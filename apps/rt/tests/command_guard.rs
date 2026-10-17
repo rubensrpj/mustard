@@ -24,16 +24,25 @@ fn run_guard(dir: &Path, command: &str) -> String {
         "session_id": "command-guard-test",
         "tool_input": { "command": command }
     });
-    let mut child = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+    run_hook(dir, &input, None)
+}
+
+/// Run `mustard-rt on PreToolUse` with the whole `input`, from `dir`, and,
+/// when given, with Claude Code's config folder moved to `config`.
+fn run_hook(dir: &Path, input: &Value, config: Option<&Path>) -> String {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_mustard-rt"));
+    command
         .args(["on", "PreToolUse"])
         .current_dir(dir)
         .env_remove("CLAUDE_PROJECT_DIR")
         .env_remove("MUSTARD_WORKSPACE_ROOT")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn mustard-rt");
+        .stderr(Stdio::piped());
+    if let Some(config) = config {
+        command.env("CLAUDE_CONFIG_DIR", config);
+    }
+    let mut child = command.spawn().expect("spawn mustard-rt");
     child
         .stdin
         .take()
@@ -100,14 +109,93 @@ fn quoted_text_passes_and_a_real_delete_is_blocked() {
     assert!(reason.starts_with("Comando barrado: apagar pasta à força"), "{reason}");
 }
 
-/// The rewrite to `rtk` belongs to rtk's own hook: the guard hands the
-/// command back untouched.
+/// Outside a Mustard project the guard hands the command back untouched:
+/// the rtk swap acts only where `mustard.json` keeps it on.
 #[test]
-fn an_unprefixed_command_is_not_rewritten() {
+fn an_unprefixed_command_outside_a_project_is_not_rewritten() {
     let dir = TempDir::new().expect("tempdir");
     let out = run_guard(dir.path(), "git status");
     assert!(!out.contains("updatedInput"), "{out}");
     assert!(refusal(&out).is_none(), "{out}");
+}
+
+/// A plugin install under `config` whose `bin/rtk` answers `rtk rewrite` the
+/// way rtk 0.49 does: `rtk` in front of the command, exit 3. Answers the
+/// path of that rtk copy.
+#[cfg(unix)]
+fn plugin_with_rtk(config: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = config.join("plugin/bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let rtk = bin.join("rtk");
+    std::fs::write(&rtk, "#!/bin/sh\n[ \"$1\" = rewrite ] || exit 9\nprintf 'rtk %s\\n' \"$3\"\nexit 3\n").unwrap();
+    std::fs::set_permissions(&rtk, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::create_dir_all(config.join("plugins")).unwrap();
+    let registry = serde_json::json!({"plugins":{"mustard@local":[{"version":"0.0.1","installPath":config.join("plugin")}]}});
+    std::fs::write(config.join("plugins/installed_plugins.json"), registry.to_string()).unwrap();
+    rtk
+}
+
+/// The conductor's command, in a project with the rtk option on, comes out
+/// with one swap only: the rtk copy that ships with Mustard, by its whole
+/// path, in front of the command.
+#[cfg(unix)]
+#[test]
+fn the_conductor_command_gets_one_rtk_swap_through_the_bundled_copy() {
+    let dir = project_with("{}");
+    let config = TempDir::new().expect("config");
+    let rtk = plugin_with_rtk(config.path());
+    let input = serde_json::json!({"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":dir.path(),"session_id":"conductor",
+        "tool_input":{"command":"git status","timeout":600_000}});
+    let out: Value = serde_json::from_str(run_hook(dir.path(), &input, Some(config.path())).trim()).expect("json");
+    assert_eq!(out["hookSpecificOutput"]["updatedInput"]["command"], format!("'{}' git status", rtk.display()), "{out}");
+
+    std::fs::write(dir.path().join("mustard.json"), r#"{"rtk":false}"#).unwrap();
+    let off = run_hook(dir.path(), &input, Some(config.path()));
+    assert!(!off.contains("updatedInput"), "the rtk option off keeps the command: {off}");
+}
+
+/// A wave agent outside its copy runs `cargo test` once, inside the copy,
+/// through the bundled rtk copy, with the 600-second ceiling and in the
+/// foreground: the rtk swap comes before the copy's wrapper, never racing it.
+#[cfg(unix)]
+#[test]
+fn a_wave_agent_cargo_test_runs_once_in_its_copy_through_the_bundled_rtk() {
+    use mustard_core::io::{sha256::Sha256, spec_events, wave_prompt};
+    let dir = project_with("{}");
+    let root = dir.path();
+    let config = TempDir::new().expect("config");
+    let rtk = plugin_with_rtk(config.path());
+    let copy = wave_prompt::slot_path(root, "work", 0);
+    std::fs::create_dir_all(&copy).unwrap();
+    let path = spec_events::spec_file(root, "work").unwrap();
+    let send = serde_json::json!({"wave":1,"role":"wave","lines":1,"chars":1,"mustard":"test","copy":copy,"host":"claude","text":"task"});
+    let sent = spec_events::write(&path, "send", send.as_object().unwrap().clone(), &[]).unwrap();
+    let log = spec_events::read(&path).unwrap().unwrap();
+    let digest = |text: &str| {
+        let mut hash = Sha256::new();
+        hash.update(text.as_bytes());
+        hash.hex_digest()
+    };
+    let bindings = root.join(".claude/mustard/host-transcripts");
+    std::fs::create_dir_all(&bindings).unwrap();
+    std::fs::write(
+        bindings.join(format!("claude-{}-{}.json", digest("session"), digest("worker"))),
+        serde_json::json!({"host":"claude","spec":"work","wave":1,"dispatch":log.dispatch_position(sent.id)}).to_string(),
+    )
+    .unwrap();
+    let input = serde_json::json!({"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":root,"session_id":"session",
+        "agent_id":"worker","agent_type":"mustard-wave","tool_input":{"command":"cargo test","run_in_background":true}});
+    let out: Value = serde_json::from_str(run_hook(root, &input, Some(config.path())).trim()).expect("json");
+    let updated = &out["hookSpecificOutput"]["updatedInput"];
+    assert_eq!(
+        updated["command"],
+        format!("cd -- '{}' && (\n'{}' cargo test\n)", wave_prompt::shown(&copy), rtk.display()),
+        "{out}"
+    );
+    assert_eq!(updated["timeout"], 600_000);
+    assert!(updated.get("run_in_background").is_none(), "{out}");
+    std::fs::remove_dir_all(wave_prompt::copies_dir(root)).unwrap();
 }
 
 #[test]

@@ -146,7 +146,7 @@ export function diagnosticsPanel(data,view,actions,h) {
       'usage-record-failed':t('Mustard não conseguiu gravar uma medição de consumo.','Mustard could not record a usage measurement.'),
       'live-usage-busy':t('Arquivo de consumo ocupado durante a gravação.','Usage file busy during recording.'),
       'usage-out-of-order-or-reset':t('Medição fora de ordem ou contador reiniciado; valor recusado para evitar contagem incorreta.','Out-of-order measurement or reset counter; value rejected to avoid incorrect counting.'),
-    })[event.reason] || event.reason),note(`${date(event.at)}${event.count?' · '+event.count+'×':''}`),
+    })[event.reason] || event.reason),...(event.detail?[note(event.detail)]:[]),note(`${date(event.at)}${event.count?' · '+event.count+'×':''}`),
       ...(event.spec?[note(`${event.spec}${event.wave?' · '+event.wave:''}`)]:[])])),
     ...(!shown.length?[note(t('Nenhum evento detalhado neste filtro. Contadores de sessões e cobertura podem estar incompletos.','No detailed event matches this filter. Session counters and coverage may be incomplete.'))]:[]),
     row([button('diagnostic-export',t('Exportar diagnóstico local','Export local diagnostic'),actions.exportDiagnostics),

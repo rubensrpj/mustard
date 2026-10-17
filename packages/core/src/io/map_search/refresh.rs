@@ -7,14 +7,67 @@
 //! índice foi feito; entram pela mesma gravação ([`super::insert_docs`]), e os
 //! números de cada nível — os documentos e o tamanho médio de cada campo —
 //! saem da conta exata das somas, o que dá os mesmos números da montagem
-//! inteira. A tabela trigram não muda: o nome da declaração e o arquivo dela
-//! ficam como estavam.
+//! inteira. Na atualização da história, a tabela trigram não muda: o nome da
+//! declaração e o arquivo dela ficam como estavam. Na gravação do scan que
+//! mudou as linhas de alguns arquivos ([`replace_files`]), ela troca as
+//! declarações desses arquivos junto.
 
-use rusqlite::{params_from_iter, Connection, OptionalExtension};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 
 use super::{documents, insert_docs, write_meta, Doc, Level, DECL_LEVEL, FILE_LEVEL, LANGUAGES_KEY};
 use crate::domain::normalize::{Languages, Normalizer};
+use crate::domain::search::folded_name;
 use crate::platform::error::Result;
+
+/// Os documentos do índice que os arquivos `paths` têm nas linhas do mapa
+/// agora: os números dos arquivos e os das declarações deles. É o que a
+/// gravação lê antes de mudar as linhas, para [`replace_files`] tirar depois.
+pub(crate) fn documents_of(conn: &Connection, paths: &[&str]) -> Result<(Vec<i64>, Vec<i64>)> {
+    if paths.is_empty() || paths.len() > MOST_PATHS {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    Ok((ids(conn, "SELECT rowid FROM files WHERE path IN", paths)?, ids(conn, "SELECT rowid FROM decls WHERE file IN", paths)?))
+}
+
+/// Troca no índice os documentos dos arquivos `paths`, que antes da gravação
+/// tinham os números `stale` ([`documents_of`]), pelos que as linhas deles
+/// dão agora, nas línguas `languages`: os dois níveis, os números deles e a
+/// tabela trigram. Roda na transação de quem grava, depois das linhas, e dá o
+/// mesmo índice que a montagem inteira. `false`, sem mudar nada, quando o
+/// índice não foi feito nessas línguas — vazio ou feito em outras — ou quando
+/// os arquivos são tantos que a montagem inteira custa o mesmo: aí quem grava
+/// o refaz inteiro.
+pub(crate) fn replace_files(conn: &Connection, languages: &Languages, paths: &[&str], stale: &(Vec<i64>, Vec<i64>)) -> Result<bool> {
+    if paths.is_empty() {
+        return Ok(true);
+    }
+    let stored: Option<String> = conn
+        .query_row("SELECT value FROM search_meta WHERE key = ?1", [LANGUAGES_KEY], |row| row.get(0))
+        .optional()?;
+    if stored.as_deref() != Some(languages.codes().join(",").as_str()) {
+        return Ok(false);
+    }
+    let files: i64 = conn.query_row("SELECT count(*) FROM files", [], |row| row.get(0))?;
+    if paths.len() > MOST_PATHS || 2 * paths.len() as i64 > files {
+        return Ok(false);
+    }
+    let (files, decls) = documents(conn, &mut Normalizer::new(languages), Some(paths))?;
+    swap(conn, &FILE_LEVEL, &stale.0, files.iter())?;
+    swap(conn, &DECL_LEVEL, &stale.1, decls.iter().filter(|decl| !decl.unlisted).map(|decl| &decl.doc))?;
+    let mut forget = conn.prepare("DELETE FROM decl_trigram WHERE rowid = ?1")?;
+    for id in &stale.1 {
+        forget.execute([id])?;
+    }
+    let mut insert = conn.prepare("INSERT INTO decl_trigram(rowid, name, folded, file) VALUES (?1, ?2, ?3, ?4)")?;
+    for decl in &decls {
+        insert.execute(params![decl.doc.id, decl.name, folded_name(&decl.name), decl.file])?;
+    }
+    Ok(true)
+}
+
+/// Quantos arquivos, no máximo, a troca por arquivo aceita: cada caminho vai
+/// como um valor da consulta, e o SQLite aceita 32 766 deles.
+const MOST_PATHS: usize = 30_000;
 
 /// Refaz no índice os documentos dos arquivos `paths` e os das declarações
 /// deles, nas línguas em que o índice foi feito, e acerta os números dos dois

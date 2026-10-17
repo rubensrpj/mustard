@@ -8,6 +8,9 @@ use std::{io::Read, path::{Path, PathBuf}};
 pub(crate) struct Measured {
     pub usage:transcript::Usage,
     pub steps:Option<u64>,
+    /// Um despacho anterior da onda ficou sem registro e contou como não
+    /// recebido. Quem tem outra testemunha dos agentes da onda a prefere.
+    pub skipped:bool,
 }
 
 fn directory(root:&Path)->PathBuf { root.join(".claude/mustard/host-transcripts") }
@@ -86,6 +89,15 @@ pub(super) fn observe(root:&Path,host:&str,event:&str,input:&HookInput) {
         transcript.as_deref().and_then(opening)
     };
     let text=prompt.or_else(||initial.as_ref().map(|p|p.0.as_str()));
+    // A sessão do agente trocou no meio da onda: o registro desta sessão nasce
+    // sem despacho. Quando o mesmo agente relê o pedido da onda, ele volta ao
+    // despacho que já tinha noutra sessão, se esse despacho é o atual.
+    if record["dispatch"].as_u64().is_none() {
+        let reread=input.tool_input.get("command").and_then(Value::as_str).and_then(ReadDispatch::of);
+        if let Some((identity,dispatch))=reread.and_then(|identity|rebound(root,&folder,host,agent,&path,&identity).map(|dispatch|(identity,dispatch))) {
+            record["spec"]=json!(identity.spec); record["wave"]=json!(identity.wave); record["dispatch"]=json!(dispatch);
+        }
+    }
     if let Some(identity)=text.and_then(|text| {
         ReadDispatch::of(text).or_else(||heading(text).map(|(spec,wave)|ReadDispatch {spec,wave,root:mustard_core::io::wave_prompt::shown(root)}))
     }) {
@@ -114,8 +126,28 @@ pub(super) fn observe(root:&Path,host:&str,event:&str,input:&HookInput) {
     let _=lock.replace(record.to_string().as_bytes());
 }
 
-/// Only explicit records for this send. Unknown/missing format stays unknown;
-/// partial histories are never presented as a complete wave total.
+/// O despacho atual da onda que `identity` relê, quando outro registro do
+/// mesmo `agent` no mesmo `host`, de outra sessão, já está preso a ele.
+fn rebound(root:&Path,folder:&Path,host:&str,agent:&str,own:&Path,identity:&ReadDispatch)->Option<u64> {
+    if identity.root!=mustard_core::io::wave_prompt::shown(root) {return None;}
+    let log=mustard_core::io::spec_events::read(&mustard_core::io::spec_events::spec_file(root,&identity.spec).ok()?).ok()??;
+    let current=log.dispatch_position(log.last_by_wave("send").get(&identity.wave).copied()?);
+    let (prefix,suffix)=(format!("{host}-"),format!("-{}.json",digest(agent)));
+    let entries=std::fs::read_dir(folder).ok()?.collect::<Result<Vec<_>,_>>().ok()?;
+    if entries.len()>4096 {return None;}
+    entries.iter().map(std::fs::DirEntry::path).filter(|path| path!=own && path.file_name().and_then(|name|name.to_str())
+        .is_some_and(|name|name.starts_with(&prefix) && name.ends_with(&suffix)))
+        .filter_map(|path|read(&path))
+        .any(|record|record["spec"]==json!(identity.spec) && record["wave"]==json!(identity.wave) && record["dispatch"].as_u64()==Some(current))
+        .then_some(current)
+}
+
+/// Só os registros do gancho de cada despacho da onda; formato desconhecido
+/// ou ausente fica desconhecido. O último despacho é o do agente que
+/// entregou: sem registro dele a onda fica sem medição, e o consumo das
+/// tentativas anteriores nunca passa pelo da onda. Um despacho anterior sem
+/// registro conta como não recebido — a onda foi reenviada antes de nascer
+/// agente dele — e a medição diz que o pulou ([`Measured::skipped`]).
 pub(crate) fn wave_usage(root:&Path,spec:&str,log:&SpecLog,wave:u64)->Option<Measured> {
     let folder=directory(root);
     if !inside(root,&folder) {return None;}
@@ -129,7 +161,8 @@ pub(crate) fn wave_usage(root:&Path,spec:&str,log:&SpecLog,wave:u64)->Option<Mea
         let dispatch=record["dispatch"].as_u64()?;
         if sends.contains(&dispatch) {found.entry(dispatch).or_default().push(record.clone());}
     }
-    if sends.is_empty() || sends.iter().any(|send|!found.contains_key(send)) {return None;}
+    if !found.contains_key(sends.last()?) {return None;}
+    let skipped=found.len()<sends.len();
     let mut total=transcript::Usage::default();
     let mut claude_files=std::collections::BTreeSet::new();
     let mut codex_files=std::collections::BTreeSet::new();
@@ -166,7 +199,7 @@ pub(crate) fn wave_usage(root:&Path,spec:&str,log:&SpecLog,wave:u64)->Option<Mea
     }
     if has_codex && has_claude {total.model=None;}
     let steps=(!has_codex).then_some(total.steps);
-    (total.tokens>0 || total.model.is_some()).then_some(Measured {usage:total,steps})
+    (total.tokens>0 || total.model.is_some()).then_some(Measured {usage:total,steps,skipped})
 }
 
 #[cfg(test)]
@@ -247,5 +280,29 @@ mod tests {
         let mut send=next.get(written.id).unwrap().clone(); send.id+=1; send.fields.insert("resends".into(),json!(written.id)); next.events.push(send);
         assert!(wave_usage(root,"work",&next,1).is_none());
         assert!(wave_usage(root,"other",&log,1).is_none());
+    }
+    /// A onda Codex saiu e foi reenviada antes de nascer agente do primeiro
+    /// envio: só o agente do reenvio deixa registro, e o painel mostra o
+    /// consumo dele.
+    #[test]
+    fn a_codex_resend_is_measured_when_the_earlier_send_left_no_record() {
+        let dir=tempfile::tempdir().unwrap(); let root=dir.path();
+        std::fs::write(root.join("mustard.json"),"{}").unwrap();
+        let path=mustard_core::io::spec_events::spec_file(root,"work").unwrap();
+        let command=format!("mustard-rt run read request-1 --root {} --spec work",mustard_core::io::wave_prompt::shown(root));
+        let send=|extra:Value| {
+            let mut fields=json!({"wave":1,"role":"wave","lines":1,"chars":command.len(),"mustard":"test","host":"codex","text":command});
+            fields.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            mustard_core::io::spec_events::write(&path,"send",fields.as_object().unwrap().clone(),&[]).unwrap()
+        };
+        let first=send(json!({}));
+        send(json!({"resends":first.id}));
+        let log=mustard_core::io::spec_events::read(&path).unwrap().unwrap();
+        let rollout=root.join("resent-thread.jsonl");
+        std::fs::write(&rollout,format!("{}\n{}\n",json!({"timestamp":chrono::Utc::now().to_rfc3339(),"type":"response_item","payload":{"role":"user","content":[{"type":"input_text","text":command}]}}),json!({"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":80,"output_tokens":20,"total_tokens":120}}}}))).unwrap();
+        let input=serde_json::from_value(json!({"cwd":root,"hook_event_name":"SubagentStop","session_id":"s","agent_id":"agent","agent_transcript_path":rollout})).unwrap();
+        crate::host::codex("SubagentStop",&input);
+        let panel=crate::commands::flow::round::usage_snapshot(root,&log,None,None);
+        assert_eq!(panel["waves"][0]["usage"]["tokens"],120,"{panel}");
     }
 }

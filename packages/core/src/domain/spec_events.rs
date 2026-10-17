@@ -57,7 +57,7 @@ pub use read::{
     parse_log, repair_cut_lines, Hidden, SkipReason, SkippedLine, SpecEvent, SpecLog, Step, TimeFilter,
 };
 pub use refusal::{ItemPart, Refusal, TaskDeclaration, TASK_TITLE_MAX};
-pub use search::{calls_command, found_by, refresh_search_lines, search_field};
+pub use search::{calls_command, found_by, ranked_by, refresh_search_lines, search_field, Ranked, Ranking, NOT_SEARCHED};
 pub use types::{
     type_names, type_spec, Block, BlockQuery, EventRef, Field, Kind, ReadQuery, TypeSpec, CUT_LINE_TYPE,
     DELIVERED_MAX_CHARS, METRIC_TYPES, PHASES, TYPES, WORK_KINDS,

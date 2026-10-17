@@ -74,6 +74,11 @@ pub enum SpecEventsCmd {
         /// command by its name, like `map search`.
         #[arg(long)]
         term: Option<String>,
+        /// The whole answer. Without it, `backlog` opens with the total and
+        /// leaves out of each line the empty wave and the empty dependency
+        /// list; the other blocks read the same either way.
+        #[arg(long)]
+        full: bool,
         /// Any directory inside the repo. Defaults to the current dir.
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -147,6 +152,31 @@ pub enum SpecEventsCmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
+    /// Find items in a spec in one call, as plain text: one line per item with
+    /// its code, its type, its wave, its day and its title, at most 5 lines.
+    /// A text finds the items that have all its words (function words left
+    /// out, each word by its root), the title weighing more than the text;
+    /// with more than 5 such items, or none, up to 30 candidates go to Jev in
+    /// one question and only what it judges useful comes back, and without
+    /// Jev the score order comes with partial items marked and a line saying
+    /// so. An item code prints the whole item, as reading the item does.
+    /// `--type` alone lists the newest items of that type. Hook notices,
+    /// call records, receipts and copies are never searched.
+    #[command(display_order = 42)]
+    Find {
+        /// The text to find, or an item code like `MSTD-TASK-NNNN`.
+        term: Option<String>,
+        /// Only items of this type: the word the answer shows (`tarefa`,
+        /// `task`, `mensagem`) or the type name. Repeat it for more types.
+        #[arg(long = "type", value_name = "TYPE")]
+        types: Vec<String>,
+        /// The spec to search. Without it, the current spec, as in `read`.
+        #[arg(long)]
+        spec: Option<String>,
+        /// Any directory inside the repo. Defaults to the current dir.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
     /// Rebuild the spec index (`.claude/spec/index.ndjson` of the main
     /// checkout) from every spec's event file, and recompute the `search`
     /// field of each line, when the index is missing or diverges. Every
@@ -190,11 +220,14 @@ fn fields_of_each_type() -> String {
 /// Dispatch one `spec_events`-family `run` subcommand.
 pub fn dispatch(cmd: SpecEventsCmd) {
     match cmd {
-        SpecEventsCmd::Read { block, spec, term, root } => {
-            spec_events::read::run(&spec_events::read::ReadOpts { root, spec, block, term });
+        SpecEventsCmd::Read { block, spec, term, full, root } => {
+            spec_events::read::run(&spec_events::read::ReadOpts { root, spec, block, term }, full);
         }
         SpecEventsCmd::Write { event_type, spec, json, copy, root } => {
             spec_events::write::run(&spec_events::write::WriteOpts { root, spec, event_type, json }, copy);
+        }
+        SpecEventsCmd::Find { term, types, spec, root } => {
+            spec_events::find::run(&spec_events::find::FindOpts { root, spec, term, types });
         }
         SpecEventsCmd::Index { root } => {
             spec_events::index::run(&spec_events::index::IndexOpts { root });

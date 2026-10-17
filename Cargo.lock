@@ -1122,6 +1122,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "toml",
+ "winapi-util",
  "yaml-rust2",
 ]
 
@@ -1138,6 +1139,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "toml",
  "ureq",
 ]
 

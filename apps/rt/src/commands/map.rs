@@ -39,7 +39,12 @@
 //!   sentido do arquivo, ou da declaração, em palavras de negócio, para a
 //!   busca achar o trecho por elas; a nota da spec atual entra no lugar da que
 //!   o trecho já tinha, e vale enquanto o arquivo não mudar. O `slice` mostra a
-//!   nota da declaração, dita velha quando o arquivo mudou depois dela.
+//!   nota da declaração, dita velha quando o arquivo mudou depois dela;
+//! - `notes-package [--limit <caracteres>] [--changed-since <commit>]`: o
+//!   pacote das funções sem frase em dia para o agente de análise, as de nota
+//!   velha primeiro, depois as dos arquivos mudados, cada uma com o trecho;
+//! - `notes-write --json '[{"file","name","text"}]'`: grava as frases que o
+//!   agente devolveu, e diz as gravadas e as recusadas, com o motivo.
 //!
 //! A regra mora em `mustard_core::domain::project_map`, e a leitura do banco
 //! na porta `mustard_core::io::project_map`; a busca lê o índice de palavras
@@ -56,7 +61,7 @@ use mustard_core::Setting;
 use mustard_core::domain::map_filter::Verdict;
 use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::project_map::{self as project_map, DeclAt, FoundItem, MapRefusal, ProjectMap, UseSite};
-use mustard_core::domain::scan::{HistoryReport, ScanReport};
+use mustard_core::domain::scan::{HistoryReport, NativePass, ScanReport};
 use mustard_core::domain::search::TOP;
 use mustard_core::io::map_glossary::{self, Place};
 use mustard_core::io::map_notes::{self, NewNote};
@@ -74,6 +79,10 @@ use crate::shared::config_key::Walk;
 use crate::shared::search_door::{self as door, Assemble, Numbers, first_warning, jev};
 use crate::shared::triage_view;
 
+mod grep_answer;
+mod notes;
+mod refreshing;
+
 /// A pergunta feita ao mapa.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Question {
@@ -88,6 +97,8 @@ pub enum Question {
     Dump,
     Audit,
     Note,
+    NotesPackage,
+    NotesWrite,
 }
 
 impl Question {
@@ -104,6 +115,8 @@ impl Question {
             Self::Dump => "dump",
             Self::Audit => "audit",
             Self::Note => "note",
+            Self::NotesPackage => "notes-package",
+            Self::NotesWrite => "notes-write",
         }
     }
 }
@@ -146,6 +159,12 @@ pub struct MapOpts {
     pub pr: Option<u32>,
     /// A sessão de quem pergunta, que guarda os avisos já dados.
     pub session: Option<String>,
+    /// O teto de caracteres do pacote de `notes-package`.
+    pub limit: Option<usize>,
+    /// O commit desde o qual `notes-package` dá os arquivos por mudados.
+    pub changed_since: Option<String>,
+    /// As frases que `notes-write` grava, como JSON.
+    pub json: Option<String>,
 }
 
 fn refused(refusal: &MapRefusal, lang: Locale) -> Value {
@@ -186,20 +205,50 @@ pub(crate) fn map_at(opts: &MapOpts, mine: &Mine<'_>, trace: &Trace<'_>, assembl
     if opts.question==Question::Audit {
         return mustard_core::io::knowledge::audit::run(&project.root).unwrap_or_else(|error|refused(&error,project.lang));
     }
-    crate::commands::flow::round::refresh_map_if_stale(&project.root, mine);
-    let _ = map_specs::sync(&project.root, &project.languages);
+    // A passada que segue em segundo plano (`busy`) deixa a resposta com o
+    // mapa de antes, e a resposta diz isso.
+    let running = std::cell::Cell::new(false);
+    let watched = |root: &Path, out: &Path| {
+        let report = mine(root, out)?;
+        running.set(report.busy);
+        Ok(report)
+    };
+    crate::commands::flow::round::refresh_map_if_stale(&project.root, &watched);
+    if reads_specs(opts.question) {
+        let _ = map_specs::sync(&project.root, &project.languages);
+    }
     let lang = project.lang;
-    match answer(opts, &project.root, lang, &project.languages, trace, assemble) {
+    let mut report = match answer(opts, &project.root, lang, &project.languages, trace, assemble) {
         Ok(report) => {
             remember(opts, &project.root, &project.languages, &report);
             report
         }
-        Err(refusal) => refused(&refusal, lang),
+        Err(refusal) => refreshing::refused(&refusal, lang, running.get()),
+    };
+    if running.get() {
+        report["refreshing"] = json!(mustard_core::translate("map.refreshing", lang));
     }
+    report
 }
 
+/// Se a pergunta lê o bloco das specs, que a resposta põe em dia antes dela:
+/// as partes de um arquivo, o trecho de uma declaração, quem a usa, quem
+/// importa o arquivo e os testes dele não o leem, e não esperam a gravação.
+fn reads_specs(question: Question) -> bool {
+    !matches!(
+        question,
+        Question::Summary | Question::Slice | Question::Users | Question::Importers | Question::Tests | Question::NotesPackage | Question::NotesWrite
+    )
+}
+
+/// Quanto a pergunta ao mapa espera a passada que o põe em dia, o mesmo prazo
+/// da busca: passado ele, a passada segue sozinha e a resposta sai do mapa de
+/// antes, com o aviso.
+const REFRESH_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Compatibility spelling of the source-first gateway. No scan or remote
-/// filter is required to execute a literal search.
+/// filter is required to execute a literal search. The report carries the
+/// text answer by the map that the command prints.
 fn source_search(opts:&MapOpts,grep:&GrepSearch)->Value {
     if let Err(refusal)=required(Some(&grep.pattern),Question::Search,"<pattern>") {
         return refused(&refusal,mustard_core::ProjectConfig::load(&opts.root).language().text_or_default());
@@ -211,9 +260,9 @@ fn source_search(opts:&MapOpts,grep:&GrepSearch)->Value {
     argv.extend(["-e".into(),grep.pattern.clone(),"--".into(),grep.folder.as_deref().unwrap_or(Path::new(".")).to_string_lossy().into_owned()]);
     let result=mustard_core::domain::code_search::Request::native(&argv).and_then(|mut request|{
         request.intent=opts.intent.as_deref().or(opts.described.as_deref()).unwrap_or_default().into();
-        crate::shared::search_gateway::answer(&opts.root,&request)
+        crate::shared::search_gateway::answer(&opts.root,&request).map(|answer|(request,answer))
     });
-    match result {Ok(answer)=>answer.report,Err(reason)=>json!({"ok":false,"reason":reason,"fallback":"use-original-host-tool","executed":false})}
+    match result {Ok((request,answer))=>grep_answer::answered(&opts.root,&request,answer),Err(reason)=>json!({"ok":false,"reason":reason,"fallback":"use-original-host-tool","executed":false})}
 }
 
 /// Guarda no glossário do mapa o que a resposta entregou à sessão de quem
@@ -350,6 +399,8 @@ fn answer_from(
         Question::Dump => dump(root),
         Question::Audit => mustard_core::io::knowledge::audit::run(root),
         Question::Note => note(opts, root, read),
+        Question::NotesPackage => notes::package(opts, root),
+        Question::NotesWrite => notes::write(opts, root, lang, read),
     }
 }
 
@@ -928,7 +979,11 @@ fn history_number(root: &Path, session: Option<&str>, lang: Locale, (key, settin
 /// sai como texto, e as demais, como JSON.
 pub fn run(opts: &MapOpts) {
     let scan = mustard_core::Scan::locate();
-    let report = map_at(opts, &|root, out| scan.scan_then_read_history(root, out), &|root, out, file, moves| scan.history(root, out, file, moves), &jev);
+    let mine = |root: &Path, out: &Path| match scan.scan_native_within(root, out, REFRESH_WAIT)? {
+        NativePass::Done(report) => Ok(report),
+        NativePass::Running => Ok(ScanReport { busy: true, ..ScanReport::default() }),
+    };
+    let report = map_at(opts, &mine, &|root, out, file, moves| scan.history(root, out, file, moves), &jev);
     match report["answer"].as_str().filter(|_| report["question"] == "search") {
         // A resposta ao texto do `Grep` sai como o gancho a dá: o texto só.
         Some(answer) => println!("{answer}"),
@@ -1020,6 +1075,9 @@ mod tests {
             name: None,
             pr: None,
             session: None,
+            limit: None,
+            changed_since: None,
+            json: None,
         }
     }
 
@@ -1835,6 +1893,60 @@ mod tests {
     /// Antes de cada resposta, o mapa se confere com o conteúdo de agora:
     /// um arquivo editado sem commit é relido, e a pergunta seguinte já
     /// responde a linha nova; sem nada mudado, o scan não roda.
+    /// Com a passada do mapa ainda em segundo plano, a pergunta não espera:
+    /// responde com o mapa de antes e diz que ele segue em atualização. O
+    /// arquivo que o mapa não tem é recusado na hora, e a recusa manda repetir
+    /// a pergunta, e não rodar o scan, que leria o projeto ao mesmo tempo que
+    /// a passada; sem a passada, a mesma recusa manda rodar o scan. A passada
+    /// que acabou não deixa aviso.
+    #[test]
+    fn a_question_while_the_map_refreshes_answers_from_the_previous_map() {
+        let dir = project_with_map();
+        let root = dir.path();
+        let init = std::process::Command::new("git").args(["init", "-q"]).current_dir(root).output().expect("git");
+        assert!(init.status.success());
+        let calls = std::cell::Cell::new(0);
+        let busy = std::cell::Cell::new(true);
+        let mine = |_: &Path, _: &Path| {
+            calls.set(calls.get() + 1);
+            Ok(ScanReport { busy: busy.get(), ..ScanReport::default() })
+        };
+        let no_trace = |_: &Path, _: &Path, _: &str, _: usize| panic!("these questions never read a history");
+
+        // Um arquivo novo, que a passada em segundo plano ainda está lendo.
+        let checkout = root.join("web/src/checkout.ts");
+        std::fs::create_dir_all(checkout.parent().unwrap()).unwrap();
+        std::fs::write(&checkout, "export function payOrder(total: number): number {\n  return total;\n}\n").unwrap();
+        let mut slice = ask(root, Question::Slice);
+        slice.file = Some("web/src/checkout.ts".to_string());
+        slice.name = Some("payOrder".to_string());
+        let report = map_at(&slice, &mine, &no_trace);
+        assert_eq!(report["reason"], json!("unknown-file"), "{report}");
+        assert_eq!(report["refreshing"], json!(mustard_core::translate("map.refreshing", Locale::PtBr)), "{report}");
+        assert_eq!(report["hint"], json!(mustard_core::translate("map.refused_while_refreshing", Locale::PtBr)), "{report}");
+        assert_eq!(calls.get(), 1);
+
+        busy.set(false);
+        let report = map_at(&slice, &mine, &no_trace);
+        assert_eq!(report["reason"], json!("unknown-file"), "{report}");
+        let scan_hint = MapRefusal::UnknownFile { file: "web/src/checkout.ts".to_string() }.message(Locale::PtBr);
+        assert_eq!(report["hint"], json!(scan_hint), "{report}");
+        assert!(scan_hint.contains("mustard-rt run scan"), "{scan_hint}");
+        assert!(report.get("refreshing").is_none(), "{report}");
+        busy.set(true);
+
+        let mut summary = ask(root, Question::Summary);
+        summary.file = Some("packages/core/src/pay.rs".to_string());
+        let report = map_at(&summary, &mine, &no_trace);
+        assert_eq!(report["parts"][0]["name"], json!("Payment"), "{report}");
+        assert!(report["refreshing"].is_string(), "{report}");
+
+        busy.set(false);
+        let report = map_at(&summary, &mine, &no_trace);
+        assert_eq!(report["parts"][0]["name"], json!("Payment"), "{report}");
+        assert!(report.get("refreshing").is_none(), "{report}");
+    }
+
     #[test]
     fn a_question_after_an_edit_without_commit_answers_the_new_line() {
         let scan = mustard_core::Scan::locate();
@@ -2850,7 +2962,12 @@ mod tests {
 
         /// A montagem que entrega este filtro, como a chave no projeto.
         fn assemble(&self) -> impl Fn(&Path, &mustard_core::ProjectConfig) -> Result<Assembled, FilterError> + '_ {
-            move |_, _| Ok(Assembled { name: "jev", filter: Box::new(self.clone()), warning: None })
+            self.assemble_named("jev")
+        }
+
+        /// [`Self::assemble`] com o filtro montado sob o nome `name`.
+        fn assemble_named(&self, name: &'static str) -> impl Fn(&Path, &mustard_core::ProjectConfig) -> Result<Assembled, FilterError> + '_ {
+            move |_, _| Ok(Assembled { name, filter: Box::new(self.clone()), warning: None })
         }
 
         /// A montagem com a chave achada no projeto como a busca de verdade a
@@ -3564,6 +3681,48 @@ mod tests {
         assert!(calls[0].get("tokens").is_none(), "{calls:?}");
     }
 
+    /// A busca com filtro e o registro da chamada da rodada ao Jev gravam a
+    /// mesma medida para a mesma resposta: o filtro, o tempo dele, os tokens,
+    /// o custo, os pedidos e o modelo; o filtro de outro nome grava o nome
+    /// dele; e, na falha, o nome com o motivo e o tempo até ela, sem tokens,
+    /// custo, pedidos nem modelo.
+    #[test]
+    fn the_search_and_the_jev_call_record_write_the_same_measure() {
+        use crate::shared::jev::{ITEMS_CALL, record_jev_call};
+        use mustard_core::domain::map_filter::FilterUsage;
+        let measure = |call: &serde_json::Map<String, Value>| -> Vec<Value> {
+            ["filter", "tokens", "cost_micro_usd", "requests", "model"].iter().map(|field| call.get(*field).cloned().unwrap_or(Value::Null)).collect()
+        };
+
+        let dir = search_project_on("medida");
+        searched(&search_opts(dir.path(), "pedido", Some("onde o pedido é gravado"), None), &FakeFilter::scoring(&[0.7, 0.9, 0.8]).assemble());
+        let usage = FilterUsage { incomplete: false, input_tokens: 21_000, millis: 40, cost_micro_usd: 882, requests: 3, model: "jev-1.13.0".to_string() };
+        record_jev_call(dir.path(), "medida", ITEMS_CALL, Instant::now(), None, Ok(&usage));
+        let calls = calls_of(dir.path(), "medida");
+        assert_eq!(calls.len(), 2, "{calls:?}");
+        let expected = vec![json!("jev"), json!(21_000), json!(882), json!(3), json!("jev-1.13.0")];
+        assert_eq!((measure(&calls[0]), measure(&calls[1])), (expected.clone(), expected), "{calls:?}");
+        assert_eq!((&calls[0]["filter_ms"], &calls[1]["filter_ms"]), (&json!(40), &json!(40)), "{calls:?}");
+
+        // Outro nome de filtro, com a mesma medida: a gravação leva o nome do
+        // filtro montado, e não um nome fixo.
+        let other = search_project_on("outro-filtro");
+        searched(&search_opts(other.path(), "pedido", Some("onde o pedido é gravado"), None), &FakeFilter::scoring(&[0.7, 0.9, 0.8]).assemble_named("outro"));
+        let calls = calls_of(other.path(), "outro-filtro");
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert_eq!(measure(&calls[0]), vec![json!("outro"), json!(21_000), json!(882), json!(3), json!("jev-1.13.0")], "{calls:?}");
+
+        let failing = search_project_on("falha-medida");
+        let refused = FilterError::Refused { status: 429 };
+        searched(&search_opts(failing.path(), "pedido", None, None), &FakeFilter::failing(refused.clone()).assemble());
+        record_jev_call(failing.path(), "falha-medida", ITEMS_CALL, Instant::now(), None, Err(&refused));
+        let failed = calls_of(failing.path(), "falha-medida");
+        assert_eq!(failed.len(), 2, "{failed:?}");
+        let expected = vec![json!("jev:busy"), Value::Null, Value::Null, Value::Null, Value::Null];
+        assert_eq!((measure(&failed[0]), measure(&failed[1])), (expected.clone(), expected), "{failed:?}");
+        assert!(failed.iter().all(|call| call["filter_ms"].is_u64()), "{failed:?}");
+    }
+
     /// O mapa `map` gravado como a passada do scan o grava: com a marca dela
     /// em cada bloco e o índice nas línguas do projeto.
     fn written_by_the_scan(root: &Path, map: &Value) {
@@ -3571,13 +3730,12 @@ mod tests {
         store::save_at(&store::model_path(root), map, "scan 1", &languages).unwrap();
     }
 
-    /// O scan de uma compilação mais velha abre o mapa: ele declara o bloco
-    /// das declarações noutra versão, e o bloco perde a marca da passada. A
-    /// abertura seguinte, na versão deste programa, o refaz vazio.
+    /// O bloco das declarações ficou no formato de um scan mais velho: a
+    /// abertura seguinte, na versão deste programa, o refaz vazio e sem a
+    /// marca da passada.
     fn opened_by_an_older_scan(root: &Path) {
-        use mustard_core::io::map_db::{Block, Kind, MapDb};
-        let older = Block { name: store::DECLS.name(), version: 1, tables: &[], schema: "", kind: Kind::Rebuilt(|_, _| Ok(())) };
-        MapDb::open(&store::model_path(root), root, &[older]).unwrap();
+        let mut db = mustard_core::io::map_db::MapDb::open(&store::model_path(root), root, &[]).unwrap();
+        db.write(|tx| Ok(tx.execute("UPDATE blocks SET version = version - 1 WHERE name = ?1", [store::DECLS.name()])?)).unwrap();
     }
 
     /// Um repositório git de verdade, com o texto e o código em português e

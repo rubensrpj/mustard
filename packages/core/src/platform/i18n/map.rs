@@ -169,6 +169,21 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Who uses `{name}`, as file:line:caller. Proven links come first. \
              Suspect ones follow, grouped by the declarations the call may reach."
         }
+        ("map.refreshing", Locale::PtBr) => {
+            "O mapa segue em atualização, em segundo plano. Esta resposta veio do mapa de antes; repita a pergunta depois para ver o mapa novo."
+        }
+        ("map.refreshing", Locale::EnUs) => {
+            "The map is still being refreshed in the background. This answer came from the previous map; ask again later to see the new one."
+        }
+        // A recusa que viria de o mapa de antes ainda não ter o que a pergunta
+        // pede, com a passada em segundo plano: rodar o scan leria o projeto
+        // inteiro de novo, ao mesmo tempo que ela.
+        ("map.refused_while_refreshing", Locale::PtBr) => {
+            "Não rode `mustard-rt run scan` agora, porque a passada em segundo plano já relê o projeto. Repita a pergunta quando ela terminar."
+        }
+        ("map.refused_while_refreshing", Locale::EnUs) => {
+            "Do not run `mustard-rt run scan` now, because the background pass is already reading the project again. Ask again when it ends."
+        }
         ("map.users.none", Locale::PtBr) => "Ninguém usa `{name}` de `{file}`.",
         ("map.users.none", Locale::EnUs) => "Nothing uses `{name}` from `{file}`.",
         ("map.users.suspect", Locale::PtBr) => {
@@ -344,6 +359,13 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("map.answer.map_only", Locale::EnUs) => {
             "The plain search would find no line with this text. The map points to these files: {files}."
         }
+        // A resposta ao texto da busca pelo mapa traz só os arquivos dele.
+        ("map.answer.outside", Locale::PtBr) => {
+            "Fora do mapa, {count} arquivos também têm linhas achadas, como documentos e dados. Esta resposta os deixa de fora, e a última linha diz como ver a busca inteira."
+        }
+        ("map.answer.outside", Locale::EnUs) => {
+            "Outside the map, {count} files also have lines found, such as documents and data. This answer leaves them out, and the last line says how to see the whole search."
+        }
         // O arquivo que mudou depois da passada do mapa, com ou sem obra em
         // andamento no projeto.
         ("map.answer.changed", Locale::PtBr) => "mudado depois do mapa",
@@ -463,8 +485,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("map.rs"),
             super::PREFIXES,
-            79,
-            0xfff0_0d3f_6d2d_5166,
+            82,
+            0x3538_41fb_07f2_09d4,
         );
     }
 
@@ -482,6 +504,8 @@ mod tests {
                 "map.search.pass",
                 "map.users.head",
                 "map.users.none",
+                "map.refreshing",
+                "map.refused_while_refreshing",
                 "map.users.suspect",
                 "map.users.common.one",
                 "map.users.common.many",
@@ -510,6 +534,7 @@ mod tests {
                 "map.answer.lines",
                 "map.answer.lines_code",
                 "map.answer.map_only",
+                "map.answer.outside",
                 "map.answer.changed",
                 "map.answer.rest",
                 "map.answer.rest_beside",
@@ -735,6 +760,8 @@ mod tests {
             ("map.summary.ask", &[][..]),
             ("map.users.head", &["{name}"][..]),
             ("map.users.none", &["{name}", "{file}"][..]),
+            ("map.refreshing", &[][..]),
+            ("map.refused_while_refreshing", &[][..]),
             ("map.users.suspect", &[][..]),
             ("map.users.common.one", &["{name}"][..]),
             ("map.users.common.many", &["{count}", "{name}"][..]),
@@ -763,6 +790,7 @@ mod tests {
             ("map.answer.lines", &[][..]),
             ("map.answer.lines_code", &[][..]),
             ("map.answer.map_only", &["{files}"][..]),
+            ("map.answer.outside", &["{count}"][..]),
             ("map.answer.changed", &[][..]),
             ("map.answer.rest", &["{places}", "{files}"][..]),
             ("map.answer.rest_beside", &["{places}", "{files}"][..]),

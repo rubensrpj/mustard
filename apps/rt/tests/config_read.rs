@@ -15,10 +15,8 @@ fn private_host_environment_keys_are_masked_without_changing_the_file() {
     let private=json!({"env":{"TYPESAFE_API_KEY":SECRET},"rtk":true}).to_string();
     let file=".claude/settings.local.json";
     std::fs::write(dir.path().join(file),&private).unwrap();
-    let response=hook(dir.path(),"cat .claude/settings.local.json; echo finished");
-    assert!(!response.to_string().contains(SECRET));
-    let command=response["hookSpecificOutput"]["updatedInput"]["command"].as_str().expect("masked native reader");
-    assert!(command.contains("config-read") && command.ends_with("; echo finished"));
+    let command=masked_command(dir.path(),"cat .claude/settings.local.json; echo finished");
+    assert!(command.ends_with("; echo finished"), "{command}");
     let output=native(dir.path(),file,"cat",json!([]));
     assert!(output.status.success());
     let shown=String::from_utf8(output.stdout).unwrap();
@@ -27,6 +25,8 @@ fn private_host_environment_keys_are_masked_without_changing_the_file() {
     assert_eq!(std::fs::read_to_string(dir.path().join(file)).unwrap(),private);
 }
 
+/// The hook's answer for `command`; a hook that lets it pass in silence
+/// answers `null`.
 fn hook(root: &Path, command: &str) -> Value {
     let mut child = Command::new(env!("CARGO_BIN_EXE_mustard-rt")).args(["on", "PreToolUse"])
         .current_dir(root).env_remove("CLAUDE_PROJECT_DIR").env_remove("MUSTARD_WORKSPACE_ROOT")
@@ -36,7 +36,25 @@ fn hook(root: &Path, command: &str) -> Value {
     child.stdin.take().unwrap().write_all(request.to_string().as_bytes()).unwrap();
     let output = child.wait_with_output().unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    if output.stdout.is_empty() {
+        return Value::Null;
+    }
     serde_json::from_slice(&output.stdout).unwrap()
+}
+
+/// The command the refusal of `command` hands back, alone on the last line of
+/// the reason. The refusal changes no command and never carries the key: a
+/// refusal beats any other hook that would rewrite the same command.
+fn masked_command(root: &Path, command: &str) -> String {
+    let result = hook(root, command);
+    let specific = &result["hookSpecificOutput"];
+    assert_eq!(specific["permissionDecision"], "deny", "{command}: {result}");
+    assert!(specific.get("updatedInput").is_none(), "{command}: {result}");
+    assert!(!result.to_string().contains(SECRET), "{command}: {result}");
+    let reason = specific["permissionDecisionReason"].as_str().unwrap();
+    let ready = reason.lines().last().unwrap();
+    assert!(ready.contains(" run config-read --file "), "{command}: {reason}");
+    ready.to_string()
 }
 
 fn native(root: &Path, file: &str, reader: &str, args: Value) -> std::process::Output {
@@ -57,27 +75,21 @@ fn filtered_config_and_git_execute_once_without_a_secret_or_full_config_dump() {
     std::fs::write(dir.path().join("untracked.txt"), "test").unwrap();
     let original = r#"grep -n -E "ignore-pattern|--roots|taskset|\"enabled\"|\"rtk\"|flow|protected" mustard.json | cut -c1-200; echo "--- git"; git status --short | head -5; echo "fim""#;
     let result = hook(dir.path(), original);
-    let specific = &result["hookSpecificOutput"];
-    assert!(specific.get("permissionDecision").is_none(), "{result}");
-    assert!(specific.get("additionalContext").is_none(), "no configuration dump: {result}");
-    let updated = &specific["updatedInput"];
-    assert_eq!(updated["timeout"], 3500);
-    assert_eq!(updated["description"], "config and git");
-    let command = updated["command"].as_str().unwrap();
-    assert!(command.ends_with(r#" | cut -c1-200; echo "--- git"; git status --short | head -5; echo "fim""#), "{command}");
-    assert!(!result.to_string().contains(SECRET));
+    assert!(result["hookSpecificOutput"].get("additionalContext").is_none(), "no configuration dump: {result}");
     // The hook itself executed no part of the requested command.
     assert!(!result.to_string().contains("?? untracked.txt"));
-    let out = shell(dir.path(), command);
+    let command = masked_command(dir.path(), original);
+    assert!(command.ends_with(r#" | cut -c1-200; echo "--- git"; git status --short | head -5; echo "fim""#), "{command}");
+    let out = shell(dir.path(), &command);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let text = String::from_utf8(out.stdout).unwrap();
     assert!(text.contains("2:  \"git\"") && text.contains("3:  \"testCommand\"") && text.contains("4:  \"lintCommand\""), "{text}");
     assert!(text.contains("?? untracked.txt") && text.contains("--- git") && text.contains("fim"), "{text}");
     assert!(!text.contains("jev") && !text.contains(SECRET), "{text}");
     assert_eq!(std::fs::read_to_string(dir.path().join("mustard.json")).unwrap(), CONFIG);
-    let result = hook(dir.path(), "grep -q flow mustard.json && printf tested >> run.count");
+    let command = masked_command(dir.path(), "grep -q flow mustard.json && printf tested >> run.count");
     assert!(!dir.path().join("run.count").exists(), "hook must never run the suffix");
-    let out = shell(dir.path(), result["hookSpecificOutput"]["updatedInput"]["command"].as_str().unwrap());
+    let out = shell(dir.path(), &command);
     assert!(out.status.success());
     assert_eq!(std::fs::read_to_string(dir.path().join("run.count")).unwrap(), "tested");
 }
@@ -95,18 +107,15 @@ fn masked_reads_preserve_no_match_conditions_and_read_latest_bytes() {
         ("cat mustard.json | grep key", "  \"jev\": {\"key\": \"***\"}\n"),
         ("grep -nH flow mustard.json", "mustard.json:2:  \"git\": {\"flow\": {\"*\": \"develop\"}},\n"),
     ] {
-        let result = hook(dir.path(), original);
-        let command = result["hookSpecificOutput"]["updatedInput"]["command"].as_str().unwrap();
-        let out = shell(dir.path(), command);
+        let out = shell(dir.path(), &masked_command(dir.path(), original));
         assert!(out.status.success(), "{original}: {}", String::from_utf8_lossy(&out.stderr));
         assert_eq!(String::from_utf8(out.stdout).unwrap(), expected, "{original}");
     }
-    let result = hook(dir.path(), "grep absent mustard.json");
-    assert_eq!(shell(dir.path(), result["hookSpecificOutput"]["updatedInput"]["command"].as_str().unwrap()).status.code(), Some(1));
-    let result = hook(dir.path(), "cat mustard.json");
-    std::fs::write(dir.path().join("mustard.json"), r#"{"jev":{"k\u0065y":"changed-secret-81"},"new":true}"#).unwrap();
-    let out = shell(dir.path(), result["hookSpecificOutput"]["updatedInput"]["command"].as_str().unwrap());
-    assert_eq!(String::from_utf8(out.stdout).unwrap(), r#"{"jev":{"k\u0065y":"***"},"new":true}"#);
+    assert_eq!(shell(dir.path(), &masked_command(dir.path(), "grep absent mustard.json")).status.code(), Some(1));
+    let command = masked_command(dir.path(), "cat mustard.json");
+    std::fs::write(dir.path().join("mustard.json"), r#"{"jev":{"key":"changed-secret-81"},"new":true}"#).unwrap();
+    let out = shell(dir.path(), &command);
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), r#"{"jev":{"key":"***"},"new":true}"#);
 }
 
 #[test]
@@ -127,6 +136,7 @@ fn unsupported_or_mixed_reads_do_not_execute_any_suffix_or_dump_the_config() {
         let specific = &result["hookSpecificOutput"];
         assert_eq!(specific["permissionDecision"], "deny", "{original}: {result}");
         assert!(specific.get("updatedInput").is_none(), "{result}");
+        assert!(!specific["permissionDecisionReason"].as_str().unwrap().contains("--reader"), "no masked command: {result}");
         assert!(!result.to_string().contains(SECRET) && !result.to_string().contains("testCommand"), "{result}");
         assert!(!dir.path().join("wrong").exists());
     }
@@ -135,4 +145,87 @@ fn unsupported_or_mixed_reads_do_not_execute_any_suffix_or_dump_the_config() {
     assert!(!dir.path().join("wrong").exists());
     let missing = native(dir.path(), "missing/mustard.json", "cat", json!([]));
     assert!(!missing.status.success() && missing.stdout.is_empty());
+}
+
+/// The read the session reported: the plain read, the same read after
+/// entering the project folder, and a cut read. Each is refused; the command
+/// the refusal hands back passes the hook and shows the file with `***`.
+#[test]
+fn a_config_read_is_refused_with_the_masked_command_ready() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("project");
+    std::fs::create_dir_all(project.join(".claude")).unwrap();
+    std::fs::write(project.join(".claude/mustard.json"), CONFIG).unwrap();
+    std::fs::write(project.join("mustard.json"), CONFIG).unwrap();
+    let entering = format!("cd {} && cat .claude/mustard.json", project.display());
+    for (at, original) in [(project.as_path(), "cat .claude/mustard.json"), (dir.path(), entering.as_str()), (project.as_path(), "head -5 mustard.json")] {
+        let ready = masked_command(at, original);
+        let again = hook(at, &ready);
+        assert_ne!(again["hookSpecificOutput"]["permissionDecision"], "deny", "{original}: {again}");
+        let out = shell(at, &ready);
+        assert!(out.status.success(), "{original}: {}", String::from_utf8_lossy(&out.stderr));
+        let shown = String::from_utf8(out.stdout).unwrap();
+        assert!(shown.contains("\"jev\": {\"key\": \"***\"}") && !shown.contains(SECRET), "{original}: {shown}");
+    }
+}
+
+/// The rtk readers show the file like `cat`: the hook refuses them too, with
+/// no rewrite and no key.
+#[test]
+fn rtk_readers_of_the_config_are_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join(".claude")).unwrap();
+    std::fs::write(dir.path().join(".claude/mustard.json"), CONFIG).unwrap();
+    std::fs::write(dir.path().join("mustard.json"), CONFIG).unwrap();
+    for original in ["rtk read .claude/mustard.json", "rtk read mustard.json --max-lines 5", "rtk json mustard.json"] {
+        let result = hook(dir.path(), original);
+        let specific = &result["hookSpecificOutput"];
+        assert_eq!(specific["permissionDecision"], "deny", "{original}: {result}");
+        assert!(specific.get("updatedInput").is_none(), "{original}: {result}");
+        assert!(!result.to_string().contains(SECRET), "{original}: {result}");
+    }
+}
+
+fn git(root: &Path, args: &[&str]) {
+    let out = Command::new("git")
+        .args(["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
+        .args(args).current_dir(root).output().unwrap();
+    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+/// The read refused in the main checkout of a TypeScript project hands back a
+/// command that, run inside the wave's separate copy — where the session moves
+/// every command of a wave agent and where the configuration, kept out of git,
+/// does not exist —, still shows the main checkout's file with the key
+/// masked. With the file missing in both places, the answer names both.
+#[test]
+fn a_masked_read_inside_a_wave_copy_reads_the_main_checkout_configuration() {
+    let dir = tempfile::tempdir().unwrap();
+    let main = dir.path().join("shop");
+    std::fs::create_dir_all(main.join("src")).unwrap();
+    std::fs::write(main.join("src/app.ts"), "export const answer = 42;\n").unwrap();
+    git(&main, &["init", "-q"]);
+    git(&main, &["add", "-A"]);
+    git(&main, &["commit", "-q", "-m", "seed"]);
+    std::fs::write(main.join("mustard.json"), CONFIG).unwrap();
+    let copy = dir.path().join("copies").join("d");
+    git(&main, &["worktree", "add", "-q", "--detach", copy.to_str().unwrap()]);
+    assert!(!copy.join("mustard.json").exists(), "the wave copy carries no configuration");
+
+    let command = masked_command(&main, "grep -n -E 'flow|key' mustard.json");
+    let out = shell(&copy, &command);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(text, "2:  \"git\": {\"flow\": {\"*\": \"develop\"}},\n5:  \"jev\": {\"key\": \"***\"}\n");
+    // The folder and the file name, as each system writes them: the full path
+    // may come back resolved, through a link or with a long-path prefix.
+    let named = |text: &str, folder: &str| text.contains(&Path::new(folder).join("mustard.json").display().to_string());
+    let note = String::from_utf8_lossy(&out.stderr);
+    assert!(named(&note, "shop"), "the answer says which file it read: {note}");
+
+    std::fs::remove_file(main.join("mustard.json")).unwrap();
+    let missing = shell(&copy, &command);
+    let reason = String::from_utf8_lossy(&missing.stderr);
+    assert!(!missing.status.success() && missing.stdout.is_empty(), "{reason}");
+    assert!(named(&reason, "d") && named(&reason, "shop"), "both places are named: {reason}");
 }

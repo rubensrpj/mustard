@@ -577,7 +577,7 @@ fn user_says(project: &Project, text: &str) -> u64 {
 fn survey(project: &Project) {
     let said = user_says(project, GOAL);
     project.write("context", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": GOAL, "origin": said}));
-    let grilled = project.run(&["grill", "--spec", SPEC, "--kinds", "feature"]);
+    let grilled = project.run(&["grill", "--spec", SPEC, "--kinds", "feature", "--full"]);
     let points = grilled["points"].as_array().cloned().expect("the point list");
     assert!(!points.is_empty(), "{grilled}");
     let mut current = Value::Null;

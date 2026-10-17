@@ -69,3 +69,20 @@
 ; texto) e a declaração que o contém.
 (interpreted_string_literal) @text
 (raw_string_literal) @text
+
+; A declaração que o Go exporta do pacote: a de nome que começa por letra
+; maiúscula. Quem está fora do projeto pode usá-la, e a falta de uso dentro
+; dele não diz que ela sobra. A função, o método e o campo valem pelo próprio
+; nome; o tipo e a constante só no topo do arquivo, porque os escritos dentro
+; de uma função são locais dela.
+([(function_declaration name: (identifier) @_name)
+  (method_declaration name: (field_identifier) @_name)
+  (method_elem name: (field_identifier) @_name)
+  (field_declaration name: (field_identifier) @_name)] @visible
+  (#match? @_name "^\\p{Lu}"))
+((source_file (type_declaration
+  [(type_spec name: (type_identifier) @_name)
+   (type_alias name: (type_identifier) @_name)] @visible))
+  (#match? @_name "^\\p{Lu}"))
+((source_file (const_declaration (const_spec name: (identifier) @_name) @visible))
+  (#match? @_name "^\\p{Lu}"))

@@ -163,7 +163,6 @@ mod page;
 mod measure;
 mod install;
 mod spec_text;
-mod round_checks;
 
 /// Uma parte do catálogo: os começos de chave que ela responde e a leitura dela.
 type Part = (&'static [&'static str], fn(&str, Locale) -> Option<&'static str>);
@@ -183,8 +182,7 @@ type Part = (&'static [&'static str], fn(&str, Locale) -> Option<&'static str>);
 /// - `measure` — a medição do uso real;
 /// - `install` — o diagnóstico da instalação;
 /// - `spec_text` — o rótulo da onda;
-/// - `round_checks` — a recusa da rodada quando um comando declarado cai.
-const PARTS: [Part; 13] = [
+const PARTS: [Part; 12] = [
     (flow::PREFIXES, flow::text),
     (survey::PREFIXES, survey::text),
     (prompt::PREFIXES, prompt::text),
@@ -197,7 +195,6 @@ const PARTS: [Part; 13] = [
     (measure::PREFIXES, measure::text),
     (install::PREFIXES, install::text),
     (spec_text::PREFIXES, spec_text::text),
-    (round_checks::PREFIXES, round_checks::text),
 ];
 
 /// Translate `key` into a literal banner string for `lang`.
@@ -330,7 +327,6 @@ mod tests {
         include_str!("i18n/measure.rs"),
         include_str!("i18n/install.rs"),
         include_str!("i18n/spec_text.rs"),
-        include_str!("i18n/round_checks.rs"),
     ];
 
     /// O texto com cada marcador (`{spec}`, `{count}`…) trocado por uma

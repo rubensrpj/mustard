@@ -30,6 +30,28 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("spec_events.unknown_type", Locale::EnUs) => {
             "The spec file has no {type} event type. Nothing was written. Accepted types: {types}."
         }
+        // A procura na spec (`run find`) e a leitura de uma onda de dentro da
+        // cópia, que saem em texto.
+        ("spec_events.find_more", Locale::PtBr) => "{shown} de {total}. Use mais uma palavra ou o filtro por tipo.",
+        ("spec_events.find_more", Locale::EnUs) => "{shown} of {total}. Add a word or the type filter.",
+        ("spec_events.find_none", Locale::PtBr) => "Não achei.",
+        ("spec_events.find_none", Locale::EnUs) => "Nothing found.",
+        ("spec_events.find_jev_off", Locale::PtBr) => "Jev fora: {reason}.",
+        ("spec_events.find_jev_off", Locale::EnUs) => "Jev off: {reason}.",
+        ("spec_events.find_no_key", Locale::PtBr) => "sem chave",
+        ("spec_events.find_no_key", Locale::EnUs) => "no key",
+        ("spec_events.find_no_answer", Locale::PtBr) => "sem resposta",
+        ("spec_events.find_no_answer", Locale::EnUs) => "no answer",
+        ("spec_events.find_partial", Locale::PtBr) => "parcial",
+        ("spec_events.find_partial", Locale::EnUs) => "partial",
+        ("spec_events.find_user_message", Locale::PtBr) => "Mensagem do usuário",
+        ("spec_events.find_user_message", Locale::EnUs) => "User message",
+        ("spec_events.find_lesson", Locale::PtBr) => "Lição",
+        ("spec_events.find_lesson", Locale::EnUs) => "Lesson",
+        ("spec_events.find_pasted", Locale::PtBr) => "[texto colado, {kb} kB: leia por item-{code}]",
+        ("spec_events.find_pasted", Locale::EnUs) => "[pasted text, {kb} kB: read item-{code}]",
+        ("spec_events.find_files", Locale::PtBr) => "Arquivos: {files}",
+        ("spec_events.find_files", Locale::EnUs) => "Files: {files}",
         ("spec_events.missing_field", Locale::PtBr) => {
             "Campos obrigatórios do evento {type} que faltaram ou vieram vazios: {field}. Nada foi \
              gravado."
@@ -144,6 +166,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              read each item\" in the request; `lesson-<number>` is the lesson of that number. Then record \
              the delivery again. Nothing was written."
         }
+        ("spec_events.delivery_proof_older_than_file", Locale::PtBr) => {
+            "A entrega da onda {wave} foi recusada: {files} mudou depois do último passo de término de \
+             tarefa, e a prova verde desse passo não cobre o que vai no commit. Rode a prova da tarefa de \
+             novo e, com ela verde, grave o passo da tarefa com `run write step`. Depois grave a entrega \
+             de novo. Nada foi gravado."
+        }
+        ("spec_events.delivery_proof_older_than_file", Locale::EnUs) => {
+            "The delivery of wave {wave} was refused: {files} changed after the last task-end step, and \
+             the green proof of that step does not cover what goes into the commit. Run the task's proof \
+             again and, once it is green, record the task's step with `run write step`. Then record the \
+             delivery again. Nothing was written."
+        }
         ("spec_events.verdict_read_missing", Locale::PtBr) => {
             "O veredito foi recusado: o pedido da revisão lista item que ainda não foi lido, e faltou \
              {missing}. Leia cada um de dentro da cópia do revisor. Use o comando de \"Como ler cada \
@@ -178,16 +212,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              single command and run the round again. Nothing was written."
         }
         ("spec_events.proof_program_unknown", Locale::PtBr) => {
-            "A prova do critério precisa ser um comando que roda, e o primeiro termo dela, {term}, \
-             não é um programa que o shell ache. Escreva no lugar o comando que demonstra o \
-             critério. A conferência que só se faz à mão vai para o texto do critério, e não para \
-             a prova. Nada foi gravado."
+            "A prova precisa ser um comando que roda, e o primeiro termo dela, {term}, não é um \
+             programa que o shell ache. Escreva no lugar o comando que demonstra o critério ou a \
+             tarefa. A conferência que só se faz à mão vai para o texto, e não para a prova. Nada \
+             foi gravado."
         }
         ("spec_events.proof_program_unknown", Locale::EnUs) => {
-            "A criterion's proof must be a command that runs, and its first term, {term}, is not a \
-             program the shell can find. Write the command that demonstrates the criterion \
-             instead. A check that can only be done by hand goes in the criterion's text, not in \
-             the proof. Nothing was written."
+            "A proof must be a command that runs, and its first term, {term}, is not a program the \
+             shell can find. Write the command that demonstrates the criterion or the task instead. \
+             A check that can only be done by hand goes in the text, not in the proof. Nothing was \
+             written."
         }
         ("spec_events.proof_chained_by_semicolon", Locale::PtBr) => {
             "A prova liga comandos por ponto e vírgula, e só o último decide o resultado: {found}. \
@@ -207,6 +241,42 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The proof is a lone search, {found}, and a search succeeds when it finds text. If it \
              must come out empty, put ! in front: the proof then passes when nothing is found. If \
              it must find the text, add -q. Nothing was written."
+        }
+        ("spec_events.proof_test_target_missing", Locale::PtBr) => {
+            "A prova roda o alvo de teste {target} do pacote {package}, e o pacote não tem esse \
+             alvo. O cargo recusa o comando antes de rodar teste nenhum. Os alvos de teste do \
+             pacote são: {targets}. Cite um deles em --test, com o nome do teste como filtro depois \
+             dele, ou tire o --test e deixe só o filtro. Nada foi gravado."
+        }
+        ("spec_events.proof_test_target_missing", Locale::EnUs) => {
+            "The proof runs test target {target} of package {package}, and the package has no such \
+             target. Cargo refuses the command before running any test. The package's test targets \
+             are: {targets}. Name one of them in --test, with the test's name as a filter after it, \
+             or drop --test and keep only the filter. Nothing was written."
+        }
+        ("spec_events.proof_test_target_missing_none", Locale::PtBr) => {
+            "A prova roda o alvo de teste {target} do pacote {package}, e o pacote não tem alvo de \
+             teste nenhum. O cargo recusa o comando antes de rodar teste nenhum. Tire o --test e \
+             deixe só o nome do teste como filtro. Se a tarefa cria o alvo, declare o arquivo dele \
+             na lista de arquivos, marcado como novo. Nada foi gravado."
+        }
+        ("spec_events.proof_test_target_missing_none", Locale::EnUs) => {
+            "The proof runs test target {target} of package {package}, and the package has no test \
+             target at all. Cargo refuses the command before running any test. Drop --test and \
+             keep only the test's name as a filter, or declare the target's file in the task's \
+             files, marked as new. Nothing was written."
+        }
+        ("spec_events.proof_path_missing", Locale::PtBr) => {
+            "A prova cita o caminho {path}, que não existe no projeto. O comando falha quando a \
+             onda o roda, ou passa sem provar nada. Corrija o caminho, ou declare o arquivo na \
+             lista de arquivos da tarefa, marcado como novo, quando é a tarefa que o cria. Nada \
+             foi gravado."
+        }
+        ("spec_events.proof_path_missing", Locale::EnUs) => {
+            "The proof cites the path {path}, which does not exist in the project. The command \
+             fails when the wave runs it, or passes without proving anything. Fix the path, or \
+             declare the file in the task's files, marked as new, when the task creates it. \
+             Nothing was written."
         }
         ("spec_events.invalid_value", Locale::PtBr) => {
             "O campo {field} do evento {type} precisa ser {expected}. Nada foi gravado."
@@ -958,8 +1028,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            123,
-            0x24d0_d2e6_f1a4_ec77,
+            137,
+            0x4006_1fef_f143_11b6,
         );
     }
 
@@ -970,6 +1040,16 @@ mod tests {
         for (key, slots) in [
             ("spec_events.not_an_object", &["{detail}"][..]),
             ("spec_events.unknown_type", &["{type}", "{types}"][..]),
+            ("spec_events.find_more", &["{shown}", "{total}"][..]),
+            ("spec_events.find_none", &[][..]),
+            ("spec_events.find_jev_off", &["{reason}"][..]),
+            ("spec_events.find_no_key", &[][..]),
+            ("spec_events.find_no_answer", &[][..]),
+            ("spec_events.find_partial", &[][..]),
+            ("spec_events.find_user_message", &[][..]),
+            ("spec_events.find_lesson", &[][..]),
+            ("spec_events.find_pasted", &["{kb}", "{code}"][..]),
+            ("spec_events.find_files", &["{files}"][..]),
             ("spec_events.missing_field", &["{type}", "{field}"][..]),
             ("spec_events.task_declaration_missing", &["{missing}"][..]),
             ("spec_events.task_declaration_what", &[][..]),
@@ -990,12 +1070,16 @@ mod tests {
             ("spec_events.agreed_items_missing", &["{missing}"][..]),
             ("spec_events.delivery_agreed_missing", &["{wave}", "{missing}"][..]),
             ("spec_events.delivery_read_missing", &["{wave}", "{missing}"][..]),
+            ("spec_events.delivery_proof_older_than_file", &["{wave}", "{files}"][..]),
             ("spec_events.verdict_read_missing", &["{missing}"][..]),
             ("spec_events.criterion_form_missing", &[][..]),
             ("spec_events.proof_not_a_command", &["{criterion}", "{found}"][..]),
             ("spec_events.proof_program_unknown", &["{term}"][..]),
             ("spec_events.proof_chained_by_semicolon", &["{found}"][..]),
             ("spec_events.proof_search_not_negated", &["{found}"][..]),
+            ("spec_events.proof_test_target_missing", &["{package}", "{target}", "{targets}"][..]),
+            ("spec_events.proof_test_target_missing_none", &["{target}", "{package}"][..]),
+            ("spec_events.proof_path_missing", &["{path}"][..]),
             ("spec_events.invalid_value", &["{type}", "{field}", "{expected}"][..]),
             ("spec_events.empty_text", &["{type}", "{field}"][..]),
             ("spec_events.wrong_count", &["{type}", "{field}", "{min}", "{max}", "{count}"][..]),

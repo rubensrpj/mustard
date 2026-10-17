@@ -347,7 +347,11 @@ fn newly_discovered_source_without_git_is_live_evidence_and_never_borrows_an_old
         "def fresh():\n    return 'recover quartz snapshot fresh_sentinel'\n",
     )
     .unwrap();
-    let answer = run(root, &request(), None);
+    let req = Request {
+        input: json!({"args":["-n","--with-filename","entry_sentinel|fresh_sentinel","src/allowed"]}),
+        ..request()
+    };
+    let answer = run(root, &req, None);
     let live = answer.report["task_context"]["investigation"]["live_matches"]
         .as_array()
         .unwrap();
@@ -357,13 +361,51 @@ fn newly_discovered_source_without_git_is_live_evidence_and_never_borrows_an_old
                 && item["indexed_symbol"].is_null())
     );
     let view =
-        String::from_utf8(code_search::presentation::agent(&answer, &request(), root).stdout)
+        String::from_utf8(code_search::presentation::agent(&answer, &req, root).stdout)
             .unwrap();
     assert!(view.contains("fresh_sentinel"));
     assert_eq!(
         answer.report["task_context"]["learning"]["needs_scan"],
         true
     );
+}
+
+#[test]
+fn task_source_comes_only_from_hit_files_and_hits_outside_declarations_stay() {
+    let dir = fixture();
+    let root = dir.path();
+    std::fs::write(
+        root.join("src/allowed/archive.rs"),
+        "/// Recover the quartz snapshot from the cold archive.\npub fn archive_recover() { let archive_body_sentinel=4; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/allowed/check.mjs"),
+        "function helper() { return 1; }\nconst seen = 'entry_sentinel';\nconsole.log(seen);\n",
+    )
+    .unwrap();
+    model::scan(root, &root.join(".claude"), &[]);
+    std::fs::write(
+        root.join("src/allowed/fresh.py"),
+        "def fresh():\n    return 'recover quartz snapshot cold archive live_sentinel'\n",
+    )
+    .unwrap();
+    let req = Request {
+        intent: "recover quartz snapshot from the cold archive".into(),
+        purpose: Purpose::Implement,
+        ..request()
+    };
+    let answer = run(root, &req, None);
+    let view =
+        String::from_utf8(code_search::presentation::agent(&answer, &req, root).stdout).unwrap();
+    // The hit's owner calls restore in a file without hits: left out.
+    assert!(!view.contains("let quartz_snapshot=2"), "{view}");
+    // Same words, no hit and no link: a range at most, never source lines.
+    assert!(!view.contains("archive_body_sentinel"), "{view}");
+    assert!(!view.contains("live_sentinel"), "{view}");
+    // A hit in top-level script code is shown with its line.
+    assert!(view.contains("@ src/allowed/check.mjs"), "{view}");
+    assert!(view.contains("2 | const seen = 'entry_sentinel';"), "{view}");
 }
 
 struct Progressive {

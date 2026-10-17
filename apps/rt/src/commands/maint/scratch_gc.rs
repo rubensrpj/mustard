@@ -7,8 +7,9 @@
 //! projeto, e cada cópia compila tudo do zero: de 2 a 5 GB de `target/` por
 //! cópia. A trava de comandos barra apagar pasta à força pelo terminal, então a
 //! pasta ficava para sempre. Esta porta é o caminho de limpeza: a exclusão é
-//! feita pelo próprio binário (`std::fs::remove_dir_all`), nunca por comando de
-//! shell, e só depois de conferir que o alvo é mesmo uma pasta descartável.
+//! feita pelo próprio binário (`std::fs::remove_dir_all`, ou
+//! `std::fs::remove_file` para o arquivo solto do `--path`), nunca por comando
+//! de shell, e só depois de conferir que o alvo é mesmo descartável.
 //!
 //! ## Candidata — os quatro filtros juntos
 //!
@@ -34,10 +35,10 @@
 //!
 //! Os `mustard-removal-*` do temp ficam de fora: são worktrees registradas no
 //! git, e apagá-las por aqui deixaria o registro apontando para o nada. Pelo
-//! mesmo
-//! motivo, QUALQUER worktree registrada — pasta cujo `.git` é um arquivo, nela
-//! ou numa filha direta — fica de fora e o `--path` a recusa: ela pode ter
-//! trabalho não commitado, e quem a remove é o `git worktree remove`.
+//! mesmo motivo, QUALQUER worktree registrada — pasta cujo `.git` é um
+//! arquivo, nela ou numa filha direta; no `--path`, em qualquer profundidade —
+//! fica de fora e o `--path` a recusa: ela pode ter trabalho não commitado, e
+//! quem a remove é o `git worktree remove`.
 //!
 //! ## Modos
 //!
@@ -45,12 +46,23 @@
 //!   apagado;
 //! - `--apply`: apaga exatamente as listadas, e esvazia a compilação
 //!   compartilhada quando ela passa do teto;
-//! - `--path <dir>`: apaga UMA pasta, sem o filtro de idade (o revisor apaga a
-//!   própria pasta recém-criada ao terminar), mas só depois de conferir os
-//!   filtros 1 e 2. Fora do diretório temporário — o repositório, a home — é
-//!   recusado com erro (exit 1) e nada é tocado; um `mustard-removal-*` também
-//!   (é worktree registrada). `--dry-run` não combina com `--apply` nem com
-//!   `--path`: o parser recusa a chamada (exit 2) antes de tocar em algo.
+//! - `--path <caminho>`: apaga UMA pasta ou UM arquivo regular do temp que é
+//!   do usuário e fica fora de qualquer checkout do git, sem o filtro de idade
+//!   (o agente apaga o que acabou de criar ao terminar) nem o 2: a pasta que
+//!   ele cria com `mktemp -d` ou no `scratchpad/` da sessão guarda o que a
+//!   prova pede (um repositório de teste, um projeto de outra linguagem), e o
+//!   arquivo solto é o que ele gravou ali (um mapa com `--out`). Fora de
+//!   checkout quer dizer: nenhuma pasta acima dele tem `.git`, e nada abaixo
+//!   da pasta é worktree registrada nem repositório com worktree registrada.
+//!   O caminho dado não pode ser ele mesmo um link simbólico, nem com a barra
+//!   ou o `/.` no fim: apagar pelo link levaria o destino. Nem pode terminar
+//!   em `.` ou `..`, que não nomeiam o que se apaga — `link/..` levaria a
+//!   pasta-mãe do destino. A lista e o `--apply` continuam exigindo o filtro
+//!   2 e só apagam pastas. Fora do diretório temporário — o repositório, a
+//!   home — é recusado com erro (exit 1) e nada é tocado; um
+//!   `mustard-removal-*` também (é worktree registrada). Toda recusa do
+//!   `--path` diz o que ele aceita. `--dry-run` não combina com `--apply` nem
+//!   com `--path`: o parser recusa a chamada (exit 2) antes de tocar em algo.
 //!
 //! ## Cópias de obra
 //!
@@ -110,6 +122,9 @@ const SCRATCHPAD_DIR: &str = "scratchpad";
 /// Prefixo das worktrees de prova de remoção, registradas no git.
 const REMOVAL_WORKTREE_PREFIX: &str = "mustard-removal-";
 
+/// O que o `--path` aceita, dito depois do motivo de toda recusa dele.
+const PATH_RULE: &str = "--path deletes only a folder or a regular file of the system temp directory that the current user owns, that lies outside any git checkout and whose own name is not a symbolic link";
+
 // ---------------------------------------------------------------------------
 // Opções + relatório
 // ---------------------------------------------------------------------------
@@ -118,7 +133,7 @@ const REMOVAL_WORKTREE_PREFIX: &str = "mustard-removal-";
 pub struct ScratchGcOpts {
     /// `true` apaga as candidatas listadas; `false` (padrão) só lista.
     pub apply: bool,
-    /// Apaga só esta pasta, conferida, sem o filtro de idade.
+    /// Apaga só esta pasta ou este arquivo, conferido, sem o filtro de idade.
     pub path: Option<PathBuf>,
 }
 
@@ -673,28 +688,134 @@ fn gc(roots: &ScratchRoots, apply: bool) -> (ScratchGcReport, bool) {
     (report, false)
 }
 
-/// `--path`: confere os filtros 1 e 2 e apaga UMA pasta, sem o filtro de
-/// idade. Devolve o caminho apagado, ou o motivo da recusa — e recusa não toca
-/// em nada.
+/// `--path`: apaga UMA pasta ou UM arquivo regular do diretório temporário do
+/// sistema, sem o filtro de idade nem o 2. Devolve o caminho apagado, ou o
+/// motivo da recusa seguido da regra do `--path` ([`PATH_RULE`]) — e recusa
+/// não toca em nada.
+///
+/// O filtro 2 não vale aqui: a pasta que o agente cria com `mktemp -d` ou no
+/// `scratchpad/` da sessão guarda o que a prova pede — um repositório de
+/// teste, um projeto em outra linguagem, a cópia `.bak` de um arquivo —, sem
+/// cópia deste projeto nem `target/`, e quem a criou precisa apagá-la; o
+/// arquivo solto é o que ele gravou ali, como um mapa com `--out`. No lugar
+/// do filtro, o caminho fica fora de qualquer checkout ([`outside_checkouts`]).
+/// A lista e o `--apply`, que apagam sem ninguém apontar a pasta, continuam
+/// com ele.
 ///
 /// O caminho é resolvido (`canonicalize`) ANTES de qualquer conferência: um
 /// link no temp apontando para o repositório vira o repositório, e é recusado
 /// como tal. O próprio temp também é conferido ([`checked_temp_root`]): com
 /// `TMPDIR=$HOME`, "dentro do temp" deixaria de proteger alguma coisa.
 pub(crate) fn remove_path(target: &Path, roots: &ScratchRoots) -> Result<PathBuf, String> {
-    let temp = checked_temp_root(roots)?;
-    let dir = confine(target, &temp, roots.owner_uid)?;
-    if !dir.is_dir() {
-        return Err(format!("refused: {} is not a directory", dir.display()));
+    let (path, kind) = removable(target, roots).map_err(|refusal| format!("{refusal}; {PATH_RULE}"))?;
+    match kind {
+        Removable::Folder => std::fs::remove_dir_all(&path).map_err(|e| format!("remove_dir_all failed: {e}"))?,
+        Removable::File => std::fs::remove_file(&path).map_err(|e| format!("remove_file failed: {e}"))?,
     }
-    if !holds_scratch_build(&dir) {
+    Ok(path)
+}
+
+/// O que o `--path` apaga, e por isso como apagar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Removable {
+    /// Uma pasta, com tudo o que tem dentro.
+    Folder,
+    /// Um arquivo regular, só ele.
+    File,
+}
+
+/// As conferências do `--path`, na ordem: o temp seguro, a fronteira de toda
+/// exclusão ([`confine`]), o caminho dado terminar num nome e esse nome não
+/// ser um link, uma pasta ou um arquivo regular, e fora de qualquer checkout.
+///
+/// O link é conferido no nome em que o caminho DADO termina, sem segui-lo, e
+/// depois da fronteira: o link que sai do temp já foi recusado como "fora", e
+/// o que fica dentro dele apagaria o destino no lugar do link — a pasta ou o
+/// arquivo que ninguém apontou. A conferência lê os componentes do caminho, e
+/// não o texto dado: com a barra no fim (a que o completar do shell põe) ou um
+/// `/.`, o sistema segue o link, e `link/` passaria por pasta. O caminho que
+/// termina em `.` ou `..` não nomeia o que apaga — `link/..` levaria a
+/// pasta-mãe do destino — e é recusado. Um nível acima que é link (o `/tmp`
+/// de alguns sistemas) não conta: o `canonicalize` o resolve, e a fronteira
+/// julga o destino.
+fn removable(target: &Path, roots: &ScratchRoots) -> Result<(PathBuf, Removable), String> {
+    let temp = checked_temp_root(roots)?;
+    let path = confine(target, &temp, roots.owner_uid)?;
+    if !matches!(target.components().next_back(), Some(Component::Normal(_))) {
         return Err(format!(
-            "refused: {} holds neither a copy of this project nor a build target/",
-            dir.display()
+            "refused: {} ends in . or .. instead of a name; name the folder or the file itself",
+            target.display()
         ));
     }
-    std::fs::remove_dir_all(&dir).map_err(|e| format!("remove_dir_all failed: {e}"))?;
-    Ok(dir)
+    // Os componentes deixam a barra do fim e os `.` de fora: `link/` e
+    // `link/.` voltam a ser o próprio `link`, que não é seguido.
+    let named: PathBuf = target.components().collect();
+    if std::fs::symlink_metadata(&named).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err(format!(
+            "refused: {} is a symbolic link to {}; name the folder or the file itself",
+            target.display(),
+            path.display()
+        ));
+    }
+    let kind = match std::fs::symlink_metadata(&path) {
+        Ok(meta) if meta.is_dir() => Removable::Folder,
+        Ok(meta) if meta.is_file() => Removable::File,
+        Ok(_) => return Err(format!("refused: {} is neither a folder nor a regular file", path.display())),
+        Err(e) => return Err(format!("refused: cannot read {}: {e}", path.display())),
+    };
+    outside_checkouts(&path)?;
+    Ok((path, kind))
+}
+
+/// O caminho resolvido `dir` — pasta ou arquivo — fica fora de qualquer
+/// checkout do git:
+///
+/// - nenhuma pasta acima dele, até a raiz do disco, tem `.git`: apagar parte
+///   de uma árvore de trabalho descarta arquivos dela, e um temp montado
+///   dentro de um repositório (`TMPDIR=<repo>/tmp`) não vira licença;
+/// - nada abaixo da pasta, em qualquer profundidade, é uma worktree registrada
+///   (`.git` que não é pasta) — a [`confine`] só olha a pasta e as filhas
+///   diretas, a profundidade do filtro 2;
+/// - nenhum repositório abaixo da pasta tem worktree registrada
+///   (`.git/worktrees/` com entrada): apagá-lo levaria o histórico de cada
+///   uma, onde quer que more.
+///
+/// Um arquivo não tem nada abaixo: para ele só a primeira regra pesa, e o
+/// arquivo de um clone ou de uma cópia de obra no temp é recusado por ela.
+/// O repositório próprio da pasta (`.git/` pasta, sem worktree) passa: é o de
+/// teste que a prova criou, e apagá-lo leva só o que é dele. Nenhum link é
+/// seguido, e o interior de um `.git/` não é percorrido.
+fn outside_checkouts(dir: &Path) -> Result<(), String> {
+    let git_of = |d: &Path| std::fs::symlink_metadata(d.join(".git")).ok();
+    if let Some(root) = dir.ancestors().skip(1).find(|a| git_of(a).is_some()) {
+        return Err(format!(
+            "refused: {} lies inside the git checkout {}",
+            dir.display(),
+            root.display()
+        ));
+    }
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        if let Some(meta) = git_of(&current) {
+            if !meta.file_type().is_dir() {
+                return Err(format!(
+                    "refused: {} holds the registered git worktree {} — use git worktree remove",
+                    dir.display(),
+                    current.display()
+                ));
+            }
+            let worktrees = current.join(".git").join("worktrees");
+            if std::fs::read_dir(&worktrees).is_ok_and(|mut entries| entries.next().is_some()) {
+                return Err(format!(
+                    "refused: {} holds the git repository {}, which has registered worktrees — remove them with git worktree remove first",
+                    dir.display(),
+                    current.display()
+                ));
+            }
+        }
+        stack.extend(child_dirs(&current).into_iter().filter(|child| file_name(child).as_deref() != Some(".git")));
+    }
+    Ok(())
 }
 
 /// A fronteira de TODA exclusão — a mesma para `--path`, para o `--apply` e
@@ -715,20 +836,13 @@ pub(crate) fn remove_path(target: &Path, roots: &ScratchRoots) -> Result<PathBuf
 fn confine(target: &Path, temp: &Path, owner_uid: Option<u32>) -> Result<PathBuf, String> {
     let dir = std::fs::canonicalize(target)
         .map_err(|e| format!("refused: cannot resolve {}: {e}", target.display()))?;
-    let Ok(rel) = dir.strip_prefix(temp) else {
+    let Some(parts) = parts_below(&dir, temp) else {
         return Err(format!(
             "refused: {} is outside the temp directory {}",
             dir.display(),
             temp.display()
         ));
     };
-    let parts: Vec<&OsStr> = rel
-        .components()
-        .filter_map(|c| match c {
-            Component::Normal(s) => Some(s),
-            _ => None,
-        })
-        .collect();
     if parts.is_empty() {
         return Err(format!("refused: {} is the temp directory itself", dir.display()));
     }
@@ -744,7 +858,7 @@ fn confine(target: &Path, temp: &Path, owner_uid: Option<u32>) -> Result<PathBuf
     // Dentro de `claude-<uid>/` só vale o que está abaixo de um `scratchpad/`:
     // os níveis de cima são a estrutura da sessão, não uma cópia.
     let in_session_tree = parts[0].to_str().is_some_and(|n| n.starts_with(SESSION_ROOT_PREFIX));
-    if in_session_tree && !(parts.len() >= 5 && parts[3] == SCRATCHPAD_DIR) {
+    if in_session_tree && !in_session_scratchpad(&parts) {
         return Err(format!(
             "refused: {} is part of a Claude Code session layout, not a folder inside its scratchpad/",
             dir.display()
@@ -764,7 +878,32 @@ fn confine(target: &Path, temp: &Path, owner_uid: Option<u32>) -> Result<PathBuf
     Ok(dir)
 }
 
-/// O relatório do modo `--path`, e se a pasta foi recusada.
+/// Os nomes do caminho resolvido `dir` abaixo do temp resolvido `temp`, do
+/// topo para baixo; `None` quando `dir` fica fora do temp.
+fn parts_below<'a>(dir: &'a Path, temp: &Path) -> Option<Vec<&'a OsStr>> {
+    let rel = dir.strip_prefix(temp).ok()?;
+    Some(
+        rel.components()
+            .filter_map(|c| match c {
+                Component::Normal(s) => Some(s),
+                _ => None,
+            })
+            .collect(),
+    )
+}
+
+/// Os nomes abaixo do temp descrevem uma pasta DENTRO do `scratchpad/` de uma
+/// sessão — `claude-<uid>/<projeto>/<sessao>/scratchpad/<pasta>`, em qualquer
+/// profundidade abaixo dele —, nunca o próprio `scratchpad/` nem os níveis de
+/// cima. O temp é o do sistema ou o do `TMPDIR`, que é onde o Claude Code
+/// monta essa árvore.
+fn in_session_scratchpad(parts: &[&OsStr]) -> bool {
+    parts.len() >= 5
+        && parts[0].to_str().is_some_and(|n| n.starts_with(SESSION_ROOT_PREFIX))
+        && parts[3] == SCRATCHPAD_DIR
+}
+
+/// O relatório do modo `--path`, e se o caminho foi recusado.
 fn path_report(target: &Path, roots: &ScratchRoots) -> (ScratchGcReport, bool) {
     let mut report = ScratchGcReport {
         dry_run: false,
@@ -814,7 +953,7 @@ pub(crate) fn human_bytes(n: u64) -> String {
 // CLI entry point
 // ---------------------------------------------------------------------------
 
-/// Dispatch `mustard-rt run clean [--apply] [--path <dir>]`.
+/// Dispatch `mustard-rt run clean [--apply] [--path <caminho>]`.
 pub fn run(opts: ScratchGcOpts) {
     let _started = std::time::Instant::now();
     let roots = ScratchRoots::from_env();
@@ -1053,7 +1192,8 @@ mod tests {
     }
 
     /// O `--path` fora do temp (o repositório, a home) é recusado e nada
-    /// é apagado; dentro do temp, os filtros 1 e 2 continuam valendo.
+    /// é apagado; dentro do temp, o próprio temp, a estrutura da sessão e a
+    /// worktree de prova de remoção também.
     #[test]
     fn scratch_gc_path_refuses_outside_temp() {
         let base = tempdir().unwrap();
@@ -1081,17 +1221,12 @@ mod tests {
             assert!(repo.join("Cargo.toml").exists(), "a symlink never reaches the repository");
         }
 
-        // O próprio temp, a estrutura da sessão e uma pasta alheia: recusados.
+        // O próprio temp e a estrutura da sessão: recusados.
         assert!(remove_path(&roots.temp_root, &roots).is_err());
         let session_layout = roots.temp_root.join("claude-1000").join("proj");
         target_only(&session_layout);
         assert!(remove_path(&session_layout, &roots).is_err());
         assert!(session_layout.exists());
-        let foreign = roots.temp_root.join("outra-coisa");
-        fs::create_dir_all(&foreign).unwrap();
-        fs::write(foreign.join("notas.txt"), "x").unwrap();
-        assert!(remove_path(&foreign, &roots).is_err());
-        assert!(foreign.join("notas.txt").exists());
 
         // Worktree de prova de remoção: registrada no git, mesmo sendo cópia.
         let removal = roots.temp_root.join("mustard-removal-abc");
@@ -1099,6 +1234,112 @@ mod tests {
         let err = remove_path(&removal, &roots).unwrap_err();
         assert!(err.contains("registered removal worktree"), "{err}");
         assert!(removal.join("Cargo.toml").exists(), "a registered worktree is never removed here");
+    }
+
+    /// Um projeto em TypeScript com repositório git próprio, sem cópia deste
+    /// projeto nem `target/`.
+    fn typescript_repo(dir: &Path) {
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::create_dir_all(dir.join(".git")).unwrap();
+        fs::write(dir.join("package.json"), "{\"name\":\"prova\"}\n").unwrap();
+        fs::write(dir.join("src").join("index.ts"), "export const answer: number = 42;\n").unwrap();
+        fs::write(dir.join(".git").join("HEAD"), "ref: refs/heads/main\n").unwrap();
+    }
+
+    /// A pasta que o agente criou no temp sai pelo `--path`, tenha o que
+    /// tiver: a do `mktemp -d` no topo do temp, com cópias `.bak` e um
+    /// repositório de teste em TypeScript (a forma da pasta que um agente não
+    /// conseguiu limpar), e a do `scratchpad/` de uma sessão. A pasta real
+    /// escrita com a barra no fim (a que o completar do shell põe) ou com
+    /// `/.` sai do mesmo jeito: a recusa do link lê o nome do caminho, não o
+    /// texto digitado. O próprio `scratchpad/` fica, a pasta fora do temp é
+    /// recusada com a regra do `--path`, e um link no `scratchpad/` é julgado
+    /// pelo destino.
+    #[test]
+    fn path_removes_any_folder_the_agent_made_in_the_temp_directory() {
+        let base = tempdir().unwrap();
+        let roots = fake_roots(base.path());
+        let made = roots.temp_root.join("tmp.Xa9fQ2");
+        fs::create_dir_all(&made).unwrap();
+        fs::write(made.join("build-deb.sh.bak"), "#!/bin/sh\n").unwrap();
+        typescript_repo(&made.join("repo"));
+        let pad = roots.temp_root.join("claude-1000").join("-home-x-proj").join("sess-x").join(SCRATCHPAD_DIR);
+        let proof = pad.join("prova");
+        typescript_repo(&proof);
+        let outside = base.path().join("prova");
+        typescript_repo(&outside);
+
+        let removed = remove_path(&made, &roots).unwrap();
+        assert_eq!(removed, fs::canonicalize(&roots.temp_root).unwrap().join("tmp.Xa9fQ2"));
+        assert!(!made.exists(), "the folder made with mktemp at the top of the temp goes");
+        let removed = remove_path(&proof, &roots).unwrap();
+        assert_eq!(removed, fs::canonicalize(&pad).unwrap().join("prova"));
+        assert!(!proof.exists(), "the folder made in the scratchpad goes");
+        for (name, spelling) in [("slash", "/"), ("dot", "/.")] {
+            let folder = pad.join(name);
+            typescript_repo(&folder);
+            let mut given = folder.clone().into_os_string();
+            given.push(spelling);
+            let removed = remove_path(Path::new(&given), &roots)
+                .unwrap_or_else(|e| panic!("the real folder given as {given:?} goes: {e}"));
+            assert_eq!(removed, fs::canonicalize(&pad).unwrap().join(name));
+            assert!(!folder.exists(), "the real folder given as {given:?} goes");
+        }
+        assert!(pad.is_dir(), "the scratchpad itself stays");
+
+        let err = remove_path(&outside, &roots).unwrap_err();
+        assert!(err.contains("outside the temp directory"), "{err}");
+        assert!(err.contains(PATH_RULE), "the refusal says what --path takes: {err}");
+        let err = remove_path(&pad, &roots).unwrap_err();
+        assert!(err.contains("not a folder inside its scratchpad/"), "{err}");
+        #[cfg(unix)]
+        {
+            let link = pad.join("atalho");
+            std::os::unix::fs::symlink(&outside, &link).unwrap();
+            let err = remove_path(&link, &roots).unwrap_err();
+            assert!(err.contains("outside the temp directory"), "{err}");
+        }
+        assert!(outside.join("src").join("index.ts").is_file(), "the folder outside the temp is untouched");
+    }
+
+    /// No temp, a pasta dentro de um checkout do git é recusada, e também a
+    /// que guarda, em qualquer profundidade, uma worktree registrada ou o
+    /// repositório de uma: apagá-las descartaria trabalho do checkout. A
+    /// recusa diz a regra do `--path`, e nada é tocado. O repositório próprio
+    /// da pasta, sem worktree, sai.
+    #[test]
+    fn path_refuses_a_folder_inside_a_checkout_or_holding_one() {
+        let base = tempdir().unwrap();
+        let roots = fake_roots(base.path());
+        let tmp = roots.temp_root.clone();
+
+        let clone = tmp.join("tmp.clone");
+        typescript_repo(&clone);
+        let err = remove_path(&clone.join("src"), &roots).unwrap_err();
+        assert!(err.contains("lies inside the git checkout"), "{err}");
+        assert!(err.contains(PATH_RULE), "the refusal says what --path takes: {err}");
+        assert!(clone.join("src").join("index.ts").is_file(), "the checkout is untouched");
+
+        // Uma cópia de obra três níveis abaixo: a `.git` dela é um arquivo.
+        let copies = tmp.join("tmp.copias");
+        let slot = copies.join("proj-1a2b").join("spec").join("c");
+        typescript_repo(&slot);
+        fs::remove_dir_all(slot.join(".git")).unwrap();
+        fs::write(slot.join(".git"), "gitdir: /repo/.git/worktrees/c\n").unwrap();
+        let err = remove_path(&copies, &roots).unwrap_err();
+        assert!(err.contains("holds the registered git worktree"), "{err}");
+        assert!(slot.join(".git").is_file() && slot.join("src").join("index.ts").is_file());
+
+        // O repositório de uma worktree que mora em outro lugar.
+        let main = tmp.join("tmp.main");
+        typescript_repo(&main.join("repo"));
+        fs::create_dir_all(main.join("repo").join(".git").join("worktrees").join("c")).unwrap();
+        let err = remove_path(&main, &roots).unwrap_err();
+        assert!(err.contains("has registered worktrees"), "{err}");
+        assert!(main.join("repo").join(".git").join("HEAD").is_file());
+
+        remove_path(&clone, &roots).unwrap();
+        assert!(!clone.exists(), "a repository of its own, with no worktree, goes");
     }
 
     /// `--path` apaga a pasta recém-criada do revisor: sem filtro de idade.
@@ -1115,6 +1356,142 @@ mod tests {
         assert!(!fresh.exists());
         assert!(remove_path(&scratch, &roots).is_ok());
         assert!(!scratch.exists());
+    }
+
+    /// O arquivo solto que o agente gerou no temp sai pelo `--path`, como a
+    /// pasta: o mapa gravado com `--out` no `scratchpad/` da sessão e um
+    /// arquivo TypeScript no topo do temp. Sai só o arquivo; a pasta onde ele
+    /// mora fica, e o relatório traz o caminho resolvido.
+    #[test]
+    fn path_removes_a_file_the_agent_made_in_the_temp_directory() {
+        let base = tempdir().unwrap();
+        let roots = fake_roots(base.path());
+        let pad = roots.temp_root.join("claude-1000").join("-home-x-proj").join("sess-x").join(SCRATCHPAD_DIR);
+        fs::create_dir_all(&pad).unwrap();
+        let map = pad.join("map-before.json");
+        fs::write(&map, "{\"modules\":[]}\n").unwrap();
+        let loose = roots.temp_root.join("probe.ts");
+        fs::write(&loose, "export const answer: number = 42;\n").unwrap();
+
+        let (report, refused) = path_report(&map, &roots);
+        assert!(!refused, "{:?}", report.errors);
+        assert_eq!(report.removed, vec![fs::canonicalize(&pad).unwrap().join("map-before.json").display().to_string()]);
+        assert!(!map.exists(), "the map written in the scratchpad goes");
+        assert!(pad.is_dir(), "the scratchpad itself stays");
+
+        let removed = remove_path(&loose, &roots).unwrap();
+        assert_eq!(removed, fs::canonicalize(&roots.temp_root).unwrap().join("probe.ts"));
+        assert!(!loose.exists(), "the loose file at the top of the temp goes");
+        assert!(roots.temp_root.is_dir(), "the temp itself stays");
+    }
+
+    /// Arquivo fora do temp, dentro de um checkout do git no temp (um clone
+    /// TypeScript ou uma cópia de obra, cuja `.git` é um arquivo) ou na
+    /// estrutura de uma sessão, fora do `scratchpad/`: recusado com a regra do
+    /// `--path`, e o arquivo fica.
+    #[test]
+    fn path_refuses_a_file_outside_the_temp_or_inside_a_checkout() {
+        let base = tempdir().unwrap();
+        let roots = fake_roots(base.path());
+        let tmp = roots.temp_root.clone();
+
+        let outside = base.path().join("notes.txt");
+        fs::write(&outside, "fora do temp\n").unwrap();
+        let err = remove_path(&outside, &roots).unwrap_err();
+        assert!(err.contains("outside the temp directory"), "{err}");
+        assert!(err.contains(PATH_RULE), "the refusal says what --path takes: {err}");
+        assert!(outside.is_file(), "the file outside the temp is untouched");
+
+        let clone = tmp.join("tmp.clone");
+        typescript_repo(&clone);
+        let source = clone.join("src").join("index.ts");
+        let err = remove_path(&source, &roots).unwrap_err();
+        assert!(err.contains("lies inside the git checkout"), "{err}");
+        assert!(source.is_file(), "the checkout is untouched");
+
+        let slot = tmp.join("tmp.copias").join("proj-1a2b").join("spec").join("c");
+        typescript_repo(&slot);
+        fs::remove_dir_all(slot.join(".git")).unwrap();
+        fs::write(slot.join(".git"), "gitdir: /repo/.git/worktrees/c\n").unwrap();
+        let err = remove_path(&slot.join("package.json"), &roots).unwrap_err();
+        assert!(err.contains("lies inside the git checkout"), "{err}");
+        assert!(slot.join("package.json").is_file(), "the work copy is untouched");
+
+        let session = tmp.join("claude-1000").join("-home-x-proj").join("sess-x");
+        fs::create_dir_all(&session).unwrap();
+        let layout = session.join("state.json");
+        fs::write(&layout, "{}\n").unwrap();
+        let err = remove_path(&layout, &roots).unwrap_err();
+        assert!(err.contains("not a folder inside its scratchpad/"), "{err}");
+        assert!(layout.is_file(), "the session layout is untouched");
+    }
+
+    /// O `--path` que nomeia um link simbólico é recusado, aponte para onde
+    /// apontar e seja escrito como for: apagar pelo link levaria o destino,
+    /// não o link. A barra no fim (a que o completar do shell põe) e o `/.`
+    /// não mudam isso, e o `/..` depois do link, que levaria a pasta-mãe do
+    /// destino, é recusado por não terminar num nome. O link para fora do temp
+    /// segue recusado como "fora". Cada caso tem o seu destino e é conferido
+    /// sozinho, antes do veredito: o link e o que está atrás dele ficam.
+    #[cfg(unix)]
+    #[test]
+    fn path_refuses_a_symbolic_link() {
+        let base = tempdir().unwrap();
+        let roots = fake_roots(base.path());
+        let pad = roots.temp_root.join("claude-1000").join("-home-x-proj").join("sess-x").join(SCRATCHPAD_DIR);
+        fs::create_dir_all(&pad).unwrap();
+
+        // (caminho dado, o que a recusa diz, o link, o que fica atrás dele)
+        let mut cases: Vec<(PathBuf, &str, PathBuf, PathBuf)> = Vec::new();
+        let map = pad.join("map.json");
+        fs::write(&map, "{}\n").unwrap();
+        let link = pad.join("map-link.json");
+        std::os::unix::fs::symlink(&map, &link).unwrap();
+        cases.push((link.clone(), "is a symbolic link", link, map));
+        let outside = base.path().join("notes.txt");
+        fs::write(&outside, "fora do temp\n").unwrap();
+        let link = pad.join("notes-link.txt");
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        cases.push((link.clone(), "outside the temp directory", link, outside));
+        for (i, spelling) in ["", "/", "/.", "/.."].into_iter().enumerate() {
+            // A pasta do link mora numa pasta-mãe só dela, que o `/..` alcançaria.
+            let folder = pad.join(format!("holder-{i}")).join("probe");
+            typescript_repo(&folder);
+            let link = pad.join(format!("probe-link-{i}"));
+            std::os::unix::fs::symlink(&folder, &link).unwrap();
+            let mut given = link.clone().into_os_string();
+            given.push(spelling);
+            let refusal = if spelling == "/.." { "ends in . or .." } else { "is a symbolic link" };
+            cases.push((PathBuf::from(given), refusal, link, folder.join("src").join("index.ts")));
+        }
+
+        let broken: Vec<String> = cases
+            .iter()
+            .filter_map(|(given, refusal, link, kept)| {
+                let outcome = remove_path(given, &roots);
+                let refused = outcome.as_ref().is_err_and(|e| e.contains(refusal) && e.contains(PATH_RULE));
+                let link_stays = fs::symlink_metadata(link).is_ok_and(|m| m.file_type().is_symlink());
+                (!refused || !link_stays || !kept.is_file())
+                    .then(|| format!("{}: {outcome:?}; link stays: {link_stays}; {} stays: {}", given.display(), kept.display(), kept.is_file()))
+            })
+            .collect();
+        assert!(broken.is_empty(), "every link is refused and nothing behind it is touched: {broken:#?}");
+    }
+
+    /// Só pasta e arquivo regular saem: um socket no temp é recusado e fica.
+    #[cfg(unix)]
+    #[test]
+    fn path_refuses_what_is_neither_a_folder_nor_a_regular_file() {
+        use std::os::unix::fs::FileTypeExt;
+        let base = tempdir().unwrap();
+        let roots = fake_roots(base.path());
+        let socket = roots.temp_root.join("agent.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+
+        let err = remove_path(&socket, &roots).unwrap_err();
+        assert!(err.contains("neither a folder nor a regular file"), "{err}");
+        assert!(err.contains(PATH_RULE), "the refusal says what --path takes: {err}");
+        assert!(fs::symlink_metadata(&socket).unwrap().file_type().is_socket(), "the socket stays");
     }
 
     /// Acima do teto, a compilação compartilhada é esvaziada no

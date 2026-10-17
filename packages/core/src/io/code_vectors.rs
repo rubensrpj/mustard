@@ -29,8 +29,9 @@ pub fn status(root:&Path)->Value {
         "status":if !enabled {"disabled"}else if counts.is_some_and(|c|c.1>0){"indexed"}else{"index-not-populated"},
         "source_validity":"checked during search","model_calls":0})
 }
-const BLOCK: Block = Block {name:"code-meaning",version:1,tables:&["code_vectors","code_vector_files"],
-    schema:"CREATE TABLE code_vectors(id TEXT NOT NULL,chunk INTEGER NOT NULL,path TEXT NOT NULL,sha256 TEXT NOT NULL,vector BLOB NOT NULL,PRIMARY KEY(id,chunk)) WITHOUT ROWID; CREATE INDEX code_vectors_path ON code_vectors(path); CREATE TABLE code_vector_files(path TEXT PRIMARY KEY,fingerprint TEXT NOT NULL,model TEXT NOT NULL) WITHOUT ROWID;",kind:Kind::Rebuilt(empty)};
+// `document` é o hash do texto que o modelo lê: o mesmo texto guarda o vetor.
+pub(crate) const BLOCK: Block = Block {name:"code-meaning",version:2,tables:&["code_vectors","code_vector_files"],
+    schema:"CREATE TABLE code_vectors(id TEXT NOT NULL,chunk INTEGER NOT NULL,path TEXT NOT NULL,sha256 TEXT NOT NULL,document TEXT NOT NULL,vector BLOB NOT NULL,PRIMARY KEY(id,chunk)) WITHOUT ROWID; CREATE INDEX code_vectors_path ON code_vectors(path); CREATE TABLE code_vector_files(path TEXT PRIMARY KEY,fingerprint TEXT NOT NULL,model TEXT NOT NULL) WITHOUT ROWID;",kind:Kind::Rebuilt(empty)};
 #[allow(clippy::unnecessary_wraps)]
 fn empty(_: &Connection, _: &Path) -> Result<()> {Ok(())}
 fn model()->Option<&'static StaticModel> {
@@ -47,9 +48,23 @@ fn cosine(a:&[u8],b:&[u8])->f64 {
 }
 
 /// Changed files only; hashes bind vectors to scanned bytes and metadata.
-/// `--native` never calls this. Disabled configuration returns before opening DB.
-pub fn fill_at(path:&Path,root:&Path)->Result<usize> {
-    if !crate::domain::config::ProjectConfig::load(root).ai_vectors_enabled(){return Ok(0);}
+/// Disabled configuration returns before opening DB. Um cálculo por mapa: com
+/// outro em andamento no mapa em `path` — o da passada do scan que segue
+/// sozinha depois de gravar o mapa, por exemplo —, este sai na hora com
+/// `None`, sem calcular nada, e quem pediu ordena com os vetores que já
+/// valem.
+///
+/// No arquivo mudado, só o documento cujo texto mudou vai ao modelo: os outros
+/// guardam o vetor que o mesmo modelo já deu àquele texto, também quando a
+/// análise do arquivo mudou só porque outro arquivo desceu uma linha. Devolve
+/// quantos documentos foram calculados.
+pub fn fill_at(path:&Path,root:&Path)->Result<Option<usize>> {
+    if !crate::domain::config::ProjectConfig::load(root).ai_vectors_enabled(){return Ok(Some(0));}
+    let Some(_alone)=crate::io::fs::lock::LockedFile::exclusive_if_free(&crate::io::fs::lock::temp_lock_path("code-vectors",path))? else {return Ok(None)};
+    fill(path,root).map(Some)
+}
+
+fn fill(path:&Path,root:&Path)->Result<usize> {
     let mut db=MapDb::open(path,root,&[BLOCK])?;
     if !table_exists(db.conn(),"texts")? {return Ok(0);}
     let known:BTreeMap<String,String>={let mut q=db.conn().prepare("SELECT path,fingerprint FROM code_vector_files WHERE model=?1")?;
@@ -75,21 +90,35 @@ pub fn fill_at(path:&Path,root:&Path)->Result<usize> {
             for item in value["knowledge"]["cards"].as_array().into_iter().flatten() {
                 let card:Card=serde_json::from_value(item.clone()).map_err(|e|Error::Parse(e.to_string()))?;
                 if sha!=card.source.sha256 {continue;}
-                for (at,body) in documents_for(&card,&text).into_iter().enumerate() {documents.push((card.id.clone(),at,sha.clone(),body));}
+                for (at,body) in documents_for(&card,&text).into_iter().enumerate() {documents.push((card.id.clone(),at,sha.clone(),hash(body.as_bytes()),body));}
             }
         }
-        let vectors=if documents.is_empty(){Vec::new()}else{
+        // Só o arquivo enchido por este modelo empresta os vetores: o vetor de
+        // outro modelo nunca vale pelo mesmo texto.
+        let kept:BTreeMap<String,Vec<u8>>=if known.contains_key(&file) {
+            let mut q=db.conn().prepare("SELECT document,vector FROM code_vectors WHERE path=?1")?;
+            q.query_map([&file],|r|Ok((r.get(0)?,r.get(1)?)))?.collect::<rusqlite::Result<_>>()?
+        } else {BTreeMap::new()};
+        let fresh:Vec<usize>=(0..documents.len()).filter(|at|!kept.contains_key(&documents[*at].3)).collect();
+        let encoded=if fresh.is_empty(){Vec::new()}else{
             let encoder=model().ok_or_else(||Error::config("embedded code encoder is invalid"))?;
-            documents.chunks(256).flat_map(|batch|encoder.encode_with_args(&batch.iter().map(|(_,_,_,text)|text.clone()).collect::<Vec<_>>(),None,256)).map(|v|blob(&v)).collect::<Vec<_>>()
+            let texts:Vec<String>=fresh.iter().map(|at|documents[*at].4.clone()).collect();
+            texts.chunks(256).flat_map(|batch|encoder.encode_with_args(batch,None,256)).map(|v|blob(&v)).collect::<Vec<_>>()
         };
-        count+=vectors.len();changes.push((file,fingerprint,documents,vectors));
+        count+=encoded.len();
+        let mut vectors:Vec<Option<Vec<u8>>>=documents.iter().map(|document|kept.get(&document.3).cloned()).collect();
+        for (at,vector) in fresh.into_iter().zip(encoded) {vectors[at]=Some(vector);}
+        changes.push((file,fingerprint,documents,vectors));
     }
     if changes.is_empty() && known.keys().all(|p|present.contains(p)) {return Ok(0);}
     db.write(|tx| {
         for path in known.keys().filter(|p|!present.contains(*p)) {tx.execute("DELETE FROM code_vectors WHERE path=?1",[path])?;tx.execute("DELETE FROM code_vector_files WHERE path=?1",[path])?;}
         for (path,fingerprint,documents,vectors) in &changes {
             tx.execute("DELETE FROM code_vectors WHERE path=?1",[path])?;
-            for ((id,at,sha,_),vector) in documents.iter().zip(vectors) {tx.execute("INSERT INTO code_vectors(id,chunk,path,sha256,vector) VALUES(?1,?2,?3,?4,?5)",params![id,*at as i64,path,sha,vector])?;}
+            for ((id,at,sha,document,_),vector) in documents.iter().zip(vectors) {
+                let Some(vector)=vector else {continue};
+                tx.execute("INSERT INTO code_vectors(id,chunk,path,sha256,document,vector) VALUES(?1,?2,?3,?4,?5,?6)",params![id,*at as i64,path,sha,document,vector])?;
+            }
             tx.execute("INSERT OR REPLACE INTO code_vector_files(path,fingerprint,model) VALUES(?1,?2,?3)",params![path,fingerprint,MODEL])?;
         }
         Ok(())
@@ -156,7 +185,7 @@ mod tests {
     fn optional_cache_refreshes_changed_bytes_removes_deleted_files_and_rejects_old_receipts() {
         let dir=tempfile::tempdir().unwrap();let root=dir.path();let path=root.join("grain.db");
         std::fs::write(root.join("mustard.json"),r#"{"ai":{"vectors":false}}"#).unwrap();
-        assert_eq!(fill_at(&path,root).unwrap(),0);assert!(!path.exists());
+        assert_eq!(fill_at(&path,root).unwrap(),Some(0));assert!(!path.exists());
         std::fs::write(root.join("mustard.json"),r#"{"ai":{"vectors":true}}"#).unwrap();
         let db=MapDb::open(&path,root,&[]).unwrap();
         db.conn().execute_batch("CREATE TABLE texts(path TEXT PRIMARY KEY,analysis TEXT); CREATE TABLE knowledge_symbols(id TEXT PRIMARY KEY,sha256 TEXT);").unwrap();
@@ -169,14 +198,43 @@ mod tests {
             db.conn().execute("INSERT OR REPLACE INTO knowledge_symbols VALUES('main.rs:1:read_json',?1)",[sha]).unwrap();
         };
         write("fn read_json() { parse_json(read_file()); }");
-        assert_eq!(fill_at(&path,root).unwrap(),1);assert_eq!(fill_at(&path,root).unwrap(),0);
+        assert_eq!(fill_at(&path,root).unwrap(),Some(1));assert_eq!(fill_at(&path,root).unwrap(),Some(0));
         let files=BTreeSet::from(["main.rs".to_string()]);
         assert_eq!(ranked(db.conn(),"read JSON from a file",&files,10).unwrap().ids,["main.rs:1:read_json"]);
         assert_eq!(ranked(db.conn(),"read JSON from a file",&BTreeSet::new(),10).unwrap().calls,0);
         write("fn read_json() { parse_json(read_other_file()); }");
         assert!(ranked(db.conn(),"read JSON from a file",&files,10).unwrap().ids.is_empty());
-        assert_eq!(fill_at(&path,root).unwrap(),1);assert_eq!(fill_at(&path,root).unwrap(),0);
+        assert_eq!(fill_at(&path,root).unwrap(),Some(1));assert_eq!(fill_at(&path,root).unwrap(),Some(0));
         db.conn().execute("DELETE FROM texts",[]).unwrap();fill_at(&path,root).unwrap();
         assert_eq!(db.conn().query_row("SELECT count(*) FROM code_vectors",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+    }
+    /// O mapa em `path`, no projeto em `root`, com um arquivo de uma função.
+    fn map_with_one_function(root:&Path,path:&Path)->MapDb {
+        let db=MapDb::open(path,root,&[]).unwrap();
+        db.conn().execute_batch("CREATE TABLE texts(path TEXT PRIMARY KEY,analysis TEXT); CREATE TABLE knowledge_symbols(id TEXT PRIMARY KEY,sha256 TEXT);").unwrap();
+        let text="fn read_json() { parse_json(read_file()); }";
+        std::fs::write(root.join("main.rs"),text).unwrap();
+        let card=serde_json::json!({"id":"main.rs:1:read_json","name":"read_json","kind":"function","source":{"file":"main.rs","line":1,"end_line":1,"sha256":hash(text.as_bytes())}});
+        db.conn().execute("INSERT INTO texts VALUES('main.rs',?1)",[serde_json::json!({"knowledge":{"cards":[card]}}).to_string()]).unwrap();
+        db
+    }
+    #[test]
+    fn a_fill_while_another_fills_the_same_map_computes_nothing_and_says_so() {
+        let dir=tempfile::tempdir().unwrap();let root=dir.path();let path=root.join("grain.db");
+        let db=map_with_one_function(root,&path);
+        let other=crate::io::fs::lock::LockedFile::exclusive_if_free(&crate::io::fs::lock::temp_lock_path("code-vectors",&path)).unwrap().expect("no fill of this map runs");
+        assert_eq!(fill_at(&path,root).unwrap(),None);
+        assert_eq!(db.conn().query_row("SELECT count(*) FROM code_vectors",[],|r|r.get::<_,i64>(0)).unwrap_or(0),0);
+        drop(other);
+        assert_eq!(fill_at(&path,root).unwrap(),Some(1));
+    }
+    #[test]
+    fn the_same_text_filled_by_another_encoder_is_computed_again() {
+        let dir=tempfile::tempdir().unwrap();let root=dir.path();let path=root.join("grain.db");
+        let db=map_with_one_function(root,&path);
+        assert_eq!(fill_at(&path,root).unwrap(),Some(1));
+        db.conn().execute("UPDATE code_vector_files SET model='another-encoder'",[]).unwrap();
+        assert_eq!(fill_at(&path,root).unwrap(),Some(1),"a vector of another encoder is not reused");
+        assert_eq!(db.conn().query_row("SELECT model FROM code_vector_files",[],|r|r.get::<_,String>(0)).unwrap(),MODEL);
     }
 }

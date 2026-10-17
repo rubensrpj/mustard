@@ -15,10 +15,10 @@
 //! mora aqui, montado num lugar só para os dois momentos da compactação: o
 //! aviso antes dela e o início da sessão depois do resumo.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecLog};
+use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog};
 use mustard_core::domain::spec_state::{SpecState, State};
 use mustard_core::domain::survey;
 use mustard_core::io::spec_events as store;
@@ -86,7 +86,94 @@ pub(crate) fn resume_for(opts: &ResumeOpts, session: Option<&str>) -> Value {
         out["base"] = json!(base);
     }
     out["goal_approval"] = super::goal::status(&log, lang);
+    out["since_last_message"] = since_last_message(&project.root, &spec, &log);
     out
+}
+
+/// Quantos caracteres do sha cada commit mostra na retomada: o tamanho curto
+/// que o git usa por padrão.
+const SHORT_SHA: usize = 7;
+
+/// O que aconteceu desde a última mensagem do usuário, para quem volta depois
+/// de limpar a conversa saber o que a rodada fez sem precisar perguntar: as
+/// ondas que ela aceitou, os commits pelo sha curto e pelo título, e as ondas
+/// que ela despachou, cada uma com as tarefas que levou. Junto vem o que está à
+/// espera agora, venha de quando vier: as voltas gravadas que a rodada ainda
+/// não assumiu, cada uma com os minutos de espera, e as ondas no ar, cada uma
+/// dizendo se tem agente vivo e se perdeu o processo que a enviou. Sem
+/// mensagem do usuário, conta desde o início da spec.
+fn since_last_message(root: &Path, spec: &str, log: &SpecLog) -> Value {
+    use crate::commands::flow::round::{minutes_since, queue, waves_in_progress};
+
+    let codes = log.codes();
+    let code_of = |id: u64| codes.get(&id).cloned().unwrap_or_else(|| id.to_string());
+    let message =
+        log.visible().into_iter().filter(|e| e.event_type == "message" && e.str_field("author") == Some("user")).map(|e| e.id).max();
+    let since = message.unwrap_or(0);
+
+    let accepted: BTreeSet<u64> = log
+        .block(BlockQuery::Block(Block::Waves))
+        .into_iter()
+        .filter(|e| e.event_type == "delivered" && e.id > since)
+        .filter_map(SpecEvent::wave)
+        .collect();
+    let commits: Vec<Value> = log
+        .block(BlockQuery::Block(Block::Progress))
+        .into_iter()
+        .filter(|e| e.event_type == "commit" && e.id > since)
+        .map(|e| {
+            let sha = e.str_field("sha").unwrap_or_default();
+            json!({ "sha": sha.get(..SHORT_SHA).unwrap_or(sha), "title": e.str_field("title").unwrap_or_default() })
+        })
+        .collect();
+    // A versão do envio que só soma o consumo some da leitura e não despacha
+    // nada de novo: conta o envio que é a própria posição do despacho.
+    let dispatched: Vec<Value> = log
+        .events
+        .iter()
+        .filter(|e| e.event_type == "send" && e.id > since && e.str_field("role") != Some("review"))
+        .filter(|e| log.dispatch_position(e.id) == e.id)
+        .filter_map(|e| {
+            let tasks: Vec<String> = e
+                .ints("items")
+                .into_iter()
+                .filter(|id| log.get(*id).is_some_and(|item| item.event_type == "task"))
+                .map(code_of)
+                .collect();
+            Some(json!({ "wave": e.wave()?, "tasks": tasks }))
+        })
+        .collect();
+
+    let returns: Vec<&SpecEvent> = log.unassumed_returns().into_iter().filter(|e| e.event_type == "delivered").collect();
+    let returned: BTreeSet<u64> = returns.iter().filter_map(|e| e.wave()).collect();
+    let awaiting: Vec<Value> = returns
+        .iter()
+        .filter_map(|e| {
+            let mut entry = json!({ "wave": e.wave()? });
+            if let Some(minutes) = minutes_since(log, e.id) {
+                entry["minutes"] = json!(minutes);
+            }
+            Some(entry)
+        })
+        .collect();
+
+    let alive = queue::waves_with_live_agent(root, spec, log);
+    let mut in_flight: BTreeMap<u64, Value> = BTreeMap::new();
+    for wave in waves_in_progress(log).into_keys().filter(|n| !returned.contains(n)) {
+        in_flight.insert(wave, json!({ "wave": wave, "agent_alive": alive.contains_key(&wave), "orphaned": false }));
+    }
+    for wave in queue::orphaned_waves(log).into_keys().filter(|n| !returned.contains(n)) {
+        in_flight.insert(wave, json!({ "wave": wave, "agent_alive": false, "orphaned": true }));
+    }
+
+    json!({
+        "after": message.map(code_of),
+        "accepted": accepted,
+        "commits": commits,
+        "dispatched": dispatched,
+        "awaiting_review": awaiting,
+        "in_flight": in_flight.into_values().collect::<Vec<_>>(),
+    })
 }
 
 /// A linha de retomada da spec `spec`: a spec, a fase, o último passo do
@@ -516,6 +603,73 @@ mod tests {
             .replace("{last}", translate("resume.none", Locale::PtBr))
             .replace("{next}", &translate("resume.wave", Locale::PtBr).replace("{n}", "1"));
         assert_eq!(resume_line("x", &log, Locale::PtBr), line);
+    }
+
+    /// Depois da última mensagem do usuário, a rodada aceitou a onda 2,
+    /// comitou, despachou as ondas 3 e 5, e a onda 4 voltou sem revisão. A
+    /// retomada conta só o que veio depois da mensagem: a entrega, o commit e
+    /// os envios de antes ficam de fora. As voltas à espera e as ondas no ar
+    /// saem pelo estado de agora: a onda 3 com agente vivo, e a 5 sem ele,
+    /// porque o processo que a enviou fechou.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_resume_lists_what_the_round_did_since_the_last_user_message() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
+        assert_eq!(record_open(root, "x", "feature/x", "dev"), Ok(true));
+        let seed = |event_type: &str, body: Value| crate::shared::spec_state::seed_event(root, "x", event_type, body);
+        let said = seed("message", json!({"author": "user", "text": "o plano"}));
+        let crit = seed("criterion", json!({"when": "a", "then": "b", "proof": "p", "form": "ubiquitous", "origin": said}));
+        let tasks: Vec<u64> = (1..=5u64)
+            .map(|n| {
+                seed("wave", json!({"n": n, "text": format!("Onda {n}."), "criteria": [crit], "done_when": "x", "origin": said}));
+                seed("task", json!({"wave": n, "title": format!("Tarefa {n}"), "text": "Fazer.", "agent": "Fazer.",
+                    "covers": [crit], "files": [{"path": format!("src/w{n}.ts")}], "origin": said}))
+            })
+            .collect();
+        crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join("x"));
+        seed("state", json!({"phase": "running", "author": "binary"}));
+        let send = |n: u64, extra: Value| {
+            let mut body = json!({"wave": n, "role": "wave", "text": "pedido", "lines": 1, "chars": 6,
+                "items": [crit, tasks[usize::try_from(n).unwrap() - 1]], "mustard": "0", "author": "binary"});
+            body.as_object_mut().unwrap().extend(extra.as_object().cloned().unwrap_or_default());
+            seed("send", body)
+        };
+        let commit = |sha: &str, title: &str, wave: u64| {
+            seed("commit", json!({"sha": sha, "title": title, "waves": [wave], "files": [format!("src/w{wave}.ts")], "repo": "x", "author": "binary"}))
+        };
+        send(1, json!({}));
+        seed("delivered", json!({"wave": 1, "text": "Pronta.", "files": ["src/w1.ts"], "author": "wave"}));
+        commit("1111111aaaaaaaa", "Onda 1 entra", 1);
+        send(2, json!({}));
+        send(4, json!({}));
+        let last = seed("message", json!({"author": "user", "text": "e agora?"}));
+        seed("delivered", json!({"wave": 2, "text": "Pronta.", "files": ["src/w2.ts"], "author": "wave"}));
+        commit("2222222bbbbbbbb", "Onda 2 entra", 2);
+        send(3, json!({"agent_launched": true}));
+        seed("delivered", json!({"wave": 4, "text": "Pronta.", "files": ["src/w4.ts"], "returned": true, "author": "wave"}));
+        let (dead_pid, dead_started) = crate::commands::flow::round::closed_process();
+        send(5, json!({"claude_pid": dead_pid, "claude_started": dead_started}));
+
+        let codes = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap().codes();
+        let code = |id: u64| codes.get(&id).cloned().unwrap_or_else(|| id.to_string());
+        let out = resume(root, "x");
+        assert_eq!(
+            out["since_last_message"],
+            json!({
+                "after": code(last),
+                "accepted": [2],
+                "commits": [{"sha": "2222222", "title": "Onda 2 entra"}],
+                "dispatched": [{"wave": 3, "tasks": [code(tasks[2])]}, {"wave": 5, "tasks": [code(tasks[4])]}],
+                "awaiting_review": [{"wave": 4, "minutes": 0}],
+                "in_flight": [
+                    {"wave": 3, "agent_alive": true, "orphaned": false},
+                    {"wave": 5, "agent_alive": false, "orphaned": true},
+                ],
+            }),
+            "{out}"
+        );
     }
 
     #[test]

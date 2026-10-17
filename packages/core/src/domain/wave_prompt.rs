@@ -37,7 +37,7 @@ use std::fmt::Write as _;
 
 use serde_json::Value;
 
-use crate::domain::config::Language;
+use crate::domain::config::{Commands, Language};
 use crate::domain::lessons::{Scope, applies_to, text_only};
 use crate::domain::pattern::{Direction, Pattern};
 use crate::domain::project_map::{QUALITY_TOP_PERCENT, Recipe, RecipeOf};
@@ -995,16 +995,47 @@ pub fn dispatch_items<'a>(log: &'a SpecLog, wave: u64, fresh: Option<&Choice>) -
     out
 }
 
+/// Os itens combinados que um pedido de onda leva, entre os itens que ele lê
+/// (`read`), na ordem dada e sem repetir: os do bloco do combinado que têm
+/// texto. É a conta única do que o pedido manda obedecer — "O que obedecer",
+/// com o que as tarefas atendem, que ele mostra sob a tarefa — e do que a
+/// entrega da onda responde em `agreed`: a montagem a faz sobre o que o
+/// pedido lê, e a conferência da entrega, sobre a lista que o envio gravou
+/// disso ([`sent_agreed`]). Por ela, o pedido e a entrega nunca discordam.
+#[must_use]
+pub fn carried_agreed<'a>(read: impl IntoIterator<Item = &'a SpecEvent>) -> Vec<&'a SpecEvent> {
+    let mut seen: BTreeSet<u64> = BTreeSet::new();
+    read.into_iter()
+        .filter(|item| item.block() == Some(Block::Agreed) && item.str_field("text").is_some_and(|text| !text.trim().is_empty()))
+        .filter(|item| seen.insert(item.id))
+        .collect()
+}
+
+/// Os itens combinados que o envio `send` de uma onda levou: a lista do que o
+/// pedido dele lia, como ele a gravou (`items`), cada número lido em `log`
+/// e passado por [`carried_agreed`]. Vale também para o reenvio, que grava a
+/// lista do envio anterior com o pedido dele, palavra por palavra. `None` no
+/// envio gravado antes de a lista existir.
+#[must_use]
+pub fn sent_agreed<'a>(log: &'a SpecLog, send: &SpecEvent) -> Option<Vec<&'a SpecEvent>> {
+    let items = send.fields.get("items")?.as_array()?;
+    Some(carried_agreed(items.iter().filter_map(Value::as_u64).filter_map(|id| log.get(id))))
+}
+
 /// Os campos que o registro de um lote deriva das tarefas que o compõem
-/// agora: os critérios que elas cobrem (`covers`, sem repetir), os títulos
+/// agora: os itens que elas cobrem (`covers`, sem repetir), os títulos
 /// delas juntados por ponto e vírgula e o pronto-quando — a prova de cada
-/// critério coberto, ligada por " && ", ou, sem prova nenhuma (o caso do
-/// item combinado sem dono, que não tem prova), os mesmos títulos. O texto
-/// inteiro das tarefas não entra: o pronto-quando abre o pedido da onda, e as
-/// tarefas já saem nele com o título e a parte do agente. A formação do lote
-/// e a atualização dele depois de uma tarefa sair pelo backlog usam esta
-/// mesma conta, sobre as tarefas que a leitura de agora mostra, para as duas
-/// nunca discordarem.
+/// item coberto, ligada por " && ", sem repetir. O critério dá a prova dele;
+/// o pedido sem prova dá a que o relato dele nomeia ([`named_proofs`]) ou,
+/// sem nenhuma nomeada, o comando que compila o projeto: a onda de conserto
+/// de uma sobra fica pronta pela prova dela, nunca pela de um critério
+/// alheio. Sem prova nenhuma (o caso do item combinado sem dono, que não tem
+/// prova, ou do projeto que não declara compilação), os mesmos títulos. O
+/// texto inteiro das tarefas não entra: o pronto-quando abre o pedido da
+/// onda, e as tarefas já saem nele com o título e a parte do agente. A
+/// formação do lote e a atualização dele depois de uma tarefa sair pelo
+/// backlog usam esta mesma conta, sobre as tarefas que a leitura de agora
+/// mostra, para as duas nunca discordarem.
 pub struct BacklogFields {
     pub criteria: Vec<u64>,
     pub text: String,
@@ -1012,9 +1043,18 @@ pub struct BacklogFields {
 }
 
 /// Calcula [`BacklogFields`] a partir das tarefas `tasks` de um lote, lendo em
-/// `log` a prova de cada critério que elas cobrem.
+/// `log` a prova de cada item que elas cobrem, com os comandos que o projeto
+/// declara em `commands`: o de teste reconhece a prova citada no relato de
+/// um pedido, e o de compilação é a prova do pedido que não nomeia nenhuma.
+///
+/// A prova de um item entra só na onda da última tarefa aberta dele: o item
+/// que outra tarefa ainda aberta, fora deste lote, também cobre (`waiting`,
+/// por qualquer versão do item) continua entre os itens do lote, mas a prova
+/// dele fica de fora — ela depende do que essa outra tarefa ainda vai
+/// entregar, e esta onda não consegue fazê-la passar. O fechamento roda a
+/// prova de todo item de qualquer jeito.
 #[must_use]
-pub fn backlog_fields(log: &SpecLog, tasks: &[&SpecEvent]) -> BacklogFields {
+pub fn backlog_fields(log: &SpecLog, tasks: &[&SpecEvent], commands: &Commands, waiting: &BTreeSet<u64>) -> BacklogFields {
     let mut criteria: BTreeSet<u64> = BTreeSet::new();
     let mut titles: Vec<String> = Vec::new();
     for task in tasks {
@@ -1022,12 +1062,100 @@ pub fn backlog_fields(log: &SpecLog, tasks: &[&SpecEvent]) -> BacklogFields {
         titles.extend(item_title(task));
     }
     let criteria: Vec<u64> = criteria.into_iter().collect();
-    let mut seen = BTreeSet::new();
-    let proof = criteria.iter().filter_map(|id| log.get(*id)).filter_map(|event| event.str_field("proof"))
-        .filter(|proof| seen.insert(proof.trim())).collect::<Vec<_>>().join(" && ");
+    let codes = log.codes();
+    let waiting_codes: BTreeSet<&String> = waiting.iter().filter_map(|id| codes.get(id)).collect();
+    let waits = |id: u64| waiting.contains(&id) || codes.get(&id).is_some_and(|code| waiting_codes.contains(code));
+    let mut proofs: Vec<String> = Vec::new();
+    for item in criteria.iter().filter(|id| !waits(**id)).filter_map(|id| log.get(*id)) {
+        let own: Vec<String> = match item.str_field("proof") {
+            Some(proof) => vec![proof.trim().to_string()],
+            None if item.event_type == "request" => {
+                let named = named_proofs(item, commands.test.as_deref());
+                if named.is_empty() { commands.build.iter().cloned().collect() } else { named }
+            }
+            None => Vec::new(),
+        };
+        for proof in own {
+            if !proof.is_empty() && !proofs.contains(&proof) {
+                proofs.push(proof);
+            }
+        }
+    }
     let text = titles.join("; ");
-    let done_when = if proof.is_empty() { text.clone() } else { proof };
+    let done_when = if proofs.is_empty() { text.clone() } else { proofs.join(" && ") };
     BacklogFields { criteria, text, done_when }
+}
+
+/// As marcas com que um relato nomeia a prova dele, nos dois idiomas do
+/// produto: os comandos entre crases que vêm depois dela, na mesma linha.
+const PROOF_MARKERS: &[&str] = &["Prova:", "Proof:"];
+
+/// As provas que o relato do item `item` (o texto e a parte do agente)
+/// nomeia, sem repetir: os comandos entre crases depois de uma marca de
+/// prova ([`PROOF_MARKERS`]), até o fim da linha; sem marca, os comandos
+/// entre crases que começam pelo comando de teste que o projeto declara
+/// (`test`), lido até a primeira opção e no máximo pelas duas primeiras
+/// palavras — vale para qualquer ferramenta, e nenhuma é conhecida aqui.
+fn named_proofs(item: &SpecEvent, test: Option<&str>) -> Vec<String> {
+    let fields: Vec<&str> = ["text", "agent"].iter().filter_map(|field| item.str_field(field)).collect();
+    proofs_named_in(&fields, test)
+}
+
+/// A mesma seleção de [`named_proofs`] sobre os textos `fields` de um relato
+/// que ainda não foi gravado: a gravação de um pedido, e a da sobra que a
+/// rodada converte em pedido, conferem as provas que a onda vai rodar.
+#[must_use]
+pub fn proofs_named_in(fields: &[&str], test: Option<&str>) -> Vec<String> {
+    let mut named: Vec<String> = fields.iter().flat_map(|text| marked_proofs(text)).collect();
+    if named.is_empty() {
+        let head: Vec<&str> =
+            test.map(|test| test.split_whitespace().take_while(|word| !word.starts_with('-')).take(2).collect()).unwrap_or_default();
+        if !head.is_empty() {
+            named = fields
+                .iter()
+                .flat_map(|text| text.lines())
+                .flat_map(quoted_commands)
+                .filter(|command| command.split_whitespace().take(head.len()).eq(head.iter().copied()))
+                .collect();
+        }
+    }
+    let mut seen = BTreeSet::new();
+    named.retain(|command| seen.insert(command.clone()));
+    named
+}
+
+/// Os comandos que o relato `text` nomeia como prova: em cada linha, os que
+/// vêm entre crases depois de uma marca de prova ([`PROOF_MARKERS`]), até o
+/// fim da linha, na ordem em que aparecem. Os trechos entre crases saem da
+/// linha inteira, e só conta a marca escrita fora deles: a marca citada
+/// dentro de um trecho entre crases não marca nada, e a prosa que vem depois
+/// dela nunca vira comando.
+#[must_use]
+pub fn marked_proofs(text: &str) -> Vec<String> {
+    text.lines().flat_map(proofs_after_marker).collect()
+}
+
+/// Os trechos entre crases de `line` que começam depois de uma marca de prova
+/// escrita fora de crase, sem os espaços das pontas e sem os vazios. Pelo
+/// corte em crase, as partes de índice par ficam fora de crase e as de índice
+/// ímpar, dentro.
+fn proofs_after_marker(line: &str) -> Vec<String> {
+    let mut marked = false;
+    let mut found = Vec::new();
+    for (index, piece) in line.split('`').enumerate() {
+        if index % 2 == 0 {
+            marked = marked || PROOF_MARKERS.iter().any(|marker| piece.contains(marker));
+        } else if marked && !piece.trim().is_empty() {
+            found.push(piece.trim().to_string());
+        }
+    }
+    found
+}
+
+/// Os trechos entre crases de `line`, sem os espaços das pontas e sem os
+/// vazios.
+fn quoted_commands(line: &str) -> Vec<String> {
+    line.split('`').skip(1).step_by(2).map(str::trim).filter(|command| !command.is_empty()).map(str::to_string).collect()
 }
 
 /// Os executores que o binário reconhece abrindo a prova de um critério,
@@ -1118,7 +1246,7 @@ pub fn owner_rule(before: &SpecLog, after: &SpecLog) -> Result<(), Refusal> {
 /// O tipo de trabalho e os pontos do levantamento não têm, e não são itens a
 /// implementar.
 fn agreed_items(log: &SpecLog) -> Vec<&SpecEvent> {
-    log.block(BlockQuery::Block(Block::Agreed)).into_iter().filter(|e| e.str_field("text").is_some_and(|t| !t.trim().is_empty())).collect()
+    carried_agreed(log.block(BlockQuery::Block(Block::Agreed)))
 }
 
 /// Os caminhos que as tarefas de uma onda declaram, em ordem, sem repetir.
@@ -1715,9 +1843,70 @@ mod tests {
             ("criterion", json!({"proof":"cargo test --doc"})),
             ("task", json!({"title":"Complete reader", "covers":[1,2,3,4]})),
         ]);
-        let fields = backlog_fields(&log, &[log.get(5).unwrap()]);
+        let fields = backlog_fields(&log, &[log.get(5).unwrap()], &Commands::default(), &BTreeSet::new());
         assert_eq!(fields.criteria, [1,2,3,4]);
         assert_eq!(fields.done_when, "cargo test --locked && cargo test --doc");
+    }
+
+    /// Num projeto TypeScript, duas tarefas cobrem o critério da soma, e uma
+    /// delas cobre também o da tipagem. A onda cuja tarefa divide a soma com
+    /// outra tarefa ainda aberta fora do lote leva só a prova da tipagem, e o
+    /// critério da soma segue entre os dela; a onda da última tarefa aberta
+    /// da soma leva a prova dela. Com todo item à espera, o pronto-quando são
+    /// os títulos.
+    #[test]
+    fn a_proof_goes_only_to_the_wave_of_the_last_open_task_of_its_item() {
+        let log = log(&[
+            ("criterion", json!({"proof": "npm test -- soma"})),
+            ("criterion", json!({"proof": "npx tsc --noEmit"})),
+            ("task", json!({"title": "Somar com sinal", "covers": [1, 2]})),
+            ("task", json!({"title": "Somar o total", "covers": [1]})),
+        ]);
+        let shared = BTreeSet::from([1]);
+        let first = backlog_fields(&log, &[log.get(3).unwrap()], &Commands::default(), &shared);
+        assert_eq!(first.criteria, [1, 2], "o critério à espera segue coberto");
+        assert_eq!(first.done_when, "npx tsc --noEmit");
+
+        let last = backlog_fields(&log, &[log.get(4).unwrap()], &Commands::default(), &BTreeSet::new());
+        assert_eq!(last.done_when, "npm test -- soma");
+
+        let all_waiting = backlog_fields(&log, &[log.get(4).unwrap()], &Commands::default(), &shared);
+        assert_eq!(all_waiting.done_when, "Somar o total", "sem prova possível, os títulos");
+    }
+
+    /// O pedido sem prova fica pronto pela prova que o relato dele nomeia
+    /// depois da marca, ou, sem marca, pelo comando entre crases que começa
+    /// pelo comando de teste do projeto; sem nenhuma nomeada, pela
+    /// compilação do projeto; e, sem compilação declarada, pelos títulos.
+    /// Vale para qualquer ferramenta: aqui, a de um projeto TypeScript.
+    #[test]
+    fn a_request_without_proof_is_done_when_its_named_proof_or_the_build_passes() {
+        let log = log(&[
+            ("request", json!({"title": "Sinal", "text": "A soma perde o sinal.", "agent": "Prova: `npm test -- soma` e `npm run lint`.", "effect": "new_waves"})),
+            ("request", json!({"title": "Total", "text": "Rode `npm test -- total` depois de mexer em `src/total.ts`.", "effect": "new_waves"})),
+            ("request", json!({"title": "Nome", "text": "O nome confunde em `src/nome.ts`.", "effect": "new_waves"})),
+            ("task", json!({"title": "Sinal", "covers": [1]})),
+            ("task", json!({"title": "Total", "covers": [2]})),
+            ("task", json!({"title": "Nome", "covers": [3]})),
+        ]);
+        let declared = Commands { build: Some("npx tsc --noEmit".into()), test: Some("npm test --silent".into()), ..Commands::default() };
+        let done = |task: u64, commands: &Commands| backlog_fields(&log, &[log.get(task).unwrap()], commands, &BTreeSet::new()).done_when;
+        assert_eq!(done(4, &declared), "npm test -- soma && npm run lint");
+        assert_eq!(done(5, &declared), "npm test -- total");
+        assert_eq!(done(6, &declared), "npx tsc --noEmit");
+        assert_eq!(done(6, &Commands::default()), "Nome", "sem compilação declarada, os títulos");
+    }
+
+    /// A marca de prova citada dentro de crase não marca nada: a prosa entre
+    /// os trechos nunca vira comando, e só os comandos depois da marca escrita
+    /// fora de crase contam, num projeto TypeScript como em qualquer outro.
+    #[test]
+    fn a_proof_marker_inside_backticks_never_turns_prose_into_commands() {
+        let quoted_marker = "Grave a sobra (`Prova:` no detalhe) ou mande `npm run lint`; ver `src/a.ts` em `src/b.ts`.";
+        assert_eq!(marked_proofs(quoted_marker), Vec::<String>::new(), "sem marca fora de crase, nenhuma prova");
+
+        let both = "Cite `Prova:` no detalhe. Prova: `npm test -- soma` e `npx tsc --noEmit`.";
+        assert_eq!(marked_proofs(both), ["npm test -- soma", "npx tsc --noEmit"]);
     }
 
     #[test]
@@ -1739,12 +1928,12 @@ mod tests {
         let visible = log.visible();
         let (titled, old, covering) = (visible[1], visible[2], visible[3]);
 
-        let unproven = backlog_fields(&log, &[titled, old]);
+        let unproven = backlog_fields(&log, &[titled, old], &Commands::default(), &BTreeSet::new());
         assert!(unproven.criteria.is_empty());
         assert_eq!(unproven.text, "Somar o total; Mostrar o total na página.");
         assert_eq!(unproven.done_when, unproven.text, "sem prova, o pronto-quando são os títulos");
 
-        let proven = backlog_fields(&log, &[covering]);
+        let proven = backlog_fields(&log, &[covering], &Commands::default(), &BTreeSet::new());
         assert_eq!(proven.criteria, [1]);
         assert_eq!(proven.text, "Conferir a soma");
         assert_eq!(proven.done_when, "cargo test -p soma");
@@ -1805,7 +1994,7 @@ mod tests {
             "Não comite e não use `git add`: o commit é da rodada.",
             "Ache e leia o código pelo mapa, cada comando na sua hora",
             "Não releia o arquivo depois de editar",
-            "Durante o trabalho, rode só os testes do que mudou.",
+            "Compile e rode só a prova da tarefa e dos critérios da onda",
             "A suíte inteira e o lint são da rodada",
             "Nunca mande compilação ou teste para segundo plano",
         ] {
@@ -2875,40 +3064,6 @@ mod tests {
         let en = write(&Material { execution: with_copy(), ..material(&log, 1) }, Locale::EnUs);
         let rules = section(&en, translate("prompt.part.work", Locale::EnUs));
         assert!(rules.contains("`/repo/copia-1`") && !rules.contains("target/copias"), "{rules}");
-    }
-
-    /// Os textos dos agentes, que cada agente carrega uma vez, exigem o teste
-    /// de cada critério nascendo vermelho pelo caminho que o usuário usa, e
-    /// não só pela função auxiliar, com a entrega dizendo como a prova foi
-    /// feita; o do revisor manda rodar a prova gravada, ler as provas do
-    /// vermelho da entrega e cortar onde a onda não cortou, sem repetir os
-    /// cortes dela. A parte fixa dos pedidos não repete nada disso.
-    #[test]
-    fn the_agent_texts_ask_for_the_red_proof_by_the_real_path_and_the_review_skips_the_waves_cuts() {
-        let log = log(&[("wave", json!({"n": 1, "text": "Onda", "criteria": [], "done_when": "pronto"}))]);
-        for (lang, wave, review) in [
-            (
-                Locale::PtBr,
-                ["Prove o vermelho", "comando/hook", "não só um helper", "teste e vermelho de cada critério"],
-                ["confira o recibo vigente", "verificação do vermelho que a entrega relata", "onde a onda não cortou", "sem repetir os dela"],
-            ),
-            (
-                Locale::EnUs,
-                ["Prove the red", "command/hook", "not only a helper", "each criterion's test and red verification"],
-                ["check the current receipt", "red verification the delivery reports", "where the wave did not cut", "without repeating its own"],
-            ),
-        ] {
-            let agents = crate::platform::seeds::agent_texts(lang);
-            let request = write(&material(&log, 1), lang);
-            let pairs = wave
-                .iter()
-                .map(|said| (said, agents[0].1, request.as_str()))
-                .chain(review.iter().map(|said| (said, agents[1].1, translate("prompt.final.fixed", lang))));
-            for (said, agent, fixed) in pairs {
-                assert!(agent.contains(said), "{lang:?}: {said}: {agent}");
-                assert!(!fixed.contains(said), "{lang:?} repeats {said}");
-            }
-        }
     }
 
     fn direction(from: &str, to: &str, along: usize, against: usize) -> Direction {

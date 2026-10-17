@@ -21,6 +21,8 @@ pub(super) const PREFIXES: &[&str] = &[
     "workbranch",
     "base",
     "command_guard",
+    "runtime_output",
+    "tool_observations",
     "install_lock",
     "clarity",
     "gate",
@@ -31,6 +33,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
     Some(match (key, lang) {
         ("search.gateway.route", Locale::PtBr) => "[Mustard] Busque por `mcp__mustard__search` com {request:{tool,input,intent,purpose,choose?}}. Use os mesmos argumentos. Diga em intent o que quer saber. Em purpose, use understand, spec, implement ou validate. Para só achar texto, use locate. Outra opção: {command}. Se a opção faltar, use a busca de antes.",
         ("search.gateway.route", Locale::EnUs) => "[Mustard] Use `mcp__mustard__search` with {request:{tool,input,intent,purpose,choose?}}, preserving original arguments. For investigation, state the specific question in intent and set purpose (understand/spec/implement/validate); locate keeps literal lookup. Alternative: {command}. If the new search lacks an option, use the original tool.",
+        ("search.gateway.scan_running", Locale::PtBr) => "[Mustard] O mapa do código desta pasta segue em atualização, em segundo plano. Esta resposta veio do mapa de antes; repita a busca depois para ver o mapa novo.\n",
+        ("search.gateway.scan_running", Locale::EnUs) => "[Mustard] The code map of this folder is still being refreshed in the background. This answer came from the previous map; repeat the search later to see the new one.\n",
         // Regression gate verdict labels + messages. These are
         // MACHINE / log strings (gate verdicts consumed by the orchestrator and
         // written to telemetry), so they are ENGLISH regardless of the user's
@@ -248,22 +252,35 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // Onde começam os testes escritos dentro do arquivo.
         ("code_route.tests_from", Locale::PtBr) => "testes a partir da linha {line}",
         ("code_route.tests_from", Locale::EnUs) => "tests from line {line}",
-        // A leitura do arquivo de configuração que guarda a chave do Jev
-        // volta com o arquivo, e a chave trocada. `{text}` vem do chamador:
-        // o arquivo inteiro, já sem o valor da chave.
+        // A leitura do arquivo com a chave num formato sem troca segura é
+        // recusada sem comando pronto. `{file}` é o arquivo como o comando o
+        // nomeou.
         ("config_key.shell_unsupported", Locale::PtBr) => {
             "[Mustard] Leitura de {file} bloqueada para proteger a chave. Esse formato de comando não permite substituição segura. Nenhuma etapa foi executada. Use `mustard-rt run config-read --file '{file}'` para ler a configuração mascarada e execute as outras etapas separadamente."
         }
         ("config_key.shell_unsupported", Locale::EnUs) => {
             "[Mustard] Reading {file} was blocked to protect the key. This command format cannot be safely rewritten. No step was executed. Use `mustard-rt run config-read --file '{file}'` to read the masked configuration and run other steps separately."
         }
+        // A leitura do arquivo com a chave num formato que tem troca segura é
+        // recusada, e a recusa vence qualquer outro gancho que troque o
+        // comando. `{command}` vem do chamador, sozinho depois da última
+        // quebra de linha: o mesmo comando, com cada leitura já mascarada.
+        ("config_key.masked_command", Locale::PtBr) => {
+            "[Mustard] A leitura da configuração foi barrada para proteger a chave do Jev. Nenhuma etapa foi executada. Rode como está o comando abaixo: ele faz a mesma leitura com a chave trocada por *** e mantém as outras etapas na mesma ordem.\n{command}"
+        }
+        ("config_key.masked_command", Locale::EnUs) => {
+            "[Mustard] Reading the configuration was blocked to protect the Jev key. No step was executed. Run the command below as is: it does the same read with the key replaced by *** and keeps the other steps in the same order.\n{command}"
+        }
+        // A leitura do arquivo de configuração que guarda a chave do Jev
+        // volta com o arquivo, e a chave trocada. `{text}` vem do chamador:
+        // o arquivo inteiro, já sem o valor da chave.
         ("config_key.hidden", Locale::PtBr) => {
             "[Mustard] {file} guarda a chave do Jev, e a chave nunca entra na conversa. Segue o \
-             arquivo, com a chave trocada por ***:\n{text}\nA leitura de {file} foi bloqueada. O comando solicitado não foi executado, incluindo etapas encadeadas de teste. Execute o teste separadamente; o hook preserva a ordem e as condições do comando original."
+             arquivo, com a chave trocada por ***:\n{text}\nA leitura de {file} foi bloqueada. O comando solicitado não foi executado, incluindo etapas encadeadas de teste. Execute o teste separadamente; o hook preserva a ordem e as condições do comando original. Os comandos de lint, teste e compilação mudam por `mustard-rt run settings`, sem abrir o arquivo."
         }
         ("config_key.hidden", Locale::EnUs) => {
             "[Mustard] {file} holds the Jev key, and the key never enters the conversation. Here is \
-             the file, with the key replaced by ***:\n{text}\nReading {file} was blocked. The requested command was not executed, including chained test steps. Run the test separately; the hook preserves the original command's order and conditions."
+             the file, with the key replaced by ***:\n{text}\nReading {file} was blocked. The requested command was not executed, including chained test steps. Run the test separately; the hook preserves the original command's order and conditions. The lint, test and build commands change through `mustard-rt run settings`, without opening the file."
         }
         // A busca do terminal em pastas que passaria pelo arquivo com a
         // chave volta com a opção que o deixa de fora. `{fix}` vem do
@@ -360,12 +377,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "[Mustard] The user accepted the change {code}. Run the round again with the same report."
         }
         ("change.witness.declined", Locale::PtBr) => {
-            "[Mustard] O usuário recusou a mudança {code}: a rodada não segue com ela. Combine com \
-             o usuário o que fazer com a onda."
+            "[Mustard] O usuário recusou a mudança {code}: o plano aprovado fica. Na próxima \
+             rodada, o que a onda mudou entra no commit e as tarefas que ela não fez voltam soltas \
+             ao backlog."
         }
         ("change.witness.declined", Locale::EnUs) => {
-            "[Mustard] The user declined the change {code}: the round does not go on with it. \
-             Agree with the user on what to do with the wave."
+            "[Mustard] The user declined the change {code}: the approved plan stays. In the next \
+             round, what the wave changed goes into the commit and the tasks it did not do return \
+             to the backlog unheld."
         }
         ("change.witness.free_text", Locale::PtBr) => {
             "[Mustard] Nada foi aceito para a mudança {code}: a resposta {selected} não é uma das \
@@ -407,15 +426,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("command_guard.rm_recursive_force", Locale::EnUs) => {
             "deleting a folder by force (`rm` with `-r` and `-f`)"
         }
-        // O caminho permitido, na linha seguinte à do comando: só a pasta no
-        // temporário, que o `clean --path` confere antes de apagar.
+        // O caminho permitido, na linha seguinte à do comando: só a pasta ou o
+        // arquivo do temporário do sistema que é do usuário e fica fora de
+        // qualquer checkout, que o `clean --path` confere antes de apagar.
         ("command_guard.rm_recursive_force_instead", Locale::PtBr) => {
-            "Para apagar a cópia do projeto ou a pasta de compilação no temporário, rode \
-             `mustard-rt run clean --path <pasta>`: ele confere a pasta antes de apagar."
+            "Para apagar uma pasta ou um arquivo do temporário do sistema, rode `mustard-rt run clean \
+             --path <caminho>`. O caminho tem de ser seu e ficar fora de qualquer checkout do git. O \
+             comando confere isso antes de apagar. Vale também dentro do scratchpad da sessão."
         }
         ("command_guard.rm_recursive_force_instead", Locale::EnUs) => {
-            "To delete the project copy or the build folder in the temp directory, run \
-             `mustard-rt run clean --path <folder>`: it checks the folder before deleting it."
+            "To delete a folder or a file of the system temp directory, run `mustard-rt run clean \
+             --path <path>`. The path must be yours and lie outside any git checkout. The command \
+             checks this before deleting. It also works inside the session scratchpad."
         }
         ("command_guard.force_push", Locale::PtBr) => {
             "forçar o envio ao servidor (`git push --force`); `--force-with-lease` continua liberado"
@@ -456,6 +478,38 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              or `ps`. The loop and the process it waits for can name each other's own search text and \
              never end.\nCommand: {command}\nRun the command in the foreground, with its own time \
              limit, and read the result before moving on."
+        }
+        // A recusa do comando que passa a resposta do Mustard por script,
+        // filtro ou corte (`apps/rt/src/hooks/bash/runtime_output.rs`).
+        // `{command}` vem do chamador: o comando recusado, encurtado.
+        ("runtime_output.scripted", Locale::PtBr) => {
+            "Comando barrado: ele passa a resposta do Mustard por script, filtro ou corte.\nComando: \
+             {command}\nA resposta do Mustard se lê inteira, e nada dela passa por script, filtro ou \
+             corte. Rode o comando do Mustard sozinho. Para ler só uma parte, use `mustard-rt run read \
+             <bloco> --term <termo>`. Se a resposta for grande, grave num arquivo com `> arquivo` e leia \
+             o arquivo por partes. Se o Mustard não traz o recorte de que você precisa, isso vira um \
+             pedido, não um corte."
+        }
+        ("runtime_output.scripted", Locale::EnUs) => {
+            "Command blocked: it runs the Mustard answer through a script, a filter or a cut.\nCommand: \
+             {command}\nThe Mustard answer is read whole, and none of it goes through a script, a filter \
+             or a cut. Run the Mustard command alone. To read only one part, use `mustard-rt run read \
+             <block> --term <term>`. When the answer is long, save it to a file with `> file` and read \
+             the file in parts. When Mustard does not give the part you need, that becomes a request, \
+             not a cut."
+        }
+        // O aviso depois do executor de teste ou de compilação cujo resumo o
+        // pipe escondeu (`apps/rt/src/shared/tool_observations.rs`). `{command}`
+        // vem do chamador: o executor escrito sem o pipe.
+        ("tool_observations.summary_hidden", Locale::PtBr) => {
+            "O resumo do executor não chegou à saída. O pipe o escondeu, e o host recebe o código \
+             de saída do último programa. Este resultado não prova que o executor passou. O recibo \
+             dele fica sem veredito. Para provar, rode sem o pipe: `{command}`"
+        }
+        ("tool_observations.summary_hidden", Locale::EnUs) => {
+            "The runner summary did not reach the output. The pipe hid it, and the host gets the \
+             exit code of the last program. This result does not prove that the runner passed. Its \
+             receipt has no verdict. To prove it, run it without the pipe: `{command}`"
         }
         // A trava de instalação (`apps/rt/src/hooks/session/prompt_entry.rs`):
         // um comando `/mustard:` num projeto sem `mustard.json` na raiz. Sem
@@ -564,8 +618,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("gates.rs"),
             super::PREFIXES,
-            73,
-            0x8a68_47a5_4763_e8c0,
+            77,
+            0x918a_381e_f538_a844,
         );
     }
 
@@ -586,6 +640,7 @@ mod tests {
                 ("config_key.hidden", &[("{file}", "mustard"), ("{text}", word)][..]),
                 ("config_key.swept", &[("{file}", "mustard"), ("{fix}", word)][..]),
                 ("config_key.swept_tool", &[("{file}", "mustard")][..]),
+                ("config_key.masked_command", &[("{command}", word)][..]),
             ] {
                 let text = slots.iter().fold(translate(key, lang).to_string(), |text, (slot, value)| text.replace(slot, value));
                 let report = crate::domain::clarity::measure(&text, &[], Some(lang));
@@ -610,6 +665,7 @@ mod tests {
             ("config_key.hidden", &["{file}", "{text}"][..]),
             ("config_key.swept", &["{file}", "{fix}"][..]),
             ("config_key.swept_tool", &["{file}"][..]),
+            ("config_key.masked_command", &["{command}"][..]),
             ("approval.witness.clear", &["{spec}"][..]),
             ("approval.witness.free_text", &["{spec}", "{selected}", "{offered}"][..]),
             ("approval.witness.not_affirmative", &["{spec}", "{selected}"][..]),
@@ -699,6 +755,8 @@ mod tests {
             ("command_guard.delete_base", &["{branch}"][..]),
             ("command_guard.windows_path_rewritten", &["{original}", "{posix}"][..]),
             ("command_guard.waiting_loop", &["{command}"][..]),
+            ("runtime_output.scripted", &["{command}"][..]),
+            ("tool_observations.summary_hidden", &["{command}"][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
             assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");

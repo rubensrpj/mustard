@@ -326,7 +326,7 @@ pub fn upsert_project_with(root: &Path, version: Option<&str>, mode: InstallMode
     //       which take no mode: they are always rewritten.
     let config = ProjectConfig::load(root);
     let text = config.language().text_or_default();
-    for (name, outcome) in seed_settings(&claude_dir, false, mode, config.rtk(), text)? {
+    for (name, outcome) in seed_settings(&claude_dir, false, mode, text)? {
         report.record(name, outcome);
     }
     for (rel, outcome) in seed_harness_texts(&claude_dir, text, config.agent_settings())? {

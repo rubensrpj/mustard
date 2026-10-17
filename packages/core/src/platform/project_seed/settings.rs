@@ -42,12 +42,11 @@ const PLUGIN_ID: &str = "mustard@mustard";
 /// user scope (`~/.claude/settings.json`) — the project seed never writes it.
 const MARKETPLACE_REPO_URL: &str = "REPLACE_WITH_MUSTARD_PLUGIN_MARKETPLACE_GIT_URL";
 
-/// The command of rtk's own hook, the one Mustard writes into the local
-/// settings while `mustard.json#rtk` is on and takes out when it is off.
+/// The command of rtk's own hook. Mustard once wrote it into the local
+/// settings; now Mustard's own hook makes rtk's swap, and the install takes
+/// this one out wherever it finds it, since two hooks rewriting the same
+/// command race and the host keeps only one rewrite.
 pub const RTK_HOOK_COMMAND: &str = "rtk hook claude";
-
-/// The tool the rtk hook rewrites: only shell commands pass through it.
-const RTK_HOOK_MATCHER: &str = "Bash";
 
 /// Se `rule` é uma liberação do próprio Mustard: um comando `mustard-rt run`.
 /// Nenhuma outra liberação da semente chega a um projeto já instalado.
@@ -159,8 +158,8 @@ const DISABLE_AUTO_COMPACT_KEY: &str = "DISABLE_AUTO_COMPACT";
 /// Both paths pass through the point migrations —
 /// [`retire_planted_plugin_enablement`], [`swap_mixed_wildcard_deny_rules`],
 /// [`backfill_own_permission_rules`] and [`retire_old_rules`] — and through the
-/// two switches this file holds: in the local layer, the rtk hook follows `rtk`
-/// ([`apply_rtk_hook`]), the response style follows `text`
+/// two switches this file holds: in the local layer, rtk's own hook leaves
+/// ([`remove_rtk_hook`]), the response style follows `text`
 /// ([`apply_output_style`]), the response language follows it too
 /// ([`apply_response_language`]), the automatic compaction is switched off
 /// ([`turn_auto_compact_off`]) and the seed's link variable reaches an `env`
@@ -183,11 +182,10 @@ pub fn seed_settings(
     claude_dir: &Path,
     overwrite: bool,
     mode: InstallMode,
-    rtk: bool,
     text: Locale,
 ) -> Result<Vec<(&'static str, SeedOutcome)>> {
     let copies = copies_dir_of(claude_dir);
-    let mut seeded = vec![(settings_footprint(mode), seed_dest(claude_dir, overwrite, mode, rtk, text, &copies)?)];
+    let mut seeded = vec![(settings_footprint(mode), seed_dest(claude_dir, overwrite, mode, text, &copies)?)];
     if !mode.is_private() {
         seeded.push((SETTINGS_LOCAL_JSON, seed_local_copies_dir(claude_dir, &copies)?));
     }
@@ -201,7 +199,6 @@ fn seed_dest(
     claude_dir: &Path,
     overwrite: bool,
     mode: InstallMode,
-    rtk: bool,
     text: Locale,
     copies: &str,
 ) -> Result<SeedOutcome> {
@@ -231,10 +228,11 @@ fn seed_dest(
     swap_mixed_wildcard_deny_rules(&mut settings);
     backfill_own_permission_rules(&mut settings, &seed);
     retire_old_rules(&mut settings);
-    // rtk's hook belongs to the local layer only: a shared install writes the
-    // team's file, and the hook is a choice of whoever programs.
+    // rtk's own hook lived in the local layer only: a shared install writes
+    // the team's file, and the local file loses the hook in
+    // `seed_local_copies_dir`.
     if mode.is_private() {
-        apply_rtk_hook(&mut settings, rtk);
+        remove_rtk_hook(&mut settings);
         apply_output_style(&mut settings, text);
         apply_response_language(&mut settings, text);
         turn_auto_compact_off(&mut settings);
@@ -259,6 +257,7 @@ fn seed_local_copies_dir(claude_dir: &Path, copies: &str) -> Result<SeedOutcome>
         },
     };
     allow_copies_dir(&mut settings, copies);
+    remove_rtk_hook(&mut settings);
     write_if_changed(&dest, existing_raw.as_deref(), settings)
 }
 
@@ -503,31 +502,11 @@ fn retire_old_rules(settings: &mut Map<String, Value>) {
     deny.retain(|rule| !rule.as_str().is_some_and(|r| RETIRED_DENY_RULES.contains(&r)));
 }
 
-/// Put rtk's own hook into the settings when `on`, take it out when not.
-///
-/// The hook is the one rtk ships (`rtk hook claude`) on the shell tool, never a
-/// copy of it. Turned on, it is added once, whatever entry already carries it;
-/// turned off, every hook with that command leaves, and an entry, an event or
-/// the `hooks` object that ends up empty leaves with it — the file keeps
-/// nothing that only existed to hold the hook.
-pub fn apply_rtk_hook(settings: &mut Map<String, Value>, on: bool) {
-    if on {
-        if rtk_hook_present(settings) {
-            return;
-        }
-        let hooks = settings.entry("hooks").or_insert_with(|| Value::Object(Map::new()));
-        let Some(hooks) = hooks.as_object_mut() else {
-            return;
-        };
-        let event = hooks.entry("PreToolUse").or_insert_with(|| Value::Array(Vec::new()));
-        if let Some(entries) = event.as_array_mut() {
-            entries.push(serde_json::json!({
-                "matcher": RTK_HOOK_MATCHER,
-                "hooks": [{ "type": "command", "command": RTK_HOOK_COMMAND }],
-            }));
-        }
-        return;
-    }
+/// Take rtk's own hook out of the settings: every hook with that command
+/// leaves, and an entry, an event or the `hooks` object that ends up empty
+/// leaves with it — the file keeps nothing that only existed to hold the hook.
+/// A hook the user put beside it stays.
+pub fn remove_rtk_hook(settings: &mut Map<String, Value>) {
     let Some(hooks) = settings.get_mut("hooks").and_then(Value::as_object_mut) else {
         return;
     };
@@ -695,9 +674,10 @@ pub(super) fn parse_json_object(raw: &str) -> Map<String, Value> {
 pub struct Switches {
     /// `mustard.json#enabled`: off means no Mustard hook acts in this project.
     pub enabled: bool,
-    /// `mustard.json#rtk`: whether rtk's hook should be in the local settings.
+    /// `mustard.json#rtk`: whether Mustard's hook makes rtk's swap.
     pub rtk: bool,
-    /// Whether the local settings carry rtk's hook. `None` when the file is
+    /// Whether the local settings still carry rtk's own hook, which races
+    /// Mustard's hook for the same command. `None` when the file is
     /// there and cannot be read as JSON: nothing can be said about it.
     pub rtk_hook: Option<bool>,
     /// Whether the local settings leave Claude Code's signature on. `None`
@@ -725,11 +705,10 @@ impl Switches {
         }
     }
 
-    /// The choice in `mustard.json` and the hook in the local settings
-    /// disagree.
+    /// The local settings still carry rtk's own hook.
     #[must_use]
-    pub fn rtk_diverges(&self) -> bool {
-        self.rtk_hook.is_some_and(|hook| hook != self.rtk)
+    pub fn rtk_hook_left(&self) -> bool {
+        self.rtk_hook == Some(true)
     }
 }
 
@@ -884,7 +863,7 @@ mod tests {
         )
         .unwrap();
 
-        seed_settings(&root.join(".claude"), false, InstallMode::Shared, true, Locale::PtBr).unwrap();
+        seed_settings(&root.join(".claude"), false, InstallMode::Shared, Locale::PtBr).unwrap();
 
         let settings: Value = serde_json::from_str(
             &std_fs::read_to_string(root.join(".claude/settings.json")).unwrap(),
@@ -1061,32 +1040,32 @@ mod tests {
         parse_json_object(&std_fs::read_to_string(root.join(".claude/settings.local.json")).unwrap())
     }
 
-    /// Com a opção ligada, o gancho do rtk entra uma vez só nas configurações
-    /// locais; desligada, ele sai, e o que só existia para guardá-lo sai
-    /// junto; o gancho que o usuário pôs ao lado fica.
+    /// A instalação tira das configurações locais o gancho do próprio rtk,
+    /// nos dois modos, e o que só existia para guardá-lo sai junto; o gancho
+    /// que o usuário pôs ao lado fica.
     #[test]
-    fn the_rtk_hook_comes_in_once_and_leaves_with_its_empty_containers() {
-        let mut settings = parse_json_object(r#"{"env":{"X":"1"}}"#);
-        apply_rtk_hook(&mut settings, true);
-        apply_rtk_hook(&mut settings, true);
-        assert!(rtk_hook_present(&settings));
-        let entries = settings["hooks"]["PreToolUse"].as_array().unwrap();
-        assert_eq!(entries.len(), 1, "added once: {settings:?}");
-        assert_eq!(entries[0]["matcher"], json!("Bash"));
+    fn the_install_takes_rtk_own_hook_out_of_the_local_settings() {
+        let local = r#"{"env":{"X":"1"},"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"rtk hook claude"}]}]}}"#;
+        for mode in [InstallMode::Private, InstallMode::Shared] {
+            let dir = tempfile::tempdir().unwrap();
+            let claude = dir.path().join(".claude");
+            std_fs::create_dir_all(&claude).unwrap();
+            std_fs::write(claude.join("settings.local.json"), local).unwrap();
+            seed_settings(&claude, false, mode, Locale::PtBr).unwrap();
+            let settings = local_settings(dir.path());
+            assert!(!rtk_hook_present(&settings), "{mode:?}: {settings:?}");
+            assert!(settings.get("hooks").and_then(|h| h.get("PreToolUse")).is_none(), "{mode:?}: {settings:?}");
+            assert_eq!(settings["env"]["X"], json!("1"));
+        }
 
-        apply_rtk_hook(&mut settings, false);
-        assert!(!rtk_hook_present(&settings));
-        assert!(settings.get("hooks").is_none(), "nothing kept only to hold the hook: {settings:?}");
-        assert_eq!(settings["env"]["X"], json!("1"));
-
-        let mut shared = parse_json_object(
+        let mut beside = parse_json_object(
             r#"{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[
                 {"type":"command","command":"rtk hook claude"},
                 {"type":"command","command":"my-own-check"}]}]}}"#,
         );
-        apply_rtk_hook(&mut shared, false);
-        let left = shared["hooks"]["PreToolUse"][0]["hooks"].as_array().unwrap();
-        assert_eq!(left.len(), 1, "{shared:?}");
+        remove_rtk_hook(&mut beside);
+        let left = beside["hooks"]["PreToolUse"][0]["hooks"].as_array().unwrap();
+        assert_eq!(left.len(), 1, "{beside:?}");
         assert_eq!(left[0]["command"], json!("my-own-check"));
     }
 
@@ -1117,7 +1096,7 @@ mod tests {
         )
         .unwrap();
 
-        seed_settings(&claude, false, InstallMode::Private, true, Locale::PtBr).unwrap();
+        seed_settings(&claude, false, InstallMode::Private, Locale::PtBr).unwrap();
 
         let settings = local_settings(dir.path());
         let deny: Vec<&str> = settings["permissions"]["deny"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
@@ -1188,7 +1167,7 @@ mod tests {
         )
         .unwrap();
 
-        seed_settings(&claude, false, InstallMode::Private, true, Locale::PtBr).unwrap();
+        seed_settings(&claude, false, InstallMode::Private, Locale::PtBr).unwrap();
 
         let deny = deny_of(dir.path());
         assert_eq!(
@@ -1203,7 +1182,7 @@ mod tests {
             assert_eq!(deny.iter().filter(|rule| *rule == new).count(), 1, "{new} is not there once: {deny:?}");
         }
         let settled = std_fs::read_to_string(&local).unwrap();
-        let again = seed_settings(&claude, false, InstallMode::Private, true, Locale::PtBr).unwrap();
+        let again = seed_settings(&claude, false, InstallMode::Private, Locale::PtBr).unwrap();
         assert_eq!(again[0].1, SeedOutcome::Preserved, "the second update changes nothing");
         assert_eq!(std_fs::read_to_string(&local).unwrap(), settled);
 
@@ -1215,7 +1194,7 @@ mod tests {
             r#"{"permissions":{"deny":["Bash(git checkout * -f*)","Bash(git checkout * -f:*)"]}}"#,
         )
         .unwrap();
-        seed_settings(&claude, false, InstallMode::Private, true, Locale::PtBr).unwrap();
+        seed_settings(&claude, false, InstallMode::Private, Locale::PtBr).unwrap();
         let deny = deny_of(both.path());
         assert_eq!(deny[0], "Bash(git checkout * -f*)");
         assert!(!deny.iter().any(|rule| rule == "Bash(git checkout * -f:*)"), "the old one only leaves: {deny:?}");
@@ -1252,7 +1231,7 @@ mod tests {
             )
             .unwrap();
 
-            seed_settings(&claude, false, InstallMode::Private, true, Locale::PtBr).unwrap();
+            seed_settings(&claude, false, InstallMode::Private, Locale::PtBr).unwrap();
 
             let deny = rules_of(dir.path(), "deny");
             assert!(!deny.iter().any(|rule| rule == new), "{new} entered deny over the {list} decision: {deny:?}");
@@ -1345,7 +1324,7 @@ mod tests {
                     format!(r#"{{"env":{{"{name}":"{value}","MY_OWN":"1"}}}}"#),
                 )
                 .unwrap();
-                seed_settings(&claude, false, InstallMode::Private, true, Locale::PtBr).unwrap();
+                seed_settings(&claude, false, InstallMode::Private, Locale::PtBr).unwrap();
                 let env = local_settings(dir.path())["env"].clone();
                 assert_eq!(env.get(name).is_none(), leaves, "{name}={value}: {env}");
                 assert_eq!(env["MY_OWN"], json!("1"), "{name}={value}: {env}");
@@ -1394,9 +1373,9 @@ mod tests {
             serde_json::from_str::<Value>(&raw).unwrap()["outputStyle"].clone()
         };
 
-        seed_settings(&claude, false, InstallMode::Private, true, Locale::EnUs).unwrap();
+        seed_settings(&claude, false, InstallMode::Private, Locale::EnUs).unwrap();
         assert_eq!(style(), json!("mustard:mustard-en-US"));
-        seed_settings(&claude, false, InstallMode::Private, true, Locale::PtBr).unwrap();
+        seed_settings(&claude, false, InstallMode::Private, Locale::PtBr).unwrap();
         assert_eq!(style(), json!("mustard:mustard-pt-BR"), "a language change swaps the style");
 
         let mut settings = parse_json_object(r#"{"outputStyle":"Explanatory"}"#);
@@ -1408,7 +1387,7 @@ mod tests {
 
         let shared = dir.path().join("shared/.claude");
         std_fs::create_dir_all(&shared).unwrap();
-        seed_settings(&shared, false, InstallMode::Shared, true, Locale::EnUs).unwrap();
+        seed_settings(&shared, false, InstallMode::Shared, Locale::EnUs).unwrap();
         let team: Value = serde_json::from_str(&std_fs::read_to_string(shared.join("settings.json")).unwrap()).unwrap();
         assert!(team.get("outputStyle").is_none(), "the team's file never gets the style");
 
@@ -1447,16 +1426,16 @@ mod tests {
         std_fs::create_dir_all(&claude).unwrap();
         let language = || -> Value { local_settings(dir.path())["language"].clone() };
 
-        seed_settings(&claude, false, InstallMode::Private, true, Locale::PtBr).unwrap();
+        seed_settings(&claude, false, InstallMode::Private, Locale::PtBr).unwrap();
         assert_eq!(language(), json!("português do Brasil"));
-        seed_settings(&claude, false, InstallMode::Private, true, Locale::EnUs).unwrap();
+        seed_settings(&claude, false, InstallMode::Private, Locale::EnUs).unwrap();
         assert_eq!(language(), json!("English"), "a language change swaps the value");
-        seed_settings(&claude, false, InstallMode::Private, true, Locale::PtBr).unwrap();
+        seed_settings(&claude, false, InstallMode::Private, Locale::PtBr).unwrap();
         assert_eq!(language(), json!("português do Brasil"), "and swaps it back");
 
         // O valor da pessoa fica, pelo upsert inteiro e pela regra sozinha.
         std_fs::write(claude.join("settings.local.json"), r#"{"language":"japanese"}"#).unwrap();
-        seed_settings(&claude, false, InstallMode::Private, true, Locale::EnUs).unwrap();
+        seed_settings(&claude, false, InstallMode::Private, Locale::EnUs).unwrap();
         assert_eq!(language(), json!("japanese"), "the person's own language stays");
         for own in [json!("japanese"), json!(""), json!(3)] {
             let mut settings = Map::new();
@@ -1470,7 +1449,7 @@ mod tests {
 
         let shared = dir.path().join("shared/.claude");
         std_fs::create_dir_all(&shared).unwrap();
-        seed_settings(&shared, false, InstallMode::Shared, true, Locale::EnUs).unwrap();
+        seed_settings(&shared, false, InstallMode::Shared, Locale::EnUs).unwrap();
         let team: Value = serde_json::from_str(&std_fs::read_to_string(shared.join("settings.json")).unwrap()).unwrap();
         assert!(team.get("language").is_none(), "the team's file never gets the response language");
     }
@@ -1486,7 +1465,7 @@ mod tests {
         std_fs::create_dir_all(&claude).unwrap();
         let env = || local_settings(dir.path())["env"].clone();
 
-        seed_settings(&claude, false, InstallMode::Private, true, Locale::PtBr).unwrap();
+        seed_settings(&claude, false, InstallMode::Private, Locale::PtBr).unwrap();
         assert_eq!(env()["DISABLE_AUTO_COMPACT"], json!("1"), "a fresh install");
         assert!(env().get("DISABLE_COMPACT").is_none(), "the manual compaction is not switched off: {}", env());
 
@@ -1496,9 +1475,9 @@ mod tests {
             r#"{"env":{"MY_OWN":"1","FORCE_HYPERLINK":"0"}}"#,
         )
         .unwrap();
-        seed_settings(&claude, false, InstallMode::Private, true, Locale::PtBr).unwrap();
+        seed_settings(&claude, false, InstallMode::Private, Locale::PtBr).unwrap();
         let first = std_fs::read_to_string(claude.join("settings.local.json")).unwrap();
-        let again = seed_settings(&claude, false, InstallMode::Private, true, Locale::PtBr).unwrap();
+        let again = seed_settings(&claude, false, InstallMode::Private, Locale::PtBr).unwrap();
         assert_eq!(again[0].1, SeedOutcome::Preserved, "a second install changes nothing");
         assert_eq!(std_fs::read_to_string(claude.join("settings.local.json")).unwrap(), first);
         let kept = env();
@@ -1508,13 +1487,13 @@ mod tests {
 
         // O valor que a pessoa já pôs fica.
         std_fs::write(claude.join("settings.local.json"), r#"{"env":{"DISABLE_AUTO_COMPACT":"0"}}"#).unwrap();
-        seed_settings(&claude, false, InstallMode::Private, true, Locale::PtBr).unwrap();
+        seed_settings(&claude, false, InstallMode::Private, Locale::PtBr).unwrap();
         assert_eq!(env()["DISABLE_AUTO_COMPACT"], json!("0"), "the person's own value stays");
 
         // O arquivo da equipe nunca recebe a variável.
         let shared = dir.path().join("shared/.claude");
         std_fs::create_dir_all(&shared).unwrap();
-        seed_settings(&shared, false, InstallMode::Shared, true, Locale::PtBr).unwrap();
+        seed_settings(&shared, false, InstallMode::Shared, Locale::PtBr).unwrap();
         let team = std_fs::read_to_string(shared.join("settings.json")).unwrap();
         assert!(!team.contains("DISABLE_AUTO_COMPACT"), "the team's file got the variable: {team}");
     }

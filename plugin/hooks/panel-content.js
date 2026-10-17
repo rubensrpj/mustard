@@ -28,20 +28,12 @@ export function definitionText(item, english=false) {
 
 export function waveText(detail, view, english=false) {
   if(view==='Perfil') {
-    const selected=detail?.expertise,skills=detail?.skills || [];
-    if(!selected)return english?'No specialization receipt for this dispatch.':'Este envio não possui registro de especialização.';
-    const method=selected.source==='jev'?'Jev':selected.source==='jev-cache'?'Jev · cache':english?'Native selection':'Seleção nativa';
+    if(!detail?.request_recorded)return english?'No request has been sent to an agent for this wave yet.':'Esta onda ainda não tem um pedido enviado ao agente.';
+    const skills=detail.skills || [];
     return [
-      `**${english?'Selection method':'Método de seleção'}**\n${method}`,
-      `**${english?'Preferred agent':'Agente preferencial'}**\n${selected.preferred_agent || 'mustard-wave'}`,
-      english?'The current host must list this agent. If unavailable, the generic executor receives the same skills.':'O agente precisa estar disponível no host atual. Se ainda não estiver, o executor genérico recebe as mesmas skills.',
-      `**${english?'Selected procedures':'Procedimentos selecionados'}**\n${selected.profiles?.join('\n') || (english?'None':'Nenhum')}`,
+      `**${english?'Agent':'Agente'}**\n${detail.executor_requested || 'wave'}`,
       `**${english?'Skills delivered':'Skills enviadas'}**\n${skills.map(s=>`${s.name}\n${s.path}\n${s.read_confirmed===true?(english?'Read confirmed':'Leitura confirmada'):(english?'Reading not independently confirmed':'Leitura sem confirmação independente')}`).join('\n\n') || (english?'None recorded':'Nenhuma registrada')}`,
-      selected.reason?`**${english?'Selection basis':'Critério da escolha'}**\n${selected.source?.startsWith('jev')?(english?'Jev compared current reviewed procedures covering the same files. Native rules remain mandatory.':'Jev comparou procedimentos revisados e atuais que cobrem os mesmos arquivos. As regras nativas continuam obrigatórias.'):(english?'Current project procedures take priority; navigation profiles cover remaining files.':'Procedimentos atuais do projeto têm prioridade; perfis de navegação cobrem os arquivos restantes.')}`:'',
-      selected.pending_review?.length?`**${english?'Awaiting procedure review':'Procedimentos aguardando revisão'}**\n${selected.pending_review.join('\n')}`:'',
-      selected.uncovered_files?.length?`**${english?'Files without a current specialization':'Arquivos sem especialização atual'}**\n${selected.uncovered_files.join('\n')}`:'',
-      english?'Reuse follows current sources and rules. Changed evidence withdraws the procedure; selection never authorizes a scope or plan change.':'O reaproveitamento depende das fontes e regras atuais. Mudanças retiram o procedimento da seleção; a escolha não autoriza mudar escopo ou plano.',
-    ].filter(Boolean).join('\n\n');
+    ].join('\n\n');
   }
   if (!detail) return english ? 'Select a wave to load its recorded content.' : 'Selecione uma onda para carregar seu conteúdo registrado.';
   if (view==='Pedido') return detail.request ?? (english ? 'No request has been sent to an agent for this wave yet.' : 'Esta onda ainda não tem um pedido enviado ao agente.');

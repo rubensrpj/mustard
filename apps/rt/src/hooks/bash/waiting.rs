@@ -11,9 +11,10 @@
 //!   instead.
 //! - **A build or a test sent to the background**, through the Bash tool's
 //!   `run_in_background` field or a `&` at the end of the line, and a test
-//!   called by cargo's full path (`~/.cargo/bin/cargo test`), which escapes
-//!   the separate `rtk` hook that only rewrites the bare `cargo`. Neither is
-//!   refused: the request is rewritten to run in the foreground, with the
+//!   called by cargo's full path (`~/.cargo/bin/cargo test`), which `rtk
+//!   rewrite` leaves alone because it only knows the bare `cargo`: with the
+//!   rtk copy that ships with Mustard at hand, the full path becomes that
+//!   copy followed by `cargo`. Neither is refused: the request is rewritten to run in the foreground, with the
 //!   command's own time limit, the same way [`crate::hooks::task::subagent_inject`]
 //!   rewrites a dispatch prompt.
 //! - **A cargo build or test with no time limit, or one under 600 seconds**,
@@ -26,6 +27,8 @@
 //! It reads the commands [`super::lex::segments`] found, never the raw text:
 //! `git commit -m "espera com pgrep"` names the danger inside a quote and
 //! passes, same as the other two checks in the family.
+
+use std::path::Path;
 
 use serde_json::Value;
 
@@ -85,8 +88,8 @@ fn waits_in_a_loop(segments: &[Segment]) -> bool {
 }
 
 /// The raw spelling of the `cargo` program when it was called by its full
-/// path (`~/.cargo/bin/cargo`, `/home/x/.cargo/bin/cargo`), which the
-/// separate `rtk` hook — matching the bare word `cargo` — does not catch.
+/// path (`~/.cargo/bin/cargo`, `/home/x/.cargo/bin/cargo`), which `rtk
+/// rewrite` — matching the bare word `cargo` — does not catch.
 fn full_path_cargo(segments: &[Segment]) -> Option<&str> {
     segments.iter().find(|seg| seg.name() == "cargo" && seg.program.text != "cargo" && seg.program.raw.ends_with("/cargo")).map(|seg| seg.program.raw.as_str())
 }
@@ -105,10 +108,11 @@ fn without_trailing_background(cmd: &str) -> String {
 
 /// The waiting check: deny a loop that waits for another process; rewrite a
 /// `cargo` build or test sent to the background — through `run_in_background`,
-/// a trailing `&`, or a full path — to run in the foreground instead; and
-/// rewrite a `cargo` build or test with no time limit, or one under 600
-/// seconds, to carry the 600-second ceiling.
-pub(super) fn bash_waiting(segments: &[Segment], cmd: &str, input: &HookInput, lang: SupportedLocale) -> Option<Verdict> {
+/// a trailing `&` — to run in the foreground instead; rewrite a `cargo` build
+/// or test with no time limit, or one under 600 seconds, to carry the
+/// 600-second ceiling; and, when `rtk` names the rtk copy that ships with
+/// Mustard, call a full-path `cargo` through that copy.
+pub(super) fn bash_waiting(segments: &[Segment], cmd: &str, input: &HookInput, lang: SupportedLocale, rtk: Option<&Path>) -> Option<Verdict> {
     if waits_in_a_loop(segments) {
         let reason = translate("command_guard.waiting_loop", lang).replace("{command}", truncate(cmd, 120));
         return Some(Verdict::Deny { reason });
@@ -117,7 +121,7 @@ pub(super) fn bash_waiting(segments: &[Segment], cmd: &str, input: &HookInput, l
     let is_cargo = segments.iter().any(|seg| seg.name() == "cargo");
     let backgrounded = is_cargo && input.tool_input.get("run_in_background").and_then(Value::as_bool).unwrap_or(false);
     let trailing_background = is_cargo && ends_in_background(cmd);
-    let full_path = full_path_cargo(segments);
+    let full_path = rtk.and_then(|copy| full_path_cargo(segments).map(|path| (path, copy)));
     let current_timeout = input.tool_input.get("timeout").and_then(Value::as_u64);
     let short_ceiling = is_cargo && current_timeout.is_none_or(|timeout| timeout < FOREGROUND_TIMEOUT_MS);
     if !backgrounded && !trailing_background && full_path.is_none() && !short_ceiling {
@@ -125,8 +129,8 @@ pub(super) fn bash_waiting(segments: &[Segment], cmd: &str, input: &HookInput, l
     }
 
     let mut command = cmd.to_string();
-    if let Some(path) = full_path {
-        command = command.replacen(path, "rtk cargo", 1);
+    if let Some((path, copy)) = full_path {
+        command = command.replacen(path, &format!("{} cargo", super::rtk_swap::quoted(copy)), 1);
     }
     if trailing_background {
         command = without_trailing_background(&command);
@@ -158,8 +162,11 @@ mod tests {
 
     fn check(cmd: &str, run_in_background: Option<bool>) -> Option<Verdict> {
         let hook_input = input(cmd, run_in_background);
-        bash_waiting(&segments(cmd), cmd, &hook_input, SupportedLocale::PtBr)
+        bash_waiting(&segments(cmd), cmd, &hook_input, SupportedLocale::PtBr, Some(Path::new(RTK)))
     }
+
+    /// The rtk copy the tests hand to the check, with a blank in the path.
+    const RTK: &str = "/opt/mustard bin/rtk";
 
     /// An input with an explicit `timeout` (`None` leaves the field out, the
     /// same as a command with no ceiling at all).
@@ -173,7 +180,7 @@ mod tests {
 
     fn check_with_timeout(cmd: &str, timeout: Option<u64>) -> Option<Verdict> {
         let hook_input = input_with_timeout(cmd, timeout);
-        bash_waiting(&segments(cmd), cmd, &hook_input, SupportedLocale::PtBr)
+        bash_waiting(&segments(cmd), cmd, &hook_input, SupportedLocale::PtBr, Some(Path::new(RTK)))
     }
 
     /// The three examples that got stuck for five hours on 19/09: `while` and
@@ -256,24 +263,29 @@ mod tests {
         assert_eq!(check_with_timeout("cargo build && cargo test", Some(600_000)), None);
     }
 
-    /// The full path to `cargo` — which the separate `rtk` hook does not
-    /// catch, since it only rewrites the bare word — is rewritten to `rtk
-    /// cargo`, keeping the rest of the line.
+    /// The full path to `cargo` — which `rtk rewrite` does not catch, since
+    /// it only rewrites the bare word — is rewritten to the bundled rtk copy,
+    /// quoted, followed by `cargo`, keeping the rest of the line. Without the
+    /// copy the full path stays: a bare `rtk` would be whatever the `PATH`
+    /// finds first.
     #[test]
-    fn a_full_path_cargo_test_is_rewritten_through_rtk() {
+    fn a_full_path_cargo_test_is_rewritten_through_the_bundled_rtk() {
         match check("/home/rubens/.cargo/bin/cargo test -p mustard-rt", None) {
             Some(Verdict::Rewrite { tool_input, .. }) => {
-                assert_eq!(tool_input["command"], "rtk cargo test -p mustard-rt");
+                assert_eq!(tool_input["command"], "'/opt/mustard bin/rtk' cargo test -p mustard-rt");
                 assert!(tool_input.get("run_in_background").is_none(), "{tool_input}");
             }
             other => panic!("expected a rewrite, got {other:?}"),
         }
+        let cmd = "/home/rubens/.cargo/bin/cargo test -p mustard-rt";
+        let hook_input = input_with_timeout(cmd, Some(600_000));
+        assert_eq!(bash_waiting(&segments(cmd), cmd, &hook_input, SupportedLocale::PtBr, None), None);
     }
 
     /// The bare `cargo test`, in the foreground, with no loop and with the
     /// 600-second ceiling already met: the third check has nothing to say,
-    /// and the command passes as it came — the bare-word rewrite is the
-    /// separate `rtk` hook's own job.
+    /// and the command passes as it came — the bare-word rewrite is the rtk
+    /// swap's own job.
     #[test]
     fn the_same_command_in_the_foreground_with_no_loop_passes_unchanged() {
         assert_eq!(check_with_timeout("cargo test -p mustard-rt", Some(600_000)), None);
@@ -315,7 +327,7 @@ mod tests {
 
         match check("/home/rubens/.cargo/bin/cargo test -p mustard-rt", None) {
             Some(Verdict::Rewrite { tool_input, .. }) => {
-                assert_eq!(tool_input["command"], "rtk cargo test -p mustard-rt");
+                assert_eq!(tool_input["command"], "'/opt/mustard bin/rtk' cargo test -p mustard-rt");
             }
             other => panic!("expected the full path to be rewritten through rtk, got {other:?}"),
         }

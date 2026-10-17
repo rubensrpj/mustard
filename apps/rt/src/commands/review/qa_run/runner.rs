@@ -4,7 +4,7 @@
 //! falha.
 
 use super::AcResult;
-use crate::shared::proc::{ShellOutcome, run_shell_with_deadline};
+use crate::shared::proc::{ShellOutcome, run_shell_interleaved_with_deadline};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -299,6 +299,25 @@ fn excerpt(s: &str) -> String {
     s.chars().take(100).collect()
 }
 
+/// Quantos bytes da saída de um verde a evidência guarda: o bastante para a
+/// saída inteira do lint ou da suíte de um projeto, sem deixar uma saída sem
+/// fim tomar a memória.
+const GREEN_EVIDENCE_BYTES: usize = 1024 * 1024;
+
+/// A saída de um verde, inteira até [`GREEN_EVIDENCE_BYTES`], cortada no
+/// último fim de linha que cabe: a linha cortada ao meio não se lê.
+fn green_evidence(s: &str) -> String {
+    if s.len() <= GREEN_EVIDENCE_BYTES {
+        return s.to_string();
+    }
+    let mut end = GREEN_EVIDENCE_BYTES;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    let kept = &s[..end];
+    kept.rfind('\n').map_or(kept, |at| &kept[..at]).to_string()
+}
+
 /// Quantas linhas do fim da saída uma falha guarda.
 const FAILURE_TAIL_LINES: usize = 40;
 
@@ -428,12 +447,13 @@ fn run_ac_command_inner(command: &str, expect: Option<&str>, cwd: &Path, timeout
     // `rg 'token' caminho` chegam ao programa como aspas, e não como
     // caracteres soltos de um `cmd.exe`. A criação do processo, o esvaziamento
     // dos canais e a espera pelo prazo moram num lugar só
-    // ([`crate::shared::proc::run_shell_with_deadline`]). O esvaziamento é
-    // necessário: um comando que escreve mais que o buffer de ~64 KB do canal
-    // travava na escrita e gastava o prazo inteiro, já tendo terminado o
-    // trabalho.
-    let (status, stdout, stderr) = match run_shell_with_deadline(command, cwd, timeout) {
-        ShellOutcome::Exited { status, stdout, stderr } => (status, stdout, stderr),
+    // ([`crate::shared::proc::run_shell_interleaved_with_deadline`]). O
+    // esvaziamento é necessário: um comando que escreve mais que o buffer de
+    // ~64 KB do canal travava na escrita e gastava o prazo inteiro, já tendo
+    // terminado o trabalho. A saída normal e a de erro vão a um canal só, e a
+    // saída chega na ordem em que o comando a escreveu.
+    let (status, output) = match run_shell_interleaved_with_deadline(command, cwd, timeout) {
+        ShellOutcome::Exited { status, stdout, .. } => (status, stdout),
         // Killed by its deadline: a class of its own, NEVER `skip`. The
         // criterion WAS attempted and simply never finished, so it verified
         // nothing — `skip` (warn-and-allow) would let the run read green.
@@ -444,6 +464,7 @@ fn run_ac_command_inner(command: &str, expect: Option<&str>, cwd: &Path, timeout
                 duration_ms: t0.elapsed().as_millis(),
                 stderr_excerpt: format!("timeout after {}ms", after.as_millis()),
                 tests_run: None,
+                evidence: String::new(),
             };
         }
         // Never ran ⇒ the criterion could not be attempted at all ⇒ `skip`.
@@ -458,27 +479,29 @@ fn run_ac_command_inner(command: &str, expect: Option<&str>, cwd: &Path, timeout
                 duration_ms: t0.elapsed().as_millis(),
                 stderr_excerpt: format!("could not run the command: {error}"),
                 tests_run: None,
+                evidence: String::new(),
             };
         }
     };
 
     let duration_ms = t0.elapsed().as_millis();
-    // Full combined output (stderr first, then stdout): the haystack the
-    // optional `Expect:` regex matches against AND the source of the bounded
-    // excerpt shown on failure.
-    let combined_full = [stderr.trim(), stdout.trim()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" ");
+    // A saída inteira, stdout e stderr na ordem em que o comando os escreveu,
+    // cada linha na sua: é onde a regex opcional do `Expect:` procura e de
+    // onde sai o trecho de uma falha. Lida em ordem, a falha de um lint por
+    // pacote liga cada arquivo ao anúncio do pacote que veio antes dele.
+    let combined_full = output.trim();
     // O que o executor disse sobre quantos testes rodaram viaja no resultado,
     // como número. O julgamento não mora aqui: este executor responde ao lint
     // do projeto e à prova de um critério, e só a segunda promete rodar teste
     // (ver `super::run_proof`).
-    let counted = tests_run(&combined_full);
+    let counted = tests_run(combined_full);
     if status.success() {
         // Optional `Expect:` evidence gate. Absent ⇒ the legacy exit-0 pass
         // (byte-for-byte). Present ⇒ the regex must match the command's own
         // output, else the "green" command proved nothing (fail); an
         // uncompilable pattern degrades to skip, never a panic (fail-open).
         let pattern = expect.unwrap_or_default();
-        return match evaluate_expect(expect, &combined_full) {
+        return match evaluate_expect(expect, combined_full) {
             ExpectVerdict::NoExpectation | ExpectVerdict::Matched => AcResult {
                 status: "pass".to_string(),
                 exit: Some(0),
@@ -489,17 +512,22 @@ fn run_ac_command_inner(command: &str, expect: Option<&str>, cwd: &Path, timeout
                 // montada. O verde comum segue com o excerto vazio, como
                 // sempre.
                 stderr_excerpt: match counted {
-                    Some(0) => excerpt(&combined_full),
+                    Some(0) => excerpt(combined_full),
                     _ => String::new(),
                 },
                 tests_run: counted,
+                // O verde guarda a saída inteira, até o teto: o aviso de
+                // código morto que o compilador escreveu nela é evidência a
+                // mais da análise final, e nunca condição.
+                evidence: green_evidence(combined_full),
             },
             ExpectVerdict::Missed => AcResult {
                 status: "fail".to_string(),
                 exit: Some(0),
                 duration_ms,
-                stderr_excerpt: format!("Expect `{pattern}` not found in command output: {}", tail_excerpt(&combined_full)),
+                stderr_excerpt: format!("Expect `{pattern}` not found in command output: {}", tail_excerpt(combined_full)),
                 tests_run: counted,
+                evidence: String::new(),
             },
             ExpectVerdict::InvalidPattern => AcResult {
                 status: "skip".to_string(),
@@ -507,6 +535,7 @@ fn run_ac_command_inner(command: &str, expect: Option<&str>, cwd: &Path, timeout
                 duration_ms,
                 stderr_excerpt: format!("Expect `{pattern}` is not a valid regex; skipped (fail-open)"),
                 tests_run: counted,
+                evidence: String::new(),
             },
         };
     }
@@ -542,16 +571,18 @@ fn run_ac_command_inner(command: &str, expect: Option<&str>, cwd: &Path, timeout
             status: "fail".to_string(),
             exit: Some(EXIT_COMMAND_NOT_FOUND),
             duration_ms,
-            stderr_excerpt: format!("the shell could not find the command (exit {EXIT_COMMAND_NOT_FOUND}): {}", tail_excerpt(&combined_full)),
+            stderr_excerpt: format!("the shell could not find the command (exit {EXIT_COMMAND_NOT_FOUND}): {}", tail_excerpt(combined_full)),
             tests_run: counted,
+            evidence: String::new(),
         };
     }
     AcResult {
         status: "fail".to_string(),
         exit: Some(status.code().map_or(1, i64::from)),
         duration_ms,
-        stderr_excerpt: tail_excerpt(&combined_full),
+        stderr_excerpt: tail_excerpt(combined_full),
         tests_run: counted,
+        evidence: String::new(),
     }
 }
 
@@ -711,6 +742,23 @@ mod tests {
         assert_eq!(red.status, "fail", "and must still fail on absent evidence, stderr: {}", red.stderr_excerpt);
     }
 
+    /// A saída de um comando chega na ordem em que ele a escreveu, cada linha
+    /// na sua, misturando stdout e stderr: o que veio no stdout, depois no
+    /// stderr, depois no stdout de novo, sai nessa ordem, no verde e na falha.
+    /// Juntadas à parte, a última linha do stderr colava na primeira do
+    /// stdout, e o rodapé de erro de um lint por pacote vinha antes do bloco
+    /// do pacote.
+    #[test]
+    fn the_output_keeps_the_order_and_the_lines_the_command_wrote() {
+        let dir = tempdir().unwrap();
+        let writes = "echo '> @mono/api@1.0.0 lint'; echo 'npm error path /mono/api' >&2; echo 'src/a.ts:1 error'";
+        let written = "> @mono/api@1.0.0 lint\nnpm error path /mono/api\nsrc/a.ts:1 error";
+        let green = run_ac_command(writes, None, dir.path());
+        assert_eq!((green.status.as_str(), green.evidence.as_str()), ("pass", written));
+        let red = run_ac_command(&format!("{writes}; exit 1"), None, dir.path());
+        assert_eq!((red.status.as_str(), red.stderr_excerpt.as_str()), ("fail", written));
+    }
+
     /// Um comando que o shell não acha é graduado `fail`, e NOMEADO.
     ///
     /// Chegou a sair como `skip`, para que ninguém o tomasse por prova
@@ -851,6 +899,27 @@ mod tests {
     /// Um comando que escreve 200 linhas numeradas, `linha 1` a `linha 200`, e
     /// sai com o código 3: a falha aparece na última.
     const PRINTS_LINES_THEN_FAILS: &str = "i=1; while [ $i -le 200 ]; do echo \"linha $i\"; i=$((i+1)); done; exit 3";
+
+    /// O verde guarda a saída inteira, do começo ao fim, como evidência, e
+    /// segue sem trecho; a falha não guarda evidência, só o fim da saída. A
+    /// saída maior que o teto fica nele, cortada no último fim de linha.
+    #[test]
+    fn a_green_run_keeps_its_whole_output_as_evidence() {
+        let dir = tempdir().unwrap();
+        let green = run_ac_command("i=1; while [ $i -le 200 ]; do echo \"linha $i\"; i=$((i+1)); done", None, dir.path());
+        assert_eq!(green.status, "pass", "{}", green.stderr_excerpt);
+        assert!(green.stderr_excerpt.is_empty(), "{}", green.stderr_excerpt);
+        assert_eq!(green.evidence.lines().count(), 200, "{}", green.evidence);
+        assert!(green.evidence.starts_with("linha 1\n") && green.evidence.ends_with("linha 200"), "{}", green.evidence);
+        let red = run_ac_command(PRINTS_LINES_THEN_FAILS, None, dir.path());
+        assert!(red.evidence.is_empty(), "{}", red.evidence);
+
+        let line = "x".repeat(99);
+        let huge = format!("{line}\n").repeat(GREEN_EVIDENCE_BYTES / 100 + 10);
+        let kept = green_evidence(&huge);
+        assert!(kept.len() <= GREEN_EVIDENCE_BYTES && kept.len() > GREEN_EVIDENCE_BYTES - 100, "{}", kept.len());
+        assert!(kept.ends_with(&line), "cut at the end of a line");
+    }
 
     /// A falha mostra o FIM da saída, onde o motivo aparece: numa saída de 200
     /// linhas que falha na última, o trecho tem a última linha, guarda só as

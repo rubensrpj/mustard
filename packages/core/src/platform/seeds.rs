@@ -361,26 +361,29 @@ mod tests {
         }
     }
 
-    /// O mapa pede a todo agente chamado que grave o resultado na spec, pelo
-    /// `mustard-rt run write`, e volte com duas linhas, na linha que delega
-    /// ao agente a investigação que abre muitos arquivos.
+    /// Na linha que delega ao agente a investigação que abre muitos arquivos,
+    /// o mapa diz que o agente de onda grava a entrega pelo `write delivered`,
+    /// põe nela o erro e a sobra, em `leftovers`, e volta com duas linhas,
+    /// nessa ordem.
     #[test]
-    fn the_session_map_asks_every_agent_to_record_in_the_spec_and_come_back_in_two_lines() {
-        for (text, investigation, every_agent, in_the_spec, two_lines) in [
-            (Locale::PtBr, "Delegue só se compensar", "todo agente", "na spec", "duas linhas"),
-            (Locale::EnUs, "only useful bounded investigation", "every agent", "in the spec", "two lines"),
+    fn the_session_map_asks_the_wave_agent_to_record_its_delivery_and_come_back_in_two_lines() {
+        for (text, investigation, two_lines) in [
+            (Locale::PtBr, "Delegue só se compensar", "duas linhas"),
+            (Locale::EnUs, "only useful bounded investigation", "two lines"),
         ] {
             let map = session_map(text);
             let line = map
                 .lines()
                 .find(|line| line.contains(investigation))
                 .unwrap_or_else(|| panic!("the {text} map lost the investigation delegation: {map}"));
-            let write = line
-                .find("`mustard-rt run write`")
-                .unwrap_or_else(|| panic!("the {text} map does not ask the agent to record through `run write`: {line}"));
-            assert!(line[..write].contains(every_agent), "the {text} map does not ask it of every agent: {line}");
-            assert!(line[..write].contains(in_the_spec), "the {text} map does not say the result goes to the spec: {line}");
-            assert!(line[write..].contains(two_lines), "the {text} map does not ask the agent to come back in two lines: {line}");
+            let delivered = line
+                .find("`write delivered`")
+                .unwrap_or_else(|| panic!("the {text} map does not ask the wave agent to record its delivery: {line}"));
+            let leftovers = line[delivered..]
+                .find("`leftovers`")
+                .map(|at| delivered + at)
+                .unwrap_or_else(|| panic!("the {text} map does not send errors and leftovers to the delivery: {line}"));
+            assert!(line[leftovers..].contains(two_lines), "the {text} map does not ask the agent to come back in two lines: {line}");
         }
     }
 

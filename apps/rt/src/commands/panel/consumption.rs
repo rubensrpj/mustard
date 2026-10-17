@@ -195,7 +195,7 @@ pub(super) fn history(root: &Path, dir: Option<&Path>) -> Value {
         Ok(ledger) => ledger,
         Err(error) => return json!({"available":false,"reason":error.reason()}),
     };
-    let own_dir = root.join(".claude/mustard/usage/project-history");
+    let own_dir = spend::project_history_dir(root);
     let own_ledger = match spend::load(&own_dir) {
         Ok(ledger) => ledger,
         Err(error) => return json!({"available":false,"reason":error.reason()}),
@@ -220,53 +220,6 @@ pub(super) fn history(root: &Path, dir: Option<&Path>) -> Value {
         "today_partial":true,"today_measured":own_ledger.measured_at.is_some() && own_ledger.open_day.as_deref()==Some(today.as_str()),
         "project_days":own,"project_scope":"canonical-project-root","origin":"deduplicated-transcripts","cost_micro_usd":null,
         "trend":mustard_core::domain::spend::trend(&ledger.rows).map(|trend|json!({"change_percent":trend.change_percent}))})
-}
-
-/// Cache exact project history separately from the legacy machine ledger,
-/// whose display names can merge unrelated projects of the same basename.
-/// Closed days remain cached; only new days and today's partial rows recount.
-pub(super) fn refresh_history(
-    start: &Path,
-    machine: &crate::commands::spec::spend::Machine,
-) -> Value {
-    let Some(config) = machine.config.as_deref() else {
-        return json!({"ok":false,"reason":"no-machine-folder"});
-    };
-    let root = mustard_core::io::spec_events::spec_root(start);
-    if !mustard_core::ProjectConfig::exists(&root) {
-        return json!({"ok":true,"recorded":false,"reason":"project-not-initialized"});
-    }
-    let dir = root.join(".claude/mustard/usage/project-history");
-    let result = (|| -> Result<(), mustard_core::domain::spend::Refusal> {
-        let range = spend::load(&dir)?.to_count(&machine.today);
-        let closed = range
-            .as_ref()
-            .map(|range| spend::project_days(config, &root, range));
-        let range_today = mustard_core::domain::spend::Range {
-            first: Some(machine.today.clone()),
-            last: machine.today.clone(),
-        };
-        let open = spend::project_days(config, &root, &range_today)
-            .into_iter()
-            .map(|row| mustard_core::domain::spend::DayRow {
-                partial: true,
-                ..row
-            })
-            .collect::<Vec<_>>();
-        spend::update(&dir, |ledger| {
-            if let (Some(range), Some(closed)) = (&range, closed) {
-                ledger.record_counted(range, closed);
-            }
-            ledger.open_rows = open;
-            ledger.open_day = Some(machine.today.clone());
-            ledger.measured_at = Some(chrono::Utc::now().to_rfc3339());
-        })?;
-        Ok(())
-    })();
-    result.map_or_else(
-        |error| json!({"ok":false,"reason":error.reason()}),
-        |()| json!({"ok":true}),
-    )
 }
 
 #[cfg(test)]
@@ -332,7 +285,7 @@ mod tests {
         })
         .unwrap();
         spend::update(
-            &root.path().join(".claude/mustard/usage/project-history"),
+            &spend::project_history_dir(root.path()),
             |ledger| {
                 ledger.rows = vec![row("actual-project".into(), 100)];
                 ledger.counted_through = Some("2026-10-01".into());
@@ -342,44 +295,5 @@ mod tests {
         let result = history(root.path(), Some(dir.path()));
         assert_eq!(result["project_tokens"], 100);
         assert_eq!(result["machine_tokens"], 1000);
-    }
-    #[test]
-    fn project_refresh_excludes_another_project_with_the_same_name() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = dir.path().join("config");
-        let left = dir.path().join("left/repo");
-        let right = dir.path().join("right/repo");
-        for root in [&left, &right] {
-            std::fs::create_dir_all(root).unwrap();
-            std::fs::write(root.join("mustard.json"), "{}").unwrap();
-        }
-        let folder = config.join("projects/fixture");
-        std::fs::create_dir_all(&folder).unwrap();
-        let line = |id, cwd: &Path, tokens| {
-            json!({"type":"assistant","timestamp":"2026-10-01T12:00:00Z","cwd":cwd,
-            "message":{"id":id,"role":"assistant","content":[],"usage":{"input_tokens":tokens,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}).to_string()
-        };
-        std::fs::write(
-            folder.join("session.jsonl"),
-            format!(
-                "{}\n{}\n",
-                line("left", &left, 100),
-                line("right", &right, 900)
-            ),
-        )
-        .unwrap();
-        let machine = crate::commands::spec::spend::Machine {
-            config: Some(config),
-            dir: Some(dir.path().join("machine")),
-            today: spend::today(),
-        };
-        assert_eq!(refresh_history(&left, &machine)["ok"], true);
-        assert_eq!(
-            spend::load(&left.join(".claude/mustard/usage/project-history"))
-                .unwrap()
-                .rows[0]
-                .tokens,
-            100
-        );
     }
 }

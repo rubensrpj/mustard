@@ -247,13 +247,14 @@ fn init_with_scan(
     let config = ProjectConfig::load(&project_path);
     let text = config.language().text_or_default();
 
-    // The settings: the reduced seed, rtk's hook as `mustard.json#rtk` says,
+    // The settings: the reduced seed, rtk's own hook taken out (Mustard's hook
+    // makes rtk's swap itself, under `mustard.json#rtk`),
     // the response style of the text language and Claude Code's signature off
     // — the core engine owns the content, the merge rules and the destination
     // (the untracked local layer).
     // The local settings also receive the folder of the project's separate
     // copies, in either mode — in shared mode, that is all they receive.
-    let seeded = mustard_core::seed_settings(&claude_path, overwrite, mode, config.rtk(), text)
+    let seeded = mustard_core::seed_settings(&claude_path, overwrite, mode, text)
         .context("seeding the settings under .claude/")?;
     for (name, outcome) in seeded {
         seeding::report_seed(name, outcome, false);

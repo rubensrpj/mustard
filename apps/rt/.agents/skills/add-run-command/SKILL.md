@@ -1,6 +1,8 @@
 ---
 name: add-run-command
 description: Adicionar uma porta mustard-rt run mantendo CLI, despacho, documentação útil e provas de comportamento coerentes.
+paths:
+  - apps/rt/src/commands/**
 ---
 # Adicionar uma porta run
 

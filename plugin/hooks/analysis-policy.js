@@ -4,7 +4,11 @@ export function analysisSpawn(event) {
   if(!isAnalysis(event.subagentType))return event;
   if(event.fork)return {deny:'Mustard analysis requires an isolated native subagent. A fork inherits the parent transcript/model; use native evidence instead.'};
   if(typeof event.prompt!=='string' || event.prompt.length>32000)return {deny:'Mustard analysis expects a bounded scan package; prepare a smaller source-bound question first.'};
-  return {...event,model:'haiku'}; // The documented native alias tracks the family.
+  // The agent definition already pins the session's small model. Rewriting the
+  // model here sends the bare alias down a path the host rejects as unknown, so
+  // a different family is refused instead of rewritten.
+  if(event.model!=null && !/haiku|luna/.test(event.model))return {deny:'Mustard analysis runs on the session small model: launch it without `model`, or with `model: haiku`.'};
+  return event;
 }
 export function fullAnalysisInput(usage) {
   const parts=[usage?.input_tokens,usage?.cache_read_input_tokens,usage?.cache_creation_input_tokens];
@@ -12,6 +16,9 @@ export function fullAnalysisInput(usage) {
 }
 export function analysisTool(event,state) {
   if(!state)return null;
+  // The handback is how the agent returns its receipt to the conductor: refusing
+  // it, even over budget, leaves the conductor without the result.
+  if(event.tool==='SubagentHandback')return null;
   // Reserve headroom for the final answer and native tool/schema overhead.
   if(state.input!=null && state.input>=90000)return {decision:'deny',reason:'Mustard analysis is near its fixed 100000-token input budget. Return the current result now; do not read more or start another analysis.'};
   const tool=event.tool;

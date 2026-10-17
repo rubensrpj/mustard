@@ -1,16 +1,74 @@
 //! Shared gateway for CLI and host adapters; never evaluates shell request text.
 use mustard_core::domain::code_search::{Invocation, Request};
-use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
-use serde_json::json;
+use mustard_core::domain::model::contract::{Ctx, HookInput, Trigger, Verdict};
+use mustard_core::domain::scan::{NativePass, Scan, ScanReport};
+use serde_json::{Value, json};
 use std::path::Path;
+use std::time::Duration;
+
+/// A variável em que o gancho do Bash entrega ao comando nativo a identidade
+/// do agente que o pediu; a sessão segue nas variáveis da sessão
+/// ([`super::spec_state::shell_export`]).
+const AGENT_VAR: &str = "MUSTARD_AGENT_ID";
 
 pub(crate) fn quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\\''"))
 }
 
+/// Entrega ao comando nativo a identidade do subagente cujo gancho o liberou.
+pub(crate) fn agent_export(agent: &str) -> String {
+    format!("export {AGENT_VAR}={}\n", quote(agent))
+}
+
+/// O subagente que o gancho nomeou para este processo, por [`agent_export`].
+fn agent_from_env() -> Option<String> {
+    std::env::var(AGENT_VAR).ok().map(|id| id.trim().to_string()).filter(|id| !id.is_empty())
+}
+
+/// Quanto a busca espera a atualização do mapa antes de responder com o mapa
+/// de antes. Medido neste repositório (874 arquivos), com o programa da
+/// compilação de desenvolvimento: a passada que lê tudo levou 67 s, e a que
+/// relê um arquivo, de 41 a 47 s; com o da versão instalada, 31 s. Depois que
+/// a gravação passou a trocar só as linhas e os documentos do índice dos
+/// arquivos que mudaram, a que relê um arquivo levou 18 s contra 50 s da que
+/// lê tudo, já com os vetores de código, na de desenvolvimento. A primeira
+/// busca numa cópia sem mapa passava de 110 s e o Bash a cortava aos 120 s.
+/// Projeto pequeno atualiza dentro do prazo; passado ele, a passada segue
+/// sozinha e a busca diz isso.
+const SCAN_WAIT: Duration = Duration::from_secs(5);
+
 pub(crate) fn answer(
     cwd: &Path,
     request: &Request,
+) -> Result<mustard_core::io::code_search::Answer, String> {
+    answer_with(cwd, request, &Scan::locate(), SCAN_WAIT)
+}
+
+/// A passada nativa do mapa de `tree`, esperada até `wait`: o relato quando
+/// ela acabou, ou o estado que a busca registra no lugar dele.
+fn refresh_map(scan: &Scan, tree: &Path, wait: Duration) -> Result<ScanReport, Value> {
+    match scan.scan_native_within(tree, &mustard_core::io::project_map::model_path(tree), wait) {
+        Ok(NativePass::Done(report)) => Ok(report),
+        Ok(NativePass::Running) => Err(json!({"status":"in-progress","waited_ms":wait.as_millis(),"local_model_calls":0,"remote_model_calls":0})),
+        Err(error) => Err(json!({"status":"pending","reason":error.to_string()})),
+    }
+}
+
+/// Diz a quem buscou, na saída de erro, que o mapa segue em atualização: a
+/// saída da busca continua a mesma, e o aviso chega também a quem a lê crua.
+fn tell_map_running(root: &Path, answer: &mut mustard_core::io::code_search::Answer) {
+    let running = |learning: &Value| learning["scan"]["status"] == "in-progress";
+    if running(&answer.report["learning"]) || running(&answer.report["task_context"]["learning"]) {
+        let lang = mustard_core::ProjectConfig::load(root).language().text_or_default();
+        answer.stderr.extend_from_slice(super::say::say("search.gateway.scan_running", lang, &[]).as_bytes());
+    }
+}
+
+fn answer_with(
+    cwd: &Path,
+    request: &Request,
+    scan: &Scan,
+    wait: Duration,
 ) -> Result<mustard_core::io::code_search::Answer, String> {
     request.validate()?;
     let cwd = cwd.canonicalize().map_err(|e| e.to_string())?;
@@ -29,30 +87,33 @@ pub(crate) fn answer(
         } else {
             &root
         };
-        let mut answer =
-            mustard_core::io::code_search::operations::execute(index_root, &tree, &cwd, request)?;
+        use mustard_core::io::code_search::operations;
+        let mut answer = operations::execute(index_root, &tree, &cwd, request)?;
         let learning = answer.report["learning"].clone();
         if learning["needs_scan"] == true {
-            match mustard_core::Scan::locate()
-                .scan_native(&tree, &mustard_core::io::project_map::model_path(&tree))
-            {
+            match refresh_map(scan, &tree, wait) {
                 Ok(report) => {
                     let saved = mustard_core::io::knowledge::observations::scanned(
                         index_root, &tree, &learning,
                     );
+                    // A pergunta que o bloco velho deixou sem resposta se
+                    // repete no mapa que a passada pôs em dia; a das outras
+                    // operações só ganha os donos.
+                    if operations::awaits_pass(&answer) {
+                        answer = operations::execute(index_root, &tree, &cwd, request)?;
+                    } else {
+                        operations::recross(&tree, &tree, &mut answer)?;
+                    }
                     answer.report["learning"]["scan"] = json!({"status":"refreshed-native","files_read":report.read.len(),"acknowledged":saved.is_ok(),"local_model_calls":0,"remote_model_calls":0});
                     if saved.is_ok() {
                         answer.report["learning"]["needs_scan"] = json!(false);
                     }
-                    mustard_core::io::code_search::operations::recross(&tree, &tree, &mut answer)?;
                 }
-                Err(error) => {
-                    answer.report["learning"]["scan"] =
-                        json!({"status":"pending","reason":error.to_string()});
-                }
+                Err(status) => answer.report["learning"]["scan"] = status,
             }
         }
         answer.report["choice_gate"]=json!("native-operation");
+        tell_map_running(&root, &mut answer);
         return Ok(answer);
     }
     let selector = if request.choose && !request.intent.trim().is_empty()
@@ -68,9 +129,7 @@ pub(crate) fn answer(
     if learning["needs_scan"] == true {
         // A linked checkout gets its own structural snapshot. Its observations
         // remain keyed by checkout in the anchor; main's scan is never replaced.
-        let scan = mustard_core::Scan::locate()
-            .scan_native(&tree, &mustard_core::io::project_map::model_path(&tree));
-        match scan {
+        match refresh_map(scan, &tree, wait) {
             Ok(report) => {
                 index_root.clone_from(&tree);
                 let saved =
@@ -82,10 +141,7 @@ pub(crate) fn answer(
                     answer.report["learning"]["pending_paths"] = json!([]);
                 }
             }
-            Err(error) => {
-                answer.report["learning"]["scan"] =
-                    json!({"status":"pending","reason":error.to_string()});
-            }
+            Err(status) => answer.report["learning"]["scan"] = status,
         }
     } else if tree != root && mustard_core::io::project_map::model_path(&tree).is_file() {
         index_root.clone_from(&tree);
@@ -107,14 +163,14 @@ pub(crate) fn answer(
     if answer.report["task_context"]["learning"]["needs_scan"]==true
         && answer.report["remote_model_calls"]==0 {
         let learning=answer.report["task_context"]["learning"].clone();
-        match mustard_core::Scan::locate().scan_native(&tree,&mustard_core::io::project_map::model_path(&tree)) {
+        match refresh_map(scan,&tree,wait) {
             Ok(report)=>{
                 let saved=mustard_core::io::knowledge::observations::scanned(&index_root,&tree,&learning);
                 if let Some(refresh)=refresh_code_vectors(&tree,request) {local_refreshes.push(refresh);}
                 mustard_core::io::code_search::enrich(&tree,&tree,&cwd,request,&mut answer,selector.as_ref().map(|s|s as &dyn mustard_core::domain::knowledge::selection::SymbolSelector));
                 answer.report["task_context"]["learning"]["scan"]=json!({"status":"refreshed-native","files_read":report.read.len(),"acknowledged":saved.is_ok(),"local_model_calls":0,"remote_model_calls":0});
             },
-            Err(error)=>answer.report["task_context"]["learning"]["scan"]=json!({"status":"pending","reason":error.to_string()}),
+            Err(status)=>answer.report["task_context"]["learning"]["scan"]=status,
         }
     }
     if !local_refreshes.is_empty() {
@@ -122,6 +178,7 @@ pub(crate) fn answer(
         answer.report["local_index_refresh"]=json!({"attempts":local_refreshes,"computed_vectors":computed,"remote_model_calls":0});
     }
     answer.report["choice_gate"]=json!(choice_gate(&root,request,selector.is_some()));
+    tell_map_running(&root, &mut answer);
     Ok(answer)
 }
 
@@ -138,6 +195,10 @@ fn choice_gate(root:&Path,request:&Request,provider:bool)->&'static str {
     "provider-unavailable"
 }
 
+/// Os vetores de código do que mudou no mapa de `root`, calculados antes da
+/// busca que os usa. A passada do scan que segue sozinha os calcula depois de
+/// gravar o mapa: com ela calculando, a busca não espera nem calcula de novo,
+/// e ordena com os vetores que já valem.
 fn refresh_code_vectors(root:&Path,request:&Request)->Option<serde_json::Value> {
     use mustard_core::domain::knowledge::investigation::Purpose;
     if request.purpose==Purpose::Locate || request.tool=="Read" || request.intent.trim().is_empty()
@@ -145,12 +206,18 @@ fn refresh_code_vectors(root:&Path,request:&Request)->Option<serde_json::Value> 
     let path=mustard_core::io::project_map::model_path(root);
     if !path.is_file() {return None;}
     Some(match mustard_core::io::code_vectors::fill_at(&path,root) {
-        Ok(count)=>json!({"status":"current-local-code-index","computed_vectors":count,"remote_model_calls":0}),
+        Ok(Some(count))=>json!({"status":"current-local-code-index","computed_vectors":count,"remote_model_calls":0}),
+        Ok(None)=>json!({"status":"computed-by-running-scan","computed_vectors":0,"remote_model_calls":0}),
         Err(reason)=>json!({"status":"unavailable; lexical fallback preserved","reason":reason.to_string(),"remote_model_calls":0}),
     })
 }
 
 fn guard(root: &Path, cwd: &Path, request: &Request) -> Result<(), String> {
+    // A conferência vale para quem pediu a busca: o agente de onda que busca
+    // na própria cópia não é o condutor preso nela, e a cópia de outra onda
+    // continua barrada para ele.
+    let session_id = super::spec_state::session_from_env();
+    let agent_id = agent_from_env();
     let ctx = Ctx {
         project_dir: root.to_string_lossy().into_owned(),
         trigger: Some(Trigger::PreToolUse),
@@ -173,6 +240,8 @@ fn guard(root: &Path, cwd: &Path, request: &Request) -> Result<(), String> {
                 value
             },
             cwd: Some(cwd.to_string_lossy().into_owned()),
+            session_id,
+            agent_id,
             ..HookInput::default()
         }
     } else {
@@ -186,6 +255,8 @@ fn guard(root: &Path, cwd: &Path, request: &Request) -> Result<(), String> {
             tool_name: Some("Bash".into()),
             tool_input: json!({"command":command}),
             cwd: Some(cwd.to_string_lossy().into_owned()),
+            session_id,
+            agent_id,
             ..HookInput::default()
         }
     };
@@ -196,8 +267,8 @@ fn guard(root: &Path, cwd: &Path, request: &Request) -> Result<(), String> {
             &ctx,
         )
     } else {
-        crate::hooks::bash::command_guard::CommandGuard
-            .evaluate(&input, &ctx)
+        // A busca roda aqui, sem shell: a cópia como raiz não prende ninguém.
+        crate::hooks::bash::command_guard::CommandGuard::evaluate_in_process(&input, &ctx)
             .map_err(|e| e.to_string())?
     };
     match verdict {
@@ -245,11 +316,11 @@ pub(crate) fn before_bash(input: &HookInput, ctx: &Ctx) -> Option<Verdict> {
         if mustard_core::io::code_search::arguments(&request).is_err() {continue;}
         request.describe(input.tool_description().unwrap_or_default());
         let Ok(envelope) = serde_json::to_string(&Invocation::new(request)) else {continue};
-        // `.` is evaluated when this segment runs, after any preceding cd.
+        // `.` is evaluated when this segment runs, after any preceding cd and
+        // after the hook leads a wave agent's command into its copy.
         // Pipeline consumers receive exactly native bytes, without cards.
-        let cwd = if compound {"."} else {input.cwd.as_deref().unwrap_or(&ctx.project_dir)};
-        let routed = format!("mustard-rt run search --root {} --request {} {}",
-            quote(cwd), quote(&envelope), if compound {"--raw"} else {"--shell-output"});
+        let routed = format!("mustard-rt run search --root '.' --request {} {}",
+            quote(&envelope), if compound {"--raw"} else {"--shell-output"});
         let begin = range.start + part.len() - part.trim_start().len();
         replacement.replace_range(begin..begin + trimmed.len(), &routed);
         changed = true;
@@ -505,6 +576,328 @@ mod tests {
             assert!(before_file(&input, &ctx).is_none());
         }
     }
+    /// Um scan de mentira em `dir`: cada passada anota o pedido no registro e
+    /// só acaba quando o teste cria o arquivo de soltura, ou em 10 s.
+    #[cfg(unix)]
+    fn held_scan(dir: &Path) -> (Scan, std::path::PathBuf, std::path::PathBuf) {
+        let tools = dir.join("tools");
+        std::fs::create_dir_all(&tools).unwrap();
+        let (log, release) = (dir.join("log"), dir.join("release"));
+        let script = format!(
+            "#!/bin/sh\necho \"$1\" >> '{log}'\nn=0\nwhile [ ! -e '{release}' ] && [ $n -lt 500 ]; do sleep 0.02; n=$((n+1)); done\n\
+             echo finished >> '{log}'\necho '{{\"ok\":true,\"read\":[]}}'\n",
+            log = log.display(),
+            release = release.display()
+        );
+        let written = std::process::Command::new("/bin/sh")
+            .args(["-c", "printf '%s' \"$2\" > \"$1\" && chmod 755 \"$1\"", "sh"])
+            .arg(tools.join("scan"))
+            .arg(script)
+            .status()
+            .unwrap();
+        assert!(written.success());
+        (Scan::located_from(Some(&tools.join("mustard-rt"))), log, release)
+    }
+
+    /// A primeira busca numa pasta sem mapa não espera a leitura do projeto
+    /// inteiro: responde no prazo, com o resultado da busca, e diz na saída de
+    /// erro que o mapa segue em atualização; a passada continua depois dela.
+    #[cfg(unix)]
+    #[test]
+    fn a_search_in_a_folder_without_a_map_answers_at_the_wait_and_says_the_refresh_goes_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("project");
+        std::fs::create_dir_all(project.join("src")).unwrap();
+        std::fs::write(project.join("mustard.json"), "{}").unwrap();
+        std::fs::write(project.join("src/a.rs"), "pub fn quartz_marker() {}\n").unwrap();
+        let git = std::process::Command::new("git").args(["init", "-q"]).current_dir(&project).status().unwrap();
+        assert!(git.success());
+        let (scan, log, release) = held_scan(dir.path());
+        let request = Request::native(&["rg".into(), "-n".into(), "quartz_marker".into(), ".".into()]).unwrap();
+
+        let started = std::time::Instant::now();
+        let answer = answer_with(&project, &request, &scan, Duration::from_millis(300)).expect("the search answers");
+        let waited = started.elapsed();
+        let calls = std::fs::read_to_string(&log).unwrap_or_default();
+        std::fs::write(&release, "").unwrap();
+
+        assert!(!calls.contains("finished"), "the answer came while the refresh was still running ({waited:?}): {calls}");
+        assert!(calls.starts_with("scan\n"), "the search asked for the refresh: {calls}");
+        assert_eq!(answer.report["learning"]["scan"]["status"], "in-progress", "{}", answer.report["learning"]);
+        assert!(String::from_utf8_lossy(&answer.stdout).contains("quartz_marker"), "the search result is kept");
+        let lang = mustard_core::ProjectConfig::load(&project).language().text_or_default();
+        let notice = super::super::say::say("search.gateway.scan_running", lang, &[]);
+        assert!(String::from_utf8_lossy(&answer.stderr).contains(&notice), "{}", String::from_utf8_lossy(&answer.stderr));
+    }
+
+    /// O mapa herdado de outra versão do programa, com o índice de
+    /// conhecimento velho, é refeito pela passada do scan, que segura a trava
+    /// de gravação enquanto o refaz. A busca que pediu a passada e a que chega
+    /// no meio dela não abrem o mapa para refazer o mesmo bloco nem esperam a
+    /// trava: cada uma responde antes de uma espera de trava inteira (5 s),
+    /// com o resultado nativo, e diz que o mapa segue em atualização.
+    #[cfg(unix)]
+    #[test]
+    fn searches_over_a_map_with_an_outdated_block_answer_without_waiting_for_the_pass_that_rebuilds_it() {
+        use mustard_core::domain::knowledge::investigation::Purpose;
+        use mustard_core::io::map_db::MapDb;
+        let real = Scan::locate();
+        assert!(
+            real.is_compiled_alongside(),
+            "o teste precisa do scan compilado junto com ele: rode `cargo build -p scan` antes de `cargo test -p mustard-rt`"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("project");
+        std::fs::create_dir_all(project.join("src")).unwrap();
+        std::fs::write(project.join("mustard.json"), r#"{"ai":{"vectors":false}}"#).unwrap();
+        std::fs::write(project.join("src/entry.ts"), "export function quartzEntry(): number { return 1; }\n").unwrap();
+        let git = std::process::Command::new("git").args(["init", "-q"]).current_dir(&project).status().unwrap();
+        assert!(git.success());
+        let model = mustard_core::io::project_map::model_path(&project);
+        real.scan(&project, &model).expect("the real scan writes the map");
+        let version = || {
+            MapDb::open(&model, &project, &[]).unwrap().conn().query_row("SELECT version FROM blocks WHERE name = 'knowledge_index'", [], |row| row.get::<_, u32>(0)).unwrap()
+        };
+        let current = version();
+        MapDb::open(&model, &project, &[]).unwrap().write(|tx| Ok(tx.execute_batch("UPDATE blocks SET version = version - 1 WHERE name = 'knowledge_index'")?)).unwrap();
+        let (scan, log, release) = held_scan(dir.path());
+        // A passada que refaz o bloco: segura a trava de gravação do mapa
+        // desde que começa até o teste a soltar.
+        let (locked, hold) = (dir.path().join("locked"), std::sync::mpsc::channel::<()>());
+        let (marker, watched, holder_model, holder_root) = (locked.clone(), log.clone(), model.clone(), project.clone());
+        let holder = std::thread::spawn(move || {
+            let started = std::time::Instant::now();
+            while !watched.exists() && started.elapsed() < Duration::from_secs(10) {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            MapDb::open(&holder_model, &holder_root, &[]).unwrap().write(|_| {
+                std::fs::write(&marker, "").unwrap();
+                let _ = hold.1.recv_timeout(Duration::from_secs(60));
+                Ok(())
+            }).unwrap();
+        });
+        let requests = [
+            Request { tool: "rg".into(), input: json!({"args":["-n","quartzEntry","."]}), intent: "where the quartz entry is defined".into(), purpose: Purpose::Implement, choose: false },
+            Request { tool: "Glob".into(), input: json!({"pattern":"src/**/*.ts"}), intent: "find the quartz entry module".into(), purpose: Purpose::Implement, choose: false },
+        ];
+        let lang = mustard_core::ProjectConfig::load(&project).language().text_or_default();
+        let notice = super::super::say::say("search.gateway.scan_running", lang, &[]);
+        let mut answers = Vec::new();
+        for request in &requests {
+            let started = std::time::Instant::now();
+            let answer = answer_with(&project, request, &scan, Duration::from_secs(1)).expect("the search answers");
+            answers.push((request.tool.clone(), started.elapsed(), locked.exists(), answer));
+        }
+        let still = version();
+        std::fs::write(&release, "").unwrap();
+        hold.0.send(()).unwrap();
+        holder.join().unwrap();
+
+        for (tool, waited, held, answer) in &answers {
+            let stderr = String::from_utf8_lossy(&answer.stderr);
+            assert!(held, "{tool}: the pass held the map lock while the search answered");
+            assert!(*waited < Duration::from_secs(5), "{tool}: the search waited for the lock of the pass ({waited:?}); every answer: {:?}", answers.iter().map(|(tool, waited, ..)| (tool, waited)).collect::<Vec<_>>());
+            assert_eq!(answer.report["learning"]["scan"]["status"], "in-progress", "{tool}: {}", answer.report["learning"]);
+            assert_eq!(answer.report["task_context"]["status"], "native-fallback", "{tool}: {}", answer.report["task_context"]);
+            assert!(stderr.contains(&notice), "{tool}: {stderr}");
+        }
+        assert!(String::from_utf8_lossy(&answers[0].3.stdout).contains("quartzEntry"), "the search result is kept");
+        assert_eq!(answers[0].3.report["crossing_status"], "index-unavailable-or-stale");
+        assert_eq!(still, current - 1, "the search leaves the outdated block to the pass");
+        assert!(std::fs::read_to_string(&log).unwrap().starts_with("scan\n"), "the search asked for the pass");
+    }
+
+    /// As perguntas explícitas por símbolo e por estrutura, num mapa herdado
+    /// com o índice de conhecimento velho, não refazem o bloco antes de pedir
+    /// a passada nem esperam a trava da passada que o refaz: a primeira pede a
+    /// passada, as que chegam no meio dela respondem antes de uma espera de
+    /// trava inteira (5 s), e todas dizem que o mapa segue em atualização.
+    /// Quando a passada acaba no prazo, a pergunta por símbolo se repete no
+    /// mapa posto em dia e traz o símbolo.
+    #[cfg(unix)]
+    #[test]
+    fn explicit_searches_over_a_map_with_an_outdated_block_answer_without_rebuilding_it_or_waiting_for_the_pass() {
+        use mustard_core::domain::knowledge::investigation::Purpose;
+        use mustard_core::io::code_search::operations::MAP_OUTDATED;
+        use mustard_core::io::map_db::MapDb;
+        let real = Scan::locate();
+        assert!(
+            real.is_compiled_alongside(),
+            "o teste precisa do scan compilado junto com ele: rode `cargo build -p scan` antes de `cargo test -p mustard-rt`"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("project");
+        std::fs::create_dir_all(project.join("src")).unwrap();
+        std::fs::write(project.join("mustard.json"), r#"{"ai":{"vectors":false}}"#).unwrap();
+        std::fs::write(project.join("src/entry.ts"), "export function quartzEntry(): number { return 1; }\n").unwrap();
+        let git = std::process::Command::new("git").args(["init", "-q"]).current_dir(&project).status().unwrap();
+        assert!(git.success());
+        let model = mustard_core::io::project_map::model_path(&project);
+        real.scan(&project, &model).expect("the real scan writes the map");
+        let version = || {
+            MapDb::open(&model, &project, &[]).unwrap().conn().query_row("SELECT version FROM blocks WHERE name = 'knowledge_index'", [], |row| row.get::<_, u32>(0)).unwrap()
+        };
+        let current = version();
+        MapDb::open(&model, &project, &[]).unwrap().write(|tx| Ok(tx.execute_batch("UPDATE blocks SET version = version - 1 WHERE name = 'knowledge_index'")?)).unwrap();
+        let (scan, log, release) = held_scan(dir.path());
+        let (locked, hold) = (dir.path().join("locked"), std::sync::mpsc::channel::<()>());
+        let (marker, watched, holder_model, holder_root) = (locked.clone(), log.clone(), model.clone(), project.clone());
+        let holder = std::thread::spawn(move || {
+            let started = std::time::Instant::now();
+            while !watched.exists() && started.elapsed() < Duration::from_secs(10) {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            MapDb::open(&holder_model, &holder_root, &[]).unwrap().write(|_| {
+                std::fs::write(&marker, "").unwrap();
+                let _ = hold.1.recv_timeout(Duration::from_secs(60));
+                Ok(())
+            }).unwrap();
+        });
+        let ask = |tool: &str, input: serde_json::Value| Request { tool: tool.into(), input, intent: "what the quartz entry returns".into(), purpose: Purpose::Understand, choose: false };
+        let symbol = ask("Symbol", json!({"file_path":"src/entry.ts","symbol":"src/entry.ts:1:quartzEntry"}));
+        let structure = ask("Structure", json!({"file_path":"src/entry.ts","query":"(function_declaration name: (identifier) @name)"}));
+        let lang = mustard_core::ProjectConfig::load(&project).language().text_or_default();
+        let notice = super::super::say::say("search.gateway.scan_running", lang, &[]);
+        let mut answers = Vec::new();
+        for request in [&symbol, &structure, &symbol] {
+            let started = std::time::Instant::now();
+            let answer = answer_with(&project, request, &scan, Duration::from_secs(1));
+            answers.push((request.tool.clone(), started.elapsed(), locked.exists(), answer));
+        }
+        let still = version();
+        std::fs::write(&release, "").unwrap();
+        hold.0.send(()).unwrap();
+        holder.join().unwrap();
+
+        let waits: Vec<_> = answers.iter().map(|(tool, waited, ..)| (tool.clone(), *waited)).collect();
+        for (at, (tool, waited, held, answer)) in answers.into_iter().enumerate() {
+            let answer = answer.unwrap_or_else(|error| panic!("{tool} {at} refused: {error}"));
+            assert!(held, "{tool} {at}: the pass held the map lock while the search answered; block version {still} of {current}; {}", answer.report["learning"]);
+            assert!(waited < Duration::from_secs(5), "{tool} {at} waited for the lock of the pass; every wait: {waits:?}");
+            assert_eq!(answer.report["learning"]["scan"]["status"], "in-progress", "{tool} {at}: {}", answer.report["learning"]);
+            assert!(String::from_utf8_lossy(&answer.stderr).contains(&notice), "{tool} {at}: {}", String::from_utf8_lossy(&answer.stderr));
+            let result = &answer.report["result"];
+            if tool == "Symbol" {
+                assert_eq!(result["status"], MAP_OUTDATED, "{tool} {at}: {result}");
+            } else {
+                assert!(result["matches"].as_array().is_some_and(|found| !found.is_empty()), "{tool} {at}: {result}");
+                assert_eq!(result["owners"]["status"], MAP_OUTDATED, "{tool} {at}: {result}");
+            }
+        }
+        assert_eq!(still, current - 1, "the search leaves the outdated block to the pass");
+        assert!(std::fs::read_to_string(&log).unwrap().starts_with("scan\n"), "the search asked for the pass");
+
+        let refreshed = answer_with(&project, &symbol, &real, Duration::from_secs(60)).expect("the search answers after the pass");
+        assert_eq!(refreshed.report["learning"]["scan"]["status"], "refreshed-native", "{}", refreshed.report["learning"]);
+        assert!(refreshed.report["result"]["cards"].as_array().is_some_and(|cards| cards.iter().any(|card| card["id"] == "src/entry.ts:1:quartzEntry")), "{}", refreshed.report["result"]);
+        assert_eq!(version(), current, "the pass rebuilt the block");
+    }
+
+    /// A busca de implementação de um padrão traz primeiro todas as linhas
+    /// que casam, mesmo além de 64, e nada de arquivo onde o padrão não casa:
+    /// nem a função chamada noutro arquivo, nem a de palavras parecidas.
+    #[test]
+    fn an_implementation_search_answers_with_every_pattern_hit_first_and_no_file_without_hits() {
+        use mustard_core::domain::knowledge::investigation::Purpose;
+        let real = Scan::locate();
+        assert!(
+            real.is_compiled_alongside(),
+            "o teste precisa do scan compilado junto com ele: rode `cargo build -p scan` antes de `cargo test -p mustard-rt`"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("project");
+        std::fs::create_dir_all(project.join("src")).unwrap();
+        std::fs::write(project.join("mustard.json"), r#"{"ai":{"vectors":false}}"#).unwrap();
+        std::fs::write(project.join("src/entry.ts"), "import { recoverSnapshot } from \"./store\";\nexport function quartzEntry(): number {\n  return recoverSnapshot();\n}\n").unwrap();
+        std::fs::write(project.join("src/store.ts"), "/** Recover the quartz snapshot. */\nexport function recoverSnapshot(): number {\n  const storeBodySentinel = 2;\n  return storeBodySentinel;\n}\n").unwrap();
+        std::fs::write(project.join("src/noise.ts"), "/** Recover the quartz snapshot from the archive. */\nexport function archiveRecover(): number {\n  const noiseBodySentinel = 4;\n  return noiseBodySentinel;\n}\n").unwrap();
+        let rows: String = (0..150).map(|at| format!("  \"quartzEntry {at}\",\n")).collect();
+        std::fs::write(project.join("src/table.ts"), format!("export const quartzTable = [\n{rows}];\n")).unwrap();
+        let git = std::process::Command::new("git").args(["init", "-q"]).current_dir(&project).status().unwrap();
+        assert!(git.success());
+        real.scan(&project, &mustard_core::io::project_map::model_path(&project)).expect("the real scan writes the map");
+        let request = Request {
+            tool: "rg".into(),
+            input: json!({"args":["-n","quartzEntry","src"]}),
+            intent: "recover the quartz snapshot".into(),
+            purpose: Purpose::Implement,
+            choose: false,
+        };
+        let answer = answer(&project, &request).expect("the search answers");
+        let view = mustard_core::io::code_search::presentation::agent(&answer, &request, &project);
+        let text = String::from_utf8(view.stdout).unwrap();
+        assert_eq!(view.representation, "current-task-evidence", "{text}");
+        let first_reference = text
+            .match_indices('\n')
+            .map(|(at, _)| at + 1)
+            .find(|at| ["# References", "# Native follow-up", "# static relation", "# Deferred"].iter().any(|mark| text[*at..].starts_with(mark)))
+            .unwrap_or(text.len());
+        let native = String::from_utf8_lossy(&answer.stdout).into_owned();
+        let hits: Vec<_> = native.lines().filter_map(|row| row.split_once(':')).filter_map(|(_, rest)| rest.split_once(':')).collect();
+        assert_eq!(hits.len(), 151, "{native}");
+        for (line, body) in hits {
+            let at = text.find(&format!("\n{line} | {body}\n")).unwrap_or_else(|| panic!("hit {line} left out: {text}"));
+            assert!(at < first_reference, "hit {line} after a reference: {text}");
+        }
+        for absent in ["src/store.ts", "storeBodySentinel", "src/noise.ts", "noiseBodySentinel"] {
+            assert!(!text.contains(absent), "{absent}: {text}");
+        }
+    }
+
+    /// A busca com finalidade que nomeia o arquivo traz toda linha casada
+    /// dele antes do resumo por símbolo, e nada do teste que não tem a
+    /// palavra.
+    #[test]
+    fn a_purposed_search_of_a_named_file_answers_with_every_matched_line_before_the_symbols() {
+        use mustard_core::domain::knowledge::investigation::Purpose;
+        let real = Scan::locate();
+        assert!(
+            real.is_compiled_alongside(),
+            "o teste precisa do scan compilado junto com ele: rode `cargo build -p scan` antes de `cargo test -p mustard-rt`"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("project");
+        std::fs::create_dir_all(project.join("src")).unwrap();
+        std::fs::write(project.join("mustard.json"), r#"{"ai":{"vectors":false}}"#).unwrap();
+        std::fs::write(project.join("src/limits.ts"), "export const TAIL_BYTES = 4096; // threshold of the tail\n\
+            export function overLimit(size: number): boolean {\n  const threshold = TAIL_BYTES * 2;\n  return size > threshold;\n}\n\
+            export class Gauge {\n  constructor(private readonly threshold: number) {}\n  exceeds(value: number): boolean {\n    return value > this.threshold;\n  }\n}\n\
+            /** Explains the threshold rule. */\nexport function describe(): string {\n  return \"threshold reached\";\n}\n").unwrap();
+        std::fs::write(project.join("src/limits.test.ts"), "import { overLimit, Gauge } from \"./limits\";\n\
+            test(\"big sizes pass\", () => {\n  const unrelatedSentinel = new Gauge(1);\n  expect(overLimit(10000) && unrelatedSentinel.exceeds(2)).toBe(true);\n});\n").unwrap();
+        let git = std::process::Command::new("git").args(["init", "-q"]).current_dir(&project).status().unwrap();
+        assert!(git.success());
+        real.scan(&project, &mustard_core::io::project_map::model_path(&project)).expect("the real scan writes the map");
+        let request = Request {
+            tool: "rg".into(),
+            input: json!({"args":["-n","-H","threshold","src/limits.ts"]}),
+            intent: "check how the gauge compares against its threshold".into(),
+            purpose: Purpose::Validate,
+            choose: false,
+        };
+
+        let answer = answer(&project, &request).expect("the search answers");
+        let view = mustard_core::io::code_search::presentation::agent(&answer, &request, &project);
+
+        let text = String::from_utf8(view.stdout).unwrap();
+        assert_eq!(view.representation, "current-task-evidence", "{text}");
+        let native = String::from_utf8_lossy(&answer.stdout).into_owned();
+        let hits: Vec<_> = native.lines().filter_map(|row| row.split_once(':')).filter_map(|(_, rest)| rest.split_once(':')).collect();
+        assert_eq!(hits.len(), 7, "{native}");
+        let first_reference = text
+            .match_indices('\n')
+            .map(|(at, _)| at + 1)
+            .find(|at| ["# References", "# Native follow-up", "# static relation", "# Deferred"].iter().any(|mark| text[*at..].starts_with(mark)))
+            .unwrap_or(text.len());
+        for (line, body) in hits {
+            let at = text.find(&format!("\n{line} | {body}\n")).unwrap_or_else(|| panic!("hit {line} left out: {text}"));
+            assert!(at < first_reference, "hit {line} after a reference: {text}");
+        }
+        for absent in ["@ src/limits.test.ts", "unrelatedSentinel"] {
+            assert!(!text.contains(absent), "{absent}: {text}");
+        }
+    }
+
     #[test]
     fn gateway_reads_apply_the_existing_secret_and_config_guards() {
         let dir = tempfile::tempdir().unwrap();

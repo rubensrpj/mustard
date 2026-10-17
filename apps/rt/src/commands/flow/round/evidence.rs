@@ -107,7 +107,7 @@ pub(super) fn links(board: &Board) -> BTreeSet<(u64, u64)> {
 mod tests {
     use super::super::{
         backlog::dispatch_backlog,
-        queue::{backlog_project, backlog_task_on, seed_running, spec_now, wave_order},
+        queue::{backlog_project, backlog_task_on, spec_now, wave_order},
     };
     use super::*;
     use crate::shared::judgement::{BoardTask, BoardWave};
@@ -123,7 +123,6 @@ mod tests {
             depends_on: vec![],
             reads: vec![],
             criteria: BTreeSet::from([1]),
-            expertise: Vec::new(),
         }
     }
     fn scan_fixture(root: &Path) {
@@ -210,45 +209,10 @@ mod tests {
         let b = backlog_task_on(root, said, crit, "Change contract.", &["src/b.rs"]);
         let log = spec_now(root);
         assert_eq!(
-            dispatch_backlog(root, "x", &log, &log, 4, None),
+            dispatch_backlog(root, "x", &log, &log, 4, None).map(|(formed, _)| formed),
             Ok(vec![1])
         );
         assert_eq!(wave_order(root, 1), vec![a, b]);
-    }
-    #[test]
-    fn a_running_contract_writer_holds_its_consumer_but_not_independent_work() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        let (said, crit) = backlog_project(root);
-        scan_fixture(root);
-        backlog_task_on(root, said, crit, "Change contract.", &["src/b.rs"]);
-        let log = spec_now(root);
-        assert_eq!(
-            dispatch_backlog(root, "x", &log, &log, 4, None),
-            Ok(vec![1])
-        );
-        seed_running(root, 1);
-        let consumer = backlog_task_on(root, said, crit, "Change consumer.", &["src/a.rs"]);
-        let log = spec_now(root);
-        let never = |_: &Board| -> Result<
-            crate::shared::judgement::Judged,
-            mustard_core::domain::map_filter::FilterError,
-        > { panic!("an exact native reservation needs no paid judgement") };
-        assert_eq!(
-            dispatch_backlog(root, "x", &log, &log, 4, Some(&never)),
-            Ok(vec![])
-        );
-        let independent = backlog_task_on(root, said, crit, "Change docs.", &["README.md"]);
-        let log = spec_now(root);
-        assert_eq!(
-            dispatch_backlog(root, "x", &log, &log, 4, None),
-            Ok(vec![2])
-        );
-        assert_eq!(wave_order(root, 2), vec![independent]);
-        assert_eq!(
-            spec_now(root).current(consumer).and_then(|t| t.wave()),
-            None
-        );
     }
     #[test]
     fn shared_read_with_a_running_wave_remains_parallel() {

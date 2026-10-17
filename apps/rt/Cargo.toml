@@ -72,6 +72,12 @@ tempfile = { workspace = true }
 # dependency; the `1` line is the one already resolved in Cargo.lock via scan.
 regex = "1"
 
+# A conferência da prova (`spec_events::proof_check`) lê os manifestos do Cargo
+# do projeto para saber os alvos de teste de um pacote citado por `cargo test
+# -p <pacote> --test <alvo>`. A mesma linha `1` que o mustard-core declara e o
+# Cargo.lock já resolve.
+toml = "1"
+
 # No `[dev-dependencies]`: the tests use `tempfile`, which is a normal
 # dependency above because the runtime needs it too.
 

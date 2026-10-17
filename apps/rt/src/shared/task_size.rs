@@ -31,7 +31,8 @@ const LEVELS: [&str; 4] =
     ["One small place", "Two or three files", "Many files in one area", "Many files across several areas"];
 
 /// Quanto a conversa do agente cresce ao fazer uma tarefa de cada nível, em
-/// tokens, do menor para o maior nível. A nota entre dois níveis interpola.
+/// tokens, do menor para o maior nível. A nota não interpola entre dois
+/// níveis: a documentação do Jev pede para não fazer conta com a nota.
 pub(crate) const GROWTH_TOKENS: [u64; 4] = [35_000, 65_000, 95_000, 125_000];
 
 /// Use the same conservative local estimate in packing and final cleanups.
@@ -49,39 +50,46 @@ pub(crate) fn question(key: &str) -> Value {
     })
 }
 
-/// A nota de tamanho que a resposta `answer` dá, de 0 a 3; `None` quando a
-/// resposta não traz nota. Nota fora dos quatro níveis vale o nível mais
-/// próximo.
+/// O nível de tamanho que a resposta `answer` dá, de 0 a 3: o de maior
+/// probabilidade em `probabilities`, e o maior deles no empate. Sem
+/// probabilidades legíveis, o nível mais próximo da nota; `None` quando a
+/// resposta não traz nota.
 pub(crate) fn level_in(answer: &Value) -> Option<f64> {
     let top = (LEVELS.len() - 1) as f64;
-    answer.get("score").and_then(Value::as_f64).map(|score| score.clamp(0.0, top))
+    let score = answer.get("score").and_then(Value::as_f64)?;
+    let likeliest = answer.get("probabilities").and_then(Value::as_object).and_then(|chances| {
+        (0..LEVELS.len())
+            .filter_map(|level| chances.get(&level.to_string()).and_then(Value::as_f64).map(|chance| (level, chance)))
+            .reduce(|best, next| if next.1 >= best.1 { next } else { best })
+    });
+    Some(likeliest.map_or_else(|| score.clamp(0.0, top).round(), |(level, _)| level as f64))
 }
 
-/// Quantos tokens a conversa do agente cresce ao fazer uma tarefa de nota
-/// `level`: o valor da tabela no nível, ou o da reta entre os dois níveis que
-/// a nota separa. Nota fora de 0 a 3 vale o nível mais próximo.
+/// Quantos tokens a conversa do agente cresce ao fazer uma tarefa de nível
+/// `level`: o valor da tabela no nível mais próximo, sem reta entre dois
+/// níveis. Nível fora de 0 a 3 vale o mais próximo, e o que não é número, o
+/// maior.
 pub(crate) fn growth_tokens(level: f64) -> u64 {
     let top = GROWTH_TOKENS.len() - 1;
     let level = if level.is_nan() { top as f64 } else { level.clamp(0.0, top as f64) };
-    let below = level.floor() as usize;
-    let above = level.ceil() as usize;
-    let (from, to) = (GROWTH_TOKENS[below] as f64, GROWTH_TOKENS[above] as f64);
-    (from + (to - from) * (level - below as f64)).round() as u64
+    GROWTH_TOKENS[level.round() as usize]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Cada nível vale o que a tabela diz, e a nota entre dois níveis fica na
-    /// reta entre eles.
+    /// Cada nível vale o que a tabela diz. A nota 1,4 com a maior
+    /// probabilidade no nível 1 vale o nível 1, sem reta entre dois níveis; o
+    /// empate vai ao maior nível.
     #[test]
-    fn a_level_is_worth_its_table_value_and_a_score_between_two_levels_is_on_the_line() {
+    fn a_task_is_worth_the_table_value_of_its_likeliest_level() {
         let at: Vec<u64> = [0.0, 1.0, 2.0, 3.0].into_iter().map(growth_tokens).collect();
         assert_eq!(at, vec![35_000, 65_000, 95_000, 125_000]);
-        assert_eq!(growth_tokens(0.5), 50_000);
-        assert_eq!(growth_tokens(1.5), 80_000);
-        assert_eq!(growth_tokens(2.2), 101_000);
+        let likeliest = |answer: Value| growth_tokens(level_in(&answer).unwrap());
+        assert_eq!(likeliest(json!({"score": 1.4, "probabilities": {"0": 0.2, "1": 0.45, "2": 0.3, "3": 0.05}})), 65_000);
+        assert_eq!(likeliest(json!({"score": 1.5, "probabilities": {"0": 0.0, "1": 0.5, "2": 0.5, "3": 0.0}})), 95_000);
+        assert_eq!(likeliest(json!({"score": 2.2})), 95_000);
     }
 
     /// A nota fora dos quatro níveis vale o nível mais próximo, e a que não é
@@ -94,14 +102,15 @@ mod tests {
     }
 
     /// A pergunta leva a tarefa pela chave, a nota de quatro níveis em ordem,
-    /// e a resposta dela é lida da nota e presa ao intervalo de 0 a 3.
+    /// e a resposta sem probabilidades é lida do nível mais próximo da nota,
+    /// preso ao intervalo de 0 a 3.
     #[test]
     fn the_question_names_the_task_and_has_four_levels_and_the_answer_is_read_from_the_score() {
         let asked = question("t11");
         assert_eq!(asked["type"], json!("score"));
         assert!(asked["instructions"]["question"].as_str().unwrap().contains("`backlog.t11`"));
         assert_eq!(asked["criteria"].as_array().unwrap().len(), 4);
-        assert_eq!(level_in(&json!({"type": "score", "score": 2.4, "confidence": 0.7})), Some(2.4));
+        assert_eq!(level_in(&json!({"type": "score", "score": 2.4, "confidence": 0.7})), Some(2.0));
         assert_eq!(level_in(&json!({"score": 9.0})), Some(3.0));
         assert_eq!(level_in(&json!({"type": "noul", "noul": 0.5})), None);
         assert_eq!(level_in(&json!({"score": "big"})), None);

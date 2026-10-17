@@ -35,6 +35,9 @@
 //!   the `Authorization` header.
 //! - [`agent_said`] — the agent's last words before a call, read backwards
 //!   from the end of the session transcript and never a person's text.
+//! - [`typed_messages`] — o que o usuário digitou numa conversa, lido do
+//!   arquivo da sessão, sem resultado de ferramenta, linha de sistema nem
+//!   bloco do harness; a spec aberta no meio da conversa grava essas falas.
 //! - [`secret`] — the ONE search for text that looks like a secret, shared by
 //!   the spec page, the purge of the spec file and everything that leaves the
 //!   machine for an outside service ([`jev`] among them).
@@ -51,7 +54,6 @@ pub(crate) mod tool_observations;
 
 /// A última fala do agente antes de uma chamada, lida do fim do arquivo da
 /// conversa; nunca texto do usuário.
-#[cfg(test)]
 pub mod agent_said;
 pub mod branch_state;
 /// O caminho do código pelo mapa, para as travas da leitura e da busca.
@@ -70,7 +72,6 @@ pub mod dag;
 /// compilação dele, em primeiro e em segundo plano.
 pub mod development_build;
 pub(crate) mod evidence;
-pub(crate) mod expertise_selection;
 pub(crate) mod host_observation;
 pub(crate) mod integration_health;
 pub(crate) mod host_installation;
@@ -89,6 +90,8 @@ pub(crate) mod search_gateway;
 pub mod secret;
 /// O que a triagem do mapa põe na resposta da busca.
 pub mod triage_view;
+/// O que o usuário digitou numa conversa, lido do arquivo da sessão.
+pub(crate) mod typed_messages;
 // The Azure adapter behind the pr_provider port — reached through the factory.
 pub mod pr_azure;
 pub mod pr_history;
@@ -98,6 +101,9 @@ pub mod prompt;
 /// O texto do catálogo com as vagas preenchidas.
 pub mod say;
 pub mod spec_state;
+/// O classificador das atividades que a rodada grava: coberta, junta a uma
+/// tarefa aberta de mesmo sentido ou nova, perto do assunto dela.
+pub(crate) mod task_triage;
 /// O tamanho que a montagem espera de cada tarefa do backlog, em tokens de
 /// conversa do agente, e o teto de cada onda.
 pub mod task_size;

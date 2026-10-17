@@ -200,7 +200,7 @@ jobs:
           $destination = Join-Path $env:RUNNER_TEMP 'mustard-install'
           $process = Start-Process -FilePath $installer -ArgumentList '/S', "/D=$destination" -Wait -PassThru
           if ($process.ExitCode -ne 0) { throw "Silent installation failed: $($process.ExitCode)" }
-          python packaging/smoke-install.py --bin-dir (Join-Path $destination 'mustard-cli') --version $env:VERSION --bootstrap-archive "dist/mustard-bins-$env:VERSION-windows-x64.zip"
+          python packaging/smoke-install.py --bin-dir (Join-Path $destination 'mustard-cli') --version $env:VERSION --commit ($env:GITHUB_SHA.Substring(0, 12)) --bootstrap-archive "dist/mustard-bins-$env:VERSION-windows-x64.zip"
           if ($LASTEXITCODE -ne 0) { throw "Installed Mustard smoke test failed." }
 
   # ------------------------------------------------ macOS — instalador .pkg ----
@@ -268,7 +268,7 @@ jobs:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           sudo installer -pkg "dist/Mustard-$VERSION-universal.pkg" -target /
-          python3 packaging/smoke-install.py --bin-dir /usr/local/mustard/bin --version "$VERSION" --bootstrap-archive "dist/mustard-bins-$VERSION-macos-universal.tar.gz"
+          python3 packaging/smoke-install.py --bin-dir /usr/local/mustard/bin --version "$VERSION" --commit "${GITHUB_SHA::12}" --bootstrap-archive "dist/mustard-bins-$VERSION-macos-universal.tar.gz"
 
   # ------------------------------------------ Linux — .deb fundido (Docker) ----
   linux-deb:
@@ -319,7 +319,7 @@ jobs:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           sudo dpkg -i "dist/mustard_${VERSION}_amd64.deb"
-          python3 packaging/smoke-install.py --bin-dir /usr/lib/mustard/bin --version "$VERSION" --bootstrap-archive "dist/mustard-bins-$VERSION-linux-x64.tar.gz"
+          python3 packaging/smoke-install.py --bin-dir /usr/lib/mustard/bin --version "$VERSION" --commit "${GITHUB_SHA::12}" --bootstrap-archive "dist/mustard-bins-$VERSION-linux-x64.tar.gz"
 
   # ------------------------------------------------------------- publica ----
   # Junta os instaladores num único GitHub Release. Só publica em tag; no

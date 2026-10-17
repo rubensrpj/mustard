@@ -39,13 +39,16 @@ fn ensure_parent_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Build a sibling temporary path for `path` in the same directory.
+/// Build a sibling temporary path for `path` in the same directory, ending in
+/// `.{extension}`.
 ///
 /// Same-directory placement is required: `rename` is only guaranteed atomic
 /// when source and destination share a filesystem, and a sibling always does.
-/// The name mixes the original file name with a clock-derived suffix and the
-/// process id so two concurrent writers do not collide on the temp file.
-fn temp_path_for(path: &Path) -> PathBuf {
+/// The name mixes the original file name with the process id and a
+/// clock-derived suffix, so two concurrent writers do not collide on the temp
+/// file, and a process that is given the pid of a dead one does not trip on
+/// the file the dead one left behind.
+pub(super) fn temp_path_for(path: &Path, extension: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
@@ -54,7 +57,7 @@ fn temp_path_for(path: &Path) -> PathBuf {
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("mustard");
-    let temp_name = format!(".{file_name}.{pid}.{nanos}.tmp");
+    let temp_name = format!(".{file_name}.{pid}.{nanos}.{extension}");
     match path.parent() {
         Some(parent) if !parent.as_os_str().is_empty() => parent.join(temp_name),
         _ => PathBuf::from(temp_name),
@@ -72,7 +75,7 @@ impl Fs for RealFs {
 
     fn write_atomic(&self, path: &Path, contents: &[u8]) -> Result<()> {
         ensure_parent_dir(path)?;
-        let temp = temp_path_for(path);
+        let temp = temp_path_for(path, "tmp");
 
         // Scope the file handle so it is closed before the rename. Windows
         // refuses to rename a file that still has an open handle.

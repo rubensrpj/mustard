@@ -1,15 +1,17 @@
 //! As ondas que continuam um resumo: a cada resumo que ainda vale
 //! ([`SpecLog::live_summaries`]), a montagem forma primeiro uma onda com as
 //! tarefas dele que estão prontas no backlog e as do backlog pronto que
-//! dividem arquivo com elas. O resumo acompanha cada tarefa que deixou até
+//! dividem arquivo com elas ou que o classificador pôs no grupo de assunto
+//! delas. O resumo acompanha cada tarefa que deixou até
 //! ela ser entregue, em quantas ondas ela sair. Uma onda leva no máximo um
 //! resumo, e as tarefas dela não entram em outra onda da mesma montagem,
-//! saia ela agora ou espere a vez pela regra de conflito.
+//! saia ela agora ou espere uma vaga.
 
 use std::collections::BTreeSet;
 
 use mustard_core::domain::spec_events::SpecLog;
 
+use super::leftovers::{GROUP, group_name};
 use crate::shared::dag::{BacklogTask, Batch, sets_cross, touches_whole_tree};
 
 /// Uma onda formada a partir de um resumo que ainda vale.
@@ -25,7 +27,8 @@ pub(super) struct SummaryWave {
 /// `ready` é o backlog pronto, na ordem de prontidão, e `population` traz os
 /// arquivos de cada tarefa. De cada resumo entram as tarefas que ele
 /// acompanha e que estão prontas, e as prontas que dividem arquivo com elas,
-/// direto; a tarefa com o curinga da árvore inteira nunca entra de carona, nem
+/// direto, ou que gravam o grupo de assunto de uma delas ([`group_name`]),
+/// mesmo sem arquivo em comum; a tarefa com o curinga da árvore inteira nunca entra de carona, nem
 /// a que outro resumo acompanha, que sai na onda dele. Uma tarefa só vai a um
 /// resumo, e o resumo sem nenhuma tarefa pronta não forma onda.
 pub(super) fn summary_waves(log: &SpecLog, ready: &[u64], population: &[BacklogTask<u64>]) -> Vec<SummaryWave> {
@@ -43,9 +46,15 @@ pub(super) fn summary_waves(log: &SpecLog, ready: &[u64], population: &[BacklogT
         for id in &base {
             batch.files.extend(files_of(*id).into_iter().flatten().cloned());
         }
+        let groups: BTreeSet<String> = base.iter().filter_map(|id| log.get(*id)).map(|task| group_name(log, task)).collect();
+        let in_group = |id: u64| {
+            log.get(id).is_some_and(|task| task.fields.contains_key(GROUP) && groups.contains(&group_name(log, task)))
+        };
         if !touches_whole_tree(&batch.files) {
             let sharing = |id: &u64| {
-                !taken.contains(id) && !carried.contains(id) && files_of(*id).is_some_and(|files| !touches_whole_tree(files) && sets_cross(files, &batch.files))
+                !taken.contains(id)
+                    && !carried.contains(id)
+                    && files_of(*id).is_some_and(|files| !touches_whole_tree(files) && (sets_cross(files, &batch.files) || in_group(*id)))
             };
             let along: Vec<u64> = ready.iter().copied().filter(sharing).collect();
             for id in &along {
@@ -58,6 +67,51 @@ pub(super) fn summary_waves(log: &SpecLog, ready: &[u64], population: &[BacklogT
         out.push(SummaryWave { summary: summary.id, batch });
     }
     out
+}
+
+/// As ondas que o classificador formou: as tarefas prontas de `ready` que
+/// gravam o mesmo grupo ([`GROUP`], pelo nome de [`group_name`]) saem juntas,
+/// na posição que ele deu a cada uma, com os arquivos de `population`; os
+/// grupos, na ordem da primeira tarefa pronta de cada um. Cada onda leva como
+/// base o resumo que ainda vale e que deixou alguma tarefa dela: um resumo
+/// que deixou tarefas de vários objetivos vai com cada uma dessas ondas. A
+/// tarefa com o curinga da árvore inteira não entra: ela sai sozinha.
+pub(super) fn group_waves(log: &SpecLog, ready: &[u64], population: &[BacklogTask<u64>]) -> Vec<(Batch<u64>, Option<u64>)> {
+    let live = log.live_summaries();
+    let files_of = |id: u64| population.iter().find(|task| task.id == id).map(|task| &task.files);
+    let mut groups: Vec<(String, Vec<(u64, u64)>)> = Vec::new();
+    for &id in ready {
+        let Some(task) = log.get(id) else { continue };
+        let Some(group) = task.fields.get(GROUP) else { continue };
+        if files_of(id).is_some_and(|files| touches_whole_tree(files)) {
+            continue;
+        }
+        let name = group_name(log, task);
+        let position = group.get("position").and_then(serde_json::Value::as_u64).unwrap_or(u64::MAX);
+        match groups.iter_mut().find(|(known, _)| *known == name) {
+            Some((_, tasks)) => tasks.push((position, id)),
+            None => groups.push((name, vec![(position, id)])),
+        }
+    }
+    // O grupo que leva o código de uma tarefa é o grupo dela: a tarefa, que
+    // não grava grupo, vai na mesma onda, na frente.
+    for &id in ready {
+        let Some(task) = log.get(id).filter(|task| !task.fields.contains_key(GROUP)) else { continue };
+        let name = group_name(log, task);
+        if let Some((_, tasks)) = groups.iter_mut().find(|(known, _)| *known == name) {
+            tasks.push((0, id));
+        }
+    }
+    groups
+        .into_iter()
+        .map(|(_, mut tasks)| {
+            tasks.sort_unstable();
+            let tasks: Vec<u64> = tasks.into_iter().map(|(_, id)| id).collect();
+            let files = tasks.iter().flat_map(|id| files_of(*id).into_iter().flatten().cloned()).collect();
+            let base = live.iter().find(|(_, left)| tasks.iter().any(|id| left.contains(id))).map(|(summary, _)| summary.id);
+            (Batch { tasks, files }, base)
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -118,7 +172,7 @@ mod tests {
         let summary = stopped_with(root, &[left]);
 
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![1, 2]));
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![1, 2]));
         assert_eq!(wave_order(root, 1), vec![left], "o resumo vem antes, com o que ele deixou");
         assert_eq!(wave_order(root, 2), vec![lower], "a de código mais baixo sai depois");
         let log = spec_now(root);
@@ -129,12 +183,12 @@ mod tests {
         sent(root, 1, Some(summary));
         sent(root, 2, None);
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![]), "nenhuma onda nova");
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![]), "nenhuma onda nova");
     }
 
     /// A tarefa pronta que divide arquivo, direto, com uma das que o resumo
     /// deixou vai na onda dele; a que só divide arquivo com essa, por
-    /// corrente, não vai, e espera a vez.
+    /// corrente, não vai, e sai na sua onda, como a sem relação.
     #[test]
     fn a_ready_task_sharing_a_file_with_the_left_ones_rides_along_but_a_chain_does_not() {
         let dir = tempdir().unwrap();
@@ -147,37 +201,65 @@ mod tests {
         stopped_with(root, &[left]);
 
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![1, 2]));
-        assert_eq!(wave_order(root, 1), vec![left, along], "a que divide arquivo vai de carona");
-        assert_eq!(wave_order(root, 2), vec![apart], "a da corrente espera, e a sem relação sai à parte");
-        assert_eq!(spec_now(root).current(chained).and_then(|task| task.wave()), None, "a da corrente segue no backlog");
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![1, 2, 3]));
+        let id = |task: u64| log.current(task).unwrap().id;
+        assert_eq!(wave_order(root, 1), vec![id(left), id(along)], "a que divide arquivo vai de carona");
+        assert_eq!(wave_order(root, 2), vec![id(chained)], "a da corrente sai na sua onda");
+        assert_eq!(wave_order(root, 3), vec![id(apart)], "a sem relação sai à parte");
     }
 
-    /// O resumo preso por uma onda em andamento reserva os arquivos dele: a
-    /// tarefa que divide arquivo com a onda dele, mesmo só por corrente, não
-    /// toma a vaga que ele deixa livre, e a que não divide, com o tamanho com
-    /// que um lote sai ao lado da onda em andamento, sai.
+    /// A tarefa pronta que o classificador pôs no grupo de assunto de uma das
+    /// que o resumo deixou vai na onda dele, sem arquivo em comum; a pronta
+    /// sem grupo e sem arquivo em comum sai à parte.
     #[test]
-    fn a_summary_held_by_a_running_wave_keeps_its_files_from_a_later_task() {
+    fn task_triage_group_rides_along_with_the_summary_without_a_shared_file() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, crit) = backlog_project(root);
+        let left = backlog_task_on(root, said, crit, "Mexer no código de dois.", &["src/b.rs"]);
+        let code = spec_now(root).codes()[&left].clone();
+        let grouped = id_of(&write(
+            root,
+            "x",
+            "task",
+            json!({"text": "Mexer no cinco, do mesmo assunto.", "files": [{"path": "src/e.rs"}], "depends_on": [],
+            "covers": [crit], "origin": said, "group": {"name": code, "position": 2}}),
+        ));
+        let apart = backlog_task_on(root, said, crit, "Mexer no quatro.", &["src/d.rs"]);
+        stopped_with(root, &[left]);
+
+        let log = spec_now(root);
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![1, 2]));
+        let id = |task: u64| log.current(task).unwrap().id;
+        assert_eq!(wave_order(root, 1), vec![id(left), id(grouped)], "a do mesmo grupo vai de carona");
+        assert_eq!(wave_order(root, 2), vec![id(apart)], "a sem grupo sai à parte");
+    }
+
+    /// O resumo que divide arquivo com uma onda em andamento sai ao lado
+    /// dela, com a tarefa que divide arquivo direto com a dele; a que só
+    /// divide por corrente e a que não divide nada saem cada uma na sua vaga.
+    #[test]
+    fn a_summary_sharing_a_file_with_a_running_wave_leaves_beside_it() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let (said, crit) = backlog_project(root);
         backlog_task_on(root, said, crit, "Mexer no código de dois.", &["src/b.rs"]);
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![1]));
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![1]));
         seed_running(root, 1);
 
         let left = backlog_task_on(root, said, crit, "Mexer nos dois.", &["src/b.rs", "src/a.rs"]);
-        backlog_task_on(root, said, crit, "Mexer no um.", &["src/a.rs", "src/d.rs"]);
+        let along = backlog_task_on(root, said, crit, "Mexer no um.", &["src/a.rs", "src/d.rs"]);
         let chained = backlog_task_on(root, said, crit, "Mexer no quatro.", &["src/d.rs"]);
         let apart = backlog_task_on(root, said, crit, "Mexer no cinco.", &SIX_FILES);
         stopped_with(root, &[left]);
 
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![2]));
-        assert_eq!(wave_order(root, 2), vec![apart], "só a que não divide arquivo sai");
-        assert_eq!(spec_now(root).current(chained).and_then(|task| task.wave()), None, "a que divide espera a vez");
-        assert_eq!(spec_now(root).current(left).and_then(|task| task.wave()), None, "o resumo espera a onda em andamento");
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![2, 3, 4]));
+        let id = |task: u64| log.current(task).unwrap().id;
+        assert_eq!(wave_order(root, 2), vec![id(left), id(along)], "o resumo sai ao lado da onda em andamento");
+        assert_eq!(wave_order(root, 3), vec![id(chained)], "a da corrente sai na sua vaga");
+        assert_eq!(wave_order(root, 4), vec![id(apart)], "a que não divide nada também");
     }
 
     /// Summary continuation keeps its own wave; independent small work can
@@ -189,14 +271,14 @@ mod tests {
         let (said, crit) = backlog_project(root);
         backlog_task_on(root, said, crit, "Mexer na parte grande.", &SIX_FILES);
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![1]));
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![1]));
         seed_running(root, 1);
         let left = backlog_task_on(root, said, crit, "Mexer no código de dois.", &["src/b.rs"]);
         let other = backlog_task_on(root, said, crit, "Mexer no código de três.", &["src/c.rs"]);
         stopped_with(root, &[left]);
 
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![2, 3]));
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![2, 3]));
         assert_eq!(wave_order(root, 2), vec![left], "summary stays attached");
         assert_eq!(wave_order(root, 3), vec![other], "independent small work uses a slot");
     }
@@ -279,8 +361,8 @@ mod tests {
     }
 
     /// A tarefa que outro resumo acompanha não vai de carona na onda de um
-    /// resumo, mesmo dividindo arquivo com ela: espera a vez de sair na onda
-    /// do resumo dela.
+    /// resumo, mesmo dividindo arquivo com ela: sai na onda do resumo dela,
+    /// na mesma rodada.
     #[test]
     fn a_task_another_summary_carries_does_not_ride_along() {
         let dir = tempdir().unwrap();
@@ -292,8 +374,46 @@ mod tests {
         stopped_in(root, 8, &[two]);
 
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None), Ok(vec![1]));
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![1, 2]));
         assert_eq!(wave_order(root, 1), vec![one], "only the task of its own summary");
-        assert_eq!(spec_now(root).current(two).and_then(|task| task.wave()), None, "it waits for its own summary");
+        assert_eq!(wave_order(root, 2), vec![two], "it leaves with its own summary");
+    }
+
+    /// As tarefas prontas que gravam a mesma onda do classificador saem
+    /// juntas, na posição que ele deu; a sem grupo fica para a montagem de
+    /// sempre, e cada onda leva os arquivos das tarefas dela.
+    #[test]
+    fn the_waves_the_classifier_formed_leave_whole_in_its_order() {
+        let task = |id: u64, file: &str, group: Option<(&str, u64)>| {
+            let mut line = json!({ "v": 1, "id": id, "type": "task", "title": format!("t{id}"), "files": [{ "path": file }], "depends_on": [] });
+            if let Some((name, position)) = group {
+                line["group"] = json!({ "name": name, "position": position });
+            }
+            line.to_string()
+        };
+        let lines = [
+            task(1, "web/auth/token.ts", Some(("A sessão renova o token", 2))),
+            task(2, "web/cart/total.ts", None),
+            task(3, "web/auth/session.ts", Some(("A sessão renova o token", 1))),
+            task(4, "web/report/export.ts", Some(("A exportação grava um arquivo limpo", 1))),
+        ];
+        let log = mustard_core::domain::spec_events::parse_log(&lines.join("\n"));
+        let population: Vec<crate::shared::dag::BacklogTask<u64>> = log
+            .visible()
+            .into_iter()
+            .map(|event| crate::shared::dag::BacklogTask {
+                id: event.id,
+                depends_on: std::collections::BTreeSet::new(),
+                files: super::super::queue::task_files(event),
+                done: false,
+                blocked: false,
+                priority: false,
+            })
+            .collect();
+        let waves = super::group_waves(&log, &[1, 2, 3, 4], &population);
+        let tasks: Vec<Vec<u64>> = waves.iter().map(|(wave, _)| wave.tasks.clone()).collect();
+        assert_eq!(tasks, [vec![3, 1], vec![4]]);
+        assert!(waves[0].0.files.contains("web/auth/token.ts") && waves[0].0.files.contains("web/auth/session.ts"), "{:?}", waves[0]);
+        assert_eq!((waves[0].1, waves[1].1), (None, None), "no summary is live in this log");
     }
 }

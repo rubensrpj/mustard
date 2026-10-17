@@ -346,14 +346,19 @@ pub fn last_user_message(log: &SpecLog) -> Option<&SpecEvent> {
 /// a resposta nova sem `reply_to` numa spec que já tem mensagem do usuário é
 /// recusada, como era antes de o campo poder faltar.
 ///
+/// O maior número de antes é lido uma vez: o evento novo é o que passa dele.
+/// Lido para cada evento de depois, o arquivo inteiro era percorrido de novo
+/// a cada evento, e a gravação numa spec de dez mil eventos levava segundos.
+///
 /// # Errors
 ///
 /// [`Refusal::MissingField`] com o campo `reply_to`.
 pub fn reply_rule(before: &SpecLog, after: &SpecLog) -> Result<(), Refusal> {
+    let last_before = before.max_id();
     let unanswered = after
         .events
         .iter()
-        .any(|e| e.id > before.max_id() && e.event_type == "response" && e.int("reply_to").is_none());
+        .any(|e| e.id > last_before && e.event_type == "response" && e.int("reply_to").is_none());
     if unanswered && last_user_message(before).is_some() {
         return Err(Refusal::MissingField { event_type: "response".to_string(), field: "reply_to".to_string() });
     }
@@ -1118,5 +1123,42 @@ mod tests {
             Ok(()),
             "o que se mede é a primeira frase, a que vira título",
         );
+    }
+
+    /// A regra da resposta sobre a conversa `lines` com os eventos `new`
+    /// gravados a seguir, numa gravação só.
+    fn reply_with(lines: &[Value], new: &[Value]) -> Result<(), Refusal> {
+        let before = log(lines);
+        let mut after = lines.to_vec();
+        for (id, event) in (before.max_id() + 1..).zip(new) {
+            let mut event = event.clone();
+            event["v"] = json!(1);
+            event["id"] = json!(id);
+            after.push(event);
+        }
+        reply_rule(&before, &log(&after))
+    }
+
+    /// Numa spec com mensagem do usuário, a resposta nova sem `reply_to` é
+    /// recusada, também quando chega depois de outro evento na mesma
+    /// gravação, e a com `reply_to` passa. A resposta do turno em que a spec
+    /// nasceu, gravada antes sem o campo, não segura a gravação seguinte, e
+    /// sem mensagem do usuário a resposta sem o campo passa.
+    #[test]
+    fn reply_rule_refuses_a_new_answer_without_reply_to_and_takes_one_with_it() {
+        let call = json!({ "type": "call", "author": "binary", "command": "task triage" });
+        let refused = Err(Refusal::MissingField { event_type: "response".to_string(), field: "reply_to".to_string() });
+        let talk = surveyed_with(&[answer("Sugiro um objetivo. Serve?"), user("Serve.")]);
+        let said = 3;
+
+        assert_eq!(reply_with(&talk, &[answer("Gravei o objetivo.")]), refused, "a resposta sem reply_to");
+        assert_eq!(reply_with(&talk, &[call.clone(), answer("Gravei o objetivo.")]), refused, "a resposta sem reply_to depois de outro evento");
+        let mut replied = answer("Gravei o objetivo.");
+        replied["reply_to"] = json!(said);
+        assert_eq!(reply_with(&talk, &[call.clone(), replied]), Ok(()), "a resposta com reply_to");
+        assert_eq!(reply_with(&talk, &[call]), Ok(()), "a resposta antiga sem reply_to não conta");
+
+        let born = surveyed_with(&[]);
+        assert_eq!(reply_with(&born, &[answer("Sugiro um objetivo. Serve?")]), Ok(()), "sem mensagem do usuário");
     }
 }

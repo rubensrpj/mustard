@@ -54,7 +54,9 @@ impl<'a> Listing<'a> {
             }
             steps.push(TaskStep { task, attended });
         }
-        let obey = material.agreed.iter().copied().filter(|item| fresh(item)).collect();
+        // A mesma conta com que a entrega da onda é cobrada, sobre a lista
+        // que o envio grava do que o pedido lê.
+        let obey = super::carried_agreed(material.agreed.iter().copied()).into_iter().filter(|item| fresh(item)).collect();
         let lessons = material.lessons.clone();
         Self { summary, fix, steps, obey, lessons }
     }

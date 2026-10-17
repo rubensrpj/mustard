@@ -413,6 +413,42 @@ pub fn project_days(config_dir: &Path, root: &Path, range: &Range) -> Vec<DayRow
     rows.map(|row| DayRow { project: name.clone().unwrap_or_default(), ..row }).collect()
 }
 
+/// A pasta do histórico de gasto do projeto `root`, dentro dele: as linhas de
+/// dia só dele, pela pasta inteira, sem outro projeto de mesmo nome.
+#[must_use]
+pub fn project_history_dir(root: &Path) -> PathBuf {
+    root.join(".claude").join("mustard").join("usage").join("project-history")
+}
+
+/// Fecha no histórico do projeto de `start` os dias passados que faltam,
+/// contados nas conversas de `config_dir` ([`project_days`]), e reconta hoje
+/// como parcial. O dia já fechado não se reabre. Devolve o último dia
+/// fechado, ou `None` quando `start` não é de um projeto com `mustard.json`.
+///
+/// # Errors
+///
+/// As recusas de [`load`] e de [`update`].
+pub fn close_project_history(config_dir: &Path, start: &Path, today: &str) -> Result<Option<String>, Refusal> {
+    let root = crate::io::spec_events::spec_root(start);
+    if !ProjectConfig::exists(&root) {
+        return Ok(None);
+    }
+    let dir = project_history_dir(&root);
+    let range = load(&dir)?.to_count(today);
+    let closed = range.as_ref().map(|range| project_days(config_dir, &root, range));
+    let today_range = Range { first: Some(today.to_string()), last: today.to_string() };
+    let open: Vec<DayRow> = project_days(config_dir, &root, &today_range).into_iter().map(|row| DayRow { partial: true, ..row }).collect();
+    update(&dir, |ledger| {
+        if let (Some(range), Some(closed)) = (&range, closed) {
+            ledger.record_counted(range, closed);
+        }
+        ledger.open_rows = open;
+        ledger.open_day = Some(today.to_string());
+        ledger.measured_at = Some(Utc::now().to_rfc3339());
+        ledger.counted_through.clone()
+    })
+}
+
 /// As conversas do projeto de `root` em `config_dir` mudadas desde `since`:
 /// as sessões e os agentes abertos nele e nas cópias de onda dele, com o
 /// projeto pela pasta inteira, como em [`project_days`]. Cada conversa é do
@@ -705,5 +741,24 @@ mod tests {
         let days = project_days(&config, &root, &range(None, "2026-10-02"));
         let seen: Vec<_> = days.iter().map(|row| (row.day.as_str(), row.tokens, row.actions, row.code_searches, row.jev_tokens)).collect();
         assert_eq!(seen, [("2026-09-30", 100, 2, 1, 0), ("2026-10-01", 130, 2, 1, 0)], "the agent joins its session's day");
+    }
+
+    /// O histórico de um projeto fecha só os dias dele: outro projeto com o
+    /// mesmo nome de pasta fica fora.
+    #[test]
+    fn the_project_history_excludes_another_project_with_the_same_name() {
+        let dir = tempdir().unwrap();
+        let config = dir.path().join("config");
+        let left = project(&dir.path().join("left"), "repo");
+        let right = project(&dir.path().join("right"), "repo");
+        conversation(
+            &config,
+            "fixture",
+            "session",
+            &[reply("left", "2026-10-01T12:00:00Z", &left, 100, &[]), reply("right", "2026-10-01T12:00:00Z", &right, 900, &[])],
+        );
+        assert_eq!(close_project_history(&config, &left, "2026-10-02"), Ok(Some("2026-10-01".to_string())));
+        let rows = load(&project_history_dir(&left)).unwrap().rows;
+        assert_eq!(rows.iter().map(|row| (row.day.as_str(), row.tokens)).collect::<Vec<_>>(), [("2026-10-01", 100)]);
     }
 }

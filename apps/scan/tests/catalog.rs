@@ -1,6 +1,6 @@
 #[path = "support/model.rs"]
 mod model;
-use mustard_core::io::{knowledge, project_map as store};
+use mustard_core::io::{knowledge, map_notes, project_map as store};
 use serde_json::{Value, json};
 
 fn query(root: &std::path::Path, text: &str) -> Value {
@@ -88,6 +88,42 @@ fn ambiguous_names_and_examples_do_not_create_document_links_and_line_addresses_
     std::fs::remove_file(root.join("src/other.rs")).unwrap();
     model::scan(root, &root.join(".claude"), &[]);
     assert_eq!(query(root, "fechamento aprovado")["cards"][0]["name"], "restoreLedger");
+}
+
+/// A gravação que troca só um arquivo TypeScript refaz as citações só do
+/// documento que cita esse arquivo, e deixa para depois o perfil do projeto:
+/// quem o lê nesse meio tempo o vê já com o arquivo novo, e a passada
+/// seguinte sem mudança o grava.
+#[test]
+fn a_save_of_one_file_settles_only_the_documents_citing_it_and_leaves_the_profile_for_later() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(root.join("docs")).unwrap();
+    std::fs::write(root.join("mustard.json"), "{}").unwrap();
+    std::fs::write(root.join("src/store.ts"), "export function restoreLedger(): number { return 1; }\n").unwrap();
+    std::fs::write(root.join("src/books.ts"), "export function closeBooks(): number { return 2; }\n").unwrap();
+    std::fs::write(root.join("docs/recovery.md"), "# Recovery\nThe approved closing uses `restoreLedger`.\n").unwrap();
+    std::fs::write(root.join("docs/closing.md"), "# Closing\nThe month ends with `closeBooks`.\n").unwrap();
+    model::scan(root, &root.join(".claude"), &["--native"]);
+    let db = || rusqlite::Connection::open(store::model_path(root)).unwrap();
+    let cited_at = |resource: &str| db().query_row("SELECT ref_line FROM knowledge_resource_refs WHERE resource=?1", [resource], |r| r.get::<_, i64>(0)).unwrap();
+    let stored_lines = || serde_json::from_str::<Value>(&db().query_row("SELECT payload FROM project_profile", [], |r| r.get::<_, String>(0)).unwrap()).unwrap()["size"]["lines"].clone();
+    let mark = || db().query_row("SELECT mark FROM blocks WHERE name='project_profile'", [], |r| r.get::<_, Option<String>>(0)).unwrap();
+    // A citação que a gravação refizesse voltaria à linha 2.
+    db().execute("UPDATE knowledge_resource_refs SET ref_line=99 WHERE resource='docs/closing.md'", []).unwrap();
+    let before = stored_lines();
+
+    std::fs::write(root.join("src/store.ts"), "export function restoreLedger(): number {\n  return 3;\n}\n").unwrap();
+    model::scan(root, &root.join(".claude"), &["--native"]);
+    assert_eq!((cited_at("docs/recovery.md"), cited_at("docs/closing.md")), (2, 99));
+    assert_eq!(knowledge::audit::run(root).unwrap()["issues"], json!([]), "the citing document follows the new symbol");
+    assert_eq!((mark().as_deref(), stored_lines()), (Some("behind"), before.clone()));
+    let read = mustard_core::io::project_profile::snapshot(root);
+    assert_eq!(read["data"]["size"]["lines"], json!(before.as_u64().unwrap() + 2), "{read}");
+
+    model::scan(root, &root.join(".claude"), &["--native"]);
+    assert_eq!((mark().as_deref(), stored_lines()), (Some(""), read["data"]["size"]["lines"].clone()));
 }
 
 #[test]
@@ -206,6 +242,64 @@ fn native_audit_checks_receipts_indexes_and_plans_and_detects_a_missing_posting(
     drop(db);
     let missing = knowledge::audit::run(root).unwrap();
     assert!(missing["issues"].as_array().unwrap().iter().any(|i| i["check"] == "canonical_symbol_missing"), "{missing}");
+}
+
+/// A auditoria conta as frases de uma linha num projeto em TypeScript lido
+/// pelo scan: a frase da função cujo arquivo não mudou e a do arquivo inteiro
+/// seguem em dia; a do método cujo arquivo mudou e a da função cujo texto
+/// analisado não é JSON envelhecem, sem derrubar a auditoria, que aponta o
+/// texto estragado. O método e essa função passam a contar como funções sem
+/// frase; a classe e a frase do arquivo inteiro não contam.
+#[test]
+fn audit_counts_fresh_and_stale_notes_and_functions_without_a_fresh_note() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"pt-BR","code":"en-US"}}"#).unwrap();
+    std::fs::write(root.join("src/price.ts"), "export function priceOf(amount: number): number { return amount * 2; }\n").unwrap();
+    std::fs::write(root.join("src/order.ts"), "export class Order {\n  total(): number { return 1; }\n}\n").unwrap();
+    std::fs::write(root.join("src/tax.ts"), "export function taxOf(amount: number): number { return amount / 10; }\n").unwrap();
+    model::scan(root, &root.join(".claude"), &[]);
+    let model = store::model_path(root);
+    for (file, name, text) in [
+        ("src/price.ts", "priceOf", "Calcula o preço cobrado do cliente."),
+        ("src/price.ts", "", "Regras de preço da loja."),
+        ("src/order.ts", "total", "Soma o pedido do cliente."),
+        ("src/tax.ts", "taxOf", "Calcula o imposto do pedido."),
+    ] {
+        map_notes::write(&model, root, &map_notes::NewNote { file, name, text, spec: "loja" }).unwrap();
+    }
+    std::fs::write(root.join("src/order.ts"), "export class Order {\n  total(): number { return 2; }\n}\n").unwrap();
+    model::scan(root, &root.join(".claude"), &[]);
+    let db = rusqlite::Connection::open(&model).unwrap();
+    db.execute("UPDATE texts SET analysis='not-json' WHERE path='src/tax.ts'", []).unwrap();
+    drop(db);
+    let audit = knowledge::audit::run(root).unwrap();
+    let counts = &audit["counts"];
+    assert_eq!((&counts["notes_fresh"], &counts["notes_stale"], &counts["functions_without_note"]), (&json!(2), &json!(2), &json!(2)), "{audit}");
+    assert!(audit["issues"].as_array().unwrap().iter().any(|i| i["check"] == "invalid_analysis_json"), "{audit}");
+}
+
+/// Num arquivo em TypeScript lido pelo scan, com duas funções e a frase de
+/// cada uma, mudar o corpo da segunda envelhece só a frase dela: a da
+/// primeira segue em dia, e a do arquivo inteiro envelhece com ele.
+#[test]
+fn a_changed_function_ages_only_its_own_note_in_a_scanned_typescript_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"pt-BR","code":"en-US"}}"#).unwrap();
+    let body = |refund: &str| format!("export function charge(amount: number): number {{\n  return amount;\n}}\n\nexport function refund(amount: number): number {{\n  return {refund};\n}}\n");
+    std::fs::write(root.join("src/pay.ts"), body("amount")).unwrap();
+    model::scan(root, &root.join(".claude"), &[]);
+    let model = store::model_path(root);
+    for (name, text) in [("charge", "Cobra o cliente."), ("refund", "Devolve o dinheiro do cliente."), ("", "Pagamentos da loja.")] {
+        map_notes::write(&model, root, &map_notes::NewNote { file: "src/pay.ts", name, text, spec: "loja" }).unwrap();
+    }
+    std::fs::write(root.join("src/pay.ts"), body("-amount")).unwrap();
+    model::scan(root, &root.join(".claude"), &[]);
+    let stale = |name: &str| map_notes::of_at(&model, "src/pay.ts", name).unwrap().unwrap().stale;
+    assert_eq!((stale("charge"), stale("refund"), stale("")), (false, true, true));
 }
 
 #[test]

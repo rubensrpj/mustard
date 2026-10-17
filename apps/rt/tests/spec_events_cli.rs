@@ -170,8 +170,6 @@ fn approved_with_waves(root: &Path, waves: u64) {
     support::copies_leave_with_the_test(root);
     seed_state(root, &json!({"author": "binary", "phase": "plan", "branch": "feature/teste", "base": "dev"}));
     let said = seed_binary(root, "message", &json!({"author": "user", "text": "o plano"}));
-    // A prova precisa passar de verdade: a rodada agora roda o critério
-    // coberto antes de comitar.
     let crit = seed_binary(root, "criterion",
         &json!({"when": "a", "then": "b", "proof": "git --version", "form": "ubiquitous", "origin": said}));
     for n in 1..=waves {
@@ -621,12 +619,10 @@ fn the_dispatch_reading_returns_every_item_the_wave_request_lists() {
 
 /// O commit da rodada nunca depende da lista de arquivos que a onda
 /// declara: ele lê da cópia dela o que mudou de fato. A onda 1 muda o
-/// arquivo que declarou e outro que não citou, o repositório continua
-/// compilando, e o commit leva os dois, com um aviso da divergência. A onda
-/// 2 deixa o comando de compilação quebrado, e a rodada não comita nada
-/// dela: o repositório volta ao que era, e a recusa mostra o erro.
+/// arquivo que declarou e outro que não citou, e o commit leva os dois,
+/// com um aviso da divergência.
 #[test]
-fn a_wave_that_still_builds_commits_the_undeclared_file_and_one_that_breaks_the_build_is_refused() {
+fn the_round_commits_the_undeclared_file_the_wave_changed() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     let git = |args: &[&str]| {
@@ -637,10 +633,6 @@ fn a_wave_that_still_builds_commits_the_undeclared_file_and_one_that_breaks_the_
             .output()
             .expect("git");
         assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-    };
-    let head = || {
-        let out = Command::new("git").args(["rev-parse", "HEAD"]).current_dir(root).output().expect("git rev-parse");
-        String::from_utf8_lossy(&out.stdout).trim().to_string()
     };
     support::copies_leave_with_the_test(root);
 
@@ -678,8 +670,7 @@ fn a_wave_that_still_builds_commits_the_undeclared_file_and_one_that_breaks_the_
 
     let copy = |wave: u64| mustard_core::io::wave_prompt::slot_path(root, "teste", usize::try_from(wave).expect("a wave number fits") - 1);
 
-    // Onda 1: muda o arquivo declarado e um outro que a entrega não cita; o
-    // repositório continua compilando com o Makefile que já está lá.
+    // Onda 1: muda o arquivo declarado e um outro que a entrega não cita.
     std::fs::write(copy(1).join("a1.rs"), "fn one() {}\n// muda\n").expect("a1 muda");
     std::fs::write(copy(1).join("extra.rs"), "fn main() {}\n").expect("extra");
     read_request(root, 1);
@@ -712,23 +703,6 @@ fn a_wave_that_still_builds_commits_the_undeclared_file_and_one_that_breaks_the_
     assert_eq!(warned[1]["reason"], "scope-expanded", "{body}");
     assert_eq!(warned[1]["files"], json!(["extra.rs"]), "{body}");
     assert_eq!(warned[1]["classification"], "necessity-unverified", "{body}");
-
-    // Onda 2: a cópia dela deixa o comando de compilação quebrado.
-    let before = head();
-    std::fs::write(copy(2).join("Makefile"), "default:\n\texit 1\n").expect("Makefile quebrado");
-    read_request(root, 2);
-    finish_tasks(root, 2);
-    write(root, "delivered", &json!({"wave": 2, "text": "Saiu.", "files": ["Makefile"], "commit": "makefile sai"}));
-    let out = rt(root, &["round", "--dispatch", "--spec", "teste"]).output().expect("round 2");
-    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stdout));
-    let body = stdout_json(&out);
-    assert_eq!(body["reason"], json!("round-build-failed"), "{body}");
-    assert_eq!(head(), before, "nada foi comitado com o repositório quebrado");
-    assert_eq!(
-        std::fs::read_to_string(root.join("Makefile")).expect("o Makefile do principal"),
-        "default:\n\t@true\n",
-        "o repositório principal volta ao que era: nada da onda 2 entrou"
-    );
 }
 
 fn index_file(root: &Path) -> std::path::PathBuf {

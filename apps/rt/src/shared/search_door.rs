@@ -42,6 +42,7 @@ use serde_json::{Map, Value, json};
 
 use crate::shared::code_route::in_search;
 use crate::shared::config_key::{NameFilter, Walk};
+use crate::shared::jev::measure_filter_call;
 use crate::shared::triage_view;
 
 /// Os números da busca com filtro, com o padrão no lugar do ausente e do
@@ -325,22 +326,12 @@ pub(crate) fn classify(ask: &Ask<'_>, assembled: &Assembled) -> Result<Classifie
     match assembled.filter.filter(&request) {
         Ok(filtered) => {
             let pieces = pieces(ask.root, &request.candidates, &filtered, admit)?;
-            measured.insert("filter".to_string(), json!(assembled.name));
-            measured.insert("filter_ms".to_string(), json!(filtered.usage.millis));
-            if !filtered.usage.incomplete {
-                measured.insert("tokens".to_string(), json!(filtered.usage.input_tokens));
-                measured.insert("cost_micro_usd".to_string(), json!(filtered.usage.cost_micro_usd));
-            }
-            measured.insert("requests".to_string(), json!(filtered.usage.requests));
+            measure_filter_call(&mut measured, assembled.name, calling, Ok(&filtered.usage));
             measured.insert("returned".to_string(), json!(pieces.len()));
-            if !filtered.usage.model.is_empty() {
-                measured.insert("model".to_string(), json!(filtered.usage.model));
-            }
             Ok(Classified { outcome: Outcome::Classified { verdict: filtered.verdict, pieces }, measured })
         }
         Err(error) => {
-            measured.insert("filter".to_string(), json!(format!("{}:{}", assembled.name, error.reason())));
-            measured.insert("filter_ms".to_string(), json!(u64::try_from(calling.elapsed().as_millis()).unwrap_or(u64::MAX)));
+            measure_filter_call(&mut measured, assembled.name, calling, Err(&error));
             measured.insert("returned".to_string(), json!(ask.triaged.files.len()));
             Ok(Classified { outcome: Outcome::Failed(error), measured })
         }

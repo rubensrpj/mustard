@@ -287,6 +287,12 @@ impl PreciseSymbols for ScipSymbols<'_> {
         if location.line == 0 {
             return Err("precise-line-starts-at-one".into());
         }
+        // Abrir o mapa com bloco a pôr em dia o refaria aqui, ou esperaria a
+        // trava da passada que o refaz: o índice importado fica de fora, e a
+        // pergunta segue para o provedor seguinte.
+        if store::needs_block_update(&store::model_path(self.root)) {
+            return Err(crate::io::code_search::operations::MAP_OUTDATED.into());
+        }
         let db =
             super::open_existing(&store::model_path(self.root)).map_err(|e| format!("{e:?}"))?;
         let conn = db
@@ -608,6 +614,27 @@ mod tests {
             .iter()
             .all(|r| r.source.file == "a.ts")
         );
+    }
+    /// Num mapa com bloco de outra versão do formato, o índice importado não
+    /// responde: abrir o mapa refaria o bloco aqui, que é da passada do scan.
+    #[test]
+    fn an_outdated_map_block_leaves_the_imported_index_out_without_rebuilding_it() {
+        let (dir, index) = fixture();
+        let root = dir.path();
+        import(root, root, &save(root, &index), None).unwrap();
+        let model = store::model_path(root);
+        let version = || {
+            MapDb::open(&model, root, &[]).unwrap().conn().query_row("SELECT version FROM blocks WHERE name = 'knowledge_index'", [], |row| row.get::<_, u32>(0)).unwrap()
+        };
+        let current = version();
+        MapDb::open(&model, root, &[]).unwrap().write(|tx| Ok(tx.execute_batch("UPDATE blocks SET version = version - 1 WHERE name = 'knowledge_index'")?)).unwrap();
+        let port = ScipSymbols { root, tree: root };
+        let location = Location { file: "a.ts", line: 2, column_bytes: 1 };
+
+        let refused = port.resolve(&location, Relation::Definitions, 64).err();
+
+        assert_eq!(refused.as_deref(), Some(crate::io::code_search::operations::MAP_OUTDATED));
+        assert_eq!(version(), current - 1, "the block is left to the scan pass");
     }
     #[test]
     fn failed_import_is_atomic_and_other_source_edits_invalidate_the_index() {

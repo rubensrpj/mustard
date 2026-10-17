@@ -216,6 +216,79 @@ fn migrated_structural_index_requires_refresh_even_for_previously_learned_source
     }
 }
 
+/// Um mapa herdado de outra versão do programa, com o índice de conhecimento
+/// velho, não é refeito pela busca: ela grava a fonte e pede a passada, e é a
+/// passada do scan que refaz o bloco.
+#[test]
+fn an_inherited_map_with_an_outdated_block_is_left_for_the_scan_to_rebuild() {
+    let dir=tempfile::tempdir().unwrap();let root=dir.path();
+    std::fs::write(root.join("mustard.json"),"{}").unwrap();
+    std::fs::write(root.join("entry.ts"),"export function entry(): number { return 1; }\n").unwrap();
+    model::scan(root,&root.join(".claude"),&["--native"]);
+    let record=|| mustard_core::io::knowledge::observations::record(root,root,&[("entry.ts".into(),1,"export function entry(): number { return 1; }".into())]).unwrap();
+    let map=|| rusqlite::Connection::open(root.join(".claude/grain.db")).unwrap();
+    let version=|| map().query_row("SELECT version FROM blocks WHERE name='knowledge_index'",[],|row|row.get::<_,u32>(0)).unwrap();
+    assert_eq!(record()["needs_scan"],false);
+    let current=version();
+    map().execute("UPDATE blocks SET version=?1 WHERE name='knowledge_index'",[current-1]).unwrap();
+    let inherited=record();
+    assert_eq!((inherited["needs_scan"].clone(),inherited["pending_paths"].clone(),version()),(json!(true),json!(["entry.ts"]),current-1),"{inherited}");
+    model::scan(root,&root.join(".claude"),&["--native"]);
+    let after=record();
+    assert_eq!((after["needs_scan"].clone(),version()),(json!(false),current),"{after}");
+}
+
+/// Numa cópia com o mapa herdado de outra versão do programa, a pergunta pelas
+/// partes de um arquivo TypeScript não espera a trava de outra gravação nem
+/// refaz o bloco velho que ela não lê: responde na hora com o mapa que a
+/// passada do scan gravou, e o bloco velho fica para a passada seguinte.
+#[test]
+fn a_question_on_an_inherited_map_answers_without_waiting_for_an_outdated_block() {
+    let dir=tempfile::tempdir().unwrap();let root=dir.path();
+    std::fs::write(root.join("mustard.json"),"{}").unwrap();
+    std::fs::write(root.join("entry.ts"),"export function entry(): number { return helper(); }\nfunction helper(): number { return 1; }\n").unwrap();
+    model::scan(root,&root.join(".claude"),&["--native"]);
+    let path=model::path_in(&root.join(".claude"));
+    let version=|| rusqlite::Connection::open(&path).unwrap().query_row("SELECT version FROM blocks WHERE name='pulls'",[],|row|row.get::<_,i64>(0)).unwrap();
+    let current=version();
+    let writer=rusqlite::Connection::open(&path).unwrap();
+    writer.execute("UPDATE blocks SET version=version-1 WHERE name='pulls'",[]).unwrap();
+    writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let started=std::time::Instant::now();
+    let read=mustard_core::io::project_map::read_for_at(&path,mustard_core::io::project_map::Need::Parts("entry.ts")).unwrap();
+    let waited=started.elapsed();
+    let parts=mustard_core::domain::project_map::parts(&read,"entry.ts").unwrap();
+    writer.execute_batch("COMMIT").unwrap();
+    assert!(waited<std::time::Duration::from_secs(1),"the question waited {waited:?}");
+    let names:Vec<&str>=parts.parts.iter().map(|part|part.name.as_str()).collect();
+    assert_eq!((names,version()),(vec!["entry","helper"],current-1));
+}
+
+/// Numa cópia, a confirmação da passada vai ao mapa do checkout principal. O
+/// bloco dele gravado por outra versão do programa fica para a passada dele:
+/// a confirmação grava a fonte aprendida na cópia sem refazer o bloco.
+#[test]
+fn the_acknowledgement_from_a_copy_leaves_an_outdated_block_of_the_main_map_to_its_scan() {
+    let dir=tempfile::tempdir().unwrap();
+    let (main,copy)=(dir.path().join("main"),dir.path().join("copy"));
+    let source="export function entry(): number { return 1; }";
+    for folder in [&main,&copy] {
+        std::fs::create_dir_all(folder).unwrap();
+        std::fs::write(folder.join("mustard.json"),"{}").unwrap();
+        std::fs::write(folder.join("entry.ts"),format!("{source}\n")).unwrap();
+    }
+    model::scan(&main,&main.join(".claude"),&["--native"]);
+    let map=|| rusqlite::Connection::open(main.join(".claude/grain.db")).unwrap();
+    let version=|| map().query_row("SELECT version FROM blocks WHERE name='knowledge_index'",[],|row|row.get::<_,u32>(0)).unwrap();
+    let current=version();
+    map().execute("UPDATE blocks SET version=?1 WHERE name='knowledge_index'",[current-1]).unwrap();
+    let learning=mustard_core::io::knowledge::observations::record(&main,&copy,&[("entry.ts".into(),1,source.into())]).unwrap();
+    assert_eq!(learning["needs_scan"],true,"{learning}");
+    mustard_core::io::knowledge::observations::scanned(&main,&copy,&learning).unwrap();
+    let indexed:String=map().query_row("SELECT indexed FROM search_files WHERE tree=?1 AND path='entry.ts'",[learning["tree"].as_str().unwrap()],|row|row.get(0)).unwrap();
+    assert_eq!((json!(indexed),version()),(learning["source_hashes"]["entry.ts"].clone(),current-1),"{learning}");
+}
+
 #[test]
 fn exact_entry_follows_current_dependency_with_no_query_word_and_preserves_native_result() {
     let dir=tempfile::tempdir().unwrap();let root=dir.path();

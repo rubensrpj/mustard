@@ -81,6 +81,11 @@ pub enum FlowCmd {
         /// mostrados de uma vez para um sim só.
         #[arg(long)]
         condensed: bool,
+        /// A resposta inteira, com cada ponto da lista e o conhecimento achado.
+        /// Sem ela, vêm a dica, o próximo ponto, os códigos dos pontos abertos
+        /// e só o que a dica manda usar.
+        #[arg(long)]
+        full: bool,
         /// Qualquer pasta dentro do repositório. Por padrão, a pasta atual.
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -107,8 +112,9 @@ pub enum FlowCmd {
     /// grava o envio com o pedido exato e marca a spec como em execução na
     /// primeira rodada. Com a entrega que uma onda gravou na spec, primeiro
     /// assume a volta e grava o veredito da revisão, formata só os arquivos
-    /// da rodada, executa build/provas pertinentes e faz o commit, e então
-    /// despacha as dependentes liberadas. Lint/suíte geral ficam para fechar.
+    /// da rodada e faz o commit, sem compilar nem rodar prova, e então
+    /// despacha as dependentes liberadas. A compilação, o lint, a suíte e as
+    /// provas ficam para o fechamento.
     /// Nenhuma etapa da rodada publica uma página externa.
     #[command(display_order = 3)]
     Round {
@@ -126,7 +132,13 @@ pub enum FlowCmd {
         /// `<PAUSED>`. Para reprovar a volta de uma onda, no lugar da `USAGE`
         /// dela vai a linha `<REJECTED>{"wave":1,"reason":"…"}</REJECTED>`,
         /// com o motivo: a rodada segura a volta fora do commit, a onda espera
-        /// um agente novo, e o motivo vai a ele.
+        /// um agente novo, e o motivo vai a ele. Para recusar a mudança de
+        /// plano que uma onda propôs, quando a mensagem do usuário já recusa,
+        /// vai a linha `<PLAN_REFUSED>{"wave":1,"reason":"…"}</PLAN_REFUSED>`:
+        /// como o clique em "Recusar", a rodada comita o que a onda mudou e
+        /// devolve as tarefas dela soltas ao backlog. A onda que mudou código
+        /// leva a `REVIEWED` dela na mesma rodada. Aceitar a mudança é só
+        /// pelo clique do usuário.
         /// Código exige revisão prévia por `run review-wave`. Depois de ler
         /// o diff e conferir regras/testes, aceite com
         /// `<REVIEWED>{"wave":1,"fingerprint":"…","note":"…"}</REVIEWED>`.
@@ -137,29 +149,38 @@ pub enum FlowCmd {
         /// esta opção, o comando somente consulta o estado.
         #[arg(long)]
         dispatch: bool,
+        /// A resposta inteira, com cada tarefa segurada e o detalhe dela. Sem
+        /// ela, as seguradas vêm agrupadas pelo motivo, com o detalhe uma vez.
+        #[arg(long)]
+        full: bool,
         /// Qualquer pasta dentro do repositório. Por padrão, a pasta atual.
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
     /// Prepara e mostra o diff real da onda para revisão antes do commit.
     /// Depois de ler o diff, passe `REVIEWED` com wave, fingerprint e note no
-    /// relatório da rodada. Mudança posterior invalida a revisão.
+    /// relatório da rodada. Mudança posterior invalida a revisão. A resposta
+    /// abre com a impressão digital, traz o diff inteiro e cada regra do
+    /// projeto pelo caminho e pelo tamanho.
     #[command(display_order = 22)]
     ReviewWave {
         #[arg(long)]
         wave: u64,
         #[arg(long)]
         spec: Option<String>,
+        /// A resposta inteira, com o texto de cada regra do projeto.
+        #[arg(long)]
+        full: bool,
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
     /// Fecha uma spec: grava o que voltou da última rodada, confere se a obra
     /// terminou (nenhuma onda sem commit, nenhuma reprovada sem o conserto e
     /// nenhum pedido do usuário sem onda que o entregue), roda em ambiente
-    /// limpo o lint e a suíte que o `mustard.json` declara e cada critério uma
-    /// vez, gravando a execução de cada um, e então grava a fase fechada,
-    /// solta a spec da sessão e prepara a cópia para o banco de dados das
-    /// páginas. Toda obra, mesmo a de uma onda só, recebe antes o pedido do
+    /// limpo a compilação, o lint e a suíte que o `mustard.json` declara e
+    /// cada critério uma vez, gravando a execução de cada um, e então grava a
+    /// fase fechada, solta a spec da sessão e prepara a cópia para o banco de
+    /// dados das páginas. Toda obra, mesmo a de uma onda só, recebe antes o pedido do
     /// agente de teste dedicado, numa cópia que o fechamento cria e apaga, e
     /// só fecha com a linha dele aprovada.
     #[command(display_order = 4)]
@@ -294,6 +315,28 @@ pub enum FlowCmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
+    /// Reorganiza a lista aberta pelo classificador das atividades, numa
+    /// chamada ao Jev: os grupos de mesmo sentido (a primeira tarefa de cada
+    /// grupo fica), as tarefas que uma entrega feita já cobre e a ordem dos
+    /// assuntos por valor (o que destrava mais tarefas ou o usuário, o pedido
+    /// urgente, o que corta gasto; no empate, o de resultado mais rápido).
+    /// Sem `--apply`, não grava nada e responde curto. A tarefa presa em onda
+    /// no ar fica de fora, com aviso; sem Jev, a lista fica como está.
+    #[command(display_order = 41)]
+    Triage {
+        /// A spec cuja lista aberta é reorganizada. Sem ela, a spec atual.
+        #[arg(long)]
+        spec: Option<String>,
+        /// Grava, sob a trava e tudo ou nada, a versão nova da primeira
+        /// tarefa de cada grupo, com o trabalho das outras, e remove as outras
+        /// e as cobertas, com o motivo. A resposta traz, para cada versão
+        /// nova, o pedido ao agente de análise da sessão que escreve o texto.
+        #[arg(long)]
+        apply: bool,
+        /// Qualquer pasta dentro do repositório. Por padrão, a pasta atual.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
 }
 
 /// Despacha um comando `run` da família do fluxo: roda o passo e responde
@@ -303,22 +346,23 @@ pub fn dispatch(cmd: FlowCmd) {
     match cmd {
         FlowCmd::Evidence {root,spec,wave,point,receipt,text}=>{
             let report=flow::evidence::run(&root,spec.as_deref(),wave,point.as_deref(),receipt.as_deref(),text.as_deref());
-            flow::answer("evidence",&root,spec.as_deref(),started,&report);
+            flow::answer("evidence",&root,spec.as_deref(),started,&report, false);
         }
         FlowCmd::Open { kind, name, base, pending, root } => {
-            let opts = flow::open::OpenOpts { root, kind, name, base, pending };
+            let session = crate::shared::spec_state::session_from_env();
+            let opts = flow::open::OpenOpts { root, kind, name, base, pending, session };
             let named = opts.name.clone();
-            flow::answer("open", &opts.root, named.as_deref(), started, &flow::open::open_at(&opts));
+            flow::answer("open", &opts.root, named.as_deref(), started, &flow::open::open_at(&opts), false);
         }
-        FlowCmd::Grill { spec, kinds, condensed, root } => {
+        FlowCmd::Grill { spec, kinds, condensed, full, root } => {
             let opts = flow::grill::GrillOpts { root, spec, kinds, condensed };
-            flow::answer("grill", &opts.root, opts.spec.as_deref(), started, &flow::grill::grill_at(&opts));
+            flow::answer("grill", &opts.root, opts.spec.as_deref(), started, &flow::grill::grill_at(&opts), full);
         }
         FlowCmd::Plan { spec, root } => {
             let opts = flow::plan::PlanOpts { root, spec };
-            flow::answer("plan", &opts.root, opts.spec.as_deref(), started, &flow::plan::plan_at(&opts));
+            flow::answer("plan", &opts.root, opts.spec.as_deref(), started, &flow::plan::plan_at(&opts), false);
         }
-        FlowCmd::Round { spec, report, root, dispatch } => {
+        FlowCmd::Round { spec, report, root, dispatch, full } => {
             if !dispatch && report.is_none() {
                 let mut out = flow::resume::resume_at(&flow::resume::ResumeOpts { root, spec });
                 out["mode"] = serde_json::json!("status");
@@ -330,31 +374,35 @@ pub fn dispatch(cmd: FlowCmd) {
                 return;
             }
             let opts = flow::round::RoundOpts { root, spec, report };
-            flow::answer("round", &opts.root, opts.spec.as_deref(), started, &flow::round::round_at(&opts));
+            flow::answer("round", &opts.root, opts.spec.as_deref(), started, &flow::round::round_at(&opts), full);
         }
-        FlowCmd::ReviewWave { wave, spec, root } => {
+        FlowCmd::ReviewWave { wave, spec, full, root } => {
             let out = flow::round::review::view_at(&root, spec.as_deref(), wave);
-            flow::answer("review-wave", &root, spec.as_deref(), started, &out);
+            flow::answer("review-wave", &root, spec.as_deref(), started, &out, full);
         }
         FlowCmd::Close { spec, report, pending_later, root } => {
             let opts = flow::close::CloseOpts { root, spec, report, pending_later };
-            flow::answer("close", &opts.root, opts.spec.as_deref(), started, &flow::close::close_at(&opts));
+            flow::answer("close", &opts.root, opts.spec.as_deref(), started, &flow::close::close_at(&opts), false);
         }
         FlowCmd::Resume { spec, root } => {
             let opts = flow::resume::ResumeOpts { root, spec };
-            flow::answer("resume", &opts.root, opts.spec.as_deref(), started, &flow::resume::resume_at(&opts));
+            flow::answer("resume", &opts.root, opts.spec.as_deref(), started, &flow::resume::resume_at(&opts), false);
         }
         FlowCmd::Discard { spec, remote, delete, confirm, root } => {
             let opts = flow::discard::DiscardOpts { root, spec, remote, delete, confirm };
-            flow::answer("discard", &opts.root, opts.spec.as_deref(), started, &flow::discard::discard_at(&opts));
+            flow::answer("discard", &opts.root, opts.spec.as_deref(), started, &flow::discard::discard_at(&opts), false);
         }
         FlowCmd::Reopen { reason, fix, spec, root } => {
             let opts = flow::reopen::ReopenOpts { root, spec, reason, fix };
-            flow::answer("reopen", &opts.root, opts.spec.as_deref(), started, &flow::reopen::reopen_at(&opts));
+            flow::answer("reopen", &opts.root, opts.spec.as_deref(), started, &flow::reopen::reopen_at(&opts), false);
+        }
+        FlowCmd::Triage { spec, apply, root } => {
+            let opts = flow::triage::TriageOpts { root, spec, apply };
+            flow::answer("triage", &opts.root, opts.spec.as_deref(), started, &flow::triage::triage_at(&opts), false);
         }
         FlowCmd::Answer { spec, point, event_type, json, facts, result, not_applicable, reason, root } => {
             let opts = flow::answer::AnswerOpts { root, spec, point, event_type, json, facts, result, not_applicable, reason };
-            flow::answer("answer", &opts.root, opts.spec.as_deref(), started, &flow::answer::answer_at(&opts));
+            flow::answer("answer", &opts.root, opts.spec.as_deref(), started, &flow::answer::answer_at(&opts), false);
         }
     }
 }

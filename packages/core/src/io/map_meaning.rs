@@ -284,23 +284,61 @@ struct Declaration {
 /// gravações ([`map_revision::stamp`]) que o último preenchimento guardou
 /// ainda é o do mapa.
 ///
+/// A passada lê e calcula fora da trava de gravação ([`read_pass`]) e grava
+/// dentro dela ([`write_pass`]): duas passadas ao mesmo tempo no mesmo mapa
+/// terminam as duas. Quando as duas partem do mesmo mapa, o bloco fica o de
+/// uma passada só; com mapas de versões diferentes, vale o da última a gravar,
+/// e o carimbo que ela guardou faz a passada seguinte refazer o que mudou.
+///
 /// Mapa sem declarações, ou sem o modelo carregado, fica como está.
 pub fn fill_at(map: &Path, root: &Path) -> Result<Report> {
     if !crate::domain::config::ProjectConfig::load(root).ai_vectors_enabled() {
         return Ok(Report::default());
     }
     let mut db = MapDb::open(map, root, &[BLOCK])?;
-    if !table_exists(db.conn(), "decls")? {
-        return Ok(Report::default());
+    match read_pass(db.conn(), root)? {
+        Read::Done(report) => Ok(report),
+        Read::Write(pass) => write_pass(&mut db, &pass),
+    }
+}
+
+/// O que uma passada leu do mapa e calculou, pronto para gravar.
+struct Pass {
+    declarations: Vec<Declaration>,
+    /// As posições, em `declarations`, das que têm vetor novo.
+    changed: Vec<usize>,
+    /// Os vetores das de `changed`, na mesma ordem.
+    vectors: Vec<Vec<i8>>,
+    /// As declarações com vetor que saíram do mapa: arquivo, nome e ordem.
+    gone: Vec<(String, String, i64)>,
+    /// As palavras, quando elas se refazem nesta passada.
+    words: Option<WordPlan>,
+    language_mark: String,
+    stamp: String,
+}
+
+/// O que a leitura de uma passada decidiu.
+enum Read {
+    /// Nada a gravar: os números do bloco como está.
+    Done(Report),
+    /// A gravação a fazer.
+    Write(Box<Pass>),
+}
+
+/// Lê o mapa e calcula os vetores de uma passada, sem a trava de gravação:
+/// outra passada pode gravar o bloco entre esta leitura e a gravação desta.
+fn read_pass(conn: &Connection, root: &Path) -> Result<Read> {
+    if !table_exists(conn, "decls")? {
+        return Ok(Read::Done(Report::default()));
     }
     let languages = Languages::of_project(root);
     let language_mark = languages.codes().join(",");
-    let stamp = map_revision::stamp(db.conn())?;
-    if stored_stamp(db.conn())?.as_deref() == Some(stamp.as_str()) && stored_language_mark(db.conn())?.as_deref() == Some(language_mark.as_str()) {
-        return Ok(Report { declarations: count_rows(db.conn(), "decl_vectors")?, computed: 0, words: count_rows(db.conn(), "word_vectors")? });
+    let stamp = map_revision::stamp(conn)?;
+    if stored_stamp(conn)?.as_deref() == Some(stamp.as_str()) && stored_language_mark(conn)?.as_deref() == Some(language_mark.as_str()) {
+        return Ok(Read::Done(Report { declarations: count_rows(conn, "decl_vectors")?, computed: 0, words: count_rows(conn, "word_vectors")? }));
     }
-    let declarations = read_declarations(db.conn())?;
-    let known = stored_hashes(db.conn())?;
+    let declarations = read_declarations(conn)?;
+    let known = stored_hashes(conn)?;
     let changed: Vec<usize> = (0..declarations.len())
         .filter(|at| {
             let d = &declarations[*at];
@@ -308,30 +346,39 @@ pub fn fill_at(map: &Path, root: &Path) -> Result<Report> {
         })
         .collect();
     let present: HashSet<(&str, &str, i64)> = declarations.iter().map(|d| (d.file.as_str(), d.name.as_str(), d.nth)).collect();
-    let gone: Vec<&(String, String, i64)> = known.keys().filter(|(file, name, nth)| !present.contains(&(file.as_str(), name.as_str(), *nth))).collect();
-    let words_stale = !changed.is_empty() || !gone.is_empty() || stored_language_mark(db.conn())?.as_deref() != Some(language_mark.as_str());
+    let gone: Vec<(String, String, i64)> =
+        known.into_keys().filter(|(file, name, nth)| !present.contains(&(file.as_str(), name.as_str(), *nth))).collect();
+    let words_stale = !changed.is_empty() || !gone.is_empty() || stored_language_mark(conn)?.as_deref() != Some(language_mark.as_str());
 
     let vectors = if changed.is_empty() {
         Vec::new()
     } else {
         let Some(model) = model() else {
-            return Ok(Report::default());
+            return Ok(Read::Done(Report::default()));
         };
         encode(model, changed.iter().map(|at| declarations[*at].text.as_str()))
     };
-    let plan = if words_stale { Some(plan_words(db.conn(), &declarations, &languages)?) } else { None };
+    let words = if words_stale { Some(plan_words(conn, &declarations, &languages)?) } else { None };
+    Ok(Read::Write(Box::new(Pass { declarations, changed, vectors, gone, words, language_mark, stamp })))
+}
 
+/// Grava a passada que [`read_pass`] leu, numa transação só, sob a trava de
+/// gravação do mapa. A palavra nova que outra passada gravou depois da
+/// leitura desta é substituída pela desta, com as formas e o vetor que esta
+/// calculou, em vez de recusar a gravação inteira; o vetor de declaração já
+/// se grava assim.
+fn write_pass(db: &mut MapDb, pass: &Pass) -> Result<Report> {
     db.write(|tx| {
         let mut drop_declaration = tx.prepare("DELETE FROM decl_vectors WHERE file = ?1 AND name = ?2 AND nth = ?3")?;
-        for (file, name, nth) in gone {
+        for (file, name, nth) in &pass.gone {
             drop_declaration.execute(params![file, name, nth])?;
         }
         let mut put = tx.prepare("INSERT OR REPLACE INTO decl_vectors(file, name, nth, hash, vector) VALUES (?1, ?2, ?3, ?4, ?5)")?;
-        for (at, vector) in changed.iter().zip(&vectors) {
-            let d = &declarations[*at];
+        for (at, vector) in pass.changed.iter().zip(&pass.vectors) {
+            let d = &pass.declarations[*at];
             put.execute(params![d.file, d.name, d.nth, fingerprint(&d.text), to_blob(vector)])?;
         }
-        if let Some(plan) = &plan {
+        if let Some(plan) = &pass.words {
             let current: HashSet<&str> = plan.words.iter().map(|(word, _)| word.as_str()).collect();
             let mut drop_word = tx.prepare("DELETE FROM word_vectors WHERE word = ?1")?;
             for word in plan.stored.iter().filter(|word| !current.contains(word.as_str())) {
@@ -341,17 +388,20 @@ pub fn fill_at(map: &Path, root: &Path) -> Result<Report> {
             for (word, forms) in plan.words.iter().filter(|(word, _)| plan.stored.contains(word)) {
                 update.execute(params![word, forms])?;
             }
-            let mut insert = tx.prepare("INSERT INTO word_vectors(word, forms, vector) VALUES (?1, ?2, ?3)")?;
+            let mut insert = tx.prepare(
+                "INSERT INTO word_vectors(word, forms, vector) VALUES (?1, ?2, ?3) \
+                 ON CONFLICT(word) DO UPDATE SET forms = excluded.forms, vector = excluded.vector",
+            )?;
             for ((word, forms), vector) in plan.fresh.iter().zip(&plan.fresh_vectors) {
                 insert.execute(params![word, forms, to_blob(vector)])?;
             }
-            tx.execute("INSERT OR REPLACE INTO meaning_meta(key, value) VALUES ('languages', ?1)", params![language_mark])?;
+            tx.execute("INSERT OR REPLACE INTO meaning_meta(key, value) VALUES ('languages', ?1)", params![pass.language_mark])?;
         }
-        tx.execute("INSERT OR REPLACE INTO meaning_meta(key, value) VALUES ('stamp', ?1)", params![stamp])?;
+        tx.execute("INSERT OR REPLACE INTO meaning_meta(key, value) VALUES ('stamp', ?1)", params![pass.stamp])?;
         Ok(())
     })?;
     let words = count_rows(db.conn(), "word_vectors")?;
-    Ok(Report { declarations: declarations.len(), computed: changed.len(), words })
+    Ok(Report { declarations: pass.declarations.len(), computed: pass.changed.len(), words })
 }
 
 /// As palavras do projeto como a passada as deixa: cada uma com as formas
@@ -857,6 +907,45 @@ mod tests {
             assert_eq!(forms, &normalizer.word_forms(word).join(" "), "{word}");
         }
         assert_ne!(after, before, "the forms follow the language of the project");
+    }
+
+    /// As linhas das duas tabelas de vetores, em texto, na ordem da chave.
+    fn vector_rows(dir: &TempDir) -> Vec<String> {
+        let db = opened(dir);
+        let mut rows = Vec::new();
+        for sql in ["SELECT file || '|' || name || '|' || nth || '|' || hash || '|' || hex(vector) FROM decl_vectors ORDER BY file, name, nth",
+            "SELECT word || '|' || forms || '|' || hex(vector) FROM word_vectors ORDER BY word"]
+        {
+            let mut statement = db.conn().prepare(sql).unwrap();
+            let read = statement.query_map([], |row| row.get::<_, String>(0)).unwrap();
+            rows.extend(read.map(std::result::Result::unwrap));
+        }
+        rows
+    }
+
+    /// Duas passadas ao mesmo tempo no mesmo mapa: as duas leem antes de
+    /// qualquer uma gravar, então cada uma traz as mesmas palavras novas. A
+    /// segunda grava sem erro sobre as palavras que a primeira acabou de
+    /// gravar, e as tabelas ficam as de uma passada só.
+    #[test]
+    fn two_passes_that_read_before_either_writes_leave_the_vectors_of_one_pass() {
+        let dir = two_files();
+        let map = map_of(&dir);
+        let mut first = MapDb::open(&map, dir.path(), &[BLOCK]).unwrap();
+        let mut second = MapDb::open(&map, dir.path(), &[BLOCK]).unwrap();
+        let (Read::Write(first_pass), Read::Write(second_pass)) =
+            (read_pass(first.conn(), dir.path()).unwrap(), read_pass(second.conn(), dir.path()).unwrap())
+        else {
+            panic!("both passes have vectors to write");
+        };
+        write_pass(&mut first, &first_pass).unwrap();
+        let report = write_pass(&mut second, &second_pass).expect("the second pass writes over the words the first one wrote");
+
+        let alone = two_files();
+        assert_eq!(report, fill_at(&map_of(&alone), alone.path()).unwrap());
+        let rows = vector_rows(&dir);
+        assert!(rows.iter().any(|row| row.starts_with("invoice|")), "{rows:?}");
+        assert_eq!(rows, vector_rows(&alone), "the vectors of two passes are those of one");
     }
 
     /// Duas declarações de mesmo nome no mesmo arquivo têm um vetor cada, pela

@@ -21,6 +21,10 @@ pub struct Receipt {
     pub input_sha256: String,
     pub output_sha256: String,
     pub exit_code: Option<i64>,
+    /// Como a chamada acabou. `returned`, `failed` ou `interrupted` vêm do
+    /// host. Sem o código de saída, o resumo do executor de teste ou de
+    /// compilação decide: `passed`, `failed`, ou `summary-hidden` quando o
+    /// pipe tirou o resumo da saída. A leitura de um arquivo dá `succeeded`.
     pub result_status: String,
     pub observed_at: String,
 }
@@ -30,6 +34,13 @@ pub fn digest(bytes: &[u8]) -> String {
     hash.update(bytes);
     hash.hex_digest()
 }
+
+/// Quanto a gravação ou a leitura de um recibo espera a vez de outra conexão
+/// antes de desistir. Várias ondas gravam no mesmo banco ao mesmo tempo, e o
+/// disco ocupado pelas compilações delas segura uma gravação por bem mais que
+/// alguns milissegundos; desistir cedo perde o recibo, que o gancho não grava
+/// de novo. Sem disputa, a gravação leva milissegundos e não espera nada.
+const WAIT: Duration = Duration::from_secs(5);
 
 fn open(root: &Path, write: bool) -> Result<Connection, String> {
     let path = root.join(".claude/mustard/observations.db");
@@ -61,10 +72,17 @@ fn open(root: &Path, write: bool) -> Result<Connection, String> {
     };
     let connection =
         Connection::open_with_flags(path, flags).map_err(|_| "observation-store-unavailable")?;
+    // A espera vem antes de tudo: até trocar o diário pede a trava.
     connection
-        .busy_timeout(Duration::from_millis(15))
+        .busy_timeout(WAIT)
         .map_err(|e| e.to_string())?;
     if write {
+        // No `WAL`, quem lê não espera quem grava, e cada gravação confirma o
+        // disco uma vez só. O modo fica gravado no arquivo, e o banco de antes
+        // passa a ele na primeira gravação; o disco que não guarda o `WAL`
+        // deixa o banco no diário que já tinha, que também vale. A troca no
+        // banco recém-criado espera a vez de outra gravação que a faz junto.
+        crate::io::map_db::journal_to_wal(&connection, WAIT).map_err(|e| e.to_string())?;
         connection.execute_batch("CREATE TABLE IF NOT EXISTS receipts(id TEXT PRIMARY KEY, spec TEXT NOT NULL, dispatch INTEGER NOT NULL, observed_at TEXT NOT NULL, payload TEXT NOT NULL); CREATE INDEX IF NOT EXISTS receipts_scope ON receipts(spec,dispatch,observed_at);").map_err(|e|e.to_string())?;
     }
     Ok(connection)
@@ -105,28 +123,118 @@ pub fn read(root: &Path, id: &str) -> Result<Receipt, String> {
         return Err("observation-invalid-receipt-id".into());
     }
     let connection = open(root, false)?;
+    // Só a falta da linha diz que o recibo não existe. O banco preso por outra
+    // conexão além da espera, ou que não se deixa ler, diz que o banco está
+    // indisponível: quem cita o recibo grava de novo, em vez de achar que ele
+    // sumiu.
     let payload: String = connection
         .query_row(
             "SELECT payload FROM receipts WHERE id=?1 AND length(payload)<=8192",
             [id],
             |row| row.get(0),
         )
-        .map_err(|_| "observation-receipt-not-found")?;
+        .map_err(|error| match error {
+            rusqlite::Error::QueryReturnedNoRows => "observation-receipt-not-found",
+            _ => "observation-store-unavailable",
+        })?;
     serde_json::from_str(&payload).map_err(|_| "observation-corrupt-receipt".into())
 }
 
+/// The receipt `id` of this spec and dispatch. A receipt of another wave or
+/// attempt is refused, so a page and its detail never mix dispatches.
+fn scoped(root: &Path, spec: &str, dispatch: u64, id: &str) -> Result<Receipt, String> {
+    let receipt = read(root, id)?;
+    if receipt.spec != spec || receipt.dispatch != dispatch {
+        return Err("observation-belongs-to-another-dispatch".into());
+    }
+    Ok(receipt)
+}
+
+/// How many characters of the command a page shows for each receipt.
+const COMMAND_LINE_CHARS: usize = 80;
+
+/// The first line of the recorded command, cut to [`COMMAND_LINE_CHARS`]. A
+/// leading change of directory, the group a hook opens after it and the
+/// identity a hook puts ahead of a native command are left out: they repeat on
+/// every call of a wave and would fill the line. A cut, a dropped line or a
+/// dropped prefix ends in `…`; the whole command is in the receipt.
+fn command_line(source: &str) -> String {
+    let whole = source.trim();
+    let rest = &whole[command_start(whole)..];
+    let mut lines = rest.lines().map(str::trim).filter(|line| !line.is_empty());
+    let first = lines.next().unwrap_or_default();
+    let mut chars = first.chars();
+    let mut shown: String = chars.by_ref().take(COMMAND_LINE_CHARS).collect();
+    if chars.next().is_some() || lines.next().is_some() || rest.len() < whole.len() {
+        shown.push('…');
+    }
+    shown
+}
+
+/// Where the command the agent wrote starts in `source`, in bytes: past the
+/// leading changes of directory, the groups a hook opens after them and the
+/// identity a hook puts ahead of a native command.
+#[must_use]
+pub fn command_start(source: &str) -> usize {
+    let mut rest = source.trim_start();
+    while let Some(next) = after_leading_cd(rest).or_else(|| opened_group(rest)).or_else(|| after_identity(rest)) {
+        rest = next;
+    }
+    source.len() - rest.len()
+}
+
+/// What follows a leading `cd <dir>` ended by `&&`, `;` or a line break, with
+/// quotes respected. `None` when no other command follows it.
+fn after_leading_cd(text: &str) -> Option<&str> {
+    if !text.strip_prefix("cd")?.starts_with([' ', '\t']) {
+        return None;
+    }
+    let bytes = text.as_bytes();
+    let mut quote = None;
+    for (at, byte) in bytes.iter().enumerate() {
+        let end = match (quote, byte) {
+            (None, b'\'' | b'"') => {
+                quote = Some(*byte);
+                continue;
+            }
+            (Some(open), _) if open == *byte => {
+                quote = None;
+                continue;
+            }
+            (None, b';' | b'\n') => at + 1,
+            (None, b'&') if bytes.get(at + 1) == Some(&b'&') => at + 2,
+            _ => continue,
+        };
+        return Some(text[end..].trim_start()).filter(|rest| !rest.is_empty());
+    }
+    None
+}
+
+/// What follows a `(` alone on the first line, the group a hook wraps the
+/// original command in.
+fn opened_group(text: &str) -> Option<&str> {
+    let (line, rest) = text.split_once('\n')?;
+    (line.trim() == "(").then(|| rest.trim_start()).filter(|rest| !rest.is_empty())
+}
+
+/// What follows a first line `export MUSTARD_<NAME>=<value>`, the session or
+/// the agent a hook hands to a native command. An `export` of any other
+/// variable is part of the agent's command and stays.
+fn after_identity(text: &str) -> Option<&str> {
+    let (line, rest) = text.split_once('\n')?;
+    let (name, _) = line.strip_prefix("export MUSTARD_")?.split_once('=')?;
+    (!name.is_empty() && name.bytes().all(|byte| byte.is_ascii_uppercase() || byte == b'_'))
+        .then(|| rest.trim_start())
+        .filter(|rest| !rest.is_empty())
+}
+
+/// One page of the dispatch's receipts, newest first: the receipt, its time,
+/// its result and one short line of the command. [`detail`] gives the rest.
 pub fn page(root: &Path, spec: &str, dispatch: u64, before: Option<&str>) -> Result<Value, String> {
-    let dispatch = i64::try_from(dispatch).map_err(|_| "observation-invalid-dispatch")?;
     let cursor = before
-        .map(|id| {
-            read(root, id).and_then(|receipt| {
-                if receipt.spec != spec || receipt.dispatch != dispatch as u64 {
-                    return Err("observation-cursor-belongs-to-another-dispatch".into());
-                }
-                Ok((receipt.observed_at, id))
-            })
-        })
+        .map(|id| scoped(root, spec, dispatch, id).map(|receipt| (receipt.observed_at, id)))
         .transpose()?;
+    let dispatch = i64::try_from(dispatch).map_err(|_| "observation-invalid-dispatch")?;
     let connection = open(root, false)?;
     let mut statement=connection.prepare("SELECT id,payload FROM receipts WHERE spec=?1 AND dispatch=?2 AND (?3 IS NULL OR observed_at<?3 OR (observed_at=?3 AND id<?4)) ORDER BY observed_at DESC,id DESC LIMIT 33").map_err(|e|e.to_string())?;
     let rows = statement
@@ -145,13 +253,21 @@ pub fn page(root: &Path, spec: &str, dispatch: u64, before: Option<&str>) -> Res
         let (id, payload) = row.map_err(|e| e.to_string())?;
         let receipt: Receipt =
             serde_json::from_str(&payload).map_err(|_| "observation-corrupt-receipt")?;
-        output.push(json!({"receipt":id,"observed_at":receipt.observed_at,"dispatch":receipt.dispatch,
-            "tool":receipt.tool,"source":receipt.source,"input_sha256":receipt.input_sha256,"output_sha256":receipt.output_sha256,
-            "exit_code":receipt.exit_code,"result_status":receipt.result_status,"claim_verified":false}));
+        output.push(json!({"receipt":id,"observed_at":receipt.observed_at,"tool":receipt.tool,
+            "source":command_line(&receipt.source),"exit_code":receipt.exit_code,"result_status":receipt.result_status}));
     }
     let next_before = (output.len() > 32).then(|| output[31]["receipt"].clone());
     output.truncate(32);
     Ok(json!({"receipts":output,"next_before":next_before}))
+}
+
+/// One receipt of the dispatch, whole: the command as recorded and the
+/// digests of its input and output.
+pub fn detail(root: &Path, spec: &str, dispatch: u64, id: &str) -> Result<Value, String> {
+    let receipt = scoped(root, spec, dispatch, id)?;
+    Ok(json!({"receipt":id,"observed_at":receipt.observed_at,"host":receipt.host,"tool":receipt.tool,
+        "source":receipt.source,"exit_code":receipt.exit_code,"result_status":receipt.result_status,
+        "input_sha256":receipt.input_sha256,"output_sha256":receipt.output_sha256}))
 }
 
 pub fn list(root: &Path, spec: &str, dispatch: u64) -> Result<Vec<Value>, String> {
@@ -320,6 +436,133 @@ mod tests {
         let forged =
             json!([{"receipt":id,"mode":"current","text":"Accessible","observed_at":"2026-01-03"}]);
         assert!(resolve(dir.path(), "demo", 10, "2026-01-01T00:00:00Z", &forged).is_err());
+    }
+    /// O caminho do banco, para outra conexão abri-lo como outra onda o abre.
+    fn store(root: &Path) -> std::path::PathBuf {
+        root.join(".claude/mustard/observations.db")
+    }
+    #[test]
+    fn a_receipt_waits_for_another_write_instead_of_being_lost() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        record(&root, &receipt()).unwrap();
+        let (held, wait_for_hold) = std::sync::mpsc::channel();
+        let path = store(&root);
+        let holder = std::thread::spawn(move || {
+            let other = Connection::open(path).unwrap();
+            other.execute_batch("BEGIN EXCLUSIVE").unwrap();
+            held.send(()).unwrap();
+            std::thread::sleep(Duration::from_millis(200));
+            other.execute_batch("COMMIT").unwrap();
+        });
+        wait_for_hold.recv().unwrap();
+        let mut during = receipt();
+        during.call = "call-during-another-write".into();
+        let written = record(&root, &during);
+        holder.join().unwrap();
+        let (id, _) = written.unwrap();
+        assert_eq!(read(&root, &id).unwrap().call, "call-during-another-write");
+    }
+    /// Os dois primeiros recibos de um projeto, gravados ao mesmo tempo,
+    /// entram os dois, rodada após rodada: a troca do diário no banco
+    /// recém-criado espera a vez da outra gravação.
+    #[test]
+    fn the_first_two_receipts_recorded_at_the_same_time_are_both_kept() {
+        for round in 0..12 {
+            let dir = tempfile::tempdir().unwrap();
+            let start = std::sync::Barrier::new(2);
+            let written: Vec<Result<String, String>> = std::thread::scope(|scope| {
+                let writers: Vec<_> = ["first-call", "second-call"]
+                    .into_iter()
+                    .map(|call| {
+                        let (root, start) = (dir.path(), &start);
+                        scope.spawn(move || {
+                            let mut each = receipt();
+                            each.call = call.into();
+                            start.wait();
+                            record(root, &each).map(|(id, _)| id)
+                        })
+                    })
+                    .collect();
+                writers.into_iter().map(|writer| writer.join().unwrap()).collect()
+            });
+            for id in written {
+                let id = id.unwrap_or_else(|err| panic!("round {round}: both receipts are recorded: {err}"));
+                assert!(read(dir.path(), &id).is_ok(), "round {round}");
+            }
+        }
+    }
+    #[test]
+    fn a_receipt_reads_while_another_write_holds_a_store_from_the_rollback_journal() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let (id, _) = record(&root, &receipt()).unwrap();
+        // Um banco gravado antes fica no diário de desfazer até a próxima gravação.
+        let old = Connection::open(store(&root)).unwrap();
+        let mode: String = old
+            .pragma_update_and_check(None, "journal_mode", "DELETE", |row| row.get(0))
+            .unwrap();
+        assert_eq!(mode, "delete");
+        drop(old);
+        let mut next = receipt();
+        next.call = "call-after-the-old-journal".into();
+        record(&root, &next).unwrap();
+        let (held, wait_for_hold) = std::sync::mpsc::channel();
+        let (finished, wait_for_reader) = std::sync::mpsc::channel::<()>();
+        let path = store(&root);
+        let holder = std::thread::spawn(move || {
+            let other = Connection::open(path).unwrap();
+            other
+                .execute_batch("BEGIN EXCLUSIVE; INSERT INTO receipts VALUES('uncommitted','demo',10,'2026-01-01T02:00:00Z','{}')")
+                .unwrap();
+            held.send(()).unwrap();
+            wait_for_reader.recv().unwrap();
+            other.execute_batch("ROLLBACK").unwrap();
+        });
+        wait_for_hold.recv().unwrap();
+        let seen = read(&root, &id);
+        let listed = list(&root, "demo", 10);
+        finished.send(()).unwrap();
+        holder.join().unwrap();
+        assert_eq!(seen.unwrap().exit_code, Some(1));
+        assert_eq!(listed.unwrap().len(), 2, "the write still open is not seen");
+    }
+    #[test]
+    fn a_store_held_past_the_wait_is_unavailable_and_only_a_missing_row_is_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let (id, _) = record(&root, &receipt()).unwrap();
+        // No diário de desfazer, quem grava com trava exclusiva barra também
+        // quem lê, e a leitura espera a vez até desistir.
+        let old = Connection::open(store(&root)).unwrap();
+        let mode: String = old
+            .pragma_update_and_check(None, "journal_mode", "DELETE", |row| row.get(0))
+            .unwrap();
+        assert_eq!(mode, "delete");
+        drop(old);
+        let (held, wait_for_hold) = std::sync::mpsc::channel();
+        let (finished, wait_for_reader) = std::sync::mpsc::channel::<()>();
+        let path = store(&root);
+        let holder = std::thread::spawn(move || {
+            let other = Connection::open(path).unwrap();
+            other.execute_batch("BEGIN EXCLUSIVE").unwrap();
+            held.send(()).unwrap();
+            wait_for_reader.recv().unwrap();
+            other.execute_batch("ROLLBACK").unwrap();
+        });
+        wait_for_hold.recv().unwrap();
+        let started = std::time::Instant::now();
+        let busy = read(&root, &id);
+        let waited = started.elapsed();
+        finished.send(()).unwrap();
+        holder.join().unwrap();
+        assert_eq!(busy.unwrap_err(), "observation-store-unavailable");
+        assert!(waited >= WAIT, "the read gave up after {waited:?}, before the wait");
+        assert_eq!(
+            read(&root, &digest(b"a call never recorded")).unwrap_err(),
+            "observation-receipt-not-found"
+        );
+        assert_eq!(read(&root, &id).unwrap().exit_code, Some(1));
     }
     #[test]
     fn every_receipt_remains_accessible_without_loading_the_whole_history() {

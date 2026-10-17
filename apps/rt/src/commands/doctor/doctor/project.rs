@@ -45,20 +45,30 @@ fn visible_to_git(root: &Path, paths: &[String]) -> Option<Vec<String>> {
 }
 
 /// The choices `mustard.json` holds for the project against what the local
-/// settings carry. Only reads. A WARN when Mustard is off here, when the `rtk`
-/// option and rtk's hook disagree, when Claude Code's signature is on, and when
+/// settings carry. Only reads. A WARN when Mustard is off here, when rtk's own
+/// hook is still in the local or the personal settings (Mustard's hook makes
+/// rtk's swap, and a second hook rewriting the same command races it), when
+/// Claude Code's signature is on, and when
 /// a language key holds a value the reader drops — each in the language
 /// `lang`, naming what to run or what to write.
 pub(super) fn check_switches(root: &Path, lang: Locale) -> CheckResult {
+    switches_in(root, lang, mustard_core::platform::harness::claude_config_dir().as_deref())
+}
+
+/// [`check_switches`] with Claude Code's personal config folder named, the
+/// one `rtk init -g` writes its hook into.
+fn switches_in(root: &Path, lang: Locale, personal: Option<&Path>) -> CheckResult {
     const NAME: &str = "switches";
     let switches = mustard_core::Switches::read(root);
     let mut details = unread_languages(root, lang);
     if !switches.enabled {
         details.push(translate("doctor.switches.off", lang).to_string());
     }
-    if switches.rtk_diverges() {
-        let key = if switches.rtk { "doctor.switches.rtk_missing" } else { "doctor.switches.rtk_left" };
-        details.push(translate(key, lang).to_string());
+    if switches.rtk_hook_left() {
+        details.push(translate("doctor.switches.rtk_hook_left", lang).to_string());
+    }
+    if let Some(home) = personal.and_then(rtk_hook_at_home) {
+        details.push(translate("doctor.switches.rtk_hook_home", lang).replace("{path}", &home.to_string_lossy()));
     }
     if switches.signature_on == Some(true) {
         details.push(translate("doctor.switches.signature_on", lang).to_string());
@@ -68,6 +78,16 @@ pub(super) fn check_switches(root: &Path, lang: Locale) -> CheckResult {
     } else {
         CheckResult::warn(NAME, details)
     }
+}
+
+/// The personal settings file under `personal` (`rtk init -g` writes there)
+/// when it carries rtk's own hook; `None` when it does not, or when it cannot
+/// be read.
+fn rtk_hook_at_home(personal: &Path) -> Option<std::path::PathBuf> {
+    let path = personal.join("settings.json");
+    let raw = std::fs::read_to_string(&path).ok()?;
+    let settings: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    mustard_core::platform::project_seed::settings::rtk_hook_present(settings.as_object()?).then_some(path)
 }
 
 /// Each language key `mustard.json` writes and the reader does not take — the
@@ -137,22 +157,22 @@ mod tests {
         assert_eq!(check_scan_output(root, Locale::PtBr).status, Status::Ok);
     }
 
-    /// O diagnóstico avisa o Mustard desligado, a opção do rtk que diverge do
-    /// gancho nas configurações locais e a assinatura ligada; com tudo
-    /// alinhado, fica quieto.
+    /// O diagnóstico avisa o Mustard desligado, o gancho do próprio rtk que
+    /// ficou nas configurações locais ou na pasta pessoal, com a opção ligada
+    /// ou desligada, e a assinatura ligada; sem nada disso, fica quieto.
     #[test]
-    fn the_doctor_flags_mustard_off_a_diverging_rtk_and_the_signature() {
+    fn the_doctor_flags_mustard_off_rtk_own_hook_and_the_signature() {
         let dir = tempdir().unwrap();
         let root = dir.path();
+        let personal = dir.path().join("personal");
+        let hook = r#"{"attribution":{"commit":"","pr":""},"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"rtk hook claude"}]}]}}"#;
         let local = root.join(".claude").join("settings.local.json");
-        write_file(
-            &local,
-            r#"{"attribution":{"commit":"","pr":""},"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"rtk hook claude"}]}]}}"#,
-        );
-        assert_eq!(check_switches(root, Locale::PtBr).status, Status::Ok, "aligned: nothing to say");
+        write_file(&local, r#"{"attribution":{"commit":"","pr":""}}"#);
+        assert_eq!(switches_in(root, Locale::PtBr, Some(&personal)).status, Status::Ok, "nothing to say");
 
+        write_file(&local, hook);
         write_file(&root.join("mustard.json"), r#"{"enabled":false,"rtk":false}"#);
-        let off = check_switches(root, Locale::PtBr);
+        let off = switches_in(root, Locale::PtBr, Some(&personal));
         assert_eq!(off.status, Status::Warn);
         let said = off.details.join(" ");
         assert!(said.contains("desligado neste projeto"), "{said}");
@@ -160,9 +180,11 @@ mod tests {
 
         write_file(&root.join("mustard.json"), "{}");
         write_file(&local, r#"{"attribution":{"commit":"assistant","pr":"assistant"}}"#);
-        let en = check_switches(root, Locale::EnUs);
+        write_file(&personal.join("settings.json"), hook);
+        let en = switches_in(root, Locale::EnUs, Some(&personal));
         let said = en.details.join(" ");
-        assert!(said.contains("is not in"), "the missing hook is named: {said}");
+        assert!(said.contains("rtk init -g") && said.contains(&personal.join("settings.json").to_string_lossy().into_owned()), "the personal hook is named: {said}");
+        assert!(!said.contains("still in .claude/settings.local.json"), "{said}");
         assert!(said.contains("signature"), "{said}");
         assert!(!said.contains("turned off in this project"), "{said}");
     }
@@ -176,11 +198,11 @@ mod tests {
         let root = dir.path();
         write_file(
             &root.join(".claude").join("settings.local.json"),
-            r#"{"attribution":{"commit":"","pr":""},"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"rtk hook claude"}]}]}}"#,
+            r#"{"attribution":{"commit":"","pr":""}}"#,
         );
 
         write_file(&root.join("mustard.json"), r#"{"language":{"code":"pt"}}"#);
-        let short = check_switches(root, Locale::PtBr);
+        let short = switches_in(root, Locale::PtBr, None);
         assert_eq!(short.status, Status::Warn, "{:?}", short.details);
         let said = short.details.join(" ");
         for named in ["`language.code`", "`pt`", "`pt-BR`", "`en-US`"] {
@@ -189,7 +211,7 @@ mod tests {
         assert!(!said.contains("language.text"), "{said}");
 
         write_file(&root.join("mustard.json"), r#"{"language":{"text":"fr-FR","code":"en-US"}}"#);
-        let other = check_switches(root, Locale::EnUs);
+        let other = switches_in(root, Locale::EnUs, None);
         assert_eq!(other.status, Status::Warn, "{:?}", other.details);
         let said = other.details.join(" ");
         assert!(said.contains("`language.text`") && said.contains("`fr-FR`"), "{said}");
@@ -197,7 +219,7 @@ mod tests {
 
         for calm in [r#"{"language":{"text":"en-US","code":"pt-BR"}}"#, "{}"] {
             write_file(&root.join("mustard.json"), calm);
-            let passed = check_switches(root, Locale::PtBr);
+            let passed = switches_in(root, Locale::PtBr, None);
             assert_eq!(passed.status, Status::Ok, "{calm}: {:?}", passed.details);
         }
     }

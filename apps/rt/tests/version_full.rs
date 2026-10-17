@@ -90,7 +90,9 @@ fn without_the_environment_and_without_git_the_version_is_just_the_number() {
 
 /// Com `.git` ausente (o cenário do pacote Linux) mas com o commit, a marca
 /// de mudança e a data entregues por variável de ambiente, a versão mostra o
-/// commit — exatamente o que `packaging/linux/build-deb.sh` passa a fazer.
+/// commit — exatamente o que `packaging/linux/build-deb.sh` passa a fazer. A
+/// versão da publicação chega junto, como chega na esteira, e o bloco do
+/// commit continua na linha.
 #[test]
 fn the_version_shows_the_commit_from_the_environment() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -102,7 +104,12 @@ fn the_version_shows_the_commit_from_the_environment() {
     let full = run_build_rs_without_git(
         &bin,
         &empty_cwd,
-        &[("MUSTARD_GIT_HASH", "deadbeef1234"), ("MUSTARD_GIT_DIRTY", "1"), ("MUSTARD_GIT_DATE", "2026-01-02")],
+        &[
+            ("MUSTARD_RELEASE_VERSION", "9.9.9"),
+            ("MUSTARD_GIT_HASH", "deadbeef1234"),
+            ("MUSTARD_GIT_DIRTY", "1"),
+            ("MUSTARD_GIT_DATE", "2026-01-02"),
+        ],
     );
     assert_eq!(full, "9.9.9 (build dev, gdeadbeef1234-dirty 2026-01-02)", "a versão tem de trazer o commit da variável de ambiente: {full}");
 }
@@ -119,13 +126,21 @@ fn git_in(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
-/// Os arquivos do núcleo que os dois scripts de build incluem por caminho,
-/// relativos à raiz do repositório.
-const SHARED_BY_PATH: [&str; 2] = ["packages/core/src/io/sha256.rs", "packages/core/src/io/tree_state.rs"];
+/// Os arquivos do núcleo que os scripts de build incluem por caminho,
+/// relativos à raiz do repositório. Os dois scripts incluem o `sha256.rs` e o
+/// `tree_state.rs`; o `hooks_digest.rs` entra só no do `mustard-rt` (e no do
+/// scan, que inclui o script do `mustard-rt` inteiro).
+const SHARED_BY_PATH: [&str; 3] = ["packages/core/src/io/sha256.rs", "packages/core/src/io/tree_state.rs", "packages/core/src/io/hooks_digest.rs"];
 
 /// Um projeto git em `root` com dois pacotes, cada um com um dos dois
 /// scripts de build de verdade — o do `mustard-rt` e o do `mustard` — e um
 /// binário que só imprime a versão que o script carimbou.
+///
+/// O projeto traz as pastas do plugin que o script do `mustard-rt` vigia, a
+/// dos ganchos e a da interface, com o tema. O cargo roda de novo, a cada
+/// compilação, o script que vigia um caminho que não existe; com as pastas no
+/// lugar, ele só roda quando algo vigiado muda, e a nova compilação depois da
+/// troca de commit prova a vigia do commit.
 fn stamped_project(root: &Path) {
     let write = |path: &str, body: &str| {
         let path = root.join(path);
@@ -144,6 +159,7 @@ fn stamped_project(root: &Path) {
         write(&format!("{crate_dir}/src/main.rs"), "fn main() {\n    println!(\"{}\", env!(\"MUSTARD_VERSION_FULL\"));\n}\n");
     }
     write("plugin/hooks/hooks.json", "{}\n");
+    write("plugin/ui/theme.js", "export const theme = {};\n");
     write(".gitignore", "target/\nCargo.lock\n");
     write("LEIAME.md", "um\n");
     git_in(root, &["init", "-q"]);
@@ -291,15 +307,19 @@ fn the_diff_comes_from_the_environment_when_git_is_absent() {
 }
 
 /// O script do pacote Linux, carregado por `source` (só as funções ficam
-/// definidas), com o corpo `body` rodado em `bash` em cima delas; devolve a
-/// saída comum. O `PATH` de `path_first`, quando vem, passa à frente.
+/// definidas), com o corpo `body` rodado em `bash` em cima delas, com as
+/// variáveis `env` a mais; devolve o que o `bash` deixou, saia ele como sair.
+/// O `PATH` de `path_first`, quando vem, passa à frente.
 #[cfg(unix)]
-fn run_package_script(body: &str, args: &[&Path], path_first: Option<&Path>) -> String {
+fn package_script(body: &str, args: &[&Path], path_first: Option<&Path>, env: &[(&str, &str)]) -> std::process::Output {
     let script = repo_root().join("packaging/linux/build-deb.sh");
     let mut cmd = Command::new("bash");
     cmd.arg("-c").arg(format!("source \"$1\"; shift; {body}")).arg("_").arg(&script).args(args);
     for var in ["MUSTARD_BUILD_NUMBER", "MUSTARD_GIT_HASH", "MUSTARD_GIT_DIRTY", "MUSTARD_GIT_DATE", "MUSTARD_GIT_DIFF", "GIT_DIR", "GIT_WORK_TREE"] {
         cmd.env_remove(var);
+    }
+    for (key, value) in env {
+        cmd.env(key, value);
     }
     if let Some(first) = path_first {
         let rest = std::env::var_os("PATH").unwrap_or_default();
@@ -307,17 +327,86 @@ fn run_package_script(body: &str, args: &[&Path], path_first: Option<&Path>) -> 
         paths.extend(std::env::split_paths(&rest));
         cmd.env("PATH", std::env::join_paths(paths).expect("a PATH"));
     }
-    let out = cmd.output().expect("bash runs");
+    cmd.output().expect("bash runs")
+}
+
+/// [`package_script`] sem variáveis a mais, que tem de sair sem erro; devolve
+/// a saída comum.
+#[cfg(unix)]
+fn run_package_script(body: &str, args: &[&Path], path_first: Option<&Path>) -> String {
+    let out = package_script(body, args, path_first, &[]);
     assert!(out.status.success(), "o script do pacote saiu com erro: {}", String::from_utf8_lossy(&out.stderr));
     String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// O que o script do pacote imprime de cada uma das quatro variáveis do
+/// commit, uma por linha.
+#[cfg(unix)]
+const PRINT_STAMP: &str = "printf '%s\\n%s\\n%s\\n%s\\n' \"$MUSTARD_GIT_HASH\" \"$MUSTARD_GIT_DIRTY\" \"$MUSTARD_GIT_DATE\" \"$MUSTARD_GIT_DIFF\"";
+
+/// Um repositório git de um commit só em `dir`.
+#[cfg(unix)]
+fn one_commit_repository(dir: &Path) {
+    std::fs::create_dir_all(dir).expect("mkdir");
+    git_in(dir, &["init", "-q"]);
+    std::fs::write(dir.join("a.md"), "a\n").expect("write");
+    git_in(dir, &["add", "-A"]);
+    git_in(dir, &["commit", "-q", "-m", "um"]);
 }
 
 /// O que o script do pacote lê da pasta `repo`: o commit, se está suja (`1` ou
 /// vazio), a data e o resumo, nesta ordem.
 #[cfg(unix)]
 fn package_script_stamp(repo: &Path) -> Vec<String> {
-    let body = "read_git_stamp \"$1\"; printf '%s\\n%s\\n%s\\n%s\\n' \"$MUSTARD_GIT_HASH\" \"$MUSTARD_GIT_DIRTY\" \"$MUSTARD_GIT_DATE\" \"$MUSTARD_GIT_DIFF\"";
-    run_package_script(body, &[repo], None).lines().map(str::to_string).collect()
+    run_package_script(&format!("read_git_stamp \"$1\"; {PRINT_STAMP}"), &[repo], None).lines().map(str::to_string).collect()
+}
+
+/// O repositório que o contêiner do pacote monta é de outro dono — o da
+/// máquina —, e o contêiner roda como root: o git recusa ler a pasta de outro
+/// dono. O script lê o commit e a data mesmo assim, em vez de deixar o
+/// carimbo vazio em silêncio. A variável de teste do próprio git faz ele tratar
+/// a pasta como de outro dono, sem precisar de root.
+#[cfg(unix)]
+#[test]
+fn the_package_script_reads_the_commit_of_a_repository_of_another_owner() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().join("de-outro-dono");
+    one_commit_repository(&root);
+    let commit = git_in(&root, &["rev-parse", "--short=12", "HEAD"]);
+    let date = git_in(&root, &["log", "-1", "--format=%cs"]);
+    let other_owner = [("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1")];
+    let refused = Command::new("git").args(["rev-parse", "HEAD"]).current_dir(&root).envs(other_owner).output().expect("git runs");
+    assert!(!refused.status.success(), "o git desta máquina não simula a pasta de outro dono; o teste não provaria nada");
+
+    let out = package_script(&format!("read_git_stamp \"$1\"; {PRINT_STAMP}"), &[&root], None, &other_owner);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let stamp: Vec<String> = String::from_utf8_lossy(&out.stdout).lines().map(str::to_string).collect();
+    assert_eq!(stamp, [commit.as_str(), "", date.as_str(), ""], "a pasta de outro dono");
+}
+
+/// Sem commit lido, o pacote não sai: a leitura que o script faz antes de
+/// compilar recusa e mostra o motivo do git, em vez de embalar binários que
+/// respondem só o número da versão. Com o commit, ela segue.
+#[cfg(unix)]
+#[test]
+fn the_package_build_refuses_a_folder_without_a_commit() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let plain = tmp.path().join("sem-git");
+    std::fs::create_dir_all(&plain).expect("mkdir");
+    std::fs::write(plain.join("a.md"), "a\n").expect("write");
+    let body = "require_git_stamp \"$1\"; echo seguiu";
+    let english = [("LC_ALL", "C")];
+
+    let refused = package_script(body, &[&plain], None, &english);
+    let (stdout, stderr) = (String::from_utf8_lossy(&refused.stdout), String::from_utf8_lossy(&refused.stderr));
+    assert!(!refused.status.success() && !stdout.contains("seguiu"), "a pasta sem commit seguiu: {stdout}{stderr}");
+    assert!(stderr.contains(&plain.display().to_string()), "a recusa não diz a pasta: {stderr}");
+    assert!(stderr.contains("not a git repository"), "a recusa não traz o motivo do git: {stderr}");
+
+    let repo = tmp.path().join("com-commit");
+    one_commit_repository(&repo);
+    let went = package_script(body, &[&repo], None, &english);
+    assert!(went.status.success() && String::from_utf8_lossy(&went.stdout).contains("seguiu"), "{}", String::from_utf8_lossy(&went.stderr));
 }
 
 /// O script do pacote e o `build.rs` leem o mesmo estado da mesma pasta: o
@@ -403,4 +492,52 @@ fn the_package_build_hands_the_four_variables_to_cargo() {
     ] {
         assert!(seen.lines().any(|line| line == expected), "falta `{expected}` no que o cargo recebeu:\n{seen}");
     }
+}
+
+/// O teste de instalação da esteira (`packaging/smoke-install.py`) confere o
+/// commit nos três programas compilados: o programa cuja linha de versão não
+/// traz `g<commit>` para o teste, com o nome dele e o que respondeu; com o
+/// commit nos três, o teste segue adiante. Os programas de mentira só
+/// respondem `--version`, e o teste para no passo seguinte, a instalação.
+#[cfg(unix)]
+#[test]
+fn the_install_smoke_requires_the_commit_in_the_three_compiled_programs() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let bin = tmp.path().join("bin");
+    std::fs::create_dir_all(&bin).expect("mkdir");
+    for name in ["COPYING", "LICENSE-MIT", "UNLICENSE"] {
+        std::fs::write(bin.join(format!("ripgrep-{name}")), "licença\n").expect("write");
+    }
+    let program = |name: &str, line: &str| {
+        let path = bin.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n[ \"$1\" = --version ] && echo '{line}' && exit 0\nexit 3\n")).expect("write");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    };
+    let smoke = || {
+        let out = Command::new("python3")
+            .arg(repo_root().join("packaging/smoke-install.py"))
+            .arg("--bin-dir")
+            .arg(&bin)
+            .args(["--version", "0.2.21", "--commit", "0123456789ab"])
+            .output()
+            .expect("python3 runs");
+        assert!(!out.status.success(), "os programas de mentira nunca passam o teste inteiro");
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    };
+    program("rtk", "rtk 0.49.0");
+    program("rg", "ripgrep 15.2.0");
+    for name in ["mustard", "mustard-rt", "scan"] {
+        program(name, &format!("{name} 0.2.21"));
+    }
+    let bare = smoke();
+    assert!(bare.contains("installed commit differs: mustard answered 'mustard 0.2.21'"), "{bare}");
+    let stamped = "0.2.21 (build 7, g0123456789ab 2026-10-14)";
+    program("mustard", &format!("mustard {stamped}"));
+    program("mustard-rt", &format!("mustard-rt {stamped}"));
+    let without_scan = smoke();
+    assert!(without_scan.contains("installed commit differs: scan answered 'scan 0.2.21'"), "{without_scan}");
+    program("scan", &format!("grain {stamped}"));
+    let all_stamped = smoke();
+    assert!(!all_stamped.contains("installed commit differs") && all_stamped.contains("'run', 'upsert'] failed"), "{all_stamped}");
 }

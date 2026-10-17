@@ -52,6 +52,16 @@ model2vec-rs = { version = "0.3", default-features = false, features = ["local-o
 # lidos como o Claude Code os lê: `**`, `{a,b}` e `[abc]`. A mesma linha 0.4 que o
 # `scan` já usa, então nenhum código novo entra na árvore.
 globset = "0.4"
+
+# A identidade de um arquivo aberto no Windows (o volume e o índice), que a trava
+# de `io::fs::lock` compara com a do arquivo do caminho depois de esperar, para
+# perceber a troca de conteúdo. A função do sistema (`GetFileInformationByHandle`,
+# do `windows-sys`) só se chama com `unsafe`, que o workspace proíbe; esta
+# biblioteca a embrulha. A mesma linha 0.1 que já entra na árvore pelo
+# `same-file`, então nenhum código novo entra nela.
+[target.'cfg(windows)'.dependencies]
+winapi-util = "0.1"
+
 [dev-dependencies]
 # Temp directories for io-layer round-trip tests (event store, pipeline repo,
 # atomic fs) and config/env tests. Test-only — never compiled into the library.

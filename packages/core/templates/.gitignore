@@ -51,6 +51,12 @@ spec/*/.blobs/
 # Local editor state — written per project, regenerable, and none of it is code.
 .obsidian/
 
+# O arquivo ao lado em que a troca de conteúdo de um arquivo travado escreve
+# (`.<nome>.<pid>.<hora>.swap`). O processo morto no meio da troca o larga, e
+# ele fica até a troca seguinte do mesmo caminho apagá-lo, em qualquer pasta,
+# inclusive na da spec, que é versionada.
+.*.swap
+
 # Runtime output the harness writes into `.claude/` while working. A spec's own
 # content stays VERSIONED — it belongs to its unit — but these sidecars are
 # regenerable, and untracked they are what blocks the exit ritual: the harness

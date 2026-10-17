@@ -35,9 +35,11 @@ async function localOperation($,command,request) {
   const result=await $.process.run([await runtime($),'run',command,'--root',cwd,...(request?['--json',JSON.stringify(request)]:[])],{cwd,timeoutMs:10000});
   const value=JSON.parse(result.stdout);if(result.exitCode!==0 || value.ok!==true)throw new Error(value.reason || 'operation-failed');return value;
 }
-async function diagnostic($,component,operation,reason) {
+// The cause of a failure on one line, short enough for the diagnostics record.
+function cause(error) {return String(error?.message ?? error ?? '').replace(/\s+/g,' ').trim().slice(0,300) || undefined;}
+async function diagnostic($,component,operation,reason,detail) {
   try {const cwd=await $.session.cwd();await $.process.run([await runtime($),'run','panel-diagnostics','--root',cwd,'--record'],
-    {cwd,timeoutMs:3000,stdin:JSON.stringify({component,operation,reason,session:await $.session.id()})});}catch{/* Diagnostics never blocks work. */}
+    {cwd,timeoutMs:3000,stdin:JSON.stringify({component,operation,reason,...(detail?{detail}:{}),session:await $.session.id()})});}catch{/* Diagnostics never blocks work. */}
 }
 async function previewImpact($,request,action) {
   try {impact=await localOperation($,'impact',request);impact.canExecute=typeof action==='function';impactAction=action?{run:action,request}:undefined;}
@@ -102,7 +104,7 @@ async function settingsOperation($,operation='load') {
   $.ui.invalidate('ui.render');
   try {
     const cwd=await $.session.cwd();
-    let args=['run','settings','--root',cwd],scan=false;
+    let args=['run','settings','--root',cwd,'--full'],scan=false;
     if(operation==='save')args.push('--json',JSON.stringify({schema_version:1,revision:settings.revision,changes:settings.changes}));
     if(operation==='scan') {scan=true;args=['run','scan','--root',cwd];}
     const result=await $.process.run([await runtime($),...args],{cwd,timeoutMs:scan?110000:10000});
@@ -116,7 +118,7 @@ async function settingsOperation($,operation='load') {
     if(scan) {
       settings={...settings,message:['Índice atualizado.','Index updated.']};
       // Refresh safe availability without disturbing saved choices.
-      const fresh=await $.process.run([await runtime($),'run','settings','--root',cwd],{cwd,timeoutMs:10000});
+      const fresh=await $.process.run([await runtime($),'run','settings','--root',cwd,'--full'],{cwd,timeoutMs:10000});
       if(!opened || ticket!==settingsRevision)return;
       const next=JSON.parse(fresh.stdout);
       if(fresh.exitCode===0 && next.ok===true && next.schema_version===1)settings={...next,loaded:true,changes:{},message:settings.message};
@@ -150,9 +152,9 @@ async function refresh($) {
           '--section',section,...(sourceRevision && queryIdentity===identity && !measure?['--if-revision',sourceRevision]:[]),
           ...(view.tab==='Ondas' && view.selectedWave!==undefined ? ['--wave',String(view.selectedWave)] : []), ...(measure ? ['--refresh-consumption'] : [])],
         { cwd, timeoutMs: measure ? 30000 : 10000 });
-      if (result.exitCode !== 0) throw new Error(result.stderr || 'Consulta local falhou');
+      if (result.exitCode !== 0) throw new Error(`exit ${result.exitCode}: ${(result.stderr || '').trim() || 'no error output'}`);
       const next = JSON.parse(result.stdout);
-      if (next.ok !== true || next.schema_version !== 1) throw new Error('Versão do painel incompatível');
+      if (next.ok !== true || next.schema_version !== 1) throw new Error(`incompatible panel answer: ok ${next.ok}, schema_version ${next.schema_version}${typeof next.reason==='string'?', reason '+next.reason:''}`);
       if (!opened || ticket !== revision) return;
       if(!next.unchanged)data=next;
       if(data)data.checked_at=new Date().toISOString();
@@ -163,7 +165,7 @@ async function refresh($) {
       problem = undefined;
     } catch (error) {
       if (opened && ticket === revision) {problem=t('Não foi possível atualizar. Tente novamente ou abra Diagnóstico.','Could not update. Retry or open Diagnostics.');
-        void diagnostic($,'panel','refresh','panel-query-failed');}
+        void diagnostic($,'panel','refresh','panel-query-failed',cause(error));}
     } finally {
       busy = false;
       if (opened && ticket === revision) $.ui.invalidate('ui.render');
@@ -174,7 +176,7 @@ function recordMeasurement($, measurement) {
   // Preserve arrival order. A repeated cumulative reading replaces no spend,
   // and the runtime resolves attribution from the checkout, not the pane tab.
   measurementQueue = measurementQueue.catch(() => {}).then(async () => {
-    let failure='usage-record-failed';
+    let failure='usage-record-failed',detail;
     try {
       const cwd = await $.session.cwd();
       const session = await $.session.id();
@@ -182,12 +184,14 @@ function recordMeasurement($, measurement) {
       const result=await $.process.run([await runtime($), 'run', 'usage-record', '--root', cwd, '--session', session],
         {cwd, timeoutMs:5000, stdin:JSON.stringify({...measurement,model:measurement.model || model})});
       const reply=JSON.parse(result.stdout);
-      if(result.exitCode!==0 || reply.ok!==true) {
+      // The runtime already recorded a live-usage failure, with its cause.
+      if(result.exitCode!==0 || (reply.ok!==true && reply.live?.diagnosed!==true)) {
         const reason=reply.live?.reason || reply.reason;
         if(typeof reason==='string' && /^(usage|live-usage)-[a-z-]{1,80}$/.test(reason))failure=reason;
+        detail=reply.live?.detail || reply.detail || (typeof reason==='string' && reason!==failure?reason:`exit ${result.exitCode}`);
         throw new Error('usage-record-failed');
       }
-    } catch {void diagnostic($,'usage','record',failure);}
+    } catch(error) {void diagnostic($,'usage','record',failure,detail ?? cause(error));}
   });
   return measurementQueue;
 }
@@ -334,10 +338,6 @@ export function register(on) {
     if(problem) return {result:`search-contract: ${problem}. Retry with {request:{tool,input,intent,purpose,choose?}}; preserve original search arguments.`,isError:true};
     const cwd=await $.session.cwd();
     // MCP arguments are fields of e; the nested request avoids reserved tool.
-    // Use Bash through the host tool API so
-    // permissions, classic hooks and the shell sandbox still apply. A process
-    // launched directly by a mod would bypass that boundary.
-    const quote=value=>"'"+String(value).replace(/'/g,"'\\''")+"'";
     // The binary decides whether a source-backed ambiguity actually exists.
     // Allow that decision for investigations without requiring the conductor
     // to remember a flag. Literal lookup, exact reads and explicit opt-outs
@@ -346,17 +346,34 @@ export function register(on) {
     const envelope={schema_version:1,request:{...request,choose}};
     const agent=e.agentId || 'main';
     const epoch=evidenceEpoch;
+    let env;
     try {
       const session=await $.session.id();
-      if ([session,agent,epoch].every(value=>typeof value==='string' && /^[a-zA-Z0-9_-]{1,160}$/.test(value))) {
+      const identity=value=>typeof value==='string' && /^[a-zA-Z0-9_-]{1,160}$/.test(value);
+      // The binary records the call under this session, as a shell run did.
+      if (identity(session)) env={MUSTARD_SESSION_ID:session};
+      if ([session,agent,epoch].every(identity)) {
         envelope.context={session,agent,epoch,acknowledged:[...(evidenceAcknowledged.get(agent)||[])]};
       }
     } catch { /* Without a host delivery identity every body is delivered again. */ }
-    const command=[quote(await runtime($)),'run','search','--root',quote(cwd),'--request',quote(JSON.stringify(envelope)),'--shell-output'].join(' ');
-    const result=await $.tool.call({tool:'Bash',command,description:request.intent || 'Search current project code through Mustard'});
-    if(result.deny) return {deny:result.deny};
-    const failed=result.isError===true || result.result?.interrupted===true;
-    let stdout=result.result?.stdout ?? result.text ?? (typeof result.result==='string' ? result.result : '');
+    // The host already approved this tool's own call, so the binary runs
+    // directly, without a shell. A Bash call made here would carry no model
+    // request for the auto mode classifier to judge. The command and read
+    // guards still run inside the binary before any search executes.
+    let run;
+    try {
+      run=await $.process.run([await runtime($),'run','search','--root',cwd,'--request',JSON.stringify(envelope),'--shell-output'],
+        {cwd,timeoutMs:120000,...(env?{env}:{})});
+    } catch (error) {
+      // A timeout or a binary that never started delivers no evidence.
+      return {result:`Mustard search did not finish: ${error?.message || error}`,isError:true};
+    }
+    // Exit 1 is how rg, grep, git grep, Grep and Glob say nothing matched, and
+    // the binary's own report already counts it as ok. Read has no such
+    // answer, so its exit 1 stays a failure.
+    const unmatched=run.exitCode===1 && request.tool!=='Read';
+    const failed=run.exitCode!==0 && !unmatched;
+    let stdout=run.stdout || '';
     const receipt=/\n# mustard-delivery:([a-f0-9]{64}):(\d+):([a-f0-9]{16})\n?$/.exec(stdout);
     if (receipt && envelope.context && epoch===evidenceEpoch && !failed
         && completeDelivery(stdout.slice(0,receipt.index),receipt)) {
@@ -366,10 +383,14 @@ export function register(on) {
       evidenceAcknowledged.set(agent,acknowledged);
     }
     if(receipt)stdout=stdout.slice(0,receipt.index);
-    const stderr=result.result?.stderr || '';
+    const stderr=run.stderr || '';
+    const text=stdout+(stderr?(stdout?'\nstderr:\n':'')+stderr:'');
     // Mods validates the registered tool's result as content, not as an MCP
     // tools/call envelope. Error status belongs to the tool.call reply itself.
-    return {result:stdout+(stderr?(stdout?'\nstderr:\n':'')+stderr:''),...(failed ? {isError:true} : {})};
+    // A silent failure still names its exit code; so does a silent search
+    // that matched nothing, without the error status.
+    if(failed) return {result:text || `Process exited with code ${run.exitCode}`,isError:true};
+    return {result:text || (unmatched?'No matches (exit code 1)':'')};
   });
   // Observe completed operations without replacing permissions or the
   // native orchestration. Coalesce bursts; retain polling for external edits.
@@ -479,7 +500,7 @@ export function register(on) {
       yield {kind:'text',index:0,text:answer};
       return {turnId:e.turnId,index:e.index,answer,toolUses:[],stopReason:'end_turn',usage:null};
     }
-    const result=yield* next(analysis?{...e,model:'haiku',effort:'medium'}:e);
+    const result=yield* next(analysis?{...e,effort:'medium'}:e);
     if(analysis)analysis.input=fullAnalysisInput(result.usage);
     if(result.usage)await recordMeasurement($,hostReceipt(e,result));
     requestRefresh($);return result;

@@ -28,6 +28,12 @@
 //! depois do nascimento ganha a nota "virou a spec `<nome>`", que o merge da
 //! spec lê para fechá-la. A nota que não se grava vira aviso, e a spec fica.
 //!
+//! Logo depois do nascimento, as mensagens que o usuário digitou na conversa
+//! antes da abertura entram na spec, em ordem, como mensagens dele: o pedido
+//! dito antes fica nas palavras dele, e o objetivo pode apontá-lo. A conversa
+//! é a da sessão, no arquivo que o Claude Code guarda; sem ela, a resposta
+//! avisa e a abertura segue.
+//!
 //! A resposta termina na pergunta do objetivo, que o assistente faz ao
 //! usuário. Chamar o `open` de novo na branch que ele criou devolve o mesmo
 //! relatório, com `already_open`, e não grava nada além da nota da pendência
@@ -54,7 +60,9 @@ use crate::commands::event::work_branch::{
     checkout_work_branch, local_branch_exists, name_dirty_paths, remote_branch_exists, BusyCheckout,
     CheckoutWork, RefusalCause,
 };
+use crate::commands::spec_events::conversation::record_earlier_messages;
 use crate::commands::spec_events::{self, write::record_open};
+use crate::shared::typed_messages::{session_transcript, typed_messages};
 use crate::shared::spec_state::DiskSpecState;
 use crate::shared::work_kind::WorkKind;
 
@@ -70,6 +78,9 @@ pub struct OpenOpts {
     pub base: Option<String>,
     /// A pendência aberta de onde a spec vem, como `P-12`.
     pub pending: Option<String>,
+    /// A sessão da conversa que abre a spec: a conversa dela dá as mensagens
+    /// que o usuário digitou antes da abertura.
+    pub session: Option<String>,
 }
 
 /// As recusas do `open`: as dele e as da gravação da spec.
@@ -586,10 +597,16 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
     if let Err(detail) = checkout_work_branch(&root, &target, &base) {
         return refuse(OpenRefusal::GitFailed { branch: target, detail });
     }
-    if let Err(refusal) = record_open(&root, &name, &target, &base) {
-        undo_branch(&root, &back_to, start.as_deref(), &target);
-        return refuse(OpenRefusal::Spec(refusal));
-    }
+    let born = match record_open(&root, &name, &target, &base) {
+        Ok(born) => born,
+        Err(refusal) => {
+            undo_branch(&root, &back_to, start.as_deref(), &target);
+            return refuse(OpenRefusal::Spec(refusal));
+        }
+    };
+    // O pedido que o usuário fez antes da abertura entra na spec que acabou
+    // de nascer, nas palavras dele.
+    let earlier = born.then(|| bring_earlier_messages(&root, &name, opts.session.as_deref(), lang));
 
     // A nota da pendência, e o mapa, só no que mudou; a falha de cada um só
     // avisa.
@@ -606,7 +623,24 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
     if let Some(id) = pending {
         report["pending"] = json!(id);
     }
+    match earlier {
+        Some(Ok(ids)) => report["earlier_messages"] = json!(ids),
+        Some(Err(note)) => report["earlier_messages_missing"] = json!(note),
+        None => {}
+    }
     report
+}
+
+/// As mensagens que o usuário digitou na conversa da sessão `session` antes
+/// da abertura, gravadas na spec `spec`, que acabou de nascer; os números
+/// delas. Sem a conversa (a sessão que não se sabe, ou a do Codex, que não
+/// guarda o arquivo do Claude Code), o aviso de que elas ficaram fora: a
+/// abertura segue como antes.
+fn bring_earlier_messages(root: &Path, spec: &str, session: Option<&str>, lang: Locale) -> Result<Vec<u64>, String> {
+    let Some(transcript) = session.and_then(session_transcript) else {
+        return Err(translate("open.earlier_messages_missing", lang).to_string());
+    };
+    Ok(record_earlier_messages(root, spec, &typed_messages(&transcript)))
 }
 
 
@@ -662,6 +696,7 @@ mod tests {
             name: name.map(str::to_string),
             base: base.map(str::to_string),
             pending: None,
+            session: None,
         }
     }
 

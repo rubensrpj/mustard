@@ -5,11 +5,10 @@
 //! as ondas e as tarefas estão gravadas, este comando monta o pedido de cada
 //! onda a partir dos eventos — com as lições e as skills —, confere o plano
 //! contra o código real, refaz o índice, grava a fase `plan` pela mesma porta
-//! de gravação de fase das outras, prepara a cópia da spec para o banco de
-//! dados da página e responde o próximo passo: publique a página que ainda
-//! não foi publicada, copie os lotes para o banco e faça a pergunta de
-//! aprovação. O item que ainda guarda um trecho com cara de segredo sai dito,
-//! para ser expurgado; ele fica fora da cópia.
+//! de gravação de fase das outras e responde o próximo passo: conferir o
+//! plano e fazer a pergunta de aprovação. Publicar a página é só a pedido do
+//! usuário, e este passo não publica nem copia nada. O item que ainda guarda
+//! um trecho com cara de segredo sai dito, para ser expurgado.
 //!
 //! **O que trava** e segura a pergunta até ser corrigido: ponto do
 //! levantamento aberto; skill que a conferência recusa; arquivo citado que
@@ -27,9 +26,10 @@
 //! do git (um agente noutra sessão ou máquina não o vê); nome citado que o
 //! mapa não acha; item combinado de uma onda que nenhuma tarefa cobre — menos
 //! o marcado como "não vira código", que traz o motivo na linha dele, e o do
-//! projeto, que vale sempre; contrato que nenhum critério cita; tarefa que
-//! podia nomear uma skill; e o comando de compilar ou de testar que o
-//! `mustard.json` ainda não declara, com o campo a preencher.
+//! projeto, que vale sempre; contrato que nenhum critério cita; e o comando
+//! de compilar ou de testar que o `mustard.json` ainda não declara, com o
+//! campo a preencher. A skill não se sugere por palavras: a que declara as
+//! pastas que atende entra no pedido da onda que mexe nelas.
 //!
 //! O plano não confere onda: a onda é um lote que o binário forma na hora de
 //! despachar, e não um desenho do plano. Não há aviso de ondas que dividem
@@ -57,7 +57,6 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::citation::{self, CitationWorld, Finding};
-use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::project_map::MapRefusal;
 use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog};
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State};
@@ -69,7 +68,6 @@ use mustard_core::io::wave_prompt::{Flight, WavePrompt, prompts};
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Map, Value, json};
 
-use crate::commands::flow::skill_search::{best_skill, skills_on_disk};
 use crate::commands::spec_events::{self, write::record};
 use crate::shared::spec_state::{DiskSpecState, checkout, session_from_env};
 
@@ -99,8 +97,6 @@ enum PlanFinding {
     ContractWithoutCriterion { code: String },
     /// Uma tarefa que mexe em código e não diz em que arquivo mexe.
     TaskWithoutFile { task: String },
-    /// Uma tarefa sem skill para a qual já existe uma skill que serve.
-    TaskCouldNameASkill { task: String, skill: String },
     /// O comando de compilar ou de testar que o projeto ainda não declarou
     /// no `mustard.json`, pelo nome do campo (`buildCommand`/`testCommand`).
     CommandNotDeclared { field: &'static str },
@@ -118,7 +114,6 @@ impl PlanFinding {
             Self::FileOutsideGit { .. }
             | Self::ItemWithoutTask { .. }
             | Self::ContractWithoutCriterion { .. }
-            | Self::TaskCouldNameASkill { .. }
             | Self::CommandNotDeclared { .. } => false,
         }
     }
@@ -139,7 +134,6 @@ impl PlanFinding {
             Self::ItemWithoutTask { .. } => "item-without-task".into(),
             Self::ContractWithoutCriterion { .. } => "contract-without-criterion".into(),
             Self::TaskWithoutFile { .. } => "task-without-file".into(),
-            Self::TaskCouldNameASkill { .. } => "task-could-name-a-skill".into(),
             Self::CommandNotDeclared { .. } => "command-not-declared".into(),
         }
     }
@@ -164,7 +158,6 @@ impl PlanFinding {
             Self::ItemWithoutTask { code } => fill("plan.item_without_task", &[("{code}", code.clone())]),
             Self::ContractWithoutCriterion { code } => fill("plan.contract_without_criterion", &[("{code}", code.clone())]),
             Self::TaskWithoutFile { task } => fill("plan.task_without_file", &[("{task}", task.clone())]),
-            Self::TaskCouldNameASkill { task, skill } => fill("plan.task_could_name_a_skill", &[("{task}", task.clone()), ("{skill}", skill.clone())]),
             Self::CommandNotDeclared { field } => fill("plan.command_not_declared", &[("{field}", (*field).to_string())]),
         }
     }
@@ -253,13 +246,10 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>) -> Value {
         }
     };
 
-    // O passo termina preparando a cópia para o banco da página, que é por
-    // onde a spec é aprovada. A cópia acontece só nos marcos, e a aprovação é
-    // um deles: a resposta manda publicar a página que ainda não tem endereço
-    // e copiar os lotes, e nenhum endereço vai para a resposta ao usuário — o
-    // link mora na barra de status. O item que ainda guarda um trecho com
-    // cara de segredo sai dito, para ser expurgado, sem segurar a cópia nem a
-    // pergunta.
+    // O passo termina na pergunta de aprovação, sem publicar nem copiar nada:
+    // publicar a página é só a pedido do usuário, e o acompanhamento mora no
+    // painel. O item que ainda guarda um trecho com cara de segredo sai dito,
+    // para ser expurgado, sem segurar a pergunta.
     let mut report = json!({
         "ok": true, "spec": spec, "phase": "plan", "from": from,
         "waves": waves, "warnings": warnings,
@@ -316,7 +306,6 @@ fn check(start: &Path, root: &Path, spec: &str, log: &SpecLog, built: &[WaveProm
     let mut out: Vec<PlanFinding> = Vec::new();
     let codes = log.codes();
     let code_of = |event: &SpecEvent| codes.get(&event.id).cloned().unwrap_or_else(|| event.id.to_string());
-    let languages = Languages::of_project(root);
 
     // Nenhum ponto do levantamento aberto.
     let open = open_points(log);
@@ -413,25 +402,13 @@ fn check(start: &Path, root: &Path, spec: &str, log: &SpecLog, built: &[WaveProm
             }
         }
     }
-    // A skill é escolhida pela tarefa: a tarefa que não nomeia skill ganha o
-    // nome da que já existe e serve. Como as outras conferências das
-    // tarefas, esta olha só as ondas que ainda vêm.
-    let on_disk = skills_on_disk(root, &tasks);
-    for task in &ahead {
-        if task.str_field("skill").is_some_and(|s| !s.trim().is_empty()) {
-            continue;
-        }
-        let text = task.str_field("text").unwrap_or_default();
-        if let Some(name) = best_skill(&on_disk, text, &languages) {
-            out.push(PlanFinding::TaskCouldNameASkill { task: code_of(task), skill: name });
-        }
-    }
-
     // A prova de cada critério é o comando que a rodada e o fechamento
-    // rodam: a que não roda, liga comandos por `;` ou é uma busca sem `!`
-    // segura a pergunta de aprovação.
+    // rodam: a que não roda, liga comandos por `;`, é uma busca sem `!` ou
+    // cita um alvo de teste ou um caminho que o projeto não tem, nem uma
+    // tarefa do plano declara criar, segura a pergunta de aprovação.
+    let created: BTreeSet<String> = tasks.iter().flat_map(|task| spec_events::proof_check::created_files(&task.fields)).collect();
     for criterion in log.block(BlockQuery::Block(Block::Criteria)).into_iter().filter(|e| e.event_type == "criterion") {
-        let refusal = criterion.str_field("proof").and_then(spec_events::proof_check::proof_defect);
+        let refusal = criterion.str_field("proof").and_then(|proof| spec_events::proof_check::proof_defect(root, proof, &created));
         if let Some(refusal) = refusal {
             out.push(PlanFinding::Proof { criterion: code_of(criterion), refusal });
         }
@@ -565,12 +542,11 @@ mod tests {
         report[field].as_array().cloned().unwrap_or_default().iter().filter_map(|f| f["reason"].as_str().map(str::to_string)).collect()
     }
 
-    /// Um plano são é conferido numa chamada: a spec passa para o plano, a
-    /// cópia para o banco da página sai preparada, sem página nem `.md`
-    /// escritos, e a resposta manda publicar as duas páginas, copiar os lotes
-    /// e fazer a pergunta.
+    /// Um plano são é conferido numa chamada: a spec passa para o plano, sem
+    /// página, `.md` nem cópia escritos, e a resposta manda fazer a pergunta
+    /// de aprovação, sem ordem de publicar ou de copiar.
     #[test]
-    fn a_sound_plan_is_checked_in_one_call_and_asks_for_the_page_and_the_question() {
+    fn a_sound_plan_is_checked_in_one_call_and_asks_the_question() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = surveyed(root, "x");
@@ -610,6 +586,47 @@ mod tests {
         assert!(again.get("publish").is_none() && again.get("copy").is_none(), "{again}");
         let rebuilt = std::fs::read_to_string(root.join(".claude/spec/index.ndjson")).unwrap();
         assert_eq!(rebuilt, index, "o índice volta igual");
+    }
+
+    /// Com a spec no plano, o próximo passo manda conferir o plano e fazer a
+    /// pergunta de aprovação, e nunca publicar a página: publicação é só a
+    /// pedido do usuário. Vale nos dois idiomas, na resposta do plano, na
+    /// retomada, no bloco do começo da sessão e na rodada pedida antes do sim.
+    #[test]
+    fn the_plan_next_step_does_not_ask_to_publish() {
+        use crate::commands::flow::resume::{ResumeOpts, resume_block, resume_for};
+        use crate::commands::flow::round::{RoundOpts, round_for};
+        use crate::hooks::session::session_start_inject::MAX_BYTES;
+
+        let cases = [
+            ("pt-BR", Locale::PtBr, "confira o plano", "Aprovar esta spec?"),
+            ("en-US", Locale::EnUs, "check the plan", "Approve this spec?"),
+        ];
+        for (language, lang, check, question) in cases {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            let said = surveyed(root, "x");
+            sound_plan(root, "x", said);
+            std::fs::write(root.join("mustard.json"), format!(r#"{{"language":{{"text":"{language}"}}}}"#)).unwrap();
+
+            let planned = plan(root, "x");
+            assert_eq!(planned["phase"], json!("plan"), "{language}: {planned}");
+            let resumed = resume_for(&ResumeOpts { root: root.to_path_buf(), spec: Some("x".into()) }, None);
+            let next = resumed["next"].as_str().unwrap_or_default();
+            assert!(next.contains(check) && next.contains(&format!("\"{question}\"")), "{language}: {next}");
+            let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+            let block = resume_block("x", &log, lang, MAX_BYTES);
+            let round = round_for(&RoundOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None }, None);
+            assert_eq!(round["reason"], json!("round-not-approved"), "{language}: {round}");
+
+            let said = [planned["next"].to_string(), next.to_string(), block, round.to_string()];
+            for text in said {
+                let lower = text.to_lowercase();
+                for word in ["publique", "publicar", "publish"] {
+                    assert!(!lower.contains(word), "{language}: `{word}` in {text}");
+                }
+            }
+        }
     }
 
     /// Cada linha de cada pedido aparece na página da spec que o comando de
@@ -788,6 +805,44 @@ mod tests {
         assert!(hints.iter().any(|h| h.starts_with("MSTD-CRIT-") && h.contains("sai")), "{hints:?}");
     }
 
+    /// O critério gravado cru, sem passar pela gravação, com uma prova que
+    /// cita um alvo de teste ou um arquivo que o projeto não tem, segura a
+    /// pergunta de aprovação: os manifestos e os arquivos são lidos da raiz
+    /// do plano. O alvo e o arquivo que uma tarefa do plano declara criar
+    /// passam.
+    #[test]
+    fn a_criterion_proof_citing_what_the_project_lacks_holds_the_question() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        sound_plan(root, "x", said);
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"calc\"\n").unwrap();
+        std::fs::create_dir_all(root.join("tests")).unwrap();
+        std::fs::write(root.join("tests/soma.rs"), "").unwrap();
+        write(
+            root,
+            Some("x"),
+            "task",
+            json!({"wave": 1, "text": "Cria os testes novos.",
+            "files": [{"path": "tests/novo.rs", "new": true}, {"path": "web/novo.test.ts", "new": true}], "origin": said}),
+        );
+
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let mut next = log.max_id();
+        for proof in ["cargo test -p calc --test nope", "npx vitest run web/gone.test.ts", "cargo test -p calc --test novo", "npx vitest run web/novo.test.ts"] {
+            next += 1;
+            append_raw(root, "x", "criterion", json!({"when": "a", "then": "b", "proof": proof, "form": "ubiquitous", "origin": said}), next);
+        }
+
+        let report = plan(root, "x");
+        assert_eq!(report["ok"], json!(false), "{report}");
+        let blocking = reasons(&report, "blocking");
+        assert_eq!(blocking.iter().filter(|r| *r == "proof-test-target-missing").count(), 1, "{report}");
+        assert_eq!(blocking.iter().filter(|r| *r == "proof-path-missing").count(), 1, "{report}");
+        let hints = hints_of(&report, "blocking", "proof-path-missing");
+        assert!(hints.iter().any(|hint| hint.contains("web/gone.test.ts")), "{hints:?}");
+    }
+
     /// As citações do plano passam pela mesma conferência do ponto do
     /// levantamento: o arquivo que não existe e não está marcado como novo
     /// trava; o marcado como novo passa; e o nome que o mapa não acha avisa.
@@ -878,46 +933,6 @@ mod tests {
         }
     }
 
-    /// A tarefa que não nomeia skill ganha o nome da skill que já existe e
-    /// serve para ela.
-    #[test]
-    fn the_plan_names_the_skill_that_serves() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let said = surveyed(root, "x");
-        let crit = criterion(root, "x", said);
-        let skill = root.join(".claude/skills/add-run-command");
-        std::fs::create_dir_all(&skill).unwrap();
-        std::fs::write(
-            skill.join("SKILL.md"),
-            "---\nname: add-run-command\ndescription: Use quando for preciso adicionar um comando \
-             de execução novo, com os registros, a recusa nos dois idiomas e os testes.\n---\n\nPassos.\n",
-        )
-        .unwrap();
-        write(root, Some("x"), "wave", json!({"n": 1, "text": "Uma.", "criteria": [crit], "done_when": "passa", "origin": said}));
-        write(
-            root,
-            Some("x"),
-            "task",
-            json!({"wave": 1, "text": "Adicionar um comando de execução novo, com os registros e os testes.",
-            "files": [{"path": "src/a.rs"}], "origin": said}),
-        );
-        write(
-            root,
-            Some("x"),
-            "task",
-            json!({"wave": 1, "text": "Já tem skill.", "skill": "add-run-command",
-            "files": [{"path": "src/b.rs"}], "origin": said}),
-        );
-
-        let report = plan(root, "x");
-        let named: Vec<&Value> =
-            report["warnings"].as_array().map(Vec::as_slice).unwrap_or_default().iter().filter(|f| f["reason"] == json!("task-could-name-a-skill")).collect();
-        assert_eq!(named.len(), 1, "só a tarefa sem skill recebe o nome: {report}");
-        let hint = named[0]["hint"].as_str().unwrap_or_default();
-        assert!(hint.contains("MSTD-TASK-0001") && hint.contains("add-run-command"), "{hint}");
-    }
-
     /// Os achados de um motivo, pela mensagem, num dos campos da resposta.
     fn hints_of(report: &Value, field: &str, reason: &str) -> Vec<String> {
         report[field]
@@ -928,48 +943,6 @@ mod tests {
             .filter(|f| f["reason"] == json!(reason))
             .filter_map(|f| f["hint"].as_str().map(str::to_string))
             .collect()
-    }
-
-    /// O aviso de que uma tarefa podia nomear uma skill olha só as ondas que
-    /// ainda vêm: a mesma tarefa sem skill avisa na onda sem registro de
-    /// entrega e se cala na onda entregue.
-    #[test]
-    fn the_skill_warning_looks_only_at_the_waves_still_to_come() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let said = surveyed(root, "x");
-        let crit = criterion(root, "x", said);
-        let skill = root.join(".claude/skills/add-run-command");
-        std::fs::create_dir_all(&skill).unwrap();
-        std::fs::write(
-            skill.join("SKILL.md"),
-            "---\nname: add-run-command\ndescription: Use quando for preciso adicionar um comando \
-             de execução novo, com os registros, a recusa nos dois idiomas e os testes.\n---\n\nPassos.\n",
-        )
-        .unwrap();
-        for n in [1, 2] {
-            write(
-                root,
-                Some("x"),
-                "wave",
-                json!({"n": n, "text": "Os comandos de execução novos.",
-                "criteria": [crit], "done_when": "passa", "origin": said}),
-            );
-            write(
-                root,
-                Some("x"),
-                "task",
-                json!({"wave": n, "text": "Adicionar um comando de execução novo, com os registros e os testes.",
-                "files": [{"path": "src/a.rs"}], "origin": said}),
-            );
-        }
-        let record = write(root, Some("x"), "delivered", json!({"wave": 1, "text": "A onda 1 saiu.", "files": ["src/a.rs"]}));
-        assert_eq!(record["ok"], json!(true), "{record}");
-
-        let report = plan(root, "x");
-        let named = hints_of(&report, "warnings", "task-could-name-a-skill");
-        assert_eq!(named.len(), 1, "só a onda que ainda vem avisa: {report}");
-        assert!(named[0].contains("MSTD-TASK-0002"), "{named:?}");
     }
 
     /// A tarefa de onda que já tem registro de entrega não é conferida: o
@@ -1310,13 +1283,11 @@ mod tests {
         assert!(!next.contains("ponto"), "nenhum texto impresso cita a nota do Scrum: {next}");
     }
 
-    /// A aprovação é o primeiro marco de uma spec nova, que ainda não tem
-    /// template: a ordem manda publicar o template, sem falar de página
-    /// antiga, e o próprio orquestrador copiar a spec inteira, antes da
-    /// pergunta, sem agente. Uma spec que uma versão antiga publicou inteira,
-    /// ainda no plano, ganha o template num link novo na aprovação.
+    /// Antes da aprovação, o plano não copia a spec nem publica página: a
+    /// resposta traz só a pergunta. Uma spec que uma versão antiga publicou
+    /// ainda no plano recebe a mesma resposta.
     #[test]
-    fn approving_a_new_spec_tells_the_orchestrator_to_copy_the_whole_spec() {
+    fn approving_a_spec_neither_copies_nor_publishes_it() {
         for legacy in [false, true] {
             let dir = tempdir().unwrap();
             let root = dir.path();

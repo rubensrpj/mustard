@@ -148,6 +148,30 @@ fn the_session_start_keeps_a_same_subject_defect_in_the_open_spec() {
     }
 }
 
+/// A abertura de uma spec vem em dois passos no mapa, nas duas línguas: o
+/// `run open` sozinho, sem objetivo junto — ele não recebe objetivo —, e
+/// depois o objetivo gravado pelo `run write context`, com `origin` na
+/// mensagem do usuário.
+#[test]
+fn the_session_map_opens_the_spec_then_records_the_goal_as_its_own_context() {
+    let open = "`mustard-rt run open`";
+    let write = "`mustard-rt run write context`";
+    for (lang, text, goal) in [("pt-BR", Locale::PtBr, "objetivo"), ("en-US", Locale::EnUs, "goal")] {
+        let map = mustard_core::session_map(text);
+        let line = map.lines().find(|line| line.contains(open)).unwrap_or_else(|| panic!("the {lang} map never says {open}: {map}"));
+        let after_open = &line[line.find(open).unwrap() + open.len()..];
+        let open_step = after_open.split(';').next().unwrap_or_default();
+        assert!(
+            !open_step.contains(goal) && !open_step.contains("context"),
+            "the {lang} map hands the goal to {open}, which takes none: {line}",
+        );
+        let at = after_open.find(write).unwrap_or_else(|| panic!("the {lang} map does not record the goal with {write} after {open}: {line}"));
+        let write_step = after_open[at..].split(';').next().unwrap_or_default();
+        assert!(write_step.contains("`origin`"), "the {lang} map does not point the goal at the user's message: {line}");
+        assert!(after_open[..at].contains(goal), "the {lang} map does not say the goal is what {write} records: {line}");
+    }
+}
+
 /// Uma instalação nova em inglês acompanha localmente e só exporta sob pedido;
 /// iniciar a sessão não cria páginas ou recursos externos.
 #[test]

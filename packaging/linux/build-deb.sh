@@ -50,21 +50,28 @@ CLI_BINS="scan mustard-rt mustard"
 # ou vazio), MUSTARD_GIT_DATE e MUSTARD_GIT_DIFF preenchidos; sem git ou sem
 # commit, os quatro ficam vazios, e quem não consegue ler a pasta não a afirma
 # suja.
+#
+# O repositório chega montado em /work com o dono da máquina, e o contêiner
+# roda como root: o git recusa ler a pasta de outro dono ("dubious ownership"),
+# e o commit saía vazio sem ninguém ver. Cada leitura daqui confia na pasta só
+# naquele comando (`safe.directory`); confiar não acrescenta risco, porque o
+# script vai compilar e rodar o código dessa mesma pasta.
 read_git_stamp() {
   local repo="$1" top tracked fresh_file name digest
-  MUSTARD_GIT_HASH=$(git -C "$repo" rev-parse --short=12 HEAD 2>/dev/null || echo "")
+  local -a git_in=(git -c "safe.directory=*" -C "$repo")
+  MUSTARD_GIT_HASH=$("${git_in[@]}" rev-parse --short=12 HEAD 2>/dev/null || echo "")
   MUSTARD_GIT_DIRTY=""
   MUSTARD_GIT_DATE=""
   MUSTARD_GIT_DIFF=""
   [ -n "$MUSTARD_GIT_HASH" ] || return 0
-  MUSTARD_GIT_DATE=$(git -C "$repo" log -1 --format=%cs 2>/dev/null || echo "")
-  top=$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null) || return 0
-  tracked=$(git -C "$repo" -c color.ui=never diff --binary --no-ext-diff --no-textconv HEAD 2>/dev/null) || return 0
+  MUSTARD_GIT_DATE=$("${git_in[@]}" log -1 --format=%cs 2>/dev/null || echo "")
+  top=$("${git_in[@]}" rev-parse --show-toplevel 2>/dev/null) || return 0
+  tracked=$("${git_in[@]}" -c color.ui=never diff --binary --no-ext-diff --no-textconv HEAD 2>/dev/null) || return 0
   # Sem as bordas em branco, como o `trim` do núcleo: a substituição de comando
   # já tirou as quebras de linha do fim, faltam os espaços e as tabelas.
   while [ -n "$tracked" ] && [[ "${tracked: -1}" == [[:space:]] ]]; do tracked=${tracked%?}; done
   fresh_file=$(mktemp)
-  if ! git -C "$repo" ls-files --others --exclude-standard --full-name -z -- ":/" 2>/dev/null \
+  if ! "${git_in[@]}" ls-files --others --exclude-standard --full-name -z -- ":/" 2>/dev/null \
       | LC_ALL=C sort -z > "$fresh_file"; then
     rm -f "$fresh_file"
     return 0
@@ -88,6 +95,17 @@ read_git_stamp() {
   MUSTARD_GIT_DIFF="$digest"
 }
 
+# `require_git_stamp <repositório>`: o `read_git_stamp` que recusa seguir sem
+# commit. Sem ele, cada binário do pacote responderia só o número da versão, e
+# nada provaria de que código veio; o motivo do git vai junto na recusa.
+require_git_stamp() {
+  read_git_stamp "$1"
+  [ -z "$MUSTARD_GIT_HASH" ] || return 0
+  echo "erro: o commit de $1 não foi lido; o pacote não sai sem o commit na versão dos binários." >&2
+  git -c "safe.directory=*" -C "$1" rev-parse --short=12 HEAD >/dev/null || true
+  return 1
+}
+
 # Compila os binários do CLI na área de build, com a versão e as quatro
 # variáveis do commit que `read_git_stamp` deixou.
 build_cli() {
@@ -103,7 +121,8 @@ if [ "${BASH_SOURCE[0]}" != "$0" ]; then
   return 0
 fi
 
-read_git_stamp "$REPO"
+require_git_stamp "$REPO" || exit 1
+echo "    commit: $MUSTARD_GIT_HASH${MUSTARD_GIT_DIRTY:+-dirty} $MUSTARD_GIT_DATE"
 
 echo "==> [1/5] copiando o repo para área de build isolada ($BUILD)"
 mkdir -p "$BUILD"

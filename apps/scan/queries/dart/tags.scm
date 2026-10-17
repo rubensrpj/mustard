@@ -156,3 +156,24 @@
 ; tem duas palavras ou forma de caminho ou chave, com a marca (log, erro ou
 ; texto) e a declaração que o contém.
 (string_literal) @text
+
+; A declaração que o Dart deixa ver fora da biblioteca: a de nome sem
+; sublinhado na frente, que é a regra da língua, nome a nome, também para o
+; membro de um tipo. Quem está fora do projeto pode usá-la, e a falta de uso
+; dentro dele não diz que ela sobra. O nome do construtor é o que vem antes
+; dos parâmetros (`vazia` em `Caixa.vazia()`, `_` em `Caixa._()`).
+([(class_definition name: (identifier) @_name)
+  (mixin_declaration (identifier) @_name)
+  (enum_declaration name: (identifier) @_name)
+  (extension_declaration name: (identifier) @_name)
+  (function_signature name: (identifier) @_name)
+  (getter_signature name: (identifier) @_name)
+  (setter_signature name: (identifier) @_name)
+  (constructor_signature (identifier) @_name . (formal_parameter_list))
+  (constant_constructor_signature (identifier) @_name . (formal_parameter_list))
+  (factory_constructor_signature (identifier) @_name . (formal_parameter_list))
+  (static_final_declaration . (identifier) @_name)
+  (declaration (initialized_identifier_list (initialized_identifier . (identifier) @_name)))
+  (declaration (static_final_declaration_list (static_final_declaration . (identifier) @_name)))
+  (enum_constant name: (identifier) @_name)] @visible
+  (#match? @_name "^[^_]"))

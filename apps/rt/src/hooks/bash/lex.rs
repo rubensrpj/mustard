@@ -14,6 +14,10 @@ const MAX_DEPTH: usize = 16;
 const STRUCTURE_WORDS: &[&str] =
     &["!", "{", "}", "if", "then", "else", "elif", "fi", "do", "done", "while", "until"];
 
+/// As palavras de [`STRUCTURE_WORDS`] que fecham um grupo de comandos: o `|`
+/// logo depois de uma delas leva a saída do grupo.
+const CLOSING_WORDS: &[&str] = &["}", "fi", "done"];
+
 /// The word that opens a function definition. Written plain at the head of a
 /// command it is skipped together with the function's name, so the body is
 /// read (`function f { rm -rf x; }` runs `rm`).
@@ -76,9 +80,21 @@ pub(crate) struct Segment {
     /// the program, in order: `while pgrep x` is `["while"]`, `do sleep 1` is
     /// `["do"]`. A wrapper or an assignment in between is skipped, not kept.
     pub leading: Vec<String>,
+    /// Os invólucros pulados antes do programa, pelo nome e na ordem:
+    /// `rtk grep x` dá `["rtk"]`, `xargs -n1 echo` dá `["xargs"]`.
+    pub wrappers: Vec<String>,
     /// `true` when the command hands its output to the next one through a
-    /// pipe (`|` or `|&`).
+    /// pipe (`|` or `|&`). Num `|` logo depois de um grupo (`( … )`,
+    /// `{ …; }`, o `done` de um laço, o `fi` de um `if`), o encadeado é o
+    /// último comando do grupo, junto com as palavras que fecham os grupos de
+    /// dentro dele.
     pub piped: bool,
+    /// A profundidade do comando: `0` na própria linha, e mais um para cada
+    /// `$(…)`, crases, `<(…)`, `${…}`, `$((…))`, `bash -c "…"`, `eval` ou
+    /// `find -exec` em volta dele. Os comandos de dentro de um comando vêm
+    /// logo depois dele, mais fundos; os do corpo de um heredoc vêm depois do
+    /// último comando da linha do heredoc.
+    pub depth: usize,
 }
 
 impl Segment {
@@ -191,7 +207,10 @@ impl Reader {
     fn list(&mut self, close: Close, depth: usize) -> Vec<Segment> {
         let mut out = Vec::new();
         let mut cur = Pending::default();
-        let mut parens = 0usize;
+        // Onde começa, em `out`, cada grupo entre parênteses ainda aberto, e
+        // o do grupo que acabou de fechar, até o separador seguinte.
+        let mut groups: Vec<usize> = Vec::new();
+        let mut closed: Option<usize> = None;
         let mut range_start = self.pos;
         while let Some(c) = self.peek(0) {
             let before = self.pos;
@@ -202,6 +221,7 @@ impl Reader {
                     self.advance(1);
                     if depth == 0 && self.track_ranges { self.ranges.push(range_start..before); }
                     finish(&mut cur, &mut out, depth);
+                    closed = None;
                     range_start = self.pos;
                     self.heredoc_bodies(&mut out, depth);
                 }
@@ -209,6 +229,7 @@ impl Reader {
                     self.advance(1);
                     if depth == 0 && self.track_ranges { self.ranges.push(range_start..before); }
                     finish(&mut cur, &mut out, depth);
+                    closed = None;
                     range_start = self.pos;
                 }
                 '&' if self.peek(1) == Some('>') => self.redirect(&mut cur, String::new(), close, depth),
@@ -219,8 +240,12 @@ impl Reader {
                         self.advance(1);
                     }
                     cur.piped = c == '|' && second != Some('|');
+                    if cur.piped {
+                        pipe_the_group(&mut out, &cur, closed, depth);
+                    }
                     if depth == 0 && self.track_ranges { self.ranges.push(range_start..before); }
                     finish(&mut cur, &mut out, depth);
+                    closed = None;
                     range_start = self.pos;
                 }
                 '<' | '>' if self.peek(1) != Some('(') => {
@@ -230,18 +255,19 @@ impl Reader {
                     self.advance(1);
                     if depth == 0 && self.track_ranges { self.ranges.push(range_start..before); }
                     finish(&mut cur, &mut out, depth);
+                    closed = None;
                     range_start = self.pos;
-                    parens += 1;
+                    groups.push(out.len());
                 }
                 ')' => {
                     self.advance(1);
                     if depth == 0 && self.track_ranges { self.ranges.push(range_start..before); }
                     finish(&mut cur, &mut out, depth);
                     range_start = self.pos;
-                    if parens > 0 {
-                        parens -= 1;
-                    } else if close == Close::Paren {
-                        return out;
+                    match groups.pop() {
+                        Some(start) => closed = Some(start),
+                        None if close == Close::Paren => return out,
+                        None => closed = None,
                     }
                 }
                 '`' if close == Close::Backtick => {
@@ -574,7 +600,7 @@ fn heredoc_commands(body: &str, depth: usize) -> Vec<Segment> {
 fn finish(cur: &mut Pending, out: &mut Vec<Segment>, depth: usize) {
     let Pending { words, redirects, inner, piped } = std::mem::take(cur);
     if !words.is_empty() || !redirects.is_empty() {
-        let segment = Segment { piped, ..simple_command(words, redirects) };
+        let segment = Segment { piped, depth, ..simple_command(words, redirects) };
         let nested = run_by(&segment, depth);
         out.push(segment);
         out.extend(inner);
@@ -584,13 +610,43 @@ fn finish(cur: &mut Pending, out: &mut Vec<Segment>, depth: usize) {
     }
 }
 
+/// Um `|` logo depois de um grupo leva a saída do grupo inteiro. O grupo é o
+/// que `closed` aponta em `out`, quando o comando em `cur` não tem palavra
+/// (`(a) | b`, `(a) 2>&1 | b`), ou o que termina em `out`, quando `cur` só
+/// tem palavras que fecham grupos (`{ a; } | b`, `…; done | b`). Fica
+/// encadeado o último comando do grupo, na profundidade da lista, e também
+/// as palavras que fecham grupos entre ele e o `|`.
+fn pipe_the_group(out: &mut [Segment], cur: &Pending, closed: Option<usize>, depth: usize) {
+    let closes = |w: &Word| w.is_plain() && CLOSING_WORDS.contains(&w.text.as_str());
+    let start = if cur.words.is_empty() {
+        closed
+    } else if cur.words.iter().all(closes) {
+        Some(0)
+    } else {
+        None
+    };
+    let Some(group) = start.and_then(|start| out.get_mut(start..)) else {
+        return;
+    };
+    for segment in group.iter_mut().rev().filter(|segment| segment.depth == depth) {
+        segment.piped = true;
+        let closer = segment.program.text.is_empty()
+            && !segment.leading.is_empty()
+            && segment.leading.iter().all(|word| CLOSING_WORDS.contains(&word.as_str()));
+        if !closer {
+            return;
+        }
+    }
+}
+
 /// The command `words` spell: the program found past the structure words,
 /// the assignments and the wrappers, then its arguments.
 fn simple_command(words: Vec<Word>, redirects: Vec<Redirect>) -> Segment {
     // `command_start` can name an index past the last word (a wrapper's own
     // options run out with none of its own left, `function` with nothing
     // after it): `skip` reads past the end fine, but slicing does not.
-    let start = command_start(&words).min(words.len());
+    let (start, wrappers) = command_start(&words);
+    let start = start.min(words.len());
     let leading = words[..start]
         .iter()
         .filter(|w| w.is_plain() && STRUCTURE_WORDS.contains(&w.text.as_str()))
@@ -598,14 +654,15 @@ fn simple_command(words: Vec<Word>, redirects: Vec<Redirect>) -> Segment {
         .collect();
     let mut rest = words.into_iter().skip(start);
     let program = rest.next().unwrap_or_default();
-    Segment { program, args: rest.collect(), redirects, leading, piped: false }
+    Segment { program, args: rest.collect(), redirects, leading, wrappers, piped: false, depth: 0 }
 }
 
 /// Where the command really starts: past the structure words, a function
 /// definition's head, the `NAME=value` assignments and the wrappers with
-/// their options.
-fn command_start(words: &[Word]) -> usize {
+/// their options. Junto, os nomes dos invólucros pulados, na ordem.
+fn command_start(words: &[Word]) -> (usize, Vec<String>) {
     let mut i = 0;
+    let mut wrappers = Vec::new();
     while let Some(w) = words.get(i) {
         if (w.is_plain() && STRUCTURE_WORDS.contains(&w.text.as_str())) || is_assignment(w) {
             i += 1;
@@ -616,11 +673,14 @@ fn command_start(words: &[Word]) -> usize {
             continue;
         }
         match wrapper_end(words, i) {
-            Some(next) if next > i => i = next,
+            Some(next) if next > i => {
+                wrappers.push(base_name(&w.text).to_string());
+                i = next;
+            }
             _ => break,
         }
     }
-    i
+    (i, wrappers)
 }
 
 /// `NAME=value` (or `NAME+=value`), with the name written plain.
@@ -734,7 +794,7 @@ fn find_actions(args: &[Word], depth: usize) -> Vec<Segment> {
         if words.is_empty() {
             continue;
         }
-        let action = simple_command(words, Vec::new());
+        let action = Segment { depth: depth + 1, ..simple_command(words, Vec::new()) };
         let nested = run_by(&action, depth + 1);
         out.push(action);
         out.extend(nested);
@@ -1011,6 +1071,42 @@ mod tests {
         assert!(programs("for f in a b; do rm -rf $f; done").contains(&"rm".to_string()));
         // A quoted keyword is a program name, not a keyword.
         assert_eq!(programs("'if' x"), ["if"]);
+    }
+
+    /// O programa de cada comando, seguido de `|` quando ele passa a saída
+    /// adiante por um encadeamento.
+    fn chain(cmd: &str) -> Vec<String> {
+        segments(cmd).into_iter().map(|s| if s.piped { format!("{}|", s.program.text) } else { s.program.text }).collect()
+    }
+
+    /// O `|` logo depois de um grupo entre parênteses leva a saída do grupo:
+    /// o último comando dele fica encadeado, também com um redirecionamento
+    /// do grupo no meio e com grupos um dentro do outro. O `||` não encadeia.
+    #[test]
+    fn a_pipe_right_after_a_parenthesized_group_chains_its_last_command() {
+        assert_eq!(chain("(a) | b"), ["a|", "b"]);
+        assert_eq!(chain("(a) |& b"), ["a|", "b"]);
+        assert_eq!(chain("(a; b) | c"), ["a", "b|", "c"]);
+        assert_eq!(chain("((a)) 2>&1 | b"), ["a|", "|", "b"]);
+        assert_eq!(chain("(a) || b"), ["a", "b"]);
+        assert_eq!(chain("(a) && b | c"), ["a", "b|", "c"]);
+        assert_eq!(chain("(npx tsc --noEmit -p tsconfig.json) | head -20"), ["npx|", "head"]);
+        assert_eq!(chain("(cd api && dotnet test Api.Tests.csproj) |& tail -15"), ["cd", "dotnet|", "tail"]);
+    }
+
+    /// O `|` logo depois do `}` de um grupo entre chaves, do `done` de um
+    /// laço ou do `fi` de um `if` leva a saída do grupo: o último comando
+    /// dele fica encadeado, e as palavras que fecham grupos de dentro também.
+    /// Uma atribuição como último comando é o elo, e o comando de fora do
+    /// grupo não fica encadeado.
+    #[test]
+    fn a_pipe_right_after_a_closing_word_chains_the_last_command_of_the_group() {
+        assert_eq!(chain("{ a; } | b"), ["a|", "|", "b"]);
+        assert_eq!(chain("while x; do a; done | b"), ["x", "a|", "|", "b"]);
+        assert_eq!(chain("if x; then a; fi |& b"), ["x", "a|", "|", "b"]);
+        assert_eq!(chain("{ { a; }; } | b"), ["a|", "|", "|", "b"]);
+        assert_eq!(chain("a; { X=1; } | b"), ["a", "|", "|", "b"]);
+        assert_eq!(chain("{ a; } || b"), ["a", "", "b"]);
     }
 
     #[test]

@@ -20,9 +20,13 @@ pub enum PanelCmd {
     Settings {
         #[arg(long, default_value = ".")]
         root: PathBuf,
-        /// {schema_version:1,revision,changes:{vectors,jev,rtk,...}}; never credentials.
+        /// {schema_version:1,revision,changes:{vectors,jev,rtk,build_command,test_command,lint_command,max_compiling_waves,...}}; never credentials.
         #[arg(long)]
         json: Option<String>,
+        /// The whole answer: besides the current values and the revision,
+        /// the state of Jev, rtk, the index and the integrations.
+        #[arg(long)]
+        full: bool,
     },
     /// Publish an explicit static snapshot using the configured native destination.
     #[command(display_order = 27)]
@@ -60,6 +64,9 @@ pub enum PanelCmd {
         /// Continue a receipt page using its next_before value.
         #[arg(long, requires = "observations")]
         observations_before: Option<String>,
+        /// Read one receipt of this wave whole, with the command as recorded.
+        #[arg(long, requires = "observations", conflicts_with = "observations_before")]
+        receipt: Option<String>,
         /// Query only the visible dashboard section.
         #[arg(long,value_parser=clap::builder::PossibleValuesParser::new(super::dashboard::SECTIONS.iter().copied()))]
         section:Option<String>,
@@ -97,7 +104,10 @@ pub fn dispatch(cmd: PanelCmd) {
             }
             println!("{}",super::safe_value(result));
         },
-        PanelCmd::Settings {root,json} => println!("{}",super::settings::run(&root,json.as_deref())),
+        PanelCmd::Settings {root,json,full} => {
+            let report=super::settings::run(&root,json.as_deref());
+            println!("{}",crate::commands::flow::projection("settings",&report,full).unwrap_or(report));
+        }
         PanelCmd::Publish {
             root,
             spec,
@@ -122,7 +132,7 @@ pub fn dispatch(cmd: PanelCmd) {
                 name.map_or_else(||serde_json::json!({"ok":false,"reason":"no-current-spec","hint":"Use --project para publicar o projeto sem spec aberta."}),|name|super::publication::publish(&root,&name,include_consumption))
             }
         ),
-        PanelCmd::Panel { root, spec, refresh_consumption, session, wave, observations, observations_before,section,if_revision } => {
+        PanelCmd::Panel { root, spec, refresh_consumption, session, wave, observations, observations_before,receipt,section,if_revision } => {
             if observations {
                 let name=spec.or_else(||crate::shared::context::checkout::current_spec(&root.to_string_lossy()));
                 let root=mustard_core::io::spec_events::spec_root(&root);
@@ -131,7 +141,16 @@ pub fn dispatch(cmd: PanelCmd) {
                         .and_then(|path|mustard_core::io::spec_events::read(&path).ok().flatten())
                         .and_then(|log|log.last_by_wave("send").get(&wave).map(|id|log.dispatch_position(*id)));
                     dispatch.map_or_else(||serde_json::json!({"ok":false,"reason":"observation-no-wave-dispatch"}),|dispatch| {
-                        match mustard_core::io::observations::page(&root,&name,dispatch,observations_before.as_deref()) {
+                        let read=match receipt.as_deref() {
+                            Some(id)=>mustard_core::io::observations::detail(&root,&name,dispatch,id),
+                            None=>mustard_core::io::observations::page(&root,&name,dispatch,observations_before.as_deref()).map(|mut page| {
+                                if page["receipts"].as_array().is_some_and(|rows|!rows.is_empty()) {
+                                    page["whole_command"]=serde_json::json!("repeat with --receipt <receipt>");
+                                }
+                                page
+                            }),
+                        };
+                        match read {
                             Ok(mut page)=>{page["ok"]=serde_json::json!(true);page["spec"]=serde_json::json!(name);page["wave"]=serde_json::json!(wave);page},
                             Err(reason)=>serde_json::json!({"ok":false,"reason":reason}),
                         }
@@ -142,9 +161,10 @@ pub fn dispatch(cmd: PanelCmd) {
             let refresh=refresh_consumption.then(||{
                 crate::shared::rtk_gain::refresh(&root);
                 let machine=crate::commands::spec::spend::Machine::here();
+                // A conta do gasto também fecha o histórico do projeto e o devolve em `project`,
+                // mesmo quando a conta da máquina é recusada.
                 let mut refresh=crate::commands::spec::spend::spend_at(
                     &crate::commands::spec::spend::SpendOpts{root:root.clone(),publish:false,republish:false,url:None},&machine);
-                refresh["project"]=super::consumption::refresh_history(&root,&machine);
                 refresh["waves"]=super::wave_usage::refresh(&root,spec.as_deref(),session.as_deref(),machine.config.as_deref());
                 refresh
             });

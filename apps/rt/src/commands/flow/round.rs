@@ -136,12 +136,17 @@ pub(crate) use dependencies::prepare as prepare_copy_dependencies;
 mod environment;
 mod finish_check;
 mod fixes;
+mod handoff;
 mod imports_check;
 pub(crate) mod item_choice;
+mod jev_failure;
 mod keep;
 mod leftovers;
 mod lost_commit;
-mod queue;
+mod planning;
+pub(crate) use planning::needs_planning;
+pub(crate) use leftovers::is_cleanup;
+pub(crate) mod queue;
 mod read_check;
 mod rehearsal;
 mod rejection;
@@ -166,23 +171,23 @@ mod closed_process;
 /// cabeçalho da pergunta que decide a mudança. A mudança proposta que ainda
 /// espera o clique e as ondas paradas no limite de consertos, o bloco de
 /// retomada as conta.
-pub(crate) use stops::{change_accepted, change_code_of, replan_code, swaps_decision, waves_stuck};
+pub(crate) use stops::{append_agent_line, change_accepted, change_code_of, replan_code, swaps_decision, waves_stuck};
 
 pub(crate) use commit::{refresh_map_if_stale, waves_checked_only};
 
 use std::path::PathBuf;
 
-use crate::shared::spec_state::DiskSpecState;
-use mustard_core::domain::spec_state::SpecState;
 use serde_json::{Value, json};
 
 use crate::commands::spec_events;
 use crate::shared::spec_state::session_from_env;
 
-pub(crate) use answer::{RoundRefusal, agents_refreshed, read_command, wave_dispatch};
+pub(crate) use answer::{RoundRefusal, agents_refreshed, minutes_since, read_command, wave_dispatch};
 pub(crate) use fixes::{fix_file, sweep_fixes};
 pub(crate) use keep::Kept;
-pub(crate) use queue::{backlog_left, open_review, open_sends, send_revision, tasks_left, waves_awaiting_new_agent, waves_in_progress, waves_pending_fix,
+pub(crate) use queue::{
+    backlog_left, open_review, open_sends, send_revision, sender_fields, tasks_left, waves_awaiting_new_agent, waves_in_progress, waves_left_without_tasks,
+    waves_pending_fix,
 };
 pub(crate) use read_check::request_name;
 pub(crate) use rejection::{replaced_by_rejection, replaced_in_file};
@@ -215,8 +220,8 @@ pub struct RoundOpts {
     pub report: Option<String>,
 }
 
-/// Keep dispatches, reviews, warnings and evidence intact. Optional preparation
-/// need not repeat task text, file lists and both hosts' arguments every round.
+/// Keep dispatches, reviews, warnings and evidence intact; a wave-size warning
+/// becomes a short change line.
 pub(crate) fn projection(report: &Value) -> Value {
     let mut out = report.clone();
     if let Some(warnings) = out.get_mut("warnings").and_then(Value::as_array_mut) {
@@ -225,15 +230,16 @@ pub(crate) fn projection(report: &Value) -> Value {
         warnings.retain(|warning| warning["reason"] != "wave-size");
         if !changes.is_empty() { out["changes"] = json!(changes); }
     }
-    if let Some(preparations) = out.get_mut("specialization_preparation").and_then(Value::as_array_mut) {
-        for preparation in preparations {
-            if preparation["required"] == false && preparation["pending_review"].as_array().is_none_or(Vec::is_empty) {
-                let wave = preparation["wave"].clone();
-                let model_calls = preparation["model_calls"].clone();
-                *preparation = json!({"wave":wave,"required":false,"model_calls":model_calls,
-                    "next":"Only if current guidance is insufficient: use run expertise --prepare with the current host, task and files from dispatch.read. Reuse unchanged analyses. Do not launch another CLI/API."});
-            }
-        }
+    out
+}
+
+/// A resposta curta da rodada: a de [`projection`], com as tarefas seguradas
+/// agrupadas pelo motivo ([`scheduling::grouped`]) — a frase da vaga cheia
+/// sai uma vez, e não uma por tarefa.
+pub(crate) fn short(projected: &Value) -> Value {
+    let mut out = projected.clone();
+    if let Some(held) = out.get("held").and_then(Value::as_array) {
+        out["held"] = json!(scheduling::grouped(held));
     }
     out
 }
@@ -242,20 +248,15 @@ pub(crate) fn projection(report: &Value) -> Value {
 mod transport_tests {
     use super::*;
     #[test]
-    fn compact_round_keeps_actions_warnings_and_required_preparation() {
-        let full = json!({"ok":true,"dispatch":[{"wave":1,"read":"read request-1","preferred_agent":"mustard-database"}],
-            "warnings":[{"reason":"proof-missing"}],"stopped":[2],"commit":{"sha":"abc"},
-            "specialization_preparation":[{"wave":1,"required":false,"model_calls":1,"pending_review":[],"query":"x".repeat(3000),"files":["src/a.rs"]},
-                {"wave":2,"required":false,"pending_review":["stale"],"query":"inspect changed source"},
-                {"wave":3,"required":true,"pending_review":[],"query":"required analysis"}]});
+    fn compact_round_keeps_actions_and_turns_size_warnings_into_changes() {
+        let full = json!({"ok":true,"dispatch":[{"wave":1,"read":"read request-1","agent":"mustard-wave"}],
+            "warnings":[{"reason":"proof-missing"},{"reason":"wave-size","wave":1,"hint":"smaller"}],"stopped":[2],"commit":{"sha":"abc"}});
         let compact = projection(&full);
-        for field in ["dispatch", "warnings", "stopped", "commit"] {
+        for field in ["dispatch", "stopped", "commit"] {
             assert_eq!(compact[field], full[field]);
         }
-        assert_eq!(compact["specialization_preparation"][0]["model_calls"], 1);
-        assert_eq!(compact["specialization_preparation"][1], full["specialization_preparation"][1]);
-        assert_eq!(compact["specialization_preparation"][2], full["specialization_preparation"][2]);
-        assert!(compact.to_string().len() * 3 < full.to_string().len());
+        assert_eq!(compact["warnings"], json!([{"reason":"proof-missing"}]));
+        assert_eq!(compact["changes"], json!([{"wave":1,"summary":"smaller"}]));
     }
 }
 
@@ -283,41 +284,10 @@ pub(crate) fn round_for(opts: &RoundOpts, session: Option<&str>) -> Value {
 pub(crate) fn round_in(opts: &RoundOpts, caller: Caller<'_>) -> Value {
     let project = spec_events::project(&opts.root);
     let lang = project.lang;
-    let name = opts.spec.clone().or_else(|| DiskSpecState::new(&opts.root).active(caller.session));
-    let read_log = || {
-        name.as_deref()
-            .and_then(|name| mustard_core::io::spec_events::spec_file(&project.root, name).ok())
-            .and_then(|path| mustard_core::io::spec_events::read(&path).ok().flatten())
-    };
-    let before = read_log().and_then(|log| log.events.last().map(|event| event.id)).unwrap_or(0);
-    let mut report = match answer::run_round(opts, &project.root, lang, caller) {
+    match answer::run_round(opts, &project.root, lang, caller) {
         Ok(report) => report,
         Err(refusal) => refusal.to_value(lang),
-    };
-    if let Some(log) = read_log() {
-        let records: Vec<_> = log
-            .events
-            .iter()
-            .filter(|event| {
-                event.id > before
-                    && event.event_type == "stage_run"
-                    && matches!(event.str_field("stage"), Some("build" | "criterion-proof" | "criterion-proofs"))
-            })
-            .map(|event| {
-                json!({"stage":event.str_field("stage"),"result":event.str_field("result"),"exit":event.fields.get("exit"),
-                "ms":event.int("ms"),"criterion":event.int("criterion"),"waves":event.ints("waves"),"reused":event.fields.get("reused"),
-                "command":event.str_field("command").map(crate::shared::secret::without_secrets)})
-            })
-            .collect();
-        if !records.is_empty() {
-            let executed = records.iter().filter(|record| record["stage"] == "criterion-proof" && record["reused"] != true).count();
-            let reused = records.iter().filter(|record| record["stage"] == "criterion-proof" && record["reused"] == true).count();
-            report["validation"] = json!({"scope":"this-round","executed_proofs":executed,"reused_proof_receipts":reused,
-                "more_records":records.len().saturating_sub(16),"records":records.into_iter().take(16).collect::<Vec<_>>(),
-                "details":format!("mustard-rt run panel --section usage --spec {}",name.as_deref().unwrap_or_default())});
-        }
     }
-    report
 }
 
 /// A spec na fase `phase` pode ter ondas despachadas: está aprovada, ou já em
@@ -861,22 +831,34 @@ mod tests {
         assert_eq!(log.visible().into_iter().filter(|event|event.event_type=="send").count(),1,"retry does not dispatch twice");
     }
 
+    /// A reviewed procedure whose scope and text match the wave's TypeScript
+    /// task reaches neither the send nor the request: the send keeps no
+    /// procedure choice, its skills leave the procedure out, and the round
+    /// response carries no area profile, agent choice nor preparation.
     #[test]
-    fn a_matching_unreviewed_procedure_holds_dispatch_until_native_guidance_is_chosen() {
-        use mustard_core::io::expertise::{self,Profile,workflow};
-        let dir=tempfile::tempdir().unwrap();let root=dir.path();approved(root,"x",&[(1,&["src/a.rs"],&[])]);
+    fn a_reviewed_area_procedure_reaches_neither_the_send_nor_the_request() {
+        use mustard_core::io::expertise::{self,Profile};
+        let dir=tempfile::tempdir().unwrap();let root=dir.path();approved(root,"x",&[(1,&["src/a.ts"],&[])]);
         mustard_core::io::project_map::write_text(root,"{\"modules\":[]}").unwrap();
-        let path=mustard_core::io::spec_events::spec_file(root,"x").unwrap();
-        let log=mustard_core::io::spec_events::read(&path).unwrap().unwrap();let query=workflow::wave_task(&log,1);
-        let source=mustard_core::domain::knowledge::Source {file:"src/a.rs".into(),line:1,end_line:1,
-            sha256:mustard_core::io::observations::digest(&std::fs::read(root.join("src/a.rs")).unwrap())};
-        expertise::record(root,&Profile {name:"task-procedure".into(),description:query.chars().take(300).collect(),
-            paths:vec!["src/a.rs".into()],procedure:query.clone(),sources:vec![source],origin:"authored".into(),reviewed:None,rule_context:None}).unwrap();
-        let held=round(root,"x",None);assert_eq!(held["ok"],true,"{held}");assert_eq!(held["preparation_held"],json!([1]));
-        assert!(held["dispatch"].as_array().unwrap().is_empty());
-        assert!(!mustard_core::io::spec_events::read(&path).unwrap().unwrap().events.iter().any(|e|e.event_type=="send"));
-        workflow::acknowledge_native(root,&["src/a.rs".into()],&query).unwrap();
-        let ready=round(root,"x",None);assert_eq!(ready["dispatch"][0]["wave"],1,"{ready}");
+        let source=mustard_core::domain::knowledge::Source {file:"src/a.ts".into(),line:1,end_line:1,
+            sha256:mustard_core::io::observations::digest(&std::fs::read(root.join("src/a.ts")).unwrap())};
+        let task="Tarefa da onda 1.".to_string();
+        let draft=expertise::record(root,&Profile {name:"task-procedure".into(),description:task.clone(),
+            paths:vec!["src/a.ts".into()],procedure:task,sources:vec![source],origin:"authored".into(),reviewed:None,rule_context:None}).unwrap();
+        assert_eq!(expertise::review(root,"task-procedure",draft["fingerprint"].as_str().unwrap()).unwrap()["active"],true);
+        let answer=round(root,"x",None);assert_eq!(answer["ok"],true,"{answer}");
+        assert_eq!(answer["dispatch"][0]["wave"],1,"{answer}");
+        for field in ["expertise","preferred_agent","agent_selection"] {
+            assert!(answer["dispatch"][0].get(field).is_none(),"{field}: {answer}");
+        }
+        for field in ["specialization_preparation","preparation_held","preparation_next"] {
+            assert!(answer.get(field).is_none(),"{field}: {answer}");
+        }
+        let log=mustard_core::io::spec_events::read(&mustard_core::io::spec_events::spec_file(root,"x").unwrap()).unwrap().unwrap();
+        let send=log.visible().into_iter().find(|event|event.event_type=="send").unwrap();
+        assert!(send.fields.get("expertise").is_none(),"{:?}",send.fields);
+        assert!(!send.fields["skills"].to_string().contains("task-procedure"),"{}",send.fields["skills"]);
+        assert!(!send.str_field("text").unwrap().contains("task-procedure"));
     }
 
 }

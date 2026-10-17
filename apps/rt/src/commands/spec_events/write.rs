@@ -70,6 +70,9 @@
 //! com a trava presa, a versão sem onda de cada tarefa que ainda levava o
 //! número dela, e a saída lista essas versões em `returned`. As tarefas da
 //! onda entregue ficam como estão, e o número da removida não volta a nascer.
+//! A remoção que deixa sem tarefa nenhuma uma onda com envio aberto lista em
+//! `waves_left_without_tasks` os números dessas ondas, que saem do ar com
+//! ela; a remoção que não tira onda nenhuma do ar não traz a lista.
 //! Um pedido (`request`) devolve em `next` o
 //! passo seguinte, pelo `effect`: gravar as tarefas novas, que entram no
 //! backlog, ou as versões novas das que mudam, na mesma spec e na mesma branch.
@@ -204,12 +207,15 @@ use mustard_core::domain::spec_state::{
     PhaseWriter, SpecState, State, birth_event, goal_rule, last_user_message, not_closed_yet, phase_write_allowed, reply_rule, returns_to_running, survey_rule,
 };
 use mustard_core::domain::survey::{self, SurveyStep};
-use mustard_core::domain::wave_prompt::owner_rule;
+use mustard_core::domain::wave_prompt::{marked_proofs, owner_rule, proofs_named_in};
 use mustard_core::io::{lessons, spec_events as store};
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Map, Value, json};
 
-use crate::commands::flow::round::backlog_return;
+use super::proof_check::{created_files, proof_defect, relative_path};
+use crate::commands::flow::round::queue::{task_files, tasks_not_delivered};
+use crate::commands::flow::round::{backlog_left, backlog_return, waves_left_without_tasks};
+use crate::shared::task_triage::{self, Candidate, Destination, Item};
 use crate::shared::spec_state::{DiskSpecState, checkout, session_from_env};
 
 /// Os tipos que só o binário grava: a execução de um critério, que o
@@ -295,8 +301,17 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
 
 /// O núcleo testável de [`run`]: o relatório da gravação ou a recusa. Com
 /// `copy`, a gravação feita prepara a cópia da página para o banco dela.
-/// Nunca entra em pânico.
+/// A tarefa e o pedido novos passam antes pelo classificador das atividades,
+/// com a pergunta ao Jev da orquestração ([`same_work_open`]). Nunca entra em
+/// pânico.
 pub(crate) fn write_at_with(opts: &WriteOpts, copy: bool) -> Value {
+    write_triaged(opts, copy, &|root, spec, payload| task_triage::jev_ask(root, spec)(payload))
+}
+
+/// [`write_at_with`] com a pergunta ao classificador feita por `ask`, que
+/// recebe a raiz do projeto, a spec e o pedido, e devolve a resposta do Jev
+/// ou `None` sem ele.
+fn write_triaged(opts: &WriteOpts, copy: bool, ask: &dyn Fn(&Path, &str, &str) -> Option<Value>) -> Value {
     let project = super::project(&opts.root);
     let lang = project.lang;
     let refuse = move |refusal: Refusal| super::refused(&refusal, lang);
@@ -347,11 +362,14 @@ pub(crate) fn write_at_with(opts: &WriteOpts, copy: bool) -> Value {
     if let Err(refusal) = spec_was_opened(&project.root, spec) {
         return refuse(refusal);
     }
+    if let Some(refusal) = same_work_open(&project.root, spec, event_type, &draft, lang, &|payload| ask(&project.root, spec, payload)) {
+        return refusal;
+    }
     // O passo de término de uma tarefa guarda a impressão da cópia da onda,
     // que a entrega compara com a cópia dela na hora de entregar.
-    if event_type == "step" {
-        crate::commands::flow::round::mark_step_copy(&project.root, spec, &mut draft);
-    }
+    // O passo cujo item não é tarefa nem critério da onda grava, com aviso.
+    let stray_step =
+        if event_type == "step" { crate::commands::flow::round::mark_step_copy(&project.root, spec, &mut draft, lang) } else { None };
     // A volta da onda só entra com envio aberto para ela, e passa antes pelas
     // conferências que só leem a volta: a recusa vem antes de gravar, e o
     // agente grava de novo. A trava do passo do git que a conferência prende
@@ -381,7 +399,7 @@ pub(crate) fn write_at_with(opts: &WriteOpts, copy: bool) -> Value {
         if event_type == "remove" { record_removal(&project, &opts.root, spec, draft) } else { record_in(&project, &opts.root, spec, event_type, draft, None) };
     drop(held);
     match recorded {
-        Ok(Recorded { written, survey, returned }) => {
+        Ok(Recorded { written, survey, returned, emptied_waves }) => {
             // O item gravado entra no bloco das specs do mapa. A gravação na
             // spec já está feita: a falha no mapa não a desfaz, e a próxima
             // resposta do mapa tenta de novo.
@@ -404,6 +422,9 @@ pub(crate) fn write_at_with(opts: &WriteOpts, copy: bool) -> Value {
             if !returned.is_empty() {
                 report["returned"] = json!(returned);
             }
+            if !emptied_waves.is_empty() {
+                report["waves_left_without_tasks"] = json!(emptied_waves);
+            }
             // Se não deu para refazer a linha da spec no índice, o evento já
             // está no arquivo: fica o aviso. O nome citado num fato que o
             // mapa não confirma também só avisa.
@@ -414,6 +435,7 @@ pub(crate) fn write_at_with(opts: &WriteOpts, copy: bool) -> Value {
             for (fact, finding) in &written.citation_warnings {
                 warnings.extend(finding.warning(*fact, lang));
             }
+            warnings.extend(stray_step);
             // Só a gravação com `--copy` prepara a cópia: a última de um
             // pedido do usuário que muda o plano, que a leva uma vez, já com
             // tudo o que o pedido gerou. A ordem sai sem marco: a página que
@@ -441,6 +463,69 @@ pub(crate) fn write_at_with(opts: &WriteOpts, copy: bool) -> Value {
         }
         Err(refusal) => refuse(refusal),
     }
+}
+
+/// A recusa da tarefa ou do pedido novo, do assistente ou do plano, que o
+/// classificador das atividades ([`task_triage::classify_with`]), com a
+/// pergunta feita por `ask`, dá como o mesmo trabalho de uma tarefa ainda por
+/// entregar da spec `spec` de `root`: a coberta (terminar a tarefa termina a
+/// atividade) ou a de mesmo sentido, que entra nela. A recusa
+/// (`same-work-open`) nomeia a tarefa, no idioma `lang`, e manda gravar a
+/// versão nova dela; na junção, traz em `rewrite` o pedido ao agente de
+/// análise da sessão, que escreve o texto da versão nova. A versão nova
+/// (`replaces`), a gravação com o motivo em `distinct`, a spec sem tarefa por
+/// entregar e a leitura sem confiança, ou sem Jev, gravam como sempre: `None`.
+fn same_work_open(
+    root: &Path,
+    spec: &str,
+    event_type: &str,
+    draft: &Map<String, Value>,
+    lang: Locale,
+    ask: &dyn Fn(&str) -> Option<Value>,
+) -> Option<Value> {
+    if !matches!(event_type, "task" | "request") || draft.contains_key("replaces") || draft.contains_key("distinct") {
+        return None;
+    }
+    let log = store::read(&store::spec_file(root, spec).ok()?).ok()??;
+    let joinable = backlog_left(&log);
+    let open: Vec<&SpecEvent> = tasks_not_delivered(&log, &BTreeSet::new()).into_iter().filter_map(|id| log.get(id)).collect();
+    if open.is_empty() {
+        return None;
+    }
+    let candidates: Vec<Candidate> = open
+        .iter()
+        .map(|task| Candidate {
+            id: task.id,
+            title: task.str_field("title").unwrap_or_default(),
+            text: task.str_field("text").unwrap_or_default(),
+            files: task_files(task),
+            joinable: joinable.contains(&task.id),
+        })
+        .collect();
+    let said = |name: &str| draft.get(name).and_then(Value::as_str).unwrap_or_default().to_string();
+    let files = draft
+        .get("files")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|file| file.as_str().or_else(|| file.get("path").and_then(Value::as_str)))
+        .map(str::to_string)
+        .collect();
+    let item = Item { title: said("title"), text: said("text"), files };
+    let (task, key, joins) = match task_triage::classify_with(&candidates, &[item], &[], ask).into_iter().next().flatten()? {
+        Destination::Covered { task, .. } => (task, "triage.same_work_covered", false),
+        Destination::Join { task, .. } => (task, "triage.same_work_open", true),
+        Destination::New { .. } => return None,
+    };
+    let event = log.get(task)?;
+    let code = log.codes().get(&task).cloned().unwrap_or_else(|| task.to_string());
+    let hint = translate(key, lang).replace("{task}", &code).replace("{title}", event.str_field("title").unwrap_or_default());
+    let mut out = json!({ "ok": false, "reason": "same-work-open", "hint": hint, "task": code, "id": task });
+    if joins {
+        let sources = vec![task_triage::rewrite_source(code, &event.fields), task_triage::rewrite_source(event_type.to_string(), draft)];
+        out["rewrite"] = task_triage::rewrite_request(root, task, sources);
+    }
+    Some(out)
 }
 
 /// Para os testes: grava como a produção grava. A mensagem do usuário chega
@@ -511,8 +596,9 @@ pub(crate) fn draft_object(json: &str) -> Result<Map<String, Value>, Refusal> {
 /// campos, antes de ler a spec: o autor do programa; o estado e o tipo de
 /// trabalho, que têm porta própria; os tipos que só o binário grava; a onda,
 /// que nasce do backlog; a fala que só um gancho grava; a pendência que o
-/// pedido adiado aponta, vista de `start`; e a prova do critério que não
-/// roda. Com `returns`, a volta da onda e a do revisor passam, para a
+/// pedido adiado aponta, vista de `start`; e a prova do critério, ou a que a
+/// linha `Prova:` da tarefa nomeia, que não se sustenta, com os manifestos
+/// do projeto lidos de `start`. Com `returns`, a volta da onda e a do revisor passam, para a
 /// conferência delas; sem ele, são recusadas como os outros tipos do binário.
 pub(crate) fn draft_rules(start: &Path, spec: &str, event_type: &str, draft: &mut Map<String, Value>, returns: bool) -> Result<(), Refusal> {
     let spec = spec.trim().to_string();
@@ -541,14 +627,63 @@ pub(crate) fn draft_rules(start: &Path, spec: &str, event_type: &str, draft: &mu
         point_to_open_pending(start, draft)?;
     }
     // A prova do critério é o comando que a rodada e o fechamento rodam: a que
-    // não roda, liga comandos por `;` ou é uma busca sem `!` recusa antes de
-    // gravar.
-    if event_type == "criterion"
-        && let Some(refusal) = draft.get("proof").and_then(Value::as_str).and_then(super::proof_check::proof_defect)
-    {
-        return Err(refusal);
+    // não roda, liga comandos por `;`, é uma busca sem `!`, cita um alvo de
+    // teste que o pacote não tem ou um caminho que o projeto não tem recusa
+    // antes de gravar. O que uma tarefa da spec declara criar conta como
+    // existente.
+    let named: Vec<String> = match event_type {
+        "criterion" => draft.get("proof").and_then(Value::as_str).map(str::to_string).into_iter().collect(),
+        // A tarefa nomeia a prova dela na linha `Prova:` do texto ou da parte
+        // do agente, e a onda roda esses comandos no fim.
+        "task" => ["text", "agent"].iter().filter_map(|field| draft.get(*field).and_then(Value::as_str)).flat_map(marked_proofs).collect(),
+        // O pronto-quando da onda sai das provas que o pedido coberto nomeia,
+        // pela mesma seleção da formação do lote.
+        "request" => {
+            let fields: Vec<&str> = ["text", "agent"].iter().filter_map(|field| draft.get(*field).and_then(Value::as_str)).collect();
+            proofs_named_in(&fields, project_test(start).as_deref())
+        }
+        _ => Vec::new(),
+    };
+    if !named.is_empty() {
+        let root = checkout(start);
+        let created = if event_type == "task" { created_files(draft) } else { spec_created(start, spec.trim()) };
+        if let Some(refusal) = named.iter().find_map(|proof| proof_defect(&root, proof, &created)) {
+            return Err(refusal);
+        }
+    }
+    // A sobra que a volta da onda traz vira, na rodada, um pedido com o
+    // detalhe dela como relato, e a rodada não confere o que grava: as provas
+    // que esse pedido vai nomear passam aqui, com os arquivos que a sobra
+    // declara mudar como os que ela cria.
+    if event_type == "delivered" {
+        let root = checkout(start);
+        let test = project_test(start);
+        for leftover in draft.get("leftovers").and_then(Value::as_array).into_iter().flatten() {
+            let Some(detail) = leftover.get("detail").and_then(Value::as_str) else { continue };
+            let created: BTreeSet<String> =
+                leftover.get("files").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(relative_path).collect();
+            let proofs = proofs_named_in(&[detail], test.as_deref());
+            if let Some(refusal) = proofs.iter().find_map(|proof| proof_defect(&root, proof, &created)) {
+                return Err(refusal);
+            }
+        }
     }
     Ok(())
+}
+
+/// O comando de teste que o projeto de `start` declara: é por ele que a
+/// seleção das provas de um relato reconhece a prova sem marca.
+fn project_test(start: &Path) -> Option<String> {
+    mustard_core::ProjectConfig::load(&super::project(start).root).commands().test
+}
+
+/// Os arquivos que as tarefas vigentes da spec `spec`, lida no projeto de
+/// `start`, declaram criar: um critério ou um pedido pode citar o arquivo de
+/// teste que uma tarefa já declarou.
+fn spec_created(start: &Path, spec: &str) -> BTreeSet<String> {
+    let Ok(path) = store::spec_file(&super::project(start).root, spec) else { return BTreeSet::new() };
+    let Ok(Some(log)) = store::read(&path) else { return BTreeSet::new() };
+    log.visible().into_iter().filter(|event| event.event_type == "task").flat_map(|task| created_files(&task.fields)).collect()
 }
 
 /// A spec `spec` foi aberta: o arquivo de eventos dela existe, ou a pasta é
@@ -610,6 +745,9 @@ pub struct Recorded {
     /// Os números das versões sem onda que a remoção de uma onda devolveu ao
     /// backlog ([`record_removal`]); vazio nas outras gravações.
     pub(crate) returned: Vec<u64>,
+    /// As ondas com envio aberto que a remoção tirou do ar por ficarem sem
+    /// tarefa nenhuma ([`record_removal`]); vazio nas outras gravações.
+    pub(crate) emptied_waves: Vec<u64>,
 }
 
 /// Grava um evento da spec `spec`, vista de `start`, pela mesma gravação do
@@ -1010,14 +1148,18 @@ fn record_to(
         Some(locked) => locked.write_guarded(event_type, draft, &roots, find, guard, |_| {})?,
         None => store::write_guarded(&path, event_type, draft, &roots, find, guard, |_| {})?,
     };
-    Ok(Recorded { written, survey, returned: Vec::new() })
+    Ok(Recorded { written, survey, returned: Vec::new(), emptied_waves: Vec::new() })
 }
 
 /// A remoção que o modelo grava e, no mesmo trecho com a trava do arquivo
 /// presa, a volta ao backlog das tarefas da onda que ela tirou sem entrega
 /// ([`SpecLog::tasks_of_removed_waves`]): cada uma ganha a versão sem `wave`
 /// ([`backlog_return`]), gravada pelo programa. Sem isso a tarefa ficaria
-/// presa ao número de uma onda que não existe mais, fora do backlog.
+/// presa ao número de uma onda que não existe mais, fora do backlog. A
+/// remoção diz também as ondas com envio aberto que ela tirou do ar
+/// ([`waves_left_without_tasks`]): as que ficaram sem tarefa por ela, e não
+/// as que já estavam assim antes. Quem remove a tarefa errada vê que a onda
+/// que queria tirar do ar não está na lista.
 ///
 /// # Errors
 ///
@@ -1025,12 +1167,14 @@ fn record_to(
 fn record_removal(project: &super::Project, start: &Path, spec: &str, draft: Map<String, Value>) -> Result<Recorded, Refusal> {
     let path = store::spec_file(&project.root, spec)?;
     let held = store::with_locked_writer(&path, |locked| -> Result<Recorded, Refusal> {
+        let before = waves_left_without_tasks(locked.log());
         let mut removal = record_to(project, start, spec, "remove", draft.clone(), None, Some(&mut *locked))?;
         let freed: Vec<Map<String, Value>> = locked.log().tasks_of_removed_waves(&removal.written.removed).into_iter().map(backlog_return).collect();
         for task in freed {
             let back = record_to(project, start, spec, "task", task, Some(PhaseWriter::Binary), Some(&mut *locked))?;
             removal.returned.push(back.written.id);
         }
+        removal.emptied_waves = waves_left_without_tasks(locked.log()).into_keys().filter(|wave| !before.contains_key(wave)).collect();
         Ok(removal)
     })?;
     // Sem o arquivo de eventos, a gravação comum dá a recusa de sempre.
@@ -1668,6 +1812,99 @@ mod tests {
         write_to(root, Some("teste"), event_type, json)
     }
 
+    /// A spec com o pedido da subtração e uma tarefa aberta que o cobre, em
+    /// `src/calc.ts`. Devolve a mensagem do usuário, o pedido e a tarefa.
+    fn subtraction_backlog(root: &std::path::Path) -> (u64, u64, u64) {
+        std::fs::write(root.join("mustard.json"), "{}").unwrap();
+        let asked = write(root, "message", r#"{"author":"user","text":"inclua a subtração"}"#)["id"].as_u64().unwrap();
+        let request = json!({"title": "Subtração", "text": "Incluir a subtração.", "keys": ["subtração"], "effect": "new_waves",
+            "agent": "- conferir pelo teste", "origin": asked});
+        let request = write(root, "request", &request.to_string())["id"].as_u64().unwrap();
+        let task = json!({"title": "Subtrair", "text": "Subtrair dois números.", "agent": "- subtrair", "files": [{"path": "src/calc.ts"}],
+            "depends_on": [], "covers": [request], "origin": asked});
+        let task = write(root, "task", &task.to_string());
+        assert_eq!(task["ok"], json!(true), "{task}");
+        (asked, request, task["id"].as_u64().unwrap())
+    }
+
+    /// A leitura confiante do Jev, com a escolha `choice`, para a pergunta
+    /// da atividade gravada.
+    fn triaged(choice: &str) -> Value {
+        json!({"answers": {"i0": {"choice": choice, "confidence": 0.95, "probabilities": {choice: 0.93, "new": 0.04}}}})
+    }
+
+    /// A tarefa nova que o Jev, confiante, dá como o mesmo sentido da aberta
+    /// é recusada nomeando a aberta, e nada se grava; com `distinct`, ela grava
+    /// sem perguntar e guarda o motivo; sem Jev, grava como sempre.
+    #[test]
+    fn backlog_triage_refuses_a_task_with_the_meaning_of_an_open_one() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (asked, request, open) = subtraction_backlog(root);
+        let again = json!({"title": "Tirar um número do outro", "text": "Tirar um número do outro.", "agent": "- tirar",
+            "files": [{"path": "src/calc.ts"}], "depends_on": [], "covers": [request], "origin": asked});
+        let opts = |draft: &Value| WriteOpts { root: root.to_path_buf(), spec: Some("teste".into()), event_type: "task".into(), json: draft.to_string() };
+        let events = || store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap().events.len();
+        let before = events();
+
+        let refused = write_triaged(&opts(&again), false, &|_, _, _| Some(triaged(&format!("join:t{open}"))));
+        assert_eq!(refused["reason"], json!("same-work-open"), "{refused}");
+        assert_eq!(refused["task"], json!("MSTD-TASK-0001"), "{refused}");
+        assert!(refused["hint"].as_str().unwrap().contains("MSTD-TASK-0001 — Subtrair"), "{refused}");
+        assert_eq!(events(), before, "nothing is recorded");
+
+        let mut distinct = again.clone();
+        distinct["distinct"] = json!("Outra conta: tira um número do outro.");
+        let recorded = write_triaged(&opts(&distinct), false, &|_, _, _| panic!("a distinct write asks nothing"));
+        assert_eq!(recorded["ok"], json!(true), "{recorded}");
+        let log = store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap();
+        let id = recorded["id"].as_u64().unwrap();
+        assert_eq!(log.get(id).and_then(|event| event.str_field("distinct")), Some("Outra conta: tira um número do outro."));
+
+        let plain = write_triaged(&opts(&again), false, &|_, _, _| None);
+        assert_eq!(plain["ok"], json!(true), "without Jev the task is recorded: {plain}");
+    }
+
+    /// Na junção, a recusa traz o pedido ao agente de análise da sessão, no
+    /// modelo pequeno da família do anfitrião, com a tarefa e a atividade
+    /// como fontes; o recibo devolve o título, o texto e a parte do agente
+    /// juntos, e a versão nova que quem conduz grava com eles substitui a
+    /// tarefa.
+    #[test]
+    fn backlog_triage_join_hands_the_text_to_the_session_small_model() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (asked, request, open) = subtraction_backlog(root);
+        let again = json!({"title": "Tirar um número do outro", "text": "Tirar um número do outro.", "agent": "- tirar",
+            "files": [{"path": "src/calc.ts"}], "depends_on": [], "covers": [request], "origin": asked});
+        let opts = WriteOpts { root: root.to_path_buf(), spec: Some("teste".into()), event_type: "task".into(), json: again.to_string() };
+        let refused = write_triaged(&opts, false, &|_, _, _| Some(triaged(&format!("join:t{open}"))));
+        let delegation = &refused["rewrite"]["delegation"];
+        let family = if delegation["host"] == json!("claude") { "haiku" } else { "luna" };
+        assert_eq!(delegation["model_family"], json!(family), "{refused}");
+        assert_eq!(delegation["preferred_agent"], json!("mustard-analysis"), "{refused}");
+        let prompt = delegation["request"]["prompt"].as_str().unwrap();
+        assert!(prompt.contains("Subtrair dois números.") && prompt.contains("Tirar um número do outro."), "{prompt}");
+
+        let receipt = mustard_core::io::knowledge::enrichment::SessionReceipt {
+            request_id: refused["rewrite"]["request_id"].as_str().unwrap().to_string(),
+            model: "inherit".into(),
+            effort: None,
+            result: json!({"title": "Subtrair de dois jeitos", "text": "Subtrair dois números e tirar um do outro.", "agent": "- subtrair\n- tirar"}),
+            input_tokens: None,
+            output_tokens: None,
+        };
+        let done = mustard_core::io::knowledge::enrichment::complete_session(root, root, &receipt).unwrap();
+        let rewrite = &done["rewrite"];
+        assert_eq!(rewrite["replaces"], json!(open), "{done}");
+        let version = json!({"replaces": rewrite["replaces"], "title": rewrite["title"], "text": rewrite["text"], "agent": rewrite["agent"],
+            "files": [{"path": "src/calc.ts"}], "depends_on": [], "covers": [request], "origin": asked});
+        let recorded = write(root, "task", &version.to_string());
+        assert_eq!(recorded["ok"], json!(true), "{recorded}");
+        let log = store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap();
+        assert_eq!(log.current(open).and_then(|task| task.str_field("title")), Some("Subtrair de dois jeitos"));
+    }
+
     #[test]
     fn a_write_reports_its_number_and_what_a_removal_took_out() {
         let dir = tempdir().unwrap();
@@ -2281,6 +2518,105 @@ mod tests {
         assert_eq!(kept["reason"], json!("proof-program-unknown"), "a regravação é conferida: {kept}");
         let fixed = write(root, "criterion", &revise("git --version"));
         assert_eq!(fixed["ok"], json!(true), "{fixed}");
+    }
+
+    /// A linha `Prova:` de uma tarefa nomeia o comando que a onda roda no fim,
+    /// e a gravação da tarefa o confere como confere a prova de um critério:
+    /// o `cargo test` com um alvo de teste que o pacote não tem é recusado
+    /// citando o alvo e os alvos que o pacote tem, sem gravar; com o alvo que
+    /// existe, e o nome do teste como filtro, a tarefa é gravada.
+    #[test]
+    fn a_task_whose_proof_names_a_missing_test_target_is_refused() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        born(root);
+        std::fs::write(root.join("Cargo.toml"), "[workspace]\nmembers = [\"apps/rt\"]\n").unwrap();
+        std::fs::create_dir_all(root.join("apps/rt/tests")).unwrap();
+        std::fs::write(root.join("apps/rt/Cargo.toml"), "[package]\nname = \"mustard-rt\"\nautotests = false\n\n[[test]]\nname = \"it\"\n").unwrap();
+        std::fs::write(root.join("apps/rt/tests/it.rs"), "mod agents_find_code_through_the_map;\n").unwrap();
+        std::fs::write(root.join("apps/rt/tests/agents_find_code_through_the_map.rs"), "").unwrap();
+        let said = write(root, "message", r#"{"author":"user","text":"o pedido"}"#)["id"].as_u64().unwrap();
+        let crit = write(root, "criterion", &json!({"when": "a", "then": "b", "proof": "cargo test", "form": "ubiquitous", "origin": said}).to_string());
+        let crit = crit["id"].as_u64().unwrap_or_else(|| panic!("{crit}"));
+        let task = |proof: &str| {
+            json!({"title": "Agentes acham o código pelo mapa", "text": "Os agentes acham o código pelo mapa.",
+            "agent": format!("- mudar os moldes\nProva: `{proof}`."), "files": [], "depends_on": [], "covers": [crit], "origin": said})
+            .to_string()
+        };
+
+        let before = lines(root);
+        let refused = write(root, "task", &task("cargo test -p mustard-rt --test agents_find_code_through_the_map"));
+        assert_eq!(refused["reason"], json!("proof-test-target-missing"), "{refused}");
+        let hint = refused["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("agents_find_code_through_the_map") && hint.contains("mustard-rt") && hint.contains(": it."), "{hint}");
+        assert_eq!(lines(root), before, "nada foi gravado");
+
+        let accepted = write(root, "task", &task("cargo test -p mustard-rt --test it agents_find_code_through_the_map"));
+        assert_eq!(accepted["ok"], json!(true), "{accepted}");
+
+        // A tarefa que declara criar o arquivo do alvo, marcado como novo,
+        // tem a prova dele aceita.
+        let declares = json!({"title": "Alvo novo", "text": "Cria o alvo novo.",
+            "agent": "Prova: `cargo test -p calc --test novo`.", "files": [{"path": "calc/tests/novo.rs", "new": true}],
+            "depends_on": [], "covers": [crit], "origin": said});
+        std::fs::write(root.join("Cargo.toml"), "[workspace]\nmembers = [\"apps/rt\", \"calc\"]\n").unwrap();
+        std::fs::create_dir_all(root.join("calc")).unwrap();
+        std::fs::write(root.join("calc/Cargo.toml"), "[package]\nname = \"calc\"\n").unwrap();
+        let created = write(root, "task", &declares.to_string());
+        assert_eq!(created["ok"], json!(true), "{created}");
+        let mut undeclared = declares.clone();
+        undeclared["files"] = json!([{"path": "calc/src/lib.rs"}]);
+        assert_eq!(write(root, "task", &undeclared.to_string())["reason"], json!("proof-test-target-missing"));
+    }
+
+    /// O pronto-quando da onda sai das provas que o pedido coberto nomeia, e
+    /// a gravação do pedido as confere pela mesma seleção: o pedido cuja
+    /// prova cita um alvo que o pacote não tem, ou um arquivo de teste que o
+    /// projeto não tem, é recusado sem gravar; com o alvo e o arquivo que
+    /// existem, é gravado. A sobra da volta de uma onda, que a rodada converte
+    /// em pedido, passa pela mesma conferência na gravação da volta, com os
+    /// arquivos que ela declara como os que ela cria.
+    #[test]
+    fn a_request_whose_proof_names_a_missing_target_or_file_is_refused() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        born(root);
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"calc\"\n").unwrap();
+        std::fs::create_dir_all(root.join("tests")).unwrap();
+        std::fs::write(root.join("tests/soma.rs"), "").unwrap();
+        std::fs::create_dir_all(root.join("web/src")).unwrap();
+        std::fs::write(root.join("web/src/sum.test.ts"), "").unwrap();
+        let said = write(root, "message", r#"{"author":"user","text":"o pedido"}"#)["id"].as_u64().unwrap();
+        let request = |proof: &str| {
+            json!({"title": "Soma certa", "text": "A soma sai certa.", "agent": format!("Prova: `{proof}`."),
+            "effect": "new_waves", "keys": ["soma"], "origin": said})
+            .to_string()
+        };
+
+        let before = lines(root);
+        for (proof, reason) in [
+            ("cargo test -p calc --test nope", "proof-test-target-missing"),
+            ("npx vitest run web/src/nao_existe.test.ts", "proof-path-missing"),
+        ] {
+            let refused = write(root, "request", &request(proof));
+            assert_eq!(refused["reason"], json!(reason), "{proof}: {refused}");
+            assert_eq!(lines(root), before, "{proof}: nada foi gravado");
+        }
+        for proof in ["cargo test -p calc --test soma", "npx vitest run web/src/sum.test.ts"] {
+            let accepted = write(root, "request", &request(proof));
+            assert_eq!(accepted["ok"], json!(true), "{proof}: {accepted}");
+        }
+
+        let delivered = |files: Value| {
+            let mut draft = json!({"wave": 1, "text": "feito", "leftovers": [{"title": "Teste novo", "files": files,
+                "detail": "Falta o teste da soma. Prova: `npx vitest run web/src/novo.test.ts`"}]})
+            .as_object()
+            .cloned()
+            .unwrap();
+            draft_rules(root, "teste", "delivered", &mut draft, true)
+        };
+        assert_eq!(delivered(json!(["web/src/sum.ts"])), Err(Refusal::ProofPathMissing { path: "web/src/novo.test.ts".into() }));
+        assert_eq!(delivered(json!(["web/src/novo.test.ts"])), Ok(()));
     }
 
     /// A onda não nasce mais pequena por contagem: a quarta tarefa é gravada
@@ -3161,10 +3497,10 @@ mod tests {
         let mut rule = whole_rule(said);
         rule["title"] = json!("Proteger o diretório de cache");
         rule["agent"] = json!("- o gancho fica na sentinela do comando");
-        let wanted = by_model(root, "rule", &rule)["id"].clone();
+        let wanted = by_model(root, "rule", &rule)["code"].as_str().expect("the code").to_string();
         let other = json!({"title": "Relatório em português", "text": "O relatório sai em português.", "keys": ["idioma"],
             "example": "e", "origin": said, "agent": "- conferir o idioma"});
-        let other = by_model(root, "rule", &other)["id"].clone();
+        let other = by_model(root, "rule", &other)["code"].as_str().expect("the code").to_string();
         for term in ["diretório", "sentinela"] {
             let read = super::super::read::read_at(&super::super::read::ReadOpts {
                 root: root.to_path_buf(),
@@ -3173,9 +3509,9 @@ mod tests {
                 term: Some(term.into()),
             })
             .expect("the agreed block reads");
-            let read: Value = serde_json::from_str(&read).expect("the reading is JSON");
-            let ids: Vec<Value> = read["events"].as_array().expect("events").iter().map(|e| e["id"].clone()).collect();
-            assert!(ids.contains(&wanted) && !ids.contains(&other), "{term}: {read}");
+            // A busca por termo responde em texto, uma linha por item.
+            let codes: Vec<&str> = read.lines().filter_map(|line| line.split_whitespace().next()).collect();
+            assert!(codes.contains(&wanted.as_str()) && !codes.contains(&other.as_str()), "{term}: {read}");
         }
     }
 

@@ -22,7 +22,6 @@ use super::answer::RoundRefusal;
 use super::report::WaveReport;
 use super::slots::{reset_committed_slot, sharing_copy};
 use crate::commands::git_settle::{enter_unit_branch, submodule_holding, submodules_of};
-use crate::commands::review::qa_run::ProofFault;
 use crate::commands::spec_events::write::record;
 
 /// A entrega pede commit? Só quando mudou arquivo: a onda que volta sem
@@ -276,8 +275,9 @@ pub(super) fn head(root: &Path) -> String {
 /// próprio — o disco dela já bate com esse HEAD, então a comparação sairia
 /// sempre igual, e o arquivo comitado dentro da cópia nunca chegaria ao
 /// repositório principal. A cópia é um checkout ligado (`git worktree`) do
-/// mesmo repositório, então o antepassado comum sempre existe.
-fn fork_point(copy_repo: &Path, root_repo: &Path) -> Result<String, String> {
+/// mesmo repositório, então o antepassado comum sempre existe. A revisão da
+/// onda tira o diff dela contra este mesmo commit.
+pub(super) fn fork_point(copy_repo: &Path, root_repo: &Path) -> Result<String, String> {
     let root_head = git(root_repo, &["rev-parse", "HEAD"])?;
     let base = git(copy_repo, &["merge-base", "HEAD", root_head.trim()])?;
     Ok(base.trim().to_string())
@@ -297,14 +297,19 @@ pub(super) fn refresh_map(root: &Path, mine: &dyn Fn(&Path, &Path) -> mustard_co
     refreshed
 }
 
-pub(crate) fn final_unused(root: &Path, spec: &str, log: &SpecLog, lang: Locale, outputs: &[String]) -> Vec<(u64, bool, String)> {
+/// Os achados da análise final de declarações sem uso da spec `spec`: se
+/// cada um recusa o fechamento e o texto dele, que cita o arquivo. Sem o mapa
+/// da base ou o de agora, um aviso só, que não recusa. A onda de cada achado
+/// fica de fora: ela sai dos commits da obra, e o commit de duas ondas daria a
+/// cada uma os arquivos da outra; quem reabre se decide pelo arquivo citado.
+pub(crate) fn final_unused(root: &Path, spec: &str, log: &SpecLog, lang: Locale, outputs: &[String]) -> Vec<(bool, String)> {
     let base = mustard_core::io::spec_events::spec_file(root, spec)
         .ok()
         .and_then(|p| std::fs::read(p.parent()?.join("validation-base-map.json")).ok())
         .and_then(|bytes| serde_json::from_slice(&bytes).ok());
     let after = mustard_core::io::project_map::read(root).ok();
     let (Some(base), Some(after)) = (base, after) else {
-        return vec![(0, false, translate("round.after_wave.analysis_unknown", lang).to_string())];
+        return vec![(false, translate("round.after_wave.analysis_unknown", lang).to_string())];
     };
     let changed = log
         .visible()
@@ -319,7 +324,7 @@ pub(crate) fn final_unused(root: &Path, spec: &str, log: &SpecLog, lang: Locale,
                 .collect::<Vec<_>>()
         })
         .collect();
-    super::removed_check::final_findings(root, &AfterWave { base, after, changed }, lang, outputs).into_iter().map(|f| (f.wave, f.refuses, f.text)).collect()
+    super::removed_check::final_findings(root, &AfterWave { base, after, changed }, lang, outputs).into_iter().map(|f| (f.refuses, f.text)).collect()
 }
 
 /// A conferência do mapa com o conteúdo de agora, antes de toda resposta
@@ -915,90 +920,6 @@ fn after_wave_answer(waves: &[WaveReport], found: &[Finding], lang: Locale) -> R
     Err(RoundRefusal::AfterWave { text, question, fixes })
 }
 
-/// A prova de cada critério que as ondas de `waves` cobrem roda, uma de cada
-/// vez e na ordem do código, antes do commit da rodada — o mesmo laço que o
-/// fechamento roda para os critérios da spec inteira
-/// ([`crate::commands::review::qa_run::run_criteria_proofs`]), aqui só com
-/// os critérios que estas ondas apontam. A que não passa recusa pelo motivo
-/// que o laço leu, com o código do critério: a que não executa ou sai com
-/// erro traz o comando inteiro e a saída de erro, a que sai verde sem rodar
-/// teste traz o comando, e a que cita um teste inexistente traz o nome que
-/// faltou. A rodada não comita nada.
-///
-/// O critério para o qual uma onda da rodada entregou prova nova (`delivered`,
-/// cada uma pelo número vigente do critério, já resolvida pela conferência
-/// que a grava depois do commit) roda a entregue no lugar da gravada: a onda
-/// que muda o nome de um teste entrega a prova com o nome novo, e a gravada,
-/// que cita o nome antigo, recusaria a entrega por um teste que ela mesma
-/// tirou. Os outros critérios rodam a gravada.
-///
-/// O critério que outra tarefa ainda por entregar também cobre — no backlog,
-/// numa onda que não está entre as de `waves` ou entre as tarefas que a
-/// volta diz não ter feito (`undone`, pelo número de cada uma) — não roda
-/// agora: a prova dele depende do que essa tarefa ainda vai entregar, e
-/// recusaria a entrega de uma onda por um trabalho que não é dela. Ele volta
-/// a rodar na rodada em que entra a última tarefa que o cobre; o fechamento
-/// roda todos os critérios da spec de qualquer jeito. A prova nova entregue
-/// para um critério que ficou de fora roda uma vez depois do commit, como a
-/// de um critério que nenhuma onda da rodada cobre.
-///
-/// Devolve os comandos que rodaram, todos verdes: a prova nova que já passou
-/// aqui não roda de novo depois do commit.
-pub(super) fn ensure_criteria_proofs(
-    root: &Path,
-    spec: &str,
-    log: &SpecLog,
-    waves: &[u64],
-    undone: &[u64],
-    delivered: &[(u64, String)],
-) -> Result<Vec<String>, RoundRefusal> {
-    let codes = log.codes();
-    let returning: BTreeSet<u64> = waves.iter().copied().collect();
-    let mut waiting = super::agreed::covered_codes(log, &returning);
-    waiting.extend(undone.iter().filter_map(|id| log.get(*id)).flat_map(|task| task.ints("covers")).filter_map(|id| codes.get(&id).cloned()));
-    let mut selected = log.criteria_for_waves(waves);
-    for (id, _) in delivered {
-        if let Some(criterion) = log.get(*id).filter(|event| event.event_type == "criterion")
-            && !selected.iter().any(|event| event.id == *id)
-        {
-            selected.push(criterion);
-        }
-    }
-    let criteria: Vec<(u64, String, String)> = selected
-        .into_iter()
-        .filter_map(|e| {
-            let code = codes.get(&e.id).cloned().unwrap_or_else(|| e.id.to_string());
-            if waiting.contains(&code) && !delivered.iter().any(|(id, _)| *id == e.id) {
-                return None;
-            }
-            let proof = match delivered.iter().find(|(id, _)| *id == e.id) {
-                Some((_, proof)) => proof.clone(),
-                None => e.str_field("proof")?.trim().to_string(),
-            };
-            Some((e.id, code, proof))
-        })
-        .collect();
-    let (outcomes, failed) = crate::commands::review::qa_run::run_criteria_proofs(root, &criteria);
-    for (id, code, out) in &outcomes {
-        let command = criteria.iter().find(|(_, c, _)| c == code).map(|(_, _, p)| p.as_str()).unwrap_or_default();
-        let mut own: Vec<_> = waves.iter().copied().filter(|wave| log.criteria_for_waves(&[*wave]).iter().any(|criterion| criterion.id == *id)).collect();
-        // A supplied proof can cover a broader criterion than the planned
-        // task list. It was verified against this joined round, not no wave.
-        if own.is_empty() && delivered.iter().any(|(criterion, _)| criterion == id) {
-            own.extend_from_slice(waves);
-        }
-        super::super::validation::record_criterion(root, spec, *id, &own, command, out).map_err(RoundRefusal::Refused)?;
-    }
-    let Some(failed) = failed else {
-        return Ok(criteria.into_iter().map(|(_, _, proof)| proof).collect());
-    };
-    Err(match failed.fault {
-        ProofFault::RanNoTest(tests) => RoundRefusal::CriterionRanNoTest { code: failed.code, command: failed.command, tests },
-        ProofFault::MissingTest(name) => RoundRefusal::CriterionMissingTest { code: failed.code, name },
-        ProofFault::Failed(output) => RoundRefusal::CriterionProofFailed { code: failed.code, command: failed.command, output },
-    })
-}
-
 /// Os arquivos de uma rodada que mudam o programa: o que mora sob `apps/` ou
 /// `packages/`. Um documento, uma spec ou um texto do plugin não pedem
 /// compilação nenhuma.
@@ -1469,15 +1390,57 @@ mod tests {
         let path = store::spec_file(root, "x").unwrap();
         let log = store::read(&path).unwrap().unwrap();
         let commit = log.visible().into_iter().find(|e| e.event_type == "commit").expect("commit");
-        let proofs =
-            log.events.iter().rev().find(|e| e.event_type == "stage_run" && e.str_field("stage") == Some("criterion-proofs")).expect("proof stage");
-        assert_eq!(proofs.str_field("result"), Some("pass"), "fixture executes git --version as its criterion proof");
         assert_eq!(commit.str_field("title"), Some(expected));
         assert_eq!(commit.ints("waves"), vec![1, 2]);
         let shown = Command::new("git").args(["show", "--name-only", "--format=%s", "HEAD"]).current_dir(root).output();
         let shown = String::from_utf8_lossy(&shown.unwrap().stdout).to_string();
         let shown: Vec<&str> = shown.lines().filter(|line| !line.is_empty()).collect();
         assert_eq!(shown, [expected, "src/a.rs", "src/b.rs"], "{shown:?}");
+    }
+
+    /// Num projeto TypeScript com a compilação declarada vermelha, a onda
+    /// revisada volta com uma prova nova do critério que não passa. A rodada
+    /// junta e comita sem compilar nem rodar a prova, e não grava etapa de
+    /// compilação nem de prova; com a compilação já verde, o fechamento roda
+    /// o critério, grava a etapa dele e recusa pela prova que caiu.
+    #[cfg(unix)]
+    #[test]
+    fn a_reviewed_round_commits_without_building_or_proving_and_the_close_still_proves() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.ts"], &[])]);
+        let config = json!({"buildCommand": "echo tsc-red; exit 1", "lintCommand": "true", "testCommand": "true"});
+        std::fs::write(root.join("mustard.json"), config.to_string()).unwrap();
+        round(root, "x", None);
+        let copy = mustard_core::io::wave_prompt::slot_path(root, "x", 0);
+        std::fs::write(copy.join("src/a.ts"), "export const one = 1;\n").unwrap();
+        let broken = "git --nao-existe-esta-opcao";
+        let back = json!({"wave": 1, "text": "Saiu.", "files": ["src/a.ts"], "commit": "a onda sai",
+            "proofs": [{"criterion": "MSTD-CRIT-0001", "proof": broken}]});
+        assert_eq!(returned(root, back)["ok"], json!(true));
+        let before = git_text(root, &["rev-parse", "HEAD"]);
+
+        let out = round(root, "x", None);
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_ne!(git_text(root, &["rev-parse", "HEAD"]), before, "the round commits: {out}");
+        let stages = |phase: &str| -> Vec<String> {
+            let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+            let runs = log.events.iter().filter(|e| e.event_type == "stage_run" && e.str_field("phase") == Some(phase));
+            runs.filter(|e| e.str_field("command").is_some()).filter_map(|e| e.str_field("stage").map(str::to_string)).collect()
+        };
+        assert_eq!(stages("delivery"), Vec::<String>::new(), "the round runs no build and no proof: {out}");
+
+        // A compilação vermelha travaria o fechamento antes do critério.
+        let green = json!({"buildCommand": "true", "lintCommand": "true", "testCommand": "true"});
+        std::fs::write(root.join("mustard.json"), green.to_string()).unwrap();
+        let closed = crate::commands::flow::close::close_at(&crate::commands::flow::close::CloseOpts {
+            root: root.into(),
+            spec: Some("x".into()),
+            report: None,
+            pending_later: Vec::new(),
+        });
+        assert_eq!(closed["ok"], json!(false), "{closed}");
+        assert!(stages("final").iter().any(|stage| stage == "criterion:MSTD-CRIT-0001"), "the close proves the criterion: {closed}");
     }
 
     /// A mensagem do commit é conferida antes de qualquer gravação: a volta
@@ -1983,6 +1946,7 @@ mod tests {
             output: output.to_string(),
             ran_no_test: None,
             missing_test: None,
+            evidence: String::new(),
         }
     }
 

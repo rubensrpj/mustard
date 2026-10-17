@@ -21,7 +21,8 @@ async function fixture($,on,surface='desktop',english=false) {
         expect(request.schema_version).toBe(1);expect(request.revision).toBe(stored.revision);
         if(fail)result={ok:false,schema_version:1,reason:'settings-conflict'};
         else {stored={...stored,revision:'revision-'+(calls.length+1),values:{...stored.values,...request.changes}};result={...stored,saved:true};}
-      }else {reads++;result=stored;}
+      // Without --full the binary answers only the current values; the panel needs the whole answer.
+      }else {reads++;result=e.argv.includes('--full')?stored:{ok:true,schema_version:1,revision:stored.revision,values:stored.values};}
     } else if(command==='scan') {calls.push(e.argv);stored={...stored,index_present:true};result={ok:true};}
     else {
       expect(command).toBe('panel');

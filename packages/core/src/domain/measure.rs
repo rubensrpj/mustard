@@ -1,10 +1,13 @@
 //! A medição do uso real: o gasto do Claude num projeto antes e depois de uma
 //! versão do Mustard chegar a ele. A conta pura, sem disco e sem relógio.
 //!
-//! A marca é a primeira sessão de uma compilação do Mustard no projeto. Os
-//! dois lados se comparam em dias contados — dias fechados com
-//! [`MIN_ACTIONS`] ações ou mais —, pela mesma soma da página do gasto. O dia
-//! da marca fica fora dos dois lados: nele as duas versões se misturam.
+//! Cada compilação do Mustard deixa uma marca no projeto na primeira sessão
+//! dela; a que vale para a medida é a primeira da versão publicada mais nova
+//! ([`counted_mark`]), para que as compilações seguintes do mesmo número não
+//! empurrem a marca para frente. Os dois lados se comparam em dias contados —
+//! dias fechados com [`MIN_ACTIONS`] ações ou mais —, pela mesma soma da
+//! página do gasto. O dia da marca fica fora dos dois lados: nele as duas
+//! versões se misturam.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -21,6 +24,23 @@ pub const MIN_DAYS: usize = 5;
 pub struct Mark {
     pub version: String,
     pub at: String,
+}
+
+/// O número publicado da linha de versão `version`: o texto antes do carimbo
+/// da compilação, que muda a cada compilação em desenvolvimento.
+fn release(version: &str) -> &str {
+    version.split_whitespace().next().unwrap_or_default()
+}
+
+/// A marca que vale para a medida, entre as marcas `marks` da mais velha à
+/// mais nova: a primeira da sequência final de marcas com o mesmo número
+/// publicado da última. Recompilar a mesma versão não move a marca; a versão
+/// nova, ou a volta a uma anterior, começa outra medida. Sem marca, nenhuma.
+#[must_use]
+pub fn counted_mark(marks: &[Mark]) -> Option<&Mark> {
+    let newest = release(&marks.last()?.version);
+    let run = marks.iter().rev().take_while(|mark| release(&mark.version) == newest).count();
+    marks.get(marks.len() - run)
 }
 
 /// Um lado da comparação: os dias contados, do mais velho ao mais novo, e a
@@ -98,6 +118,31 @@ pub fn measure(rows: &[DayRow], mark: DateTime<Utc>, today: &str) -> Measurement
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// As compilações seguintes da mesma versão publicada não movem a marca:
+    /// vale a primeira da sequência final com o número da última; a versão
+    /// nova, ou a volta a uma anterior, começa a sua; sem marca, nenhuma.
+    #[test]
+    fn the_counted_mark_is_the_first_build_of_the_newest_release() {
+        let mark = |version: &str, at: &str| Mark { version: version.into(), at: at.into() };
+        let builds = [
+            mark("0.2.17 (build dev, g5ec568889476-dirty 2026-10-13)", "2026-10-14T10:27:33-03:00"),
+            mark("0.2.21 (build dev, g7396ec49f8d9-dirty 2026-10-14)", "2026-10-14T10:28:43-03:00"),
+            mark("0.2.21 (build dev, g42e1b9b1d05a-dirty 2026-10-14)", "2026-10-14T14:38:35-03:00"),
+            mark("0.2.21 (build dev, gebd72d5981d1-dirty 2026-10-15)", "2026-10-15T01:54:16-03:00"),
+        ];
+        let back = [builds[1].clone(), builds[0].clone()];
+        let cases: [(&str, &[Mark], Option<&str>); 5] = [
+            ("three builds of one release", &builds, Some("2026-10-14T10:28:43-03:00")),
+            ("one release, one build", &builds[..1], Some("2026-10-14T10:27:33-03:00")),
+            ("a new release after a build", &builds[..2], Some("2026-10-14T10:28:43-03:00")),
+            ("back to an older release", &back, Some("2026-10-14T10:27:33-03:00")),
+            ("no mark", &[], None),
+        ];
+        for (name, marks, expected) in cases {
+            assert_eq!(counted_mark(marks).map(|mark| mark.at.as_str()), expected, "{name}");
+        }
+    }
 
     /// Um caso da tabela: o nome, as linhas, a marca, hoje, os dias de antes,
     /// os de depois e o veredito.

@@ -1,13 +1,18 @@
-//! Replace only supported outer configuration reads. Never execute any part
-//! of the caller's shell from the hook, or drop an unrecognised protected read.
+//! The masked equivalent of a command whose supported outer configuration
+//! reads go through `mustard-rt run config-read`. The hook refuses the
+//! original and hands this command back; it never executes any part of the
+//! caller's shell, nor offers a command for an unrecognised protected read.
 
-use mustard_core::domain::model::contract::{Ctx, HookInput, Verdict};
+use mustard_core::domain::model::contract::{Ctx, HookInput};
 
 use super::{lex, reading};
 use crate::commands::maint::config_read::supported;
 use crate::shared::{config_key, search_gateway::{literal_shell, quote}};
 
-pub(super) fn rewrite(command: &str, input: &HookInput, ctx: &Ctx) -> Option<Verdict> {
+/// `command` with each supported read of the configuration file replaced by
+/// the masked read, the other steps kept in order. `None` when no read can be
+/// replaced safely, or when the replaced command would still expose the key.
+pub(super) fn masked_command(command: &str, input: &HookInput, ctx: &Ctx) -> Option<String> {
     let binary = std::env::current_exe().ok()?;
     let mut changes = Vec::new();
     for range in lex::command_ranges(command) {
@@ -38,9 +43,7 @@ pub(super) fn rewrite(command: &str, input: &HookInput, ctx: &Ctx) -> Option<Ver
     // Recheck the whole command, not just the first offending segment. A
     // second read through a wildcard, recursion or substitution still denies.
     if reading::bash_reading(&lex::segments(&rewritten), &rewritten, input, ctx).is_some() { return None; }
-    let mut tool_input = input.tool_input.clone();
-    tool_input["command"] = serde_json::json!(rewritten);
-    Some(Verdict::Rewrite { tool_input, note: None })
+    Some(rewritten)
 }
 
 // Do not freeze shell globs, tilde or brace expansion into literal argv.

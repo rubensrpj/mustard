@@ -4,12 +4,28 @@ use std::path::Path;
 use mustard_core::{ProjectConfig,domain::config::{AGENT_EFFORTS,FilterSetting}};
 use serde_json::{Value,json};
 
-const FIELDS:[&str;12]=["enabled","rtk","vectors","jev","jev_search","jev_wave_planning","jev_context","agent_model","agent_effort","search_answer","session_claude_model","session_codex_model"];
+const FIELDS:[&str;16]=["enabled","rtk","vectors","jev","jev_search","jev_wave_planning","jev_context","agent_model","agent_effort","search_answer","session_claude_model","session_codex_model",
+    "build_command","test_command","lint_command","max_compiling_waves"];
+/// Os comandos do projeto, gravados na raiz do `mustard.json` com o nome em
+/// camelCase; o nome antigo, em snake_case, é o próprio campo.
+const COMMANDS:[(&str,&str);3]=[("build_command","buildCommand"),("test_command","testCommand"),("lint_command","lintCommand")];
 const PURPOSES:[(&str,&str);3]=[("jev_search","search"),("jev_wave_planning","wave-planning"),("jev_context","context")];
 
 pub(super) fn run(start:&Path,patch:Option<&str>)->Value {
     let root=mustard_core::io::spec_events::spec_root(start);
     if let Some(patch)=patch {apply(&root,patch)} else {read(&root)}
+}
+
+/// A resposta curta dos ajustes: só os valores atuais e a revisão, que a
+/// troca pede, com o resultado da gravação quando houve uma. A situação do
+/// Jev, do rtk, do índice e das integrações, que o painel mostra, vem com
+/// `--full`.
+pub(crate) fn short(report:&Value)->Value {
+    let mut out=serde_json::Map::new();
+    for key in ["ok","schema_version","revision","values","saved","pending","scan_recommended","agent_changes_apply_to"] {
+        if let Some(value)=report.get(key) {out.insert(key.into(),value.clone());}
+    }
+    Value::Object(out)
 }
 
 fn refused(reason:&str)->Value {json!({"ok":false,"schema_version":1,"reason":reason})}
@@ -33,10 +49,12 @@ fn read(root:&Path)->Value {
     values["session_claude_model"]=json!(config.ai.session_models.get("claude").map_or("haiku",String::as_str));
     values["session_codex_model"]=json!(config.ai.session_models.get("codex").map_or("gpt-6-luna",String::as_str));
     for (field,purpose) in PURPOSES {values[field]=json!(config.judgement_filter(purpose)==FilterSetting::Jev);}
+    values["build_command"]=json!(config.build_command);values["test_command"]=json!(config.test_command);values["lint_command"]=json!(config.lint_command);
+    values["max_compiling_waves"]=json!(crate::commands::flow::round::queue::max_parallel(root));
     let switches=mustard_core::Switches::read(root);
     json!({"ok":true,"schema_version":1,"revision":revision(root,&text),"values":values,
         "jev":super::jev_usage::configuration(root,&config,std::env::var(mustard_core::io::jev_gate::KEY_ENV).ok()),
-        "rtk":{"hook_configured":switches.rtk_hook},
+        "rtk":{"own_hook_left":switches.rtk_hook},
         "index_present":mustard_core::io::project_map::model_path(root).is_file(),
         "availability":crate::shared::integration_health::snapshot(root)})
 }
@@ -45,6 +63,9 @@ fn valid(field:&str,value:&Value)->bool {
     match field {
         "agent_model" | "session_claude_model" | "session_codex_model"=>value.as_str().is_some_and(|name|name.len()<=160 && !name.is_empty() && name.chars().all(|c|c.is_ascii_alphanumeric() || matches!(c,'.'|'_'|':'|'/'|'-'|'['|']'))),
         "agent_effort"=>value.as_str().is_some_and(|effort|AGENT_EFFORTS.contains(&effort)),
+        "build_command" | "test_command" | "lint_command"=>value.is_null() || value.as_str().is_some_and(|command|
+            !command.trim().is_empty() && command.chars().count()<=1_000 && !command.contains(['\n','\r','\0'])),
+        "max_compiling_waves"=>value.as_u64().is_some_and(|waves|(1..=16).contains(&waves)),
         _=>FIELDS.contains(&field) && value.is_boolean(),
     }
 }
@@ -76,25 +97,37 @@ fn apply(root:&Path,text:&str)->Value {
             "agent_model"=>vec!["agents","model"],
             "session_claude_model"=>vec!["ai","sessionModels","claude"],
             "session_codex_model"=>vec!["ai","sessionModels","codex"],"agent_effort"=>vec!["agents","effort"],
-            "search_answer"=>vec!["search","answer"],
+            "search_answer"=>vec!["search","answer"],"max_compiling_waves"=>vec!["maxCompilingWaves"],
             _=>vec![field.as_str()],
         };
-        let ok=if let Some((_,purpose))=PURPOSES.iter().find(|(name,_)|name==field) {
+        let ok=if let Some((old,key))=COMMANDS.iter().find(|(name,_)|name==field) {
+            // O nome antigo sai junto, e `null` tira a chave em vez de gravar `null`.
+            next.as_object_mut().is_some_and(|object|{
+                object.shift_remove(*old);object.shift_remove(*key);
+                if !value.is_null() {object.insert((*key).into(),value.clone());}
+                true
+            })
+        }else if let Some((_,purpose))=PURPOSES.iter().find(|(name,_)|name==field) {
             put(&mut next,&["judgement",purpose,"filter"],json!(if value==true {"jev"}else{"none"}))
         }else {put(&mut next,&path,value.clone())};
         if !ok {return refused("settings-invalid-section");}
     }
-    let Ok(config)=serde_json::from_value::<ProjectConfig>(next.clone()) else {return refused("settings-invalid-section");};
+    if serde_json::from_value::<ProjectConfig>(next.clone()).is_err() {return refused("settings-invalid-section");}
     // Prepare derived writes before changing anything. Invalid host settings
     // cannot erase hooks or private environment choices.
     let local_path=root.join(".claude/settings.local.json");
-    let local=if changes.contains_key("rtk") {
-        let Ok(raw)=mustard_core::io::fs::read_to_string(&local_path) else {return refused("settings-local-missing");};
-        let Ok(Value::Object(mut object))=serde_json::from_str::<Value>(&raw) else {return refused("settings-local-invalid");};
-        mustard_core::platform::project_seed::settings::apply_rtk_hook(&mut object,config.rtk());
-        if mustard_core::platform::project_seed::settings::rtk_hook_present(&object)!=config.rtk() {return refused("settings-local-invalid");}
-        Some(Value::Object(object))
-    }else {None};
+    // The rtk option turns the swap Mustard's own hook makes. Touching it also
+    // takes rtk's own hook out of the local settings, where it would race
+    // Mustard's hook for the same command; a missing file holds no hook.
+    let local=match mustard_core::io::fs::read_to_string(&local_path) {
+        Ok(raw) if changes.contains_key("rtk") => {
+            let Ok(Value::Object(mut object))=serde_json::from_str::<Value>(&raw) else {return refused("settings-local-invalid");};
+            let before=object.clone();
+            mustard_core::platform::project_seed::settings::remove_rtk_hook(&mut object);
+            (object!=before).then_some(Value::Object(object))
+        }
+        _=>None,
+    };
     let Ok(mut bytes)=serde_json::to_vec_pretty(&next) else {return refused("settings-write-failed");};
     bytes.push(b'\n');
     if document(root).is_none_or(|(now,_)|request["revision"]!=revision(root,&now)) {return refused("settings-conflict");}
@@ -171,15 +204,21 @@ mod tests {
         assert_eq!(value["judgement"]["context"]["extra"],"keep");
         assert_eq!(value["judgement"]["search"]["filter"],"jev");assert_eq!(value["ai"]["vectors"],false);
         let local=std::fs::read_to_string(root.join(".claude/settings.local.json")).unwrap();
-        assert!(local.contains(SECRET) && local.contains("other hook") && local.contains("rtk hook claude"));
+        assert!(local.contains(SECRET) && local.contains("other hook") && !local.contains("rtk hook claude"));
         let agent=std::fs::read_to_string(root.join(".claude/agents/mustard/wave.md")).unwrap();
         assert!(agent.contains("model: opus") && agent.contains("effort: high"));
         let receipt:Value=serde_json::from_str(&std::fs::read_to_string(root.join(".claude/mustard/installation.json")).unwrap()).unwrap();
         assert_eq!(receipt["complete"],false);assert_eq!(receipt["settings_changed"],true);
+        let left=r#"{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"rtk hook claude"},{"type":"command","command":"other hook"}]}]}}"#;
+        std::fs::write(root.join(".claude/settings.local.json"),left).unwrap();
+        #[cfg(unix)] {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root.join(".claude/settings.local.json"),std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
         let off=patch(root,json!({"rtk":false,"jev_search":false,"enabled":false}));
         assert_eq!(off["ok"],true);assert_eq!(off["values"]["enabled"],false);
         let local=std::fs::read_to_string(root.join(".claude/settings.local.json")).unwrap();
-        assert!(!local.contains("rtk hook claude") && local.contains("other hook"));
+        assert!(!local.contains("rtk hook claude") && local.contains("other hook"),"rtk's own hook leaves, the user's stays: {local}");
         assert_eq!(document(root).unwrap().1["judgement"]["search"]["filter"],"none");
         #[cfg(unix)] {
             use std::os::unix::fs::PermissionsExt;
@@ -212,11 +251,45 @@ mod tests {
     #[test]
     fn invalid_local_hooks_refuse_the_entire_patch_before_writing() {
         let dir=fixture();let root=dir.path();let before=std::fs::read(root.join("mustard.json")).unwrap();
-        std::fs::write(root.join(".claude/settings.local.json"),r#"{"hooks":[]}"#).unwrap();
+        std::fs::write(root.join(".claude/settings.local.json"),r#"["not an object"]"#).unwrap();
         assert_eq!(patch(root,json!({"rtk":true,"vectors":false}))["reason"],"settings-local-invalid");
         assert_eq!(std::fs::read(root.join("mustard.json")).unwrap(),before);
         std::fs::write(root.join("mustard.json"),"{broken").unwrap();
         assert_eq!(read(root)["reason"],"settings-unreadable");
+    }
+    /// Os três comandos mudam sem tocar na chave nem nos outros campos;
+    /// `null` tira a chave, e um comando com quebra de linha não muda nada.
+    #[test]
+    fn a_command_patch_keeps_the_key_and_every_other_field() {
+        let dir=fixture();let root=dir.path();
+        let saved=patch(root,json!({"build_command":"pnpm build","test_command":"dotnet test","lint_command":"npx eslint ."}));
+        assert_eq!(saved["ok"],true,"{saved}");
+        assert_eq!(saved["values"]["test_command"],"dotnet test");assert!(!saved.to_string().contains(SECRET));
+        let (_,value)=document(root).unwrap();
+        assert_eq!(value["buildCommand"],"pnpm build");assert_eq!(value["lintCommand"],"npx eslint .");
+        assert_eq!(value["jev"]["key"],SECRET);assert_eq!(value["future"]["keep"],17);
+        assert_eq!(value["agents"]["model"],"custom-model-1");assert_eq!(value["agents"]["extra"],"keep");
+        assert_eq!(patch(root,json!({"lint_command":null}))["ok"],true);
+        let (before,value)=document(root).unwrap();
+        assert!(value.get("lintCommand").is_none() && value["buildCommand"]=="pnpm build","{value}");
+        let refused=patch(root,json!({"test_command":"dotnet test\nrm -rf ."}));
+        assert_eq!(refused["reason"],"settings-invalid-fields");assert_eq!(refused["fields"],json!(["test_command"]));
+        assert_eq!(std::fs::read_to_string(root.join("mustard.json")).unwrap(),before);
+    }
+    /// O teto de ondas em paralelo gravado aparece na leitura seguinte, com a
+    /// chave intacta; fora de 1 a 16 ele é recusado sem mudar o arquivo.
+    #[test]
+    fn a_wave_cap_patch_changes_the_value_read_next() {
+        let dir=fixture();let root=dir.path();
+        assert_eq!(read(root)["values"]["max_compiling_waves"],4);
+        assert_eq!(patch(root,json!({"max_compiling_waves":7}))["ok"],true);
+        assert_eq!(read(root)["values"]["max_compiling_waves"],7);
+        assert_eq!(document(root).unwrap().1["jev"]["key"],SECRET);
+        let before=std::fs::read_to_string(root.join("mustard.json")).unwrap();
+        for waves in [json!(0),json!(17),json!("7")] {
+            assert_eq!(patch(root,json!({"max_compiling_waves":waves}))["reason"],"settings-invalid-fields","{waves}");
+        }
+        assert_eq!(std::fs::read_to_string(root.join("mustard.json")).unwrap(),before);
     }
     #[test]
     fn a_busy_writer_and_wrong_versions_are_refused_without_app_commands() {

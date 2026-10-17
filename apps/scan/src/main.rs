@@ -31,6 +31,7 @@ use mustard_core::domain::config::ProjectConfig;
 use mustard_core::domain::normalize::Languages;
 use mustard_core::io::project_map::{self as store, Listing};
 use std::collections::BTreeSet;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -57,7 +58,9 @@ enum Command {
         /// Read every file, ignoring the previous model.
         #[arg(long)]
         all: bool,
-        /// Refresh source structure without loading a configured meaning model.
+        /// Refresh source structure without loading a configured meaning model:
+        /// after the map, only the code vectors of what changed, by the
+        /// embedded model.
         #[arg(long)]
         native: bool,
         /// Print one JSON line (what was read) instead of the text summary.
@@ -160,14 +163,26 @@ fn lower_priority() {}
 /// história faz depois de gravar a dela. O mapa vale sem os vetores, então a
 /// falha só avisa. Devolve quantos vetores de declaração foram calculados.
 fn fill_meaning(out: &Path, root: &Path) -> usize {
-    let code = match mustard_core::io::code_vectors::fill_at(out, root) {
-        Ok(count) => count,
-        Err(err) => {eprintln!("The code vectors were not written: {err}");0}
-    };
-    code + match mustard_core::io::map_meaning::fill_at(out, root) {
+    fill_code_vectors(out, root) + match mustard_core::io::map_meaning::fill_at(out, root) {
         Ok(report) => report.computed,
         Err(err) => {
             eprintln!("The meaning vectors were not written: {err}");
+            0
+        }
+    }
+}
+
+/// Os vetores de código das declarações do mapa em `out` que mudaram, do
+/// projeto em `root`, pelo modelo embutido: o que a passada nativa ainda faz
+/// depois de gravar o mapa. Quem pede a passada e para de esperar por ela não
+/// os calcula na busca seguinte: a passada segue sozinha e os grava. Com
+/// outro cálculo do mesmo mapa em andamento, este não calcula nada. Devolve
+/// quantos foram calculados; a falha só avisa, porque o mapa vale sem eles.
+fn fill_code_vectors(out: &Path, root: &Path) -> usize {
+    match mustard_core::io::code_vectors::fill_at(out, root) {
+        Ok(count) => count.unwrap_or(0),
+        Err(err) => {
+            eprintln!("The code vectors were not written: {err}");
             0
         }
     }
@@ -199,34 +214,58 @@ fn main() -> Result<()> {
             println!("{}", report);
         }
         Command::Scan { path, out, all, native, json } => {
+            // Uma passada nativa por mapa: a busca que a pede pode não esperar
+            // por ela, e a busca seguinte, com a primeira ainda lendo, não
+            // começa outra leitura do projeto inteiro.
+            let _alone = if native {
+                let lock = mustard_core::io::fs::lock::LockedFile::exclusive_if_free(
+                    &mustard_core::domain::scan::native_pass_lock_path(&out),
+                )?;
+                if lock.is_none() {
+                    if json {
+                        println!("{}", serde_json::json!({"ok": true, "busy": true, "read": [], "remote_model_calls": 0}));
+                    } else {
+                        println!("Another native pass of {} is running", out.display());
+                    }
+                    return Ok(());
+                }
+                lock
+            } else {
+                None
+            };
             // O `mustard.json` da pasta lida: as línguas da busca e o teto do
             // nome comum da ligação. O valor inválido já vale o padrão aqui;
             // quem avisa é quem chama o scan.
             let config = ProjectConfig::load(&path);
             let (max_same_name, _) = config.scan_max_same_name();
-            let analysis = match census_pass(&path, &out, all, max_same_name) {
-                Some(analysis) => analysis,
+            // O modelo da passada anterior fica até a gravação, que parte dele.
+            let (analysis, previous) = match census_pass(&path, &out, all, max_same_name) {
+                Some(analysis) => (analysis, None),
                 None => {
                     let previous: Option<ProjectModel> = if all { None } else { ProjectModel::load(&out) };
-                    analyze(&path, previous.as_ref(), max_same_name)?
+                    (analyze(&path, previous.as_ref(), max_same_name)?, previous)
                 }
             };
             // Nothing changed → the file is left alone (same bytes, same date).
-            let written = if analysis.census_only {
-                if analysis.resources_changed {
+            let saved = if analysis.census_only {
+                let written = if analysis.resources_changed {
                     analysis.model.save_resources(&out, refresh::FORMAT, &Languages::of(&config))?
-                } else { analysis.model.save_census(&out, refresh::FORMAT)? }
+                } else { analysis.model.save_census(&out, refresh::FORMAT)? };
+                model::Saved { written, enriched: 0 }
             } else {
-                analysis.model.save(&out, refresh::FORMAT, &Languages::of(&config))?
+                analysis.model.save(&out, refresh::FORMAT, &Languages::of(&config), previous.as_ref())?
             };
             drop_legacy_map(&out)?;
-            // O sentido de cada declaração e de cada palavra do mapa recém-gravado.
-            let vectors = if native {0}else{fill_meaning(&out, &path)};
+            // O sentido de cada declaração e de cada palavra do mapa
+            // recém-gravado; a passada nativa calcula só os vetores de código,
+            // pelo modelo embutido.
+            let vectors = if native { fill_code_vectors(&out, &path) } else { fill_meaning(&out, &path) };
             if json {
                 let report = serde_json::json!({
                     "ok": true,
                     "full": analysis.full,
                     "read": analysis.read,
+                    "enriched": saved.enriched,
                     "files": analysis.model.modules.len(),
                     "resources": analysis.model.resources.len(),
                     "resource_issues": analysis.model.resources.iter().filter(|file| !file.issue.is_empty()).map(|file|
@@ -238,7 +277,9 @@ fn main() -> Result<()> {
                     "vectors_enabled": config.ai_vectors_enabled(),
                     "remote_model_calls": 0,
                 });
-                println!("{report}");
+                // Quem pediu a passada pode ter parado de esperar por ela: o
+                // mapa já está gravado, e o relato que ninguém lê se perde.
+                let _ = writeln!(std::io::stdout(), "{report}");
             } else {
                 // O modelo da passada que só refez o censo não traz os
                 // arquivos inteiros: o resumo lê o mapa que ela gravou.
@@ -247,7 +288,7 @@ fn main() -> Result<()> {
                 } else {
                     print_summary(&analysis.model);
                 }
-                if written {
+                if saved.written {
                     println!("\nMap written to {}", out.display());
                 } else {
                     println!("\nMap unchanged at {}", out.display());
@@ -502,6 +543,11 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>, listing: Option<&Lis
             let folder = markup::imports_above(&imports_files, &sf.rel_path, &sf.language);
             let project = routes::Project { global_imports: &[], manifest_deps: &manifest_deps, path: &sf.rel_path, folder: &folder };
             let extracted = analyzer.map(|a| a.extract(&sf.content, keep, &project)).unwrap_or_default();
+            // O texto de cada declaração, por nome: a nota dela envelhece só quando ele muda.
+            let declared = mustard_core::io::map_notes::declaration_digests(
+                &sf.content,
+                extracted.declarations.iter().map(|d| (d.name.as_str(), d.line, d.end_line)),
+            );
             Some(Module {
                 path: sf.rel_path.clone(),
                 blob: String::new(),
@@ -530,6 +576,7 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>, listing: Option<&Lis
                 analysis: Some(serde_json::json!({"parse_complete":extracted.parse_complete,
                     "file_identifiers":extracted.file_identifiers,"end_line":sf.content.lines().count(),
                     "content_sha256":({let mut hash=mustard_core::io::sha256::Sha256::new();hash.update(sf.content.as_bytes());hash.hex_digest()}),
+                    "declaration_sha256":declared,
                     "origin":if analyzer.is_some(){"tree-sitter"}else{"unsupported"},
                     "relations":"syntactic-candidates", "tests":"candidates-not-coverage"})),
                 signals: code_signals(&sf.content),
@@ -569,13 +616,16 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>, listing: Option<&Lis
     graph::test_module::mark_declared(&mut modules);
     let projects = graph::Projects::of(&ing.manifests);
     let aliases = path_aliases::PathAliases::load(&ing.root, &ing.walk_paths);
-    let graph = graph::build(&modules, &projects, &aliases);
+    // As importações do projeto se resolvem uma vez: o grafo conta as arestas
+    // e as dependências de cada arquivo as leem.
+    let edges = graph::resolve_edges(&modules, &projects, &aliases);
+    let graph = graph::build(&modules, &edges);
     // The project files each module imports, from the same resolved edges the
     // graph counts — the answer to "who imports this file", read backwards.
     // A importação de namespace chega aqui já estreitada aos arquivos que
     // declaram um nome que o módulo usa.
     let mut deps: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); modules.len()];
-    for (from, to, _) in graph::resolve_edges(&modules, &projects, &aliases) {
+    for (from, to, _) in edges {
         deps[from].insert(to);
     }
     let paths: Vec<String> = modules.iter().map(|m| m.path.clone()).collect();
@@ -678,7 +728,10 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>, max_same_name: usize) -
     // file and on which line. Read from the call sites and the citations every
     // module carries, so a pass that read only what changed links the same
     // declarations a full pass does.
-    graph::link_declarations(&mut modules, &projects, &ing.manifests, &aliases, max_same_name);
+    // A passada que releu só o que mudou resolve de novo só as chamadas que
+    // podem ter mudado com isso, e fica com o resto do mapa anterior.
+    let relink = previous.filter(|_| !full).map(|model| graph::Previous { model, read: &ing.read });
+    graph::link_declarations(&mut modules, &projects, &ing.manifests, &aliases, max_same_name, relink);
     // Cada tipo com os membros dele e cada método com o do contrato que ele
     // cumpre, refeitos do projeto inteiro como as ligações acima.
     graph::link_members(&mut modules);
@@ -753,6 +806,7 @@ fn analyze(root: &Path, previous: Option<&ProjectModel>, max_same_name: usize) -
             state,
             history,
             marks: Default::default(),
+            stamp: String::new(),
         },
         read,
         full,
@@ -935,17 +989,11 @@ mod shouting_words;
 mod tests {
     use super::*;
 
-    #[test]
-    fn incremental_changes_deletions_and_new_files_match_a_complete_scan() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        std::fs::create_dir(root.join("src")).unwrap();
-        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\n").unwrap();
-        std::fs::write(root.join("src/lib.rs"), "mod math; pub fn total() -> u32 { math::sum() }\n").unwrap();
-        std::fs::write(root.join("src/math.rs"), "pub fn sum() -> u32 { 1 }\n").unwrap();
+    /// Põe `root` num repositório git, com tudo o que ele tem num commit.
+    fn commit_everything(root: &Path) {
         for args in [
             vec!["init", "-q"],
-            vec!["add", "Cargo.toml", "src"],
+            vec!["add", "-A"],
             vec![
                 "-c",
                 "user.name=Fixture",
@@ -964,9 +1012,20 @@ mod tests {
             let ran = std::process::Command::new("git").args(args).current_dir(root).output().unwrap();
             assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
         }
+    }
+
+    #[test]
+    fn incremental_changes_deletions_and_new_files_match_a_complete_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join("src")).unwrap();
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\n").unwrap();
+        std::fs::write(root.join("src/lib.rs"), "mod math; pub fn total() -> u32 { math::sum() }\n").unwrap();
+        std::fs::write(root.join("src/math.rs"), "pub fn sum() -> u32 { 1 }\n").unwrap();
+        commit_everything(root);
         let first = analyze(root, None, 20).unwrap();
         let db = root.join(".claude/grain.db");
-        first.model.save(&db, refresh::FORMAT, &Languages::of_project(root)).unwrap();
+        first.model.save(&db, refresh::FORMAT, &Languages::of_project(root), None).unwrap();
         let previous = ProjectModel::load(&db).unwrap();
         std::fs::remove_file(root.join("src/math.rs")).unwrap();
         std::fs::write(root.join("src/lib.rs"), "mod new_math; pub fn total() -> u32 { new_math::sum() }\n").unwrap();
@@ -976,6 +1035,40 @@ mod tests {
         assert!(!incremental.full, "the actual incremental path must execute");
         assert_eq!(serde_json::to_value(&incremental.model.modules).unwrap(), serde_json::to_value(&complete.model.modules).unwrap());
         assert_eq!(serde_json::to_value(&incremental.model.graph).unwrap(), serde_json::to_value(&complete.model.graph).unwrap());
+    }
+
+    /// A passada que parte do mapa lido sem os cartões de conhecimento e acha
+    /// o mapa regravado depois da leitura grava o mapa inteiro, com os cartões
+    /// de todo arquivo refeitos: o mapa sai igual ao da leitura inteira.
+    #[test]
+    fn a_save_from_a_map_rewritten_after_the_read_rebuilds_every_card() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join("src")).unwrap();
+        std::fs::write(root.join("src/a.ts"), "export function a(): number {\n  return 1;\n}\n").unwrap();
+        std::fs::write(root.join("src/b.ts"), "import { a } from './a';\n\nexport function b(): number {\n  return a() + 1;\n}\n").unwrap();
+        std::fs::write(root.join("src/c.ts"), "export class C {\n  run(): number {\n    return 3;\n  }\n}\n").unwrap();
+        commit_everything(root);
+        let languages = Languages::of_project(root);
+        let db = root.join(".claude/grain.db");
+        let whole = analyze(root, None, 20).unwrap().model.save(&db, refresh::FORMAT, &languages, None).unwrap();
+        assert!(whole.enriched > 0, "{whole:?}");
+        let previous = ProjectModel::load(&db).unwrap();
+
+        // Outra gravação passa pelo mapa, pela porta do núcleo, depois da leitura.
+        let mut stored: serde_json::Value = serde_json::from_str(&store::read_stored_at(&db).unwrap().json).unwrap();
+        stored["modules"][0]["loc"] = serde_json::json!(99);
+        assert!(store::save_at(&db, &stored, refresh::FORMAT, &languages).unwrap());
+
+        let pass = analyze(root, Some(&previous), 20).unwrap();
+        assert!(!pass.full, "the pass starts from the map it read");
+        let saved = pass.model.save(&db, refresh::FORMAT, &languages, Some(&previous)).unwrap();
+        assert_eq!(saved.enriched, whole.enriched, "every card is rebuilt");
+
+        let other = tempfile::tempdir().unwrap();
+        let complete = other.path().join("grain.db");
+        analyze(root, None, 20).unwrap().model.save(&complete, refresh::FORMAT, &languages, None).unwrap();
+        assert_eq!(store::read_stored_at(&db).unwrap().json, store::read_stored_at(&complete).unwrap().json);
     }
 
     fn manifest(path: &str, kind: &str, name: &str) -> model::Manifest {

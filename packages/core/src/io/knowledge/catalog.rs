@@ -37,7 +37,7 @@ pub(crate) const BLOCK: Block = Block {
 };
 
 fn initialize(conn: &Connection, root: &Path) -> Result<()> {
-    sync(conn, &Languages::of_project(root))?;
+    sync(conn, &Languages::of_project(root), None)?;
     super::references::rebuild(conn)
 }
 
@@ -45,21 +45,50 @@ fn words(normalizer: &mut Normalizer, text: &str) -> String {
     normalizer.written_forms(text).into_iter().collect::<Vec<_>>().join(" ")
 }
 
+/// Os símbolos que uma sincronização do catálogo trocou: os arquivos cujos
+/// símbolos saíram e entraram de novo, e o número e o nome de cada símbolo
+/// que saiu ou entrou.
+#[derive(Debug, Default)]
+pub(crate) struct Swapped {
+    pub paths: BTreeSet<String>,
+    pub ids: BTreeSet<String>,
+    pub names: BTreeSet<String>,
+}
+
 /// Runs in the source transaction. Unchanged files retain their index rows.
-pub(crate) fn sync(conn: &Connection, languages: &Languages) -> Result<()> {
+/// Com `scope`, os únicos arquivos cujas linhas mudaram nesta gravação, só
+/// eles se conferem: o arquivo de fora dele tem o mesmo texto da gravação em
+/// que se catalogou. Catálogo feito em outras línguas ou noutra versão se
+/// refaz inteiro, com ou sem `scope`. Devolve os símbolos trocados; `None`
+/// quando o catálogo se refez inteiro.
+pub(crate) fn sync(conn: &Connection, languages: &Languages, scope: Option<&BTreeSet<String>>) -> Result<Option<Swapped>> {
     conn.execute_batch("CREATE INDEX IF NOT EXISTS knowledge_texts_path ON texts(path);")?;
     let codes = languages.codes().join(",");
     let stored: Option<String> = conn.query_row("SELECT value FROM knowledge_meta WHERE key='languages'", [], |r| r.get(0)).optional()?;
     let version: Option<String> = conn.query_row("SELECT value FROM knowledge_meta WHERE key='evidence_version'", [], |r| r.get(0)).optional()?;
+    let mut scope = scope;
     if stored.as_deref() != Some(&codes) || version.as_deref() != Some(&knowledge::VERSION.to_string()) {
         conn.execute_batch("DELETE FROM knowledge_fts; DELETE FROM knowledge_links; DELETE FROM knowledge_symbols; DELETE FROM knowledge_files;")?;
+        scope = None;
     }
     let mut normalizer = Normalizer::new(languages);
-    let mut select = conn.prepare("SELECT path,analysis FROM texts ORDER BY path")?;
-    let rows = select.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)))?;
+    let rows: Vec<(String, Option<String>)> = match scope {
+        None => {
+            let mut select = conn.prepare("SELECT path,analysis FROM texts ORDER BY path")?;
+            select.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?
+        }
+        Some(paths) => {
+            let mut select = conn.prepare("SELECT path,analysis FROM texts WHERE path=?1")?;
+            let mut found = Vec::new();
+            for path in paths {
+                found.extend(select.query_row([path], |r| Ok((r.get(0)?, r.get(1)?))).optional()?);
+            }
+            found
+        }
+    };
     let mut present = BTreeSet::new();
-    for row in rows {
-        let (path, analysis) = row?;
+    let mut swapped = Swapped::default();
+    for (path, analysis) in rows {
         present.insert(path.clone());
         let text = analysis.unwrap_or_default();
         let mut digest = Sha256::new();
@@ -69,7 +98,7 @@ pub(crate) fn sync(conn: &Connection, languages: &Languages) -> Result<()> {
         if old.as_deref() == Some(&fingerprint) {
             continue;
         }
-        remove(conn, &path)?;
+        remove(conn, &path, &mut swapped)?;
         let analysis: Value = if text.is_empty() { Value::Null } else { serde_json::from_str(&text).map_err(|e| Error::Parse(e.to_string()))? };
         if analysis["knowledge"]["version"] == knowledge::VERSION {
             for (position, value) in analysis["knowledge"]["cards"].as_array().into_iter().flatten().enumerate() {
@@ -79,6 +108,8 @@ pub(crate) fn sync(conn: &Connection, languages: &Languages) -> Result<()> {
                     params![card.id, path, card.name, integer(card.source.line)?, integer(card.source.end_line)?, card.source.sha256, position as i64],
                 )?;
                 let rowid = conn.last_insert_rowid();
+                swapped.ids.insert(card.id.clone());
+                swapped.names.insert(card.name.clone());
                 let own = knowledge::evidence::own_text(&card);
                 conn.execute(
                     "INSERT INTO knowledge_fts(rowid,name,own,path,header,intent) VALUES (?1,?2,?3,?4,?5,?6)",
@@ -113,19 +144,33 @@ pub(crate) fn sync(conn: &Connection, languages: &Languages) -> Result<()> {
             params![path, fingerprint, integer(analysis["knowledge"]["version"].as_u64().unwrap_or(0))?],
         )?;
     }
-    let mut select = conn.prepare("SELECT path FROM knowledge_files")?;
-    let old = select.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let old: Vec<String> = match scope {
+        None => {
+            let mut select = conn.prepare("SELECT path FROM knowledge_files")?;
+            select.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?
+        }
+        Some(paths) => paths.iter().cloned().collect(),
+    };
     for path in old {
         if !present.contains(&path) {
-            remove(conn, &path)?;
+            remove(conn, &path, &mut swapped)?;
         }
     }
     conn.execute("INSERT OR REPLACE INTO knowledge_meta(key,value) VALUES ('languages',?1)", [codes])?;
     conn.execute("INSERT OR REPLACE INTO knowledge_meta(key,value) VALUES ('evidence_version',?1)", [knowledge::VERSION.to_string()])?;
-    Ok(())
+    Ok(scope.map(|_| swapped))
 }
 
-fn remove(conn: &Connection, path: &str) -> Result<()> {
+/// Tira do catálogo os símbolos do arquivo `path`, contando em `swapped` o
+/// arquivo e o número e o nome de cada símbolo que sai.
+fn remove(conn: &Connection, path: &str, swapped: &mut Swapped) -> Result<()> {
+    let mut leaving = conn.prepare_cached("SELECT id,name FROM knowledge_symbols WHERE path=?1")?;
+    for row in leaving.query_map([path], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+        let (id, name) = row?;
+        swapped.ids.insert(id);
+        swapped.names.insert(name);
+    }
+    swapped.paths.insert(path.to_string());
     conn.execute("DELETE FROM knowledge_fts WHERE rowid IN (SELECT rowid FROM knowledge_symbols WHERE path=?1)", [path])?;
     conn.execute("DELETE FROM knowledge_links WHERE source IN (SELECT id FROM knowledge_symbols WHERE path=?1)", [path])?;
     conn.execute("DELETE FROM knowledge_symbols WHERE path=?1", [path])?;
@@ -291,6 +336,85 @@ pub(super) fn exact_name(root: &Path, options: &Query<'_>) -> std::result::Resul
         .is_some())
 }
 
+/// As declarações que a pergunta cita pelo nome: cada palavra dela escrita
+/// como nome de código ([`cited_names`]) igual ao nome de uma declaração
+/// do mapa, sem distinguir maiúsculas, a grafia exata antes. A palavra que só
+/// a maiúscula faz nome exige a mesma grafia: `Backoff` numa frase não cita a
+/// constante `BACKOFF`. O nome com mais homônimos que `slots`, as vagas que a
+/// resposta deixa às declarações fora da reserva das relações, não conta: ele
+/// não diz qual declaração a pergunta quer, e entraria pela metade. O nome de
+/// menos homônimos vem antes; no empate, o que a pergunta escreve primeiro.
+pub(super) fn named(root: &Path, options: &Query<'_>, slots: usize) -> std::result::Result<Vec<String>, MapRefusal> {
+    let words = cited_names(options.text);
+    if options.all || words.is_empty() {
+        return Ok(Vec::new());
+    }
+    let fetch = i64::try_from(slots + 1).unwrap_or(i64::MAX);
+    let db = store::open_existing(&store::model_path(root))?;
+    let mut statement = db
+        .conn()
+        .prepare("SELECT id FROM knowledge_symbols WHERE name=?1 COLLATE NOCASE AND (?4=0 OR name=?1) AND (?2 IS NULL OR path=?2) ORDER BY name=?1 DESC,path,line LIMIT ?3")
+        .map_err(|e| unreadable(e.into()))?;
+    let mut groups = Vec::new();
+    for Cited { word, exact } in words {
+        let ids = statement
+            .query_map(params![word, options.file, fetch, exact], |r| r.get::<_, String>(0))
+            .and_then(Iterator::collect::<rusqlite::Result<Vec<_>>>)
+            .map_err(|e| unreadable(e.into()))?;
+        if ids.len() <= slots {
+            groups.push(ids);
+        }
+    }
+    groups.sort_by_key(Vec::len);
+    let mut named = Vec::new();
+    for id in groups.into_iter().flatten() {
+        if !named.contains(&id) {
+            named.push(id);
+        }
+    }
+    Ok(named)
+}
+
+/// Uma palavra da pergunta escrita como nome de código. `exact` quando só a
+/// maiúscula a faz nome: ela cita só a declaração de mesma grafia.
+struct Cited<'a> {
+    word: &'a str,
+    exact: bool,
+}
+
+/// As palavras que a pergunta escreve como nome de código, e não como prosa,
+/// na ordem e sem repetir. Pela forma, que casa sem distinguir maiúsculas:
+/// com `_`, `$` ou algarismo, ou com maiúscula depois da primeira letra junto
+/// de minúscula (`retry_limit`, `maxRetries`, `PATH_RULE`). Só pela maiúscula,
+/// que exige a mesma grafia: a sigla toda em maiúsculas (`API`) e a palavra
+/// com maiúscula no meio de uma frase (`Modes`). A palavra de prosa que por
+/// acaso também nomeia uma declaração (`round`, ou `Timeout` abrindo a frase
+/// ou a linha) fica para a semelhança.
+fn cited_names(text: &str) -> Vec<Cited<'_>> {
+    let mut names: Vec<Cited<'_>> = Vec::new();
+    let (mut opening, mut start) = (true, None);
+    for (at, c) in text.char_indices().chain([(text.len(), '\n')]) {
+        if c.is_alphanumeric() || c == '_' || c == '$' {
+            start.get_or_insert(at);
+            continue;
+        }
+        if let Some(from) = start.take() {
+            let word = &text[from..at];
+            let capital = word.chars().next().is_some_and(char::is_uppercase);
+            let inner_capital = word.chars().skip(1).any(char::is_uppercase);
+            let lower = word.chars().any(char::is_lowercase);
+            let code = word.chars().any(|c| c == '_' || c == '$' || c.is_numeric()) || (inner_capital && lower);
+            let acronym = inner_capital && !lower;
+            if (code || acronym || (capital && !opening)) && !names.iter().any(|cited| cited.word == word) {
+                names.push(Cited { word, exact: !code });
+            }
+            opening = false;
+        }
+        opening |= matches!(c, '.' | '!' | '?' | '\n');
+    }
+    names
+}
+
 pub(super) fn ensure_languages(root:&Path)->std::result::Result<(),MapRefusal> {
     let mut db=store::open_existing(&store::model_path(root))?;
     let languages=Languages::of_project(root);
@@ -299,7 +423,7 @@ pub(super) fn ensure_languages(root:&Path)->std::result::Result<(),MapRefusal> {
         db.conn().query_row("SELECT value FROM knowledge_meta WHERE key='languages'", [], |r| r.get(0)).optional().map_err(|e| unreadable(e.into()))?;
     if stored.as_deref() != Some(&codes) {
         db.write(|tx| {
-            sync(tx, &languages)?;
+            sync(tx, &languages, None)?;
             super::references::rebuild(tx)?;
             crate::io::map_revision::bump(tx)
         })
@@ -537,4 +661,15 @@ pub(super) fn fts_query(terms: &[Vec<String>], join: &str) -> String {
 
 pub(super) fn integer(value: u64) -> Result<i64> {
     i64::try_from(value).map_err(|e| Error::Parse(e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_line_break_opens_a_new_sentence_for_cited_names() {
+        let words: Vec<_> = cited_names("fix the upload retry\nTimeout and Backoff\n- Modes stay").into_iter().map(|cited| cited.word).collect();
+        assert_eq!(words, ["Backoff"]);
+    }
 }

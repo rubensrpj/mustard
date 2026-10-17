@@ -48,7 +48,10 @@ try {
   assert.deepEqual(fs.readdirSync(root), []);
   successful('mustard', ['init', '--yes']);
   const sessionMap=fs.readFileSync(path.join(root,'.claude/mustard/session-map.md'),'utf8');
-  assert.ok(sessionMap.includes('{request:{tool,input,intent,purpose,choose?}}'));
+  // O mapa só aponta a busca do Mustard; o formato do pedido chega ao agente
+  // pela recusa que desvia a busca nativa, conferida mais abaixo.
+  assert.ok(sessionMap.includes('mcp__mustard__search'));
+  assert.ok(sessionMap.includes('mustard-rt run search --shell-output'));
   assert.ok(sessionMap.includes('mustard:spec:'));
   assert.ok(sessionMap.includes('Reuse trechos atuais') || sessionMap.includes('Reuse current excerpts'));
   assert.ok(sessionMap.includes('offset') && sessionMap.includes('limit'));
@@ -149,6 +152,7 @@ try {
   const routed = hook('Grep', typed.input);
   assert.equal(routed.permissionDecision, 'deny');
   assert.ok(routed.permissionDecisionReason.includes('mcp__mustard__search'));
+  assert.ok(routed.permissionDecisionReason.includes('{request:{tool,input,intent,purpose,choose?}}'));
   assert.ok(routed.permissionDecisionReason.includes(JSON.stringify(typed.input)));
   const noTools=path.join(temporary,'no-native-search');
   fs.mkdirSync(noTools);

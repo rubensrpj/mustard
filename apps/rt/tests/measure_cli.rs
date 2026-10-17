@@ -106,9 +106,9 @@ const DAYS: [(&str, u64, u64); 10] = [
 /// A resposta traz a tabela do gasto e a frase do veredito, no idioma do
 /// projeto: dois dias de cada lado, como no modelo aprovado, ainda não dão
 /// para dizer; cinco de cada lado dão; a marca de agora, sem dia depois, diz
-/// que a versão ainda não foi usada, com o antes pronto. Sem marca, a medição
-/// começa na próxima sessão; o instante que não se lê é recusado. Nada vai ao
-/// arquivo do gasto nem à spec.
+/// que o dia dela fica fora e que o dia seguinte é o primeiro que pode contar,
+/// com o antes pronto. Sem marca, a medição começa na próxima sessão; o
+/// instante que não se lê é recusado. Nada vai ao arquivo do gasto nem à spec.
 #[test]
 fn the_answer_carries_the_spend_table_and_the_verdict_in_the_project_language() {
     let dir = tempfile::tempdir().unwrap();
@@ -185,6 +185,17 @@ fn the_answer_carries_the_spend_table_and_the_verdict_in_the_project_language() 
     let unused = measure(dir.path(), &config, &root, &[]);
     let said = (unused["mark"]["version"].clone(), unused["verdict"].clone());
     assert_eq!(said, (json!("1.0 (abc)"), json!({"kind": "not-used-yet"})), "{unused}");
+    // O dia da marca de agora no fuso de -03:00 do gasto e o dia seguinte.
+    let at = chrono::DateTime::parse_from_rfc3339(unused["mark"]["at"].as_str().unwrap()).unwrap();
+    let mark_day = at.with_timezone(&chrono::FixedOffset::west_opt(3 * 3600).unwrap()).date_naive();
+    let shown = |day: chrono::NaiveDate| day.format("%d/%m").to_string();
+    let first_day = shown(mark_day.succ_opt().unwrap());
+    let verdict = format!(
+        "Nenhum dia depois da marca foi contado ainda. O dia da marca, {}, fica fora da conta. O primeiro que \
+         pode contar é {first_day}. Um dia entra quando fecha com 100 ações ou mais. A coluna de antes já está \
+         pronta.",
+        shown(mark_day)
+    );
     let not_used_yet = [
         "| | antes (29, 30/09, 01, 02 e 03/10) | depois |",
         "|---|---:|---:|",
@@ -193,7 +204,7 @@ fn the_answer_carries_the_spend_table_and_the_verdict_in_the_project_language() 
         "| tokens | 4.006 milhões | sem uso |",
         "| **tokens por ação** | **126 mil** | sem uso |",
         "",
-        "Esta versão ainda não foi usada neste projeto. A coluna de antes já está pronta.",
+        &verdict,
         "",
         "Nenhuma busca respondida desde a marca. Ainda não dá para dizer: faltam 200 para o mínimo de 200.",
     ];

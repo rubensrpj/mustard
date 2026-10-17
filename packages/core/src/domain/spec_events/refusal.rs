@@ -190,6 +190,12 @@ pub enum Refusal {
     /// Nada é gravado, e a mensagem nomeia cada item não lido e manda lê-lo de
     /// dentro da cópia.
     DeliveryReadMissing { wave: u64, missing: Vec<String> },
+    /// A entrega da onda `wave` com arquivos entregues, `files`, que a cópia
+    /// tem diferentes do que o último passo de término de tarefa guardou: o
+    /// passo marca a prova verde, e o arquivo mudado depois dele iria ao
+    /// commit sem prova que o cubra. Nada é gravado, e a mensagem nomeia cada
+    /// arquivo e manda rodar a prova e gravar o passo de novo.
+    DeliveryProofOlderThanFile { wave: u64, files: Vec<String> },
     /// O veredito da revisão final sem a leitura, registrada, de algum item
     /// que o pedido dela lista: o código do item. Nada é gravado, e a
     /// mensagem nomeia cada item não lido e manda lê-lo de dentro da cópia do
@@ -218,6 +224,16 @@ pub enum Refusal {
     /// sair vazia passa achando o resto. `found` é a prova como veio. Nada é
     /// gravado.
     ProofSearchNotNegated { found: String },
+    /// A prova que roda `cargo test` num pacote, `package`, com um alvo de
+    /// teste, `target`, que o pacote não tem: o cargo recusa o comando antes
+    /// de rodar teste nenhum. `targets` são os alvos de teste que o pacote
+    /// tem, vazio quando ele não tem nenhum. Nada é gravado.
+    ProofTestTargetMissing { package: String, target: String, targets: Vec<String> },
+    /// A prova que cita um caminho relativo, `path`, que não existe no
+    /// projeto e que o trabalho não declara criar: o comando falha quando a
+    /// onda o roda, ou passa sem provar nada, em qualquer ferramenta. Nada é
+    /// gravado.
+    ProofPathMissing { path: String },
     /// Um pedido gravado pelo assistente numa spec que já fechou, com a fase
     /// `phase` (fechada ou com o pull request aberto). Ela recebe o pedido
     /// depois de reaberta, na mesma spec e na mesma branch: a mensagem aponta
@@ -368,12 +384,15 @@ impl Refusal {
             Self::AgreedItemsMissing { .. } => "agreed-items-missing",
             Self::DeliveryAgreedMissing { .. } => "delivery-agreed-missing",
             Self::DeliveryReadMissing { .. } => "delivery-read-missing",
+            Self::DeliveryProofOlderThanFile { .. } => "delivery-proof-older-than-file",
             Self::VerdictReadMissing { .. } => "verdict-read-missing",
             Self::CriterionFormMissing => "criterion-form-missing",
             Self::ProofNotACommand { .. } => "proof-not-a-command",
             Self::ProofProgramUnknown { .. } => "proof-program-unknown",
             Self::ProofChainedBySemicolon { .. } => "proof-chained-by-semicolon",
             Self::ProofSearchNotNegated { .. } => "proof-search-not-negated",
+            Self::ProofTestTargetMissing { .. } => "proof-test-target-missing",
+            Self::ProofPathMissing { .. } => "proof-path-missing",
             Self::RequestOnClosedSpec { .. } => "request-on-closed-spec",
             Self::WorkOnFinishedSpec { .. } => "work-on-finished-spec",
             Self::Io { .. } => "io-failed",
@@ -646,6 +665,10 @@ impl Refusal {
                 "spec_events.delivery_read_missing",
                 &[("{wave}", wave.to_string()), ("{missing}", missing.join(", "))],
             ),
+            Self::DeliveryProofOlderThanFile { wave, files } => fill(
+                "spec_events.delivery_proof_older_than_file",
+                &[("{wave}", wave.to_string()), ("{files}", files.join(", "))],
+            ),
             Self::VerdictReadMissing { missing } => {
                 fill("spec_events.verdict_read_missing", &[("{missing}", missing.join(", "))])
             }
@@ -663,6 +686,15 @@ impl Refusal {
             Self::ProofSearchNotNegated { found } => {
                 fill("spec_events.proof_search_not_negated", &[("{found}", found.clone())])
             }
+            Self::ProofTestTargetMissing { package, target, targets } => {
+                let key = if targets.is_empty() {
+                    "spec_events.proof_test_target_missing_none"
+                } else {
+                    "spec_events.proof_test_target_missing"
+                };
+                fill(key, &[("{package}", package.clone()), ("{target}", target.clone()), ("{targets}", targets.join(", "))])
+            }
+            Self::ProofPathMissing { path } => fill("spec_events.proof_path_missing", &[("{path}", path.clone())]),
             Self::RequestOnClosedSpec { spec, phase } => fill(
                 "spec_events.request_on_closed_spec",
                 &[("{spec}", spec.clone()), ("{phase}", phase.clone())],

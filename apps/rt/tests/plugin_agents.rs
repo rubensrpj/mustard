@@ -374,10 +374,13 @@ fn the_wave_agent_calls_an_agreed_item_met_when_it_still_holds_after_the_change(
 }
 
 /// O molde da onda, nos dois idiomas, diz na orientação sobre ferramentas que
-/// o passo de término de cada tarefa leva o código dela e responde, com a
-/// marca do Mustard, se o agente segue ou entrega, e que a resposta se
-/// obedece; que tarefa começada se conclui antes da entrega; e não manda mais
-/// parar no meio da tarefa, nem conta chamadas de folga.
+/// o passo de término de cada tarefa leva o número da onda e o código dela, e
+/// a linha do passo nomeia cada campo que a gravação do passo exige, para a
+/// primeira gravação não voltar recusada; que o passo responde, com a marca
+/// do Mustard, se o agente segue ou entrega, e que a resposta se obedece; que
+/// o sinal chega após a entrada mais 150 mil de trabalho, com a janela do
+/// modelo só de teto; que tarefa começada se conclui antes da entrega; e
+/// não manda mais parar no meio da tarefa, nem conta chamadas de folga.
 #[test]
 fn the_wave_agent_reads_the_size_at_each_task_end_and_finishes_what_it_started() {
     let said = [
@@ -385,34 +388,56 @@ fn the_wave_agent_reads_the_size_at_each_task_end_and_finishes_what_it_started()
             "pt-BR",
             "## Orientação sobre ferramentas",
             [
-                "ao terminar tarefa, com o código dela no `item`",
+                "ao terminar tarefa, com o número da onda no `wave`, o código dela no `item`",
                 "O resultado traz, com a marca [Mustard], se você segue ou entrega",
-                "entrada inicial + resumos herdados + 150 mil tokens de trabalho",
+                "O sinal chega com entrada inicial + resumos herdados + 150 mil tokens de trabalho;",
+                "a janela do modelo só é teto, aos 75% dela",
                 "termine a tarefa atual, testes mínimos e resumo; não comece outra",
             ],
-            ["Pare:", "8 chamadas", "pare aos 150 mil"],
+            ["Pare:", "8 chamadas", "pare aos 150 mil", "sem janela conhecida"],
         ),
         (
             "en-US",
             "## Tool guidance",
             [
-                "on finishing a task, with its code in `item`",
+                "on finishing a task, with the wave number in `wave`, its code in `item`",
                 "The result says, marked [Mustard], whether you go on or deliver",
-                "initial input + inherited summaries + 150 thousand work tokens",
+                "The signal comes at initial input + inherited summaries + 150 thousand work tokens;",
+                "the model's window is only a cap, at 75% of it",
                 "finish the current task, minimal tests and summary; start no other task",
             ],
-            ["Stop:", "8 calls", "stop at 150 thousand"],
+            ["Stop:", "8 calls", "stop at 150 thousand", "with no known window"],
         ),
     ];
+    let step = mustard_core::domain::spec_events::type_spec("step").unwrap();
+    let required: Vec<&str> = step.fields.iter().filter(|field| field.required).map(|field| field.name).collect();
+    assert!(required.len() >= 3, "the step write requires only {required:?}");
     for (lang, header, phrases, gone) in said {
         let wave = template(lang, "wave");
         let rule = section(&wave, header);
         for phrase in phrases {
             assert!(rule.contains(phrase), "the {lang} task end rule does not say `{phrase}`: {rule}");
         }
+        let line = rule.lines().find(|line| line.contains("`run write step`")).unwrap();
+        for field in &required {
+            assert!(line.contains(&format!("`{field}`")), "the {lang} step line does not name the required `{field}`: {line}");
+        }
         for phrase in gone {
             assert!(!wave.contains(phrase), "the {lang} wave agent still stops mid-task: `{phrase}`");
         }
+    }
+}
+
+/// O molde da onda, nos dois idiomas, manda criar os temporários no
+/// scratchpad da sessão, que a limpeza confere e apaga, e limpá-los ao fim.
+#[test]
+fn the_wave_agent_creates_its_temporary_files_in_the_session_scratchpad() {
+    for (lang, phrase) in [
+        ("pt-BR", "crie temporários no scratchpad da sessão e limpe-os"),
+        ("en-US", "create temporary files in the session scratchpad and remove them"),
+    ] {
+        let wave = template(lang, "wave");
+        assert!(wave.contains(phrase), "the {lang} wave mold does not say `{phrase}`");
     }
 }
 
@@ -686,7 +711,7 @@ fn wave_template_puts_in_the_task_the_file_the_change_requires() {
 /// mesma onda o que a própria mudança deixou sem uso, com o teste que só
 /// existia para ele; num arquivo de outra onda em andamento, o agente não
 /// edita e deixa a sobra em `leftovers`, o campo da entrega que a rodada
-/// grava, só com o título e o detalhe: toda sobra vai ao backlog, e o
+/// grava, com o título, o detalhe e os arquivos a mudar: toda sobra vai ao backlog, e o
 /// molde não pede mais que o agente diga se ela quebra algo ou é cosmética. A
 /// sobra que só de comentário/documentação/ajuda leva a marca
 /// de limpeza, que a rodada segura para o fim da obra.
@@ -721,7 +746,7 @@ fn boundary_says_to_remove_what_the_change_left_unused() {
         let name = "wave";
         let body = template(lang, name);
         let boundary = section(&body, wave_headers(lang).0);
-        let field = "`\"leftovers\":[{\"title\":\"…\",\"detail\":\"…\"}]`";
+        let field = "`\"leftovers\":[{\"title\":\"…\",\"detail\":\"…\",\"files\":[\"…\"]}]`";
         for phrase in said.iter().chain(std::iter::once(&field)) {
             assert!(boundary.contains(phrase), "the {lang} `{name}` boundary does not say `{phrase}`:{boundary}");
         }
@@ -734,7 +759,8 @@ fn boundary_says_to_remove_what_the_change_left_unused() {
 /// Os moldes dizem o limite do que entra. O agente de onda põe só o que tem
 /// uso fora de teste, um teste por comportamento e nenhum código que só serve
 /// a medição, e a tarefa que só tira código, junta testes ou muda
-/// configuração se prova pela suíte, sem teste novo. O revisor tem por Maior
+/// configuração se prova pelos testes que já cobrem o trecho, sem teste novo
+/// nem suíte na onda. O revisor tem por Maior
 /// o teste repetido e o código de laboratório no programa instalado.
 #[test]
 fn templates_state_the_size_limit_and_when_no_new_test_is_needed() {
@@ -746,7 +772,7 @@ fn templates_state_the_size_limit_and_when_no_new_test_is_needed() {
             "## Gravidade",
             [
                 "Critério que muda comportamento ganha um teste",
-                "Tarefa que só tira código, junta testes ou muda configuração prova pela suíte",
+                "Tarefa que só tira código, junta testes ou muda configuração prova pelos testes existentes do trecho",
                 "sem teste novo nem leitor de configuração",
                 "tem uso fora de teste; um teste por comportamento, sem repetir outro",
                 "nada de código só de medição",
@@ -763,7 +789,7 @@ fn templates_state_the_size_limit_and_when_no_new_test_is_needed() {
             "## Severity",
             [
                 "A criterion that changes behavior gets a test",
-                "A task that only removes code, merges tests or changes configuration is proved by the suite",
+                "A task that only removes code, merges tests or changes configuration is proved by the existing tests of that code",
                 "no new test and no configuration reader",
                 "has a use outside tests; one test per behavior, never repeating another",
                 "no measurement-only code",
@@ -947,7 +973,9 @@ fn reviewer_proposes_the_fix_with_a_test_in_place_of_the_lesson() {
 
 /// O molde da onda e o do revisor, nos dois idiomas, mandam procurar código
 /// pela porta, com o padrão original e a intenção em campos distintos.
-/// O scan enriquece a pesquisa executada, sem apagar suas ocorrências.
+/// O scan enriquece a pesquisa executada, sem apagar suas ocorrências. A
+/// busca literal aparece como a finalidade `--purpose locate` da busca, nunca
+/// como um comando `locate`, que o programa não reconhece.
 #[test]
 fn the_wave_and_review_agents_preserve_literal_searches_and_offer_explicit_map_recovery() {
     for (lang, literal, command, uncertain) in [
@@ -968,6 +996,9 @@ fn the_wave_and_review_agents_preserve_literal_searches_and_offer_explicit_map_r
                 assert!(line.contains("run search") || line.contains("run knowledge"),"literal patterns belong to the search gateway; explicit questions may retrieve knowledge: {line}");
             }
             assert!(agent.contains("run search") && agent.contains("--purpose"),"{lang} {name}: task-oriented evidence must be available");
+            // A busca literal é a finalidade `locate` da busca; não existe comando `run locate`.
+            assert!(agent.contains("`--purpose locate`"), "{lang} {name}: literal lookup must name the search purpose");
+            assert!(!agent.contains("`locate`:"), "{lang} {name}: literal lookup must not read as a command");
         }
     }
 }
@@ -977,27 +1008,32 @@ fn the_wave_and_review_agents_preserve_literal_searches_and_offer_explicit_map_r
 /// add`, rodar cada comando de dentro da cópia — moram só no molde do agente,
 /// escritas à mão e fora do catálogo de textos, e o molde da onda e do revisor
 /// levam as mesmas palavras, nos dois idiomas. Nenhum dos dois fala mais de
-/// pasta de compilação: a cópia é a vaga fixa, com a compilação dentro. Rodar
-/// só os testes do que mudou é da onda, que deixa a suíte inteira e o lint
-/// para a rodada e não roda mais a suíte no fim; o revisor roda os testes que
-/// lê e os que seus cortes derrubam, a suíte inteira uma vez no fim pelo
-/// `rtk` e, na revisão final, não repete a suíte que o fechamento rodou do
-/// `testCommand`.
+/// pasta de compilação: a cópia é a vaga fixa, com a compilação dentro. A
+/// onda compila e roda só a prova da própria tarefa e dos critérios dela, sem
+/// suíte, lint nem corte, e não prova mais o vermelho cortando o caminho do
+/// usuário; a suíte inteira, o lint e a prova de ponta a ponta ficam para o
+/// fechamento.
 #[test]
 fn the_wave_and_review_agents_carry_the_project_wide_execution_rules() {
-    for (lang, phrases, gone, wave_phase, final_phase) in [
+    for (lang, phrases, gone, wave_phases, wave_gone) in [
         ("pt-BR", ["Use os comandos do mapa quando a localização ou evidência atual faltar",
           "Leia a faixa pertinente e expanda se faltar contexto", "Releia quando o conteúdo mudou ou a prova exigir",
           "Nunca mande compilação ou teste para segundo plano", "Não comite e não use `git add`: o commit é da rodada",
-          "Rode cada comando de dentro da cópia", "o corte que mexe no mesmo trecho de outro vai sozinho"],
+          "Rode cada comando de dentro da cópia"],
           ["pasta de compilação", "passa de uma cópia para a seguinte"],
-          "A rodada executa o build e as provas pertinentes antes do commit", "A suíte inteira e o lint ficam na validação final da spec"),
+          ["Compile e rode só a prova da tarefa e dos critérios da onda; sem suíte, lint ou corte",
+           "A rodada executa o build e as provas pertinentes antes do commit",
+           "a suíte inteira, o lint e a prova de ponta a ponta ficam no fechamento"],
+          ["vermelho", "Agrupe cortes", "rode só os testes do que mudou"]),
         ("en-US", ["Use map commands when location or current evidence is missing",
           "Read the relevant range and expand when context is missing", "Reread when content changed or a proof requires it",
           "Never send a build or test to the background", "Do not commit and do not use `git add`: the commit belongs to the round",
-          "Run every command from inside the copy", "a cut that touches the same spot as another goes alone"],
+          "Run every command from inside the copy"],
           ["build folder", "passes from one copy to the next"],
-          "The round runs the build and pertinent criterion proofs before the commit", "The full suite and lint run during final spec validation"),
+          ["Build and run only the proof of the task and of the wave's criteria; no suite, lint or cut",
+           "The round runs the build and pertinent criterion proofs before the commit",
+           "the full suite, lint and the end-to-end proof run at the close"],
+          [" red ", "Group independent cuts", "run only the tests of what changed"]),
     ] {
         for name in ["wave", "review"] {
             let agent = template(lang, name);
@@ -1005,11 +1041,114 @@ fn the_wave_and_review_agents_carry_the_project_wide_execution_rules() {
             for phrase in gone { assert!(!agent.contains(phrase), "{lang} {name}: obsolete {phrase}"); }
         }
         let wave = template(lang, "wave");
-        assert!(wave.contains(wave_phase) && wave.contains(final_phase), "{lang}: validation phases");
+        for phrase in wave_phases { assert!(wave.contains(phrase), "{lang} wave: validation phase `{phrase}`"); }
+        for phrase in wave_gone { assert!(!wave.contains(phrase), "{lang} wave: still runs or cuts beyond its proof: `{phrase}`"); }
         let review = template(lang, "review");
-        assert!(review.contains("`testCommand`") && review.contains("lint") && review.contains("`rtk`"));
-        assert!(review.contains(if lang=="pt-BR" { "conteúdo, comando ou execução ficarem incertos" } else { "content, commands or execution become uncertain" }));
         assert!(!review.contains("the close already ran it") && !review.contains("o fechamento já a rodou"));
+    }
+}
+
+/// A revisão de onda lê o diff, o código e os recibos da prova da onda, e não
+/// compila, não roda teste nem binário e não corta. Tudo o que roda — reler os
+/// recibos do fechamento e reexecutar o que ficou incerto, a prova de ponta a
+/// ponta pelo caminho do usuário e o caso da proteção tirada com duas voltas
+/// ao mesmo tempo — mora só no bloco da revisão final da obra,
+/// que continua completa, e nenhuma dessas frases aparece fora dele. O
+/// crítico, o único que reprova, inclui o conserto sem teste. O molde vai a
+/// todo projeto: instalar o Mustard é a prova deste repositório, e mora no
+/// CLAUDE.md da raiz dele. Nos dois idiomas.
+#[test]
+fn only_the_final_review_runs_checks_and_the_wave_review_reads_the_diff_and_receipts() {
+    for (lang, severity, wave_review, final_review, runs, critical) in [
+        (
+            "pt-BR",
+            "## Gravidade",
+            ("- Revisão de onda:", [
+                "leia o diff, o código e os recibos da prova da onda",
+                "`run panel --wave N --observations`",
+                "Não compile, não rode teste nem binário e não corte nada",
+            ]),
+            "- Revisão final da obra, completa:",
+            [
+                "`testCommand`",
+                "`rtk`",
+                "conteúdo, comando ou execução ficarem incertos",
+                "prove de ponta a ponta",
+                "pelo caminho que ele usa (o comando, a tela, a chamada)",
+                "mktemp -d",
+                "duas voltas ao mesmo tempo",
+                "segundo plano",
+            ],
+            "- Crítico: o código faz a coisa errada, tira uma proteção ou conserta sem teste",
+        ),
+        (
+            "en-US",
+            "## Severity",
+            ("- Wave review:", [
+                "read the diff, the code and the wave's proof receipts",
+                "`run panel --wave N --observations`",
+                "Do not build, run tests or binaries, or cut anything",
+            ]),
+            "- The work's final review, in full:",
+            [
+                "`testCommand`",
+                "`rtk`",
+                "content, commands or execution become uncertain",
+                "prove it end to end",
+                "on the path they take (the command, the screen, the call)",
+                "mktemp -d",
+                "two runs at once",
+                "background",
+            ],
+            "- Critical: the code does the wrong thing, removes a protection or fixes without a test",
+        ),
+    ] {
+        let review = template(lang, "review");
+        let (head, said) = wave_review;
+        let line = review.lines().find(|l| l.starts_with(head)).unwrap_or_else(|| panic!("the {lang} reviewer has no `{head}` line:{review}"));
+        for phrase in said {
+            assert!(line.contains(phrase), "the {lang} wave review does not say `{phrase}`: {line}");
+        }
+        let mut after = review.lines().skip_while(|l| !l.starts_with(final_review));
+        assert!(after.next().is_some(), "the {lang} reviewer has no `{final_review}` block:{review}");
+        let block: Vec<&str> = after.take_while(|l| l.starts_with("  - ")).collect();
+        let inside = block.join("\n");
+        let outside = review.lines().filter(|l| !block.contains(l)).collect::<Vec<_>>().join("\n");
+        for phrase in runs {
+            assert!(inside.contains(phrase), "the {lang} final review does not say `{phrase}`:\n{inside}");
+            assert!(!outside.contains(phrase), "the {lang} reviewer says `{phrase}` outside the final review:\n{outside}");
+        }
+        assert!(!review.contains("mustard init"), "the {lang} reviewer carries this repository's own proof");
+        assert!(section(&review, severity).contains(critical), "the {lang} critical finding does not cover a fix without a test");
+    }
+}
+
+/// No critério, o revisor confere se o teste da regra cai sem a mudança lendo
+/// o diff e o recibo vigente, sem cortar o caminho do usuário nem rodar nada
+/// para ver o vermelho. O molde não manda mais cortar em parte alguma, nos
+/// dois idiomas.
+#[test]
+fn the_reviewer_checks_the_rule_test_fails_without_the_change_by_reading_the_diff_and_receipt() {
+    for (lang, criterion, said, banned) in [
+        (
+            "pt-BR",
+            "  - Critério:",
+            ["confira se o teste da regra cai sem a mudança", "lendo o diff e o recibo vigente", "sem cortar nem rodar"],
+            "cortando",
+        ),
+        (
+            "en-US",
+            "  - Criterion:",
+            ["check whether the rule's test fails without the change", "reading the diff and the current receipt", "cut nothing and run nothing"],
+            "cutting",
+        ),
+    ] {
+        let review = template(lang, "review");
+        let line = review.lines().find(|l| l.starts_with(criterion)).unwrap_or_else(|| panic!("the {lang} reviewer has no `{criterion}` line:{review}"));
+        for phrase in said {
+            assert!(line.contains(phrase), "the {lang} reviewer's criterion check does not say `{phrase}`: {line}");
+        }
+        assert!(!review.to_lowercase().contains(banned), "the {lang} reviewer still says `{banned}`:{review}");
     }
 }
 
@@ -1039,19 +1178,6 @@ fn no_agent_text_creates_a_copy_on_its_own_and_the_request_names_the_slot_withou
         for key in ["prompt.execution.copy", "prompt.review.copy"] {
             assert!(translate(key, text).contains(said), "the {lang} `{key}` does not say `{said}`");
         }
-        // O revisor prova de ponta a ponta, pelo caminho que o usuário usa,
-        // além dos testes. O molde vai a todo projeto: instalar o Mustard é a
-        // prova deste repositório, e mora no CLAUDE.md da raiz dele.
-        let (end_to_end, user_path) = if text == Locale::PtBr {
-            ("prove de ponta a ponta", "pelo caminho que ele usa (o comando, a tela, a chamada)")
-        } else {
-            ("prove it end to end", "on the path they take (the command, the screen, the call)")
-        };
-        for line in [end_to_end, user_path, "mktemp -d"] {
-            assert!(template(lang, "review").contains(line), "the {lang} reviewer does not say `{line}`");
-        }
-        assert!(!template(lang, "review").contains("mustard init"), "the {lang} reviewer carries this repository's own proof");
-
         let notice = translate("scratch.residue.notice", text);
         assert!(notice.contains("mustard-rt run clean"), "the {lang} disk notice lost its cleanup command");
     }

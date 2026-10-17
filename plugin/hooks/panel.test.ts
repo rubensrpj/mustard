@@ -4,13 +4,17 @@ import {analysisSpawn,analysisTool,fullAnalysisInput} from './analysis-policy.js
 
 test('analysis stays in an isolated Haiku session and counts cache in its input budget',()=>{
   expect(analysisSpawn({subagentType:'mustard-analysis',fork:true,prompt:'bounded'}).deny).toContain('isolated');
-  expect(analysisSpawn({subagentType:'mustard:mustard-analysis',fork:false,prompt:'bounded',model:'opus'}).model).toBe('haiku');
+  expect(analysisSpawn({subagentType:'mustard:mustard-analysis',fork:false,prompt:'bounded',model:'opus'}).deny).toContain('small model');
+  expect(analysisSpawn({subagentType:'mustard-analysis',fork:false,prompt:'bounded'}).model).toBeUndefined();
+  expect(analysisSpawn({subagentType:'mustard-analysis',fork:false,prompt:'bounded',model:'haiku'}).model).toBe('haiku');
   expect(analysisSpawn({subagentType:'mustard-wave',fork:false,prompt:'task',model:'sonnet'}).model).toBe('sonnet');
   expect(fullAnalysisInput({input_tokens:1000,cache_read_input_tokens:87000,cache_creation_input_tokens:2000})).toBe(90000);
   expect(fullAnalysisInput({input_tokens:1000})).toBeNull();
   expect(analysisTool({tool:'Edit',input:{}},{input:1000}).decision).toBe('deny');
   expect(analysisTool({tool:'Read',input:{}},{input:90000}).decision).toBe('deny');
   expect(analysisTool({tool:'Read',input:{}},{input:1000})).toBeNull();
+  expect(analysisTool({tool:'SubagentHandback',input:{}},{input:1000})).toBeNull();
+  expect(analysisTool({tool:'SubagentHandback',input:{}},{input:95000})).toBeNull();
   expect(analysisTool({tool:'Bash',input:{command:'touch changed'}},null)).toBeNull();
   expect(analysisTool({tool:'mcp__mustard__search',input:{request:{tool:'Bash',input:{command:'touch changed'}}}},{input:1}).decision).toBe('deny');
 });
@@ -64,11 +68,14 @@ test('a lost pane reference does not prevent a fresh Desktop opening',async ($,o
   await pane.press({key:'close'});
 });
 
-test('wave specialization distinguishes delivery from independent reading evidence',()=>{
-  const content=waveText({expertise:{source:'jev-cache',reason:'fit',preferred_agent:'mustard-database',profiles:['database'],pending_review:[],uncovered_files:[]},
-    skills:[{name:'database',path:'.claude/skills/database/SKILL.md',read_confirmed:null}]},'Perfil',false);
-  expect(content).toContain('mustard-database');expect(content).toContain('database');
-  expect(content).toContain('sem confirmação independente');expect(content).toContain('Critério da escolha');
+test('wave agent view shows the fixed agent and skills without an old procedure choice',()=>{
+  const content=waveText({request_recorded:true,executor_requested:'wave',
+    expertise:{source:'jev-cache',preferred_agent:'mustard-database',profiles:['database']},
+    skills:[{name:'contract',path:'.claude/skills/contract/SKILL.md',read_confirmed:null}]},'Perfil',false);
+  expect(content).toContain('wave');expect(content).toContain('contract');
+  expect(content).toContain('sem confirmação independente');
+  expect(content).not.toContain('mustard-database');expect(content).not.toContain('Critério da escolha');
+  expect(waveText({request_recorded:false},'Perfil',true)).toContain('No request has been sent');
 });
 
 test('reopening recreates the host pane and history recovery waits for Usage',async ($,on)=>{
@@ -199,7 +206,7 @@ test('usage shows incomplete wave subtotals and explains disabled Jev without ma
 
 test('usage separates measured RTK output and Jev cost from unproven total savings',async ($,on)=>{
   const {pane,clock,counts,snapshot}=await clarityFixture($,on,'desktop',72,20);
-  snapshot.rtk={status:'measured',configured:true,hook_configured:true,scope:'project-directory',
+  snapshot.rtk={status:'measured',configured:true,own_hook_left:false,scope:'project-directory',
     commands:8635,input_tokens:7456308,output_tokens:4576286,saved_tokens:2880729,percent:38.6,
     measured_at:'2026-10-11T00:01:06Z'};
   snapshot.jev={physical_requests:1,cost_micro_usd:1044,
@@ -214,7 +221,7 @@ test('usage separates measured RTK output and Jev cost from unproven total savin
   expect(await pane.find({type:'Text',text:'Histórico observado'})).toBeUndefined();
   await pane.select({key:'usage-section',value:'RTK'});
   expect(await pane.find({type:'Text',text:'Comandos registrados: 8.635'})).toBeDefined();
-  expect(await pane.find({type:'Text',text:'Hook configurado para comandos compatíveis.'})).toBeDefined();
+  expect(await pane.find({type:'Text',text:'O gancho do Mustard faz a troca do RTK nos comandos compatíveis.'})).toBeDefined();
   expect(await pane.find({type:'Text',text:/não é redução da fatura/})).toBeDefined();
   await pane.select({key:'usage-section',value:'Jev'});
   expect(await pane.find({type:'Text',text:/Última chamada: search · sucesso/})).toBeDefined();
@@ -394,7 +401,7 @@ test('panel updates locally, preserves unknown usage, and stops on close', async
     specs:[{name:'demo',phase:'running',goal:'Demo',waves:[],stages:[],
       final_validation_valid:false,review_approved:false,undeclared_commands:[],
       scheduling:{backlog:2,ready:1,capacity:4,occupied_wave_slots:1,free_wave_slots:3,omitted_tasks:0,
-        tasks:[{task:"T-2",title:"Consumer",reason:"file-reservation",dependencies:[],holding_waves:[1]},{task:"T-3",title:"Docs",reason:"ready",dependencies:[],holding_waves:[]}]},
+        tasks:[{task:"T-2",title:"Consumer",reason:"capacity",dependencies:[]},{task:"T-3",title:"Docs",reason:"ready",dependencies:[]}]},
       usage:{wave_tokens:null,conductor_tokens:null}}],
     jev:{physical_requests:0,known_input_tokens:0,requests_with_unknown_usage:0,cost_micro_usd:null},
   };
@@ -419,7 +426,7 @@ test('panel updates locally, preserves unknown usage, and stops on close', async
   await pane.press({key:'tab-Execução'});
   expect(await pane.find({type:'Text',text:'2 tarefas no backlog · 1 prontas'})).toBeDefined();
   expect(await pane.find({type:'Text',text:'T-2 · Consumer'})).toBeDefined();
-  expect(await pane.find({type:'Text',text:'Arquivo reservado: 1'})).toBeDefined();
+  expect(await pane.find({type:'Text',text:'Aguarda vaga'})).toBeDefined();
   await pane.press({key:'tab-Consumo'});
   await pane.select({key:'usage-section',value:'Ondas'});
   expect(await pane.find({type:'Text',text:'Consumo das ondas ainda não medido.'})).toBeDefined();
@@ -656,4 +663,39 @@ test('installation details do not present an old receipt as verification of this
   expect(await pane.find({type:'Text',text:'Instalação conferida para esta versão.'})).toBeDefined();
   expect(counts.turns).toBe(0);expect(counts.publications).toBe(0);
   await pane.press({key:'close'});
+});
+
+test('panel and usage failures reach the diagnostics with their cause, once', async ($, on) => {
+  const clock = mock.clock(on);
+  on('tool.register',()=>({value:{tool:'mcp__mustard__search'}}));
+  mock.env(on, {});
+  let reads = 0;
+  const diagnostics:any[] = [];
+  const replies = [
+    {ok:false,reason:'usage-cost-unknown',live:{ok:false,reason:'live-usage-unreadable',detail:'EOF while parsing a string',diagnosed:true}},
+    {ok:false,reason:'io error: No space left on device (os error 28)'},
+  ];
+  const snapshot = {ok:true,schema_version:1,at:'2026-10-08T12:00:00Z',project:{name:'fixture'},specs:[],jev:{}};
+  on('session.start', ($, e) => ({cwd:e.cwd}));on('session.measure',($,e)=>({changed:e.changed}));
+  on('command.register', () => ({value:null}));
+  on('session.cwd', () => ({value:'/fixture'}));on('session.id',()=>({value:'actual-session'}));on('session.model',()=>({value:'test-model'}));
+  on('session.usage', () => ({value:{rateLimits:[]}}));
+  on('ui.open', () => ({value:null}));
+  on('ui.close', () => ({value:null}));
+  on('process.run', ($, e) => {
+    if(e.argv[2]==='panel-diagnostics') {diagnostics.push(JSON.parse(e.init.stdin));return {value:{exitCode:0,stdout:'{"ok":true}',stderr:''}};}
+    if(e.argv[2]==='usage-record')return {value:{exitCode:0,stdout:JSON.stringify(replies.shift()),stderr:''}};
+    reads++;
+    return {value:reads===1 ? {exitCode:0,stdout:JSON.stringify(snapshot),stderr:''} : {exitCode:1,stdout:'',stderr:'database is locked\n'}};
+  });
+  await $.session.start({cwd:'/fixture',surface:'terminal',isInteractive:true});
+  for(const _ of [0,1])await $.session.measure({context:{percent:1,tokens:10,window:200000},cost:{usd:0.1},rateLimits:[],changed:['cost']});
+  await $.command.run({command:'mustard-panel',args:''});
+  await $.ui.mount({plugin:'mustard',surface:'terminal',component:'Pane',props:{id:'mustard-panel',title:'Mustard'},requestId:'mustard-panel'});
+  await clock.advance(10000);
+  await clock.advance(10);
+  expect(diagnostics).toEqual([
+    {component:'usage',operation:'record',reason:'usage-record-failed',detail:'io error: No space left on device (os error 28)',session:'actual-session'},
+    {component:'panel',operation:'refresh',reason:'panel-query-failed',detail:'exit 1: database is locked',session:'actual-session'},
+  ]);
 });

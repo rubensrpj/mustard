@@ -596,6 +596,32 @@ mod tests {
         assert!(merged.starts_with("# mine\nmy-notes/\nworktrees/\n"), "merge-only: {merged}");
     }
 
+    /// O arquivo ao lado que uma troca morta no meio larga fica fora do git em
+    /// qualquer pasta de `.claude/`, inclusive na da spec, que é versionada:
+    /// no ignore novo e no que a junção completa num ignore antigo, sem a linha.
+    /// A pergunta vai ao git de verdade, com o nome que a troca dá.
+    #[test]
+    fn the_seeded_ignore_hides_the_file_a_cut_swap_leaves() {
+        for existing in [None, Some("# mine\nmy-notes/\n")] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            assert!(git::run(root, &["init", "-q"]).ok, "the test measures git's decision, so it needs a real repository");
+            let claude = root.join(".claude");
+            std_fs::create_dir_all(&claude).unwrap();
+            if let Some(existing) = existing {
+                std_fs::write(claude.join(".gitignore"), existing).unwrap();
+            }
+            seed_gitignore(&claude, false).unwrap();
+            let ignored = |rel: &str| git::run(root, &["check-ignore", "-q", rel]).ok;
+            for target in [".claude/spec/a-unit/spec.ndjson", ".claude/mustard/panel/diagnostics.json"] {
+                let side = crate::io::fs::lock::swap_path_for(&root.join(target));
+                let rel = side.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/");
+                assert!(ignored(&rel), "the swap leftover must stay out of git ({existing:?}): {rel}");
+            }
+            assert!(!ignored(".claude/spec/a-unit/spec.ndjson"), "the spec's own log stays versioned ({existing:?})");
+        }
+    }
+
     /// The two GATE MARKERS are held back, and the unit's own RECORD is not.
     ///
     /// Both halves are asserted, and the second is the one that makes the test

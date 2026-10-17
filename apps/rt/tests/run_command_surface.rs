@@ -690,6 +690,80 @@ fn knowledge_session_protocol_supports_both_hosts_and_checks_current_sources() {
     }
 }
 
+/// A resposta de uma consulta vai para a conversa dentro do teto de 25.000
+/// bytes, porque o terminal do host guarda fora da conversa a saída maior. A
+/// consulta que acha dez funções compridas passaria de 25.000 bytes; ela sai
+/// encolhida, com os mesmos cartões na mesma ordem, o primeiro ainda com o
+/// trecho do código, e diz como pedir a resposta inteira, que `--out` grava
+/// no arquivo sem cortar nada. A resposta que já cabe sai como era.
+#[test]
+fn a_knowledge_answer_fits_the_conversation_cap() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::create_dir_all(root.join("src")).unwrap();
+    let digest = |text: &str| {
+        let mut digest = mustard_core::io::sha256::Sha256::new();
+        digest.update(text.as_bytes());
+        digest.hex_digest()
+    };
+    let mut modules = Vec::new();
+    for n in 0..10 {
+        let line = format!("let ledger_restore = \"{}\";", "restore the ledger ".repeat(3));
+        let body = format!("    {line}\n").repeat(70);
+        let source = format!("pub fn restore_ledger_{n}() {{\n{body}}}\npub fn check_ledger_{n}() {{\n    let ledger = \"restore\";\n}}\n");
+        let path = format!("src/part_{n}.rs");
+        fs::write(root.join(&path), &source).unwrap();
+        modules.push(serde_json::json!({"path": path, "language": "rust",
+            "analysis": {"content_sha256": digest(&source), "parse_complete": true},
+            "declarations": [
+                {"name": format!("restore_ledger_{n}"), "kind": "function", "line": 1, "end_line": 72, "signature": format!("pub fn restore_ledger_{n}()")},
+                {"name": format!("check_ledger_{n}"), "kind": "function", "line": 73, "end_line": 75, "signature": format!("pub fn check_ledger_{n}()")}]}));
+    }
+    let tiny = "pub fn quartz_marker() {}\n";
+    fs::write(root.join("src/quartz.rs"), tiny).unwrap();
+    modules.push(serde_json::json!({"path": "src/quartz.rs", "language": "rust",
+        "analysis": {"content_sha256": digest(tiny), "parse_complete": true},
+        "declarations": [{"name": "quartz_marker", "kind": "function", "line": 1, "end_line": 1, "signature": "pub fn quartz_marker()"}]}));
+    let mut map = serde_json::json!({ "modules": modules });
+    mustard_core::domain::knowledge::enrich(&mut map);
+    mustard_core::io::project_map::write_text(root, &map.to_string()).unwrap();
+    let ask = |args: &[&str]| {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+            .args(["run", "knowledge", "--root"])
+            .arg(root)
+            .args(args)
+            .current_dir(root)
+            .env_remove("CLAUDE_PROJECT_DIR")
+            .env_remove("MUSTARD_WORKSPACE_ROOT")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8(out.stdout).unwrap();
+        assert!(out.status.success(), "{args:?}: {stdout}");
+        stdout.trim_end().to_string()
+    };
+    let query = ["--query", "restore ledger", "--purpose", "implement"];
+
+    let printed = ask(&query);
+    let file = root.join("whole.json");
+    ask(&[&query[..], &["--out", file.to_str().unwrap()]].concat());
+    let whole = fs::read_to_string(&file).unwrap();
+    assert!(whole.len() > 25_000, "the whole answer passes the cap: {} bytes", whole.len());
+    assert!(printed.len() <= 25_000, "the printed answer fits the cap: {} bytes", printed.len());
+
+    let printed: serde_json::Value = serde_json::from_str(&printed).unwrap();
+    let whole: serde_json::Value = serde_json::from_str(&whole).unwrap();
+    let ids = |report: &serde_json::Value| report["cards"].as_array().unwrap().iter().map(|card| card["id"].clone()).collect::<Vec<_>>();
+    assert!(ids(&whole).len() > 1, "{whole}");
+    assert_eq!(ids(&printed), ids(&whole), "every card stays, in the same order");
+    assert!(printed["cards"][0]["source_excerpt"]["text"].as_str().is_some_and(|text| text.contains("restore the ledger")), "{printed}");
+    assert!(printed["conversation_cap"]["original_bytes"].as_u64().is_some_and(|bytes| bytes > 25_000), "{printed}");
+    assert!(printed["gaps"].as_array().unwrap().iter().any(|gap| gap.as_str().is_some_and(|gap| gap.contains("--out"))), "{printed}");
+
+    let small: serde_json::Value = serde_json::from_str(&ask(&["--query", "quartz_marker"])).unwrap();
+    assert_eq!(small["cards"][0]["name"], "quartz_marker", "{small}");
+    assert!(small.get("conversation_cap").is_none(), "an answer within the cap is not compacted: {small}");
+}
+
 /// Exercise the actual binary's native-session handoff, source-bound draft,
 /// separate review, host export and reuse. The reply here is a fixture, not
 /// evidence that an authenticated host ran Haiku or Luna.
@@ -723,20 +797,16 @@ fn expertise_session_review_export_and_reuse_work_through_the_cli_for_both_hosts
         assert_eq!(drafted["draft_result"]["active"],false);
         let name=drafted["draft_result"]["name"].as_str().unwrap();
         assert!(name.starts_with("restore-backup-"));
-        let before=run(&["--prepare","--host",host,"--file","backup.rs"]);
-        assert!(before["selection"]["preferred_agent"].is_null(),"unreviewed prose cannot become an executor");
+        let agent=format!("mustard-{name}");
+        assert!(!mustard_core::io::expertise::is_agent(root,&agent,host),"unreviewed prose cannot become an executor");
         let review=format!("{name}:{}",drafted["draft_result"]["fingerprint"].as_str().unwrap());
         run(&["--review",&review]);
-        let active=run(&["--prepare","--host",host,"--query","restore backup","--file","backup.rs"]);
-        let agent=format!("mustard-{name}");
-        assert_eq!(active["selection"]["preferred_agent"],agent);
+        run(&["--export",name,"--host",host]);
         assert!(mustard_core::io::expertise::is_agent(root,&agent,host));
         let reused=run(&args);assert_eq!(reused["cached"],true);assert_eq!(reused["session_model_calls"],0);
-        let exported=run(&["--prepare","--host",host,"--file","backup.rs"]);
-        assert_eq!(exported["exports"][0]["changed"],0);
+        assert_eq!(run(&["--export",name,"--host",host])["changed"],0);
         fs::write(root.join("AGENTS.md"),"Use the current schema contract.\n").unwrap();
         assert!(!mustard_core::io::expertise::is_agent(root,&agent,host),"changed rules withdraw the previously reviewed executor");
-        assert!(run(&["--prepare","--host",host,"--file","backup.rs"])["selection"]["preferred_agent"].is_null());
     }
 }
 

@@ -356,6 +356,10 @@ const TITLE: Field = opt("title", Kind::Text);
 /// markdown curto. O `text` fica com o porquê, para o usuário. Opcional no
 /// tipo pelo mesmo motivo do título.
 const AGENT: Field = opt("agent", Kind::Text);
+/// Por que a tarefa ou o pedido novo é outro trabalho, embora o classificador
+/// das atividades o dê como o mesmo de uma tarefa aberta: com o motivo, a
+/// gravação passa e o guarda no evento.
+const DISTINCT: Field = opt("distinct", Kind::Text);
 const APPLIES_TO: Field = opt("applies_to", Kind::TextOrObject);
 /// As ondas donas de um item combinado, além das ondas das tarefas que o
 /// cobrem. O item do projeto diz, em vez disso, que vale no projeto todo
@@ -399,6 +403,9 @@ const CRITERION_FORMS: &[&str] =
 const SKILL_ACTIONS: &[&str] = &["create", "change", "drop"];
 const ROLES: &[&str] = &["wave", "review"];
 const VERDICTS: &[&str] = &["approved", "rejected"];
+/// O resultado de uma marca da máquina numa onda: a reprovação, que põe a
+/// onda em conserto, ou a soltura, que tira a reprovação que não tinha prova.
+const FAILURE_RESULTS: &[&str] = &["rejected", "released"];
 const EFFECTS: &[&str] = &["new_waves", "adjust_waves"];
 const PURGE_REASONS: &[&str] = &["secret", "client_data"];
 
@@ -670,7 +677,7 @@ pub const TYPES: &[TypeSpec] = &[
         false,
         &[
             req("wave", Kind::Int),
-            req("result", Kind::OneOf(VERDICTS)),
+            req("result", Kind::OneOf(FAILURE_RESULTS)),
             TEXT,
             req("final", Kind::Bool),
             req("fingerprint", Kind::Text),
@@ -741,6 +748,17 @@ pub const TYPES: &[TypeSpec] = &[
             // gravação recusa, como todo texto opcional vazio
             // (`check::check_field`). Ausente é tarefa comum.
             opt("priority", Kind::Text),
+            // O grupo de assunto da tarefa: `name`, o nome do grupo, e
+            // `position`, a ordem dela no grupo. O classificador das
+            // atividades o grava na tarefa nova que fica no assunto de uma
+            // tarefa aberta, e a onda de um resumo leva de carona as tarefas
+            // prontas do grupo dele. Ausente é tarefa sem grupo.
+            opt("group", Kind::Object),
+            // O motivo de quem grava uma tarefa nova que o classificador das
+            // atividades daria como o mesmo trabalho de uma aberta: com ele,
+            // a gravação passa sem perguntar e o motivo fica no evento.
+            // Ausente, a tarefa nova passa pelo classificador.
+            DISTINCT,
             // O par de papéis cuja direção de importação esta tarefa muda,
             // por pedido formal do usuário: a conferência depois da onda
             // libera a importação entre os dois só nos arquivos desta
@@ -799,6 +817,8 @@ pub const TYPES: &[TypeSpec] = &[
             req("mustard", Kind::Text),
             opt("lessons", Kind::Ints),
             opt("skills", Kind::Objects),
+            // A escolha do procedimento por área: só o envio antigo a traz, e
+            // nada mais a lê nem a grava.
             opt("expertise", Kind::Object),
             opt("host", Kind::Text),
             // O modelo e o esforço pedidos para o agente, no envio; o que ele
@@ -837,13 +857,29 @@ pub const TYPES: &[TypeSpec] = &[
             // entrega de uma onda que parou. Enquanto a onda deste envio não
             // entrega, o resumo está em uso; entregue a onda, está usado.
             opt("summary", Kind::Int),
-            // O processo do Claude Code que mandou este envio — o número e a
-            // hora de início que `/proc` contava então, para um número
-            // reaproveitado não enganar. Sem o par, num envio de versão
-            // antiga ou fora do Linux, a rodada não sabe dizer se ele segue
-            // aberto.
+            // O processo do hospedeiro — o Claude Code ou o Codex — que mandou
+            // este envio: o número e a hora de início que `/proc` contava
+            // então, para um número reaproveitado não enganar. Sem o par, a
+            // rodada não sabe dizer se ele segue aberto, e não dá a onda como
+            // órfã; só o envio de versão antiga do Claude Code sem o par segue
+            // a regra de antes.
             opt("claude_pid", Kind::Int),
             opt("claude_started", Kind::Int),
+            // A marca do envio que saiu sem hospedeiro reconhecido por trás
+            // da rodada — um script, um teste, a linha de comando ou um
+            // hospedeiro fora da lista —, e por isso sem o par: é o que o
+            // separa do envio de versão antiga, também sem o par.
+            opt("no_host_process", Kind::Bool),
+            // A marca do par que é do hospedeiro reconhecido: o envio de
+            // versão antiga feito no Codex traz o par sem ela, porque gravava
+            // o processo da própria rodada, e esse par não diz se o
+            // hospedeiro segue aberto.
+            opt("host_pair", Kind::Bool),
+            // A marca da versão que o gancho do despacho grava quando lança o
+            // agente da onda: só a onda lançada, com sinal de vida recente,
+            // conta como onda com agente trabalhando. O envio novo da rodada
+            // sai sem ela.
+            opt("agent_launched", Kind::Bool),
             // A reprovação de quem conduz a obra: a volta da onda que ele
             // reprovou, pelo número (`delivered`), e o motivo dele (`reason`).
             // Enquanto essa volta for a última da onda, ela fica fora do
@@ -871,6 +907,11 @@ pub const TYPES: &[TypeSpec] = &[
             // troca. Toda mudança de plano espera aceite; omitir este campo
             // apenas informa que nenhuma decisão específica foi substituída.
             opt("changes_decision", Kind::Text),
+            // A recusa da mudança de plano, que só a rodada grava na entrega
+            // oficial: o motivo, com a mensagem do usuário que a sustenta em
+            // `origin` — o clique em "Recusar" ou, na recusa de quem conduz, a
+            // última mensagem dele. A onda entra no commit sem a mudança.
+            opt("replan_refused", Kind::Text),
             // O código de cada tarefa da onda que o agente não fez. Com a
             // mudança de plano, é obrigatório, vazio quando fez todas; sem
             // ela, ausente quer dizer que fez todas. Cada tarefa citada volta
@@ -964,7 +1005,7 @@ pub const TYPES: &[TypeSpec] = &[
     // Anotações.
     ty(
         "request", "REQ", Block::Notes, true,
-        &[TEXT, KEYS, req("effect", Kind::OneOf(EFFECTS)), TITLE, AGENT],
+        &[TEXT, KEYS, req("effect", Kind::OneOf(EFFECTS)), TITLE, AGENT, DISTINCT],
     ),
     ty("deferred", "DEFER", Block::Notes, true, &[TEXT, KEYS, req("pending", Kind::Int)]),
     ty(

@@ -155,3 +155,37 @@
 ; A string escrita sozinha no começo do módulo é a documentação dele, e não
 ; texto fixo.
 (module . (expression_statement (string (string_content) @doc)))
+
+; A declaração que o Python deixa ver fora do módulo: a de nome sem
+; sublinhado na frente, e o nome especial entre sublinhados duplos
+; (`__init__`, `__all__`), que a própria língua chama. Quem está fora do
+; projeto pode usá-la, e a falta de uso dentro dele não diz que ela sobra. A
+; classe, a função e a constante valem no topo do módulo, porque as escritas
+; dentro de uma função são locais dela; o membro vale no corpo de uma classe.
+((module [
+    (class_definition name: (identifier) @_name) @visible
+    (function_definition name: (identifier) @_name) @visible
+    (decorated_definition definition: [
+      (class_definition name: (identifier) @_name)
+      (function_definition name: (identifier) @_name)] @visible)
+    (expression_statement (assignment left: (identifier) @_name) @visible)])
+  (#match? @_name "^(?:[^_]|__.+__$)"))
+((class_definition body: (block [
+    (class_definition name: (identifier) @_name) @visible
+    (function_definition name: (identifier) @_name) @visible
+    (decorated_definition definition: [
+      (class_definition name: (identifier) @_name)
+      (function_definition name: (identifier) @_name)] @visible)
+    (expression_statement (assignment left: (identifier) @_name) @visible)]))
+  (#match? @_name "^(?:[^_]|__.+__$)"))
+
+; O nome que o módulo deixa ver fora pela lista `__all__` escrita no topo dele
+; (`__all__ = ['_ler']`, `__all__ += ('_gravar',)`, em lista ou em tupla): a
+; declaração do topo do módulo com esse nome é de fora, ainda que comece por
+; sublinhado.
+((module (expression_statement [
+    (assignment left: (identifier) @_all
+      right: [(list (string (string_content) @visible.name)) (tuple (string (string_content) @visible.name))])
+    (augmented_assignment left: (identifier) @_all
+      right: [(list (string (string_content) @visible.name)) (tuple (string (string_content) @visible.name))])]))
+  (#eq? @_all "__all__"))

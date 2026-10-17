@@ -171,7 +171,7 @@ fn a_test_survey_goes_through_every_point_and_the_plan_is_refused_while_one_is_o
     // Duas falas que chegam sem ponto aberto e sem registro que as aponte.
     let loose = [user_says(root, "E o painel?"), user_says(root, "E o aviso por e-mail?")];
 
-    let grilled = rt(root, &["grill", "--kinds", "feature", "--spec", SPEC]);
+    let grilled = rt(root, &["grill", "--kinds", "feature", "--spec", SPEC, "--full"]);
     assert_eq!(grilled.status.code(), Some(0), "{}", String::from_utf8_lossy(&grilled.stdout));
     let items = report(&grilled)["points"].as_array().cloned().expect("the point list");
     assert_eq!(items.len(), 9, "{items:?}");
@@ -260,7 +260,7 @@ fn a_survey_is_answered_with_one_answer_call_per_point() {
     assert_eq!(opened.status.code(), Some(0), "{}", String::from_utf8_lossy(&opened.stdout));
     let said = user_says(root, GOAL);
     write(root, "context", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": GOAL, "origin": said}));
-    let items = report(&rt(root, &["grill", "--kinds", "feature", "--spec", SPEC]))["points"]
+    let items = report(&rt(root, &["grill", "--kinds", "feature", "--spec", SPEC, "--full"]))["points"]
         .as_array()
         .cloned()
         .expect("the point list");
@@ -410,7 +410,7 @@ fn a_question_said_during_an_open_point_is_not_left_loose_at_the_end() {
     write(root, "context", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": GOAL, "origin": said}));
     let before_points = hook_says(root, home.path(), "E o painel?");
 
-    let items = report(&rt(root, &["grill", "--kinds", "feature", "--spec", SPEC]))["points"]
+    let items = report(&rt(root, &["grill", "--kinds", "feature", "--spec", SPEC, "--full"]))["points"]
         .as_array()
         .cloned()
         .expect("the point list");

@@ -189,6 +189,16 @@ test('native model request observers preserve the stream and record only usage m
   expect(f.receipts[0].effort).toBe('medium');expect(f.receipts[0].usage.input_tokens).toBe(10);
   expect(JSON.stringify(f.receipts)).not.toContain('unchanged answer');expect(f.turns).toBe(0);await f.pane.press({key:'close'});
 });
+test('the analysis step pins the effort and leaves the model the agent definition resolved',async ($,on)=>{
+  const seen:any[]=[];
+  on('agent.spawn',()=>({agentId:'agent-analysis',model:'claude-haiku-5-5'}));
+  on('turn.step',async function* ($,e){seen.push(e);return {turnId:e.turnId,index:e.index,answer:'ok',toolUses:[],stopReason:'end_turn',usage:null};});
+  const f=await fixture($,on);
+  await $.agent.spawn({subagentType:'mustard-analysis',fork:false,prompt:'bounded'});
+  await $.turn.step({turnId:'turn-analysis',index:0,model:'claude-haiku-5-5',effort:'high',messageCount:1,agentId:'agent-analysis'}).next();
+  expect(seen.length).toBe(1);expect(seen[0].effort).toBe('medium');expect(seen[0].model).toBe('claude-haiku-5-5');
+  await f.pane.press({key:'close'});
+});
 test('impact observation preserves a denied Bash call and never reruns or approves it',async ($,on)=>{
   let executions=0;
   on('tool.call',{tool:'Bash'},()=>{executions++;return {deny:'Existing native protection'};});

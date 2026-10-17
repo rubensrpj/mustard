@@ -104,3 +104,56 @@ fn the_doctor_follows_the_moved_config_folder_to_the_newest_install() {
         "a instalação conferida é a mais nova do registro: {details}"
     );
 }
+
+/// O diagnóstico diz o commit do programa em uso, do `mustard-rt` do plugin e
+/// do primeiro `mustard-rt` do `PATH`, e avisa quando eles divergem. Com os
+/// três no mesmo carimbo, não há aviso; com o do plugin num commit diferente,
+/// há, e o aviso cita os dois carimbos.
+#[cfg(unix)]
+#[test]
+fn the_doctor_warns_when_the_plugin_binary_and_the_running_one_carry_different_commits() {
+    use std::os::unix::fs::PermissionsExt;
+    let base = tempfile::tempdir().unwrap();
+    let (home, config, project) = (base.path().join("pessoal"), base.path().join("config"), base.path().join("projeto"));
+    let (install, system) = (base.path().join("instalacoes").join("0.2.21"), base.path().join("sistema"));
+    for dir in [&home, &config, &project, &system] {
+        fs::create_dir_all(dir).unwrap();
+    }
+    seed_install(&install, false);
+    seed_registry(&config, &[(&install, "0.2.21")]);
+    let answering = |path: &Path, line: &str| {
+        fs::write(path, format!("#!/bin/sh\necho '{line}'\n")).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    };
+    let running = Command::new(env!("CARGO_BIN_EXE_mustard-rt")).arg("--version").env("MUSTARD_RT_DELEGATED", "1").output().unwrap();
+    let running = String::from_utf8_lossy(&running.stdout).trim().to_string();
+    let running_stamp = running.split_once(", ").map(|(_, rest)| rest.trim_end_matches(')').to_string()).unwrap_or_default();
+    assert!(running_stamp.starts_with('g'), "o programa do teste não diz o commit, e nada se compara: {running}");
+    answering(&system.join("mustard-rt"), &running);
+    let path = std::env::join_paths(std::iter::once(system.clone()).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()))).unwrap();
+    let doctor = || {
+        let out = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+            .args(["run", "doctor", "--check", "binaries", "--json"])
+            .current_dir(&project)
+            .env("MUSTARD_RT_DELEGATED", "1")
+            .env("HOME", &home)
+            .env("CLAUDE_CONFIG_DIR", &config)
+            .env("CLAUDE_PROJECT_DIR", &project)
+            .env("PATH", &path)
+            .output()
+            .unwrap();
+        let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        report["checks"][0].clone()
+    };
+
+    answering(&install.join("bin").join("mustard-rt"), &running);
+    let same = doctor();
+    assert_eq!(same["status"], "ok", "os três no mesmo commit não divergem: {same}");
+    assert!(same["details"][0].as_str().unwrap().contains(&format!("plugin {running_stamp} · system {running_stamp}")), "{same}");
+
+    answering(&install.join("bin").join("mustard-rt"), "mustard-rt 0.2.21 (build 7, g0123456789ab 2026-01-02)");
+    let diverged = doctor();
+    let details = diverged["details"].to_string();
+    assert_eq!(diverged["status"], "warn", "o plugin noutro commit diverge: {diverged}");
+    assert!(details.contains("g0123456789ab 2026-01-02") && details.contains(&running_stamp), "o aviso cita os dois carimbos: {details}");
+}

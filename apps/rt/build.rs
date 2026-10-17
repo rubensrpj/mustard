@@ -9,6 +9,10 @@ use std::process::Command;
 mod sha256;
 #[path = "../../packages/core/src/io/tree_state.rs"]
 mod tree_state;
+// O resumo dos ganchos que esta compilação entrega, pela mesma conta com que a
+// conferência da instalação mede a cópia que o anfitrião carrega.
+#[path = "../../packages/core/src/io/hooks_digest.rs"]
+mod hooks_digest;
 
 fn main() {
     // Windows defaults the main-thread stack to 1 MiB, which is too small for
@@ -21,6 +25,25 @@ fn main() {
 
     emit_version_full();
     embed_shipped_hooks_manifest();
+    emit_shipped_hooks_digest();
+}
+
+/// A raiz do plugin que esta compilação entrega, relativa a este crate.
+const SHIPPED_PLUGIN: &str = "../../plugin";
+
+/// Emite `MUSTARD_PLUGIN_HOOKS_DIGEST`, o resumo dos ganchos desta compilação.
+/// A conferência da instalação compara com ele a cópia que o anfitrião
+/// carrega: o mesmo número de versão com outro conteúdo não passa por
+/// instalado. Sem as pastas, o resumo fica vazio, e nenhuma cópia confere.
+fn emit_shipped_hooks_digest() {
+    let Some(crate_root) = std::env::var_os("CARGO_MANIFEST_DIR") else {
+        return;
+    };
+    let digest = hooks_digest::hooks_digest(&Path::new(&crate_root).join(SHIPPED_PLUGIN)).unwrap_or_default();
+    println!("cargo:rustc-env=MUSTARD_PLUGIN_HOOKS_DIGEST={digest}");
+    for folder in hooks_digest::HOOK_FOLDERS {
+        println!("cargo:rerun-if-changed={SHIPPED_PLUGIN}/{folder}");
+    }
 }
 
 /// The hook manifest the plugin ships, relative to this crate: `plugin/`

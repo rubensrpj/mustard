@@ -27,6 +27,7 @@ pub(super) const PREFIXES: &[&str] = &[
     "stuck",
     "conversation_size",
     "wave_prompt",
+    "triage",
 ];
 
 /// Os comandos do mapa que os textos do catálogo citam para achar e ler o
@@ -160,16 +161,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("resume.next.survey", Locale::PtBr) => "A spec está no levantamento: rode o levantamento e grave a resposta de cada ponto.",
         ("resume.next.survey", Locale::EnUs) => "The spec is in the survey: run the survey and record the answer to each point.",
         ("resume.next.plan", Locale::PtBr) => {
-            "O plano está gravado: confira o plano e publique a página da spec. Depois, faça a \
-             pergunta de aprovação na ordem de explicar do estilo de resposta, com o texto exato \
-             \"{question}\". As opções são \"{option}\" e \"Ajustar\", e com outro texto a aprovação \
-             não vale."
+            "O plano está gravado: confira o plano. Depois, faça a pergunta de aprovação na ordem \
+             de explicar do estilo de resposta, com o texto exato \"{question}\". As opções são \
+             \"{option}\" e \"Ajustar\", e com outro texto a aprovação não vale."
         }
         ("resume.next.plan", Locale::EnUs) => {
-            "The plan is recorded: check the plan and publish the spec page. Then ask the approval \
-             question in the order of explaining from the response style, with the exact text \
-             \"{question}\". The options are \"{option}\" and \"Adjust\", and with another text the \
-             approval does not count."
+            "The plan is recorded: check the plan. Then ask the approval question in the order of \
+             explaining from the response style, with the exact text \"{question}\". The options \
+             are \"{option}\" and \"Adjust\", and with another text the approval does not count."
         }
         ("resume.next.running", Locale::PtBr) => "A spec está aprovada: rode a próxima rodada de ondas.",
         ("resume.next.running", Locale::EnUs) => "The spec is approved: run the next round of waves.",
@@ -190,10 +189,49 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Code or configuration changed during final validation. Inspect the change and close again against the current version."
         }
         ("close.repair_next", Locale::PtBr) => {
-            "Conserto final registrado. Rode `mustard-rt run round` para obter o envio autorizado de conserto; depois integre e repita o fechamento. A atribuição é pelos critérios quando disponível; sem ela, conferir a integração inteira."
+            "Conserto final registrado. Rode `mustard-rt run round` para obter o envio autorizado de conserto; depois integre e repita o fechamento. A onda volta ao conserto pelo critério dela que falhou, ou porque a saída cita um arquivo da obra que ela declarou ou entregou."
         }
         ("close.repair_next", Locale::EnUs) => {
-            "Final repair recorded. Run `mustard-rt run round` for the authorized repair dispatch, then integrate and close again. Attribution follows criteria when available; otherwise inspect the complete integration."
+            "Final repair recorded. Run `mustard-rt run round` for the authorized repair dispatch, then integrate and close again. A wave returns to repair through its own failing criterion, or because the output cites a work file it declared or delivered."
+        }
+        // O lint ou a suíte do fechamento que caiu sem citar arquivo de onda
+        // da obra: o que a saída citou, e que nenhuma onda reabriu.
+        ("close.cited_outside", Locale::PtBr) => {
+            "A saída cita {files}, e nenhum desses arquivos é da obra: a branch não os mudou. Nenhuma onda reabriu. \
+             Mostre a saída ao usuário e pergunte o que fazer com esses arquivos; resolvido isso, repita o fechamento."
+        }
+        ("close.cited_outside", Locale::EnUs) => {
+            "The output cites {files}, and none of these files belongs to the work: the branch did not change them. No wave \
+             reopened. Show the output to the user and ask what to do with these files; once that is settled, close again."
+        }
+        ("close.cited_nothing", Locale::PtBr) => {
+            "A saída não cita arquivo nenhum do projeto, e por isso nenhum da obra. Nenhuma onda reabriu. \
+             Mostre a saída ao usuário e pergunte o que fazer; resolvido isso, repita o fechamento."
+        }
+        ("close.cited_nothing", Locale::EnUs) => {
+            "The output cites no project file, so none from the work. No wave reopened. \
+             Show the output to the user and ask what to do; once that is settled, close again."
+        }
+        ("close.cited_unowned", Locale::PtBr) => {
+            "A saída cita arquivo que a branch mudou, mas que nenhuma onda declarou nem entregou. Nenhuma onda reabriu. \
+             Mostre a saída ao usuário e pergunte o que fazer; resolvido isso, repita o fechamento."
+        }
+        ("close.cited_unowned", Locale::EnUs) => {
+            "The output cites a file the branch changed, but no wave declared or delivered it. No wave reopened. \
+             Show the output to the user and ask what to do; once that is settled, close again."
+        }
+        // A marca de conserto que o lint, a suíte ou a análise de declarações
+        // sem uso do fechamento gravaram sem citar arquivo da onda, solta no
+        // começo do fechamento ou da rodada.
+        ("close.stale_mark_released", Locale::PtBr) => {
+            "A reprovação da onda {wave} pelo lint, pela suíte ou pela análise de código sem uso do fechamento saiu. A saída \
+             gravada nela não cita arquivo que a branch mudou e que a onda declarou ou entregou. Sem essa prova, a onda não \
+             volta ao conserto."
+        }
+        ("close.stale_mark_released", Locale::EnUs) => {
+            "The rejection of wave {wave} by the closing lint, suite or unused-code analysis was released. Its recorded output \
+             cites no file the branch changed and the wave declared or delivered. Without that proof, the wave does not return \
+             to repair."
         }
         ("close.not_running", Locale::PtBr) => "A spec está na fase {phase} e não está em execução: só fecha o que estava correndo.",
         ("close.not_running", Locale::EnUs) => "The spec is in the {phase} phase and is not running: only work in flight closes.",
@@ -234,6 +272,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("close.criterion_missing_test", Locale::EnUs) => {
             "The verification of criterion {code} names the test {name}, which appears in no file of the \
              project. Write that test or record the criterion's new version with the right name, and close again."
+        }
+        ("close.build_failed", Locale::PtBr) => {
+            "A compilação do projeto (`{command}`), rodada em ambiente limpo como o servidor a roda, \
+             não passou, e a spec não fechou: {output}"
+        }
+        ("close.build_failed", Locale::EnUs) => {
+            "The project build (`{command}`), run in a clean environment the way the server runs it, \
+             did not pass, and the spec did not close: {output}"
         }
         ("close.lint_failed", Locale::PtBr) => "O lint do projeto (`{command}`) não passou, e a spec não fechou: {output}",
         ("close.lint_failed", Locale::EnUs) => "The project lint (`{command}`) did not pass, and the spec did not close: {output}",
@@ -517,13 +563,33 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("conversation_size.notice", Locale::EnUs) => {
             "[Mustard] Context reached {tokens} thousand tokens. Finish the current step and use `/compact` or `/clear`. Resume: {line}"
         }
-        // A entrada e os resumos herdados precedem o horizonte de trabalho.
+        // A entrada e os resumos herdados precedem o horizonte de trabalho,
+        // e o aviso diz a janela do modelo, que só serve de teto ao horizonte.
         ("conversation_size.wave_signal", Locale::PtBr) => {
-            "[Mustard] Sinal de conclusão: entrada e resumos herdados, {baseline} mil tokens; trabalho, {counted} mil; contexto total, {now} mil. O sinal é entrada + {limit} mil = {total_limit} mil. Termine a tarefa atual, execute os testes mínimos, grave o resumo e devolva ao orquestrador. Não comece outra tarefa. A tarefa atual continua liberada."
+            "[Mustard] Sinal de conclusão: entrada e resumos herdados, {baseline} mil tokens; trabalho, {counted} mil; contexto total, {now} mil. {basis} O sinal é entrada + {limit} mil = {total_limit} mil. Termine a tarefa atual, execute os testes mínimos, grave o resumo e devolva ao orquestrador. Não comece outra tarefa. A tarefa atual continua liberada."
         }
         ("conversation_size.wave_signal", Locale::EnUs) => {
-            "[Mustard] Wrap-up signal: initial input and inherited summaries, {baseline} thousand tokens; work, {counted} thousand; total context, {now} thousand. The signal is initial input + {limit} thousand = {total_limit} thousand. Finish the current task, run minimal tests, record the summary and return to the orchestrator. Do not start another task. The current task remains executable."
+            "[Mustard] Wrap-up signal: initial input and inherited summaries, {baseline} thousand tokens; work, {counted} thousand; total context, {now} thousand. {basis} The signal is initial input + {limit} thousand = {total_limit} thousand. Finish the current task, run minimal tests, record the summary and return to the orchestrator. Do not start another task. The current task remains executable."
         }
+        // A janela que serve de teto ao sinal: a do modelo da onda,
+        // conhecida pela tabela da API, ou nenhuma, e então o sinal fica sem
+        // teto. O tamanho dela vai por extenso: 1 milhão, ou o número de mil.
+        ("conversation_size.window_known", Locale::PtBr) => {
+            "Janela do modelo {model}: {window}; o teto do sinal é {share}% dela."
+        }
+        ("conversation_size.window_known", Locale::EnUs) => {
+            "Window of model {model}: {window}; the signal is capped at {share}% of it."
+        }
+        // A janela que o registro da conversa declara, sem o nome do modelo,
+        // que a amostra de uso do Codex não traz.
+        ("conversation_size.window_declared", Locale::PtBr) => "Janela do modelo declarada pela conversa: {window}; o teto do sinal é {share}% dela.",
+        ("conversation_size.window_declared", Locale::EnUs) => "Model window declared by the conversation: {window}; the signal is capped at {share}% of it.",
+        ("conversation_size.window_million", Locale::PtBr) => "1 milhão de tokens",
+        ("conversation_size.window_million", Locale::EnUs) => "1 million tokens",
+        ("conversation_size.window_thousands", Locale::PtBr) => "{n} mil tokens",
+        ("conversation_size.window_thousands", Locale::EnUs) => "{n} thousand tokens",
+        ("conversation_size.window_unknown", Locale::PtBr) => "Janela do modelo desconhecida: o sinal fica sem teto.",
+        ("conversation_size.window_unknown", Locale::EnUs) => "Model window unknown: the signal has no cap.",
         ("conversation_size.wave_continue", Locale::PtBr) => {
             "[Mustard] Fim de tarefa: contexto total, {now} mil tokens; entrada e resumos herdados, {baseline} mil; trabalho, {counted} mil. O sinal é entrada + {limit} mil = {total_limit} mil. A maior tarefa acrescentou {largest} mil. Siga para a próxima tarefa."
         }
@@ -592,8 +658,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              platform records for this session. Its usage did not reach the page, but the delivery \
              was written anyway."
         }
-        ("round.build_failed", Locale::PtBr) => "O repositório principal não compilou com `{command}`, e a rodada não comitou nada: {output}",
-        ("round.build_failed", Locale::EnUs) => "The main repository did not build with `{command}`, and the round committed nothing: {output}",
         // A suíte e o lint que o projeto declara, rodados pela rodada no
         // repositório principal antes do commit, com o fim da saída.
         ("round.tests_failed", Locale::PtBr) => {
@@ -735,33 +799,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "`{file}` line {line} is a test that only calls `{name}`, new code with no use outside tests. \
              Remove the test along with it."
         }
-        ("round.criterion_proof_failed", Locale::PtBr) => {
-            "A verificação do critério {code} não executou ou não passou, e a rodada não comitou nada: \
-             `{command}` — {output}"
-        }
-        ("round.criterion_proof_failed", Locale::EnUs) => {
-            "Criterion {code}'s verification did not run or did not pass, and the round committed nothing: \
-             `{command}` — {output}"
-        }
-        // As duas recusas abaixo só dizem o que a verificação fez: o passo de
-        // quem conduz vem logo depois delas, e é mandar a onda de volta ao
-        // agente que a fez.
-        ("round.criterion_ran_no_test", Locale::PtBr) => {
-            "A verificação do critério {code} saiu verde sem rodar teste nenhum: `{command}` diz que rodou \
-             {count} testes. A rodada não comitou nada."
-        }
-        ("round.criterion_ran_no_test", Locale::EnUs) => {
-            "The verification of criterion {code} came out green without running any test: `{command}` says \
-             it ran {count} tests. The round committed nothing."
-        }
-        ("round.criterion_missing_test", Locale::PtBr) => {
-            "A verificação do critério {code} cita o teste {name}, que não aparece em nenhum arquivo do \
-             projeto. A rodada não comitou nada."
-        }
-        ("round.criterion_missing_test", Locale::EnUs) => {
-            "The verification of criterion {code} names the test {name}, which appears in no file of the \
-             project. The round committed nothing."
-        }
         ("round.development_build_failed", Locale::PtBr) => {
             "O commit saiu, mas a versão em construção do Mustard não compilou, e a sessão segue no \
              programa compilado anterior: {output}"
@@ -852,14 +889,26 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "A onda {wave} propôs mudar o plano aprovado e ficou fora do commit. Leia a entrega e \
              pergunte ao usuário com opções \"{yes}\"/\"{no}\" e cabeçalho {code}, explicando o efeito \
              da mudança. Após o aceite, revise as tarefas pendentes ({tasks}) antes de repetir a \
-             rodada; o clique não resolve acesso nem reescreve tarefa."
+             rodada; o clique não resolve acesso nem reescreve tarefa. Recusar mantém o plano \
+             aprovado. Quando a mensagem do usuário já recusa, use \
+             `<PLAN_REFUSED>{\"wave\":{wave},\"reason\":\"…\"}</PLAN_REFUSED>` no relatório da rodada. \
+             Com ela ou com o \"{no}\", a rodada comita o que a onda mudou, com a `REVIEWED` de \
+             sempre. As tarefas voltam soltas ao backlog. Aceitar é só pelo clique."
         }
         ("round.replan", Locale::EnUs) => {
             "Wave {wave} proposed changing the approved plan and was held outside the commit. Read \
              the delivery and ask the user with options \"{yes}\"/\"{no}\" and header {code}, explaining \
              the effect of the change. After acceptance, revise pending tasks ({tasks}) before \
-             repeating the round; a click does not resolve access or rewrite a task."
+             repeating the round; a click does not resolve access or rewrite a task. Declining keeps \
+             the approved plan. When the user's message already declines, use \
+             `<PLAN_REFUSED>{\"wave\":{wave},\"reason\":\"…\"}</PLAN_REFUSED>` in the round report. \
+             With it or with \"{no}\", the round commits what the wave changed, with the usual \
+             `REVIEWED`. The tasks return to the backlog unheld. Accepting takes the click."
         }
+        ("round.plan_refused.click", Locale::PtBr) => "O usuário recusou a mudança no clique em \"Recusar\".",
+        ("round.plan_refused.click", Locale::EnUs) => "The user declined the change by clicking \"Decline\".",
+        ("round.plan_refused.commit", Locale::PtBr) => "parte feita antes da mudança recusada",
+        ("round.plan_refused.commit", Locale::EnUs) => "work done before the declined change",
         ("round.no_tasks", Locale::PtBr) => "nenhuma",
         ("round.no_tasks", Locale::EnUs) => "none",
         ("round.replan_needs_undone", Locale::PtBr) => {
@@ -947,11 +996,123 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.returned_change", Locale::EnUs) => "Plan change accepted when wave {wave} came back: {change}",
         ("round.unmet_joined", Locale::PtBr) => "Item não cumprido na volta da onda {wave} — {code}: {text}",
         ("round.unmet_joined", Locale::EnUs) => "Item not met when wave {wave} came back — {code}: {text}",
+        ("round.unmet_covered", Locale::PtBr) => {
+            "Item não cumprido na volta da onda {wave} — {code}, que a tarefa {task}, ainda por entregar, já cobre: {text}"
+        }
+        ("round.unmet_covered", Locale::EnUs) => {
+            "Item not met when wave {wave} came back — {code}, which task {task}, still to deliver, already covers: {text}"
+        }
+        ("round.unmet_review_joined", Locale::PtBr) => "Item não cumprido na revisão final — {code}: {text}",
+        ("round.unmet_review_joined", Locale::EnUs) => "Item not met in the final review — {code}: {text}",
+        ("round.unmet_review_covered", Locale::PtBr) => {
+            "Item não cumprido na revisão final — {code}, que a tarefa {task}, ainda por entregar, já cobre: {text}"
+        }
+        ("round.unmet_review_covered", Locale::EnUs) => {
+            "Item not met in the final review — {code}, which task {task}, still to deliver, already covers: {text}"
+        }
+        ("round.unmet_judged", Locale::PtBr) => {
+            "O Jev julgou que terminar a tarefa termina o que o item pede, com chance {chance}; por isso ele não \
+             virou tarefa nova."
+        }
+        ("round.unmet_judged", Locale::EnUs) => {
+            "Jev judged that finishing the task finishes what the item asks, with chance {chance}; so it did not \
+             become a new task."
+        }
         ("round.leftover_joined", Locale::PtBr) => {
             concat!("Sobra da onda {wave}, nos mesmos arquivos — {title}: {detail} (Pelo mapa: ", map_commands_pt!(), ".)")
         }
         ("round.leftover_joined", Locale::EnUs) => {
             concat!("Leftover from wave {wave}, on the same files — {title}: {detail} (By the map: ", map_commands_en!(), ".)")
+        }
+        ("round.leftover_classified", Locale::PtBr) => {
+            concat!("Erro da volta da onda {wave} — {title}: {detail} (Pelo mapa: ", map_commands_pt!(), ".)")
+        }
+        ("round.leftover_classified", Locale::EnUs) => {
+            concat!("Error from wave {wave}'s return — {title}: {detail} (By the map: ", map_commands_en!(), ".)")
+        }
+        ("round.leftover_priority", Locale::PtBr) => "Sobra da onda {wave}: erro achado na obra sai antes das tarefas antigas.",
+        ("round.leftover_priority", Locale::EnUs) => "Leftover from wave {wave}: an error found in the work goes before the old tasks.",
+        ("triage.same_work_open", Locale::PtBr) => {
+            "A tarefa aberta {task} — {title} tem o mesmo sentido: nada foi gravado. Grave a versão nova dela, com `replaces` {task}, juntando esta atividade; o pedido em `rewrite` dá o texto. Se for outro trabalho, grave de novo com `distinct` e o motivo."
+        }
+        ("triage.same_work_open", Locale::EnUs) => {
+            "The open task {task} — {title} has the same meaning: nothing was recorded. Record its new version, with `replaces` {task}, joining this activity; the request in `rewrite` gives the text. If it is other work, record again with `distinct` and the reason."
+        }
+        ("triage.same_work_covered", Locale::PtBr) => {
+            "A tarefa aberta {task} — {title} já cobre esta atividade: terminá-la a termina, e nada foi gravado. Se for outro trabalho, grave de novo com `distinct` e o motivo."
+        }
+        ("triage.same_work_covered", Locale::EnUs) => {
+            "The open task {task} — {title} already covers this activity: finishing it finishes this one, and nothing was recorded. If it is other work, record again with `distinct` and the reason."
+        }
+        ("triage.next_grouping", Locale::PtBr) => {
+            "O modelo pequeno da sessão ainda não leu esta lista. Entregue o pedido de `grouping` ao agente de análise da sessão, mande o recibo por `mustard-rt run knowledge --complete-session <recibo.json>` e rode `run triage` de novo: o Jev ordena cada assunto, e a resposta mostra a lista antes de qualquer gravação."
+        }
+        ("triage.next_grouping", Locale::EnUs) => {
+            "The session's small model has not read this list yet. Hand the `grouping` request to the session's analysis agent, send its receipt with `mustard-rt run knowledge --complete-session <receipt.json>` and run `run triage` again: the Jev orders each subject, and the answer shows the list before anything is recorded."
+        }
+        ("round.formation_pending", Locale::PtBr) => {
+            "O classificador espera a leitura da lista para formar as próximas ondas: entregue o pedido de `formation` ao agente de análise da sessão, mande o recibo por `mustard-rt run knowledge --complete-session <recibo.json>` e rode a rodada de novo. Até lá, nenhuma onda nova sai da lista."
+        }
+        ("round.formation_pending", Locale::EnUs) => {
+            "The classifier waits for the reading of the list to form the next waves: hand the `formation` request to the session's analysis agent, send its receipt with `mustard-rt run knowledge --complete-session <receipt.json>` and run the round again. Until then, no new wave leaves the list."
+        }
+        ("triage.wave_too_big", Locale::PtBr) => {
+            "A onda \"{objective}\" lê {tokens} tokens de arquivos, acima do limite de uma onda: o agente entrega uma parte e devolve o resumo para a próxima."
+        }
+        ("triage.wave_too_big", Locale::EnUs) => {
+            "The wave \"{objective}\" reads {tokens} tokens of files, above the limit of one wave: the agent delivers a part and returns the summary for the next one."
+        }
+        ("triage.order_unanswered", Locale::PtBr) => {
+            "{missing} de {requests} pedidos de ordem ao Jev ficaram sem resposta usável; esses assuntos ficam na ordem do modelo pequeno da sessão."
+        }
+        ("triage.order_unanswered", Locale::EnUs) => {
+            "{missing} of {requests} order requests to the Jev got no usable answer; those subjects keep the order of the session's small model."
+        }
+        ("triage.held", Locale::PtBr) => "Classificadas, mas fora da gravação, as tarefas de onda com agente trabalhando: {tasks}.",
+        ("triage.held", Locale::EnUs) => "Classified but left out of the write, the tasks of a wave whose agent is still working: {tasks}.",
+        ("triage.joined_line", Locale::PtBr) => "Junta {code} — {title}: {text}",
+        ("triage.joined_line", Locale::EnUs) => "Joins {code} — {title}: {text}",
+        ("triage.removed_joined", Locale::PtBr) => "Mesmo sentido de {code}, que recebe este trabalho na versão nova.",
+        ("triage.removed_joined", Locale::EnUs) => "Same meaning as {code}, which takes this work in its new version.",
+        ("triage.next_dry", Locale::PtBr) => "Nada foi gravado. Confira os assuntos, a ordem e as junções; para gravar, rode de novo com `--apply`.",
+        ("triage.next_dry", Locale::EnUs) => "Nothing was recorded. Check the subjects, the order and the merges; to record, run again with `--apply`.",
+        ("triage.next_applied", Locale::PtBr) => {
+            "Gravado. Delegue cada pedido de `rewrite` ao agente de análise da sessão e grave a versão nova que o recibo devolve."
+        }
+        ("triage.next_applied", Locale::EnUs) => {
+            "Recorded. Delegate each `rewrite` request to the session's analysis agent and record the new version its receipt returns."
+        }
+        ("round.leftover_repeated", Locale::PtBr) => {
+            "Sobra da onda {wave} que repete a tarefa {task}, ainda por entregar: {detail}"
+        }
+        ("round.leftover_repeated", Locale::EnUs) => {
+            "Leftover from wave {wave} that repeats task {task}, still to deliver: {detail}"
+        }
+        ("round.leftover_judged", Locale::PtBr) => {
+            "O Jev julgou que a sobra descreve o mesmo trabalho da tarefa, com chance {chance}; por isso ela \
+             não virou tarefa nova."
+        }
+        ("round.leftover_judged", Locale::EnUs) => {
+            "Jev judged that the leftover describes the same work as the task, with chance {chance}; so it did \
+             not become a new task."
+        }
+        ("round.leftover_marked", Locale::PtBr) => "Sobra da onda {wave}: {title}",
+        ("round.leftover_marked", Locale::EnUs) => "Leftover from wave {wave}: {title}",
+        ("round.wave_left_without_tasks", Locale::PtBr) => {
+            "A onda {wave} saiu do ar por ficar sem tarefa: o pedido {send} segue sem volta, e nenhuma tarefa viva \
+             aponta a onda. A fila, a retomada e a rodada deixam de listá-la."
+        }
+        ("round.wave_left_without_tasks", Locale::EnUs) => {
+            "Wave {wave} left the air for having no task: request {send} has no return, and no live task points to \
+             the wave. The queue, the resume and the round no longer list it."
+        }
+        ("round.leftover_without_files", Locale::PtBr) => {
+            "Sobra sem arquivo declarado: grave uma versão nova da tarefa com os arquivos e as \
+             dependências antes de ela sair numa onda."
+        }
+        ("round.leftover_without_files", Locale::EnUs) => {
+            "Leftover without a declared file: write a new version of the task with its files and \
+             dependencies before it goes out in a wave."
         }
         ("round.tasks_returned", Locale::PtBr) => {
             "A onda {wave} não fez as tarefas {tasks}, e elas voltaram ao backlog, com a mudança \
@@ -1064,12 +1225,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              Rejection preserves the copy and sends the reason to a new agent. Usage comes from conversations, never typed numbers. Commits use the delivery’s `commit`."
         }
         ("round.report.checks", Locale::PtBr) => {
-            "A rodada valida o build e as provas pertinentes antes do commit. O fechamento valida \
-             o lint e a suíte completa da spec. Não rode a suíte completa nem lint por conta própria."
+            "A rodada junta e comita sem compilar nem rodar prova. O fechamento compila e valida \
+             o lint, a suíte completa e os critérios da spec. Não rode a suíte completa nem lint por conta própria."
         }
         ("round.report.checks", Locale::EnUs) => {
-            "The round validates the build and pertinent proofs before the commit. Closing validates \
-             lint and the full spec suite. Do not run the full suite or lint on your own."
+            "The round joins and commits without building or running proofs. Closing builds and validates \
+             lint, the full suite and the spec criteria. Do not run the full suite or lint on your own."
         }
         ("round.waiting", Locale::PtBr) => {
             "Nada novo a despachar nem a revisar: as ondas {waves} estão em andamento, e o pedido \
@@ -1079,6 +1240,50 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Nothing new to dispatch or review: waves {waves} are in flight, and their requests \
              already went out."
         }
+        // O que segura a tarefa pronta que a rodada deixou na fila: o detalhe
+        // de cada motivo, no `held` da resposta, e as frases do próximo passo.
+        ("round.queued.capacity", Locale::PtBr) => {
+            "o limite é de {limit} ondas compilando ao mesmo tempo ({origin}), e as {occupied} vagas estão com as ondas {waves}"
+        }
+        ("round.queued.capacity", Locale::EnUs) => {
+            "the limit is {limit} waves compiling at once ({origin}), and the {occupied} slots are held by waves {waves}"
+        }
+        ("round.queued.no_slots", Locale::PtBr) => {
+            "o limite é de {limit} ondas compilando ao mesmo tempo ({origin}), e com esse número nenhuma onda sai"
+        }
+        ("round.queued.no_slots", Locale::EnUs) => {
+            "the limit is {limit} waves compiling at once ({origin}), and with that number no wave goes out"
+        }
+        ("round.queued.origin_config", Locale::PtBr) => "`maxCompilingWaves` do `mustard.json`",
+        ("round.queued.origin_config", Locale::EnUs) => "`maxCompilingWaves` in `mustard.json`",
+        ("round.queued.origin_default", Locale::PtBr) => "padrão do Mustard, sem `maxCompilingWaves` no `mustard.json`",
+        ("round.queued.origin_default", Locale::EnUs) => "Mustard default, with no `maxCompilingWaves` in `mustard.json`",
+        ("round.queued.file", Locale::PtBr) => "arquivo {files}, reservado pela onda {wave}",
+        ("round.queued.file", Locale::EnUs) => "file {files}, held by wave {wave}",
+        ("round.queued.cleanup", Locale::PtBr) => "limpeza: sai depois das outras tarefas do backlog",
+        ("round.queued.cleanup", Locale::EnUs) => "cleanup: goes out after the other backlog tasks",
+        ("round.queued.assembly", Locale::PtBr) => "pronta e com vaga, mas fora desta montagem. A próxima rodada confere de novo",
+        ("round.queued.assembly", Locale::EnUs) => "ready with a free slot, but left out of this assembly. The next round checks again",
+        ("round.queued.reads", Locale::PtBr) => "lê {files}, que a onda {wave} muda, pelo mapa do scan",
+        ("round.queued.reads", Locale::EnUs) => "reads {files}, which wave {wave} changes, per the scan map",
+        ("round.queued.read_by", Locale::PtBr) => "muda {files}, que a onda {wave} lê, pelo mapa do scan",
+        ("round.queued.read_by", Locale::EnUs) => "changes {files}, which wave {wave} reads, per the scan map",
+        ("round.queued.judged", Locale::PtBr) => "o Jev julgou {chance}% de chance de ela mudar o mesmo que uma onda em andamento",
+        ("round.queued.judged", Locale::EnUs) => "Jev judged a {chance}% chance that it changes the same as a running wave",
+        ("round.queued.behind", Locale::PtBr) => "reservada atrás de {task}, que também ficou e divide {files} com ela",
+        ("round.queued.behind", Locale::EnUs) => "held behind {task}, which also stayed and shares {files} with it",
+        ("round.queued.behind_lot", Locale::PtBr) => "no mesmo assunto de {task}, que também ficou",
+        ("round.queued.behind_lot", Locale::EnUs) => "in the same subject as {task}, which also stayed",
+        ("round.queued.arrived", Locale::PtBr) => "chegou ao backlog nesta rodada e entra na montagem da próxima",
+        ("round.queued.arrived", Locale::EnUs) => "reached the backlog this round and joins the next round's assembly",
+        ("round.queued.line_held", Locale::PtBr) => "{task} ficou: {detail}.",
+        ("round.queued.line_held", Locale::EnUs) => "{task} stayed: {detail}.",
+        ("round.queued.line_capacity", Locale::PtBr) => "Sem vaga para {tasks}: {detail}. A fila anda quando uma onda voltar.",
+        ("round.queued.line_capacity", Locale::EnUs) => "No slot for {tasks}: {detail}. The queue moves when a wave returns.",
+        ("round.queued.line_file", Locale::PtBr) => "{task} espera o {detail}.",
+        ("round.queued.line_file", Locale::EnUs) => "{task} waits for the {detail}.",
+        ("round.queued.line_other", Locale::PtBr) => "Também ficaram na fila: {tasks}; o motivo de cada uma está em `held`.",
+        ("round.queued.line_other", Locale::EnUs) => "Also left in the queue: {tasks}; each one's reason is in `held`.",
         ("round.close", Locale::PtBr) => "Todas as ondas estão entregues e aprovadas: feche a spec com `{command}`.",
         ("round.close", Locale::EnUs) => "Every wave is delivered and approved: close the spec with `{command}`.",
         ("round.review_open", Locale::PtBr) => {
@@ -1097,6 +1302,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Every planned wave is done, but the backlog still holds tasks {tasks}, ready to become a \
              batch. The work does not close with a task in the backlog. Run the round again with `{command}`."
         }
+        ("round.backlog_needs_planning", Locale::PtBr) => {
+            "As tarefas {tasks} do backlog esperam plano. Estão presas sem arquivo nenhum e não saem numa \
+             onda até ganhar arquivos e dependências. Leia cada uma pelo item e grave uma versão nova, com \
+             `replaces`, os arquivos e as dependências e sem o `blocked_by`."
+        }
+        ("round.backlog_needs_planning", Locale::EnUs) => {
+            "Backlog tasks {tasks} wait for planning. They are held without any file and do not go out in a \
+             wave until they get files and dependencies. Read each one by its item and write a new version, \
+             with `replaces`, the files and the dependencies and without `blocked_by`."
+        }
         ("round.backlog_stuck", Locale::PtBr) => {
             "Nada a despachar e nada em andamento, mas o backlog ainda tem as tarefas {tasks}, presas. \
              Nenhuma tem todas as dependências entregues e cobre algum item. Mostre ao usuário o que as segura \
@@ -1105,6 +1320,44 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.backlog_stuck", Locale::EnUs) => {
             "Nothing to dispatch and nothing in flight, but the backlog still holds tasks {tasks}, stuck: \
              none has every dependency delivered and covers an item. Show the user what holds them before closing."
+        }
+        // O aviso da rodada: uma chamada dela ao Jev falhou, e a rodada seguiu
+        // sem ele. O remédio sai pelo motivo da falha.
+        ("round.jev_failed", Locale::PtBr) => {
+            "O Jev falhou nesta rodada ({reason}), e a rodada seguiu sem ele, pelas regras nativas. {remedy}"
+        }
+        ("round.jev_failed", Locale::EnUs) => {
+            "Jev failed in this round ({reason}), and the round went on without it, by the native rules. {remedy}"
+        }
+        ("round.jev_remedy_key", Locale::PtBr) => "O serviço recusou a chave: configure uma chave válida.",
+        ("round.jev_remedy_key", Locale::EnUs) => "The service refused the key: configure a valid key.",
+        ("round.jev_remedy_missing_key", Locale::PtBr) => "O projeto não tem chave do Jev: configure uma para a rodada perguntar a ele.",
+        ("round.jev_remedy_missing_key", Locale::EnUs) => "The project has no Jev key: configure one for the round to ask it.",
+        ("round.jev_remedy_key_in_git", Locale::PtBr) => {
+            "A chave do Jev está num arquivo que o git guarda e não vale: tire o arquivo do git e troque a chave."
+        }
+        ("round.jev_remedy_key_in_git", Locale::EnUs) => {
+            "The Jev key is in a file git tracks and does not count: take the file out of git and change the key."
+        }
+        ("round.jev_remedy_credit", Locale::PtBr) => {
+            "A conta do serviço está sem crédito: ponha crédito nela; a chave vale, e trocá-la não resolve."
+        }
+        ("round.jev_remedy_credit", Locale::EnUs) => {
+            "The service account has no credit: add credit to it; the key is valid, and changing it does not help."
+        }
+        ("round.jev_remedy_size", Locale::PtBr) => {
+            "A pergunta passou do teto de tamanho e nem saiu; a chave e o crédito não estão em causa."
+        }
+        ("round.jev_remedy_size", Locale::EnUs) => {
+            "The question went over the size cap and was never sent; the key and the credit are not at fault."
+        }
+        ("round.jev_remedy_wait", Locale::PtBr) => {
+            "O serviço não deu resposta útil desta vez: lento, ocupado, fora de alcance ou com erro. A rodada \
+             seguinte pergunta de novo. A chave e o crédito não estão em causa."
+        }
+        ("round.jev_remedy_wait", Locale::EnUs) => {
+            "The service gave no usable answer this time: slow, busy, unreachable or failing. The next round \
+             asks again. The key and the credit are not at fault."
         }
         ("round.task_without_covers", Locale::PtBr) => {
             "As tarefas {tasks} do backlog não cobrem item nenhum (`covers`). A onda leva como critérios os \
@@ -1235,18 +1488,30 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              have them."
         }
         ("open.next_goal", Locale::PtBr) => {
-            "A spec {spec} nasceu na branch {branch}. Faça ao usuário a pergunta de `question` e \
-             espere a resposta. O objetivo da spec é uma frase que diz o que ele pediu: a dele, ou a \
-             que você sugeriu e ele aprovou. Grave-o como o primeiro `context`, com `origin` na \
-             mensagem dele. O card, os critérios de aceite e os documentos antigos que vierem junto \
-             vão logo depois, como `context`, com o mesmo `origin`."
+            "A spec {spec} nasceu na branch {branch}. As mensagens que o usuário digitou antes da \
+             abertura já estão nela, como mensagens dele, com os números em `earlier_messages`. Faça \
+             ao usuário a pergunta de `question` e espere a resposta. O objetivo da spec é uma frase \
+             que diz o que ele pediu: a dele, ou a que você sugeriu e ele aprovou. Grave-o como o \
+             primeiro `context`, com `origin` na mensagem em que ele fez o pedido, mesmo que seja \
+             uma das de antes. O card, os critérios de aceite e os documentos antigos que vierem \
+             junto vão logo depois, como `context`, com o mesmo `origin`."
+        }
+        ("open.earlier_messages_missing", Locale::PtBr) => {
+            "A conversa desta sessão não foi achada, e as mensagens que o usuário digitou antes da \
+             abertura ficaram fora da spec. O `origin` do objetivo vai na resposta dele à pergunta."
+        }
+        ("open.earlier_messages_missing", Locale::EnUs) => {
+            "This session's conversation was not found, and the messages the user typed before the \
+             opening stayed out of the spec. The goal's `origin` goes on their answer to the question."
         }
         ("open.next_goal", Locale::EnUs) => {
-            "Spec {spec} was born on branch {branch}. Ask the user the question in `question` and \
-             wait for the answer. The spec's goal is one sentence saying what they asked for: theirs, \
-             or the one you suggested and they approved. Record it as the first `context`, with \
-             `origin` on their message. The card, the acceptance criteria and the old documents that \
-             come along go right after it, as `context`, with the same `origin`."
+            "Spec {spec} was born on branch {branch}. The messages the user typed before the opening \
+             are already in it, as their messages, with the numbers in `earlier_messages`. Ask the \
+             user the question in `question` and wait for the answer. The spec's goal is one sentence \
+             saying what they asked for: theirs, or the one you suggested and they approved. Record \
+             it as the first `context`, with `origin` on the message where they made the request, \
+             even when it is one of the earlier ones. The card, the acceptance criteria and the old \
+             documents that come along go right after it, as `context`, with the same `origin`."
         }
         ("open.no_flow", Locale::PtBr) => {
             "O mustard.json não declara as bases (git.flow): as candidatas são as branches do \
@@ -1783,7 +2048,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 236, 0x592b_7dd0_64d3_1aea);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 292, 0x7fab_d7eb_8513_8ac2);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
@@ -1797,6 +2062,7 @@ mod tests {
             ("open.confirm_name", &["{asked}", "{adjusted}"][..]),
             ("open.ask_goal", &[][..]),
             ("open.next_goal", &["{spec}", "{branch}"][..]),
+            ("open.earlier_messages_missing", &[][..]),
             ("open.no_flow", &[][..]),
             ("open.map_warning", &["{detail}"][..]),
             ("open.kind_invalid", &["{kind}"][..]),
@@ -1886,8 +2152,12 @@ mod tests {
             ("close.criterion_failed", &["{code}", "{output}"][..]),
             ("close.criterion_ran_no_test", &["{code}", "{command}", "{count}"][..]),
             ("close.criterion_missing_test", &["{code}", "{name}"][..]),
+            ("close.build_failed", &["{command}", "{output}"][..]),
             ("close.lint_failed", &["{command}", "{output}"][..]),
             ("close.suite_failed", &["{command}", "{output}"][..]),
+            ("close.cited_outside", &["{files}"][..]),
+            ("close.cited_nothing", &[][..]),
+            ("close.cited_unowned", &[][..]),
             ("close.server_command_not_declared", &["{key}"][..]),
             ("close.review_copy_dirty", &["{copy}", "{files}"][..]),
             ("close.review_copy_failed", &["{copy}", "{detail}"][..]),
@@ -1942,7 +2212,12 @@ mod tests {
             ("conversation_size.more", &["{count}"][..]),
             ("conversation_size.precompact", &["{block}"][..]),
             ("conversation_size.notice", &["{tokens}", "{line}"][..]),
-            ("conversation_size.wave_signal", &["{now}", "{baseline}", "{counted}", "{limit}", "{total_limit}"][..]),
+            ("conversation_size.wave_signal", &["{now}", "{baseline}", "{counted}", "{basis}", "{limit}", "{total_limit}"][..]),
+            ("conversation_size.window_known", &["{model}", "{window}", "{share}"][..]),
+            ("conversation_size.window_declared", &["{window}", "{share}"][..]),
+            ("conversation_size.window_million", &[][..]),
+            ("conversation_size.window_thousands", &["{n}"][..]),
+            ("conversation_size.window_unknown", &[][..]),
             ("conversation_size.wave_continue", &["{now}", "{baseline}", "{counted}", "{limit}", "{total_limit}", "{largest}"][..]),
             ("conversation_size.wave_deliver", &["{now}", "{baseline}", "{counted}", "{limit}", "{total_limit}", "{largest}"][..]),
             ("conversation_size.wave_locked", &["{build}"][..]),
@@ -1953,7 +2228,6 @@ mod tests {
             ("round.file_unknown", &["{file}", "{wave}"][..]),
             ("round.files_diverged", &["{wave}", "{changed}", "{declared}", "{missing}"][..]),
             ("round.usage_missing", &["{wave}"][..]),
-            ("round.build_failed", &["{command}", "{output}"][..]),
             ("round.tests_failed", &["{command}", "{output}"][..]),
             ("round.lint_failed", &["{command}", "{output}"][..]),
             ("round.after_wave.limit", &["{waves}", "{max}"][..]),
@@ -1968,9 +2242,6 @@ mod tests {
             ("round.after_wave.orphan", &["{file}", "{line}", "{name}"][..]),
             ("round.after_wave.unused", &["{file}", "{line}", "{name}"][..]),
             ("round.after_wave.unused_test", &["{file}", "{line}", "{name}"][..]),
-            ("round.criterion_proof_failed", &["{code}", "{command}", "{output}"][..]),
-            ("round.criterion_ran_no_test", &["{code}", "{command}", "{count}"][..]),
-            ("round.criterion_missing_test", &["{code}", "{name}"][..]),
             ("round.development_build_failed", &["{output}"][..]),
             ("round.proof_ran_no_test", &["{code}"][..]),
             ("round.proof_missing_test", &["{code}", "{name}"][..]),
@@ -1987,6 +2258,8 @@ mod tests {
             ("round.commit_looks_like_sha", &["{found}"][..]),
             ("round.formatter_missing", &["{name}"][..]),
             ("round.replan", &["{wave}", "{yes}", "{no}", "{code}", "{tasks}"][..]),
+            ("round.plan_refused.click", &[][..]),
+            ("round.plan_refused.commit", &[][..]),
             ("round.no_tasks", &[][..]),
             ("round.replan_needs_undone", &["{wave}", "{tasks}"][..]),
             ("round.undone_not_in_wave", &["{wave}", "{code}", "{tasks}"][..]),
@@ -1999,7 +2272,25 @@ mod tests {
             ("round.rejected_committed", &["{wave}", "{sha}"][..]),
             ("round.returned_change", &["{wave}", "{change}"][..]),
             ("round.unmet_joined", &["{wave}", "{code}", "{text}"][..]),
+            ("round.unmet_covered", &["{wave}", "{code}", "{task}", "{text}"][..]),
+            ("round.unmet_review_joined", &["{code}", "{text}"][..]),
+            ("round.unmet_review_covered", &["{code}", "{task}", "{text}"][..]),
+            ("round.unmet_judged", &["{chance}"][..]),
             ("round.leftover_joined", &["{wave}", "{title}", "{detail}"][..]),
+            ("round.leftover_classified", &["{wave}", "{title}", "{detail}"][..]),
+            ("round.leftover_priority", &["{wave}"][..]),
+            ("triage.same_work_open", &["{task}", "{title}"][..]),
+            ("triage.same_work_covered", &["{task}", "{title}"][..]),
+            ("triage.held", &["{tasks}"][..]),
+            ("triage.order_unanswered", &["{missing}", "{requests}"][..]),
+            ("triage.wave_too_big", &["{objective}", "{tokens}"][..]),
+            ("triage.joined_line", &["{code}", "{title}", "{text}"][..]),
+            ("triage.removed_joined", &["{code}"][..]),
+            ("round.leftover_repeated", &["{wave}", "{task}", "{detail}"][..]),
+            ("round.leftover_judged", &["{chance}"][..]),
+            ("round.leftover_marked", &["{wave}", "{title}"][..]),
+            ("round.wave_left_without_tasks", &["{wave}", "{send}"][..]),
+            ("round.leftover_without_files", &[][..]),
             ("round.tasks_returned", &["{wave}", "{tasks}"][..]),
             ("round.held_return", &["{wave}", "{hint}"][..]),
             ("round.code_kept", &["{wave}", "{copy}", "{ref}"][..]),
@@ -2019,8 +2310,16 @@ mod tests {
             ("round.review_open", &[][..]),
             ("round.missing", &["{wave}"][..]),
             ("round.backlog_left", &["{tasks}", "{command}"][..]),
+            ("round.backlog_needs_planning", &["{tasks}"][..]),
             ("round.backlog_stuck", &["{tasks}"][..]),
             ("round.task_without_covers", &["{tasks}"][..]),
+            ("round.jev_failed", &["{reason}", "{remedy}"][..]),
+            ("round.jev_remedy_key", &[][..]),
+            ("round.jev_remedy_missing_key", &[][..]),
+            ("round.jev_remedy_key_in_git", &[][..]),
+            ("round.jev_remedy_credit", &[][..]),
+            ("round.jev_remedy_size", &[][..]),
+            ("round.jev_remedy_wait", &[][..]),
             ("round.agents_refreshed", &["{files}"][..]),
             ("round.agents_not_refreshed", &["{detail}"][..]),
             ("round.fix_limit", &["{wave}", "{count}", "{max}", "{verdicts}"][..]),

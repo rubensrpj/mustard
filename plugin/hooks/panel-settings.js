@@ -3,7 +3,6 @@ export function settingsPanel(state,actions,{t,text,note,row,section,button,pick
   const errors={
     'settings-unreadable':['Não foi possível ler mustard.json. Corrija o arquivo antes de editar.','Cannot read mustard.json. Repair the file before editing.'],
     'settings-conflict':['A configuração mudou fora do painel. Recarregue e reaplique suas escolhas.','Settings changed outside the panel. Reload and reapply your choices.'],
-    'settings-local-missing':['As configurações locais faltam. Execute mustard-rt run upsert antes de alterar o RTK.','Local settings are missing. Run mustard-rt run upsert before changing RTK.'],
     'settings-local-invalid':['As configurações locais têm formato inválido. Corrija-as antes de alterar o RTK.','Local settings are invalid. Repair them before changing RTK.'],
     'settings-apply-incomplete':['As escolhas foram gravadas, mas alguns arquivos não foram atualizados. Execute mustard-rt run upsert.','Choices were saved but some files were not updated. Run mustard-rt run upsert.'],
     'settings-busy':['Outra gravação está em andamento. Tente salvar novamente.','Another write is in progress. Try saving again.'],
@@ -31,7 +30,7 @@ export function settingsPanel(state,actions,{t,text,note,row,section,button,pick
     ])]);
   if(group==='Geral')result.push(toggle('enabled',['Mustard no projeto','Mustard in this project'],['Ativa os recursos do Mustard neste projeto.','Enables Mustard features in this project.']),
     toggle('rtk',['RTK','RTK'],['Compacta saídas de comandos compatíveis. Salvar também atualiza o gancho local.','Compacts supported command outputs. Saving also updates the local hook.']));
-  if(group==='Geral' && state.values.rtk && state.rtk?.hook_configured!==true)result.push(note(t('RTK está configurado, mas o gancho local não foi confirmado. Execute mustard-rt run upsert.','RTK is configured, but its local hook was not confirmed. Run mustard-rt run upsert.')));
+  if(group==='Geral' && state.rtk?.own_hook_left===true)result.push(note(t('O gancho do próprio RTK continua nas configurações locais e disputa a troca com o Mustard. Execute mustard-rt run upsert para tirá-lo.','RTK\'s own hook is still in the local settings and races Mustard\'s swap. Run mustard-rt run upsert to take it out.')));
   if(group==='Busca')result.push(toggle('vectors',['Modelo local da busca','Local search model'],['Modelo embarcado para busca vetorial. Roda na máquina, sem Ollama ou cobrança de API.','Embedded model for vector search. Runs locally, without Ollama or API charges.']),
     toggle('search_answer',['Resposta compacta da busca','Compact search response'],['Usa evidências do índice quando válidas e mantém o retorno nativo como reserva.','Uses valid index evidence and keeps native results as fallback.']));
   if(group==='Jev') {

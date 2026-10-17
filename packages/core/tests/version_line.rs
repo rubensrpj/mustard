@@ -69,6 +69,8 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use yaml_rust2::{Yaml, YamlLoader};
+
 /// The plugin manifest, relative to the workspace root.
 const MANIFEST_REL: &str = "plugin/.claude-plugin/plugin.json";
 
@@ -956,4 +958,68 @@ fn the_manifest_ships_the_new_version_without_memory_server_or_dashboard() {
     for word in ["memory", "memória", "mcp", "retrieval", "dashboard", "painel", "panel"] {
         assert!(!lower.contains(word), "o plugin.json ainda cita `{word}`: {raw}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// O commit na linha de versão dos programas publicados
+// ---------------------------------------------------------------------------
+
+/// A esteira que compila, instala e publica os programas.
+const RELEASE_WORKFLOW_REL: &str = ".github/workflows/release.yml";
+
+/// Os trabalhos da esteira `release` cujos arquivos a publicação solta sem que
+/// a instalação deles confira o commit na linha de versão dos programas
+/// instalados. A publicação junta tudo o que sobem os trabalhos de que ela
+/// depende; cada um que sobe arquivo tem de rodar o teste da instalação
+/// (`packaging/smoke-install.py`) com `--commit` tirado do commit da própria
+/// rodada (`GITHUB_SHA`), que é o código compilado. Sem a lista de
+/// dependências da publicação, a resposta aponta a publicação.
+fn jobs_publishing_without_the_commit(release: &str) -> Vec<String> {
+    let docs = YamlLoader::load_from_str(release).unwrap_or_else(|e| panic!("{RELEASE_WORKFLOW_REL} não é YAML: {e}"));
+    let jobs = &docs.first().unwrap_or_else(|| panic!("{RELEASE_WORKFLOW_REL} está vazio"))["jobs"];
+    let needs: Vec<&str> = match &jobs["publish"]["needs"] {
+        Yaml::Array(items) => items.iter().filter_map(Yaml::as_str).collect(),
+        Yaml::String(one) => vec![one.as_str()],
+        _ => return vec!["publish".to_string()],
+    };
+    let checks_the_commit = |line: &str| {
+        line.contains("packaging/smoke-install.py")
+            && line
+                .split_once("--commit ")
+                .and_then(|(_, rest)| rest.split_whitespace().next())
+                .is_some_and(|value| value.contains("GITHUB_SHA"))
+    };
+    needs
+        .into_iter()
+        .filter(|job| {
+            let steps = jobs[*job]["steps"].as_vec().map(Vec::as_slice).unwrap_or_default();
+            let said = |step: &Yaml, key: &str| step[key].as_str().unwrap_or_default().to_string();
+            let ships = steps.iter().any(|step| said(step, "uses").starts_with("actions/upload-artifact"));
+            let checked = steps.iter().any(|step| said(step, "run").lines().any(checks_the_commit));
+            ships && !checked
+        })
+        .map(str::to_string)
+        .collect()
+}
+
+/// A publicação só solta o que veio de um trabalho que conferiu, nos
+/// programas instalados, o commit da rodada na linha de versão. Na esteira de
+/// hoje os três instaladores conferem; com um commit escrito à mão no lugar do
+/// da rodada, os dois trabalhos que o recebem são os apontados, e o do
+/// Windows, que segue com o da rodada, não.
+#[test]
+fn the_release_publishes_only_what_was_checked_for_the_commit_in_the_version_line() {
+    let Some(root) = workspace_root() else {
+        return;
+    };
+    let path = root.join(RELEASE_WORKFLOW_REL);
+    let Ok(release) = std::fs::read_to_string(&path) else {
+        eprintln!("[skip] {} não está nesta árvore de código", path.display());
+        return;
+    };
+    assert_eq!(jobs_publishing_without_the_commit(&release), Vec::<String>::new(), "a esteira de hoje");
+
+    let fixed = release.replace("--commit \"${GITHUB_SHA::12}\"", "--commit 0123456789ab");
+    assert_ne!(fixed, release, "{RELEASE_WORKFLOW_REL} não passa mais o commit como `--commit \"${{GITHUB_SHA::12}}\"`");
+    assert_eq!(jobs_publishing_without_the_commit(&fixed), ["macos-installer", "linux-deb"], "o commit escrito à mão");
 }

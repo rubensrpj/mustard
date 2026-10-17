@@ -2,7 +2,7 @@
 //! blocker, plan change or code diff bypasses the model entirely. A label
 //! cannot prove access, approve a change or substitute for test receipts.
 use super::{
-    jev::{JEV_MODEL, JevFilter},
+    jev::{JEV_MODEL, JevFilter, TRIAGE_CALL},
     secret::without_secrets,
 };
 use serde_json::{Value, json};
@@ -20,11 +20,7 @@ pub(crate) struct Evidence {
 
 pub(crate) fn classify(root: &Path, spec: &str, returns: &[Evidence]) -> Vec<Value> {
     let filter = JevFilter::for_orchestration(root, spec);
-    classify_with(returns, &|payload| {
-        filter
-            .as_ref()
-            .and_then(|f| f.choose_orchestration(payload).ok())
-    })
+    classify_with(returns, &|payload| filter.as_ref()?.choose_recorded(root, spec, TRIAGE_CALL, payload))
 }
 
 fn classify_with(returns: &[Evidence], invoke: &dyn Fn(&str) -> Option<Value>) -> Vec<Value> {
@@ -53,11 +49,9 @@ fn classify_with(returns: &[Evidence], invoke: &dyn Fn(&str) -> Option<Value>) -
                 "incomplete":"The report explicitly says the assigned task was not finished.","insufficient":"The report does not establish why no change was needed."}}));
     }
     let payload=json!({"model":JEV_MODEL,"state":{"revision":"return-triage-v1","returns":state},"questions":questions}).to_string();
-    let doc = if payload.len() <= 48_000 {
-        invoke(&payload)
-    } else {
-        None
-    };
+    // A pergunta grande demais não sai: o teto e o registro dele moram em
+    // quem pergunta.
+    let doc = invoke(&payload);
     ambiguous.iter().map(|e| {
         let answer=doc.as_ref().map(|doc|&doc["answers"][format!("w{}",e.wave)]);
         let label=answer.and_then(confident_label).unwrap_or("insufficient");

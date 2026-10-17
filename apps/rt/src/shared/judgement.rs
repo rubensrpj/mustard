@@ -36,7 +36,6 @@ pub(crate) struct BoardTask {
     /// evidence. Shared reading alone is never a concurrent-write conflict.
     pub(crate) reads: Vec<String>,
     pub(crate) criteria: BTreeSet<u64>,
-    pub(crate) expertise: Vec<String>,
 }
 
 impl BoardTask {
@@ -66,7 +65,6 @@ impl BoardTask {
                 .filter_map(Value::as_str).map(|path| path.split('#').next().unwrap_or(path).trim().replace('\\', "/"))
                 .filter(|path| !path.is_empty()).collect::<BTreeSet<_>>().into_iter().collect(),
             criteria: task.ints("covers").into_iter().collect(),
-            expertise: Vec::new(),
         }
     }
 
@@ -139,15 +137,6 @@ pub(crate) struct BoardItem {
 }
 
 impl Board {
-    pub(crate) fn with_expertise(&mut self, root: &Path) {
-        let profiles = mustard_core::io::expertise::list(root).unwrap_or_default().into_iter()
-            .filter(|profile| mustard_core::io::expertise::active(root, profile)).collect::<Vec<_>>();
-        for task in self.backlog.iter_mut().chain(self.running.iter_mut().flat_map(|wave| wave.tasks.iter_mut())) {
-            task.expertise = profiles.iter().filter(|profile| mustard_core::io::expertise::matches(profile, &task.files))
-                .map(|profile| format!("{}@{}: {}", profile.name, mustard_core::io::expertise::fingerprint(profile), profile.description)).collect();
-        }
-    }
-
     /// Inverted indices generate only explicit criterion/read/dependency pairs.
     /// This is local evidence, not a semantic judgement of every ready pair.
     pub(crate) fn affinities(&self) -> crate::shared::dag::Affinities<u64> {

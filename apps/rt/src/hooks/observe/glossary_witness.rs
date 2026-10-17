@@ -163,6 +163,9 @@ mod tests {
             name: None,
             pr: None,
             session: Some(SESSION.to_string()),
+            limit: None,
+            changed_since: None,
+            json: None,
         };
         let report = map_at(
             &opts,

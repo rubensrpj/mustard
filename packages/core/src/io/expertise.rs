@@ -13,7 +13,6 @@ use crate::io::{knowledge, project_map, sha256::Sha256};
 
 mod export;
 pub use export::export;
-pub mod workflow;
 pub mod authoring;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

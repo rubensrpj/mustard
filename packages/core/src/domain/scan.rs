@@ -17,7 +17,7 @@
 //! Fail-open: spawning or parsing failures return [`Error`]; callers degrade
 //! (e.g. an empty subproject list when the tool is missing).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use serde::Deserialize;
@@ -107,6 +107,49 @@ pub fn mark_own_git_roots(repo_root: &Path, projects: &mut [Project]) {
     }
 }
 
+/// `true` quando um arquivo que a compilação de `binary` lista no arquivo de
+/// dependências gravado ao lado dele (o `scan.d` do `scan`) mudou depois que
+/// ele foi gravado: o programa é de antes do código atual, e a próxima
+/// compilação o refaz. A data do programa que roda não serve de régua: a
+/// compilação deixa intocado o scan que já está em dia, e ele ficaria mais
+/// velho que o programa sempre que só o programa mudasse. Sem o arquivo de
+/// dependências (um programa instalado) ou sem data legível, nada diz que ele
+/// é velho; o caminho listado que já não existe também não diz.
+fn built_before_its_sources(binary: &Path) -> bool {
+    let modified = |path: &Path| std::fs::metadata(path).and_then(|meta| meta.modified()).ok();
+    let (Some(built), Ok(listing)) = (modified(binary), std::fs::read_to_string(binary.with_extension("d"))) else {
+        return false;
+    };
+    dependency_paths(&listing).iter().any(|source| modified(source).is_some_and(|changed| changed > built))
+}
+
+/// Os caminhos que um arquivo de dependências no formato do make lista
+/// depois de cada alvo (`alvo: dep dep`), com o espaço escapado (`\ `) lido
+/// de volta como espaço. A linha de comentário (`#`) fica de fora.
+fn dependency_paths(listing: &str) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    for deps in listing.lines().filter(|line| !line.starts_with('#')).filter_map(|line| line.split_once(": ").map(|(_, deps)| deps)) {
+        let mut current = String::new();
+        let mut chars = deps.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\\' && chars.peek() == Some(&' ') {
+                current.push(' ');
+                chars.next();
+            } else if c.is_whitespace() {
+                if !current.is_empty() {
+                    paths.push(PathBuf::from(std::mem::take(&mut current)));
+                }
+            } else {
+                current.push(c);
+            }
+        }
+        if !current.is_empty() {
+            paths.push(PathBuf::from(current));
+        }
+    }
+    paths
+}
+
 impl Scan {
     /// Locate the bundled grain binary — built as a sibling of the running
     /// executable in the same workspace `target/` dir — falling back to
@@ -129,11 +172,14 @@ impl Scan {
         Self { binary: found.map_or_else(|| DEFAULT_BINARY.to_string(), |cand| cand.to_string_lossy().into_owned()) }
     }
 
-    /// `true` when this is the scan compiled with the running program, found
-    /// by [`Self::locate`], and not the name looked up on `PATH`.
+    /// `true` quando este é o scan compilado com o código do programa que
+    /// roda: achado por [`Self::locate`], e não o nome procurado no `PATH`, e
+    /// sem arquivo que a compilação dele lista mudado depois dele
+    /// ([`built_before_its_sources`]). O scan de antes do código atual cai
+    /// aqui, e quem confere dá a dica de compilá-lo em vez de minerar com ele.
     #[must_use]
     pub fn is_compiled_alongside(&self) -> bool {
-        self.binary != DEFAULT_BINARY
+        self.binary != DEFAULT_BINARY && !built_before_its_sources(Path::new(&self.binary))
     }
 
     /// Mine `root` into the model file at `out` (`grain scan`). With a model
@@ -165,11 +211,41 @@ impl Scan {
         }
     }
 
-    /// Refresh structural evidence without loading a configured sense model.
-    pub fn scan_native(&self,root:&Path,out:&Path)->Result<ScanReport> {
-        let mut args=scan_args(root,out);args.push("--native".into());
-        let stdout=self.run(&args)?;
-        serde_json::from_str(last_line(&stdout)).map_err(|e|Error::check_failed(format!("scan native report: {e}")))
+    /// Atualiza a estrutura do mapa em `out` sem carregar modelo de sentido,
+    /// esperando a passada até `wait`. A passada roda num processo solto de
+    /// quem a pede: passado o prazo, ela segue sozinha e grava o mapa quando
+    /// acabar, e a resposta é [`NativePass::Running`]. Outra passada nativa do
+    /// mesmo mapa já em andamento faz esta sair sem ler nada, com a mesma
+    /// resposta. A saída de erro do scan não vai a ninguém: escrever num cano
+    /// que ninguém lê mais derrubaria a passada no meio.
+    ///
+    /// # Errors
+    /// [`Error::Io`] se o scan não abre; [`Error::CheckFailed`] se ele sai com
+    /// erro ou o relato não se entende.
+    pub fn scan_native_within(&self, root: &Path, out: &Path, wait: std::time::Duration) -> Result<NativePass> {
+        let mut args = scan_args(root, out);
+        args.push("--native".into());
+        let mut command = Command::new(&self.binary);
+        command.args(&args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+        detach(&mut command);
+        let child = command.spawn()?;
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(child.wait_with_output());
+        });
+        let output = match receiver.recv_timeout(wait) {
+            Ok(output) => output?,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => return Ok(NativePass::Running),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(Error::check_failed("scan native: the wait for the pass was lost"));
+            }
+        };
+        if !output.status.success() {
+            return Err(Error::check_failed(format!("scan {}: {}", args.join(" "), output.status)));
+        }
+        let report: ScanReport = serde_json::from_str(last_line(&String::from_utf8_lossy(&output.stdout)))
+            .map_err(|e| Error::check_failed(format!("scan native report: {e}")))?;
+        Ok(if report.busy { NativePass::Running } else { NativePass::Done(report) })
     }
 
     /// Read from git the history of each declaration of `file`, in the base
@@ -336,6 +412,26 @@ pub struct ScanReport {
     pub resource_issues: Vec<ResourceIssue>,
     pub head: String,
     pub dictionary: bool,
+    /// A passada nativa saiu sem ler nada porque outra do mesmo mapa estava
+    /// em andamento.
+    pub busy: bool,
+}
+
+/// Como acabou a espera por uma passada nativa ([`Scan::scan_native_within`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NativePass {
+    /// A passada acabou dentro do prazo, com o relato dela.
+    Done(ScanReport),
+    /// Uma passada do mapa segue em segundo plano — esta, passado o prazo, ou
+    /// outra que já rodava —, e o mapa muda quando ela acabar.
+    Running,
+}
+
+/// O arquivo de trava da passada nativa sobre o mapa em `out`: quem o segura
+/// é a única passada nativa daquele mapa.
+#[must_use]
+pub fn native_pass_lock_path(out: &Path) -> std::path::PathBuf {
+    crate::io::fs::lock::temp_lock_path("scan", out)
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -490,6 +586,61 @@ mod tests {
         assert_eq!(logged(&log)[2..], ["scan", "history-all"], "the scan that passed starts the reading after itself");
     }
 
+    /// A passada nativa que passa do prazo segue sozinha: a chamada volta no
+    /// prazo dizendo que ela continua, e o processo dela acaba depois.
+    #[cfg(unix)]
+    #[test]
+    fn a_native_pass_past_the_wait_goes_on_and_the_call_returns_at_the_wait() {
+        let dir = tempfile::tempdir().unwrap();
+        let (log, release) = (dir.path().join("log"), dir.path().join("release"));
+        let scan = script_scan(
+            dir.path(),
+            "slow",
+            &format!(
+                "echo \"$1 $5 $6\" >> '{log}'\nn=0\nwhile [ ! -e '{release}' ] && [ $n -lt 3000 ]; do sleep 0.02; n=$((n+1)); done\n\
+                 if [ -e '{release}' ]; then echo finished >> '{log}'; else echo gave-up >> '{log}'; fi\necho '{{\"ok\":true,\"read\":[]}}'",
+                log = log.display(),
+                release = release.display()
+            ),
+        );
+        let started = std::time::Instant::now();
+        let pass = scan.scan_native_within(dir.path(), &dir.path().join("m.db"), std::time::Duration::from_millis(300)).expect("the pass starts");
+        assert_eq!(pass, NativePass::Running);
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "the call waited {:?}", started.elapsed());
+        assert!(wait_until(|| logged(&log) == ["scan --json --native"]), "{:?}", logged(&log));
+        std::fs::write(&release, "").unwrap();
+        assert!(wait_until(|| logged(&log).len() == 2), "{:?}", logged(&log));
+        assert_eq!(logged(&log)[1], "finished", "the pass went on after the call returned");
+    }
+
+    /// Dentro do prazo, a passada nativa responde o relato dela; a que achou
+    /// outra do mesmo mapa em andamento responde que uma segue; a que sai com
+    /// erro é o erro.
+    #[cfg(unix)]
+    #[test]
+    fn a_native_pass_within_the_wait_answers_its_report_or_that_another_is_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let mode = dir.path().join("mode");
+        let scan = script_scan(
+            dir.path(),
+            "quick",
+            &format!(
+                "case $(cat '{mode}') in\n busy) echo '{{\"ok\":true,\"busy\":true,\"read\":[]}}';;\n fail) exit 3;;\n \
+                 *) echo noise; echo '{{\"ok\":true,\"full\":true,\"read\":[\"a.rs\"],\"files\":1}}';;\nesac",
+                mode = mode.display()
+            ),
+        );
+        let out = dir.path().join("m.db");
+        let wait = std::time::Duration::from_secs(30);
+        std::fs::write(&mode, "done").unwrap();
+        let NativePass::Done(report) = scan.scan_native_within(dir.path(), &out, wait).unwrap() else { panic!("the pass ended") };
+        assert_eq!((report.read, report.files, report.busy), (vec!["a.rs".to_string()], 1, false));
+        std::fs::write(&mode, "busy").unwrap();
+        assert_eq!(scan.scan_native_within(dir.path(), &out, wait).unwrap(), NativePass::Running);
+        std::fs::write(&mode, "fail").unwrap();
+        assert!(scan.scan_native_within(dir.path(), &out, wait).is_err(), "the failed pass is the answer");
+    }
+
     #[test]
     fn a_scan_that_cannot_be_run_has_no_format() {
         let dir = tempfile::tempdir().unwrap();
@@ -553,6 +704,42 @@ mod tests {
         std::fs::create_dir_all(&other).unwrap();
         assert_eq!(Scan::located_from(Some(&other.join("x"))).binary, DEFAULT_BINARY);
         assert_eq!(Scan::located_from(None).binary, DEFAULT_BINARY);
+    }
+
+    /// O scan ao lado do programa só passa pela conferência enquanto nenhum
+    /// arquivo que o `scan.d` dele lista mudou depois dele. Com um arquivo
+    /// listado mais novo — numa pasta com espaço no nome, que o `scan.d`
+    /// escreve `\ ` —, a conferência recusa, e quem a usa dá a dica de
+    /// compilar o scan. Sem o `scan.d`, como num programa instalado, nada diz
+    /// que ele é velho.
+    #[test]
+    fn a_scan_older_than_a_source_its_build_lists_fails_the_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = dir.path().join(if cfg!(windows) { "scan.exe" } else { "scan" });
+        let sources = dir.path().join("my src");
+        std::fs::create_dir_all(&sources).unwrap();
+        let (old, new) = (sources.join("old.rs"), sources.join("new.rs"));
+        for path in [&binary, &old, &new] {
+            std::fs::write(path, "").unwrap();
+        }
+        let dated = |path: &Path, secs: u64| {
+            let file = std::fs::File::options().write(true).open(path).unwrap();
+            file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs)).unwrap();
+        };
+        dated(&old, 1_000);
+        dated(&new, 1_500);
+        dated(&binary, 2_000);
+        let escaped = |path: &Path| path.to_string_lossy().replace(' ', "\\ ");
+        let listing = binary.with_extension("d");
+        std::fs::write(&listing, format!("{}: {} {}\n", escaped(&binary), escaped(&old), escaped(&new))).unwrap();
+        let scan = Scan { binary: binary.to_string_lossy().into_owned() };
+        assert!(scan.is_compiled_alongside(), "todo arquivo listado é mais velho que o scan");
+
+        dated(&new, 3_000);
+        assert!(!scan.is_compiled_alongside(), "um arquivo listado mudou depois do scan");
+
+        std::fs::remove_file(&listing).unwrap();
+        assert!(scan.is_compiled_alongside(), "sem o arquivo de dependências nada diz que o scan é velho");
     }
 
     #[test]

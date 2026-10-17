@@ -6,7 +6,6 @@
 //! e o fecho dessa leitura inteira.
 
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
@@ -23,10 +22,7 @@ use crate::platform::error::{Error, Result};
 /// projeto. Quem o segura é o único que lê a história daquele mapa.
 #[must_use]
 pub fn reading_lock_path(model: &Path) -> PathBuf {
-    let whole = std::path::absolute(model).unwrap_or_else(|_| model.to_path_buf());
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    whole.hash(&mut hasher);
-    std::env::temp_dir().join(format!("mustard-history-{:016x}.lock", hasher.finish()))
+    crate::io::fs::lock::temp_lock_path("history", model)
 }
 
 /// Os arquivos do mapa em `model` cuja história por declaração falta ou

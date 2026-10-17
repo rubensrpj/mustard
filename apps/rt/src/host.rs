@@ -2,40 +2,7 @@
 //! Claude transcript formats, approval witnesses and settings healing do not
 //! run against a Codex session. Installation never implies hook trust.
 use mustard_core::domain::model::contract::{HookInput, Outcome, Trigger, Verdict};
-use mustard_core::platform::code_tools::{MachineRunner, RunOutcome, ToolRunner};
 use serde_json::{Value, json};
-
-/// RTK's native rewrite API only returns a command; it never executes it.
-/// Apply after Mustard's guards, respecting opt-out, denial and all host fields.
-fn rtk_rewrite(input:&HookInput,outcome:&mut Outcome,enabled:bool,runner:&impl ToolRunner) {
-    if !enabled || input.tool_name.as_deref()!=Some("Bash") {return;}
-    let (mut tool_input,note)=match &outcome.verdict {
-        Verdict::Allow=>(input.tool_input.clone(),None),
-        Verdict::Rewrite {tool_input,note}=>(tool_input.clone(),note.clone()),
-        _=>return,
-    };
-    let Some(command)=tool_input.get("command").and_then(Value::as_str) else {return;};
-    if command.len()>65_536 || command.contains('\0') {return;}
-    let commands=crate::hooks::bash::lex::segments(command);
-    // The gateway owns its output and flags. RTK's API is idempotent for
-    // existing wrappers; skip the common already-wrapped form altogether.
-    if matches!(command.split_whitespace().next(),Some("rtk"|"rtk.exe"))
-        || commands.iter().any(|s|matches!(s.name(),"mustard-rt"|"mustard-rt.exe"|"mustard-boot")) {return;}
-    let (status,exit_code,text)=runner.output_with_exit("rtk",&["rewrite","--",command],std::time::Duration::from_secs(1));
-    if status==RunOutcome::Failed && exit_code==Some(2) {
-        outcome.verdict=Verdict::Deny {reason:"[Mustard] RTK rejected this command through its configured permission rules. Nothing was executed.".into()};
-        return;
-    }
-    let rewritten=text.trim();
-    // RTK 0.49 returns 3 for a valid rewrite without a Claude allow rule.
-    // Codex PreToolUse `allow` means continue with replacement arguments;
-    // native execution/sandbox/PermissionRequest policy still runs. Never
-    // install a PermissionRequest auto-allow or emit unsupported `ask` here.
-    if !(status==RunOutcome::Succeeded && exit_code==Some(0) || status==RunOutcome::Failed && exit_code==Some(3))
-        || rewritten.is_empty() || rewritten==command || rewritten.len()>131_072 || rewritten.contains('\0') {return;}
-    tool_input["command"]=json!(rewritten);
-    outcome.verdict=Verdict::Rewrite {tool_input,note};
-}
 
 fn normalized(input: &HookInput) -> HookInput {
     let mut copy = input.clone();
@@ -124,10 +91,8 @@ pub(crate) fn codex(event: &str, original: &HookInput) -> Option<String> {
     } else {
         crate::dispatch::run_codex_event(Trigger::from_event_name(event), &input)
     };
-    if event=="PreToolUse" {
-        let runner=MachineRunner::new(&std::env::var("PATH").unwrap_or_default()).at(&root);
-        rtk_rewrite(&input,&mut outcome,config.rtk(),&runner);
-    }
+    // The rtk swap already ran inside the command guard, the same step the
+    // Claude Code hook takes: Codex gets one rewrite, never a second pass.
     if let Verdict::Rewrite { tool_input, .. } = &mut outcome.verdict {
         if original.tool_name.as_deref() == Some("spawn_agent") {
             let mut actual = original.tool_input.clone();
@@ -178,73 +143,16 @@ fn output(event: &str, outcome: &Outcome) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    struct RtkRunner {status:RunOutcome, text:&'static str}
-    impl ToolRunner for RtkRunner {
-        fn on_path(&self,_:&str)->bool {panic!("no extra probe")}
-        fn run(&self,_:&str,_:&[&str])->bool {panic!("never execute the user's command")}
-        fn found_off_path(&self,_:&str)->Option<std::path::PathBuf> {None}
-        fn output(&self,program:&str,args:&[&str],limit:std::time::Duration)->(RunOutcome,String) {
-            assert_eq!(program,"rtk"); assert_eq!(args,["rewrite","--","git status --short"]);
-            assert_eq!(limit,std::time::Duration::from_secs(1));
-            (self.status,self.text.into())
-        }
-    }
-    fn shell_call()->HookInput {
-        normalized(&serde_json::from_value(json!({"tool_name":"exec_command","tool_input":{"cmd":"git status --short","yield_time_ms":1000,"max_output_tokens":1234}})).unwrap())
-    }
+    /// A rewritten command goes back as replacement arguments on the
+    /// tool-call event and never as an approval of the native execution.
     #[test]
-    fn codex_rtk_reuses_native_rewrite_without_executing_the_command_or_losing_fields() {
-        let call=shell_call(); let mut outcome=Outcome::allow();
-        rtk_rewrite(&call,&mut outcome,true,&RtkRunner {status:RunOutcome::Succeeded,text:"rtk git status --short\n"});
-        let Verdict::Rewrite {tool_input,..}=outcome.verdict else {panic!("expected rewrite")};
-        assert_eq!(tool_input["command"],"rtk git status --short");
-        assert_eq!(tool_input["yield_time_ms"],1000); assert_eq!(tool_input["max_output_tokens"],1234);
-    }
-    #[test]
-    fn codex_rtk_respects_denials_opt_out_gateway_and_existing_wrappers() {
-        let runner=RtkRunner {status:RunOutcome::Succeeded,text:"rtk git status --short"};
-        // RtkRunner asserts the exact original command if called: these
-        // skipped forms must never reach it.
-        for command in ["mustard-rt run search --request '{}'","rtk git status --short"] {
-            let mut call=shell_call(); call.tool_input["command"]=json!(command);
-            let mut outcome=Outcome::allow(); rtk_rewrite(&call,&mut outcome,true,&runner);
-            assert!(matches!(outcome.verdict,Verdict::Allow));
-        }
-        let mut denied=Outcome::allow(); denied.fold(Verdict::Deny {reason:"capacity or protected write".into()});
-        rtk_rewrite(&shell_call(),&mut denied,true,&runner);
-        assert!(matches!(denied.verdict,Verdict::Deny {..}));
-        let mut off=Outcome::allow(); rtk_rewrite(&shell_call(),&mut off,false,&runner);
-        assert!(matches!(off.verdict,Verdict::Allow));
-    }
-    #[test]
-    fn codex_rtk_failure_keeps_the_original_native_command() {
-        for (status,text) in [(RunOutcome::Failed,""),(RunOutcome::TimedOut {after:std::time::Duration::from_secs(1)},"partial"),(RunOutcome::Succeeded,"")] {
-            let mut outcome=Outcome::allow();
-            rtk_rewrite(&shell_call(),&mut outcome,true,&RtkRunner {status,text});
-            assert!(matches!(outcome.verdict,Verdict::Allow));
-        }
-    }
-    #[test]
-    fn codex_rtk_handles_protocol_exit_codes_without_approving_native_execution() {
-        struct ExitRunner(i32);
-        impl ToolRunner for ExitRunner {
-            fn on_path(&self,_:&str)->bool {panic!("no probe")}
-            fn run(&self,_:&str,_:&[&str])->bool {panic!("never execute")}
-            fn found_off_path(&self,_:&str)->Option<std::path::PathBuf> {None}
-            fn output_with_exit(&self,_:&str,_:&[&str],_:std::time::Duration)->(RunOutcome,Option<i32>,String) {
-                (RunOutcome::Failed,Some(self.0),"rtk git status --short".into())
-            }
-        }
-        let mut out=Outcome::allow(); rtk_rewrite(&shell_call(),&mut out,true,&ExitRunner(3));
+    fn a_rewrite_never_approves_native_execution() {
+        let mut out=Outcome::allow();
+        out.fold(Verdict::Rewrite {tool_input:json!({"command":"'/opt/rtk' git status --short","yield_time_ms":1000}),note:None});
         let view:Value=serde_json::from_str(&output("PreToolUse",&out).unwrap()).unwrap();
-        assert_eq!(view["hookSpecificOutput"]["updatedInput"]["command"],"rtk git status --short");
+        assert_eq!(view["hookSpecificOutput"]["updatedInput"]["command"],"'/opt/rtk' git status --short");
+        assert_eq!(view["hookSpecificOutput"]["updatedInput"]["yield_time_ms"],1000);
         assert!(output("PermissionRequest",&out).is_none(),"rewriting must not approve execution");
-        let mut denied=Outcome::allow(); rtk_rewrite(&shell_call(),&mut denied,true,&ExitRunner(2));
-        assert!(matches!(denied.verdict,Verdict::Deny {..}));
-        for code in [1,4,126,127] {
-            let mut out=Outcome::allow(); rtk_rewrite(&shell_call(),&mut out,true,&ExitRunner(code));
-            assert!(matches!(out.verdict,Verdict::Allow),"exit {code} is not a valid rewrite");
-        }
     }
     #[test]
     fn codex_post_tool_answer_records_approval_through_the_native_witness() {

@@ -334,6 +334,282 @@ fn a_call_through_a_library_path_links_the_same_when_only_another_file_changed()
 
 /// Um projeto git com o mapa fora dele, como a instalação o deixa, e um
 /// commit com `files`.
+/// A passada nativa de um mapa que outra passada nativa segura sai sem ler
+/// nada e diz que está ocupada; solta a trava, a seguinte lê o projeto.
+#[test]
+fn a_native_pass_of_a_map_another_native_pass_holds_reads_nothing_and_says_busy() {
+    let temp = project("scan-native-busy-", &[("src/a.rs", "pub fn alpha() -> u32 {\n    1\n}\n")]);
+    let dir = temp.path();
+    let out = model::path_in(&map_folder(dir));
+    let pass = || native_pass(dir, &out);
+    let running = mustard_core::io::fs::lock::LockedFile::exclusive_if_free(&mustard_core::domain::scan::native_pass_lock_path(&out))
+        .unwrap()
+        .expect("no other pass holds this map");
+    let busy = pass();
+    assert_eq!((busy["busy"].clone(), busy["read"].clone()), (json!(true), json!([])), "{busy}");
+    assert!(!out.exists(), "the busy pass wrote no map");
+    drop(running);
+    let read = pass();
+    assert_eq!(read["busy"], Value::Null, "{read}");
+    assert!(read["read"].as_array().is_some_and(|files| files.contains(&json!("src/a.rs"))), "{read}");
+    assert!(out.exists(), "the free pass wrote the map");
+}
+
+/// Roda a passada nativa do scan sobre `dir`, gravando o mapa em `out`, e
+/// devolve o relato dela.
+fn native_pass(dir: &Path, out: &Path) -> Value {
+    let run = Command::new(env!("CARGO_BIN_EXE_scan"))
+        .args(["scan", dir.to_str().unwrap(), "--out", out.to_str().unwrap(), "--json", "--native"])
+        .output()
+        .expect("run scan");
+    assert!(run.status.success(), "stderr: {}", String::from_utf8_lossy(&run.stderr));
+    let stdout = String::from_utf8_lossy(&run.stdout).into_owned();
+    serde_json::from_str::<Value>(stdout.lines().last().unwrap_or("{}")).expect("the report is one JSON line")
+}
+
+/// A passada nativa grava, depois do mapa, os vetores de código do que mudou:
+/// a busca que vem depois dela não tem vetor a calcular. Num projeto em
+/// TypeScript, na primeira passada e na que relê um arquivo.
+#[test]
+fn a_native_pass_leaves_no_code_vector_for_the_next_search_to_compute() {
+    let temp = project("scan-native-vectors-", &[("src/alpha.ts", "export function alphaStart(): number {\n  return 1;\n}\n")]);
+    let dir = temp.path();
+    let out = model::path_in(&map_folder(dir));
+    let first = native_pass(dir, &out);
+    assert!(first["vectors"].as_u64().is_some_and(|count| count > 0), "{first}");
+    assert_eq!(mustard_core::io::code_vectors::fill_at(&out, dir).unwrap(), Some(0), "nothing left for the search");
+
+    write(dir, "src/alpha.ts", "export function alphaStart(): number {\n  return 2;\n}\n");
+    let second = native_pass(dir, &out);
+    assert_eq!(second["read"], json!(["src/alpha.ts"]), "{second}");
+    assert!(second["vectors"].as_u64().is_some_and(|count| count > 0), "{second}");
+    assert_eq!(mustard_core::io::code_vectors::fill_at(&out, dir).unwrap(), Some(0), "nothing left for the search");
+}
+
+/// A passada que relê um arquivo calcula o vetor de código só da declaração
+/// cujo texto mudou: a outra do mesmo arquivo, que só desceu de linha, e a do
+/// arquivo que a chama guardam o vetor que já tinham. Num projeto em
+/// TypeScript.
+#[test]
+fn a_pass_that_rereads_a_file_computes_code_vectors_only_for_the_declarations_whose_text_changed() {
+    let temp = project(
+        "scan-native-vector-reuse-",
+        &[
+            ("src/alpha.ts", "export function alphaStart(): number {\n  return 1;\n}\n\nexport function alphaEnd(): number {\n  return 9;\n}\n"),
+            ("src/beta.ts", "import { alphaEnd } from './alpha';\n\nexport function betaRun(): number {\n  return alphaEnd() + 1;\n}\n"),
+        ],
+    );
+    let dir = temp.path();
+    let out = model::path_in(&map_folder(dir));
+    let first = native_pass(dir, &out);
+    assert_eq!(first["vectors"], json!(3), "{first}");
+
+    write(dir, "src/alpha.ts", "export function alphaStart(): number {\n  const base = 1;\n  return base + 1;\n}\n\nexport function alphaEnd(): number {\n  return 9;\n}\n");
+    let second = native_pass(dir, &out);
+    assert_eq!(second["read"], json!(["src/alpha.ts"]), "{second}");
+    assert_eq!(second["vectors"], json!(1), "only alphaStart changed its text: {second}");
+    let conn = rusqlite::Connection::open(&out).unwrap();
+    let kept: i64 = conn.query_row("SELECT count(*) FROM code_vectors v JOIN knowledge_symbols s ON s.id = v.id AND s.sha256 = v.sha256", [], |r| r.get(0)).unwrap();
+    assert_eq!(kept, 3, "every declaration still has a current vector");
+}
+
+/// As linhas das tabelas de vetores de sentido do mapa em `out`, em texto, na
+/// ordem da chave: as das declarações e as das palavras.
+fn meaning_vectors(out: &Path) -> Vec<String> {
+    let conn = rusqlite::Connection::open(out).unwrap();
+    ["SELECT file, name, nth, hash, hex(vector) FROM decl_vectors ORDER BY 1, 2, 3", "SELECT word, forms, hex(vector) FROM word_vectors ORDER BY 1"]
+        .iter()
+        .flat_map(|query| {
+            let mut stmt = conn.prepare(query).unwrap();
+            let width = stmt.column_count();
+            stmt.query_map([], |row| Ok((0..width).map(|at| format!("{:?}", row.get::<_, rusqlite::types::Value>(at).unwrap())).collect::<Vec<_>>().join("|")))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// Um comentário acrescentado no fim de um arquivo, fora de toda declaração,
+/// não muda o texto compilado de declaração nenhuma: a passada que relê o
+/// arquivo não calcula vetor nenhum, nem de sentido nem de código, e as
+/// tabelas de vetores ficam como estavam, as do outro arquivo inclusive. Num
+/// projeto em TypeScript.
+#[test]
+fn a_comment_at_the_end_of_a_file_recomputes_no_declaration_vector() {
+    let orders = "/** Places the customer order and charges the invoice. */\nexport function placeOrder(total: number): number {\n  return total * 2;\n}\n";
+    let temp = project(
+        "scan-trailing-comment-",
+        &[
+            ("src/orders.ts", orders),
+            ("src/shipping.ts", "import { placeOrder } from './orders';\n/** Ships the parcel to the warehouse address. */\nexport class ParcelShipper {\n  ship(weight: number): number {\n    return placeOrder(weight) + 1;\n  }\n}\n"),
+        ],
+    );
+    let dir = temp.path();
+    let map = model::path_in(&map_folder(dir));
+    let first = scan(dir, &[]);
+    assert!(first["vectors"].as_u64().is_some_and(|count| count > 0), "{first}");
+    let before = meaning_vectors(&map);
+    assert!(before.iter().any(|row| row.contains("ParcelShipper")), "{before:?}");
+
+    write(dir, "src/orders.ts", &format!("{orders}\n// Reviewed by the billing team.\n"));
+    let second = scan(dir, &[]);
+    assert_eq!(second["read"], json!(["src/orders.ts"]), "{second}");
+    assert_eq!(second["vectors"], json!(0), "no compiled text changed: {second}");
+    assert_eq!(meaning_vectors(&map), before, "every declaration keeps its vector");
+}
+
+/// Duas passadas ao mesmo tempo no mesmo projeto terminam sem erro ao gravar
+/// os vetores de sentido, e os vetores ficam os de uma passada só. O mapa vem
+/// do scan; cada rodada esvazia o bloco de sentido e larga juntas duas
+/// gravações dele, a mesma que o scan faz depois de gravar o mapa: as duas
+/// leem o mapa antes de qualquer uma gravar e têm as mesmas palavras novas a
+/// gravar. Num projeto em TypeScript.
+#[test]
+fn two_passes_at_the_same_time_write_the_meaning_vectors_of_a_single_pass() {
+    let temp = project(
+        "scan-two-passes-",
+        &[
+            ("src/orders.ts", "/** Places the customer order and charges the invoice. */\nexport function placeOrder(total: number): number {\n  return total * 2;\n}\n"),
+            ("src/shipping.ts", "import { placeOrder } from './orders';\n/** Ships the parcel to the warehouse address. */\nexport class ParcelShipper {\n  ship(weight: number): number {\n    return placeOrder(weight) + 1;\n  }\n}\n"),
+            ("src/refunds.ts", "/** Refunds the payment when the delivery fails. */\nexport interface RefundPolicy {\n  refundDays: number;\n}\n"),
+        ],
+    );
+    let dir = temp.path();
+    let map = model::path_in(&map_folder(dir));
+    scan(dir, &[]);
+    let expected = meaning_vectors(&map);
+    assert!(expected.iter().any(|row| row.starts_with("Text(\"parcel\")")), "a single pass writes the word vectors: {} rows", expected.len());
+    for round in 0..3 {
+        rusqlite::Connection::open(&map)
+            .unwrap()
+            .execute_batch("DELETE FROM decl_vectors; DELETE FROM word_vectors; DELETE FROM meaning_meta;")
+            .unwrap();
+        let together = std::sync::Barrier::new(2);
+        let failures: Vec<String> = std::thread::scope(|scope| {
+            let passes: Vec<_> = (0..2)
+                .map(|_| {
+                    scope.spawn(|| {
+                        together.wait();
+                        mustard_core::io::map_meaning::fill_at(&map, dir).map(|_| ()).map_err(|err| err.to_string())
+                    })
+                })
+                .collect();
+            passes.into_iter().filter_map(|pass| pass.join().unwrap().err()).collect()
+        });
+        assert!(failures.is_empty(), "round {round}: both passes write the vectors: {failures:?}");
+        assert_eq!(meaning_vectors(&map), expected, "round {round}: the vectors of two passes are those of one");
+    }
+}
+
+/// Dois processos do scan largados juntos sobre uma pasta de mapa ainda vazia
+/// saem os dois com sucesso, rodada após rodada, e o mapa fica o de uma
+/// passada só: a abertura do mapa novo espera a vez da outra, em vez de uma
+/// passada cair inteira com o banco travado. Num projeto em TypeScript.
+#[test]
+fn two_passes_at_the_same_time_over_a_new_map_folder_both_finish_with_the_map_of_one() {
+    let temp = project(
+        "scan-two-new-maps-",
+        &[
+            ("src/orders.ts", "export function placeOrder(total: number): number {\n  return total * 2;\n}\n"),
+            ("src/shipping.ts", "import { placeOrder } from './orders';\nexport class ParcelShipper {\n  ship(weight: number): number {\n    return placeOrder(weight) + 1;\n  }\n}\n"),
+        ],
+    );
+    let dir = temp.path();
+    let single = tempfile::tempdir().unwrap();
+    let (expected, _) = model::scan(dir, single.path(), &[]);
+    for round in 0..6 {
+        let folder = tempfile::tempdir().unwrap();
+        let map = model::path_in(folder.path());
+        let passes: Vec<_> = (0..2)
+            .map(|_| {
+                Command::new(env!("CARGO_BIN_EXE_scan"))
+                    .args(["scan", dir.to_str().unwrap(), "--out", map.to_str().unwrap(), "--json"])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
+                    .expect("run scan")
+            })
+            .collect();
+        for pass in passes {
+            let run = pass.wait_with_output().unwrap();
+            assert!(run.status.success(), "round {round}: both passes finish: {}", String::from_utf8_lossy(&run.stderr));
+        }
+        assert_eq!(model::read(folder.path()), expected, "round {round}: the map of two passes is the map of one");
+    }
+}
+
+/// O índice de busca do mapa em `out`, tabela por tabela, como o banco o
+/// guarda: cada forma de cada campo de cada documento, o tamanho dos campos,
+/// os números de cada nível, os nomes da tabela trigram, as declarações com o
+/// número de cada uma e o catálogo dos símbolos.
+fn search_index(out: &Path) -> Vec<Vec<String>> {
+    let conn = rusqlite::Connection::open(out).unwrap();
+    [
+        "SELECT term, doc, col, offset FROM decl_vocab ORDER BY 1, 2, 3, 4",
+        "SELECT term, doc, col, offset FROM file_vocab ORDER BY 1, 2, 3, 4",
+        "SELECT * FROM decl_lengths ORDER BY id",
+        "SELECT * FROM file_lengths ORDER BY id",
+        "SELECT key, value FROM search_meta ORDER BY key",
+        "SELECT rowid, name, folded, file FROM decl_trigram ORDER BY rowid",
+        "SELECT rowid, file, name FROM decls ORDER BY rowid",
+        "SELECT rowid, path FROM files ORDER BY rowid",
+        "SELECT id, path, name, line, end_line, sha256, position FROM knowledge_symbols ORDER BY id",
+    ]
+    .iter()
+    .map(|query| {
+        let mut stmt = conn.prepare(query).unwrap();
+        let width = stmt.column_count();
+        stmt.query_map([], |row| Ok((0..width).map(|at| format!("{:?}", row.get_ref(at).unwrap())).collect::<Vec<_>>().join("|")))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    })
+    .collect()
+}
+
+/// A passada que relê um arquivo troca só a parte dele no índice de busca,
+/// sem refazer o índice inteiro, e o índice fica o mesmo da passada que lê
+/// tudo num mapa novo, também depois de o arquivo ganhar uma declaração. Num
+/// projeto em TypeScript.
+#[test]
+fn a_pass_that_rereads_one_file_rewrites_only_its_part_of_the_search_index() {
+    let temp = project(
+        "scan-index-in-place-",
+        &[
+            ("src/alpha.ts", "export function alphaStart(): number {\n  return 1;\n}\n"),
+            ("src/beta.ts", "export const betaLabel = 'beta';\n"),
+            ("src/delta.ts", "export class DeltaBox {\n  size = 3;\n}\n"),
+            ("src/epsilon.ts", "export interface EpsilonShape {\n  side: number;\n}\n"),
+            ("src/gamma.ts", "import { alphaStart } from './alpha';\nexport function gammaFifth(): number {\n  return alphaStart() + 5;\n}\n"),
+            ("src/zeta.ts", "export function zetaLast(text: string): string {\n  return text.toUpperCase();\n}\n"),
+        ],
+    );
+    let dir = temp.path();
+    let out = model::path_in(&map_folder(dir));
+    assert_eq!(scan(dir, &[])["full"], json!(true));
+    // Uma marca no índice que só a montagem inteira dele apaga.
+    let conn = rusqlite::Connection::open(&out).unwrap();
+    conn.execute("INSERT INTO search_meta(key, value) VALUES ('kept-by-the-pass', 1)", []).unwrap();
+    drop(conn);
+
+    let gamma = "import { alphaStart } from './alpha';\nexport function gammaFifth(): number {\n  return alphaStart() + 50;\n}\n";
+    write(dir, "src/gamma.ts", gamma);
+    let second = scan(dir, &[]);
+    assert_eq!(second["read"], json!(["src/gamma.ts"]), "{second}");
+    let conn = rusqlite::Connection::open(&out).unwrap();
+    let kept: i64 = conn.query_row("SELECT count(*) FROM search_meta WHERE key = 'kept-by-the-pass'", [], |row| row.get(0)).unwrap();
+    assert_eq!(kept, 1, "the pass did not rebuild the whole index");
+    conn.execute("DELETE FROM search_meta WHERE key = 'kept-by-the-pass'", []).unwrap();
+    drop(conn);
+
+    write(dir, "src/gamma.ts", &format!("{gamma}export function gammaAdded(): void {{}}\n"));
+    assert_eq!(scan(dir, &[])["read"], json!(["src/gamma.ts"]));
+    let whole = tempfile::tempdir().unwrap();
+    model::scan(dir, whole.path(), &[]);
+    assert_eq!(search_index(&out), search_index(&model::path_in(whole.path())), "the index after one file is the index of a full pass");
+}
+
 fn project(prefix: &str, files: &[(&str, &str)]) -> tempfile::TempDir {
     let temp = tempfile::Builder::new().prefix(prefix).tempdir().unwrap();
     let dir = temp.path();
@@ -577,6 +853,40 @@ fn a_map_of_another_scan_build_is_behind_until_a_pass_of_this_one_writes_it() {
     assert!(!model::is_behind(dir), "written by this build, the map is up to date again");
 }
 
+/// Um programa mais velho, que declara o bloco das declarações no formato de
+/// antes, abre o mapa que a passada de agora gravou de um projeto em
+/// TypeScript: a abertura recusa e o mapa segue com as declarações e os
+/// textos de cada arquivo ao lado dos arquivos, e em dia. Antes, essa abertura
+/// refazia o bloco no formato dela e deixava as declarações e os textos
+/// vazios com os arquivos inteiros.
+#[test]
+fn an_older_program_opening_the_map_leaves_its_declarations_and_texts() {
+    use mustard_core::io::map_db::{Block, Kind, MapDb};
+    let temp = project("scan-older-program-", &[("web/tela.ts", "/** Carrega a tela. */\nexport function carregar(): string {\n  return \"tela pronta\";\n}\n")]);
+    let dir = temp.path();
+    assert_eq!(scan(dir, &[])["full"], json!(true));
+    let model = mustard_core::io::project_map::model_path(dir);
+    let counted = || -> (u32, [i64; 3]) {
+        let db = MapDb::open(&model, dir, &[]).unwrap();
+        let version = db.conn().query_row("SELECT version FROM blocks WHERE name = 'decls'", [], |row| row.get(0)).unwrap();
+        let count = |table: &str| db.conn().query_row(&format!("SELECT count(*) FROM {table}"), [], |row| row.get(0)).unwrap();
+        (version, [count("files"), count("decls"), count("texts")])
+    };
+    let before = counted();
+    assert!(before.1.iter().all(|&rows| rows > 0), "the pass wrote the files, the declarations and the texts: {before:?}");
+
+    let older = Block {
+        name: mustard_core::io::project_map::DECLS.name(),
+        version: before.0 - 1,
+        tables: &["decls", "texts"],
+        schema: "CREATE TABLE decls(file TEXT, name TEXT); CREATE TABLE texts(path TEXT);",
+        kind: Kind::Rebuilt(|_, _| Ok(())),
+    };
+    assert!(MapDb::open(&model, dir, &[older]).is_err(), "the older program refuses the newer block");
+    assert_eq!(counted(), before, "the declarations and the texts stay beside the files");
+    assert!(!model::is_behind(dir), "the map stays up to date for this build");
+}
+
 /// Um arquivo que não é código entra, muda e sai, e um deles marca o
 /// Laravel pelo caminho: a passada não relê nada, refaz as pilhas do projeto
 /// e do subprojeto, e o mapa é o de uma passada que lê tudo.
@@ -677,4 +987,268 @@ fn a_pass_that_rereads_only_the_importer_follows_what_the_kept_file_passes_on() 
     assert_eq!(report["read"], json!(["web/src/tela.ts"]), "{report}");
     assert_eq!(deps_in_the_map(dir, "web/src/tela.ts"), vec![json!("web/src/pedidos/pedido.service.ts")]);
     same_as_a_full_pass(dir);
+}
+
+/// A passada que lê um arquivo novo e relê um que ganhou uma função
+/// regrava, depois deles, as linhas de um arquivo que não leu, com os
+/// cartões que só o banco guardava: só os cartões dos dois se refazem, e o
+/// mapa sai igual ao da leitura inteira.
+#[test]
+fn a_pass_that_moves_the_rows_of_an_untouched_file_keeps_its_cards() {
+    let temp = project(
+        "scan-moved-cards-",
+        &[
+            ("src/a.ts", "export function a(): number {\n  return 1;\n}\n"),
+            ("src/m.ts", "export function m(): number {\n  return 2;\n}\n"),
+            ("src/z.ts", "export function z(): number {\n  return 3;\n}\n"),
+        ],
+    );
+    let dir = temp.path();
+    assert_eq!(scan(dir, &[])["full"], json!(true));
+
+    write(dir, "src/b.ts", "export function b(): number {\n  return 4;\n}\n");
+    write(dir, "src/m.ts", "export function m(): number {\n  return 2;\n}\n\nexport function n(): number {\n  return 5;\n}\n");
+    let report = scan(dir, &[]);
+    assert_eq!(report["read"], json!(["src/b.ts", "src/m.ts"]), "{report}");
+    assert_eq!(report["enriched"], json!(2), "{report}");
+    same_as_a_full_pass(dir);
+}
+
+/// A passada que relê um arquivo refaz os cartões de conhecimento só dos
+/// arquivos cujas entradas mudaram: o arquivo editado e, quando a declaração
+/// chamada muda de linha, o arquivo que a chama, cujo cartão aponta para ela.
+/// Os outros ficam com os cartões que já tinham, e o mapa sai igual ao da
+/// leitura inteira.
+#[test]
+fn rereading_one_file_rebuilds_only_the_cards_whose_inputs_changed() {
+    let temp = project(
+        "scan-cards-",
+        &[
+            ("src/total.ts", "export function total(): number {\n  return 1;\n}\n"),
+            ("src/pedido.ts", "import { total } from './total';\n\nexport function pedido(): number {\n  return total() + 1;\n}\n"),
+            ("src/avulso.ts", "export function avulso(): number {\n  return 3;\n}\n"),
+            ("src/outro.ts", "export function outro(): number {\n  return 4;\n}\n"),
+        ],
+    );
+    let dir = temp.path();
+    let first = scan(dir, &[]);
+    assert_eq!(first["full"], json!(true), "{first}");
+    assert_eq!(first["enriched"], first["files"], "{first}");
+
+    // Só o corpo de um arquivo que ninguém chama muda.
+    write(dir, "src/avulso.ts", "export function avulso(): number {\n  return 5;\n}\n");
+    let second = scan(dir, &[]);
+    assert_eq!(second["read"], json!(["src/avulso.ts"]), "{second}");
+    assert_eq!(second["enriched"], json!(1), "{second}");
+
+    // A função chamada desce uma linha: o arquivo dela e o de quem a chama.
+    write(dir, "src/total.ts", "// Soma do pedido.\nexport function total(): number {\n  return 1;\n}\n");
+    let third = scan(dir, &[]);
+    assert_eq!(third["read"], json!(["src/total.ts"]), "{third}");
+    assert_eq!(third["enriched"], json!(2), "{third}");
+    same_as_a_full_pass(dir);
+}
+
+/// O uso que nenhum arquivo escreve, plantado numa declaração do mapa: só a
+/// passada que resolve de novo as chamadas que a alcançam o tira.
+const GHOST_USE: &str = "src/ghost.ts:9:ghost";
+
+/// Os usos que o mapa gravado dá à declaração `name` de `file`.
+fn uses_in_the_map(dir: &Path, file: &str, name: &str) -> Vec<Value> {
+    let map = model::read(&map_folder(dir));
+    let module = map["modules"].as_array().unwrap().iter().find(|m| m["path"] == json!(file)).expect("o arquivo está no mapa");
+    let decl = module["declarations"].as_array().unwrap().iter().find(|d| d["name"] == json!(name)).expect("a declaração está no mapa");
+    decl["used_by"].as_array().cloned().unwrap_or_default()
+}
+
+/// Planta o uso falso na declaração `name` de `file` (`plant`) ou o tira,
+/// pelo porto, com a marca guardada.
+fn ghost_use(dir: &Path, file: &str, name: &str, plant: bool) {
+    model::edit_keeping_the_mark(&map_folder(dir), |map| {
+        let module = map["modules"].as_array_mut().unwrap().iter_mut().find(|m| m["path"] == json!(file)).unwrap();
+        let decl = module["declarations"].as_array_mut().unwrap().iter_mut().find(|d| d["name"] == json!(name)).unwrap();
+        let decl = decl.as_object_mut().unwrap();
+        let uses = decl.entry("used_by").or_insert(json!([])).as_array_mut().unwrap();
+        uses.retain(|site| *site != json!(GHOST_USE));
+        if plant {
+            uses.push(json!(GHOST_USE));
+        }
+        // A lista vazia não se grava, como na passada do scan.
+        if uses.is_empty() {
+            decl.remove("used_by");
+        }
+    });
+}
+
+/// A passada que relê um arquivo resolve de novo só as chamadas que podem
+/// mudar com ele, e o mapa sai o da leitura inteira, com a função do arquivo
+/// lido que só desceu de linha e a que trocou de nome. O uso plantado na
+/// declaração que nenhuma chamada do arquivo lido alcança fica; a declaração
+/// que muda de tipo tem as chamadas dela resolvidas de novo, e o uso plantado
+/// sai. Num projeto em TypeScript.
+#[test]
+fn a_pass_that_rereads_one_file_resolves_again_only_the_calls_that_can_change() {
+    let temp = project(
+        "scan-relink-",
+        &[
+            ("src/alpha.ts", "export function alpha(): number {\n  return 1;\n}\n"),
+            ("src/beta.ts", "import { alpha } from './alpha';\nexport function beta(): number {\n  return alpha();\n}\n"),
+            ("src/gamma.ts", "export function gamma(): number {\n  return 2;\n}\nexport function delta(): number {\n  return 3;\n}\n"),
+            ("src/uses.ts", "import { gamma, delta } from './gamma';\nexport function both(): number {\n  return gamma() + delta();\n}\n"),
+        ],
+    );
+    let dir = temp.path();
+    assert_eq!(scan(dir, &[])["full"], json!(true));
+
+    let gamma = |body: u32| {
+        format!("// topo\n\nexport function gamma(): number {{\n  return {body};\n}}\nexport function epsilon(): number {{\n  return 3;\n}}\n")
+    };
+    write(dir, "src/gamma.ts", &gamma(20));
+    let second = scan(dir, &[]);
+    assert_eq!((second["full"].clone(), second["read"].clone()), (json!(false), json!(["src/gamma.ts"])), "{second}");
+    assert_eq!(uses_in_the_map(dir, "src/gamma.ts", "gamma"), [json!("src/uses.ts:3:both")]);
+    same_as_a_full_pass(dir);
+
+    // O uso plantado só sai da declaração cujas chamadas se resolvem de novo.
+    // O cartão de conhecimento da declaração o guarda, e por isso o mapa só se
+    // compara com o da leitura inteira depois que ela muda.
+    ghost_use(dir, "src/alpha.ts", "alpha", true);
+    write(dir, "src/gamma.ts", &gamma(30));
+    assert_eq!(scan(dir, &[])["read"], json!(["src/gamma.ts"]));
+    assert_eq!(
+        uses_in_the_map(dir, "src/alpha.ts", "alpha"),
+        [json!("src/beta.ts:3:beta"), json!(GHOST_USE)],
+        "the calls that reach alpha were not resolved again"
+    );
+
+    write(dir, "src/alpha.ts", "export const alpha = 1;\n");
+    assert_eq!(scan(dir, &[])["full"], json!(false));
+    assert!(!uses_in_the_map(dir, "src/alpha.ts", "alpha").contains(&json!(GHOST_USE)), "a declaration that changed kind is linked again");
+    same_as_a_full_pass(dir);
+}
+
+/// O contexto com o campo `config`, do tipo `field_type`.
+fn csharp_context(field_type: &str) -> String {
+    format!("namespace Loja;\n\npublic class Ctx\n{{\n    public {field_type} config;\n}}\n")
+}
+
+/// O campo que troca de tipo no arquivo relido leva a chamada lida por ele
+/// noutro arquivo (`_ctx.config.Lingua()`) ao método do tipo novo, como na
+/// leitura inteira: o arquivo que escreve a chamada não muda, e o nome
+/// chamado também não. Num projeto em C#.
+#[test]
+fn a_field_that_changes_type_in_the_reread_file_takes_the_call_read_through_it_to_the_new_type() {
+    let reader = "namespace Loja;\n\npublic class Leitor\n{\n    private readonly Ctx _ctx;\n\n    public int Ler()\n    {\n        return _ctx.config.Lingua();\n    }\n}\n";
+    let temp = project(
+        "scan-field-type-",
+        &[
+            ("src/Config.cs", "namespace Loja;\n\npublic class Config\n{\n    public int Lingua() { return 1; }\n}\n"),
+            ("src/Outra.cs", "namespace Loja;\n\npublic class Outra\n{\n    public int Lingua() { return 0; }\n}\n"),
+            ("src/Ctx.cs", &csharp_context("Config")),
+            ("src/Leitor.cs", reader),
+        ],
+    );
+    let dir = temp.path();
+    assert_eq!(scan(dir, &[])["full"], json!(true));
+    let call = json!("src/Leitor.cs:9:Ler");
+    assert_eq!(uses_in_the_map(dir, "src/Config.cs", "Lingua"), std::slice::from_ref(&call));
+
+    write(dir, "src/Ctx.cs", &csharp_context("Outra"));
+    let second = scan(dir, &[]);
+    assert_eq!((second["full"].clone(), second["read"].clone()), (json!(false), json!(["src/Ctx.cs"])), "{second}");
+    assert_eq!(uses_in_the_map(dir, "src/Outra.cs", "Lingua"), [call], "the call follows the new type of the field");
+    assert!(uses_in_the_map(dir, "src/Config.cs", "Lingua").is_empty(), "the old type keeps no use");
+    same_as_a_full_pass(dir);
+}
+
+/// O arquivo da função `name`, que chama a função `comum` `calls` vezes sem
+/// importar nenhuma.
+fn common_caller(name: &str, calls: usize) -> String {
+    format!("export function {name}(): number {{\n  return {};\n}}\n", vec!["comum()"; calls].join("\n    + "))
+}
+
+/// Nove funções `comum`, de `src/m1.ts` a `src/m9.ts`, e os chamadores
+/// `src/a.ts` e `src/b.ts`, que a chamam uma vez cada sem importar nenhuma:
+/// cada chamada alcança as nove, acima do teto do nome comum, e só se conta.
+/// Em TypeScript.
+fn common_name_project(prefix: &str) -> tempfile::TempDir {
+    let mut files: Vec<(String, String)> =
+        (1..=9).map(|n| (format!("src/m{n}.ts"), format!("export function comum(): number {{\n  return {n};\n}}\n"))).collect();
+    files.push(("src/a.ts".to_string(), common_caller("a", 1)));
+    files.push(("src/b.ts".to_string(), common_caller("b", 1)));
+    let files: Vec<(&str, &str)> = files.iter().map(|(rel, body)| (rel.as_str(), body.as_str())).collect();
+    project(prefix, &files)
+}
+
+/// A função `comum` de `src/m1.ts`, como o mapa gravado a guarda.
+fn common_decl(dir: &Path) -> Value {
+    let map = model::read(&map_folder(dir));
+    let m1 = map["modules"].as_array().unwrap().iter().find(|m| m["path"] == json!("src/m1.ts")).unwrap();
+    m1["declarations"].as_array().unwrap().iter().find(|d| d["name"] == json!("comum")).unwrap().clone()
+}
+
+/// Nove funções `comum` e dois arquivos que a chamam sem importar nenhuma:
+/// cada chamada alcança as nove, acima do teto do nome comum, e só se conta.
+/// Reler um dos chamadores conta a chamada dele uma vez só, como na leitura
+/// inteira. Num projeto em TypeScript.
+#[test]
+fn rereading_one_caller_counts_its_common_call_once() {
+    let temp = common_name_project("scan-common-calls-");
+    let dir = temp.path();
+    assert_eq!(scan(dir, &[])["full"], json!(true));
+    assert_eq!(common_decl(dir)["common_calls"], json!(2));
+
+    write(dir, "src/a.ts", &format!("// o primeiro chamador\n{}", common_caller("a", 1)));
+    let second = scan(dir, &[]);
+    assert_eq!((second["full"].clone(), second["read"].clone()), (json!(false), json!(["src/a.ts"])), "{second}");
+    assert_eq!(common_decl(dir)["common_calls"], json!(2), "the reread caller's call is counted once");
+    same_as_a_full_pass(dir);
+}
+
+/// Reler um dos chamadores de um nome comum demais não refaz o nome nos
+/// outros arquivos: a contagem guarda de que arquivo veio cada chamada, a
+/// passada fica com as dos arquivos que não releu e troca só as do arquivo
+/// relido. O uso plantado na declaração chamada fica, porque nenhuma chamada
+/// dos outros arquivos se resolveu de novo. Num projeto em TypeScript.
+#[test]
+fn rereading_a_caller_of_a_common_name_keeps_what_the_other_callers_counted() {
+    let temp = common_name_project("scan-common-origin-");
+    let dir = temp.path();
+    assert_eq!(scan(dir, &[])["full"], json!(true));
+    let counted = || -> (Value, Value) {
+        let common = common_decl(dir);
+        (common["common_calls"].clone(), common["common_from"].clone())
+    };
+    assert_eq!(counted(), (json!(2), json!({"src/a.ts": 1, "src/b.ts": 1})));
+
+    write(dir, "src/a.ts", &common_caller("a", 2));
+    let second = scan(dir, &[]);
+    assert_eq!((second["full"].clone(), second["read"].clone()), (json!(false), json!(["src/a.ts"])), "{second}");
+    assert_eq!(counted(), (json!(3), json!({"src/a.ts": 2, "src/b.ts": 1})), "the reread caller's calls replace its own");
+    same_as_a_full_pass(dir);
+
+    ghost_use(dir, "src/m1.ts", "comum", true);
+    write(dir, "src/a.ts", &common_caller("a", 1));
+    assert_eq!(scan(dir, &[])["read"], json!(["src/a.ts"]));
+    assert_eq!(uses_in_the_map(dir, "src/m1.ts", "comum"), [json!(GHOST_USE)], "the common name was not linked again in every file");
+    assert_eq!(counted(), (json!(2), json!({"src/a.ts": 1, "src/b.ts": 1})));
+}
+
+/// O mapa gravado antes de a contagem do nome comum guardar a origem de cada
+/// chamada traz o bloco das declarações na versão 16, sem a coluna da origem.
+/// Pela versão, a passada seguinte refaz o bloco, lê o projeto inteiro e
+/// grava a origem de novo, em vez de ler e gravar uma coluna que o banco não
+/// tem. Num projeto em TypeScript.
+#[test]
+fn a_map_written_before_the_common_call_origin_is_read_again_whole() {
+    let temp = common_name_project("scan-common-origin-format-");
+    let dir = temp.path();
+    assert_eq!(scan(dir, &[])["full"], json!(true));
+    let db = rusqlite::Connection::open(model::path_in(&map_folder(dir))).unwrap();
+    db.execute_batch("ALTER TABLE decls DROP COLUMN common_from; UPDATE blocks SET version = 16 WHERE name = 'decls';").unwrap();
+    drop(db);
+
+    let report = scan(dir, &[]);
+    assert_eq!(report["full"], json!(true), "{report}");
+    assert_eq!(common_decl(dir)["common_from"], json!({"src/a.ts": 1, "src/b.ts": 1}));
 }

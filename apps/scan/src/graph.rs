@@ -72,8 +72,11 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 mod member;
 mod reach;
+mod relink;
 pub(crate) mod test_module;
 mod value;
+
+pub(crate) use relink::Previous;
 
 /// Catalog cap for `top_fan_in`: a bounded list (~a few KB of model) ordered
 /// strongest first. The map's summary reads the first hubs of
@@ -109,10 +112,11 @@ fn scc_depth(c: usize, succ: &[HashSet<usize>], memo: &mut [Option<usize>]) -> u
 /// centrality — otherwise every file of the most-imported namespace ends up at
 /// the same high fan-in, saturating `top_fan_in` with uniform glue.
 ///
-/// The single resolver of the imports: the model graph ([`build`]) and the
-/// dependencies of each file (`Module::deps`) both read it, so the two can
-/// never see a different graph. Output sorted → byte-stable. Nothing switches
-/// on a language name.
+/// O único resolvedor das importações, rodado uma vez por passada: o grafo do
+/// mapa ([`build`]) e as dependências de cada arquivo (`Module::deps`) leem as
+/// arestas que ele dá, e os dois nunca veem grafos diferentes. A saída vem
+/// ordenada, e os bytes não mudam de uma passada para outra. Nada depende do
+/// nome de uma linguagem.
 ///
 /// O arquivo que um módulo declara como teste ([`Module::is_declared_test`])
 /// não escreve aresta: o que ele importa é do teste, como o que o trecho de
@@ -180,7 +184,9 @@ pub fn resolve_test_deps(modules: &[Module], projects: &Projects, aliases: &Path
 /// cada módulo.
 pub type GraphBuild = (GraphStats, HashMap<String, usize>);
 
-pub fn build(modules: &[Module], projects: &Projects, aliases: &PathAliases) -> GraphBuild {
+/// O grafo dos arquivos `modules` pelas arestas `resolved` que
+/// [`resolve_edges`] deu a eles: as estatísticas e a camada de cada módulo.
+pub fn build(modules: &[Module], resolved: &[(usize, usize, u64)]) -> GraphBuild {
     let mut g: DiGraph<String, ()> = DiGraph::new();
     for m in modules {
         g.add_node(m.path.clone());
@@ -191,9 +197,8 @@ pub fn build(modules: &[Module], projects: &Projects, aliases: &PathAliases) -> 
     // `NodeIndex::new(i)`. The published degree is specificity-weighted (see the
     // resolver): a bucket-broadcast target keeps its 1/N share instead of a
     // minted full count, so real hubs rank above diffuse glue.
-    let resolved = resolve_edges(modules, projects, aliases);
     let mut edge_w: HashMap<(NodeIndex, NodeIndex), u64> = HashMap::new();
-    for &(a, b, w) in &resolved {
+    for &(a, b, w) in resolved {
         edge_w.insert((NodeIndex::new(a), NodeIndex::new(b)), w);
     }
     let edge_set: HashSet<(NodeIndex, NodeIndex)> = edge_w.keys().copied().collect();
@@ -291,8 +296,9 @@ pub(crate) const CITED_KINDS: &[&str] =
 /// provada tem um alvo só; a suspeita traz as declarações que a chamada pode
 /// alcançar, e a chamada que pode alcançar mais declarações que
 /// `max_same_name`, o teto do nome comum que o projeto configura, só se conta
-/// (`Decl::common_calls`). Quem a chamada alcança se procura por degraus,
-/// sempre só entre as declarações que se chamam ([`CALLABLE_KINDS`]):
+/// (`Decl::common_calls`), com o arquivo que a escreve (`Decl::common_from`).
+/// Quem a chamada alcança se procura por degraus, sempre só entre as
+/// declarações que se chamam ([`CALLABLE_KINDS`]):
 ///
 /// - O caminho escrito antes do nome que nomeia arquivo do projeto
 ///   (`Module::call_paths`, resolvido pelo mesmo passo que o põe em `deps`)
@@ -355,46 +361,69 @@ pub(crate) const CITED_KINDS: &[&str] =
 /// pelas regras de [`member::verdict`], e não entra entre os nomes chamados.
 /// The links of every declaration are
 /// rewritten from scratch on each pass, so nothing survives a declaration
-/// that is gone.
+/// that is gone. Com o mapa anterior (`previous`), a passada que releu só
+/// alguns arquivos resolve de novo só as chamadas e as citações que podem ter
+/// mudado, e fica com o resto do que ele ligou ([`relink`]).
 pub fn link_declarations(
     modules: &mut [Module],
     projects: &Projects,
     manifests: &[crate::model::Manifest],
     aliases: &PathAliases,
     max_same_name: usize,
+    previous: Option<Previous<'_>>,
 ) {
-    let DeclLinks { mut calls, mut uses, common, linked } =
-        resolve_declaration_links(modules, projects, manifests, aliases, max_same_name);
-    for (m, linked) in modules.iter_mut().zip(linked) {
+    let plan = previous.and_then(|previous| relink::plan(modules, manifests, max_same_name, previous));
+    let DeclLinks { mut calls, mut uses, mut common, linked, relinked } =
+        resolve_declaration_links(modules, projects, manifests, aliases, max_same_name, plan.as_ref());
+    // A citação que não se resolveu de novo fica como o mapa anterior a
+    // deixou: ligada.
+    let kept = |mi: usize, i: usize| plan.as_ref().is_some_and(|plan| !plan.whole(mi) && !relinked[mi].contains(&i));
+    for (mi, (m, linked)) in modules.iter_mut().zip(linked).enumerate() {
         m.cites = std::mem::take(&mut m.cites)
             .into_iter()
             .enumerate()
-            .filter_map(|(i, site)| linked.contains(&i).then_some(site))
+            .filter_map(|(i, site)| (linked.contains(&i) || kept(mi, i)).then_some(site))
             .collect();
     }
     for (mi, m) in modules.iter_mut().enumerate() {
+        let whole = plan.as_ref().is_none_or(|plan| plan.whole(mi));
         for (di, decl) in m.declarations.iter_mut().enumerate() {
-            decl.calls = std::mem::take(&mut calls[mi][di]).into_iter().collect();
+            let now = std::mem::take(&mut calls[mi][di]);
+            decl.calls = match &plan {
+                Some(plan) if !whole => plan.calls(&decl.calls, now),
+                _ => now.into_iter().collect(),
+            };
             let mut used = std::mem::take(&mut uses[mi][di]);
+            let mut from = std::mem::take(&mut common[mi][di]);
+            if let Some((kept, counted)) = plan.as_ref().and_then(|plan| plan.kept((mi, di), decl)) {
+                used.extend(kept);
+                for (file, calls) in counted {
+                    *from.entry(file).or_default() += calls;
+                }
+            }
             used.sort();
             // O mesmo lugar ligado duas vezes fica uma só, e a provada, que
             // vem antes na ordem, vence a suspeita.
             used.dedup_by(|next, kept| (&next.file, next.line, &next.from) == (&kept.file, kept.line, &kept.from));
             decl.used_by = used;
-            decl.common_calls = common[mi][di];
+            decl.common_calls = from.values().sum();
+            decl.common_from = from;
         }
     }
 }
 
 /// As ligações do projeto, por módulo e por declaração: os nomes que cada uma
 /// chama, os usos que recebe, as chamadas comuns demais para ligar que
-/// podiam alcançá-la, e as citações de cada módulo que ligaram, pela posição
-/// em `Module::cites`.
+/// podiam alcançá-la, pelo arquivo que as escreve, e as citações de cada
+/// módulo que ligaram, pela posição em `Module::cites`, e, na passada que liga
+/// de novo só parte do projeto, as citações de cada módulo que se resolveram
+/// de novo.
 struct DeclLinks {
     calls: Vec<Vec<BTreeSet<String>>>,
     uses: Vec<Vec<Vec<UseSite>>>,
-    common: Vec<Vec<usize>>,
+    common: Vec<Vec<BTreeMap<String, usize>>>,
     linked: Vec<HashSet<usize>>,
+    relinked: Vec<HashSet<usize>>,
 }
 
 /// O que uma chamada ou uma citação alcança.
@@ -475,13 +504,14 @@ fn own_types(m: &Module, from: Option<usize>) -> Vec<&str> {
 
 /// As ligações, por módulo e por declaração ([`DeclLinks`]). Split out of
 /// [`link_declarations`] so the whole project is read before any declaration
-/// is written to.
+/// is written to. Com `plan`, só as chamadas e as citações que ele diz.
 fn resolve_declaration_links(
     modules: &[Module],
     projects: &Projects,
     manifests: &[crate::model::Manifest],
     aliases: &PathAliases,
     max_same_name: usize,
+    plan: Option<&relink::Plan>,
 ) -> DeclLinks {
     let index = |kinds: &[&str]| {
         let mut by_name: HashMap<&str, Vec<DeclId>> = HashMap::new();
@@ -570,12 +600,16 @@ fn resolve_declaration_links(
     let mut links = DeclLinks {
         calls: modules.iter().map(|m| vec![BTreeSet::new(); m.declarations.len()]).collect(),
         uses: modules.iter().map(|m| vec![Vec::new(); m.declarations.len()]).collect(),
-        common: modules.iter().map(|m| vec![0; m.declarations.len()]).collect(),
+        common: modules.iter().map(|m| vec![BTreeMap::new(); m.declarations.len()]).collect(),
         linked: vec![HashSet::new(); modules.len()],
+        relinked: vec![HashSet::new(); modules.len()],
     };
 
     for (src, m) in modules.iter().enumerate() {
         if m.calls.is_empty() && m.cites.is_empty() && m.value_uses.is_empty() && m.member_reads.is_empty() {
+            continue;
+        }
+        if plan.is_some_and(|plan| !plan.reads(m, src)) {
             continue;
         }
         let imported: HashSet<&str> = m.deps.iter().map(String::as_str).collect();
@@ -649,6 +683,16 @@ fn resolve_declaration_links(
             .chain(m.value_uses.iter().map(|s| (s, &valued, None, Written::Value)))
             .chain(m.member_reads.iter().map(|s| (s, &read, None, Written::Member)));
         for (site, by_name, cite_at, written) in sites {
+            if let Some(plan) = plan {
+                let alone = site.qualifier.is_empty();
+                let looked = if alone { renamed(&brought_from, &site.name).unwrap_or(&site.name) } else { &site.name };
+                if !plan.relinks(src, looked) {
+                    continue;
+                }
+                if let Some(i) = cite_at {
+                    links.relinked[src].insert(i);
+                }
+            }
             let is_call = matches!(written, Written::Call);
             let by_value = matches!(written, Written::Value);
             let from = enclosing(&m.declarations, site.line);
@@ -947,7 +991,7 @@ fn resolve_declaration_links(
                 Verdict::Common(targets) => {
                     if is_call {
                         for (mi, di) in targets {
-                            links.common[mi][di] += 1;
+                            *links.common[mi][di].entry(m.path.clone()).or_default() += 1;
                         }
                     }
                     continue;

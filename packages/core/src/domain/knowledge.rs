@@ -133,9 +133,21 @@ fn short(text: &str, max: usize) -> String {
 /// Enrich the raw scanner model before its atomic database transaction. The
 /// content hash is calculated over the SAME text the parser saw, not a later
 /// read of the file. Unchanged metadata produces identical bytes.
-pub fn enrich(raw: &mut Value) {
+///
+/// Os cartões de um arquivo saem do que ele traz e do que os outros dizem
+/// dele: o resumo de cada arquivo que o usa e as declarações de outros
+/// arquivos que ele chama. Cada arquivo guarda com os cartões a marca dessas
+/// entradas (`inputs`); o arquivo que chega com cartões desta versão e com a
+/// mesma marca fica com eles, sem refazer, e sai igual ao que a leitura
+/// inteira daria. A marca vale para a mesma compilação do scan, a única que
+/// toma arquivos do mapa anterior. O arquivo que chega com a marca e sem os
+/// cartões, que a leitura do mapa deixou no banco, também fica como está:
+/// quem grava os mantém de lá ou, sem como, os faz refazer
+/// ([`forget_unloaded`]). Devolve os arquivos cujos cartões se refizeram, em
+/// ordem.
+pub fn enrich(raw: &mut Value) -> Vec<String> {
     let Some(modules) = raw["modules"].as_array() else {
-        return;
+        return Vec::new();
     };
     let hashes: BTreeMap<_, _> = modules
         .iter()
@@ -148,138 +160,263 @@ pub fn enrich(raw: &mut Value) {
             ))
         })
         .collect();
-    let mut cards = BTreeMap::<String, Vec<Card>>::new();
-    for module in modules {
-        let file = module["path"].as_str().unwrap_or_default();
-        if !module["file_class"].as_str().unwrap_or_default().is_empty() {
-            continue;
-        }
-        let sha256 = module["analysis"]["content_sha256"]
-            .as_str()
-            .unwrap_or_default();
-        for declaration in module["declarations"].as_array().into_iter().flatten() {
-            let line = declaration["line"].as_u64().unwrap_or(0);
-            let end_line = declaration["end_line"].as_u64().unwrap_or(0);
-            let in_test = module["test_lines"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .any(|range| {
-                    range[0].as_u64().is_some_and(|start| start <= line)
-                        && range[1].as_u64().is_some_and(|end| line <= end)
-                });
-            let name = declaration["name"].as_str().unwrap_or_default();
-            let strings = |key: &str| {
-                declaration[key]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(Value::as_str)
-                    .map(str::to_string)
-                    .collect()
-            };
-            let callers = declaration["used_by"].as_array().into_iter().flatten().filter_map(|site| {
-                let site: UseSite = serde_json::from_value(site.clone()).ok()?;
-                Some(json!({"file":site.file,"line":site.line,"from":site.from,
-                    "source":Source{file:site.file.clone(),line:site.line as u64,end_line:site.line as u64,sha256:hashes.get(site.file.as_str()).copied().unwrap_or_default().into()},
-                    "resolution":if site.is_proven(){"unique-static-target"}else{"ambiguous"},"candidates":site.candidates}))
-            }).collect();
-            cards.entry(file.to_string()).or_default().push(Card {
-                id: format!("{file}:{line}:{name}"), name:name.to_string(),
-                kind:declaration["kind"].as_str().unwrap_or_default().to_string(),
-                signature:short(declaration["signature"].as_str().unwrap_or_default(),1200),
-                documentation:short(declaration["doc"].as_str().unwrap_or_default(),800),
-                body_comment:short(declaration["body_comment"].as_str().unwrap_or_default(),600),
-                identifiers:declaration["body_names"].as_str().unwrap_or_default().to_string(),
-                literals:module["texts"].as_array().into_iter().flatten().filter(|text|
-                    text["owner"].as_str()==Some(name) && text["line"].as_u64().is_some_and(|at|line<=at && at<=end_line))
-                    .map(evidence::source_literal).collect(),
-                syntax:declaration["syntax"].clone(),file_documentation:short(module["file_doc"].as_str().unwrap_or_default(),600),
-                annotations:declaration["annotations"].as_array().into_iter().flatten()
-                    .filter_map(|item|serde_json::from_value(item.clone()).ok()).collect(),
-                source:Source {file:file.to_string(),line,end_line,sha256:sha256.to_string()},
-                parse_complete:module["analysis"]["parse_complete"].as_bool(),contracts:strings("contract"),
-                routes:module["routes"].as_array().into_iter().flatten().filter(|route| route["handler"].as_str()==Some(name))
-                    .map(|route|json!({"method":route["method"],"path":route["path"],"handler":route["handler"],"line":route["line"]})).collect(),
-                tests:module["tests"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect(),
-                inline_tests:module["has_tests"].as_bool().unwrap_or(false),test_only:in_test || super::ast::is_test_path(file),outgoing:Vec::new(),callers,
-                unresolved_calls:declaration["common_calls"].as_u64().unwrap_or(0) as usize,
-            });
-        }
-        // Executable configuration and scripts may have no grammar-recognized
-        // declarations. Keep file evidence addressable without inventing one.
-        if module["declarations"].as_array().is_some_and(Vec::is_empty)
-            && module["analysis"]["origin"]=="tree-sitter" && !super::ast::is_test_path(file) {
-            let end_line=module["analysis"]["end_line"].as_u64().unwrap_or(0);
-            if end_line>0 {
-                cards.entry(file.into()).or_default().push(Card {
-                    id:format!("{file}:1:@file"), name:std::path::Path::new(file).file_name().and_then(|name|name.to_str()).unwrap_or(file).into(),
-                    kind:"source-file".into(),signature:String::new(),syntax:Value::Null,documentation:String::new(),
-                    body_comment:short(module["file_comment"].as_str().unwrap_or_default(),600),
-                    identifiers:module["analysis"]["file_identifiers"].as_str().unwrap_or_default().into(),
-                    literals:module["texts"].as_array().into_iter().flatten().map(evidence::source_literal).collect(),
-                    file_documentation:short(module["file_doc"].as_str().unwrap_or_default(),600),annotations:vec![],
-                    source:Source{file:file.into(),line:1,end_line,sha256:sha256.into()},
-                    parse_complete:module["analysis"]["parse_complete"].as_bool(),contracts:vec![],routes:vec![],tests:vec![],inline_tests:false,test_only:false,
-                    outgoing:vec![],callers:vec![],unresolved_calls:0,
-                });
-            }
-        }
-    }
-    // Distinct declarations can share file, line and name (for example,
-    // two type members on one line). Keep every declaration addressable.
-    for entries in cards.values_mut() {
-        let mut counts=BTreeMap::<String,usize>::new();
-        for card in entries.iter() {*counts.entry(card.id.clone()).or_default()+=1;}
-        let mut ordinals=BTreeMap::<String,usize>::new();
-        for card in entries.iter_mut() {
-            if counts.get(&card.id).copied().unwrap_or(0)>1 {
-                let base=format!("{}:{}:{}",card.id,card.kind,card.source.end_line);
-                let ordinal=ordinals.entry(base.clone()).or_default();
-                card.id=format!("{base}:{ordinal}");*ordinal+=1;
-            }
-        }
-    }
-    // Reverse the scanner's edges once. Select the narrowest containing
-    // caller; overloaded names elsewhere in a file must not acquire its call.
-    let edges: Vec<_> = cards
-        .values()
-        .flatten()
-        .flat_map(|target| {
-            target
-                .callers
-                .iter()
-                .map(move |site| (target.id.clone(), target.source.clone(), site.clone()))
+    let path_of = |at: usize| modules[at]["path"].as_str().unwrap_or_default();
+    // Só o arquivo escrito por gente tem cartões; os usos se invertem na
+    // ordem dos caminhos, a dos cartões de cada arquivo.
+    let mut carded: Vec<usize> =
+        (0..modules.len()).filter(|&at| modules[at]["file_class"].as_str().unwrap_or_default().is_empty()).collect();
+    carded.sort_by(|&a, &b| path_of(a).cmp(path_of(b)));
+    let ids: BTreeMap<usize, Vec<String>> = carded.iter().map(|&at| (at, card_ids(path_of(at), &modules[at]))).collect();
+    // Every use of each declaration of each file, read once.
+    let uses: Vec<Vec<Vec<UseSite>>> = modules
+        .iter()
+        .map(|module| {
+            module["declarations"].as_array().into_iter().flatten().map(|declaration| {
+                declaration["used_by"].as_array().into_iter().flatten().filter_map(|site| serde_json::from_value(site.clone()).ok()).collect()
+            }).collect()
         })
         .collect();
-    for (target, source, site) in edges {
-        if let Some(callers) = cards.get_mut(site["file"].as_str().unwrap_or_default()) {
-            let at = site["line"].as_u64().unwrap_or(0);
-            let candidates: Vec<_> = callers
-                .iter().enumerate()
-                .filter(|(_,card)| {
-                    Some(card.name.as_str()) == site["from"].as_str()
-                        && card.source.line <= at
-                        && at <= card.source.end_line
-                })
-                .map(|(i,card)|(i,card.source.end_line-card.source.line)).collect();
-            let narrowest=candidates.iter().map(|(_,width)|*width).min();
-            let candidates: Vec<_>=candidates.into_iter().filter(|(_,width)|Some(*width)==narrowest).map(|(i,_)|i).collect();
-            for &i in &candidates {
-                callers[i].outgoing.push(json!({"target":target,"source":source,"call_line":at,
-                    "resolution":if candidates.len()==1 {site["resolution"].clone()}else{json!("ambiguous")}}));
+    // Each use of a declaration, by the file where it is written: the edge
+    // that the caller's card shows as outgoing.
+    let mut incoming = BTreeMap::<&str, Vec<(usize, usize, &UseSite)>>::new();
+    for &at in &carded {
+        for (di, sites) in uses[at].iter().enumerate() {
+            for site in sites {
+                let Some((file, _)) = hashes.get_key_value(site.file.as_str()) else { continue };
+                incoming.entry(file).or_default().push((at, di, site));
             }
         }
     }
-    if let Some(modules) = raw["modules"].as_array_mut() {
-        for module in modules {
+    let target = |at: usize, di: usize| -> (String, Source) {
+        let declaration = &modules[at]["declarations"][di];
+        let file = path_of(at);
+        (
+            ids[&at][di].clone(),
+            Source {
+                file: file.to_string(),
+                line: declaration["line"].as_u64().unwrap_or(0),
+                end_line: declaration["end_line"].as_u64().unwrap_or(0),
+                sha256: hashes.get(file).copied().unwrap_or_default().to_string(),
+            },
+        )
+    };
+    let fingerprints: Vec<String> = modules
+        .iter()
+        .zip(&uses)
+        .map(|(module, sites)| {
             let file = module["path"].as_str().unwrap_or_default();
-            let entries = cards.remove(file).unwrap_or_default();
+            let mut inputs = Inputs::default();
+            for key in ["path", "file_class", "declarations", "test_lines", "texts", "file_doc", "file_comment", "routes", "tests", "has_tests"] {
+                inputs.value(&module[key]);
+            }
+            for (key, value) in module["analysis"].as_object().into_iter().flatten().filter(|(key, _)| *key != "knowledge") {
+                inputs.text(key);
+                inputs.value(value);
+            }
+            for site in sites.iter().flatten() {
+                inputs.text(hashes.get(site.file.as_str()).copied().unwrap_or_default());
+            }
+            for (at, di, site) in incoming.get(file).into_iter().flatten() {
+                let (id, source) = target(*at, *di);
+                inputs.text(&id);
+                inputs.text(&source.sha256);
+                inputs.text(&format!("{}:{}:{}:{}:{}", source.line, source.end_line, site.line, site.from, site.is_proven()));
+            }
+            inputs.finish()
+        })
+        .collect();
+    let kept = |at: usize| {
+        let knowledge = &modules[at]["analysis"]["knowledge"];
+        knowledge["version"] == VERSION
+            && knowledge["inputs"] == fingerprints[at].as_str()
+            && (knowledge["cards"].is_array() || knowledge.get("cards").is_none())
+    };
+    let mut fresh = BTreeMap::<usize, Vec<Card>>::new();
+    for &at in carded.iter().filter(|&&at| !kept(at)) {
+        let mut entries = file_cards(&modules[at], &ids[&at], &hashes);
+        // Reverse the scanner's edges once. Select the narrowest containing
+        // caller; overloaded names elsewhere in a file must not acquire its call.
+        for (target_at, target_di, site) in incoming.get(path_of(at)).into_iter().flatten() {
+            let (id, source) = target(*target_at, *target_di);
+            let line = site.line as u64;
+            let candidates: Vec<_> = entries
+                .iter()
+                .enumerate()
+                .filter(|(_, card)| card.name == site.from && card.source.line <= line && line <= card.source.end_line)
+                .map(|(i, card)| (i, card.source.end_line - card.source.line))
+                .collect();
+            let narrowest = candidates.iter().map(|(_, width)| *width).min();
+            let candidates: Vec<_> = candidates.into_iter().filter(|(_, width)| Some(*width) == narrowest).map(|(i, _)| i).collect();
+            let resolution = if candidates.len() == 1 && site.is_proven() { "unique-static-target" } else { "ambiguous" };
+            for &i in &candidates {
+                entries[i].outgoing.push(json!({"target":id,"source":source,"call_line":line,"resolution":resolution}));
+            }
+        }
+        fresh.insert(at, entries);
+    }
+    // O arquivo sem cartões também guarda a marca, e só se regrava quando
+    // ela muda.
+    let stale: Vec<usize> = (0..modules.len()).filter(|&at| fresh.contains_key(&at) || (!ids.contains_key(&at) && !kept(at))).collect();
+    let mut rebuilt = Vec::new();
+    if let Some(modules) = raw["modules"].as_array_mut() {
+        for at in stale {
+            let module = &mut modules[at];
+            rebuilt.push(module["path"].as_str().unwrap_or_default().to_string());
             if !module["analysis"].is_object() {
                 module["analysis"] = json!({});
             }
-            module["analysis"]["knowledge"] = json!({"version":VERSION,"cards":entries});
+            let entries = fresh.remove(&at).unwrap_or_default();
+            module["analysis"]["knowledge"] = json!({"version":VERSION,"inputs":fingerprints[at],"cards":entries});
         }
+    }
+    rebuilt.sort();
+    rebuilt
+}
+
+/// Tira a marca dos cartões de todo arquivo de `raw` que a traz sem os
+/// cartões, deixados no banco pela leitura do mapa, para o [`enrich`]
+/// seguinte os refazer: é o caminho da gravação que não tem de onde
+/// mantê-los. Diz se tirou de algum.
+pub fn forget_unloaded(raw: &mut Value) -> bool {
+    let mut forgot = false;
+    for module in raw["modules"].as_array_mut().into_iter().flatten() {
+        let unloaded = module["analysis"]["knowledge"].as_object().is_some_and(|knowledge| !knowledge.contains_key("cards"));
+        if let (true, Some(analysis)) = (unloaded, module["analysis"].as_object_mut()) {
+            analysis.remove("knowledge");
+            forgot = true;
+        }
+    }
+    forgot
+}
+
+/// The id of each card of `module`, in the order of its declarations, or of
+/// its one file card. Distinct declarations can share file, line and name
+/// (for example, two type members on one line). Keep every declaration
+/// addressable.
+fn card_ids(file: &str, module: &Value) -> Vec<String> {
+    let declarations = module["declarations"].as_array().map_or(&[][..], Vec::as_slice);
+    if declarations.is_empty() {
+        return vec![format!("{file}:1:@file")];
+    }
+    let base: Vec<String> = declarations
+        .iter()
+        .map(|declaration| {
+            format!("{file}:{}:{}", declaration["line"].as_u64().unwrap_or(0), declaration["name"].as_str().unwrap_or_default())
+        })
+        .collect();
+    let mut counts = BTreeMap::<&str, usize>::new();
+    for id in &base {
+        *counts.entry(id).or_default() += 1;
+    }
+    let mut ordinals = BTreeMap::<String, usize>::new();
+    base.iter()
+        .zip(declarations)
+        .map(|(id, declaration)| {
+            if counts.get(id.as_str()).copied().unwrap_or(0) < 2 {
+                return id.clone();
+            }
+            let kind = declaration["kind"].as_str().unwrap_or_default();
+            let base = format!("{id}:{kind}:{}", declaration["end_line"].as_u64().unwrap_or(0));
+            let ordinal = ordinals.entry(base.clone()).or_default();
+            let id = format!("{base}:{ordinal}");
+            *ordinal += 1;
+            id
+        })
+        .collect()
+}
+
+/// The cards of one file written by a person, with the ids `ids`, before the
+/// edges reversed from the other files fill their outgoing calls.
+/// Executable configuration and scripts may have no grammar-recognized
+/// declarations. Keep file evidence addressable without inventing one.
+fn file_cards(module: &Value, ids: &[String], hashes: &BTreeMap<&str, &str>) -> Vec<Card> {
+    let file = module["path"].as_str().unwrap_or_default();
+    let sha256 = module["analysis"]["content_sha256"].as_str().unwrap_or_default();
+    let mut cards = Vec::new();
+    for (declaration, id) in module["declarations"].as_array().into_iter().flatten().zip(ids) {
+        let line = declaration["line"].as_u64().unwrap_or(0);
+        let end_line = declaration["end_line"].as_u64().unwrap_or(0);
+        let in_test = module["test_lines"].as_array().into_iter().flatten().any(|range| {
+            range[0].as_u64().is_some_and(|start| start <= line) && range[1].as_u64().is_some_and(|end| line <= end)
+        });
+        let name = declaration["name"].as_str().unwrap_or_default();
+        let strings = |key: &str| {
+            declaration[key].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect()
+        };
+        let callers = declaration["used_by"].as_array().into_iter().flatten().filter_map(|site| {
+            let site: UseSite = serde_json::from_value(site.clone()).ok()?;
+            Some(json!({"file":site.file,"line":site.line,"from":site.from,
+                "source":Source{file:site.file.clone(),line:site.line as u64,end_line:site.line as u64,sha256:hashes.get(site.file.as_str()).copied().unwrap_or_default().into()},
+                "resolution":if site.is_proven(){"unique-static-target"}else{"ambiguous"},"candidates":site.candidates}))
+        }).collect();
+        cards.push(Card {
+            id: id.clone(), name:name.to_string(),
+            kind:declaration["kind"].as_str().unwrap_or_default().to_string(),
+            signature:short(declaration["signature"].as_str().unwrap_or_default(),1200),
+            documentation:short(declaration["doc"].as_str().unwrap_or_default(),800),
+            body_comment:short(declaration["body_comment"].as_str().unwrap_or_default(),600),
+            identifiers:declaration["body_names"].as_str().unwrap_or_default().to_string(),
+            literals:module["texts"].as_array().into_iter().flatten().filter(|text|
+                text["owner"].as_str()==Some(name) && text["line"].as_u64().is_some_and(|at|line<=at && at<=end_line))
+                .map(evidence::source_literal).collect(),
+            syntax:declaration["syntax"].clone(),file_documentation:short(module["file_doc"].as_str().unwrap_or_default(),600),
+            annotations:declaration["annotations"].as_array().into_iter().flatten()
+                .filter_map(|item|serde_json::from_value(item.clone()).ok()).collect(),
+            source:Source {file:file.to_string(),line,end_line,sha256:sha256.to_string()},
+            parse_complete:module["analysis"]["parse_complete"].as_bool(),contracts:strings("contract"),
+            routes:module["routes"].as_array().into_iter().flatten().filter(|route| route["handler"].as_str()==Some(name))
+                .map(|route|json!({"method":route["method"],"path":route["path"],"handler":route["handler"],"line":route["line"]})).collect(),
+            tests:module["tests"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect(),
+            inline_tests:module["has_tests"].as_bool().unwrap_or(false),test_only:in_test || super::ast::is_test_path(file),outgoing:Vec::new(),callers,
+            unresolved_calls:declaration["common_calls"].as_u64().unwrap_or(0) as usize,
+        });
+    }
+    if module["declarations"].as_array().is_some_and(Vec::is_empty)
+        && module["analysis"]["origin"]=="tree-sitter" && !super::ast::is_test_path(file) {
+        let end_line=module["analysis"]["end_line"].as_u64().unwrap_or(0);
+        if end_line>0 {
+            cards.push(Card {
+                id:format!("{file}:1:@file"), name:std::path::Path::new(file).file_name().and_then(|name|name.to_str()).unwrap_or(file).into(),
+                kind:"source-file".into(),signature:String::new(),syntax:Value::Null,documentation:String::new(),
+                body_comment:short(module["file_comment"].as_str().unwrap_or_default(),600),
+                identifiers:module["analysis"]["file_identifiers"].as_str().unwrap_or_default().into(),
+                literals:module["texts"].as_array().into_iter().flatten().map(evidence::source_literal).collect(),
+                file_documentation:short(module["file_doc"].as_str().unwrap_or_default(),600),annotations:vec![],
+                source:Source{file:file.into(),line:1,end_line,sha256:sha256.into()},
+                parse_complete:module["analysis"]["parse_complete"].as_bool(),contracts:vec![],routes:vec![],tests:vec![],inline_tests:false,test_only:false,
+                outgoing:vec![],callers:vec![],unresolved_calls:0,
+            });
+        }
+    }
+    cards
+}
+
+/// A marca das entradas dos cartões de um arquivo: cada valor entra como o
+/// texto JSON dele, separado do seguinte por um caractere que esse texto
+/// nunca traz sem escapar.
+#[derive(Default)]
+struct Inputs(std::collections::hash_map::DefaultHasher);
+
+impl Inputs {
+    fn value(&mut self, value: &Value) {
+        use std::fmt::Write as _;
+        let _ = write!(self, "{value}\u{1}");
+    }
+
+    fn text(&mut self, text: &str) {
+        std::hash::Hasher::write(&mut self.0, text.as_bytes());
+        std::hash::Hasher::write_u8(&mut self.0, 1);
+    }
+
+    fn finish(&self) -> String {
+        format!("{:016x}", std::hash::Hasher::finish(&self.0))
+    }
+}
+
+impl std::fmt::Write for Inputs {
+    fn write_str(&mut self, text: &str) -> std::fmt::Result {
+        std::hash::Hasher::write(&mut self.0, text.as_bytes());
+        Ok(())
     }
 }
 

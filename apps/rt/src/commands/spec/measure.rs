@@ -1,8 +1,9 @@
 //! `mustard-rt run measure` — o gasto do Claude no projeto antes e depois da
 //! marca de uma versão do Mustard.
 //!
-//! Sem `--since`, a marca é a última que o início de sessão gravou no
-//! projeto; com ele, o instante dado, em RFC 3339 ou `AAAA-MM-DD` (a
+//! Sem `--since`, a marca é a primeira que o início de sessão gravou no
+//! projeto com o número publicado da última
+//! (`mustard_core::domain::measure::counted_mark`); com ele, o instante dado, em RFC 3339 ou `AAAA-MM-DD` (a
 //! meia-noite do dia no fuso do gasto). A conta mora em
 //! `mustard_core::domain::measure`, sobre as linhas de dia que
 //! `mustard_core::io::spend` dá ao projeto, pela mesma soma da página do
@@ -19,8 +20,8 @@ mod searches;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
-use mustard_core::domain::measure::{measure, Mark, Measurement, Side, Verdict, MIN_DAYS};
-use mustard_core::domain::spend::{day_start, Range};
+use mustard_core::domain::measure::{counted_mark, measure, Measurement, Side, Verdict, MIN_DAYS};
+use mustard_core::domain::spend::{day_of, day_start, next_day, Range, MIN_ACTIONS};
 use mustard_core::io::{measure as marks, spend as store};
 use mustard_core::platform::harness::claude_config_dir;
 use mustard_core::platform::i18n::{translate, Locale};
@@ -61,7 +62,7 @@ fn measure_at(opts: &MeasureOpts, config: Option<&Path>, today: &str) -> (Value,
     let mark = match opts.since.as_deref().map(since) {
         Some(Err(hint)) => return (json!({ "ok": false, "reason": "not-an-instant", "hint": hint }), Vec::new()),
         Some(Ok(at)) => Some((json!({ "version": null, "at": at.to_rfc3339() }), at)),
-        None => marks::marks(&opts.root).pop().and_then(|mark: Mark| {
+        None => counted_mark(&marks::marks(&opts.root)).and_then(|mark| {
             let at = DateTime::parse_from_rfc3339(&mark.at).ok()?.with_timezone(&Utc);
             Some((json!(mark), at))
         }),
@@ -85,7 +86,7 @@ fn measure_at(opts: &MeasureOpts, config: Option<&Path>, today: &str) -> (Value,
         "text": format!(
             "{}\n\n{}\n\n{}",
             table(&measured, lang),
-            sentence(&measured, lang),
+            sentence(&measured, at, lang),
             searches::report(&found, lang)
         ),
     });
@@ -170,9 +171,11 @@ fn table(measured: &Measurement, lang: Locale) -> String {
     format!("| | {left} | {right} |\n|---|---:|---:|{}", lines.collect::<String>())
 }
 
-/// O veredito de `measured` numa frase, em `lang`, com quanto cada ação
-/// custou a mais ou a menos depois da marca quando os dois lados têm dia.
-fn sentence(measured: &Measurement, lang: Locale) -> String {
+/// O veredito de `measured`, da marca feita no instante `mark`, numa frase,
+/// em `lang`, com quanto cada ação custou a mais ou a menos depois da marca
+/// quando os dois lados têm dia. Sem dia contado depois, a frase diz o dia da
+/// marca, que fica fora da conta, e o seguinte, o primeiro que pode contar.
+fn sentence(measured: &Measurement, mark: DateTime<Utc>, lang: Locale) -> String {
     let (before, after) = (&measured.before, &measured.after);
     let change = || {
         let (was, is) = (before.tokens_per_action, after.tokens_per_action);
@@ -186,7 +189,16 @@ fn sentence(measured: &Measurement, lang: Locale) -> String {
     };
     let days = [("{before_days}", before.days.len().to_string()), ("{after_days}", after.days.len().to_string())];
     match measured.verdict {
-        Verdict::NotUsedYet => fill("measure.not_used_yet", lang, &[]),
+        Verdict::NotUsedYet => {
+            let mark_day = day_of(mark);
+            let first_day = next_day(&mark_day).unwrap_or_default();
+            let slots = [
+                ("{mark_day}", day_list(&[mark_day], lang)),
+                ("{first_day}", day_list(&[first_day], lang)),
+                ("{min_actions}", MIN_ACTIONS.to_string()),
+            ];
+            fill("measure.not_used_yet", lang, &slots)
+        }
         Verdict::TooEarly { missing_before, missing_after } => {
             let missing = [
                 ("{missing_before}", missing_before.to_string()),

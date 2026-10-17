@@ -684,9 +684,9 @@ pub struct ProjectConfig {
     /// por [`ProjectConfig::enabled`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
-    /// Liga e desliga o gancho do rtk nas configurações locais do projeto.
-    /// Ausente, ligado. Desligar não desinstala o rtk. Lida só por
-    /// [`ProjectConfig::rtk`].
+    /// Liga e desliga a troca do rtk que o gancho do Mustard faz no comando
+    /// do Bash, com a cópia do rtk que acompanha o Mustard. Ausente, ligada.
+    /// Desligar não desinstala o rtk. Lida só por [`ProjectConfig::rtk`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rtk: Option<bool>,
     /// Declared context injections (`[{on, file, once}]`) — see [`Injectable`].
@@ -955,8 +955,8 @@ impl ProjectConfig {
         self.enabled != Some(false)
     }
 
-    /// O gancho do rtk deve estar nas configurações locais: só um
-    /// `rtk: false` escrito no arquivo o tira.
+    /// O gancho do Mustard faz a troca do rtk: só um `rtk: false` escrito no
+    /// arquivo a desliga.
     #[must_use]
     pub fn rtk(&self) -> bool {
         self.rtk != Some(false)

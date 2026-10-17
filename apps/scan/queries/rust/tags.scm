@@ -273,3 +273,9 @@
 ; texto) e a declaração que o contém.
 (string_literal) @text
 (raw_string_literal) @text
+
+; A declaração que o `pub` sozinho torna visível fora do crate: quem está fora
+; do projeto pode usá-la, e a falta de uso dentro dele não diz que ela sobra.
+; O `pub(crate)`, o `pub(super)` e o `pub(in caminho)` ficam dentro do crate.
+((_ (visibility_modifier) @_visibility) @visible
+  (#eq? @_visibility "pub"))

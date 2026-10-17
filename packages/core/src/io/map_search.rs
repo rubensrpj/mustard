@@ -99,9 +99,11 @@ use crate::io::map_order;
 use crate::io::project_map::{model_path, open_existing, unreadable, MapBlock};
 use crate::platform::error::Result;
 
+mod owners;
 mod refresh;
 
-pub(crate) use refresh::refresh_files;
+pub use owners::{line_owners, LineOwner, MapFile, OwnedLines};
+pub(crate) use refresh::{documents_of, refresh_files, replace_files};
 
 
 /// Um texto fixo como o scan o grava, na tabela dos textos de cada arquivo.

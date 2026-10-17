@@ -7,6 +7,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::time::Duration;
 
 pub(crate) const BLOCK:Block=Block {
     name:"search_facts",version:1,tables:&["search_files","search_facts"],
@@ -24,16 +25,19 @@ fn hash(bytes: &[u8]) -> String {
     digest.update(bytes);
     digest.hex_digest()
 }
+/// Quanto a gravação do que a busca aprendeu espera a trava num mapa com bloco
+/// a pôr em dia. Quem a segura é, quase sempre, a passada do scan refazendo o
+/// bloco, por dezenas de segundos num projeto grande: a busca não espera por
+/// ela, e a fonte que não se gravou segue pendente para a passada.
+const OUTDATED_WAIT: Duration = Duration::from_millis(200);
+
 fn tree_key(tree: &Path) -> String {
     hash(tree.to_string_lossy().as_bytes())
 }
 
 pub fn record(root: &Path, tree: &Path, hits: &[(String, u64, String)]) -> Result<Value, String> {
     if hits.is_empty() {
-        let needs_scan=if store::model_path(root).is_file() {
-            let db=MapDb::open(&store::model_path(root),root,&store::DB_BLOCKS).map_err(|e|e.to_string())?;
-            !structure_ready(&db)?
-        }else{false};
+        let needs_scan=if store::model_path(root).is_file() {!structure_ready(&open(root)?)?}else{false};
         return Ok(json!({"status":"no-source-facts","new_facts":0,"needs_scan":needs_scan,"source_hashes":{}}));
     }
     let registry = Registry::load()?;
@@ -68,16 +72,19 @@ pub fn record(root: &Path, tree: &Path, hits: &[(String, u64, String)]) -> Resul
     // 50 ms timeout dropped discoveries while a normal scan/writer committed.
     // Use the database's bounded writer wait (5 s); persistent contention is
     // still reported by the caller, which preserves the native search result.
-    let mut db = MapDb::open(&store::model_path(root), root, &store::DB_BLOCKS)
-        .map_err(|e| e.to_string())?;
-    // A schema upgrade rebuilds derived blocks empty. A source hash learned
-    // under the old schema cannot acknowledge that missing structural index.
+    let mut db = open(root)?;
+    // A block written by another program version is rebuilt by the next scan.
+    // A source hash learned under the old schema cannot acknowledge it.
     let structure_ready=structure_ready(&db)?;
+    let outdated=store::outdated_block(&db).map_err(|e|e.to_string())?;
+    if outdated {
+        db.conn().busy_timeout(OUTDATED_WAIT).map_err(|e|e.to_string())?;
+    }
     let key = tree_key(tree);
     let mut added = 0;
     let mut reused = 0;
     let mut pending = Vec::new();
-    db.write(|tx| {
+    let written = db.write(|tx| {
         for (file,(digest,_)) in &sources {
             let old:Option<String>=tx.query_row("SELECT sha256 FROM search_files WHERE tree=?1 AND path=?2",params![key,file],|row|row.get(0)).optional()?;
             if old.as_ref().is_some_and(|old|old!=digest) {tx.execute("DELETE FROM search_facts WHERE tree=?1 AND path=?2",params![key,file])?;}
@@ -85,11 +92,13 @@ pub fn record(root: &Path, tree: &Path, hits: &[(String, u64, String)]) -> Resul
             // A scanned document or a code file with zero declarations is
             // still a current snapshot. Requiring a symbol causes a complete
             // scan on the first hit in every such file, despite identical bytes.
+            // An outdated map may lack these tables; the scan answers first.
+            if !structure_ready {pending.push(file.clone());continue;}
             let indexed:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM knowledge_symbols WHERE path=?1 AND sha256=?2)
                 OR EXISTS(SELECT 1 FROM resource_index_files WHERE path=?1 AND sha256=?2)
                 OR EXISTS(SELECT 1 FROM texts WHERE path=?1 AND CASE WHEN json_valid(analysis) THEN json_extract(analysis,'$.content_sha256') END=?2)",params![file,digest],|row|row.get(0))?;
             let learned:bool=tx.query_row("SELECT indexed=sha256 FROM search_files WHERE tree=?1 AND path=?2",params![key,file],|row|row.get(0))?;
-            if !structure_ready || !indexed && !learned {pending.push(file.clone());}
+            if !indexed && !learned {pending.push(file.clone());}
         }
         for (file,line,text) in &witnesses {
             let Some((digest,source))=sources.get(file) else {continue};
@@ -101,23 +110,47 @@ pub fn record(root: &Path, tree: &Path, hits: &[(String, u64, String)]) -> Resul
             added+=1;
         }
         Ok(())
-    }).map_err(|e|e.to_string())?;
+    });
+    let source_hashes=sources.iter().map(|(file,(digest,_))|(file,digest)).collect::<BTreeMap<_,_>>();
+    match written {
+        Ok(()) => {}
+        // O mapa que espera a passada segue pedindo por ela, com toda fonte
+        // pendente, mesmo sem a gravação.
+        Err(reason) if outdated => return Ok(json!({"status":"not-stored","reason":reason.to_string(),"new_facts":0,"needs_scan":true,
+            "pending_paths":sources.keys().collect::<Vec<_>>(),"tree":key,"source_hashes":source_hashes,"interpretations_recorded":0})),
+        Err(reason) => return Err(reason.to_string()),
+    }
     Ok(
         json!({"status":"stored-current-source-facts","new_facts":added,"reused_facts":reused,"needs_scan":!pending.is_empty(),"pending_paths":pending,"omitted_line_witnesses":hits.len().saturating_sub(witnesses.len()),
-        "tree":key,"source_hashes":sources.iter().map(|(file,(digest,_))|(file,digest)).collect::<BTreeMap<_,_>>(),"interpretations_recorded":0}),
+        "tree":key,"source_hashes":source_hashes,"interpretations_recorded":0}),
     )
 }
 
+/// The map with only this module's block brought up to date. A map inherited
+/// from another program version may need other blocks rebuilt (the knowledge
+/// index rereads every analysed text, tens of seconds on a large project);
+/// that belongs to the scan, in its own process, so the search reaches the
+/// refresh instead of doing the rebuild before it.
+fn open(root:&Path)->Result<MapDb,String> {
+    MapDb::open(&store::model_path(root),root,std::slice::from_ref(&BLOCK)).map_err(|e|e.to_string())
+}
+
 fn structure_ready(db:&MapDb)->Result<bool,String> {
+    if store::outdated_block(db).map_err(|e|e.to_string())? {return Ok(false);}
     for block in [&store::CENSUS,&store::FILES,&store::DECLS,&store::GRAPH,&store::RESOURCES] {
         if db.mark(block.name()).map_err(|e|e.to_string())?.is_none_or(|mark|mark.is_empty()) {return Ok(false);}
     }
     Ok(true)
 }
 
-/// Mark only the source versions the completed native scan was asked to learn.
+/// Marca só as versões de fonte que a passada nativa terminada foi chamada a
+/// aprender. O mapa já tem de existir: a confirmação nunca cria um. Só o bloco
+/// deste módulo é posto em dia ([`open`]): numa cópia, `root` é o checkout
+/// principal, e o bloco do mapa dele gravado por outra versão do programa
+/// fica para a passada do próprio checkout principal.
 pub fn scanned(root: &Path, tree: &Path, learning: &Value) -> Result<(), String> {
-    let mut db = super::open_existing(&store::model_path(root)).map_err(|e| format!("{e:?}"))?;
+    store::existing(&store::model_path(root)).map_err(|e| format!("{e:?}"))?;
+    let mut db = open(root)?;
     db.write(|tx| {
         for (file, digest) in learning["source_hashes"].as_object().into_iter().flatten() {
             if let Some(digest) = digest.as_str() {

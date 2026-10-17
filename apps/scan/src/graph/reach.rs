@@ -61,7 +61,7 @@ pub(super) fn declared_in(resolver: &Resolver, files: HashSet<String>, name: &st
 }
 
 /// Os tipos de declaração que têm campos.
-const FIELD_KINDS: &[&str] = &["field", "property"];
+pub(super) const FIELD_KINDS: &[&str] = &["field", "property"];
 
 /// Os tipos do projeto, pelo nome, para ler o tipo de um receptor.
 pub(super) struct Typing<'a> {

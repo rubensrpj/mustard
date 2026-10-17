@@ -72,8 +72,13 @@ pub(super) fn measure_usage<'u>(root: &Path, log: &SpecLog, caller: Caller<'_>, 
             .and_then(|text|mustard_core::domain::wave_prompt::ReadDispatch::of(text).map(|r|r.spec)
                 .or_else(||text.lines().next().and_then(|heading|mustard_core::domain::wave_prompt::wave_of_title(heading,Locale::PtBr).or_else(||mustard_core::domain::wave_prompt::wave_of_title(heading,Locale::EnUs))).map(|r|r.0)));
         let native=spec.as_deref().and_then(|spec|crate::shared::host_observation::wave_usage(root,spec,log,wave));
-        let own = native.as_ref().map(|measured|measured.usage.clone())
-            .or_else(||session.as_deref().and_then(|session|wave_usage(root, log, session, wave)));
+        // Os registros do gancho tomam o despacho anterior sem registro por
+        // não recebido. A pasta da sessão, quando se lê, vê também o agente
+        // que nasceu sem deixar registro, e a medição dela vale mais.
+        let scanned=native.as_ref().is_none_or(|measured|measured.skipped)
+            .then(||session.as_deref().and_then(|session|wave_usage(root, log, session, wave))).flatten();
+        let native=native.filter(|_|scanned.is_none());
+        let own = native.as_ref().map(|measured|measured.usage.clone()).or(scanned);
         *usage = Usage {
             model_used: own.as_ref().and_then(|own| own.model.clone()),
             steps: native.as_ref().map_or_else(||own.as_ref().map(|own|own.steps),|measured|measured.steps),
@@ -116,8 +121,16 @@ pub(crate) fn snapshot(root: &Path, log: &SpecLog, session: Option<&str>, config
 /// nas das outras sessões do mesmo projeto. A conversa do agente que
 /// atravessou um `/clear` soma todos os pedaços dela
 /// ([`transcript::agent_pieces`]); a linha repetida entre dois pedaços conta
-/// uma vez, como toda resposta e todo uso de ferramenta. `None` quando o
-/// arquivo não é achado ou nenhum pedaço se lê.
+/// uma vez, como toda resposta e todo uso de ferramenta.
+///
+/// O envio que outro envio da onda substituiu sem que nenhum agente o
+/// recebesse — nenhum arquivo, em nenhuma sessão do projeto, entre ele e o
+/// envio seguinte — não gastou nada e não conta: a rodada reenvia a onda
+/// órfã ou pausada mesmo quando nenhum agente chegou a nascer do envio
+/// anterior. Já o último envio é o do agente que entregou: sem o arquivo
+/// dele, o consumo da onda seria só o das tentativas anteriores, e a medição
+/// fica de fora. `None` quando o arquivo do último envio não é achado ou
+/// nenhum pedaço se lê.
 fn wave_usage(root: &Path, log: &SpecLog, session: &Path, wave: u64) -> Option<transcript::Usage> {
     let sends: Vec<_> = log.events.iter().filter(|e| e.event_type == "send" && e.wave() == Some(wave) && log.dispatch_position(e.id) == e.id).collect();
     let mut pieces = std::collections::BTreeSet::new();
@@ -128,7 +141,7 @@ fn wave_usage(root: &Path, log: &SpecLog, session: &Path, wave: u64) -> Option<t
         let read = mustard_core::domain::wave_prompt::ReadDispatch { spec, wave, root: mustard_core::io::wave_prompt::shown(root) };
         let until = sends.get(at + 1).map(|s| s.at());
         let files = transcript::wave_agent_files(session, title, sent.at(), until, &read);
-        if files.is_empty() {
+        if files.is_empty() && until.is_none() {
             return None;
         }
         for file in files {
@@ -318,5 +331,111 @@ pub(super) mod tests {
         // r1 = 1.142, r2 = 2.053 e r3 = 3.064, cada uma uma vez; t1 a t4.
         assert_eq!(revised.int("tokens"), Some(1_142 + 2_053 + 3_064), "{revised:?}");
         assert_eq!(revised.int("steps"), Some(4), "{revised:?}");
+    }
+
+    /// A onda 1 da obra `x` sai e, antes de qualquer agente nascer dela, a
+    /// rodada seguinte a reenvia (a onda pausada sai de novo). Devolve a hora
+    /// do primeiro envio e a do reenvio, e o texto curto com que o condutor
+    /// despacha a onda: o título e o comando que lê o pedido.
+    fn resent_wave(root: &Path) -> (String, String, String) {
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        round(root, "x", None);
+        let resent = round(root, "x", Some(&line("PAUSED", json!({"wave": 1}))));
+        assert_eq!(resent["dispatch"][0]["wave"], json!(1), "a onda pausada sai de novo: {resent}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let sends: Vec<String> = log.visible().into_iter().filter(|e| e.event_type == "send" && e.wave() == Some(1)).map(|e| e.at().to_string()).collect();
+        assert_eq!(sends.len(), 2, "o envio e o reenvio: {sends:?}");
+        let dispatch = super::super::answer::wave_dispatch(root, "x", 1, mustard_core::platform::i18n::Locale::PtBr);
+        (sends[0].clone(), sends[1].clone(), dispatch)
+    }
+
+    /// A volta da onda 1 da obra `x`, assumida pela rodada com a linha `USAGE`
+    /// só com o número da onda, na sessão `session` da pasta da plataforma
+    /// `config`. Devolve a resposta e o envio que a rodada gravou com o
+    /// consumo.
+    fn measured_return(root: &Path, config: &Path, session: &str) -> (Value, mustard_core::domain::spec_events::SpecEvent) {
+        std::fs::write(root.join("src/a.rs"), "fn one() {}\n// A soma saiu.\n").unwrap();
+        let delivery = json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": "a onda 1 saiu"});
+        assert_eq!(returned(root, delivery)["ok"], json!(true));
+        let opts = RoundOpts { root: root.to_path_buf(), spec: Some("x".to_string()), report: Some(line("USAGE", json!({"wave": 1}))) };
+        super::super::review::test_conductor_review(root, "x");
+        let out = round_in(&opts, Caller { session: Some(session), config_dir: Some(config) });
+        assert_eq!(out["ok"], json!(true), "{out}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let revised = log.get(log.last_by_wave("send")[&1]).unwrap().clone();
+        (out, revised)
+    }
+
+    /// Se a resposta `out` avisa que o consumo da onda 1 ficou de fora.
+    fn usage_missing(out: &Value) -> bool {
+        out["warnings"].as_array().into_iter().flatten().any(|w| w["reason"] == json!("usage-missing") && w["wave"] == json!(1))
+    }
+
+    /// O aplicativo de desktop grava o agente da onda em
+    /// `<sessão>/subagents/agent-<id>.jsonl`, com um `agent-<id>.meta.json`
+    /// ao lado, e o agente recebe o texto curto do despacho. A onda saiu e foi
+    /// reenviada antes de qualquer agente nascer do primeiro envio: só o
+    /// reenvio tem agente. A rodada acha o arquivo dele e grava o consumo; o
+    /// envio sem agente não deixa a onda sem medição.
+    #[test]
+    fn the_desktop_agent_transcript_is_found_under_the_session_folder() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (_, resent, dispatch) = resent_wave(root);
+        let platform = tempdir().unwrap();
+        let config = platform.path();
+        session(config, "-tmp-obra", "desktop", &instant(&resent, -60_000));
+        agent(config, "-tmp-obra", "desktop/subagents/agent-x.jsonl", &instant(&resent, 200), &dispatch, "r1", [2, 100, 1_000, 40]);
+        platform_file(config, "-tmp-obra", "desktop/subagents/agent-x.meta.json", &[json!({"agentType": "mustard-wave", "description": "Onda 1 x"})]);
+
+        let (out, revised) = measured_return(root, config, "desktop");
+        assert!(!usage_missing(&out), "o arquivo do agente do reenvio foi achado: {out}");
+        // 2 + 100 + 1000 + 40: o agente do reenvio, com um uso de ferramenta.
+        assert_eq!(revised.int("tokens"), Some(1_142), "{revised:?}");
+        assert_eq!(revised.int("steps"), Some(1), "{revised:?}");
+        assert_eq!(revised.str_field("model_used"), Some(MODEL), "{revised:?}");
+    }
+
+    /// O agente do primeiro envio trabalhou e sumiu, e o do reenvio — o que
+    /// entregou — não tem arquivo em sessão nenhuma do projeto: o consumo das
+    /// tentativas anteriores não passa pelo da onda. A resposta avisa que o
+    /// consumo ficou de fora, e o envio não ganha tokens.
+    #[test]
+    fn the_wave_stays_unmeasured_without_the_agent_of_its_last_send() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (first, _, dispatch) = resent_wave(root);
+        let platform = tempdir().unwrap();
+        let config = platform.path();
+        session(config, "-tmp-obra", "desktop", &instant(&first, -60_000));
+        agent(config, "-tmp-obra", "desktop/subagents/agent-antes.jsonl", &instant(&first, 1), &dispatch, "a1", [9_000, 0, 0, 0]);
+
+        let (out, revised) = measured_return(root, config, "desktop");
+        assert!(usage_missing(&out), "sem o agente que entregou, a medição fica de fora: {out}");
+        assert_eq!((revised.int("tokens"), revised.int("steps")), (None, None), "{revised:?}");
+    }
+
+    /// O agente do primeiro envio nasceu e sumiu sem deixar registro no
+    /// gancho; o do reenvio deixou o dele. A pasta da sessão mostra os dois,
+    /// e a rodada grava o consumo dos dois, não só o do agente com registro.
+    #[test]
+    fn the_session_folder_counts_an_earlier_agent_the_hook_never_recorded() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (first, resent, dispatch) = resent_wave(root);
+        let platform = tempdir().unwrap();
+        let config = platform.path();
+        session(config, "-tmp-obra", "desktop", &instant(&first, -60_000));
+        agent(config, "-tmp-obra", "desktop/subagents/agent-antes.jsonl", &instant(&first, 0), &dispatch, "a1", [9_000, 0, 0, 0]);
+        agent(config, "-tmp-obra", "desktop/subagents/agent-x.jsonl", &instant(&resent, 200), &dispatch, "r1", [2, 100, 1_000, 40]);
+        let transcript = config.join("projects/-tmp-obra/desktop/subagents/agent-x.jsonl");
+        let stop = serde_json::from_value(json!({"cwd": root, "hook_event_name": "SubagentStop", "session_id": "desktop", "agent_id": "x", "agent_transcript_path": transcript})).unwrap();
+        let _ = crate::dispatch::run_event(Some(mustard_core::domain::model::contract::Trigger::SubagentStop), &stop);
+
+        let (out, revised) = measured_return(root, config, "desktop");
+        assert!(!usage_missing(&out), "{out}");
+        // 9.000 do agente sem registro mais 2 + 100 + 1.000 + 40 do reenvio.
+        assert_eq!(revised.int("tokens"), Some(10_142), "{revised:?}");
+        assert_eq!(revised.int("steps"), Some(2), "{revised:?}");
     }
 }

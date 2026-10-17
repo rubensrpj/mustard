@@ -6,6 +6,7 @@ discard
 doctor
 evidence
 expertise
+find
 grill
 help
 ideas
@@ -36,6 +37,7 @@ settings
 setup-codex
 spend
 statusline
+triage
 upsert
 usage-record
 write

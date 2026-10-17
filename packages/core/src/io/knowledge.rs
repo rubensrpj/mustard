@@ -30,8 +30,10 @@ pub mod waves;
 pub use navigation::Direction;
 
 /// Inventory evidence for search diagnostics, never a completeness guarantee.
+/// A contagem lê o mapa sem pôr bloco nenhum em dia: o bloco noutra versão é
+/// da passada do scan, e esperar a trava dela seguraria a busca.
 pub(crate) fn indexed_file_count(root: &Path) -> Option<u64> {
-    let db = open_existing(&store::model_path(root)).ok()?;
+    let db = store::read_only_existing(&store::model_path(root)).ok()?;
     let count: i64 = db.conn().query_row("SELECT count(*) FROM knowledge_files", [], |row| row.get(0)).ok()?;
     u64::try_from(count).ok()
 }
@@ -421,10 +423,37 @@ fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpr
     let hydrated_candidates = pool.cards.len();
     let mut candidates_omitted = pool.omitted;
     let mut cards = pool.cards;
+    let max = if all { indexed_symbols } else { limit.clamp(1, 50) };
+    // Guarda vagas da resposta para as relações: com todas as vagas tomadas
+    // pela semelhança, quem chama a conclusão ou a entrada nunca aparecia.
+    let seed_limit = if scope.is_some() {max.saturating_sub(max/3).max(1)}
+        else if guided && direction != Direction::Outgoing && depth > 0 {max.saturating_sub((max/3).max(1)).max(1)} else {max};
+    // A declaração que a pergunta cita pelo nome entra mesmo quando a
+    // semelhança não a trouxe, e com ela os cartões do arquivo dela que casam
+    // com a pergunta. Os homônimos do nome contam contra as mesmas vagas.
+    let named = if scope.is_none() && symbol.is_none() && !exact_name {catalog::named(root,options,seed_limit)?} else {Vec::new()};
+    let missing: BTreeSet<_> = named.iter().filter(|id| !cards.iter().any(|card| &card.id == *id)).cloned().collect();
+    if !missing.is_empty() {
+        cards.extend(cards_for_ids(root, &missing)?);
+    }
+    let named_files: BTreeSet<String> = cards.iter().filter(|card| named.contains(&card.id)).map(|card| card.source.file.clone()).collect();
+    if !named_files.is_empty() {
+        candidates_omitted |= catalog::expand_files(root, &mut cards, &named_files.iter().cloned().collect::<Vec<_>>(), query, all)?.1;
+    }
+    // A vez do cartão na resposta: 0 a declaração citada pelo nome, 1 outro
+    // cartão do arquivo dela, 2 o resto, que segue a ordem por semelhança.
+    let named_rank = |card: &Card| u8::from(!named.contains(&card.id)) + u8::from(!named_files.contains(&card.source.file));
     let mut selected = BTreeSet::new();
     let mut order = Vec::new();
     let mut reasons = BTreeMap::new();
-    let max = if all { indexed_symbols } else { limit.clamp(1, 50) };
+    // A declaração citada toma a vaga antes das interpretações e referências,
+    // sem tomar a reserva das relações.
+    for i in named.iter().filter_map(|id| cards.iter().position(|card| &card.id == id)) {
+        if selected.len() < seed_limit && current(tree, &cards[i].source, &mut hashes) && selected.insert(i) {
+            order.push(i);
+            reasons.insert(i, "exact-name");
+        }
+    }
     let note_documents: Vec<Card> = fresh.iter().map(note_card).collect();
     let matching: Vec<_> = knowledge::ranked(&note_documents, query, &languages)
         .into_iter()
@@ -469,10 +498,6 @@ fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpr
             stale_cards += 1;
         }
     }
-    // Reserve response slots for relationships; filling every slot with
-    // lexical seeds prevented the completion/entry caller from ever appearing.
-    let seed_limit = if scope.is_some() {max.saturating_sub(max/3).max(1)}
-        else if guided && direction != Direction::Outgoing && depth > 0 {max.saturating_sub((max/3).max(1)).max(1)} else {max};
     let mut ranking = Vec::new();
     let mut local_hybrid_index = false;
     if let Some(discovery) = discovery {
@@ -546,6 +571,16 @@ fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpr
         for (i,_) in cards.iter().enumerate().filter(|(_,card)|scope.seeds.contains(&card.id)) {
             if !ranking.contains(&i) {ranking.push(i);}
         }
+    }
+    // Os cartões do arquivo da declaração citada que a semelhança não pôs na
+    // ordem entram por ela; a investigação lê esses arquivos primeiro.
+    if !named.is_empty() {
+        let heads = named.iter().filter_map(|id| cards.iter().position(|card| &card.id == id));
+        let similar = knowledge::ranked(&cards, query, &languages).into_iter().filter(|&i| named_files.contains(&cards[i].source.file));
+        for i in heads.chain(similar).collect::<Vec<_>>() {
+            if !ranking.contains(&i) {ranking.push(i);}
+        }
+        ranking.sort_by_key(|&i| named_rank(&cards[i]));
     }
     let mut expanded_candidates=0;
     let mut ambiguous_files=0;
@@ -629,6 +664,9 @@ fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpr
         } else {
             stale_cards += 1;
         }
+    }
+    if !named.is_empty() {
+        order.sort_by_key(|&i| named_rank(&cards[i]));
     }
     candidates_omitted |= catalog::neighbors_in(root,&mut cards,&order,depth,direction,all,scope)?;
     let walk = navigation::walk(tree, &cards, &order, max, depth, direction, &mut hashes);
@@ -1010,5 +1048,134 @@ use super::*;
             sha256: "a".repeat(64),
         };
         assert!(!current(dir.path(), &source, &mut hashes));
+    }
+
+    /// Um projeto em TypeScript, com cada arquivo de `files`, lido pelo scan
+    /// compilado junto com os testes.
+    fn scanned_typescript(files: &[(&str, &str)]) -> tempfile::TempDir {
+        let scan = crate::Scan::locate();
+        assert!(scan.is_compiled_alongside(), "rode `cargo build -p scan` antes de `cargo test -p mustard-core`");
+        let dir = tempfile::tempdir().unwrap();
+        for (file, text) in files {
+            let path = dir.path().join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+        scan.scan(dir.path(), &store::model_path(dir.path())).expect("the scan writes the map");
+        dir
+    }
+
+    /// A pergunta de quem implementa, como `run knowledge --purpose implement`
+    /// a faz: os cartões da resposta, cada um como `arquivo:nome`. Com `trace`,
+    /// a intenção de uma investigação que segue um nível de quem chama as
+    /// declarações achadas.
+    fn implement_answer(root: &Path, text: &str, limit: usize, trace: Option<&str>) -> Vec<String> {
+        let (depth, direction) = if trace.is_some() { (1, Direction::Callers) } else { (0, Direction::Outgoing) };
+        let opts = Query { text, file: None, limit, depth, all: false, detail: false, symbol: None, direction, refresh: false };
+        let task = knowledge::investigation::Task { intent: trace.unwrap_or_default(), purpose: knowledge::investigation::Purpose::Implement };
+        let report = query_for(root, root, &opts, task).unwrap().0;
+        report["cards"].as_array().unwrap().iter().map(|card| format!("{}:{}", card["source"]["file"].as_str().unwrap(), card["name"].as_str().unwrap())).collect()
+    }
+
+    const UPLOAD: &str = "/** Retries the upload request after a timeout until the server answers. */\nexport async function retryUpload(request: string): Promise<string> {\n  // retry the upload request after each timeout\n  return request;\n}\n";
+    const SENDER: &str = "import { retryUpload } from \"./upload\";\n\nexport async function sendRequest(request: string): Promise<string> {\n  return retryUpload(request);\n}\n";
+    const REQUEST: &str = "/** Sends the upload request and retries it after a timeout. */\nexport function sendRequest(request: string): string {\n  // the request retries the upload after a timeout\n  return request;\n}\n";
+
+    #[test]
+    fn a_question_naming_a_declaration_returns_its_card_first_and_its_file_next() {
+        let dir = scanned_typescript(&[
+            ("src/limits.ts", "export const RETRY_LIMIT = 3;\n\n/** Waits between upload retries. */\nexport function nextDelay(attempt: number): number {\n  return attempt * 200;\n}\n"),
+            ("src/policy.ts", "export class Backoff {\n  /** Grows the wait between upload retries. */\n  grow(wait: number): number {\n    return wait * 2;\n  }\n}\n"),
+            ("src/upload.ts", UPLOAD),
+            ("src/request.ts", REQUEST),
+        ]);
+        for (question, named, next) in [
+            ("how many times does the upload retry the request after a timeout? retry_limit", "src/limits.ts:RETRY_LIMIT", "src/limits.ts:nextDelay"),
+            ("how long does the Backoff wait before the upload retries the request after a timeout", "src/policy.ts:Backoff", "src/policy.ts:grow"),
+        ] {
+            let cards = implement_answer(dir.path(), question, 3, None);
+            assert_eq!(cards[..2], [named, next], "{question}: {cards:?}");
+            let file = named.split_once(':').unwrap().0;
+            assert!(cards[2..].iter().all(|card| !card.starts_with(file)), "{question}: {cards:?}");
+        }
+    }
+
+    #[test]
+    fn a_prose_word_or_a_name_with_more_homonyms_than_slots_does_not_lead_the_answer() {
+        let mut files = vec![("src/upload.ts", UPLOAD), ("src/values.ts", "export const timeout = 5000;\nexport const Timeout = 6000;\n")];
+        let jobs = ["src/jobs/one.ts", "src/jobs/two.ts", "src/jobs/three.ts"];
+        files.extend(jobs.map(|file| (file, "export function runJob(): void {}\n")));
+        let dir = scanned_typescript(&files);
+        let cards = implement_answer(dir.path(), "Timeout. Does runJob retry the upload after a timeout?", 2, None);
+        assert_eq!(cards.first().map(String::as_str), Some("src/upload.ts:retryUpload"), "{cards:?}");
+    }
+
+    #[test]
+    fn a_word_cited_only_by_its_capitals_names_only_the_same_spelling() {
+        for (file, text, question) in [
+            ("src/policy.ts", "export const BACKOFF = 2;\n", "how does the Backoff retry the upload after a timeout"),
+            ("src/client.ts", "export function api(): number {\n  return 1;\n}\n", "how does the API retry the upload after a timeout"),
+        ] {
+            let dir = scanned_typescript(&[(file, text), ("src/upload.ts", UPLOAD)]);
+            let cards = implement_answer(dir.path(), question, 3, None);
+            assert_eq!(cards.first().map(String::as_str), Some("src/upload.ts:retryUpload"), "{question}: {cards:?}");
+        }
+    }
+
+    #[test]
+    fn the_spelling_the_question_writes_comes_before_its_case_variants() {
+        let dir = scanned_typescript(&[
+            ("src/a.ts", "export const uploadTimeout = 5000;\n"),
+            ("src/b.ts", "export class UploadTimeout {}\n"),
+            ("src/upload.ts", UPLOAD),
+        ]);
+        let cards = implement_answer(dir.path(), "how does the UploadTimeout stop the upload retry", 3, None);
+        assert_eq!(cards[..2], ["src/b.ts:UploadTimeout", "src/a.ts:uploadTimeout"], "{cards:?}");
+    }
+
+    #[test]
+    fn the_cited_name_with_fewer_homonyms_comes_first() {
+        let dir = scanned_typescript(&[
+            ("src/jobs/one.ts", "export function runJob(): void {}\n"),
+            ("src/jobs/two.ts", "export function runJob(): void {}\n"),
+            ("src/upload.ts", UPLOAD),
+        ]);
+        let cards = implement_answer(dir.path(), "does runJob call retryUpload after a timeout", 3, None);
+        assert_eq!(cards[..3], ["src/upload.ts:retryUpload", "src/jobs/one.ts:runJob", "src/jobs/two.ts:runJob"], "{cards:?}");
+    }
+
+    #[test]
+    fn cited_declarations_leave_the_caller_reserve_of_a_guided_navigation() {
+        let dir = scanned_typescript(&[
+            ("src/upload.ts", "export function retryUpload(request: string): string {\n  return request;\n}\n"),
+            ("src/cancel.ts", "export function cancelUpload(): void {}\n"),
+            ("src/pause.ts", "export function pauseUpload(): void {}\n"),
+            ("src/send.ts", SENDER),
+        ]);
+        let cards = implement_answer(dir.path(), "who calls retryUpload, cancelUpload or pauseUpload", 3, Some("Trace who retries the upload"));
+        assert_eq!(cards, ["src/upload.ts:retryUpload", "src/cancel.ts:cancelUpload", "src/send.ts:sendRequest"]);
+    }
+
+    #[test]
+    fn a_cited_name_enters_with_all_its_homonyms_or_leaves_the_slots_to_similarity() {
+        let jobs = ["src/jobs/one.ts:runJob", "src/jobs/three.ts:runJob", "src/jobs/two.ts:runJob"];
+        let mut files = vec![("src/upload.ts", UPLOAD), ("src/send.ts", SENDER)];
+        files.extend(jobs.map(|job| (job.split_once(':').unwrap().0, "export function runJob(): void {}\n")));
+        let dir = scanned_typescript(&files);
+        let question = "does runJob retry the upload after a timeout";
+        assert_eq!(implement_answer(dir.path(), question, 3, None), jobs);
+        // A investigação guiada guarda uma das três vagas para quem chama: os
+        // três homônimos não cabem nas duas que sobram, e o nome não lidera.
+        let traced = implement_answer(dir.path(), question, 3, Some("Trace who retries the upload"));
+        assert_eq!(traced.first().map(String::as_str), Some("src/upload.ts:retryUpload"), "{traced:?}");
+    }
+
+    #[test]
+    fn an_acronym_names_the_declaration_of_its_spelling_even_opening_the_sentence() {
+        let dir = scanned_typescript(&[("src/client.ts", "export const API = \"https://uploads.example.com\";\n"), ("src/upload.ts", UPLOAD)]);
+        for question in ["how does the API retry the upload after a timeout", "API retries the upload after a timeout?"] {
+            let cards = implement_answer(dir.path(), question, 3, None);
+            assert_eq!(cards.first().map(String::as_str), Some("src/client.ts:API"), "{question}: {cards:?}");
+        }
     }
 }

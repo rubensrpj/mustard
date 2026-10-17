@@ -18,6 +18,9 @@
 //! - **scratch-residue** (`--residue` só) — tamanho total das sobras que o
 //!   `clean` recolheria e o da compilação compartilhada, pela MESMA
 //!   varredura dele. WARN quando há sobra ou quando a compilação passou do teto.
+//! - **binaries** — o commit e a data de três programas: o que roda o
+//!   diagnóstico, o `mustard-rt` do plugin instalado e o primeiro do `PATH`.
+//!   WARN quando dois vêm de commits diferentes ou quando um não diz o commit.
 //! - **drift** — compare by hash the folders a fresh payload owns
 //!   (`CORE_FOLDERS`) between the installed `.claude/` and the
 //!   `templates/` source. Degrades to `skip` when `templates/` is not
@@ -54,11 +57,13 @@
 //! de uma conferência, os eventos de gancho que o binário conhece, as opções e
 //! a lista das conferências, na ordem em que o comando as roda. Cada
 //! conferência mora numa parte da pasta ao lado, por assunto: a ligação dos
-//! ganchos (`wiring`), as sobras (`residue`), o desvio dos moldes (`drift`), o
+//! ganchos (`wiring`), as sobras (`residue`), o commit dos três programas
+//! (`binaries`), o desvio dos moldes (`drift`), o
 //! que a máquina tem instalado (`host`), a proteção das bases (`protection`),
 //! o estado das specs (`specs`), o que o Mustard deixa no projeto (`project`)
 //! e a saída do relatório (`report`).
 
+mod binaries;
 mod drift;
 mod host;
 mod project;
@@ -71,6 +76,7 @@ mod wiring;
 use mustard_core::ClaudePaths;
 use std::path::PathBuf;
 
+use binaries::check_binaries;
 use drift::check_drift;
 use host::{check_claude_cli, check_nerd_font, check_rtk, lsp_check};
 use project::{check_claude_md, check_scan_output, check_switches};
@@ -227,14 +233,7 @@ struct Check {
 /// que o `--check` aceita na linha de comando, a escolha dele, a mensagem de
 /// conferência desconhecida e a rodada inteira.
 const CHECKS: &[Check] = &[
-    Check {runs:Runs::Named("session-plugins"),check:|place| {
-        let report=crate::shared::host_installation::snapshot(&place.project().root);
-        let rows=report["observations"].as_array();
-        let status=if rows.is_none_or(Vec::is_empty) {Status::Skip}
-            else if rows.is_some_and(|rows|rows.iter().any(|row|row["matches_running_version"]==false || row["mods_module_present"]==false)) {Status::Warn}
-            else {Status::Ok};
-        CheckResult {name:"session-plugins",status,details:vec![report.to_string()]}
-    }},
+    Check {runs:Runs::Named("session-plugins"),check:|place| session_plugins(crate::shared::host_installation::snapshot(&place.project().root))},
     Check {runs:Runs::Named("integrations"),check:|place| {
         let report=crate::shared::integration_health::snapshot(&place.project().root);
         if report["ok"]==true {CheckResult::ok("integrations")}
@@ -248,6 +247,8 @@ const CHECKS: &[Check] = &[
         runs: Runs::Round,
         check: |place| bootstrap_to_check_result(&crate::commands::doctor::bootstrap_check::run(&place.cwd)),
     },
+    // De que commit vêm o programa em uso, o do plugin e o do sistema.
+    Check { runs: Runs::Named("binaries"), check: |place| check_binaries(place.project().lang) },
     Check { runs: Runs::Round, check: |place| check_drift(&place.claude_dir) },
     Check { runs: Runs::Round, check: |place| check_state_health(&place.claude_dir) },
     Check { runs: Runs::Round, check: |_| check_claude_cli() },
@@ -300,6 +301,19 @@ const CHECKS: &[Check] = &[
         check: |_| check_scratch_residue(&crate::commands::maint::scratch_gc::ScratchRoots::from_env()),
     },
 ];
+
+/// A pasta do plugin que cada sessão do projeto usa, com o binário que o
+/// gancho dela executa e a linha de versão dele. Sem sessão observada, pula;
+/// com uma pasta de outra versão que a deste binário, ou sem o módulo do
+/// painel, avisa.
+fn session_plugins(mut report: serde_json::Value) -> CheckResult {
+    crate::shared::host_installation::add_binary_versions(&mut report);
+    let rows=report["observations"].as_array();
+    let status=if rows.is_none_or(Vec::is_empty) {Status::Skip}
+        else if rows.is_some_and(|rows|rows.iter().any(|row|row["matches_running_version"]==false || row["mods_module_present"]==false)) {Status::Warn}
+        else {Status::Ok};
+    CheckResult {name:"session-plugins",status,details:vec![report.to_string()]}
+}
 
 /// Os nomes que o `--check` aceita, na ordem da lista.
 fn names_of(list: &[Check]) -> Vec<&'static str> {
@@ -508,6 +522,70 @@ mod tests {
         let check = doctor.get_arguments().find(|arg| arg.get_id() == "check").expect("--check is declared");
         let taken: Vec<String> = check.get_possible_values().iter().map(|v| v.get_name().to_string()).collect();
         assert_eq!(taken, names_of(CHECKS), "the real --check does not read the list of checks");
+    }
+
+    /// A sessão cujo processo o cache registra como usuário de uma pasta do
+    /// plugin aponta para essa pasta, com o binário que o gancho roda e a linha
+    /// de versão que ele responde, perguntada fora do projeto e sem passar a
+    /// chamada adiante. A pasta sincronizada dos argumentos, sem binário, não
+    /// aparece; nem a pasta antiga cujo registro é de um processo morto com o
+    /// mesmo número.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_session_points_at_the_cache_folder_that_records_it_and_says_its_binary_version() {
+        use std::os::unix::fs::symlink;
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        let manifest = r#"{"name":"mustard","version":"0.2.21"}"#;
+        let cache = dir.path().join("config/plugins/cache/mustard-local/mustard");
+        let (current, stale) = (cache.join("0.2.21"), cache.join("0.2.10"));
+        let synced = dir.path().join("remote/plugins/7c685082/e8c99c382fbeaa27");
+        for plugin in [&current, &stale, &synced] {
+            write_file(&plugin.join(".claude-plugin/plugin.json"), manifest);
+        }
+        write_file(&synced.join("bin/mustard-boot"), "#!/bin/sh\n");
+        write_file(&current.join(".in_use/21"), r#"{"pid":21,"procStart":"3308387"}"#);
+        write_file(&stale.join(".in_use/21"), r#"{"pid":21,"procStart":"53166493"}"#);
+        write_file(&current.join("hooks/register.js"), "export default () => {};");
+        // O binário é gravado por um shell à parte: os testes rodam em paralelo
+        // no mesmo processo, e o arquivo que este processo mantém aberto para
+        // escrita o Linux recusa rodar ("Text file busy").
+        for plugin in [&current, &stale] {
+            std::fs::create_dir_all(plugin.join("bin")).unwrap();
+            let written = std::process::Command::new("/bin/sh")
+                .args(["-c", "printf '%s' \"$2\" > \"$1\" && chmod 755 \"$1\"", "sh"])
+                .arg(plugin.join("bin/mustard-rt"))
+                .arg("#!/bin/sh\nprintf 'mustard-rt 0.2.21 (build test) delegated=%s cwd=%s\\n' \"$MUSTARD_RT_DELEGATED\" \"$(pwd -P)\"\n")
+                .status()
+                .unwrap();
+            assert!(written.success());
+        }
+        let executable = dir.path().join("ccd-cli/2.1.295");
+        write_file(&executable, "");
+        let process = dir.path().join("proc/21");
+        std::fs::create_dir_all(&process).unwrap();
+        symlink(&root, process.join("cwd")).unwrap();
+        symlink(&executable, process.join("exe")).unwrap();
+        std::fs::write(process.join("cmdline"), format!("claude\0--plugin-dir={}\0", synced.display())).unwrap();
+        std::fs::write(process.join("stat"), "21 (claude) S 1 21 21 0 -1 4194560 100 0 0 0 1 1 0 0 20 0 8 0 3308387 123 456\n").unwrap();
+
+        let checked = session_plugins(crate::shared::host_installation::inspect(
+            &dir.path().join("proc"),
+            Some(&dir.path().join("config")),
+            &root,
+        ));
+        let report: serde_json::Value = serde_json::from_str(&checked.details[0]).unwrap();
+        let rows = report["observations"].as_array().unwrap();
+        assert_eq!(rows.len(), 1, "{report}");
+        assert_eq!(rows[0]["plugin_root"], current.display().to_string());
+        assert_eq!(rows[0]["source"], "plugin-cache-in-use");
+        assert_eq!(rows[0]["rt_binary"], current.join("bin/mustard-rt").display().to_string());
+        let version = rows[0]["rt_version"].as_str().unwrap_or_else(|| panic!("no binary version: {report}"));
+        let asked_from = version.strip_prefix("mustard-rt 0.2.21 (build test) delegated=1 cwd=").unwrap_or_else(|| panic!("{version}"));
+        assert_eq!(Path::new(asked_from), std::env::temp_dir().canonicalize().unwrap(), "the version is asked from the temporary folder, outside any project");
+        assert!(!checked.details[0].contains(&synced.display().to_string()), "{report}");
+        assert!(!checked.details[0].contains(&stale.display().to_string()), "{report}");
     }
 
     /// Nenhum arquivo do diagnóstico passa do teto de linhas de código: a porta e

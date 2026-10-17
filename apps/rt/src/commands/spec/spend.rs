@@ -1,7 +1,8 @@
 //! `mustard-rt run spend` — o gasto de cada dia, contado pelas conversas e
 //! mostrado numa página.
 //!
-//! Sem argumento, conta e guarda dias fechados e mostra o resumo local de hoje.
+//! Sem argumento, conta e guarda os dias fechados da máquina e do histórico do
+//! projeto e mostra o resumo local de hoje.
 //! Só `--publish` ou `--republish` prepara e publica um snapshot estático. `--url`
 //! registra uma URL confirmada. Nenhum hook inicia essa operação.
 //!
@@ -21,7 +22,8 @@ use crate::commands::spec_events::project;
 
 /// Options for `mustard-rt run spend`.
 pub struct SpendOpts {
-    /// Qualquer pasta dentro do repositório: só dá o idioma das mensagens.
+    /// Qualquer pasta dentro do projeto: dá o idioma das mensagens, o projeto
+    /// cujo histórico de gasto fecha e o destino configurado da publicação.
     pub root: PathBuf,
     /// Prepara a página externa somente a pedido explícito.
     pub publish: bool,
@@ -51,24 +53,27 @@ impl Machine {
     }
 }
 
-/// O núcleo testável de [`run`]: a resposta do comando ou a recusa.
+/// O núcleo testável de [`run`]: a resposta do comando ou a recusa. Fora do
+/// `--url`, a resposta traz em `project` o fechamento do histórico do
+/// projeto, feito à parte da conta da máquina: a recusa dela (sem a pasta do
+/// gasto, ou com o arquivo do gasto ilegível) não impede o projeto de fechar.
 pub(crate) fn spend_at(opts: &SpendOpts, machine: &Machine) -> Value {
     let lang = project(&opts.root).lang;
-    match answer(opts, machine, lang) {
-        Ok(report) => report,
-        Err(refusal) => {
-            json!({ "ok": false, "reason": refusal.reason(), "hint": refusal.message(lang) })
-        }
+    let refused = |refusal: Refusal| json!({ "ok": false, "reason": refusal.reason(), "hint": refusal.message(lang) });
+    if let Some(url) = &opts.url {
+        let dir = machine.dir.as_deref().ok_or(Refusal::NoMachineFolder);
+        return dir.and_then(|dir| record_url(dir, url)).unwrap_or_else(refused);
     }
+    let project = close_project(machine, &opts.root, lang);
+    let mut report = answer(opts, machine, lang).unwrap_or_else(refused);
+    report["project"] = project;
+    report
 }
 
-/// O que o pedido faz: grava o endereço, ou conta o que falta, conta hoje e
-/// prepara a cópia.
+/// A conta da máquina: conta os dias fechados que faltam, conta hoje e, a
+/// pedido, prepara a cópia.
 fn answer(opts: &SpendOpts, machine: &Machine, lang: Locale) -> Result<Value, Refusal> {
     let dir = machine.dir.as_deref().ok_or(Refusal::NoMachineFolder)?;
-    if let Some(url) = &opts.url {
-        return record_url(dir, url);
-    }
     let config = machine.config.as_deref().ok_or(Refusal::NoMachineFolder)?;
     let counted = count_missing(dir, config, &machine.today)?;
     let open = store::count_open(config, Some(dir), &machine.today);
@@ -79,9 +84,8 @@ fn answer(opts: &SpendOpts, machine: &Machine, lang: Locale) -> Result<Value, Re
     })?;
     if !opts.publish && !opts.republish {
         let ledger = store::load(dir)?;
-        return Ok(
-            json!({"ok":true,"counted":counted,"summary":summarize(&ledger.rows,&open,&machine.today),"published":false}),
-        );
+        return Ok(json!({"ok":true,"counted":counted,"counted_through":ledger.counted_through,
+            "summary":summarize(&ledger.rows,&open,&machine.today),"published":false}));
     }
     let ledger = store::update(dir, |ledger| ledger.clone())?;
     let rows=ledger.rows.iter().chain(&open).map(|row| {
@@ -106,6 +110,7 @@ fn answer(opts: &SpendOpts, machine: &Machine, lang: Locale) -> Result<Value, Re
         crate::report::public_spend_snapshot,
     );
     answer["counted"] = counted;
+    answer["counted_through"] = json!(ledger.counted_through);
     if answer["published"] == true {
         // Static snapshots have no remote document versions/copy cursor.
         let url = answer["remote_url"].as_str().ok_or_else(|| Refusal::Io {
@@ -127,6 +132,21 @@ fn count_missing(dir: &Path, config: &Path, today: &str) -> Result<Value, Refusa
     let counted = rows.len();
     store::update(dir, |ledger| ledger.record_counted(&range, rows))?;
     Ok(json!({ "first": range.first, "last": range.last, "rows": counted }))
+}
+
+/// Fecha os dias passados que faltam no histórico do projeto de `root`, o que
+/// o consumo do projeto no painel lê; a medição não o lê, ela soma as
+/// conversas. Só precisa das conversas da máquina, não do arquivo do gasto
+/// dela. A falha fica na resposta, com a razão, sem desfazer a conta da
+/// máquina.
+fn close_project(machine: &Machine, root: &Path, lang: Locale) -> Value {
+    let closed = machine.config.as_deref().ok_or(Refusal::NoMachineFolder)
+        .and_then(|config| store::close_project_history(config, root, &machine.today));
+    match closed {
+        Ok(Some(through)) => json!({ "ok": true, "counted_through": through }),
+        Ok(None) => json!({ "ok": true, "recorded": false, "reason": "project-not-initialized" }),
+        Err(refusal) => json!({ "ok": false, "reason": refusal.reason(), "hint": refusal.message(lang) }),
+    }
 }
 
 /// Grava o endereço da página.
@@ -211,6 +231,71 @@ mod tests {
 
     fn database(answer: &Value) -> Value {
         serde_json::from_slice(&fs::read(answer["database"].as_str().unwrap()).unwrap()).unwrap()
+    }
+
+    /// O comando fecha também os dias passados do histórico do projeto, e não
+    /// só os da máquina: três dias com 100, 874 e 50 ações fecham, a medição
+    /// conta os dois primeiros, e a segunda chamada ainda diz até onde a conta
+    /// fechou.
+    #[test]
+    fn the_command_closes_the_past_days_of_the_project_history_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let machine = machine(dir.path(), "2026-10-14");
+        let root = project(dir.path(), "loja", "en-US");
+        let busy = [("2026-10-11", 100), ("2026-10-12", 874), ("2026-10-13", 50)];
+        let lines: Vec<String> = busy
+            .iter()
+            .map(|(day, actions)| {
+                let tools: Vec<Value> = (0..*actions)
+                    .map(|n| json!({"type": "tool_use", "id": format!("{day}-{n}"), "name": "Bash", "input": {"command": "ls"}}))
+                    .collect();
+                json!({"timestamp": format!("{day}T15:00:00Z"), "cwd": root.to_string_lossy(), "message": {
+                    "id": format!("m-{day}"), "usage": {"input_tokens": 10, "output_tokens": 0}, "content": tools}})
+                .to_string()
+            })
+            .collect();
+        let folder = dir.path().join("config/projects/p");
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("s1.jsonl"), lines.join("\n")).unwrap();
+        let local = SpendOpts { publish: false, ..opts(&root) };
+
+        let first = spend_at(&local, &machine);
+        assert_eq!((first["counted_through"].clone(), first["project"].clone()),
+            (json!("2026-10-13"), json!({"ok": true, "counted_through": "2026-10-13"})), "{first}");
+        let history = store::load(&store::project_history_dir(&root)).unwrap();
+        let closed: Vec<_> = history.rows.iter().map(|row| (row.day.as_str(), row.actions)).collect();
+        assert_eq!(closed, [("2026-10-11", 100), ("2026-10-12", 874), ("2026-10-13", 50)]);
+        let mark = mustard_core::domain::spend::day_start("2026-10-10").unwrap();
+        let measured = mustard_core::domain::measure::measure(&history.rows, mark, "2026-10-14");
+        assert_eq!(measured.after.days, ["2026-10-11", "2026-10-12"]);
+
+        let again = spend_at(&local, &machine);
+        assert_eq!((again["counted"].clone(), again["counted_through"].clone()), (Value::Null, json!("2026-10-13")), "{again}");
+    }
+
+    /// A recusa da conta da máquina não impede o histórico do projeto de
+    /// fechar: com o arquivo do gasto ilegível, e sem a pasta do gasto, o
+    /// comando recusa, deixa o arquivo como estava e fecha o projeto até
+    /// ontem, com os dois dias das conversas.
+    #[test]
+    fn a_refused_machine_count_still_closes_the_project_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let unreadable = machine(dir.path(), "2026-10-03");
+        let homeless = Machine { dir: None, ..machine(dir.path(), "2026-10-03") };
+        let folder = unreadable.dir.clone().unwrap();
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(store::ledger_path(&folder), "{ not json").unwrap();
+        for (name, machine, reason) in [("unreadable", &unreadable, "unreadable-ledger"), ("homeless", &homeless, "no-machine-folder")] {
+            let root = project(dir.path(), name, "en-US");
+            conversation(dir.path(), &root, &["2026-10-01", "2026-10-02"]);
+            let refused = spend_at(&SpendOpts { publish: false, ..opts(&root) }, machine);
+            assert_eq!((refused["ok"].clone(), refused["reason"].clone(), refused["project"].clone()),
+                (json!(false), json!(reason), json!({"ok": true, "counted_through": "2026-10-02"})), "{name}: {refused}");
+            let history = store::load(&store::project_history_dir(&root)).unwrap();
+            let closed: Vec<_> = history.rows.iter().map(|row| row.day.as_str()).collect();
+            assert_eq!(closed, ["2026-10-01", "2026-10-02"], "{name}");
+        }
+        assert_eq!(fs::read_to_string(store::ledger_path(&folder)).unwrap(), "{ not json");
     }
 
     #[test]
