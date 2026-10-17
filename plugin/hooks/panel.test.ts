@@ -13,6 +13,8 @@ test('analysis stays in an isolated Haiku session and counts cache in its input 
   expect(analysisTool({tool:'Edit',input:{}},{input:1000}).decision).toBe('deny');
   expect(analysisTool({tool:'Read',input:{}},{input:90000}).decision).toBe('deny');
   expect(analysisTool({tool:'Read',input:{}},{input:1000})).toBeNull();
+  expect(analysisTool({tool:'SubagentHandback',input:{}},{input:1000})).toBeNull();
+  expect(analysisTool({tool:'SubagentHandback',input:{}},{input:95000})).toBeNull();
   expect(analysisTool({tool:'Bash',input:{command:'touch changed'}},null)).toBeNull();
   expect(analysisTool({tool:'mcp__mustard__search',input:{request:{tool:'Bash',input:{command:'touch changed'}}}},{input:1}).decision).toBe('deny');
 });

@@ -16,6 +16,9 @@ export function fullAnalysisInput(usage) {
 }
 export function analysisTool(event,state) {
   if(!state)return null;
+  // The handback is how the agent returns its receipt to the conductor: refusing
+  // it, even over budget, leaves the conductor without the result.
+  if(event.tool==='SubagentHandback')return null;
   // Reserve headroom for the final answer and native tool/schema overhead.
   if(state.input!=null && state.input>=90000)return {decision:'deny',reason:'Mustard analysis is near its fixed 100000-token input budget. Return the current result now; do not read more or start another analysis.'};
   const tool=event.tool;
