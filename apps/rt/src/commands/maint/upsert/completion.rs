@@ -73,9 +73,13 @@ fn finish_with_install(root:&Path,report:&Report,runner:&impl ToolRunner,left:Du
     let host_binaries=host_version && plugin.as_ref().is_some_and(|plugin|host_binaries_ready(plugin,&expected,runner,&budget));
     let host_enabled=host_version && plugin.as_ref().is_some_and(|plugin|enabled_plugin(plugin,runner,&budget));
     let host_ready=host_binaries && host_enabled;
-    checks.push(check("plugin-version",host_version,"update or reinstall the Mustard plugin so its hooks match this build, then restart Claude Code"));
-    checks.push(check("plugin-binaries",host_binaries,"run the installed plugin's bin/mustard-boot --version; retry mustard-rt run upsert"));
-    checks.push(check("plugin-enabled",host_enabled,"enable Mustard with claude plugin enable <installed-plugin-id>, then restart Claude Code"));
+    checks.push(check("plugin-version",host_version,&plugin_version_remedy(root,plugin.as_ref(),&expected)));
+    // Os programas e a ativação só se conferem sobre o plugin desta
+    // compilação: sem ele, ficam não prontos sem remédio próprio, que não
+    // consertaria nada.
+    let dependent=|remedy:&'static str| if host_version {remedy} else {NEEDS_PLUGIN_VERSION};
+    checks.push(check("plugin-binaries",host_binaries,dependent("run the installed plugin's bin/mustard-boot --version; retry mustard-rt run upsert")));
+    checks.push(check("plugin-enabled",host_enabled,dependent("enable Mustard with claude plugin enable <installed-plugin-id>, then restart Claude Code")));
     let mut receipt=json!({"schema_version":1,"version":expected,"at":chrono::Utc::now().to_rfc3339(),
         "complete":project_ready && host_ready,"project_ready":project_ready,"host_ready":host_ready,
         "checks":checks,"scan":{"ok":scan["ok"],"files":scan["files"],"read":scan["read"],"reason":scan["reason"],"error":scan["error"]},
@@ -93,6 +97,30 @@ fn finish_with_install(root:&Path,report:&Report,runner:&impl ToolRunner,left:Du
 
 /// O resumo dos ganchos que esta compilação entrega, gravado pelo `build.rs`.
 const SHIPPED_HOOKS_DIGEST:&str=env!("MUSTARD_PLUGIN_HOOKS_DIGEST");
+
+/// O remédio das conferências do plugin que dependem da versão dele.
+const NEEDS_PLUGIN_VERSION:&str="not checked: needs plugin-version";
+
+/// O remédio da versão do plugin. O plugin instalado mais novo que o
+/// programa que responde não se conserta reinstalando o plugin: quem está
+/// atrás é o programa, e o remédio cita as duas versões e manda subir o
+/// programa à do plugin — no repositório do Mustard, avançando a branch e
+/// recompilando o programa de desenvolvimento. Plugin ausente, mais velho ou
+/// com os ganchos trocados sob o mesmo número leva o remédio de reinstalar.
+fn plugin_version_remedy(root:&Path,plugin:Option<&mustard_core::platform::harness::InstalledPlugin>,expected:&str)->String {
+    match plugin {
+        Some(plugin) if mustard_core::platform::harness::is_behind(expected,&plugin.version) => {
+            let installed=&plugin.version;
+            let update=if mustard_core::mustard_checkout(root).is_some() {
+                format!("advance this branch to {installed} and rebuild the development program with cargo build --profile mustard-dev")
+            } else {
+                format!("update the Mustard program to {installed} by reinstalling the Mustard bundle")
+            };
+            format!("the Mustard program answering ({expected}) is behind the installed plugin ({installed}); {update}, then retry mustard-rt run upsert")
+        }
+        _ => "update or reinstall the Mustard plugin so its hooks match this build, then restart Claude Code".into(),
+    }
+}
 
 /// O plugin instalado é o desta compilação: o registro e o manifesto dizem o
 /// número esperado, e os ganchos da cópia que o anfitrião carrega têm o
@@ -246,6 +274,62 @@ mod tests {
         let old=plugin_version(plugin);
         assert_eq!(old["ready"],false,"the same number with an old hook is not the plugin of this build: {old}");
         assert!(old["remedy"].as_str().is_some_and(|remedy|remedy.contains("reinstall the Mustard plugin")),"{old}");
+    }
+    /// O plugin instalado mais novo que o programa que responde tem a versão
+    /// não pronta com o remédio que cita as duas versões e manda subir o
+    /// programa; no repositório do Mustard, recompilando o de
+    /// desenvolvimento. O plugin mais velho e o ausente seguem com o remédio
+    /// de reinstalar o plugin.
+    #[test]
+    fn a_plugin_newer_than_the_answering_program_names_the_program_behind() {
+        let project=tempfile::tempdir().unwrap();
+        let report=installed_project(project.path());
+        let cached=tempfile::tempdir().unwrap();
+        let plugin=shipped_plugin_copy(cached.path());
+        let expected=mustard_core::harness_version();
+        let newer=format!("{expected}.1");
+        let remedy=|plugin:Option<mustard_core::platform::harness::InstalledPlugin>| {
+            let receipt=finish_with_install(project.path(),&report,&MissingPrograms,Duration::from_secs(1),plugin,"http://127.0.0.1:9/v1/systemone");
+            let version=component(&receipt,"plugin-version");
+            assert_eq!(version["ready"],false,"{version}");
+            version["remedy"].as_str().unwrap().to_string()
+        };
+        let ahead=remedy(Some(mustard_core::platform::harness::InstalledPlugin{version:newer.clone(),..plugin.clone()}));
+        assert!(ahead.contains("behind the installed plugin") && ahead.contains(&format!("({expected})")) && ahead.contains(&format!("({newer})")),"{ahead}");
+        assert!(!ahead.contains("reinstall the Mustard plugin") && !ahead.contains("cargo build"),"{ahead}");
+        std::fs::create_dir_all(project.path().join("apps/rt")).unwrap();
+        std::fs::write(project.path().join("apps/rt/Cargo.toml"),"[package]\nname = \"mustard-rt\"\n").unwrap();
+        let in_mustard=remedy(Some(mustard_core::platform::harness::InstalledPlugin{version:newer.clone(),..plugin.clone()}));
+        assert!(in_mustard.contains(&format!("({expected})")) && in_mustard.contains(&format!("advance this branch to {newer}")) && in_mustard.contains("cargo build --profile mustard-dev"),"{in_mustard}");
+        let older=remedy(Some(mustard_core::platform::harness::InstalledPlugin{version:"0.0.1".into(),..plugin}));
+        assert!(older.contains("reinstall the Mustard plugin") && !older.contains("behind"),"{older}");
+        let absent=remedy(None);
+        assert!(absent.contains("reinstall the Mustard plugin") && !absent.contains("behind"),"{absent}");
+    }
+    /// Os programas e a ativação do plugin só se conferem sobre o plugin
+    /// desta compilação: com a versão não pronta, os dois ficam não prontos
+    /// com o remédio de não conferidos, e o recibo incompleto; com a versão
+    /// pronta, cada um segue com o próprio remédio.
+    #[test]
+    fn the_plugin_checks_that_need_its_version_are_not_checked_without_it() {
+        let project=tempfile::tempdir().unwrap();
+        let report=installed_project(project.path());
+        let cached=tempfile::tempdir().unwrap();
+        let plugin=shipped_plugin_copy(cached.path());
+        let receipt_for=|plugin| finish_with_install(project.path(),&report,&MissingPrograms,Duration::from_secs(1),Some(plugin),"http://127.0.0.1:9/v1/systemone");
+        let current=receipt_for(plugin.clone());
+        assert_eq!(component(&current,"plugin-version")["ready"],true,"{current}");
+        assert!(component(&current,"plugin-binaries")["remedy"].as_str().is_some_and(|remedy|remedy.contains("mustard-boot")),"{current}");
+        assert!(component(&current,"plugin-enabled")["remedy"].as_str().is_some_and(|remedy|remedy.contains("claude plugin enable")),"{current}");
+        let newer=format!("{}.1",mustard_core::harness_version());
+        let ahead=receipt_for(mustard_core::platform::harness::InstalledPlugin{version:newer,..plugin});
+        assert_eq!(ahead["complete"],false,"{ahead}");
+        assert_eq!(ahead["host_ready"],false,"{ahead}");
+        for name in ["plugin-binaries","plugin-enabled"] {
+            let dependent=component(&ahead,name);
+            assert_eq!(dependent["ready"],false,"{ahead}");
+            assert_eq!(dependent["remedy"],"not checked: needs plugin-version","{ahead}");
+        }
     }
     #[test]
     fn files_written_without_a_working_scan_and_host_are_not_a_complete_installation() {
