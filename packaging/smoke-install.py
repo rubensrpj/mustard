@@ -77,19 +77,30 @@ def smoke(bin_dir, version, commit, bootstrap_archive=None):
         assert installed["installation"]["project_ready"] is True, "required project components were not installed"
         assert installed["installation"]["host_ready"] is False, "missing host was presented as ready"
         assert installed["installation"]["complete"] is False, "an incomplete host was presented as complete"
-        settings = json.loads((root / ".claude/settings.local.json").read_text())
-        assert any(h.get("command") == "rtk hook claude" for group in settings["hooks"]["PreToolUse"] for h in group["hooks"]), "RTK hook missing from installation"
+        # O Mustard faz a troca do rtk no próprio gancho: o gancho do rtk sai
+        # da configuração do projeto, e o comando trocado chama o rtk que vem
+        # com o Mustard, pelo caminho inteiro.
+        settings_path = root / ".claude/settings.local.json"
+        settings = json.loads(settings_path.read_text()) if settings_path.exists() else {}
+        own_hooks = [h for group in settings.get("hooks", {}).get("PreToolUse", []) for h in group.get("hooks", [])]
+        assert not any(h.get("command") == "rtk hook claude" for h in own_hooks), "rtk's own hook was left beside Mustard's"
+
+        def through_rtk(command):
+            prefix, found, _ = command.rpartition(" git status --short")
+            return bool(found) and Path(prefix.strip("'\"")).name in ("rtk", "rtk.exe")
+
         hook = {"hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": str(root), "tool_input": {"command": "git status --short"}}
-        rewritten = subprocess.run([binary("rtk"), "hook", "claude"], input=json.dumps(hook), cwd=root, env=env, text=True, capture_output=True, timeout=10)
-        assert "rtk git status" in json.loads(rewritten.stdout)["hookSpecificOutput"]["updatedInput"]["command"], "installed RTK hook did not rewrite"
+        claude_args = [binary("mustard-rt"), "on", "PreToolUse", "--host", "claude"]
+        rewritten = json.loads(run(claude_args, input_text=json.dumps(hook)))["hookSpecificOutput"]["updatedInput"]
+        assert through_rtk(rewritten["command"]), "Mustard's hook did not rewrite through the bundled rtk: " + rewritten["command"]
         config = json.loads((root / "mustard.json").read_text())
         codex_hook = dict(hook, tool_name="exec_command", tool_input={"cmd": "git status --short", "yield_time_ms": 1000})
         hook_args = [binary("mustard-rt"), "on", "PreToolUse", "--host", "codex"]
         rewritten = json.loads(run(hook_args, input_text=json.dumps(codex_hook)))["hookSpecificOutput"]["updatedInput"]
-        assert rewritten["cmd"] == "rtk git status --short" and rewritten["yield_time_ms"] == 1000, "Codex RTK rewrite lost the native tool contract"
+        assert through_rtk(rewritten["cmd"]) and rewritten["yield_time_ms"] == 1000, "Codex RTK rewrite lost the native tool contract"
         canonical_hook = dict(hook, tool_input={"command": "git status --short"})
         canonical = json.loads(run(hook_args, input_text=json.dumps(canonical_hook)))["hookSpecificOutput"]["updatedInput"]
-        assert canonical["command"] == "rtk git status --short", "canonical Codex Bash was not rewritten"
+        assert through_rtk(canonical["command"]), "canonical Codex Bash was not rewritten"
         # Execute only this fixed read-only command in the disposable project;
         # a rewrite alone is not evidence that the installed filter works.
         run([binary("rtk"), "git", "status", "--short"])
