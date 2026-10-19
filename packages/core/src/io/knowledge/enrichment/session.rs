@@ -716,12 +716,12 @@ mod tests {
     }
 
     /// Five open tasks of a TypeScript project and the summary of a wave that
-    /// stopped at its token limit, leaving T1 and T3, go to the small model in
-    /// one request, for up to two waves. The reply with three waves, a task in
-    /// two waves, a merge across waves or a task outside the list is refused
-    /// and stores nothing; the reply that puts the summary's tasks in the wave
-    /// of their objective and leaves T5 for later is stored and read back by
-    /// the request id.
+    /// stopped at its token limit, leaving the two token tasks, go to the
+    /// small model in one request, for up to two waves. The reply with three
+    /// waves, a task in two waves, a merge across waves or a task outside the
+    /// list is refused and stores nothing; the reply that puts the summary's
+    /// tasks in the wave of their objective and leaves the cart task for
+    /// later is stored and read back by the request id.
     #[test]
     fn a_wave_forming_keeps_one_objective_per_wave() {
         let dir = fixture();

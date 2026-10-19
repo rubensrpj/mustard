@@ -36,6 +36,21 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("spec_events.find_more", Locale::EnUs) => "{shown} of {total}. Add a word or the type filter.",
         ("spec_events.find_none", Locale::PtBr) => "Não achei.",
         ("spec_events.find_none", Locale::EnUs) => "Nothing found.",
+        // A mudança dos registros de uma spec antiga para o arquivo de operações.
+        ("spec_events.move_records_preview", Locale::PtBr) => {
+            "Nada mudou. Sairiam {events} registros, {kb} kB da spec. Para mover, rode de novo com --apply: a spec vai antes para uma cópia de segurança."
+        }
+        ("spec_events.move_records_preview", Locale::EnUs) => {
+            "Nothing changed. {events} records would leave, {kb} kB of the spec. To move them, run again with --apply: the spec is backed up first."
+        }
+        ("spec_events.move_records_done", Locale::PtBr) => {
+            "{events} registros saíram da spec, {kb} kB, para o arquivo de operações. A cópia de segurança da spec ficou em {backup}."
+        }
+        ("spec_events.move_records_done", Locale::EnUs) => {
+            "{events} records left the spec, {kb} kB, for the operations file. The spec's backup is at {backup}."
+        }
+        ("spec_events.move_records_none", Locale::PtBr) => "A spec não tem registro para mover. Nada mudou.",
+        ("spec_events.move_records_none", Locale::EnUs) => "The spec has no record to move. Nothing changed.",
         ("spec_events.find_jev_off", Locale::PtBr) => "Jev fora: {reason}.",
         ("spec_events.find_jev_off", Locale::EnUs) => "Jev off: {reason}.",
         ("spec_events.find_no_key", Locale::PtBr) => "sem chave",
@@ -52,6 +67,30 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("spec_events.find_pasted", Locale::EnUs) => "[pasted text, {kb} kB: read item-{code}]",
         ("spec_events.find_files", Locale::PtBr) => "Arquivos: {files}",
         ("spec_events.find_files", Locale::EnUs) => "Files: {files}",
+        // A leitura de quem conduz (`run read` sem `--all`): o teto do bloco,
+        // a lista só das ondas abertas e a busca no painel em resumo.
+        ("spec_events.read_more", Locale::PtBr) => "{shown} de {total}, os mais novos primeiro. Todos: --all.",
+        ("spec_events.read_more", Locale::EnUs) => "{shown} of {total}, newest first. All of them: --all.",
+        ("spec_events.read_open_waves", Locale::PtBr) => "{shown} de {total} ondas: só as abertas. Todas: --all.",
+        ("spec_events.read_open_waves", Locale::EnUs) => "{shown} of {total} waves: only the open ones. All of them: --all.",
+        ("spec_events.read_summary", Locale::PtBr) => {
+            "Resumo por tipo do que o termo achou. Um item: item- e o código. Todos inteiros: --all."
+        }
+        ("spec_events.read_summary", Locale::EnUs) => {
+            "Summary by type of what the term found. One item: item- plus its code. All of them whole: --all."
+        }
+        ("spec_events.no_wave_request", Locale::PtBr) => {
+            "A onda {wave} não tem pedido gravado: ela ainda não saiu. Confira o número na wave-list."
+        }
+        ("spec_events.no_wave_request", Locale::EnUs) => {
+            "Wave {wave} has no recorded request: it has not gone out yet. Check the number in the wave-list."
+        }
+        ("spec_events.no_review_request", Locale::PtBr) => {
+            "O revisor final não tem pedido gravado: o fechamento ainda não o chamou."
+        }
+        ("spec_events.no_review_request", Locale::EnUs) => {
+            "The final reviewer has no recorded request: the close has not called it yet."
+        }
         ("spec_events.missing_field", Locale::PtBr) => {
             "Campos obrigatórios do evento {type} que faltaram ou vieram vazios: {field}. Nada foi \
              gravado."
@@ -135,11 +174,11 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The tasks depend on each other in a circle: {cycle}. Nothing was written."
         }
         ("spec_events.agreed_items_missing", Locale::PtBr) => {
-            "O veredito final precisa responder por todos os requisitos acordados vigentes: faltou {missing}. \
+            "O veredito final responde pelos requisitos acordados que nenhuma tarefa terminada cobre: faltou {missing}. \
              O revisor grava o veredito de novo, com todos eles. Nada foi gravado."
         }
         ("spec_events.agreed_items_missing", Locale::EnUs) => {
-            "The final verdict must answer for all the vigent agreed requirements: {missing} is missing. \
+            "The final verdict answers for the agreed requirements no finished task covers: {missing} is missing. \
              The reviewer writes the verdict again, with all of them. Nothing was written."
         }
         ("spec_events.delivery_agreed_missing", Locale::PtBr) => {
@@ -168,13 +207,13 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("spec_events.delivery_proof_older_than_file", Locale::PtBr) => {
             "A entrega da onda {wave} foi recusada: {files} mudou depois do último passo de término de \
-             tarefa, e a prova verde desse passo não cobre o que vai no commit. Rode a prova da tarefa de \
+             tarefa. A prova verde desse passo não cobre o que vai no commit. Rode a prova da tarefa de \
              novo e, com ela verde, grave o passo da tarefa com `run write step`. Depois grave a entrega \
              de novo. Nada foi gravado."
         }
         ("spec_events.delivery_proof_older_than_file", Locale::EnUs) => {
-            "The delivery of wave {wave} was refused: {files} changed after the last task-end step, and \
-             the green proof of that step does not cover what goes into the commit. Run the task's proof \
+            "The delivery of wave {wave} was refused: {files} changed after the last task-end step. The \
+             green proof of that step does not cover what goes into the commit. Run the task's proof \
              again and, once it is green, record the task's step with `run write step`. Then record the \
              delivery again. Nothing was written."
         }
@@ -388,6 +427,24 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("spec_events.survey_not_started", Locale::EnUs) => {
             "Spec {spec} has had no survey yet: run `mustard-rt run grill` before moving on to the \
              plan. Nothing was written."
+        }
+        ("spec_events.plan_without_task", Locale::PtBr) => {
+            "A spec {spec} não tem tarefa nenhuma, e não há o que aprovar. Grave as tarefas e rode \
+             `mustard-rt run plan` de novo. Nada foi gravado."
+        }
+        ("spec_events.plan_without_task", Locale::EnUs) => {
+            "Spec {spec} has no task at all, so there is nothing to approve. Write the tasks and run \
+             `mustard-rt run plan` again. Nothing was written."
+        }
+        ("spec_events.plan_not_passed", Locale::PtBr) => {
+            "A spec {spec} não pode ser aprovada: o último plano não passou, ou o plano mudou depois \
+             dele. Rode `mustard-rt run plan` e faça a pergunta de novo quando ele passar. Nada foi \
+             gravado."
+        }
+        ("spec_events.plan_not_passed", Locale::EnUs) => {
+            "Spec {spec} cannot be approved: the last plan did not pass, or the plan changed after \
+             it. Run `mustard-rt run plan` and ask the question again once it passes. Nothing was \
+             written."
         }
         ("spec_events.survey_gaps_unrecorded", Locale::PtBr) => {
             "A spec {spec} ainda tem {count} lacunas do tipo de trabalho sem ponto: {gaps}. Rode \
@@ -1028,8 +1085,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            137,
-            0x4006_1fef_f143_11b6,
+            147,
+            0xcbe9_6fca_005f_a821,
         );
     }
 
@@ -1042,6 +1099,9 @@ mod tests {
             ("spec_events.unknown_type", &["{type}", "{types}"][..]),
             ("spec_events.find_more", &["{shown}", "{total}"][..]),
             ("spec_events.find_none", &[][..]),
+            ("spec_events.move_records_preview", &["{events}", "{kb}"][..]),
+            ("spec_events.move_records_done", &["{events}", "{kb}", "{backup}"][..]),
+            ("spec_events.move_records_none", &[][..]),
             ("spec_events.find_jev_off", &["{reason}"][..]),
             ("spec_events.find_no_key", &[][..]),
             ("spec_events.find_no_answer", &[][..]),
@@ -1050,6 +1110,11 @@ mod tests {
             ("spec_events.find_lesson", &[][..]),
             ("spec_events.find_pasted", &["{kb}", "{code}"][..]),
             ("spec_events.find_files", &["{files}"][..]),
+            ("spec_events.read_more", &["{shown}", "{total}"][..]),
+            ("spec_events.read_open_waves", &["{shown}", "{total}"][..]),
+            ("spec_events.read_summary", &[][..]),
+            ("spec_events.no_wave_request", &["{wave}"][..]),
+            ("spec_events.no_review_request", &[][..]),
             ("spec_events.missing_field", &["{type}", "{field}"][..]),
             ("spec_events.task_declaration_missing", &["{missing}"][..]),
             ("spec_events.task_declaration_what", &[][..]),
@@ -1092,6 +1157,8 @@ mod tests {
             ("spec_events.goal_origin_not_user", &["{spec}", "{origin}"][..]),
             ("spec_events.survey_open", &["{spec}", "{count}", "{points}"][..]),
             ("spec_events.survey_not_started", &["{spec}"][..]),
+            ("spec_events.plan_without_task", &["{spec}"][..]),
+            ("spec_events.plan_not_passed", &["{spec}"][..]),
             ("spec_events.survey_gaps_unrecorded", &["{spec}", "{count}", "{gaps}"][..]),
             ("spec_events.point_already_open", &["{code}", "{block}"][..]),
             ("spec_events.point_not_open", &["{id}", "{open}"][..]),

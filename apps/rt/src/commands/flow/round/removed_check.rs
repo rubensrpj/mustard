@@ -4,7 +4,9 @@
 //!
 //! - Resto pelo nome: o nome tirado, como palavra inteira, nos arquivos que
 //!   o git rastreia e nos que a onda criou (código, comentário, teste,
-//!   documento, molde, script), com o arquivo e a linha. O nome que continua
+//!   documento, molde, script), com o arquivo e a linha. A citação num
+//!   documento, num molde ou numa linha de comentário só avisa; a linha de
+//!   código segura a onda ([`only_warns`]). O nome que continua
 //!   declarado noutro lugar não conta pelo texto: ali o texto pode citar a
 //!   outra declaração, e o mapa de depois já liga cada chamada a ela. A spec
 //!   (`.claude/spec/`), o registro de mudanças do projeto, o registro datado
@@ -145,12 +147,13 @@ pub(super) fn findings(root: &Path, maps: &AfterWave, lang: Locale) -> Vec<Findi
                     if other_thing(maps, &removed, name, &site, &text) {
                         continue;
                     }
+                    let refuses = !only_warns(&site, &text);
                     let text = translate("round.after_wave.leftover", lang)
                         .replace("{file}", &site)
                         .replace("{line}", &line.to_string())
                         .replace("{name}", name)
                         .replace("{from}", file);
-                    out.push(Finding { wave: *wave, refuses: true, text });
+                    out.push(Finding { wave: *wave, refuses, text });
                 }
             }
         }
@@ -450,6 +453,20 @@ fn is_document(path: &str) -> bool {
     DOCUMENT_EXTENSIONS.contains(&extension) || folders.split('/').any(|folder| folder == MOLD_FOLDER)
 }
 
+/// A citação do nome tirado na linha `text` de `file` só avisa, e a onda
+/// segue: o documento, o molde e a linha de comentário não quebram o
+/// programa. A linha de código segura a onda. O `#` só abre comentário
+/// seguido de espaço ou sozinho (`#include`, `#[atributo]` e `#!` são
+/// código), e o `*` de bloco só seguido de espaço ou de `/` (`*ptr` é código).
+fn only_warns(file: &str, text: &str) -> bool {
+    if is_document(file) {
+        return true;
+    }
+    let line = text.trim_start();
+    let opens = |mark: char, after: &[char]| line.strip_prefix(mark).is_some_and(|rest| rest.is_empty() || rest.starts_with(after));
+    line.starts_with("//") || line.starts_with("/*") || opens('#', &[' ', '\t', '#']) || opens('*', &[' ', '\t', '/'])
+}
+
 /// `link` aprova alguma ocorrência de `name` em `text`, que o recebe com o
 /// que vem antes do nome na linha e o que vem depois.
 fn linked_by(name: &str, text: &str, link: impl Fn(&str, &str) -> bool) -> bool {
@@ -736,18 +753,58 @@ mod tests {
     }
 
     #[test]
-    fn removing_a_function_but_leaving_a_comment_that_cites_it_gets_the_fix() {
+    fn a_removed_name_cited_only_in_a_document_or_a_comment_warns_without_holding_the_wave() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        let files = [("src/b.rs", "fn outra() {}\n// soma pelo old_total antes de gravar\n")];
+        // `src/b.rs` usava `old_total` na base; o comentário dele e o guia
+        // ainda citam o nome que a onda tirou.
+        let files = [
+            ("src/b.rs", "fn outra() {}\n// soma pelo old_total antes de gravar\n"),
+            ("src/c.rs", "fn caller() {}\n"),
+            ("docs/guide.md", "Chame `old_total(x)` para somar.\n"),
+        ];
+        project(root, &files, &base_with("old_total", &["src/b.rs:1:outra"]));
+        let out = back_without_old_total(root);
+        assert!(held_wave(&out).is_none(), "a citation in a document or a comment does not hold the wave: {out}");
+        let warned = orphan_hint(&out);
+        assert!(warned.contains("`src/b.rs` linha 2 ainda cita `old_total`, que a onda tirou de `src/a.rs`"), "{warned}");
+        assert!(warned.contains("`docs/guide.md` linha 1 ainda cita `old_total`, que a onda tirou de `src/a.rs`"), "{warned}");
+    }
+
+    #[test]
+    fn only_a_document_or_a_comment_line_turns_a_leftover_into_a_warning() {
+        // (arquivo, linha, só avisa)
+        let cases = [
+            ("docs/guide.md", "    let x = old_total();", true),
+            ("templates/page.html", "<p>{{ old_total }}</p>", true),
+            ("src/b.rs", "// soma pelo old_total", true),
+            ("src/b.rs", "    /// soma pelo `old_total`", true),
+            ("src/b.rs", " * soma pelo old_total", true),
+            ("src/b.rs", "/* old_total */", true),
+            ("packaging/build.sh", "# chama old_total", true),
+            ("src/b.rs", "    old_total(1);", false),
+            ("src/b.rs", "#[serde(default = \"old_total\")]", false),
+            ("src/b.c", "#include \"old_total.h\"", false),
+            ("src/b.c", "*old_total = 1;", false),
+            ("packaging/build.sh", "cp src/old_total.rs out/", false),
+        ];
+        for (file, text, warns) in cases {
+            assert_eq!(only_warns(file, text), warns, "{file}: {text:?}");
+        }
+    }
+
+    #[test]
+    fn removing_a_function_but_leaving_a_call_to_it_gets_the_fix() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let files = [("src/b.rs", "fn outra() {}\n    old_total(1);\n")];
         let base = json!({"modules": [module("src/a.rs", &[("old_total", 1, &["src/b.rs:1:outra"]), ("keep_sum", 5, &[])]), module("src/b.rs", &[("outra", 1, &[])])]});
         project(root, &files, &base);
         let head = git_text(root, &["rev-parse", "HEAD"]);
         let after = json!({"modules": [module("src/a.rs", &[("keep_sum", 1, &[])]), module("src/b.rs", &[("outra", 1, &[])])]});
         let out = back(root, after);
-        assert_eq!(out["ok"], json!(false), "{out}");
-        assert_eq!(out["reason"], json!("round-after-wave"), "{out}");
-        let hint = out["hint"].as_str().unwrap_or_default();
+        assert_eq!(out["ok"], json!(true), "{out}");
+        let hint = held_hint(&out);
         assert!(hint.contains("`src/b.rs` linha 2 ainda cita `old_total`, que a onda tirou de `src/a.rs`"), "{hint}");
         assert_eq!(git_text(root, &["rev-parse", "HEAD"]), head, "nothing committed: {out}");
     }
@@ -811,25 +868,36 @@ mod tests {
             module("src/d.rs", &[("late", 1, &[])]),
         ]});
         let out = back(root, after);
-        assert_eq!(out["reason"], json!("round-after-wave"), "{out}");
-        let hint = out["hint"].as_str().unwrap_or_default();
+        let hint = held_hint(&out);
         assert!(hint.contains("`src/d.rs` linha 2 ainda cita `old_total`, que a onda tirou de `src/a.rs`"), "{hint}");
+        // O guia vai junto, depois da linha de código, só como aviso.
         assert!(hint.contains("`docs/guide.md` linha 1 ainda cita `old_total`, que a onda tirou de `src/a.rs`"), "{hint}");
     }
 
-    /// O texto de conserto da volta da onda que tira o nome `name` de
+    /// O texto da conferência depois da onda que tira o nome `name` de
     /// `src/a.rs`, com `files` no projeto e `uses` como as chamadas que o mapa
-    /// da base guarda; vazio quando a volta passa sem achado.
+    /// da base guarda: o da recusa e o dos avisos, juntos; vazio quando a
+    /// volta passa sem achado.
     fn leftovers_after_removing(name: &str, uses: &[&str], files: &[(&str, &str)]) -> String {
         let dir = tempdir().unwrap();
         let root = dir.path();
         project(root, files, &base_with(name, uses));
         let out = back_without_old_total(root);
-        if out["ok"] == json!(true) {
-            return String::new();
-        }
-        assert_eq!(out["reason"], json!("round-after-wave"), "{out}");
-        out["hint"].as_str().unwrap_or_default().to_string()
+        let warned = out["warnings"].as_array().into_iter().flatten().filter(|w| w["reason"] == "round-after-wave-warnings");
+        held_wave(&out).into_iter().chain(warned.cloned()).map(|said| said["hint"].as_str().unwrap_or_default().to_string()).collect::<Vec<_>>().join("\n")
+    }
+
+    /// A recusa da conferência depois da onda que segurou a onda 1 na resposta
+    /// `out` da rodada; nada quando a onda passou.
+    fn held_wave(out: &Value) -> Option<Value> {
+        let held = out["warnings"].as_array()?.iter().find(|w| w["reason"] == json!("round-after-wave"))?;
+        assert_eq!(held["wave"], json!(1), "{out}");
+        Some(held.clone())
+    }
+
+    /// O texto da recusa que segurou a onda 1 na resposta `out` da rodada.
+    fn held_hint(out: &Value) -> String {
+        held_wave(out).unwrap_or_else(|| panic!("the wave was not held: {out}"))["hint"].as_str().unwrap_or_default().to_string()
     }
 
     #[test]
@@ -867,8 +935,7 @@ mod tests {
         // A onda tirou o arquivo `src/a.rs` inteiro.
         let after = json!({"modules": [module("src/b.rs", &[("outra", 1, &[])]), module("src/c.rs", &[("caller", 1, &[])])]});
         let out = back(root, after);
-        assert_eq!(out["reason"], json!("round-after-wave"), "{out}");
-        let hint = out["hint"].as_str().unwrap_or_default();
+        let hint = held_hint(&out);
         assert!(hint.contains("`packaging/build.sh` linha 1 ainda cita `a.rs`, que a onda tirou de `src/a.rs`"), "{hint}");
     }
 
@@ -1066,12 +1133,10 @@ mod tests {
         let root = dir.path();
         let files = [("src/b.rs", "fn outra() {}\n// the plugin is switched `OFF` when idle\n"), ("src/c.rs", "fn caller() {}\n")];
         project(root, &files, &base_with("OFF", &["src/b.rs:1:outra"]));
-        let head = git_text(root, &["rev-parse", "HEAD"]);
         let out = back_without_old_total(root);
-        assert_eq!(out["reason"], json!("round-after-wave"), "{out}");
-        let hint = out["hint"].as_str().unwrap_or_default();
+        assert!(held_wave(&out).is_none(), "{out}");
+        let hint = orphan_hint(&out);
         assert!(hint.contains("`src/b.rs` linha 2 ainda cita `OFF`, que a onda tirou de `src/a.rs`"), "{hint}");
-        assert_eq!(git_text(root, &["rev-parse", "HEAD"]), head, "nothing committed: {out}");
     }
 
     #[test]
@@ -1084,8 +1149,7 @@ mod tests {
         project(root, &files, &base_with("OFF", &["src/c.rs:2:caller"]));
         let head = git_text(root, &["rev-parse", "HEAD"]);
         let out = back_without_old_total(root);
-        assert_eq!(out["reason"], json!("round-after-wave"), "{out}");
-        let hint = out["hint"].as_str().unwrap_or_default();
+        let hint = held_hint(&out);
         assert!(hint.contains("`src/c.rs` linha 2 ainda cita `OFF`, que a onda tirou de `src/a.rs`"), "{hint}");
         assert!(!hint.contains("`src/b.rs`"), "{hint}");
         assert_eq!(git_text(root, &["rev-parse", "HEAD"]), head, "nothing committed: {out}");
@@ -1822,7 +1886,9 @@ mod tests {
         let after = real_map(root, &maps.path().join("after.db"));
         let changed = vec![(1, vec!["web/math.ts".to_string(), "web/legacy.ts".to_string()])];
         let found = findings(root, &AfterWave { base, after, changed }, Locale::PtBr);
-        let mut refused: Vec<&str> = found.iter().filter(|f| f.refuses).map(|f| f.text.as_str()).collect();
+        // Os guias só avisam: documento não segura a onda.
+        assert!(found.iter().all(|f| !f.refuses), "{:#?}", found.iter().map(|f| &f.text).collect::<Vec<_>>());
+        let mut refused: Vec<&str> = found.iter().filter(|f| f.text.contains("ainda cita")).map(|f| f.text.as_str()).collect();
         refused.sort_unstable();
         let expected = [
             "`MUSTARD-COMMANDS.md` linha 1 ainda cita `legacy.ts`, que a onda tirou de `web/legacy.ts`",

@@ -3,7 +3,7 @@
 //! Em cada idioma, todo texto que o modelo lê soma menos de 25.600 bytes, pela
 //! medida que mora em `support/prose_budget.rs`, ao lado deste arquivo — a
 //! mesma que o teste da instalação dos agentes confere. O mapa do início da
-//! sessão, que entra em toda sessão, continua com o teto dele de 3.072 bytes.
+//! sessão, que entra em toda sessão, tem o teto dele de 2.400 bytes.
 //!
 //! O teste mora no pacote da medida: trazido de outro pacote pelo caminho, o
 //! arquivo da medida ficaria fora dele, e o cargo o guardaria pelo endereço da
@@ -20,8 +20,11 @@ use std::path::Path;
 
 use prose_budget::{collect_md, language_of, read_by_the_model, repo_root, shown, LANGUAGES};
 
-/// O teto de um arquivo, e do texto do início da sessão, em bytes.
-const FILE_CAP: u64 = 3_072;
+/// O teto do mapa do início da sessão, em bytes. O início da sessão inteiro
+/// cabe em 3.000 bytes; os 600 que sobram ao lado do mapa guardam o lugar da
+/// retomada e do relato do pull request mesclado por outra pessoa, que nunca
+/// saem. Com o mapa maior, é ele que sai.
+const MAP_CAP: u64 = 2_400;
 
 /// O corte da descrição de um comando na lista do Claude Code, em caracteres.
 const DESCRIPTION_CHAR_CAP: usize = 1_536;
@@ -52,13 +55,13 @@ fn every_text_exists_in_both_languages() {
     }
 }
 
-/// O texto do início da sessão — o mapa — tem até 3.072 bytes em cada
+/// O texto do início da sessão — o mapa — tem até 2.400 bytes em cada
 /// idioma, medido no texto que o binário embute e grava no projeto.
 #[test]
 fn the_session_start_text_fits_its_cap() {
     for text in [mustard_core::platform::i18n::Locale::PtBr, mustard_core::platform::i18n::Locale::EnUs] {
         let size = mustard_core::session_map(text).len() as u64;
-        assert!(size <= FILE_CAP, "the {text} session map is {size} bytes, over {FILE_CAP}");
+        assert!(size <= MAP_CAP, "the {text} session map is {size} bytes, over {MAP_CAP}");
     }
 }
 

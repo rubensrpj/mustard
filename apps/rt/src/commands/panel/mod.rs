@@ -5,13 +5,11 @@ pub mod cli;
 mod consumption;
 mod dashboard;
 mod diagnostics;
-mod delivery_metrics;
-mod impact;
 mod jev_usage;
-mod knowledge_usage;
 mod live_usage;
-mod preferences;
+pub(crate) mod progress;
 mod publication;
+mod sections;
 mod settings;
 mod wave_usage;
 #[cfg(test)]
@@ -26,17 +24,41 @@ use mustard_core::domain::spec_state::{State, final_approval};
 use mustard_core::io::{spec_index, spend};
 use serde_json::{Value, json};
 
+#[cfg(test)]
+thread_local! {
+    /// Quantos arquivos de eventos a leitura do painel abriu nesta linha de execução.
+    pub(crate) static SPEC_LOGS_READ: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub(crate) fn snapshot(start: &Path, selected: Option<&str>) -> Value {
     snapshot_session(start,selected,None)
 }
 
 pub(crate) fn snapshot_session(start: &Path, selected: Option<&str>, session:Option<&str>) -> Value {
+    snapshot_with(start,selected,session,None)
+}
+
+/// [`snapshot`] com só a spec `name` lida: a publicação de uma spec não abre
+/// o arquivo de eventos das outras.
+pub(crate) fn snapshot_of(start: &Path, name: &str) -> Value {
+    snapshot_with(start,Some(name),None,Some(name))
+}
+
+fn snapshot_with(start: &Path, selected: Option<&str>, session:Option<&str>, only:Option<&str>) -> Value {
     let root = mustard_core::io::spec_events::spec_root(start);
     let selected = selected.map(str::to_string).or_else(|| crate::shared::context::checkout::current_spec(&start.to_string_lossy()));
     let jev = jev_usage::Ledger::read(&root);
     let costs = consumption::costs(&root);
+    let logs = match only {
+        Some(name) => spec_index::live_spec_files(&root).into_iter().filter(|(spec, _)| spec == name)
+            .filter_map(|(spec, events)| mustard_core::io::fs::lock::read_shared(&events).ok().map(|content| (spec, mustard_core::domain::spec_events::parse_log(&content))))
+            .collect(),
+        None => spec_index::read_specs(&root),
+    };
+    #[cfg(test)]
+    SPEC_LOGS_READ.with(|read| read.set(read.get() + logs.len()));
     let mut specs: Vec<Value> =
-        spec_index::read_specs(&root).into_iter().map(|(name, log)| spec_view(&root, &name, &log, selected.as_deref() == Some(&name), &jev)).collect();
+        logs.into_iter().map(|(name, log)| spec_view(&root, &name, &log, selected.as_deref() == Some(&name), &jev)).collect();
     for spec in &mut specs {
         let name=spec["name"].as_str().unwrap_or_default().to_string();
         spec["usage"]["claude_cost"]=json!({"known_micro_usd":costs["by_spec"][&name],"basis":costs["basis"],
@@ -53,13 +75,22 @@ pub(crate) fn snapshot_session(start: &Path, selected: Option<&str>, session:Opt
         "selected_spec":selected,"specs":specs,
         "jev":jev_view,"rtk":crate::shared::rtk_gain::cached(&root),"claude_cost":costs,"consumption":consumption::history(&root,spend::machine_dir().as_deref()),
         "retrieval":{"vectors_enabled":config.ai_vectors_enabled(),"index_present":mustard_core::io::project_map::model_path(&root).is_file()},
-        "knowledge":knowledge_usage::snapshot(&root),
-        "project_profile":mustard_core::io::project_profile::summary(&root,&[]),
         "hosts":integration_health["hosts"],
         "integration_health":integration_health,
         "installation":std::fs::read_to_string(root.join(".claude/mustard/installation.json")).ok().and_then(|text|serde_json::from_str::<Value>(&text).ok()),
-        "statusline":consumption::statusline(&root,session),
-        "commands":{"panel":"/mustard-panel","publish":"/mustard-pages"}})
+        "statusline":consumption::statusline(&root,session)})
+}
+
+/// One panel screen for `spec` under `root`, as the plugin asks for it.
+#[cfg(test)]
+pub(crate) fn section(root: &Path, spec: Option<&str>, name: &str) -> Value {
+    dashboard::query_with(root, spec, None, None, name, None, &sections::Params::default())
+}
+
+/// The events of `spec` under `root`, live or discarded.
+#[cfg(test)]
+pub(crate) fn dashboard_spec_log(root: &Path, spec: &str) -> Option<SpecLog> {
+    dashboard::spec_log(&mustard_core::io::spec_events::spec_root(root), spec)
 }
 
 pub(crate) fn observe_statusline(data:&Value) {
@@ -67,12 +98,8 @@ pub(crate) fn observe_statusline(data:&Value) {
 }
 
 fn spec_view(root: &Path, name: &str, log: &SpecLog, selected: bool, jev: &jev_usage::Ledger) -> Value {
-    spec_view_mode(root,name,log,selected,jev,"all")
-}
-
-fn spec_view_mode(root: &Path, name: &str, log: &SpecLog, selected: bool, jev: &jev_usage::Ledger, section:&str) -> Value {
     let visible = log.visible();
-    let live = if matches!(section,"all"|"usage") {wave_usage::read(root,name)}else{Value::Null};
+    let live = wave_usage::read(root,name);
     let hidden = log.hidden();
     let planned=log.planned_waves();
     let dispatches=log.last_dispatch_by_wave();
@@ -129,9 +156,14 @@ fn spec_view_mode(root: &Path, name: &str, log: &SpecLog, selected: bool, jev: &
             let usage=measured_wave(*wave)?;
             usage["caller_tokens"].as_u64().zip(usage.get("caller_usage_breakdown"))
         })).max_by_key(|(tokens,_)|*tokens).map(|(_,detail)|detail);
-    let stages: Vec<Value> = visible
+    // As etapas da rodada moram no arquivo de operações; as specs antigas as
+    // gravaram no próprio arquivo. As duas fontes, na ordem da hora.
+    let recorded = super::spec_events::conversation::recorded_operations(root, name);
+    let mut stage_runs: Vec<&mustard_core::domain::spec_events::SpecEvent> =
+        visible.iter().copied().chain(recorded.visible()).filter(|e| e.event_type == "stage_run").collect();
+    stage_runs.sort_by_key(|e| super::spec_events::conversation::time_of(e));
+    let stages: Vec<Value> = stage_runs
         .iter()
-        .filter(|e| e.event_type == "stage_run")
         .map(|e| {
             json!({
                 "stage":e.str_field("stage"),"phase":e.str_field("phase"),"result":e.str_field("result"),"ms":e.int("ms"),"at":e.at(),
@@ -154,15 +186,14 @@ fn spec_view_mode(root: &Path, name: &str, log: &SpecLog, selected: bool, jev: &
         })
         .collect();
     json!({"name":name,"goal":mustard_core::domain::spec_index::goal_of(log),"phase":State::from_log(log).phase,
-        "delivery_metrics":if matches!(section,"all"|"usage") {delivery_metrics::summary(log,&waves)}else{Value::Null},
-        "waves":waves,"scheduling":if selected {super::flow::round::scheduling_snapshot(root,log)} else {Value::Null},"usage":{"wave_tokens":tokens,
+        "waves":waves,"scheduling":if selected {super::flow::round::scheduling_snapshot(root,name,log)} else {Value::Null},"usage":{"wave_tokens":tokens,
             "known_wave_tokens":waves.iter().filter_map(|wave|wave["tokens"].as_u64()).sum::<u64>(),"measured_at":live["measured_at"],
             "conductor_tokens":caller,"waves_with_unknown_usage":unknown,
             "known_wave_breakdown":breakdown,"waves_with_unknown_breakdown":detail_unknown,"conductor_breakdown":caller_breakdown,"origin":"deduplicated-transcripts"},
         "stages":stages,"final_validation_valid":if selected {Some(super::flow::validation::reusable(root,log))} else {None},
-        "counted_waves":wave_counts(log),
-        "publication":publication,"jev":jev.spec(name),"operations":if matches!(section,"all"|"usage") {operations(root,name,log)}else{Value::Null},
-        "definitions":if selected && matches!(section,"all"|"definitions") {definitions(log)} else {Value::Null},
+        "counted_waves":progress::wave_counts(log),
+        "publication":publication,"jev":jev.spec(name),"operations":operations(root,name,log),
+        "definitions":if selected {definitions(log)} else {Value::Null},
         "review_approved":final_approval(log).is_some(),"undeclared_commands":missing})
 }
 
@@ -298,14 +329,14 @@ pub(crate) fn wave_detail(start: &Path, name: &str, wave: u64) -> Value {
     })
         .map(|event| {let mut item=display_item(event,&codes);if let Some(code)=event.int("criterion").and_then(|id|codes.get(&id)){item["criterion"]=json!(code);}item}).collect();
     let user_input = planned.and_then(|event| event.int("origin")).and_then(|id| log.get(id)).and_then(|event| event.str_field("text"));
-    let mut skills=sent.and_then(|event|event.fields.get("skills")).cloned().unwrap_or(Value::Null);
+    let mut skills=sent.and_then(|event|log.send_field(event.id,"skills")).cloned().unwrap_or(Value::Null);
     for skill in skills.as_array_mut().into_iter().flatten() {
         let read=attempt.zip(skill["path"].as_str()).zip(skill["sha"].as_str()).and_then(|((dispatch,path),sha)|
             mustard_core::io::observations::read_receipt(&root,name,dispatch,path,sha));
         if let Some(receipt)=read {skill["read_confirmed"]=json!(true);skill["reading_receipt"]=receipt;}
     }
     safe_value(json!({"spec":name,"wave":wave,"plan":planned.map(|event| &event.fields),
-        "user_input":user_input,"request":sent.and_then(|event|event.str_field("text")),
+        "user_input":user_input,"request":sent.and_then(|event|log.send_text(event.id)),
         "request_recorded":sent.is_some(),"sent_at":sent.map(|event|event.at()),
         "skills":skills,
         "executor_requested":sent.and_then(|event|event.str_field("agent")),
@@ -315,11 +346,6 @@ pub(crate) fn wave_detail(start: &Path, name: &str, wave: u64) -> Value {
         "steps":steps,"tasks":tasks,"criteria":criteria,"tests":tests}))
 }
 
-/// The same progress used by the terminal and the full local projection.
-pub(crate) fn wave_counts(log: &SpecLog) -> (usize, usize) {
-    let counted = log.counted_waves();
-    (log.delivered_waves().intersection(&counted).count(), counted.len())
-}
 
 #[cfg(test)]
 mod tests {
@@ -359,6 +385,22 @@ mod tests {
         assert_eq!(result["search"]["reduced_calls"], 0);
         assert_eq!(result["search"]["native_bytes"], 100);
         assert_eq!(result["search"]["delivered_bytes"], 150);
+    }
+
+    /// A etapa da rodada que mora no arquivo de operações aparece no painel
+    /// junto das que as specs antigas gravaram no próprio arquivo.
+    #[test]
+    fn round_stages_from_the_operations_file_reach_the_panel() {
+        let dir=tempfile::tempdir().unwrap();let root=dir.path();
+        std::fs::write(root.join("mustard.json"),"{}").unwrap();
+        let folder=root.join(".claude/spec/demo");std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("spec.ndjson"),format!("{}\n",json!({"v":1,"id":1,"at":"2026-10-19T10:00:00Z","type":"stage_run","phase":"final","stage":"machine","result":"pass","ms":5,"author":"binary"}))).unwrap();
+        let draft=json!({"phase":"delivery","stage":"integration","result":"pass","ms":7,"scope":"leaf","author":"binary"});
+        assert!(super::super::spec_events::conversation::observe(root,"demo","stage_run",vec![draft.as_object().unwrap().clone()]).is_some());
+        let view=snapshot(root,Some("demo"));
+        let spec=view["specs"].as_array().unwrap().iter().find(|spec|spec["name"]=="demo").unwrap();
+        let stages:Vec<_>=spec["stages"].as_array().unwrap().iter().map(|stage|stage["stage"].clone()).collect();
+        assert_eq!(stages,vec![json!("machine"),json!("integration")],"{}",spec["stages"]);
     }
 
     #[test]

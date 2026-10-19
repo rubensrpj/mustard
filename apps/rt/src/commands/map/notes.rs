@@ -157,7 +157,11 @@ mod tests {
     /// Um arquivo em TypeScript gravado no disco, e o módulo que o mapa
     /// guarda dele, com o SHA-256 do conteúdo e o de cada função.
     fn module(root: &Path, path: &str, names: &[&str]) -> Value {
-        let content: String = names.iter().map(|name| format!("function {name}() {{\n  return 1;\n}}\n")).collect();
+        let content = names.iter().fold(String::new(), |mut content, name| {
+            use std::fmt::Write as _;
+            let _ = write!(content, "function {name}() {{\n  return 1;\n}}\n");
+            content
+        });
         std::fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
         std::fs::write(root.join(path), &content).unwrap();
         let spans: Vec<(&str, usize, usize)> = names.iter().enumerate().map(|(at, name)| (*name, at * 3 + 1, at * 3 + 3)).collect();

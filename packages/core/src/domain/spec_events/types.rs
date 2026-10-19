@@ -109,6 +109,7 @@ impl BlockQuery {
                 "wave-list",
                 "wave-<n>",
                 "dispatch-<n>",
+                "dispatch-review",
                 "request-<n>",
                 "request-review",
                 "request-review-preview",
@@ -128,7 +129,8 @@ impl BlockQuery {
 /// O que o `read` pede: um bloco da spec ou uma das leituras que ele monta
 /// fora dos blocos. `wave-list` é uma linha curta por onda — o número, a
 /// primeira linha do texto e as ondas de que ela depende —; `dispatch-2` é
-/// tudo o que o pedido da onda `2` lista;
+/// tudo o que o pedido da onda `2` lista; `dispatch-review`, tudo o que o
+/// pedido mais novo do revisor final lista;
 /// `request-2`, o pedido exato gravado no envio dela; `request-review`, o
 /// pedido exato gravado no último envio do revisor final, que não tem onda;
 /// `request-review-preview`, o pedido que o fechamento daria ao revisor final
@@ -140,6 +142,7 @@ pub enum ReadQuery {
     Block(BlockQuery),
     WaveList,
     Dispatch(u64),
+    ReviewDispatch,
     Request(u64),
     ReviewRequest,
     ReviewPreview,
@@ -159,6 +162,9 @@ impl ReadQuery {
         // Antes de `wave-<n>`, que leria `list` como o número de uma onda.
         if name == "wave-list" {
             return Some(Self::WaveList);
+        }
+        if name == "dispatch-review" {
+            return Some(Self::ReviewDispatch);
         }
         if let Some(rest) = name.strip_prefix("dispatch-") {
             return number(rest).map(Self::Dispatch);
@@ -496,10 +502,12 @@ pub const TYPES: &[TypeSpec] = &[
             opt("returned", Kind::Int),
             opt("model", Kind::Text),
             // A leitura que o agente faz do pedido dele: de qual pedido é
-            // (`request-<onda>` ou `request-review`) e qual item leu (o
-            // código, ou `lesson-<número>`).
+            // (`request-<onda>` ou `request-review`) e os itens que a leitura
+            // achou (o código, ou `lesson-<número>`), todos num recibo só. O
+            // recibo de antes, um por item, trazia o item em `item`.
             opt("request", Kind::Text),
             opt("item", Kind::Text),
+            opt("items", Kind::Texts),
         ],
     ),
     // Estado.
@@ -1077,7 +1085,7 @@ mod tests {
         assert_eq!(BlockQuery::parse("wave-x"), None);
         assert_eq!(BlockQuery::parse("everything"), None);
         assert!(BlockQuery::accepted_names().contains(
-            "waves, wave-list, wave-<n>, dispatch-<n>, request-<n>, request-review, request-review-preview, delivered-<n>, backlog, calls, item-<code|n>, review"
+            "waves, wave-list, wave-<n>, dispatch-<n>, dispatch-review, request-<n>, request-review, request-review-preview, delivered-<n>, backlog, calls, item-<code|n>, review"
         ));
     }
 
@@ -1091,6 +1099,7 @@ mod tests {
         assert_eq!(ReadQuery::parse("wave-3"), Some(ReadQuery::Block(BlockQuery::Wave(3))));
         assert_eq!(ReadQuery::parse(" wave-list "), Some(ReadQuery::WaveList));
         assert_eq!(ReadQuery::parse("dispatch-3"), Some(ReadQuery::Dispatch(3)));
+        assert_eq!(ReadQuery::parse(" dispatch-review "), Some(ReadQuery::ReviewDispatch));
         assert_eq!(ReadQuery::parse("request-3"), Some(ReadQuery::Request(3)));
         assert_eq!(ReadQuery::parse(" request-review "), Some(ReadQuery::ReviewRequest));
         assert_eq!(ReadQuery::parse("request-review-preview"), Some(ReadQuery::ReviewPreview));

@@ -320,7 +320,7 @@ pub(crate) fn projection(full: &Value) -> Value {
         }).collect::<Vec<_>>();
         *knowledge=json!({"cards":cards,"role":"static navigation; confirm behavior in source or measured evidence"});
     }
-    out["expand"]=json!({"point":"mustard-rt run read item-<item-id>","all_points":"mustard-rt run read agreed",
+    out["expand"]=json!({"point":"mustard-rt run read item-<item-id>","all_points":"mustard-rt run read agreed --all",
         "source":"mustard-rt run knowledge --query <local-question> --purpose spec",
         "measurements":"mustard-rt run evidence --spec <spec>"});
     out
@@ -934,6 +934,7 @@ mod tests {
         let mut witness = Map::new();
         witness.insert("phase".into(), json!("approved"));
         witness.insert("witness".into(), json!({"question": "Aprovar a spec?", "answer": "Aprovar"}));
+        crate::shared::test_fixture::pass_plan(root, "aprovada");
         assert!(record(root, "aprovada", "state", witness, PhaseWriter::Witness).is_ok());
         open_spec(root, "sem-estado");
         id_of(&write(root, Some("sem-estado"), "message", json!({"author": "user", "text": GOAL})));

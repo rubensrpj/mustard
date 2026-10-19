@@ -19,10 +19,13 @@
 //! do módulo: `approval_refusal_explains::approval_refusal_names_the_unmet_condition`.
 //! Um critério que rode o teste com `--exact` cita esse caminho inteiro.
 
+#[path = "support/binary.rs"]
+mod binary;
+
 use std::fs;
 use std::io::Write;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use mustard_core::io::spec_events as store;
 use serde_json::{json, Value};
@@ -42,7 +45,7 @@ fn answer(cwd: &Path, session: &str, offered: &[&str], answers: Value) -> String
         "session_id": session,
         "cwd": cwd.to_str().unwrap()
     });
-    let mut child = Command::new(bin)
+    let mut child = binary::isolated(bin)
         .args(["on", "PostToolUse"])
         .current_dir(cwd)
         .env("CLAUDE_PROJECT_DIR", cwd)
@@ -67,11 +70,15 @@ fn answer(cwd: &Path, session: &str, offered: &[&str], answers: Value) -> String
         .unwrap_or_default()
 }
 
-/// Uma spec `epic` na fase de plano, ligada à sessão, num projeto em pt-BR.
+/// Uma spec `epic` na fase de plano, com uma tarefa e o plano passado, ligada
+/// à sessão, num projeto em pt-BR.
 fn spec_in_plan(project: &Path, session: &str) {
     fs::write(project.join("mustard.json"), r#"{"language":{"text":"pt-BR"}}"#).unwrap();
     let path = store::spec_file(project, "epic").unwrap();
     fs::create_dir_all(path.parent().unwrap()).unwrap();
+    // A aprovação pede uma tarefa e o plano passado depois dela.
+    let task = json!({ "text": "Somar dois números.", "author": "binary" });
+    store::write(&path, "task", task.as_object().cloned().unwrap(), &[]).unwrap();
     let plan = json!({ "phase": "plan" });
     store::write(&path, "state", plan.as_object().cloned().unwrap(), &[]).unwrap();
     let session_dir = project.join(".claude").join(".session").join(session);

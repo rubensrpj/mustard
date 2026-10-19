@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use mustard_core::io::fs::lock::LockedFile;
+use crate::commands::git_settle::CopiesLock;
 use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{Locale, translate};
 
@@ -31,8 +31,9 @@ pub(crate) struct Snapshot {
     cwd: Option<std::path::PathBuf>,
 }
 
-/// List candidates while holding the git-step lock. No process is terminated.
-pub(crate) fn find_stuck_processes(root: &Path, _held: &LockedFile) -> Vec<Detected> {
+/// List candidates while holding the copies lock: the round that prepares a
+/// copy holds it until the send is recorded. No process is terminated.
+pub(crate) fn find_stuck_processes(root: &Path, _held: &CopiesLock) -> Vec<Detected> {
     let copies = mustard_core::io::wave_prompt::copies_dir(root);
     let copies = std::fs::canonicalize(&copies).unwrap_or(copies);
     let busy = busy_slots(root, &copies);
@@ -403,7 +404,7 @@ mod tests {
         wait_until_spawned(orphaned.id(), "sleep");
         wait_until_spawned(ordinary.id(), "sleep");
 
-        let held = crate::commands::git_settle::git_step_lock(root).expect("git step lock");
+        let held = crate::commands::git_settle::copies_lock(root).expect("copies lock");
         let ended = find_stuck_processes(root, &held);
         assert!(left_alive(&mut looping), "the waiting loop inside the project must only be reported");
         assert!(left_alive(&mut orphaned), "the command in the deleted copy must only be reported");
@@ -457,7 +458,7 @@ mod tests {
         wait_until_spawned(inside.id(), "mustard-stuck-linked-marker");
         wait_until_spawned(elsewhere.id(), "mustard-stuck-linked-elsewhere-marker");
 
-        let held = crate::commands::git_settle::git_step_lock(&linked).expect("git step lock");
+        let held = crate::commands::git_settle::copies_lock(&linked).expect("copies lock");
         let ended = find_stuck_processes(&linked, &held);
         assert!(left_alive(&mut inside), "the waiting loop inside the linked project must only be reported");
         assert!(elsewhere.try_wait().ok().flatten().is_none(), "a waiting loop outside the project is left alone");
@@ -508,7 +509,7 @@ mod tests {
         std::fs::remove_dir_all(&copy).expect("remove the wave's copy");
         std::fs::remove_dir_all(&foreign).expect("remove the other project's copy");
 
-        let held = crate::commands::git_settle::git_step_lock(root).expect("git step lock");
+        let held = crate::commands::git_settle::copies_lock(root).expect("copies lock");
         let ended = find_stuck_processes(root, &held);
         assert!(left_alive(&mut orphaned), "the command in the deleted outside copy must only be reported");
         assert!(left_alive(&mut looping), "the waiting loop in a live outside copy must only be reported");
@@ -600,7 +601,7 @@ mod tests {
         wait_until_spawned(working.id(), "sleep");
         wait_until_spawned(legacy.id(), "sleep");
 
-        let held = crate::commands::git_settle::git_step_lock(root).expect("git step lock");
+        let held = crate::commands::git_settle::copies_lock(root).expect("copies lock");
         let ended = find_stuck_processes(root, &held);
         assert!(left_alive(&mut idle), "the command left in the slot with no wave running must only be reported");
         assert!(working.try_wait().ok().flatten().is_none(), "the slot of the running wave is left alone");
@@ -640,7 +641,7 @@ mod tests {
         wait_until_spawned(reviewing.id(), "sleep");
         wait_until_spawned(idle.id(), "sleep");
 
-        let held = crate::commands::git_settle::git_step_lock(root).expect("git step lock");
+        let held = crate::commands::git_settle::copies_lock(root).expect("copies lock");
         let ended = find_stuck_processes(root, &held);
         assert!(left_alive(&mut idle), "the command left in the slot with no work must only be reported");
         assert!(reviewing.try_wait().ok().flatten().is_none(), "the slot of the open final review is left alone");

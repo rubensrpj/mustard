@@ -633,7 +633,7 @@ fn review_checkpoint(log: &SpecLog, block: &str) -> Option<SpecLog> {
             question == crate::translate("survey.review_question", *lang) && answer == crate::translate("survey.continue_option", *lang)
         });
         if !accepted { return None; }
-        let prefix = SpecLog { events: log.events.iter().take_while(|event| event.id < message.id).cloned().collect(), skipped: Vec::new() };
+        let prefix = SpecLog::with_events(log.events.iter().take_while(|event| event.id < message.id).cloned().collect());
         let latest = prefix.events.iter().rev().find(|event| event.event_type == "point" && event.int("closes").is_some())?;
         if latest.str_field("block") != Some(block) || open_points(&prefix).iter().any(|point| point.str_field("block") == Some(block)) { return None; }
         Some(prefix)

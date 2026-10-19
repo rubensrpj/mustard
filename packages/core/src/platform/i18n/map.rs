@@ -447,24 +447,24 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              or in the `TYPESAFE_API_KEY` variable. To not use the filter, set search.filter to none."
         }
         ("map.search.key_in_git", Locale::PtBr) => {
-            "A chave em jev.key não vale, porque o git guarda o mustard.json. Tire o arquivo do git e troque a \
-             chave, porque quem lê o repositório pode tê-la visto."
+            "A chave em jev.key não vale, porque o git guarda o mustard.json ou não o ignora. Tire o arquivo do \
+             git e troque a chave, porque quem lê o repositório pode tê-la visto."
         }
         ("map.search.key_in_git", Locale::EnUs) => {
-            "The key in jev.key does not count, because git tracks mustard.json. Take the file out of git and \
-             change the key, because anyone who reads the repository may have seen it."
+            "The key in jev.key does not count, because git tracks mustard.json or does not ignore it. Take the \
+             file out of git and change the key, because anyone who reads the repository may have seen it."
         }
         // O aviso da rodada: a chave em jev.key do mustard.json que o git
-        // guarda não vale, e a rodada monta as ondas sem o Jev.
+        // guarda ou não ignora não vale, e a rodada monta as ondas sem o Jev.
         ("map.round.key_in_git", Locale::PtBr) => {
-            "O git guarda o mustard.json, então a chave em jev.key não vale. A rodada monta as ondas pelos arquivos \
-             de cada tarefa, sem o Jev. Tire o arquivo do git e troque a chave, porque quem lê o repositório pode \
-             tê-la visto."
+            "O git guarda o mustard.json ou não o ignora, então a chave em jev.key não vale. A rodada monta as \
+             ondas pelos arquivos de cada tarefa, sem o Jev. Tire o arquivo do git e troque a chave, porque quem \
+             lê o repositório pode tê-la visto."
         }
         ("map.round.key_in_git", Locale::EnUs) => {
-            "Git tracks mustard.json, so the key in jev.key does not count. The round builds the waves from the \
-             files of each task, without Jev. Take the file out of git and change the key, because anyone who \
-             reads the repository may have seen it."
+            "Git tracks mustard.json or does not ignore it, so the key in jev.key does not count. The round builds \
+             the waves from the files of each task, without Jev. Take the file out of git and change the key, \
+             because anyone who reads the repository may have seen it."
         }
         ("map.history_unreadable", Locale::PtBr) => "A história de `{file}` não pôde ser lida do git ({detail}).",
         ("map.history_unreadable", Locale::EnUs) => "The history of `{file}` could not be read from git ({detail}).",
@@ -486,7 +486,7 @@ mod tests {
             include_str!("map.rs"),
             super::PREFIXES,
             82,
-            0x3538_41fb_07f2_09d4,
+            0x7d2e_b7bc_f049_3538,
         );
     }
 

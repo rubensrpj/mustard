@@ -56,7 +56,7 @@ mod summary;
 pub use changed::TaskChange;
 pub use dispatch::ReadDispatch;
 pub use request::listed;
-pub use review::listed_final_review;
+pub use review::{Proven, listed_final_review};
 pub use rules::{ROOT_RULES_FILE, RulesFile, carries_project_rules, project_rules_section, touched_by};
 pub use summary::summary_of;
 
@@ -327,7 +327,8 @@ pub struct TaskPattern {
 }
 
 /// Um exemplo do padrão: o nome da função, o arquivo e a faixa de linhas
-/// dela. Nunca o código: o agente lê o trecho se precisar.
+/// dela, zerada quando o arquivo mudou depois do mapa. Nunca o código: o
+/// agente lê o trecho se precisar.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PatternExample {
     pub name: String,
@@ -387,7 +388,8 @@ pub fn pattern_block(pattern: &TaskPattern, lang: Locale) -> String {
         .examples
         .iter()
         .map(|e| {
-            let line = translate("prompt.pattern.example", lang)
+            let key = if e.end == 0 { "prompt.pattern.example_named" } else { "prompt.pattern.example" };
+            let line = translate(key, lang)
                 .replace("{name}", &e.name)
                 .replace("{path}", &e.path)
                 .replace("{start}", &e.start.to_string())
@@ -454,8 +456,10 @@ pub fn recipe_lines(recipe: &Recipe, lang: Locale) -> String {
     out
 }
 
-/// O teto de tokens do pedido de uma onda: acima dele, quem despacha recusa
-/// e diz o tamanho medido e o teto, para dividir o lote em dois. O teto é
+/// O teto de tokens do pedido de uma onda: acima dele, quem despacha divide
+/// a onda, deixando nela as tarefas que cabem e devolvendo as outras ao
+/// backlog; a onda cuja primeira tarefa sozinha já passa dele é recusada,
+/// com o tamanho medido e o teto. O teto é
 /// de despachar, não de montar — [`write`] continua escrevendo
 /// o pedido inteiro, do tamanho que for, porque é esse texto que a página
 /// mostra antes da aprovação; ninguém corta linha para caber.
@@ -771,6 +775,24 @@ pub fn all_agreed(log: &SpecLog) -> Vec<&SpecEvent> {
     agreed_items(log)
 }
 
+/// O combinado que o veredito final responde: o que o pedido mais novo da
+/// revisão listou (`read_items`) e o que nenhuma tarefa terminada cobre agora
+/// ([`Proven`]) — o item gravado depois do pedido também. O combinado que uma
+/// tarefa terminada cobre e o pedido não listou já tem prova. O pedido sem a
+/// lista, de antes dela, responde por todo o combinado ([`all_agreed`]).
+#[must_use]
+pub fn review_agreed(log: &SpecLog) -> Vec<&SpecEvent> {
+    let visible = log.visible();
+    let sent = visible.iter().filter(|e| e.event_type == "send" && e.str_field("role") == Some("review")).max_by_key(|e| e.id);
+    let Some(listed) = sent.and_then(|e| e.fields.get("read_items")).and_then(Value::as_array) else {
+        return all_agreed(log);
+    };
+    let listed: BTreeSet<&str> = listed.iter().filter_map(Value::as_str).collect();
+    let codes = log.codes();
+    let proven = Proven::of(log);
+    all_agreed(log).into_iter().filter(|e| codes.get(&e.id).is_some_and(|code| listed.contains(code.as_str())) || !proven.covers(e)).collect()
+}
+
 // ---------------------------------------------------------------------------
 // A escolha dos itens do pedido
 // ---------------------------------------------------------------------------
@@ -961,8 +983,8 @@ impl Choice {
 /// A escolha gravada no envio mais novo da onda `wave`, quando ele tem uma.
 #[must_use]
 pub fn recorded_choice(log: &SpecLog, wave: u64) -> Option<Choice> {
-    let sent = log.last_by_wave("send").get(&wave).and_then(|id| log.get(*id))?;
-    Choice::from_value(sent.fields.get("analysis")?)
+    let sent = *log.last_by_wave("send").get(&wave)?;
+    Choice::from_value(log.send_field(sent, "analysis")?)
 }
 
 /// A escolha que vale para o pedido da onda `wave`: a dada (`fresh`) ou, sem
@@ -1406,10 +1428,19 @@ impl Writer<'_> {
     /// lê por lá. Sem cópia, o agente roda no próprio repositório principal,
     /// e o caminho sobra.
     fn read_example(&self, out: &mut String, key: &str, in_copy: bool) {
-        let root = &self.material.execution.root;
-        let flag = if in_copy && !root.is_empty() { format!("--root {root} ") } else { String::new() };
-        let line = self.t(key).replace("{root}", &flag).replace("{spec}", &self.material.spec);
+        let line = self
+            .t(key)
+            .replace("{root}", &self.root_flag(in_copy))
+            .replace("{spec}", &self.material.spec)
+            .replace("{wave}", &self.material.wave.to_string());
         let _ = writeln!(out, "{line}\n");
+    }
+
+    /// `--root <repositório principal> ` nos comandos da spec de quem
+    /// trabalha numa cópia (`in_copy`); nada fora dela.
+    fn root_flag(&self, in_copy: bool) -> String {
+        let root = &self.material.execution.root;
+        if in_copy && !root.is_empty() { format!("--root {root} ") } else { String::new() }
     }
 
     /// As regras da execução do revisor: a cópia que o fechamento já criou no
@@ -1639,12 +1670,12 @@ mod tests {
             }
             assert!(prompt.contains("a onda termina"), "o done_when abre o pedido: {prompt}");
             assert_eq!(section(&prompt, translate("prompt.part.do", lang)).lines().collect::<Vec<_>>(), steps, "{prompt}");
-            let example = translate("prompt.read.wave", lang).replace("{root}", "").replace("{spec}", "teste");
+            let example = translate("prompt.read.wave", lang).replace("{root}", "").replace("{spec}", "teste").replace("{wave}", "1");
             assert!(prompt.contains(&example), "{}", prompt);
             // O comando que lê um item pelo código e o que lê uma lição, os
             // dois só na seção de como ler.
             assert_eq!(prompt.matches("mustard-rt run read").count(), 2, "{prompt}");
-            assert_eq!(prompt.matches("--term").count(), 1, "{prompt}");
+            assert_eq!(prompt.matches("--term").count(), 0, "{prompt}");
             for code in ["MSTD-TASK-0001", "MSTD-TASK-0002", "MSTD-CRIT-0001"] {
                 assert_eq!(prompt.matches(code).count(), 1, "{code}: {prompt}");
             }
@@ -2680,24 +2711,66 @@ mod tests {
         assert!(prompt.contains(&format!("- Lição {last_id} — ")), "{}", prompt);
     }
 
-    /// O que o agente devolve é o mesmo em todo pedido, no idioma do projeto: a
-    /// entrega pela ferramenta, o campo `commit` e a ordem de não deixar texto
-    /// solto fora da entrega — e mais nada de instrução fixa antes disso.
+    /// O que o agente devolve é o mesmo em todo pedido, no idioma do projeto: o
+    /// comando do passo, a entrega pela ferramenta, com o comando dela, o
+    /// campo `commit` e a ordem de não deixar texto solto fora da entrega — e
+    /// mais nada de instrução fixa antes disso.
     #[test]
     fn every_request_carries_the_same_return_rules() {
         let log = log(&[("wave", json!({"n": 1, "text": "Onda", "criteria": [], "done_when": "pronto"}))]);
         for lang in [Locale::PtBr, Locale::EnUs] {
             let prompt = write(&material(&log, 1), lang);
+            let command = |key: &str| translate(key, lang).replace("{root}", "").replace("{spec}", "teste").replace("{wave}", "1");
             assert_eq!(
                 section(&prompt, translate("prompt.part.return", lang)).lines().collect::<Vec<_>>(),
                 [
                     String::new(),
+                    format!("- {}", command("prompt.return.step")),
                     format!("- {}", translate("prompt.execution.report_lines", lang)),
+                    format!("- {}", command("prompt.return.delivered")),
                     format!("- {}", translate("prompt.execution.commit_field", lang)),
                     format!("- {}", translate("prompt.return.loose", lang)),
                 ],
                 "{lang:?}: {prompt}"
             );
+        }
+    }
+
+    /// "O que devolver" traz prontos os dois comandos com que o agente grava a
+    /// volta — o passo e a entrega —, com a spec, o número da onda e, na
+    /// cópia, o caminho do repositório principal: ele grava sem pedir a ajuda
+    /// do comando.
+    #[test]
+    fn the_return_section_carries_the_step_and_delivery_commands_ready_to_run() {
+        let log = log(&[("wave", json!({"n": 4, "text": "Onda", "criteria": [], "done_when": "pronto"}))]);
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let bare = write(&material(&log, 4), lang);
+            let returns = section(&bare, translate("prompt.part.return", lang));
+            assert!(returns.contains(r#"`mustard-rt run write step --spec teste --json '{"wave":4,"item":""#), "{lang:?}: {returns}");
+            assert!(returns.contains(r#"`mustard-rt run write delivered --spec teste --json '{"wave":4,"text":""#), "{lang:?}: {returns}");
+            let in_copy = write(&Material { execution: with_copy(), ..material(&log, 4) }, lang);
+            let returns = section(&in_copy, translate("prompt.part.return", lang));
+            for kind in ["step", "delivered"] {
+                let command = format!("`mustard-rt run write {kind} --root /repo --spec teste --json '{{\"wave\":4,");
+                assert!(returns.contains(&command), "{lang:?} {kind}: {returns}");
+            }
+        }
+    }
+
+    /// Com a cópia, a linha logo depois do título manda rodar cada comando de
+    /// dentro dela, pelo caminho, sem `cd` para fora: o título continua na
+    /// primeira linha e é reconhecido. Sem cópia, essa linha não existe.
+    #[test]
+    fn the_line_after_the_title_says_to_run_every_command_inside_the_copy() {
+        let log = log(&[("wave", json!({"n": 2, "text": "Onda", "criteria": [], "done_when": "pronto"}))]);
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let request = write(&Material { execution: with_copy(), ..material(&log, 2) }, lang);
+            let lines: Vec<&str> = request.lines().collect();
+            assert_eq!(wave_of_title(lines[0], lang), Some(("teste".to_string(), 2)), "{request}");
+            assert!(lines[1].is_empty(), "{request}");
+            assert!(lines[2].contains("`/repo/copia-1`") && lines[2].contains("`cd`"), "{lang:?}: {request}");
+            let bare = write(&material(&log, 2), lang);
+            assert!(!bare.lines().nth(2).unwrap_or_default().contains("`cd`"), "{lang:?}: {bare}");
         }
     }
 
@@ -2711,12 +2784,12 @@ mod tests {
         for (lang, said, gone) in [
             (
                 Locale::PtBr,
-                ["cada item pelo comando de \"Como ler cada item\"", "leva `title`, `text` e `agent`"],
+                ["todos os itens numa chamada só, pelo comando de \"Como ler cada item\"", "leva `title`, `text` e `agent`"],
                 "na dúvida, o comando que ele dá lê o texto completo",
             ),
             (
                 Locale::EnUs,
-                ["Read each item with the command under \"How to read each item\"", "takes `title`, `text` and `agent`"],
+                ["Read every item in one call (\"How to read each item\")", "takes `title`, `text` and `agent`"],
                 "when in doubt, the command it gives reads the whole text",
             ),
         ] {
@@ -2798,7 +2871,7 @@ mod tests {
             assert!(reading.trim_start().starts_with(&example), "{text}");
             assert!(text.find(&example) < text.find(&format!("## {}", translate("prompt.part.waves", lang))), "{text}");
             assert_eq!(text.matches("mustard-rt run read").count(), 2, "{text}");
-            assert_eq!(text.matches("--term").count(), 1, "{text}");
+            assert_eq!(text.matches("--term").count(), 0, "{text}");
             for secret in ["Detalhe secreto", "Corpo secreto", "a spec fecha"] {
                 assert!(!text.contains(secret), "no item text is copied: {text}");
             }
@@ -3028,11 +3101,13 @@ mod tests {
         for line in [format!("- {}", t("prompt.execution.commit_field")), format!("- {}", t("prompt.execution.report_lines"))] {
             assert!(returns.contains(&line), "{line}: {returns}");
         }
-        // De onde ler a spec, só a linha de como ler diz, uma vez, nos dois
-        // comandos dela.
-        let wave_example = t("prompt.read.wave").replace("{root}", "--root /repo ").replace("{spec}", "teste");
+        // De onde ler a spec dizem a linha de como ler, nos dois comandos
+        // dela, e os dois comandos de gravar a volta; a linha logo abaixo do
+        // título só diz para que o `--root` serve.
+        let wave_example = t("prompt.read.wave").replace("{root}", "--root /repo ").replace("{spec}", "teste").replace("{wave}", &m.wave.to_string());
         assert!(wave.contains(&wave_example) && !rules.contains("--root"), "{wave}");
-        assert_eq!(wave.matches("--root").count(), 2, "{wave}");
+        assert_eq!(wave.matches("--root /repo ").count(), 4, "{wave}");
+        assert_eq!(wave.matches("--root").count(), 5, "{wave}");
 
         let example = t("prompt.read.final").replace("{root}", "--root /repo ").replace("{spec}", "teste");
         m.execution = with_final_copy();

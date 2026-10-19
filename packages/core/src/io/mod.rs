@@ -1,5 +1,6 @@
 pub mod fs;
 pub mod jev_gate;
+pub mod project_secret;
 pub mod sha256;
 pub mod tree_state;
 pub mod hooks_digest;

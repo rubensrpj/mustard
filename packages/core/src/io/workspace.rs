@@ -47,10 +47,11 @@
 //! override is honoured verbatim.
 //!
 //! A linked worktree that lives OUTSIDE the project — the separate copy of a
-//! wave, in the user's cache folder — has no anchor anywhere above it. When
-//! the walk finds nothing, the main checkout of that worktree becomes the
-//! root, provided it is a genuine anchor; otherwise the walk's
-//! [`WorkspaceError::AnchorNotFound`] stands.
+//! wave, in the user's cache folder or in a folder under another project —
+//! resolves to the main checkout of that worktree BEFORE any walk, provided
+//! the main checkout is a genuine anchor: the walk from a copy kept under
+//! another project would stop at that other project. Without a genuine main
+//! checkout the walk decides as usual.
 //!
 //! ## Inviolable safety contract
 //!
@@ -215,15 +216,16 @@ fn resolve_uncached(
         let override_path = PathBuf::from(override_raw);
         return validate_override(override_path);
     }
-    // A linked worktree OUTSIDE the project — the separate copy of a wave,
-    // which lives in the user's cache folder — has no project above it, and
-    // Mustard itself stays out of git, so the copy carries no anchor either.
-    // When the walk finds nothing, the main checkout of that worktree is the
-    // project, provided it is a genuine anchor.
-    let resolved = match walk_ancestors(start_dir) {
-        Ok(found) => found,
-        Err(missing) => return main_checkout_if_linked(start_dir).ok_or(missing),
-    };
+    // A linked worktree — the separate copy of a wave — belongs to its main
+    // checkout, wherever the copy lives. It is asked FIRST: a copy kept in a
+    // folder under another project would otherwise resolve, by the walk, to
+    // that other project, and its state would land there. Mustard stays out
+    // of git, so the copy itself carries no anchor; the main checkout counts
+    // only when it is a genuine anchor, and otherwise the walk decides.
+    if let Some(main) = main_checkout_if_linked(start_dir) {
+        return Ok(main);
+    }
+    let resolved = walk_ancestors(start_dir)?;
     // Worktree redirect (the ONE behavioural change): a resolved anchor sitting
     // inside a LINKED git worktree is remapped to its MAIN checkout so specs,
     // events, markers, and telemetry land under the primary `.claude/`. The main
@@ -815,6 +817,35 @@ mod tests {
             matches!(resolve_with_override(&loose, None), Err(WorkspaceError::AnchorNotFound { .. })),
             "a folder outside any project still resolves nothing",
         );
+    }
+
+    /// The copy of project B kept in a folder inside project A — test copies
+    /// under A's `target/`, or a copies folder the user pointed into A —
+    /// belongs to B: the walk up from it finds A first, but A is another
+    /// repository, and a hook there must write B's state, never A's. A itself
+    /// still resolves to A.
+    #[test]
+    fn a_copy_of_project_b_inside_project_a_resolves_to_b() {
+        let _guard = serialize_test();
+        let dir = tempdir().unwrap();
+        let outer = dir.path().join("a");
+        std::fs::create_dir_all(&outer).unwrap();
+        git(&outer, &["init", "-q"]);
+        make_loose_anchor(&outer);
+        let inner = dir.path().join("b");
+        std::fs::create_dir_all(inner.join("src")).unwrap();
+        std::fs::write(inner.join("src").join("lib.rs"), "fn um() {}\n").unwrap();
+        git(&inner, &["init", "-q"]);
+        git(&inner, &["add", "-A"]);
+        git(&inner, &["commit", "-q", "-m", "seed"]);
+        make_loose_anchor(&inner);
+        let copy = outer.join("target").join("copias").join("b-0123abcd").join("x-1");
+        git(&inner, &["worktree", "add", "-q", "--detach", &copy.to_string_lossy(), "HEAD"]);
+
+        let resolved = resolve_with_override(&copy.join("src"), None).expect("the copy resolves");
+        assert_eq!(std::fs::canonicalize(&resolved).unwrap(), std::fs::canonicalize(&inner).unwrap(), "the copy belongs to B");
+        let own = resolve_with_override(&outer.join("target"), None).expect("A resolves");
+        assert_eq!(std::fs::canonicalize(&own).unwrap(), std::fs::canonicalize(&outer).unwrap());
     }
 
     /// Um repositório de mentira que declara o pacote `mustard-rt`, com o git

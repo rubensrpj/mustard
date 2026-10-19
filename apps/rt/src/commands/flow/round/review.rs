@@ -2,7 +2,10 @@
 //! nativo da leitura e o aceite do condutor se prendem à impressão digital
 //! do diff da onda contra a base dela: os arquivos mudados e o conteúdo. Nem
 //! `USAGE` nem a compilação são revisão. Uma onda independente segue
-//! enquanto outra espera.
+//! enquanto outra espera. A revisão responde com o resumo — as linhas
+//! postas e tiradas por arquivo, o que saiu do plano e os passos da onda —,
+//! e o diff inteiro só a pedido. O aceite na rodada dispensa a impressão: o
+//! binário usa a da volta pendente, desde que quem conduz a tenha visto.
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Component, Path, PathBuf};
@@ -10,7 +13,7 @@ use std::path::{Component, Path, PathBuf};
 use mustard_core::domain::spec_events::SpecLog;
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState};
 use mustard_core::io::{sha256::Sha256, spec_events as store};
-use mustard_core::platform::i18n::Locale;
+use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Value, json};
 
 use super::RoundRefusal;
@@ -21,13 +24,17 @@ use crate::commands::git_settle::submodules_of;
 use crate::commands::spec_events::write::record;
 use crate::shared::spec_state::DiskSpecState;
 
+/// O aceite de quem conduz para a volta de uma onda. Sem `fingerprint`, vale
+/// para a impressão da volta pendente que ele viu ([`hold_unreviewed`]).
 pub(crate) struct Approval {
     pub wave: u64,
-    pub fingerprint: String,
+    pub fingerprint: Option<String>,
     pub note: String,
 }
 
-pub(crate) fn view_at(start: &Path, named: Option<&str>, wave: u64) -> Value {
+/// A revisão da onda `wave`: grava o recibo da leitura e responde com o
+/// resumo do diff dela; o diff inteiro vem só com `with_diff`.
+pub(crate) fn view_at(start: &Path, named: Option<&str>, wave: u64, with_diff: bool) -> Value {
     let project = crate::commands::spec_events::project(start);
     let result = (|| {
         let spec = named.map(str::to_owned).or_else(|| DiskSpecState::new(start).active(None))
@@ -43,28 +50,32 @@ pub(crate) fn view_at(start: &Path, named: Option<&str>, wave: u64) -> Value {
         }
         validate_paths(std::slice::from_ref(returned)).map_err(|e| e.message(project.lang))?;
         let formatted = format_round_files(&dir, &returned.files);
-        let (fingerprint, diff) = snapshot(&project.root, &log, returned)?;
-        receipt(start, &spec, returned, "view", &fingerprint, None).map_err(|e| e.message(project.lang))?;
-        let hint = match project.lang {
-            Locale::PtBr => {
-                "Leia o diff, confira regras/skills e testes. Para aceitar, use REVIEWED com wave, fingerprint e note na rodada. Para recusar, use REJECTED com o motivo. Não peça aprovação ao usuário para uma revisão técnica já autorizada."
-            }
-            Locale::EnUs => {
-                "Read the diff, check project rules/skills and tests. Accept with REVIEWED (wave, fingerprint, note) in the round report, or reject with REJECTED and a reason. Technical review does not require another user approval."
-            }
-        };
+        let seen = snapshot(&project.root, &log, returned)?;
+        receipt(start, &spec, returned, "view", &seen.fingerprint, None).map_err(|e| e.message(project.lang))?;
+        let hint = translate("round.review.hint", project.lang).replace("{wave}", &wave.to_string());
         let planned = mustard_core::domain::wave_prompt::wave_files(&log, wave);
         let outside: Vec<_> = returned.files.iter().filter(|file| !planned.iter().any(|scope| crate::shared::dag::files_cross(scope, file))).collect();
         let rules = review_rules(&project.root, &dir, &returned.files);
-        Ok(json!({"ok":true,"spec":spec,"wave":wave,"fingerprint":fingerprint,"files":returned.files,
-            "planned_files":planned,"outside_scope":outside,"project_rules":rules,"diff":diff,"formatted":formatted.formatted,"missing_formatters":formatted.missing,"hint":hint}))
+        let (steps, without_step) = super::finish_check::review_steps(&log, wave);
+        let proofs: Vec<Value> = returned.proofs.iter().map(|(criterion, proof)| json!({"criterion":criterion,"proof":proof})).collect();
+        let added: u64 = seen.changes.iter().map(|(_, added, _)| added).sum();
+        let removed: u64 = seen.changes.iter().map(|(_, _, removed)| removed).sum();
+        let changes: Vec<Value> = seen.changes.iter().map(|(file, added, removed)| json!({"file":file,"added":added,"removed":removed})).collect();
+        let mut out = json!({"ok":true,"spec":spec,"wave":wave,"fingerprint":seen.fingerprint,"changes":changes,"added":added,"removed":removed,
+            "planned_files":planned,"outside_scope":outside,"tasks_without_step":without_step,"steps":steps,"proofs":proofs,
+            "project_rules":rules,"formatted":formatted.formatted,"missing_formatters":formatted.missing,"hint":hint});
+        if with_diff {
+            out["diff"] = json!(seen.diff);
+        }
+        Ok(out)
     })();
     result.unwrap_or_else(|hint: String| json!({"ok":false,"reason":"wave-review-unavailable","wave":wave,"hint":hint}))
 }
 
 /// A resposta curta da revisão de onda: a impressão digital logo depois de
-/// `ok`, o diff inteiro e cada regra do projeto pelo caminho e pelo tamanho
-/// do texto, em bytes. O texto da regra vem com `--full` ou lendo o arquivo.
+/// `ok`, o resumo — e o diff, quando pedido — e cada regra do projeto pelo
+/// caminho e pelo tamanho do texto, em bytes. O texto da regra vem com
+/// `--full` ou lendo o arquivo.
 pub(crate) fn short(report: &Value) -> Value {
     let mut out = serde_json::Map::new();
     out.insert("ok".into(), report["ok"].clone());
@@ -107,13 +118,15 @@ fn review_rules(root: &Path, copy: &Path, files: &[String]) -> Vec<Value> {
 /// principal, a spec, as regras e a volta da onda ficam de fora: o commit de
 /// outra onda, um item gravado na spec ou outra volta com o mesmo código não
 /// mudam a impressão, e o aceite já dado continua valendo. Uma linha a mais
-/// no diff muda.
-fn snapshot(root: &Path, log: &SpecLog, wave: &WaveReport) -> Result<(String, String), String> {
+/// no diff muda. Junto vêm, por arquivo, as linhas postas e tiradas: no
+/// arquivo fora do git, todas as linhas dele contam como postas.
+fn snapshot(root: &Path, log: &SpecLog, wave: &WaveReport) -> Result<Snapshot, String> {
     let dir = review_dir(root, log, wave.wave);
     let subs = submodules_of(root);
     let mut bases: BTreeMap<PathBuf, String> = BTreeMap::new();
     let mut hash = Sha256::new();
     let mut diff = String::new();
+    let mut changes = Vec::new();
     let mut files = wave.files.clone();
     files.sort();
     files.dedup();
@@ -144,6 +157,12 @@ fn snapshot(root: &Path, log: &SpecLog, wave: &WaveReport) -> Result<(String, St
         hash.update(&[0]);
         if tracked.is_empty() { untracked_state(&mut hash, &path)?; } else { hash.update(tracked.as_bytes()); }
         hash.update(&[0]);
+        let (added, removed) = if tracked.is_empty() {
+            (std::fs::read_to_string(&path).map_or(0, |text| text.lines().count() as u64), 0)
+        } else {
+            moved_lines(&tracked)
+        };
+        changes.push((file.clone(), added, removed));
         let _ = write!(diff, "\n--- {file} ---\n");
         let shown = if tracked.is_empty() {
             if std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.file_type().is_symlink()) {
@@ -159,7 +178,35 @@ fn snapshot(root: &Path, log: &SpecLog, wave: &WaveReport) -> Result<(String, St
         }
         diff.push('\n');
     }
-    Ok((hash.hex_digest(), diff))
+    Ok(Snapshot { fingerprint: hash.hex_digest(), diff, changes })
+}
+
+/// O diff de uma onda como a revisão o lê ([`snapshot`]): a impressão
+/// digital, o texto do diff e, por arquivo, as linhas postas e tiradas.
+struct Snapshot {
+    fingerprint: String,
+    diff: String,
+    changes: Vec<(String, u64, u64)>,
+}
+
+/// As linhas postas e as tiradas do diff `tracked` de um arquivo, contadas
+/// só dentro dos trechos (`@@`): o cabeçalho e o patch binário não contam.
+fn moved_lines(tracked: &str) -> (u64, u64) {
+    let (mut added, mut removed, mut in_hunk) = (0, 0, false);
+    for line in tracked.lines() {
+        if line.starts_with("diff --git ") {
+            in_hunk = false;
+        } else if line.starts_with("@@") {
+            in_hunk = true;
+        } else if in_hunk {
+            match line.as_bytes().first() {
+                Some(b'+') => added += 1,
+                Some(b'-') => removed += 1,
+                _ => {}
+            }
+        }
+    }
+    (added, removed)
 }
 
 /// O que o diff do git não mostra do arquivo `path` da cópia, para a
@@ -186,16 +233,16 @@ fn untracked_state(hash: &mut Sha256, path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Cada arquivo de `waves` pode entrar num commit: o caminho relativo, sem
+/// subir de pasta, fora de `node_modules`. O primeiro que não pode é a recusa.
 pub(super) fn validate_paths(waves: &[WaveReport]) -> Result<(), RoundRefusal> {
-    for file in waves.iter().flat_map(|wave| &wave.files) {
-        if file.split('/').any(|part| part == "node_modules") {
-            return Err(RoundRefusal::Git { detail: "Dependency directories and node_modules symlinks cannot be wave deliverables".into() });
-        }
-        if Path::new(file).components().any(|part| !matches!(part, Component::Normal(_))) {
-            return Err(RoundRefusal::Git { detail:format!("Invalid wave path: {file}") });
-        }
+    let never_committed = |file: &str| {
+        file.split('/').any(|part| part == "node_modules") || Path::new(file).components().any(|part| !matches!(part, Component::Normal(_)))
+    };
+    match waves.iter().flat_map(|wave| &wave.files).find(|file| never_committed(file)) {
+        Some(file) => Err(RoundRefusal::InvalidPath { file: file.clone() }),
+        None => Ok(()),
     }
-    Ok(())
 }
 
 fn receipt(start: &Path, spec: &str, wave: &WaveReport, step: &str, hash: &str, note: Option<&str>) -> Result<(), mustard_core::domain::spec_events::Refusal> {
@@ -224,19 +271,19 @@ pub(super) fn hold_unreviewed(root: &Path, spec: &str, log: &SpecLog, waves: &mu
     hold_refused(waves, |wave| {
         if wave.files.is_empty() { return Ok(());
         }
-        let snapshot = snapshot(root, log, wave);
-        if let Ok((hash, _)) = &snapshot {
+        let snapshot = snapshot(root, log, wave).map(|seen| seen.fingerprint);
+        if let Ok(hash) = &snapshot {
             if has_receipt(log, wave, "accepted", hash) { return Ok(());
             }
-            if let Some(approval) = approvals.iter().find(|a| a.wave == wave.wave && a.fingerprint == *hash)
+            // O aceite sem impressão é o da volta pendente: a impressão de
+            // agora, e só com o recibo da leitura dela. O diff que mudou depois
+            // da leitura não tem recibo, e a onda segue esperando.
+            if let Some(approval) = approvals.iter().find(|a| a.wave == wave.wave && a.fingerprint.as_ref().is_none_or(|said| said == hash))
                 .filter(|_| has_receipt(log, wave, "view", hash)) {
                 return receipt(root, spec, wave, "accepted", hash, Some(&approval.note)).map_err(RoundRefusal::Refused);
             }
         }
-        let hint = match lang {
-            Locale::PtBr => format!("A onda {} aguarda revisão do diff antes do commit. Rode `mustard-rt run review-wave --wave {} --spec {spec}`, leia o diff e aceite com REVIEWED (wave, fingerprint, note) ou recuse com REJECTED. O registro de uso não aprova código.", wave.wave, wave.wave),
-            Locale::EnUs => format!("Wave {} awaits diff review before commit. Run `mustard-rt run review-wave --wave {} --spec {spec}`, read the diff and accept with REVIEWED (wave, fingerprint, note) or reject with REJECTED. Usage does not approve code.", wave.wave, wave.wave),
-        };
+        let hint = translate("round.review.required", lang).replace("{wave}", &wave.wave.to_string()).replace("{spec}", spec);
         Err(RoundRefusal::PreparationRequired(json!({"ok":false,"reason":"wave-review-required","wave":wave.wave,
             "agent_rework_required":false,"hint":hint,"detail":snapshot.err()})))
     })
@@ -250,12 +297,12 @@ pub(crate) fn test_conductor_review(root: &Path, spec: &str) {
     let Some(path) = store::spec_file(root, spec).ok() else { return };
     let Some(log) = store::read(&path).ok().flatten() else { return };
     for wave in returned_waves(&log).0 {
-        let view = view_at(root, Some(spec), wave.wave);
+        let view = view_at(root, Some(spec), wave.wave, false);
         let Some(hash) = view["fingerprint"].as_str() else { continue };
         let Some(fresh) = store::read(&path).ok().flatten() else { continue };
         let mut waves = returned_waves(&fresh).0;
         super::copy_check::check_against_copies(root, &fresh, &mut waves, Locale::PtBr);
-        let approvals = [Approval { wave: wave.wave, fingerprint: hash.into(), note: "Fixture conductor reviewed the actual diff and project rules".into() }];
+        let approvals = [Approval { wave: wave.wave, fingerprint: Some(hash.into()), note: "Fixture conductor reviewed the actual diff and project rules".into() }];
         hold_unreviewed(root, spec, &fresh, &mut waves, &approvals, Locale::PtBr);
     }
 }
@@ -286,7 +333,7 @@ mod tests {
         let held = bare_round(root, Some("<USAGE>{\"wave\":1}</USAGE>".into()));
         assert!(held["warnings"].as_array().unwrap().iter().any(|w| w["reason"] == "wave-review-required"), "{held}");
         assert!(store::read(&path).unwrap().unwrap().last_by_wave("delivered").is_empty());
-        let view = view_at(root, Some("x"), 1);
+        let view = view_at(root, Some("x"), 1, true);
         assert_eq!(view["ok"], true, "{view}");
         assert!(view["diff"].as_str().unwrap().contains("fn changed()"));
         let approve = |view: &Value| {
@@ -295,11 +342,11 @@ mod tests {
         std::fs::write(copy.join("src/a.rs"), "fn changed_again() {}\n").unwrap();
         let stale = bare_round(root, Some(approve(&view)));
         assert!(stale["warnings"].as_array().unwrap().iter().any(|w| w["reason"] == "wave-review-required"), "{stale}");
-        let fresh = view_at(root, Some("x"), 1);
+        let fresh = view_at(root, Some("x"), 1, true);
         assert_ne!(view["fingerprint"], fresh["fingerprint"]);
         std::fs::write(root.join("CLAUDE.md"), "Use shared schemas; never duplicate types.\n").unwrap();
         std::fs::write(copy.join("src/extra.rs"), "fn extra() {}\n").unwrap();
-        let fresh = view_at(root, Some("x"), 1);
+        let fresh = view_at(root, Some("x"), 1, true);
         assert_eq!(fresh["planned_files"], json!(["src/a.rs"]));
         assert_eq!(fresh["outside_scope"], json!(["src/extra.rs"]));
         assert_eq!(fresh["project_rules"][0]["path"], "CLAUDE.md");
@@ -309,9 +356,76 @@ mod tests {
         assert!(accepted["commit"].is_object(), "{accepted}");
         assert!(std::fs::read_to_string(root.join("src/a.rs")).unwrap().contains("changed_again"));
     }
+    /// A onda 1 mudou `src/a.rs` (uma linha posta) e criou `src/extra.rs`,
+    /// fora do plano, e gravou o passo de término da tarefa e a prova do
+    /// critério. A revisão responde com o resumo: cada arquivo com as linhas
+    /// postas e tiradas, o que saiu do plano e os passos com o resultado. O
+    /// diff inteiro só vem a pedido.
+    #[test]
+    fn the_review_answers_with_a_summary_and_the_diff_only_on_request() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        round(root, "x", None);
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let copy = copy_of(&log, 1).unwrap();
+        std::fs::write(copy.join("src/a.rs"), "fn one() {}\nfn two() {}\n").unwrap();
+        std::fs::write(copy.join("src/extra.rs"), "fn extra() {}\n").unwrap();
+        let proved = write(root, "x", "step", json!({"wave":1,"item":"MSTD-CRIT-0001","text":"git --version: verde"}));
+        assert_eq!(proved["ok"], true, "{proved}");
+        let out = returned(root, json!({"wave":1,"text":"Concluída.","files":["src/a.rs","src/extra.rs"],"commit":"Altera comportamento"}));
+        assert_eq!(out["ok"], true, "{out}");
+        let view = view_at(root, Some("x"), 1, false);
+        assert_eq!(view["ok"], true, "{view}");
+        assert_eq!(view["changes"], json!([{"file":"src/a.rs","added":1,"removed":0},{"file":"src/extra.rs","added":1,"removed":0}]), "{view}");
+        assert_eq!((view["added"].clone(), view["removed"].clone()), (json!(2), json!(0)), "{view}");
+        assert_eq!(view["outside_scope"], json!(["src/extra.rs"]), "{view}");
+        assert_eq!(view["tasks_without_step"], json!([]), "{view}");
+        let steps = view["steps"].as_array().cloned().unwrap_or_default();
+        assert!(steps.contains(&json!({"item":"MSTD-CRIT-0001","text":"git --version: verde"})), "{view}");
+        assert!(steps.iter().any(|step| step["item"] == "MSTD-TASK-0001"), "{view}");
+        assert!(view.get("diff").is_none(), "the diff only comes on request: {view}");
+        let hint = view["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("--diff") && hint.contains(r#"<REVIEWED>{"wave":1,"note":"#) && !hint.contains("fingerprint"), "{hint}");
+        let whole = view_at(root, Some("x"), 1, true);
+        assert!(whole["diff"].as_str().unwrap_or_default().contains("fn two()"), "{whole}");
+        assert_eq!(whole["fingerprint"], view["fingerprint"]);
+    }
+
+    /// O condutor aceita na rodada sem copiar a impressão: o binário usa a da
+    /// volta pendente, e o aceite só vale depois de vê-la. Sem ver, ou com o
+    /// diff mudado depois de ver, a onda segue esperando; vista a impressão
+    /// de agora, a rodada comita sem linha de uso.
+    #[test]
+    fn a_review_accepted_without_the_fingerprint_holds_for_the_diff_the_conductor_saw() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        round(root, "x", None);
+        let path = store::spec_file(root, "x").unwrap();
+        let copy = copy_of(&store::read(&path).unwrap().unwrap(), 1).unwrap();
+        std::fs::write(copy.join("src/a.rs"), "fn changed() {}\n").unwrap();
+        let out = returned(root, json!({"wave":1,"text":"Concluída.","files":["src/a.rs"],"commit":"Altera comportamento"}));
+        assert_eq!(out["ok"], true, "{out}");
+        let accept = format!("<REVIEWED>{}</REVIEWED>", json!({"wave":1,"note":"Li o resumo, as regras e os testes"}));
+        let waits = |out: &Value| out["warnings"].as_array().into_iter().flatten().any(|w| w["reason"] == "wave-review-required" && w["wave"] == 1);
+        let unseen = bare_round(root, Some(accept.clone()));
+        assert!(waits(&unseen), "{unseen}");
+        assert_eq!(view_at(root, Some("x"), 1, false)["ok"], true);
+        std::fs::write(copy.join("src/a.rs"), "fn changed_again() {}\n").unwrap();
+        let stale = bare_round(root, Some(accept.clone()));
+        assert!(waits(&stale), "{stale}");
+        assert!(store::read(&path).unwrap().unwrap().last_by_wave("delivered").is_empty());
+        assert_eq!(view_at(root, Some("x"), 1, false)["ok"], true);
+        let accepted = bare_round(root, Some(accept));
+        assert_eq!(accepted["ok"], true, "{accepted}");
+        assert!(accepted["commit"].is_object(), "{accepted}");
+        assert!(std::fs::read_to_string(root.join("src/a.rs")).unwrap().contains("changed_again"));
+    }
+
     /// A revisão de uma onda que mudou `web/app.ts`, com uma regra do projeto
     /// na raiz. A resposta curta abre com a impressão digital logo depois de
-    /// `ok`, traz o diff inteiro e a regra só pelo caminho e pelo tamanho; a
+    /// `ok`, traz o diff pedido e a regra só pelo caminho e pelo tamanho; a
     /// inteira traz o texto da regra.
     #[test]
     fn short_answer_opens_the_review_with_the_fingerprint_and_rules_without_text() {
@@ -327,7 +441,7 @@ mod tests {
         assert_eq!(out["ok"], true, "{out}");
         let rule = "Use shared schemas; never duplicate types.";
         std::fs::write(root.join("CLAUDE.md"), format!("{rule}\n")).unwrap();
-        let view = view_at(root, Some("x"), 1);
+        let view = view_at(root, Some("x"), 1, true);
         assert_eq!(view["ok"], true, "{view}");
         let short = crate::commands::flow::projection("review-wave", &view, false).unwrap();
         let keys: Vec<&String> = short.as_object().unwrap().keys().collect();
@@ -357,7 +471,7 @@ mod tests {
         std::fs::write(copy.join("src/extra.ts"), "export const extra = 1;\n").unwrap();
         let out = returned(root, json!({"wave":2,"text":"Concluída.","files":["src/app.ts","src/extra.ts"],"commit":"Refaz a metade"}));
         assert_eq!(out["ok"], true, "{out}");
-        let view = view_at(root, Some("x"), 2);
+        let view = view_at(root, Some("x"), 2, true);
         assert_eq!(view["planned_files"], json!(["src/app.ts", "src/Api.cs"]), "{view}");
         assert_eq!(view["outside_scope"], json!(["src/extra.ts"]), "{view}");
     }
@@ -376,7 +490,7 @@ mod tests {
             let out = returned(root, json!({"wave":wave,"text":"Concluída.","files":[file],"commit":"Altera comportamento"}));
             assert_eq!(out["ok"], true, "{out}");
         }
-        let view = view_at(root, Some("x"), 2);
+        let view = view_at(root, Some("x"), 2, true);
         assert_eq!(view["ok"], true, "{view}");
         let out = bare_round(root, Some(format!("<REVIEWED>{}</REVIEWED>", json!({"wave":2,"fingerprint":view["fingerprint"],"note":"Li o diff, as regras e os testes"}))));
         assert_eq!(out["ok"], true, "{out}");
@@ -412,7 +526,7 @@ mod tests {
         let accepted: Vec<String> = [1, 2]
             .into_iter()
             .map(|wave| {
-                let view = view_at(root, Some("x"), wave);
+                let view = view_at(root, Some("x"), wave, true);
                 assert_eq!(view["ok"], true, "{view}");
                 format!("<REVIEWED>{}</REVIEWED>", json!({"wave":wave,"fingerprint":view["fingerprint"],"note":"Li o diff, as regras e os testes"}))
             })
@@ -445,7 +559,7 @@ mod tests {
             assert_eq!(out["ok"], true, "{out}");
         };
         let fingerprint = || {
-            let view = view_at(root, Some("x"), 1);
+            let view = view_at(root, Some("x"), 1, true);
             view["fingerprint"].as_str().map(str::to_owned).unwrap_or_else(|| panic!("{view}"))
         };
         deliver();

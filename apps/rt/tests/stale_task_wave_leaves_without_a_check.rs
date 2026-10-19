@@ -9,6 +9,9 @@
 //! agente lê traz, sob a tarefa, o commit e o arquivo que mudaram. Prova pelo
 //! binário de verdade, num repositório temporário, nos dois idiomas.
 
+#[path = "support/binary.rs"]
+mod binary;
+
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -65,7 +68,7 @@ impl Project {
     }
 
     fn command(&self, args: &[&str], stdin: &str) -> std::process::Output {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+        let mut child = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
             .args(args)
             .current_dir(&self.root)
             .env("HOME", &self.home)

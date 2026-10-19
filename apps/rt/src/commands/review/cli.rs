@@ -101,6 +101,24 @@ pub enum ReviewCmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
+    /// Deliver a spec whose work git proves already in the base, merged
+    /// outside the close: its copies leave first, each keeping under
+    /// `refs/mustard/kept/` the code no commit has, and only with the last one
+    /// gone is the spec recorded as delivered — never as closed, since the
+    /// close and the final review did not happen. A copy that stays holds the
+    /// delivery back, and the spec stays as it was. The session start runs it
+    /// in the background; it answers one JSON report and exits 1 when it
+    /// refuses or holds back.
+    #[command(name = "deliver-merged")]
+    #[command(display_order = 43)]
+    DeliverMerged {
+        /// The spec to deliver.
+        #[arg(long)]
+        spec: String,
+        /// Any directory inside the repo. Defaults to the current dir.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
 }
 
 /// Dispatch one `review`-family `run` subcommand.
@@ -114,6 +132,9 @@ pub fn dispatch(cmd: ReviewCmd) {
         }
         ReviewCmd::Open { base, head, spec, fill, draft, root } => {
             review::pr_publish::run_open(&root, &base, &head, spec.as_deref(), fill, draft);
+        }
+        ReviewCmd::DeliverMerged { spec, root } => {
+            review::pr_door::run_deliver_merged(&root, &spec);
         }
     }
 }

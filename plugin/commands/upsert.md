@@ -23,5 +23,6 @@ argument-hint: [--doctor]
 
 - `mustard-rt run scan` updates the map; `--full` refreshes scan-map texts. No git writes.
 - `mustard-rt run clean` lists the throwaway copies agents left in the temp folder; deletes only when told.
+- `mustard-rt run move-records --spec <name>`: only on request.
 
 The binary writes `.claude/settings.local.json`, `.claude/mustard/` and `.claude/agents/mustard/`. Never hand-edit them.

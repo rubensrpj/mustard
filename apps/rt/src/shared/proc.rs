@@ -369,10 +369,23 @@ fn one_pipe_for_both(cmd: &mut Command) -> std::io::Result<std::io::PipeReader> 
 /// The shell could not be started.
 pub fn spawn_detached_shell(command: &str, cwd: &Path) -> std::io::Result<()> {
     let mut cmd = crate::util::platform::build_shell_command(command);
-    cmd.current_dir(cwd).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     if let Some(path) = augmented_path() {
         cmd.env("PATH", path);
     }
+    spawn_detached(cmd, cwd)
+}
+
+/// Start `cmd` in `cwd` and leave it running on its own, as
+/// [`spawn_detached_shell`] does: no wait, and a process the caller's exit
+/// does not take down with it. The standard streams are whatever the caller
+/// set on `cmd`.
+///
+/// # Errors
+///
+/// The program could not be started.
+pub fn spawn_detached(mut cmd: Command, cwd: &Path) -> std::io::Result<()> {
+    cmd.current_dir(cwd);
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;

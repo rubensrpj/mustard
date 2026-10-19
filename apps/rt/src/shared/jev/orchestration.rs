@@ -114,9 +114,14 @@ mod tests {
         (url, count)
     }
 
+    /// As chamadas `command` que o programa observou na spec `x`.
     fn calls(root: &Path, command: &str) -> Vec<Map<String, Value>> {
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        log.visible().into_iter().filter(|e| e.event_type == "call" && e.str_field("command") == Some(command)).map(|e| e.fields.clone()).collect()
+        crate::commands::spec_events::conversation::observed(root, "x", &log)
+            .into_iter()
+            .filter(|e| e.event_type == "call" && e.str_field("command") == Some(command))
+            .map(|e| e.fields)
+            .collect()
     }
 
     /// A escolha que o serviço recusa por falta de crédito volta vazia e deixa

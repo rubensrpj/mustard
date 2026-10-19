@@ -192,7 +192,8 @@ pub(crate) type Trace<'t> = dyn Fn(&Path, &Path, &str, usize) -> mustard_core::p
 /// conferência do mapa com o conteúdo de agora relê por `mine` o que mudou
 /// desde a passada que o gravou, e o bloco das specs recebe o que as specs
 /// gravaram desde a última resposta; a falha dele deixa o bloco como
-/// estava, e a resposta sai. A pergunta da história monta por `trace` a
+/// estava, e a resposta sai. A pergunta da história lê antes o texto dos pull
+/// requests que o mapa ainda não tem, monta por `trace` a
 /// lista do arquivo que o mapa ainda não tem, ou que venceu, e a dos
 /// exemplos, a do alvo além da janela do mapa; a busca monta por `trace` a
 /// dos arquivos ligados aos itens achados, e por `assemble` o filtro, quando
@@ -208,12 +209,20 @@ pub(crate) fn map_at(opts: &MapOpts, mine: &Mine<'_>, trace: &Trace<'_>, assembl
     // A passada que segue em segundo plano (`busy`) deixa a resposta com o
     // mapa de antes, e a resposta diz isso.
     let running = std::cell::Cell::new(false);
+    let passed = std::cell::Cell::new(false);
     let watched = |root: &Path, out: &Path| {
+        passed.set(true);
         let report = mine(root, out)?;
         running.set(report.busy);
         Ok(report)
     };
     crate::commands::flow::round::refresh_map_if_stale(&project.root, &watched);
+    // A passada que acabou fora de uma pergunta, em segundo plano, não leu o
+    // texto dos pull requests: a história, com o mapa em dia, lê o que falta.
+    // Com a passada desta pergunta, a leitura já veio junto dela.
+    if opts.question == Question::History && !passed.get() {
+        crate::shared::pr_history::refresh(&project.root);
+    }
     if reads_specs(opts.question) {
         let _ = map_specs::sync(&project.root, &project.languages);
     }
@@ -979,8 +988,13 @@ fn history_number(root: &Path, session: Option<&str>, lang: Locale, (key, settin
 /// sai como texto, e as demais, como JSON.
 pub fn run(opts: &MapOpts) {
     let scan = mustard_core::Scan::locate();
+    // Com o mapa gravado, a leitura da história de todo arquivo dele começa em
+    // segundo plano, como depois de toda passada.
     let mine = |root: &Path, out: &Path| match scan.scan_native_within(root, out, REFRESH_WAIT)? {
-        NativePass::Done(report) => Ok(report),
+        NativePass::Done(report) => {
+            let _ = scan.read_history_in_background(root, out);
+            Ok(report)
+        }
         NativePass::Running => Ok(ScanReport { busy: true, ..ScanReport::default() }),
     };
     let report = map_at(opts, &mine, &|root, out, file, moves| scan.history(root, out, file, moves), &jev);
@@ -1431,7 +1445,7 @@ mod tests {
         }
         let log = mustard_core::domain::spec_events::parse_log(&(lines.join("\n") + "\n"));
         let flight = mustard_core::io::wave_prompt::Flight::default();
-        let built = mustard_core::io::wave_prompt::prompts(root, "teste", &log, Locale::PtBr, &flight);
+        let built = mustard_core::io::wave_prompt::prompts(root, "teste", &log, Locale::PtBr, &flight, &log.planned_waves());
         let text = &built.iter().find(|p| p.wave == 1).expect("the request of wave 1").text;
         let under = |task: &str| -> String {
             let mut rest = text.lines().skip_while(|line| !line.contains(task));
@@ -3458,11 +3472,18 @@ mod tests {
         dir
     }
 
+    /// As chamadas que o programa observou na spec `spec`.
     fn calls_of(root: &Path, spec: &str) -> Vec<serde_json::Map<String, Value>> {
         use mustard_core::domain::spec_state::SpecState;
         crate::shared::spec_state::DiskSpecState::new(root)
             .log(spec)
-            .map(|log| log.visible().into_iter().filter(|e| e.event_type == "call").map(|e| e.fields.clone()).collect())
+            .map(|log| {
+                crate::commands::spec_events::conversation::observed(root, spec, &log)
+                    .into_iter()
+                    .filter(|e| e.event_type == "call")
+                    .map(|e| e.fields)
+                    .collect()
+            })
             .unwrap_or_default()
     }
 

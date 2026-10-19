@@ -942,8 +942,9 @@ fn merged_report(
     let qa_warning = spec
         .as_deref()
         .and_then(|slug| crate::commands::review::pr_publish::qa_warning(root, slug));
+    let why = format!("PR #{} mergeado", facts.number);
     let Landed { pending_closed, pending_open, settle: settled } =
-        land(root, facts, spec.as_deref(), flow, settle, session);
+        land(root, &facts.head, &why, spec.as_deref(), flow, settle, session);
 
     let Some(settled) = settled else {
         return PrMergeReport {
@@ -1060,28 +1061,42 @@ struct Landed {
 /// exit ritual ([`settle_at`]), called rather than rewritten: it already
 /// verifies the merge landed, already advances every base and already handles
 /// the in-place unit that has no worktree to leave.
+///
+/// `head` é a branch que entrou e `why`, o motivo que fecha as pendências que
+/// a obra levou: o número do pull request, ou o merge que o git provou.
 fn land(
     root: &Path,
-    facts: &PrFacts,
+    head: &str,
+    why: &str,
     spec: Option<&str>,
     flow: &BaseFlow,
     settle: &dyn Fn(&Path, &str) -> Value,
     session: Option<&str>,
 ) -> Landed {
-    let (pending_closed, pending_open) = after_merge(root, facts, spec, session);
-    let settle = (!is_base_promotion(&facts.head, flow)).then(|| settle(root, &facts.head));
+    let (pending_closed, pending_open) = after_merge(root, why, spec, session);
+    let settle = (!is_base_promotion(head, flow)).then(|| settle(root, head));
+    // Com a base já avançada pela arrumação, sai a ref guardada da spec
+    // entregue cujo código a base tem.
+    if let Some(spec) = spec.map(str::trim).filter(|spec| !spec.is_empty()) {
+        crate::commands::flow::round::landed_kept(root, spec, true);
+    }
     Landed { pending_closed, pending_open, settle }
 }
 
-/// O pull request da spec atual, perguntado no início da sessão.
+/// O pull request da spec atual, perguntado no início da sessão, ou a obra
+/// de uma spec que o git prova já estar na base.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum MergedElsewhere {
     /// Entrou pelas mãos de outra pessoa, e o mesmo caminho do merge desta
     /// porta rodou: a spec gravada como entregue, a arrumação da branch e a
     /// pergunta das pendências nascidas na spec.
     Landed {
-        /// O número do pull request.
-        pr: u64,
+        /// O número do pull request; nenhum quando foi o git que provou o
+        /// merge, fora da porta do pull request.
+        pr: Option<u64>,
+        /// A spec passou pelo fechamento e pela revisão final antes de a obra
+        /// entrar na base.
+        reviewed: bool,
         /// A branch da unidade.
         branch: String,
         /// O relatório da arrumação, ou nada numa promoção.
@@ -1101,6 +1116,28 @@ pub(crate) enum MergedElsewhere {
     /// O pull request do principal segue aberto, e a spec mexe em
     /// submódulo: o que a conferência dos pull requests deles achou e fez.
     Submodules(SubmodulePrs),
+    /// A obra entrou na base fora da porta do pull request, e a spec ainda tem
+    /// cópias no disco: elas saem num processo em segundo plano
+    /// ([`deliver_merged_at`]), que só grava a entrega depois que a última sai.
+    Leaving {
+        /// A branch da spec.
+        branch: String,
+        /// A spec passou pelo fechamento e pela revisão final.
+        reviewed: bool,
+        /// Quantas cópias estão saindo.
+        copies: usize,
+        /// O arquivo em que o processo escreve o relatório, ao terminar.
+        report: String,
+    },
+    /// A obra entrou na base fora da porta do pull request, mas a spec ainda
+    /// tem tarefa que não saiu ([`tasks_left`]): nada foi entregue, e o aviso
+    /// diz quantas faltam.
+    TasksLeft {
+        /// A branch da spec.
+        branch: String,
+        /// Quantas tarefas ainda não saíram.
+        count: usize,
+    },
 }
 
 /// No início da sessão, com a spec `spec` em "pull request aberto": pergunta
@@ -1127,6 +1164,9 @@ pub(crate) fn merged_elsewhere(root: &Path, spec: &str, session: Option<&str>) -
 ///
 /// O provedor é pedido só depois de a fase dizer "pull request aberto": no
 /// início da sessão, a spec em qualquer outra fase não custa pergunta nenhuma.
+/// Em execução ou fechada, a spec não tem pull request a perguntar: é o git,
+/// na abertura da sessão, que diz se a obra dela já entrou na base
+/// ([`merged_outside`]).
 pub(crate) fn merged_elsewhere_with(
     root: &Path,
     spec: &str,
@@ -1166,20 +1206,259 @@ pub(crate) fn merged_elsewhere_with(
     if head.is_empty() {
         return None;
     }
-    let facts = PrFacts { number: view.number, head };
     let (flow, _) = bases_and_branch(&repo);
-    let landed = land(&repo, &facts, Some(spec), &flow, settle, session);
+    let landed = land(&repo, &head, &format!("PR #{} mergeado", view.number), Some(spec), &flow, settle, session);
     Some(MergedElsewhere::Landed {
-        pr: facts.number,
-        branch: facts.head,
+        pr: Some(view.number),
+        reviewed: true,
+        branch: head,
         settle: landed.settle,
         pending_open: landed.pending_open,
     })
 }
 
-/// What a merge leaves recorded besides the merge: the `pr.merged` event, the
-/// spec's `delivered` phase and the closing of every pending item the work
-/// carried. Returns the closed ids and the pending items born in the
+/// As fases em que a obra de uma spec ainda pode entrar na base sem ter sido
+/// entregue: em execução, fechada e com o pull request aberto.
+pub(crate) const NOT_DELIVERED: [&str; 3] = ["running", "closed", "pr_open"];
+
+/// O motivo, no relatório da arrumação, da branch que já não existe nem aqui
+/// nem no servidor.
+const BRANCH_GONE: &str = "branch-gone";
+
+/// O motivo, no relatório da arrumação, da branch que continua viva: a
+/// entrega fora da porta do pull request não a arruma.
+const BRANCH_KEPT: &str = "branch-kept";
+
+/// A spec `spec`, numa das fases `phases`, cuja obra o git prova já estar na
+/// base ([`spec_work_in_base`]), sem trabalho em andamento
+/// ([`work_in_flight`]) nem tarefa que ainda não saiu ([`tasks_left`]): a
+/// varredura da abertura da sessão, sem perguntar ao provedor. `None` quando
+/// a spec está em outra fase, tem onda em andamento ou nada prova o merge.
+/// Com a obra na base e tarefa por sair, nada é entregue e o aviso diz
+/// quantas faltam ([`MergedElsewhere::TasksLeft`]).
+///
+/// [`spec_work_in_base`]: crate::commands::git_settle::spec_work_in_base
+pub(crate) fn merged_outside(root: &Path, spec: &str, session: Option<&str>, phases: &[&str]) -> Option<MergedElsewhere> {
+    use mustard_core::domain::spec_state::{SpecState as _, State};
+
+    let repo = project_root(root);
+    let log = crate::shared::spec_state::DiskSpecState::new(&repo).log(spec)?;
+    let state = State::from_log(&log);
+    let phase = state.phase.filter(|phase| phases.contains(phase) && NOT_DELIVERED.contains(phase))?;
+    if work_in_flight(&log) {
+        return None;
+    }
+    let (flow, _) = bases_and_branch(&repo);
+    let (branch, refs) = work_in_base(&repo, &log, &state, &flow)?;
+    let count = tasks_left(&log);
+    if count > 0 {
+        return Some(MergedElsewhere::TasksLeft { branch, count });
+    }
+    let reviewed = phase != "running";
+    let copies = crate::commands::flow::round::spec_copies(&repo, spec);
+    if copies.is_empty() {
+        return Some(deliver_outside(&repo, spec, &branch, refs, reviewed, session));
+    }
+    match deliver_in_background(&repo, spec, session) {
+        Ok(report) => Some(MergedElsewhere::Leaving { branch, reviewed, copies: copies.len(), report }),
+        Err(reason) => {
+            let lang = mustard_core::ProjectConfig::load(&repo).language().text_or_default();
+            eprintln!("{}", translate("session.deliver.not_started", lang).replace("{spec}", spec).replace("{reason}", &reason));
+            None
+        }
+    }
+}
+
+/// A spec ainda tem trabalho em andamento: onda despachada sem volta
+/// assumida — a órfã, a replanejada e a que voltou e espera a rodada
+/// inclusive ([`unanswered_sends`]) —, a revisão final aberta
+/// ([`open_review`]) ou o conserto pedido e ainda não entregue
+/// ([`open_fix_wave_of`]). As cópias dessa spec são de quem trabalha nelas, e
+/// nada a entrega.
+///
+/// [`unanswered_sends`]: crate::commands::flow::round::queue::unanswered_sends
+/// [`open_review`]: crate::commands::flow::round::open_review
+/// [`open_fix_wave_of`]: crate::commands::flow::reopen::open_fix_wave_of
+fn work_in_flight(log: &mustard_core::domain::spec_events::SpecLog) -> bool {
+    !crate::commands::flow::round::queue::unanswered_sends(log).is_empty()
+        || crate::commands::flow::round::open_review(log).is_some()
+        || crate::commands::flow::reopen::open_fix_wave_of(log).is_some()
+}
+
+/// Quantas tarefas da spec ainda não saíram ([`tasks_not_delivered`]): a do
+/// backlog, sem onda, e a de onda do plano que ainda não foi entregue. A obra
+/// que entrou na base com tarefa assim não está pronta, e nada a entrega.
+///
+/// [`tasks_not_delivered`]: crate::commands::flow::round::queue::tasks_not_delivered
+fn tasks_left(log: &mustard_core::domain::spec_events::SpecLog) -> usize {
+    crate::commands::flow::round::queue::tasks_not_delivered(log, &std::collections::BTreeSet::new()).len()
+}
+
+/// A branch da spec e a prova de que a obra dela já está na base: `Some`
+/// com a branch e se alguma ref dela ainda existe. A prova é o último commit
+/// que a rodada gravou para a spec neste repositório — o evento `commit` cujo
+/// `repo` é o nome da pasta do checkout `repo`; o de um submódulo não conta.
+fn work_in_base(
+    repo: &Path,
+    log: &mustard_core::domain::spec_events::SpecLog,
+    state: &mustard_core::domain::spec_state::State,
+    flow: &BaseFlow,
+) -> Option<(String, bool)> {
+    let branch = state.branch.clone()?;
+    let base = state.base.clone().or_else(|| flow.base_of(&branch).into_known())?;
+    let here = repo.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    let last = log
+        .visible()
+        .into_iter()
+        .filter(|event| event.event_type == "commit" && event.str_field("repo") == Some(here.as_str()))
+        .max_by_key(|event| event.id)
+        .and_then(|event| event.str_field("sha").map(str::to_string))?;
+    let refs = crate::commands::git_settle::spec_work_in_base(repo, &branch, &base, &last, flow)?;
+    Some((branch, refs))
+}
+
+/// Grava a entrega da spec `spec`, cuja obra entrou na base pela branch
+/// `branch` fora da porta do pull request ([`after_merge`]): a fase
+/// `delivered`, nunca `closed`, e as pendências que a obra levou. Não troca o
+/// ramo do checkout nem apaga a branch: a arrumação dela é dos caminhos que já
+/// existem, e o aviso das branches juntadas e vivas a nomeia. O relatório da
+/// arrumação diz só se alguma ref dela (`refs`) ainda existe.
+fn deliver_outside(repo: &Path, spec: &str, branch: &str, refs: bool, reviewed: bool, session: Option<&str>) -> MergedElsewhere {
+    let why = format!("branch {branch} juntada à base fora do pull request");
+    let (_, pending_open) = after_merge(repo, &why, Some(spec), session);
+    let tidy = serde_json::json!({ "ok": true, "reason": if refs { BRANCH_KEPT } else { BRANCH_GONE } });
+    MergedElsewhere::Landed { pr: None, reviewed, branch: branch.to_string(), settle: Some(tidy), pending_open }
+}
+
+/// O arquivo, ao lado das cópias da spec `spec` e fora da pasta delas, a que
+/// o processo em segundo plano acrescenta uma linha de relatório quando
+/// termina.
+fn background_report(repo: &Path, spec: &str) -> PathBuf {
+    mustard_core::io::wave_prompt::copies_dir(repo).join(format!("{spec}.deliver-merged.log"))
+}
+
+/// Solta `mustard-rt run deliver-merged` da spec `spec` num processo que não
+/// morre com o gancho, com a saída acrescentada ao arquivo de
+/// [`background_report`]: duas entregas ao mesmo tempo não apagam o relatório
+/// uma da outra. Devolve o caminho desse arquivo.
+fn deliver_in_background(repo: &Path, spec: &str, session: Option<&str>) -> Result<String, String> {
+    let report = background_report(repo, spec);
+    if let Some(folder) = report.parent() {
+        std::fs::create_dir_all(folder).map_err(|e| e.to_string())?;
+    }
+    let out = std::fs::OpenOptions::new().create(true).append(true).open(&report).map_err(|e| e.to_string())?;
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let mut command = Command::new(exe);
+    command.args(["run", "deliver-merged", "--spec", spec, "--root"]).arg(repo);
+    command.stdin(std::process::Stdio::null()).stdout(out).stderr(std::process::Stdio::null());
+    if let Some(session) = session {
+        crate::shared::spec_state::hand_session(&mut command, session);
+    }
+    crate::shared::proc::spawn_detached(command, repo).map_err(|e| e.to_string())?;
+    Ok(mustard_core::io::wave_prompt::shown(&report))
+}
+
+/// `mustard-rt run deliver-merged`: a spec `spec` cuja obra o git prova já
+/// estar na base, fora da porta do pull request. Com a trava das cópias e a
+/// do passo do git presas, nesta ordem, relê a spec e confere de novo a fase, o trabalho em andamento, as
+/// tarefas que ainda não saíram ([`tasks_left`]) — com alguma, recusa
+/// dizendo quantas — e a prova; só então tira as cópias do caminho, guardando
+/// antes o código que nenhum commit tem ([`remove_spec_copies_held`]), e só
+/// com a última fora grava a entrega ([`deliver_outside`]). Um despacho não
+/// entra no meio, e a segunda entrega da mesma spec acha a fase já gravada e
+/// recusa. Apagar o que as cópias têm no disco vem depois de soltar a trava
+/// ([`Removal::delete_leaving`]). Cópia que fica segura a entrega: a spec
+/// fica como estava, e a próxima abertura tenta de novo. Não troca o ramo do
+/// checkout nem apaga a branch.
+///
+/// [`remove_spec_copies_held`]: crate::commands::flow::round::remove_spec_copies_held
+/// [`Removal::delete_leaving`]: crate::commands::flow::round::Removal::delete_leaving
+pub(crate) fn deliver_merged_at(root: &Path, spec: &str, session: Option<&str>) -> Value {
+    use mustard_core::domain::spec_state::{SpecState as _, State};
+
+    let repo = project_root(root);
+    let lang = mustard_core::ProjectConfig::load(&repo).language().text_or_default();
+    let refused = |reason: &str, key: &str, phase: Option<&str>| {
+        let named = translate(&format!("page.phase.{}", phase.unwrap_or("plan")), lang);
+        let hint = translate(key, lang).replace("{spec}", spec).replace("{phase}", named);
+        serde_json::json!({ "ok": false, "reason": reason, "spec": spec, "hint": hint })
+    };
+    let copies = match crate::commands::git_settle::copies_lock(&repo) {
+        Ok(copies) => copies,
+        Err(detail) => return serde_json::json!({ "ok": false, "reason": "git-lock", "spec": spec, "detail": detail }),
+    };
+    let held = match crate::commands::git_settle::git_step_lock(&repo) {
+        Ok(held) => held,
+        Err(detail) => return serde_json::json!({ "ok": false, "reason": "git-lock", "spec": spec, "detail": detail }),
+    };
+    let Some(log) = crate::shared::spec_state::DiskSpecState::new(&repo).log(spec) else {
+        return refused("no-spec", "session.deliver.no_spec", None);
+    };
+    let state = State::from_log(&log);
+    let Some(phase) = state.phase.filter(|phase| NOT_DELIVERED.contains(phase)) else {
+        return refused("spec-not-open", "session.deliver.not_open", state.phase);
+    };
+    if work_in_flight(&log) {
+        return refused("work-in-flight", "session.deliver.in_flight", Some(phase));
+    }
+    let left_tasks = tasks_left(&log);
+    if left_tasks > 0 {
+        let mut refusal = refused("backlog-left", "session.deliver.backlog", Some(phase));
+        let hint = refusal["hint"].as_str().unwrap_or_default().replace("{count}", &left_tasks.to_string());
+        refusal["hint"] = Value::String(hint);
+        refusal["tasks"] = Value::from(left_tasks);
+        return refusal;
+    }
+    let (flow, _) = bases_and_branch(&repo);
+    let Some((branch, refs)) = work_in_base(&repo, &log, &state, &flow) else {
+        return refused("not-in-base", "session.deliver.not_in_base", Some(phase));
+    };
+    let mut removal = crate::commands::flow::round::remove_spec_copies_held(&repo, spec, Some(&log), &copies, &held);
+    let left = crate::commands::flow::round::spec_copies(&repo, spec);
+    let delivered = left.is_empty().then(|| deliver_outside(&repo, spec, &branch, refs, phase != "running", session));
+    // Entregue a spec, sai a ref guardada cujo código a base já tem.
+    let landed = if delivered.is_some() { crate::commands::flow::round::landed_kept(&repo, spec, true) } else { Vec::new() };
+    // Sob a trava, as cópias só saíram do caminho; apagar o que elas têm no
+    // disco — a compilação inteira, às vezes — fica para depois de soltá-la,
+    // sem segurar despacho nem commit de ninguém.
+    drop(held);
+    drop(copies);
+    removal.delete_leaving();
+    let warnings: Vec<Value> = crate::commands::flow::close::removal_warnings(&removal, lang)
+        .into_iter()
+        .map(|(reason, hint)| serde_json::json!({ "reason": reason, "hint": hint }))
+        .collect();
+    let kept: Vec<&str> = removal.kept.iter().map(|kept| kept.refname.as_str()).collect();
+    let Some(delivered) = delivered else {
+        return serde_json::json!({
+            "ok": false, "reason": "copies-left", "spec": spec, "left": left, "kept": kept, "warnings": warnings,
+        });
+    };
+    let MergedElsewhere::Landed { settle, pending_open, .. } = delivered else {
+        return serde_json::json!({ "ok": false, "reason": "not-delivered", "spec": spec });
+    };
+    let pending: Vec<Value> =
+        pending_open.iter().map(|item| serde_json::json!({ "id": item.id, "title": item.title })).collect();
+    serde_json::json!({
+        "ok": true, "action": "delivered", "spec": spec, "branch": branch, "kept": kept, "kept_removed": landed,
+        "warnings": warnings, "branchState": settle, "pendingOpen": pending,
+    })
+}
+
+/// Dispatch `mustard-rt run deliver-merged`. A sessão vem do ambiente. A
+/// resposta sai numa linha só: o processo em segundo plano a acrescenta ao
+/// relatório dele, uma linha por entrega.
+pub fn run_deliver_merged(root: &Path, spec: &str) {
+    let report = deliver_merged_at(root, spec, crate::shared::spec_state::session_from_env().as_deref());
+    println!("{}", serde_json::to_string(&report).unwrap_or_else(|_| "{}".to_string()));
+    if report["ok"] != Value::Bool(true) {
+        std::process::exit(1);
+    }
+}
+
+/// What a merge leaves recorded besides the merge: the spec's `delivered`
+/// phase and the closing of every pending item the work carried, with `why`
+/// as the reason. Returns the closed ids and the pending items born in the
 /// spec that stay open: the delivery asks only about them, never about the
 /// whole list.
 ///
@@ -1191,43 +1470,31 @@ pub(crate) fn merged_elsewhere_with(
 /// charge, so the two can never come apart again.
 ///
 /// The reason `PR #N mergeado` puts the pull request number in the ledger, so
-/// whoever rereads the list knows what delivered the item.
+/// whoever rereads the list knows what delivered the item; a merge git proved
+/// outside the close names the branch instead.
 ///
-/// Also runs on the `dev` → `main` promotion: the `pr.merged` is recorded. A
-/// promotion has no spec, so it records no phase, arms no charge and asks
-/// about no pending item.
+/// Also runs on the `dev` → `main` promotion. A promotion has no spec, so it
+/// records no phase, arms no charge and asks about no pending item.
 fn after_merge(
     root: &Path,
-    facts: &PrFacts,
+    why: &str,
     spec: Option<&str>,
     session: Option<&str>,
 ) -> (Vec<String>, Vec<OpenPending>) {
-    record_merge(root, facts, spec, session);
     if let Some(slug) = spec.map(str::trim).filter(|s| !s.is_empty()) {
         crate::commands::spec_events::write::record_phase(root, slug, "delivered", session);
     }
-    let reason = format!("PR #{} mergeado", facts.number);
     // The note "became the spec X" in the list and the survey's approved
     // context link a pending item to the spec.
     let closed: Vec<String> = spec
         .map(|slug| carried_by(root, slug))
         .unwrap_or_default()
         .into_iter()
-        .filter(|id| close_pending(root, id, &reason))
+        .filter(|id| close_pending(root, id, why))
         .collect();
     let born = spec.map(|slug| open_pending_born_in(root, slug)).unwrap_or_default();
     (closed, born)
 }
-
-/// Records this door's `pr.merged`, and nothing else — the phase is
-/// [`after_merge`]'s next step, through the spec file's own door. `pr_detect`
-/// records the event of a `gh pr merge` typed in Bash, the same way.
-///
-/// Declared effect: the event also feeds `pr_metrics` — the merge count when
-/// git does not answer and the opened → merged pairing. The merges made by
-/// this door, invisible there before, start counting. They do not count
-/// twice: `pr_detect` only records the `gh pr merge` typed in Bash.
-fn record_merge(_root: &Path, _facts: &PrFacts, _spec: Option<&str>, _session: Option<&str>) {}
 
 /// Ask the provider to merge. The strategy is explicit because it has to be: a
 /// bare `gh pr merge` opens an interactive picker, and a `run`-face command has

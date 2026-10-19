@@ -266,44 +266,45 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // comando. `{command}` vem do chamador, sozinho depois da última
         // quebra de linha: o mesmo comando, com cada leitura já mascarada.
         ("config_key.masked_command", Locale::PtBr) => {
-            "[Mustard] A leitura da configuração foi barrada para proteger a chave do Jev. Nenhuma etapa foi executada. Rode como está o comando abaixo: ele faz a mesma leitura com a chave trocada por *** e mantém as outras etapas na mesma ordem.\n{command}"
+            "[Mustard] A leitura da configuração foi barrada para proteger a chave secreta. Nenhuma etapa foi executada. Rode como está o comando abaixo: ele faz a mesma leitura com a chave trocada por *** e mantém as outras etapas na mesma ordem.\n{command}"
         }
         ("config_key.masked_command", Locale::EnUs) => {
-            "[Mustard] Reading the configuration was blocked to protect the Jev key. No step was executed. Run the command below as is: it does the same read with the key replaced by *** and keeps the other steps in the same order.\n{command}"
+            "[Mustard] Reading the configuration was blocked to protect the secret key. No step was executed. Run the command below as is: it does the same read with the key replaced by *** and keeps the other steps in the same order.\n{command}"
         }
-        // A leitura do arquivo de configuração que guarda a chave do Jev
-        // volta com o arquivo, e a chave trocada. `{text}` vem do chamador:
-        // o arquivo inteiro, já sem o valor da chave.
+        // A leitura do arquivo de configuração que guarda uma chave secreta,
+        // a do Jev ou o token da publicação, volta com o arquivo, e a chave
+        // trocada. `{text}` vem do chamador: o arquivo inteiro, já sem o
+        // valor da chave.
         ("config_key.hidden", Locale::PtBr) => {
-            "[Mustard] {file} guarda a chave do Jev, e a chave nunca entra na conversa. Segue o \
+            "[Mustard] {file} guarda uma chave secreta, e a chave nunca entra na conversa. Segue o \
              arquivo, com a chave trocada por ***:\n{text}\nA leitura de {file} foi bloqueada. O comando solicitado não foi executado, incluindo etapas encadeadas de teste. Execute o teste separadamente; o hook preserva a ordem e as condições do comando original. Os comandos de lint, teste e compilação mudam por `mustard-rt run settings`, sem abrir o arquivo."
         }
         ("config_key.hidden", Locale::EnUs) => {
-            "[Mustard] {file} holds the Jev key, and the key never enters the conversation. Here is \
+            "[Mustard] {file} holds a secret key, and the key never enters the conversation. Here is \
              the file, with the key replaced by ***:\n{text}\nReading {file} was blocked. The requested command was not executed, including chained test steps. Run the test separately; the hook preserves the original command's order and conditions. The lint, test and build commands change through `mustard-rt run settings`, without opening the file."
         }
         // A busca do terminal em pastas que passaria pelo arquivo com a
         // chave volta com a opção que o deixa de fora. `{fix}` vem do
         // chamador, no jeito do programa da busca.
         ("config_key.swept", Locale::PtBr) => {
-            "[Mustard] Essa busca passa por {file}, que guarda a chave do Jev, e mostraria a chave. \
+            "[Mustard] Essa busca passa por {file}, que guarda uma chave secreta, e mostraria a chave. \
              A chave nunca entra na conversa. Rode a mesma busca com {fix} no fim: assim o arquivo \
              fica de fora."
         }
         ("config_key.swept", Locale::EnUs) => {
-            "[Mustard] This search goes through {file}, which holds the Jev key, and would show the \
+            "[Mustard] This search goes through {file}, which holds a secret key, and would show the \
              key. The key never enters the conversation. Run the same search with {fix} at the end: \
              that leaves the file out."
         }
         // A ferramenta de busca cujo `glob` alcança o arquivo com a chave,
         // que ela deixaria de fora sem ele.
         ("config_key.swept_tool", Locale::PtBr) => {
-            "[Mustard] O `glob` dessa busca alcança {file}, que guarda a chave do Jev, e a busca \
+            "[Mustard] O `glob` dessa busca alcança {file}, que guarda uma chave secreta, e a busca \
              mostraria a chave. A chave nunca entra na conversa. Troque o `glob` por `type`, ou \
              busque sem ele: assim o arquivo fica de fora, como tudo o que o git ignora."
         }
         ("config_key.swept_tool", Locale::EnUs) => {
-            "[Mustard] The `glob` of this search reaches {file}, which holds the Jev key, and the \
+            "[Mustard] The `glob` of this search reaches {file}, which holds a secret key, and the \
              search would show the key. The key never enters the conversation. Use `type` instead \
              of `glob`, or search without it: that leaves the file out, like everything git ignores."
         }
@@ -619,7 +620,7 @@ mod tests {
             include_str!("gates.rs"),
             super::PREFIXES,
             77,
-            0x918a_381e_f538_a844,
+            0xb29a_6178_2507_187a,
         );
     }
 
@@ -677,10 +678,8 @@ mod tests {
             ("change.witness.free_text", &["{code}", "{selected}", "{offered}"][..]),
             ("change.witness.no_spec", &["{code}"][..]),
             ("change.witness.no_code", &[][..]),
-            ("subagent.ticket_unreadable", &["{ticket}", "{found}"][..]),
-            ("subagent.not_approved", &["{spec}", "{phase}"][..]),
-            ("subagent.no_wave", &["{spec}", "{wave}"][..]),
             ("subagent.wave_not_running", &["{spec}", "{wave}"][..]),
+            ("subagent.wave_has_agent", &["{spec}", "{wave}"][..]),
             ("subagent.dispatch_replaced", &["{wave}"][..]),
             ("subagent.fix_replaced", &["{wave}"][..]),
             ("subagent.new_agent_fix", &["{wave}"][..]),
@@ -688,8 +687,12 @@ mod tests {
             ("subagent.rejected_agent", &["{wave}", "{title}"][..]),
             ("subagent.rejected_agent_working", &["{wave}"][..]),
             ("subagent.rejected_agent_locked", &["{wave}"][..]),
+            ("subagent.launch_settings", &["{agent}", "{asked_model}", "{asked_effort}", "{model}", "{effort}"][..]),
+            ("subagent.launch_settings_forced", &["{agent}", "{asked_model}", "{asked_effort}", "{model}", "{effort}"][..]),
             ("session.merged", &["{count}", "{branches}"][..]),
             ("session.landed", &["{pr}", "{spec}"][..]),
+            ("session.landed.outside", &["{branch}", "{spec}"][..]),
+            ("session.landed.outside_closed", &["{branch}", "{spec}"][..]),
             ("session.provider_silent", &["{spec}", "{reason}"][..]),
             ("session.submodules", &["{spec}", "{text}"][..]),
             ("session.version.drift", &["{stamped}", "{running}"][..]),
@@ -714,6 +717,30 @@ mod tests {
             assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");
             assert_ne!(en, "<missing-key>", "{key} missing in en-US");
             assert_ne!(pt, en, "{key} must differ per locale");
+        }
+        // A branch que já tinha saído e as recusas da entrega fora do
+        // fechamento, com as vagas que quem chama troca.
+        for (key, slots) in [
+            ("session.landed.gone", &["{branch}"][..]),
+            ("session.landed.kept", &["{branch}"][..]),
+            ("session.landed.recorded", &[][..]),
+            ("session.landed.leaving_one", &["{spec}", "{report}"][..]),
+            ("session.landed.leaving_many", &["{spec}", "{count}", "{report}"][..]),
+            ("session.deliver.in_flight", &["{spec}"][..]),
+            ("session.deliver.backlog", &["{spec}", "{count}"][..]),
+            ("session.landed.tasks_left", &["{branch}", "{spec}", "{count}"][..]),
+            ("session.deliver.not_started", &["{spec}", "{reason}"][..]),
+            ("session.deliver.no_spec", &["{spec}"][..]),
+            ("session.deliver.not_open", &["{spec}", "{phase}"][..]),
+            ("session.deliver.not_in_base", &["{spec}"][..]),
+        ] {
+            let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
+            assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");
+            assert_ne!(en, "<missing-key>", "{key} missing in en-US");
+            assert_ne!(pt, en, "{key} must differ per locale");
+            for slot in slots {
+                assert!(pt.contains(slot) && en.contains(slot), "{key} lost {slot}");
+            }
         }
         assert_eq!(translate("session.old_hook", Locale::PtBr), "<missing-key>", "o aviso do script de instalação saiu");
         // A pergunta de aprovação da spec, um dos dois gestos em que a

@@ -374,7 +374,13 @@ fn the_package_script_reads_the_commit_of_a_repository_of_another_owner() {
     one_commit_repository(&root);
     let commit = git_in(&root, &["rev-parse", "--short=12", "HEAD"]);
     let date = git_in(&root, &["log", "-1", "--format=%cs"]);
-    let other_owner = [("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1")];
+    // Even a folder of another owner passes when the machine's own git
+    // configuration lists it, or every folder, as safe: the test reads an
+    // empty one instead.
+    let empty = tmp.path().join("gitconfig");
+    std::fs::write(&empty, "").expect("empty git configuration");
+    let empty = empty.to_str().expect("utf-8 path");
+    let other_owner = [("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1"), ("GIT_CONFIG_GLOBAL", empty)];
     let refused = Command::new("git").args(["rev-parse", "HEAD"]).current_dir(&root).envs(other_owner).output().expect("git runs");
     assert!(!refused.status.success(), "o git desta máquina não simula a pasta de outro dono; o teste não provaria nada");
 

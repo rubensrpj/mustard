@@ -178,13 +178,16 @@ pub fn unit_segment(cwd: &Path, branch: Option<&str>) -> Option<Segment> {
     }
     let root = cwd.to_string_lossy();
     let slug = crate::shared::context::checkout::current_spec(&root).filter(|s| !s.is_empty())?;
+    // O arquivo de eventos é lido uma vez só: o endereço, a fase e as ondas
+    // saem da mesma leitura, que antes se repetia para cada um.
+    let log = DiskSpecState::new(cwd).log(&slug);
     // Um endereço com caractere de controle (arquivo editado à mão) quebraria
     // a sequência e sujaria a barra; nesse caso o texto sai sem link.
-    let url = crate::commands::spec::spec_doc::published_url(cwd, &slug).filter(|url| !url.chars().any(char::is_control));
+    let url = log.as_ref().and_then(crate::commands::spec::spec_doc::published_url).filter(|url| !url.chars().any(char::is_control));
     let linked = |label: &str| url.as_deref().map_or_else(|| label.to_string(), |url| hyperlink(url, label));
     // A fase é conveniência, não o ponto: um arquivo de eventos ilegível ainda
     // deixa a spec nomeada.
-    let phase = crate::shared::spec_state::lock_state(cwd, &slug).and_then(|state| state.phase);
+    let phase = mustard_core::domain::spec_state::lock_state_of(log.as_ref()).and_then(|state| state.phase);
     let named = phase.is_none() || !branch.is_some_and(|branch| branch.ends_with(slug.as_str()));
     let lang = mustard_core::ProjectConfig::load(cwd).language().text_or_default();
     let mut text = String::from("\u{25b8}");
@@ -196,7 +199,7 @@ pub fn unit_segment(cwd: &Path, branch: Option<&str>) -> Option<Segment> {
         let label = if named { label.to_string() } else { linked(label) };
         let _ = write!(text, " {label}");
         if matches!(phase, "approved" | "running")
-            && let Some((delivered, total)) = wave_progress(cwd, &slug)
+            && let Some((delivered, total)) = log.as_ref().and_then(wave_progress)
         {
             let progress = mustard_core::translate("statusline.wave", lang)
                 .replace("{delivered}", &delivered.to_string())
@@ -207,13 +210,13 @@ pub fn unit_segment(cwd: &Path, branch: Option<&str>) -> Option<Segment> {
     Some(Segment::new(SegmentKind::Unit, text))
 }
 
-/// O andamento das ondas da spec `slug`: quantas ondas que contam foram
-/// entregues e quantas contam, pela mesma conta da retomada da obra
-/// ([`mustard_core::domain::spec_events::SpecLog::counted_waves`]): a onda
-/// esvaziada não entra. `None` sem arquivo de eventos e sem onda que conte.
-fn wave_progress(cwd: &Path, slug: &str) -> Option<(usize, usize)> {
-    let log = DiskSpecState::new(cwd).log(slug)?;
-    let counts = crate::commands::panel::wave_counts(&log);
+/// O andamento das ondas da spec cujo arquivo de eventos é `log`: quantas
+/// ondas do plano terminaram e quantas o plano tem, pela mesma conta da
+/// rodada, do painel e da retomada da obra
+/// ([`crate::commands::panel::progress::wave_counts`]). `None` sem onda no
+/// plano.
+fn wave_progress(log: &mustard_core::domain::spec_events::SpecLog) -> Option<(usize, usize)> {
+    let counts = crate::commands::panel::progress::wave_counts(log);
     (counts.1 > 0).then_some(counts)
 }
 
@@ -433,14 +436,14 @@ mod tests {
         }
     }
 
-    /// A barra de status e o bloco de retomada da obra contam as mesmas ondas
-    /// quando há ondas esvaziadas — a que perdeu a tarefa para outra onda, a
-    /// que teve a tarefa removida, a que voltou ao backlog e a combinada sem
-    /// tarefa, de autor do binário ou não. Conta a entregue, mesmo sem
-    /// tarefa, e a que ainda tem tarefa: o total da barra é o das entregues
-    /// mais o da lista do que falta.
+    /// A barra de status, o bloco de retomada da obra e o painel contam as
+    /// ondas como a rodada, lado a lado, quando há ondas esvaziadas — a que
+    /// perdeu a tarefa para outra onda, a que teve a tarefa removida, a que
+    /// voltou ao backlog e a combinada sem tarefa, de autor do binário ou não.
+    /// O total é o plano da rodada: a combinada à mão fica, mesmo sem tarefa,
+    /// e a de lote esvaziada sai, mesmo entregue.
     #[test]
-    fn the_bar_and_the_resume_block_count_the_same_waves_with_emptied_waves() {
+    fn the_bar_the_resume_block_and_the_panel_count_the_waves_as_the_round() {
         use serde_json::json;
 
         if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() {
@@ -501,13 +504,20 @@ mod tests {
         };
         let delivered = between(&block, "Ondas entregues: ", " no total. Em andamento");
         let missing = between(&block, "Falta: ", ". Gravado depois");
-        assert_eq!(delivered, ["2"], "the block counts the delivered waves: {block}");
-        assert_eq!(missing, ["2", "8"], "the emptied waves are not missing: {block}");
+        assert_eq!(delivered, ["2"], "the block counts the finished waves: {block}");
+        assert_eq!(missing, ["2", "3", "5", "8"], "what the round still dispatches is missing: {block}");
         let progress = mustard_core::translate("statusline.wave", mustard_core::SupportedLocale::PtBr)
             .replace("{delivered}", &delivered[0])
             .replace("{total}", &(delivered[0].parse::<usize>().unwrap() + missing.len()).to_string());
-        assert_eq!(progress, "2 de 4 ondas");
+        assert_eq!(progress, "2 de 6 ondas");
         assert!(bar.text.ends_with(&progress), "the bar counts what the block counts: {}", bar.text);
+        let log = crate::commands::panel::dashboard_spec_log(root, "x").expect("the spec log");
+        let planned = log.planned_waves();
+        let finished = crate::commands::flow::round::wave_states(&log).values().filter(|state| state.finished()).count();
+        assert_eq!((finished, planned.len()), (2, 6), "the round plans and finishes the same waves");
+        let panel = crate::commands::panel::section(root, Some("x"), "overview");
+        assert_eq!(panel["spec"]["waves"]["finished"], 2, "{panel}");
+        assert_eq!(panel["spec"]["waves"]["planned"], 6, "the panel counts what the bar counts: {panel}");
     }
 
     /// O nome do projeto vira link para a página do projeto quando o índice

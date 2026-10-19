@@ -51,7 +51,10 @@ pub(super) fn check_state_health(claude_dir: &Path) -> CheckResult {
                 warnings.push(format!("'{spec}' has an empty event file"));
             }
             Ok(Some(log)) => {
-                let last=log.visible().into_iter().rfind(|event|event.event_type=="call" && event.str_field("command")==Some("round"));
+                // A chamada da rodada é das que o programa observou: no
+                // arquivo de operações ou, na spec antiga, na própria spec.
+                let observed=crate::commands::spec_events::conversation::observed(&root,&spec,&log);
+                let last=observed.iter().rfind(|event|event.event_type=="call" && event.str_field("command")==Some("round"));
                 if let Some(failed)=last.filter(|event|event.str_field("result")==Some("refused")) {
                     let reason=failed.str_field("refusal").unwrap_or("unknown");
                     warnings.push(format!("'{spec}': last round failed ({reason}); installation health does not prove dispatch health. Inspect `mustard-rt run read conversation --spec {spec}` before retrying. Prepared waves may remain unsent."));

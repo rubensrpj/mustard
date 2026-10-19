@@ -300,7 +300,7 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
 }
 
 /// O núcleo testável de [`run`]: o relatório da gravação ou a recusa. Com
-/// `copy`, a gravação feita prepara a cópia da página para o banco dela.
+/// `copy`, a resposta só avisa que a cópia virou publicação explícita.
 /// A tarefa e o pedido novos passam antes pelo classificador das atividades,
 /// com a pergunta ao Jev da orquestração ([`same_work_open`]). Nunca entra em
 /// pânico.
@@ -377,13 +377,13 @@ fn write_triaged(opts: &WriteOpts, copy: bool, ask: &dyn Fn(&Path, &str, &str) -
     // onda nunca grava a entrega oficial entre a conferência e a gravação. O
     // veredito do revisor prende a mesma trava, para o fechamento não assumir
     // o pedido de revisão entre a conferência dele e a gravação.
-    let held = if ["delivered", "verdict"].contains(&event_type) {
-        match crate::commands::flow::round::check_return(&opts.root, spec, event_type, &mut draft) {
-            Ok(held) => Some(held),
+    let (held, proof_warnings) = if ["delivered", "verdict"].contains(&event_type) {
+        match crate::commands::flow::round::check_return(&opts.root, spec, event_type, &mut draft, lang) {
+            Ok((held, warnings)) => (Some(held), warnings),
             Err(refusal) => return refusal.to_value(lang),
         }
     } else {
-        None
+        (None, Vec::new())
     };
     // A volta do revisor só entra com pedido de revisão aberto, e o veredito
     // final que não responde por todo o combinado recusa antes de gravar.
@@ -436,6 +436,7 @@ fn write_triaged(opts: &WriteOpts, copy: bool, ask: &dyn Fn(&Path, &str, &str) -
                 warnings.extend(finding.warning(*fact, lang));
             }
             warnings.extend(stray_step);
+            warnings.extend(proof_warnings);
             // Só a gravação com `--copy` prepara a cópia: a última de um
             // pedido do usuário que muda o plano, que a leva uma vez, já com
             // tudo o que o pedido gerou. A ordem sai sem marco: a página que
@@ -445,8 +446,8 @@ fn write_triaged(opts: &WriteOpts, copy: bool, ask: &dyn Fn(&Path, &str, &str) -
             let next = next.map(|key| translate(&key, lang).to_string());
             if copy {
                 warnings.push(match lang {
-                    Locale::PtBr => "`--copy` foi substituído por publicação explícita: use `/mustard-publish`. O estado local já está atualizado.".into(),
-                    Locale::EnUs => "`--copy` is replaced by explicit publishing: use `/mustard-publish`. Local state is already current.".into(),
+                    Locale::PtBr => "`--copy` foi substituído por publicação explícita: use `/mustard:pages`. O estado local já está atualizado.".into(),
+                    Locale::EnUs => "`--copy` is replaced by explicit publishing: use `/mustard:pages`. Local state is already current.".into(),
                 });
             }
             if !warnings.is_empty() {
@@ -1768,7 +1769,25 @@ fn open_spec_for_the_fix(root: &Path, spec: Option<&str>) -> Option<String> {
 /// prepares the copy of the spec page. Exit 1 on a refusal.
 pub fn run(opts: &WriteOpts, copy: bool) {
     let started = std::time::Instant::now();
-    let report = write_at_with(opts, copy);
+    let mut report = write_at_with(opts, copy);
+    // O passo que termina uma tarefa responde, ele mesmo, a medida da
+    // conversa do agente de onda que o gravou, pela identidade que o gancho
+    // do terminal exporta ao comando.
+    if opts.event_type.trim() == "step" && report["ok"] == json!(true) {
+        let project = super::project(&opts.root);
+        let session = crate::shared::spec_state::session_from_env();
+        let transcript = session.as_deref().and_then(|session| crate::shared::typed_messages::session_transcript(&project.root, session));
+        crate::hooks::session::conversation_size::answer_step(
+            &mut report,
+            &project.root,
+            &opts.event_type,
+            &opts.json,
+            crate::shared::search_gateway::agent_from_env().as_deref(),
+            session.as_deref(),
+            transcript.as_deref(),
+            project.lang,
+        );
+    }
     let _ = super::conversation::record_call(&opts.root, "write", opts.spec.as_deref(), started, &report);
     println!("{}", serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".into()));
     if report["ok"] != json!(true) {
@@ -2366,6 +2385,7 @@ mod tests {
     }
 
     fn witness_approves(root: &std::path::Path) {
+        crate::shared::test_fixture::pass_plan(root, "teste");
         let draft = json!({
             "phase": "approved",
             "author": "user",
@@ -3588,6 +3608,7 @@ mod tests {
             assert_eq!(out["ok"], json!(true), "{out}");
             assert_eq!(out["spec"], json!("teste"), "{out}");
             assert_eq!(out["next"], json!(translate(key, Locale::PtBr)), "{out}");
+            assert!(out["next"].as_str().unwrap_or_default().contains("`/mustard:pages`"), "{out}");
         }
         let note = write(root, "note", &json!({"text": "t", "keys": ["k"], "origin": msg}).to_string());
         assert!(note.get("next").is_none(), "only a request says the next step: {note}");
@@ -3862,7 +3883,8 @@ mod tests {
         assert_eq!(last["ok"], json!(true), "{last}");
         assert!(last.get("copy").is_none() && last.get("publish").is_none());
         assert!(!copy_folder.exists());
-        assert!(last["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap_or_default().contains("--copy")));
+        assert!(last["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap_or_default().contains("--copy")
+            && w.as_str().unwrap_or_default().contains("`/mustard:pages`")), "{last}");
         written.push(last["id"].as_u64().unwrap());
         let log = store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap();
         for id in &written {

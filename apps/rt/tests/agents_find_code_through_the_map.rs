@@ -14,7 +14,8 @@
 #[path = "support/manifest_dir.rs"]
 mod manifest_dir;
 
-use std::process::Command;
+#[path = "support/binary.rs"]
+mod binary;
 
 use mustard_core::platform::i18n::{translate, Locale};
 
@@ -68,7 +69,7 @@ struct Accepted {
 }
 
 fn accepted_by_the_command() -> Accepted {
-    let out = Command::new(env!("CARGO_BIN_EXE_mustard-rt")).args(["run", "map", "--help"]).output().expect("the binary runs");
+    let out = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt")).args(["run", "map", "--help"]).output().expect("the binary runs");
     assert!(out.status.success(), "{out:?}");
     let help = String::from_utf8_lossy(&out.stdout).to_string();
     let questions: Vec<String> = help
@@ -179,7 +180,7 @@ fn the_molds_list_each_map_command_with_its_moment_of_use() {
             assert!(cites_agent_search(&mold), "the {lang} `{name}` mold must use agent output, not the full diagnostic envelope");
             let line=mold.lines().find(|line|line.contains("run search --shell-output")).unwrap();
             assert!(line.split("`: ").nth(1).unwrap_or_default().split_whitespace().count()>=3,"the search must have a moment of use: {line}");
-            let help=Command::new(env!("CARGO_BIN_EXE_mustard-rt")).args(["run","search","--help"]).output().unwrap();
+            let help=binary::isolated(env!("CARGO_BIN_EXE_mustard-rt")).args(["run","search","--help"]).output().unwrap();
             assert!(help.status.success());
             for flag in ["--shell-output","--intent","--purpose"] {assert!(String::from_utf8_lossy(&help.stdout).contains(flag),"unsupported gateway option {flag}");}
             for question in ["summary", "slice", "users", "tests", "history"] {

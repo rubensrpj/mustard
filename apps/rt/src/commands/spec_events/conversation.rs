@@ -1,10 +1,14 @@
-//! A conversa gravada no bloco da spec atual: a mensagem do usuário, a
-//! resposta do assistente, o que um gancho fez e cada chamada de um passo do
-//! fluxo.
+//! A conversa da spec atual e o que o programa observou de si enquanto ela
+//! corria. A mensagem do usuário, a resposta do assistente e o recibo de
+//! leitura de um pedido são do trabalho e vão para a spec. O que um gancho fez
+//! e cada chamada de comando são observação e vão para o arquivo de operações
+//! da spec; quem os lê junta esse arquivo ao que as specs antigas gravaram na
+//! própria spec ([`observed`]). Os dois arquivos só recebem a linha nova, com
+//! a trava, sem que o que já está neles seja analisado de novo.
 //!
 //! Quem grava é o binário, nunca o modelo: a mensagem e a resposta chegam
-//! pelo Claude Code, e o despachante sabe o que cada gancho decidiu. Tudo
-//! passa pela mesma gravação do `run write`, com o autor de cada um.
+//! pelo Claude Code, e o despachante sabe o que cada gancho decidiu, com o
+//! autor de cada um.
 //!
 //! Só se grava numa spec atual, que tem arquivo de eventos e ainda não
 //! terminou: sem ela, nada é gravado, menos o custo da chamada que usou o
@@ -21,9 +25,10 @@
 use std::path::Path;
 use std::time::Instant;
 
-use mustard_core::domain::spec_events::{SpecEvent, SpecLog};
-use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State, last_user_message};
+use mustard_core::domain::spec_events::{Refusal, SpecEvent, SpecLog};
+use mustard_core::domain::spec_state::{SpecState, State, last_user_message};
 use mustard_core::domain::survey;
+use mustard_core::io::spec_events as store;
 use mustard_core::io::spend;
 use serde_json::{Map, Value, json};
 
@@ -52,47 +57,86 @@ impl HookAction {
 /// A spec que recebe a conversa de `session` no projeto em `root`: a spec
 /// atual, pela escada única, quando ela tem arquivo de eventos e não
 /// terminou.
+///
+/// A fase sai da linha da spec no índice, que toda gravação refaz com a trava
+/// da spec presa: ler o arquivo de eventos inteiro só para saber se a spec
+/// terminou custava uma leitura completa a cada gancho que agia e a cada
+/// busca. Sem a linha no índice, vale o arquivo de eventos.
 pub(crate) fn conversation_spec(root: &Path, session: Option<&str>) -> Option<String> {
-    let disk = DiskSpecState::new(root);
-    let spec = disk.active(session)?;
-    let log = disk.log(&spec)?;
-    let phase = State::from_log(&log).phase;
-    (!phase.is_some_and(|phase| FINISHED.contains(&phase))).then_some(spec)
+    use mustard_core::io::spec_events as store;
+    let spec = DiskSpecState::new(root).active(session)?;
+    let base = store::spec_root(root);
+    let events = store::spec_file(&base, &spec).ok().filter(|path| path.is_file())?;
+    let phase = match mustard_core::io::spec_index::read(&base).into_iter().find(|line| line.name == spec) {
+        Some(line) => line.phase,
+        None => State::from_log(&store::read(&events).ok()??).phase.map(str::to_string),
+    };
+    (!phase.is_some_and(|phase| FINISHED.contains(&phase.as_str()))).then_some(spec)
 }
 
-/// Grava um evento na spec da conversa; o número dele, ou `None` quando não
-/// há spec ou a gravação foi recusada.
+/// Grava no arquivo de operações da spec da conversa o que um gancho fez; o
+/// número do evento lá, ou `None` quando não há spec ou a gravação foi
+/// recusada.
 fn record(root: &Path, session: Option<&str>, event_type: &str, draft: Map<String, Value>) -> Option<u64> {
     let spec = conversation_spec(root, session)?;
-    record_in_spec(root, &spec, event_type, draft)
+    observe(root, &spec, event_type, vec![draft])?.first().copied()
 }
 
-/// Grava um evento na spec `spec`, pela gravação do `run write`.
-fn record_in_spec(root: &Path, spec: &str, event_type: &str, draft: Map<String, Value>) -> Option<u64> {
-    super::write::record(root, spec, event_type, draft, PhaseWriter::Binary).ok().map(|recorded| recorded.written.id)
+/// Grava `drafts` no arquivo de operações da spec `spec`, que precisa ter
+/// arquivo de eventos: só acrescenta as linhas, numa escrita só e com a
+/// trava do arquivo, sem as conferências do trabalho, que a observação não
+/// muda, e sem analisar o que já está nele; passando do teto, a parte antiga
+/// vai ao arquivo morto ao lado ([`store::append_operations`]). Os números
+/// gravados, ou `None` sem a spec ou com a gravação recusada.
+pub(crate) fn observe(root: &Path, spec: &str, event_type: &str, drafts: Vec<Map<String, Value>>) -> Option<Vec<u64>> {
+    store::spec_file(&store::spec_root(root), spec).ok().filter(|path| path.is_file())?;
+    let path = store::operations_file(root, spec)?;
+    store::append_operations(&path, drafts.into_iter().map(|draft| (event_type, draft)).collect()).ok()
 }
 
-/// Grava os eventos `drafts`, do tipo `event_type`, na spec `spec`, numa
-/// gravação só: o arquivo de eventos é lido uma vez, com a trava presa até o
-/// último, e cada um passa pelas conferências de [`record_in_spec`]. É tudo
-/// ou nada: a recusa de um volta o arquivo ao que era antes do primeiro. Os
-/// números gravados, na ordem; `None` quando a spec não tem arquivo ou um
-/// deles foi recusado.
-fn record_all_in_spec(root: &Path, spec: &str, event_type: &str, drafts: Vec<Map<String, Value>>) -> Option<Vec<u64>> {
-    use mustard_core::io::spec_events as store;
-    let path = store::spec_file(&store::spec_root(root), spec).ok()?;
-    let held = store::with_locked_writer(&path, |locked| {
-        let before = locked.content().to_string();
-        let recorded: Result<Vec<u64>, _> = drafts
-            .into_iter()
-            .map(|draft| super::write::record_locked(locked, root, spec, event_type, draft, PhaseWriter::Binary).map(|recorded| recorded.written.id))
-            .collect();
-        if recorded.is_err() {
-            let _ = locked.restore(before);
-        }
-        recorded.ok()
-    });
-    held.ok().flatten().flatten()
+/// Acrescenta um evento ao fim da spec `spec`, com a trava dela e sem
+/// analisar o arquivo inteiro ([`store::append`]): a fala, a resposta e o
+/// recibo de leitura só crescem no fim e não mudam a fase, o objetivo nem o
+/// levantamento que as regras da gravação do `run write` conferem. `guard`
+/// recebe o arquivo, lido pelos envelopes, com a trava presa. Numa pasta do
+/// formato antigo, ou sem o arquivo de eventos, nada é gravado.
+fn record_in_spec(root: &Path, spec: &str, event_type: &str, draft: Map<String, Value>, guard: impl FnOnce(&SpecLog) -> Result<(), Refusal>) -> Option<u64> {
+    let base = store::spec_root(root);
+    if super::pages::old_format_spec(&base, spec) {
+        return None;
+    }
+    let path = store::spec_file(&base, spec).ok().filter(|path| path.is_file())?;
+    store::append(&path, vec![(event_type, draft)], guard).ok()?.first().copied()
+}
+
+/// Os tipos do que o programa observa de si: o que um gancho fez e cada
+/// chamada de comando.
+const OBSERVED: &[&str] = &["injection", "hook", "call"];
+
+/// O evento é uma observação do programa e não do trabalho: a chamada que
+/// leva o pedido (`request`) é o recibo de leitura, que a entrega confere, e
+/// fica de fora.
+fn is_observation(event: &SpecEvent) -> bool {
+    OBSERVED.contains(&event.event_type.as_str()) && !event.fields.contains_key("request")
+}
+
+/// A hora de `event` como número, para ordenar eventos de arquivos
+/// diferentes; a hora que não se lê vem antes de todas.
+pub(crate) fn time_of(event: &SpecEvent) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(event.at()).ok().and_then(|at| at.timestamp_nanos_opt())
+}
+
+/// O que o programa observou de si na spec `spec`, cujo arquivo de eventos é
+/// `log`: o que os ganchos fizeram e as chamadas de comando, menos os
+/// recibos de leitura. Junta as duas fontes — o que as specs antigas
+/// gravaram no próprio arquivo de eventos e o arquivo de operações —, na
+/// ordem da hora. Nenhuma spec antiga é reescrita: quem lê passa por aqui.
+pub(crate) fn observed(root: &Path, spec: &str, log: &SpecLog) -> Vec<SpecEvent> {
+    let operations = recorded_operations(root, spec);
+    let mut events: Vec<SpecEvent> =
+        log.visible().into_iter().chain(operations.visible()).filter(|event| is_observation(event)).cloned().collect();
+    events.sort_by_key(time_of);
+    events
 }
 
 fn draft(fields: Value) -> Map<String, Value> {
@@ -113,7 +157,7 @@ fn record_user_message(root: &Path, session: Option<&str>, mut fields: Value) ->
     if let Some(point) = open {
         fields["during"] = json!(point);
     }
-    record_in_spec(root, &spec, "message", draft(fields))
+    record_in_spec(root, &spec, "message", draft(fields), |_| Ok(()))
 }
 
 /// A mensagem do usuário, como ele a escreveu, sem os segredos.
@@ -135,7 +179,7 @@ pub(crate) fn record_earlier_messages(root: &Path, spec: &str, texts: &[String])
         .iter()
         .filter(|text| !text.trim().is_empty())
         .filter_map(|text| {
-            record_in_spec(root, spec, "message", draft(json!({ "author": "user", "text": without_secrets(text) })))
+            record_in_spec(root, spec, "message", draft(json!({ "author": "user", "text": without_secrets(text) })), |_| Ok(()))
         })
         .collect()
 }
@@ -196,10 +240,22 @@ fn reply(root: &Path, session: Option<&str>, text: &str, repeated: impl FnOnce(&
         return None;
     }
     let mut fields = json!({ "author": "assistant", "text": text });
-    if let Some(asked) = last_user_message(&log) {
-        fields["reply_to"] = json!(asked.id);
+    let asked = last_user_message(&log).map(|asked| asked.id);
+    if let Some(asked) = asked {
+        fields["reply_to"] = json!(asked);
     }
-    record_in_spec(root, &spec, "response", draft(fields))
+    // O `reply_to` sai da leitura de antes da trava. Uma mensagem do usuário
+    // gravada depois dela, com a trava, deixa a resposta sem `reply_to` de
+    // fora, como a regra da resposta faz na gravação completa: a resposta sem
+    // ele nunca fica depois de uma mensagem do usuário.
+    let seen = log.max_id();
+    let asked_since = |now: &SpecLog| {
+        now.events.iter().any(|e| e.id > seen && e.event_type == "message" && e.str_field("author").map(str::trim) == Some("user"))
+    };
+    record_in_spec(root, &spec, "response", draft(fields), |now| match asked {
+        None if asked_since(now) => Err(Refusal::MissingField { event_type: "response".to_string(), field: "reply_to".to_string() }),
+        _ => Ok(()),
+    })
 }
 
 /// As mensagens gravadas depois da última resposta de `log`, quando ela tem
@@ -297,9 +353,10 @@ fn transport_metrics(args:&[String],output:&str)->Map<String,Value> {
 /// mapa grava o filtro, o tempo dele, os tokens e o custo. A busca por
 /// palavra, que é parte compartilhada e não alcança este módulo, recebe esta
 /// função de quem monta a cena dela (`crate::shared::word_search::Record`).
-/// A chamada que usou o Jev e não ficou numa spec, por não haver uma ou pela
-/// gravação recusada, deixa os tokens e o custo dele no arquivo das chamadas
-/// soltas da máquina. Esses registros não representam saldo do provedor.
+/// A chamada que usou o Jev e não ficou no arquivo de operações de uma spec,
+/// por não haver uma ou pela gravação recusada, deixa os tokens e o custo
+/// dele no arquivo das chamadas soltas da máquina. Esses registros não
+/// representam saldo do provedor.
 pub(crate) fn record_measured_call(
     root: &Path,
     command: &str,
@@ -310,39 +367,47 @@ pub(crate) fn record_measured_call(
     mut measured: Map<String, Value>,
 ) -> Option<u64> {
     measured.entry("invocation").or_insert(json!(false));
-    let tokens = measured.get("tokens").and_then(Value::as_u64);
-    let cost = measured.get("cost_micro_usd").and_then(Value::as_u64);
+    let billed = billing(&measured);
     let recorded = record_in_call_spec(root, command, named, session, started, report, measured);
-    let billed = tokens.is_some() || cost.is_some();
-    if let (None, true, Some(dir)) = (recorded, billed, spend::machine_dir()) {
-        let _ = spend::record_loose_call(&dir, root, tokens.unwrap_or(0), cost.unwrap_or(0));
+    if recorded.is_none() {
+        record_loose(root, billed);
     }
     recorded
 }
 
-/// Transport observations must not consume item IDs, change a refused
-/// write, or masquerade as an agent's required reading receipt.
-fn operations_path(root:&Path,spec:&str)->Option<std::path::PathBuf> {
-    let canonical=mustard_core::io::spec_events::spec_file(root,spec).ok()?;
-    let name=canonical.parent()?.file_name()?;
-    Some(mustard_core::io::spec_events::spec_root(root).join(".claude/mustard/operations").join(name).with_extension("ndjson"))
+/// Os tokens e o custo do Jev que a medida `measured` traz; `None` sem
+/// nenhum dos dois.
+fn billing(measured: &Map<String, Value>) -> Option<(u64, u64)> {
+    let tokens = measured.get("tokens").and_then(Value::as_u64);
+    let cost = measured.get("cost_micro_usd").and_then(Value::as_u64);
+    (tokens.is_some() || cost.is_some()).then(|| (tokens.unwrap_or(0), cost.unwrap_or(0)))
 }
 
+/// Deixa no arquivo das chamadas soltas da máquina os tokens e o custo do
+/// Jev de uma chamada que não ficou no arquivo de operações de uma spec.
+fn record_loose(root: &Path, billed: Option<(u64, u64)>) {
+    if let (Some((tokens, cost)), Some(dir)) = (billed, spend::machine_dir()) {
+        let _ = spend::record_loose_call(&dir, root, tokens, cost);
+    }
+}
+
+/// O arquivo de operações da spec `spec`, lido com o arquivo morto ao lado
+/// ([`store::read_operations`]): o histórico inteiro; vazio sem ele.
 pub(crate) fn recorded_operations(root:&Path,spec:&str)->mustard_core::domain::spec_events::SpecLog {
-    operations_path(root,spec).and_then(|path|mustard_core::io::spec_events::read(&path).ok().flatten()).unwrap_or_default()
+    store::operations_file(root,spec).and_then(|path|store::read_operations(&path).ok().flatten()).unwrap_or_default()
 }
 
 fn project_operations_path(root:&Path)->std::path::PathBuf {
     mustard_core::io::spec_events::spec_root(root).join(".claude/mustard/operations/.project.ndjson")
 }
 
-pub(crate) fn project_operations(root:&Path)->mustard_core::domain::spec_events::SpecLog {
-    mustard_core::io::spec_events::read(&project_operations_path(root)).ok().flatten().unwrap_or_default()
-}
-
-/// A gravação de [`record_measured_call`] na spec do relatório, na que a
-/// chamada nomeou ou na atual; `None` sem nenhuma delas ou com a gravação
-/// recusada.
+/// A gravação de [`record_measured_call`] no arquivo de operações da spec do
+/// relatório, da que a chamada nomeou ou da atual; `None` sem nenhuma delas
+/// ou com a gravação recusada. Toda chamada é observação do programa e mora
+/// ali, fora da spec: ela nunca gasta número de item, nunca muda uma gravação
+/// recusada e nunca se passa pelo recibo de leitura ([`record_receipt`]). A
+/// spec só precisa ter arquivo de eventos, e basta conferir o caminho: ler o
+/// arquivo inteiro para isso custava uma leitura completa por chamada.
 fn record_in_call_spec(
     root: &Path,
     command: &str,
@@ -360,20 +425,27 @@ fn record_in_call_spec(
         .filter(|spec| !spec.is_empty())
         .map(str::to_string)
         .or_else(|| conversation_spec(root, session));
-    if let Some(spec) = &spec { DiskSpecState::new(root).log(spec)?; }
-    else if command != "knowledge" { return None; }
+    if let Some(spec) = &spec {
+        store::spec_file(&store::spec_root(root), spec).ok().filter(|path| path.is_file())?;
+    } else if command != "knowledge" {
+        return None;
+    }
     let fields = call_fields(command, started, report, measured);
     let Some(spec) = spec else {
-        return mustard_core::io::spec_events::write(&project_operations_path(root),"call",fields,&[]).ok().map(|event|event.id);
+        return store::append_operations(&project_operations_path(root), vec![("call", fields)]).ok()?.first().copied();
     };
-    let ok = fields.get("result") == Some(&json!("ok"));
-    let reason = fields.get("refusal").and_then(Value::as_str);
-    let argument_failure = !ok && matches!(reason,Some("duplicate-option"|"invalid-arguments"));
-    if (fields.get("invocation")==Some(&json!(true)) && matches!(command,"read"|"write"|"search"|"knowledge"|"expertise")) || argument_failure {
-        let path=operations_path(root,&spec)?;
-        return mustard_core::io::spec_events::write(&path,"call",fields,&[]).ok().map(|recorded|recorded.id);
-    }
-    record_in_spec(root, &spec, "call", fields)
+    observe(root, &spec, "call", vec![fields])?.first().copied()
+}
+
+/// O recibo da leitura de um pedido: uma chamada `read` com o pedido
+/// (`request-<onda>` ou `request-review`) e todos os itens que a leitura
+/// achou, gravada na spec `spec` numa gravação só. É do trabalho, e não
+/// observação: a entrega da onda e o veredito da revisão final conferem por
+/// ele que o agente leu o que o pedido lista. Um recibo por item regravava a
+/// spec inteira a cada um.
+pub(crate) fn record_receipt(root: &Path, spec: &str, request: &str, items: &[String], started: Instant) -> Option<u64> {
+    let measured = draft(json!({ "invocation": false, "request": request, "items": items }));
+    record_in_spec(root, spec, "call", call_fields("read", started, &json!({ "ok": true }), measured), |_| Ok(()))
 }
 
 /// Os campos de toda chamada `command`, feita em `started`: o autor, o tempo,
@@ -398,35 +470,27 @@ fn call_fields(command: &str, started: Instant, report: &Value, measured: Map<St
 }
 
 /// As chamadas `command` que saíram juntas em `started`, da spec `spec`, cada
-/// uma com a medida dela (`measured`), como [`record_measured_call`] grava
-/// uma: todas numa gravação só ([`record_all_in_spec`]). Uma gravação por
-/// chamada lia, conferia e regravava a spec inteira a cada uma, e a triagem
-/// de sessenta tarefas levava minutos. Sem a spec, ou com a gravação
-/// recusada, nenhuma fica nela, e o custo de cada uma que usou o Jev vai para
-/// o arquivo das chamadas soltas da máquina.
+/// uma com a medida dela (`measured`), com os campos que
+/// [`record_measured_call`] grava numa: todas no arquivo de operações numa
+/// gravação só, que só acrescenta as linhas. Sem a spec, ou com a gravação
+/// recusada, nenhuma fica, e o custo de cada uma que usou o Jev vai para as
+/// chamadas soltas da máquina. Os números gravados, na ordem.
 pub(crate) fn record_measured_calls(root: &Path, spec: &str, command: &str, started: Instant, measured: Vec<Map<String, Value>>) -> Option<Vec<u64>> {
+    let spec = spec.trim();
     let report = json!({ "ok": true, "spec": spec });
-    let billed: Vec<(u64, u64)> = measured
-        .iter()
-        .filter_map(|call| {
-            let (tokens, cost) = (call.get("tokens").and_then(Value::as_u64), call.get("cost_micro_usd").and_then(Value::as_u64));
-            (tokens.is_some() || cost.is_some()).then(|| (tokens.unwrap_or(0), cost.unwrap_or(0)))
-        })
-        .collect();
-    let drafts = measured
+    let mut billed = Vec::with_capacity(measured.len());
+    let fields: Vec<Map<String, Value>> = measured
         .into_iter()
         .map(|mut call| {
             call.entry("invocation").or_insert(json!(false));
+            billed.push(billing(&call));
             call_fields(command, started, &report, call)
         })
         .collect();
-    let recorded = record_all_in_spec(root, spec, "call", drafts);
-    if recorded.is_none()
-        && !billed.is_empty()
-        && let Some(dir) = spend::machine_dir()
-    {
-        for (tokens, cost) in billed {
-            let _ = spend::record_loose_call(&dir, root, tokens, cost);
+    let recorded = if spec.is_empty() { None } else { observe(root, spec, "call", fields) };
+    if recorded.is_none() {
+        for call in billed {
+            record_loose(root, call);
         }
     }
     recorded
@@ -437,6 +501,7 @@ mod tests {
     use super::*;
     use crate::commands::spec_events::write::record_open;
     use crate::shared::spec_state::stand_on_spec_branch;
+    use mustard_core::domain::spec_state::PhaseWriter;
 
     #[test]
     fn transport_counts_use_real_utf8_output_and_store_no_content_or_credentials() {
@@ -477,15 +542,14 @@ mod tests {
         let observed=recorded_operations(root,"medicao");
         assert_eq!(observed.events.len(),8,"concurrent observations use the locked writer");
         assert!(observed.events.iter().all(|e|e.fields["invocation"]==true && e.str_field("result")==Some("refused")));
-        let receipt=draft(json!({"request":"request-1","item":"MSTD-RULE-0001"}));
-        assert!(record_measured_call(root,"read",Some("medicao"),None,Instant::now(),&json!({"ok":true}),receipt).is_some());
+        assert!(record_receipt(root,"medicao","request-1",&["MSTD-RULE-0001".to_string()],Instant::now()).is_some());
         let receipts=events_of(root,"medicao","call");
         assert_eq!(receipts.len(),1);
-        assert_eq!(receipts[0]["request"],"request-1");
+        assert_eq!((&receipts[0]["request"],&receipts[0]["items"]),(&json!("request-1"),&json!(["MSTD-RULE-0001"])));
         assert_eq!(recorded_operations(root,"medicao").events.len(),8);
         assert!(record_call(root,"open",Some("medicao"),Instant::now(),&json!({"ok":true,"kind":"feature"})).is_some());
-        assert_eq!(events_of(root,"medicao","call").len(),2,"the domain's work kind is not a CLI parse error");
-        assert_eq!(recorded_operations(root,"medicao").events.len(),8);
+        assert_eq!(events_of(root,"medicao","call").len(),1,"a flow step is an observation too");
+        assert_eq!(recorded_operations(root,"medicao").events.len(),9);
     }
 
     #[test]
@@ -539,27 +603,164 @@ mod tests {
             .unwrap_or_default()
     }
 
-    /// Com spec atual, a mensagem, a resposta ligada a ela, a decisão de um
-    /// gancho e o texto colocado vão para o bloco da conversa, cada um com o
-    /// autor certo.
+    /// Com spec atual, a mensagem e a resposta ligada a ela vão para o bloco
+    /// da conversa, cada uma com o autor certo.
     #[test]
     fn the_conversation_lands_in_the_current_spec() {
         let dir = project_on("conversa");
         let root = dir.path();
         let asked = record_message(root, None, "arrume o login").expect("message recorded");
         record_response(root, None, "Arrumei.").expect("response recorded");
-        record_hook(root, None, "command_guard", HookAction::Block, "Bash", "apaga trabalho").expect("hook");
-        record_injection(root, None, "prompt_entry", "uma linha").expect("injection");
 
         let message = &events_of(root, "conversa", "message")[0];
         assert_eq!((message["author"].as_str(), message["text"].as_str()), (Some("user"), Some("arrume o login")));
         let response = &events_of(root, "conversa", "response")[0];
         assert_eq!(response["reply_to"], json!(asked));
         assert_eq!(response["author"], json!("assistant"));
-        let hook = &events_of(root, "conversa", "hook")[0];
-        assert_eq!((hook["action"].as_str(), hook["tool"].as_str()), (Some("block"), Some("Bash")));
-        let injection = &events_of(root, "conversa", "injection")[0];
-        assert_eq!(injection["chars"], json!(9));
+    }
+
+    /// O que um gancho fez — barrar, avisar, colocar texto — vai para o
+    /// arquivo de operações da spec atual, e a spec fica como estava: ela
+    /// guarda o trabalho, e cada gancho que agia regravava o arquivo inteiro.
+    #[test]
+    fn hook_actions_are_recorded_in_the_operations_file_not_in_the_spec() {
+        let dir = project_on("ganchos");
+        let root = dir.path();
+        let path = mustard_core::io::spec_events::spec_file(root, "ganchos").unwrap();
+        let before = std::fs::read_to_string(&path).unwrap();
+        record_hook(root, None, "command_guard", HookAction::Block, "Bash", "apaga trabalho").expect("hook");
+        record_injection(root, None, "prompt_entry", "uma linha").expect("injection");
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before, "the spec is left as it was");
+        let observed = recorded_operations(root, "ganchos");
+        let kinds: Vec<&str> = observed.events.iter().map(|e| e.event_type.as_str()).collect();
+        assert_eq!(kinds, ["hook", "injection"]);
+        assert_eq!((observed.events[0].str_field("action"), observed.events[0].str_field("tool")), (Some("block"), Some("Bash")));
+        assert_eq!(observed.events[1].int("chars"), Some(9));
+    }
+
+    /// Toda chamada vai para o arquivo de operações: o passo do fluxo, a
+    /// retomada, a procura, o pull request e a busca do mapa com o custo do
+    /// Jev. Nenhuma toca na spec.
+    #[test]
+    fn every_call_goes_to_the_operations_file() {
+        let dir = project_on("chamadas");
+        let root = dir.path();
+        let path = mustard_core::io::spec_events::spec_file(root, "chamadas").unwrap();
+        let before = std::fs::read_to_string(&path).unwrap();
+        let ok = json!({"ok": true, "spec": "chamadas"});
+        for command in ["open", "resume", "round", "pr-open"] {
+            assert!(record_call(root, command, Some("chamadas"), Instant::now(), &ok).is_some(), "{command}");
+        }
+        assert!(record_output_call(root, "find", Some("chamadas"), Instant::now(), &ok, "achado\n").is_some());
+        let billed = draft(json!({"filter": "jev", "tokens": 10, "cost_micro_usd": 3}));
+        assert!(record_measured_call(root, "map search", Some("chamadas"), None, Instant::now(), &ok, billed).is_some());
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before, "no call reaches the spec");
+        let commands: Vec<String> =
+            recorded_operations(root, "chamadas").events.iter().filter_map(|e| e.str_field("command").map(str::to_string)).collect();
+        assert_eq!(commands, ["open", "resume", "round", "pr-open", "find", "map search"]);
+    }
+
+    /// A fala e a resposta só acrescentam a linha delas ao fim da spec: o que
+    /// já estava no arquivo fica como estava, byte a byte, mesmo com uma linha
+    /// cortada no fim, que a gravação completa reescreveria. Cada uma leva o
+    /// número seguinte ao maior, contando o da linha cortada, começa numa
+    /// linha nova e leva o código seguinte do tipo dela.
+    #[test]
+    fn the_message_and_the_answer_only_append_their_line_to_the_spec() {
+        let dir = project_on("acrescenta");
+        let root = dir.path();
+        let path = mustard_core::io::spec_events::spec_file(root, "acrescenta").unwrap();
+        let first = record_message(root, None, "primeira").expect("first message");
+        let cut = first + 5;
+        let before = format!("{}{{\"v\":1,\"id\":{cut},\"code\":\"MSTD-MSG-0", std::fs::read_to_string(&path).unwrap());
+        std::fs::write(&path, &before).unwrap();
+
+        let asked = record_message(root, None, "segunda").expect("message recorded");
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(after.starts_with(&before), "the message rewrote what was there:\n{after}");
+        assert!(after[before.len()..].starts_with('\n'), "the message starts on a new line");
+        assert_eq!(asked, cut + 1, "the next number counts the cut line");
+
+        let answered = record_response(root, None, "Feito.").expect("response recorded");
+        let last = std::fs::read_to_string(&path).unwrap();
+        assert!(last.starts_with(&after), "the answer rewrote what was there:\n{last}");
+        assert_eq!(answered, asked + 1);
+
+        let log = DiskSpecState::new(root).log("acrescenta").unwrap();
+        let message = log.get(asked).expect("the message reads");
+        assert_eq!(message.str_field("code"), Some("MSTD-MSG-0002"));
+        assert_eq!(log.get(answered).and_then(|answer| answer.int("reply_to")), Some(asked));
+    }
+
+    /// O que um gancho fez também só acrescenta a linha ao arquivo de
+    /// operações, sem reescrever o que estava nele.
+    #[test]
+    fn an_observation_only_appends_its_line_to_the_operations_file() {
+        let dir = project_on("operacoes");
+        let root = dir.path();
+        record_hook(root, None, "command_guard", HookAction::Warn, "Bash", "primeiro").expect("first hook");
+        let path = mustard_core::io::spec_events::operations_file(root, "operacoes").unwrap();
+        let mut before = std::fs::read_to_string(&path).unwrap();
+        before.push_str("{\"v\":1,\"id\":7,\"code\":\"MSTD-HOOK-0\n");
+        std::fs::write(&path, &before).unwrap();
+
+        let id = record_hook(root, None, "command_guard", HookAction::Block, "Bash", "segundo").expect("hook recorded");
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(after.starts_with(&before), "the observation rewrote what was there:\n{after}");
+        assert_eq!(id, 8);
+        assert_eq!(recorded_operations(root, "operacoes").get(id).and_then(|e| e.str_field("code").map(str::to_string)), Some("MSTD-HOOK-0002".to_string()));
+    }
+
+    /// As chamadas medidas que saíram juntas vão ao arquivo de operações numa
+    /// gravação só: a mesma hora em todas, os números seguidos, e a spec fica
+    /// como estava.
+    #[test]
+    fn calls_measured_together_are_recorded_in_one_write() {
+        let dir = project_on("lote");
+        let root = dir.path();
+        let path = mustard_core::io::spec_events::spec_file(root, "lote").unwrap();
+        let before = std::fs::read_to_string(&path).unwrap();
+        let measured: Vec<Map<String, Value>> =
+            (1..=4).map(|n| draft(json!({"filter": "jev", "tokens": n * 10, "cost_micro_usd": n}))).collect();
+
+        let ids = record_measured_calls(root, "lote", "triage", Instant::now(), measured).expect("all recorded");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before, "no call reaches the spec");
+        let log = recorded_operations(root, "lote");
+        let calls: Vec<&SpecEvent> = ids.iter().filter_map(|id| log.get(*id)).collect();
+        assert_eq!(calls.len(), 4);
+        assert!(ids.windows(2).all(|pair| pair[1] == pair[0] + 1), "{ids:?}");
+        assert!(calls.iter().all(|call| call.at() == calls[0].at()), "one write, one time: {calls:?}");
+        assert_eq!(calls.iter().filter_map(|call| call.int("tokens")).collect::<Vec<_>>(), [10, 20, 30, 40]);
+    }
+
+    /// O arquivo de operações que passa do teto manda a parte antiga ao
+    /// arquivo morto ao lado: o vivo volta a ficar pequeno, os números e os
+    /// códigos seguem de onde estavam, e quem lê o histórico inteiro vê cada
+    /// evento uma vez, na ordem.
+    #[test]
+    fn an_operations_file_past_its_cap_moves_the_old_part_to_the_archive() {
+        let dir = project_on("teto");
+        let root = dir.path();
+        let text = "x".repeat(1000);
+        let injection = || draft(json!({"author": "hook", "hook": "prompt_entry", "chars": 1000, "text": text}));
+        record_hook(root, None, "command_guard", HookAction::Warn, "Bash", "antigo").expect("hook");
+        for _ in 0..12 {
+            observe(root, "teto", "injection", (0..100).map(|_| injection()).collect()).expect("recorded");
+        }
+        let live = mustard_core::io::spec_events::operations_file(root, "teto").unwrap();
+        let size = std::fs::metadata(&live).unwrap().len();
+        assert!(size < 512 * 1024, "the live file kept growing: {size} bytes");
+
+        let next = observe(root, "teto", "injection", vec![injection()]).expect("recorded")[0];
+        assert_eq!(next, 1202, "the numbers go on from where they were");
+        let hook = record_hook(root, None, "command_guard", HookAction::Block, "Bash", "novo").expect("hook");
+        let log = recorded_operations(root, "teto");
+        let ids: Vec<u64> = log.events.iter().map(|e| e.id).collect();
+        assert_eq!(ids, (1..=1203).collect::<Vec<u64>>(), "every event once, in order");
+        assert_eq!(log.get(next).and_then(|e| e.str_field("code")), Some("MSTD-INJ-1201"));
+        assert_eq!(log.get(hook).and_then(|e| e.str_field("code")), Some("MSTD-HOOK-0002"));
     }
 
     /// Sem spec atual nada é gravado, nem a mensagem nem a resposta; e a
@@ -608,32 +809,6 @@ mod tests {
         let missing = mustard_core::domain::spec_events::Refusal::MissingField { event_type: "response".to_string(), field: "reply_to".to_string() };
         assert_eq!(refused, Some(missing));
         assert_eq!(event_lines(root, "abertura"), before, "a refusal writes nothing");
-    }
-
-    /// Os eventos gravados juntos vão numa gravação só, tudo ou nada: com o
-    /// terceiro recusado (a resposta sem `reply_to` numa spec que já tem
-    /// mensagem do usuário), os dois primeiros também ficam de fora; sem
-    /// recusa, os três entram, em números seguidos.
-    #[test]
-    fn events_recorded_together_land_in_one_write_or_none() {
-        let dir = project_on("juntas");
-        let root = dir.path();
-        let asked = record_message(root, None, "classifique a lista").expect("message");
-        let answer = |reply: bool| {
-            let mut fields = json!({ "author": "assistant", "text": "Classifiquei." });
-            if reply {
-                fields["reply_to"] = json!(asked);
-            }
-            draft(fields)
-        };
-        let before = event_lines(root, "juntas");
-        assert_eq!(record_all_in_spec(root, "juntas", "response", vec![answer(true), answer(true), answer(false)]), None);
-        assert_eq!(event_lines(root, "juntas"), before, "the refused third leaves the first two out");
-
-        let ids = record_all_in_spec(root, "juntas", "response", vec![answer(true), answer(true), answer(true)]).expect("recorded");
-        assert_eq!(ids.len(), 3, "{ids:?}");
-        assert!(ids.windows(2).all(|pair| pair[1] == pair[0] + 1), "{ids:?}");
-        assert_eq!(event_lines(root, "juntas"), before + 3);
     }
 
     /// A mensagem do usuário e a resposta do fim do turno gravadas ao mesmo
@@ -829,7 +1004,7 @@ mod tests {
     }
 
     /// A chamada de um passo grava o comando, o resultado e, na recusa, a
-    /// razão; na spec do relatório.
+    /// razão; no arquivo de operações da spec do relatório.
     #[test]
     fn a_call_records_its_result() {
         let dir = project_on("chamada");
@@ -837,7 +1012,7 @@ mod tests {
         let started = Instant::now();
         record_call(root, "plan", None, started, &json!({"ok": true, "spec": "chamada"})).expect("ok call");
         record_call(root, "round", Some("chamada"), started, &json!({"ok": false, "reason": "not-approved"})).expect("refused call");
-        let calls = events_of(root, "chamada", "call");
+        let calls: Vec<Map<String, Value>> = recorded_operations(root, "chamada").events.into_iter().map(|e| e.fields).collect();
         assert_eq!(calls.len(), 2);
         assert_eq!((calls[0]["command"].as_str(), calls[0]["result"].as_str()), (Some("plan"), Some("ok")));
         assert!(calls[0].get("refusal").is_none());
@@ -846,5 +1021,6 @@ mod tests {
 
         // Uma spec que não existe não ganha arquivo.
         assert_eq!(record_call(root, "plan", Some("outra"), started, &json!({"ok": true})), None);
+        assert!(mustard_core::io::spec_events::operations_file(root, "outra").is_some_and(|path| !path.exists()));
     }
 }

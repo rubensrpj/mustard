@@ -83,7 +83,7 @@ pub(super) fn group_waves(log: &SpecLog, ready: &[u64], population: &[BacklogTas
     for &id in ready {
         let Some(task) = log.get(id) else { continue };
         let Some(group) = task.fields.get(GROUP) else { continue };
-        if files_of(id).is_some_and(|files| touches_whole_tree(files)) {
+        if files_of(id).is_some_and(touches_whole_tree) {
             continue;
         }
         let name = group_name(log, task);

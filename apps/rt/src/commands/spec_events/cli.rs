@@ -10,7 +10,7 @@
 //! every name stays FLAT: `mustard-rt run read`, never `run spec-events read`.
 
 use clap::Subcommand;
-use mustard_core::domain::spec_events::TYPES;
+use mustard_core::domain::spec_events::{TYPES, TypeSpec, type_spec};
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
@@ -23,13 +23,15 @@ pub enum SpecEventsCmd {
     /// of the main checkout), never the whole file: `state`, `metrics`,
     /// `agreed`, `specification`, `criteria`, `waves`, `wave-<n>`, `review`,
     /// `progress`, `notes` or `conversation`. Removed and replaced items are
-    /// left out; a line that does not parse is skipped with a warning.
-    /// `wave-list` lists one short line per wave, by number: its code, the
+    /// left out; a line that does not parse is skipped with a warning. A
+    /// block but `state` comes newest first, up to 30 events without `--all`.
+    /// `wave-list` lists one short line per open wave, by number: its code, the
     /// first line of its text and the waves it depends on. `dispatch-<n>` reads, in one go, every item the request of wave `n`
-    /// lists, each with its code, and its lessons, by the same selection
-    /// that builds the request. `request-<n>` prints, as plain text, the
+    /// lists, each with its code, and its lessons: the list the send recorded.
+    /// `dispatch-review` does the same for the newest final review request.
+    /// `request-<n>` prints, as plain text, the
     /// exact request recorded when wave `n` went out: the agent reads its own
-    /// request this way. `request-review` does the same for the final
+    /// request this way; a wave that never went out is refused. `request-review` does the same for the final
     /// review, which has no wave: the close answer hands the reviewer this
     /// command instead of the request. `request-review-preview` prints, as
     /// plain text, the final review request the close would build now,
@@ -48,14 +50,17 @@ pub enum SpecEventsCmd {
     /// `removed`, and a user message shows its whole text like any other item.
     /// The `state` block also gives `last_user_message`, the number of the
     /// user's latest message, without its text. Reading an item, a lesson
-    /// (`lessons --term <n>`) or `dispatch-<n>` from inside the copy of an
+    /// (`lessons --term <n>`), `dispatch-<n>` or `dispatch-review` from inside the copy of an
     /// open request is recorded as read: the delivery of a wave request, and
     /// the verdict of the final review, are refused while an item the
     /// request lists was not read. From inside that copy an item line comes
     /// without `v`, `at`, `author` and `keys` (a user message keeps `at` and
-    /// `author`). `metrics` read without `--term` lists the send, the
-    /// injection and the delivery without their `text`: `item-MSTD-INJ-NNNN`
-    /// reads the whole line, and `delivered-<n>` the delivery.
+    /// `author`). `metrics` also lists the hook actions, the injections and
+    /// the command calls. They live in the spec's operations file, or in the
+    /// spec itself in older specs, and `calls` sums both. Read without
+    /// `--term`, `metrics` lists the send, the injection and the delivery
+    /// without their `text`: `--term` with `--all` brings them whole, the
+    /// item code brings one whole, and `delivered-<n>` reads the delivery.
     #[command(display_order = 8)]
     Read {
         /// The block to read, e.g. `state`, `wave-list`, `wave-2`, `dispatch-2`,
@@ -79,6 +84,12 @@ pub enum SpecEventsCmd {
         /// list; the other blocks read the same either way.
         #[arg(long)]
         full: bool,
+        /// Everything the reading finds. Without it, a block shows its newest
+        /// 30 events, with `more` saying how many of how many; `wave-list`
+        /// shows only the open waves; and `metrics` with a `--term` that is
+        /// not an item code shows a summary by type, with the newest codes.
+        #[arg(long)]
+        all: bool,
         /// Any directory inside the repo. Defaults to the current dir.
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -140,12 +151,9 @@ pub enum SpecEventsCmd {
         /// message in the spec, the missing field is refused.
         #[arg(long, default_value = "{}")]
         json: String,
-        /// After the write, prepare the copy of the spec page for its
-        /// database, with the batches computed now, and answer the order to
-        /// copy them. Pass it only on the last write a user's request
-        /// generates (the request itself when it generates no other), so the
-        /// page gets one copy with everything the request changed. Without
-        /// it, no write prepares a copy: the milestones copy on their own.
+        /// Kept only so older calls still run: no write prepares a copy of
+        /// the page anymore, and the answer says to publish explicitly with
+        /// `/mustard:pages`. The write itself is the same with or without it.
         #[arg(long)]
         copy: bool,
         /// Any directory inside the repo. Defaults to the current dir.
@@ -189,6 +197,27 @@ pub enum SpecEventsCmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
+    /// Move an older spec's records out of its event file and into its
+    /// operations file (`.claude/mustard/operations/<spec>.ndjson`): what the
+    /// hooks did, the injections, the command calls and the round's stage
+    /// times, which newer specs already write there. Reading receipts, stages
+    /// the round checks and records another event points at stay. Without
+    /// `--apply` it only says how many events and bytes would leave; with it,
+    /// the whole spec is first copied to `.claude/mustard/backups/`. Every
+    /// reader already joins both files, so readings come out the same. Only
+    /// when the user asks.
+    #[command(display_order = 44)]
+    MoveRecords {
+        /// The spec whose records move.
+        #[arg(long)]
+        spec: String,
+        /// Make the move. Without it, nothing changes.
+        #[arg(long)]
+        apply: bool,
+        /// Any directory inside the repo. Defaults to the current dir.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
 }
 
 /// O fim da ajuda do `run write`: os campos de cada tipo, lidos da mesma
@@ -202,26 +231,73 @@ fn fields_of_each_type() -> String {
          type also takes `author`, `label` and `replaces`, and `text` and `keys` where not listed:",
     );
     for spec in TYPES {
-        let named = |required: bool| spec.fields.iter().filter(move |f| f.required == required).map(|f| f.name);
-        let mut required: Vec<&str> = named(true).collect();
-        if spec.needs_origin {
-            required.push("origin");
-        }
-        let optional: Vec<&str> = named(false).collect();
-        let _ = write!(help, "\n  {}: {}", spec.name, required.join(", "));
-        if !optional.is_empty() {
-            let gap = if required.is_empty() { "" } else { " " };
-            let _ = write!(help, "{gap}({})", optional.join(", "));
-        }
+        help.push_str(&fields_line(spec));
     }
     help
+}
+
+/// A linha de um tipo no fim da ajuda: `\n  <tipo>: ` e os obrigatórios,
+/// com o `origin` nos tipos que o assistente grava a partir da conversa, e os
+/// que podem faltar entre parênteses.
+fn fields_line(spec: &TypeSpec) -> String {
+    let named = |required: bool| spec.fields.iter().filter(move |f| f.required == required).map(|f| f.name);
+    let mut required: Vec<&str> = named(true).collect();
+    if spec.needs_origin {
+        required.push("origin");
+    }
+    let optional: Vec<&str> = named(false).collect();
+    let mut line = format!("\n  {}: {}", spec.name, required.join(", "));
+    if !optional.is_empty() {
+        let gap = if required.is_empty() { "" } else { " " };
+        let _ = write!(line, "{gap}({})", optional.join(", "));
+    }
+    line
+}
+
+/// A ajuda de `run write <TYPE> --help` (`args` é a linha de comando
+/// inteira) com um tipo que existe: o uso e a linha dos campos só desse
+/// tipo, da mesma tabela da ajuda inteira. O agente que só queria o formato
+/// de um tipo recebia os campos de todos, dezenas de vezes por obra. `None`
+/// sem tipo, com um tipo que não existe ou noutro comando: a ajuda inteira.
+#[must_use]
+pub fn write_help_for_type(args: &[String]) -> Option<String> {
+    let rest = match args {
+        [_, run, write, rest @ ..] if run == "run" && write == "write" => rest,
+        _ => return None,
+    };
+    if !rest.iter().any(|arg| arg == "--help" || arg == "-h") {
+        return None;
+    }
+    let mut words = rest.iter();
+    let mut named = None;
+    while let Some(arg) = words.next() {
+        match arg.as_str() {
+            "--spec" | "--json" | "--root" => {
+                words.next();
+            }
+            flag if flag.starts_with('-') => {}
+            word => {
+                named = Some(word);
+                break;
+            }
+        }
+    }
+    let spec = type_spec(named?)?;
+    Some(format!(
+        "Usage: mustard-rt run write {name} [--spec <SPEC>] [--json <JSON>] [--root <ROOT>]\n\n\
+         Fields of `{name}`, the required ones first and the optional ones in parentheses. It also \
+         takes `author`, `label` and `replaces`, and `text` and `keys` when not listed:{line}\n\n\
+         `mustard-rt run write --help` shows the whole help.\n",
+        name = spec.name,
+        line = fields_line(spec),
+    ))
 }
 
 /// Dispatch one `spec_events`-family `run` subcommand.
 pub fn dispatch(cmd: SpecEventsCmd) {
     match cmd {
-        SpecEventsCmd::Read { block, spec, term, full, root } => {
-            spec_events::read::run(&spec_events::read::ReadOpts { root, spec, block, term }, full);
+        SpecEventsCmd::Read { block, spec, term, full, all, root } => {
+            spec_events::read::run(&spec_events::read::ReadOpts { root, spec, block, term }, full, all);
         }
         SpecEventsCmd::Write { event_type, spec, json, copy, root } => {
             spec_events::write::run(&spec_events::write::WriteOpts { root, spec, event_type, json }, copy);
@@ -231,6 +307,9 @@ pub fn dispatch(cmd: SpecEventsCmd) {
         }
         SpecEventsCmd::Index { root } => {
             spec_events::index::run(&spec_events::index::IndexOpts { root });
+        }
+        SpecEventsCmd::MoveRecords { spec, apply, root } => {
+            spec_events::move_records::run(&spec_events::move_records::MoveRecordsOpts { root, spec, apply });
         }
     }
 }
@@ -281,6 +360,30 @@ mod tests {
             help.contains("a `task` missing one of its three mandatory declarations"),
             "the help does not name the task-declaration refusal:\n{help}"
         );
+    }
+
+    /// A ajuda pedida com o tipo — `run write step --help` — mostra só o uso
+    /// do comando e a linha dos campos desse tipo, não a ajuda inteira, mesmo
+    /// com as opções antes do tipo. Sem tipo, com um tipo que não existe ou
+    /// noutro comando, nada: a ajuda inteira continua.
+    #[test]
+    fn the_write_help_with_a_type_shows_only_that_type() {
+        let args = |list: &[&str]| list.iter().map(ToString::to_string).collect::<Vec<_>>();
+        let help = write_help_for_type(&args(&["mustard-rt", "run", "write", "step", "--help"])).expect("the help of one type");
+        assert!(help.contains("Usage: mustard-rt run write"), "{help}");
+        assert!(help.contains("\n  step: wave, item, text"), "{help}");
+        assert!(!help.contains("\n  delivered: ") && !help.contains("three mandatory declarations"), "{help}");
+        let later = write_help_for_type(&args(&["mustard-rt", "run", "write", "--spec", "x", "--root=.", "delivered", "-h"])).expect("the help of one type");
+        assert!(later.contains("\n  delivered: wave, text ("), "{later}");
+        assert!(!later.contains("\n  step: "), "{later}");
+        for whole in [
+            args(&["mustard-rt", "run", "write", "--help"]),
+            args(&["mustard-rt", "run", "write", "--spec", "step", "--help"]),
+            args(&["mustard-rt", "run", "write", "nothing", "--help"]),
+            args(&["mustard-rt", "run", "read", "step", "--help"]),
+        ] {
+            assert_eq!(write_help_for_type(&whole), None, "{whole:?}");
+        }
     }
 
     /// Uma decisão gravada pelo comando sem dois campos obrigatórios é

@@ -89,6 +89,10 @@ fn formed(task: &SpecEvent) -> bool {
     task.fields.get("group").and_then(|group| group.get("formed")).and_then(Value::as_bool) == Some(true)
 }
 
+/// A pergunta ao Jev que [`triage_with`] faz: recebe a raiz do projeto, a spec
+/// e os pedidos, e devolve as respostas na ordem deles.
+type AskJev<'a> = dyn Fn(&Path, &str, &[String]) -> Option<Vec<Value>> + 'a;
+
 /// [`triage_at`] com a sessão recebida e a pergunta feita por `ask`, que
 /// recebe a raiz do projeto, a spec e os pedidos, e devolve as respostas na
 /// ordem deles.
@@ -96,7 +100,7 @@ fn formed(task: &SpecEvent) -> bool {
 /// onda em andamento, tenha o agente dela começado ou não, e cada uma dessas
 /// ondas toma uma vaga. Fora dela, no comando, só a onda com agente vivo
 /// segura as tarefas, e a parada sem agente as solta.
-fn triage_with(opts: &TriageOpts, session: Option<&str>, in_round: bool, ask: &dyn Fn(&Path, &str, &[String]) -> Option<Vec<Value>>) -> Value {
+fn triage_with(opts: &TriageOpts, session: Option<&str>, in_round: bool, ask: &AskJev<'_>) -> Value {
     let project = spec_events::project(&opts.root);
     let lang = project.lang;
     let refuse = |refusal: &Refusal| spec_events::refused(refusal, lang);
@@ -433,7 +437,7 @@ fn joined_version(log: &SpecLog, group: &[u64], lang: Locale) -> Result<Map<Stri
         for field in ["files", "covers", "depends_on"] {
             let mut list: Vec<Value> = draft.get(field).and_then(Value::as_array).cloned().unwrap_or_default();
             for value in other.fields.get(field).and_then(Value::as_array).into_iter().flatten() {
-                if !list.contains(value) && !(field == "depends_on" && members.contains(value)) {
+                if !(list.contains(value) || (field == "depends_on" && members.contains(value))) {
                     list.push(value.clone());
                 }
             }
@@ -610,7 +614,7 @@ mod tests {
         let mut ids = backlog(root, &[("A retomada lista as ondas no ar", "apps/rt/src/commands/flow/resume.rs", &[])]);
         let seed = |event_type: &str, body: Value| crate::shared::spec_state::seed_event(root, "x", event_type, body);
         let (live, closed) = (crate::commands::flow::stuck::this_process(), crate::commands::flow::round::closed_process());
-        let waves: [(&str, &str, (u32, u64), bool, Option<Value>); 5] = [
+        let waves = [
             ("A retomada diz a onda que perdeu o processo", "web/stuck.ts", live, true, Some(json!({ "text": "Parei.", "replan": "Outra tarefa antes." }))),
             ("A retomada mostra a onda sem agente", "src/Resume.cs", closed, true, None),
             ("A retomada avisa a onda com agente", "web/live.ts", live, true, None),

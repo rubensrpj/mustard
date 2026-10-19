@@ -195,6 +195,23 @@ const COMPLEXITY_LEVELS: [&str; 4] =
 /// de um assunto: a de mais valor sai antes e, no mesmo valor, a mais simples.
 const VALUE_WEIGHT: f64 = 2.0;
 
+/// O nível que a resposta `answer` dá a uma nota de quatro níveis, de 0 a 3:
+/// o de maior probabilidade em `probabilities`, e o maior deles no empate. A
+/// documentação do Jev pede para não fazer conta com a nota. Sem
+/// probabilidades legíveis, o nível mais próximo da nota; `None` quando a
+/// resposta não traz nota.
+fn level_in(answer: &Value) -> Option<f64> {
+    let levels = VALUE_LEVELS.len();
+    let top = (levels - 1) as f64;
+    let score = answer.get("score").and_then(Value::as_f64)?;
+    let likeliest = answer.get("probabilities").and_then(Value::as_object).and_then(|chances| {
+        (0..levels)
+            .filter_map(|level| chances.get(&level.to_string()).and_then(Value::as_f64).map(|chance| (level, chance)))
+            .reduce(|best, next| if next.1 >= best.1 { next } else { best })
+    });
+    Some(likeliest.map_or_else(|| score.clamp(0.0, top).round(), |(level, _)| level as f64))
+}
+
 /// Os caracteres do título e do texto de cada tarefa no pedido de ordem.
 const ORDER_SHOWN: usize = 400;
 
@@ -371,8 +388,8 @@ pub(crate) fn order_backlog_with(
     let sent: Vec<String> = fitting.iter().map(|(_, payload)| payload.clone()).collect();
     let docs = if sent.is_empty() { Some(Vec::new()) } else { invoke(&sent) };
     let mut unanswered = oversized.len();
-    // A nota é o nível mais provável da resposta, como na de tamanho.
-    let level = |doc: &Value, key: &str| super::task_size::level_in(&doc["answers"][key]);
+    // A nota é o nível mais provável da resposta.
+    let level = |doc: &Value, key: &str| level_in(&doc["answers"][key]);
     let mut subject_values: Option<Vec<f64>> = None;
     let mut task_scores: BTreeMap<u64, f64> = BTreeMap::new();
     for (at, (target, _)) in fitting.iter().enumerate() {
@@ -408,7 +425,7 @@ pub(crate) fn order_backlog_with(
         own.iter().flat_map(|id| fact(id).depends_on).filter(|id| !own.contains(id)).collect()
     };
     for subject in &mut subjects {
-        let mut ranked: Vec<(bool, bool, f64, usize, usize, (u64, Vec<u64>))> = subject
+        let mut ranked: Vec<_> = subject
             .tasks
             .drain(..)
             .enumerate()
@@ -528,6 +545,20 @@ fn confident(answer: &Value, allowed: &[String]) -> Option<(String, f64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A nota vale o nível mais provável: 1,4 com a maior probabilidade no
+    /// nível 1 vale 1, sem reta entre dois níveis, e o empate vai ao maior.
+    /// Sem probabilidades, vale o nível mais próximo da nota, preso de 0 a 3;
+    /// a resposta sem nota não tem nível.
+    #[test]
+    fn a_score_is_worth_its_likeliest_level() {
+        assert_eq!(level_in(&json!({"score": 1.4, "probabilities": {"0": 0.2, "1": 0.45, "2": 0.3, "3": 0.05}})), Some(1.0));
+        assert_eq!(level_in(&json!({"score": 1.5, "probabilities": {"0": 0.0, "1": 0.5, "2": 0.5, "3": 0.0}})), Some(2.0));
+        assert_eq!(level_in(&json!({"type": "score", "score": 2.4, "confidence": 0.7})), Some(2.0));
+        assert_eq!(level_in(&json!({"score": 9.0})), Some(3.0));
+        assert_eq!(level_in(&json!({"type": "noul", "noul": 0.5})), None);
+        assert_eq!(level_in(&json!({"score": "big"})), None);
+    }
 
     fn candidate<'a>(id: u64, title: &'a str, file: &str, joinable: bool) -> Candidate<'a> {
         Candidate { id, title, text: "", files: BTreeSet::from([file.to_string()]), joinable }

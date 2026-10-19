@@ -44,16 +44,19 @@ pub(super) fn context(input:&HookInput,ctx:&Ctx)->Option<String> {
     let mut context=if pt {
         format!("Mustard: proprietários estáticos do trecho já lido ({}:{}-{last}).\n",path.rel,first+1)
     }else{format!("Mustard: static owners of the excerpt already read ({}:{}-{last}).\n",path.rel,first+1)};
+    // O dono inteiro dentro da faixa, a leitura já mostrou: a nota leva só
+    // o que começa ou termina fora dela e, sem nenhum, não sai.
+    let mut partial=0;
     for owner in owners {
         let source=owner.get("source")?;
         let start=source.get("line")?.as_u64()?;
         let end=source.get("end_line")?.as_u64()?;
-        let coverage=match (first<start && last>=end,pt) {
-            (true,true)=>"intervalo completo",(false,true)=>"intervalo parcial",
-            (true,false)=>"complete range",(false,false)=>"partial range",
-        };
+        if first<start && last>=end {continue;}
+        partial+=1;
+        let coverage=if pt {"intervalo parcial"}else{"partial range"};
         let _=writeln!(context,"- {}: {start}-{end} ({coverage}).",owner.get("name")?.as_str()?);
     }
+    if partial==0 {return None;}
     let omitted=report.get("omitted_symbols")?.as_u64()?;
     if omitted>0 {let _=writeln!(context,"+{omitted} {}",if pt {"outros símbolos no trecho."}else{"other symbols in the excerpt."});}
     context.push_str(if pt {"Somente as linhas lidas foram conferidas. Relação estática não prova comportamento em execução."}else{"Only the delivered lines were checked. Static ownership does not prove runtime behavior."});
@@ -97,8 +100,17 @@ mod tests {
         input.agent_id=Some("worker".into());assert!(context(&input,&ctx).is_some());
         input.tool_input=json!({"file_path":root.path().join("src/main.rs"),"offset":1,"limit":3});
         input.raw["tool_response"]["file"]=json!({"filePath":root.path().join("src/main.rs"),"content":SOURCE,"numLines":3,"startLine":1,"totalLines":3});
-        let complete=context(&input,&ctx).unwrap();
-        assert!(complete.contains("complete range") || complete.contains("intervalo completo"));
+        assert!(context(&input,&ctx).is_none(),"an owner read whole needs no note");
+    }
+    #[test]
+    fn a_read_that_holds_every_owner_whole_gains_no_note() {
+        let root=indexed();let (mut input,ctx)=read(root.path());
+        input.tool_input=json!({"file_path":root.path().join("src/main.rs")});
+        input.raw["tool_response"]["file"]=json!({"filePath":root.path().join("src/main.rs"),"content":SOURCE,"numLines":3,"startLine":1,"totalLines":3});
+        assert!(context(&input,&ctx).is_none(),"the read already shows every owner whole");
+        let (cut,ctx)=read(root.path());
+        let note=context(&cut,&ctx).unwrap();
+        assert!(note.contains("quartz: 1-3"),"an owner that starts or ends outside the excerpt still goes: {note}");
     }
     #[test]
     fn stale_unknown_partial_and_mismatched_read_outputs_preserve_native_fallback() {

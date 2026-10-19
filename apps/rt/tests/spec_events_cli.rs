@@ -9,6 +9,9 @@
 //! gravação do núcleo. O `write` recusa a fala, e aceita a entrega só como a
 //! volta da onda com o envio dela aberto.
 
+#[path = "support/binary.rs"]
+mod binary;
+
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
@@ -33,7 +36,7 @@ fn rt(root: &Path, args: &[&str]) -> Command {
             else { owned.extend(["--report".into(), report]); }
         }
     }
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mustard-rt"));
+    let mut cmd = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"));
     // O ambiente de quem roda a suíte não chega ao serviço do Jev: a rodada o
     // chamaria de verdade.
     cmd.arg("run")
@@ -54,7 +57,7 @@ fn request_by_command(root: &Path, entry: &Value) -> String {
     assert!(entry.get("prompt").is_none(), "o pedido não vem inteiro na resposta: {entry}");
     let words: Vec<&str> = command.split_whitespace().collect();
     assert_eq!(words.first(), Some(&"mustard-rt"), "{command}");
-    let out = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+    let out = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
         .args(&words[1..])
         .current_dir(root)
         .env_remove("MUSTARD_ACTIVE_SPEC")
@@ -246,7 +249,7 @@ fn a_write_cut_by_the_size_limit_leaves_the_spec_file_as_it_was() {
     assert_eq!(before.len(), limit - 40);
 
     let fields = json!({"text": "segunda ".repeat(20)});
-    let out = Command::new("bash")
+    let out = binary::isolated("bash")
         .args(["-c", "trap '' XFSZ; ulimit -f 64 && exec \"$0\" \"$@\""])
         .arg(env!("CARGO_BIN_EXE_mustard-rt"))
         .args(["run", "write", "message", "--spec", "teste", "--json", &fields.to_string()])
@@ -288,7 +291,9 @@ fn two_processes_closing_a_wave_preserve_both_deliveries_without_automatic_publi
             .expect("git");
         assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
     };
-    git(&["init", "-q"]);
+    // O checkout fica no ramo da spec, como a abertura da obra o deixa:
+    // a rodada só comita e só abre cópia nele.
+    git(&["init", "-q", "-b", "feature/teste"]);
     std::fs::write(root.join(".git/info/exclude"), ".claude/\n").expect("exclude");
     for n in 1..=2 * rounds {
         std::fs::write(root.join(format!("a{n}.rs")), "fn one() {}\n").expect("seed file");
@@ -308,7 +313,7 @@ fn two_processes_closing_a_wave_preserve_both_deliveries_without_automatic_publi
             std::fs::write(root.join(&file), format!("fn one() {{}}\n// {text}\n")).expect("the wave's change");
             read_request(root, wave);
             finish_tasks(root, wave);
-            write(root, "delivered", &json!({"wave": wave, "text": text, "files": [file], "commit": format!("a onda {wave} sai")}));
+            write(root, "delivered", &json!({"wave": wave, "text": text, "files": [file], "commit": format!("a entrega {wave} sai")}));
         }
         let writers: Vec<_> = (0..2)
             .map(|_| rt(root, &["round", "--dispatch", "--spec", "teste"]).stdout(Stdio::piped()).spawn().expect("spawn round"))
@@ -360,7 +365,9 @@ fn the_copies_a_test_makes_leave_when_it_ends_even_when_it_fails() {
                     .expect("git");
                 assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
             };
-            git(&["init", "-q"]);
+            // O checkout fica no ramo da spec, como a abertura da obra o deixa:
+            // a rodada só comita e só abre cópia nele.
+            git(&["init", "-q", "-b", "feature/teste"]);
             std::fs::write(root.join(".git/info/exclude"), ".claude/\n").expect("exclude");
             std::fs::write(root.join("a1.rs"), "fn one() {}\n").expect("seed file");
             git(&["add", "-A"]);
@@ -478,6 +485,7 @@ fn request_of(root: &Path, wave: u64) -> (String, std::collections::BTreeSet<Str
         &log,
         mustard_core::platform::i18n::Locale::PtBr,
         &mustard_core::io::wave_prompt::Flight::default(),
+        &std::collections::BTreeSet::from([wave]),
     );
     let text = built.into_iter().find(|p| p.wave == wave).expect("the request of the wave").text;
     let lessons = text
@@ -654,7 +662,9 @@ fn the_round_commits_the_undeclared_file_the_wave_changed() {
     std::fs::write(root.join("mustard.json"), br#"{"buildCommand":"make"}"#).expect("mustard.json");
     std::fs::write(root.join("a1.rs"), "fn one() {}\n").expect("a1.rs");
     std::fs::write(root.join("Makefile"), "default:\n\t@true\n").expect("Makefile");
-    git(&["init", "-q"]);
+    // O checkout fica no ramo da spec, como a abertura da obra o deixa:
+    // a rodada só comita e só abre cópia nele.
+    git(&["init", "-q", "-b", "feature/teste"]);
     // Quem comita a rodada é o binário, não o `git` deste teste: sem
     // identidade gravada no repositório temporário ele cai no nome do
     // sistema, que numa máquina de integração vem vazio e faz o git recusar.
@@ -925,7 +935,9 @@ fn item_owned_by_its_files_goes_in_the_request_of_the_wave_that_touches_them() {
     std::fs::write(root.join("mustard.json"), b"{}").expect("mustard.json");
     std::fs::write(root.join("a1.rs"), "fn one() {}\n").expect("a1.rs");
     std::fs::write(root.join("a2.rs"), "fn dois() {}\n").expect("a2.rs");
-    git(&["init", "-q"]);
+    // O checkout fica no ramo da spec, como a abertura da obra o deixa:
+    // a rodada só comita e só abre cópia nele.
+    git(&["init", "-q", "-b", "feature/teste"]);
     git(&["config", "user.email", "t@t"]);
     git(&["config", "user.name", "t"]);
     std::fs::write(root.join(".git/info/exclude"), ".claude/\n").expect("exclude");
@@ -942,7 +954,7 @@ fn item_owned_by_its_files_goes_in_the_request_of_the_wave_that_touches_them() {
             .into_iter()
             .flatten()
             .find(|d| d["wave"] == json!(wave))
-            .unwrap_or_else(|| panic!("a onda {wave} sai: {body}"));
+            .unwrap_or_else(|| panic!("a entrega {wave} sai: {body}"));
         request_by_command(root, entry)
     };
     assert!(prompt(1).contains(&decision), "a onda que toca a1.rs leva a decisão: {}", prompt(1));
@@ -952,7 +964,7 @@ fn item_owned_by_its_files_goes_in_the_request_of_the_wave_that_touches_them() {
 /// O pedido de uma onda sai, pela leitura do comando, igual byte a byte ao
 /// texto gravado no envio: acentos, crases, linha em branco e a quebra do fim,
 /// sem uma quebra a mais. Um segundo envio da mesma onda vence o primeiro, e
-/// a onda que nunca saiu devolve texto vazio.
+/// a onda que nunca saiu é recusada: não tem pedido para ler.
 #[test]
 fn the_request_reading_prints_the_sent_text_byte_for_byte() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -970,14 +982,14 @@ fn the_request_reading_prints_the_sent_text_byte_for_byte() {
     assert_eq!(out.stdout, text.as_bytes(), "{}", String::from_utf8_lossy(&out.stdout));
 
     let none = rt(root, &["read", "request-3", "--spec", "teste"]).output().expect("read");
-    assert!(none.status.success(), "{}", String::from_utf8_lossy(&none.stdout));
-    assert!(none.stdout.is_empty(), "{}", String::from_utf8_lossy(&none.stdout));
+    assert!(!none.status.success(), "{}", String::from_utf8_lossy(&none.stdout));
+    assert_eq!(stdout_json(&none)["reason"], json!("no-request"), "{}", String::from_utf8_lossy(&none.stdout));
 }
 
 /// O pedido do revisor final, que não tem onda, sai pela leitura
 /// `request-review` igual byte a byte ao texto do último envio de revisão: o
 /// envio de uma onda não entra, o envio de revisão mais novo vence o antigo, e
-/// a spec sem envio de revisão devolve texto vazio. O pedido de uma onda segue
+/// a spec sem envio de revisão é recusada. O pedido de uma onda segue
 /// saindo por `request-<n>`, sem trocar de lugar com o da revisão.
 #[test]
 fn the_final_review_request_reading_prints_the_last_review_text_byte_for_byte() {
@@ -989,8 +1001,8 @@ fn the_final_review_request_reading_prints_the_last_review_text_byte_for_byte() 
         "text": wave, "lines": wave.lines().count(), "chars": wave.chars().count(), "mustard": "0"}));
 
     let none = rt(root, &["read", "request-review", "--spec", "teste"]).output().expect("read");
-    assert!(none.status.success(), "{}", String::from_utf8_lossy(&none.stdout));
-    assert!(none.stdout.is_empty(), "o envio de onda não é o da revisão: {}", String::from_utf8_lossy(&none.stdout));
+    assert!(!none.status.success(), "o envio de onda não é o da revisão: {}", String::from_utf8_lossy(&none.stdout));
+    assert_eq!(stdout_json(&none)["reason"], json!("no-request"), "{}", String::from_utf8_lossy(&none.stdout));
 
     let first = "# teste — revisão final\n\nO primeiro.\n";
     let last = "# teste — revisão final\n\nLeia a `spec` só pelo binário: ação, acentuação.\n\n- uma linha\n  - recuada\n";
@@ -1080,7 +1092,7 @@ fn a_new_version_over_a_replaced_version_is_refused_and_names_the_current_one() 
         .filter(|e| e["code"] == json!("MSTD-DEC-0099"))
         .filter_map(|e| e["id"].as_u64())
         .collect();
-    assert_eq!(tips, vec![base + 1, base + 2], "as duas pontas seguem na leitura: {agreed}");
+    assert_eq!(tips, vec![base + 2, base + 1], "as duas pontas seguem na leitura, a mais nova primeiro: {agreed}");
 }
 
 /// O comando de ler, rodado pelo binário de dentro de `from`, que é a pasta
@@ -1095,14 +1107,19 @@ fn read_from(root: &Path, from: &Path, block: &str, term: Option<&str>) -> Value
     stdout_json(&out)
 }
 
-/// As leituras que o binário registrou, na ordem: o pedido e o item.
+/// As leituras que o binário registrou, na ordem: o pedido e cada item dos
+/// recibos.
 fn reads_recorded(root: &Path) -> Vec<(String, String)> {
     let path = mustard_core::io::spec_events::spec_file(root, "teste").expect("spec file");
     let log = mustard_core::io::spec_events::read(&path).expect("read").expect("the spec file");
     log.visible()
         .into_iter()
         .filter(|e| e.event_type == "call" && e.str_field("command") == Some("read"))
-        .map(|e| (e.str_field("request").unwrap_or_default().to_string(), e.str_field("item").unwrap_or_default().to_string()))
+        .flat_map(|e| {
+            let request = e.str_field("request").unwrap_or_default().to_string();
+            let items: Vec<String> = e.fields["items"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
+            items.into_iter().map(move |item| (request.clone(), item))
+        })
         .collect()
 }
 
@@ -1169,4 +1186,147 @@ fn the_every_wave_mark_is_accepted_on_write_and_shown_on_read() {
     assert_eq!((code, &written["ok"]), (Some(0), &json!(true)), "{written}");
     let item = read(root, &format!("item-{}", written["code"].as_str().expect("the rule code")));
     assert_eq!(item["events"][0]["every_wave"], json!(true), "{item}");
+}
+
+/// A leitura de um bloco, como quem conduz a faz, traz os mais novos
+/// primeiro, até o teto, com a linha que diz quantos de quantos; `--all` traz
+/// todos, sem a linha.
+#[test]
+fn a_conversation_read_brings_the_newest_up_to_the_cap_and_all_brings_every_one() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let ids: Vec<u64> =
+        (1..=35).map(|n| seed_binary(root, "message", &json!({"author": "user", "text": format!("mensagem {n}")}))).collect();
+    let numbers = |report: &Value| -> Vec<u64> {
+        report["events"].as_array().expect("events").iter().map(|e| e["id"].as_u64().expect("id")).collect()
+    };
+
+    let capped = read(root, "conversation");
+    let newest: Vec<u64> = ids.iter().rev().take(30).copied().collect();
+    assert_eq!(numbers(&capped), newest, "{capped}");
+    assert_eq!(capped["count"], json!(30), "{capped}");
+    let more = capped["more"].as_str().unwrap_or_default();
+    assert!(more.contains("30") && more.contains("35") && more.contains("--all"), "{capped}");
+
+    let out = rt(root, &["read", "conversation", "--spec", "teste", "--all"]).output().expect("run read");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+    let all = stdout_json(&out);
+    assert_eq!(numbers(&all), ids.iter().rev().copied().collect::<Vec<_>>(), "{all}");
+    assert!(all.get("more").is_none(), "{all}");
+}
+
+/// A lista das ondas mostra só as abertas, com a linha que diz quantas de
+/// quantas; `--all` traz também a onda já entregue.
+#[test]
+fn the_wave_list_shows_only_the_open_waves_unless_all_is_asked() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let said = seed_binary(root, "message", &json!({"author": "user", "text": "o plano"}));
+    let crit = seed_binary(root, "criterion",
+        &json!({"when": "a", "then": "b", "proof": "git --version", "form": "ubiquitous", "origin": said}));
+    for n in 1..=3 {
+        seed_binary(root, "wave", &json!({"author": "binary", "n": n, "text": format!("Onda {n}."), "criteria": [crit],
+            "done_when": "x", "origin": said}));
+        seed_binary(root, "task", &json!({"wave": n, "text": format!("Tarefa {n}."),
+            "files": [{"path": format!("a{n}.rs")}], "origin": said}));
+    }
+    seed_binary(root, "delivered", &json!({"author": "binary", "wave": 1, "text": "Pronta.", "files": ["a1.rs"]}));
+    let waves = |report: &Value| -> Vec<u64> {
+        report["events"].as_array().expect("events").iter().map(|e| e["n"].as_u64().expect("n")).collect()
+    };
+
+    let open = read(root, "wave-list");
+    assert_eq!(waves(&open), [2, 3], "{open}");
+    let more = open["more"].as_str().unwrap_or_default();
+    assert!(more.contains('2') && more.contains('3') && more.contains("--all"), "{open}");
+
+    let out = rt(root, &["read", "wave-list", "--spec", "teste", "--all"]).output().expect("run read");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+    let all = stdout_json(&out);
+    assert_eq!(waves(&all), [1, 2, 3], "{all}");
+    assert!(all.get("more").is_none(), "{all}");
+}
+
+/// A busca com termo no painel vem resumida, uma linha por tipo, com quantos
+/// e os códigos dos mais novos; `--all` traz os eventos inteiros.
+#[test]
+fn a_metrics_search_comes_as_a_summary_and_all_brings_the_events() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let call = |command: &str, ms: u64| {
+        seed_binary(root, "call", &json!({"author": "binary", "command": command, "result": "ok", "ms": ms}))
+    };
+    call("map search", 10);
+    call("round", 3);
+    call("map search", 20);
+    call("map search", 30);
+
+    let out = rt(root, &["read", "metrics", "--spec", "teste", "--term", "map search"]).output().expect("run read");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+    let summary = stdout_json(&out);
+    let lines = summary["events"].as_array().expect("events");
+    assert_eq!(lines.len(), 1, "{summary}");
+    assert_eq!((&lines[0]["type"], &lines[0]["count"]), (&json!("call"), &json!(3)), "{summary}");
+    assert!(lines[0].get("command").is_none(), "the summary does not bring the events: {summary}");
+    assert!(summary["more"].as_str().unwrap_or_default().contains("--all"), "{summary}");
+
+    let out = rt(root, &["read", "metrics", "--spec", "teste", "--term", "map search", "--all"]).output().expect("run read");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+    let all = stdout_json(&out);
+    let commands: Vec<&Value> = all["events"].as_array().expect("events").iter().map(|e| &e["command"]).collect();
+    assert_eq!(commands, [&json!("map search"); 3], "{all}");
+}
+
+/// Uma spec antiga, que gravava dentro dela o que os ganchos fizeram, as
+/// injeções, as chamadas e o tempo das etapas da rodada. Sem `--apply`, o
+/// `move-records` só diz quantos eventos e bytes sairiam, e nada muda; com
+/// ele, a spec vai inteira para a cópia de segurança, os registros passam ao
+/// arquivo de operações com a hora deles, e fica na spec o que é trabalho: a
+/// fala, o recibo de leitura, a etapa que a rodada confere e o registro que
+/// outro evento aponta.
+#[test]
+fn move_records_only_shows_without_apply_and_moves_with_a_backup() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    open_spec(root);
+    let spec = mustard_core::io::spec_events::spec_file(root, "teste").expect("spec file");
+    let lines = [
+        json!({"v":1,"id":1,"code":"MSTD-MSG-0001","at":"2026-09-01T10:00:00-03:00","type":"message","author":"user","text":"arrume"}),
+        json!({"v":1,"id":2,"code":"MSTD-HOOK-0001","at":"2026-09-01T10:01:00-03:00","type":"hook","author":"hook","hook":"command_guard","action":"block","tool":"Bash","reason":"apaga"}),
+        json!({"v":1,"id":3,"code":"MSTD-INJ-0001","at":"2026-09-01T10:02:00-03:00","type":"injection","author":"hook","hook":"prompt_entry","chars":3,"text":"uma"}),
+        json!({"v":1,"id":4,"code":"MSTD-CALL-0001","at":"2026-09-01T10:03:00-03:00","type":"call","author":"binary","command":"round","ms":3,"result":"ok"}),
+        json!({"v":1,"id":5,"code":"MSTD-CALL-0002","at":"2026-09-01T10:04:00-03:00","type":"call","author":"binary","command":"read","ms":1,"result":"ok","request":"request-1","items":["MSTD-RULE-0001"]}),
+        json!({"v":1,"id":6,"code":"MSTD-STAGE-0001","at":"2026-09-01T10:05:00-03:00","type":"stage_run","author":"binary","phase":"delivery","stage":"merge","result":"pass","ms":9,"scope":"leaf","version":"0.2.24","attempt":42}),
+        json!({"v":1,"id":7,"code":"MSTD-STAGE-0002","at":"2026-09-01T10:06:00-03:00","type":"stage_run","author":"binary","phase":"delivery","stage":"wave-review-diff:1","result":"pass","ms":0,"fingerprint":"abc","attempt":3}),
+        json!({"v":1,"id":8,"code":"MSTD-CALL-0003","at":"2026-09-01T10:07:00-03:00","type":"call","author":"binary","command":"plan","ms":2,"result":"ok"}),
+        json!({"v":1,"id":9,"code":"MSTD-RM-0001","at":"2026-09-01T10:08:00-03:00","type":"remove","author":"assistant","targets":[8],"reason":"engano"}),
+    ];
+    let original: String = lines.iter().map(|line| line.to_string() + "\n").collect();
+    std::fs::write(&spec, &original).expect("old spec");
+    let moved_bytes: usize = [&lines[1], &lines[2], &lines[3], &lines[5]].iter().map(|line| line.to_string().len() + 1).sum();
+
+    let shown = rt(root, &["move-records", "--spec", "teste"]).output().expect("run move-records");
+    assert!(shown.status.success(), "{}", String::from_utf8_lossy(&shown.stdout));
+    let shown = stdout_json(&shown);
+    assert_eq!((shown["applied"].clone(), shown["events"].clone(), shown["bytes"].clone()), (json!(false), json!(4), json!(moved_bytes)), "{shown}");
+    assert_eq!(std::fs::read_to_string(&spec).expect("spec"), original, "without --apply nothing changes");
+
+    let applied = rt(root, &["move-records", "--spec", "teste", "--apply"]).output().expect("run move-records");
+    assert!(applied.status.success(), "{}", String::from_utf8_lossy(&applied.stdout));
+    let applied = stdout_json(&applied);
+    assert_eq!((applied["applied"].clone(), applied["events"].clone()), (json!(true), json!(4)), "{applied}");
+    let backup = root.join(applied["backup"].as_str().expect("the backup path"));
+    assert_eq!(std::fs::read_to_string(backup).expect("backup"), original);
+    let left: Vec<u64> = mustard_core::io::spec_events::read(&spec).expect("read").expect("spec").events.iter().map(|e| e.id).collect();
+    assert_eq!(left, [1, 5, 7, 8, 9]);
+    let operations = mustard_core::io::spec_events::operations_file(root, "teste").expect("operations file");
+    let moved = mustard_core::io::spec_events::read_operations(&operations).expect("read").expect("operations");
+    let kinds: Vec<(&str, &str)> = moved.events.iter().map(|e| (e.event_type.as_str(), e.at())).collect();
+    assert_eq!(kinds, [("hook", "2026-09-01T10:01:00-03:00"), ("injection", "2026-09-01T10:02:00-03:00"), ("call", "2026-09-01T10:03:00-03:00"), ("stage_run", "2026-09-01T10:05:00-03:00")]);
+
+    let again = stdout_json(&rt(root, &["move-records", "--spec", "teste", "--apply"]).output().expect("run move-records"));
+    assert_eq!((again["applied"].clone(), again["events"].clone()), (json!(false), json!(0)), "{again}");
+    let missing = rt(root, &["move-records", "--spec", "outra"]).output().expect("run move-records");
+    assert_eq!(missing.status.code(), Some(1));
+    assert_eq!(stdout_json(&missing)["reason"], json!("no-spec-file"));
 }

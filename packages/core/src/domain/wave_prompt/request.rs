@@ -123,6 +123,11 @@ impl Writer<'_> {
         let listing = Listing::of(m);
         let mut out = String::new();
         let _ = writeln!(out, "{}\n", wave_title(&m.spec, m.wave, self.lang));
+        // Logo depois do título, que segue sozinho na primeira linha, porque
+        // é por ele que os ganchos acham a onda.
+        if let Some(copy) = &m.execution.copy {
+            let _ = writeln!(out, "{}\n", self.t("prompt.copy.first").replace("{copy}", &copy.path));
+        }
         let _ = writeln!(
             out,
             "{}\n",
@@ -281,11 +286,18 @@ impl Writer<'_> {
         out.push('\n');
     }
 
-    /// "O que devolver": a entrega pela ferramenta, o campo `commit` e a
-    /// ordem de não deixar texto solto fora da entrega.
+    /// "O que devolver": o comando pronto do passo, a entrega pela
+    /// ferramenta, com o comando pronto dela, o campo `commit` e a ordem de
+    /// não deixar texto solto fora da entrega.
     fn to_return(&self, out: &mut String) {
+        let m = self.material;
+        let command = |key: &str| {
+            self.t(key).replace("{root}", &self.root_flag(m.execution.copy.is_some())).replace("{spec}", &m.spec).replace("{wave}", &m.wave.to_string())
+        };
         let _ = writeln!(out, "## {}\n", self.t("prompt.part.return"));
+        let _ = writeln!(out, "- {}", command("prompt.return.step"));
         let _ = writeln!(out, "- {}", self.t("prompt.execution.report_lines"));
+        let _ = writeln!(out, "- {}", command("prompt.return.delivered"));
         let _ = writeln!(out, "- {}", self.t("prompt.execution.commit_field"));
         let _ = writeln!(out, "- {}", self.t("prompt.return.loose"));
         out.push('\n');

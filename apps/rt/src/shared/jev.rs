@@ -2,7 +2,7 @@
 //! Local rules recover plausible candidates first. Mandatory instructions,
 //! exact searches, native authorization and final validation bypass Jev.
 //! Candidate relevance uses independent Nouls with one rubric across batches;
-//! Choice/Score remain suitable for task kind and ordinal size.
+//! Choice remains suitable for the task kind.
 //! Full relevant evidence is partitioned to the provider's documented request
 //! size, never silently clipped. Intrinsic task profiles and plausible running
 //! relations are separate requests. A provider-independent service validates
@@ -36,7 +36,6 @@ use serde_json::{Map, Value, json};
 use crate::shared::dag::{Judgement, TaskKind};
 use crate::shared::paths::sensitive_pattern;
 use crate::shared::secret::without_secrets;
-use crate::shared::task_size;
 
 // ---------------------------------------------------------------------------
 // O serviço
@@ -188,21 +187,35 @@ pub struct JevFilter {
     timeouts: Timeouts,
     cache: Option<PathBuf>,
     spec: Option<String>,
+    /// A finalidade com que as escolhas da orquestração saem e ficam no
+    /// registro das tentativas: montar as ondas, salvo a busca na spec.
+    purpose: Purpose,
 }
 
 impl JevFilter {
     pub(crate) fn for_orchestration(root: &Path, spec: &str) -> Option<Self> {
+        Self::orchestrating(root, spec, Purpose::WavePlanning)
+    }
+
+    /// O filtro da busca na spec: a finalidade própria, que o
+    /// `mustard.json` liga ou desliga à parte; sem ela escrita, fica
+    /// desligada até ser ligada.
+    pub(crate) fn for_spec_search(root: &Path, spec: &str) -> Option<Self> {
+        Self::orchestrating(root, spec, Purpose::SpecSearch)
+    }
+
+    fn orchestrating(root: &Path, spec: &str, purpose: Purpose) -> Option<Self> {
         let config=ProjectConfig::load(root);
-        if cfg!(test) || !config.ai_fallback_enabled() || !jev_gate::setting_allows(config.judgement_filter("wave-planning")) { return None; }
+        if cfg!(test) || !config.ai_fallback_enabled() || !jev_gate::setting_allows(config.judgement_filter(purpose.key())) { return None; }
         let loaded=key_in(root,&config,std::env::var(jev_gate::KEY_ENV).ok()).ok()?;
-        let mut filter=Self::new(root,loaded.key); filter.spec=Some(spec.into()); Some(filter)
+        let mut filter=Self::new(root,loaded.key); filter.spec=Some(spec.into()); filter.purpose=purpose; Some(filter)
     }
 
     /// As escolhas da orquestração para `payloads`, pedidas ao mesmo tempo e
     /// esperadas até `wait`, na ordem dos pedidos.
     pub(crate) fn choose_orchestration(&self, payloads: &[String], wait: Duration) -> Result<Vec<Value>,FilterError> {
         for payload in payloads { validate_wire_size(payload)?; }
-        let docs=self.send_all_for(payloads,Instant::now()+wait,Purpose::WavePlanning)?;
+        let docs=self.send_all_for(payloads,Instant::now()+wait,self.purpose)?;
         if docs.len()==payloads.len() { Ok(docs) } else { Err(FilterError::Unreadable("missing orchestration choice".into())) }
     }
 
@@ -238,6 +251,7 @@ impl JevFilter {
             timeouts: Timeouts { connect: CONNECT_TIMEOUT, response: RESPONSE_TIMEOUT },
             cache: None,
             spec: None,
+            purpose: Purpose::WavePlanning,
         }
     }
 
@@ -869,10 +883,27 @@ pub(crate) fn for_context(root: &Path, spec: &str) -> WavesJev {
 fn for_purpose(root: &Path, purpose: &str, spec: Option<&str>) -> WavesJev {
     let config = ProjectConfig::load(root);
     if cfg!(test) {
+        #[cfg(test)]
+        if let Some(judge) = JUDGE_IN_TEST.with(|slot| slot.borrow().clone()) {
+            return WavesJev { filter: Some(judge), key_in_git: false };
+        }
         return WavesJev { filter: None, ..purpose_filter(root, &config, None, purpose, spec) };
     }
     purpose_filter(root, &config, std::env::var(jev_gate::KEY_ENV).ok(), purpose, spec)
 }
+#[cfg(test)]
+thread_local! {
+    /// O Jev que um teste põe no lugar do serviço, só nesta linha de execução.
+    static JUDGE_IN_TEST: std::cell::RefCell<Option<std::sync::Arc<dyn WaveJudge>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Põe `judge` no lugar do Jev da montagem e dos itens, nesta linha de
+/// execução; `None` volta ao de todo teste, sem Jev.
+#[cfg(test)]
+pub(crate) fn judge_in_test(judge: Option<std::sync::Arc<dyn WaveJudge>>) {
+    JUDGE_IN_TEST.with(|slot| *slot.borrow_mut() = judge);
+}
+
 #[cfg(test)]
 fn waves_filter(root: &Path, config: &ProjectConfig, env: Option<String>) -> WavesJev {
     purpose_filter(root, config, env, "wave-planning", None)
@@ -1030,7 +1061,6 @@ fn board_parts(board: &Board) -> (Value, Map<String, Value>) {
                 "criteria": Value::Object(kinds.clone()),
             }),
         );
-        questions.insert(format!("tam_{key}"), task_size::question(&key));
         for wave in &board.running {
             if !wave.tasks.iter().any(|running| related_tasks(task, running)) {
                 continue;
@@ -1061,8 +1091,6 @@ fn read_judgements(doc: &Value, board: &Board) -> Result<BTreeMap<u64, Judgement
         let name = kind.get("choice").and_then(Value::as_str).unwrap_or_default();
         let kind_of = TaskKind::from_key(name).ok_or_else(|| FilterError::Unreadable(format!("{asked} is not a kind of work")))?;
         let confidence = kind.get("confidence").and_then(Value::as_f64).ok_or_else(|| FilterError::Unreadable(format!("no confidence for {asked}")))?;
-        let asked_size = format!("tam_{key}");
-        let size = answers.get(&asked_size).and_then(task_size::level_in).ok_or_else(|| missing(asked_size.clone()))?;
         let mut clash = 0.0_f64;
         for wave in &board.running {
             if !wave.tasks.iter().any(|running| related_tasks(task, running)) {
@@ -1072,7 +1100,7 @@ fn read_judgements(doc: &Value, board: &Board) -> Result<BTreeMap<u64, Judgement
             let chance = answers.get(&asked).and_then(|answer| answer.get("noul")).and_then(Value::as_f64).ok_or_else(|| missing(asked.clone()))?;
             clash = clash.max(chance);
         }
-        judged.insert(task.id, Judgement { kind: kind_of, confidence, clash, size });
+        judged.insert(task.id, Judgement { kind: kind_of, confidence, clash });
     }
     Ok(judged)
 }
@@ -2221,6 +2249,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         if git {
             assert!(mustard_core::platform::git::run(dir.path(), &["init", "-q"]).ok);
+            assert!(mustard_core::platform::git::run(dir.path(), &["config", "core.excludesFile", ""]).ok);
         }
         let config = json!({"language": {"text": "pt-BR"}, "jev": {"key": key}});
         std::fs::write(dir.path().join("mustard.json"), config.to_string()).unwrap();
@@ -2249,15 +2278,17 @@ mod tests {
         assert_eq!(project_key(bare.path(), None).unwrap_err(), FilterError::MissingKey);
     }
 
-    /// O `mustard.json` que o git guarda não entrega a chave: sem a do
-    /// ambiente, não há chave e o motivo é o git; com ela, vale a do ambiente,
-    /// com o mesmo aviso.
+    /// O `mustard.json` que o git guarda, ou que ele não ignora, não entrega
+    /// a chave: o próximo commit a levaria. Sem a do ambiente, não há chave e
+    /// o motivo é o git; com ela, vale a do ambiente, com o mesmo aviso.
     #[test]
     fn a_key_in_a_file_that_git_tracks_is_not_used_and_warns() {
         let project = project_with_key(SECRET, true);
+        assert_eq!(project_key(project.path(), None).unwrap_err(), FilterError::KeyInGit, "a file git does not ignore goes to the next commit");
+        std::fs::write(project.path().join(".git/info/exclude"), "/mustard.json\n").unwrap();
         assert_eq!(project_key(project.path(), None).unwrap().key.0, SECRET, "out of git, the key counts");
 
-        assert!(mustard_core::platform::git::run(project.path(), &["add", "mustard.json"]).ok);
+        assert!(mustard_core::platform::git::run(project.path(), &["add", "-f", "mustard.json"]).ok);
         let refused = project_key(project.path(), None).unwrap_err();
         assert_eq!(refused, FilterError::KeyInGit);
         assert!(!refused.to_string().contains(SECRET));
@@ -2372,16 +2403,13 @@ mod tests {
     }
 
     /// A resposta do serviço ao quadro `board()`: a tarefa 11 é um defeito
-    /// certo, de tamanho 2,4, e a 12 um recurso incerto, de tamanho 0,6, que
-    /// muda o mesmo que a onda 7.
+    /// certo, e a 12 um recurso incerto, que muda o mesmo que a onda 7.
     fn judged_answer() -> Value {
         json!({
             "model": "jev-1.13.0",
             "answers": {
                 "tipo_t11": {"type": "choice", "choice": "defect", "probabilities":{"defect":0.9,"feature":0.04,"text_fix":0.02,"remove_unused":0.02,"test_cleanup":0.02}, "confidence": 0.9},
                 "tipo_t12": {"type": "choice", "choice": "feature", "probabilities":{"defect":0.2,"feature":0.41,"text_fix":0.13,"remove_unused":0.13,"test_cleanup":0.13}, "confidence": 0.41},
-                "tam_t11": {"type": "score", "score": 2.4, "probabilities":{"0":0.01,"1":0.09,"2":0.4,"3":0.5}, "confidence": 0.8},
-                "tam_t12": {"type": "score", "score": 0.6, "probabilities":{"0":0.4,"1":0.6,"2":0.0,"3":0.0}, "confidence": 0.7},
                 "blk_w7_t11": {"type": "noul", "noul": 0.1},
                 "blk_w7_t12": {"type": "noul", "noul": 0.68},
             },
@@ -2389,8 +2417,7 @@ mod tests {
         })
     }
 
-    /// Cada tarefa do backlog vai num pedido, com as perguntas de tipo e de
-    /// tamanho, e o choque com a onda em andamento vai noutro, com o estado da
+    /// Cada tarefa do backlog vai num pedido, com a pergunta de tipo, e o choque com a onda em andamento vai noutro, com o estado da
     /// definição, da onda e do backlog; todos com o modelo fixo. As respostas
     /// juntas viram o julgamento de cada tarefa, com os tokens, o custo e o
     /// modelo.
@@ -2408,11 +2435,7 @@ mod tests {
         assert_eq!(body["model"], json!(JEV_MODEL));
         let mut asked: Vec<&str> = body["questions"].as_object().unwrap().keys().map(String::as_str).collect();
         asked.sort_unstable();
-        assert_eq!(asked, vec!["blk_w7_t11", "blk_w7_t12", "tam_t11", "tam_t12", "tipo_t11", "tipo_t12"]);
-        let size = &body["questions"]["tam_t11"];
-        assert_eq!(size["type"], json!("score"));
-        assert!(size["instructions"]["question"].as_str().unwrap().contains("`backlog.t11`"), "{size}");
-        assert_eq!(size["criteria"], json!(["One small place", "Two or three files", "Many files in one area", "Many files across several areas"]));
+        assert_eq!(asked, vec!["blk_w7_t11", "blk_w7_t12", "tipo_t11", "tipo_t12"]);
         let state = &body["state"];
         assert!(state["definition"]["wave"].is_string());
         let profile = received.iter().find(|r| r.body["questions"].get("tipo_t11").is_some()).unwrap();
@@ -2424,16 +2447,14 @@ mod tests {
         assert!(state["backlog"]["t11"].get("expertise").is_none(), "the assembly request carries no area profile");
         assert_eq!(body["questions"]["tipo_t11"]["criteria"].as_object().unwrap().len(), 5);
 
-        assert_eq!(judged.tasks[&11], Judgement { kind: TaskKind::Defect, confidence: 0.9, clash: 0.1, size: 3.0 });
-        assert_eq!(judged.tasks[&12], Judgement { kind: TaskKind::Feature, confidence: 0.41, clash: 0.68, size: 1.0 });
-        assert_eq!((judged.tasks[&11].growth_tokens(), judged.tasks[&12].growth_tokens()), (125_000, 65_000));
+        assert_eq!(judged.tasks[&11], Judgement { kind: TaskKind::Defect, confidence: 0.9, clash: 0.1 });
+        assert_eq!(judged.tasks[&12], Judgement { kind: TaskKind::Feature, confidence: 0.41, clash: 0.68 });
         assert_eq!((judged.usage.input_tokens, judged.usage.cost_micro_usd, judged.usage.requests, judged.usage.model.as_str()), (6000, 252, 3, "jev-1.13.0"));
     }
 
     /// Sem onda em andamento não há pergunta de bloqueio, e a tarefa fica sem
-    /// choque; a falta de uma resposta, um tipo que não existe, a confiança
-    /// ausente e a nota de tamanho que não é nota são resposta ilegível, e o
-    /// serviço que recusa é falha.
+    /// choque; a falta de uma resposta, um tipo que não existe e a confiança
+    /// ausente são resposta ilegível, e o serviço que recusa é falha.
     #[test]
     fn an_answer_that_misses_a_question_or_a_kind_is_unreadable_and_a_refusal_is_a_failure() {
         let no_wave = Board { running: Vec::new(), backlog: vec![board_task(11, &["a.rs"])] };
@@ -2446,28 +2467,20 @@ mod tests {
         });
         let judged = service.filter().judge_backlog(&no_wave).unwrap();
         assert_eq!(judged.tasks[&11].clash, 0.0);
-        assert_eq!(service.received()[0].body["questions"].as_object().unwrap().len(), 2);
+        assert_eq!(service.received()[0].body["questions"].as_object().unwrap().len(), 1);
 
         for (name, answer) in [
             (
                 "a missing blk",
-                json!({"tipo_t11": {"choice": "defect", "confidence": 0.9}, "tipo_t12": {"choice": "defect", "confidence": 0.9}, "tam_t11": {"score": 1.0}, "tam_t12": {"score": 1.0}, "blk_w7_t11": {"noul": 0.1}}),
+                json!({"tipo_t11": {"choice": "defect", "confidence": 0.9}, "tipo_t12": {"choice": "defect", "confidence": 0.9}, "blk_w7_t11": {"noul": 0.1}}),
             ),
             (
                 "an unknown kind",
-                json!({"tipo_t11": {"choice": "chore", "confidence": 0.9}, "tipo_t12": {"choice": "defect", "confidence": 0.9}, "tam_t11": {"score": 1.0}, "tam_t12": {"score": 1.0}, "blk_w7_t11": {"noul": 0.1}, "blk_w7_t12": {"noul": 0.1}}),
+                json!({"tipo_t11": {"choice": "chore", "confidence": 0.9}, "tipo_t12": {"choice": "defect", "confidence": 0.9}, "blk_w7_t11": {"noul": 0.1}, "blk_w7_t12": {"noul": 0.1}}),
             ),
             (
                 "no confidence",
-                json!({"tipo_t11": {"choice": "defect"}, "tipo_t12": {"choice": "defect", "confidence": 0.9}, "tam_t11": {"score": 1.0}, "tam_t12": {"score": 1.0}, "blk_w7_t11": {"noul": 0.1}, "blk_w7_t12": {"noul": 0.1}}),
-            ),
-            (
-                "a missing tam",
-                json!({"tipo_t11": {"choice": "defect", "confidence": 0.9}, "tipo_t12": {"choice": "defect", "confidence": 0.9}, "tam_t11": {"score": 1.0}, "blk_w7_t11": {"noul": 0.1}, "blk_w7_t12": {"noul": 0.1}}),
-            ),
-            (
-                "a tam that is not a score",
-                json!({"tipo_t11": {"choice": "defect", "confidence": 0.9}, "tipo_t12": {"choice": "defect", "confidence": 0.9}, "tam_t11": {"score": 1.0}, "tam_t12": {"noul": 0.4}, "blk_w7_t11": {"noul": 0.1}, "blk_w7_t12": {"noul": 0.1}}),
+                json!({"tipo_t11": {"choice": "defect"}, "tipo_t12": {"choice": "defect", "confidence": 0.9}, "blk_w7_t11": {"noul": 0.1}, "blk_w7_t12": {"noul": 0.1}}),
             ),
         ] {
             let service = FakeService::start(move |_, _| Reply::json(200, &json!({"answers": answer.clone()})));

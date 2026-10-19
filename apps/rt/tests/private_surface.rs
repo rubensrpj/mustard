@@ -11,6 +11,9 @@
 //! nothing at all would satisfy every "the visible file is absent" assertion
 //! here, which is precisely how three defects in this unit shipped green.
 
+#[path = "support/binary.rs"]
+mod binary;
+
 use std::path::Path;
 use std::process::Command;
 
@@ -77,7 +80,7 @@ fn upsert_is_private_unconditionally_and_offers_no_switch() {
     // The mode is unconditional, so the surface must offer no way to ask for a
     // visible install — not the flag that used to exist, and not its opposite.
     for argv in [["--private"], ["--shared"]] {
-        let out = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+        let out = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
             .arg("run")
             .arg("upsert")
             .args(argv)
@@ -109,7 +112,7 @@ fn upsert_is_private_unconditionally_and_offers_no_switch() {
 /// unset, an `upsert` in a test would update the machine's REAL plugin install,
 /// which is a side effect no test may have.
 fn upsert(root: &Path, args: &[&str]) -> Value {
-    let out = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+    let out = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
         .arg("run")
         .arg("upsert")
         .args(args)

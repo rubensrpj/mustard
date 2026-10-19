@@ -19,5 +19,6 @@
     "harness",
     "qa-gate"
   ],
-  "defaultEnabled": false
+  "defaultEnabled": false,
+  "types": "./types/index.d.ts"
 }

@@ -11,6 +11,9 @@
 //! um ponto aberto, a gravação do plano pela porta do binário é recusada com a
 //! lista; com todos fechados, ela passa.
 
+#[path = "support/binary.rs"]
+mod binary;
+
 use std::path::Path;
 use std::process::{Command, Output};
 
@@ -54,7 +57,7 @@ fn repo() -> tempfile::TempDir {
 }
 
 fn rt(root: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+    binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
         .arg("run")
         .args(args)
         .arg("--root")
@@ -98,7 +101,7 @@ fn hook_says(root: &Path, home: &Path, text: &str) -> u64 {
 
     let payload = json!({"hook_event_name": "UserPromptSubmit", "prompt": text, "session_id": "s-levantamento",
         "cwd": root.to_string_lossy()});
-    let mut child = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+    let mut child = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
         .args(["on", "UserPromptSubmit"])
         .current_dir(root)
         .env("HOME", home)

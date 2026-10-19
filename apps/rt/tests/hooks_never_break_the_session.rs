@@ -22,6 +22,9 @@
 //!   nunca vem deixaria a chamada pendurada; o teste segura o stdin aberto e
 //!   confere que o comando termina sozinho.
 
+#[path = "support/binary.rs"]
+mod binary;
+
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -55,7 +58,7 @@ struct Fired {
 /// Roda `mustard-rt on <event>` em `cwd` com `stdin`, numa pasta pessoal falsa
 /// e sem a variável de uma spec ativa.
 fn fire(cwd: &Path, home: &Path, event: &str, stdin: &[u8]) -> Fired {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+    let mut child = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
         .args(["on", event])
         .current_dir(cwd)
         .env("CLAUDE_PROJECT_DIR", cwd)
@@ -264,7 +267,7 @@ fn wait_up_to(child: &mut Child, limit: Duration) -> Option<std::process::ExitSt
 #[test]
 fn a_run_command_never_waits_for_the_stdin() {
     let tmp = tempfile::tempdir().unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+    let mut child = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
         .args(["run", "read", "state"])
         .arg("--root")
         .arg(tmp.path())

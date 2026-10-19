@@ -119,6 +119,12 @@ pub enum Refusal {
     /// A passagem para o plano de uma spec com lacunas do tipo de trabalho
     /// ainda sem ponto; a mensagem as nomeia no idioma de quem lê.
     SurveyGapsUnrecorded { spec: String, gaps: Vec<GapKey> },
+    /// A aprovação de uma spec sem tarefa nenhuma, ou o plano dela: não há o
+    /// que aprovar.
+    PlanWithoutTask { spec: String },
+    /// A aprovação de uma spec cujo último plano não passou, ou cujo plano
+    /// mudou depois do último que passou.
+    PlanNotPassed { spec: String },
     /// Um `point` novo no mesmo bloco e com a mesma lacuna de um ponto que já
     /// está aberto: o que existe volta no lugar do segundo.
     PointAlreadyOpen { code: String, block: String },
@@ -364,6 +370,8 @@ impl Refusal {
             Self::SurveyOpen { .. } => "survey-open",
             Self::SurveyNotStarted { .. } => "survey-not-started",
             Self::SurveyGapsUnrecorded { .. } => "survey-gaps-unrecorded",
+            Self::PlanWithoutTask { .. } => "plan-without-task",
+            Self::PlanNotPassed { .. } => "plan-not-passed",
             Self::PointAlreadyOpen { .. } => "point-already-open",
             Self::PointNotOpen { .. } => "point-not-open",
             Self::ClosingPointOpen => "closing-point-open",
@@ -578,6 +586,8 @@ impl Refusal {
                 &[("{spec}", spec.clone()), ("{count}", count.to_string()), ("{points}", points.clone())],
             ),
             Self::SurveyNotStarted { spec } => fill("spec_events.survey_not_started", &[("{spec}", spec.clone())]),
+            Self::PlanWithoutTask { spec } => fill("spec_events.plan_without_task", &[("{spec}", spec.clone())]),
+            Self::PlanNotPassed { spec } => fill("spec_events.plan_not_passed", &[("{spec}", spec.clone())]),
             Self::SurveyGapsUnrecorded { spec, gaps } => fill(
                 "spec_events.survey_gaps_unrecorded",
                 &[

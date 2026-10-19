@@ -11,6 +11,9 @@
 //! caminhos voltariam a depender um do outro em círculo. O teste lê o código
 //! dos arquivos, sem os comentários, e confere as importações.
 
+#[path = "support/binary.rs"]
+mod binary;
+
 #[path = "support/manifest_dir.rs"]
 mod manifest_dir;
 #[path = "support/mod.rs"]
@@ -52,16 +55,18 @@ fn the_search_answer_is_built_in_shared_without_command_and_hook_reaching_each_o
 #[test]
 fn shell_gateway_preserves_pipe_filters_cwd_conditions_and_exit_codes() {
     use std::io::Write;
-    use std::process::{Command,Stdio};
+    use std::process::Stdio;
     let dir=tempfile::tempdir().unwrap();let root=dir.path();
     std::fs::create_dir(root.join("src")).unwrap();
     std::fs::write(root.join("src/a.py"),"def quartz(): return 1\ndef zircon(): return 2\n").unwrap();
-    std::fs::write(root.join("mustard.json"),r#"{"ai":{"fallback":false,"vectors":false}}"#).unwrap();
+    // The rtk swap stays off: this test is about the search gateway, and the
+    // rtk the machine has would shorten a stream filter of its own accord.
+    std::fs::write(root.join("mustard.json"),r#"{"ai":{"fallback":false,"vectors":false},"rtk":false}"#).unwrap();
     let binary=std::path::Path::new(env!("CARGO_BIN_EXE_mustard-rt"));
     let search_path=format!("{}:{}",binary.parent().unwrap().display(),std::env::var("PATH").unwrap_or_default());
     for command in ["grep -En 'quartz|zircon' src/a.py | grep return", "cd src && grep quartz a.py | head -n 1", "grep missing src/a.py || grep zircon src/a.py", "false && grep quartz src/a.py", "cat src/a.py | grep quartz"] {
         let input=serde_json::json!({"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":root,"session_id":"shell-parity","tool_input":{"command":command}});
-        let mut hook=Command::new(binary).args(["on","PreToolUse"]).current_dir(root).env("CLAUDE_PROJECT_DIR",root)
+        let mut hook=binary::isolated(binary).args(["on","PreToolUse"]).current_dir(root).env("CLAUDE_PROJECT_DIR",root)
             .env("MUSTARD_RT_DELEGATED","1").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
         hook.stdin.take().unwrap().write_all(input.to_string().as_bytes()).unwrap();
         let output=hook.wait_with_output().unwrap();assert!(output.status.success());
@@ -70,7 +75,7 @@ fn shell_gateway_preserves_pipe_filters_cwd_conditions_and_exit_codes() {
         let rewritten=value["hookSpecificOutput"]["updatedInput"]["command"].as_str().unwrap_or(command).to_owned();
         if command.starts_with("cat") {assert_eq!(rewritten,command,"a stream filter is not a new file search");}
         else {assert!(rewritten.contains("mustard-rt run search"),"{rewritten}");}
-        let run=|script:&str|std::process::Command::new("sh").args(["-c",script]).current_dir(root)
+        let run=|script:&str|binary::isolated("sh").args(["-c",script]).current_dir(root)
             .env("PATH",&search_path).env("MUSTARD_RT_DELEGATED","1").output().unwrap();
         let original=run(command);let gateway=run(&rewritten);
         assert_eq!(gateway.status.code(),original.status.code(),"{rewritten}: {}",String::from_utf8_lossy(&gateway.stderr));
@@ -137,11 +142,11 @@ fn in_own_copy(copies: &WaveCopies, agent: Option<&str>, command: &str) -> (Opti
 #[cfg(unix)]
 fn ran_from(copies: &WaveCopies, cwd: &std::path::Path, agent: Option<&str>, command: &str) -> (Option<i32>, String, String) {
     use std::io::Write;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     let binary = std::path::Path::new(env!("CARGO_BIN_EXE_mustard-rt"));
     let input = serde_json::json!({"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":cwd,
         "session_id":"wave-session","agent_id":agent,"tool_input":{"command":command}});
-    let mut hook = Command::new(binary).args(["on", "PreToolUse"]).current_dir(cwd).env("CLAUDE_PROJECT_DIR", &copies.root)
+    let mut hook = binary::isolated(binary).args(["on", "PreToolUse"]).current_dir(cwd).env("CLAUDE_PROJECT_DIR", &copies.root)
         .env("MUSTARD_RT_DELEGATED", "1").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     hook.stdin.take().unwrap().write_all(input.to_string().as_bytes()).unwrap();
     let output = hook.wait_with_output().unwrap();
@@ -153,7 +158,7 @@ fn ran_from(copies: &WaveCopies, cwd: &std::path::Path, agent: Option<&str>, com
     // Só o comando que o gancho devolveu diz quem busca: nada vem do
     // ambiente de quem roda o teste.
     let path = format!("{}:{}", binary.parent().unwrap().display(), std::env::var("PATH").unwrap_or_default());
-    let out = Command::new("sh").args(["-c", &rewritten]).current_dir(cwd).env("PATH", path)
+    let out = binary::isolated("sh").args(["-c", &rewritten]).current_dir(cwd).env("PATH", path)
         .env("MUSTARD_RT_DELEGATED", "1").env_remove("MUSTARD_SESSION_ID").env_remove("MUSTARD_AGENT_ID").output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     let detail = format!("{rewritten}\n{stdout}{}", String::from_utf8_lossy(&out.stderr));
@@ -200,7 +205,7 @@ fn a_wave_agent_grep_from_the_main_checkout_runs_in_its_copy() {
 fn a_search_in_a_wave_copy_runs_for_a_caller_without_identity() {
     let copies = wave_copies();
     let binary = std::path::Path::new(env!("CARGO_BIN_EXE_mustard-rt"));
-    let tool = std::process::Command::new(binary)
+    let tool = binary::isolated(binary)
         .args(["run", "search", "--root"])
         .arg(&copies.own)
         .args(["--shell-output", "--intent", "Find quartz", "--purpose", "implement", "--", "grep", "-n", "quartz", "src/a.py"])
@@ -243,7 +248,6 @@ fn a_wave_agent_search_in_another_waves_copy_is_refused() {
 #[cfg(unix)]
 #[test]
 fn a_search_hitting_a_line_over_a_megabyte_answers_under_the_conversation_cap() {
-    use std::process::Command;
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
     std::fs::create_dir(root.join("assets")).unwrap();
@@ -263,7 +267,7 @@ fn a_search_hitting_a_line_over_a_megabyte_answers_under_the_conversation_cap() 
     let native = format!("assets/tokenizer.json:1:{tokenizer}\n{}", hits.concat());
     let binary = std::path::Path::new(env!("CARGO_BIN_EXE_mustard-rt"));
     let search = ["rg", "-n", "--sort", "path", "needle", "assets", "src"];
-    let out = Command::new(binary)
+    let out = binary::isolated(binary)
         .args(["run", "search", "--root"])
         .arg(&root)
         .arg("--shell-output")
@@ -306,7 +310,7 @@ fn a_search_hitting_a_line_over_a_megabyte_answers_under_the_conversation_cap() 
     let file = saved.path().join("whole.txt");
     let command = rest.strip_prefix("# Whole native result: ").unwrap().replace("<file>", &file.display().to_string());
     let path = format!("{}:{}", binary.parent().unwrap().display(), std::env::var("PATH").unwrap_or_default());
-    let rerun = Command::new("sh").args(["-c", &command]).env("PATH", path).env("MUSTARD_RT_DELEGATED", "1")
+    let rerun = binary::isolated("sh").args(["-c", &command]).env("PATH", path).env("MUSTARD_RT_DELEGATED", "1")
         .env_remove("MUSTARD_SESSION_ID").env_remove("MUSTARD_AGENT_ID").output().unwrap();
     assert_eq!(rerun.status.code(), Some(0), "{command}: {}", String::from_utf8_lossy(&rerun.stderr));
     assert!(std::fs::read(&file).unwrap() == native.as_bytes(), "{command}: the saved result is not the native search");

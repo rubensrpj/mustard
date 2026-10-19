@@ -18,7 +18,7 @@ use crate::domain::spec_events::{BlockQuery, SpecEvent, SpecLog};
 /// o número gravado já não aponta uma entrega que a leitura mostra.
 #[must_use]
 pub fn summary_of(log: &SpecLog, wave: u64) -> Option<&SpecEvent> {
-    let sent = log.last_by_wave("send").get(&wave).and_then(|id| log.get(*id)).and_then(|send| send.int("summary"));
+    let sent = log.last_by_wave("send").get(&wave).and_then(|id| log.send_field(*id, "summary")).and_then(serde_json::Value::as_u64);
     let formed = || log.block(BlockQuery::Wave(wave)).into_iter().find(|event| event.event_type == "wave").and_then(|event| event.int("summary"));
     sent.or_else(formed)
         .and_then(|id| log.current(id).or_else(|| log.live_summaries().into_iter().find(|(event, _)| event.id == id).map(|(event, _)| event)))

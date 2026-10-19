@@ -6,7 +6,7 @@
 //! variável `MUSTARD_ACTIVE_SPEC`, depois a branch do checkout, depois a spec
 //! ligada à sessão. Sem nenhuma, recusa.
 //!
-//! A saída é um JSON com um evento por linha, na ordem do arquivo:
+//! A saída é um JSON com um evento por linha:
 //!
 //! ```text
 //! {"ok":true,"spec":"teste","block":"wave-2","count":2,"events":[
@@ -14,6 +14,15 @@
 //! {"v":1,"id":20,…,"type":"task",…}
 //! ]}
 //! ```
+//!
+//! **Quem conduz lê com teto.** Um bloco sai do mais novo para o mais
+//! antigo — menos o `state`, que é o retrato de agora, e a `wave-<n>`, que é
+//! a história de uma onda e sai na ordem do arquivo. Sem `--all`, o bloco
+//! mostra só os [`BLOCK_CAP`] mais novos, e o campo `more` diz "N de M"; a
+//! `wave-list` mostra só as ondas abertas; e o `metrics` com um termo que não
+//! é código de item vira um resumo por tipo. Quem lê por necessidade — o
+//! agente com o pedido, a rodada, o fechamento, o painel — lê o pedido, o
+//! item, a onda ou o `--all`, nunca o bloco cortado.
 //!
 //! Uma linha do arquivo que não se entende entra em `warnings`, no idioma do
 //! projeto, e o resto é lido.
@@ -30,8 +39,9 @@
 //!
 //! `dispatch-<n>` também foge: não é um bloco, é tudo o que o pedido da onda
 //! `n` lista — os itens da spec, cada um com o código, e as lições do banco —,
-//! pela mesma conta que monta o pedido, numa leitura só. O `--term` filtra
-//! dentro disso.
+//! pela lista que o envio gravou, numa leitura só. `dispatch-review` faz o
+//! mesmo com o pedido mais novo do revisor final. O `--term` filtra dentro
+//! disso.
 //!
 //! Cinco leituras respondem o que antes saía de script escrito na hora, e
 //! nelas o `--term` não vale:
@@ -95,11 +105,11 @@
 //! **A leitura do pedido fica registrada.** Quem lê `item-<código>`,
 //! `item-<número>`, `lessons --term <número>` ou `dispatch-<n>` de dentro da
 //! cópia de um pedido aberto (a pasta atual é a vaga gravada no envio, ou
-//! uma pasta dentro dela) deixa uma chamada `read` por item achado, com o
-//! pedido e o item (`read_record`). A leitura de outra pasta, e a que não
-//! acha nada, não grava nada. É dessas chamadas que a entrega da onda e o
-//! veredito da revisão final conferem que o agente leu tudo o que o pedido
-//! lista.
+//! uma pasta dentro dela) deixa um recibo: uma chamada `read` com o pedido e
+//! todos os itens achados, numa gravação só (`read_record`). A leitura de
+//! outra pasta, e a que não acha nada, não grava nada. É desses recibos que a
+//! entrega da onda e o veredito da revisão final conferem que o agente leu
+//! tudo o que o pedido lista.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -131,18 +141,48 @@ pub struct ReadOpts {
     pub term: Option<String>,
 }
 
-/// O núcleo testável de [`run`]: a saída pronta, ou a recusa. A sessão vem
-/// do ambiente, e a pasta de onde se lê, da pasta atual. Nunca entra em
-/// pânico.
+/// Quantos eventos um bloco mostra a quem conduz, sem `--all`: os mais
+/// novos. Um bloco inteiro chegava a 4,6 MB e era lido em pedaços; trinta
+/// eventos cabem numa leitura, e a linha "N de M" diz que há mais.
+pub(crate) const BLOCK_CAP: usize = 30;
+
+/// Quantos códigos cada linha do resumo da busca no painel traz.
+const SUMMARY_CODES: usize = 5;
+
+/// Até onde a leitura vai.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Reach {
+    /// Tudo: o `--all` e quem lê por dentro do programa.
+    All,
+    /// A leitura de quem conduz: o bloco até [`BLOCK_CAP`], a lista das
+    /// ondas só com as abertas e a busca com termo no painel em resumo.
+    Capped,
+}
+
+/// O núcleo testável de [`run`] com `--all`: a saída inteira, ou a recusa. A
+/// sessão vem do ambiente, e a pasta de onde se lê, da pasta atual. Nunca
+/// entra em pânico.
 pub(crate) fn read_at(opts: &ReadOpts) -> Result<String, Value> {
     let from = std::env::current_dir().unwrap_or_else(|_| opts.root.clone());
     read_for(opts, session_from_env().as_deref(), &from)
+}
+
+/// [`read_at`] com o teto de quem conduz ([`Reach::Capped`]): é a leitura de
+/// [`run`] sem `--all`.
+fn read_capped(opts: &ReadOpts) -> Result<String, Value> {
+    let from = std::env::current_dir().unwrap_or_else(|_| opts.root.clone());
+    read_reach(opts, session_from_env().as_deref(), &from, Reach::Capped)
 }
 
 /// [`read_at`] com a sessão e a pasta recebidas, que é como um teste as
 /// escolhe. A pasta `from` diz de qual pedido é a leitura: dentro da cópia de
 /// um pedido aberto, o que a leitura acha fica registrado como lido.
 pub(crate) fn read_for(opts: &ReadOpts, session: Option<&str>, from: &Path) -> Result<String, Value> {
+    read_reach(opts, session, from, Reach::All)
+}
+
+/// [`read_for`] até onde `reach` diz.
+fn read_reach(opts: &ReadOpts, session: Option<&str>, from: &Path, reach: Reach) -> Result<String, Value> {
     let started = Instant::now();
     let project = super::project(&opts.root);
     let lang = project.lang;
@@ -156,7 +196,7 @@ pub(crate) fn read_for(opts: &ReadOpts, session: Option<&str>, from: &Path) -> R
         {
             let read: Vec<String> = found.iter().map(|id| format!("lesson-{id}")).collect();
             let request = read_record::request_of(&log, from);
-            note_reading(&project.root, &spec, session, request.as_ref(), None, &read, started);
+            note_reading(&project.root, &spec, request.as_ref(), None, &read, started);
         }
         return Ok(report);
     }
@@ -180,16 +220,30 @@ pub(crate) fn read_for(opts: &ReadOpts, session: Option<&str>, from: &Path) -> R
     // que ele se restringe: o `dispatch-<n>` só conta na cópia da onda `n`.
     let mut read: Vec<String> = Vec::new();
     let mut only_wave: Option<u64> = None;
+    // A linha que diz o que a leitura de quem conduz deixou de fora.
+    let mut more: Option<String> = None;
     let events: Vec<String> = match reading {
-        ReadQuery::Request(wave) => return Ok(request_text(&log, wave)),
-        ReadQuery::ReviewRequest => return Ok(review_request_text(&log)),
+        ReadQuery::Request(wave) => return request_text(&log, wave).ok_or_else(|| no_request(Some(wave), lang)),
+        ReadQuery::ReviewRequest => return review_request_text(&log).ok_or_else(|| no_request(None, lang)),
         ReadQuery::ReviewPreview => return Ok(final_review(&project.root, &spec, &log, lang).text),
+        ReadQuery::ReviewDispatch => {
+            let listed = review_listed(&log).ok_or_else(|| no_request(None, lang))?;
+            let (lines, found) = listed_lines(&project.root, &log, &listed, term, &codes, &project.languages, item_view, lang);
+            // De dentro da cópia do revisor, a leitura sai em texto e grava
+            // um recibo só; a cópia de uma onda não lê o pedido do revisor.
+            if item_view == Shown::Agent {
+                let review = request.as_ref().filter(|request| request.wave.is_none());
+                note_reading(&project.root, &spec, review, None, &found, started);
+                return Ok(lines.join("\n\n"));
+            }
+            lines
+        }
         ReadQuery::Dispatch(wave) => {
             let (lines, listed) = dispatch_lines(&project.root, &log, wave, term, &codes, &project.languages, item_view, lang);
             // De dentro da cópia, a leitura da onda sai em texto, um bloco por
             // item.
             if item_view == Shown::Agent {
-                note_reading(&project.root, &spec, session, request.as_ref(), Some(wave), &listed, started);
+                note_reading(&project.root, &spec, request.as_ref(), Some(wave), &listed, started);
                 return Ok(lines.join("\n\n"));
             }
             read = listed;
@@ -201,14 +255,21 @@ pub(crate) fn read_for(opts: &ReadOpts, session: Option<&str>, from: &Path) -> R
             read.extend(found.map(|event| codes.get(&event.id).cloned().unwrap_or_else(|| event.id.to_string())));
             found.map(|event| item_line(&log, event, &codes, item_view)).into_iter().collect()
         }
-        ReadQuery::WaveList => wave_list_lines(&log, &codes),
+        ReadQuery::WaveList => {
+            let (lines, total) = wave_list_lines(&log, &codes, reach == Reach::Capped);
+            if lines.len() < total {
+                let shown = lines.len().to_string();
+                more = Some(translate("spec_events.read_open_waves", lang).replace("{shown}", &shown).replace("{total}", &total.to_string()));
+            }
+            lines
+        }
         ReadQuery::Delivered(wave) => delivered_lines(&log, wave, &codes),
         ReadQuery::Backlog => {
             let (lines, total) = backlog_lines(&log, &codes);
             extra.push(("total", total));
             lines
         }
-        ReadQuery::Calls => calls_lines(&log, term),
+        ReadQuery::Calls => calls_lines(&super::conversation::observed(&project.root, &spec, &log), term),
         ReadQuery::Block(query) => {
             if query == BlockQuery::Block(Block::State)
                 && let Some(id) = last_user_message(&log)
@@ -229,7 +290,46 @@ pub(crate) fn read_for(opts: &ReadOpts, session: Option<&str>, from: &Path) -> R
             }
             let found = found_by(log.block(query), term, &codes, &project.languages);
             let found = if query == BlockQuery::Block(Block::State) { latest_copies(found) } else { found };
-            found.into_iter().map(|e| shown_with_code(e, &codes, shown)).collect()
+            let mut found: Vec<(&SpecEvent, &BTreeMap<u64, String>)> = found.into_iter().map(|e| (e, &codes)).collect();
+            // O painel junta o que o programa observou de si e mora no arquivo
+            // de operações, cada evento com o código que ele tem lá, na ordem
+            // da hora com os da spec.
+            let operations = if query == BlockQuery::Block(Block::Metrics) {
+                super::conversation::recorded_operations(&project.root, &spec)
+            } else {
+                SpecLog::default()
+            };
+            let operation_codes = operations.codes();
+            let observed = found_by(operations.block(query), term, &operation_codes, &project.languages);
+            if !observed.is_empty() {
+                found.extend(observed.into_iter().map(|e| (e, &operation_codes)));
+                found.sort_by_key(|(e, _)| super::conversation::time_of(e));
+            }
+            // O bloco sai do mais novo para o mais antigo; o estado, que já é
+            // o retrato de agora, e a onda, que é a história dela, ficam na
+            // ordem do arquivo.
+            let newest_first = matches!(query, BlockQuery::Block(block) if block != Block::State);
+            if newest_first {
+                found.reverse();
+            }
+            let a_code = |codes: &BTreeMap<u64, String>| codes.values().any(|code| code.eq_ignore_ascii_case(term.trim()));
+            let summary = reach == Reach::Capped
+                && query == BlockQuery::Block(Block::Metrics)
+                && !term.trim().is_empty()
+                && !found.is_empty()
+                && !a_code(&codes)
+                && !a_code(&operation_codes);
+            if summary {
+                more = Some(translate("spec_events.read_summary", lang).to_string());
+                metrics_summary(&found)
+            } else {
+                if reach == Reach::Capped && newest_first && found.len() > BLOCK_CAP {
+                    let total = found.len().to_string();
+                    more = Some(translate("spec_events.read_more", lang).replace("{shown}", &BLOCK_CAP.to_string()).replace("{total}", &total));
+                    found.truncate(BLOCK_CAP);
+                }
+                found.into_iter().map(|(e, codes)| shown_with_code(&log, e, codes, shown)).collect()
+            }
         }
     };
     let events = events
@@ -241,9 +341,51 @@ pub(crate) fn read_for(opts: &ReadOpts, session: Option<&str>, from: &Path) -> R
             if crate::shared::evidence::revalidate(&project.root, &mut value) { value.to_string() } else { line }
         })
         .collect::<Vec<_>>();
-    note_reading(&project.root, &spec, session, request.as_ref(), only_wave, &read, started);
+    note_reading(&project.root, &spec, request.as_ref(), only_wave, &read, started);
     let warnings: Vec<String> = log.skipped.iter().map(|s| s.message(lang)).collect();
-    Ok(render(&spec, block, &events, &extra, &warnings))
+    Ok(render(&spec, block, more.as_deref(), &events, &extra, &warnings))
+}
+
+/// A recusa da leitura de um pedido que nunca saiu: o da onda `wave` ou, sem
+/// onda, o do revisor final. Responder um texto vazio passaria por pedido.
+fn no_request(wave: Option<u64>, lang: Locale) -> Value {
+    let hint = match wave {
+        Some(wave) => translate("spec_events.no_wave_request", lang).replace("{wave}", &wave.to_string()),
+        None => translate("spec_events.no_review_request", lang).to_string(),
+    };
+    json!({ "ok": false, "reason": "no-request", "hint": hint })
+}
+
+/// Um evento com os códigos da fonte dele: a spec ou o arquivo de operações.
+type Coded<'a> = (&'a SpecEvent, &'a BTreeMap<u64, String>);
+
+/// A busca com termo no painel, resumida: uma linha por tipo, na ordem em
+/// que `found` vem (do mais novo), com quantos o termo achou, a hora do mais
+/// antigo (`from`) e do mais novo (`to`) e os códigos dos mais novos, que se
+/// leem por `item-<código>`.
+fn metrics_summary(found: &[Coded<'_>]) -> Vec<String> {
+    let mut by_type: Vec<(&str, Vec<Coded<'_>>)> = Vec::new();
+    for &(event, codes) in found {
+        let kind = event.event_type.as_str();
+        match by_type.iter_mut().find(|(seen, _)| *seen == kind) {
+            Some((_, list)) => list.push((event, codes)),
+            None => by_type.push((kind, vec![(event, codes)])),
+        }
+    }
+    by_type
+        .into_iter()
+        .map(|(kind, list)| {
+            let mut line = Map::new();
+            line.insert("type".into(), json!(kind));
+            line.insert("count".into(), json!(list.len()));
+            line.insert("from".into(), json!(list.last().map(|(event, _)| event.at())));
+            line.insert("to".into(), json!(list.first().map(|(event, _)| event.at())));
+            let newest: Vec<String> =
+                list.iter().take(SUMMARY_CODES).map(|(event, codes)| codes.get(&event.id).cloned().unwrap_or_else(|| event.id.to_string())).collect();
+            line.insert("newest".into(), json!(newest));
+            shown_line(&line)
+        })
+        .collect()
 }
 
 /// A busca por texto num bloco de conteúdo: a mesma procura do `run find`,
@@ -265,18 +407,25 @@ fn text_search(log: &SpecLog, codes: &BTreeMap<u64, String>, query: BlockQuery, 
     Some(super::find::found_text(log, codes, pool, &asked, &move |spec, payload| super::find::ask_jev(&root, spec, payload)))
 }
 
-/// Do estado, só a cópia mais nova de cada página: cada rodada grava uma
-/// cópia nova, e a anterior fica sem leitor, porque a seguinte parte da
-/// última. Sem esse corte, o estado de uma spec longa trazia centenas de
-/// cópias, mais de cem mil letras, para quem só queria a fase e a branch. Os
-/// outros eventos do estado seguem todos, na ordem do arquivo.
+/// Os tipos do estado de que só o mais novo de cada página vale: a cópia
+/// para o banco e a publicação.
+const ONE_PER_PAGE: &[&str] = &["copy", "publish"];
+
+/// Do estado, só a cópia e a publicação mais novas de cada página: cada
+/// rodada grava uma cópia nova, cada marco publica de novo, e a anterior fica
+/// sem leitor, porque a seguinte parte da última. Sem esse corte, o estado de
+/// uma spec longa trazia centenas de cópias, mais de cem mil letras, para
+/// quem só queria a fase e a branch. Os outros eventos do estado seguem
+/// todos, na ordem do arquivo.
 fn latest_copies(events: Vec<&SpecEvent>) -> Vec<&SpecEvent> {
-    let mut newest: BTreeMap<Option<&str>, u64> = BTreeMap::new();
-    for event in events.iter().filter(|event| event.event_type == "copy") {
-        let id = newest.entry(event.str_field("page")).or_insert(event.id);
+    let per_page = |event: &SpecEvent| ONE_PER_PAGE.contains(&event.event_type.as_str());
+    let mut newest: BTreeMap<(String, Option<String>), u64> = BTreeMap::new();
+    let key = |event: &SpecEvent| (event.event_type.clone(), event.str_field("page").map(str::to_string));
+    for event in events.iter().filter(|event| per_page(event)) {
+        let id = newest.entry(key(event)).or_insert(event.id);
         *id = (*id).max(event.id);
     }
-    events.into_iter().filter(|event| event.event_type != "copy" || newest.get(&event.str_field("page")) == Some(&event.id)).collect()
+    events.into_iter().filter(|event| !per_page(event) || newest.get(&key(event)) == Some(&event.id)).collect()
 }
 
 /// A spec da leitura e o arquivo dela, sem recusar: a leitura das lições não
@@ -292,10 +441,10 @@ fn quiet_spec(opts: &ReadOpts, session: Option<&str>, root: &Path) -> Option<(St
 }
 
 /// Registra o que a leitura achou como lido, quando ela veio da cópia de um
-/// pedido aberto da spec (`request`, de `read_record::request_of`): uma
-/// chamada por item. Com `only_wave`, só vale na cópia dessa onda. Sem item
+/// pedido aberto da spec (`request`, de `read_record::request_of`): um recibo
+/// com todos os itens. Com `only_wave`, só vale na cópia dessa onda. Sem item
 /// achado, ou fora de uma cópia de pedido, nada é gravado.
-fn note_reading(root: &Path, spec: &str, session: Option<&str>, request: Option<&Request>, only_wave: Option<u64>, read: &[String], started: Instant) {
+fn note_reading(root: &Path, spec: &str, request: Option<&Request>, only_wave: Option<u64>, read: &[String], started: Instant) {
     if read.is_empty() {
         return;
     }
@@ -303,22 +452,22 @@ fn note_reading(root: &Path, spec: &str, session: Option<&str>, request: Option<
     if only_wave.is_some_and(|wanted| request.wave != Some(wanted)) {
         return;
     }
-    read_record::record(root, spec, session, request, read, started);
+    read_record::record(root, spec, request, read, started);
 }
 
 /// O pedido gravado no último envio da onda `wave`, igual byte a byte, em
-/// texto puro. A onda sem envio não tem pedido: o texto vem vazio.
-fn request_text(log: &SpecLog, wave: u64) -> String {
-    let sent = log.last_by_wave("send").get(&wave).and_then(|id| log.get(*id));
-    sent.and_then(|send| send.str_field("text")).unwrap_or_default().to_string()
+/// texto puro. A onda sem envio não tem pedido: `None`.
+fn request_text(log: &SpecLog, wave: u64) -> Option<String> {
+    let sent = log.last_by_wave("send").get(&wave).copied()?;
+    log.send_text(sent).map(str::to_string)
 }
 
 /// O pedido gravado no último envio do revisor final, igual byte a byte, em
 /// texto puro. O envio dele não tem onda, então `request-<n>` não o alcança.
-/// Sem envio de revisão na spec, o texto vem vazio.
-fn review_request_text(log: &SpecLog) -> String {
-    let sent = log.visible().into_iter().filter(|event| event.event_type == "send" && event.str_field("role") == Some("review")).max_by_key(|event| event.id);
-    sent.and_then(|send| send.str_field("text")).unwrap_or_default().to_string()
+/// Sem envio de revisão na spec, `None`.
+fn review_request_text(log: &SpecLog) -> Option<String> {
+    let sent = log.visible().into_iter().filter(|event| event.event_type == "send" && event.str_field("role") == Some("review")).max_by_key(|event| event.id)?;
+    log.send_text(sent.id).map(str::to_string)
 }
 
 /// O número da última mensagem do usuário que a leitura mostra, sem o texto:
@@ -353,7 +502,7 @@ fn find_item<'a>(log: &'a SpecLog, target: &EventRef, codes: &BTreeMap<u64, Stri
 /// de um pedido ([`Shown::Agent`]).
 fn item_line(log: &SpecLog, event: &SpecEvent, codes: &BTreeMap<u64, String>, shown: Shown) -> String {
     let hidden = log.hidden();
-    let mut fields = event.fields.clone();
+    let mut fields = log.whole_fields(event);
     if let Some(code) = codes.get(&event.id) {
         fields.insert("code".into(), json!(code));
     }
@@ -367,7 +516,7 @@ fn item_line(log: &SpecLog, event: &SpecEvent, codes: &BTreeMap<u64, String>, sh
         _ => {}
     }
     let previous = event.replaced().first().and_then(|old| log.get(*old));
-    if let Some(changed) = previous.map(|old| changed_fields(&old.fields, &event.fields)).filter(|c| !c.is_empty()) {
+    if let Some(changed) = previous.map(|old| changed_fields(&log.whole_fields(old), &log.whole_fields(event))).filter(|c| !c.is_empty()) {
         fields.insert("changed".into(), Value::Object(changed));
     }
     if shown == Shown::Agent {
@@ -385,7 +534,7 @@ const NOT_COMPARED: &[&str] = &["v", "id", "code", "at", "type", "search", "repl
 /// número, uma marca ou um campo que surgiu ou sumiu diz de quanto para
 /// quanto (`from`, `to`); um texto ou um objeto só diz que mudou (`true`),
 /// porque as duas versões se leem pelo número.
-fn changed_fields(old: &Map<String, Value>, new: &Map<String, Value>) -> Map<String, Value> {
+pub(crate) fn changed_fields(old: &Map<String, Value>, new: &Map<String, Value>) -> Map<String, Value> {
     let keys: BTreeSet<&str> = old.keys().chain(new.keys()).map(String::as_str).filter(|key| !NOT_COMPARED.contains(key)).collect();
     let mut changed = Map::new();
     for key in keys {
@@ -457,11 +606,18 @@ fn delivered_lines(log: &SpecLog, wave: u64, codes: &BTreeMap<u64, String>) -> V
 /// As ondas que a leitura mostra, uma linha curta por onda, na ordem do
 /// número: a versão vigente, o código, o número, a primeira linha não vazia
 /// do texto e as ondas de que ela depende, vazia quando não depende de
-/// nenhuma. A onda removida ou substituída fica de fora, como no bloco.
-fn wave_list_lines(log: &SpecLog, codes: &BTreeMap<u64, String>) -> Vec<String> {
+/// nenhuma. A onda removida ou substituída fica de fora, como no bloco. Com
+/// `open_only`, fica de fora também a onda que terminou. Devolve as linhas e
+/// quantas ondas a lista teria sem esse corte.
+fn wave_list_lines(log: &SpecLog, codes: &BTreeMap<u64, String>, open_only: bool) -> (Vec<String>, usize) {
     let mut waves: Vec<&SpecEvent> = log.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|e| e.event_type == "wave").collect();
     waves.sort_by_key(|wave| (wave.wave(), wave.id));
-    waves
+    let total = waves.len();
+    if open_only {
+        let states = crate::commands::flow::round::wave_states(log);
+        waves.retain(|wave| !wave.wave().and_then(|n| states.get(&n)).is_some_and(|state| state.finished()));
+    }
+    let lines = waves
         .into_iter()
         .map(|wave| {
             let text = wave.str_field("text").unwrap_or_default();
@@ -476,7 +632,8 @@ fn wave_list_lines(log: &SpecLog, codes: &BTreeMap<u64, String>) -> Vec<String> 
             line.insert("depends_on".into(), json!(wave.ints("depends_on")));
             shown_line(&line)
         })
-        .collect()
+        .collect();
+    (lines, total)
 }
 
 /// As tarefas ainda por entregar, uma linha por tarefa na ordem do código:
@@ -561,7 +718,13 @@ fn render_value(report: &Value) -> String {
         match value.as_array().filter(|_| key == "events") {
             Some(events) => {
                 let lines: Vec<String> = events.iter().map(Value::to_string).collect();
-                out.push_str(&if lines.is_empty() { "[]".to_string() } else { format!("[\n{}\n]", lines.join(",\n")) });
+                if lines.is_empty() {
+                    out.push_str("[]");
+                } else {
+                    out.push_str("[\n");
+                    out.push_str(&lines.join(",\n"));
+                    out.push_str("\n]");
+                }
             }
             None => out.push_str(&value.to_string()),
         }
@@ -576,12 +739,14 @@ fn render_value(report: &Value) -> String {
 /// pelo banco, pelo filtro e o motivo (`jev:busy`); a mediana, o p90 e o pior
 /// do tempo da chamada (`ms`) e do tempo do filtro (`filter_ms`); e os tokens
 /// e o custo, somados. Os campos que nenhuma chamada do comando traz ficam de
-/// fora. Com `term`, só o comando que tem esse nome.
-fn calls_lines(log: &SpecLog, term: &str) -> Vec<String> {
+/// fora. Com `term`, só o comando que tem esse nome. As chamadas são as que
+/// o programa observou ([`observed`](super::conversation::observed)): as da
+/// spec antiga e as do arquivo de operações, sem os recibos de leitura.
+fn calls_lines(observed: &[SpecEvent], term: &str) -> Vec<String> {
     let term = term.trim();
     let mut by_command: BTreeMap<&str, Vec<&SpecEvent>> = BTreeMap::new();
-    for call in log.block(BlockQuery::Block(Block::Metrics)) {
-        if call.event_type == "call" && !call.fields.contains_key("request") && (term.is_empty() || calls_command(call, term)) {
+    for call in observed {
+        if call.event_type == "call" && (term.is_empty() || calls_command(call, term)) {
             by_command.entry(call.str_field("command").unwrap_or_default().trim()).or_default().push(call);
         }
     }
@@ -652,6 +817,14 @@ fn dispatch_lines(
     if !log.planned_waves().contains(&wave) {
         return (Vec::new(), Vec::new());
     }
+    // O envio guarda a lista que o pedido imprimiu: o lote é ela, e nunca uma
+    // segunda conta que acharia a onda ou um item que o pedido não listou. O
+    // envio sem a lista, de antes dela, cai na conta da montagem.
+    let sent = log.last_by_wave("send").get(&wave).copied();
+    if let Some(listed) = sent.and_then(|sent| log.send_field(sent, "read_items")).and_then(Value::as_array) {
+        let listed: Vec<String> = listed.iter().filter_map(Value::as_str).map(str::to_string).collect();
+        return listed_lines(root, log, &listed, term, codes, languages, shown, lang);
+    }
     let bank = lesson_bank(root);
     let found = request_items(log, bank.as_ref(), wave, None, languages);
     let items = found_by(found.items, term, codes, languages);
@@ -665,7 +838,64 @@ fn dispatch_lines(
         .collect();
     // De dentro da cópia, cada item é um bloco de texto ([`agent_block`]).
     let agent = shown == Shown::Agent;
-    let mut lines: Vec<String> = items.into_iter().map(|e| if agent { agent_block(e, codes, lang) } else { shown_with_code(e, codes, shown) }).collect();
+    let mut lines: Vec<String> = items.into_iter().map(|e| if agent { agent_block(e, codes, lang) } else { shown_with_code(log, e, codes, shown) }).collect();
+    lines.extend(lessons.into_iter().map(|lesson| if agent { lesson_block(lesson, lang) } else { shown_line(&lesson.fields) }));
+    (lines, read)
+}
+
+/// A lista que o pedido mais novo do revisor final gravou (`read_items`).
+/// `None` sem pedido do revisor; o pedido sem a lista, de antes dela, lista
+/// nada.
+fn review_listed(log: &SpecLog) -> Option<Vec<String>> {
+    let sent = log.visible().into_iter().filter(|event| event.event_type == "send" && event.str_field("role") == Some("review")).max_by_key(|event| event.id)?;
+    let listed = log.send_field(sent.id, "read_items").and_then(Value::as_array).into_iter().flatten();
+    Some(listed.filter_map(Value::as_str).map(str::to_string).collect())
+}
+
+/// Os itens da lista `listed` que um pedido gravou, na ordem dela: cada código
+/// na versão vigente, como `item-<código>` a mostra, e cada `lesson-<número>`
+/// pela lição do banco do projeto `root`. O `term` filtra como no
+/// [`dispatch_lines`]. Devolve as linhas e o que cada uma é, para o recibo.
+#[allow(clippy::too_many_arguments)]
+fn listed_lines(
+    root: &Path,
+    log: &SpecLog,
+    listed: &[String],
+    term: &str,
+    codes: &BTreeMap<u64, String>,
+    languages: &Languages,
+    shown: Shown,
+    lang: Locale,
+) -> (Vec<String>, Vec<String>) {
+    // O código de cada item, uma vez só: a versão vigente, ou a última
+    // quando todas saíram, como a leitura de um item escolhe.
+    let hidden = log.hidden();
+    let mut by_code: BTreeMap<&str, &SpecEvent> = BTreeMap::new();
+    for event in &log.events {
+        let Some(code) = codes.get(&event.id) else { continue };
+        let keep = by_code.get(code.as_str()).is_none_or(|had| !hidden.contains_key(&event.id) || hidden.contains_key(&had.id));
+        if keep {
+            by_code.insert(code, event);
+        }
+    }
+    let bank = listed.iter().any(|code| code.starts_with("lesson-")).then(|| lesson_bank(root)).flatten();
+    let mut items: Vec<&SpecEvent> = Vec::new();
+    let mut lessons: Vec<&SpecEvent> = Vec::new();
+    for code in listed {
+        match code.strip_prefix("lesson-").and_then(|n| n.parse::<u64>().ok()) {
+            Some(n) => lessons.extend(bank.as_ref().and_then(|bank| bank.get(n))),
+            None => items.extend(by_code.get(code.as_str()).copied()),
+        }
+    }
+    let items = found_by(items, term, codes, languages);
+    let lessons = found_by(lessons, term, &BTreeMap::new(), languages);
+    let read: Vec<String> = items
+        .iter()
+        .map(|item| codes.get(&item.id).cloned().unwrap_or_else(|| item.id.to_string()))
+        .chain(lessons.iter().map(|lesson| format!("lesson-{}", lesson.id)))
+        .collect();
+    let agent = shown == Shown::Agent;
+    let mut lines: Vec<String> = items.into_iter().map(|e| if agent { agent_block(e, codes, lang) } else { shown_with_code(log, e, codes, shown) }).collect();
     lines.extend(lessons.into_iter().map(|lesson| if agent { lesson_block(lesson, lang) } else { shown_line(&lesson.fields) }));
     (lines, read)
 }
@@ -759,7 +989,7 @@ fn read_lessons(root: &Path, spec: Option<&str>, term: Option<&str>, lang: Local
     let found: Vec<_> = kept(&bank).into_iter().filter(|lesson| wanted.is_some_and(|id| lesson.id == id)).collect();
     let events: Vec<String> = found.iter().map(|lesson| shown_line(&lesson.fields)).collect();
     let numbers = found.iter().map(|lesson| lesson.id).collect();
-    Ok((render(spec.unwrap_or_default(), "lessons", &events, &[], &[]), numbers))
+    Ok((render(spec.unwrap_or_default(), "lessons", None, &events, &[], &[]), numbers))
 }
 
 /// A linha como a leitura mostra, com o código do item (`MSTD-<sigla>-<NNNN>`),
@@ -767,8 +997,8 @@ fn read_lessons(root: &Path, spec: Option<&str>, term: Option<&str>, lang: Local
 /// ou, numa linha sem código, o que a leitura dá a ela. `shown` diz o que sai
 /// dela: o envio sem o pedido (`text`) na lista das ondas e no painel, e no
 /// painel sem termo também a injeção e a entrega sem o `text`.
-fn shown_with_code(event: &SpecEvent, codes: &BTreeMap<u64, String>, shown: Shown) -> String {
-    let mut fields = event.fields.clone();
+fn shown_with_code(log: &SpecLog, event: &SpecEvent, codes: &BTreeMap<u64, String>, shown: Shown) -> String {
+    let mut fields = log.whole_fields(event);
     if let Some(code) = codes.get(&event.id) {
         fields.insert("code".into(), Value::String(code.clone()));
     }
@@ -824,10 +1054,17 @@ fn without_agent_omissions(fields: &mut Map<String, Value>, event_type: &str) {
     }
 }
 
-/// A saída de uma leitura: o envelope, um evento por linha, depois os campos
-/// de `extra` que a leitura dá além dos eventos, e os avisos por último.
-fn render(spec: &str, block: &str, events: &[String], extra: &[(&str, Value)], warnings: &[String]) -> String {
-    let mut out = format!("{{\"ok\":true,\"spec\":{},\"block\":{},\"count\":{},\"events\":[", json!(spec), json!(block), events.len());
+/// A saída de uma leitura: o envelope, com `more` antes dos eventos quando a
+/// leitura deixou algo de fora, um evento por linha, depois os campos de
+/// `extra` que a leitura dá além dos eventos, e os avisos por último.
+fn render(spec: &str, block: &str, more: Option<&str>, events: &[String], extra: &[(&str, Value)], warnings: &[String]) -> String {
+    let mut out = format!("{{\"ok\":true,\"spec\":{},\"block\":{},\"count\":{},", json!(spec), json!(block), events.len());
+    if let Some(more) = more {
+        out.push_str("\"more\":");
+        out.push_str(&json!(more).to_string());
+        out.push(',');
+    }
+    out.push_str("\"events\":[");
     for (i, event) in events.iter().enumerate() {
         out.push_str(if i == 0 { "\n" } else { ",\n" });
         out.push_str(event);
@@ -871,10 +1108,13 @@ pub(crate) fn read_by_command(command: &str) -> String {
 /// Run `read` and print the block; exit 1 on a refusal. The recorded request
 /// of a wave, or of the final review, and the final review request the close
 /// would build now print byte for byte, with no newline added. The backlog
-/// prints its short answer unless `full` asks for the whole one.
-pub fn run(opts: &ReadOpts, full: bool) {
+/// prints its short answer unless `full` asks for the whole one. Without
+/// `all`, a block shows its newest [`BLOCK_CAP`] events, the wave list only
+/// the open waves and a metrics search a summary by type.
+pub fn run(opts: &ReadOpts, full: bool, all: bool) {
     let started = std::time::Instant::now();
-    let result = read_at(opts).map(|text| shortened(&opts.block, text, full));
+    let read = if all { read_at(opts) } else { read_capped(opts) };
+    let result = read.map(|text| shortened(&opts.block, text, full));
     // Reads from a dispatched request already record each required item.
     // Keep those receipts separate from the CLI invocation's own measure.
     let report = match &result {
@@ -1439,7 +1679,7 @@ mod tests {
         by_program(root, "call", body)
     }
 
-    /// O nome do comando acha as chamadas dele, na ordem do arquivo, sem olhar
+    /// O nome do comando acha as chamadas dele, da mais nova à mais antiga, sem olhar
     /// maiúsculas nem espaços de sobra; a busca por nota, que acharia a
     /// entrega que cita a busca, não entra, e a chamada de outro comando fica
     /// de fora.
@@ -1454,8 +1694,8 @@ mod tests {
 
         let ids =
             |block: &str, term: &str| -> Vec<Value> { events(&read_at(&opts(root, block, Some(term))).unwrap()).iter().map(|e| e["id"].clone()).collect() };
-        assert_eq!(ids("metrics", "map search"), [json!(first), json!(second)]);
-        assert_eq!(ids("conversation", " Map  Search "), [json!(first), json!(second)]);
+        assert_eq!(ids("metrics", "map search"), [json!(second), json!(first)]);
+        assert_eq!(ids("conversation", " Map  Search "), [json!(second), json!(first)]);
         assert_eq!(ids("metrics", "pronta").len(), 1, "a word that names no command still searches by score");
     }
 
@@ -1564,17 +1804,19 @@ mod tests {
         (copy, sent)
     }
 
-    /// As leituras registradas, na ordem do arquivo: o pedido e o item de
-    /// cada chamada `read`.
+    /// As leituras registradas, na ordem do arquivo: o pedido e cada item dos
+    /// recibos `read`.
     fn recorded_reads(root: &std::path::Path) -> Vec<(String, String)> {
         let path = store::spec_file(root, "teste").expect("spec file");
         let log = store::read(&path).unwrap().unwrap();
         log.visible()
             .into_iter()
             .filter(|e| e.event_type == "call" && e.str_field("command") == Some("read"))
-            .map(|e| {
+            .flat_map(|e| {
                 assert_eq!(e.str_field("author"), Some("binary"));
-                (e.str_field("request").unwrap_or_default().to_string(), e.str_field("item").unwrap_or_default().to_string())
+                let request = e.str_field("request").unwrap_or_default().to_string();
+                let items: Vec<String> = e.fields["items"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
+                items.into_iter().map(move |item| (request.clone(), item))
             })
             .collect()
     }
@@ -1600,6 +1842,21 @@ mod tests {
         read_from(root, &copy.parent().unwrap().join("outra"), "item-MSTD-RULE-0001", None);
         read_from(root, &copy, "item-MSTD-RULE-0099", None);
         assert_eq!(recorded_reads(root).len(), 2, "outra pasta e código que não existe não gravam");
+    }
+
+    /// A onda cuja tarefa ganhou versão nova depois do envio segue com o
+    /// agente na cópia dela: a leitura de dentro da vaga ainda grava o recibo
+    /// do pedido, que a entrega confere.
+    #[test]
+    fn an_item_read_from_the_copy_of_a_replanned_wave_is_still_recorded() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (copy, _) = open_request(root);
+        put(root, "task", json!({"wave": 1, "text": "Fazer de outro jeito.", "files": [{"path": "a.rs"}], "depends_on": [], "replaces": "MSTD-TASK-0001", "origin": 1}));
+        let log = store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap();
+        assert!(crate::commands::flow::round::queue::open_sends(&log).is_empty(), "the wave was replanned after the send");
+        read_from(root, &copy, "item-MSTD-RULE-0001", None);
+        assert_eq!(recorded_reads(root), [("request-1".into(), "MSTD-RULE-0001".into())]);
     }
 
     /// Pelo número, o item grava o código dele; a lição grava
@@ -1646,6 +1903,105 @@ mod tests {
         put(root, "wave", json!({"n": 2, "text": "Dois.", "criteria": [c2], "done_when": "y", "origin": 1}));
         read_from(root, &copy, "dispatch-2", None);
         assert_eq!(recorded_reads(root).len(), listed.len(), "o pedido da onda 2 não se lê da cópia da onda 1");
+    }
+
+    /// Ler `dispatch-<n>` de dentro da cópia grava um recibo só, com todos os
+    /// itens que a leitura listou: um recibo por item regravava a spec
+    /// inteira a cada um, e a leitura de uma onda grande levava vinte
+    /// segundos.
+    #[test]
+    fn a_dispatch_read_from_the_copy_records_one_receipt_with_every_item() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (copy, _) = open_request(root);
+        let listed: Vec<Value> = events(&read_from(root, root, "dispatch-1", None)).iter().map(|e| e["code"].clone()).collect();
+        assert!(listed.len() > 1, "{listed:?}");
+        let path = store::spec_file(root, "teste").unwrap();
+        let before = store::read(&path).unwrap().unwrap().events.len();
+
+        read_from(root, &copy, "dispatch-1", None);
+        let log = store::read(&path).unwrap().unwrap();
+        assert_eq!(log.events.len(), before + 1, "one write for the whole read");
+        let receipt = log.events.last().unwrap();
+        assert_eq!((receipt.event_type.as_str(), receipt.str_field("request")), ("call", Some("request-1")));
+        assert_eq!(receipt.fields.get("items"), Some(&Value::Array(listed)));
+    }
+
+    /// O envio da onda 1 de `open_request` com a lista do que o pedido
+    /// listou, como a rodada o grava: a onda, o critério e a mensagem ficam de
+    /// fora dela.
+    fn listed_request(root: &std::path::Path, listed: &[&str]) -> PathBuf {
+        let (copy, sent) = open_request(root);
+        let path = store::spec_file(root, "teste").unwrap();
+        let mut fields = store::read(&path).unwrap().unwrap().get(sent).unwrap().fields.clone();
+        for key in ["v", "id", "code", "at", "type", "search"] {
+            fields.remove(key);
+        }
+        fields.insert("replaces".into(), json!(sent));
+        fields.insert("read_items".into(), json!(listed));
+        by_program(root, "send", Value::Object(fields));
+        copy
+    }
+
+    /// O lote da onda traz a lista que o envio gravou, na ordem dela: nem um
+    /// item a mais que o pedido — a onda, o critério e a mensagem que ele não
+    /// lista —, nem um a menos. O recibo leva a mesma lista.
+    #[test]
+    fn the_dispatch_read_brings_exactly_the_items_the_request_listed() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let copy = listed_request(root, &["MSTD-TASK-0001", "MSTD-RULE-0001"]);
+        let text = read_from(root, &copy, "dispatch-1", None);
+        assert_eq!(recorded_reads(root), [("request-1".into(), "MSTD-TASK-0001".into()), ("request-1".into(), "MSTD-RULE-0001".into())]);
+        assert!(text.contains("MSTD-TASK-0001") && text.contains("MSTD-RULE-0001"), "{text}");
+        assert!(!text.contains("MSTD-WAVE-0001") && !text.contains("MSTD-CRIT-0001"), "{text}");
+        let outside: Vec<Value> = events(&read_from(root, root, "dispatch-1", None)).iter().map(|e| e["code"].clone()).collect();
+        assert_eq!(outside, [json!("MSTD-TASK-0001"), json!("MSTD-RULE-0001")]);
+    }
+
+    /// `dispatch-review` traz, numa leitura só, os itens que o pedido mais
+    /// novo do revisor final listou. De dentro da cópia do revisor grava um
+    /// recibo só, com todos; de fora, não grava nada.
+    #[test]
+    fn the_review_dispatch_read_records_one_receipt_with_every_listed_item() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        open_request(root);
+        let review = root.join("copias").join("revisao");
+        std::fs::create_dir_all(&review).unwrap();
+        by_program(
+            root,
+            "send",
+            json!({"author": "binary", "role": "review", "text": "revise", "lines": 1, "chars": 6, "mustard": "0",
+            "copy": mustard_core::io::wave_prompt::shown(&review), "read_items": ["MSTD-RULE-0001", "MSTD-TASK-0001"]}),
+        );
+        let outside: Vec<Value> = events(&read_from(root, root, "dispatch-review", None)).iter().map(|e| e["code"].clone()).collect();
+        assert_eq!(outside, [json!("MSTD-RULE-0001"), json!("MSTD-TASK-0001")]);
+        assert!(recorded_reads(root).is_empty(), "lido de fora da cópia não grava");
+
+        let path = store::spec_file(root, "teste").unwrap();
+        let before = store::read(&path).unwrap().unwrap().events.len();
+        let text = read_from(root, &review, "dispatch-review", None);
+        assert!(text.contains("MSTD-RULE-0001") && text.contains("MSTD-TASK-0001"), "{text}");
+        assert_eq!(store::read(&path).unwrap().unwrap().events.len(), before + 1, "one receipt for the whole read");
+        assert_eq!(recorded_reads(root), [("request-review".into(), "MSTD-RULE-0001".into()), ("request-review".into(), "MSTD-TASK-0001".into())]);
+    }
+
+    /// O bloco das chamadas e o painel juntam as duas fontes: a chamada que
+    /// a spec antiga gravou nela mesma e a que mora no arquivo de operações.
+    #[test]
+    fn the_calls_and_metrics_blocks_join_the_spec_and_the_operations_file() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        call(root, "round", json!({"ms": 3}));
+        let ok = json!({"ok": true, "spec": "teste"});
+        assert!(crate::commands::spec_events::conversation::record_output_call(root, "search", Some("teste"), Instant::now(), &ok, "x\n").is_some());
+
+        let commands: Vec<Value> = events(&read_at(&opts(root, "calls", None)).unwrap()).iter().map(|e| e["command"].clone()).collect();
+        assert_eq!(commands, [json!("round"), json!("search")]);
+        let panel: Vec<Value> =
+            events(&read_at(&opts(root, "metrics", None)).unwrap()).iter().filter(|e| e["type"] == json!("call")).map(|e| e["command"].clone()).collect();
+        assert_eq!(panel, [json!("search"), json!("round")], "the panel lists the newest first");
     }
 
     /// O envio de revisão aberto grava `request-review`, e o pedido que já
@@ -1820,5 +2176,75 @@ mod tests {
         assert_eq!(delivered["text"], json!("O relato da entrega."), "the plan keeps the delivery text");
         let send = waves.iter().find(|e| e["type"] == json!("send")).expect("the waves list the send");
         assert!(send.get("text").is_none(), "{send}");
+    }
+
+    /// O estado traz só a publicação mais nova de cada página, como faz com
+    /// as cópias: cada marco publica de novo, e a anterior fica sem leitor.
+    #[test]
+    fn the_state_block_carries_only_the_newest_publication_of_each_page() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        by_program(root, "state", json!({"author": "binary", "phase": "plan", "branch": "feature/teste", "base": "dev"}));
+        let publish = |page: &str, milestone: &str| {
+            by_program(root, "publish", json!({"author": "binary", "page": page, "milestone": milestone, "ok": true, "url": format!("https://x/{page}")}))
+        };
+        publish("spec", "approval");
+        publish("project", "approval");
+        publish("spec", "round");
+        let newest_project = publish("project", "round");
+        let newest_spec = publish("spec", "close");
+
+        let report = read_at(&opts(root, "state", None)).unwrap();
+        let mut published: Vec<u64> = events(&report).iter().filter(|e| e["type"] == json!("publish")).map(|e| e["id"].as_u64().unwrap()).collect();
+        published.sort_unstable();
+        assert_eq!(published, [newest_project, newest_spec], "one publication per page: {report}");
+    }
+
+    /// A onda que nunca saiu não tem pedido: a leitura dele é recusada, nos
+    /// dois idiomas, em vez de responder um texto vazio como se desse certo.
+    /// O mesmo vale para o pedido do revisor final sem envio de revisão.
+    #[test]
+    fn a_request_never_sent_is_refused_instead_of_read_empty() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        by_program(root, "send", json!({"author": "binary", "wave": 1, "role": "wave", "text": "o pedido", "lines": 1, "chars": 8, "mustard": "0"}));
+        assert_eq!(read_at(&opts(root, "request-1", None)), Ok("o pedido".to_string()));
+
+        for (block, lang) in [("request-2", "pt-BR"), ("request-review", "en-US")] {
+            std::fs::write(root.join("mustard.json"), format!(r#"{{"language": {{"text": "{lang}"}}}}"#)).unwrap();
+            let refused = read_at(&opts(root, block, None)).expect_err(block);
+            assert_eq!(refused["ok"], json!(false), "{refused}");
+            assert_eq!(refused["reason"], json!("no-request"), "{refused}");
+            let hint = refused["hint"].as_str().unwrap_or_default();
+            let expected = if lang == "pt-BR" { "não tem pedido" } else { "has no recorded request" };
+            assert!(hint.contains(expected), "{block} in {lang}: {refused}");
+        }
+    }
+
+    /// Um bloco sai do mais novo para o mais antigo: quem conduz lê primeiro
+    /// o que acabou de acontecer.
+    #[test]
+    fn a_block_lists_its_newest_events_first() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let first = put(root, "message", json!({"author": "user", "text": "primeiro"}));
+        let second = put(root, "message", json!({"author": "user", "text": "segundo"}));
+        let third = put(root, "message", json!({"author": "user", "text": "terceiro"}));
+        let ids: Vec<Value> = events(&read_at(&opts(root, "conversation", None)).unwrap()).iter().map(|e| e["id"].clone()).collect();
+        assert_eq!(ids, [json!(third), json!(second), json!(first)]);
+    }
+
+    /// Na leitura de quem conduz, o código de um item no painel ainda traz o
+    /// item inteiro: só a busca por palavras vira resumo.
+    #[test]
+    fn a_metrics_item_code_still_brings_the_whole_item_under_the_cap() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        by_program(root, "injection", json!({"author": "hook", "hook": "prompt_entry", "chars": 5, "text": "Texto"}));
+        let capped = |term: &str| read_reach(&opts(root, "metrics", Some(term)), None, root, Reach::Capped).unwrap();
+        let by_code = events(&capped("MSTD-INJ-0001"));
+        assert_eq!((by_code.len(), &by_code[0]["text"]), (1, &json!("Texto")), "{by_code:?}");
+        let summary = events(&capped("texto"));
+        assert_eq!((&summary[0]["type"], &summary[0]["newest"]), (&json!("injection"), &json!(["MSTD-INJ-0001"])), "{summary:?}");
     }
 }

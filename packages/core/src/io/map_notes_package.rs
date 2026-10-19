@@ -158,7 +158,11 @@ mod tests {
     /// Um arquivo de `names.len()` funções de três linhas cada, gravado no
     /// disco, como o mapa o guarda.
     fn module(dir: &Path, path: &str, names: &[&str], body: &str) -> Value {
-        let content: String = names.iter().map(|name| format!("function {name}() {{\n  return {body};\n}}\n")).collect();
+        let content = names.iter().fold(String::new(), |mut content, name| {
+            use std::fmt::Write as _;
+            let _ = write!(content, "function {name}() {{\n  return {body};\n}}\n");
+            content
+        });
         std::fs::create_dir_all(dir.join(path).parent().unwrap()).unwrap();
         std::fs::write(dir.join(path), &content).unwrap();
         let declarations: Vec<Value> = names

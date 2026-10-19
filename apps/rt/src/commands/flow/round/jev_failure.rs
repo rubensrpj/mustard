@@ -8,10 +8,10 @@
 use std::path::Path;
 
 use mustard_core::domain::spec_events::SpecLog;
-use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Value, json};
 
+use crate::commands::spec_events::conversation::recorded_operations;
 use crate::shared::jev::{ASSEMBLY_CALL, ITEMS_CALL, TASK_TRIAGE_CALL, TRIAGE_CALL};
 
 /// Os comandos que a rodada grava quando chama o Jev: a montagem das ondas,
@@ -23,7 +23,8 @@ const ROUND_CALLS: [&str; 4] = [ASSEMBLY_CALL, ITEMS_CALL, TRIAGE_CALL, TASK_TRI
 const MARK: &str = "round.jev_failed";
 
 /// O motivo da primeira falha do Jev entre as chamadas da rodada gravadas
-/// depois do último evento de `on_entry`, a spec como a rodada a leu ao entrar.
+/// depois do último evento de `on_entry`, o arquivo de operações da spec como
+/// a rodada o leu ao entrar.
 fn failure_since(now: &SpecLog, on_entry: &SpecLog) -> Option<String> {
     let since = on_entry.events.iter().map(|event| event.id).max().unwrap_or(0);
     now.visible()
@@ -50,15 +51,17 @@ fn remedy_key(reason: &str) -> &'static str {
     }
 }
 
-/// O aviso `jev-failed` da rodada da spec em `path`, com o motivo e o que
+/// O aviso `jev-failed` da rodada da spec `spec`, com o motivo e o que
 /// fazer, quando alguma chamada da rodada ao Jev falhou; uma vez só na sessão
-/// `session`, e sempre sem sessão conhecida. Sem Jev na rodada (`asked`
-/// falso), nenhuma chamada saiu, e a spec nem é relida.
-pub(super) fn warning(root: &Path, path: &Path, on_entry: &SpecLog, asked: bool, session: Option<&str>, lang: Locale) -> Option<Value> {
+/// `session`, e sempre sem sessão conhecida. As chamadas moram no arquivo de
+/// operações da spec, e `on_entry` é ele como a rodada o leu ao entrar. Sem
+/// Jev na rodada (`asked` falso), nenhuma chamada saiu, e o arquivo nem é
+/// relido.
+pub(super) fn warning(root: &Path, spec: &str, on_entry: &SpecLog, asked: bool, session: Option<&str>, lang: Locale) -> Option<Value> {
     if !asked {
         return None;
     }
-    let now = store::read(path).ok().flatten()?;
+    let now = recorded_operations(root, spec);
     let failure = failure_since(&now, on_entry)?;
     crate::shared::search_door::first_warning(root, session, MARK).then(|| {
         let hint = translate("round.jev_failed", lang)
@@ -82,13 +85,14 @@ mod tests {
     use crate::shared::jev::{ITEMS_CALL, TASK_TRIAGE_CALL, record_jev_call};
 
     use super::super::item_choice::fake;
-    use super::super::tests::{approved_with, id_of, write};
+    use super::super::tests::{approved_with, id_of, launched, write};
     use super::super::{RoundOpts, round_for};
 
-    /// Uma rodada da obra `x` na sessão `session`.
+    /// Uma rodada da obra `x` na sessão `session`, com o agente de cada onda
+    /// que ela despachou lançado.
     fn round_in(root: &Path, session: Option<&str>) -> Value {
         super::super::review::test_conductor_review(root, "x");
-        round_for(&RoundOpts { root: root.to_path_buf(), spec: Some("x".to_string()), report: None }, session)
+        launched(root, "x", round_for(&RoundOpts { root: root.to_path_buf(), spec: Some("x".to_string()), report: None }, session))
     }
 
     fn jev_warnings(out: &Value) -> Vec<Value> {
@@ -150,8 +154,8 @@ mod tests {
         assert_eq!(quiet["dispatch"].as_array().map_or(0, Vec::len), 0, "{quiet}");
         assert!(jev_warnings(&quiet).is_empty(), "an old failure of another round stays silent: {quiet}");
 
-        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let failed = log.visible().into_iter().filter(|e| e.event_type == "call" && e.str_field("filter") == Some("jev:no_credit")).count();
+        let observed = super::recorded_operations(root, "x");
+        let failed = observed.visible().into_iter().filter(|e| e.event_type == "call" && e.str_field("filter") == Some("jev:no_credit")).count();
         assert_eq!(failed, 3, "every failed call stays recorded");
     }
 
@@ -162,13 +166,12 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved_with(root, "x", &[], |_| {});
-        let path = store::spec_file(root, "x").unwrap();
-        let on_entry = store::read(&path).unwrap().unwrap();
+        let on_entry = super::recorded_operations(root, "x");
         let refused = FilterError::Refused { status: 402 };
         record_jev_call(root, "x", ITEMS_CALL, Instant::now(), None, Err(&refused));
 
-        assert!(super::warning(root, &path, &on_entry, true, None, Locale::PtBr).is_some(), "the failure is there to read");
-        assert_eq!(super::warning(root, &path, &on_entry, false, None, Locale::PtBr), None);
+        assert!(super::warning(root, "x", &on_entry, true, None, Locale::PtBr).is_some(), "the failure is there to read");
+        assert_eq!(super::warning(root, "x", &on_entry, false, None, Locale::PtBr), None);
     }
 
     /// A falha gravada do classificador das atividades vira o aviso
@@ -178,11 +181,10 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved_with(root, "x", &[], |_| {});
-        let path = store::spec_file(root, "x").unwrap();
-        let on_entry = store::read(&path).unwrap().unwrap();
+        let on_entry = super::recorded_operations(root, "x");
         record_jev_call(root, "x", TASK_TRIAGE_CALL, Instant::now(), None, Err(&FilterError::Refused { status: 402 }));
 
-        let warned = super::warning(root, &path, &on_entry, true, None, Locale::PtBr).expect("the failure warns");
+        let warned = super::warning(root, "x", &on_entry, true, None, Locale::PtBr).expect("the failure warns");
         assert_eq!(warned["reason"], json!("jev-failed"));
         assert_eq!(warned["failure"], json!("no_credit"));
     }

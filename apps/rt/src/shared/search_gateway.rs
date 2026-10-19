@@ -21,7 +21,7 @@ pub(crate) fn agent_export(agent: &str) -> String {
 }
 
 /// O subagente que o gancho nomeou para este processo, por [`agent_export`].
-fn agent_from_env() -> Option<String> {
+pub(crate) fn agent_from_env() -> Option<String> {
     std::env::var(AGENT_VAR).ok().map(|id| id.trim().to_string()).filter(|id| !id.is_empty())
 }
 
@@ -811,7 +811,11 @@ mod tests {
         std::fs::write(project.join("src/entry.ts"), "import { recoverSnapshot } from \"./store\";\nexport function quartzEntry(): number {\n  return recoverSnapshot();\n}\n").unwrap();
         std::fs::write(project.join("src/store.ts"), "/** Recover the quartz snapshot. */\nexport function recoverSnapshot(): number {\n  const storeBodySentinel = 2;\n  return storeBodySentinel;\n}\n").unwrap();
         std::fs::write(project.join("src/noise.ts"), "/** Recover the quartz snapshot from the archive. */\nexport function archiveRecover(): number {\n  const noiseBodySentinel = 4;\n  return noiseBodySentinel;\n}\n").unwrap();
-        let rows: String = (0..150).map(|at| format!("  \"quartzEntry {at}\",\n")).collect();
+        let rows = (0..150).fold(String::new(), |mut rows, at| {
+            use std::fmt::Write as _;
+            let _ = writeln!(rows, "  \"quartzEntry {at}\",");
+            rows
+        });
         std::fs::write(project.join("src/table.ts"), format!("export const quartzTable = [\n{rows}];\n")).unwrap();
         let git = std::process::Command::new("git").args(["init", "-q"]).current_dir(&project).status().unwrap();
         assert!(git.success());

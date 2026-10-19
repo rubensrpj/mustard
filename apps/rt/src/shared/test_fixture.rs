@@ -178,6 +178,22 @@ pub(crate) fn repo_from_template(root: &Path, key: &str, build: impl FnOnce(&Pat
     copy_dir_all(template.path(), root);
 }
 
+/// Deixa a spec `spec` de `root` com o plano passado, como a aprovação pede:
+/// uma tarefa, quando ainda não há nenhuma, e depois dela a marca do plano,
+/// um `state` em `plan`. Escreve direto no arquivo de eventos, sem as regras
+/// da gravação, como os testes montam a spec à mão.
+pub(crate) fn pass_plan(root: &Path, spec: &str) {
+    use mustard_core::io::spec_events as store;
+    let path = store::spec_file(root, spec).expect("spec file");
+    std::fs::create_dir_all(path.parent().expect("spec folder")).expect("spec folder");
+    let has_task = store::read(&path).ok().flatten().is_some_and(|log| log.visible().iter().any(|e| e.event_type == "task"));
+    let fields = |value: serde_json::Value| value.as_object().cloned().unwrap_or_default();
+    if !has_task {
+        store::write(&path, "task", fields(serde_json::json!({ "text": "Somar dois números.", "author": "binary" })), &[]).expect("task");
+    }
+    store::write(&path, "state", fields(serde_json::json!({ "phase": "plan" })), &[]).expect("plan mark");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

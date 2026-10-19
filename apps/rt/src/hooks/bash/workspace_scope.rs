@@ -233,7 +233,11 @@ mod tests {
         let root = canonical.as_path();
         let copy = project_with_copy(root);
         let temp = tempfile::tempdir().unwrap();
-        let scratch = temp.path().join("claude-1000").join(root.to_string_lossy().replace(['/', '\\', ':'], "-")).join("session/scratchpad");
+        // The folder name Claude Code gives a project: every character that is
+        // not a letter or a digit becomes `-`, the `?` of a Windows `\\?\`
+        // path included, which no Windows folder name may carry.
+        let name: String = root.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+        let scratch = temp.path().join("claude-1000").join(name).join("session/scratchpad");
         std::fs::create_dir_all(&scratch).unwrap();
         let ctx = Ctx::for_test(root.to_string_lossy().into_owned(), Some(mustard_core::domain::model::contract::Trigger::PreToolUse));
         let mut input: HookInput =

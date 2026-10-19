@@ -298,7 +298,7 @@ pub(crate) fn reopen_with_provider(
                 warnings.push(fill("reopen.merge_unchecked", lang, &[("{spec}", &spec), ("{reason}", &reason)]));
             }
             Some(MergedElsewhere::Closed { pr }) => closed_pr = Some(pr),
-            Some(MergedElsewhere::Submodules(_)) | None => {}
+            Some(MergedElsewhere::Submodules(_) | MergedElsewhere::Leaving { .. } | MergedElsewhere::TasksLeft { .. }) | None => {}
         }
     }
 

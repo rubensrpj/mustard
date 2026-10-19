@@ -1,6 +1,6 @@
 //! O registro de cada chamada da rodada ao Jev. A montagem das ondas, a
 //! escolha dos itens do pedido, a do procedimento de cada onda, a triagem da
-//! volta sem mudança e o classificador das atividades gravam, cada uma, um evento `call` na spec, do jeito que
+//! volta sem mudança e o classificador das atividades gravam, cada uma, um evento `call` no arquivo de operações da spec, do jeito que
 //! a busca grava o dela: na resposta, o tempo, os tokens, o custo e o modelo;
 //! na falha, o motivo no nome do filtro (`jev:<motivo>`) e o tempo até ela. A
 //! rodada lê esses eventos pelo nome de cada chamada para dizer que o Jev
@@ -48,8 +48,8 @@ pub(crate) fn record_jev_call(
 }
 
 /// [`record_jev_call`] para as chamadas `command` que saíram juntas em
-/// `called`, uma por resposta ou falha de `answers`, na ordem: todas numa
-/// gravação só na spec ([`record_measured_calls`]).
+/// `called`, uma por resposta ou falha de `answers`, na ordem, no arquivo de
+/// operações da spec ([`record_measured_calls`]).
 pub(crate) fn record_jev_calls(start: &Path, spec: &str, command: &str, called: Instant, answers: &[Result<&FilterUsage, &FilterError>]) {
     let measured = answers.iter().map(|answer| jev_measure(None, called, *answer)).collect();
     let _ = record_measured_calls(start, spec, command, called, measured);

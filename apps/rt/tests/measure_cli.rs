@@ -7,6 +7,9 @@
 //! com as conversas do Claude Code, a pasta do gasto e a pasta pessoal numa
 //! pasta temporária.
 
+#[path = "support/binary.rs"]
+mod binary;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -45,7 +48,7 @@ fn conversation(config: &Path, file: &str, cwd: &Path, days: &[(&str, u64, u64)]
 /// a lista das linhas.
 fn measure(dir: &Path, config: &Path, cwd: &Path, args: &[&str]) -> Value {
     let home = dir.join("home");
-    let out = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+    let out = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
         .args([&["run", "measure"], args].concat())
         .current_dir(cwd)
         .env("CLAUDE_PROJECT_DIR", cwd)

@@ -68,8 +68,8 @@ pub mod settings;
 
 pub use cleanup::{CleanupDone, CleanupPlan, PendingList};
 pub use files::{
-    default_inject_entries, harness_text_paths, harness_texts, migrate_inject_declarations, refresh_agent_texts,
-    same_declared_path, seed_gitignore, seed_harness_texts, session_map_declared_path,
+    default_inject_entries, harness_text_paths, harness_texts, migrate_inject_declarations, project_harness_texts, refresh_agent_texts,
+    same_declared_path, seed_gitignore, seed_harness_texts, seed_project_harness_texts, session_map_declared_path,
 };
 pub use footprint::{
     FootprintEntry, InstallMode, PRIVATE_MARKS, carries_private_marks, detect_install_mode, footprint, footprint_pathspecs, footprint_rules,
@@ -329,7 +329,7 @@ pub fn upsert_project_with(root: &Path, version: Option<&str>, mode: InstallMode
     for (name, outcome) in seed_settings(&claude_dir, false, mode, text)? {
         report.record(name, outcome);
     }
-    for (rel, outcome) in seed_harness_texts(&claude_dir, text, config.agent_settings())? {
+    for (rel, outcome) in seed_project_harness_texts(&claude_dir, &config)? {
         report.record(&format!(".claude/{rel}"), outcome);
     }
     report.record(CLAUDE_GITIGNORE_PATH, seed_gitignore(&claude_dir, false)?);

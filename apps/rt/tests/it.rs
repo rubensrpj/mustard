@@ -56,6 +56,7 @@ mod spec_events_cli;
 mod spec_flow_prose;
 mod spend_cli;
 mod stale_task_wave_leaves_without_a_check;
+mod step_answers_the_wave_measure;
 mod survey_cli;
 mod template_parity;
 mod version_full;

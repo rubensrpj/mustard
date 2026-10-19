@@ -302,3 +302,31 @@ fn actual_http_errors_do_not_echo_credentials_or_remote_diagnostics() {
     );
     server.join().unwrap();
 }
+
+/// O token vem do ambiente, que vence; sem ele, de `publication.apiToken` do
+/// `mustard.json`, só enquanto o git não vê o arquivo. O token que o git vê
+/// não se usa, e a recusa manda tirar o arquivo do git e trocar o token, sem
+/// mostrá-lo.
+#[test]
+fn the_token_comes_from_the_environment_or_a_file_git_does_not_see() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    assert!(mustard_core::platform::git::run(root, &["init", "-q"]).ok);
+    assert!(mustard_core::platform::git::run(root, &["config", "core.excludesFile", ""]).ok);
+    let mut file = json!({"publication":{"provider":"cloudflare-pages","accountId":"0123456789abcdef0123456789abcdef","projectName":"my-project"}});
+    file["publication"][mustard_core::domain::config::PUBLICATION_TOKEN_FIELD] = json!("from-file");
+    std::fs::write(root.join("mustard.json"), file.to_string()).unwrap();
+    let loaded = mustard_core::ProjectConfig::load(root).publication.unwrap();
+    let refused = token(root, &loaded, None).unwrap_err();
+    assert_eq!(refused["reason"], "publication-token-in-git", "{refused}");
+    assert_eq!(refused["published"], false);
+    assert!(!refused.to_string().contains("from-file"), "{refused}");
+    assert!(refused["hint"].as_str().unwrap().contains("git rm --cached mustard.json"), "{refused}");
+    assert_eq!(token(root, &loaded, Some(" from-env ".into())).unwrap(), "from-env");
+    std::fs::write(root.join(".git/info/exclude"), "/mustard.json\n").unwrap();
+    assert_eq!(token(root, &loaded, None).unwrap(), "from-file");
+    assert!(mustard_core::platform::git::run(root, &["add", "-f", "--", "mustard.json"]).ok);
+    assert_eq!(token(root, &loaded, None).unwrap_err()["reason"], "publication-token-in-git");
+    let bare = tempfile::tempdir().unwrap();
+    assert_eq!(token(bare.path(), &config(), None).unwrap_err()["reason"], "publication-token-missing");
+}

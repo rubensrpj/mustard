@@ -104,9 +104,6 @@ pub mod spec_state;
 /// O classificador das atividades que a rodada grava: coberta, junta a uma
 /// tarefa aberta de mesmo sentido ou nova, perto do assunto dela.
 pub(crate) mod task_triage;
-/// O tamanho que a montagem espera de cada tarefa do backlog, em tokens de
-/// conversa do agente, e o teto de cada onda.
-pub mod task_size;
 // Test-only: cloning git fixture scenery instead of rebuilding it per test.
 #[cfg(test)]
 pub mod test_fixture;

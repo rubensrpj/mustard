@@ -22,7 +22,8 @@
 //!
 //! `pr-open` takes no `--title` and no `--body-file`. The message is BUILT
 //! from the spec's own event file — the goal for the title, the recorded
-//! summary and what each wave delivered for the body — by
+//! summary and one line per delivery, its commit summary, for the body, with
+//! nothing of Mustard's own work in it — by
 //! [`mustard_core::domain::spec_events::pr_message`], the one place the
 //! template and its limits live. A hand-written `pr-body.md` was a fourth file
 //! in the spec folder, committed with it, and stale the moment the next round
@@ -326,7 +327,7 @@ pub(crate) fn message_of(repo: &Path, spec: &str) -> Result<(String, String), St
     let Some(log) = DiskSpecState::new(repo).log(spec) else {
         return Err(format!("spec-events-unreadable: {spec}"));
     };
-    pr_message(&log).map_err(|refusal| format!("{}: {}", refusal.reason(), refusal.message(lang)))
+    pr_message(&log, lang).map_err(|refusal| format!("{}: {}", refusal.reason(), refusal.message(lang)))
 }
 
 /// O pull request de um submódulo da spec, como a abertura o deixou.

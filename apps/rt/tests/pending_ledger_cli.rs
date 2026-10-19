@@ -2,6 +2,9 @@
 //! um processo de verdade prova, a raiz da lista dentro de um worktree e o
 //! tamanho de cada resposta numa lista longa.
 
+#[path = "support/binary.rs"]
+mod binary;
+
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::Command;
@@ -9,7 +12,7 @@ use std::process::Command;
 use serde_json::Value;
 
 fn rt(root: &Path, args: &[&str]) -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mustard-rt"));
+    let mut cmd = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"));
     cmd.arg("run").args(args).arg("--root").arg(root).current_dir(root);
     cmd
 }

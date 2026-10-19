@@ -174,7 +174,7 @@ mod tests {
     /// O pedido da onda 1, com a onda `running` ou fora de voo.
     fn request(root: &Path, log: &SpecLog, running: bool) -> String {
         let flight = Flight { running: if running { [1].into() } else { Default::default() }, ..Flight::default() };
-        prompts(root, "teste", log, Locale::PtBr, &flight).remove(0).text
+        prompts(root, "teste", log, Locale::PtBr, &flight, &log.planned_waves()).remove(0).text
     }
 
     #[test]

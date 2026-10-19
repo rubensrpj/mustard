@@ -175,7 +175,12 @@ fn checked_fields(event: &Map<String, Value>, spec: &TypeSpec) -> Vec<Field> {
             .into_iter()
             .filter(|shared| !spec.fields.iter().any(|f| f.name == shared.name)),
     );
-    fields.extend(spec.fields.iter().copied());
+    // A versão nova de um envio leva só o que mudou: o pedido fica na versão
+    // que o gravou ([`super::SEND_REQUEST_FIELDS`]).
+    let send_revision = spec.name == "send" && event.contains_key("replaces");
+    fields.extend(spec.fields.iter().copied().map(|field| {
+        if send_revision && super::SEND_REQUEST_FIELDS.contains(&field.name) { Field { required: false, ..field } } else { field }
+    }));
     fields
 }
 

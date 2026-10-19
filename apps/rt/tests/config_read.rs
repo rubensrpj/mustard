@@ -1,6 +1,9 @@
 //! Regression of the actual reported command, with synthetic credentials.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+#[path = "support/binary.rs"]
+mod binary;
+
 use std::{io::Write, path::Path, process::{Command, Stdio}};
 use serde_json::{json, Value};
 
@@ -28,7 +31,7 @@ fn private_host_environment_keys_are_masked_without_changing_the_file() {
 /// The hook's answer for `command`; a hook that lets it pass in silence
 /// answers `null`.
 fn hook(root: &Path, command: &str) -> Value {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_mustard-rt")).args(["on", "PreToolUse"])
+    let mut child = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt")).args(["on", "PreToolUse"])
         .current_dir(root).env_remove("CLAUDE_PROJECT_DIR").env_remove("MUSTARD_WORKSPACE_ROOT")
         .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     let request = json!({"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":root,
@@ -58,7 +61,7 @@ fn masked_command(root: &Path, command: &str) -> String {
 }
 
 fn native(root: &Path, file: &str, reader: &str, args: Value) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+    binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
         .args(["run", "config-read", "--file", file, "--reader", reader, "--args-json", &args.to_string()])
         .current_dir(root).output().unwrap()
 }
@@ -157,7 +160,9 @@ fn a_config_read_is_refused_with_the_masked_command_ready() {
     std::fs::create_dir_all(project.join(".claude")).unwrap();
     std::fs::write(project.join(".claude/mustard.json"), CONFIG).unwrap();
     std::fs::write(project.join("mustard.json"), CONFIG).unwrap();
-    let entering = format!("cd {} && cat .claude/mustard.json", project.display());
+    // Quoted, as a shell needs a Windows path: unquoted, its backslashes
+    // vanish and the `cd` itself fails.
+    let entering = format!("cd '{}' && cat .claude/mustard.json", project.display());
     for (at, original) in [(project.as_path(), "cat .claude/mustard.json"), (dir.path(), entering.as_str()), (project.as_path(), "head -5 mustard.json")] {
         let ready = masked_command(at, original);
         let again = hook(at, &ready);
@@ -167,6 +172,36 @@ fn a_config_read_is_refused_with_the_masked_command_ready() {
         let shown = String::from_utf8(out.stdout).unwrap();
         assert!(shown.contains("\"jev\": {\"key\": \"***\"}") && !shown.contains(SECRET), "{original}: {shown}");
     }
+}
+
+/// The `head` of macOS reads the standard input only when no file is named,
+/// and takes `-` for a file that does not exist. The masked read hands the
+/// configuration through the input without naming it, so such a `head`
+/// still shows the file, key masked.
+#[cfg(unix)]
+#[test]
+fn the_masked_read_hands_the_input_without_naming_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("mustard.json"), CONFIG).unwrap();
+    let bin = dir.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let path = std::env::var("PATH").unwrap_or_default();
+    let head = bin.join("head");
+    let script = format!(
+        "#!/bin/sh\nfor arg in \"$@\"; do [ \"$arg\" = - ] && {{ echo 'head: -: No such file or directory' >&2; exit 1; }}; done\nPATH='{path}' exec head \"$@\"\n"
+    );
+    std::fs::write(&head, script).unwrap();
+    std::fs::set_permissions(&head, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let out = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
+        .args(["run", "config-read", "--file", "mustard.json", "--reader", "head", "--args-json", r#"["-5"]"#])
+        .current_dir(dir.path())
+        .env("PATH", format!("{}:{path}", bin.display()))
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let shown = String::from_utf8(out.stdout).unwrap();
+    assert!(shown.contains("\"jev\": {\"key\": \"***\"}") && !shown.contains(SECRET), "{shown}");
 }
 
 /// The rtk readers show the file like `cat`: the hook refuses them too, with
@@ -228,4 +263,21 @@ fn a_masked_read_inside_a_wave_copy_reads_the_main_checkout_configuration() {
     let reason = String::from_utf8_lossy(&missing.stderr);
     assert!(!missing.status.success() && missing.stdout.is_empty(), "{reason}");
     assert!(named(&reason, "d") && named(&reason, "shop"), "both places are named: {reason}");
+}
+
+/// The masked read the refusal hands back, with the caller's filter after
+/// it, runs: the guard that keeps the Mustard's own answers whole does not
+/// refuse it, since what comes out is the person's file, masked.
+#[test]
+fn the_masked_read_with_a_filter_is_not_refused_again() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("mustard.json"), CONFIG).unwrap();
+    for original in ["cat mustard.json | grep -n testCommand", "grep -n flow mustard.json | head -3"] {
+        let command = masked_command(dir.path(), original);
+        let again = hook(dir.path(), &command);
+        assert_ne!(again["hookSpecificOutput"]["permissionDecision"], "deny", "{command}: {again}");
+        let out = shell(dir.path(), &command);
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert!(!String::from_utf8(out.stdout).unwrap().contains(SECRET));
+    }
 }

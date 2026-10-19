@@ -60,7 +60,7 @@ pub(crate) enum JevAnswer {
 
 /// A pergunta `payload` ao Jev, gravada na spec `spec` de `root`.
 pub(crate) fn ask_jev(root: &Path, spec: &str, payload: &str) -> JevAnswer {
-    let Some(filter) = JevFilter::for_orchestration(root, spec) else { return JevAnswer::NoKey };
+    let Some(filter) = JevFilter::for_spec_search(root, spec) else { return JevAnswer::NoKey };
     filter.choose_recorded(root, spec, FIND_CALL, payload).map_or(JevAnswer::NoAnswer, JevAnswer::Doc)
 }
 

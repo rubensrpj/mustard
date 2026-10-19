@@ -261,8 +261,9 @@ fn init_with_scan(
     }
     // Mustard's own texts — so the answer to "merge or overwrite?" does not
     // reach them: the seeder takes no such argument and always lays the
-    // shipped text down again, in the text language.
-    for (rel, outcome) in mustard_core::seed_harness_texts(&claude_path, text, config.agent_settings())
+    // shipped text down again, in the text language. The final reviewer gets
+    // the model and effort declared for it, not the wave agents' ones.
+    for (rel, outcome) in mustard_core::platform::project_seed::seed_project_harness_texts(&claude_path, &config)
         .context("seeding Mustard's texts under .claude/")?
     {
         seeding::report_seed(&format!(".claude/{rel}"), outcome, true);
@@ -761,6 +762,29 @@ mod tests {
         assert_eq!(json_object(&project.join("mustard.json"))["acronyms"], serde_json::json!(["PI"]));
         assert_eq!(carried(&project, "model"), both("sonnet"));
         assert_eq!(carried(&project, "effort"), both("xhigh"));
+    }
+
+    /// Com `agents.review` no `mustard.json`, a instalação grava o revisor
+    /// final com o modelo e o esforço dele, e o agente de onda com os de
+    /// `agents`.
+    #[test]
+    fn init_writes_the_reviewer_with_the_model_and_effort_asked_for_it() {
+        let header_of = |project: &Path, name: &str, key: &str| -> String {
+            let text = fs::read_to_string(project.join(format!(".claude/agents/mustard/{name}.md"))).unwrap();
+            let header = text.split("\n---\n").next().unwrap().to_string();
+            let prefix = format!("{key}: ");
+            header.lines().find_map(|line| line.strip_prefix(&prefix)).unwrap_or_default().to_string()
+        };
+        let work = tempdir().unwrap();
+        let project = work.path().join("project");
+        fs::create_dir_all(&project).unwrap();
+        let agents = serde_json::json!({"model": "sonnet", "effort": "high", "review": {"model": "opus", "effort": "max"}});
+        fs::write(project.join("mustard.json"), serde_json::json!({ "agents": agents }).to_string()).unwrap();
+
+        init(&project, &InitOptions { yes: true, ..InitOptions::default() }).unwrap();
+
+        assert_eq!((header_of(&project, "review", "model"), header_of(&project, "review", "effort")), ("opus".into(), "max".into()));
+        assert_eq!((header_of(&project, "wave", "model"), header_of(&project, "wave", "effort")), ("sonnet".into(), "high".into()));
     }
 
     /// A instalação sobre um projeto de uma versão antiga, que ainda tem o

@@ -95,6 +95,14 @@ fn main() {
             println!("{report}");
             std::process::exit(error.exit_code());
         }
+        // `run write <TYPE> --help` mostra só aquele tipo.
+        Err(error) if error.kind() == clap::error::ErrorKind::DisplayHelp => match commands::spec_events::cli::write_help_for_type(&args) {
+            Some(help) => {
+                print!("{help}");
+                return;
+            }
+            None => error.exit(),
+        },
         Err(error) => error.exit(),
     };
 

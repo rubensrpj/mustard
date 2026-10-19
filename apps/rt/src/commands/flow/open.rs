@@ -624,7 +624,13 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
         report["pending"] = json!(id);
     }
     match earlier {
-        Some(Ok(ids)) => report["earlier_messages"] = json!(ids),
+        Some(Ok(ids)) => {
+            // A dica só fala das mensagens de antes quando elas vieram.
+            if !ids.is_empty() && let Some(hint) = report["hint"].as_str() {
+                report["hint"] = json!(format!("{hint} {}", translate("open.next_goal.earlier", lang)));
+            }
+            report["earlier_messages"] = json!(ids);
+        }
         Some(Err(note)) => report["earlier_messages_missing"] = json!(note),
         None => {}
     }
@@ -633,11 +639,11 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
 
 /// As mensagens que o usuário digitou na conversa da sessão `session` antes
 /// da abertura, gravadas na spec `spec`, que acabou de nascer; os números
-/// delas. Sem a conversa (a sessão que não se sabe, ou a do Codex, que não
-/// guarda o arquivo do Claude Code), o aviso de que elas ficaram fora: a
-/// abertura segue como antes.
+/// delas. Sem a conversa deste projeto (a sessão que não se sabe, a conversa
+/// aberta noutro projeto, ou a do Codex, que não guarda o arquivo do Claude
+/// Code), o aviso de que elas ficaram fora: a abertura segue como antes.
 fn bring_earlier_messages(root: &Path, spec: &str, session: Option<&str>, lang: Locale) -> Result<Vec<u64>, String> {
-    let Some(transcript) = session.and_then(session_transcript) else {
+    let Some(transcript) = session.and_then(|session| session_transcript(root, session)) else {
         return Err(translate("open.earlier_messages_missing", lang).to_string());
     };
     Ok(record_earlier_messages(root, spec, &typed_messages(&transcript)))

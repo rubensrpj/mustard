@@ -580,7 +580,7 @@ mod tests {
     use mustard_core::io::spec_events as store;
     use tempfile::tempdir;
 
-    use super::super::tests::{approved, git_at, returned, round, waves_in};
+    use super::super::tests::{approved, returned, round, waves_in};
     use super::*;
 
     /// A spec `x` como está gravada agora.
@@ -748,7 +748,6 @@ mod tests {
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("src/soma.ts"), "export const soma = 1;\n").unwrap();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
-        git_at(root, &["checkout", "-q", "-b", "feature/x"]);
         round(root, "x", None);
         std::fs::write(root.join("src/a.rs"), "fn one() {}\n// A soma saiu.\n").unwrap();
         let detail = "A soma perde o sinal. Prova: `npm test -- soma`.";
@@ -782,7 +781,6 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
-        git_at(root, &["checkout", "-q", "-b", "feature/x"]);
         assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1, 2]);
         let bare = json!({"title": "O disco enche", "detail": "As cópias lotam o disco durante a obra."});
         for (wave, file) in [(1, "src/a.rs"), (2, "src/b.rs")] {
@@ -824,7 +822,6 @@ mod tests {
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("src/c.rs"), "fn main() {}\n").unwrap();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
-        git_at(root, &["checkout", "-q", "-b", "feature/x"]);
         round(root, "x", None);
         std::fs::write(root.join("src/a.rs"), "fn one() {}\n// A soma saiu.\n").unwrap();
         let wrote = returned(
@@ -840,7 +837,7 @@ mod tests {
         assert_eq!(task.fields["files"], json!([]), "{:?}", task.fields);
         assert_eq!(task.str_field("blocked_by"), Some(translate("round.leftover_without_files", Locale::PtBr)), "{:?}", task.fields);
         let code = spec_x(root).codes()[&task.id].clone();
-        let queue = super::super::scheduling::snapshot(root, &spec_x(root));
+        let queue = super::super::scheduling::snapshot(root, "x", &spec_x(root));
         let row = queue["tasks"].as_array().unwrap().iter().find(|row| row["task"] == json!(code)).cloned();
         assert_eq!(row.map(|row| row["reason"].clone()), Some(json!("needs-planning")), "{queue}");
 
@@ -867,7 +864,6 @@ mod tests {
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("src/c.rs"), "fn main() {}\n").unwrap();
         approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
-        git_at(root, &["checkout", "-q", "-b", "feature/x"]);
         assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1, 2]);
         let on_file = json!({"title": "A leitura para sem o índice", "detail": "Sem o índice, `src/c.rs` para."});
         let bare = json!({"title": "O log não gira", "detail": "O arquivo de log cresce sem limite."});
@@ -1042,7 +1038,7 @@ mod tests {
             event(4, TASK, &sent),
         ]);
         let code = planned.codes()[&3].clone();
-        let built = wave_prompt::prompts(root, "x", &planned, Locale::PtBr, &wave_prompt::Flight::default());
+        let built = wave_prompt::prompts(root, "x", &planned, Locale::PtBr, &wave_prompt::Flight::default(), &planned.planned_waves());
         let attends = translate("prompt.step.attends", Locale::PtBr).replace("{item}", "");
         let text = &built.iter().find(|prompt| prompt.wave == 2).unwrap().text;
         assert!(

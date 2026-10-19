@@ -1507,7 +1507,7 @@ fn the_session_map_sends_every_page_through_the_page_command() {
             invocations.iter().any(|inv| inv.name == "page"),
             "the {text} session map never tells the reader to run `mustard-rt run page`"
         );
-        assert!(map.contains("/mustard-pages"), "the {text} map keeps explicit publication");
+        assert!(map.contains("/mustard:pages") && map.contains("/mustard:mods"), "the {text} map keeps explicit publication");
         assert!(map.contains("markdown"), "the {text} session map never says a page is written in markdown");
     }
 }

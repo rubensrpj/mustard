@@ -10,7 +10,7 @@
 //! 2. **A retomada** — a spec atual, a fase, o último passo e o próximo item,
 //!    a mesma linha que o `resume` devolve; depois da compactação, o bloco de
 //!    retomada inteiro, o mesmo que o aviso antes dela mostrou.
-//! 3. **O painel local** — `/mustard-panel` reúne projeto, specs e consumo.
+//! 3. **O painel local** — `/mustard:mods` reúne projeto, specs e consumo.
 //!    O início da sessão não gera páginas ou lotes externos.
 //! 4. **As pendências** — uma linha só, com a contagem.
 //! 5. **O pull request da spec atual** — com a spec atual em "pull request
@@ -22,7 +22,9 @@
 //!    responde, o aviso diz isso e nada muda. Com o pull request ainda aberto
 //!    e a spec mexendo em submódulo, os pull requests dos submódulos são
 //!    conferidos: o que entrou leva o ponteiro ao principal, e o aviso diz
-//!    qual falta ou que o principal ficou pronto.
+//!    qual falta ou que o principal ficou pronto. Só na abertura e na
+//!    retomada da conversa, como a atualização do mapa: depois de `/clear` e
+//!    da compactação não há scan nem pergunta ao provedor.
 //! 6. **As branches mergeadas** — as outras branches cujo trabalho já entrou
 //!    na base e que seguem vivas, só pelo git local, sem pergunta nenhuma ao
 //!    provedor.
@@ -79,7 +81,7 @@ use mustard_core::platform::i18n::{Locale, translate};
 use std::path::Path;
 
 use crate::commands::maint::scratch_gc::{ScratchRoots, human_bytes, survey};
-use crate::commands::review::pr_door::{MergedElsewhere, merged_elsewhere};
+use crate::commands::review::pr_door::{MergedElsewhere, NOT_DELIVERED, merged_elsewhere, merged_outside};
 use crate::hooks::session::injectables;
 use crate::shared::branch_state::merged_by_another;
 use crate::shared::development_build::{Gap, Launch, gap, start_in_background};
@@ -104,14 +106,18 @@ struct Probe<'a> {
     lang: Locale,
     /// A janela foi renovada pela compactação: a retomada vem em bloco.
     compacted: bool,
+    /// A conversa foi limpa (`/clear`): a retomada lista as ondas cujo agente
+    /// a limpeza parou.
+    cleared: bool,
     /// A versão que o registro de plugins dá como instalada, quando ele
     /// respondeu.
     installed: Option<&'a str>,
     /// Onde procurar as cópias descartáveis e a partir de quanto avisar.
     scratch: Option<&'a ScratchProbe>,
     /// O que o provedor respondeu sobre o pull request da spec atual, e o que
-    /// foi feito com a resposta: a spec e o resultado.
-    landing: Option<&'a (String, MergedElsewhere)>,
+    /// foi feito com a resposta, e cada outra spec cuja obra o git prova na
+    /// base: a spec e o resultado.
+    landing: &'a [(String, MergedElsewhere)],
     /// Os textos declarados, lidos uma vez antes dos avisos: o bloco de
     /// retomada precisa saber quanto lugar eles tomam.
     declared: Option<&'a str>,
@@ -194,10 +200,6 @@ fn session_start_core(
     if let Some(version) = version.filter(|_| mustard_core::ProjectConfig::exists(root)) {
         let _ = mustard_core::io::measure::record(root, version);
     }
-    // O mapa volta ao commit atual antes de qualquer aviso: um commit à mão
-    // ou um pull podem ter mudado o código fora da rodada, entre uma sessão e
-    // a outra.
-    crate::commands::flow::round::refresh_map_if_stale(root, &|root, out| mustard_core::Scan::locate().scan_then_read_history(root, out));
     let session = session_of(input);
     let source = input.raw.get("source").and_then(|v| v.as_str()).unwrap_or_default();
     let compacted = source.eq_ignore_ascii_case("compact");
@@ -205,18 +207,31 @@ fn session_start_core(
     if refreshed {
         super::conversation_size::reset_conductor_notice(input, root);
     }
-    // O merge feito por outra pessoa age antes de qualquer aviso: com a spec
-    // entregue e a branch arrumada, a retomada já lê o estado novo.
-    let landing = spec_merged_elsewhere(root, session.as_deref());
+    // Depois de `/clear` e da compactação, a sessão é a mesma e o código não
+    // saiu do lugar: o início só retoma. O scan e a pergunta ao provedor são
+    // o que estoura o prazo do gancho, e ficam para a abertura e a retomada
+    // da conversa.
+    let landing = if refreshed {
+        Vec::new()
+    } else {
+        // O mapa volta ao commit atual antes de qualquer aviso: um commit à
+        // mão ou um pull podem ter mudado o código fora da rodada, entre uma
+        // sessão e a outra.
+        crate::commands::flow::round::refresh_map_if_stale(root, &|root, out| mustard_core::Scan::locate().scan_then_read_history(root, out));
+        // O merge feito por outra pessoa age antes de qualquer aviso: com a
+        // spec entregue e a branch arrumada, a retomada já lê o estado novo.
+        spec_merged_elsewhere(root, session.as_deref())
+    };
     let declared = injectables::collect(&root.to_string_lossy(), session.as_deref(), refreshed);
     let probe = Probe {
         root,
         session: session.as_deref(),
         lang: crate::shared::context::config::project_config_cached(root).language().text_or_default(),
         compacted,
+        cleared: source.eq_ignore_ascii_case("clear"),
         installed,
         scratch,
-        landing: landing.as_ref(),
+        landing: &landing,
         declared: declared.as_deref(),
         build,
     };
@@ -296,9 +311,13 @@ fn declared_notice(probe: &Probe<'_>) -> Option<String> {
 /// ao lado dele, o texto declarado sai pelo teto de qualquer jeito, e o bloco
 /// fica com as listas.
 fn resume_notice(probe: &Probe<'_>) -> Option<String> {
-    use crate::commands::flow::resume::{current_block, current_block_within, current_line};
+    use crate::commands::flow::resume::{current_block, current_block_within, current_line, lost_by_clear};
     if !probe.compacted {
-        return current_line(probe.root, probe.session);
+        let line = current_line(probe.root, probe.session)?;
+        return Some(match probe.cleared.then(|| lost_by_clear(probe.root, probe.session)).flatten() {
+            Some(lost) => format!("{line}\n{lost}"),
+            None => line,
+        });
     }
     let room = block_room(probe.declared);
     let block = current_block_within(probe.root, probe.session, room)?;
@@ -318,8 +337,8 @@ fn block_room(declared: Option<&str>) -> usize {
 /// Indica o acompanhamento local; publicação externa exige uma ação do usuário.
 fn panel_notice(probe: &Probe<'_>) -> Option<String> {
     mustard_core::ProjectConfig::exists(probe.root).then(|| match probe.lang {
-        Locale::PtBr => "Acompanhe o projeto local com `/mustard-panel`. Publicação externa somente por `/mustard-publish` quando você pedir.".into(),
-        Locale::EnUs => "View local project state with `/mustard-panel`. External publishing uses `/mustard-publish` only when requested.".into(),
+        Locale::PtBr => "Acompanhe o projeto local com `/mustard:mods`. Publicação externa somente por `/mustard:pages` quando você pedir.".into(),
+        Locale::EnUs => "View local project state with `/mustard:mods`. External publishing uses `/mustard:pages` only when requested.".into(),
     })
 }
 
@@ -340,25 +359,42 @@ pub(crate) fn pending_notice(root: &Path, lang: Locale) -> Option<String> {
     crate::commands::event::pending::count_line(root, lang)
 }
 
-/// A spec atual em "pull request aberto", com o que o provedor respondeu sobre
-/// o pull request dela e o que foi feito com a resposta
-/// ([`merged_elsewhere`]): o provedor é perguntado só por esse pull request.
+/// A spec atual, com o que o provedor respondeu sobre o pull request dela
+/// e o que foi feito com a resposta ([`merged_elsewhere`]): o provedor é
+/// perguntado só por esse pull request. E cada spec do índice em execução,
+/// fechada ou com o pull request aberto, só pelo git ([`merged_outside`]); a
+/// atual entra só em execução ou fechada, porque com o pull request aberto
+/// quem responde por ela é o provedor. Roda na abertura e na retomada da
+/// conversa, nunca depois de `/clear` nem da compactação.
 ///
-/// `None` num projeto sem `mustard.json`, sem spec atual, com a spec em outra
-/// fase e quando o pull request segue aberto.
-fn spec_merged_elsewhere(root: &Path, session: Option<&str>) -> Option<(String, MergedElsewhere)> {
+/// Vazio num projeto sem `mustard.json` e quando nada mudou.
+fn spec_merged_elsewhere(root: &Path, session: Option<&str>) -> Vec<(String, MergedElsewhere)> {
     if !mustard_core::ProjectConfig::exists(root) {
-        return None;
+        return Vec::new();
     }
-    let spec = crate::shared::spec_state::DiskSpecState::new(root).active(session)?;
-    merged_elsewhere(root, &spec, session).map(|found| (spec, found))
+    let active = crate::shared::spec_state::DiskSpecState::new(root).active(session);
+    let mut found: Vec<(String, MergedElsewhere)> = active
+        .iter()
+        .filter_map(|spec| merged_elsewhere(root, spec, session).map(|found| (spec.clone(), found)))
+        .collect();
+    found.extend(
+        mustard_core::io::spec_index::read(root)
+            .into_iter()
+            .filter(|line| line.phase.as_deref().is_some_and(|phase| NOT_DELIVERED.contains(&phase)))
+            .filter_map(|line| {
+                let phases: &[&str] = if Some(&line.name) == active.as_ref() { &["running", "closed"] } else { &NOT_DELIVERED };
+                merged_outside(root, &line.name, session, phases).map(|found| (line.name, found))
+            }),
+    );
+    found
 }
 
-/// O pull request da spec atual: o que foi feito com ele, pelo caminho do
-/// merge, ou o silêncio do provedor sobre ele. `None` quando não há nada a
-/// dizer.
+/// O pull request da spec atual e cada spec cuja obra o git prova na base: o
+/// que foi feito, pelo caminho do merge, ou o silêncio do provedor. `None`
+/// quando não há nada a dizer.
 fn landed_notice(probe: &Probe<'_>) -> Option<String> {
-    probe.landing.and_then(|(spec, found)| landing_text(spec, found, probe.lang))
+    let texts: Vec<String> = probe.landing.iter().filter_map(|(spec, found)| landing_text(spec, found, probe.lang)).collect();
+    (!texts.is_empty()).then(|| texts.join("\n"))
 }
 
 /// As branches cujo trabalho já entrou na base e que seguem vivas, pela
@@ -382,11 +418,18 @@ fn merged_notice(probe: &Probe<'_>) -> Option<String> {
     // A branch que o caminho do merge acabou de arrumar já foi dita acima; a
     // cópia dela no servidor, que fica sem `git.deleteRemoteBranch`, não volta
     // aqui como se ninguém tivesse cuidado dela.
-    let landed = match probe.landing {
-        Some((_, MergedElsewhere::Landed { branch, .. })) => Some(branch.as_str()),
-        _ => None,
-    };
-    let merged: Vec<_> = merged_by_another(probe.root, &flow).into_iter().filter(|state| Some(state.branch.as_str()) != landed).collect();
+    let landed: Vec<&str> = probe
+        .landing
+        .iter()
+        .filter_map(|(_, found)| match found {
+            MergedElsewhere::Landed { branch, .. }
+            | MergedElsewhere::Leaving { branch, .. }
+            | MergedElsewhere::TasksLeft { branch, .. } => Some(branch.as_str()),
+            _ => None,
+        })
+        .collect();
+    let merged: Vec<_> =
+        merged_by_another(probe.root, &flow).into_iter().filter(|state| !landed.contains(&state.branch.as_str())).collect();
     if merged.is_empty() {
         return None;
     }
@@ -403,12 +446,27 @@ fn merged_notice(probe: &Probe<'_>) -> Option<String> {
 fn landing_text(spec: &str, found: &MergedElsewhere, lang: Locale) -> Option<String> {
     Some(match found {
         MergedElsewhere::Closed { .. } => return None,
+        MergedElsewhere::TasksLeft { branch, count } => translate("session.landed.tasks_left", lang)
+            .replace("{branch}", branch)
+            .replace("{spec}", spec)
+            .replace("{count}", &count.to_string()),
         MergedElsewhere::Unanswered { reason } => translate("session.provider_silent", lang).replace("{spec}", spec).replace("{reason}", reason),
         MergedElsewhere::Submodules(found) => {
             translate("session.submodules", lang).replace("{spec}", spec).replace("{text}", &found.text(lang).unwrap_or_default())
         }
-        MergedElsewhere::Landed { pr, branch, settle, pending_open } => {
-            let mut text = translate("session.landed", lang).replace("{pr}", &pr.to_string()).replace("{spec}", spec);
+        MergedElsewhere::Leaving { branch, reviewed, copies, report } => {
+            let leaving = if *copies == 1 { "session.landed.leaving_one" } else { "session.landed.leaving_many" };
+            format!(
+                "{} {}",
+                outside_text(spec, branch, *reviewed, lang),
+                translate(leaving, lang).replace("{spec}", spec).replace("{count}", &copies.to_string()).replace("{report}", report)
+            )
+        }
+        MergedElsewhere::Landed { pr, reviewed, branch, settle, pending_open } => {
+            let mut text = match pr {
+                Some(pr) => translate("session.landed", lang).replace("{pr}", &pr.to_string()).replace("{spec}", spec),
+                None => format!("{} {}", outside_text(spec, branch, *reviewed, lang), translate("session.landed.recorded", lang)),
+            };
             text.push(' ');
             text.push_str(&tidy_text(branch, settle.as_ref(), lang));
             if !pending_open.is_empty() {
@@ -421,14 +479,29 @@ fn landing_text(spec: &str, found: &MergedElsewhere, lang: Locale) -> Option<Str
     })
 }
 
+/// A frase que abre o aviso da obra da spec `spec` que entrou na base pela
+/// branch `branch` fora da porta do pull request: sem a revisão final, ou já
+/// fechada, quando `reviewed`.
+fn outside_text(spec: &str, branch: &str, reviewed: bool, lang: Locale) -> String {
+    let key = if reviewed { "session.landed.outside_closed" } else { "session.landed.outside" };
+    translate(key, lang).replace("{branch}", branch).replace("{spec}", spec)
+}
+
 /// A arrumação da branch `branch`, pelo relatório dela: a base atualizada e a
 /// branch fora da máquina, ou o motivo por que ela ficou. Sem relatório, foi
-/// uma promoção de base para base, que não tem branch a arrumar.
+/// uma promoção de base para base, que não tem branch a arrumar. A entrega
+/// fora da porta do pull request não arruma: diz só se a branch segue viva ou
+/// já tinha saído.
 fn tidy_text(branch: &str, settle: Option<&serde_json::Value>, lang: Locale) -> String {
     let Some(report) = settle else {
         return translate("session.landed.unsettled", lang).replace("{branch}", branch).replace("{reason}", "base-to-base-promotion");
     };
     let unit = |field: &str| report.get("unit").and_then(|unit| unit.get(field));
+    match report["reason"].as_str() {
+        Some("branch-gone") => return translate("session.landed.gone", lang).replace("{branch}", branch),
+        Some("branch-kept") => return translate("session.landed.kept", lang).replace("{branch}", branch),
+        _ => {}
+    }
     if report["ok"] == serde_json::json!(true) && unit("branchDeleted") == Some(&serde_json::json!(true)) {
         return translate("session.landed.settled", lang).replace("{branch}", branch);
     }
@@ -502,16 +575,16 @@ fn version_notice(probe: &Probe<'_>) -> Option<String> {
 /// espera, ou um comando na cópia de uma onda já apagada — são encerrados
 /// também aqui, não só a cada rodada e no fechamento.
 ///
-/// A busca roda com a trava do passo do git presa, como na rodada, e só num
+/// A busca roda com a trava das cópias presa, como na rodada, e só num
 /// projeto com o Mustard, onde a pasta da trava é dele. O início da sessão
-/// não espera a trava: presa por outra rodada, que pode estar no meio de um
-/// commit de minutos, a busca fica para essa rodada ou para a seguinte, e o
-/// gancho, que tem teto de segundos, não para atrás dela.
+/// não espera a trava: presa por uma rodada, que pode estar no meio do Jev,
+/// do preparo de uma cópia ou de um commit, a busca fica para essa rodada ou
+/// para a seguinte, e o gancho, que tem teto de segundos, não para atrás dela.
 fn stuck_notice(probe: &Probe<'_>) -> Option<String> {
     if !mustard_core::ProjectConfig::exists(probe.root) {
         return None;
     }
-    let held = crate::commands::git_settle::git_step_lock_if_free(probe.root)?;
+    let held = crate::commands::git_settle::copies_lock_if_free(probe.root)?;
     crate::commands::flow::stuck::report_line(&crate::commands::flow::stuck::find_stuck_processes(probe.root, &held), probe.lang)
 }
 
@@ -715,7 +788,7 @@ mod tests {
             for source in ["startup", "resume", "clear", "compact"] {
                 let verdict = session_start_core(&session_input("local-only", source), &ctx(root), NO_REGISTRY, NO_SCRATCH, NO_BUILD, NO_VERSION).unwrap();
                 if let Verdict::Inject { context } = verdict {
-                    assert!(context.contains("/mustard-panel"), "{context}");
+                    assert!(context.contains("/mustard:mods") && context.contains("/mustard:pages"), "{context}");
                     assert!(!context.contains("run spend") && !context.contains("ArtifactData") && !context.contains("write publish"), "{context}");
                 }
                 assert!(!root.join(".claude/mustard/pages").exists());
@@ -793,7 +866,7 @@ mod tests {
             .map(|(n, title)| crate::commands::event::pending::OpenPending { id: format!("P-{}", n + 10), title: title.to_string() })
             .collect();
         let settled = serde_json::json!({"ok": true, "unit": {"branchDeleted": true}});
-        let landed = MergedElsewhere::Landed { pr: 1234, branch: "feature/uma-spec-de-nome-longo".into(), settle: Some(settled), pending_open: items };
+        let landed = MergedElsewhere::Landed { pr: Some(1234), reviewed: true, branch: "feature/uma-spec-de-nome-longo".into(), settle: Some(settled), pending_open: items };
         let landed = landing_text("uma-spec-de-nome-longo", &landed, Locale::PtBr).expect("the landing is told");
         assert!(landed.contains("Revisor de fora") && landed.contains("saiu desta máquina"), "{landed}");
         let map = mustard_core::session_map(Locale::PtBr).trim().to_string();
@@ -952,9 +1025,10 @@ mod tests {
                 session: Some("s-mapa"),
                 lang,
                 compacted: false,
+                cleared: false,
                 installed: NO_REGISTRY,
                 scratch: Some(&scratch),
-                landing: None,
+                landing: &[],
                 declared: declared.as_deref(),
                 build: NO_BUILD,
             };
@@ -1173,15 +1247,15 @@ mod tests {
         assert!(!context.contains("999.0.0"), "one version notice only: {context}");
     }
 
-    /// O início da sessão procura processo preso só com a trava do passo do
-    /// git livre, e nunca espera por ela: presa por uma rodada, o aviso não
+    /// O início da sessão procura processo preso só com a trava das cópias
+    /// livre, e nunca espera por ela: presa por uma rodada, o aviso não
     /// sai e o comando esquecido numa vaga sem onda fica; solta a trava, o
     /// mesmo aviso o encerra e diz qual. Num projeto sem o Mustard, nada é
     /// procurado e a pasta da trava não nasce.
     #[cfg(target_os = "linux")]
     #[test]
-    fn the_session_start_sweeps_only_with_the_git_step_lock_free_and_never_waits_for_it() {
-        use crate::commands::git_settle::{git_step_lock, waiting_for_lock};
+    fn the_session_start_sweeps_only_with_the_copies_lock_free_and_never_waits_for_it() {
+        use crate::commands::git_settle::{copies_lock, waiting_for_lock};
         use std::os::unix::fs::MetadataExt;
         use std::process::{Command, Stdio};
 
@@ -1206,15 +1280,16 @@ mod tests {
             session: None,
             lang: Locale::PtBr,
             compacted: false,
+            cleared: false,
             installed: NO_REGISTRY,
             scratch: NO_SCRATCH,
-            landing: None,
+            landing: &[],
             declared: None,
             build: NO_BUILD,
         };
 
-        let held = git_step_lock(root).unwrap();
-        let inode = std::fs::metadata(root.join(".claude").join("spec").join("round-git.lock")).unwrap().ino();
+        let held = copies_lock(root).unwrap();
+        let inode = std::fs::metadata(root.join(".claude").join("spec").join("round-copies.lock")).unwrap().ino();
         let (waited, while_held) = std::thread::scope(|scope| {
             let asked = scope.spawn(|| stuck_notice(&probe));
             while !asked.is_finished() && !waiting_for_lock(inode) {
@@ -1228,7 +1303,7 @@ mod tests {
         let freed = stuck_notice(&probe);
         let _ = idle.kill();
         let _ = idle.wait();
-        assert!(!waited, "the session start never waits for the git step lock");
+        assert!(!waited, "the session start never waits for the copies lock");
         assert_eq!(while_held, None, "with the lock held by a round, nothing is swept");
         assert!(kept, "the command in the slot waits for the round to sweep");
         let line = freed.expect("with the lock free, the command left in the slot is ended");

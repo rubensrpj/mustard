@@ -13,8 +13,8 @@ use std::{
 
 mod failures;
 mod transcripts;
-pub(crate) use transcripts::tool_binding;
-pub(crate) use transcripts::wave_usage;
+pub(crate) use transcripts::{Binding, tool_binding, wave_named};
+pub(crate) use transcripts::{dispatch_has_agent, wave_usage};
 
 /// A CLI call must not inherit another host's most recent session by mtime.
 pub(crate) fn caller_host(root: &Path, session: Option<&str>) -> &'static str {

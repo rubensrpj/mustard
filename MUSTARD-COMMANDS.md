@@ -23,7 +23,7 @@ flowchart LR
 | 5. Ondas | `mustard-rt run round --spec <spec>` | Integra os retornos autorizados, executa build e provas pertinentes, comita e despacha dependentes liberados. Lint e suíte geral ficam para o fechamento. Perfis de tarefas e julgamentos complementares válidos são reutilizados; dependências, reservas e prioridade são calculadas localmente. Jev só julga candidatos ambíguos. `--report` recebe consumo/pausas; a entrega é gravada pelo agente com `write delivered`, com envio aberto. |
 | 6. Fechamento | `mustard-rt run close --spec <spec>` | Executa lint, suíte geral e critérios sobre o código integrado, registra o resultado e reaproveita validação vigente. Mudança de conteúdo, comando ou ambiente invalida o recibo. Falha abre trabalho rastreável de conserto. A revisão final confere resumos, código, diff e critérios, sem alterar a obra. Só fecha com revisão aprovada e validação válida. `--report` recebe linhas da rodada; `--pending-later "P-<n>=<motivo>"` registra o destino de cada pendência. |
 | 7. Pull request | `mustard-rt run pr-open --base <base> --head <branch> --spec <spec>` | Envia a branch ao servidor (o envio recusado para o comando, sem abrir nada), monta o título e o corpo a partir da spec e abre o pull request; o que já existe só tem o corpo reescrito. Com submódulo mexido pela spec, abre antes o de cada submódulo e o do principal como rascunho, que fica pronto quando eles entram (`pr-merge --root <submódulo>` ou o início da sessão). `--draft` abre como rascunho; `--fill` monta título e corpo pelos commits, para o repositório sem spec. |
-| 8. Merge | `mustard-rt run pr-merge --pr <n>` | Só quando o usuário pede. Sem veredito aprovado, pergunta e não mexe em nada; `--confirm` é a resposta. |
+| 8. Merge | `mustard-rt run pr-merge --pr <n>` | Só quando o usuário pede. Sem veredito aprovado, pergunta e não mexe em nada; `--confirm` é a resposta. A obra que o git prova na base por merge, juntada fora do fechamento, é entregue na abertura da sessão, sem revisão final. Com cópias no disco, `mustard-rt run deliver-merged --spec <spec>` roda em segundo plano: tira as cópias, guardando o código, e só então grava a entrega. |
 
 A entrega da onda mora na spec: o agente a grava com `mustard-rt run write delivered`, e só com o envio da onda aberto — sem ele, a gravação é recusada com `no-open-send`, sem gravar nada. A gravação já confere o título do commit (até 60 caracteres), o resumo com cara de SHA, o arquivo que o projeto não conhece, a prova nova e a leitura do pedido (recusa `delivery-read-missing`, nomeando o item, se algum item que o pedido da onda lista não foi lido com `run read` de dentro da cópia), e grava a entrega como volta, escondida da leitura até a rodada assumi-la. A entrega traz `wave`, `text`, `files` e `commit` — o resumo de onde a mensagem do commit é montada, exigido quando há arquivo —, e ainda `proofs` (o critério e o comando de cada teste novo), `fixes` (as ondas que um conserto fecha), `replan` (a mudança, quando o plano da onda não funciona; ela só segue com o clique em "Aceitar"), `undone` (o código de cada tarefa da onda que o agente não fez, obrigatório com `replan` — `[]` quando fez todas —, e só com tarefa da própria onda; com a volta assumida, cada uma volta ao backlog sem a onda, a mudança aceita fica anotada na parte do agente dela, e a resposta da rodada avisa com `tasks-returned`) e `leftovers` (cada sobra com `title` e `detail`, que a rodada grava como tarefa da spec, no backlog; a sobra que só muda comentário, documentação ou texto de ajuda leva `cleanup` (`true`), e a rodada a segura até o fim da obra, junto das outras limpezas numa onda só; o `kind` de uma volta antiga é ignorado). A rodada assume a volta: grava a entrega oficial, com `replaces` apontando as voltas desde o último envio, e comita com o resumo dela. O relatório da rodada são as linhas que o orquestrador escreve, uma por linha, quantas forem: `<PAUSED>{…}</PAUSED>` da onda que pausou e `<USAGE>{…}</USAGE>` da onda cujo agente terminou. O resto do texto não é lido; um relatório sem nenhuma dessas marcas é recusado, e a linha `<DELIVERED>` no relatório também, sem gravar nada. O envio grava os itens que ficaram e, à parte, em `analysis`, o que o Jev tirou e o que pôs, cada um com a chance dele (`Jev p=0.03`). O veredito é do agente de teste dedicado, que o fechamento pede a toda obra, e ele o grava com `mustard-rt run write verdict`, só com o pedido de revisão aberto e depois de ler, de dentro da cópia, cada item que esse pedido lista (senão recusa `verdict-read-missing`, nomeando o item); a linha `<VERDICT>` no relatório é recusada, como a de entrega. O veredito traz `result` (`approved` ou `rejected`) e `final:true`; a aprovada é a única que vem sem `wave`, e a reprovada traz nele a onda que o conserto refaz. Quando o agente de uma onda termina, o orquestrador escreve a linha `<USAGE>{"wave":1}</USAGE>`, só com a onda: o consumo — o modelo, os passos e os tokens do agente, e os da conversa principal no ramo da spec — a rodada mede nos arquivos de conversa que a plataforma grava, e avisa a onda cujo arquivo não acha. Nenhum número digitado, na linha ou na entrega, vira consumo, e a entrega com o campo de consumo é recusada. Antes de integrar código, o condutor lê `review-wave` e grava `REVIEWED` com fingerprint e conclusão. Mudanças invalidam essa revisão; `USAGE` sozinho não aprova. A linha de consumo identifica a onda que voltou; a de uma onda de lote com envio aberto, sem entrega gravada e com o Claude Code dela fechado marca a onda cortada, e as tarefas dela voltam para o backlog. O fechamento lê o relatório da última rodada pela mesma porta.
 
@@ -36,8 +36,8 @@ A entrega da onda mora na spec: o agente a grava com `mustard-rt run write deliv
 | `/mustard:continue` | Retoma a spec pelo `resume` e repassa o próximo passo. É o botão de reserva: a retomada já acontece no início da sessão. |
 | `/mustard:measure` | Roda o `measure` e repassa a frase do veredito: o gasto do Claude no projeto antes e depois da marca da versão. |
 | `/mustard:pr` | Abre o pull request, revisa o de um colega ou faz o merge, só a pedido. |
-| `/mustard-panel` | Abre projeto, specs, execução, consumo e dados da statusline nos Mods. Eventos atualizam a projeção; consulta a cada 10 s cobre mudanças externas. Sem turno de modelo. |
-| `/mustard-pages` | `project` publica a visão geral sem exigir spec aberta; `spec` usa a spec da branch atual; `spec <nome>` escolhe outra; `report <arquivo.md>` publica análise/resumo pronto no mesmo layout. Sem destino configurado, entrega arquivos locais. Não inicia turno do modelo. |
+| `/mustard:mods` | Abre o painel nos Mods: visão geral, spec, tarefas e demais itens, uma tarefa, consumo e configurações. Relê a tela visível no fim de cada turno do condutor ou de agente; parado, não consulta. Sem turno de modelo. |
+| `/mustard:pages` | `project` publica a visão geral sem exigir spec aberta; `spec` usa a spec da branch atual; `spec <nome>` escolhe outra; `report <arquivo.md>` publica análise/resumo pronto no mesmo layout. Sem destino configurado, entrega arquivos locais. Não inicia turno do modelo. |
 | `/mustard:upsert` | Instala ou atualiza o Mustard no projeto, e diagnostica a instalação. |
 
 Não há comando de entrada: um pedido que muda arquivo, dito na conversa, abre a spec.
@@ -62,7 +62,7 @@ Não há comando de entrada: um pedido que muda arquivo, dito na conversa, abre 
 | `prompt_entry` | cada mensagem | Grava a mensagem na spec atual; depois de uma resposta com erro de escrita, coloca a linha curta com o erro, uma vez. |
 | `write_gate` | antes de arquivos e depois de buscas | Conserva as proteções de escrita, segredo e leitura. Grep/rg executam com seus argumentos originais; compactação posterior só usa resultados executados verificáveis, sem Jev de rotina e sem transformar resultado em instrução. |
 | `command_guard` | antes de um comando | Recusa comando que apaga trabalho. |
-| `subagent_inject` | antes de despachar um agente | Troca o bilhete `MUSTARD-WAVE: <spec> <n>` pelo pedido montado da onda. |
+| `subagent_inject` | antes de despachar um agente | Troca o texto do despacho que abre com o título de uma onda em andamento pelo título e pelo comando que lê o pedido gravado dela. |
 | `approval_witness` | depois de uma pergunta com opções | Grava o clique em "Aprovar" ou "Aceitar". |
 | `end_of_turn_check` | fim da resposta | Confere a escrita: o erro achado vai na linha da mensagem seguinte, sem barrar. Barra quando a resposta sai noutro idioma que não o do projeto, para o assistente escrevê-la de novo, e quando a spec fecha ou entra no merge e a resposta não cita uma pendência aberta nascida nela. |
 | `session_cleanup_observer` | fim da sessão | Solta a spec da sessão. |
@@ -84,19 +84,17 @@ Quase todos aceitam `--root <pasta>`, que diz de que pasta o repositório é lid
 | `discard` | Descarta a spec em duas chamadas: a primeira mostra o que sai e devolve um código; a segunda, com `--confirm <código>`, faz. `--remote` apaga também a branch do servidor; `--delete` apaga a pasta da spec em vez de guardá-la. |
 | `pending` | A lista de pendências. `--add --title "…" --detail "…"` acrescenta; `--close P-<n> --reason "…"` dá como entregue; `--remove` com `--id`, `--term` ou `--before <dia>` tira em duas chamadas, a segunda com `--confirm <código>`; `--drop P-<n>` é a mesma saída para um item; `--reopen P-<n>` traz de volta; `--stale` mostra as paradas há 30 dias e `--expire --keep P-<a>,P-<b>` tira as outras. |
 | `index` | Refaz o índice das specs. |
+| `move-records` | Tira de uma spec antiga os registros que as specs novas já gravam no arquivo de operações (ganchos, injeções, chamadas e o tempo das etapas da rodada) e os põe lá. Sem `--apply`, só diz quantos eventos e bytes sairiam; com ele, a spec vai antes inteira para uma cópia de segurança em `.claude/mustard/backups/`. A leitura junta as duas fontes e dá o mesmo resultado. Só a pedido. |
 | `scan` | Atualiza o mapa do projeto, lendo só o que mudou; nunca escreve no git. `--full` refaz o mapa de cada subprojeto; `--out <caminho>` grava o modelo em outro lugar. |
 | `map <pergunta>` | Pergunta ao mapa: `examples` (`--file <arquivo>`), `importers --file`, `tests --file`, `slice --file <arquivo> --name <declaração>`, `users --name <declaração>` (quem usa a declaração, como `arquivo:linha:quem chama`; com `--file`, só a desse arquivo), `search "<padrão>" [<pasta>]` (o mesmo texto que o `Grep` recebe, com `-i` (`--ignore-case`), `-w` (`--word-regexp`), `-F` (`--fixed-strings`), `--glob` e `--type`; recuperação local e julgamento complementar de candidatos ambíguos, quando habilitado; busca literal pelo Grep/rg não chama Jev) e `summary`. |
 | `page` | Gera HTML local no layout do Mustard a partir de markdown: `--body <pagina.md> --out <pagina.html>`, com `--title`, `--subtitle`, `--kind`. Não publica remotamente. |
-| `panel` | `--section <seção> (project, definitions, waves, execution, usage, settings, ideas, diagnostics)` seleciona uma projeção; `--if-revision <revision>` devolve `unchanged:true` quando as fontes não mudaram. Consulta projeto, specs, ondas, validação, etapas e consumo conhecido em JSON: `--root <projeto> --spec <spec>`. Não gera página nem chama scan, Jev ou modelo. `--refresh-consumption` atualiza as contagens nativas locais; `--session <sessão>` inclui a observação da statusline. `--wave <n>` carrega plano, pedido exato, retorno e testes da onda selecionada. Com `--observations`, consulta somente os recibos nativos do envio, em páginas de 32; `--observations-before <next_before>` continua a consulta. Fonte histórica conserva a data; recibo não comprova a interpretação do agente. As definições da spec e as contagens de chamadas/recusas ficam no painel; tokens de transporte são estimativas pelo tamanho do texto, separados do uso informado pelos modelos. |
+| `panel` | Lê uma tela do painel do `/mustard:mods` em JSON, sem gerar página nem chamar scan, Jev ou modelo: `--root <projeto> --spec <spec> --session <sessão> --section <tela>`. As telas são `overview` (a spec em três números, avisos, próximo passo — a frase no idioma do projeto e o comando —, ondas no ar, outras specs com aviso e uso do projeto), `spec` (branch, base, combinado, ondas por estado, revisão, PR e lista de specs), `items` (uma página de itens: `--kind <tipo>` (task, criterion, decision, rule ou question), `--query <palavras ou arquivo>`, `--filter <filtro>` (all, attention, committed ou uncommitted), `--offset <n>` e `--limit <n>`, 8 quando ausente; as que pedem atenção vêm primeiro), `item` (`--item <código>`: pedido, o que o agente fez, resultado, término, arquivos, itens cobertos, gasto da onda e histórico de versões) e `usage` (histórico medido, 14 dias, custo por spec, esta spec, ferramentas, sessão e disco das cópias). `--if-revision <revision>` devolve `unchanged:true` quando as fontes da tela não mudaram. `--refresh-consumption` mede uma vez o histórico das conversas e o disco das cópias das ondas; só o botão Medir agora pede essa medida. Sem `--section`, devolve a projeção completa usada pela publicação; `--wave <n>` junta plano, pedido exato, retorno e testes da onda. Com `--observations`, consulta somente os recibos nativos do envio, em páginas de 32; `--observations-before <next_before>` continua a consulta e `--receipt <recibo>` lê um inteiro. Fonte histórica conserva a data; recibo não comprova a interpretação do agente. |
 | `knowledge` | Recupera evidência atual por capacidade/fluxo: `mustard-rt run knowledge --query "<assunto>" --limit 8 --depth 2`. `--intent "<tarefa>"` acrescenta pistas nativas; `--purpose locate|understand|spec|implement|validate` ajusta os trechos atuais. Alternativas são candidatas, trechos truncados exigem expansão e ocorrências não indexadas não reutilizam símbolos antigos. `--file <arquivo>` restringe os pontos de partida; `--detail` expande a evidência. `--symbol <id> --direction callers` investiga consumidores da declaração exata; `outgoing` segue chamadas e `both` os dois sentidos, com fontes conferidas. `--refresh` lista interpretações antigas e fontes afetadas para revisão explícita. `--all --markdown --out <relatorio.md>` exporta levantamento local; `--record <recibo.json>` registra interpretação com várias fontes/hashes. `--coverage` explica cobertura/exclusões; `--topics <plano.json>` compõe relatório por assuntos; `--evaluate <perguntas.json>` mede arquivos/símbolos e bytes, sem executar spec. Anotações são declarações do autor. Nativo por padrão; `--responsibility` habilita seleção experimental arquivo→símbolo; não é padrão por regressão observada. Choice opcional nesse modo exige `ai.fallback:true` e `judgement.search.filter:"jev"`, somente para candidatos ambíguos. |
 | `usage-record` | `mustard-rt run usage-record --root <projeto> --session <sessão>` recebe medição do host no stdin, inclusive contexto e cotas sem custo em dólares. kind:step registra usage por turn_id/index e agent_id; repetições não somam novamente. kind:spawn e kind:complete registram o ciclo do agente. A visão ao vivo não é somada ao histórico de transcrições. Totais cumulativos não são somados repetidamente; a atribuição por spec usa intervalos observados na mesma branch. Custo é estimativa equivalente de API, com cobertura explícita; não é valor cobrado pela assinatura. |
-| `ideas` | `mustard-rt run ideas --root <projeto>` lê ideias e pendências do mesmo ledger. `--json '{"schema_version":1,"revision":0,"action":"add","title":"…","detail":"…"}'` acrescenta uma sugestão; edit, archive, complete, reopen e link exigem o id e a revisão atual. Ideias não são tarefas aprovadas nem entram nas cobranças do orquestrador. |
-| `panel-preferences` | Lê perfis de apresentação por projeto; `--json '{"schema_version":1,"revision":0,"selected":"planning"}'` troca o perfil. `profile:{id,name,tab,tabs}` salva uma personalização; `delete` remove um perfil. Não muda modelos, permissões ou ondas. |
-| `impact` | `mustard-rt run impact --json '{"action":"shell","command":"rm arquivo.txt"}'` calcula uma prévia sem executar a operação. Aceita também publish, branches e discard-wave. Expansões do shell, troca de diretório, revisões e estado remoto não comprovados ficam em unknown; complete:false é uma prévia parcial. Não autoriza ações nem substitui bloqueios. |
-| `panel-diagnostics` | Lê erros locais e saúde das integrações. `--record` recebe metadados no stdin; `--export` grava uma cópia local sanitizada. Nunca envia o diagnóstico nem inclui resultados de ferramentas ou conversas. |
-| `settings` | `mustard-rt run settings --root <projeto>` devolve a projeção segura usada pela aba Configurações do Mods. `--json '{"schema_version":1,"revision":"<da consulta>","changes":{"vectors":true,"jev":true,"jev_search":true}}'` aplica somente os campos selecionados. Aceita também `enabled`, `rtk`, `search_answer`, `jev_wave_planning`, `jev_context`, `agent_model` e `agent_effort`. Não aceita chaves; detecta edição concorrente e preserva os demais campos. Atualiza o gancho RTK e os arquivos dos agentes quando essas opções mudam; não chama IA nem publica. |
+| `panel-diagnostics` | `--record` recebe no stdin os metadados de uma falha do painel ou da medição (componente, operação, motivo e causa curta) e os guarda no diagnóstico local. Nunca envia o diagnóstico nem guarda resultados de ferramentas, conversas ou chaves. |
+| `settings` | `mustard-rt run settings --root <projeto> --full` devolve a projeção segura usada pela tela Configurações do `/mustard:mods`. `--json '{"schema_version":1,"revision":"<da consulta>","changes":{"vectors":true,"jev_spec_search":false}}'` aplica somente os campos selecionados: `enabled`, `rtk`, `vectors`, `search_answer`, `jev`, `jev_search`, `jev_wave_planning`, `jev_context`, `jev_spec_search`, `agent_model`, `agent_effort`, `review_model`, `review_effort`, `session_claude_model`, `session_codex_model`, `build_command`, `test_command`, `lint_command`, `max_compiling_waves`, `cloudflare_account`, `cloudflare_project` e `cloudflare_token`. O token do Cloudflare só é gravado e só chega pela entrada padrão, com `--stdin` no lugar do `--json`: no argumento, que outro processo lê, a gravação recusa com `settings-token-argument`. Ele nunca volta na resposta, que diz apenas se há um guardado, e a gravação recusa com `settings-token-exposed` quando o git vê o `mustard.json`. Conta e projeto seguem a regra da publicação: a conta com 32 dígitos hexadecimais, o projeto em minúsculas, dígitos e hífen no meio, até 58 caracteres. Detecta edição concorrente e preserva os demais campos. Atualiza o gancho RTK e os arquivos dos agentes quando essas opções mudam; não chama IA nem publica. |
 | `publish` | Gera HTML/JSON/manifesto e publica pelo Cloudflare configurado. Sem seletor, usa a spec da branch atual; `--spec <spec>` escolhe uma, `--project` gera visão geral mesmo sem spec, `--document <arquivo.md>` publica relatório no layout comum. `--include-consumption` autoriza incluir consumo. Só por pedido explícito; retorna `published:false` enquanto não houver envio remoto confirmado. |
-| `clean` | Lista as cópias descartáveis que os agentes deixaram no diretório temporário. `--dry-run` só lista, que é o padrão; `--apply` apaga as listadas; `--path <pasta ou arquivo>` apaga só aquela pasta ou aquele arquivo do diretório temporário, e recusa link simbólico. |
+| `clean` | Lista as cópias descartáveis que os agentes deixaram no diretório temporário. `--dry-run` só lista, que é o padrão; `--apply` apaga as listadas; `--path <pasta ou arquivo>` apaga só aquela pasta ou aquele arquivo do diretório temporário, e recusa link simbólico. O código que uma cópia tinha além do commit fica guardado em `refs/mustard/kept/<spec>/…`; de spec entregue, a ref cujo código a base já tem, conferido pelo git, sai com `--apply` e na própria entrega, e as outras ficam. |
 | `pr-review` | Sem número, lista os pull requests abertos da base; `--pr <n>` mostra o pedido de revisão. Não grava veredito: `--verdict` recusa na entrada, porque o veredito de cada onda é gravado pela rodada. |
 | `upsert` | Instala ou atualiza. Na mesma chamada, tira as sobras do Mustard antigo nos `CLAUDE.md` e no `settings.json` da equipe, com as regras das Guards indo antes para um item só da lista de pendências, troca no lugar as regras de bloqueio da equipe escritas errado, e diz o que saiu e o que mudou; o arquivo sem marca só aparece na lista. Enquanto o `mustard.json` não tem `localFiles`, responde `localFilesFound`, os arquivos que o git ignora fora das pastas ignoradas; `--local-files <a,b>` grava a lista confirmada e `--prepare <comando>` o comando que prepara cada cópia, e o valor vazio grava que não há. |
 | `doctor` | Diagnóstico só de leitura. `--check <nome>` roda uma conferência; `--residue` procura também referências mortas; `--format json` ou `--json` responde em JSON. |
@@ -122,8 +120,8 @@ Uma instalação antiga que declarava as três partes do roteador (`orchestrator
 O destino recomendado é **Cloudflare Pages Direct Upload**. Configure uma vez
 um projeto Direct Upload no painel da sua conta (sem integração automática de
 Git) e um token com permissão **Account → Cloudflare Pages → Edit** restrito à
-conta escolhida. Disponibilize `CLOUDFLARE_API_TOKEN` ao processo do Claude Code
-ou ao terminal do binário; não grave o token em `mustard.json`, na spec ou no Git.
+conta escolhida. O token mora no `mustard.json`, em `publication.apiToken`;
+nunca na spec ou no Git.
 
 Acrescente ao `mustard.json`, preservando as configurações existentes:
 
@@ -132,7 +130,8 @@ Acrescente ao `mustard.json`, preservando as configurações existentes:
   "publication": {
     "provider": "cloudflare-pages",
     "accountId": "0123456789abcdef0123456789abcdef",
-    "projectName": "mustard-status"
+    "projectName": "mustard-status",
+    "apiToken": "<token da Cloudflare>"
   }
 }
 ```
@@ -144,15 +143,23 @@ contas, projetos remotos ou credenciais.
 O bloco `publication` é opcional e pertence ao `mustard.json` da raiz do projeto.
 Instalação, atualização e `mustard config` preservam seus campos e as demais
 configurações existentes. O binário informa separadamente arquivo ilegível,
-destino inválido e token ausente, antes de tentar comunicação remota. O token
-é lido exclusivamente de `CLOUDFLARE_API_TOKEN` no ambiente; um campo de token
-no JSON não configura a autenticação.
+destino inválido, token ausente e token exposto ao git, antes de tentar
+comunicação remota.
 
-- `mustard-rt run publish --project` ou `/mustard-pages project` publica o projeto
-  sem exigir uma spec aberta.
-- `mustard-rt run publish` ou `/mustard-pages spec` usa a spec da branch atual.
-  `--spec <spec>` ou `/mustard-pages spec <spec>` seleciona outra. Consumo da spec só entra com `--include-consumption`.
-- `mustard-rt run publish --document resumo.md` ou `/mustard-pages report resumo.md`
+O token segue a regra da chave do Jev. `CLOUDFLARE_API_TOKEN` no ambiente,
+ou no `env` do `.claude/settings.local.json`, vence o arquivo. O token do
+`mustard.json` só vale enquanto o git não vê o arquivo: a instalação o põe no
+`exclude` do clone. Se o git guarda o `mustard.json` ou não o ignora, a
+publicação recusa com `publication-token-in-git`: tire o arquivo do git com
+`git rm --cached mustard.json`, rode `mustard-rt run upsert` e troque o token.
+Toda leitura do arquivo pelo assistente mostra o token trocado por `***`.
+
+- `mustard-rt run publish --project` ou `/mustard:pages project` publica o projeto
+  sem exigir uma spec aberta. O botão Publicar no Cloudflare da visão geral do
+  `/mustard:mods` (tecla `p` no terminal) faz a mesma publicação, só no clique.
+- `mustard-rt run publish` ou `/mustard:pages spec` usa a spec da branch atual.
+  `--spec <spec>` ou `/mustard:pages spec <spec>` seleciona outra. Consumo da spec só entra com `--include-consumption`.
+- `mustard-rt run publish --document resumo.md` ou `/mustard:pages report resumo.md`
   publica o Markdown solicitado, com título inicial `# Título`, no layout comum.
   O conteúdo pode ser uma análise ou resumo para gestores. O modelo raciocina
   sobre o conteúdo quando necessário; formatação e envio são do binário.
@@ -181,21 +188,25 @@ apagar recursos remotos requer operação separada na conta do usuário.
 Protocolo: [Direct Upload](https://developers.cloudflare.com/pages/get-started/direct-upload/)
 e [API de deployments](https://developers.cloudflare.com/api/resources/pages/subresources/projects/subresources/deployments/methods/create/).
 
-Quem conduz recebe um aviso curto aos 200 mil tokens e em cada faixa seguinte de 100 mil, uma vez por faixa. Limpar ou compactar a sessão reinicia essa contagem. Para o agente, o sinal chega aos 75% da janela do modelo que o atende, pela tabela da documentação da API; sem janela conhecida, depois de 150 mil tokens de trabalho além da entrada e dos resumos herdados. Ao sinal, ele conclui a tarefa atual, os testes mínimos e o resumo, sem iniciar outra tarefa após a ordem de entrega.
+Quem conduz recebe um aviso curto aos 200 mil tokens e em cada faixa seguinte de 100 mil, uma vez por faixa. Limpar ou compactar a sessão reinicia essa contagem. Para o agente, o sinal chega aos 200 mil tokens de contexto, contando a entrada e os resumos herdados, ou antes, aos 75% da janela do modelo que o atende, quando ela é menor. O próprio passo de término da tarefa responde se o agente segue ou entrega. Com agente vivo, o aviso de quem conduz manda esperar a volta dele antes de `/clear`, e a retomada depois de limpar lista as ondas cujo agente parou. Ao sinal, ele conclui a tarefa atual, os testes mínimos e o resumo, sem iniciar outra tarefa após a ordem de entrega.
 
 O painel conta as chamadas observadas do fluxo, leitura, gravação e busca, inclusive recusas. A medição de transporte de `read`, `write` e `search` fica em `.claude/mustard/operations/<spec>.ndjson`, separada dos itens e dos recibos obrigatórios de leitura do agente. Uma gravação recusada não muda o histórico canônico da spec. Bytes são medidos; tokens de transporte são aproximações pelo tamanho do texto, sem guardar o conteúdo dos argumentos. Essas contagens não demonstram, sozinhas, economia de tokens ou de dinheiro.
 
-Os Mods observam `tool.call` após a execução, `turn.complete`, `session.compact`
-e `classic.SubagentStop` para antecipar consultas locais com coalescência de
-200 ms. `session.measure` fornece contexto, custo informado e limites diretamente
-do host. Observar um evento não acrescenta um novo recibo de entrega/validação:
-o histórico canônico permanece no binário. Hooks clássicos continuam aplicando
-as validações nativas. Fechar o painel cancela seus timers.
+O painel lê o binário ao abrir, ao trocar de tela e no fim de cada turno: o
+`turn.complete` do condutor e o `classic.SubagentStop` de um agente releem só a
+tela visível, com `--if-revision`. Parado, não consulta nada; ferramentas e
+passos não disparam leitura. `session.measure` fornece contexto, custo informado
+e limites diretamente do host. Observar um evento não acrescenta um novo recibo
+de entrega/validação: o histórico canônico permanece no binário. Hooks clássicos
+continuam aplicando as validações nativas.
 
-O nome de comando nos Mods é `/mustard-pages`: a interface atual aceita letras,
-números, hífen e sublinhado, sem `:`. Isso permite execução direta sem transformar
-a publicação mecânica em um comando Markdown que consome turno do modelo.
-Relatórios atuais publicam texto/tabelas do Markdown; anexos em arquivos locais
+`/mustard:mods` e `/mustard:pages` são os arquivos `mods.md` e `pages.md` do
+plugin, e por isso levam o prefixo `mustard:`. O módulo dos Mods responde aos
+dois antes de o arquivo virar texto para o modelo: a publicação mecânica não
+consome turno. Se o módulo falha, ele mesmo responde com um aviso, e nada roda.
+Os dois arquivos ficam fora do alcance do modelo
+(`disable-model-invocation`). Digitados no meio de uma resposta, esperam o fim
+dela. Relatórios atuais publicam texto/tabelas do Markdown; anexos em arquivos locais
 não são enviados implicitamente. A leitura do arquivo é explícita e não inclui
 outras conversas, código ou a spec inteira por conta própria.
 
@@ -219,7 +230,7 @@ O manifesto do Mustard declara `defaultEnabled:false`, portanto a configuração
 `mustard@inline:true` habilita a cópia local somente nessa sessão, sem gravar
 habilitação nas configurações pessoais.
 
-No Claude, confira o plugin em `/plugin` e abra `/mustard-panel`. Peça uma
+No Claude, confira o plugin em `/plugin` e abra `/mustard:mods`. Peça uma
 alteração pequena pelo fluxo normal: levantamento, aprovação do plano, ondas,
 validação e revisão final. Observe a atualização do painel, os dados de consumo
 e a statusline durante as ferramentas e após a retomada. A publicação externa

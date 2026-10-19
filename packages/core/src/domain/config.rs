@@ -493,6 +493,13 @@ impl AgentsConfig {
     }
 }
 
+/// A chave de `agents` com o modelo e o esforço do revisor final.
+pub const REVIEW_AGENT: &str = "review";
+
+/// As finalidades em que o Jev pode ser ligado, cada uma em
+/// `judgement.<finalidade>.filter`.
+pub const JEV_PURPOSES: [&str; 4] = ["search", "wave-planning", "context", "spec-search"];
+
 /// O modelo e o esforço que a instalação escreve no cabeçalho de cada agente,
 /// já conferidos: o que o projeto declara em `agents`, ou o padrão de cada
 /// campo. O `Default` é o padrão dos dois.
@@ -591,8 +598,8 @@ pub struct ProjectConfig {
     /// for existing projects with credentials or a legacy provider setting.
     #[serde(skip_serializing_if = "AiConfig::is_empty")]
     pub ai: AiConfig,
-    /// Explicit snapshot hosting. Credentials are read only from the process
-    /// environment, never from this project configuration.
+    /// Explicit snapshot hosting. Its token is a secret: see
+    /// [`PublicationToken`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub publication: Option<PublicationConfig>,
     /// Git promotion flow + provider + submodule flag.
@@ -727,8 +734,51 @@ pub struct PublicationConfig {
     pub provider: String,
     pub account_id: String,
     pub project_name: String,
+    /// O token, em [`PUBLICATION_TOKEN_FIELD`]. Nenhuma serialização do tipo
+    /// o leva: só [`ProjectConfig::write`] o devolve ao arquivo.
+    #[serde(rename = "apiToken", skip_serializing)]
+    pub api_token: PublicationToken,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+impl PublicationConfig {
+    /// O token escrito em `publication.apiToken`, sem espaço em volta; `None`
+    /// quando falta, está em branco ou não é texto. Quem o usa passa pela
+    /// regra dos segredos do projeto, que decide se o arquivo vale.
+    #[must_use]
+    pub fn token(&self) -> Option<&str> {
+        self.api_token.raw.as_ref()?.as_str().map(str::trim).filter(|token| !token.is_empty())
+    }
+}
+
+/// O nome do campo que guarda o token da publicação dentro da seção
+/// `publication` do `mustard.json`. A leitura do token o procura, e as
+/// travas escondem o valor dele em toda leitura do arquivo.
+pub const PUBLICATION_TOKEN_FIELD: &str = "apiToken";
+
+/// A variável de ambiente do token da publicação; vence o `mustard.json`.
+pub const PUBLICATION_TOKEN_ENV: &str = "CLOUDFLARE_API_TOKEN";
+
+/// O token da publicação como o arquivo o traz. É segredo: o `Debug` não o
+/// escreve. Um valor que não é texto vale como ausente e volta ao arquivo
+/// como estava.
+#[derive(Clone, Default)]
+pub struct PublicationToken {
+    raw: Option<Value>,
+}
+
+impl std::fmt::Debug for PublicationToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.raw.is_some() { "PublicationToken(…)" } else { "PublicationToken" })
+    }
+}
+
+impl<'de> Deserialize<'de> for PublicationToken {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        let raw = Value::deserialize(deserializer)?;
+        Ok(Self { raw: (!raw.is_null()).then_some(raw) })
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -793,8 +843,9 @@ impl ProjectConfig {
 
     /// Serialize and atomically write to `<root>/mustard.json`.
     ///
-    /// A seção `jev` volta ao arquivo como foi lida, no fim: é a chave do
-    /// projeto, que a serialização do tipo não leva.
+    /// A seção `jev` volta ao arquivo como foi lida, no fim, e o token da
+    /// publicação volta ao fim da seção dele: são os segredos do projeto, que
+    /// a serialização do tipo não leva.
     ///
     /// # Errors
     /// [`crate::platform::error::Error::Parse`] on serialization failure (never
@@ -805,6 +856,11 @@ impl ProjectConfig {
         let mut document = serde_json::to_value(self)?;
         if let (Some(jev), Value::Object(keys)) = (&self.jev.raw, &mut document) {
             keys.insert("jev".to_string(), jev.clone());
+        }
+        if let (Some(token), Some(Value::Object(fields))) =
+            (self.publication.as_ref().and_then(|publication| publication.api_token.raw.as_ref()), document.get_mut("publication"))
+        {
+            fields.insert(PUBLICATION_TOKEN_FIELD.to_string(), token.clone());
         }
         let mut json = serde_json::to_string_pretty(&document)?;
         json.push('\n');
@@ -891,8 +947,11 @@ impl ProjectConfig {
     #[must_use]
     pub fn judgement_filter(&self, purpose: &str) -> FilterSetting {
         self.judgement.get(purpose).and_then(|v| v.get("filter")).map_or_else(
-            || {
-                if purpose == "search" { self.search_filter() } else { FilterSetting::Absent }
+            // Cada finalidade só liga pela própria escolha: a busca na spec
+            // sem escrita fica desligada, mesmo com a montagem das ondas ligada.
+            || match purpose {
+                "search" => self.search_filter(),
+                _ => FilterSetting::Absent,
             },
             |v| FilterSetting::of(Some(v)),
         )
@@ -1065,6 +1124,18 @@ impl ProjectConfig {
     pub fn agent_settings(&self) -> AgentSettings<'_> {
         AgentSettings { model: self.agent_model(), effort: self.agent_effort() }
     }
+
+    /// O modelo e o esforço do revisor final: os de `agents.review`, cada um
+    /// conferido como os dos agentes; o que falta ou não vale segue o dos
+    /// agentes de onda ([`Self::agent_settings`]).
+    #[must_use]
+    pub fn review_settings(&self) -> AgentSettings<'_> {
+        let review = self.agents.extra.get(REVIEW_AGENT);
+        let field = |name: &str| review.and_then(|review| review.get(name)).and_then(Value::as_str).map(str::trim);
+        let model = field("model").filter(|model| is_model_name(model)).unwrap_or_else(|| self.agent_model());
+        let effort = field("effort").and_then(|effort| AGENT_EFFORTS.into_iter().find(|known| known.eq_ignore_ascii_case(effort))).unwrap_or_else(|| self.agent_effort());
+        AgentSettings { model, effort }
+    }
 }
 
 /// A declared language key read as one of the supported locales: `None` when
@@ -1153,6 +1224,17 @@ mod tests {
     }
 
     #[test]
+    fn spec_search_without_its_own_choice_stays_off_even_with_wave_planning_on() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("mustard.json"), r#"{"ai":{"fallback":true},"judgement":{"wave-planning":{"filter":"jev"}}}"#).unwrap();
+        let config = ProjectConfig::load(dir.path());
+        assert_eq!(config.judgement_filter("wave-planning"), FilterSetting::Jev);
+        assert_eq!(config.judgement_filter("spec-search"), FilterSetting::Absent);
+        std::fs::write(dir.path().join("mustard.json"), r#"{"judgement":{"wave-planning":{"filter":"jev"},"spec-search":{"filter":"jev"}}}"#).unwrap();
+        assert_eq!(ProjectConfig::load(dir.path()).judgement_filter("spec-search"), FilterSetting::Jev);
+    }
+
+    #[test]
     fn native_publication_configuration_survives_installation_config_writes() {
         let dir=tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("mustard.json"),r#"{"publication":{"provider":"cloudflare-pages","accountId":"0123456789abcdef0123456789abcdef","projectName":"my-project","futureOption":"preserve"},"custom":"preserve"}"#).unwrap();
@@ -1163,6 +1245,25 @@ mod tests {
         assert_eq!(value["publication"]["futureOption"],"preserve");
         assert_eq!(value["custom"],"preserve");
         assert!(value["publication"].get("apiToken").is_none());
+    }
+
+    /// O token da publicação mora em `publication.apiToken` e é segredo, como
+    /// a chave do Jev: o `Debug` e a serialização do tipo não o levam, e só a
+    /// gravação do arquivo o devolve ao lugar de onde veio.
+    #[test]
+    fn the_publication_token_survives_writes_and_never_prints() {
+        const TOKEN: &str = "cf-test-token-not-real";
+        let dir=tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("mustard.json"),format!(r#"{{"publication":{{"provider":"cloudflare-pages","accountId":"0123456789abcdef0123456789abcdef","projectName":"my-project","apiToken":" {TOKEN} "}}}}"#)).unwrap();
+        let config=ProjectConfig::load(dir.path());
+        assert!(!format!("{config:?}").contains(TOKEN), "the Debug text never carries the token");
+        assert!(!serde_json::to_string(&config).unwrap().contains(TOKEN), "the serialization never carries the token");
+        config.write(dir.path()).unwrap();
+        let value: Value=serde_json::from_slice(&std::fs::read(dir.path().join("mustard.json")).unwrap()).unwrap();
+        assert_eq!(value["publication"][PUBLICATION_TOKEN_FIELD], format!(" {TOKEN} "), "the write puts it back as it was");
+        assert_eq!(ProjectConfig::load(dir.path()).publication.unwrap().token(), Some(TOKEN));
+        let without = PublicationConfig { api_token: PublicationToken::default(), ..config.publication.clone().unwrap() };
+        assert_eq!(without.token(), None);
     }
 
     #[test]

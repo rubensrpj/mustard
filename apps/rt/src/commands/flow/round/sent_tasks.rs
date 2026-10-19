@@ -15,8 +15,8 @@ use serde_json::Value;
 /// não conta. O envio gravado antes de guardar os itens, e a onda sem envio,
 /// ficam com as tarefas que hoje levam a marca da onda.
 pub(super) fn sent_tasks(log: &SpecLog, wave: u64) -> Vec<&SpecEvent> {
-    let sent = log.last_dispatch_by_wave().get(&wave).and_then(|id| log.get(*id));
-    let Some(items) = sent.and_then(|send| send.fields.get("items")).and_then(Value::as_array) else {
+    let sent = log.last_dispatch_by_wave().get(&wave).copied();
+    let Some(items) = sent.and_then(|sent| log.send_field(sent, "items")).and_then(Value::as_array) else {
         return log.visible().into_iter().filter(|e| e.event_type == "task" && e.wave() == Some(wave)).collect();
     };
     let mut tasks: Vec<&SpecEvent> = Vec::new();

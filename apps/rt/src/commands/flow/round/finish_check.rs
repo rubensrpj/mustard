@@ -196,6 +196,29 @@ pub(crate) fn mark_step_copy(root: &Path, spec: &str, draft: &mut Map<String, Va
     None
 }
 
+/// O que a onda `wave` gravou desde o pedido que a despachou, para o resumo
+/// da revisão: cada passo — o término de uma tarefa ou a prova de um
+/// critério —, pelo item e pelo texto, e as tarefas com que a onda saiu que
+/// ficaram sem passo de término, pelo código. Sem envio, nada.
+pub(super) fn review_steps(log: &SpecLog, wave: u64) -> (Vec<Value>, Vec<String>) {
+    let Some(sent) = log.last_by_wave("send").get(&wave).copied() else { return (Vec::new(), Vec::new()) };
+    let codes = log.codes();
+    let since = opened_at(log, sent);
+    let steps: Vec<(String, &SpecEvent)> = log
+        .visible()
+        .into_iter()
+        .filter(|e| e.event_type == "step" && e.wave() == Some(wave) && e.id > since)
+        .map(|step| (step_task(step.fields.get("item"), &codes), step))
+        .collect();
+    let shown = steps.iter().map(|(item, step)| json!({"item": item, "text": step.str_field("text").unwrap_or_default()})).collect();
+    let without = wave_tasks(log, wave, &codes)
+        .into_iter()
+        .filter(|(code, task)| task.wave() == Some(wave) && !steps.iter().any(|(item, _)| item == code))
+        .map(|(code, _)| code)
+        .collect();
+    (shown, without)
+}
+
 /// Os códigos que os campos `fields` de uma entrega citam em `undone`, como o
 /// agente os escreveu, sem as bordas.
 fn undone_cited(fields: &Map<String, Value>) -> Vec<String> {

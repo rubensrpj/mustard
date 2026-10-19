@@ -38,6 +38,14 @@ pub(super) type SettledAgreed = (Vec<Unmet>, Vec<String>);
 /// nota ou a tarefa — e o rascunho.
 pub(super) type UnmetEvent = (u64, &'static str, Map<String, Value>);
 
+/// Um evento que um item não cumprido vira, com a marca de quem respondeu por
+/// ele ([`place_unmet`]), o tipo do evento e o rascunho.
+type PlacedEvent<T> = (T, &'static str, Map<String, Value>);
+
+/// Um evento que um item não cumprido da revisão final vira
+/// ([`place_review_unmet`]): o tipo do evento e o rascunho.
+type ReviewEvent = (&'static str, Map<String, Value>);
+
 /// Cada tarefa que ganhou pelo sentido itens não cumpridos, com o número de
 /// cada item: é ela que pede a reescrita ([`unmet_meaning_joins`]).
 pub(super) type UnmetJoins = Vec<(JoinedAt, Vec<u64>)>;
@@ -112,7 +120,7 @@ pub(super) fn request_agreed(log: &SpecLog, wave: u64) -> Vec<&SpecEvent> {
 /// número até o dele. Sem envio, a spec inteira.
 pub(super) fn as_dispatched(log: &SpecLog, wave: u64) -> SpecLog {
     let sent = dispatched_at(log, wave).unwrap_or(u64::MAX);
-    SpecLog { events: log.events.iter().filter(|e| e.id <= sent).cloned().collect(), ..SpecLog::default() }
+    SpecLog::with_events(log.events.iter().filter(|e| e.id <= sent).cloned().collect())
 }
 
 /// Os códigos dos itens que alguma tarefa ainda por entregar cobre
@@ -338,7 +346,7 @@ fn join_unmet_with(
     let mut covered = covered_codes(log, &returning);
     covered.extend(returned.iter().flat_map(|(_, task)| listed_ids(task, "covers")).map(code_of));
     let mut found: Vec<(u64, Unmet)> = Vec::new();
-    for wave in waves.iter().filter(|wave| !wave.agreed.is_empty() && !(wave.taken_elsewhere && wave.undone.is_empty())) {
+    for wave in waves.iter().filter(|wave| !(wave.agreed.is_empty() || (wave.taken_elsewhere && wave.undone.is_empty()))) {
         let mut answer = Map::from_iter([("agreed".to_string(), json!(wave.agreed))]);
         let (_, unmet) = answered_items(log, &mut answer, &mut covered, &removed_by_analysis(log, wave.wave))?;
         found.extend(unmet.into_iter().map(|item| (wave.wave, item)));
@@ -367,7 +375,7 @@ fn join_unmet_with(
 /// da volta de uma onda ([`place_unmet`]), de autor da revisão. Devolve cada
 /// evento que os itens viram, com o tipo, na ordem dos itens, e cada tarefa
 /// que ganhou itens pelo sentido.
-pub(super) fn place_review_unmet(root: &Path, spec: &str, log: &SpecLog, unmet: Vec<Unmet>, lang: Locale) -> (Vec<(&'static str, Map<String, Value>)>, UnmetJoins) {
+pub(super) fn place_review_unmet(root: &Path, spec: &str, log: &SpecLog, unmet: Vec<Unmet>, lang: Locale) -> (Vec<ReviewEvent>, UnmetJoins) {
     place_review_unmet_with(log, unmet, lang, &task_triage::jev_ask(root, spec))
 }
 
@@ -377,7 +385,7 @@ fn place_review_unmet_with(
     unmet: Vec<Unmet>,
     lang: Locale,
     ask: &dyn Fn(&str) -> Option<Value>,
-) -> (Vec<(&'static str, Map<String, Value>)>, UnmetJoins) {
+) -> (Vec<ReviewEvent>, UnmetJoins) {
     let asked = unmet.into_iter().map(|item| ((), item)).collect();
     let (events, joins) = place_unmet(log, asked, |()| AnsweredBy::Review, &mut [], &BTreeSet::new(), &[], lang, ask);
     (events.into_iter().map(|((), kind, draft)| (kind, draft)).collect(), joins)
@@ -404,7 +412,7 @@ fn place_unmet<T: Copy>(
     summaries: &[Summary],
     lang: Locale,
     ask: &dyn Fn(&str) -> Option<Value>,
-) -> (Vec<(T, &'static str, Map<String, Value>)>, UnmetJoins) {
+) -> (Vec<PlacedEvent<T>>, UnmetJoins) {
     let codes = log.codes();
     let code_of = |id: u64| codes.get(&id).cloned().unwrap_or_else(|| id.to_string());
     let back: Vec<u64> = returned.iter().filter_map(|(_, task)| task.get("replaces").and_then(Value::as_u64)).collect();
@@ -590,10 +598,11 @@ pub(super) mod tests {
         let path = store::spec_file(root, "x").unwrap();
         let log = store::read(&path).unwrap().unwrap();
         let prior = log.visible().into_iter().rfind(|e| e.event_type == "send" && e.wave() == Some(1)).cloned().unwrap();
-        assert!(prior.fields.get("analysis").is_some(), "{prior:?}");
+        let whole = log.whole_fields(&prior);
+        assert!(whole.get("analysis").is_some(), "{prior:?}");
         let mut resent = serde_json::Map::new();
         for field in ["wave", "role", "text", "lines", "chars", "items", "read_items", "mustard", "copy", "author"] {
-            if let Some(value) = prior.fields.get(field) {
+            if let Some(value) = whole.get(field) {
                 resent.insert(field.into(), value.clone());
             }
         }

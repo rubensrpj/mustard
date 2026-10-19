@@ -72,6 +72,108 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "[Mustard] Pull request #{pr} of the spec {spec} was merged by someone else: the spec \
              was recorded as delivered."
         }
+        // A obra de uma spec que o git prova na base, juntada fora da porta do
+        // pull request: a frase de abertura, a entrega gravada ou as cópias
+        // saindo antes dela, e o que houve com a branch.
+        ("session.landed.outside", Locale::PtBr) => {
+            "[Mustard] A branch {branch} da spec {spec} entrou na base fora do fechamento, sem a \
+             revisão final."
+        }
+        ("session.landed.outside", Locale::EnUs) => {
+            "[Mustard] The branch {branch} of the spec {spec} went into the base outside the close, \
+             without the final review."
+        }
+        ("session.landed.outside_closed", Locale::PtBr) => {
+            "[Mustard] A branch {branch} da spec {spec}, já fechada, entrou na base por um merge feito \
+             fora do Mustard."
+        }
+        ("session.landed.outside_closed", Locale::EnUs) => {
+            "[Mustard] The branch {branch} of the spec {spec}, already closed, went into the base \
+             through a merge made outside Mustard."
+        }
+        ("session.landed.recorded", Locale::PtBr) => "A spec foi gravada como entregue.",
+        ("session.landed.recorded", Locale::EnUs) => "The spec was recorded as delivered.",
+        ("session.landed.leaving_one", Locale::PtBr) => {
+            "A cópia da obra sai em segundo plano, e o código dela que nenhum commit tem fica \
+             guardado em `refs/mustard/kept/{spec}/`. Quando ela sair, a spec é gravada como \
+             entregue; o relatório fica em {report}."
+        }
+        ("session.landed.leaving_one", Locale::EnUs) => {
+            "The work copy is leaving in the background, and its code no commit holds is kept under \
+             `refs/mustard/kept/{spec}/`. When it is gone, the spec is recorded as delivered; the \
+             report goes to {report}."
+        }
+        ("session.landed.leaving_many", Locale::PtBr) => {
+            "As {count} cópias da obra saem em segundo plano, e o código delas que nenhum commit tem \
+             fica guardado em `refs/mustard/kept/{spec}/`. Quando a última sair, a spec é gravada \
+             como entregue; o relatório fica em {report}."
+        }
+        ("session.landed.leaving_many", Locale::EnUs) => {
+            "Its {count} work copies are leaving in the background, and their code no commit holds is \
+             kept under `refs/mustard/kept/{spec}/`. When the last one is gone, the spec is recorded \
+             as delivered; the report goes to {report}."
+        }
+        ("session.landed.gone", Locale::PtBr) => {
+            "A branch {branch} já tinha saído desta máquina e do servidor."
+        }
+        ("session.landed.gone", Locale::EnUs) => {
+            "The branch {branch} had already left this machine and the server."
+        }
+        ("session.landed.kept", Locale::PtBr) => "A branch {branch} segue nesta máquina, como estava.",
+        ("session.landed.kept", Locale::EnUs) => "The branch {branch} stays on this machine, as it was.",
+        // As recusas de `run deliver-merged`.
+        ("session.deliver.no_spec", Locale::PtBr) => "A spec {spec} não existe neste projeto.",
+        ("session.deliver.no_spec", Locale::EnUs) => "The spec {spec} does not exist in this project.",
+        ("session.deliver.not_open", Locale::PtBr) => {
+            "A spec {spec} está na fase {phase}: só a em execução, a fechada e a com o pull request \
+             aberto são entregues por aqui."
+        }
+        ("session.deliver.not_open", Locale::EnUs) => {
+            "The spec {spec} is in the phase {phase}: only a running, closed or pull-request-open \
+             spec is delivered here."
+        }
+        ("session.deliver.not_in_base", Locale::PtBr) => {
+            "Nada prova que a obra da spec {spec} entrou na base. O último commit gravado não chegou \
+             a ela por um merge, ou a branch andou depois dele. Nada foi mudado."
+        }
+        ("session.deliver.not_in_base", Locale::EnUs) => {
+            "Nothing proves the work of the spec {spec} went into the base. Its last recorded commit \
+             did not reach it through a merge, or the branch moved past it. Nothing was changed."
+        }
+        ("session.deliver.in_flight", Locale::PtBr) => {
+            "A spec {spec} ainda tem trabalho em andamento: onda sem volta assumida, revisão final \
+             aberta ou conserto pendente. As cópias ficam, e nada foi mudado."
+        }
+        ("session.deliver.in_flight", Locale::EnUs) => {
+            "The spec {spec} still has work in progress: a wave with no accepted return, an open final \
+             review or a pending fix. The copies stay, and nothing was changed."
+        }
+        ("session.landed.tasks_left", Locale::PtBr) => {
+            "[Mustard] A branch {branch} da spec {spec} entrou na base. Ainda faltam {count} \
+             tarefa(s), sem onda ou em onda não entregue. A spec não foi gravada como entregue e \
+             segue em obra. Rode as tarefas que faltam ou tire as que não vão sair."
+        }
+        ("session.landed.tasks_left", Locale::EnUs) => {
+            "[Mustard] The branch {branch} of the spec {spec} went into the base. {count} task(s) \
+             are still left, with no wave or in a wave not delivered yet. The spec was not recorded \
+             as delivered and stays in progress. Run the tasks left or remove the ones that will \
+             not go out."
+        }
+        ("session.deliver.backlog", Locale::PtBr) => {
+            "A spec {spec} ainda tem {count} tarefa(s) que não saíram: sem onda ou em onda ainda não \
+             entregue. A obra não é entregue com elas de fora; as cópias ficam, e nada foi mudado."
+        }
+        ("session.deliver.backlog", Locale::EnUs) => {
+            "The spec {spec} still has {count} task(s) that never went out: with no wave or in a wave \
+             not delivered yet. The work is not delivered without them; the copies stay, and nothing \
+             was changed."
+        }
+        ("session.deliver.not_started", Locale::PtBr) => {
+            "mustard: as cópias da spec {spec} não saíram em segundo plano: {reason}"
+        }
+        ("session.deliver.not_started", Locale::EnUs) => {
+            "mustard: the copies of the spec {spec} did not leave in the background: {reason}"
+        }
         ("session.landed.settled", Locale::PtBr) => {
             "A base foi atualizada e a branch {branch} saiu desta máquina."
         }
@@ -207,8 +309,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("session.rs"),
             super::PREFIXES,
-            25,
-            0xeaec_9c6f_6b0e_fafa,
+            39,
+            0xf790_2c9f_e42d_96cf,
         );
     }
 
