@@ -17,6 +17,9 @@
 
 #![cfg(unix)]
 
+#[path = "support/binary.rs"]
+mod binary;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader, Read, Write as _};
 use std::net::TcpListener;
@@ -96,7 +99,7 @@ impl Project {
 
     /// Como [`Self::command`], rodando de dentro de `dir`.
     fn command_in(&self, dir: &Path, args: &[&str], stdin: &str) -> Output {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+        let mut child = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
             .args(args)
             .current_dir(dir)
             .env("HOME", &self.home)
@@ -169,6 +172,13 @@ impl Project {
 
     fn log(&self) -> SpecLog {
         store::read(&store::spec_file(&self.root, SPEC).expect("spec file")).expect("readable").expect("the spec file")
+    }
+
+    /// As chamadas `command` que o programa observou: as do arquivo de
+    /// operações da spec, onde a chamada mora.
+    fn calls_of(&self, command: &str) -> Vec<serde_json::Map<String, Value>> {
+        let operations = store::operations_file(&self.root, SPEC).and_then(|path| store::read(&path).ok().flatten()).unwrap_or_default();
+        operations.visible().into_iter().filter(|e| e.event_type == "call" && e.str_field("command") == Some(command)).map(|call| call.fields.clone()).collect()
     }
 
     /// Um evento semeado cru no arquivo da spec, sem passar pela linha de
@@ -392,13 +402,15 @@ fn test_process() -> (u32, u64) {
 /// termina assim que ela responde, e a rodada seguinte leria a onda como
 /// órfã e a reenviaria. Aqui o envio mais recente de cada onda de `waves`
 /// ganha uma versão nova, como a volta da onda grava, com o par do processo
-/// do teste: a onda segue em andamento não importa quem lançou a suíte.
+/// do teste e o agente lançado: a onda segue em andamento não importa quem
+/// lançou a suíte.
 fn keep_sent(project: &Project, waves: &[u64]) {
     sent_by(project, waves, test_process());
 }
 
 /// O envio mais recente de cada onda de `waves` ganha uma versão nova, como
-/// a volta da onda grava, com o par `(pid, started)` de quem o mandou.
+/// a volta da onda grava, com o par `(pid, started)` de quem o mandou e o
+/// agente dela lançado, como a observação do hospedeiro grava.
 fn sent_by(project: &Project, waves: &[u64], (pid, started): (u32, u64)) {
     let log = project.log();
     let last = log.last_by_wave("send");
@@ -413,6 +425,7 @@ fn sent_by(project: &Project, waves: &[u64], (pid, started): (u32, u64)) {
         draft.insert("replaces".into(), json!(sent.id));
         draft.insert("claude_pid".into(), json!(pid));
         draft.insert("claude_started".into(), json!(started));
+        draft.insert("agent_launched".into(), json!(true));
         project.seed("send", &Value::Object(draft));
     }
 }
@@ -447,7 +460,7 @@ fn a_short_lived_round_uses_its_exact_session_owner_and_the_dispatch_hook_accept
     let mut hash = mustard_core::io::sha256::Sha256::new(); hash.update(SESSION.as_bytes());
     let folder = project.root.join(".claude/mustard/host-observations"); std::fs::create_dir_all(&folder).unwrap();
     std::fs::write(folder.join(format!("claude-{}.json", hash.hex_digest())), json!({"host_pid":pid,"host_started":started}).to_string()).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+    let output = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
         .args(["run","round","--dispatch","--spec",SPEC]).current_dir(&project.root)
         .env("MUSTARD_SESSION_ID",SESSION).env("MUSTARD_RT_DELEGATED","1").env("CLAUDE_CONFIG_DIR",&project.home)
         .env_remove("CODEX_THREAD_ID").env_remove("TYPESAFE_API_KEY").env_remove("MUSTARD_JEV_URL").output().unwrap();
@@ -687,16 +700,6 @@ impl FakeJev {
     /// a da tarefa entre as do pedido, da de número mais baixo para a mais
     /// alta: o teste não depende dos números que a spec deu.
     fn judging(kind_of: impl Fn(usize) -> (&'static str, f64) + Send + Sync + 'static, clash_of: impl Fn(u64, usize) -> f64 + Send + Sync + 'static) -> Self {
-        Self::judging_sized(kind_of, clash_of, |_| 0.0)
-    }
-
-    /// O Jev de [`FakeJev::judging`], que também responde a cada pergunta de
-    /// tamanho com a nota `size_of(posição)`, de 0 a 3.
-    fn judging_sized(
-        kind_of: impl Fn(usize) -> (&'static str, f64) + Send + Sync + 'static,
-        clash_of: impl Fn(u64, usize) -> f64 + Send + Sync + 'static,
-        size_of: impl Fn(usize) -> f64 + Send + Sync + 'static,
-    ) -> Self {
         Self::start(move |asked| {
             let keys: Vec<&String> = asked["questions"].as_object().expect("the questions").keys().collect();
             let position = |task: &str| {
@@ -718,27 +721,6 @@ impl FakeJev {
                             .map(|k| (k.clone(), json!(if k == kind { confidence } else { (1.0 - confidence) / (criteria.len() - 1) as f64 })))
                             .collect();
                         json!({"type":"choice","choice":kind,"confidence":confidence,"probabilities":chances})
-                    });
-                } else if let Some(task) = key.strip_prefix("tam_t") {
-                    answers.insert(key.clone(), {
-                        let size = size_of(position(task));
-                        let lo = size.floor();
-                        let hi = size.ceil();
-                        let probabilities: serde_json::Map<_, _> = (0..=3)
-                            .map(|n| {
-                                (
-                                    n.to_string(),
-                                    json!(if (f64::from(n) - lo).abs() < f64::EPSILON {
-                                        1.0 - (size - lo)
-                                    } else if (f64::from(n) - hi).abs() < f64::EPSILON {
-                                        size - lo
-                                    } else {
-                                        0.0
-                                    }),
-                                )
-                            })
-                            .collect();
-                        json!({"type":"score","score":size,"confidence":1.0,"probabilities":probabilities})
                     });
                 } else if let Some((wave, task)) = key.strip_prefix("blk_w").and_then(|rest| rest.split_once("_t")) {
                     let chance = clash_of(wave.parse().expect("a wave"), position(task));
@@ -769,10 +751,35 @@ fn batch_orders(project: &Project) -> Vec<Vec<u64>> {
     log.visible().into_iter().filter(|e| e.event_type == "wave" && e.str_field("author") == Some("binary")).map(|wave| wave.ints("order")).collect()
 }
 
-/// As chamadas `wave assembly` gravadas na spec.
+/// O recibo, com a certeza `certainty`, de cada pedido de reserva que a
+/// resposta `out` da rodada trouxe, pela porta do `run knowledge
+/// --complete-session`: o tipo `feature` na pergunta do tipo, e não nas
+/// outras. Devolve quantos recibos mandou.
+fn answer_reserves(project: &Project, out: &Value, certainty: &str) -> usize {
+    let requests = out["reserves"].as_array().cloned().unwrap_or_default();
+    for (at, request) in requests.iter().enumerate() {
+        let prompt = request["delegation"]["request"]["prompt"].as_str().unwrap_or_default();
+        let answers: serde_json::Map<String, Value> = (1..=request["questions"].as_u64().unwrap_or_default())
+            .map(|number| {
+                let id = format!("q{number}");
+                let text = prompt.lines().find_map(|line| line.strip_prefix(&format!("{id}: "))).unwrap_or_default();
+                let choice = if text.contains("What kind of work") { "feature" } else { "no" };
+                (id, json!({"choice": choice, "certainty": certainty}))
+            })
+            .collect();
+        let receipt = json!({"request_id": request["request_id"], "model": "inherit", "input_tokens": null, "output_tokens": null,
+            "result": {"answers": answers}});
+        let path = project.root.join(format!("recibo-{at}.json"));
+        std::fs::write(&path, receipt.to_string()).expect("the receipt");
+        let done = project.command(&["run", "knowledge", "--complete-session", path.to_str().unwrap()], "");
+        assert!(done.status.success(), "{}", String::from_utf8_lossy(&done.stdout));
+    }
+    requests.len()
+}
+
+/// As chamadas `wave assembly` que o programa observou.
 fn assembly_calls(project: &Project) -> Vec<serde_json::Map<String, Value>> {
-    let log = project.log();
-    log.visible().into_iter().filter(|e| e.event_type == "call" && e.str_field("command") == Some("wave assembly")).map(|call| call.fields.clone()).collect()
+    project.calls_of("wave assembly")
 }
 
 /// As tarefas de `backlog_project` que o Jev de mentira julga, pelo número
@@ -799,7 +806,7 @@ fn tasks_of_one_kind_share_a_wave_without_a_file_in_common_and_the_call_is_recor
     let asked = jev.requests();
     assert_eq!(asked.len(), 3, "um perfil estável por tarefa");
     assert_eq!(asked[0]["model"], json!("jev-1.13.0"));
-    assert_eq!(asked[0]["questions"].as_object().unwrap().len(), 2, "tipo e tamanho compartilham o perfil: {}", asked[0]);
+    assert_eq!(asked[0]["questions"].as_object().unwrap().len(), 1, "o perfil pergunta só o tipo: {}", asked[0]);
     let calls = assembly_calls(&project);
     assert_eq!(calls.len(), 1, "{calls:?}");
     let call = &calls[0];
@@ -811,13 +818,14 @@ fn tasks_of_one_kind_share_a_wave_without_a_file_in_common_and_the_call_is_recor
     assert_eq!((call["requests"].clone(), call["candidates"].clone(), call["returned"].clone()), (json!(3), json!(3), json!(3)));
 }
 
-/// Toda onda sai no modelo do projeto, com o Jev ligado ou não, e ainda que o
-/// `mustard.json` traga a chave `light_model` de antes: o envio grava o modelo
-/// do projeto, a resposta do despacho e o texto do próximo passo não citam
-/// modelo nenhum, o pedido da onda diz o do projeto, e o Jev não pergunta
-/// mais se a tarefa é mecânica.
+/// A onda sem nota de dificuldade sai no modelo do projeto, com o Jev ligado
+/// ou não, e ainda que o `mustard.json` traga a chave `light_model` de antes:
+/// o envio grava o modelo do projeto e o esforço `xhigh`, o pedido da onda diz
+/// os dois, a resposta do despacho traz o modelo de cada onda, o texto do
+/// próximo passo manda lançar o agente com ele, e o Jev não pergunta mais se a
+/// tarefa é mecânica.
 #[test]
-fn every_wave_goes_out_on_the_project_model_and_the_jev_is_not_asked_about_it() {
+fn a_wave_without_a_grade_goes_out_on_the_project_model_and_the_dispatch_names_it() {
     let jev = FakeJev::judging(
         |position| {
             if position == 0 { ("defect", 0.9) } else { ("feature", 0.9) }
@@ -827,7 +835,7 @@ fn every_wave_goes_out_on_the_project_model_and_the_jev_is_not_asked_about_it() 
     let (project, _, _, tasks) = judged_project(&[&["a.rs"], &["c.rs"], &["d.rs"]], &jev);
     let config_path = project.root.join("mustard.json");
     let mut config: Value = serde_json::from_str(&std::fs::read_to_string(&config_path).expect("config")).expect("json");
-    config["agents"] = json!({"model": "opus", "light_model": "claude-haiku-5"});
+    config["agents"] = json!({"model": "opus", "effort": "low", "light_model": "claude-haiku-5"});
     std::fs::write(&config_path, config.to_string()).expect("config");
 
     let out = project.run(&["round", "--dispatch", "--spec", SPEC]);
@@ -836,22 +844,23 @@ fn every_wave_goes_out_on_the_project_model_and_the_jev_is_not_asked_about_it() 
     let log = project.log();
     for wave in [1, 2] {
         let send = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(wave)).expect("the send");
-        assert_eq!(send.str_field("model"), Some("opus"), "a onda {wave} vai no modelo do projeto: {out}");
+        assert_eq!((send.str_field("model"), send.str_field("effort")), (Some("opus"), Some("xhigh")), "a onda {wave} vai no modelo do projeto: {out}");
         let prompt = send.str_field("text").expect("the request");
-        assert!(prompt.contains("Modelo desta onda: opus."), "o pedido diz o modelo do projeto: {prompt}");
+        assert!(prompt.contains("Modelo desta onda: opus. Esforço: xhigh."), "o pedido diz o modelo do projeto: {prompt}");
     }
     let dispatch = out["dispatch"].as_array().expect("the dispatch");
     assert_eq!(dispatch.len(), 2, "{out}");
-    assert!(dispatch.iter().all(|sent| sent.get("model").is_none()), "o despacho não traz modelo por onda: {out}");
+    assert!(dispatch.iter().all(|sent| sent["model"] == json!("opus")), "o despacho traz o modelo de cada onda: {out}");
     let next = out["next"].as_str().expect("the next step");
-    assert!(!next.contains("modelo") && !next.contains("`model`"), "o próximo passo não cita modelo: {next}");
+    assert!(next.contains("`model`"), "o próximo passo manda lançar com o modelo da entrada: {next}");
     for asked in jev.requests() {
         let questions = asked["questions"].as_object().expect("the questions");
         assert!(questions.keys().all(|key| !key.starts_with("mec_")), "o Jev não é perguntado sobre onda mecânica: {asked}");
     }
 }
 
-/// Sem chave do Jev a onda também sai no modelo do projeto, e o envio o grava.
+/// Sem chave do Jev a onda também sai no modelo do projeto, e o envio e o
+/// despacho o gravam.
 #[test]
 fn without_a_key_the_wave_goes_out_on_the_project_model() {
     let (project, _, _, _) = backlog_project(&[&["a.rs"]]);
@@ -861,7 +870,46 @@ fn without_a_key_the_wave_goes_out_on_the_project_model() {
     let log = project.log();
     let send = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(1)).expect("the send");
     assert_eq!(send.str_field("model"), Some("sonnet"), "{out}");
-    assert!(out["dispatch"][0].get("model").is_none(), "{out}");
+    assert_eq!(out["dispatch"][0]["model"], json!("sonnet"), "{out}");
+}
+
+/// Two waves formed by the classifier, one of two simple tasks and one of a
+/// task that spans several modules: the simple one goes out on Sonnet, the
+/// other on Opus, both at effort xhigh, and the dispatch names each model.
+#[test]
+fn each_formed_wave_goes_out_on_the_model_of_its_hardest_task() {
+    let project = Project::new();
+    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    let said = survey(&project);
+    let criterion = project.write(
+        "criterion",
+        &json!({"title": "Combinar o item", "when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
+            "form": "ubiquitous", "origin": said}),
+    );
+    let criterion = criterion["id"].as_u64().expect("the criterion has an id");
+    let grade = |name: &str, position: u64, level: u64| {
+        json!({"group": {"name": name, "position": position, "formed": true, "difficulty": {"level": level, "confidence": 0.9}}})
+    };
+    let simple = [
+        backlog_task_with(&project, criterion, said, &["a.rs"], &[], &grade("Soma", 1, 0)),
+        backlog_task_with(&project, criterion, said, &["b.rs"], &[], &grade("Soma", 2, 0)),
+    ];
+    let hard = backlog_task_with(&project, criterion, said, &["c.rs"], &[], &grade("Fluxo", 1, 3));
+    project.run(&["plan", "--spec", SPEC]);
+    approve(&project);
+
+    let out = project.run(&["round", "--dispatch", "--spec", SPEC]);
+
+    let log = project.log();
+    let wave_of = |task: u64| log.current(task).and_then(|t| t.wave()).unwrap_or_else(|| panic!("the task left in a wave: {out}"));
+    assert_eq!(wave_of(simple[0]), wave_of(simple[1]), "{out}");
+    let sent = |wave: u64| log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(wave)).cloned().expect("the send");
+    let (easy, heavy) = (sent(wave_of(simple[0])), sent(wave_of(hard)));
+    assert_eq!((easy.str_field("model"), easy.str_field("effort")), (Some("sonnet"), Some("xhigh")), "{out}");
+    assert_eq!((heavy.str_field("model"), heavy.str_field("effort")), (Some("opus"), Some("xhigh")), "{out}");
+    assert!(easy.str_field("text").is_some_and(|text| text.contains("Modelo desta onda: sonnet. Esforço: xhigh.")), "{easy:?}");
+    let named: BTreeMap<u64, Value> = out["dispatch"].as_array().expect("the dispatch").iter().map(|d| (d["wave"].as_u64().unwrap(), d["model"].clone())).collect();
+    assert_eq!(named, BTreeMap::from([(wave_of(simple[0]), json!("sonnet")), (wave_of(hard), json!("opus"))]), "{out}");
 }
 
 /// O defeito sai antes da limpeza, ainda que a limpeza tenha o número mais
@@ -924,7 +972,7 @@ fn a_high_clash_with_the_wave_in_progress_holds_a_task_that_shares_no_file_with_
     project.jev = Some(strict.url.clone());
     project.run(&["round", "--dispatch", "--spec", SPEC]);
     assert_eq!(wave_of(&project, held), None, "o choque de 0,8 segura a tarefa que não divide arquivo");
-    assert_eq!(strict.requests()[0]["questions"].as_object().unwrap().len(), 2, "perfil intrínseco; o bloqueio tem evidência própria");
+    assert_eq!(strict.requests()[0]["questions"].as_object().unwrap().len(), 1, "perfil intrínseco; o bloqueio tem evidência própria");
 
     let loose = FakeJev::judging(|_| ("feature", 0.9), |_, _| 0.1);
     project.jev = Some(loose.url.clone());
@@ -932,50 +980,51 @@ fn a_high_clash_with_the_wave_in_progress_holds_a_task_that_shares_no_file_with_
     assert!(wave_of(&project, held).is_some(), "com o choque de 0,1 a tarefa sai");
 }
 
-/// A montagem fecha a onda no teto de tamanho que o Jev estimou: três tarefas do
-/// mesmo tipo e de nível 3 (125 mil tokens cada) saem em três ondas, e três de
-/// nota 0,5 (50 mil), em uma. A quarta de 50 mil abre outra onda.
+/// A onda não tem teto de tamanho: seis tarefas do mesmo tipo, cada uma com
+/// sete arquivos só dela, saem juntas numa onda. Quem segura o tamanho é o
+/// sinal de conclusão dentro da conversa do agente, não a montagem.
 #[test]
-fn the_wave_closes_at_the_size_budget_the_jev_estimated() {
-    let biggest = FakeJev::judging_sized(|_| ("feature", 0.9), |_, _| 0.0, |_| 3.0);
-    let (project, _, _, tasks) = judged_project(&[&["a.rs"], &["c.rs"], &["d.rs"]], &biggest);
+fn a_wave_takes_every_task_of_its_kind_without_a_size_ceiling() {
+    let jev = FakeJev::judging(|_| ("feature", 0.9), |_, _| 0.0);
+    let files: Vec<Vec<String>> = (0..6).map(|task| (0..7).map(|file| format!("t{task}/f{file}.rs")).collect()).collect();
+    let paths: Vec<Vec<&str>> = files.iter().map(|own| own.iter().map(String::as_str).collect()).collect();
+    let lists: Vec<&[&str]> = paths.iter().map(Vec::as_slice).collect();
+    let (project, _, _, tasks) = judged_project(&lists, &jev);
     project.run(&["round", "--dispatch", "--spec", SPEC]);
-    assert_eq!(batch_orders(&project), vec![vec![tasks[0]], vec![tasks[1]], vec![tasks[2]]], "nível 3: uma por onda");
-    assert_eq!(biggest.requests().len(), 3, "um perfil por tarefa, com tipo e tamanho juntos");
-
-    let small = FakeJev::judging_sized(|_| ("feature", 0.9), |_, _| 0.0, |_| 0.5);
-    let (project, _, _, tasks) = judged_project(&[&["a.rs"], &["c.rs"], &["d.rs"], &["e.rs"]], &small);
-    project.run(&["round", "--dispatch", "--spec", SPEC]);
-    assert_eq!(batch_orders(&project), vec![vec![tasks[0], tasks[1],tasks[2]], vec![tasks[3]]], "150 mil de trabalho cabem; 200 mil abrem outra onda");
+    assert_eq!(batch_orders(&project), vec![tasks.clone()], "as seis do mesmo tipo saem numa onda só");
+    assert_eq!(jev.requests().len(), 6, "um perfil por tarefa");
 }
 
-/// Sem chave, ou com a chamada recusada, o tamanho do Jev não entra: três
-/// tarefas do mesmo arquivo, de 35 mil cada pela estimativa local, cabem no
-/// teto da onda e saem numa onda só. Com o Jev dizendo nível 3 para
-/// elas, a montagem as separa, e as três saem, cada uma na sua onda, ainda que
-/// dividam o arquivo.
+/// O tamanho nunca separa a onda: três tarefas do mesmo arquivo saem numa
+/// onda só sem chave, com a chamada recusada e com o Jev julgando as três do
+/// mesmo tipo.
 #[test]
-fn without_a_key_or_with_a_refused_call_the_size_does_not_split_the_wave() {
+fn the_size_never_splits_the_wave_with_or_without_the_jev() {
     let same: [&[&str]; 3] = [&["a.rs"], &["a.rs"], &["a.rs"]];
     let (project, _, _, tasks) = backlog_project(&same);
     project.run(&["round", "--dispatch", "--spec", SPEC]);
     assert_eq!(batch_orders(&project), vec![tasks.clone()], "sem chave");
 
+    // A chamada recusada vai à reserva, e o recibo incerto deixa a montagem
+    // pelo arquivo.
     let refusing = FakeJev::start(|_| (401, json!({})));
     let (refused, _, _, tasks) = judged_project(&same, &refusing);
+    let waiting = refused.run(&["round", "--dispatch", "--spec", SPEC]);
+    assert!(batch_orders(&refused).is_empty(), "the backlog waits for the receipt: {waiting}");
+    assert_eq!(answer_reserves(&refused, &waiting, "unsure"), 1, "{waiting}");
     refused.run(&["round", "--dispatch", "--spec", SPEC]);
     assert_eq!(batch_orders(&refused), vec![tasks.clone()], "chamada recusada");
 
-    let biggest = FakeJev::judging_sized(|_| ("feature", 0.9), |_, _| 0.0, |_| 3.0);
-    let (judged, _, _, tasks) = judged_project(&same, &biggest);
+    let jev = FakeJev::judging(|_| ("feature", 0.9), |_, _| 0.0);
+    let (judged, _, _, tasks) = judged_project(&same, &jev);
     judged.run(&["round", "--dispatch", "--spec", SPEC]);
-    assert_eq!(batch_orders(&judged), vec![vec![tasks[0]], vec![tasks[1]], vec![tasks[2]]], "com o Jev, o nível 3 separa as três");
+    assert_eq!(batch_orders(&judged), vec![tasks.clone()], "com o Jev");
 }
 
 /// Sem chave a montagem é a de hoje — por arquivo, nenhuma chamada —, e com
-/// o Jev recusando a chamada também: duas tarefas que dividem um arquivo saem
-/// juntas, a de outro arquivo sai na sua, e a chamada que falhou fica
-/// gravada com o motivo.
+/// o Jev recusando a chamada também, depois do recibo incerto da reserva:
+/// duas tarefas que dividem um arquivo saem juntas, a de outro arquivo sai na
+/// sua, e a chamada que falhou fica gravada com o motivo, uma vez só.
 #[test]
 fn without_a_key_or_with_a_refused_call_the_assembly_is_the_one_by_file() {
     let files: [&[&str]; 3] = [&["a.rs"], &["a.rs", "b.rs"], &["c.rs"]];
@@ -987,6 +1036,9 @@ fn without_a_key_or_with_a_refused_call_the_assembly_is_the_one_by_file() {
 
     let refusing = FakeJev::start(|_| (401, json!({})));
     let (refused, _, _, tasks) = judged_project(&files, &refusing);
+    let waiting = refused.run(&["round", "--dispatch", "--spec", SPEC]);
+    assert!(batch_orders(&refused).is_empty(), "the backlog waits for the receipt: {waiting}");
+    assert_eq!(answer_reserves(&refused, &waiting, "unsure"), 1, "{waiting}");
     refused.run(&["round", "--dispatch", "--spec", SPEC]);
     assert_eq!(batch_orders(&refused), vec![vec![tasks[0], tasks[1]], vec![tasks[2]]], "chamada recusada");
     let calls = assembly_calls(&refused);
@@ -1108,8 +1160,6 @@ fn judging_items(chance_of: impl Fn(&str) -> f64 + Send + Sync + 'static) -> Fak
         for key in questions.keys() {
             if key.starts_with("tipo_") {
                 answers.insert(key.clone(), json!({"type":"choice","choice":"feature","confidence":0.9,"probabilities":{"feature":0.9,"defect":0.025,"text_fix":0.025,"remove_unused":0.025,"test_cleanup":0.025}}));
-            } else if key.starts_with("tam_") {
-                answers.insert(key.clone(), json!({"type": "score", "score": 0.0,"confidence":1.0,"probabilities":{"0":1.0,"1":0.0,"2":0.0,"3":0.0}}));
             } else {
                 let title = asked["state"]["items"][key]["title"].as_str().unwrap_or_default();
                 answers.insert(key.clone(), json!({"type": "noul", "noul": chance_of(title)}));
@@ -1119,15 +1169,9 @@ fn judging_items(chance_of: impl Fn(&str) -> f64 + Send + Sync + 'static) -> Fak
     })
 }
 
-/// As chamadas `wave items` gravadas na spec.
+/// As chamadas `wave items` que o programa observou.
 fn item_calls(project: &Project) -> Vec<serde_json::Map<String, Value>> {
-    project
-        .log()
-        .visible()
-        .into_iter()
-        .filter(|e| e.event_type == "call" && e.str_field("command") == Some("wave items"))
-        .map(|call| call.fields.clone())
-        .collect()
+    project.calls_of("wave items")
 }
 
 /// A regra do projeto todo com o título `title`, gravada depois da aprovação,
@@ -1337,11 +1381,24 @@ fn a_credit_refusal_keeps_round_planning_and_context_native_and_records_the_fail
     let files: [&[&str]; 3] = [&["a.rs"], &["a.rs", "b.rs"], &["c.rs"]];
     let (project, _, said, tasks) = judged_project(&files, &jev);
     let (project_code, other_code) = two_rules(&project, said);
+    // Sem crédito, a montagem e depois a escolha dos itens vão à reserva; o
+    // recibo incerto de cada uma deixa o caminho sem Jev: a montagem pelo
+    // arquivo e o pedido padrão.
     let out = project.run(&["round", "--dispatch", "--spec", SPEC]);
     assert_eq!(out["ok"], true, "the round continues: {out}");
-    assert_eq!(batch_orders(&project), vec![vec![tasks[0], tasks[1]], vec![tasks[2]]]);
+    assert!(batch_orders(&project).is_empty(), "the assembly waits for the receipt: {out}");
+    assert_eq!(answer_reserves(&project, &out, "unsure"), 1, "{out}");
+    let items = project.run(&["round", "--dispatch", "--spec", SPEC]);
+    assert!(answer_reserves(&project, &items, "unsure") >= 1, "the choice of the items waits too: {items}");
+    let sent = project.run(&["round", "--dispatch", "--spec", SPEC]);
+    // As ondas que esperaram a escolha dos itens voltaram a ser montadas,
+    // pelo arquivo, com as tarefas em versão nova.
+    let orders = batch_orders(&project);
+    assert_eq!(orders[0], vec![tasks[0], tasks[1]], "{orders:?}");
+    assert_eq!(orders[orders.len() - 2..].iter().map(Vec::len).collect::<Vec<_>>(), vec![2, 1], "by file: {orders:?}");
+    assert!(sent.get("reserves").is_none(), "{sent}");
     let log = project.log();
-    let sent = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(1)).unwrap();
+    let sent = log.visible().into_iter().find(|e| e.event_type == "send").unwrap();
     let prompt = sent.str_field("text").unwrap();
     assert!(prompt.contains(&project_code) && !prompt.contains(&other_code), "native context is preserved: {prompt}");
     let attempts = std::fs::read_to_string(project.root.join(".claude/judgements/attempts.ndjson")).unwrap();
@@ -1501,7 +1558,7 @@ fn wave_agent(project: &Project, agent: &str, started: &str) {
     let log = project.log();
     let send = log.get(log.last_by_wave("send")[&1]).unwrap();
     let started = if started == OLD_AGENT_START { log.get(log.dispatch_position(send.id)).unwrap().at() } else { started };
-    let opening = send.str_field("text").unwrap();
+    let opening = log.send_text(send.id).unwrap();
     let line = json!({"type": "user", "timestamp": started, "message": {"role": "user", "content": opening}});
     std::fs::write(dir.join(format!("agent-{agent}.jsonl")), format!("{line}\n")).expect("the agent's conversation");
 }

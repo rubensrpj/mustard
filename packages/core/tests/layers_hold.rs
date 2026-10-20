@@ -157,8 +157,8 @@ fn the_multi_pattern_automaton_is_built_in_one_place() {
     assert!(found.is_empty(), "a second automaton is built here; reuse the vocabulary one:\n{}", found.join("\n"));
 }
 
-/// Se a linha cita algum dos módulos `names` como palavra inteira (`map_notes`
-/// não casa com `map_notes_fresh`).
+/// Se a linha cita algum dos módulos `names` como palavra inteira: um nome
+/// mais comprido que começa por ele não conta.
 fn names_a_module(line: &str, names: &[&str]) -> bool {
     line.split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|word| names.contains(&word))
 }
@@ -179,12 +179,10 @@ fn io_lines_naming(file: &str, names: &[&str]) -> Vec<String> {
     lines_naming(&repo_root().join("packages/core/src/io").join(file), names)
 }
 
-/// O índice e a leitura das notas em dia ficam embaixo: só conhecem o banco;
-/// o sentido não importa a busca nem a ordem nem a escrita da nota; a busca
-/// não importa a escrita da nota; e ninguém na biblioteca importa a escrita
-/// da nota, que refaz o índice e os vetores e por isso fica em cima de todos.
+/// O índice fica embaixo: só conhece o banco; e o sentido não importa a busca
+/// nem a ordem.
 #[test]
-fn the_index_the_fresh_notes_and_the_sense_sit_below_the_search_and_the_note_writer() {
+fn the_index_and_the_sense_sit_below_the_search() {
     const ABOVE_THE_INDEX: &[&str] = &[
         "map_search",
         "map_order",
@@ -192,23 +190,12 @@ fn the_index_the_fresh_notes_and_the_sense_sit_below_the_search_and_the_note_wri
         "map_meaning",
         "map_triage",
         "map_glossary",
-        "map_notes",
         "project_map",
     ];
     let mut found: Vec<String> = Vec::new();
     found.extend(io_lines_naming("map_index.rs", ABOVE_THE_INDEX));
-    found.extend(io_lines_naming("map_notes_fresh.rs", ABOVE_THE_INDEX));
-    found.extend(io_lines_naming("map_notes_fresh.rs", &["map_index"]));
-    found.extend(io_lines_naming("map_meaning.rs", &["map_search", "map_order", "map_sense", "map_notes"]));
-    found.extend(io_lines_naming("map_sense.rs", &["map_search", "map_order", "map_triage", "map_notes"]));
-    found.extend(io_lines_naming("map_search.rs", &["map_notes"]));
-    for path in sources_under(&["packages/core/src"]) {
-        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
-        if name == "map_notes.rs" || path.ends_with("packages/core/src/io/mod.rs") {
-            continue;
-        }
-        found.extend(lines_naming(&path, &["map_notes"]));
-    }
+    found.extend(io_lines_naming("map_meaning.rs", &["map_search", "map_order", "map_sense"]));
+    found.extend(io_lines_naming("map_sense.rs", &["map_search", "map_order", "map_triage"]));
     assert!(found.is_empty(), "an import closes a loop among the search layers:\n{}", found.join("\n"));
 }
 
@@ -220,6 +207,30 @@ fn the_search_has_no_function_only_its_tests_call() {
     let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{} unreadable: {e}", path.display()));
     for gone in ["fn ranked_files(", "fn sources("] {
         assert!(!text.contains(gone), "{gone} came back in map_search.rs; call the `_near` one with `Near::none()`");
+    }
+}
+
+/// Os perfis por área e os procedimentos revisados saíram: o módulo, o
+/// comando e a skill escondida do plugin não voltam, e o scan não refaz
+/// perfil nenhum ao terminar.
+#[test]
+fn the_area_profiles_do_not_come_back() {
+    let root = repo_root();
+    for gone in [
+        "packages/core/src/io/expertise.rs",
+        "packages/core/src/io/expertise",
+        "apps/rt/src/commands/expertise.rs",
+        "plugin/commands/expertise.md",
+    ] {
+        assert!(!root.join(gone).exists(), "{gone} came back");
+    }
+    for (file, gone) in [
+        ("packages/core/src/io/mod.rs", "pub mod expertise"),
+        ("apps/rt/src/commands/mod.rs", "pub mod expertise"),
+        ("apps/rt/src/commands/scan.rs", "expertise"),
+    ] {
+        let text = std::fs::read_to_string(root.join(file)).unwrap_or_else(|e| panic!("{file} unreadable: {e}"));
+        assert!(!text.contains(gone), "{file} still holds `{gone}`");
     }
 }
 

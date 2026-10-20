@@ -20,24 +20,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
 
         // O pedido da onda no despacho de um agente: por que o despacho foi
         // barrado.
-        ("subagent.ticket_unreadable", Locale::PtBr) => {
-            "[Mustard] O despacho foi barrado: a linha {ticket} traz \"{found}\", e ela leva a spec \
-             e o número da onda, como `{ticket} minha-spec 2`."
-        }
-        ("subagent.ticket_unreadable", Locale::EnUs) => {
-            "[Mustard] The dispatch was blocked: the {ticket} line carries \"{found}\", and it takes \
-             the spec and the wave number, as in `{ticket} my-spec 2`."
-        }
-        ("subagent.not_approved", Locale::PtBr) => {
-            "[Mustard] O despacho foi barrado: a spec {spec} está na fase {phase}, e só uma spec \
-             aprovada tem pedido de onda."
-        }
-        ("subagent.not_approved", Locale::EnUs) => {
-            "[Mustard] The dispatch was blocked: the spec {spec} is in the {phase} phase, and only an \
-             approved spec has a wave request."
-        }
-        ("subagent.no_wave", Locale::PtBr) => "[Mustard] O despacho foi barrado: o plano da spec {spec} não tem a onda {wave}.",
-        ("subagent.no_wave", Locale::EnUs) => "[Mustard] The dispatch was blocked: the plan of the spec {spec} has no wave {wave}.",
         ("subagent.wave_not_running", Locale::PtBr) => {
             "[Mustard] O despacho foi barrado: a onda {wave} da spec {spec} não está em andamento. Só \
              sai a onda que a rodada soltou."
@@ -45,6 +27,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("subagent.wave_not_running", Locale::EnUs) => {
             "[Mustard] The dispatch was blocked: wave {wave} of the spec {spec} is not in progress. \
              Only a wave the round sent out goes."
+        }
+        // A onda em andamento que já tem agente: um segundo agente na mesma
+        // cópia desfaria o trabalho do primeiro.
+        ("subagent.wave_has_agent", Locale::PtBr) => {
+            "[Mustard] O despacho foi barrado: a onda {wave} da spec {spec} já tem um agente trabalhando. \
+             Espere a volta dele; a rodada avisa se ele ficar calado."
+        }
+        ("subagent.wave_has_agent", Locale::EnUs) => {
+            "[Mustard] The dispatch was blocked: wave {wave} of the spec {spec} already has an agent working. \
+             Wait for it to return; the round warns if it goes silent."
         }
         // O texto do condutor trocado pelo que o Mustard monta: o recado diz
         // o que saiu.
@@ -126,6 +118,35 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              leads passes. No other call of yours does, not even reading or writing the spec: a \
              delivery from you would undo the rejection. Stop here and end your reply."
         }
+        // O lançamento do agente de onda ou do revisor que pede modelo ou
+        // esforço diferente do que o `mustard.json` declara para ele: aviso,
+        // e o lançamento segue.
+        ("subagent.launch_settings", Locale::PtBr) => {
+            "[Mustard] O agente {agent} saiu com modelo {asked_model} e esforço {asked_effort}. O \
+             Mustard escolheu modelo {model} e esforço {effort} para ele. O modelo da onda é o do envio \
+             dela, e o do revisor vem do `mustard.json`. O esforço é sempre xhigh. Nos próximos \
+             lançamentos, não passe `effort`. Em `model`, passe só o da entrada de `dispatch`."
+        }
+        ("subagent.launch_settings", Locale::EnUs) => {
+            "[Mustard] The agent {agent} went out with model {asked_model} and effort {asked_effort}. \
+             Mustard chose model {model} and effort {effort} for it. A wave's model is the one its send \
+             recorded, and the reviewer's comes from `mustard.json`. The effort is always xhigh. In the \
+             next launches, do not pass `effort`. In `model`, pass only the one in the `dispatch` entry."
+        }
+        // O lançamento que pedia modelo ou esforço diferente do escolhido sai
+        // com o escolhido: o gancho troca os dois na chamada.
+        ("subagent.launch_settings_forced", Locale::PtBr) => {
+            "[Mustard] O agente {agent} foi pedido com modelo {asked_model} e esforço {asked_effort}. \
+             Saiu com modelo {model} e esforço {effort}. O modelo da onda é o do envio dela, e o do \
+             revisor vem do `mustard.json`. O esforço é sempre xhigh. Nos próximos lançamentos, não \
+             passe `effort`. Em `model`, passe só o da entrada de `dispatch`."
+        }
+        ("subagent.launch_settings_forced", Locale::EnUs) => {
+            "[Mustard] The agent {agent} was asked with model {asked_model} and effort {asked_effort}. \
+             It went out with model {model} and effort {effort}. A wave's model is the one its send \
+             recorded, and the reviewer's comes from `mustard.json`. The effort is always xhigh. In the \
+             next launches, do not pass `effort`. In `model`, pass only the one in the `dispatch` entry."
+        }
 
         // O pedido de uma onda: o texto que o agente dela recebe.
         ("prompt.title", Locale::PtBr) => "{spec} — onda {n}",
@@ -137,6 +158,28 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // herdar o modelo da sessão.
         ("prompt.model.wave", Locale::PtBr) => "Modelo desta onda: {model}. Esforço: {effort}.",
         ("prompt.model.wave", Locale::EnUs) => "This wave's model: {model}. Effort: {effort}.",
+        // A linha logo abaixo do título do pedido da onda que trabalha numa
+        // cópia: o agente que via o `--root` do repositório principal entrava
+        // nele com `cd`, o gancho recusava, e a primeira leitura se perdia.
+        ("prompt.copy.first", Locale::PtBr) => {
+            "Rode cada comando de dentro da cópia `{copy}`, sem `cd` para fora dela: o `--root` dos \
+             comandos só diz onde a spec mora."
+        }
+        ("prompt.copy.first", Locale::EnUs) => {
+            "Run every command from inside the copy `{copy}`, without a `cd` out of it: the commands' \
+             `--root` only says where the spec lives."
+        }
+        // A linha do texto do despacho entre o título e o comando que lê o
+        // pedido, pela mesma razão: o pedido, com a pasta da cópia, só chega
+        // depois desse comando.
+        ("prompt.dispatch.as_is", Locale::PtBr) => {
+            "Rode o comando abaixo como está, sem `cd`: o `--root` só diz onde a spec mora. Depois, rode \
+             cada comando de dentro da cópia que o pedido diz."
+        }
+        ("prompt.dispatch.as_is", Locale::EnUs) => {
+            "Run the command below as it is, without a `cd`: `--root` only says where the spec lives. \
+             After that, run every command from inside the copy the request names."
+        }
         // Os dois idiomas do projeto, lidos do `mustard.json`, no topo de todo
         // pedido a um agente: o dos textos que a pessoa lê e o dos nomes no
         // código. Sem ela, o agente só adivinhava o idioma dos nomes.
@@ -205,23 +248,72 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.kind.item", Locale::PtBr) => "Item",
         ("prompt.kind.item", Locale::EnUs) => "Item",
         // Os passos de "O que fazer". O primeiro manda ler os itens de "O que
-        // obedecer"; cada tarefa é um passo, com o que ela atende, os
-        // arquivos e o que ler antes embaixo; a suíte e a entrega fecham a
-        // lista. `{part}` é o título da seção a que o passo aponta.
+        // obedecer"; o segundo traz as tarefas da onda só pelo código e pelo
+        // título, na ordem, com a primeira marcada; a entrega fecha a lista.
+        // `{part}` é o título da seção a que o passo aponta.
         ("prompt.step.read", Locale::PtBr) => "Leia o texto inteiro de cada item de \"{part}\".",
         ("prompt.step.read", Locale::EnUs) => "Read the whole text of each item under \"{part}\".",
-        ("prompt.step.task", Locale::PtBr) => "Faça a tarefa {item}",
-        ("prompt.step.task", Locale::EnUs) => "Do the task {item}",
+        ("prompt.step.tasks", Locale::PtBr) => {
+            "Faça as tarefas uma por vez, nesta ordem. A primeira vem inteira logo abaixo. Cada uma das \
+             outras chega na resposta do passo que termina a anterior."
+        }
+        ("prompt.step.tasks", Locale::EnUs) => {
+            "Do the tasks one at a time, in this order. The first comes whole right below. Each of the \
+             others arrives in the answer to the step that finishes the one before it."
+        }
+        ("prompt.step.first", Locale::PtBr) => "{item} (a primeira, logo abaixo)",
+        ("prompt.step.first", Locale::EnUs) => "{item} (the first, right below)",
         ("prompt.step.attends", Locale::PtBr) => "Atende: {item}",
         ("prompt.step.attends", Locale::EnUs) => "Addresses: {item}",
         ("prompt.step.user_message", Locale::PtBr) => "mensagem do usuário",
         ("prompt.step.user_message", Locale::EnUs) => "user message",
-        ("prompt.step.read_task_message", Locale::PtBr) => "Leia a tarefa e a mensagem inteiras antes de mexer.",
-        ("prompt.step.read_task_message", Locale::EnUs) => "Read the whole task and the message before you start.",
-        ("prompt.step.read_task", Locale::PtBr) => "Leia a tarefa inteira antes de mexer.",
-        ("prompt.step.read_task", Locale::EnUs) => "Read the whole task before you start.",
-        ("prompt.step.read_task_attends", Locale::PtBr) => "Leia a tarefa e o que ela atende, inteiros, antes de mexer.",
-        ("prompt.step.read_task_attends", Locale::EnUs) => "Read the whole task and what it addresses before you start.",
+        // O bloco de uma tarefa: o título, com a posição dela na onda, e cada
+        // skill dela inteira, pelo nome e pelo caminho. A skill que o teto do
+        // bloco cortou fica numa linha, com o caminho para lê-la.
+        ("prompt.task.heading", Locale::PtBr) => "Tarefa {n} de {total}: {item}",
+        ("prompt.task.heading", Locale::EnUs) => "Task {n} of {total}: {item}",
+        ("prompt.task.skill", Locale::PtBr) => "Skill {name}, de `{path}`",
+        ("prompt.task.skill", Locale::EnUs) => "Skill {name}, from `{path}`",
+        // A tarefa que cria a skill de uma falha repetida, antes do
+        // skill-creator inteiro (`io::wave_prompt`).
+        ("prompt.task.skill_creator", Locale::PtBr) => {
+            "Esta tarefa cria ou atualiza uma skill. Siga o processo do skill-creator abaixo, sem pedir aprovação a \
+             ninguém. Os scripts e os agentes dele ficam em `{folder}`. Use o formato oficial, com nome \
+             curto. A descrição fica em terceira pessoa e diz o que a skill faz e quando usar. O \
+             corpo tem menos de 500 linhas, com o mais importante no topo. No cabeçalho, `paths:` \
+             traz os caminhos onde ela vale. Escreva só o que o modelo não sabe: a armadilha, a convenção não óbvia, a ferramenta \
+             certa. Nada de visão geral do código. Teste com e sem a skill nas tarefas que a \
+             motivaram, pela avaliação do próprio skill-creator, numa pasta fora do projeto. Só \
+             com ganho ela vai para `{skills}/<nome>/SKILL.md`. No fim, grave o resultado: \
+             `mustard-rt run write skill --root {root} --spec {spec} --json \
+             '{\"name\":\"<nome>\",\"action\":\"created\",\"text\":\"<o ganho medido, numa \
+             frase>\",\"files\":[\"<arquivo citado>\"]}'`, com `\"action\":\"updated\"` quando \
+             atualiza uma skill que já existe. Sem ganho, grave `\"action\":\"discarded\"` com o motivo em \
+             `text`."
+        }
+        ("prompt.task.skill_creator", Locale::EnUs) => {
+            "This task creates or updates a skill. Follow the skill-creator process below without asking anyone \
+             for approval. Its scripts and agents live in `{folder}`. Use the official format, with a \
+             short name. The description is in the third person and says what the skill does and \
+             when to use it. The body stays under 500 lines, with the most important part on top. \
+             In the header, `paths:` lists the paths where it applies. Write only what the model does not know: the trap, the non-obvious convention, \
+             the right tool. No overview of the code. Test with and without the skill on the tasks \
+             that motivated it, with the skill-creator's own evaluation, in a folder outside the \
+             project. Only with a gain does it go to `{skills}/<name>/SKILL.md`. At the end, record \
+             the result: `mustard-rt run write skill --root {root} --spec {spec} --json \
+             '{\"name\":\"<name>\",\"action\":\"created\",\"text\":\"<the measured gain, in one \
+             sentence>\",\"files\":[\"<cited file>\"]}'`, with `\"action\":\"updated\"` when it \
+             updates a skill that exists. Without a gain, record `\"action\":\"discarded\"` with the \
+             reason in `text`."
+        }
+        ("prompt.task.skill_cut", Locale::PtBr) => {
+            "A skill {name} ficou fora deste bloco, que passou do teto de tamanho. Se a tarefa pedir, \
+             leia `{path}`."
+        }
+        ("prompt.task.skill_cut", Locale::EnUs) => {
+            "The skill {name} was left out of this block, which went past the size cap. If the task \
+             needs it, read `{path}`."
+        }
         ("prompt.step.file", Locale::PtBr) => "Arquivo: {files}",
         ("prompt.step.file", Locale::EnUs) => "File: {files}",
         ("prompt.step.files", Locale::PtBr) => "Arquivos: {files}",
@@ -236,6 +328,34 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.obey.no_lessons", Locale::EnUs) => "Lessons: none applies to this wave's files.",
         ("prompt.return.loose", Locale::PtBr) => "Fora da entrega, nenhum texto solto.",
         ("prompt.return.loose", Locale::EnUs) => "Outside the delivery, no loose text.",
+        // Os dois comandos de gravação da onda, prontos, com a spec, o número
+        // da onda e, na cópia, `--root <caminho> ` em `{root}`: sem eles, os
+        // agentes pediam a ajuda inteira do `run write` dezenas de vezes por
+        // obra.
+        ("prompt.return.step", Locale::PtBr) => {
+            "Ao provar cada critério e ao terminar cada tarefa, grave o passo: `mustard-rt run write step \
+             {root}--spec {spec} --json '{\"wave\":{wave},\"item\":\"<código da tarefa ou do critério>\",\
+             \"text\":\"<o resumo>\"}'`. A resposta do passo que termina uma tarefa traz a próxima \
+             tarefa inteira, em `next_task`, ou a ordem de entregar. Não tente ler uma tarefa que ainda \
+             não chegou."
+        }
+        ("prompt.return.step", Locale::EnUs) => {
+            "On proving each criterion and on finishing each task, record the step: `mustard-rt run write \
+             step {root}--spec {spec} --json '{\"wave\":{wave},\"item\":\"<task or criterion code>\",\
+             \"text\":\"<the summary>\"}'`. The answer to the step that finishes a task brings the next \
+             whole task, in `next_task`, or the order to deliver. Do not try to read a task that has not \
+             arrived yet."
+        }
+        ("prompt.return.delivered", Locale::PtBr) => {
+            "Grave a entrega assim, com os outros campos das suas instruções quando valem: `mustard-rt run \
+             write delivered {root}--spec {spec} --json '{\"wave\":{wave},\"text\":\"<a entrega>\",\
+             \"files\":[\"<arquivo>\"],\"commit\":\"<o título do commit>\"}'`"
+        }
+        ("prompt.return.delivered", Locale::EnUs) => {
+            "Record the delivery like this, adding the other fields your instructions describe when they \
+             apply: `mustard-rt run write delivered {root}--spec {spec} --json '{\"wave\":{wave},\
+             \"text\":\"<the delivery>\",\"files\":[\"<file>\"],\"commit\":\"<the commit title>\"}'`"
+        }
         // O mapa do projeto conhece os arquivos de teste de um arquivo que a
         // tarefa cita: o passo da tarefa ganha, logo abaixo, quem o testa,
         // para o agente não sair procurando um por um no código.
@@ -257,6 +377,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.pattern.info", Locale::EnUs) => "habit: {from} imports {to} in {along} of {total} imports",
         ("prompt.pattern.example", Locale::PtBr) => "exemplo: `{name}` em `{path}`, linhas {start} a {end}",
         ("prompt.pattern.example", Locale::EnUs) => "example: `{name}` in `{path}`, lines {start} to {end}",
+        ("prompt.pattern.example_named", Locale::PtBr) => "exemplo: `{name}` em `{path}`",
+        ("prompt.pattern.example_named", Locale::EnUs) => "example: `{name}` in `{path}`",
         // Sem regra de importação, o bloco abre só com o que o código e o git
         // mostram: o arquivo grande e a receita.
         ("prompt.pattern.head_plain", Locale::PtBr) => "O que o projeto mostra sobre esta tarefa, tirado do código e da história do git.",
@@ -286,22 +408,24 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              partir dela. Nenhum texto vem copiado: cada parte traz só o tipo, o código e o título \
              de cada item, numa linha por item.\n\n\
              **O que devolver.** O veredito com `\"final\":true`, gravado por `mustard-rt run write \
-             verdict`. O pedido traz os requisitos acordados inteiros da spec, dono ou não de onda. \
-             Responda por cada item em `agreed`, com o código em `item` e `met` dizendo se está \
-             atendido. Quando não estiver, `text` diz o que falta e `files` os arquivos, e eles viram \
-             uma tarefa nova. Faltar algum requisito acordado na lista é veredito malformado: nada é \
-             gravado."
+             verdict`. O pedido traz só o que nenhuma prova verde cobre. É a tarefa sem passo de \
+             término, o requisito acordado sem onda e o critério sem execução que passou. \
+             Responda por cada requisito acordado do pedido em `agreed`, com o código em `item` e \
+             `met` dizendo se está atendido. Quando não estiver, `text` diz o que falta e `files` os \
+             arquivos, e eles viram uma tarefa nova. Faltar algum requisito acordado do pedido é \
+             veredito malformado: nada é gravado."
         }
         ("prompt.final.fixed", Locale::EnUs) => {
             "**What this is.** The dedicated test agent's request for this spec, assembled by the \
              binary from it. No text is copied in: each part carries only the type, the code and \
              the title of each item, on one line per item.\n\n\
              **What to return.** The verdict with `\"final\":true`, recorded through `mustard-rt run \
-             write verdict`. The request carries the spec's whole agreed requirements, owned by a \
-             wave or not. Answer for each item in `agreed`, with the code in `item` and `met` \
-             saying whether it is satisfied. When it is not, `text` says what is missing and `files` \
-             the files, and they become a new task. Missing any agreed requirement from the list is \
-             a malformed verdict: nothing gets recorded."
+             write verdict`. The request carries only what no green proof covers. That is the task \
+             without a finishing step, the agreed requirement without a wave and the criterion \
+             without a passing run. Answer for each agreed requirement of the request in `agreed`, with the \
+             code in `item` and `met` saying whether it is satisfied. When it is not, `text` says \
+             what is missing and `files` the files, and they become a new task. Missing any agreed \
+             requirement of the request is a malformed verdict: nothing gets recorded."
         }
         // A primeira revisão da obra confere tudo.
         ("prompt.final.look", Locale::PtBr) => {
@@ -320,12 +444,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // e o encaixe disso no resto. Para o que não mudou, vale a conclusão
         // anterior; o veredito continua respondendo por todo o combinado. É o
         // único lugar que diz o recorte: quando o veredito reprovou uma onda,
-        // as ondas e as entregas do pedido trazem só ela.
+        // a parte das ondas traz só as tarefas dela.
         ("prompt.final.look_again", Locale::PtBr) => {
             "**O que olhar.** Esta revisão volta depois de um veredito que reprovou. A parte do que \
              mudou lista esse veredito, os commits e os itens gravados ou regravados depois dele. Ela \
-             lista também os itens que ele deu como não atendidos. Se ele reprovou uma onda, as partes \
-             das ondas e das entregas trazem só essa onda; senão, trazem todas as ondas. Confira essa \
+             lista também os itens que ele deu como não atendidos. Se ele reprovou uma onda, a parte \
+             das ondas traz só as tarefas dessa onda; senão, traz as de todas as ondas. Confira essa \
              parte e como ela se encaixa no resto da obra. Para os outros requisitos acordados, repita \
              a conclusão do veredito anterior. Aponte só; não conserte."
         }
@@ -333,51 +457,52 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "**What to look at.** This review comes back after a verdict that rejected the work. The \
              part on what changed lists that verdict, the commits and the items recorded or \
              re-recorded after it. It also lists the items that verdict marked as not met. If it \
-             rejected one wave, the waves and deliveries parts carry only that wave; otherwise, they \
-             carry every wave. Check that part and how it fits the rest of the work. For the other \
+             rejected one wave, the waves part carries only that wave's tasks; otherwise, it \
+             carries every wave's. Check that part and how it fits the rest of the work. For the other \
              agreed requirements, repeat the previous verdict's conclusion. Point it out only; do not \
              fix it."
         }
         ("prompt.part.since_verdict", Locale::PtBr) => "O que mudou desde o veredito anterior",
         ("prompt.part.since_verdict", Locale::EnUs) => "What changed since the previous verdict",
-        // Como ler cada item do pedido da onda. `{root}` é `--root <caminho> `
+        // Como ler os itens do pedido da onda. `{root}` é `--root <caminho> `
         // quando o agente trabalha numa cópia, e nada quando não trabalha. O
         // pedido traz só o tipo, o código e o título de cada item; o texto
-        // inteiro se lê pelo código, e a lição pelo número dela no banco. A
-        // entrega sem a leitura completa é recusada.
+        // inteiro de todos, lições inclusive, se lê numa chamada só, que deixa
+        // um recibo só, e um item sozinho pelo código. A entrega sem a leitura
+        // completa é recusada.
         ("prompt.read.wave", Locale::PtBr) => {
-            "Este pedido traz só o tipo, o código e o título de cada item. Leia o texto inteiro de \
-             cada um antes de usá-lo:\n\
-             - tarefa, regra, decisão, mensagem ou outro item: `mustard-rt run read item-<código> \
-             {root}--spec {spec}`\n\
-             - lição: `mustard-rt run read lessons --term <número> {root}--spec {spec}`\n\
-             A entrega é recusada se algum item deste pedido não foi lido. A recusa diz qual."
+            "A tarefa atual vem inteira neste pedido, com o texto de tudo o que ela atende. Os outros \
+             itens trazem só o tipo, o código e o título. Leia o texto inteiro deles numa chamada só:\n\
+             - os itens e lições já liberados deste pedido: `mustard-rt run read \
+             dispatch-{wave} {root}--spec {spec}`\n\
+             - um item só, para reler: `mustard-rt run read item-<código> {root}--spec {spec}`\n\
+             A entrega é recusada se algum item liberado não foi lido. A recusa diz qual."
         }
         ("prompt.read.wave", Locale::EnUs) => {
-            "This request carries only the type, the code and the title of each item. Read the whole \
-             text of each one before using it:\n\
-             - task, rule, decision, message or any other item: `mustard-rt run read item-<item-code> \
-             {root}--spec {spec}`\n\
-             - lesson: `mustard-rt run read lessons --term <number> {root}--spec {spec}`\n\
-             The delivery is refused if any item of this request was not read. The refusal says which."
+            "The current task comes whole in this request, with the text of all it addresses. The other \
+             items carry only the type, the code and the title. Read their whole text in one call:\n\
+             - the items and lessons of this request released so far: `mustard-rt run read \
+             dispatch-{wave} {root}--spec {spec}`\n\
+             - a single item, to reread it: `mustard-rt run read item-<item-code> {root}--spec {spec}`\n\
+             The delivery is refused if any released item was not read. The refusal says which."
         }
-        // Como ler cada item do pedido do revisor final: os mesmos dois comandos
-        // do pedido da onda e o aviso de que o veredito sem a leitura completa
-        // é recusado, com a recusa dizendo qual item faltou.
+        // Como ler os itens do pedido do revisor final: a mesma leitura em
+        // lote, pelo pedido aberto da revisão, e o aviso de que o veredito sem
+        // a leitura completa é recusado, com a recusa dizendo qual item faltou.
         ("prompt.read.final", Locale::PtBr) => {
             "Este pedido traz só o tipo, o código e o título de cada item. Leia o texto inteiro de \
-             cada um antes de dar o veredito:\n\
-             - onda, tarefa, requisito acordado, entrega, critério, commit ou outro item: `mustard-rt \
-             run read item-<código> {root}--spec {spec}`\n\
-             - lição: `mustard-rt run read lessons --term <número> {root}--spec {spec}`\n\
+             todos numa chamada só, antes de dar o veredito:\n\
+             - todos os itens deste pedido: `mustard-rt run read dispatch-review \
+             {root}--spec {spec}`\n\
+             - um item só, para reler: `mustard-rt run read item-<código> {root}--spec {spec}`\n\
              O veredito é recusado se algum item deste pedido não foi lido. A recusa diz qual."
         }
         ("prompt.read.final", Locale::EnUs) => {
             "This request carries only the type, the code and the title of each item. Read the whole \
-             text of each one before you give the verdict:\n\
-             - wave, task, agreed requirement, delivery, criterion, commit or any other item: \
-             `mustard-rt run read item-<item-code> {root}--spec {spec}`\n\
-             - lesson: `mustard-rt run read lessons --term <number> {root}--spec {spec}`\n\
+             text of all of them in one call, before you give the verdict:\n\
+             - every item of this request: `mustard-rt run read dispatch-review \
+             {root}--spec {spec}`\n\
+             - a single item, to reread it: `mustard-rt run read item-<item-code> {root}--spec {spec}`\n\
              The verdict is refused if any item of this request was not read. The refusal says which."
         }
         ("prompt.part.waves", Locale::PtBr) => "As ondas e as tarefas delas",
@@ -394,8 +519,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.part.criteria", Locale::EnUs) => "Criteria",
         ("prompt.skill.stale", Locale::PtBr) => "a revisar",
         ("prompt.skill.stale", Locale::EnUs) => "to review",
-        ("prompt.skill.read", Locale::PtBr) => "Leia o arquivo da skill antes de começar a tarefa que a nomeia.",
-        ("prompt.skill.read", Locale::EnUs) => "Read the skill file before starting the task that names it.",
 
         // O conserto: a onda que volta por reprovação.
         ("prompt.fix.wave", Locale::PtBr) => {
@@ -621,7 +744,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("prompt.rs"), super::PREFIXES, 104, 0x40c2_95da_5b84_22b0);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("prompt.rs"), super::PREFIXES, 110, 0x87a1_ff80_57ab_9190);
     }
 
     /// O bloco do padrão sob a tarefa passa na conferência de escrita nos
@@ -635,6 +758,7 @@ mod tests {
                 "prompt.pattern.rule",
                 "prompt.pattern.info",
                 "prompt.pattern.example",
+                "prompt.pattern.example_named",
                 "prompt.pattern.head_plain",
                 "prompt.pattern.large",
                 "prompt.pattern.recipe.created",
@@ -676,12 +800,13 @@ mod tests {
                 "prompt.read.final",
                 "prompt.fix.wave",
                 "prompt.step.read",
-                "prompt.step.task",
+                "prompt.step.tasks",
+                "prompt.step.first",
                 "prompt.step.attends",
-                "prompt.step.read_task",
-                "prompt.step.read_task_attends",
-                "prompt.step.read_task_message",
                 "prompt.step.user_message",
+                "prompt.task.heading",
+                "prompt.task.skill",
+                "prompt.task.skill_cut",
                 "prompt.step.file",
                 "prompt.step.files",
                 "prompt.step.read_before",
@@ -699,7 +824,12 @@ mod tests {
                     .replace("{file}", "src/order.service.ts")
                     .replace("{tests}", "`order_test`")
                     .replace("{root}", "")
-                    .replace("{spec}", "orders");
+                    .replace("{wave}", "2")
+                    .replace("{spec}", "orders")
+                    .replace("{n}", "1")
+                    .replace("{total}", "3")
+                    .replace("{name}", "orders")
+                    .replace("{path}", "/repo/.claude/skills/orders/SKILL.md");
                 assert!(!text.contains('{'), "{key} {lang:?}: {text}");
                 let report = crate::domain::clarity::measure(&text, &[], Some(lang));
                 assert!(report.passed, "{key} {lang:?}: {report:?}");

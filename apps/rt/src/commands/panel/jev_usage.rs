@@ -9,13 +9,16 @@ pub(super) fn configuration(root:&Path, config:&mustard_core::ProjectConfig, env
     let key=jev_gate::find_key(root,config,env);
     let fallback=config.ai_fallback_enabled();
     let mut purposes=serde_json::Map::new();
-    for purpose in ["search","wave-planning","context"] {
+    for purpose in mustard_core::domain::config::JEV_PURPOSES {
         let setting=config.judgement_filter(purpose);
         let reason=if !fallback {"ai-fallback-disabled"}
             else if !jev_gate::setting_allows(setting) {"purpose-not-configured"}
             else if let Err(error)=&key {error.reason()}
             else {"configured"};
-        purposes.insert(purpose.into(),json!({"enabled":reason=="configured","reason":reason}));
+        // `chosen` diz se o `mustard.json` traz a escolha da finalidade: sem
+        // ela, a finalidade fica desligada e o painel diz por quê.
+        let chosen=setting!=mustard_core::domain::config::FilterSetting::Absent;
+        purposes.insert(purpose.into(),json!({"enabled":reason=="configured","reason":reason,"chosen":chosen}));
     }
     json!({"fallback_enabled":fallback,"usable_key":key.is_ok(),"purposes":purposes,"provider_verified":false})
 }

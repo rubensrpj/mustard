@@ -20,7 +20,10 @@
 //! pasta das cópias, mas não é cópia de obra e não entra na lista delas. Dela
 //! sai só a cópia de um descarte que passou do prazo, pela mesma varredura do
 //! descarte ([`sweep_old_discard_copies`]), numa linha própria do relatório;
-//! a de um descarte recém-feito fica.
+//! a de um descarte recém-feito fica. Do mesmo jeito, a pasta das cópias que
+//! já saíram da obra ([`LEAVING_COPIES`]) não entra na lista: o que sobrou
+//! nela, porque apagar depois de soltar a trava não terminou, sai numa linha
+//! própria.
 //!
 //! A pasta principal e a compilação dela nunca entram. Link não é seguido.
 
@@ -34,7 +37,7 @@ use serde::Serialize;
 
 use super::scratch_gc::ErrorRecord;
 use crate::commands::flow::discard::{DISCARD_COPIES, sweep_old_discard_copies};
-use crate::commands::flow::round::{Removal, remove_single_copy, remove_spec_copies};
+use crate::commands::flow::round::{LEAVING_COPIES, Removal, landed_kept, leaving_place, remove_single_copy, remove_spec_copies};
 
 /// O prefixo das cópias antigas dentro do projeto.
 const OLD_PREFIX: &str = "mustard-";
@@ -47,6 +50,11 @@ const FINISHED: [&str; 4] = ["closed", "pr_open", "delivered", "discarded"];
 
 /// O motivo, no relatório, da cópia de página de descarte que sai.
 const OLD_DISCARD_COPY: &str = "discard page copy older than a day";
+
+/// O motivo, no relatório, da cópia que já tinha saído da obra, com o código
+/// guardado e o git sem ela, e ficou no disco porque apagá-la, depois de
+/// soltar a trava, não terminou.
+const LEFT_ON_DISK: &str = "copy already out of its work, left on disk";
 
 /// Uma cópia de obra achada, com a obra dela e o motivo de sair ou ficar.
 #[derive(Debug, Serialize)]
@@ -93,6 +101,10 @@ pub(crate) struct CopiesReport {
     /// O código que as cópias tinham além do commit, guardado antes de saírem.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub code_kept: Vec<KeptRecord>,
+    /// As refs guardadas de spec entregue cujo código a base já tem: saem com
+    /// `apply`, e sem ele só são listadas.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub kept_landed: Vec<String>,
 }
 
 /// As cópias de obra do projeto em que `start` está: lista as que saem e as
@@ -105,11 +117,15 @@ pub(crate) fn clean(start: &Path, apply: bool) -> Option<CopiesReport> {
         return None;
     }
     let (candidates, kept): (Vec<CopyRecord>, Vec<CopyRecord>) = found(&root).into_iter().partition(|record| record.leaves);
-    let mut report = CopiesReport { root: shown(&root), candidates, kept, removed: Vec::new(), errors: Vec::new(), code_kept: Vec::new() };
+    let mut report =
+        CopiesReport { root: shown(&root), candidates, kept, removed: Vec::new(), errors: Vec::new(), code_kept: Vec::new(), kept_landed: Vec::new() };
     if apply {
         remove(&root, &mut report);
     }
-    for (dir, error) in sweep_old_discard_copies(&root, apply) {
+    report.kept_landed = kept_specs(&root).iter().flat_map(|spec| landed_kept(&root, spec, apply)).collect();
+    let discard = sweep_old_discard_copies(&root, apply).into_iter().map(|swept| (swept, OLD_DISCARD_COPY));
+    let left_on_disk = sweep_left_on_disk(&root, apply).into_iter().map(|swept| (swept, LEFT_ON_DISK));
+    for ((dir, error), reason) in discard.chain(left_on_disk) {
         let path = shown(&dir);
         if apply {
             match error {
@@ -117,7 +133,7 @@ pub(crate) fn clean(start: &Path, apply: bool) -> Option<CopiesReport> {
                 Some(error) => report.errors.push(ErrorRecord { path: path.clone(), error }),
             }
         }
-        let reason = OLD_DISCARD_COPY.to_string();
+        let reason = reason.to_string();
         report.candidates.push(CopyRecord { path, spec: String::new(), reason, dir, whole: false, leaves: true });
     }
     report.candidates.sort_by(|a, b| a.path.cmp(&b.path));
@@ -126,8 +142,8 @@ pub(crate) fn clean(start: &Path, apply: bool) -> Option<CopiesReport> {
 }
 
 /// Tira as candidatas: a pasta nova de cada obra por [`remove_spec_copies`],
-/// que prende a trava do passo do git; as cópias antigas por
-/// [`remove_single_copy`], com a mesma trava presa. Cada cópia guarda antes o
+/// que prende a trava das cópias e a do passo do git; as cópias antigas por
+/// [`remove_single_copy`], com as mesmas travas presas, nesta ordem. Cada cópia guarda antes o
 /// código que tem além do commit: a que não pôde guardar não sai, e o motivo
 /// vai entre os erros; o que ficou guardado vai nomeado em `code_kept`.
 fn remove(root: &Path, report: &mut CopiesReport) {
@@ -154,7 +170,7 @@ fn remove(root: &Path, report: &mut CopiesReport) {
     }
     let mut lock_error = None;
     if !single.is_empty() {
-        match crate::commands::git_settle::git_step_lock(root) {
+        match crate::commands::git_settle::copies_lock(root).and_then(|copies| Ok((copies, crate::commands::git_settle::git_step_lock(root)?))) {
             Ok(_held) => {
                 for record in single {
                     absorb(record, remove_single_copy(root, &record.dir, &record.spec), true);
@@ -170,14 +186,38 @@ fn remove(root: &Path, report: &mut CopiesReport) {
     report.code_kept = code_kept;
 }
 
+/// As specs que têm ref guardada (`refs/mustard/kept/<spec>/…`), sem repetir.
+fn kept_specs(root: &Path) -> std::collections::BTreeSet<String> {
+    let out = std::process::Command::new("git").args(["for-each-ref", "--format=%(refname)", "refs/mustard/kept/"]).current_dir(root).output();
+    let listed = out.map(|out| String::from_utf8_lossy(&out.stdout).into_owned()).unwrap_or_default();
+    listed.lines().filter_map(|refname| refname.strip_prefix("refs/mustard/kept/")?.split_once('/').map(|(spec, _)| spec.to_string())).collect()
+}
+
+/// Cada pasta que ficou no lugar das cópias que saem ([`leaving_place`]):
+/// cópia que já saiu da obra, com o código guardado e o git sem ela, e que o
+/// apagar depois da trava não terminou. Com `apply`, cada uma sai, e o texto
+/// ao lado dela diz por que não saiu; sem `apply`, nada sai. Link não é
+/// seguido.
+fn sweep_left_on_disk(root: &Path, apply: bool) -> Vec<(PathBuf, Option<String>)> {
+    let mut left = folders(&leaving_place(root));
+    left.sort();
+    left.into_iter()
+        .map(|dir| {
+            let error = apply.then(|| mustard_core::io::fs::remove_dir_all(&dir).err().map(|e| e.to_string())).flatten();
+            (dir, error)
+        })
+        .collect()
+}
+
 /// Toda cópia de obra dos dois lugares, em ordem de caminho, cada uma com o
-/// motivo de sair ou ficar. A pasta das cópias de página dos descartes não
-/// é cópia de obra e não entra.
+/// motivo de sair ou ficar. A pasta das cópias de página dos descartes e a
+/// das cópias que já saíram da obra ([`LEAVING_COPIES`]) não são cópia de
+/// obra e não entram.
 fn found(root: &Path) -> Vec<CopyRecord> {
     let mut records = Vec::new();
     for dir in folders(&copies_dir(root)) {
         let name = dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        if name == DISCARD_COPIES {
+        if name == DISCARD_COPIES || name == LEAVING_COPIES {
             continue;
         }
         let whole = !dir.join(".git").exists();
@@ -554,5 +594,44 @@ mod tests {
         assert!(again.removed.is_empty(), "{again:?}");
         assert_eq!(again.errors.len(), 1, "{again:?}");
         assert!(again.errors[0].path.contains("outra"), "{again:?}");
+    }
+
+    /// A limpeza tira a ref guardada de spec entregue cujo código a base já
+    /// tem, conferido pelo git; a que guarda código que a base não tem fica,
+    /// e sem a opção de apagar a ref só é listada.
+    #[test]
+    fn clean_drops_the_kept_ref_of_a_delivered_spec_whose_code_the_base_has() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        project(root);
+        git(root, &["branch", "-M", "dev"]);
+        work(root, "entregue", "closed");
+        let path = store::spec_file(root, "entregue").unwrap();
+        store::write(&path, "state", json!({"phase": "delivered", "author": "binary"}).as_object().cloned().unwrap(), &[]).unwrap();
+        let text = |args: &[&str]| String::from_utf8_lossy(&std::process::Command::new("git").args(args).current_dir(root).output().unwrap().stdout).trim().to_string();
+        let seed = text(&["rev-parse", "HEAD"]);
+        let kept = |name: &str, file: &str, body: &str| {
+            git(root, &["checkout", "-q", "--detach", &seed]);
+            std::fs::write(root.join(file), body).unwrap();
+            git(root, &["add", file]);
+            git(root, &["commit", "-q", "-m", "guardado"]);
+            let commit = text(&["rev-parse", "HEAD"]);
+            git(root, &["checkout", "-q", "dev"]);
+            let refname = format!("refs/mustard/kept/entregue/{name}");
+            git(root, &["update-ref", &refname, &commit]);
+            refname
+        };
+        let landed = kept("1-3-aaaa", "entrou.txt", "na base\n");
+        let lost = kept("2-4-bbbb", "fora.txt", "só na ref\n");
+        std::fs::write(root.join("entrou.txt"), "na base\n").unwrap();
+        git(root, &["add", "entrou.txt"]);
+        git(root, &["commit", "-q", "-m", "entrou"]);
+
+        let listed = clean(root, false).expect("um projeto git");
+        assert_eq!(listed.kept_landed, vec![landed.clone()], "{listed:?}");
+        assert_eq!(text(&["for-each-ref", "--format=%(refname)", "refs/mustard/kept/"]).lines().count(), 2, "nada sai sem apagar");
+        let applied = clean(root, true).expect("um projeto git");
+        assert_eq!(applied.kept_landed, vec![landed], "{applied:?}");
+        assert_eq!(text(&["for-each-ref", "--format=%(refname)", "refs/mustard/kept/"]), lost);
     }
 }

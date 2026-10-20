@@ -422,12 +422,18 @@ pub(super) fn ensure_languages(root:&Path)->std::result::Result<(),MapRefusal> {
     let stored: Option<String> =
         db.conn().query_row("SELECT value FROM knowledge_meta WHERE key='languages'", [], |r| r.get(0)).optional().map_err(|e| unreadable(e.into()))?;
     if stored.as_deref() != Some(&codes) {
-        db.write(|tx| {
+        // Quem lê não segura quem o chamou esperando outra gravação: com o
+        // mapa ocupado, a troca das línguas fica para a próxima leitura, sem
+        // espera nenhuma, porque a mesma leitura a pede mais de uma vez.
+        db.conn().busy_timeout(std::time::Duration::ZERO).map_err(|e| unreadable(e.into()))?;
+        match db.write(|tx| {
             sync(tx, &languages, None)?;
             super::references::rebuild(tx)?;
             crate::io::map_revision::bump(tx)
-        })
-        .map_err(unreadable)?;
+        }) {
+            Err(err) if crate::io::map_db::busy(&err) => {}
+            written => written.map_err(unreadable)?,
+        }
     }
     Ok(())
 }

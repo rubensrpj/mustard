@@ -20,8 +20,8 @@ pub(super) enum ExistingAction {
     /// Overwrite (the `--force` path, or the interactive "backup" choice once
     /// the backup has been taken).
     Overwrite,
-    /// Keep user edits: seed only the files that are absent, but still merge the
-    /// plugin-enable keys into `settings.json`.
+    /// Keep user edits: lay down only what is absent; what is already there
+    /// stays. Nothing enables the plugin in the project's settings.
     Merge,
     /// Abort without writing.
     Cancel,

@@ -393,11 +393,9 @@ pub(crate) fn refs_ahead_of_base(
         if mine.is_empty() {
             continue;
         }
-        let Some(listing) = git::run(root, &["rev-list", "--first-parent", base]).out() else {
+        let Some(mainline) = mainline(root, base) else {
             continue;
         };
-        let mainline: BTreeSet<&str> =
-            listing.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
         for unit in mine {
             if !unit.tip.is_empty() && !mainline.contains(unit.tip.as_str()) {
                 ahead.insert(unit.branch.clone());
@@ -405,6 +403,25 @@ pub(crate) fn refs_ahead_of_base(
         }
     }
     ahead
+}
+
+/// Os commits da linha de primeiro pai de `reference` — a linha principal de
+/// uma base, lida na referência que quem chama escolheu (a base local, ou a do
+/// servidor). `None` quando o git não a lê.
+fn mainline(root: &Path, reference: &str) -> Option<BTreeSet<String>> {
+    let listing = git::run(root, &["rev-list", "--first-parent", reference]).out()?;
+    Some(listing.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect())
+}
+
+/// O commit `commit` está fora da linha principal de `reference`: chegou a ela
+/// por um merge, como segundo pai, e não por avanço rápido nem por ser um
+/// commit da própria base. A mesma medida que separa, em
+/// [`refs_ahead_of_base`], a branch que entregou da que só foi cortada.
+///
+/// Sem leitura da linha, a resposta é `false`: a falta de medida nunca prova
+/// uma entrega.
+pub(crate) fn off_mainline(root: &Path, reference: &str, commit: &str) -> bool {
+    mainline(root, reference).is_some_and(|line| !line.contains(commit))
 }
 
 // ---------------------------------------------------------------------------

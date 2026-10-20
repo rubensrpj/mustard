@@ -32,7 +32,7 @@ Depois, em qualquer projeto: **`mustard init`** — e, **dentro do Claude Code**
 
 Na sessão SSH da aba Code, use **+ → Plugins → Manage plugins** para conferir e atualizar o Mustard usado pelo Desktop. A atualização do CLI Linux não comprova atualização da cópia de plugin fornecida pelo cliente. Depois da atualização, abra uma sessão nova ou use `/reload-plugins` quando não houver ondas ativas.
 
-No host remoto, o diagnóstico `mustard-rt run doctor --check session-plugins --root /caminho/do/projeto --json` mostra versões e diretórios fornecidos aos processos Claude desse projeto. Na sessão Desktop, `/mustard-panel --diagnose` deve observar a interface `desktop` e o desenho após abrir e reabrir. Diretório fornecido não prova módulo carregado; pedido de abertura não prova desenho.
+No host remoto, o diagnóstico `mustard-rt run doctor --check session-plugins --root /caminho/do/projeto --json` mostra versões e diretórios fornecidos aos processos Claude desse projeto. Na sessão Desktop, `/mustard:mods --diagnose` deve observar a interface `desktop` e o desenho após abrir e reabrir. Diretório fornecido não prova módulo carregado; pedido de abertura não prova desenho.
 
 Para o procedimento oficial, consulte [plugins no Desktop/SSH](https://code.claude.com/docs/en/desktop#install-plugins) e [onde Mods são exibidos](https://code.claude.com/docs/en/plugins/mods#where-mods-run).
 

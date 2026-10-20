@@ -8,6 +8,9 @@
 //! equipe byte a byte igual, nenhum `disableAllHooks` escrito, e a pasta
 //! pessoal vazia do começo ao fim.
 
+#[path = "support/binary.rs"]
+mod binary;
+
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -34,7 +37,7 @@ fn installed(dir: &Path) -> (PathBuf, PathBuf) {
 
 /// Roda o binário no projeto, com a pasta pessoal falsa e sem `claude` à mão.
 fn rt(root: &Path, home: &Path, args: &[&str], stdin: Option<&str>) -> Output {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mustard-rt"));
+    let mut cmd = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"));
     cmd.args(args)
         .current_dir(root)
         .env("CLAUDE_PROJECT_DIR", root)

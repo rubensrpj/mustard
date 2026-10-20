@@ -369,13 +369,15 @@ pub fn reply_rule(before: &SpecLog, after: &SpecLog) -> Result<(), Refusal> {
 /// depois de uma gravação. A passagem do levantamento para o plano pede o
 /// levantamento feito ([`crate::domain::survey::leave_survey`]): o tipo de
 /// trabalho gravado, um ponto para cada lacuna dele e nenhum ponto aberto. A
-/// aprovação pede nenhum ponto aberto. As outras mudanças, e a gravação que
+/// aprovação pede nenhum ponto aberto, alguma tarefa e o último plano passado
+/// sem mudança depois dele ([`plan_passed`]). As outras mudanças, e a gravação que
 /// não muda a fase, passam; a spec sem nenhum ponto não tem o que conferir.
 ///
 /// # Errors
 ///
 /// A recusa da passagem ([`crate::domain::survey::SurveyGap::refusal`]) ou,
-/// na aprovação, [`Refusal::SurveyOpen`], com a lista dos pontos abertos.
+/// na aprovação, [`Refusal::SurveyOpen`], com a lista dos pontos abertos, ou a
+/// recusa do plano ([`Refusal::PlanWithoutTask`], [`Refusal::PlanNotPassed`]).
 pub fn survey_rule(spec: &str, before: &SpecLog, after: &SpecLog) -> Result<(), Refusal> {
     use crate::domain::survey::{leave_survey, open_points, open_refusal};
     let (was, now) = (State::from_log(before).phase, State::from_log(after).phase);
@@ -386,18 +388,97 @@ pub fn survey_rule(spec: &str, before: &SpecLog, after: &SpecLog) -> Result<(), 
         (Some("survey"), Some("plan")) => leave_survey(after).map_err(|gap| gap.refusal(spec, after)),
         (_, Some("approved")) => {
             let open = open_points(after);
-            if open.is_empty() { Ok(()) } else { Err(open_refusal(spec, after, &open)) }
+            if !open.is_empty() {
+                return Err(open_refusal(spec, after, &open));
+            }
+            approval_plan_rule(spec, before)
         }
         _ => Ok(()),
     }
+}
+
+/// A razão que o `state` do plano recusado traz: o plano rodou com a spec em
+/// plano e não passou. A fase continua `plan`, e a aprovação fica travada até
+/// um plano passar de novo.
+pub const PLAN_NOT_READY: &str = "plan-not-ready";
+
+/// O que a aprovação pede do plano, sobre o arquivo antes dela: alguma
+/// tarefa, e o último plano passado sem nada do plano gravado depois dele
+/// ([`plan_passed`]).
+///
+/// # Errors
+///
+/// [`Refusal::PlanWithoutTask`] sem tarefa nenhuma, e
+/// [`Refusal::PlanNotPassed`] quando o último plano não passou ou o plano
+/// mudou depois dele.
+fn approval_plan_rule(spec: &str, before: &SpecLog) -> Result<(), Refusal> {
+    if !before.visible().iter().any(|event| event.event_type == "task") {
+        return Err(Refusal::PlanWithoutTask { spec: spec.trim().to_string() });
+    }
+    if !plan_passed(before) {
+        return Err(Refusal::PlanNotPassed { spec: spec.trim().to_string() });
+    }
+    Ok(())
+}
+
+/// O último plano passou e nada do plano foi gravado depois dele.
+///
+/// O plano que passa deixa a spec em `plan` com um `state` sem razão; o que
+/// recusa, com a spec já em plano, grava outro `state` em `plan` com a razão
+/// [`PLAN_NOT_READY`]. O último `state` na ordem da dobra é a marca do último
+/// plano: em outra fase, ou com a razão da recusa, o plano não passou. Depois
+/// da marca, qualquer mudança nos itens que o plano confere — o combinado, a
+/// especificação, os critérios, as ondas e as tarefas, gravados, revistos ou
+/// tirados — pede o plano de novo.
+#[must_use]
+pub fn plan_passed(log: &SpecLog) -> bool {
+    let Some(mark) = folded_states(log).last().copied() else {
+        return false;
+    };
+    mark.str_field("phase").map(str::trim) == Some("plan") && !plan_refused(log) && !plan_changed_since(log, mark.id)
+}
+
+/// O último `state` na ordem da dobra é a marca de um plano recusado.
+#[must_use]
+pub fn plan_refused(log: &SpecLog) -> bool {
+    folded_states(log).last().is_some_and(|mark| mark.str_field("reason").map(str::trim) == Some(PLAN_NOT_READY))
+}
+
+/// Algum item que o plano confere mudou depois do evento `mark`: um novo,
+/// uma revisão ou uma remoção. A conta compara os itens visíveis do plano no
+/// arquivo até `mark` com os de agora; sem nenhum evento depois de `mark` que
+/// possa mudá-los, nem monta o arquivo de antes.
+#[must_use]
+pub fn plan_changed_since(log: &SpecLog, mark: u64) -> bool {
+    let may_change = |event: &SpecEvent| {
+        is_plan_item(&event.event_type) || matches!(event.event_type.as_str(), "remove" | "purge")
+    };
+    if !log.events.iter().any(|event| event.id > mark && may_change(event)) {
+        return false;
+    }
+    let then = SpecLog::with_events(log.events.iter().filter(|event| event.id <= mark).cloned().collect());
+    plan_items(&then) != plan_items(log)
+}
+
+/// Os números dos itens visíveis que o plano confere.
+fn plan_items(log: &SpecLog) -> Vec<u64> {
+    log.visible().into_iter().filter(|event| is_plan_item(&event.event_type)).map(|event| event.id).collect()
+}
+
+/// O tipo é de um item que o plano confere: o que o assistente grava a partir
+/// da conversa no combinado, na especificação, nos critérios e nas ondas.
+fn is_plan_item(event_type: &str) -> bool {
+    crate::domain::spec_events::type_spec(event_type).is_some_and(|spec| {
+        spec.needs_origin && matches!(spec.block, Block::Agreed | Block::Specification | Block::Criteria | Block::Waves)
+    })
 }
 
 /// O estado que a trava da aprovação lê: a regra escrita uma vez, para todos
 /// os leitores, a partir do arquivo de eventos da spec (`log`), quando existe.
 ///
 /// - Com algum `state` no arquivo, vale a dobra deles.
-/// - Sem nenhum `state` e com o arquivo, em plano: o "Aprovar" faz nascer e
-///   aprova.
+/// - Sem nenhum `state` e com o arquivo, em plano, e travada: a aprovação
+///   pede um plano passado ([`plan_passed`]), que essa spec nunca teve.
 /// - `None` sem o arquivo: a branch que o Mustard não abriu, e a pasta de spec
 ///   antiga, que só tem o `meta.json`.
 ///
@@ -490,10 +571,12 @@ impl Qa {
 pub fn qa(log: &SpecLog) -> Qa {
     let block = log.block(BlockQuery::Block(Block::Criteria));
     let criteria: Vec<u64> = block.iter().filter(|e| e.event_type == "criterion").map(|e| e.id).collect();
-    // A execução mais nova de cada critério: (número, passou).
+    // A execução mais nova de cada critério: (número, passou). As versões
+    // vigentes se resolvem de uma vez, e não a cada execução.
+    let currents = log.current_versions();
     let mut last: BTreeMap<u64, (u64, bool)> = BTreeMap::new();
     for run in block.iter().filter(|e| e.event_type == "criterion_run") {
-        let Some(current) = run.int("criterion").and_then(|named| log.current(named)) else {
+        let Some(current) = run.int("criterion").and_then(|named| currents.get(&named).copied()) else {
             continue;
         };
         let pass = run.str_field("result").map(str::trim) == Some("pass");

@@ -1,435 +1,441 @@
-import design from '../ui/theme.js';
-import {definitionNames,definitionText,waveText,contentPage} from './panel-content.js';
-import {settingsPanel} from './panel-settings.js';
-import {profileControls,ideasPanel,liveAgents,sessionFigures,diagnosticsPanel,impactPanel} from './panel-extras.js';
-import {sections} from './panel-runtime.js';
-import {economyOverview} from './panel-economy.js';
+// The panel's screens as one tree for every surface. The binary owns every
+// number; this module only lays out the answer of the visible screen. The
+// terminal and the desktop differ in navigation (keys in the footer against
+// tabs on top), in the chart (blocks against Svg) and in spacing.
+import {contentPage} from './panel-content.js';
+import {settingsScreen} from './panel-settings.js';
+import {countdown} from './panel-runtime.js';
 
-export const initialPanelView = () => ({tab:'Projeto',definitionGroup:'context',definitionQuery:'',definitionPage:0,
-  selectedDefinition:undefined,selectedWave:undefined,waveView:'Plano',contentOffset:0,technicalOffset:0,
-  showTechnical:false,usageView:'Resumo',showPublications:false,settingsGroup:'Busca'});
+export const PAGE=8;
+export const KINDS=['task','criterion','decision','rule','question'];
+export const FILTERS=['all','attention','committed','uncommitted'];
+export const initialPanelState=()=>({screen:'overview',spec:null,kind:'task',query:'',filter:'all',rows:PAGE,item:null,
+  back:[],history:false,waveRequest:false,searching:false,pickSpec:false,delivered:false});
 
-// The terminal's ANSI palette can quantize dark RGB surfaces into medium gray.
-// Use real black there; desktop keeps the shared web palette. Borders and labels
-// carry selection as well as color, including on terminals without truecolor.
-export function panelPalette(surface) {
-  return surface==='terminal' ? {...design.dark,paper:'black',surface:'black',sidebar:'black',inset:'black',
-    ink:'whiteBright',muted:'white',line:'gray',accentText:'yellow',accentSoft:'black'} : design.dark;
+/** The `run panel` section and arguments of a screen; none for Settings. */
+export function screenQuery(state) {
+  if(state.screen==='items')return {section:'items',args:['--kind',state.kind,'--filter',state.filter,'--offset','0','--limit',String(Math.min(50,state.rows)),
+    ...(state.query.trim()?['--query',state.query.trim()]:[])]};
+  if(state.screen==='item')return {section:'item',args:state.item?['--item',state.item]:[]};
+  return ['overview','spec','usage'].includes(state.screen)?{section:state.screen,args:[]}:undefined;
 }
 
-export function renderPanel({elements,surface,columns,bodyRows,data,usage,problem,selected,view,publicationMessage,publishing,settings,impact,operationBusy,actions}) {
-  const {Box,Text,Button,Select,Input,Link,Markdown,Code,Svg}=elements;
-  const theme=panelPalette(surface), english=data?.project?.language==='en-US';
-  const compact=surface==='terminal' || bodyRows>0 && bodyRows<24;
-  const t=(pt,en)=>english?en:pt;
+const phases={survey:['levantamento','survey'],plan:['planejamento','planning'],planned:['planejada','planned'],approved:['aprovada','approved'],
+  running:['execução','running'],closed:['fechada','closed'],pr_open:['PR aberto','PR open'],delivered:['entregue','delivered'],discarded:['descartada','discarded']};
+// How a merged pull request reads against the phase the spec is still in.
+const still={running:['segue em execução','is still running'],approved:['segue aprovada, sem execução','is still approved, not running'],
+  closed:['segue fechada, sem entrega','is still closed, not delivered'],pr_open:['segue com o PR aberto','still has the PR open']};
+const waveStates={todo:['a fazer','to do'],running:['em execução','running'],'no-agent':['parada sem agente','stopped, no agent'],
+  integrated:['integrada, sem commit','integrated, no commit'],committed:['comitada','committed'],rejected:['reprovada','rejected'],backlog:['no backlog','in the backlog']};
+const kindNames={task:['Tarefas','Tasks'],criterion:['Critérios','Criteria'],decision:['Decisões','Decisions'],rule:['Regras','Rules'],question:['Perguntas','Questions']};
+const filterNames={all:['Todas','All'],attention:['Pedem atenção','Need attention'],committed:['Comitadas','Committed'],uncommitted:['Sem commit','Not committed']};
+const reasons={'wave-no-agent':['parada sem agente','stopped, no agent'],'wave-rejected':['reprovada','rejected'],
+  'criterion-failing':['prova falhando','proof failing'],'criterion-without-proof':['sem prova','no proof'],'question-open':['aberta','open']};
+const authors={assistant:['pelo condutor','by the conductor'],user:['pelo usuário','by the user'],round:['pela rodada','by the round']};
+// How an item another one points to is named on screen: by its kind in words.
+const itemKinds={criterion:['O critério','The criterion'],decision:['A decisão','The decision'],rule:['A regra','The rule'],request:['O pedido','The request'],
+  limit:['O limite','The limit'],point:['A pergunta','The question'],task:['A tarefa','The task']};
+const titles={overview:['Visão geral','Overview'],spec:['Spec','Spec'],items:['Itens','Items'],item:['Item','Item'],usage:['Consumo','Usage'],settings:['Configurações','Settings']};
+
+/** The two chart colors for the person's theme, as the `/config` row names it. */
+export function chartColors(theme) {
+  return String(theme ?? '').includes('light')?{bar:'#9a7400',empty:'#8a877d'}:{bar:'#e1ad01',empty:'#6e6c66'};
+}
+
+/** One block per day: `▁` to `█` by the highest day, `·` for a day without measure. */
+export function dayBlocks(days) {
+  const max=Math.max(0,...days.map(day=>day.tokens ?? 0));
+  return days.map(day=>day.tokens==null?'·':'▁▂▃▄▅▆▇█'[max?Math.min(7,Math.max(0,Math.ceil(day.tokens/max*8)-1)):0]).join('');
+}
+
+export function renderPanel({elements,surface,columns,state,screens={},project,usage,settings,measuring=false,publication,problem,theme,now=Date.now(),actions}) {
+  const {Box,Text,Button,Select,Input,Svg}=elements;
+  const terminal=surface==='terminal';
+  const english=project?.language==='en-US', locale=english?'en-US':'pt-BR';
+  const t=(pt,en)=>english?en:pt, name=pair=>pair?t(...pair):undefined;
   const clean=value=>String(value ?? '').replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g,'');
-  const text=(value,props={})=>Text({children:clean(value),color:theme.ink,wrap:'wrap',...props});
-  const note=value=>text(value,{color:theme.muted});
-  const fmt=value=>value==null?t('Não medido','Not measured'):Number(value).toLocaleString(english?'en-US':'pt-BR');
-  const short=value=>value==null?t('Não medido','Not measured'):new Intl.NumberFormat(english?'en-US':'pt-BR',
-    {notation:'compact',maximumFractionDigits:1}).format(value);
-  const money=value=>value==null?t('Não medido','Not measured'):'$'+(value/1000000).toFixed(value>0 && value<1000?6:4);
-  const date=value=>{
-    const parsed=value ? new Date(value) : undefined;
-    return !parsed || Number.isNaN(parsed.valueOf())?t('Sem medição','No measurement'):parsed.toLocaleString(english?'en-US':'pt-BR',{dateStyle:'short',timeStyle:'short'});
-  };
-  const states={survey:['Levantamento','Survey'],plan:['Planejamento','Planning'],planned:['Planejada','Planned'],
-    approved:['Aprovada','Approved'],running:['Em execução','Running'],received:['Retorno recebido','Return received'],
-    integrated:['Integrada','Integrated'],committed:['Comitada','Committed'],'repair-required':['Conserto necessário','Repair required'],
-    qa:['Validação','Validation'],reviewing:['Revisão','Review'],review:['Revisão','Review'],pr:['PR aberto','PR open'],
-    pr_open:['PR aberto','PR open'],closed:['Fechada','Closed'],delivered:['Entregue','Delivered'],
-    discarded:['Descartada','Discarded'],discarded_auto:['Descartada','Discarded']};
-  const state=value=>states[value]?t(...states[value]):clean(value || t('Não informado','Not provided'));
-  const button=(key,label,onPress,{active=false,disabled=false,hotkey}={})=>Box({key:`control-${key}`,...(compact?{}:{borderStyle:'round'}),
-    borderColor:active?theme.accentText:theme.line,...(active?{backgroundColor:theme.accentSoft}:{}),paddingX:1,children:[disabled?note(label):Button({key,
-      label:clean(active?`${label} ✓`:label),plain:true,onPress,...(hotkey?{hotkey}:{}),hover:{color:theme.accentText,bold:true}})]});
-  const row=children=>Box({flexDirection:'row',flexWrap:'wrap',columnGap:1,children});
-  const section=(title,children)=>Box({flexDirection:'column',...(compact?{}:{borderStyle:'round',borderColor:theme.line,paddingX:1,backgroundColor:theme.surface}),
-    children:[Box({marginBottom:compact?0:1,children:[text(title,{bold:true,color:theme.accentText})]}),...children]});
-  const card=(label,value)=>Box({flexDirection:'column',...(compact?{}:{borderStyle:'round',paddingX:1}),borderColor:theme.line,flexGrow:1,backgroundColor:theme.surface,
-    children:[note(label),text(value,{bold:true})]});
-  const content=(value,raw=false)=>raw && Code ? Code({source:clean(value),language:'markdown',wrap:'wrap'}) : !raw && Markdown ? Markdown({text:clean(value)}) : raw ? text(value) : Box({flexDirection:'column',rowGap:1,children:clean(value).split('\n\n').map(paragraph=>{
-    const label=paragraph.match(/^\*\*([^\n]+)\*\*\n([\s\S]*)$/);
-    return label?Box({flexDirection:'column',children:[text(label[1],{bold:true,color:theme.accentText}),text(label[2])]}):text(paragraph);
-  })});
-  const pagination=(prefix,page,patch)=>page.pages>1?[row([
-    button(`${prefix}-prev`,t('Anterior','Previous'),()=>actions.change(patch(page.page-1)),{disabled:page.page===0}),
-    note(t(`Parte ${page.page+1} de ${page.pages}`,`Part ${page.page+1} of ${page.pages}`)),
-    button(`${prefix}-next`,t('Próxima','Next'),()=>actions.change(patch(page.page+1)),{disabled:page.page+1>=page.pages}),
-  ])]:[];
-  const picker=(key,label,options,value,onSelect)=>surface!=='mobile' && Select
-    ? Box({...(compact?{}:{borderStyle:'round',borderColor:theme.line,paddingX:1,backgroundColor:theme.surface}),children:[Select({key,label,options,value,onSelect})]})
-    : row(options.map(option=>button(`${key}-${option.value}`,option.label,()=>onSelect(option.value),{active:option.value===value})));
-  const specs=data?.specs || [], spec=specs.find(item=>item.name===selected);
-  const counts=item=>item?.counted_waves || (item?.summary_only?[null,null]:[item?.waves?.filter(w=>['integrated','committed'].includes(w.status)).length || 0,item?.waves?.length || 0]);
-  const progress=item=>{if(item?.summary_only)return t('Carregando detalhes da spec…','Loading spec details…');
-    const [done,total]=counts(item);return total?`${done}/${total} ${t('ondas concluídas','waves completed')}`:t('Sem ondas planejadas','No planned waves');};
-  const go=(tab)=> {
-    const wave=tab==='Ondas' && view.selectedWave===undefined
-      ? (spec?.waves?.find(w=>['running','repair-required','received'].includes(w.status)) || spec?.waves?.[0])?.wave : view.selectedWave;
-    actions.change({tab,contentOffset:0,showTechnical:false,...(tab==='Ondas'?{selectedWave:wave}:{})},true);
-  };
-  const allTabs=[['Projeto','Projeto','Project'],['Definições','Definições','Definitions'],['Ondas','Ondas','Waves'],['Execução','Execução','Execution'],['Consumo','Consumo','Usage'],['Ideias','Ideias','Ideas'],['Diagnóstico','Diagnóstico','Diagnostics'],['Configurações','Configurações','Settings']];
-  const profile=data?.preferences?.profiles?.find(item=>item.id===data.preferences.selected);
-  const tabs=allTabs.filter(([key])=>!profile || profile.tabs.includes(key) || key===view.tab || key==='Configurações');
-  const helpers={t,text,note,row,section,button,picker,Input,fmt,date,content,tabs:Object.fromEntries(allTabs.map(([key,pt,en])=>[key,t(pt,en)]))};
-  const rows=[row([text('MUSTARD',{bold:true,color:theme.accentText}),...(data?[text(data.project.name || 'Mustard',{bold:true})]:[])])];
-  if(data)rows.push(note(data.project.branch || t('Sem branch','No branch')));
-  if(data && !compact)rows.push(...profileControls(data,view,actions,helpers));
-  if(surface!=='mobile' && (bodyRows>0 && bodyRows<24 || columns && columns<88))rows.push(picker('panel-section',t('Seção','Section'),
-    tabs.map(([value,pt,en])=>({value,label:t(pt,en)})),view.tab,go));
-  else rows.push(row(tabs.map(([key,pt,en],index)=>button(`tab-${key}`,t(pt,en),()=>go(key),{active:view.tab===key,hotkey:String(index+1)}))));
-  if(problem)rows.push(section(t('Atualização indisponível','Update unavailable'),[text(problem),note(`${t('Último estado','Last state')}: ${date(data?.at)}`)]));
-  if(!data)return Box({flexDirection:'column',padding:1,backgroundColor:theme.paper,children:[...rows,text(t('Carregando projeto…','Loading project…'))]});
-  if(specs.length && !['Configurações','Ideias','Diagnóstico'].includes(view.tab))rows.push(picker('select-spec','Spec',specs.map(item=>({value:item.name,label:`${item.name} · ${state(item.phase)}`})),selected,actions.selectSpec));
-  if(!['Projeto','Configurações','Ideias','Diagnóstico'].includes(view.tab) && spec)rows.push(text(spec.goal || spec.name,{bold:true}));
-  if(data.section && data.section!==sections[view.tab] || spec?.summary_only && ['Definições','Ondas','Execução'].includes(view.tab)) {
-    rows.push(note(t('Carregando esta seção…','Loading this section…')),row([
-      button('refresh',t('Tentar atualizar','Retry update'),actions.refresh),button('close',t('Fechar','Close'),actions.close)]));
-    return Box({flexDirection:'column',rowGap:1,padding:1,backgroundColor:theme.paper,children:rows});
-  }
-  if(view.tab==='Configurações') {
-    if(compact)rows.push(...profileControls(data,view,actions,helpers));
-    rows.push(settingsPanel(settings,actions,{t,text,note,row,section,button,picker},view.settingsGroup));
-  }
-  if(view.tab==='Ideias')rows.push(ideasPanel(data,view,actions,helpers,operationBusy));
-  if(view.tab==='Diagnóstico')rows.push(diagnosticsPanel(data,view,actions,helpers));
+  const text=(value,props={})=>Text({children:clean(value),wrap:'wrap',...props});
+  const label=value=>text(value,{color:'subtle'});
+  const join=(...parts)=>parts.filter(part=>part!=null && part!=='').join('  ·  ');
+  const int=value=>value==null?'—':Number(value).toLocaleString(locale);
+  // Numbers keep plain spaces: a terminal draws the no-break one as any other.
+  const spaced=value=>value.replace(/[\u00a0\u202f]/g,' ');
+  const compact=value=>value==null?'—':spaced(new Intl.NumberFormat(locale,{notation:'compact',maximumSignificantDigits:3}).format(value));
+  // A rounded figure drops the cents only from a hundred dollars up.
+  const money=(micro,round=false)=>{if(micro==null)return t('não medido','not measured');const digits=round && micro>=1e8?0:2;
+    return spaced(new Intl.NumberFormat(locale,{style:'currency',currency:'USD',minimumFractionDigits:digits,maximumFractionDigits:digits}).format(micro/1e6));};
+  // A date reads as it was recorded, never shifted into another zone.
+  const day=value=>{const m=/^(\d{4})-(\d{2})-(\d{2})/.exec(String(value ?? ''));return m?(english?`${m[2]}/${m[3]}`:`${m[3]}/${m[2]}`):'—';};
+  const hour=value=>/T(\d{2}:\d{2})/.exec(String(value ?? ''))?.[1] ?? '';
+  const percent=value=>value==null?'—':`${Number(value).toLocaleString(locale,{maximumFractionDigits:1})}%`;
+  const row=(children,props={})=>Box({flexDirection:'row',flexWrap:'wrap',columnGap:terminal?2:1,...props,children});
+  const block=(title,lines,props={})=>Box({flexDirection:'column',...(terminal?{}:{borderStyle:'round',borderColor:'subtle',paddingX:1}),...props,
+    children:[...(title?[label(title)]:[]),Box({flexDirection:'column',...(terminal && title?{paddingLeft:2}:{}),...(terminal?{}:{rowGap:0}),children:lines})]});
+  const press=(key,caption,onPress,extra={})=>Button({key,label:clean(caption),plain:true,onPress,...extra});
+  const warn=value=>text(`▲  ${value}`,{color:'warning'});
+  // An item by its own text, never by its code: `A regra "…"`.
+  const named=item=>[name(itemKinds[item.kind]),`"${item.title || t('sem título','untitled')}"`].filter(Boolean).join(' ');
+  const state_=state;
+  const screen=state_.screen;
+  const answer=screens[screen];
+  // A key is a Button with a hotkey: in the terminal's footer; on desktop in
+  // place, where the screen draws it. Navigation keys live in the desktop's
+  // top row instead, so `nav` draws them in the terminal alone.
+  const keys=[];
+  const keyButton=k=>k.disabled?label(k.disabled):press(k.id,k.caption,k.onPress,k.hotkey?{hotkey:k.hotkey}:{});
+  const key=(id,hotkey,caption,onPress,disabled)=>{const k={id,hotkey,caption,onPress,disabled};if(terminal)keys.push(keyButton(k));else body.push(keyButton(k));};
+  const nav=(id,hotkey,caption,onPress)=>{if(terminal)keys.push(keyButton({id,hotkey,caption,onPress}));};
 
-  if(view.tab==='Projeto') {
-    if(spec)rows.push(section(t('Trabalho atual','Current work'),[
-      text(`${spec.name} · ${state(spec.phase)}`,{bold:true}),text(spec.goal || ''),text(progress(spec)),
-      row([button('open-current-definitions',t('Ver definições','Read definitions'),()=>go('Definições')),
-        button('open-current-waves',t('Acompanhar ondas','Follow waves'),()=>go('Ondas'))]),
-    ]));
-    else rows.push(note(t('Selecione uma spec para consultar definições e ondas.','Select a spec to read definitions and waves.')));
-    const total=specs.reduce((sum,item)=>{const [done,count]=counts(item);return count==null?[sum[0],sum[1],sum[2]+1]:[sum[0]+done,sum[1]+count,sum[2]];},[0,0,0]);
-    rows.push(row([card(t('Specs no projeto','Project specs'),fmt(specs.length)),
-      card(t('Ondas carregadas','Loaded waves'),`${total[0]}/${total[1]} ${t('concluídas','completed')}`)]));
-    if(total[2])rows.push(note(t('O total completo de cada spec é carregado ao selecioná-la.','Each spec’s complete total loads when selected.')));
-    if(spec?.scheduling?.tasks?.some(item=>item.reason==='task-blocked'))rows.push(section(t('Precisa de atenção','Needs attention'),
-      spec.scheduling.tasks.filter(item=>item.reason==='task-blocked').map(item=>text(`${item.title || item.task}: ${item.blocked_by || t('condição pendente','pending condition')}`))));
-    rows.push(...liveAgents(data,spec,helpers));
-    if(data.project_profile?.available) {
-      const native=data.project_profile.data;
-      rows.push(section(t('Projeto reconhecido pelo scan','Project identified by scan'),[
-        text(`${fmt(native.size?.code_files)} ${t('arquivos','files')} · ${fmt(native.size?.lines)} ${t('linhas','lines')} · ${fmt(native.size?.declarations)} ${t('declarações','declarations')}`),
-        note(t('Convenções observadas, com fontes. Elas não substituem as regras do projeto.','Source-backed observed conventions. They do not replace project rules.')),
-        button('project-profile',view.showProfile?t('Recolher convenções','Collapse conventions'):t('Ver convenções observadas','Read observed conventions'),()=>actions.change({showProfile:!view.showProfile})),
-        ...(view.showProfile?(native.naming_conventions || []).map(area=>text(`${area.area}: ${(area.styles || []).map(style=>`${style.style} ${style.count}/${style.of}`).join(' · ')}`)):[]),
-        ...(view.showProfile?[note(t('Mais detalhes por arquivo: mustard-rt run knowledge --profile --file <arquivo>','More details per file: mustard-rt run knowledge --profile --file <file>'))]:[]),
-      ]));
-    }
-    if(specs.some(item=>item!==spec))rows.push(section(t('Outras especificações','Other specifications'),specs.filter(item=>item!==spec).map(item=>
-      row([text(`${item.name} · ${state(item.phase)}`),button(`project-${item.name}`,t('Abrir','Open'),()=>actions.selectSpec(item.name))]))
-      .concat(specs.length===1?[note(t('Nenhuma outra spec registrada.','No other recorded specs.'))]:[])));
-  }
+  const body=[];
+  if(problem)body.push(text(problem,{color:'error'}));
+  if(screen==='settings') {
+    body.push(settingsScreen(settings,actions,{t,text,label,block,press,join,row,column:children=>Box({flexDirection:'column',rowGap:1,children}),Select,Input}));
+    nav('back','v',t('voltar','back'),actions.back);
+  } else if(!answer) body.push(label(t('Carregando…','Loading…')));
+  else if(answer.reason==='panel-no-spec' && screen!=='overview') body.push(text(t('Nenhuma spec neste projeto.','No spec in this project.')));
+  else if(screen==='overview') overview(answer);
+  else if(screen==='spec') specScreen(answer);
+  else if(screen==='items') itemsScreen(answer);
+  else if(screen==='item') itemScreen(answer);
+  else if(screen==='usage') usageScreen(answer);
 
-  if(view.tab==='Definições' && spec) {
-    const definitions=spec.definitions || {}, groups=Object.keys(definitionNames).filter(key=>definitions[key]?.length);
-    const group=groups.includes(view.definitionGroup)?view.definitionGroup:groups[0];
-    if(groups.length)rows.push(picker('definition-group',t('Categoria','Category'),groups.map(key=>({value:key,
-      label:`${t(...definitionNames[key])} (${definitions[key].length})`})),group,value=>actions.change({definitionGroup:value,definitionPage:0,
-      definitionQuery:'',selectedDefinition:undefined,contentOffset:0,technicalOffset:0,showTechnical:false})));
-    if(surface!=='mobile' && Input && groups.length)rows.push(Input({key:'definition-search',label:t('Buscar nesta categoria','Search this category'),
-      placeholder:t('Título, código ou texto','Title, code or text'),value:view.definitionQuery,
-      onInput:value=>actions.change({definitionQuery:value,definitionPage:0,selectedDefinition:undefined,contentOffset:0,technicalOffset:0,showTechnical:false}),
-      onSubmit:value=>actions.change({definitionQuery:value,definitionPage:0,selectedDefinition:undefined,contentOffset:0,technicalOffset:0,showTechnical:false})}));
-    const query=view.definitionQuery.trim().toLocaleLowerCase(),items=(definitions[group] || []).filter(item=>
-      !query || [item.code,item.title,item.gap,definitionText(item,english)].join(' ').toLocaleLowerCase().includes(query));
-    const pageCount=Math.max(1,Math.ceil(items.length/6)),page=Math.min(view.definitionPage,pageCount-1),visible=items.slice(page*6,page*6+6);
-    const item=visible.find(item=>String(item.code || item.id)===String(view.selectedDefinition)) || visible[0];
-    const list=section(t(`Itens encontrados (${items.length})`,`Matching items (${items.length})`),[
-      ...(surface!=='mobile' && Select && (columns || 0)<112 && visible.length
-        ? [picker('definition-item',t('Item','Item'),visible.map(entry=>({value:String(entry.code || entry.id),label:`${entry.code || entry.id} · ${entry.title || entry.gap || t('Sem título','Untitled')}`})),
-          String(item.code || item.id),value=>actions.change({selectedDefinition:value,contentOffset:0,technicalOffset:0,showTechnical:false}))]
-        : visible.map(entry=>Box({flexDirection:'column',children:[button(`item-${entry.code || entry.id}`,entry.code || String(entry.id),
-          ()=>actions.change({selectedDefinition:entry.code || entry.id,contentOffset:0,technicalOffset:0,showTechnical:false}),{active:item===entry}),
-          text(entry.title || entry.gap || t('Sem título','Untitled'))]}))),
-      ...(!items.length?[note(t(groups.length?'Nenhum item corresponde à busca.':'Nenhuma definição registrada.',groups.length?'No matching items.':'No recorded definitions.'))]:[]),
-      ...pagination('definitions',{page,pages:pageCount},value=>({definitionPage:value,contentOffset:0,showTechnical:false})),
-    ]);
-    const reader=[];
-    if(item) {
-      const body=contentPage(definitionText(item,english),view.contentOffset);
-      reader.push(text(item.title || item.gap || t(...definitionNames[group]),{bold:true}),note(item.code || item.id),
-        content(body.text),...pagination('definition-body',body,value=>({contentOffset:value})));
-      if(item.agent) {
-        reader.push(button(`technical-${item.code}`,t(view.showTechnical?'Ocultar instruções técnicas':'Ver instruções técnicas',view.showTechnical?'Hide technical instructions':'Read technical instructions'),
-          ()=>actions.change({showTechnical:!view.showTechnical,technicalOffset:0})));
-        if(view.showTechnical) {const technical=contentPage(item.agent,view.technicalOffset);
-          reader.push(content(technical.text,true),...pagination('definition-technical',technical,value=>({technicalOffset:value})));}
-      }
-    }
-    // Column counts are character cells on every Mods surface. Stack on narrow panes.
-    rows.push(Box({flexDirection:(columns || 0)>=112?'row':'column',columnGap:1,rowGap:1,children:[
-      Box({flexDirection:'column',...(columns>=112?{width:'38%'}:{}),children:[list]}),
-      ...(reader.length?[Box({flexDirection:'column',flexGrow:1,flexShrink:1,children:[section(t('Conteúdo definido','Recorded definition'),reader)]})]:[]),
-    ]}));
-  }
-
-  if(view.tab==='Ondas' && spec) {
-    rows.push(text(`${t('Esta spec','This spec')}: ${progress(spec)}`,{bold:true}));
-    if(!spec.waves.length)rows.push(section(t('Planejamento das ondas','Wave planning'),[
-      text(t('As ondas ainda não foram agrupadas.','Waves have not been grouped yet.')),
-      button('wave-definitions',t('Ver tarefas e critérios','Read tasks and criteria'),()=>go('Definições'))]));
+  function overview(d) {
+    const s=d.spec;
+    if(!s) body.push(block(null,[text(t('Nenhuma spec aberta neste projeto.','No open spec in this project.'))]));
     else {
-      rows.push(spec.waves.length>3 && surface!=='mobile' && Select
-        ? picker('select-wave',t('Onda','Wave'),spec.waves.map(w=>({value:String(w.wave),label:`${w.wave} · ${state(w.status)}`})),String(view.selectedWave),
-          value=>actions.change({selectedWave:Number(value),waveView:'Plano',contentOffset:0},true))
-        : row(spec.waves.map(w=>button(`wave-${w.wave}`,`${t('Onda','Wave')} ${w.wave} · ${state(w.status)}`,
-          ()=>actions.change({selectedWave:w.wave,waveView:'Plano',contentOffset:0},true),{active:view.selectedWave===w.wave}))));
-      if(view.selectedWave===undefined)rows.push(note(t('Selecione uma onda para ver plano, input, entrega e testes.','Select a wave to read its plan, input, return and tests.')));
+      const phase=text(name(phases[s.phase]) ?? s.phase,{color:'claude'});
+      const tasks=`${int(s.tasks.finished)} ${t('de','of')} ${int(s.tasks.total)}`;
+      if(terminal) body.push(block(null,[text(s.name,{bold:true}),row([phase,text('·',{color:'subtle'}),text(`${tasks} ${t('tarefas feitas','tasks done')}`)]),
+        text(join(`${int(s.criteria.passed)} ${t('de','of')} ${int(s.criteria.total)} ${t('critérios','criteria')}`,
+          `${int(s.waves.finished)} ${t('de','of')} ${int(s.waves.planned)} ${t('ondas','waves')}`))]));
       else {
-        const names={Plano:['Plano e tarefas','Plan and tasks'],Pedido:['Input exato enviado','Exact sent input'],Perfil:['Agente e skills','Agent and skills'],Entrega:['Entrega','Return'],Testes:['Testes','Tests']};
-        rows.push(row(Object.entries(names).map(([value,label])=>button(`wave-view-${value}`,t(...label),
-          ()=>actions.change({waveView:value,contentOffset:0}),{active:view.waveView===value}))));
-        const detail=data.wave_detail?.spec===selected && data.wave_detail.wave===view.selectedWave?data.wave_detail:undefined;
-        if(!detail)rows.push(note(t('Carregando conteúdo registrado…','Loading recorded content…')));
-        else {
-          const body=contentPage(waveText(detail,view.waveView,english),view.contentOffset);
-          const children=[];
-          if(view.waveView==='Pedido')children.push(note(t('Cópia integral do pedido enviado ao agente. Nenhum conteúdo foi resumido.','Complete copy of the request sent to the agent. No content has been summarized.')));
-          if(view.waveView==='Entrega' && detail.delivery && !detail.delivery_integrated)children.push(text(
-            t('Retorno recebido · aguardando validação do orquestrador','Return received · awaiting orchestrator validation'),{color:theme.accentText}));
-          children.push(content(body.text,view.showTechnical),...pagination('content',body,value=>({contentOffset:value})),
-            button('wave-source',t(view.showTechnical?'Texto formatado':'Ver texto original',view.showTechnical?'Formatted text':'Read original text'),()=>actions.change({showTechnical:!view.showTechnical})));
-          rows.push(section(`${t('Onda','Wave')} ${view.selectedWave} · ${t(...names[view.waveView])}`,children));
-          rows.push(button('preview-wave-discard',t('Conferir impacto de descartar esta tentativa','Inspect impact of discarding this attempt'),
-            ()=>actions.preview({action:'discard-wave',spec:selected,wave:view.selectedWave})));
-        }
+        const card=(figure,caption)=>Box({flexDirection:'column',children:[text(figure,{bold:true}),label(caption)]});
+        body.push(block(t('Agora','Now'),[row([text(s.name,{bold:true}),phase],{justifyContent:'space-between'}),label(s.goal),
+          row([press('go-items',`${s.tasks.finished}/${s.tasks.total} ${t('tarefas feitas','tasks done')}`,()=>actions.go('items',{kind:'task'}),{hotkey:'t'}),
+            card(`${s.criteria.passed}/${s.criteria.total}`,t('critérios passando','criteria passing')),
+            card(`${s.waves.finished}/${s.waves.planned}`,t('ondas concluídas','waves finished'))],{columnGap:3})]));
       }
+      const warnings=d.warnings.map(warning).filter(Boolean);
+      if(warnings.length)body.push(block(t('Precisa de atenção','Needs attention'),warnings.flat()));
+      // The binary's sentence for the step; its command stays off the screen.
+      if(s.next?.text)body.push(block(t('Próximo passo','Next step'),[terminal?text(s.next.text)
+        :row([Box({flexGrow:1,children:[text(s.next.text)]}),press('next-see',t('Ver','See'),()=>actions.go('spec'))],{alignItems:'center'})]));
+      const air=s.air;
+      body.push(block(t('Ondas no ar','Waves in the air'),[text(join(air.running?`${air.running} ${t('no ar','running')}`:t('nenhuma no ar','none running'),
+        `${air.free_slots} ${t(air.free_slots===1?'vaga livre':'vagas livres',air.free_slots===1?'free slot':'free slots')}`)),
+        ...(air.backlog?[text(`${air.backlog} ${t('tarefas na fila','tasks queued')}`)]:[]),
+        ...(d.usage?.session_agents!=null?[label(`${d.usage.session_agents} ${t('agentes trabalhando na sessão','agents working in the session')}`)]:[])]));
     }
+    if(d.others?.shown?.length)body.push(block(t('Outras specs que pedem atenção','Other specs that need attention'),[
+      ...d.others.shown.map(other=>Box({flexDirection:'column',children:[press(`spec-${other.name}`,other.name,()=>actions.selectSpec(other.name)),
+        text(join(name(phases[other.phase]) ?? other.phase,other.warning?.kind==='pr-merged'?`PR #${other.warning.pr ?? '?'} ${t('na base desde','in the base since')} ${day(other.warning.at)}`:''),{color:'warning'})]})),
+      label(`${d.others.attention} ${t('de','of')} ${d.others.total} specs`)]));
+    // The project summary as the binary gave it: the newest deliveries first.
+    if(d.deliveries?.shown?.length)body.push(block(t('Entregas do projeto','Project deliveries'),[
+      ...d.deliveries.shown.map(item=>Box({flexDirection:'column',children:[text(item.title,{bold:true}),
+        label(join(day(item.delivered_at),item.pr!=null?`PR #${item.pr}`:'',item.rules?`${int(item.rules)} ${t(item.rules===1?'regra':'regras',item.rules===1?'rule':'rules')}`:'')),
+        ...(item.delivered?[text(item.delivered)]:[])]})),
+      label(`${int(d.deliveries.shown.length)} ${t('de','of')} ${int(d.deliveries.total)} ${t('entregas','deliveries')}`)]));
+    const limits=Object.fromEntries((usage?.rateLimits || []).map(limit=>[limit.kind,limit]));
+    const host=[`${t('contexto','context')} ${percent(usage?.context?.percent)}`,`${t('cota 5 h','5 h quota')} ${percent(limits.five_hour?.percentUsed)}`,
+      `${t('semana','week')} ${percent(limits.seven_day?.percentUsed)}`];
+    body.push(block(t('Uso','Usage'),[...(terminal?[text(join(host[0],host[1])),text(host[2])]:[text(host.join('    '))]),
+      text(join(`${money(d.usage?.cost_micro_usd,true)} ${t('no projeto','in the project')}`,`${int(d.usage?.sessions)} ${t('sessões','sessions')}`)),
+      ...(terminal?[]:[label(`${compact(d.usage?.tokens)} tokens`)])]));
+    nav('go-spec','s',t('spec','spec'),()=>actions.go('spec'));
+    nav('go-items','t',t('tarefas','tasks'),()=>actions.go('items',{kind:'task'}));
+    nav('go-usage','c',t('consumo','usage'),()=>actions.go('usage'));
+    // The same publication as /mustard:pages project, only on its press, and
+    // its answer as the command gives it.
+    key('publish','p',terminal?t('publicar','publish'):t('Publicar no Cloudflare','Publish to Cloudflare'),actions.publish,
+      publication?.busy && t('Publicando…','Publishing…'));
+    if(publication?.text)body.push(text(publication.text));
+    nav('go-settings',undefined,t('configurações','settings'),()=>actions.go('settings'));
   }
 
-  if(view.tab==='Execução' && spec) {
-    const [done,total]=counts(spec);
-    if(surface==='desktop' && Svg && total>0)rows.push(Svg({alt:`${done}/${total} ${t('ondas concluídas','waves completed')}`,width:560,height:16,
-      source:`<svg xmlns="http://www.w3.org/2000/svg" width="560" height="16" viewBox="0 0 560 16"><rect width="560" height="16" rx="8" fill="${theme.inset}"/><rect width="${Math.round(560*Math.min(1,done/total))}" height="16" rx="8" fill="${theme.accent}"/></svg>`}));
-    rows.push(...liveAgents(data,spec,helpers));
-    rows.push(section(t('Andamento desta spec','This spec progress'),[
-      text(progress(spec),{bold:true}),
-      text(`${t('Validação final','Final validation')}: ${spec.final_validation_valid==null?t('Não verificada','Not checked'):spec.final_validation_valid?t('Válida','Valid'):t('Pendente','Pending')}`),
-      text(`${t('Revisão','Review')}: ${spec.review_approved?t('Aprovada','Approved'):t('Pendente','Pending')}`),
-    ]));
-    const queue=spec.scheduling;
-    if(queue) {
-      const reasons={ready:['Pronta para agrupamento','Ready for grouping'],dependencies:['Aguarda dependências','Waiting for dependencies'],
-        capacity:['Aguarda vaga','Waiting for capacity'],
-        'missing-criteria':['Falta vínculo com critério','Missing acceptance criterion'],'cleanup-last':['Limpeza aguarda implementação','Cleanup waits for implementation'],
-        'task-blocked':['Tarefa impedida; revise a condição antes de reenviar','Task blocked; revise the condition before dispatch'],
-        'needs-planning':['A planejar: faltam arquivos e dependências','To plan: files and dependencies missing'],
-        'spec-not-running':['Spec fora de execução','Spec is not running']};
-      rows.push(section(t('Fila de trabalho','Work queue'),[
-        text(`${fmt(queue.backlog)} ${t('tarefas no backlog','backlog tasks')} · ${fmt(queue.ready)} ${t('prontas','ready')}`),
-        note(`${t('Ondas em execução','Running waves')}: ${fmt(queue.occupied_wave_slots)}/${fmt(queue.capacity)}`),
-        ...queue.tasks.map(item=>Box({flexDirection:'column',children:[text(`${item.task} · ${item.title || ''}`,{bold:true}),
-          note(`${reasons[item.reason]?t(...reasons[item.reason]):state(item.reason)}${item.blocked_by?': '+item.blocked_by:''}${item.dependencies?.length?': '+item.dependencies.join(', '):''}`)]})),
-        ...(queue.omitted_tasks?[note(`${fmt(queue.omitted_tasks)} ${t('outras tarefas','other tasks')}`)]:[]),
-      ]));
+  function warning(item) {
+    if(item.kind==='pr-merged') {
+      const head=`PR #${item.pr ?? '?'} ${t('na base desde','in the base since')} ${day(item.at)}`;
+      const tail=`${t('mas a spec','but the spec')} ${name(still[item.phase]) ?? name(phases[item.phase]) ?? item.phase}`;
+      return terminal?[warn(`${head},`),text(`   ${tail}`,{color:'warning'})]:[warn(`${head}, ${tail}.`)];
     }
-    if(spec.stages?.length)rows.push(section(t('Validações registradas','Recorded validations'),spec.stages.map(stage=>
-      text(`${stage.phase} · ${stage.stage}: ${stage.result} · ${fmt(stage.ms)} ms`))));
-    if(spec.undeclared_commands?.length)rows.push(note(`${t('Comandos ainda não configurados','Commands not configured yet')}: ${spec.undeclared_commands.join(', ')}`));
+    if(item.kind==='review-reopened') {
+      const again=day(item.reopened_at)===day(item.approved_at)?`${t('às','at')} ${hour(item.reopened_at)}`:`${t('em','on')} ${day(item.reopened_at)}`;
+      return [warn(`${t('Revisão aprovada em','Review approved on')} ${day(item.approved_at)} ${t('e reaberta','and reopened')} ${again}`)];
+    }
+    if(item.kind==='wave-no-agent')return [warn(item.waves.length===1?`${t('A onda','Wave')} ${item.waves[0]} ${t('está parada sem agente','is stopped without an agent')}`
+      :`${t('As ondas','Waves')} ${item.waves.join(', ')} ${t('estão paradas sem agente','are stopped without an agent')}`)];
+    return undefined;
   }
 
-  if(view.tab==='Consumo') {
-    const usageView=view.usageView || 'Resumo', rtk=data.rtk || {}, jev=data.jev || {};
-    rows.push(picker('usage-section',t('Medição','Measurement'),[
-      ['Resumo','Resumo','Overview'],['Sessão','Sessão','Session'],['Ondas','Ondas','Waves'],
-      ['RTK','RTK','RTK'],['Jev','Jev','Jev'],['Busca','Busca','Search'],['Análises','Análises','Analyses'],['Histórico','Histórico','History'],['Detalhes','Detalhes','Details'],
-    ].map(([value,pt,en])=>({value,label:t(pt,en)})),usageView,value=>actions.change({usageView:value})));
-    if(usageView==='Resumo')rows.push(economyOverview(data,spec,actions,{...helpers,card,money}));
-    if(usageView==='Análises') {
-      const analysis=data.knowledge?.analysis || {},catalog=data.knowledge?.catalog || {};
-      rows.push(section(t('Análises reutilizáveis','Reusable analyses'),[
-        text(`${t('Concluídas por subagente da sessão','Completed by session subagent')}: ${fmt(analysis.completed_analyses)}`),
-        text(`${t('Consultas que reutilizaram análise válida','Queries reusing a current analysis')}: ${fmt(analysis.reused_operations)}`),
-        text(`${t('Delegações duplicadas evitadas','Duplicate delegations avoided')}: ${fmt(analysis.pending_delegations_reused)}`),
-        text(`${t('Falhas registradas','Recorded failures')}: ${fmt(analysis.failures)}`),
-        text(`${t('Entrada/saída informadas nos recibos','Receipt-reported input/output')}: ${fmt(analysis.reported_input_tokens)}/${fmt(analysis.reported_output_tokens)} tokens`),
-        note(`${t('Análises sem entrada medida','Analyses without measured input')}: ${fmt(analysis.analyses_with_unknown_input)} · ${t('acima de 100 mil','above 100K')}: ${fmt(analysis.over_target)}`),
-        note(t('Haiku e Luna: orçamento fixo de 100 mil tokens de entrada total por análise isolada. Recibos são declarados pela sessão; não somar novamente ao consumo do modelo.','Haiku and Luna: fixed 100K full-input budget per isolated analysis. Receipts are reported by the session; do not add them again to model usage.')),
-        note(t('Reutilização evita repetir uma interpretação. Economia líquida ainda exige comparação equivalente.','Reuse avoids repeating an interpretation. Net savings still require an equivalent comparison.')),
-      ]));
-      rows.push(section(t('Agentes e skills do projeto','Project agents and skills'),catalog.available?[
-        text(`${t('Perfis válidos','Current profiles')}: ${fmt(catalog.active)} · ${t('inativos ou aguardando revisão','inactive or awaiting review')}: ${fmt(catalog.inactive)}`),
-        note(`${t('Perfis nativos de navegação','Native navigation profiles')}: ${fmt(catalog.native_navigation)}`),
-        note(t('Procedimentos específicos exigem revisão; referências mudadas retiram o perfil da seleção.','Specific procedures require review; changed references withdraw the profile from selection.')),
-      ]:[note(t('Catálogo indisponível; atualize o scan.','Catalog unavailable; refresh the scan.'))]));
-    }
-    if(usageView==='Busca') {
-      const search=spec?.operations?.search,transport=spec?.operations?.by_command?.search;
-      rows.push(section(t('Busca e scan nesta spec','Search and scan for this spec'),search?[
-        text(`${t('Consultas registradas','Recorded queries')}: ${fmt(search.calls)} · ${t('tempo acumulado','accumulated time')}: ${fmt(search.ms)} ms`),
-        text(`${t('Cruzadas com o índice','Crossed with the index')}: ${fmt(search.enriched)} · ${t('respostas nativas preservadas','native responses preserved')}: ${fmt(search.fallback)}`),
-        text(`${t('Cache de seleção reutilizado','Selection cache reused')}: ${fmt(search.cache_hits)} · ${t('escolhas aceitas','accepted choices')}: ${fmt(search.accepted_choices)}`),
-        text(`${t('Chamadas ao modelo local','Local model calls')}: ${fmt(search.local_model_calls)} · ${t('chamadas remotas','remote calls')}: ${fmt(search.remote_model_calls)}`),
-        ...(search.paired_calls>0?[
-          text(`${t('Mesma consulta · saída nativa → entregue','Same query · native → delivered output')}: ${fmt(search.native_bytes)} → ${fmt(search.delivered_bytes)} bytes`),
-          text(`${t('Respostas menores / maiores','Smaller / larger responses')}: ${fmt(search.reduced_calls)} / ${fmt(search.expanded_calls)}`),
-          note(`${fmt(search.paired_calls)}/${fmt(search.calls)} ${t('consultas com as duas medidas; o histórico anterior permanece sem comparação.','queries with both measurements; earlier history remains unpaired.')}`),
-        ]:[]),
-        ...(transport?[text(`${t('Entrada / saída do transporte','Transport input / output')}: ${fmt(transport.input_bytes)} / ${fmt(transport.output_bytes)} bytes`),
-          note(`${t('Tokens estimados de saída','Estimated output tokens')}: ${fmt(transport.estimated_output_tokens)}`)]:[]),
-        note(t('São medições de uso e volume. Acerto e economia líquida exigem comparação com uma tarefa equivalente e conferência das fontes.','These measure usage and volume. Accuracy and net savings require equivalent-task comparison and source verification.')),
-      ]:[note(t('Esta spec ainda não possui medições de busca.','This spec has no search measurements yet.'))]));
-    }
-    if(usageView==='RTK')rows.push(section(t('RTK neste projeto','RTK for this project'),[
-      text(rtk.configured===false?t('Filtro desligado na configuração.','Filter disabled in configuration.'):
-        rtk.own_hook_left===true?t('O gancho do próprio RTK continua nas configurações locais e disputa a troca com o Mustard; execute mustard-rt run upsert.','RTK\'s own hook is still in the local settings and races Mustard\'s swap; run mustard-rt run upsert.'):
-          t('O gancho do Mustard faz a troca do RTK nos comandos compatíveis.','Mustard\'s hook makes the RTK swap on supported commands.')),
-      note(t('Configuração não comprova confiança do host nem execução. Os comandos registrados abaixo mostram o uso observado.','Configuration does not prove host trust or execution. Recorded commands below show observed use.')),
-      ...(rtk.status==='measured'?[
-        text(`${t('Comandos registrados','Recorded commands')}: ${fmt(rtk.commands)}`),
-        ...(rtk.period_start && rtk.period_end?[note(`${t('Período do histórico RTK','RTK history period')}: ${rtk.period_start} → ${rtk.period_end}`)]:[]),
-        text(`${t('Saída original → filtrada','Original → filtered output')}: ${fmt(rtk.input_tokens)} → ${fmt(rtk.output_tokens)} tokens`),
-        text(`${t('Redução estimada da saída','Estimated output reduction')}: ${fmt(rtk.percent)}% · ${fmt(rtk.saved_tokens)} tokens`),
-        note(`${t('Medição','Measurement')}: ${date(rtk.measured_at)}${rtk.stale?' · '+t('atualização falhou; mostrando última medição','refresh failed; showing last measurement'):''}`),
-      ]:[text(rtk.status==='no-recorded-commands'?t('Nenhum comando RTK registrado neste diretório; ainda não há amostra para calcular economia.','No RTK commands recorded in this directory; no sample to calculate savings yet.'):
-        t('Sem medição válida. Isso não significa economia zero.','No valid measurement. This does not mean zero savings.'))]),
-      note(t('Histórico do diretório deste projeto; cópias externas de ondas podem ficar fora. Estimativa do RTK por bytes/4; não é redução da fatura nem do contexto inteiro.','History for this project directory; external wave checkouts may be excluded. RTK bytes/4 estimate; not a reduction in billing or the whole context.')),
-    ]));
-    const session=[],context=usage?.context;
-    if(context) {
-      const percent=context.percent ?? context.percentUsed;
-      if(percent!=null)session.push(text(`${t('Contexto da sessão','Session context')}: ${fmt(percent)}%${context.tokens!=null && context.window!=null?' · '+fmt(context.tokens)+'/'+fmt(context.window)+' tokens':''}`));
-    }
-    const observed=data.statusline;
-    if(observed?.model)session.push(text(`${t('Modelo','Model')}: ${observed.model}`));
-    if(observed?.duration_ms!=null)session.push(note(`${t('Duração','Duration')}: ${Math.round(observed.duration_ms/60000)} min`));
-    if(usage?.cost?.usd!=null)session.push(text(`${t('Custo equivalente de API nesta sessão','API-equivalent cost this session')}: $${usage.cost.usd}`));
-    if(usageView==='Sessão')rows.push(section(t('Sessão atual','Current session'),session),sessionFigures(data,usage,helpers));
-    if(usageView==='Ondas' && spec)rows.push(section(t('Spec selecionada','Selected spec'),[
-      text(spec.name,{bold:true}),
-      ...(spec.usage?.wave_tokens!=null?[text(`${t('Ondas','Waves')}: ${fmt(spec.usage.wave_tokens)} tokens`)]:[note(t(spec.usage?.known_wave_tokens>0?'Total das ondas ainda incompleto.':'Consumo das ondas ainda não medido.',spec.usage?.known_wave_tokens>0?'Wave total is still incomplete.':'Wave usage has not been measured yet.'))]),
-      ...(spec.usage?.wave_tokens==null && spec.usage?.known_wave_tokens>0?[text(`${t('Subtotal das ondas medidas','Measured waves subtotal')}: ${fmt(spec.usage.known_wave_tokens)} tokens`),
-        note(`${fmt(spec.usage.waves_with_unknown_usage)} ${t('ondas ainda sem medição; subtotal incompleto.','waves still unmeasured; subtotal is incomplete.')}`)]:[]),
-      ...(spec.usage?.conductor_tokens!=null?[text(`${t('Orquestrador','Orchestrator')}: ${fmt(spec.usage.conductor_tokens)} tokens`)]:[]),
-      note(t('Totais acumulados das respostas, incluindo cache relido; não são o tamanho do contexto.','Accumulated response totals, including cache reads; not the context size.')),
-      ...(spec.usage?.known_wave_breakdown?[note(`${t('Ondas · entrada/saída','Waves · input/output')}: ${fmt(spec.usage.known_wave_breakdown.input_tokens)}/${fmt(spec.usage.known_wave_breakdown.output_tokens)} · ${t('cache criado/lido','cache written/read')}: ${fmt(spec.usage.known_wave_breakdown.cache_creation_input_tokens)}/${fmt(spec.usage.known_wave_breakdown.cache_read_input_tokens)}`)]:[]),
-      ...(spec.usage?.measured_at?[note(`${t('Medição das ondas','Wave measurement')}: ${date(spec.usage.measured_at)}`)]:[]),
-      ...(spec.usage?.claude_cost?.known_micro_usd!=null?[text(`${t('Custo equivalente de API observado','Observed API-equivalent cost')}: ${money(spec.usage.claude_cost.known_micro_usd)}`)]:[]),
-    ]));
-    if(usageView==='Ondas' && spec?.waves?.length)rows.push(section(t('Medição por onda','Usage per wave'),[
-      note(t('Consumo e entrega lado a lado. Uma onda com arquivos alterados ainda depende de revisão e testes; o total de tokens sozinho não classifica eficiência.','Usage beside delivery. Changed files still require review and tests; token totals alone do not classify efficiency.')),
-      ...spec.waves.map(wave=>section(`${t('Onda','Wave')} ${wave.wave} · ${state(wave.status)}`,[
-        text(wave.tokens!=null?`${fmt(wave.tokens)} tokens`:t('Consumo não medido','Usage not measured')),
-        text(wave.files_changed!=null?`${fmt(wave.files_changed)} ${t('arquivos na entrega','files in delivery')}`:t('Entrega ainda sem registro','No delivery recorded yet')),
-        text(`${t('Recibos de provas de critérios','Criterion proof receipts')}: ${(spec.stages || []).filter(stage=>stage.stage==='criterion-proof' && stage.waves?.includes(wave.wave)).length}`),
-        ...(wave.agreed_counts?[text(`${t('Combinados relatados · atendidos / pendentes','Reported obligations · met / pending')}: ${fmt(wave.agreed_counts.reported_met)} / ${fmt(wave.agreed_counts.reported_unmet)}`),
-          note(t('Commitar uma entrega parcial não aprova toda a spec. O relato do agente continua sujeito à conferência.','Committing a partial delivery does not approve the whole spec. Agent claims still require verification.'))]:[]),
-        ...(wave.summary?[text(wave.summary)]:[]),
-      ])),
-    ]));
-    const history=data.consumption;
-    if(usageView==='Histórico')rows.push(section(t('Histórico observado','Observed history'),[
-      note(t('Acumulado do histórico disponível; inclui hoje parcialmente.','Accumulated available history; includes partial data for today.')),
-      ...(history?.available?[row([card(t('Este projeto · tokens','This project · tokens'),short(history.project_tokens)),
-        card(t('Toda a máquina · tokens','Whole machine · tokens'),short(history.machine_tokens))])]:[note(t('Histórico ainda não disponível.','History is not available yet.'))]),
-      note(`${t('Última medição do projeto','Latest project measurement')}: ${date(history?.measured_at)}`),
-      ...(data.claude_cost?.known_micro_usd!=null?[text(`${t('Claude estimado nas sessões observadas','Estimated Claude cost in observed sessions')}: ${money(data.claude_cost.known_micro_usd)}`)]:[]),
-      note(t('Custos Claude são estimativas equivalentes de API; não são cobranças da assinatura nem medidas de economia.','Claude costs are API-equivalent estimates, not subscription charges or measured savings.')),
-    ]));
-    const jevConfig=jev.configuration, reasons={
-      'ai-fallback-disabled':['Desligado: ai.fallback não está habilitado.','Disabled: ai.fallback is not enabled.'],
-      'purpose-not-configured':['Sem filtro Jev configurado para esta finalidade.','No Jev filter configured for this purpose.'],
-      missing_key:['Chave não configurada.','Key not configured.'],
-      key_in_git:['Chave do arquivo recusada: mustard.json está versionado.','File key refused: mustard.json is tracked by git.'],
-      configured:['Habilitado sob critério; não é acionado em toda busca.','Enabled selectively; not called for every search.']};
-    const jevStatus=[];
-    if(jevConfig)for(const [purpose,label] of [['search',t('Busca','Search')],['wave-planning',t('Ondas','Waves')],['context',t('Contexto','Context')]]) {
-      const entry=jevConfig.purposes?.[purpose];
-      if(entry)jevStatus.push(text(`${label}: ${reasons[entry.reason]?t(...reasons[entry.reason]):entry.reason}`));
-    }
-    const searchUsage=spec?.operations?.search;
-    const gateLabels={'exact-read':['Leitura exata','Exact read'],locate:['Busca literal','Literal search'],
-      'not-requested':['Escolha não solicitada','Choice not requested'],'missing-intent':['Sem intenção','Missing intent'],
-      eligible:['Elegível para escolha','Eligible for choice'],'ai-fallback-disabled':['IA remota desligada','Remote AI disabled'],
-      'purpose-not-configured':['Finalidade não configurada','Purpose not configured'],'provider-unavailable':['Provedor indisponível','Provider unavailable'],
-      'native-operation':['Operação nativa','Native operation']};
-    if(usageView==='Jev')rows.push(section('Jev',[...jevStatus,...(jev.physical_requests===0?[text(t('Nenhuma chamada registrada neste projeto.','No recorded requests in this project.'))]:[
-      text(`${t('Chamadas registradas no projeto','Recorded project requests')}: ${fmt(jev.physical_requests)}`),
-      ...(jev.cost_micro_usd!=null?[text(`${t('Custo estimado','Estimated cost')}: ${money(jev.cost_micro_usd)}`)]:[note(t('Custo ainda não medido.','Cost has not been measured yet.'))]),
-    ]),
-      ...(jev.last_attempt?[text(`${t('Última chamada','Latest request')}: ${jev.last_attempt.purpose || t('finalidade não registrada','purpose not recorded')} · ${jev.last_attempt.status>=200 && jev.last_attempt.status<300?t('sucesso','success'):t('falha ou resultado não confirmado','failed or unconfirmed')} · ${date(jev.last_attempt.at)}`)]:[]),
-      ...(searchUsage?.decision_coverage?[
-        text(`${t('Buscas com diagnóstico nesta spec','Searches with diagnostics in this spec')}: ${fmt(searchUsage.decision_coverage)}/${fmt(searchUsage.calls)}`),
-        ...Object.entries(searchUsage.choice_gates || {}).map(([gate,count])=>text(`${gateLabels[gate]?t(...gateLabels[gate]):gate}: ${fmt(count)}`)),
-        text(`${t('Cache reaproveitado','Cache reused')}: ${fmt(searchUsage.cache_hits)} · ${t('escolhas aceitas','accepted choices')}: ${fmt(searchUsage.accepted_choices)}`),
-        note(`${t('Inferências locais registradas nas buscas','Recorded local inferences in searches')}: ${fmt(searchUsage.local_model_calls)}`),
-        note(t('Cobertura parcial: o histórico anterior não explica as decisões e não foi preenchido com suposições.','Partial coverage: older history does not explain decisions and was not filled with assumptions.')),
-      ]:[note(t('Diagnóstico por busca ainda não disponível; as novas consultas passam a registrar o motivo.','Per-search diagnostics not available yet; new queries record the reason.'))]),
-      note(t('Leituras exatas e buscas literais seguem nativas. Jev só escolhe entre alternativas quando a finalidade está habilitada e a busca precisa dessa decisão.','Exact reads and literal searches stay native. Jev chooses between alternatives only when the purpose is enabled and the search needs that decision.')),
-      note(t('Custo Jev estimado pela tabela; abrir este painel não faz chamada paga.','Jev cost is estimated from the pricing table; opening this panel makes no paid request.')),
-    ]));
-    if(usageView==='Detalhes') {
-      const health=data.integration_health;
-      if(health)rows.push(section(t('Funcionamento das integrações','Integration health'),[
-        text(`${t('Versão em execução / configuração','Running / configured version')}: ${health.running_version || '—'} / ${health.project_version || '—'}`),
-        text(`RTK: ${health.rtk?.enabled ? (health.rtk?.executable_available && health.rtk?.configuration_matches?t('configurado e executável disponível','configured and executable available'):t('habilitado com instalação incompleta','enabled with incomplete installation')):t('desligado','disabled')}`),
-        text(`Jev: ${health.jev?.credential_available?t('credencial disponível; uso depende da finalidade','credential available; use depends on purpose'):t('credencial indisponível','credential unavailable')}`),
-        text(`${t('Vetores locais indexados','Indexed local vectors')}: ${fmt(health.vectors?.indexed_chunks)} · ${t('documentos','documents')}: ${fmt(health.vectors?.indexed_documents)}`),
-        ...((health.issues || []).length?[note(`${t('Pendências da instalação','Installation issues')}: ${health.issues.map(issue=>({
-          'configuration-unreadable':t('configuração ilegível','unreadable configuration'),
-          'project-version-drift':t('configuração de outra versão','configuration version differs'),
-          'installation-unverified-for-running-version':t('versão atual sem recibo de instalação completo','running version lacks a complete installation receipt'),
-          'rtk-incomplete':t('RTK incompleto','RTK incomplete'),
-          'jev-credential-unavailable':t('chave Jev indisponível','Jev key unavailable'),
-        })[issue] || issue).join(' · ')}`)]:[]),
-        ...((health.hosts?.observations || []).map(host=>text(`${host.host} · ${date(host.at)} · ${fmt(host.tool_failures)} ${t('ocorrências de ferramenta acumuladas na sessão; veja Diagnóstico','accumulated session tool occurrences; see Diagnostics')}`))),
-        note(t('Configuração não comprova execução. Eventos confirmam hooks observados; ausência de medição permanece desconhecida. Este diagnóstico não chama IA.','Configuration does not prove execution. Events confirm observed hooks; missing measurements remain unknown. This diagnostic does not call AI.')),
-      ]));
-      rows.push(section(t('Origem e cobertura','Sources and coverage'),[
-        text(`Mustard ${data.project.version || t('versão não informada','version not provided')}`),
-        text(data.installation?.complete===true && data.installation.version===data.project?.version?t('Instalação conferida para esta versão.','Installation verified for this version.'):
-          data.installation?t('Instalação incompleta: execute /mustard:upsert e confira as pendências.','Installation incomplete: run /mustard:upsert and inspect outstanding components.'):
-          t('Instalação ainda não conferida: execute /mustard:upsert.','Installation not yet verified: run /mustard:upsert.')),
-        ...(Array.isArray(data.installation?.checks)?data.installation.checks.filter(check=>check.ready!==true).map(check=>note(`${check.component}: ${check.remedy}`)):[]),
-        ...(data.retrieval?[
-          text(data.retrieval.index_present?t('Scan: índice presente; buscas conferem o código atual.','Scan: index present; searches verify current source.'):
-            t('Scan: índice ausente neste projeto. Execute /mustard:upsert e atualize o scan.','Scan: index missing in this project. Run /mustard:upsert and refresh the scan.')),
-          text(data.retrieval.vectors_enabled?t('Modelo semântico local: habilitado para investigações.','Local semantic model: enabled for investigations.'):
-            t('Modelo semântico local: desligado na configuração.','Local semantic model: disabled in configuration.')),
-        ]:[]),
-        ...(history?.available?[text(`${t('Projeto','Project')}: ${fmt(history.project_tokens)} tokens · ${t('máquina','machine')}: ${fmt(history.machine_tokens)} tokens`)]:[]),
-        ...(observed?.measured_at?[note(`${t('Observação da sessão','Session observation')}: ${date(observed.measured_at)}`)]:[]),
-        ...(data.claude_cost?.unattributed_micro_usd!=null?[text(`${t('Custo sem atribuição segura a spec','Cost without safe spec attribution')}: ${money(data.claude_cost.unattributed_micro_usd)}`)]:[]),
-        ...(history?.trend?[text(`${t('Máquina · último dia de trabalho fechado vs média dos 7 anteriores','Machine · last closed workday vs average of previous 7')}: ${history.trend.change_percent>0?'+':''}${fmt(history.trend.change_percent)}%`)]:[]),
-        ...(jev.requests_with_unknown_usage?[note(`${fmt(jev.requests_with_unknown_usage)} ${t('chamadas Jev sem medição de uso','Jev requests without usage measurements')}`)]:[]),
-      ]));
-      const operations=spec?.operations;
-      if(operations)rows.push(section(t('Operações do Mustard nesta spec','Mustard operations in this spec'),[
-        text(`${fmt(operations.calls)} ${t('chamadas','calls')} · ${fmt(operations.refusals)} ${t('recusas','refusals')}`),
-        text(`${t('Entrada/saída estimadas das chamadas medidas','Estimated input/output in measured calls')}: ${fmt(operations.estimated_input_tokens)}/${fmt(operations.estimated_output_tokens)} tokens`),
-        note(t('Estimativa pelo tamanho do texto. Não mede cobrança nem economia do modelo.','Text-size estimate. Does not measure model billing or savings.')),
-        ...(operations.search?.calls?[text(`${t('Buscas','Searches')}: ${fmt(operations.search.calls)} · ${fmt(operations.search.enriched)} ${t('cruzadas com o índice','crossed with the index')} · ${fmt(operations.search.fallback)} ${t('com retorno nativo de reserva','with native fallback')}`)]:[]),
-      ]));
-      for(const limit of usage?.rateLimits || [])if(limit.percentUsed!=null)rows.push(text(`${limit.kind || limit.label || limit.name || t('Janela','Window')}: ${fmt(limit.percentUsed)}% · ${t('renova','resets')} ${date(limit.resetsAt)}`));
-      const breakdown=spec?.usage?.known_wave_breakdown;
-      if(breakdown)rows.push(section(t('Tokens das ondas com medição','Wave tokens with measurements'),[
-        text(`${t('Entrada','Input')}: ${fmt(breakdown.input_tokens)} · ${t('saída','output')}: ${fmt(breakdown.output_tokens)}`),
-        text(`${t('Cache criado/lido','Cache written/read')}: ${fmt(breakdown.cache_creation_input_tokens)}/${fmt(breakdown.cache_read_input_tokens)}`),
-        note(`${fmt(spec.usage.waves_with_unknown_breakdown)} ${t('ondas sem detalhamento','waves without usage details')}`),
-      ]));
-    }
+  function specScreen(d) {
+    const s=d.spec;
+    body.push(block(null,[text(s.name,{bold:true}),label(s.goal),text(name(phases[s.phase]) ?? s.phase,{color:'claude'})]));
+    body.push(block(null,[text(`${t('Branch','Branch')}  ${s.branch ?? '—'}${s.base?` ← ${s.base}`:''}`),
+      text(join(`${t('Aberta','Opened')} ${day(s.opened_at)}`,s.last_commit?`${t('último commit','last commit')} ${day(s.last_commit.at)}`:t('sem commit','no commit'))),
+      ...(terminal?[]:[label(`${int(s.commits)} commits`)])]));
+    const c=s.counts;
+    const tasks=`${int(c.tasks.total)} ${t('tarefas','tasks')}  ·  ${c.tasks.finished===c.tasks.total?t('todas feitas','all done'):`${int(c.tasks.finished)} ${t('feitas','done')}`}`;
+    const open=kind=>()=>actions.go('items',{kind});
+    body.push(block(t('Combinado','Agreed'),[
+      terminal?text(tasks):press('go-items',tasks,open('task'),{hotkey:'t'}),
+      press('items-criterion',join(`${int(c.criteria.total)} ${t('critérios','criteria')}`,c.criteria.failed?`${c.criteria.failed} ${t('falhando','failing')}`
+        :c.criteria.without_proof?`${c.criteria.without_proof} ${t('sem prova','without proof')}`:t('todos com prova','all proven')),open('criterion')),
+      press('items-question',join(`${int(c.questions.total)} ${t('perguntas','questions')}`,`${int(c.questions.open)} ${t('abertas','open')}`),open('question')),
+      press('items-decision',`${int(c.decisions)} ${t('decisões','decisions')}`,open('decision')),
+      press('items-rule',`${int(c.rules)} ${t('regras','rules')}`,open('rule'))]));
+    const w=s.waves;
+    body.push(block(t('Ondas','Waves'),[text(join(`${int(w.planned)} ${t('planejadas','planned')}`,`${int(w.finished)} ${t('concluídas','finished')}`)),
+      text(join(`${int(w.committed)} ${t('comitadas','committed')}`,`${int(w.integrated)} ${t('integradas','integrated')}`)),
+      ...(w.running||w.todo?[text(join(w.running?`${w.running} ${t('em execução','running')}`:'',w.todo?`${w.todo} ${t('a fazer','to do')}`:''))]:[]),
+      ...(w.no_agent.length?[warn(`${t('parada sem agente','stopped, no agent')}: ${t('onda','wave')} ${w.no_agent.join(', ')}`)]:[]),
+      ...(w.rejected.length?[warn(`${t('reprovada','rejected')}: ${t('onda','wave')} ${w.rejected.join(', ')}`)]:[])]));
+    const r=s.review;
+    const review=r.valid?text(`${t('revisão final aprovada em','final review approved on')} ${day(r.approved_at)}`,{color:'success'})
+      :r.reopened_at?warn(`${t('revisão aprovada em','review approved on')} ${day(r.approved_at)} ${t('e reaberta','and reopened')} ${day(r.reopened_at)===day(r.approved_at)?`${t('às','at')} ${hour(r.reopened_at)}`:`${t('em','on')} ${day(r.reopened_at)}`}`)
+      :label(t('revisão final ainda não aprovada','final review not approved yet'));
+    const pr=s.pr?.merged_at?text(`PR #${s.pr.number ?? '?'} ${t('na base desde','in the base since')} ${day(s.pr.merged_at)}`,{color:'success'})
+      :s.pr?.number?text(`PR #${s.pr.number} ${t('aberto','open')}`):label(t('sem PR','no PR'));
+    body.push(block(t('Fechamento','Closing'),[review,pr]));
+    if(!terminal || state_.pickSpec)body.push(specList(d));
+    nav('go-items','t',t('tarefas','tasks'),open('task'));
+    nav('other-spec','o',state_.pickSpec?t('esconder specs','hide specs'):t('outra spec','other spec'),actions.toggleSpecs);
+    nav('back','v',t('voltar','back'),actions.back);
   }
-  if(!spec && !['Projeto','Consumo','Configurações','Ideias','Diagnóstico'].includes(view.tab))rows.push(note(t('Nenhuma spec selecionada.','No spec selected.')));
-  const impactView=impactPanel(impact,actions,helpers);if(impactView)rows.push(impactView);
-  if(publicationMessage && (publicationMessage.name===selected || ['project','report'].includes(publicationMessage.name)))rows.push(text(publicationMessage.text));
-  rows.push(row([button('refresh',t('Atualizar','Refresh'),actions.refresh,{hotkey:'r'}),
-    button('publications',t('Publicação externa','External publication'),()=>actions.change({showPublications:!view.showPublications}),{active:view.showPublications}),
-    button('close',t('Fechar','Close'),actions.close,{hotkey:'q'})]));
-  if(view.showPublications) {
-    const children=[note(t('Publica um retrato do estado atual somente ao acionar um dos botões abaixo.','Publishes a snapshot of the current state only when you activate a button below.')),
-      row([button('publish',t('Publicar esta spec','Publish this spec'),()=>actions.publish('spec '+selected),{disabled:publishing || !selected}),
-        button('publish-project',t('Publicar projeto','Publish project'),()=>actions.publish('project'),{disabled:publishing})])];
-    if(Input)children.push(Input({key:'publication-document',label:t('Relatório Markdown · caminho do arquivo','Markdown report · file path'),value:view.publicationDocument || '',
-      onInput:value=>actions.change({publicationDocument:value}),onSubmit:value=>actions.change({publicationDocument:value})}),
-      button('publish-report',t('Conferir publicação do relatório','Preview report publication'),()=>actions.publish('report '+view.publicationDocument.trim()),{disabled:publishing || !view.publicationDocument?.trim()}));
-    for(const [label,url] of [[t('Última página do projeto','Latest project page'),data.project.publication_url],[t('Última página desta spec','Latest page for this spec'),spec?.publication?.url]])
-      if(url)children.push(Link?Link({href:url,label}):note(`${label}: ${url}`));
-    rows.push(section(t('Publicação sob pedido','Publication on request'),children));
+
+  function specList(d) {
+    const groups=[[t('Em andamento','In progress'),['approved','running','closed','pr_open']],[t('Levantamento','Survey'),['survey','plan','planned',null,undefined]]];
+    const done=d.specs.filter(item=>item.phase==='delivered'),dropped=Math.max(d.discarded ?? 0,d.specs.filter(item=>item.phase==='discarded').length);
+    const entry=item=>press(`spec-${item.name}`,join(`${item.name}${item.name===d.selected_spec?' ✓':''}`,
+      ['survey','plan','planned'].includes(item.phase)?`${t('desde','since')} ${day(item.created)}`:name(phases[item.phase]) ?? item.phase),()=>actions.selectSpec(item.name));
+    const lines=[];
+    for(const [title,members] of groups) {
+      const rows=d.specs.filter(item=>members.includes(item.phase));
+      if(rows.length)lines.push(label(title),...rows.map(entry));
+    }
+    if(done.length || dropped)lines.push(press('delivered',join(`${done.length} ${t('entregues','delivered')}`,dropped?`${dropped} ${t(dropped===1?'descartada':'descartadas','discarded')}`:''),actions.toggleDelivered));
+    if(state_.delivered)lines.push(...d.specs.filter(item=>['delivered','discarded'].includes(item.phase)).map(entry));
+    return block(`${t('Trocar de spec','Switch spec')} · ${d.specs.length}`,lines);
   }
-  rows.push(note(`${t('Ao vivo · última consulta','Live · last checked')} ${date(data.checked_at || data.at)} · Mustard ${data.project.version || '—'}`));
-  return Box({flexDirection:'column',rowGap:compact?0:1,padding:compact?0:1,backgroundColor:theme.paper,children:rows});
+
+  function rowDetail(item,kind) {
+    const reason=name(reasons[item.attention]);
+    if(kind==='task') {
+      if(item.wave==null)return t('no backlog','in the backlog');
+      const stateText=reason ?? `${name(waveStates[item.state]) ?? item.state}${item.state==='committed' && item.at?` ${t('em','on')} ${day(item.at)}`:''}`;
+      const head=join(`${t('onda','wave')} ${item.wave}`,stateText);
+      if(terminal)return head;
+      return join(head,item.resends?`${t('reenviada','resent')} ${item.resends} ${t(item.resends===1?'vez':'vezes',item.resends===1?'time':'times')}`:'',
+        item.unmet?t('combinado não atendido','agreement not met'):'',item.files!=null?`${item.files} ${t('arquivos','files')}`:'',item.covers?`${t('cobre','covers')} ${item.covers}`:'');
+    }
+    return reason ?? (item.wave!=null?`${t('onda','wave')} ${item.wave}`:'');
+  }
+
+  function itemsScreen(d) {
+    const kind=d.kind;
+    const heading=`${name(kindNames[kind])} · ${int(d.counts[kind])}`;
+    if(terminal)body.push(block(null,[text(heading,{bold:true}),
+      ...(Select?[Select({key:'kind',label:t('Tipo','Kind'),value:kind,options:KINDS.map(value=>({value,label:`${name(kindNames[value])} ${int(d.counts[value])}`})),onSelect:actions.setKind})]:[])]));
+    else body.push(row(KINDS.map(value=>press(`kind-${value}`,`${name(kindNames[value])} ${int(d.counts[value])}`,()=>actions.setKind(value),value===kind?{variant:'primary'}:{}))));
+    if(Input && (!terminal || state_.searching || state_.query))body.push(Input({key:'search',label:t('Buscar','Search'),placeholder:t('Título ou arquivo','Title or file'),
+      value:state_.query,...(terminal && state_.searching?{autoFocus:true}:{}),onSubmit:actions.search}));
+    if(state_.query)body.push(row([label(`${t('Busca','Search')}: ${state_.query}`),press('search-clear',t('limpar','clear'),()=>actions.search(''))]));
+    const shown=kind==='task'?FILTERS:['all','attention'];
+    if(terminal) {if(d.filter!=='all')body.push(label(`${t('Filtro','Filter')}: ${name(filterNames[d.filter])} (${int(d.filters[d.filter])})`));}
+    else body.push(row(shown.map(value=>press(`filter-${value}`,`${name(filterNames[value])} ${int(d.filters[value])}`,()=>actions.setFilter(value),value===d.filter?{variant:'primary'}:{}))));
+    const rows=d.rows.map(item=>{const detail=rowDetail(item,kind);
+      return Box({flexDirection:'column',children:[press(`item-${item.code}`,item.title || t('Sem título','Untitled'),()=>actions.openItem(item.code)),
+        ...(detail?[text(detail,{color:item.attention?'warning':'subtle'})]:[])]});});
+    body.push(Box({flexDirection:'column',rowGap:terminal?1:0,children:rows.length?rows:[label(t('Nenhum item encontrado.','No item found.'))]}));
+    if(d.rows.length)body.push(label(join(`1 ${t('a','to')} ${d.rows.length} ${t('de','of')} ${int(d.total)}`,
+      !state_.query && d.filter==='all'?t('as que pedem atenção vêm antes','the ones needing attention come first'):'')));
+    if(d.rows.length<d.total)body.push(press('more',t('Mostrar mais','Show more'),actions.more));
+    if(terminal)body.push(label(t('tab escolhe  ·  enter abre','tab picks  ·  enter opens')));
+    nav('search-open','b',t('buscar','search'),actions.openSearch);
+    nav('filter','f',`${t('filtrar','filter')} (${name(filterNames[d.filter])})`,actions.cycleFilter);
+    nav('back','v',t('voltar','back'),actions.back);
+  }
+
+  function itemScreen(d) {
+    const item=d.item;
+    if(!item){body.push(text(t('Item não encontrado.','Item not found.')));nav('back','v',t('voltar','back'),actions.back);return;}
+    body.push(block(null,[text(item.title || t('Sem título','Untitled'),{bold:true})]));
+    // The wave's date reads with its state: the commit, the return, the send.
+    const when=item.at?item.state==='committed'?` ${t('em','on')} ${day(item.at)}`:'':'';
+    const since=item.at && item.state!=='committed'?[label(`${item.state==='integrated' || item.state==='rejected'?t('entregue em','delivered on'):t('desde','since')} ${day(item.at)}`)]:[];
+    if(item.kind==='task')body.push(block(null,[text(item.wave==null?t('no backlog','in the backlog')
+      :join(`${t('onda','wave')} ${item.wave}`,`${name(waveStates[item.state]) ?? item.state}${when}`)),...since]));
+    const long=value=>value?[text(value.text),...(value.cut?[label(t(`texto cortado: ${int(value.chars)} caracteres no total`,`text cut: ${int(value.chars)} characters in all`))]:[])]:[];
+    if(item.request)body.push(block(t('Pedido','Request'),long(item.request)));
+    if(item.done)body.push(block(t('O que o agente fez','What the agent did'),long(item.done)));
+    if(item.result?.agreed?.length)body.push(block(t('Resultado','Result'),[
+      text(item.result.unmet?t('combinado não atendido','agreement not met'):t('combinado atendido','agreement met'),{color:item.result.unmet?'warning':'success'}),
+      ...item.result.agreed.flatMap(answer=>[text(join(named(answer),answer.met?t('atendido','met'):t('não atendido','not met'))),...(answer.note?[label(answer.note)]:[])])]));
+    if(item.done_when){const page=contentPage(item.done_when,0,600);body.push(block(t('Término','Done when'),[text(page.text+(page.pages>1?' …':''))]));}
+    if(item.files?.length || item.delivered_files!=null)body.push(block(t('Arquivos','Files'),[...(item.files || []).map(file=>text(file)),
+      ...(item.delivered_files!=null?[label(`${int(item.delivered_files)} ${t('arquivos na entrega da onda','files in the wave delivery')}`)]:[])]));
+    if(item.covers?.length)body.push(block(t('Cobre','Covers'),[...item.covers.map(cover=>text(named(cover))),
+      ...(item.covers.some(cover=>cover.kind==='criterion')?[]:[label(t('Nenhum critério ligado.','No criterion linked.'))])]));
+    // The tests run on what the task covers: the proof and its newest run.
+    const results={pass:['passou','passed'],fail:['falhou','failed']};
+    if(item.tests?.length)body.push(block(t('Testes','Tests'),item.tests.flatMap(run=>[
+      text(join(named({kind:'criterion',title:run.title}),run.result?name(results[run.result]) ?? run.result:t('não rodado','not run'),run.at?day(run.at):''),
+        {color:run.result==='fail'?'warning':run.result==='pass'?'success':'subtle'}),...(run.proof?[label(run.proof)]:[])])));
+    // The wave reviewer's newest verdict: approved, or rejected with its reason and the files it points at.
+    if(item.review){const approved=item.review.result==='approved';
+      body.push(block(null,[text(approved?t('Revisão: aprovada','Review: approved')
+        :`${t('Revisão: reprovada','Review: rejected')}${item.review.reason?` — ${item.review.reason}`:''}`,{color:approved?'success':'warning'}),
+        ...(approved?[]:(item.review.files || []).map(file=>label(file)))]));}
+    // The wave's request goes whole, as the agent got it, only on its key.
+    if(item.wave_request!=null) {
+      key('wave-request','p',`${state_.waveRequest?t('esconder pedido da onda','hide wave request'):t('pedido da onda','wave request')} (${int(item.wave_request.length)} ${t('caracteres','characters')})`,actions.toggleWaveRequest);
+      if(state_.waveRequest)body.push(block(t('Pedido da onda','Wave request'),[text(item.wave_request)]));
+    }
+    if(item.wave!=null)body.push(block(t('Gasto','Spend'),[text(item.wave_tokens==null?t('não medido','not measured'):`${compact(item.wave_tokens)} tokens ${t('na onda','in wave')} ${item.wave}`),
+      ...(item.resends?[label(`${t('reenviada','resent')} ${item.resends} ${t(item.resends===1?'vez':'vezes',item.resends===1?'time':'times')}`)]:[])]));
+    const history=item.history || [];
+    key('history','h',`${state_.history?t('esconder histórico','hide history'):t('histórico','history')} (${history.length} ${t(history.length===1?'versão':'versões',history.length===1?'version':'versions')})`,actions.toggleHistory);
+    if(state_.history)body.push(block(`${t('Histórico','History')} · ${history.length} ${t(history.length===1?'versão':'versões',history.length===1?'version':'versions')}`,
+      [...history].reverse().map((version,index)=>Box({flexDirection:'column',children:[text(change(version,history.length-1-index)),
+        label(join(`${day(version.at)} ${hour(version.at)}`,name(authors[version.author]) ?? version.author))]}))));
+    nav('back','v',t('voltar','back'),actions.back);
+  }
+
+  function change(version,index) {
+    if(index===0 || !version.changed)return t('Primeira versão','First version');
+    const changed=version.changed,fields=Object.keys(changed);
+    if(changed.wave)return changed.wave.to==null?t('Tirada da onda','Taken out of its wave'):`${t('Posta na onda','Put in wave')} ${changed.wave.to}`;
+    if(fields.includes('title'))return t('Título reescrito','Title rewritten');
+    if(fields.includes('text'))return t('Pedido reescrito','Request rewritten');
+    return `${t('Mudou','Changed')}: ${fields.join(', ')}`;
+  }
+
+  function usageScreen(d) {
+    body.push(block(null,[text(t('Consumo','Usage'),{bold:true}),
+      text(d.measured_through?`${t('medido até','measured through')} ${day(d.measured_through)}`:t('ainda não medido','not measured yet'),{color:'warning'}),
+      ...(d.measured_at?[label(`${t('sem atualizar desde','not updated since')} ${day(d.measured_at)}`)]:[]),
+      ...(terminal?[]:[measureButton()])]));
+    if(d.available===false)body.push(block(null,[label(t('O histórico deste projeto ainda não foi medido. Use Medir agora.','This project history was not measured yet. Use Measure now.'))]));
+    body.push(block(`${t('Total','Total')} · ${day(d.period?.first)} ${t('a','to')} ${day(d.period?.last)}`,[
+      text(join(t('projeto','project'),`${compact(d.project_tokens)} tokens`)),text(join(t('máquina','machine'),`${compact(d.machine_tokens)} tokens`)),
+      ...(d.trend?.ratio!=null?[label(`${t('último dia','last day')} (${day(d.trend.day)}): ${Number(d.trend.ratio).toLocaleString(locale)}× ${t('a média da semana','the week average')}`)]:[])]));
+    const cost=d.cost;
+    body.push(block(t('Custo estimado','Estimated cost'),[text(`${money(cost.total_micro_usd)} ${t('em','in')} ${int(cost.sessions)} ${t('sessões','sessions')}`),
+      ...cost.by_spec.map(item=>text(join(item.name,money(item.micro_usd)))),
+      ...(cost.outside_spec_micro_usd!=null?[text(join(t('fora de spec','outside a spec'),money(cost.outside_spec_micro_usd)))]:[]),
+      ...(cost.specs_without_cost?[label(`${cost.specs_without_cost} ${t('specs sem custo atribuído','specs without attributed cost')}`)]:[])]));
+    const daysShown=d.days || [];
+    if(daysShown.length) {
+      const top=daysShown.reduce((best,item)=>item.tokens!=null && (best==null || item.tokens>best.tokens)?item:best,null);
+      const span=`${day(daysShown[0].day)} ${t('a','to')} ${day(daysShown.at(-1).day)}`;
+      const chart=terminal?[row([text(dayBlocks(daysShown)),label(span)])]:[chartSvg(daysShown),row([label(day(daysShown[0].day)),label(day(daysShown[7]?.day)),label(day(daysShown.at(-1).day))],{justifyContent:'space-between'}),
+        label(`${span}  ·  ${t('tracejado: sem medida','dashed: no measure')}`)];
+      body.push(block(t('Tokens por dia · este projeto','Tokens per day · this project'),[...chart,
+        ...(top?[label(`${t('máximo','highest')} ${compact(top.tokens)} ${t('em','on')} ${day(top.day)}`)]:[])]));
+    }
+    if(d.spec)body.push(block(`${t('Esta spec','This spec')} · ${d.spec.name}`,[text(join(t('ondas','waves'),`${compact(d.spec.wave_tokens)} tokens`)),
+      ...(d.spec.waves_without_measure?[label(`${d.spec.waves_without_measure} ${t('ondas sem medida','waves without measure')}`)]:[]),
+      text(join(t('condutor','conductor'),d.spec.conductor_tokens==null?t('não medido','not measured'):`${compact(d.spec.conductor_tokens)} tokens`))]));
+    if(d.spec?.waves)waveAgents(d.spec);
+    if(d.mustard_skills?.length)mustardSkills(d.mustard_skills);
+    const tools=d.tools,jev=tools.jev,purposes={'wave-planning':['montagem','planning'],context:['contexto','context'],search:['busca','search'],'spec-search':['busca na spec','spec search']};
+    body.push(block(t('Ferramentas','Tools'),[
+      text(tools.rtk.configured?join('RTK',tools.rtk.percent!=null?`${percent(tools.rtk.percent)} ${t('a menos','less')}`:t('não medido','not measured')):join('RTK',t('desligado','off'))),
+      ...(tools.rtk.commands!=null?[label(join(`${int(tools.rtk.commands)} ${t('comandos','commands')}`,`${compact(tools.rtk.saved_tokens)} ${t('poupados','saved')}`))]:[]),
+      text(join('Jev',`${int(jev.calls)} ${t('chamadas','calls')}`)),
+      ...(Object.keys(jev.by_purpose || {}).length?[label(Object.entries(jev.by_purpose).sort((a,b)=>b[1]-a[1]).map(([purpose,count])=>`${int(count)} ${name(purposes[purpose]) ?? purpose}`).join(', '))]:[]),
+      label(join(jev.input_tokens!=null?`${compact(jev.input_tokens)} tokens`:'',jev.cost_micro_usd==null?t('custo não medido','cost not measured'):money(jev.cost_micro_usd))),
+      text(join(t('Busca de código','Code search'),`${int(tools.search.total)} ${t('buscas','searches')}`)),
+      label(tools.search.in_spec?`${int(tools.search.in_spec)} ${t('nesta spec','in this spec')}`:t('nenhuma nesta spec','none in this spec'))]));
+    const limits=Object.fromEntries((usage?.rateLimits || []).map(limit=>[limit.kind,limit]));
+    const elapsed=usage?.startedAt!=null?Math.max(0,now-usage.startedAt):null;
+    const duration=elapsed==null?'':`${Math.floor(elapsed/3600000)} h ${Math.floor(elapsed/60000)%60} min`;
+    const quota=(kind,caption)=>limits[kind]?[text(join(caption,`${percent(limits[kind].percentUsed)}${limits[kind].resetsAt?`, ${t('renova em','resets in')} ${countdown(limits[kind].resetsAt,now)}`:''}`))]:[];
+    body.push(block(`${t('Esta sessão','This session')}${duration?` · ${duration}`:''}`,[
+      ...(usage?.context?[text(join(t('contexto','context'),`${int(usage.context.tokens)} ${t('de','of')} ${compact(usage.context.window)}`))]:[]),
+      ...quota('five_hour',t('cota de 5 h','5 h quota')),...quota('seven_day',t('semana','week')),
+      ...(d.session?.agents!=null?[label(join(`${d.session.agents} ${t('agentes observados','agents observed')}`,`${d.session.working ?? 0} ${t('trabalhando','working')}`))]:[])]));
+    const disk=d.copies_disk;
+    body.push(block(t('Cópias das ondas','Wave copies'),[disk?text(join(`${(disk.bytes/1e9).toLocaleString(locale,{maximumFractionDigits:disk.bytes<1e10?1:0})} GB`,
+      `${t('medido em','measured on')} ${day(disk.measured_at)} ${hour(disk.measured_at)}`)):label(t('não medido; use Medir agora','not measured; use Measure now'))]));
+    if(terminal)keys.push(measureButton());
+    nav('back','v',t('voltar','back'),actions.back);
+  }
+
+  // What each wave's agent got and what went wrong, as the sends recorded
+  // it: the model it used (measured) or, unmeasured, the one asked; the
+  // effort that held at the launch or, unrecorded, the one asked; the
+  // skills; the summary it continued. Then the failures.
+  function waveAgents(s) {
+    const plural=(n,one,many)=>`${int(n)} ${n===1?one:many}`;
+    const reasons={no_credit:['sem crédito','no credit'],missing_key:['sem chave','no key'],key_refused:['chave recusada','key refused'],
+      key_in_git:['chave no git','key in git'],network:['rede','network'],busy:['ocupado','busy'],refused:['recusado','refused'],
+      timeout:['tempo esgotado','timed out'],unreadable:['resposta ilegível','unreadable answer'],too_large:['pergunta grande demais','request too large']};
+    const counted=(map,names={})=>Object.entries(map || {}).sort((a,b)=>b[1]-a[1]).map(([key,count])=>`${name(names[key]) ?? key} (${int(count)})`).join(', ');
+    const refused=n=>n?plural(n,t('volta recusada','refused return'),t('voltas recusadas','refused returns')):'';
+    const rejected=n=>n?plural(n,t('reprovação da revisão','review rejection'),t('reprovações da revisão','review rejections')):'';
+    // The effort the send asked; a wave shows the one that held at the launch instead, when the send recorded it.
+    const effort=value=>value?`${t('esforço pedido','effort asked')} ${value}`:'';
+    const held=value=>`${t('esforço','effort')} ${value}`;
+    const reuse=s.reuse || {};
+    body.push(block(t('Agentes das ondas','Wave agents'),[
+      ...(s.models || []).map(m=>text(join(m.model,effort(m.effort),plural(m.waves,t('onda','wave'),t('ondas','waves'))))),
+      ...(s.skills?.length?[label(`${t('skills entregues','skills delivered')}: ${s.skills.map(k=>`${k.name} (${int(k.waves)})`).join(', ')}`)]:[]),
+      text(join(plural(reuse.summaries ?? 0,t('onda continuou um resumo','wave continued a summary'),t('ondas continuaram um resumo','waves continued a summary')),
+        reuse.knowledge_calls?`${int(reuse.knowledge_cached)} ${t('de','of')} ${int(reuse.knowledge_calls)} ${t('consultas de conhecimento reaproveitadas','knowledge lookups reused')}`:''))]));
+    if(s.waves.length)body.push(block(`${t('Por onda','By wave')} · ${t('últimas','last')} ${s.waves.length} ${t('de','of')} ${int(s.waves_sent)} ${t('ondas enviadas','waves sent')}`,
+      s.waves.map(w=>{
+        const used=w.model_used ?? (w.model_asked?`${w.model_asked} ${t('(pedido)','(asked)')}`:t('modelo não medido','model not measured'));
+        const extra=join((w.skills || []).join(', '),w.summary_reused?t('continuou um resumo','continued a summary'):'',refused(w.refused_returns),rejected(w.review_rejections));
+        return Box({flexDirection:'column',children:[text(join(`${t('onda','wave')} ${w.wave}`,used,w.effort_used?held(w.effort_used):effort(w.effort_asked),
+          w.tokens!=null?`${compact(w.tokens)} tokens`:'')),
+          ...(extra?[label(extra)]:[])]});
+      })));
+    const f=s.failures || {},lines=[];
+    if(f.jev?.calls)lines.push(text(`Jev ${t('falhou','failed')} ${plural(f.jev.calls,t('vez','time'),t('vezes','times'))}: ${counted(f.jev.reasons,reasons)}`));
+    if(f.hook_blocks?.total)lines.push(text(`${plural(f.hook_blocks.total,t('bloqueio de gancho','hook block'),t('bloqueios de gancho','hook blocks'))}: ${counted(f.hook_blocks.by_hook)}`));
+    const returns=join(refused(f.refused_returns),rejected(f.review_rejections));
+    if(returns)lines.push(text(returns));
+    body.push(block(t('Falhas','Failures'),lines.length?lines:[label(t('Nenhuma falha gravada.','No failure recorded.'))]));
+  }
+
+  // The skills Mustard made: the state, how many times each went with a
+  // task, the tokens of the wave that made it and the last measured gain.
+  function mustardSkills(skills) {
+    const states={active:['ativa','active'],discarded:['descartada','discarded'],retired:['retirada','retired']};
+    body.push(block(t('Skills do Mustard','Mustard skills'),skills.map(s=>Box({flexDirection:'column',children:[
+      text(join(s.name,name(states[s.state]) ?? s.state,`${int(s.tasks)} ${s.tasks===1?t('tarefa','task'):t('tarefas','tasks')}`,
+        s.wave_tokens!=null?`${compact(s.wave_tokens)} ${t('tokens na onda que a criou','tokens in the wave that made it')}`:'')),
+      ...(s.gain?[label(s.gain)]:[])]}))));
+  }
+
+  function measureButton() {
+    return keyButton({id:'measure',hotkey:'m',caption:t('medir agora','measure now'),onPress:actions.measure,disabled:measuring && t('Medindo…','Measuring…')});
+  }
+
+  function chartSvg(days) {
+    const colors=chartColors(theme),max=Math.max(1,...days.map(item=>item.tokens ?? 0)),width=days.length*20,height=80;
+    const bars=days.map((item,index)=>item.tokens==null
+      ?`<rect x="${index*20+3}" y="${height-14}" width="14" height="12" fill="none" stroke="${colors.empty}" stroke-dasharray="3 2"/>`
+      :`<rect x="${index*20+3}" y="${height-2-Math.max(2,item.tokens/max*(height-4))}" width="14" height="${Math.max(2,item.tokens/max*(height-4))}" rx="2" fill="${colors.bar}"/>`).join('');
+    return Svg({source:`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}">${bars}</svg>`,
+      alt:`${t('Tokens por dia','Tokens per day')}: ${days.map(item=>`${day(item.day)}: ${item.tokens==null?t('sem medida','no measure'):compact(item.tokens)}`).join('; ')}`,width,height});
+  }
+
+  // The project line, then the screen, then the keys: in the terminal's
+  // footer, or as tabs on top of the desktop.
+  const head=[row([text('■',{color:'claude',bold:true}),text(project?.name || 'Mustard',{bold:true})]),label(project?.branch || t('sem branch','no branch'))];
+  if(terminal) {
+    nav('quit','q',t('sair','quit'),actions.close);
+    const width=Math.max(12,Math.min(46,(columns || 48)-2));
+    return Box({flexDirection:'column',rowGap:1,paddingX:1,children:[Box({flexDirection:'column',children:head}),...body,
+      Box({flexDirection:'column',children:[label('─'.repeat(width)),row(keys,{columnGap:4})]})]});
+  }
+  const tab=(id,hotkey,target)=>press(id,name(titles[target]),()=>actions.go(target),{...(hotkey?{hotkey}:{}),...(screen===target?{variant:'primary'}:{})});
+  const back=state_.back.at(-1);
+  const top=[row([Box({flexDirection:'column',flexGrow:1,children:head}),press('refresh','↻',actions.refresh),
+      press('go-settings','⚙',()=>actions.go('settings')),press('quit','✕',actions.close,{hotkey:'q'})],{alignItems:'center'}),
+    row([tab('go-overview',undefined,'overview'),tab('go-spec','s','spec'),tab('go-usage','c','usage')],{columnGap:2}),
+    ...(screen!=='overview' && back?[press('back',`← ${name(titles[back.screen]) ?? ''}`,actions.back,{hotkey:'v'})]:[])];
+  return Box({flexDirection:'column',rowGap:1,padding:1,children:[...top,...body]});
 }

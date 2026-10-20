@@ -8,7 +8,7 @@
 //! plano; e o `round`, a rodada de ondas, que despacha, grava o que voltou,
 //! formata e faz o commit; e o `triage`, que reorganiza a lista aberta pelo
 //! classificador das atividades. Cada passo responde por [`answer()`], que
-//! grava a chamada na spec antes de imprimir.
+//! grava a chamada no arquivo de operações da spec antes de imprimir.
 
 pub mod answer;
 pub mod cli;
@@ -33,9 +33,31 @@ use serde_json::Value;
 
 use crate::commands::spec_events::conversation::record_output_call;
 
-/// A resposta de um passo do fluxo: grava a chamada na spec, imprime o
-/// relatório e sai com 1 na recusa. `named` é a spec que a chamada nomeou;
-/// `full` pede a resposta inteira em vez da curta ([`projection`]).
+/// Os passos do fluxo: os comandos que respondem por [`answer()`] e as duas
+/// portas do pull request, a que o abre e a que o une. É por esta lista que a
+/// retomada diz o último passo, sem a retomada mesma, que só lê; a procura, a
+/// leitura, as buscas e o mapa não são passo.
+pub(crate) const STEPS: &[&str] = &[
+    "evidence",
+    "open",
+    "grill",
+    "answer",
+    "reopen",
+    "plan",
+    "round",
+    "review-wave",
+    "close",
+    "discard",
+    "triage",
+    "resume",
+    "pr-open",
+    "pr-merge",
+];
+
+/// A resposta de um passo do fluxo: grava a chamada no arquivo de operações
+/// da spec, imprime o relatório e sai com 1 na recusa. `named` é a spec que a
+/// chamada nomeou; `full` pede a resposta inteira em vez da curta
+/// ([`projection`]). O comando é um de [`STEPS`].
 pub(crate) fn answer(command: &str, root: &Path, named: Option<&str>, started: Instant, report: &Value, full: bool) {
     // Host-facing transport keeps action/evidence fields, without indentation overhead.
     // Measure exactly these bytes rather than a synthetic pretty JSON copy.
@@ -52,7 +74,8 @@ pub(crate) fn answer(command: &str, root: &Path, named: Option<&str>, started: I
 /// O único lugar que decide o que a resposta de um comando leva. A curta,
 /// que é a de sempre, traz só o que a próxima ação pede: a rodada agrupa as
 /// tarefas seguradas pelo motivo; a revisão de onda abre com a impressão
-/// digital, mantém o diff inteiro e dá as regras por caminho e tamanho; o
+/// digital, traz o resumo — o diff só a pedido — e dá as regras por caminho
+/// e tamanho; o
 /// levantamento abre com a dica, o próximo ponto e os códigos dos abertos; o
 /// backlog abre com o total, sem campo vazio por linha; e os ajustes dão só
 /// os valores atuais. Com `full`, cada comando devolve a resposta inteira. A

@@ -44,12 +44,14 @@ pub fn collect_md(dir: &Path, out: &mut Vec<PathBuf>) {
 
 /// O texto que o modelo lê: todo `.md` do plugin, fora a pasta dos binários
 /// (o `README.md` dela explica a pasta para quem mantém o projeto e nunca
-/// chega a uma janela), e os moldes que o instalador grava no projeto.
+/// chega a uma janela) e a dos terceiros (o skill-creator só chega ao bloco
+/// da tarefa de criar skill, medido pelo teto do bloco), e os moldes que o
+/// instalador grava no projeto.
 pub fn read_by_the_model() -> Vec<PathBuf> {
     let root = repo_root();
     let mut files = Vec::new();
     collect_md(&root.join("plugin"), &mut files);
-    files.retain(|p| !p.starts_with(root.join("plugin/bin")));
+    files.retain(|p| !p.starts_with(root.join("plugin/bin")) && !p.starts_with(root.join("plugin/third-party")));
     for dir in ["packages/core/templates/mustard", "packages/core/templates/agents"] {
         collect_md(&root.join(dir), &mut files);
     }

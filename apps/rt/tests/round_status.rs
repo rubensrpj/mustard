@@ -1,4 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#[path = "support/binary.rs"]
+mod binary;
+
 use serde_json::{Value, json};
 #[test]
 fn bare_round_reads_state_without_rewriting_requests_or_advancing_execution() {
@@ -12,7 +15,7 @@ fn bare_round_reads_state_without_rewriting_requests_or_advancing_execution() {
         format!("{}\n", json!({"v":1,"id":1,"type":"state","phase":"running","branch":"feature/state-only","base":"dev","author":"binary"}));
     std::fs::write(&path, &original).unwrap();
     for _ in 0..2 {
-        let output = std::process::Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+        let output = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
             .args(["run", "round", "--spec", "state-only"])
             .current_dir(root)
             .env("MUSTARD_RT_DELEGATED", "1")

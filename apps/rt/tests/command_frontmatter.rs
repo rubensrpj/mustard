@@ -10,8 +10,9 @@
 //!
 //! What is locked, and why each one matters:
 //!
-//! - **The surface is exactly four doors** — `continue`, `measure`, `pr` and
-//!   `upsert`.
+//! - **The surface is exactly six doors** — `continue`, `measure`, `mods`,
+//!   `pages`, `pr` and `upsert`. `mods` and `pages` are answered by the
+//!   plugin's module, never by the model.
 //!   Os comandos `spec`, `feature`, `bugfix`, `task`, `tactical-fix`, `git` e
 //!   `scan` saíram: o fluxo é um só, e cada comando do binário diz o próximo
 //!   passo. A door is a command file the USER types; a command file that is
@@ -40,7 +41,7 @@ fn repo_root() -> PathBuf {
 }
 
 /// The whole exposed surface: the commands a user may type. Kept sorted.
-const DOORS: &[&str] = &["continue", "measure", "pr", "upsert"];
+const DOORS: &[&str] = &["continue", "measure", "mods", "pages", "pr", "upsert"];
 
 /// The marker an internal flow carries to stay OUT of the door surface.
 const NOT_A_DOOR: &str = "user-invocable: false";
@@ -93,9 +94,27 @@ fn exposed_doors_are_exactly_these() {
         exposed, expected,
         "the user-invocable surface must stay exactly {expected:?}. A command file with no \
          `{NOT_A_DOOR}` in its frontmatter IS a door — the user sees it and types it. Everything \
-         that is not one of the four must say so: add the key, or fold the command into the door \
+         that is not one of these must say so: add the key, or fold the command into the door \
          that already owns its subject (review/close -> pr; doctor -> upsert; resuming -> continue)."
     );
+}
+
+/// The panel and the publication are the files `mods.md` and `pages.md`, so
+/// the host lists them as `/mustard:mods` and `/mustard:pages`. The plugin's
+/// module answers both before the file becomes a prompt. The model must
+/// never reach them through the Skill tool, which bypasses that answer.
+#[test]
+fn command_frontmatter_panel_and_publication_stay_out_of_the_model() {
+    for (command, hint) in [("mods", "--diagnose"), ("pages", "report <file.md>")] {
+        let fm = frontmatter(command);
+        assert!(
+            fm.contains("disable-model-invocation: true"),
+            "plugin/commands/{command}.md must declare `disable-model-invocation: true`: the module \
+             answers the typed command, and the Skill tool would hand the file to the model. \
+             Frontmatter:\n{fm}"
+        );
+        assert!(fm.contains("argument-hint:") && fm.contains(hint), "{command}: the argument hint names `{hint}`:\n{fm}");
+    }
 }
 
 #[test]

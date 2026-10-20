@@ -2,15 +2,13 @@ answer
 clean
 close
 config-read
+deliver-merged
 discard
 doctor
 evidence
-expertise
 find
 grill
 help
-ideas
-impact
 index
 knowledge
 map
@@ -19,7 +17,6 @@ open
 page
 panel
 panel-diagnostics
-panel-preferences
 pending
 plan
 pr-merge

@@ -18,6 +18,9 @@
 #[path = "support/executable.rs"]
 mod executable;
 
+#[path = "support/binary.rs"]
+mod binary;
+
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -115,7 +118,7 @@ impl Setup {
 
     /// Roda a cópia do programa no projeto, com uma pasta pessoal falsa.
     fn run(&self, args: &[&str], stdin: &str) {
-        let mut child = Command::new(&self.rt)
+        let mut child = binary::isolated(&self.rt)
             .args(args)
             .current_dir(&self.project)
             .env("CLAUDE_PROJECT_DIR", &self.project)
@@ -144,9 +147,15 @@ impl Setup {
 
     /// O início da sessão, que confere o mapa antes de qualquer aviso.
     fn session_start(&self) {
+        self.session_start_from("startup");
+    }
+
+    /// O início da sessão com a origem `source` (`startup`, `resume`, `clear`,
+    /// `compact`).
+    fn session_start_from(&self, source: &str) {
         let payload = json!({
             "hook_event_name": "SessionStart",
-            "source": "startup",
+            "source": source,
             "session_id": "s-outro-scan",
             "cwd": self.project.to_string_lossy(),
         });
@@ -173,8 +182,9 @@ fn the_map_of_another_scan_is_read_again_by_the_search_and_the_session_start_wit
     setup.search();
     let passes = setup.passes();
     assert_eq!(passes.len(), 1, "the search asks for one pass: {passes:?}");
+    // A pergunta ao mapa pede a passada nativa, que ela não espera além do prazo.
     assert!(
-        passes[0].starts_with(&format!("scan {root} --out ")) && passes[0].ends_with(" --json"),
+        passes[0].starts_with(&format!("scan {root} --out ")) && passes[0].ends_with(" --json --native"),
         "the pass is over the project and its map: {passes:?}"
     );
 
@@ -186,4 +196,20 @@ fn the_map_of_another_scan_is_read_again_by_the_search_and_the_session_start_wit
     setup.search();
     setup.session_start();
     assert_eq!(setup.passes(), Vec::<String>::new(), "a scan that says no mark does not put the map behind");
+}
+
+/// Depois de `/clear` e da compactação, o início da sessão só retoma: o mapa
+/// atrás do scan ao lado espera, sem passada nenhuma, que seria o que estoura
+/// o prazo do gancho. A retomada da conversa, como a abertura, refaz o mapa.
+#[test]
+fn the_session_start_after_clear_or_compact_asks_for_no_pass() {
+    let setup = Setup::new();
+    for source in ["clear", "compact"] {
+        setup.scan_says("0.2.4+map-bbbbbbbbbbbbbbbb");
+        setup.session_start_from(source);
+        assert_eq!(setup.passes(), Vec::<String>::new(), "{source}: the renewed window only resumes");
+    }
+    setup.scan_says("0.2.4+map-bbbbbbbbbbbbbbbb");
+    setup.session_start_from("resume");
+    assert_eq!(setup.passes().len(), 1, "resume: the map is read again: {:?}", setup.passes());
 }

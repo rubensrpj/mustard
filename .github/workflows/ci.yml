@@ -59,7 +59,7 @@ jobs:
     name: Cache (${{ matrix.os }})
     needs: route
     if: needs.route.outputs.warm_cache == 'true'
-    runs-on: ${{ matrix.runner || matrix.os }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     env:
       CARGO_INCREMENTAL: 0
@@ -67,11 +67,6 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        # ARM64 hosted capacity failed to acquire both macOS jobs on
-        # 2026-10-13. Keep check names stable; use the standard Intel pool.
-        include:
-          - os: macos-latest
-            runner: macos-15-intel
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -84,6 +79,10 @@ jobs:
         with:
           shared-key: mustard-workspace
           save-if: ${{ github.event_name == 'push' }}
+          # Saved even when a test fails: the push runs that save are the only
+          # ones, and a red push used to leave every pull request compiling
+          # from scratch (run 39426184868: "No cache found" on Windows).
+          cache-on-failure: true
       # rust-cache stores dependencies by default. An existing exact cache
       # needs no repeated compilation; a missing cache is warmed without
       # executing the test suite already approved in the PR.
@@ -95,15 +94,12 @@ jobs:
     needs: route
     if: needs.route.outputs.validate == 'true'
     name: Mods (${{ matrix.os }})
-    runs-on: ${{ matrix.runner || matrix.os }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        include:
-          - os: macos-latest
-            runner: macos-15-intel
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -122,11 +118,13 @@ jobs:
     needs: route
     if: needs.route.outputs.validate == 'true'
     name: Test (${{ matrix.os }})
-    runs-on: ${{ matrix.runner || matrix.os }}
-    # Keep a bounded job. On the Intel macOS fallback, run 38457019967 took
-    # 7m38s to compile cold and was still progressing through scan tests at
-    # 30m. Allow that measured workload to finish, without lifting other caps.
-    timeout-minutes: ${{ matrix.os == 'macos-latest' && 45 || 30 }}
+    runs-on: ${{ matrix.os }}
+    # Keep a bounded job. macOS runs on the standard Apple runner: the Intel
+    # pool it used to need 45 minutes on also kept the release waiting 47
+    # minutes for a machine. Windows gets 45: run 39445783794 compiled cold in
+    # 7m, spent 16m in the mustard-rt unit tests (47s on Linux) and was cut at
+    # 30m with every test it reached green.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 45 || 30 }}
     env:
       # A runner is discarded after every job, so incremental state is WRITTEN
       # and never read back — pure cost here. Declared rather than inherited,
@@ -142,9 +140,6 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        include:
-          - os: macos-latest
-            runner: macos-15-intel
     steps:
       - uses: actions/checkout@v4
 
@@ -177,6 +172,24 @@ jobs:
         with:
           shared-key: mustard-workspace
           save-if: ${{ github.event_name == 'push' }}
+          # Saved even when a test fails: the push runs that save are the only
+          # ones, and a red push used to leave every pull request compiling
+          # from scratch (run 39426184868: "No cache found" on Windows).
+          cache-on-failure: true
+
+      # The tests create thousands of temporary repositories and maps. On the
+      # hosted Windows runners the C: drive, where TEMP points, is far slower
+      # than D:, where the workspace already lives; uv, Zed and Dioxus move
+      # their build and temporary folders to the fast drive for the same
+      # reason. Run 39459781536 spent 13.5 minutes in the mustard-rt unit
+      # tests on Windows against 47 seconds on Linux.
+      - name: Temporary files on the fast drive
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path D:\tmp | Out-Null
+          "TEMP=D:\tmp" >> $env:GITHUB_ENV
+          "TMP=D:\tmp" >> $env:GITHUB_ENV
 
       - name: Expose the scan binary to the tests that spawn it
         shell: bash

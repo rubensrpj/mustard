@@ -13,16 +13,18 @@
 //! mediu nada — o mesmo silêncio que esconde, no campo, o plugin cujo binário
 //! nunca baixou.
 
+#[path = "support/binary.rs"]
+mod binary;
+
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 
 #[test]
 fn explicit_project_diagnosis_works_from_another_directory_without_installing_anything() {
     let dir=tempfile::tempdir().unwrap();
     let project=dir.path().join("project");let caller=dir.path().join("caller");
     fs::create_dir(&project).unwrap();fs::create_dir(&caller).unwrap();fs::write(project.join("mustard.json"),"{}").unwrap();
-    let result=Command::new(env!("CARGO_BIN_EXE_mustard-rt")).current_dir(&caller)
+    let result=binary::isolated(env!("CARGO_BIN_EXE_mustard-rt")).current_dir(&caller)
         .env("MUSTARD_RT_DELEGATED","1").env("CLAUDE_CONFIG_DIR",dir.path().join("host"))
         .args(["run","doctor","--root"]).arg(&project).args(["--check","session-plugins","--json"]).output().unwrap();
     assert!(result.status.success(),"{}",String::from_utf8_lossy(&result.stderr));
@@ -79,7 +81,7 @@ fn the_doctor_follows_the_moved_config_folder_to_the_newest_install() {
     seed_install(&newer, false);
     seed_registry(&config, &[(&older, "0.1.9"), (&newer, "0.1.10")]);
 
-    let out = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+    let out = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
         .args(["run", "doctor", "--json"])
         .current_dir(&project)
         .env("HOME", &home)
@@ -125,14 +127,14 @@ fn the_doctor_warns_when_the_plugin_binary_and_the_running_one_carry_different_c
         fs::write(path, format!("#!/bin/sh\necho '{line}'\n")).unwrap();
         fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
     };
-    let running = Command::new(env!("CARGO_BIN_EXE_mustard-rt")).arg("--version").env("MUSTARD_RT_DELEGATED", "1").output().unwrap();
+    let running = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt")).arg("--version").env("MUSTARD_RT_DELEGATED", "1").output().unwrap();
     let running = String::from_utf8_lossy(&running.stdout).trim().to_string();
     let running_stamp = running.split_once(", ").map(|(_, rest)| rest.trim_end_matches(')').to_string()).unwrap_or_default();
     assert!(running_stamp.starts_with('g'), "o programa do teste não diz o commit, e nada se compara: {running}");
     answering(&system.join("mustard-rt"), &running);
     let path = std::env::join_paths(std::iter::once(system.clone()).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()))).unwrap();
     let doctor = || {
-        let out = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+        let out = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
             .args(["run", "doctor", "--check", "binaries", "--json"])
             .current_dir(&project)
             .env("MUSTARD_RT_DELEGATED", "1")

@@ -35,7 +35,12 @@ pub(super) fn context(input:&HookInput,ctx:&Ctx)->Option<String> {
     // Persist only source witnesses verified by the existing learning policy.
     // A changed/unmapped file is pending for the next native scan, not evidence
     // that the previous declaration is still current. No model or scan here.
-    let _=mustard_core::io::knowledge::observations::record(index,&tree,&facts);
+    // Como a busca: o que se aprendeu grava no fim com a espera curta, e o
+    // mapa com bloco a pôr em dia fica para a passada, sem segurar o agente.
+    let mut later=mustard_core::io::map_db::Later::default();
+    let _=mustard_core::io::knowledge::observations::learn(index,&tree,&facts,&mut later);
+    let _=later.keep(mustard_core::io::knowledge::observations::LEARNING_WAIT);
+    if mustard_core::io::project_map::needs_block_update(&mustard_core::io::project_map::model_path(index)) {return None;}
     let hits:Vec<_>=facts.iter().map(|(file,line,text)|Occurrence {file,line:*line,text}).collect();
     let report=mustard_core::io::knowledge::investigation::cross_hits(index,&tree,&hits).ok()?;
     let owners=report.get("symbols")?.as_array()?;
@@ -44,16 +49,19 @@ pub(super) fn context(input:&HookInput,ctx:&Ctx)->Option<String> {
     let mut context=if pt {
         format!("Mustard: proprietários estáticos do trecho já lido ({}:{}-{last}).\n",path.rel,first+1)
     }else{format!("Mustard: static owners of the excerpt already read ({}:{}-{last}).\n",path.rel,first+1)};
+    // O dono inteiro dentro da faixa, a leitura já mostrou: a nota leva só
+    // o que começa ou termina fora dela e, sem nenhum, não sai.
+    let mut partial=0;
     for owner in owners {
         let source=owner.get("source")?;
         let start=source.get("line")?.as_u64()?;
         let end=source.get("end_line")?.as_u64()?;
-        let coverage=match (first<start && last>=end,pt) {
-            (true,true)=>"intervalo completo",(false,true)=>"intervalo parcial",
-            (true,false)=>"complete range",(false,false)=>"partial range",
-        };
+        if first<start && last>=end {continue;}
+        partial+=1;
+        let coverage=if pt {"intervalo parcial"}else{"partial range"};
         let _=writeln!(context,"- {}: {start}-{end} ({coverage}).",owner.get("name")?.as_str()?);
     }
+    if partial==0 {return None;}
     let omitted=report.get("omitted_symbols")?.as_u64()?;
     if omitted>0 {let _=writeln!(context,"+{omitted} {}",if pt {"outros símbolos no trecho."}else{"other symbols in the excerpt."});}
     context.push_str(if pt {"Somente as linhas lidas foram conferidas. Relação estática não prova comportamento em execução."}else{"Only the delivered lines were checked. Static ownership does not prove runtime behavior."});
@@ -97,8 +105,17 @@ mod tests {
         input.agent_id=Some("worker".into());assert!(context(&input,&ctx).is_some());
         input.tool_input=json!({"file_path":root.path().join("src/main.rs"),"offset":1,"limit":3});
         input.raw["tool_response"]["file"]=json!({"filePath":root.path().join("src/main.rs"),"content":SOURCE,"numLines":3,"startLine":1,"totalLines":3});
-        let complete=context(&input,&ctx).unwrap();
-        assert!(complete.contains("complete range") || complete.contains("intervalo completo"));
+        assert!(context(&input,&ctx).is_none(),"an owner read whole needs no note");
+    }
+    #[test]
+    fn a_read_that_holds_every_owner_whole_gains_no_note() {
+        let root=indexed();let (mut input,ctx)=read(root.path());
+        input.tool_input=json!({"file_path":root.path().join("src/main.rs")});
+        input.raw["tool_response"]["file"]=json!({"filePath":root.path().join("src/main.rs"),"content":SOURCE,"numLines":3,"startLine":1,"totalLines":3});
+        assert!(context(&input,&ctx).is_none(),"the read already shows every owner whole");
+        let (cut,ctx)=read(root.path());
+        let note=context(&cut,&ctx).unwrap();
+        assert!(note.contains("quartz: 1-3"),"an owner that starts or ends outside the excerpt still goes: {note}");
     }
     #[test]
     fn stale_unknown_partial_and_mismatched_read_outputs_preserve_native_fallback() {
@@ -121,6 +138,24 @@ mod tests {
         std::fs::remove_file(mustard_core::io::project_map::model_path(root.path())).unwrap();
         assert!(context(&input,&ctx).is_none());
         assert!(!mustard_core::io::project_map::model_path(root.path()).is_file(),"no scan/database is created for a bare Read");
+    }
+    #[test]
+    fn a_map_held_by_another_writer_does_not_hold_the_read() {
+        let root=indexed();let (input,ctx)=read(root.path());
+        let model=mustard_core::io::project_map::model_path(root.path());
+        let (held,holding)=std::sync::mpsc::channel();let (release,released)=std::sync::mpsc::channel::<()>();
+        let base=root.path().to_path_buf();
+        let writer=std::thread::spawn(move||{
+            let mut db=mustard_core::io::map_db::MapDb::open(&model,&base,&[]).unwrap();
+            db.write(|_|{held.send(()).unwrap();let _=released.recv_timeout(std::time::Duration::from_secs(10));Ok(())}).unwrap();
+        });
+        holding.recv().unwrap();
+        let started=std::time::Instant::now();
+        let note=context(&input,&ctx);
+        let spent=started.elapsed();
+        let _=release.send(());writer.join().unwrap();
+        assert!(spent<std::time::Duration::from_secs(1),"the read waited {spent:?} for the map lock");
+        assert!(note.is_some_and(|note|note.contains("quartz: 1-3")),"the owners still come from the map being read");
     }
     #[cfg(unix)]
     #[test]

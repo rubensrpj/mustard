@@ -17,6 +17,9 @@
 
 #![cfg(unix)]
 
+#[path = "support/binary.rs"]
+mod binary;
+
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -76,7 +79,7 @@ impl Project {
     }
 
     fn command(&self, args: &[&str], stdin: &str) -> Output {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+        let mut child = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
             .args(args)
             .current_dir(&self.root)
             .env("HOME", &self.home)

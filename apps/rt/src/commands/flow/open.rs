@@ -618,13 +618,24 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
             None
         }
     };
+    // As passagens do resumo do projeto: a única das specs antigas, quando a
+    // montagem não a fez, e a das regras que esperam o Jev.
+    let passed = crate::shared::project_summary::run_pending(&project.root, lang);
+    warnings.extend(passed.warnings);
     let pending_project = pending_project_notice(&project.root, lang);
     let mut report = opened(&name, &target, &base, &kind, map, &warnings, pending_project, lang);
     if let Some(id) = pending {
         report["pending"] = json!(id);
     }
+    crate::shared::jev::reserve::attach(&mut report, passed.reserves, "mustard-rt run upsert", lang);
     match earlier {
-        Some(Ok(ids)) => report["earlier_messages"] = json!(ids),
+        Some(Ok(ids)) => {
+            // A dica só fala das mensagens de antes quando elas vieram.
+            if !ids.is_empty() && let Some(hint) = report["hint"].as_str() {
+                report["hint"] = json!(format!("{hint} {}", translate("open.next_goal.earlier", lang)));
+            }
+            report["earlier_messages"] = json!(ids);
+        }
         Some(Err(note)) => report["earlier_messages_missing"] = json!(note),
         None => {}
     }
@@ -633,11 +644,11 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
 
 /// As mensagens que o usuário digitou na conversa da sessão `session` antes
 /// da abertura, gravadas na spec `spec`, que acabou de nascer; os números
-/// delas. Sem a conversa (a sessão que não se sabe, ou a do Codex, que não
-/// guarda o arquivo do Claude Code), o aviso de que elas ficaram fora: a
-/// abertura segue como antes.
+/// delas. Sem a conversa deste projeto (a sessão que não se sabe, a conversa
+/// aberta noutro projeto, ou a do Codex, que não guarda o arquivo do Claude
+/// Code), o aviso de que elas ficaram fora: a abertura segue como antes.
 fn bring_earlier_messages(root: &Path, spec: &str, session: Option<&str>, lang: Locale) -> Result<Vec<u64>, String> {
-    let Some(transcript) = session.and_then(session_transcript) else {
+    let Some(transcript) = session.and_then(|session| session_transcript(root, session)) else {
         return Err(translate("open.earlier_messages_missing", lang).to_string());
     };
     Ok(record_earlier_messages(root, spec, &typed_messages(&transcript)))
@@ -1169,6 +1180,59 @@ mod tests {
         let report = open(root, Some("feature"), Some("cadastro"), Some("dev"));
         assert_eq!(report["ok"], json!(true), "{report}");
         assert!(report.get("pending_project").is_none(), "{report}");
+    }
+
+    /// A montagem gravou a lista das specs antigas e a passagem delas pelo
+    /// resumo do projeto não rodou: a abertura seguinte a faz, uma vez.
+    #[test]
+    fn the_open_runs_the_pending_pass_of_the_old_specs() {
+        let dir = repo(DEV_MAIN);
+        let root = dir.path();
+        let folder = root.join(".claude/spec/antiga");
+        std::fs::create_dir_all(&folder).unwrap();
+        let lines = [
+            json!({"v":1,"id":1,"at":"2026-09-01T10:00:00Z","type":"context","title":"Objetivo","text":"Obra antiga."}),
+            json!({"v":1,"id":2,"at":"2026-09-03T10:00:00Z","type":"state","phase":"delivered","author":"binary"}),
+        ];
+        std::fs::write(folder.join("spec.ndjson"), lines.iter().map(|line| line.to_string() + "\n").collect::<String>()).unwrap();
+        mustard_core::io::legacy_specs::mark_once(root, "0.2.25").unwrap();
+
+        let report = open(root, Some("feature"), Some("cadastro"), Some("dev"));
+        assert_eq!(report["ok"], json!(true), "{report}");
+        let summary: Vec<String> = mustard_core::io::project_summary::read(root).into_iter().map(|entry| entry.spec).collect();
+        assert_eq!(summary, vec!["antiga".to_string()], "{report}");
+        assert!(mustard_core::io::project_summary::legacy_pass_done(root));
+    }
+
+    /// A spec entregue deixa as regras dela pendentes, sem chamar o Jev; a
+    /// abertura seguinte as decide numa chamada e consome a pendência.
+    #[test]
+    fn the_open_decides_the_pending_rules_of_a_delivered_spec() {
+        let dir = repo(DEV_MAIN);
+        let root = dir.path();
+        let folder = root.join(".claude/spec/antes");
+        std::fs::create_dir_all(&folder).unwrap();
+        let lines = [
+            json!({"v":1,"id":1,"at":"2026-09-01T10:00:00Z","type":"state","phase":"approved","author":"binary"}),
+            json!({"v":1,"id":2,"at":"2026-09-01T10:01:00Z","type":"context","title":"Objetivo","text":"Obra de antes."}),
+            json!({"v":1,"id":3,"at":"2026-09-01T10:02:00Z","type":"decision","title":"JSON","text":"Toda resposta sai em JSON.","why":"Quem lê é programa.","keys":["json"]}),
+        ];
+        std::fs::write(folder.join("spec.ndjson"), lines.iter().map(|line| line.to_string() + "\n").collect::<String>()).unwrap();
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let counted = std::rc::Rc::clone(&calls);
+        crate::shared::jev::yes_no::ask_in_test(Some(std::rc::Rc::new(move |payloads: &[String]| {
+            counted.set(counted.get() + 1);
+            Some(payloads.iter().map(|_| json!({"answers":{"i3":{"type":"noul","noul":0.9}}})).collect())
+        })));
+        assert!(crate::commands::spec_events::write::record_phase(root, "antes", "delivered", None));
+        assert_eq!((calls.get(), mustard_core::io::project_summary::pending_rules(root)), (0, vec!["antes".to_string()]));
+
+        let report = open(root, Some("feature"), Some("cadastro"), Some("dev"));
+        crate::shared::jev::yes_no::ask_in_test(None);
+        assert_eq!(report["ok"], json!(true), "{report}");
+        assert_eq!(calls.get(), 1, "{report}");
+        assert!(mustard_core::io::project_summary::pending_rules(root).is_empty(), "{report}");
+        assert!(root.join(".claude/rules/mustard/antes-1.md").is_file());
     }
 
     /// Sem `--pending`, a lista de pendências fica com os mesmos bytes.

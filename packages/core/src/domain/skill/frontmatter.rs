@@ -28,6 +28,14 @@ pub struct SkillFrontmatter {
 }
 
 impl SkillFrontmatter {
+    /// O campo `name:` do cabeçalho, sem espaços nas pontas, quando ele traz
+    /// um que não é vazio. É o nome da skill para o Claude Code e o Codex;
+    /// sem ele, quem lê usa o nome da pasta da skill.
+    #[must_use]
+    pub fn name(&self) -> Option<String> {
+        self.extra.get("name").and_then(serde_json::Value::as_str).map(str::trim).filter(|name| !name.is_empty()).map(str::to_string)
+    }
+
     /// O campo `source:` do cabeçalho (`scan`, `manual`, ...), quando ele traz
     /// um. Não é um campo tipado, então mora em [`Self::extra`]; este leitor é
     /// o caminho único para quem precisa dele, como o censo da branch que
@@ -77,6 +85,20 @@ pub fn extract_frontmatter(raw: &str) -> Option<String> {
     let rest = normalized.strip_prefix("---\n")?;
     let end = rest.find("\n---")?;
     Some(rest[..end].to_string())
+}
+
+/// O corpo de um `SKILL.md`: o texto depois da linha que fecha o cabeçalho,
+/// sem as linhas em branco das pontas. Sem cabeçalho, o texto inteiro.
+#[must_use]
+pub fn body(raw: &str) -> String {
+    let raw = raw.strip_prefix('\u{feff}').unwrap_or(raw);
+    let normalized = raw.replace("\r\n", "\n");
+    let after = normalized.strip_prefix("---\n").and_then(|rest| {
+        let end = rest.find("\n---")?;
+        let closing = &rest[end + 1..];
+        Some(closing.split_once('\n').map_or("", |(_, body)| body).to_string())
+    });
+    after.unwrap_or(normalized).trim().to_string()
 }
 
 // ---------------------------------------------------------------------------

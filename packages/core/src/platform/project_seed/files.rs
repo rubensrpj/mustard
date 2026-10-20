@@ -34,16 +34,30 @@ const AGENTS_DIR: &str = "agents/mustard";
 /// `effort:` do cabeçalho de cada agente são os que o projeto declara.
 #[must_use]
 pub fn harness_texts(text: Locale, agents: AgentSettings<'_>) -> Vec<(String, String)> {
+    harness_texts_with(text, agents, agents)
+}
+
+/// [`harness_texts`] como o projeto de `config` os grava: o revisor final
+/// com o modelo e o esforço dele ([`ProjectConfig::review_settings`]).
+#[must_use]
+pub fn project_harness_texts(config: &ProjectConfig) -> Vec<(String, String)> {
+    harness_texts_with(config.language().text_or_default(), config.agent_settings(), config.review_settings())
+}
+
+fn harness_texts_with(text: Locale, agents: AgentSettings<'_>, review: AgentSettings<'_>) -> Vec<(String, String)> {
     let mut out = vec![(format!("{SESSION_MAP_DIR}/{SESSION_MAP_NAME}"), session_map(text).to_string())];
-    out.extend(agent_files(text, agents));
+    out.extend(agent_files(text, agents, review));
     out
 }
 
 /// Os agentes do Mustard como a instalação os escreve, a partir de
 /// `.claude/`: `(caminho, corpo)`, no idioma `text` e com o `model:` e o
-/// `effort:` de `agents` no cabeçalho.
-fn agent_files(text: Locale, agents: AgentSettings<'_>) -> impl Iterator<Item = (String, String)> + '_ {
-    agent_texts(text).into_iter().map(move |(name, body)| (format!("{AGENTS_DIR}/{name}.md"), with_agent_settings(body, agents)))
+/// `effort:` de `agents` no cabeçalho — os de `review` no revisor final.
+fn agent_files<'a>(text: Locale, agents: AgentSettings<'a>, review: AgentSettings<'a>) -> impl Iterator<Item = (String, String)> + 'a {
+    agent_texts(text).into_iter().map(move |(name, body)| {
+        let settings = if name == crate::domain::config::REVIEW_AGENT { review } else { agents };
+        (format!("{AGENTS_DIR}/{name}.md"), with_agent_settings(body, settings))
+    })
         .chain(std::iter::once((format!("{AGENTS_DIR}/analysis.md"), crate::platform::seeds::analysis_agent_text(text).into())))
 }
 
@@ -70,7 +84,7 @@ pub fn refresh_agent_texts(root: &Path) -> Result<Vec<String>> {
     }
     let config = ProjectConfig::load(root);
     let mut rewritten = Vec::new();
-    for (rel, body) in agent_files(config.language().text_or_default(), config.agent_settings()) {
+    for (rel, body) in agent_files(config.language().text_or_default(), config.agent_settings(), config.review_settings()) {
         if seed_static_file(&claude_dir.join(&rel), &body, true)? != SeedOutcome::Preserved {
             rewritten.push(format!(".claude/{rel}"));
         }
@@ -112,8 +126,22 @@ pub fn session_map_declared_path() -> String {
 ///
 /// An IO error creating a directory or writing a file.
 pub fn seed_harness_texts(claude_dir: &Path, text: Locale, agents: AgentSettings<'_>) -> Result<Vec<(String, SeedOutcome)>> {
+    seed_texts(claude_dir, harness_texts(text, agents))
+}
+
+/// [`seed_harness_texts`] com os textos do projeto de `config`
+/// ([`project_harness_texts`]): o revisor final leva o modelo dele.
+///
+/// # Errors
+///
+/// An IO error creating a directory or writing a file.
+pub fn seed_project_harness_texts(claude_dir: &Path, config: &ProjectConfig) -> Result<Vec<(String, SeedOutcome)>> {
+    seed_texts(claude_dir, project_harness_texts(config))
+}
+
+fn seed_texts(claude_dir: &Path, texts: Vec<(String, String)>) -> Result<Vec<(String, SeedOutcome)>> {
     let mut out = Vec::new();
-    for (rel, body) in harness_texts(text, agents) {
+    for (rel, body) in texts {
         let dest = claude_dir.join(&rel);
         if let Some(parent) = dest.parent() {
             fs::create_dir_all(parent)?;

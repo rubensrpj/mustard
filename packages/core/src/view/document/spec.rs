@@ -28,12 +28,39 @@ pub struct RtkDay {
 pub enum WaveState {
     /// Nada saiu ainda, ou o que saiu não vale mais.
     Todo,
-    /// O pedido saiu e a entrega ainda não voltou.
+    /// O pedido saiu, o agente começou e a entrega ainda não voltou.
     Running,
-    /// Entregue e aprovada.
+    /// O pedido saiu e nenhum agente trabalha nele: o agente nunca começou,
+    /// ou o Claude Code que mandou o pedido já fechou.
+    NoAgent,
+    /// Entregue e aprovada, sem commit próprio: a entrega entrou na obra, como
+    /// um relatório, sem mudar código.
     Approved,
+    /// Entregue, aprovada e com o commit dela gravado.
+    Committed,
     /// A última revisão reprovou.
     Rejected,
+}
+
+impl WaveState {
+    /// A onda terminou: entregue e aprovada, com commit ou sem.
+    #[must_use]
+    pub fn finished(self) -> bool {
+        matches!(self, Self::Approved | Self::Committed)
+    }
+
+    /// O nome do estado nas respostas do binário.
+    #[must_use]
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Todo => "todo",
+            Self::Running => "running",
+            Self::NoAgent => "no-agent",
+            Self::Approved => "integrated",
+            Self::Committed => "committed",
+            Self::Rejected => "rejected",
+        }
+    }
 }
 
 /// O estado de cada onda do plano, pelo número dela: toda onda do plano está

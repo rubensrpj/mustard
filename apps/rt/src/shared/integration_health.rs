@@ -18,7 +18,7 @@ pub(crate) fn snapshot(root: &Path) -> Value {
         std::env::var(mustard_core::io::jev_gate::KEY_ENV).ok(),
     );
     let mut purposes = serde_json::Map::new();
-    for purpose in ["search", "wave-planning", "context"] {
+    for purpose in mustard_core::domain::config::JEV_PURPOSES {
         purposes.insert(
             purpose.into(),
             json!(

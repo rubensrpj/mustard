@@ -32,6 +32,9 @@
 
 #![cfg(unix)]
 
+#[path = "support/binary.rs"]
+mod binary;
+
 use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -391,7 +394,7 @@ impl Project {
 
     /// Como [`Self::command`], rodando de dentro de `dir`.
     fn command_in(&self, dir: &Path, args: &[&str], stdin: &str) -> Output {
-        let mut binary = Command::new(self.rt.as_deref().unwrap_or_else(|| Path::new(env!("CARGO_BIN_EXE_mustard-rt"))));
+        let mut binary = binary::isolated(self.rt.as_deref().unwrap_or_else(|| Path::new(env!("CARGO_BIN_EXE_mustard-rt"))));
         let mut child = self
             .env(&mut binary)
             .args(args)
@@ -538,6 +541,11 @@ impl Project {
     fn log(&self) -> SpecLog {
         store::read(&store::spec_file(&self.root, SPEC).expect("spec file")).expect("readable").expect("the spec file")
     }
+
+    /// O arquivo de operações da spec: o que o programa observou de si.
+    fn operations(&self) -> SpecLog {
+        store::operations_file(&self.root, SPEC).and_then(|path| store::read(&path).ok().flatten()).unwrap_or_default()
+    }
 }
 
 /// A lista `agreed` do veredito final e da entrega da onda, com todo o
@@ -654,10 +662,17 @@ fn approve(project: &Project) {
     assert_eq!(State::from_log(&project.log()).phase, Some("approved"));
 }
 
-/// Quantas chamadas cada comando do fluxo gravou na spec.
+/// Quantas chamadas cada passo do fluxo gravou no arquivo de operações da
+/// spec, e quantos recibos de leitura a spec guarda (`read`). A leitura, a
+/// escrita e as buscas pela linha de comando também gravam a chamada delas
+/// ali, e não são passo.
 fn calls(project: &Project) -> BTreeMap<String, usize> {
+    const TRANSPORT: [&str; 4] = ["read", "write", "search", "knowledge"];
+    let (log, operations) = (project.log(), project.operations());
+    let receipts = log.visible().into_iter().filter(|e| e.event_type == "call" && e.fields.contains_key("request"));
+    let steps = operations.visible().into_iter().filter(|e| e.event_type == "call" && !TRANSPORT.contains(&e.str_field("command").unwrap_or_default()));
     let mut out = BTreeMap::new();
-    for call in project.log().visible().into_iter().filter(|e| e.event_type == "call") {
+    for call in receipts.chain(steps) {
         *out.entry(call.str_field("command").unwrap_or_default().to_string()).or_insert(0) += 1;
     }
     out

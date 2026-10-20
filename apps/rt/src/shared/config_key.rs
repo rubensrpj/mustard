@@ -1,17 +1,17 @@
-//! `config_key` — a chave do Jev no arquivo de configuração do Mustard, que
-//! nenhuma leitura mostra.
+//! `config_key` — os segredos do projeto no arquivo de configuração do
+//! Mustard, que nenhuma leitura mostra.
 //!
-//! A chave mora no `mustard.json`, no campo [`JEV_KEY_FIELD`] de `jev`, ou em
-//! `env.TYPESAFE_API_KEY` das configurações locais privadas do Claude. Quem lê
-//! esses arquivos, pela
-//! ferramenta de leitura ou pelo terminal, recebe o texto dele com o valor
-//! desse campo trocado por `***` ([`masked`]), e nunca o valor. A busca em
-//! pastas que passaria pelo arquivo e mostraria as linhas dele é recusada
-//! antes de rodar ([`swept`]).
+//! São a chave do Jev, em `jev.key`, e o token da publicação, em
+//! `publication.apiToken`, no `mustard.json`, ou as variáveis deles no `env`
+//! das configurações locais privadas do Claude: os nomes de
+//! [`SECRET_NAMES`]. Quem lê esses arquivos, pela ferramenta de leitura ou
+//! pelo terminal, recebe o texto dele com o valor desses campos trocado por
+//! `***` ([`masked`]), e nunca o valor. A busca em pastas que passaria pelo
+//! arquivo e mostraria as linhas dele é recusada antes de rodar ([`swept`]).
 
 use std::path::{Path, PathBuf};
 
-use mustard_core::domain::config::JEV_KEY_FIELD;
+use mustard_core::io::project_secret::SECRET_NAMES;
 use mustard_core::platform::i18n::{translate, Locale};
 
 /// O nome do arquivo de configuração do Mustard.
@@ -35,7 +35,7 @@ enum Token {
     Other,
 }
 
-/// `text` com o valor de cada campo [`JEV_KEY_FIELD`] trocado por `***`,
+/// `text` com o valor de cada campo de [`SECRET_NAMES`] trocado por `***`,
 /// quando há algum com valor; `None` quando não há. Lê só os textos entre aspas e os
 /// dois-pontos, e por isso acha a chave também num arquivo que não se lê como
 /// JSON.
@@ -72,7 +72,7 @@ pub(crate) fn masked(text: &str) -> Option<String> {
         if let (Token::Text(name_start, name_end), Token::Colon, Token::Text(start, end)) = (last[0], last[1], token)
             && end > start
             && serde_json::from_str::<String>(&text[(name_start - 1)..=name_end])
-                .is_ok_and(|name| name == JEV_KEY_FIELD || name == mustard_core::io::jev_gate::KEY_ENV)
+                .is_ok_and(|name| SECRET_NAMES.contains(&name.as_str()))
         {
             hidden.push((start, end));
         }
@@ -336,6 +336,22 @@ mod tests {
         assert_eq!(mustard_core::ProjectConfig::load(dir.path()).jev_key(), Some(FAKE), "the config reads the key");
         let shown = masked(&text).expect("the key the config reads is found");
         assert!(!shown.contains(FAKE) && shown.contains(HIDDEN), "{shown}");
+    }
+
+    /// O token da publicação é segredo como a chave do Jev: o campo
+    /// `publication.apiToken` do `mustard.json` e a variável dele nas
+    /// configurações locais saem trocados, e uma busca que passaria pelo
+    /// arquivo é recusada.
+    #[test]
+    fn the_publication_token_is_hidden_like_the_jev_key() {
+        let config = format!(r#"{{"publication": {{"provider": "cloudflare-pages", "apiToken": "{FAKE}"}}}}"#);
+        let shown = masked(&config).expect("the file holds the publication token");
+        assert!(!shown.contains(FAKE) && shown.contains(r#""apiToken": "***""#), "{shown}");
+        let local = format!(r#"{{"env": {{"CLOUDFLARE_API_TOKEN": "{FAKE}"}}}}"#);
+        assert!(!masked(&local).expect("the local settings hold the token").contains(FAKE));
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join(CONFIG_FILE), &config).expect("config");
+        assert_eq!(swept(&[dir.path().to_path_buf()], dir.path(), Walk::Grep, &[]).as_deref(), Some(CONFIG_FILE));
     }
 
     /// Sem campo de chave, ou com a chave vazia, nada se esconde; um nome que

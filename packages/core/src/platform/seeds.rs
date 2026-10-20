@@ -249,6 +249,18 @@ mod tests {
         }
     }
 
+    /// A revisão de onda chega como resumo, com o diff a pedido, e o aceite
+    /// vai na rodada sem copiar a impressão nem escrever a linha de uso.
+    #[test]
+    fn the_session_map_accepts_the_review_without_fingerprint_or_usage() {
+        for text in [Locale::PtBr, Locale::EnUs] {
+            let map = session_map(text);
+            let line = map.lines().find(|line| line.contains("review-wave")).unwrap_or_else(|| panic!("the {text} map lost the review: {map}"));
+            assert!(line.contains("--diff") && line.contains(r#"<REVIEWED>{"wave":<n>,"note":"…"}</REVIEWED>"#), "{text}: {line}");
+            assert!(!line.contains("fingerprint") && !line.contains("USAGE"), "{text}: {line}");
+        }
+    }
+
     /// O pedido novo numa spec fechada, ou com o pull request aberto, passa
     /// antes pela reabertura, e só depois entra pelo `write request`: sem
     /// ela, a gravação é recusada e o assistente propõe uma spec nova em
@@ -331,7 +343,8 @@ mod tests {
     }
 
     /// Aberta a spec, o mapa manda sugerir ao usuário limpar a conversa com
-    /// `/clear` só depois de gravado o objetivo, o primeiro `context`: antes
+    /// `/clear` só depois de gravado o objetivo, o primeiro `context`, pelo
+    /// `run write context`: antes
     /// disso a conversa ainda tem a mensagem do usuário, que o objetivo aponta
     /// como origem. A mesma frase diz que a linha de retomada mostra onde a
     /// spec está. A sugestão mora num lugar só: a seção da retomada não fala
@@ -350,7 +363,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("the {text} map does not suggest `/clear` beside the spec opening: {map}"));
             let clear = line.find("`/clear`").unwrap_or_default();
             let before = line.get(open..clear).unwrap_or_default();
-            assert!(before.contains("`context`"), "the {text} map suggests `/clear` before the first `context` is recorded: {line}");
+            assert!(before.contains("`mustard-rt run write context`"), "the {text} map suggests `/clear` before the first `context` is recorded: {line}");
             assert!(before.contains(goal), "the {text} map does not name the goal as what is recorded first: {line}");
             assert!(line[clear..].contains(resume_line), "the {text} map does not say the resume line shows where the spec stands: {line}");
 

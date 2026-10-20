@@ -1,0 +1,6 @@
+Bundled third-party skill: skill-creator
+Origin: Anthropic, plugin "skill-creator" of the claude-plugins-official marketplace
+(plugins/skill-creator/skills/skill-creator).
+Copied unchanged on 2026-10-20.
+License: Apache License 2.0, full text in LICENSE.txt beside this file.
+Mustard uses this copy only when the official plugin is not installed on the machine.

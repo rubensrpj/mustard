@@ -1,7 +1,7 @@
 //! A conferência de que o agente leu o que o pedido dele lista: o envio guarda
-//! a lista (`read_items`), a leitura de dentro da cópia grava uma chamada
-//! `read` por item, e a entrega da onda e o veredito da revisão final se
-//! recusam quando algum item da lista ficou sem chamada.
+//! a lista (`read_items`), a leitura de dentro da cópia grava um recibo — uma
+//! chamada `read` com os itens achados —, e a entrega da onda e o veredito da
+//! revisão final se recusam quando algum item da lista ficou sem recibo.
 
 use std::collections::BTreeSet;
 
@@ -39,16 +39,18 @@ pub(super) fn opened_at(log: &SpecLog, sent: u64) -> u64 {
 /// `request` ([`request_name`]). O pedido sem a lista — gravado antes de o
 /// envio guardá-la — não cobra leitura nenhuma.
 pub(crate) fn unread_items(log: &SpecLog, sent: u64, request: &str) -> Vec<String> {
-    let Some(listed) = log.get(sent).and_then(|e| e.fields.get("read_items")).and_then(Value::as_array) else {
+    let Some(listed) = log.send_field(sent, "read_items").and_then(Value::as_array) else {
         return Vec::new();
     };
     let since = opened_at(log, sent);
+    // O recibo de agora traz todos os itens de uma leitura em `items`; o de
+    // antes, um por item, em `item`. Os dois contam.
     let read: BTreeSet<&str> = log
         .events
         .iter()
         .filter(|e| e.id > since && e.event_type == "call")
         .filter(|e| e.str_field("command") == Some("read") && e.str_field("request") == Some(request))
-        .filter_map(|e| e.str_field("item"))
+        .flat_map(|e| e.str_field("item").into_iter().chain(e.fields.get("items").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str)))
         .collect();
     listed.iter().filter_map(Value::as_str).filter(|item| !read.contains(item)).map(str::to_string).collect()
 }
@@ -155,6 +157,24 @@ mod tests {
         let expected: Vec<String> = [done, own_done, shared].iter().map(|id| code(*id)).chain(["MSTD-RULE-0001".to_string()]).collect();
         assert_eq!(left, expected, "only the reading of the done task and of the whole wave stays");
         assert_eq!(without_undone(&log, 1, &[], unread.clone()), unread, "nothing returned, everything charged");
+    }
+
+    /// O recibo de antes, um evento por item (`item`), e o de agora, um
+    /// evento por leitura com a lista dos itens (`items`), contam igual: a
+    /// spec gravada antes da mudança segue cobrando só o que ninguém leu.
+    #[test]
+    fn unread_items_counts_single_item_and_item_list_receipts() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let sent = send(root, &["MSTD-TASK-0001", "MSTD-RULE-0001", "lesson-3", "MSTD-RULE-0002"], None);
+        let receipt = |extra: serde_json::Value| {
+            let mut call = json!({"author": "binary", "command": "read", "ms": 0, "result": "ok", "request": request_name(Some(1))});
+            call.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            seed_event(root, "x", "call", call)
+        };
+        receipt(json!({"item": "MSTD-TASK-0001"}));
+        receipt(json!({"items": ["MSTD-RULE-0001", "lesson-3"]}));
+        assert_eq!(unread(root, sent), ["MSTD-RULE-0002"]);
     }
 
     /// O pedido da revisão final tem o nome dele, distinto do de toda onda.

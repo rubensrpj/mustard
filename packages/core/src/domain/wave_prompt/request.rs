@@ -1,22 +1,33 @@
-//! O texto do pedido de uma onda e a lista dos itens que ele lista.
+//! O texto do pedido de uma onda, o bloco de cada tarefa e a lista dos itens
+//! que ele lista.
 //!
-//! As duas coisas saem da mesma passagem sobre o material ([`Listing`]): a
-//! que imprime as linhas e a que diz, para a entrega conferir, quais itens o
-//! agente precisa ter lido. Nenhuma calcula a lista por conta própria, então
-//! o que o pedido mostra e o que a entrega cobra nunca discordam.
+//! As três coisas saem da mesma passagem sobre o material ([`Listing`]): a
+//! que imprime as linhas, a que monta o bloco de cada tarefa e a que diz,
+//! para a entrega conferir, quais itens o agente precisa ter lido. Nenhuma
+//! calcula a lista por conta própria, então o que o pedido mostra e o que a
+//! entrega cobra nunca discordam. O pedido traz inteiro só o bloco da
+//! primeira tarefa; o de cada uma das outras chega na resposta do passo que
+//! termina a anterior.
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
 use serde_json::Value;
 
-use super::{Material, STEP_INDENT, Writer, code_of, language_line, lowered, pattern_block_in_step, wave_title};
+use super::{
+    Material, STEP_INDENT, TASK_BLOCK_TOKEN_CAP, TaskBlock, Writer, code_of, estimate_tokens, item_body, language_line, lowered,
+    pattern_block_in_task, wave_title,
+};
 use crate::domain::spec_events::SpecEvent;
 
 /// Uma tarefa da onda, com o que ela atende.
 struct TaskStep<'a> {
     task: &'a SpecEvent,
+    /// O que ela atende e o pedido mostra pela primeira vez nela: o bloco
+    /// dela traz o texto inteiro.
     attended: Vec<&'a SpecEvent>,
+    /// O que ela atende e já veio antes no pedido: o bloco o cita numa linha.
+    again: Vec<&'a SpecEvent>,
 }
 
 /// Tudo o que o pedido de uma onda lista, na ordem em que o imprime. Cada
@@ -46,13 +57,15 @@ impl<'a> Listing<'a> {
             if !fresh(task) {
                 continue;
             }
-            let mut attended = Vec::new();
+            let (mut attended, mut again) = (Vec::new(), Vec::new());
             for item in attended_by(material, task) {
                 if fresh(item) {
                     attended.push(item);
+                } else {
+                    again.push(item);
                 }
             }
-            steps.push(TaskStep { task, attended });
+            steps.push(TaskStep { task, attended, again });
         }
         // A mesma conta com que a entrega da onda é cobrada, sobre a lista
         // que o envio grava do que o pedido lê.
@@ -123,6 +136,11 @@ impl Writer<'_> {
         let listing = Listing::of(m);
         let mut out = String::new();
         let _ = writeln!(out, "{}\n", wave_title(&m.spec, m.wave, self.lang));
+        // Logo depois do título, que segue sozinho na primeira linha, porque
+        // é por ele que os ganchos acham a onda.
+        if let Some(copy) = &m.execution.copy {
+            let _ = writeln!(out, "{}\n", self.t("prompt.copy.first").replace("{copy}", &copy.path));
+        }
         let _ = writeln!(
             out,
             "{}\n",
@@ -163,11 +181,11 @@ impl Writer<'_> {
     }
 
     /// "O que fazer": o conserto, quando a onda volta por reprovação, e os
-    /// passos numerados — ler o que obedecer, cada tarefa e a entrega. Sob
-    /// cada tarefa vêm, recuados, o que ela atende, a ordem de ler a tarefa,
-    /// os arquivos, o que ler antes, quem testa e o padrão do projeto. A
-    /// suíte inteira do projeto não é passo do agente: quem a roda, com o
-    /// lint, é a rodada, antes do commit.
+    /// passos numerados — ler o que obedecer, fazer as tarefas uma por vez e
+    /// gravar a entrega. As tarefas vêm só pelo código e pelo título, na
+    /// ordem, com a primeira marcada; o bloco inteiro dela vem logo depois
+    /// dos passos. A suíte inteira do projeto não é passo do agente: quem a
+    /// roda, com o lint, é a rodada, antes do commit.
     fn to_do(&self, out: &mut String, listing: &Listing) {
         let _ = writeln!(out, "## {}\n", self.t("prompt.part.do"));
         if !listing.fix.is_empty() {
@@ -187,35 +205,53 @@ impl Writer<'_> {
             let part = self.t("prompt.part.obey");
             step(out, &self.t("prompt.step.read").replace("{part}", part));
         }
-        for at in &listing.steps {
-            let pad = step(out, &self.t("prompt.step.task").replace("{item}", &self.item_tail(at.task)));
-            self.task_lines(out, at, &pad);
+        if !listing.steps.is_empty() {
+            let pad = step(out, self.t("prompt.step.tasks"));
+            for (n, at) in listing.steps.iter().enumerate() {
+                let item = self.item_tail(at.task);
+                let line = if n == 0 { self.t("prompt.step.first").replace("{item}", &item) } else { item };
+                let _ = writeln!(out, "{pad}- {line}");
+            }
         }
         step(out, &self.t("prompt.step.deliver").replace("{part}", self.t("prompt.part.return")));
         out.push('\n');
+        if let Some(first) = listing.steps.first() {
+            let _ = writeln!(out, "{}\n", self.task_block(first, 1, listing.steps.len()).text);
+        }
     }
 
-    /// As linhas recuadas sob o passo de uma tarefa. `pad` é o recuo dos passos.
-    fn task_lines(&self, out: &mut String, at: &TaskStep, pad: &str) {
+    /// O bloco de cada tarefa, na ordem de execução ([`super::task_blocks`]).
+    pub(super) fn task_blocks(&self) -> Vec<TaskBlock> {
+        let listing = Listing::of(self.material);
+        let total = listing.steps.len();
+        listing.steps.iter().enumerate().map(|(n, at)| self.task_block(at, n + 1, total)).collect()
+    }
+
+    /// O bloco da tarefa `at`, a `n`-ésima de `total`: o título e o código, o
+    /// texto inteiro dela e de cada item que ela atende, os arquivos, o que
+    /// mudou neles depois do texto, o que ler antes, quem testa, o padrão do
+    /// projeto e as skills dela inteiras. O que ela atende e já veio antes no
+    /// pedido entra numa linha. O bloco que passa de [`TASK_BLOCK_TOKEN_CAP`]
+    /// perde a última skill, uma de cada vez, e diz qual cortou.
+    fn task_block(&self, at: &TaskStep, n: usize, total: usize) -> TaskBlock {
         let m = self.material;
-        for item in &at.attended {
-            // A mensagem do usuário diz de quem ela é; os outros itens levam o
-            // tipo de sempre, em minúscula, no meio da frase.
-            let line = if item.event_type == "message" {
-                format!("{} {}", self.t("prompt.step.user_message"), self.item_tail(item))
-            } else {
-                lowered(&self.item_text(item))
-            };
-            let _ = writeln!(out, "{pad}- {}", self.t("prompt.step.attends").replace("{item}", &line));
-        }
-        let only_message = at.attended.len() == 1 && at.attended[0].event_type == "message";
-        let read = match (at.attended.is_empty(), only_message) {
-            (true, _) => "prompt.step.read_task",
-            (false, true) => "prompt.step.read_task_message",
-            (false, false) => "prompt.step.read_task_attends",
-        };
-        let _ = writeln!(out, "{pad}- {}", self.t(read));
         let code = code_of(m, at.task);
+        let mut out = String::new();
+        let heading = self
+            .t("prompt.task.heading")
+            .replace("{n}", &n.to_string())
+            .replace("{total}", &total.to_string())
+            .replace("{item}", &self.item_tail(at.task));
+        let _ = writeln!(out, "### {heading}\n");
+        self.whole_text(&mut out, at.task);
+        for item in &at.attended {
+            let _ = writeln!(out, "#### {}\n", self.t("prompt.step.attends").replace("{item}", &self.attends_line(item)));
+            self.whole_text(&mut out, item);
+        }
+        let mut lines = String::new();
+        for item in &at.again {
+            let _ = writeln!(lines, "- {}", self.t("prompt.step.attends").replace("{item}", &self.attends_line(item)));
+        }
         let paths: Vec<&str> = at
             .task
             .fields
@@ -229,12 +265,12 @@ impl Writer<'_> {
         if !paths.is_empty() {
             let key = if paths.len() == 1 { "prompt.step.file" } else { "prompt.step.files" };
             let files: Vec<String> = paths.iter().map(|path| format!("`{path}`")).collect();
-            let _ = writeln!(out, "{pad}- {}", self.t(key).replace("{files}", &files.join(", ")));
+            let _ = writeln!(lines, "- {}", self.t(key).replace("{files}", &files.join(", ")));
         }
-        self.changed_since_text(out, &code, pad);
+        self.changed_since_text(&mut lines, &code, "");
         if let Some((_, reads)) = m.task_reads.iter().find(|(task, _)| *task == code) {
             let hints: Vec<String> = reads.iter().map(|file| self.read_hint(file)).collect();
-            let _ = writeln!(out, "{pad}- {}", self.t("prompt.step.read_before").replace("{hints}", &hints.join(", ")));
+            let _ = writeln!(lines, "- {}", self.t("prompt.step.read_before").replace("{hints}", &hints.join(", ")));
         }
         for path in paths {
             let Some(tests) = m.file_tests.get(path) else {
@@ -242,19 +278,63 @@ impl Writer<'_> {
             };
             let list = tests.iter().map(|test| format!("`{test}`")).collect::<Vec<_>>().join(", ");
             let line = self.t("prompt.task.tested_by").replace("{file}", path).replace("{tests}", &list);
-            let _ = writeln!(out, "{pad}- {line}");
+            let _ = writeln!(lines, "- {line}");
         }
         if let Some(pattern) = m.task_patterns.get(&code) {
-            out.push_str(&pattern_block_in_step(pattern, self.lang));
+            lines.push_str(&pattern_block_in_task(pattern, self.lang));
+        }
+        if !lines.is_empty() {
+            let _ = writeln!(out, "{lines}");
+        }
+        let skills = m.task_skills.get(&code).map(Vec::as_slice).unwrap_or_default();
+        let mut kept = skills.len();
+        let text = loop {
+            let mut text = out.clone();
+            for skill in &skills[..kept] {
+                let mut heading = self.t("prompt.task.skill").replace("{name}", &skill.name).replace("{path}", &skill.path);
+                if skill.stale {
+                    let _ = write!(heading, " ({})", self.t("prompt.skill.stale"));
+                }
+                let _ = writeln!(text, "#### {heading}\n\n{}\n", skill.body.trim());
+            }
+            for skill in &skills[kept..] {
+                let _ = writeln!(text, "- {}", self.t("prompt.task.skill_cut").replace("{name}", &skill.name).replace("{path}", &skill.path));
+            }
+            if kept == 0 || estimate_tokens(&text) <= TASK_BLOCK_TOKEN_CAP {
+                break text;
+            }
+            kept -= 1;
+        };
+        let mut items = vec![code.clone()];
+        items.extend(at.attended.iter().map(|item| code_of(m, item)));
+        let skills = skills[..kept].iter().map(|skill| skill.name.clone()).collect();
+        TaskBlock { task: code, text: text.trim_end().to_string(), items, skills }
+    }
+
+    /// O texto inteiro de `item` ([`item_body`]), seguido de uma linha em
+    /// branco; sem texto, nada.
+    fn whole_text(&self, out: &mut String, item: &SpecEvent) {
+        let body = item_body(item, &code_of(self.material, item), self.lang);
+        if !body.trim().is_empty() {
+            let _ = writeln!(out, "{}\n", body.trim_end());
+        }
+    }
+
+    /// O que vem depois de "Atende:": a mensagem do usuário diz de quem ela
+    /// é; os outros itens levam o tipo de sempre, em minúscula, no meio da
+    /// frase.
+    fn attends_line(&self, item: &SpecEvent) -> String {
+        if item.event_type == "message" {
+            format!("{} {}", self.t("prompt.step.user_message"), self.item_tail(item))
+        } else {
+            lowered(&self.item_text(item))
         }
     }
 
     /// "O que obedecer": as regras e decisões que valem para a onda e as
     /// lições dos arquivos dela, uma linha cada; sem lição, a frase que diz
-    /// isso. As skills que as tarefas nomeiam vêm por último, cada uma como
-    /// recomendação de uma linha.
+    /// isso. As skills vêm inteiras no bloco da tarefa que as usa.
     fn to_obey(&self, out: &mut String, listing: &Listing) {
-        let m = self.material;
         let _ = writeln!(out, "## {}\n", self.t("prompt.part.obey"));
         for item in &listing.obey {
             let _ = writeln!(out, "- {}", self.item_text(item));
@@ -265,27 +345,21 @@ impl Writer<'_> {
         if listing.lessons.is_empty() {
             let _ = writeln!(out, "- {}", self.t("prompt.obey.no_lessons"));
         }
-        if !m.skills.is_empty() {
-            let _ = writeln!(out, "\n{}", self.t("prompt.skill.read"));
-            for skill in &m.skills {
-                let _ = write!(out, "- **{}**", skill.name);
-                if skill.stale {
-                    let _ = write!(out, " ({})", self.t("prompt.skill.stale"));
-                }
-                if !skill.when.trim().is_empty() {
-                    let _ = write!(out, " — {}", skill.when.trim());
-                }
-                let _ = writeln!(out, " — `{}`", skill.path);
-            }
-        }
         out.push('\n');
     }
 
-    /// "O que devolver": a entrega pela ferramenta, o campo `commit` e a
-    /// ordem de não deixar texto solto fora da entrega.
+    /// "O que devolver": o comando pronto do passo, a entrega pela
+    /// ferramenta, com o comando pronto dela, o campo `commit` e a ordem de
+    /// não deixar texto solto fora da entrega.
     fn to_return(&self, out: &mut String) {
+        let m = self.material;
+        let command = |key: &str| {
+            self.t(key).replace("{root}", &self.root_flag(m.execution.copy.is_some())).replace("{spec}", &m.spec).replace("{wave}", &m.wave.to_string())
+        };
         let _ = writeln!(out, "## {}\n", self.t("prompt.part.return"));
+        let _ = writeln!(out, "- {}", command("prompt.return.step"));
         let _ = writeln!(out, "- {}", self.t("prompt.execution.report_lines"));
+        let _ = writeln!(out, "- {}", command("prompt.return.delivered"));
         let _ = writeln!(out, "- {}", self.t("prompt.execution.commit_field"));
         let _ = writeln!(out, "- {}", self.t("prompt.return.loose"));
         out.push('\n');

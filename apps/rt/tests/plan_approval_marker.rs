@@ -14,6 +14,9 @@
 //! Roda `mustard-rt on` como processo, porque os ganchos são privados da
 //! biblioteca.
 
+#[path = "support/binary.rs"]
+mod binary;
+
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -34,7 +37,7 @@ fn git(root: &Path, args: &[&str]) {
 
 /// Roda o gancho `event` com `payload` na pasta `cwd`, e confere a saída 0.
 fn fire(cwd: &Path, event: &str, payload: Value) {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+    let mut child = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
         .args(["on", event])
         .current_dir(cwd)
         .env("CLAUDE_PROJECT_DIR", cwd)

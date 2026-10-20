@@ -50,11 +50,6 @@ const FLAG_WHITELIST: &[(&str, &str, &str)] = &[
     ("knowledge", "session-model", "prepared-session JSON explains this preference override on demand; tested with its native protocol, while docs/2026-10-12-agentes-skills-codex.md documents the complete flow"),
     (
         "map",
-        "changed-since",
-        "option of the notes-package question only, whose conductor flow is not taught until the user decides it after a real package is measured; `run map --help` names it in the same line as the question, and notes_package_puts_the_functions_of_files_changed_since_the_commit_first tests it",
-    ),
-    (
-        "map",
         "described",
         "hidden option of the search measurement: the terminal hook fills the description of the call by itself",
     ),
@@ -597,6 +592,7 @@ const REMOVED_COMMANDS: &[&str] = &[
     "equivalence-learn",
     "event-projections",
     "exec-rewave-check",
+    "expertise",
     "feature",
     "finding-collect",
     "gate-regression-check",
@@ -607,12 +603,15 @@ const REMOVED_COMMANDS: &[&str] = &[
     "language-audit",
     "maint-deps",
     "maint-validate",
+    "map note",
     "mark-checklist-item",
     "mark-finding",
     "material-add",
     "metrics",
     "metrics-wave-status",
     "notebook",
+    "notes-package",
+    "notes-write",
     "orient",
     "otel-collector",
     "otel-stop",
@@ -1507,7 +1506,7 @@ fn the_session_map_sends_every_page_through_the_page_command() {
             invocations.iter().any(|inv| inv.name == "page"),
             "the {text} session map never tells the reader to run `mustard-rt run page`"
         );
-        assert!(map.contains("/mustard-pages"), "the {text} map keeps explicit publication");
+        assert!(map.contains("/mustard:pages") && map.contains("/mustard:mods"), "the {text} map keeps explicit publication");
         assert!(map.contains("markdown"), "the {text} session map never says a page is written in markdown");
     }
 }

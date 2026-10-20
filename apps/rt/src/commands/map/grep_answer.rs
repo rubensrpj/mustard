@@ -135,9 +135,6 @@ mod tests {
             name: None,
             pr: None,
             session: None,
-            limit: None,
-            changed_since: None,
-            json: None,
         };
         let report = super::super::source_search(&opts, &grep);
         assert_eq!(report["question"], json!("search"), "{report}");

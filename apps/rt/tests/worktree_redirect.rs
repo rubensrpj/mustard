@@ -19,6 +19,9 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+#[path = "support/binary.rs"]
+mod binary;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -178,7 +181,7 @@ fn a_copy_of_a_submodule_project_finds_the_submodule_checkout() {
     let file = mustard_core::io::spec_events::spec_file(&main, "teste").unwrap();
     let said = serde_json::json!({"author": "user", "text": "no módulo"});
     mustard_core::io::spec_events::write(&file, "message", said.as_object().cloned().unwrap(), &[]).unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+    let out = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
         .args(["run", "read", "conversation", "--spec", "teste", "--root"])
         .arg(&copy)
         .current_dir(&copy)

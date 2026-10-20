@@ -9,7 +9,7 @@ use super::Locale;
 
 /// Os começos de chave (o trecho antes do primeiro ponto) que esta parte
 /// responde. Nenhum deles é de outra parte.
-pub(super) const PREFIXES: &[&str] = &["spec_events", "lessons", "spec_index"];
+pub(super) const PREFIXES: &[&str] = &["spec_events", "lessons", "spec_index", "failures", "skills"];
 
 /// O texto de `key` em `lang`, ou `None` quando a chave não está aqui.
 pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
@@ -42,6 +42,10 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("spec_events.find_no_key", Locale::EnUs) => "no key",
         ("spec_events.find_no_answer", Locale::PtBr) => "sem resposta",
         ("spec_events.find_no_answer", Locale::EnUs) => "no answer",
+        // A procura que pediu a escolha ao Jev e ficou sem ela: ele falhou ou
+        // passou do prazo. A escolha fica com quem procurou.
+        ("spec_events.find_choice_left", Locale::PtBr) => "O Jev não escolheu a tempo: a escolha é sua, entre os itens acima.",
+        ("spec_events.find_choice_left", Locale::EnUs) => "Jev did not choose in time: the choice is yours, among the items above.",
         ("spec_events.find_partial", Locale::PtBr) => "parcial",
         ("spec_events.find_partial", Locale::EnUs) => "partial",
         ("spec_events.find_user_message", Locale::PtBr) => "Mensagem do usuário",
@@ -52,6 +56,30 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("spec_events.find_pasted", Locale::EnUs) => "[pasted text, {kb} kB: read item-{code}]",
         ("spec_events.find_files", Locale::PtBr) => "Arquivos: {files}",
         ("spec_events.find_files", Locale::EnUs) => "Files: {files}",
+        // A leitura de quem conduz (`run read` sem `--all`): o teto do bloco,
+        // a lista só das ondas abertas e a busca no painel em resumo.
+        ("spec_events.read_more", Locale::PtBr) => "{shown} de {total}, os mais novos primeiro. Todos: --all.",
+        ("spec_events.read_more", Locale::EnUs) => "{shown} of {total}, newest first. All of them: --all.",
+        ("spec_events.read_open_waves", Locale::PtBr) => "{shown} de {total} ondas: só as abertas. Todas: --all.",
+        ("spec_events.read_open_waves", Locale::EnUs) => "{shown} of {total} waves: only the open ones. All of them: --all.",
+        ("spec_events.read_summary", Locale::PtBr) => {
+            "Resumo por tipo do que o termo achou. Um item: item- e o código. Todos inteiros: --all."
+        }
+        ("spec_events.read_summary", Locale::EnUs) => {
+            "Summary by type of what the term found. One item: item- plus its code. All of them whole: --all."
+        }
+        ("spec_events.no_wave_request", Locale::PtBr) => {
+            "A onda {wave} não tem pedido gravado: ela ainda não saiu. Confira o número na wave-list."
+        }
+        ("spec_events.no_wave_request", Locale::EnUs) => {
+            "Wave {wave} has no recorded request: it has not gone out yet. Check the number in the wave-list."
+        }
+        ("spec_events.no_review_request", Locale::PtBr) => {
+            "O revisor final não tem pedido gravado: o fechamento ainda não o chamou."
+        }
+        ("spec_events.no_review_request", Locale::EnUs) => {
+            "The final reviewer has no recorded request: the close has not called it yet."
+        }
         ("spec_events.missing_field", Locale::PtBr) => {
             "Campos obrigatórios do evento {type} que faltaram ou vieram vazios: {field}. Nada foi \
              gravado."
@@ -135,11 +163,11 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The tasks depend on each other in a circle: {cycle}. Nothing was written."
         }
         ("spec_events.agreed_items_missing", Locale::PtBr) => {
-            "O veredito final precisa responder por todos os requisitos acordados vigentes: faltou {missing}. \
+            "O veredito final responde pelos requisitos acordados que nenhuma tarefa terminada cobre: faltou {missing}. \
              O revisor grava o veredito de novo, com todos eles. Nada foi gravado."
         }
         ("spec_events.agreed_items_missing", Locale::EnUs) => {
-            "The final verdict must answer for all the vigent agreed requirements: {missing} is missing. \
+            "The final verdict answers for the agreed requirements no finished task covers: {missing} is missing. \
              The reviewer writes the verdict again, with all of them. Nothing was written."
         }
         ("spec_events.delivery_agreed_missing", Locale::PtBr) => {
@@ -166,15 +194,21 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              read each item\" in the request; `lesson-<number>` is the lesson of that number. Then record \
              the delivery again. Nothing was written."
         }
+        ("spec_events.task_not_released", Locale::PtBr) => {
+            "A tarefa {task} ainda não chegou: ela vem na resposta do fim da tarefa atual."
+        }
+        ("spec_events.task_not_released", Locale::EnUs) => {
+            "The task {task} has not arrived yet: it comes in the answer to the end of the current task."
+        }
         ("spec_events.delivery_proof_older_than_file", Locale::PtBr) => {
             "A entrega da onda {wave} foi recusada: {files} mudou depois do último passo de término de \
-             tarefa, e a prova verde desse passo não cobre o que vai no commit. Rode a prova da tarefa de \
+             tarefa. A prova verde desse passo não cobre o que vai no commit. Rode a prova da tarefa de \
              novo e, com ela verde, grave o passo da tarefa com `run write step`. Depois grave a entrega \
              de novo. Nada foi gravado."
         }
         ("spec_events.delivery_proof_older_than_file", Locale::EnUs) => {
-            "The delivery of wave {wave} was refused: {files} changed after the last task-end step, and \
-             the green proof of that step does not cover what goes into the commit. Run the task's proof \
+            "The delivery of wave {wave} was refused: {files} changed after the last task-end step. The \
+             green proof of that step does not cover what goes into the commit. Run the task's proof \
              again and, once it is green, record the task's step with `run write step`. Then record the \
              delivery again. Nothing was written."
         }
@@ -388,6 +422,24 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("spec_events.survey_not_started", Locale::EnUs) => {
             "Spec {spec} has had no survey yet: run `mustard-rt run grill` before moving on to the \
              plan. Nothing was written."
+        }
+        ("spec_events.plan_without_task", Locale::PtBr) => {
+            "A spec {spec} não tem tarefa nenhuma, e não há o que aprovar. Grave as tarefas e rode \
+             `mustard-rt run plan` de novo. Nada foi gravado."
+        }
+        ("spec_events.plan_without_task", Locale::EnUs) => {
+            "Spec {spec} has no task at all, so there is nothing to approve. Write the tasks and run \
+             `mustard-rt run plan` again. Nothing was written."
+        }
+        ("spec_events.plan_not_passed", Locale::PtBr) => {
+            "A spec {spec} não pode ser aprovada: o último plano não passou, ou o plano mudou depois \
+             dele. Rode `mustard-rt run plan` e faça a pergunta de novo quando ele passar. Nada foi \
+             gravado."
+        }
+        ("spec_events.plan_not_passed", Locale::EnUs) => {
+            "Spec {spec} cannot be approved: the last plan did not pass, or the plan changed after \
+             it. Run `mustard-rt run plan` and ask the question again once it passes. Nothing was \
+             written."
         }
         ("spec_events.survey_gaps_unrecorded", Locale::PtBr) => {
             "A spec {spec} ainda tem {count} lacunas do tipo de trabalho sem ponto: {gaps}. Rode \
@@ -748,6 +800,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              section, or the folder has a `meta.json` and no `spec.ndjson`. The binary does not \
              write to it. Open a new spec with `mustard-rt run open`. Nothing was written."
         }
+        ("spec_events.legacy_spec", Locale::PtBr) => {
+            "A spec {spec} é de uma versão anterior do Mustard e só pode ser lida. Abra uma spec nova \
+             para continuar o trabalho."
+        }
+        ("spec_events.legacy_spec", Locale::EnUs) => {
+            "The spec {spec} is from an earlier version of Mustard and can only be read. Open a new \
+             spec to continue the work."
+        }
         ("spec_events.io_failed", Locale::PtBr) => "Não consegui usar o arquivo da spec: {detail}.",
         ("spec_events.io_failed", Locale::EnUs) => "Could not use the spec file: {detail}.",
         ("spec_events.skipped_line", Locale::PtBr) => {
@@ -1011,6 +1071,134 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Nenhuma spec tem arquivo de eventos: não há índice a conferir."
         }
         ("spec_index.no_specs", Locale::EnUs) => "No spec has an event file: there is no index to check.",
+
+        // O resumo do projeto e as regras que a spec entregue deixa
+        // (`io::project_summary`).
+        ("spec_index.rules_title", Locale::PtBr) => "Regras da spec {spec}",
+        ("spec_index.rules_title", Locale::EnUs) => "Rules from spec {spec}",
+        ("spec_index.summary_failed", Locale::PtBr) => {
+            "A spec {spec} foi entregue, mas o resumo do projeto não foi gravado: {detail}."
+        }
+        ("spec_index.summary_failed", Locale::EnUs) => {
+            "Spec {spec} was delivered, but the project summary was not written: {detail}."
+        }
+        ("spec_index.legacy_summary_failed", Locale::PtBr) => {
+            "O resumo das specs antigas não foi gravado: {detail}. A próxima abertura de spec \
+             tenta de novo."
+        }
+        ("spec_index.rules_pending_failed", Locale::PtBr) => {
+            "As regras do projeto que esperam a decisão do Jev não foram gravadas: {detail}. A \
+             próxima abertura de spec tenta de novo."
+        }
+        ("spec_index.rules_pending_failed", Locale::EnUs) => {
+            "The project rules waiting for the Jev's decision were not written: {detail}. The next \
+             spec opening tries again."
+        }
+        ("spec_index.legacy_summary_failed", Locale::EnUs) => {
+            "The summary of the old specs was not written: {detail}. The next spec opening tries \
+             again."
+        }
+        // A falha que se repete vira a tarefa de criar a skill
+        // (`shared::failure_skills`).
+        ("failures.not_recorded", Locale::PtBr) => {
+            "As falhas do projeto não foram gravadas: {detail}. A próxima rodada tenta de novo."
+        }
+        ("failures.not_recorded", Locale::EnUs) => "The project failures were not recorded: {detail}. The next round tries again.",
+        ("failures.skill_task_title", Locale::PtBr) => "Criar a skill: {reason}",
+        ("failures.skill_task_title", Locale::EnUs) => "Create the skill: {reason}",
+        ("failures.skill_task_text", Locale::PtBr) => {
+            "A mesma falha voltou {count} vezes. A skill nova ensina o que evita a volta dela."
+        }
+        ("failures.skill_task_text", Locale::EnUs) => {
+            "The same failure came back {count} times. The new skill teaches what keeps it from coming back."
+        }
+        ("failures.skill_task_agent", Locale::PtBr) => {
+            "A mesma falha voltou {count} vezes. Crie a skill que a evita, pelo skill-creator do bloco \
+             desta tarefa. As ocorrências:\n{occurrences}"
+        }
+        ("failures.skill_task_agent", Locale::EnUs) => {
+            "The same failure came back {count} times. Create the skill that prevents it, with the \
+             skill-creator in this task's block. The occurrences:\n{occurrences}"
+        }
+        ("failures.occurrence", Locale::PtBr) => "- Spec {spec}, onda {wave}, {source}: {reason}",
+        ("failures.occurrence", Locale::EnUs) => "- Spec {spec}, wave {wave}, {source}: {reason}",
+        ("failures.occurrence_files", Locale::PtBr) => "Arquivos: {files}.",
+        ("failures.occurrence_files", Locale::EnUs) => "Files: {files}.",
+        ("failures.source.wave_review", Locale::PtBr) => "reprovada pelo revisor da onda",
+        ("failures.source.wave_review", Locale::EnUs) => "rejected by the wave reviewer",
+        ("failures.source.conductor", Locale::PtBr) => "reprovada por quem conduz a obra",
+        ("failures.source.conductor", Locale::EnUs) => "rejected by the conductor",
+        ("failures.source.final_review", Locale::PtBr) => "reprovada pela revisão final",
+        ("failures.source.final_review", Locale::EnUs) => "rejected by the final review",
+        ("skills.bad_name", Locale::PtBr) => {
+            "O nome da skill `{name}` não serve de pasta. Use só letras, números, hífen e sublinhado."
+        }
+        ("skills.bad_name", Locale::EnUs) => {
+            "The skill name `{name}` cannot be a folder. Use only letters, digits, hyphens and underscores."
+        }
+        ("skills.folder_missing", Locale::PtBr) => {
+            "A skill {name} não está em `.claude/skills/{name}/SKILL.md`, nem no projeto nem na cópia da \
+             onda. Grave o arquivo antes de dizer que ela foi criada."
+        }
+        ("skills.folder_missing", Locale::EnUs) => {
+            "The skill {name} is not in `.claude/skills/{name}/SKILL.md`, neither in the project nor in \
+             the wave copy. Write the file before saying it was created."
+        }
+        ("skills.not_hidden", Locale::PtBr) => "A skill {name} foi gravada, mas não ficou fora do git: {detail}.",
+        ("skills.not_hidden", Locale::EnUs) => "The skill {name} was recorded, but it was not hidden from git: {detail}.",
+        ("skills.not_backed_up", Locale::PtBr) => {
+            "A skill {name} foi gravada, mas a cópia de segurança falhou: {detail}."
+        }
+        ("skills.not_backed_up", Locale::EnUs) => "The skill {name} was recorded, but its backup copy failed: {detail}.",
+        // A vida da skill do Mustard depois de criada (`shared::skill_cycle`).
+        ("skills.update_task_title", Locale::PtBr) => "Atualizar a skill {name}",
+        ("skills.update_task_title", Locale::EnUs) => "Update the skill {name}",
+        ("skills.update_task_text", Locale::PtBr) => {
+            "A skill {name} pode ter ficado desatualizada. Arquivos: {files}."
+        }
+        ("skills.update_task_text", Locale::EnUs) => "The skill {name} may be out of date. Files: {files}.",
+        ("skills.update_task_agent", Locale::PtBr) => {
+            "Atualize a skill {name}, de `{path}`, pelo skill-creator do bloco desta tarefa. {why}\n\n\
+             Teste com e sem a mudança na skill, nas tarefas em que ela entra. Com ganho, grave \
+             `\"action\":\"updated\"`; sem ganho, `\"action\":\"discarded\"`, com o motivo em `text`."
+        }
+        ("skills.update_task_agent", Locale::EnUs) => {
+            "Update the skill {name}, from `{path}`, with the skill-creator in this task's block. {why}\n\n\
+             Test with and without the change to the skill, on the tasks it goes with. With a gain, record \
+             `\"action\":\"updated\"`; without one, `\"action\":\"discarded\"`, with the reason in `text`."
+        }
+        ("skills.update_why_change", Locale::PtBr) => {
+            "O commit `{sha}` mudou {files}, que a skill cita, e o Jev deu chance de {chance} de a mudança \
+             contradizer o que ela ensina. A mudança:\n\n```diff\n{diff}\n```"
+        }
+        ("skills.update_why_change", Locale::EnUs) => {
+            "The commit `{sha}` changed {files}, which the skill cites, and the Jev gave a chance of {chance} \
+             that the change contradicts what it teaches. The change:\n\n```diff\n{diff}\n```"
+        }
+        ("skills.update_why_gone", Locale::PtBr) => "O commit `{sha}` apagou {files}, que a skill cita.",
+        ("skills.update_why_gone", Locale::EnUs) => "The commit `{sha}` deleted {files}, which the skill cites.",
+        ("skills.update_why_failure", Locale::PtBr) => {
+            "A onda {wave} da spec {spec} recebeu a skill e foi reprovada pela mesma falha que a motivou: {reason}"
+        }
+        ("skills.update_why_failure", Locale::EnUs) => {
+            "Wave {wave} of spec {spec} got the skill and was rejected for the same failure that motivated it: {reason}"
+        }
+        ("skills.retired", Locale::PtBr) => {
+            "A skill {name} saiu de `.claude/skills/`: {reason}. A cópia de segurança fica em `{backup}`."
+        }
+        ("skills.retired", Locale::EnUs) => {
+            "The skill {name} left `.claude/skills/`: {reason}. The backup copy stays in `{backup}`."
+        }
+        ("skills.retired_reason.idle", Locale::PtBr) => {
+            "foi candidata em {count} envios e nunca entrou no bloco de uma tarefa"
+        }
+        ("skills.retired_reason.idle", Locale::EnUs) => "it was a candidate in {count} sends and never entered a task block",
+        ("skills.retired_reason.discarded", Locale::PtBr) => "foi descartada sem ganho em {count} testes seguidos",
+        ("skills.retired_reason.discarded", Locale::EnUs) => "it was discarded without a gain in {count} tests in a row",
+        ("skills.cycle_failed", Locale::PtBr) => {
+            "As contas das skills do Mustard não foram gravadas: {detail}. A próxima rodada tenta de novo."
+        }
+        ("skills.cycle_failed", Locale::EnUs) => "The Mustard skills were not recorded: {detail}. The next round tries again.",
         _ => return None,
     })
 }
@@ -1028,8 +1216,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            137,
-            0x4006_1fef_f143_11b6,
+            174,
+            0x53f6_afe2_c777_cc21,
         );
     }
 
@@ -1045,11 +1233,17 @@ mod tests {
             ("spec_events.find_jev_off", &["{reason}"][..]),
             ("spec_events.find_no_key", &[][..]),
             ("spec_events.find_no_answer", &[][..]),
+            ("spec_events.find_choice_left", &[][..]),
             ("spec_events.find_partial", &[][..]),
             ("spec_events.find_user_message", &[][..]),
             ("spec_events.find_lesson", &[][..]),
             ("spec_events.find_pasted", &["{kb}", "{code}"][..]),
             ("spec_events.find_files", &["{files}"][..]),
+            ("spec_events.read_more", &["{shown}", "{total}"][..]),
+            ("spec_events.read_open_waves", &["{shown}", "{total}"][..]),
+            ("spec_events.read_summary", &[][..]),
+            ("spec_events.no_wave_request", &["{wave}"][..]),
+            ("spec_events.no_review_request", &[][..]),
             ("spec_events.missing_field", &["{type}", "{field}"][..]),
             ("spec_events.task_declaration_missing", &["{missing}"][..]),
             ("spec_events.task_declaration_what", &[][..]),
@@ -1070,6 +1264,7 @@ mod tests {
             ("spec_events.agreed_items_missing", &["{missing}"][..]),
             ("spec_events.delivery_agreed_missing", &["{wave}", "{missing}"][..]),
             ("spec_events.delivery_read_missing", &["{wave}", "{missing}"][..]),
+            ("spec_events.task_not_released", &["{task}"][..]),
             ("spec_events.delivery_proof_older_than_file", &["{wave}", "{files}"][..]),
             ("spec_events.verdict_read_missing", &["{missing}"][..]),
             ("spec_events.criterion_form_missing", &[][..]),
@@ -1092,6 +1287,8 @@ mod tests {
             ("spec_events.goal_origin_not_user", &["{spec}", "{origin}"][..]),
             ("spec_events.survey_open", &["{spec}", "{count}", "{points}"][..]),
             ("spec_events.survey_not_started", &["{spec}"][..]),
+            ("spec_events.plan_without_task", &["{spec}"][..]),
+            ("spec_events.plan_not_passed", &["{spec}"][..]),
             ("spec_events.survey_gaps_unrecorded", &["{spec}", "{count}", "{gaps}"][..]),
             ("spec_events.point_already_open", &["{code}", "{block}"][..]),
             ("spec_events.point_not_open", &["{id}", "{open}"][..]),
@@ -1137,6 +1334,7 @@ mod tests {
             ("spec_events.work_on_finished_spec", &["{spec}", "{phase}", "{type}"][..]),
             ("spec_events.user_message_by_hook", &["{spec}"][..]),
             ("spec_events.old_format_spec", &["{spec}"][..]),
+            ("spec_events.legacy_spec", &["{spec}"][..]),
             ("spec_events.no_current_spec", &[][..]),
             ("spec_events.io_failed", &["{detail}"][..]),
             ("spec_events.skipped_line", &["{line}"][..]),

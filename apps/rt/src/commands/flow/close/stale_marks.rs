@@ -149,7 +149,7 @@ mod tests {
         );
         assert!(log.last_rejected().is_empty(), "{refused}");
         let states = crate::commands::flow::round::wave_states(&log);
-        assert_eq!(states.values().copied().collect::<Vec<_>>(), vec![WaveState::Approved, WaveState::Approved], "{states:?}");
+        assert_eq!(states.values().copied().collect::<Vec<_>>(), vec![WaveState::Committed, WaveState::Committed], "{states:?}");
 
         let next = round_for(&RoundOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None }, None);
         assert_eq!(next["dispatch"].as_array().map(Vec::len).unwrap_or_default(), 0, "{next}");

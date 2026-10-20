@@ -29,7 +29,9 @@
 //! ponto que o registra. A resposta devolve em `next` o primeiro ponto aberto
 //! ou, no condensado, pede para mostrar todos de uma vez; sem ponto aberto,
 //! lista em `unrouted` as mensagens do usuário sem destino. Chamar de novo
-//! com os mesmos tipos não grava nada e devolve o mesmo passo.
+//! com os mesmos tipos não grava nada e devolve o mesmo passo. Com entregas
+//! no resumo do projeto, `project_summary` traz ao condutor as ligadas ao
+//! objetivo (ou, sem o Jev, as mais recentes): contexto, nunca ponto.
 //!
 //! ```text
 //! {"ok": true, "spec": "x", "work_type": 4, "kinds": ["feature"], "condensed": false,
@@ -188,8 +190,7 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
         .as_deref()
         .and_then(|path| path.strip_prefix(&project.root).ok())
         .map_or_else(|| ".claude/spec/lessons.ndjson".to_string(), |rel| rel.to_string_lossy().replace('\\', "/"));
-    let index = spec_index::read(&project.root);
-    let prior = spec_index::read_specs(&project.root);
+    let (index, prior) = earlier_specs(&project.root);
     let map = |need: project_map::Need<'_>| project_map::read_for(&project.root, need);
     let condensed = opts.condensed || survey::condensed(&log);
     let mut list = survey::build(&Sources {
@@ -259,6 +260,11 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
         "reminders": reminders,
         "goal_approval": super::goal::status(&log, lang),
     });
+    // As entregas do projeto ligadas ao objetivo, para o condutor: contexto,
+    // nunca ponto da lista, e nunca no pedido de uma onda.
+    if let Some(deliveries) = crate::shared::project_summary::for_goal(&project.root, &spec, &goal_text, lang) {
+        report["project_summary"] = deliveries;
+    }
     // Discovery only: grounded flow evidence does not close survey points,
     // introduce a requirement or substitute the required source read.
     let discovery=mustard_core::io::knowledge::Query {text:&goal_text,file:None,limit:6,depth:1,all:false,detail:false,symbol:None,
@@ -320,7 +326,7 @@ pub(crate) fn projection(full: &Value) -> Value {
         }).collect::<Vec<_>>();
         *knowledge=json!({"cards":cards,"role":"static navigation; confirm behavior in source or measured evidence"});
     }
-    out["expand"]=json!({"point":"mustard-rt run read item-<item-id>","all_points":"mustard-rt run read agreed",
+    out["expand"]=json!({"point":"mustard-rt run read item-<item-id>","all_points":"mustard-rt run read agreed --all",
         "source":"mustard-rt run knowledge --query <local-question> --purpose spec",
         "measurements":"mustard-rt run evidence --spec <spec>"});
     out
@@ -344,7 +350,7 @@ pub(crate) fn short(projected: &Value) -> Value {
     if projected["condensed"] == true {
         out["points"] = json!(points);
     }
-    for key in ["unrouted", "reason", "touched", "touched_hint", "withheld", "warnings"] {
+    for key in ["unrouted", "reason", "touched", "touched_hint", "withheld", "warnings", "project_summary"] {
         if let Some(value) = projected.get(key) {
             out[key] = value.clone();
         }
@@ -458,6 +464,17 @@ fn record_point(start: &Path, spec: &str, item: &survey::Proposed, origin: Optio
     record(start, spec, "point", draft, PhaseWriter::Binary).map(|recorded| recorded.written.id)
 }
 
+/// As linhas do índice e os arquivos de eventos das specs do projeto `root`
+/// que o levantamento usa: a spec de antes desta versão do Mustard fica fora.
+fn earlier_specs(root: &Path) -> (Vec<mustard_core::domain::spec_index::IndexLine>, Vec<(String, SpecLog)>) {
+    let legacy = mustard_core::io::legacy_specs::LegacySpecs::read(root);
+    let mut index = spec_index::read(root);
+    index.retain(|line| !legacy.contains(&line.name));
+    let mut prior = spec_index::read_specs(root);
+    prior.retain(|(name, _)| !legacy.contains(name));
+    (index, prior)
+}
+
 /// Roda a linha do `grill` que uma resposta manda rodar (`line`, como ela
 /// vem, de `mustard-rt run grill …`) pelo parser do binário, na pasta `root`,
 /// e devolve a resposta dele: o comando mostrado roda como veio.
@@ -494,6 +511,20 @@ mod tests {
 
     fn id_of(report: &Value) -> u64 {
         report["id"].as_u64().unwrap_or_else(|| panic!("not written: {report}"))
+    }
+
+    /// O levantamento não usa as specs de antes desta versão do Mustard: nem
+    /// a linha do índice, nem o arquivo de eventos delas.
+    #[test]
+    fn the_survey_leaves_legacy_specs_out() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        assert_eq!(record_open(root, "antiga", "feature/antiga", "dev"), Ok(true));
+        mustard_core::io::legacy_specs::mark_once(root, "0.2.24").unwrap();
+        assert_eq!(record_open(root, "nova", "feature/nova", "dev"), Ok(true));
+        let (index, prior) = earlier_specs(root);
+        assert_eq!(index.iter().map(|line| line.name.as_str()).collect::<Vec<_>>(), ["nova"]);
+        assert_eq!(prior.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(), ["nova"]);
     }
 
     /// A spec já aberta, com o arquivo de eventos no lugar e sem estado
@@ -934,6 +965,7 @@ mod tests {
         let mut witness = Map::new();
         witness.insert("phase".into(), json!("approved"));
         witness.insert("witness".into(), json!({"question": "Aprovar a spec?", "answer": "Aprovar"}));
+        crate::shared::test_fixture::pass_plan(root, "aprovada");
         assert!(record(root, "aprovada", "state", witness, PhaseWriter::Witness).is_ok());
         open_spec(root, "sem-estado");
         id_of(&write(root, Some("sem-estado"), "message", json!({"author": "user", "text": GOAL})));
@@ -1119,6 +1151,35 @@ mod tests {
         assert_eq!(items(&report).len(), 9);
         assert!(items(&report).iter().all(|item| item["from"] == json!("gap") && item.get("facts").is_none()));
         assert_eq!(report["reminders"], json!(0));
+    }
+
+    /// Com o objetivo gravado, o levantamento traz ao condutor as entregas do
+    /// resumo do projeto; sem o Jev, as mais recentes, marcadas. A resposta
+    /// curta também as traz, e o projeto sem resumo não ganha o campo.
+    #[test]
+    fn the_survey_brings_the_project_deliveries_to_the_conductor() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        surveyed(root, "x");
+        let report = grill(root, "x", Some("feature"), false);
+        assert!(report.get("project_summary").is_none(), "{report}");
+
+        let entry = mustard_core::domain::project_summary::Entry {
+            spec: "antes".into(),
+            delivered_at: "2026-10-01T10:00:00Z".into(),
+            pr: Some(mustard_core::domain::project_summary::Pr { number: 7, url: None }),
+            title: "Resumo do projeto".into(),
+            delivered: "Grava uma linha por spec.".into(),
+            rules: vec![],
+            skills: vec![],
+            cost: None,
+        };
+        mustard_core::io::project_summary::upsert(root, &entry).unwrap();
+        let report = grill(root, "x", Some("feature"), false);
+        let summary = &report["project_summary"];
+        assert_eq!(summary["chosen"], json!("recent"), "{report}");
+        assert_eq!(summary["entries"], json!([{"spec":"antes","delivered_at":"2026-10-01","pr":7,"title":"Resumo do projeto","delivered":"Grava uma linha por spec."}]));
+        assert_eq!(short(&projection(&report))["project_summary"], *summary);
     }
 
     /// Com todos os pontos fechados, o `grill` não tem ponto a devolver e

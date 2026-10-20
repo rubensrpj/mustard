@@ -154,16 +154,18 @@ trivially_copy_pass_by_ref = "allow"
 unwrap_used = "deny"
 
 # The shipped binaries (`mustard-rt`, `scan`) run on every tool call and every
-# scan. A tuned release profile shrinks the image the OS maps per hook spawn —
-# the dominant per-invocation cost — for free. NOTE: `panic = "abort"` is
+# scan. The release keeps Rust's standard optimization and only strips the
+# symbols. Measured on 2026-10-20 (12 cores, cold): thin LTO with one codegen
+# unit took 435 s to build against 203 s for the standard profile; the binaries
+# were 83,5 MB against 86,1 MB (the embedded search model is most of both), and
+# a full map of this repository took 36,2/30,4 s against 30,2/27,0 s — no
+# runtime gain to pay the doubled build for. NOTE: `panic = "abort"` is
 # deliberately NOT set — `ast/loader.rs::load_config` relies on `catch_unwind`
 # to degrade when `tree-sitter-loader`'s `Config::initial()` panics on a
 # missing home dir (containers/CI); aborting there would break the fail-open
-# contract. `strip`+`lto`+`codegen-units` capture the size win without it.
+# contract.
 [profile.release]
 strip = true
-lto = "thin"
-codegen-units = 1
 
 # Compilação de desenvolvimento sem nenhuma informação de depuração. Cada
 # programa de teste carregava mais de cem megabytes dela: no Linux a pasta

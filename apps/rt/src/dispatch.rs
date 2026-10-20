@@ -16,11 +16,12 @@
 //!
 //! O gancho só grava quando age, e quem grava é o despachante: um gancho que
 //! barra ou avisa vira um evento `hook`, e um que coloca texto vira um evento
-//! `injection`, com o tamanho. O que deixou passar não grava nada. No fim da
-//! resposta, a resposta do assistente vai para a conversa, também a que a
-//! conferência do fim da resposta barrou: ela já apareceu na tela, e o
-//! complemento que o bloqueio pede vem depois dela, na próxima. Tudo na spec
-//! atual; sem ela, nada é gravado.
+//! `injection`, com o tamanho, os dois no arquivo de operações da spec atual,
+//! que guarda o que o programa observou de si. O que deixou passar não grava
+//! nada. No fim da resposta, a resposta do assistente vai para a conversa, na
+//! spec atual, também a que a conferência do fim da resposta barrou: ela já
+//! apareceu na tela, e o complemento que o bloqueio pede vem depois dela, na
+//! próxima. Sem spec atual, nada é gravado.
 
 use std::path::{Path, PathBuf};
 
@@ -270,14 +271,14 @@ mod tests {
         dir
     }
 
-    /// Os eventos da conversa gravados na spec, sem a mensagem e a resposta.
+    /// O que o programa observou da spec, no arquivo de operações dela: o que
+    /// os ganchos fizeram e as chamadas, sem a mensagem e a resposta.
     fn recorded(root: &Path, spec: &str) -> Vec<Map<String, Value>> {
         DiskSpecState::new(root)
             .log(spec)
             .map(|log| {
-                log.visible()
+                crate::commands::spec_events::conversation::observed(root, spec, &log)
                     .into_iter()
-                    .filter(|e| ["hook", "injection", "call"].contains(&e.event_type.as_str()))
                     .map(|e| {
                         let mut fields = e.fields.clone();
                         fields.insert("type".to_string(), json!(e.event_type));

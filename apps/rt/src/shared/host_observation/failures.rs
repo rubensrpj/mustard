@@ -28,7 +28,7 @@ pub(super) fn record(value: &mut Value, event: &str, input: &HookInput) {
         ("interrupted", "tool-interrupted")
     } else if error.contains("[Mustard] Busque por `mcp__mustard__search`") {
         ("blocked", "search-redirect")
-    } else if error.contains("[Mustard] mustard.json guarda a chave") {
+    } else if error.contains("[Mustard] mustard.json guarda uma chave secreta") {
         ("blocked", "protected-configuration")
     } else if exit.is_some_and(|code| code != 0) {
         ("failed", "command-exit-nonzero")

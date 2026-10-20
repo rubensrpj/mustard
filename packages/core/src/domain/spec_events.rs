@@ -51,7 +51,7 @@ pub use check::{normalize, validate, validation_issues, COPY_FILES_FIELD, COPY_S
 pub(crate) use check::{check_field, is_empty};
 pub use codes::code_after;
 pub use line::{render_line, shown_line, stamp};
-pub use message::{check_message, pr_message, MessageRefusal, MESSAGE_BODY_MAX, MESSAGE_TITLE_MAX};
+pub use message::{check_message, pr_message, without_forbidden, MessageRefusal, MESSAGE_BODY_MAX, MESSAGE_TITLE_MAX};
 pub use purge::{purge_excerpts, purge_lines};
 pub use read::{
     parse_log, repair_cut_lines, Hidden, SkipReason, SkippedLine, SpecEvent, SpecLog, Step, TimeFilter,
@@ -93,6 +93,11 @@ pub const PURGED_FIELD: &str = "purged";
 
 /// O que fica no lugar do trecho expurgado.
 pub const PURGED_MARK: &str = "…";
+
+/// Os campos do pedido de um envio: o texto enviado e o que o descreve. A
+/// versão nova de um envio (`replaces`) não os repete, e quem os lê os acha
+/// na versão mais nova que os tem ([`SpecLog::send_field`]).
+pub const SEND_REQUEST_FIELDS: &[&str] = &["text", "lines", "chars", "items", "read_items", "tasks", "analysis", "skills", "summary", "lessons"];
 
 /// O que os testes das partes dividem — o objeto de um JSON, a conferência
 /// de um rascunho e uma linha do arquivo —, os testes que as provas gravadas
@@ -145,10 +150,11 @@ mod tests {
         ]);
     }
 
-    /// Uma spec de teste com 8 ondas e 40 critérios abre um pull request: o
-    /// corpo cabe no teto, o título cabe no teto, um título maior é recusado
-    /// com a mensagem do limite, e um resumo com link da conversa, o nome do
-    /// modelo, um e-mail ou um caminho da máquina é recusado apontando o
+    /// Uma spec de teste com 8 entregas e 40 tarefas longas abre um pull
+    /// request: o corpo cabe no teto, deixando de fora o que testar à mão, o
+    /// título cabe no teto, um título maior é recusado com a mensagem do
+    /// limite, e um resumo com link da conversa, o nome do modelo, um e-mail,
+    /// um caminho da máquina ou o número de uma onda é recusado apontando o
     /// trecho.
     #[test]
     fn the_pull_request_message_fits_the_limits_and_refuses_user_data() {
@@ -166,47 +172,27 @@ mod tests {
         };
         push(json!({"type": "context", "text": "Deixar o Mustard enxuto. E o resto da prosa."}));
         for wave in 1..=8u64 {
-            push(json!({
-                "type": "delivered",
-                "wave": wave,
-                "files": ["a.rs"],
-                // Uma frase só, longa: sem ponto no meio, ela chega inteira ao
-                // corpo, e as oito juntas passam do teto — que é o que faz a
-                // dobra das listas em contagem ser realmente exercida aqui.
-                "text": format!("A onda {wave} entregou {}", "um detalhe e ".repeat(60)),
-            }));
+            push(json!({"type": "wave", "n": wave, "text": format!("Onda {wave}."), "criteria": [], "done_when": "pronto"}));
+            // Uma frase só, longa: sem ponto no meio, ela chega inteira à
+            // linha do que testar à mão, e as quarenta juntas passam do teto —
+            // que é o que faz o corpo deixar essa linha de fora.
+            for _ in 0..5 {
+                push(json!({"type": "task", "wave": wave, "text": format!("Conferir {}", "um detalhe e ".repeat(20))}));
+            }
+            let back = push(json!({"type": "delivered", "wave": wave, "files": ["a.rs"], "text": "Saiu.",
+                "commit": format!("Mudança número {wave} da tela"), "returned": true}));
+            push(json!({"type": "delivered", "wave": wave, "files": ["a.rs"], "text": "Saiu.", "replaces": back}));
         }
-        let mut criteria: Vec<u64> = Vec::new();
-        for n in 1..=40u64 {
-            criteria.push(push(json!({
-                "type": "criterion",
-                "when": format!("o caso {n} acontece"),
-                "then": "a resposta é a combinada",
-                "proof": "teste",
-            })));
-        }
-        push(json!({
-            "type": "criterion_run",
-            "criterion": criteria[3],
-            "result": "fail",
-            "exit": 1,
-            "ms": 12,
-        }));
         let summary = push(json!({"type": "pr_summary", "text": "O portão lê o estado."}));
 
         let log = parse_log(&lines.join("\n"));
-        let (title, body) = pr_message(&log).expect("a spec tem objetivo e resumo");
+        let (title, body) = pr_message(&log, Locale::PtBr).expect("a spec tem objetivo e resumo");
         assert_eq!(title, "Deixar o Mustard enxuto.");
         assert!(title.chars().count() <= MESSAGE_TITLE_MAX, "título: {}", title.chars().count());
-        assert!(
-            body.chars().count() <= MESSAGE_BODY_MAX,
-            "corpo com {} caracteres: as listas tinham de virar contagem",
-            body.chars().count(),
-        );
-        assert!(body.contains("O portão lê o estado."), "o resumo abre o corpo: {body}");
-        assert!(body.contains("Ondas entregues: 8."), "as listas viraram contagem: {body}");
-        assert!(body.contains("Critérios: 40"), "os critérios são contados: {body}");
-        assert!(body.contains("1 com falha"), "e a falha é nomeada: {body}");
+        assert!(body.chars().count() <= MESSAGE_BODY_MAX, "corpo com {} caracteres", body.chars().count());
+        assert!(body.starts_with("O portão lê o estado."), "o resumo abre o corpo: {body}");
+        assert!(body.contains("- Mudança número 1 da tela") && body.contains("- Mudança número 8 da tela"), "{body}");
+        assert!(!body.contains("Testar à mão"), "acima do teto, o que testar à mão sai: {body}");
 
         // Um título maior é recusado com a mensagem do limite.
         let long_title = "x".repeat(MESSAGE_TITLE_MAX + 1);
@@ -222,6 +208,8 @@ mod tests {
             ("Escrito com a ajuda do Claude.", "Claude"),
             ("Dúvidas com fulano@empresa.com.br.", "fulano@empresa.com.br"),
             ("O arquivo está em /home/fulano/projetos/x.rs.", "/home/"),
+            ("O arquivo está em /Users/fulano/projetos/x.rs.", "/Users/"),
+            ("Falta a onda 3 entrar.", "onda 3"),
         ] {
             let mut with_data = lines.clone();
             let mut map = obj(json!({"type": "pr_summary", "text": bad_summary}));
@@ -230,7 +218,7 @@ mod tests {
             map.insert("at".into(), json!("2026-09-16T11:00:00-03:00"));
             map.insert("author".into(), json!("assistant"));
             with_data.push(render_line(&map));
-            let refusal = pr_message(&parse_log(&with_data.join("\n")))
+            let refusal = pr_message(&parse_log(&with_data.join("\n")), Locale::PtBr)
                 .expect_err(&format!("o resumo com `{expected}` é recusado"));
             assert_eq!(refusal.reason(), "message-forbidden-text", "{expected}");
             let said = refusal.message(Locale::PtBr);

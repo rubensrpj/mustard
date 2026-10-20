@@ -1,6 +1,6 @@
 //! O registro de cada chamada da rodada ao Jev. A montagem das ondas, a
 //! escolha dos itens do pedido, a do procedimento de cada onda, a triagem da
-//! volta sem mudança e o classificador das atividades gravam, cada uma, um evento `call` na spec, do jeito que
+//! volta sem mudança e o classificador das atividades gravam, cada uma, um evento `call` no arquivo de operações da spec, do jeito que
 //! a busca grava o dela: na resposta, o tempo, os tokens, o custo e o modelo;
 //! na falha, o motivo no nome do filtro (`jev:<motivo>`) e o tempo até ela. A
 //! rodada lê esses eventos pelo nome de cada chamada para dizer que o Jev
@@ -27,8 +27,28 @@ pub(crate) const TRIAGE_CALL: &str = "return triage";
 /// volta e a mudança de plano aceita.
 pub(crate) const TASK_TRIAGE_CALL: &str = "task triage";
 
+/// O nome que a escolha das entregas ligadas ao objetivo da spec nova grava.
+pub(crate) const SUMMARY_CALL: &str = "project summary";
+
+/// O nome que a escolha das regras do projeto, na entrega da spec, grava.
+pub(crate) const RULES_CALL: &str = "project rules";
+
 /// O nome que a procura na spec grava quando a palavra fica em dúvida.
 pub(crate) const FIND_CALL: &str = "spec find";
+
+/// O nome que a reserva do Jev grava: a decisão que o Jev não deu e foi ao
+/// agente de análise da sessão ([`super::reserve`]).
+pub(crate) const RESERVE_CALL: &str = "jev reserve";
+
+/// Grava, na spec `spec` de `start`, a chamada de reserva da decisão que a
+/// chamada `command` ao Jev não deu: o filtro `reserve`, sem motivo de falha,
+/// e o nome da chamada em `reserve_for`, para o painel contar.
+pub(crate) fn record_reserve_call(start: &Path, spec: &str, command: &str) {
+    let mut measured = Map::new();
+    measured.insert("filter".to_string(), json!("reserve"));
+    measured.insert("reserve_for".to_string(), json!(command));
+    let _ = record_measured_calls(start, spec, RESERVE_CALL, Instant::now(), vec![measured]);
+}
 
 /// Grava o evento `call` da chamada `command` ao Jev, feita em `called`, na
 /// spec `spec` de `start`. `counts` leva, quando quem chama conta, quantos
@@ -48,8 +68,8 @@ pub(crate) fn record_jev_call(
 }
 
 /// [`record_jev_call`] para as chamadas `command` que saíram juntas em
-/// `called`, uma por resposta ou falha de `answers`, na ordem: todas numa
-/// gravação só na spec ([`record_measured_calls`]).
+/// `called`, uma por resposta ou falha de `answers`, na ordem, no arquivo de
+/// operações da spec ([`record_measured_calls`]).
 pub(crate) fn record_jev_calls(start: &Path, spec: &str, command: &str, called: Instant, answers: &[Result<&FilterUsage, &FilterError>]) {
     let measured = answers.iter().map(|answer| jev_measure(None, called, *answer)).collect();
     let _ = record_measured_calls(start, spec, command, called, measured);

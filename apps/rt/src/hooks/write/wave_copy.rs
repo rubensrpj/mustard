@@ -1,7 +1,7 @@
 //! Bind wave writes to the exact native dispatch, never to inherited cwd.
 use mustard_core::{
     domain::model::contract::{Ctx, HookInput, Verdict},
-    io::{spec_events, wave_prompt},
+    io::wave_prompt,
 };
 use std::path::Path;
 
@@ -23,12 +23,12 @@ pub(crate) fn check(root: &Path, input: &HookInput, ctx: &Ctx) -> Option<Verdict
     if binding.is_none() && !native_wave && !absolute.starts_with(&copies) {
         return None;
     }
-    let Some((spec, wave, _)) = binding else {
+    let Some(binding) = binding else {
         return Some(Verdict::Deny{reason:"Mustard: cannot identify this wave's native dispatch. Read the recorded wave request before editing; do not choose a copy from inherited cwd.".into()});
     };
-    let log = spec_events::spec_file(root, &spec).ok().and_then(|path| spec_events::read(&path).ok().flatten())?;
-    let send = log.last_by_wave("send").get(&wave).and_then(|id| log.get(*id))?;
-    let copy = Path::new(send.str_field("copy")?);
+    // O envio já veio lido com a ligação: o arquivo de eventos não é lido de novo.
+    let (spec, wave) = (&binding.spec, binding.wave);
+    let copy = Path::new(binding.send.str_field("copy")?);
     let parent = absolute.ancestors().find(|path| path.exists()).and_then(|path| path.canonicalize().ok());
     let expected = copy.canonicalize().ok();
     if parent.zip(expected).is_some_and(|(parent, copy)| parent.starts_with(copy)) {
@@ -88,10 +88,10 @@ fn bash(input: &HookInput, ctx: &Ctx, home: Option<&Path>) -> Option<Verdict> {
     }
     let root = Path::new(&ctx.project_dir);
     let host = crate::shared::host_observation::caller_host(root, input.session_id.as_deref());
-    let (spec, wave, _) = crate::shared::host_observation::tool_binding(root, host, input)?;
-    let log = spec_events::spec_file(root, &spec).ok().and_then(|path| spec_events::read(&path).ok().flatten())?;
-    let send = log.last_by_wave("send").get(&wave).and_then(|id| log.get(*id))?;
-    let expected = Path::new(send.str_field("copy")?);
+    // O envio já veio lido com a ligação: o arquivo de eventos não é lido de novo.
+    let binding = crate::shared::host_observation::tool_binding(root, host, input)?;
+    let wave = binding.wave;
+    let expected = Path::new(binding.send.str_field("copy")?);
     let real = expected.canonicalize().ok()?;
     let cwd = Path::new(input.cwd.as_deref().unwrap_or(&ctx.project_dir));
     let command = input.tool_input["command"].as_str()?;
@@ -160,6 +160,7 @@ fn bash(input: &HookInput, ctx: &Ctx, home: Option<&Path>) -> Option<Verdict> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mustard_core::io::spec_events;
     use serde_json::json;
     /// O agente `worker`, despachado para a onda 1 da spec `work` com a cópia
     /// `a`, escrevendo de dentro da cópia `b`, de outra vaga.

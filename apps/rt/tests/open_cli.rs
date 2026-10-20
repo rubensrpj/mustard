@@ -2,6 +2,9 @@
 //! exit 0, a recusa com exit 1, e a abertura cria a branch e a spec com o
 //! nome exato.
 
+#[path = "support/binary.rs"]
+mod binary;
+
 use std::path::Path;
 use std::process::{Command, Output};
 
@@ -39,7 +42,7 @@ fn repo() -> tempfile::TempDir {
 }
 
 fn open(root: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+    binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
         .arg("run")
         .arg("open")
         .args(args)
@@ -79,12 +82,24 @@ fn open_answers_a_step_with_exit_0_a_refusal_with_exit_1_and_opens_the_spec() {
     assert!(root.join(".claude").join("spec").join("trava-de-pendencias").join("spec.ndjson").is_file());
 }
 
-/// A conversa da sessão `session`, como o Claude Code a guarda dentro da
-/// pasta de configuração `config`: uma linha JSON por mensagem.
-fn conversation(config: &Path, session: &str, lines: &[Value]) {
-    let folder = config.join("projects").join("-tmp-projeto");
+/// A conversa da sessão `session`, aberta na pasta `project`, como o Claude
+/// Code a guarda dentro da pasta de configuração `config`: na pasta com o
+/// caminho do projeto em hífens, uma linha JSON por mensagem, cada uma com o
+/// `cwd` de onde a conversa roda.
+fn conversation(config: &Path, project: &Path, session: &str, lines: &[Value]) {
+    let name: String = project.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+    let folder = config.join("projects").join(name);
     std::fs::create_dir_all(&folder).expect("projects folder");
-    let text: Vec<String> = lines.iter().map(Value::to_string).collect();
+    let text: Vec<String> = lines
+        .iter()
+        .map(|line| {
+            let mut line = line.clone();
+            if let Some(fields) = line.as_object_mut() {
+                fields.insert("cwd".into(), Value::from(project.to_string_lossy().into_owned()));
+            }
+            line.to_string()
+        })
+        .collect();
     std::fs::write(folder.join(format!("{session}.jsonl")), text.join("\n") + "\n").expect("conversation");
 }
 
@@ -107,6 +122,7 @@ fn opening_a_spec_records_the_messages_the_user_typed_before_in_order() {
     let human = serde_json::json!({ "origin": { "kind": "human" } });
     conversation(
         config.path(),
+        root,
         session,
         &[
             user_line(serde_json::json!(asked), human.clone()),
@@ -130,7 +146,7 @@ fn opening_a_spec_records_the_messages_the_user_typed_before_in_order() {
         ],
     );
 
-    let out = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+    let out = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
         .args(["run", "open", "--name", "feature/trava-de-pendencias", "--base", "dev", "--root"])
         .arg(root)
         .current_dir(root)
@@ -152,6 +168,7 @@ fn opening_a_spec_records_the_messages_the_user_typed_before_in_order() {
     assert_eq!(texts, vec![asked, opening], "only what the user typed, in order");
     let ids: Vec<Value> = users.iter().map(|event| event["id"].clone()).collect();
     assert_eq!(opened["earlier_messages"], Value::Array(ids.clone()), "{opened}");
+    assert!(opened["hint"].as_str().is_some_and(|hint| hint.contains("`earlier_messages`")), "{opened}");
 
     let goal = serde_json::json!({
         "title": "O objetivo da obra",
@@ -159,7 +176,7 @@ fn opening_a_spec_records_the_messages_the_user_typed_before_in_order() {
         "text": "Travar o merge enquanto houver pendência aberta.",
         "origin": ids[0],
     });
-    let written = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+    let written = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
         .args(["run", "write", "context", "--spec", "trava-de-pendencias", "--json", &goal.to_string(), "--root"])
         .arg(root)
         .current_dir(root)
@@ -175,7 +192,7 @@ fn opening_without_the_session_conversation_warns_and_still_opens() {
     let dir = repo();
     let root = dir.path();
     let config = tempfile::tempdir().expect("config dir");
-    let out = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+    let out = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
         .args(["run", "open", "--name", "feature/sem-conversa", "--base", "dev", "--root"])
         .arg(root)
         .current_dir(root)
@@ -187,4 +204,53 @@ fn opening_without_the_session_conversation_warns_and_still_opens() {
     assert_eq!(opened["step"], "ask_goal", "{opened}");
     assert!(opened["earlier_messages_missing"].as_str().is_some_and(|note| !note.is_empty()), "{opened}");
     assert!(opened.get("earlier_messages").is_none(), "{opened}");
+    // The hint never says the earlier messages are in the spec when none came.
+    let hint = opened["hint"].as_str().unwrap_or_default();
+    assert!(!hint.contains("earlier_messages") && !hint.contains("antes da abertura"), "{opened}");
+}
+
+/// A sessão que o Claude Code põe no ambiente é a de uma conversa recente de
+/// outro projeto, guardada na pasta pessoal: a abertura neste projeto não traz
+/// fala nenhuma dela e avisa que as mensagens de antes ficaram de fora.
+#[test]
+fn opening_never_brings_the_messages_of_a_conversation_from_another_project() {
+    let dir = repo();
+    let root = dir.path();
+    let other = repo();
+    let home = tempfile::tempdir().expect("home");
+    let session = "0f1e2d3c-4b5a-4968-8776-655443322110";
+    let human = serde_json::json!({ "origin": { "kind": "human" } });
+    conversation(
+        &home.path().join(".claude"),
+        other.path(),
+        session,
+        &[
+            user_line(serde_json::json!("Analise o fluxo de pagamentos do outro projeto."), human.clone()),
+            user_line(serde_json::json!([{ "type": "text", "text": "Nesta conversa, nada de abrir spec." }]), human),
+        ],
+    );
+
+    let out = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
+        .args(["run", "open", "--name", "feature/trava-de-pendencias", "--base", "dev", "--root"])
+        .arg(root)
+        .current_dir(root)
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .env_remove("CLAUDE_CONFIG_DIR")
+        .env("CLAUDE_CODE_SESSION_ID", session)
+        .output()
+        .expect("run open");
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stdout));
+    let opened = report(&out);
+
+    let log = std::fs::read_to_string(root.join(".claude").join("spec").join("trava-de-pendencias").join("spec.ndjson"))
+        .expect("the spec was born");
+    let users: Vec<Value> = log
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|event| event["type"] == "message" && event["author"] == "user")
+        .collect();
+    assert_eq!(users, Vec::<Value>::new(), "no message of the other project's conversation: {opened}");
+    assert!(opened.get("earlier_messages").is_none(), "{opened}");
+    assert!(opened["earlier_messages_missing"].as_str().is_some_and(|note| !note.is_empty()), "{opened}");
 }

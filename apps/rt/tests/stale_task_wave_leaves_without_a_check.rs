@@ -9,6 +9,9 @@
 //! agente lê traz, sob a tarefa, o commit e o arquivo que mudaram. Prova pelo
 //! binário de verdade, num repositório temporário, nos dois idiomas.
 
+#[path = "support/binary.rs"]
+mod binary;
+
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -65,7 +68,7 @@ impl Project {
     }
 
     fn command(&self, args: &[&str], stdin: &str) -> std::process::Output {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+        let mut child = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
             .args(args)
             .current_dir(&self.root)
             .env("HOME", &self.home)
@@ -237,10 +240,10 @@ fn a_task_whose_file_changed_after_its_text_leaves_in_the_first_round_without_a_
         let placed = log.visible().into_iter().find(|e| e.event_type == "task").expect("the task").clone();
         assert_eq!(placed.wave(), Some(1), "{language}: {placed:?}");
 
-        // O pedido que o agente lê leva, sob a tarefa, o commit e o arquivo que mudaram.
+        // O pedido que o agente lê leva, no bloco da tarefa, o commit e o arquivo que mudaram.
         let read = project.command(&["run", "read", "request-1", "--spec", SPEC], "");
         let request = String::from_utf8_lossy(&read.stdout).to_string();
         let warning = translate("wave_prompt.task_changed", lang).replace("{commits}", &hash).replace("{files}", "`src/main.rs`");
-        assert!(request.contains(&format!("\n   - {warning}\n")), "{language}: {request}");
+        assert!(request.contains(&format!("\n- {warning}\n")), "{language}: {request}");
     }
 }

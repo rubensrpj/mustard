@@ -13,6 +13,10 @@
 //!   `$(mustard-rt …)`, crases, `<(mustard-rt …)`, ou o corpo de um heredoc
 //!   que roda o Mustard.
 //!
+//! A leitura mascarada da configuração (`run config-read`), que a trava de
+//! leitura devolve pronta, não é resposta do Mustard: o filtro depois dela
+//! passa.
+//!
 //! Gravar a resposta num arquivo (`>` ou `>>`), juntar os erros (`2>&1`) e
 //! dobrar as linhas (`| fold`) continuam liberados: é assim que se lê por
 //! partes uma resposta grande. A conferência lê os comandos que
@@ -34,9 +38,12 @@ const SCRIPTS: &[&str] = &[
     "uniq", "wc", "xargs", "tee",
 ];
 
-/// Se `segment` roda o Mustard.
+/// Se `segment` roda o Mustard. A leitura mascarada da configuração
+/// (`run config-read`) fica de fora: o que sai dela é o arquivo da pessoa,
+/// com a chave escondida, e não uma resposta do Mustard.
 fn runs_the_runtime(segment: &Segment) -> bool {
     RUNTIME.contains(&segment.name())
+        && !matches!(segment.args.as_slice(), [run, read, ..] if run.text == "run" && read.text == "config-read")
 }
 
 /// Se `segment` roda um programa de [`SCRIPTS`], pelo nome ou pelo `xargs`

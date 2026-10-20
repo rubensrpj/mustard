@@ -1,10 +1,11 @@
 //! `mustard-rt run resume [--spec <nome>]` — a retomada de uma spec.
 //!
-//! Lê só o estado, que é o que a retomada precisa: a fase em que a spec está,
-//! a branch e a base dela. Dali sai o próximo passo, em palavras e como
-//! comando, e é essa resposta que conduz a conversa de volta ao ponto em que
-//! ela parou. Nada mais do arquivo de eventos é lido, e nenhum endereço de
-//! página entra na resposta: o link mora na barra de status.
+//! Lê o arquivo de eventos da spec e responde a fase em que ela está, a
+//! branch e a base, o próximo passo em palavras e como comando, a aprovação
+//! do objetivo e o que aconteceu desde a última mensagem do usuário: as ondas
+//! aceitas, os commits, os despachos e o que está à espera. É essa resposta
+//! que conduz a conversa de volta ao ponto em que ela parou. Nenhum endereço
+//! de página entra na resposta: o link mora na barra de status.
 //!
 //! É também o que o `/mustard:continue` chama — o botão de reserva, porque a
 //! retomada já acontece sozinha no início da sessão: a linha de retomada
@@ -22,10 +23,12 @@ use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, S
 use mustard_core::domain::spec_state::{SpecState, State};
 use mustard_core::domain::survey;
 use mustard_core::io::spec_events as store;
+use mustard_core::io::spec_index::later;
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Value, json};
 
 use crate::commands::spec_events;
+use crate::commands::spec_events::conversation::observed;
 use crate::shared::spec_state::{DiskSpecState, checkout, session_from_env};
 
 /// As opções de `mustard-rt run resume`.
@@ -55,6 +58,9 @@ pub(crate) fn resume_for(opts: &ResumeOpts, session: Option<&str>) -> Value {
             None => return refuse(&Refusal::NoCurrentSpec),
         },
     };
+    if let Err(refusal) = mustard_core::io::legacy_specs::refuse_legacy(&project.root, &spec) {
+        return refuse(&refusal);
+    }
     let path = match store::spec_file(&project.root, &spec) {
         Ok(path) => path,
         Err(refusal) => return refuse(&refusal),
@@ -67,11 +73,12 @@ pub(crate) fn resume_for(opts: &ResumeOpts, session: Option<&str>) -> Value {
 
     let state = State::from_log(&log);
     let phase = state.phase.unwrap_or("survey");
+    let observed = observed(&project.root, &spec, &log);
     let mut out = json!({
         "ok": true,
         "spec": spec,
         "phase": phase,
-        "line": resume_line(&spec, &log, lang),
+        "line": resume_line(&spec, &log, &observed, lang),
         // A dica do plano manda fazer a pergunta de aprovação com o texto
         // exato do catálogo, o único que a testemunha da aprovação reconhece.
         "next": translate(next_key(phase), lang)
@@ -177,15 +184,16 @@ fn since_last_message(root: &Path, spec: &str, log: &SpecLog) -> Value {
 }
 
 /// A linha de retomada da spec `spec`: a spec, a fase, o último passo do
-/// fluxo e o próximo item. É o que o início da sessão coloca depois de
-/// `/clear`, e o que o `resume` devolve em `line`.
-pub(crate) fn resume_line(spec: &str, log: &SpecLog, lang: Locale) -> String {
+/// fluxo, tirado do que o programa observou ([`observed`]), e o próximo item.
+/// É o que o início da sessão coloca depois de `/clear`, e o que o `resume`
+/// devolve em `line`.
+pub(crate) fn resume_line(spec: &str, log: &SpecLog, observed: &[SpecEvent], lang: Locale) -> String {
     let phase = State::from_log(log).phase.unwrap_or("survey");
     let none = translate("resume.none", lang);
     translate("resume.line", lang)
         .replace("{spec}", spec)
         .replace("{phase}", phase)
-        .replace("{last}", &last_step(log).unwrap_or_else(|| none.to_string()))
+        .replace("{last}", &last_step(observed).unwrap_or_else(|| none.to_string()))
         .replace("{next}", &next_item(spec, phase, log, lang).unwrap_or_else(|| none.to_string()))
 }
 
@@ -193,8 +201,33 @@ pub(crate) fn resume_line(spec: &str, log: &SpecLog, lang: Locale) -> String {
 /// `None` sem spec atual, sem arquivo de eventos e na spec que já terminou,
 /// que não tem para onde voltar.
 pub(crate) fn current_line(root: &Path, session: Option<&str>) -> Option<String> {
-    let (spec, log, lang) = current_log(root, session)?;
-    Some(resume_line(&spec, &log, lang))
+    let (spec, log, lang, observed) = current_log(root, session)?;
+    Some(resume_line(&spec, &log, &observed, lang))
+}
+
+/// A linha de retomada da spec atual, como [`current_line`], e as ondas com
+/// agente vivo ([`waves_with_live_agent`](crate::commands::flow::round::queue::waves_with_live_agent)),
+/// numa leitura só da spec: o aviso de tamanho de quem conduz manda esperar a
+/// volta delas antes de limpar a conversa.
+pub(crate) fn current_line_and_live(root: &Path, session: Option<&str>) -> Option<(String, Vec<u64>)> {
+    let (spec, log, lang, observed) = current_log(root, session)?;
+    let live = crate::commands::flow::round::queue::waves_with_live_agent(&spec_events::project(root).root, &spec, &log);
+    Some((resume_line(&spec, &log, &observed, lang), live.into_keys().collect()))
+}
+
+/// O que a retomada depois de `/clear` diz das ondas cujo agente a limpeza
+/// parou: as que tinham agente vivo quando a conversa foi limpa, e o que
+/// fazer com cada uma, mandar a linha `PAUSED` dela na próxima rodada, que a
+/// reenvia na mesma cópia. `None` sem spec atual ou sem onda nesse estado.
+pub(crate) fn lost_by_clear(root: &Path, session: Option<&str>) -> Option<String> {
+    let (spec, log, lang, _) = current_log(root, session)?;
+    let live = crate::commands::flow::round::queue::waves_with_live_agent(&spec_events::project(root).root, &spec, &log);
+    if live.is_empty() {
+        return None;
+    }
+    let waves: Vec<String> = live.keys().map(u64::to_string).collect();
+    let paused: Vec<String> = live.keys().map(|wave| format!("`<PAUSED>{{\"wave\":{wave}}}</PAUSED>`")).collect();
+    Some(translate("resume.lost_by_clear", lang).replace("{waves}", &waves.join(", ")).replace("{paused}", &paused.join(" ")))
 }
 
 /// O bloco de retomada da spec atual da sessão `session`, vista de `root`,
@@ -208,22 +241,24 @@ pub(crate) fn current_block(root: &Path, session: Option<&str>) -> Option<String
 /// precisa do mesmo teto: as listas cedem na ordem de [`fit`]. Se nem o bloco
 /// com todas as listas vazias cabe, ele volta nesse tamanho mínimo.
 pub(crate) fn current_block_within(root: &Path, session: Option<&str>, cap: usize) -> Option<String> {
-    let (spec, log, lang) = current_log(root, session)?;
-    Some(resume_block(&spec, &log, lang, cap))
+    let (spec, log, lang, observed) = current_log(root, session)?;
+    Some(resume_block(&spec, &log, &observed, lang, cap))
 }
 
-/// A spec atual da sessão `session`, o arquivo de eventos dela e o idioma do
-/// projeto. `None` sem spec atual, sem arquivo de eventos e na spec que já
-/// terminou.
-fn current_log(root: &Path, session: Option<&str>) -> Option<(String, SpecLog, Locale)> {
+/// A spec atual da sessão `session`, o arquivo de eventos dela, o idioma do
+/// projeto e o que o programa observou dela ([`observed`]). `None` sem spec
+/// atual, na spec de antes desta versão do Mustard, sem arquivo de eventos e
+/// na spec que já terminou.
+fn current_log(root: &Path, session: Option<&str>) -> Option<(String, SpecLog, Locale, Vec<SpecEvent>)> {
     let project = spec_events::project(root);
-    let spec = DiskSpecState::new(&checkout(root)).active(session)?;
+    let spec = DiskSpecState::new(&checkout(root)).active(session).filter(|spec| !mustard_core::io::legacy_specs::is_legacy(&project.root, spec))?;
     let log = store::read(&store::spec_file(&project.root, &spec).ok()?).ok()??;
     let phase = State::from_log(&log).phase;
     if matches!(phase, Some("delivered" | "discarded")) {
         return None;
     }
-    Some((spec, log, project.lang))
+    let observed = observed(&project.root, &spec, &log);
+    Some((spec, log, project.lang, observed))
 }
 
 /// Os tipos cujo código o bloco de retomada lista quando foram gravados depois
@@ -239,7 +274,7 @@ const RECORDED_KINDS: &[&str] = &["decision", "rule", "limit", "request", "crite
 /// código de cada item gravado depois da última rodada; e o próximo comando.
 /// Cabe em `cap` bytes: quando passa, as listas encolhem na ordem de [`fit`] e
 /// cada uma diz quantos ficaram de fora.
-pub(crate) fn resume_block(spec: &str, log: &SpecLog, lang: Locale, cap: usize) -> String {
+pub(crate) fn resume_block(spec: &str, log: &SpecLog, observed: &[SpecEvent], lang: Locale, cap: usize) -> String {
     use crate::commands::flow::round::{
         change_accepted, replan_code, swaps_decision, waves_in_progress, waves_stuck,
     };
@@ -248,17 +283,17 @@ pub(crate) fn resume_block(spec: &str, log: &SpecLog, lang: Locale, cap: usize) 
     let phase = state.phase.unwrap_or("survey");
     let none = translate("resume.none", lang);
 
-    let delivered = log.delivered_waves();
+    // As mesmas contas da barra de status e do painel.
+    let states = crate::commands::panel::progress::wave_states(log);
+    let delivered = states.values().filter(|state| state.finished()).count();
     let returns: Vec<_> =
         log.unassumed_returns().into_iter().filter(|e| e.event_type == "delivered").collect();
     let returned: BTreeSet<u64> = returns.iter().filter_map(|e| e.wave()).collect();
     let running: BTreeSet<u64> =
         waves_in_progress(log).into_keys().filter(|n| !returned.contains(n)).collect();
     let stuck: Vec<String> = waves_stuck(log).into_keys().map(|n| n.to_string()).collect();
-    let missing: Vec<String> = log
-        .counted_waves()
+    let missing: Vec<String> = crate::commands::panel::progress::missing_waves(&states, &running, &returned)
         .into_iter()
-        .filter(|n| !delivered.contains(n) && !running.contains(n) && !returned.contains(n))
         .map(|n| n.to_string())
         .collect();
     let in_flight: Vec<String> = running
@@ -290,10 +325,10 @@ pub(crate) fn resume_block(spec: &str, log: &SpecLog, lang: Locale, cap: usize) 
         .replace("{spec}", spec)
         .replace("{phase}", phase)
         .replace("{command}", &command)
-        .replace("{delivered}", &delivered.len().to_string())
+        .replace("{delivered}", &delivered.to_string())
         .replace("{next}", &next);
     let lists = [
-        ("{recorded}", recorded_since_round(log)),
+        ("{recorded}", recorded_since_round(log, observed)),
         ("{missing}", missing),
         ("{stuck}", stuck),
         ("{returned}", waiting),
@@ -304,20 +339,18 @@ pub(crate) fn resume_block(spec: &str, log: &SpecLog, lang: Locale, cap: usize) 
 
 /// O código de cada decisão, regra, limite, pedido, critério e tarefa
 /// gravado depois da última chamada da rodada que deu certo, na ordem do
-/// arquivo.
-fn recorded_since_round(log: &SpecLog) -> Vec<String> {
-    let since = log
-        .block(BlockQuery::Block(Block::Conversation))
-        .into_iter()
-        .filter(|e| e.event_type == "call" && e.str_field("command") == Some("round"))
-        .filter(|e| e.str_field("result") == Some("ok"))
-        .map(|e| e.id)
-        .max()
-        .unwrap_or(0);
+/// arquivo. A chamada é das que o programa observou (`observed`), e mora no
+/// arquivo de operações ou, na spec antiga, na própria spec: o que veio
+/// depois dela se diz pela hora.
+fn recorded_since_round(log: &SpecLog, observed: &[SpecEvent]) -> Vec<String> {
+    let since = observed
+        .iter()
+        .rfind(|e| e.event_type == "call" && e.str_field("command") == Some("round") && e.str_field("result") == Some("ok"))
+        .map(SpecEvent::at);
     let codes = log.codes();
     log.visible()
         .into_iter()
-        .filter(|e| e.id > since && RECORDED_KINDS.contains(&e.event_type.as_str()))
+        .filter(|e| since.is_none_or(|round| later(e.at(), round)) && RECORDED_KINDS.contains(&e.event_type.as_str()))
         .map(|e| codes.get(&e.id).cloned().unwrap_or_else(|| e.id.to_string()))
         .collect()
 }
@@ -348,19 +381,16 @@ fn fit(text: &str, lists: &[(&str, Vec<String>)], lang: Locale, cap: usize) -> S
     render(&kept)
 }
 
-/// As chamadas que não são passo do fluxo: a busca do mapa grava a chamada
-/// para a conta do filtro, e não diz onde o fluxo parou.
-const NOT_A_STEP: &[&str] = &["map search"];
-
-/// O último passo do fluxo: o comando da chamada mais nova que deu certo,
-/// fora as de [`NOT_A_STEP`].
-fn last_step(log: &SpecLog) -> Option<String> {
-    log.block(BlockQuery::Block(Block::Conversation))
-        .into_iter()
+/// O último passo do fluxo: o comando da chamada mais nova que deu certo
+/// entre os passos do fluxo ([`STEPS`](super::STEPS)), menos a retomada, que
+/// só lê. A procura, a leitura, as buscas e o mapa nunca são passo.
+fn last_step(observed: &[SpecEvent]) -> Option<String> {
+    observed
+        .iter()
         .filter(|e| e.event_type == "call" && e.str_field("result") == Some("ok"))
         .filter_map(|e| e.str_field("command"))
         .map(str::trim)
-        .rfind(|command| !command.is_empty() && !NOT_A_STEP.contains(command))
+        .rfind(|command| *command != "resume" && super::STEPS.contains(command))
         .map(str::to_string)
 }
 
@@ -435,6 +465,85 @@ pub fn next_command(phase: &str, spec: &str, state: &State) -> Value {
         .map_or(Value::Null, Value::from)
 }
 
+/// O próximo passo da spec para quem lê o painel: o comando de
+/// [`next_command`] e a frase, no idioma `lang`, que diz em palavras do dia a
+/// dia o que esse comando faz pela spec agora. `Null` na fase sem comando.
+pub(crate) fn next_step(root: &Path, phase: &str, spec: &str, state: &State, log: &SpecLog, lang: Locale) -> Value {
+    let command = next_command(phase, spec, state);
+    if command.is_null() {
+        return Value::Null;
+    }
+    json!({ "command": command, "text": step_text(root, phase, spec, log, lang) })
+}
+
+/// A frase de [`next_step`]. Na execução, a rodada é lida na ordem em que ela
+/// mesma responde: a onda parada no limite de consertos, as que saem agora —
+/// as prontas do plano, as reprovadas e as que ficaram sem agente —, as
+/// tarefas prontas do backlog com vaga livre, as que estão no ar, a onda que
+/// não tem como sair, o backlog preso, a revisão final aberta e, sem nada
+/// disso, o fechamento, que refaz a revisão final quando a reabertura anulou
+/// a aprovação.
+fn step_text(root: &Path, phase: &str, spec: &str, log: &SpecLog, lang: Locale) -> String {
+    use crate::commands::flow::round::queue::{backlog_ready, next_waves};
+    use crate::commands::flow::round::{backlog_left, open_review, waves_stuck};
+    use mustard_core::view::document::WaveState;
+
+    let said = |key: &str| translate(key, lang).to_string();
+    let waves = |one: &str, many: &str, list: &[u64]| {
+        let shown = list.iter().map(u64::to_string).collect::<Vec<_>>().join(", ");
+        translate(if list.len() == 1 { one } else { many }, lang).replace("{waves}", &shown)
+    };
+    match phase {
+        "survey" => return said("resume.step.survey"),
+        "plan" => return said("resume.step.plan"),
+        "closed" => return said("resume.step.closed"),
+        _ => {}
+    }
+    let states = crate::commands::panel::progress::wave_states(log);
+    let in_state = |wanted: WaveState| states.iter().filter(|(_, state)| **state == wanted).map(|(n, _)| *n).collect::<Vec<u64>>();
+    let stuck = waves_stuck(log);
+    if !stuck.is_empty() {
+        return waves("resume.step.stuck_one", "resume.step.stuck_many", &stuck.keys().copied().collect::<Vec<_>>());
+    }
+    // As vagas pela conta única da rodada: a onda que voltou guarda a cópia
+    // sem ocupar vaga.
+    let vacancies = crate::commands::flow::round::vacancy::vacancies(root, spec, log);
+    let mut going = match next_waves(log, &vacancies, &stuck) {
+        Ok(going) => going,
+        Err(cycle) => return waves("resume.step.cycle", "resume.step.cycle", &cycle),
+    };
+    going.extend(in_state(WaveState::NoAgent));
+    going.sort_unstable();
+    going.dedup();
+    if !going.is_empty() {
+        return waves("resume.step.dispatch_one", "resume.step.dispatch_many", &going);
+    }
+    if !backlog_ready(log).is_empty() && vacancies.free() > 0 {
+        return said("resume.step.backlog");
+    }
+    let running = in_state(WaveState::Running);
+    if !running.is_empty() {
+        return waves("resume.step.wait_one", "resume.step.wait_many", &running);
+    }
+    if let Some(wave) = states.iter().find(|(_, state)| !state.finished()).map(|(n, _)| *n) {
+        return translate("resume.step.missing", lang).replace("{wave}", &wave.to_string());
+    }
+    if !backlog_left(log).is_empty() {
+        return said("resume.step.backlog_held");
+    }
+    if open_review(log).is_some() {
+        return said("resume.step.review_open");
+    }
+    let review = crate::commands::panel::progress::review(log);
+    if review["valid"] == true {
+        said("resume.step.close_approved")
+    } else if review["reopened_at"].is_null() {
+        said("resume.step.close")
+    } else {
+        said("resume.step.close_again")
+    }
+}
+
 /// A linha inteira do passo `name` da spec `spec`, com as opções que o passo
 /// exige tiradas do estado: o pull request sai da branch da spec para a base
 /// dela. `None` quando o estado não traz o que o passo exige — uma linha sem
@@ -475,6 +584,29 @@ mod tests {
 
     fn resume(root: &Path, spec: &str) -> Value {
         resume_for(&ResumeOpts { root: root.to_path_buf(), spec: Some(spec.to_string()) }, None)
+    }
+
+    /// A spec da sessão que é de antes desta versão do Mustard não se retoma:
+    /// a retomada recusa com o código próprio, pelo nome e pela branch, e o
+    /// início da sessão não traz a linha nem o bloco dela.
+    #[test]
+    fn resuming_a_legacy_spec_is_refused() {
+        if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() {
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
+        assert_eq!(record_open(root, "x", "feature/x", "dev"), Ok(true));
+        crate::shared::spec_state::stand_on_spec_branch(root, "x");
+        mustard_core::io::legacy_specs::mark_once(root, "0.2.24").unwrap();
+
+        let named = resume(root, "x");
+        assert_eq!(named["reason"], json!("legacy-spec"), "{named}");
+        let current = resume_for(&ResumeOpts { root: root.to_path_buf(), spec: None }, None);
+        assert_eq!(current["reason"], json!("legacy-spec"), "{current}");
+        assert!(current_line(root, None).is_none());
+        assert!(current_block(root, None).is_none());
     }
 
     /// A retomada lê só o estado e devolve, por fase, o próximo passo em
@@ -557,20 +689,54 @@ mod tests {
         assert!(started.lines().any(|l| l == line), "the session start carries the resume line: {started}");
     }
 
-    /// A busca do mapa depois do passo da rodada não vira o último passo: a
-    /// retomada ainda diz que foi a rodada.
+    /// O último passo é o passo do fluxo mais novo que deu certo, venha ele
+    /// da própria spec, como as specs antigas gravaram, ou do arquivo de
+    /// operações: a procura, a leitura, a busca, o mapa e a própria retomada
+    /// não são passo.
     #[test]
-    fn a_map_search_after_the_round_does_not_become_the_last_step() {
+    fn the_last_step_is_the_newest_flow_step() {
+        use crate::commands::spec_events::conversation::record_call;
         let dir = tempdir().unwrap();
         let root = dir.path();
         std::fs::write(root.join("mustard.json"), b"{}").unwrap();
         assert_eq!(record_open(root, "x", "feature/x", "dev"), Ok(true));
+        crate::shared::spec_state::seed_event(root, "x", "call", json!({"command": "round", "ms": 3, "result": "ok", "author": "binary"}));
+        let ok = json!({"ok": true, "spec": "x"});
+        for command in ["close", "pr-open", "find", "read", "search", "map search", "resume"] {
+            record_call(root, command, Some("x"), std::time::Instant::now(), &ok);
+        }
+
+        let template = translate("resume.line", Locale::PtBr);
+        let label = template[..template.find("{last}").unwrap()].rsplit(';').next().unwrap().to_string();
+        let line = resume(root, "x")["line"].as_str().unwrap_or_default().to_string();
+        assert!(line.contains(&format!("{label}pr-open;")), "{line}");
+    }
+
+    /// A rodada que deu certo marca o que veio depois dela também quando a
+    /// chamada dela mora no arquivo de operações: o bloco de retomada lista
+    /// o critério gravado depois da rodada e deixa de fora o de antes.
+    #[test]
+    fn the_round_recorded_in_operations_still_marks_what_came_after() {
+        if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() {
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
+        assert_eq!(record_open(root, "x", "feature/x", "dev"), Ok(true));
+        crate::shared::spec_state::stand_on_spec_branch(root, "x");
         let seed = |event_type: &str, body: Value| crate::shared::spec_state::seed_event(root, "x", event_type, body);
-        seed("call", json!({"command": "round", "ms": 3, "result": "ok", "author": "binary"}));
-        seed("call", json!({"command": "map search", "ms": 1800, "result": "ok", "author": "binary", "filter": "jev",
-            "filter_ms": 1500, "tokens": 20985, "cost_micro_usd": 881, "candidates": 100, "returned": 12}));
-        let log = crate::shared::spec_state::DiskSpecState::new(root).log("x").unwrap();
-        assert_eq!(last_step(&log).as_deref(), Some("round"));
+        let said = seed("message", json!({"author": "user", "text": "o plano"}));
+        let criterion = |when: &str| seed("criterion", json!({"when": when, "then": "b", "proof": "p", "form": "ubiquitous", "origin": said}));
+        let early = criterion("antes");
+        crate::commands::spec_events::conversation::record_call(root, "round", Some("x"), std::time::Instant::now(), &json!({"ok": true, "spec": "x"}));
+        let late = criterion("depois");
+
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        assert!(log.visible().iter().all(|e| e.event_type != "call"), "the round call lives in the operations file");
+        let codes = log.codes();
+        let block = current_block(root, None).expect("the block");
+        assert!(block.contains(&codes[&late]) && !block.contains(&codes[&early]), "{block}");
     }
 
     /// Na linha de retomada, a onda em andamento é a que a rodada diz que
@@ -602,7 +768,7 @@ mod tests {
             .replace("{phase}", "running")
             .replace("{last}", translate("resume.none", Locale::PtBr))
             .replace("{next}", &translate("resume.wave", Locale::PtBr).replace("{n}", "1"));
-        assert_eq!(resume_line("x", &log, Locale::PtBr), line);
+        assert_eq!(resume_line("x", &log, &observed(root, "x", &log), Locale::PtBr), line);
     }
 
     /// Depois da última mensagem do usuário, a rodada aceitou a onda 2,

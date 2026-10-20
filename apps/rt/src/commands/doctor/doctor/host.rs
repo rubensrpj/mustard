@@ -6,6 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
+use mustard_core::domain::config::DEFAULT_AGENT_EFFORT;
 use mustard_core::io::fs;
 use mustard_core::io::sha256::Sha256;
 use mustard_core::platform::code_tools::{
@@ -289,6 +290,29 @@ pub(super) fn check_nerd_font() -> CheckResult {
     )
 }
 
+/// The effort `CLAUDE_CODE_EFFORT_LEVEL` pins beats the one in the agent's
+/// header and the one in the launch: set below the highest, every Mustard
+/// agent runs at it. WARN then; unset or at the highest is OK.
+pub(super) fn check_effort_env() -> CheckResult {
+    effort_env_verdict(std::env::var("CLAUDE_CODE_EFFORT_LEVEL").ok().as_deref())
+}
+
+fn effort_env_verdict(value: Option<&str>) -> CheckResult {
+    match value.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(value) if !value.eq_ignore_ascii_case(DEFAULT_AGENT_EFFORT) => CheckResult::warn(
+            "effort-env",
+            vec![
+                format!(
+                    "CLAUDE_CODE_EFFORT_LEVEL={value} overrides every agent's effort; \
+                     the Mustard agents are meant to run at {DEFAULT_AGENT_EFFORT}."
+                ),
+                "fix: unset CLAUDE_CODE_EFFORT_LEVEL before starting Claude Code".to_string(),
+            ],
+        ),
+        _ => CheckResult::ok("effort-env"),
+    }
+}
+
 /// One level + immediate subdirectories. Match any file whose lowercased
 /// name contains "nerd" or "nf-".
 fn scan_for_any_nerd_font(dir: &Path) -> bool {
@@ -319,6 +343,16 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+
+    #[test]
+    fn an_effort_variable_below_the_highest_warns() {
+        for quiet in [None, Some(""), Some("xhigh"), Some(" XHIGH ")] {
+            assert_eq!(effort_env_verdict(quiet).status, Status::Ok, "{quiet:?}");
+        }
+        let warned = effort_env_verdict(Some("medium"));
+        assert_eq!(warned.status, Status::Warn);
+        assert!(warned.details.iter().any(|line| line.contains("medium") && line.contains("CLAUDE_CODE_EFFORT_LEVEL")), "{:?}", warned.details);
+    }
 
     #[test]
     fn lsp_check_skips_with_no_mapped_stacks() {

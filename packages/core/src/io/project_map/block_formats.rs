@@ -29,6 +29,7 @@ const FORMATS: &[(&str, u32, &str)] = &[
     ("knowledge_notes", 1, "75ccf73cc654be5b"),
     ("knowledge_index", 3, "26a72894d27e271c"),
     ("search_facts", 1, "4efc3fabb45e666a"),
+    ("search_facts", 2, "35974fe7c3dbb73f"),
     ("precise_symbols", 1, "a754e6ecf02fe219"),
     ("expertise", 1, "c223d4677d1e2d26"),
     ("project_profile", 1, "8724dbc573fe03ca"),

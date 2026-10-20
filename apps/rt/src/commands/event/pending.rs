@@ -69,7 +69,6 @@ use crate::commands::git_settle::main_checkout_root;
 use crate::shared::spec_state::{checkout, session_from_env, DiskSpecState};
 
 mod carried;
-pub(crate) mod ideas;
 pub(crate) use carried::carried_by;
 
 /// Options for `mustard-rt run pending`.

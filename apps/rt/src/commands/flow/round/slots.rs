@@ -11,6 +11,8 @@ use mustard_core::domain::spec_events::SpecLog;
 use mustard_core::domain::spec_state::State;
 use mustard_core::domain::wave_prompt::{Reuse, WaveCopy};
 use mustard_core::io::fs::lock::LockedFile;
+
+use crate::commands::git_settle::CopiesLock;
 use mustard_core::io::wave_prompt::{
     copies_dir, final_copy_path, is_slot_of, local_file_inside, recorded_copy, shown, slot_path, spec_copies_dir,
 };
@@ -18,6 +20,8 @@ use mustard_core::platform::git;
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Value, json};
 
+use super::answer::RoundRefusal;
+use super::commit::on_spec_branch;
 use super::keep::{Keeping, Kept};
 use super::queue::{max_parallel, open_review, orphaned_waves, unanswered_sends};
 use crate::commands::git_settle::{enter_unit_branch, submodule_holding, submodules_of};
@@ -117,16 +121,25 @@ pub(crate) fn held_slots(root: &Path, spec: &str, log: &SpecLog) -> BTreeSet<Str
 /// é zerada no commit atual ([`reset_slot`]). A vaga traz cada submódulo que as tarefas
 /// da onda tocam. A onda cuja cópia não pôde ser preparada não sai, e o
 /// aviso diz por quê; a onda sem vaga livre também não sai, e fica para a
-/// rodada seguinte. Roda com a trava do passo do git que o despacho já
-/// prendeu (`_held`): duas rodadas ao mesmo tempo não pegam a mesma vaga.
+/// rodada seguinte. Roda com a trava das cópias que a rodada já prendeu
+/// (`_held`), sem a do passo do git: duas rodadas ao mesmo tempo não pegam a
+/// mesma vaga, nenhuma limpeza tira a cópia no meio do preparo, e a entrega de
+/// outra onda grava sem esperar o preparo.
+///
+/// A vaga nasce do commit do checkout, e por isso só abre com o checkout no
+/// ramo da spec ([`on_spec_branch`]): fora dele, nenhuma cópia é preparada e a
+/// rodada recusa, dizendo os dois ramos.
 pub(super) fn open_copies(
     root: &Path,
     spec: &str,
     log: &SpecLog,
-    _held: &LockedFile,
+    _held: &CopiesLock,
     waves: &[u64],
     lang: Locale,
-) -> (BTreeMap<u64, WaveCopy>, Vec<Value>) {
+) -> Result<(BTreeMap<u64, WaveCopy>, Vec<Value>), RoundRefusal> {
+    if !waves.is_empty() {
+        on_spec_branch(root, log)?;
+    }
     // A cópia da onda órfã — em andamento sem o processo que a mandou — volta
     // ao commit atual sozinha, nesta rodada, sem esperar o reenvio pedir
     // isso: a onda falhou no meio do trabalho, e o que ela deixou para trás
@@ -158,7 +171,9 @@ pub(super) fn open_copies(
         .filter(|(wave, path)| waves_holding(&holders, path).is_some_and(|by| by.iter().all(|other| other == wave)))
         .map(|(_, path)| path)
         .collect();
-    let mut free: Vec<PathBuf> = (0..max_parallel(root))
+    // As pastas de vaga vão até o teto de cópias da obra, além das vagas: a
+    // onda que voltou guarda a dela até o commit sem segurar o despacho.
+    let mut free: Vec<PathBuf> = (0..super::vacancy::copy_cap(max_parallel(root)))
         .map(|slot| slot_path(root, spec, slot))
         .filter(|slot| !has_place(&held, &shown(slot)) || has_place(&own, &shown(slot)))
         .collect();
@@ -228,7 +243,7 @@ pub(super) fn open_copies(
             Err(detail) => warnings.push(failed(wave, detail)),
         }
     }
-    (copies, warnings)
+    Ok((copies, warnings))
 }
 
 /// O aviso do arquivo local `file` que não chegou à cópia `copy`.
@@ -438,6 +453,7 @@ pub(crate) fn remove_copy(root: &Path, path: &Path) -> Result<(), String> {
     if !inside_copies(root, path) {
         return Err(format!("not a copy folder: {}", shown(path)));
     }
+    let learned = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let mut detail = String::new();
     for sub in submodules_of(root) {
         let inner = path.join(&sub);
@@ -464,6 +480,7 @@ pub(crate) fn remove_copy(root: &Path, path: &Path) -> Result<(), String> {
     if path.exists() || has_place(&registered_copies(root), &shown(path)) {
         return Err(if detail.is_empty() { shown(path) } else { detail });
     }
+    let _ = mustard_core::io::knowledge::observations::forget_tree(root, &learned);
     Ok(())
 }
 
@@ -501,16 +518,68 @@ fn named_keeping(spec: &str, path: &Path) -> Keeping {
 /// está, em `removal.unkept`, com o motivo. O que guardou vai em
 /// `removal.kept`, e a que o git não deixou sair, em `removal.left`.
 fn remove_keeping(root: &Path, slot: &Path, keeping: &Keeping, removal: &mut Removal) {
-    match super::keep::keep_copy_code(root, slot, keeping) {
-        Ok(kept) => removal.kept.extend(kept),
-        Err(detail) => {
-            removal.unkept.push((shown(slot), detail));
-            return;
-        }
-    }
-    if let Err(detail) = remove_copy(root, slot) {
+    if kept_first(root, slot, keeping, removal)
+        && let Err(detail) = remove_copy(root, slot)
+    {
         removal.left.push((shown(slot), detail));
     }
+}
+
+/// Guarda o código de `slot` além do commit atual ([`keep_copy_code`]):
+/// `true` quando guardou, com o que guardou em `removal.kept`; a cópia que
+/// não pôde guardar vai em `removal.unkept`, com o motivo, e não deve sair.
+fn kept_first(root: &Path, slot: &Path, keeping: &Keeping, removal: &mut Removal) -> bool {
+    match super::keep::keep_copy_code(root, slot, keeping) {
+        Ok(kept) => {
+            removal.kept.extend(kept);
+            true
+        }
+        Err(detail) => {
+            removal.unkept.push((shown(slot), detail));
+            false
+        }
+    }
+}
+
+/// O nome da pasta, dentro da pasta das cópias do projeto
+/// ([`copies_dir`]), para onde vão as cópias de obra que saíram do caminho
+/// com a trava do passo do git presa ([`detach_copy`]) e esperam ser apagadas
+/// depois de soltá-la. O ponto do começo a separa das pastas das obras, que
+/// levam o nome de uma spec; a limpeza a deixa fora da lista das cópias de
+/// obra e só apaga o que sobrou nela.
+pub(crate) const LEAVING_COPIES: &str = ".leaving";
+
+/// O lugar das cópias que saíram do caminho e esperam ser apagadas, no
+/// projeto `root`.
+pub(crate) fn leaving_place(root: &Path) -> PathBuf {
+    copies_dir(root).join(LEAVING_COPIES)
+}
+
+/// Tira a cópia `path` da obra `spec` do caminho sem apagar nada: a pasta
+/// vai inteira para o lugar das cópias que saem ([`leaving_place`]), num
+/// nome que nenhuma outra usa, e o git — o do projeto e o de cada submódulo
+/// — esquece o registro dela e o das cópias de submódulo de dentro dela
+/// (`git worktree prune`). Renomear dentro da mesma pasta das cópias é
+/// instantâneo, qualquer que seja o tamanho da compilação dentro dela. Só a
+/// cópia de dentro da pasta das cópias do projeto. Devolve o lugar novo da
+/// pasta, que quem chama apaga depois de soltar a trava, com a pasta de
+/// antes como a busca a aprendeu, ou o motivo quando ela não saiu do caminho.
+fn detach_copy(root: &Path, spec: &str, path: &Path) -> Result<(PathBuf, PathBuf), String> {
+    if !inside_copies(root, path) || !path.starts_with(copies_dir(root)) {
+        return Err(format!("not a copy folder: {}", shown(path)));
+    }
+    let place = leaving_place(root);
+    mustard_core::io::fs::create_dir_all(&place).map_err(|err| format!("{}: {err}", shown(&place)))?;
+    let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|at| at.as_nanos()).unwrap_or_default();
+    let target = place.join(format!("{spec}-{name}-{}-{stamp}", std::process::id()));
+    let learned = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    std::fs::rename(path, &target).map_err(|err| format!("{}: {err}", shown(path)))?;
+    let _ = git::run(root, &["worktree", "prune"]);
+    for sub in submodules_of(root) {
+        let _ = git::run(&root.join(&sub), &["worktree", "prune"]);
+    }
+    Ok((target, learned))
 }
 
 /// Tira a cópia solta `path` — de um lugar antigo, sem a pasta da obra em
@@ -537,33 +606,110 @@ pub(crate) struct Removal {
     pub(crate) unkept: Vec<(String, String)>,
     /// O código que a remoção guardou antes de apagar, cópia por cópia.
     pub(crate) kept: Vec<Kept>,
+    /// As cópias que saíram do caminho com a trava presa
+    /// ([`remove_spec_copies_held`]) e ainda estão no disco, no lugar das
+    /// que saem: [`Removal::delete_leaving`] as apaga depois de soltar a
+    /// trava.
+    pub(crate) leaving: Vec<PathBuf>,
+    /// As pastas das cópias que saíram do caminho, como a busca as aprendeu:
+    /// [`Removal::delete_leaving`] tira do mapa o que ela aprendeu nelas.
+    pub(crate) learned: Vec<PathBuf>,
+}
+
+impl Removal {
+    /// Apaga do disco as cópias que esta remoção tirou do caminho com a trava
+    /// presa. Chame depois de soltar a trava: o código delas já está
+    /// guardado e o git já as esqueceu, e apagar a compilação de uma cópia
+    /// leva o tempo que levar sem segurar despacho nem commit de ninguém. A
+    /// pasta que o disco não deixa apagar vai em `left`, com o motivo, e a
+    /// limpeza a recolhe depois. Por fim, tira do mapa do projeto `root` o
+    /// que a busca aprendeu nas cópias que saíram.
+    pub(crate) fn delete_leaving(&mut self, root: &Path) {
+        for path in std::mem::take(&mut self.leaving) {
+            if let Err(err) = mustard_core::io::fs::remove_dir_all(&path)
+                && path.exists()
+            {
+                self.left.push((shown(&path), err.to_string()));
+            }
+        }
+        for copy in std::mem::take(&mut self.learned) {
+            let _ = mustard_core::io::knowledge::observations::forget_tree(root, &copy);
+        }
+    }
 }
 
 /// Tira todas as cópias da obra `spec` — cada vaga, com as cópias dos
-/// submódulos dentro dela ([`remove_copy`]) — e apaga a pasta dela
-/// ([`spec_copies_dir`]), com a trava do passo do git presa. Chamado pelo
-/// fechamento, pelo descarte e por `mustard-rt run clean`. Antes de apagar
-/// cada vaga, guarda o que ela tem além do commit atual ([`keep_copy_code`],
-/// com o dono lido de `log` quando há): a vaga que não pôde guardar não é
-/// apagada, e o motivo vai em `unkept`. Devolve cada cópia que não saiu, com
-/// o motivo, e o que guardou; a pasta principal e a compilação dela nunca
-/// entram.
+/// submódulos dentro dela — e a pasta dela ([`spec_copies_dir`]). Chamado
+/// pelo descarte e por `mustard-rt run clean`, que pegam aqui a trava das
+/// cópias; o fechamento, que já a tem, chama [`remove_spec_copies_under`].
+/// Com a trava do passo do git presa ([`remove_spec_copies_held`]), guarda o que cada
+/// vaga tem além do commit atual ([`keep_copy_code`], com o dono lido de
+/// `log` quando há) e a tira do caminho, sem apagar; só depois de soltar a
+/// trava apaga o que elas têm no disco ([`Removal::delete_leaving`]). A vaga
+/// que não pôde guardar fica onde está, e o motivo vai em `unkept`. Devolve
+/// cada cópia que não saiu, com o motivo, e o que guardou; a pasta principal
+/// e a compilação dela nunca entram.
 pub(crate) fn remove_spec_copies(root: &Path, spec: &str, log: Option<&SpecLog>) -> Removal {
     let dir = spec_copies_dir(root, spec);
-    let single = Path::new(spec).components().count() == 1
-        && matches!(Path::new(spec).components().next(), Some(std::path::Component::Normal(_)));
-    if !single || dir.parent() != Some(copies_dir(root).as_path()) {
-        return Removal { left: vec![(shown(&dir), format!("not a copy folder: {}", shown(&dir)))], ..Removal::default() };
+    if let Some(refused) = not_the_spec_copies(root, spec, &dir) {
+        return refused;
     }
     if !dir.exists() {
         return Removal::default();
     }
-    let _held = match crate::commands::git_settle::git_step_lock(root) {
-        Ok(held) => held,
-        Err(detail) => {
-            return Removal { left: vec![(shown(&dir), detail)], ..Removal::default() };
-        }
+    let mut removal = match crate::commands::git_settle::copies_lock(root) {
+        Ok(copies) => remove_spec_copies_under(root, spec, log, &copies),
+        Err(detail) => return Removal { left: vec![(shown(&dir), detail)], ..Removal::default() },
     };
+    removal.delete_leaving(root);
+    removal
+}
+
+/// [`remove_spec_copies`] com a trava das cópias já presa por quem chama
+/// (`copies`): pega a do passo do git, tira as cópias do caminho
+/// ([`remove_spec_copies_held`]) e solta a do git. Apagar o que elas têm no
+/// disco ([`Removal::delete_leaving`]) fica para quem chama, depois de soltar
+/// também a trava das cópias: nenhuma rodada espera a pasta de compilação
+/// sair do disco.
+pub(crate) fn remove_spec_copies_under(root: &Path, spec: &str, log: Option<&SpecLog>, copies: &CopiesLock) -> Removal {
+    let dir = spec_copies_dir(root, spec);
+    if let Some(refused) = not_the_spec_copies(root, spec, &dir) {
+        return refused;
+    }
+    if !dir.exists() {
+        return Removal::default();
+    }
+    match crate::commands::git_settle::git_step_lock(root) {
+        Ok(held) => remove_spec_copies_held(root, spec, log, copies, &held),
+        Err(detail) => Removal { left: vec![(shown(&dir), detail)], ..Removal::default() },
+    }
+}
+
+/// A recusa de [`remove_spec_copies`] para o nome de spec cuja pasta não é
+/// uma pasta de obra dentro da pasta das cópias do projeto.
+fn not_the_spec_copies(root: &Path, spec: &str, dir: &Path) -> Option<Removal> {
+    let single = Path::new(spec).components().count() == 1
+        && matches!(Path::new(spec).components().next(), Some(std::path::Component::Normal(_)));
+    (!single || dir.parent() != Some(copies_dir(root).as_path()))
+        .then(|| Removal { left: vec![(shown(dir), format!("not a copy folder: {}", shown(dir)))], ..Removal::default() })
+}
+
+/// A parte de [`remove_spec_copies`] que precisa das travas das cópias
+/// (`_copies`) e do passo do git (`_held`), já presas por quem chama, nesta
+/// ordem: quem confere, sob as mesmas travas, que
+/// nenhuma onda segura as cópias antes de tirá-las, sem que um despacho
+/// entre no meio. Guarda o código de cada vaga e a tira do caminho
+/// ([`detach_copy`]), sem apagar nada: a pasta da obra fica vazia e sai, e o
+/// git esquece as vagas. O que elas têm no disco fica em `leaving`, e quem
+/// chama o apaga depois de soltar a trava ([`Removal::delete_leaving`]).
+pub(crate) fn remove_spec_copies_held(root: &Path, spec: &str, log: Option<&SpecLog>, _copies: &CopiesLock, _held: &LockedFile) -> Removal {
+    let dir = spec_copies_dir(root, spec);
+    if let Some(refused) = not_the_spec_copies(root, spec, &dir) {
+        return refused;
+    }
+    if !dir.exists() {
+        return Removal::default();
+    }
     let mut slots: Vec<PathBuf> = std::fs::read_dir(&dir)
         .map(|entries| entries.flatten().map(|entry| entry.path()).filter(|path| path.is_dir()).collect())
         .unwrap_or_default();
@@ -574,7 +720,16 @@ pub(crate) fn remove_spec_copies(root: &Path, spec: &str, log: Option<&SpecLog>)
             Some(log) => slot_owner(spec, log, slot),
             None => named_keeping(spec, slot),
         };
-        remove_keeping(root, slot, &keeping, &mut removal);
+        if !kept_first(root, slot, &keeping, &mut removal) {
+            continue;
+        }
+        match detach_copy(root, spec, slot) {
+            Ok((leaving, learned)) => {
+                removal.leaving.push(leaving);
+                removal.learned.push(learned);
+            }
+            Err(detail) => removal.left.push((shown(slot), detail)),
+        }
     }
     if removal.left.is_empty()
         && removal.unkept.is_empty()
@@ -755,7 +910,7 @@ mod tests {
 
     /// A volta da onda 1 com `files` entregues e a rodada que a comita.
     fn deliver_and_commit(root: &Path, files: &[&str]) -> Value {
-        let done = json!({"wave": 1, "text": "A onda 1 saiu.", "files": files, "commit": "a onda 1 saiu"});
+        let done = json!({"wave": 1, "text": "A onda 1 saiu.", "files": files, "commit": "a entrega 1 saiu"});
         assert_eq!(returned(root, done)["ok"], json!(true));
         let taken = round(root, "x", None);
         assert_eq!(taken["ok"], json!(true), "{taken}");
@@ -868,5 +1023,92 @@ mod tests {
             assert_eq!(refused, vec![(folder.clone(), format!("not a copy folder: {folder}"))], "{spec}");
         }
         assert_eq!(std::fs::read_to_string(slot.join("src").join("lib.rs")).unwrap(), "fn one() {}\n", "a vaga fica");
+    }
+
+    /// Cada arquivo dentro de `dir`, em qualquer profundidade, pelo caminho.
+    fn files_under(dir: &Path) -> Vec<PathBuf> {
+        let mut found = Vec::new();
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(at) = stack.pop() {
+            for entry in std::fs::read_dir(&at).into_iter().flatten().flatten() {
+                let path = entry.path();
+                if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                    stack.push(path);
+                } else {
+                    found.push(path);
+                }
+            }
+        }
+        found
+    }
+
+    /// Com a trava do passo do git presa, tirar as cópias de uma obra só
+    /// guarda o código sem commit e as tira do caminho: o git deixa de
+    /// listá-las e a pasta da obra fica vazia, mas nada é apagado. Apagar o
+    /// que elas têm no disco — a compilação inteira, às vezes — fica para
+    /// depois de soltar a trava.
+    #[test]
+    fn removing_the_copies_under_the_git_lock_deletes_nothing_until_it_is_released() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        bare_project(root);
+        std::fs::write(root.join("README.md"), "loja\n").unwrap();
+        git_at(root, &["add", "README.md"]);
+        git_at(root, &["commit", "-q", "-m", "semente"]);
+        let slot = slot_path(root, "x", 0);
+        std::fs::create_dir_all(slot.parent().unwrap()).unwrap();
+        git_at(root, &["worktree", "add", "-q", "--detach", &shown(&slot), "HEAD"]);
+        std::fs::write(slot.join("rascunho.txt"), "rascunho\n").unwrap();
+        std::fs::write(slot.join("compilado.bin"), "compilado").unwrap();
+        let compiled = |dir: &Path| files_under(dir).iter().any(|file| file.ends_with("compilado.bin"));
+
+        let copies = crate::commands::git_settle::copies_lock(root).unwrap();
+        let held = crate::commands::git_settle::git_step_lock(root).unwrap();
+        let mut removal = remove_spec_copies_held(root, "x", None, &copies, &held);
+        assert!(removal.left.is_empty() && removal.unkept.is_empty(), "{removal:?}");
+        assert!(spec_copies(root, "x").is_empty(), "the work's folder is empty: {removal:?}");
+        assert!(!git_text(root, &["worktree", "list", "--porcelain"]).contains(&shown(&slot)), "git no longer lists the slot");
+        let kept = git_text(root, &["for-each-ref", "--format=%(refname)", "refs/mustard/kept/x/"]);
+        assert_eq!(git_text(root, &["show", &format!("{kept}:rascunho.txt")]), "rascunho", "the draft was kept first");
+        assert!(compiled(&copies_dir(root)), "nothing is deleted while the lock is held: {removal:?}");
+
+        drop(held);
+        removal.delete_leaving(root);
+        assert!(removal.left.is_empty() && removal.leaving.is_empty(), "{removal:?}");
+        assert!(!compiled(&copies_dir(root)), "the copy is deleted once the lock is released: {removal:?}");
+    }
+
+    /// O que a busca aprendeu numa cópia mora no mapa principal; quando a
+    /// cópia sai, sozinha ou com a obra, o que ela aprendeu sai junto.
+    #[test]
+    fn a_removed_copy_takes_what_the_search_learned_in_it_out_of_the_main_map() {
+        use mustard_core::io::knowledge::observations::record;
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        bare_project(root);
+        std::fs::write(root.join("a.rs"), "pub fn quartz() {}\n").unwrap();
+        git_at(root, &["add", "a.rs"]);
+        git_at(root, &["commit", "-q", "-m", "semente"]);
+        mustard_core::io::project_map::write_text(root, r#"{"modules":[]}"#).unwrap();
+        let hit = || vec![("a.rs".to_string(), 1, "pub fn quartz() {}".to_string())];
+        let (single, of_spec) = (slot_path(root, "x", 0), slot_path(root, "y", 0));
+        let mut learned = Vec::new();
+        for slot in [&single, &of_spec] {
+            std::fs::create_dir_all(slot.parent().unwrap()).unwrap();
+            git_at(root, &["worktree", "add", "-q", "--detach", &shown(slot), "HEAD"]);
+            let tree = slot.canonicalize().unwrap();
+            assert_eq!(record(root, &tree, &hit()).unwrap()["new_facts"], 1);
+            learned.push(tree);
+        }
+
+        remove_copy(root, &single).unwrap();
+        let removal = remove_spec_copies(root, "y", None);
+        assert!(removal.left.is_empty() && removal.unkept.is_empty(), "{removal:?}");
+
+        for tree in &learned {
+            std::fs::create_dir_all(tree).unwrap();
+            std::fs::write(tree.join("a.rs"), "pub fn quartz() {}\n").unwrap();
+            assert_eq!(record(root, tree, &hit()).unwrap()["new_facts"], 1, "nothing learned in {} stayed in the map", tree.display());
+        }
     }
 }

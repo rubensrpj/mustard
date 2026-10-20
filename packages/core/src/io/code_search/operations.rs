@@ -28,7 +28,7 @@ pub fn awaits_pass(answer: &Answer) -> bool {
     answer.report["result"]["status"] == MAP_OUTDATED
 }
 
-pub fn execute(root: &Path, tree: &Path, cwd: &Path, request: &Request) -> Result<Answer, String> {
+pub fn execute(root: &Path, tree: &Path, cwd: &Path, request: &Request, later: &mut crate::io::map_db::Later) -> Result<Answer, String> {
     request.validate()?;
     let supplied = text(&request.input, "file_path")?;
     let canonical = cwd
@@ -225,7 +225,7 @@ pub fn execute(root: &Path, tree: &Path, cwd: &Path, request: &Request) -> Resul
         _ => return Err("search-tool-unsupported".into()),
     };
     let hits = current_hits(&tree, &result)?;
-    let learning = knowledge::observations::record(root, &tree, &hits)
+    let learning = knowledge::observations::learn(root, &tree, &hits, later)
         .unwrap_or_else(|reason| json!({"status":"not-stored","reason":reason}));
     result["owners"] = if outdated {
         json!({"status":MAP_OUTDATED,"symbols":[]})

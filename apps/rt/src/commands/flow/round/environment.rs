@@ -1,9 +1,11 @@
 //! Detect stale generated declarations before blaming an implementation wave.
 //! Preparation only runs an existing generator script declared by the project.
 use super::answer::RoundRefusal;
+use super::report::WaveReport;
+use super::stops::{HeldReturn, hold_refused};
 use mustard_core::platform::i18n::Locale;
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 type Models = BTreeMap<String, BTreeMap<String, String>>;
@@ -118,7 +120,30 @@ fn stale(root: &Path) -> Option<Stale> {
     })
 }
 
-pub(super) fn prepare(root: &Path, spec: &str, lang: Locale) -> Result<(), RoundRefusal> {
+/// O preparo do cliente gerado ([`prepare`]) com a recusa atribuída às ondas
+/// de `waves` que mudaram um schema do Prisma, fora as de `committed`, cujo
+/// código já está num commit: cada uma sai de `waves` com a recusa dela
+/// ([`HeldReturn`]), e só ela fica fora do commit. Sem nenhuma, o cliente já
+/// estava atrás antes da rodada, e a recusa não é de onda nenhuma.
+pub(super) fn prepare_or_hold(
+    root: &Path,
+    spec: &str,
+    waves: &mut Vec<WaveReport>,
+    committed: &BTreeSet<u64>,
+    lang: Locale,
+) -> Result<Vec<HeldReturn>, RoundRefusal> {
+    let detail = match prepare(root, spec, lang) {
+        Err(RoundRefusal::PreparationRequired(detail)) => detail,
+        other => return other.map(|()| Vec::new()),
+    };
+    let schema = |wave: &WaveReport| !committed.contains(&wave.wave) && wave.files.iter().any(|file| file.ends_with(".prisma"));
+    if !waves.iter().any(schema) {
+        return Err(RoundRefusal::PreparationRequired(detail));
+    }
+    Ok(hold_refused(waves, |wave| if schema(wave) { Err(RoundRefusal::PreparationRequired(detail.clone())) } else { Ok(()) }))
+}
+
+fn prepare(root: &Path, spec: &str, lang: Locale) -> Result<(), RoundRefusal> {
     let Some(stale_client) = stale(root).filter(|client| !client.models.is_empty()) else {
         return Ok(());
     };

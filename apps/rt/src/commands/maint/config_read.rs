@@ -122,7 +122,10 @@ fn execute(file: &Path, reader: &str, args_json: &str) -> Result<i32, String> {
     if matches!(reader, "grep" | "egrep" | "fgrep") {
         command.arg(format!("--label={}", file.display()));
     }
-    let mut child = command.args(&args).arg("-").stdin(Stdio::piped())
+    // The input goes without a file name: the `head` of macOS takes `-` for a
+    // file that does not exist, and every supported reader reads its input
+    // when no file is named.
+    let mut child = command.args(&args).stdin(Stdio::piped())
         .spawn().map_err(|_| "configuration reader could not be started")?;
     let written = child.stdin.take().ok_or("reader stdin unavailable")?.write_all(text.as_bytes());
     let status = child.wait().map_err(|_| "configuration reader did not return")?;

@@ -162,6 +162,7 @@ mod tests {
         std::fs::write(root.join("mustard.json"),"{}").unwrap();
         let path=store::spec_file(root,"epic").unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        store::write(&path,"task",json!({"text":"Somar dois números.","author":"binary"}).as_object().unwrap().clone(),&[]).unwrap();
         store::write(&path,"state",json!({"phase":"plan","branch":"feature/epic","base":"dev"}).as_object().unwrap().clone(),&[]).unwrap();
         crate::shared::context::session::bind_session_spec(&root.to_string_lossy(),"codex-witness","epic");
         let input:HookInput=serde_json::from_value(json!({"cwd":root,"hook_event_name":"PostToolUse","session_id":"codex-witness","tool_name":"request_user_input",

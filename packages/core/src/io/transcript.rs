@@ -309,12 +309,18 @@ where
     tally.usage()
 }
 
-/// A pasta da sessão `session`, procurada em `<config_dir>/projects/*/`: a pasta
-/// que tem `<session>.jsonl` devolve `<ela>/<session>`, onde moram os agentes. A
-/// pasta acima da devolvida é a do projeto, a que [`orchestrator_usage`] lê.
-/// `None` quando nenhuma pasta tem a conversa.
+/// A pasta da sessão `session` no projeto de `root`, procurada em
+/// `<config_dir>/projects/*/`: a pasta que tem `<session>.jsonl`, com a
+/// conversa do projeto de `root` ([`crate::io::spend::is_project_conversation`]),
+/// devolve `<ela>/<session>`, onde moram os agentes. A pasta acima da devolvida
+/// é a do projeto, a que [`orchestrator_usage`] lê.
+///
+/// A sessão vem de quem chama, e quem chama pode estar numa conversa de outro
+/// projeto: o comando com a raiz de outra pasta, a suíte de testes rodada de
+/// dentro de uma conversa. A conversa de outro projeto nunca vale aqui. `None`
+/// quando nenhuma pasta tem a conversa da sessão neste projeto.
 #[must_use]
-pub fn session_dir(config_dir: &Path, session: &str) -> Option<PathBuf> {
+pub fn session_dir(config_dir: &Path, root: &Path, session: &str) -> Option<PathBuf> {
     // A sessão é um nome de arquivo; separador ou `..` sairiam da pasta.
     if session.is_empty() || Path::new(session).file_name() != Some(std::ffi::OsStr::new(session)) {
         return None;
@@ -324,7 +330,10 @@ pub fn session_dir(config_dir: &Path, session: &str) -> Option<PathBuf> {
         .ok()?
         .filter_map(Result::ok)
         .map(|entry| entry.path())
-        .filter(|project| project.join(&file).is_file())
+        .filter(|project| {
+            let conversation = project.join(&file);
+            conversation.is_file() && crate::io::spend::is_project_conversation(&conversation, root)
+        })
         .collect();
     projects.sort();
     projects.into_iter().next().map(|project| project.join(session))
@@ -617,8 +626,21 @@ mod tests {
         std::fs::write(path, lines.join("\n") + "\n").unwrap();
     }
 
+    /// Uma pasta de projeto, com o `mustard.json` que a faz projeto.
+    fn project_root() -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("mustard.json"), "{}").unwrap();
+        root
+    }
+
+    /// A primeira linha de uma conversa aberta na pasta `cwd`, com a fala `text`.
+    fn opened_in(cwd: &Path, text: &str) -> String {
+        json!({ "type": "user", "cwd": cwd.to_string_lossy(), "message": { "role": "user", "content": text } }).to_string()
+    }
+
     #[test]
     fn the_transcript_reader_counts_each_response_once_and_finds_the_wave_agent_by_its_request_title() {
+        let root = project_root();
         let config = tempfile::tempdir().unwrap();
         let project = config.path().join("projects").join("-home-alguem-obra");
         // Outro projeto, sem a sessão: a busca passa por ele e não para.
@@ -636,7 +658,7 @@ mod tests {
             &[
                 json!({
                     "type": "user", "isSidechain": false, "gitBranch": branch,
-                    "timestamp": "2026-01-10T21:00:00.000Z",
+                    "timestamp": "2026-01-10T21:00:00.000Z", "cwd": root.path().to_string_lossy(),
                     "message": { "role": "user", "content": "comece a obra" }
                 })
                 .to_string(),
@@ -685,9 +707,9 @@ mod tests {
         );
         std::fs::write(agents.join("agent-onda3.meta.json"), "{\"agentType\":\"wave\"}").unwrap();
 
-        let session = session_dir(config.path(), "sessao").expect("a sessão é achada pelo arquivo dela");
+        let session = session_dir(config.path(), root.path(), "sessao").expect("a sessão é achada pelo arquivo dela");
         assert_eq!(session, project.join("sessao"));
-        assert_eq!(session_dir(config.path(), "nenhuma"), None);
+        assert_eq!(session_dir(config.path(), root.path(), "nenhuma"), None);
 
         let found = wave_agent_file(&session, "# obra — onda 3", sent);
         assert_eq!(found, Some(agents.join("agent-onda3.jsonl")), "o agente da onda 3, e não o anterior nem o da 30");
@@ -748,6 +770,7 @@ mod tests {
     /// achado.
     #[test]
     fn a_session_that_is_not_a_plain_file_name_finds_no_folder() {
+        let root = project_root();
         let config = tempfile::tempdir().unwrap();
         let projects = config.path().join("projects");
         let project = projects.join("-home-alguem-obra");
@@ -761,14 +784,37 @@ mod tests {
             project.join("..jsonl"),
             project.join("...jsonl"),
         ] {
-            write(&file, &[String::new()]);
+            write(&file, &[opened_in(root.path(), "oi")]);
         }
 
-        assert_eq!(session_dir(config.path(), "sessao"), Some(project.join("sessao")));
+        assert_eq!(session_dir(config.path(), root.path(), "sessao"), Some(project.join("sessao")));
         let absolute = elsewhere.join("sessao").to_string_lossy().into_owned();
         for name in ["../vizinho/sessao", "sub/sessao", absolute.as_str(), "", ".", ".."] {
-            assert_eq!(session_dir(config.path(), name), None, "a sessão `{name}` saiu da pasta do projeto");
+            assert_eq!(session_dir(config.path(), root.path(), name), None, "a sessão `{name}` saiu da pasta do projeto");
         }
+    }
+
+    /// A mesma sessão em duas pastas de projeto do Claude Code: a da conversa
+    /// aberta noutro projeto, que vem primeiro na ordem, e a da conversa aberta
+    /// numa pasta de dentro do projeto. Vale só a deste projeto. Para um
+    /// terceiro projeto, nenhuma vale, nem a conversa sem pasta de projeto.
+    #[test]
+    fn the_session_folder_is_only_the_one_whose_conversation_is_of_the_project() {
+        let root = project_root();
+        let other = project_root();
+        let third = project_root();
+        let inside = root.path().join("web");
+        std::fs::create_dir_all(&inside).unwrap();
+        let config = tempfile::tempdir().unwrap();
+        let projects = config.path().join("projects");
+        write(&projects.join("-a-outro").join("sessao.jsonl"), &[opened_in(other.path(), "fala de outro projeto")]);
+        write(&projects.join("-b-obra-web").join("sessao.jsonl"), &[opened_in(&inside, "fala deste projeto")]);
+        write(&projects.join("-c-solta").join("solta.jsonl"), &[json!({ "type": "user", "message": { "role": "user", "content": "sem pasta" } }).to_string()]);
+
+        assert_eq!(session_dir(config.path(), root.path(), "sessao"), Some(projects.join("-b-obra-web").join("sessao")));
+        assert_eq!(session_dir(config.path(), other.path(), "sessao"), Some(projects.join("-a-outro").join("sessao")));
+        assert_eq!(session_dir(config.path(), third.path(), "sessao"), None, "a conversa de outro projeto nunca vale");
+        assert_eq!(session_dir(config.path(), root.path(), "solta"), None, "a conversa sem pasta de projeto não é de projeto nenhum");
     }
 
     /// Nenhuma linha que se entenda não é consumo zero de um modelo qualquer:

@@ -133,8 +133,8 @@ pub(super) fn snapshot(root:&Path,session:Option<&str>)->Value {
     if let Some(fields)=value.as_object_mut(){fields.remove("steps");}
     if let Some(agents)=value["agents"].as_object_mut(){for row in agents.values_mut(){
         let input=serde_json::from_value::<mustard_core::domain::model::contract::HookInput>(json!({"session_id":session,"agent_id":row["id"]}));
-        if let Ok(input)=input && let Some((spec,wave,dispatch))=crate::shared::host_observation::tool_binding(root,"claude",&input) {
-            row["spec"]=json!(spec);row["wave"]=json!(wave);row["dispatch"]=json!(dispatch);
+        if let Ok(input)=input && let Some(binding)=crate::shared::host_observation::tool_binding(root,"claude",&input) {
+            row["spec"]=json!(binding.spec);row["wave"]=json!(binding.wave);row["dispatch"]=json!(binding.dispatch);
         }
     }}
     super::safe_value(value)

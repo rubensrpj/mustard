@@ -6,11 +6,77 @@
 //! Nenhuma calcula a lista por conta própria, então o que o pedido mostra e o
 //! que o veredito cobra nunca discordam.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
+use serde_json::Value;
+
 use super::{code_of, language_line, project_rules_section, Material, Writer};
-use crate::domain::spec_events::SpecEvent;
+use crate::domain::spec_events::{SpecEvent, SpecLog};
+
+/// O que já tem prova verde na spec, para a revisão final ler só o resto: o
+/// critério cuja execução mais nova no fechamento passou, a tarefa com passo
+/// de término gravado — o passo sai com a prova verde — e o item combinado
+/// que uma onda cobre, citado no `covers` de uma tarefa terminada. A resposta
+/// `met` da entrega é a palavra do agente, não prova. Tarefa e combinado vão
+/// pelo código, que é o mesmo em toda versão; o critério vai pelo número,
+/// porque a versão nova pede execução nova.
+pub struct Proven {
+    criteria: BTreeSet<u64>,
+    tasks: BTreeSet<String>,
+    agreed: BTreeSet<String>,
+    codes: BTreeMap<u64, String>,
+}
+
+impl Proven {
+    #[must_use]
+    pub fn of(log: &SpecLog) -> Self {
+        let codes = log.codes();
+        // O item citado pelo número, como a rodada grava, ou pelo código,
+        // como o agente escreve.
+        let shown = |reference: Option<&Value>| -> Option<String> {
+            match reference? {
+                Value::Number(n) => n.as_u64().and_then(|id| codes.get(&id).cloned()),
+                Value::String(text) => {
+                    let text = text.trim();
+                    Some(text.parse::<u64>().ok().and_then(|id| codes.get(&id).cloned()).unwrap_or_else(|| text.to_string()))
+                }
+                _ => None,
+            }
+        };
+        let visible = log.visible();
+        let mut runs: BTreeMap<u64, bool> = BTreeMap::new();
+        for run in visible.iter().filter(|e| e.event_type == "criterion_run") {
+            if let Some(id) = run.int("criterion") {
+                runs.insert(id, run.str_field("result") == Some("pass"));
+            }
+        }
+        let criteria = runs.into_iter().filter(|(_, passed)| *passed).map(|(id, _)| id).collect();
+        let tasks: BTreeSet<String> = visible.iter().filter(|e| e.event_type == "step").filter_map(|e| shown(e.fields.get("item"))).collect();
+        let agreed: BTreeSet<String> = visible
+            .iter()
+            .filter(|e| e.event_type == "task" && codes.get(&e.id).is_some_and(|code| tasks.contains(code)))
+            .flat_map(|task| task.ints("covers"))
+            .filter_map(|id| codes.get(&id).cloned())
+            .collect();
+        Self { criteria, tasks, agreed, codes }
+    }
+
+    fn code(&self, item: &SpecEvent) -> Option<&String> {
+        self.codes.get(&item.id)
+    }
+
+    /// Se o item já tem prova verde: o critério, a tarefa ou o combinado
+    /// conforme o tipo. Os outros tipos nunca têm.
+    #[must_use]
+    pub fn covers(&self, item: &SpecEvent) -> bool {
+        match item.event_type.as_str() {
+            "criterion" => self.criteria.contains(&item.id),
+            "task" => self.code(item).is_some_and(|code| self.tasks.contains(code)),
+            _ => self.code(item).is_some_and(|code| self.agreed.contains(code)),
+        }
+    }
+}
 
 /// Tudo o que o pedido do revisor lista, na ordem em que o imprime: cada
 /// parte com o título dela e os itens que ela traz. A parte sem item não

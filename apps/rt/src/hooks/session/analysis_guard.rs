@@ -110,6 +110,7 @@ fn read_command(command: &str) -> bool {
             "--markdown",
         ],
         "search" => &["--shell-output", "--raw"],
+        "read" => &["--all"],
         _ => &[],
     };
     let mut at = 2;

@@ -16,14 +16,18 @@
 //!   após `/clear` ou `/compact` reinicia as faixas; uma leitura menor não o
 //!   faz. Quem conduz nunca é recusado por tamanho. **No agente de
 //!   onda** (o subagente cujo primeiro texto é o título de um pedido de onda),
-//!   o sinal chega após 150 mil tokens de trabalho além da entrada inicial e
-//!   dos resumos herdados, com qualquer modelo: com 50 mil de entrada, aos 200
-//!   mil. A janela do modelo que responde ao agente só serve de teto, quando
-//!   75% dela vem antes: pela tabela de
+//!   o sinal chega aos 200 mil tokens de contexto, contando a entrada inicial
+//!   e os resumos herdados, com qualquer modelo. A janela do modelo que
+//!   responde ao agente só serve de teto, quando 75% dela vem antes: pela
+//!   tabela de
 //!   [`window_of`](mustard_core::domain::context_window::window_of) e, no
 //!   Codex, a que o registro da conversa declara (`model_context_window`) na
 //!   última amostra de uso. Com 1 milhão, o sinal segue nos 200 mil; com 200
-//!   mil de janela, chega aos 150 mil. O aviso diz a janela e o teto.
+//!   mil de janela, chega aos 150 mil. O aviso diz a janela e o teto. A medida
+//!   do fim de tarefa sai do próprio `run write step`
+//!   ([`answer_step`]), pela identidade do agente que o gancho do terminal
+//!   exporta ao comando; o gancho só a dá quando o comando chega a ele sem o
+//!   prefixo e o relatório ainda não a traz.
 //!   No meio da tarefa ele é apenas orientação: concluir a tarefa atual,
 //!   testes mínimos e resumo, sem começar outra. Só o término aceito da
 //!   tarefa fecha a trava de novas implementações. Estimar uma tarefa maior
@@ -69,9 +73,8 @@ use mustard_core::domain::context_window::window_of;
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::domain::mustard_id;
 use mustard_core::domain::spec_events::type_spec;
-use mustard_core::domain::wave_prompt::wave_of_title;
 use mustard_core::io::spec_events as store;
-use mustard_core::io::transcript::{agent_pieces, first_stamp, heading_of};
+use mustard_core::io::transcript::{agent_pieces, first_stamp};
 use mustard_core::platform::error::Error;
 use mustard_core::platform::i18n::Locale;
 use mustard_core::{ClaudePaths, translate};
@@ -84,12 +87,13 @@ use crate::hooks::bash::lex::{Segment, segments};
 pub(crate) const CONDUCTOR_FIRST_NOTICE: u64 = 200_000;
 pub(crate) const CONDUCTOR_STEP: u64 = 100_000;
 
-/// Crescimento de trabalho após a entrada inicial e os resumos herdados em
-/// que o sinal chega ao agente de onda, com qualquer modelo; a janela só o
-/// encurta, como teto ([`WINDOW_SHARE`]). É também o horizonte com que a
-/// rodada monta as ondas. O sinal pede conclusão da tarefa atual; não
-/// interrompe sua implementação.
-pub(crate) const WAVE_LIMIT: u64 = 150_000;
+/// O tamanho de contexto do agente de onda em que o sinal chega, com
+/// qualquer modelo: fixo, contando a entrada inicial e os resumos herdados; a
+/// janela só o encurta, como teto ([`WINDOW_SHARE`]). A montagem das ondas
+/// não usa este número: a onda leva todo o agrupamento, e é este sinal que
+/// segura o tamanho. O sinal pede conclusão da tarefa atual; não interrompe
+/// sua implementação.
+pub(crate) const WAVE_LIMIT: u64 = 200_000;
 
 /// A parte da janela do modelo da onda, em porcento, que é o teto do sinal
 /// quando a janela é conhecida.
@@ -280,21 +284,33 @@ pub(crate) fn reset_conductor_notice(input: &HookInput, root: &Path) {
 }
 
 fn conductor_text(input: &HookInput, root: &Path) -> Option<String> {
+    conductor_text_with(input, root, || crate::commands::flow::resume::current_line_and_live(root, input.session_id.as_deref()))
+}
+
+/// O aviso a quem conduz, com a linha de retomada e as ondas com agente vivo
+/// tiradas de `line`. A marca da faixa é lida antes: a faixa já avisada não
+/// lê a spec, e só a faixa nova a lê. Com onda de agente vivo, o aviso manda
+/// esperar a volta delas antes de limpar a conversa, que para esses agentes.
+fn conductor_text_with(input: &HookInput, root: &Path, line: impl FnOnce() -> Option<(String, Vec<u64>)>) -> Option<String> {
     let tokens = last_context(Path::new(input.transcript_path()?))?;
     if tokens < CONDUCTOR_FIRST_NOTICE { return None; }
     let threshold = tokens / CONDUCTOR_STEP * CONDUCTOR_STEP;
-    let line = crate::commands::flow::resume::current_line(root, input.session_id.as_deref())?;
     let path = conductor_mark(input, root)?;
     let mut mark = mustard_core::io::fs::lock::LockedFile::exclusive(&path).ok()?;
     let warned = mark.read_to_string().ok()?.trim().parse::<u64>().unwrap_or(0);
     // Older versions stored the number of 200k bands instead of tokens.
     let warned = if warned > 0 && warned < CONDUCTOR_FIRST_NOTICE { warned.saturating_mul(200_000) } else { warned };
     if threshold <= warned { return None; }
+    let (line, live) = line()?;
     mark.replace(threshold.to_string().as_bytes()).ok()?;
     let lang = crate::commands::spec_events::project(root).lang;
+    let key = if live.is_empty() { "conversation_size.notice" } else { "conversation_size.notice_live" };
+    let waves: Vec<String> = live.iter().map(u64::to_string).collect();
     Some(
-        translate("conversation_size.notice", lang)
+        translate(key, lang)
             .replace("{tokens}", &(threshold / 1000).to_string())
+            .replace("{count}", &live.len().to_string())
+            .replace("{waves}", &waves.join(", "))
             .replace("{line}", &line),
     )
 }
@@ -324,15 +340,14 @@ impl WaveContext {
     /// A janela do modelo da onda: a que a conversa declara ou, sem ela, a da
     /// tabela da API, quando a tabela conhece o modelo.
     fn window(&self) -> Option<u64> { self.declared.or_else(|| self.model.as_deref().and_then(window_of)) }
-    /// O trabalho até o sinal: [`WAVE_LIMIT`], ou menos quando
-    /// [`WINDOW_SHARE`] da janela do modelo, menos a entrada e os resumos
-    /// herdados, vem antes. Sem janela conhecida, não há teto.
-    fn limit(&self) -> u64 {
-        let ceiling = self.window().map_or(u64::MAX, |window| share_of(window).saturating_sub(self.baseline()));
-        WAVE_LIMIT.min(ceiling)
+    /// O tamanho da conversa em que o sinal chega: [`WAVE_LIMIT`], ou menos
+    /// quando [`WINDOW_SHARE`] da janela do modelo vem antes. Sem janela
+    /// conhecida, não há teto.
+    fn signal_at(&self) -> u64 {
+        WAVE_LIMIT.min(self.window().map_or(u64::MAX, share_of))
     }
-    /// O tamanho da conversa em que o sinal chega.
-    fn signal_at(&self) -> u64 { self.baseline().saturating_add(self.limit()) }
+    /// Se a conversa chegou ao sinal.
+    fn reached(&self) -> bool { self.now >= self.signal_at() }
 }
 
 /// Se o bloco de conteúdo é uma chamada do terminal que lê o resumo de uma
@@ -376,18 +391,18 @@ fn user_text(line: &Value) -> Option<String> {
     }
 }
 
-/// A spec e a onda do pedido com que a conversa em `path` abre, no idioma
-/// `lang`: a primeira mensagem do usuário nela é a que vale. `None` quando
-/// ela não abre com o título de um pedido de onda.
-fn wave_opened(path: &Path, lang: Locale) -> Option<(String, u64)> {
+/// A spec e a onda do pedido com que a conversa em `path` abre, pela régua
+/// única do despacho ([`wave_named`](crate::shared::host_observation::wave_named)),
+/// com a raiz das specs de `root`: a primeira mensagem do usuário nela é a
+/// que vale. `None` quando ela não abre com um pedido de onda deste projeto.
+fn wave_opened(path: &Path, root: &Path) -> Option<(String, u64)> {
     use std::io::BufRead;
 
     let file = std::fs::File::open(path).ok()?;
     for line in std::io::BufReader::new(file.take(262_144)).lines().map_while(Result::ok) {
         let Ok(row) = serde_json::from_str::<Value>(&line) else { continue };
         let Some(text) = user_text(&row) else { continue };
-        let wave = wave_of_title(heading_of(&text), lang)
-            .or_else(|| mustard_core::domain::wave_prompt::ReadDispatch::of(&text).map(|read| (read.spec, read.wave)));
+        let wave = crate::shared::host_observation::wave_named(root, &text).map(|read| (read.spec, read.wave));
         // Codex can precede the delegated user task with environment/rule
         // messages. Its file identity is checked separately, not by title.
         if wave.is_some() || row["type"]!="response_item" {return wave;}
@@ -406,10 +421,10 @@ fn wave_opened(path: &Path, lang: Locale) -> Option<(String, u64)> {
 /// —, também quando o resumo foi lido num pedaço anterior. O modelo é o da
 /// última resposta que traz `message.model`, e a janela declarada, a da
 /// última amostra de uso.
-fn wave_context(pieces: &[PathBuf], lang: Locale) -> Option<WaveContext> {
+fn wave_context(pieces: &[PathBuf], root: &Path) -> Option<WaveContext> {
     use std::io::BufRead;
 
-    wave_opened(pieces.first()?, lang)?;
+    wave_opened(pieces.first()?, root)?;
     let (mut first, mut now, mut summary, mut before) = (None, None, 0_u64, None::<(Option<String>, u64)>);
     let (mut model, mut declared) = (None::<String>, None);
     for piece in pieces {
@@ -517,6 +532,7 @@ fn wave_mark(root: &Path, input: &HookInput, kind: &str) -> Option<PathBuf> {
 /// do modelo ([`declared_window`]), o teto dela ([`WINDOW_SHARE`]) baixa esse
 /// ponto se vier antes dele.
 fn wave_notice_text(input: &HookInput, root: &Path, lang: Locale) -> Option<String> {
+    if answered_step(input) { return None; }
     if finishes_a_task(input) { return task_end_text(input, root, lang); }
     let signal = wave_mark(root, input, "signal")?;
     let (_, order) = wave_marks(root, input)?;
@@ -526,13 +542,14 @@ fn wave_notice_text(input: &HookInput, root: &Path, lang: Locale) -> Option<Stri
     let now = context_of(&usage)?;
     let threshold_path = wave_mark(root, input, "threshold")?;
     let threshold = std::fs::read_to_string(&threshold_path).ok().and_then(|value| value.trim().parse::<u64>().ok());
-    // A janela declarada abaixo do horizonte fixo, ou menor que a do ponto
-    // guardado, adianta o sinal.
-    let skip_below = threshold.unwrap_or(WAVE_LIMIT).min(declared_window(&row).map_or(u64::MAX, share_of));
+    // A janela da última resposta — a declarada, ou a do modelo dela — cujo
+    // teto vem antes do limite fixo, ou do ponto guardado, adianta o sinal.
+    let window = declared_window(&row).or_else(|| row["message"]["model"].as_str().and_then(window_of));
+    let skip_below = threshold.unwrap_or(WAVE_LIMIT).min(window.map_or(u64::MAX, share_of));
     if now < skip_below { return None; }
-    let context = wave_context(&parts, lang)?;
+    let context = wave_context(&parts, root)?;
     write_mark(&threshold_path, context.signal_at());
-    if context.growth() < context.limit() { return None; }
+    if !context.reached() { return None; }
     write_mark(&signal, context.now);
     Some(wave_measurement("conversation_size.wave_signal", &context, 0, lang))
 }
@@ -543,7 +560,6 @@ fn wave_measurement(key: &str, context: &WaveContext, largest: u64, lang: Locale
         .replace("{now}", &thousands(context.now))
         .replace("{baseline}", &thousands(context.baseline()))
         .replace("{counted}", &thousands(context.growth()))
-        .replace("{limit}", &thousands(context.limit()))
         .replace("{total_limit}", &thousands(context.signal_at()))
         .replace("{largest}", &thousands(largest))
         .replace("{basis}", &window_text(context, lang))
@@ -596,17 +612,77 @@ fn finishes_a_task(input: &HookInput) -> bool {
         .windows(2)
         .find_map(|pair| (pair[0] == "--json").then_some(pair[1]))
         .or_else(|| args.iter().find_map(|arg| arg.strip_prefix("--json=")));
-    let task = type_spec("task").map(|spec| spec.code);
-    let names_a_task = json
-        .and_then(|json| serde_json::from_str::<Value>(json).ok())
-        .and_then(|step| step.get("item")?.as_str().and_then(mustard_id::parse).map(|(kind, _)| Some(kind) == task))
-        .unwrap_or(false);
+    // O relatório que já traz a medida veio do próprio passo
+    // ([`answer_step`]): medir de novo contaria o passo duas vezes.
+    let accepted = tool_report(input).is_some_and(|report|report["ok"]==true && report.get(STEP_SIZE_FIELD).is_none());
+    json.is_some_and(names_a_task) && accepted
+}
+
+/// O relatório JSON que a chamada de terminal `input` imprimiu; `None` na
+/// saída com erro ou que não é JSON.
+fn tool_report(input: &HookInput) -> Option<Value> {
     let response=&input.raw["tool_response"];
-    if response.get("exit_code").is_some_and(|code|code.as_i64()!=Some(0)) {return false;}
-    let stdout = response.get("stdout").or_else(||response.get("output")).and_then(Value::as_str).or_else(||response.as_str());
-    let accepted = stdout.and_then(|stdout|serde_json::from_str::<Value>(stdout).ok())
-        .is_some_and(|report|report["ok"]==true);
-    names_a_task && accepted
+    if response.get("exit_code").is_some_and(|code|code.as_i64()!=Some(0)) {return None;}
+    let stdout = response.get("stdout").or_else(||response.get("output")).and_then(Value::as_str).or_else(||response.as_str())?;
+    serde_json::from_str::<Value>(stdout).ok()
+}
+
+/// Se a chamada `input` gravou um passo cuja resposta já trouxe a medida
+/// ([`answer_step`]), liberando a próxima tarefa ou mandando entregar: o
+/// gancho não mede de novo nem dá outra ordem para esse mesmo passo, mesmo
+/// com a conversa crescida depois da resposta. Quem decide é a medida do fim
+/// da tarefa seguinte. Vale com qualquer prefixo no comando: o que conta é o
+/// relatório do passo.
+fn answered_step(input: &HookInput) -> bool {
+    input.tool_name.as_deref() == Some("Bash")
+        && tool_report(input).is_some_and(|report| report["ok"] == true && report["type"] == "step" && report.get(STEP_SIZE_FIELD).is_some())
+}
+
+/// Se o `--json` de um passo aponta no `item` o código de uma tarefa.
+fn names_a_task(json: &str) -> bool {
+    let task = type_spec("task").map(|spec| spec.code);
+    serde_json::from_str::<Value>(json)
+        .ok()
+        .and_then(|step| step.get("item")?.as_str().and_then(mustard_id::parse).map(|(kind, _)| Some(kind) == task))
+        .unwrap_or(false)
+}
+
+/// O campo do relatório de `run write step` com a medida do fim de tarefa.
+pub(crate) const STEP_SIZE_FIELD: &str = "size";
+
+/// A medida do fim de tarefa respondida pelo próprio `run write step`: o
+/// passo `event_type` aceito (`report` com `ok`), cujo `--json` aponta uma
+/// tarefa, gravado pelo agente `agent` da sessão `session`, cuja conversa
+/// principal é `transcript`, ganha no relatório a medida e a ordem de seguir
+/// ou de entregar ([`task_end_measure`]). A ordem de entregar fecha a trava
+/// dali em diante. Não depende de o gancho reconhecer o comando, que chega a
+/// ele reescrito com o prefixo da identidade. Fora de um agente de onda, sem
+/// a conversa ou sem medida, o relatório fica como está. Devolve se a medida
+/// mandou entregar; `None` sem medida.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn answer_step(
+    report: &mut Value,
+    root: &Path,
+    event_type: &str,
+    json: &str,
+    agent: Option<&str>,
+    session: Option<&str>,
+    transcript: Option<&Path>,
+    lang: Locale,
+) -> Option<bool> {
+    if report["ok"] != true || event_type.trim() != "step" || !names_a_task(json) {
+        return None;
+    }
+    let (Some(agent), Some(transcript)) = (agent, transcript) else { return None };
+    let input = HookInput {
+        session_id: session.map(str::to_string),
+        agent_id: Some(agent.to_string()),
+        raw: serde_json::json!({ "transcript_path": transcript.to_string_lossy() }),
+        ..HookInput::default()
+    };
+    let (text, deliver) = task_end_measure(&input, root, lang)?;
+    report[STEP_SIZE_FIELD] = Value::String(text);
+    Some(deliver)
 }
 
 /// A medida do fim de tarefa ao agente de onda: no resultado do passo de
@@ -622,7 +698,14 @@ fn task_end_text(input: &HookInput, root: &Path, lang: Locale) -> Option<String>
     if !finishes_a_task(input) {
         return None;
     }
-    let context = wave_context(&agent_parts(input), lang)?;
+    task_end_measure(input, root, lang).map(|(text, _)| text)
+}
+
+/// A medida de [`task_end_text`], já sabido que a chamada terminou uma
+/// tarefa: pelo gancho ou pelo próprio passo ([`answer_step`]), com a ordem
+/// de entregar (`true`) ou de seguir.
+fn task_end_measure(input: &HookInput, root: &Path, lang: Locale) -> Option<(String, bool)> {
+    let context = wave_context(&agent_parts(input), root)?;
     let counted = context.now.saturating_sub(context.summary);
     let (steps, order) = wave_marks(root, input)?;
     let mut sizes: Vec<u64> = std::fs::read_to_string(&steps)
@@ -650,12 +733,12 @@ fn task_end_text(input: &HookInput, root: &Path, lang: Locale) -> Option<String>
     // A entrada inicial e os resumos herdados vêm antes do horizonte de
     // trabalho. A previsão do tamanho da tarefa só informa; nunca adianta o
     // corte.
-    let deliver = order.exists() || wave_mark(root,input,"signal")?.exists() || context.growth() >= context.limit();
+    let deliver = order.exists() || wave_mark(root,input,"signal")?.exists() || context.reached();
     if deliver {
         write_mark(&order, context.now);
     }
     let key = if deliver { "conversation_size.wave_deliver" } else { "conversation_size.wave_continue" };
-    Some(wave_measurement(key, &context, largest, lang))
+    Some((wave_measurement(key, &context, largest, lang), deliver))
 }
 
 /// O nome do programa de `segment`, como foi escrito, sem a pasta e sem o
@@ -739,10 +822,10 @@ fn removes_dependency_link(input: &HookInput, part: &Segment) -> bool {
 /// dela ([`fix_file`](crate::commands::flow::round::fix_file)) está em disco,
 /// na spec de `root`. A entrega nova muda o nome do trecho, e a resposta
 /// volta a ser `false` sozinha, sem marca a apagar.
-fn awaits_its_fix(input: &HookInput, root: &Path, lang: Locale) -> bool {
+fn awaits_its_fix(input: &HookInput, root: &Path) -> bool {
     let pieces = agent_parts(input);
     let Some(first) = pieces.first() else { return false };
-    let Some((spec, wave)) = wave_opened(first, lang) else { return false };
+    let Some((spec, wave)) = wave_opened(first, root) else { return false };
     let root = store::spec_root(root);
     let Some(log) = store::spec_file(&root, &spec).ok().and_then(|path| store::read(&path).ok().flatten()) else {
         return false;
@@ -751,16 +834,16 @@ fn awaits_its_fix(input: &HookInput, root: &Path, lang: Locale) -> bool {
 }
 
 /// A onda de que a reprovação de quem conduz tirou o agente de `input`: o
-/// pedaço mais antigo da conversa dele abre com o título do pedido da onda
-/// no idioma `lang`, e o primeiro carimbo dele vem antes da volta reprovada,
+/// pedaço mais antigo da conversa dele abre com o pedido da onda
+/// ([`wave_opened`]), e o primeiro carimbo dele vem antes da volta reprovada,
 /// gravada na spec de `root`
 /// ([`replaced_in_file`](crate::commands::flow::round::replaced_in_file)).
 /// `None` fora de um agente de onda, sem carimbo na conversa e sem
 /// reprovação gravada para a onda.
-fn left_by_rejection(input: &HookInput, root: &Path, lang: Locale) -> Option<u64> {
+fn left_by_rejection(input: &HookInput, root: &Path) -> Option<u64> {
     let pieces = agent_parts(input);
     let first = pieces.first()?;
-    let (spec, wave) = wave_opened(first, lang)?;
+    let (spec, wave) = wave_opened(first, root)?;
     let started = first_stamp(first)?;
     let path = store::spec_file(&store::spec_root(root), &spec).ok()?;
     crate::commands::flow::round::replaced_in_file(&path, wave, started).then_some(wave)
@@ -783,7 +866,7 @@ fn wave_lock_reason(input: &HookInput, root: &Path, ctx: &Ctx) -> Option<String>
         return None;
     }
     let lang = ctx.config.language().text_or_default();
-    if let Some(wave) = left_by_rejection(input, root, lang) {
+    if let Some(wave) = left_by_rejection(input, root) {
         return Some(translate("subagent.rejected_agent_locked", lang).replace("{wave}", &wave.to_string()));
     }
     let (_, order) = wave_marks(root, input)?;
@@ -792,13 +875,13 @@ fn wave_lock_reason(input: &HookInput, root: &Path, ctx: &Ctx) -> Option<String>
     }
     let commands = ctx.config.commands();
     let mut finish_checks: Vec<String> = [commands.build.clone(), commands.test.clone(), commands.lint.clone()].into_iter().flatten().collect();
-    if let Some((spec, wave)) = agent_parts(input).first().and_then(|path| wave_opened(path, lang))
+    if let Some((spec, wave)) = agent_parts(input).first().and_then(|path| wave_opened(path, root))
         && let Some(log) = store::spec_file(&store::spec_root(root), &spec).ok().and_then(|path| store::read(&path).ok().flatten()) {
         finish_checks.extend(log.criteria_for_waves(&[wave]).into_iter().filter_map(|criterion| criterion.str_field("proof").map(str::to_string)));
     }
     let allowed: Vec<_> = finish_checks.iter().map(|command| Some(command.as_str())).collect();
     if passes_after_the_order(input, &allowed) { return None; }
-    if awaits_its_fix(input, root, lang) {
+    if awaits_its_fix(input, root) {
         return None;
     }
     let build = [commands.build, commands.test, commands.lint].into_iter().flatten()
@@ -839,7 +922,10 @@ mod tests {
         };
         assert!(at(199_999).is_none(),"cumulative 10M and cached input must not trigger a notice");
         assert!(at(200_000).unwrap()["hookSpecificOutput"]["additionalContext"].as_str().unwrap().contains("200"));
-        assert!(at(299_999).is_none()); assert!(at(300_000).is_some());
+        assert!(at(299_999).is_none());
+        // The resume line already opens with its own label: the notice does not repeat it.
+        let notice=at(300_000).unwrap()["hookSpecificOutput"]["additionalContext"].as_str().unwrap().to_string();
+        assert!(notice.contains("Retomada: spec x") && !notice.contains("Retomada: Retomada:"),"{notice}");
         assert!(at(70_000).is_none()); assert!(at(200_000).is_none(),"a lower reading is not compaction");
         let before=codex_event("PreCompact",&call).unwrap();
         let block=crate::commands::flow::resume::current_block(root,Some("s1")).unwrap();
@@ -864,18 +950,18 @@ mod tests {
             assert_eq!(last_context(&path),None);
         }
         native_rollout(&path,"a1",&[good,bad]);
-        assert!(wave_context(&[path],Locale::PtBr).is_none());
+        assert!(wave_context(&[path],dir.path()).is_none());
     }
 
     #[test]
     fn codex_wave_finishes_current_task_then_allows_tests_and_summary_but_no_new_work() {
         let dir=open_project("x"); let root=dir.path();
         std::fs::write(root.join("mustard.json"),r#"{"buildCommand":"cargo build","testCommand":"cargo test --lib"}"#).unwrap();
-        let path=root.join("native-child.jsonl"); native_rollout(&path,"a1",&[codex_sample(30_000,20_000),codex_sample(170_000,150_000)]);
+        let path=root.join("native-child.jsonl"); native_rollout(&path,"a1",&[codex_sample(30_000,20_000),codex_sample(190_000,150_000)]);
         let mut call=agent_after_tool(root); call.raw["agent_transcript_path"]=serde_json::json!(path);
         assert!(codex_event("PostToolUse",&call).is_none(),"no mid-task interruption");
         assert!(codex_event("PreToolUse",&call).as_ref().is_none_or(|v|v["hookSpecificOutput"]["permissionDecision"]!="deny"));
-        native_rollout(&path,"a1",&[codex_sample(30_000,20_000),codex_sample(180_000,150_000)]);
+        native_rollout(&path,"a1",&[codex_sample(30_000,20_000),codex_sample(200_000,150_000)]);
         let done=finishing(call.clone());
         let notice=codex_event("PostToolUse",&done).unwrap();
         assert!(notice["hookSpecificOutput"]["additionalContext"].as_str().unwrap().contains("Grave a entrega"));
@@ -1079,6 +1165,138 @@ mod tests {
         assert_eq!(injected(&conductor_after_tool(bare.path(), &transcript)), None, "nothing to resume");
     }
 
+    /// What the step command prints for the wave agent of `call`, at `root`.
+    fn step_command_report(root: &Path, call: &HookInput) -> Value {
+        let mut report = serde_json::json!({"ok": true, "type": "step"});
+        let json = r#"{"wave":1,"item":"MSTD-TASK-0001","text":"feita"}"#;
+        let transcript = call.transcript_path().map(PathBuf::from);
+        answer_step(&mut report, root, "step", json, call.subagent_id(), call.session_id.as_deref(), transcript.as_deref(), Locale::PtBr);
+        report
+    }
+
+    /// The host runs the step with the identity prefix the Bash hook adds,
+    /// so the hook never sees a bare `run write step`. The step command
+    /// itself answers the measure and closes the lock: the next new edit is
+    /// refused.
+    #[test]
+    fn a_task_end_behind_the_hook_prefix_orders_the_delivery_and_locks() {
+        let dir = open_project_in("x", Locale::PtBr);
+        let root = dir.path();
+        let replies = vec![agent_reply(30_000, Some("read")), agent_reply(210_000, Some("edit"))];
+        write_agent(root, &wave_request(Locale::PtBr), &replies);
+        let call = agent_after_tool(root);
+        let report = step_command_report(root, &call);
+        let step = serde_json::json!({"wave": 1, "item": "MSTD-TASK-0001", "text": "feita"});
+        let command = format!("export MUSTARD_SESSION_ID='s1'\nexport MUSTARD_AGENT_ID='a1'\n/x/mustard-rt run write step --spec x --json '{step}'");
+        let mut raw = call.raw.clone();
+        raw["tool_response"] = serde_json::json!({"stdout": serde_json::to_string_pretty(&report).unwrap(), "stderr": ""});
+        let ran = HookInput { tool_name: Some("Bash".into()), tool_input: serde_json::json!({"command": command}), raw, ..call };
+        let told = report["size"].as_str().map(str::to_string).or_else(|| injected(&ran)).unwrap_or_default();
+        assert!(told.contains("Grave a entrega"), "the step answers the order: {report}");
+        let file = root.join("b.rs").to_string_lossy().into_owned();
+        let edit = refused(root, "Edit", serde_json::json!({"file_path": file, "old_string": "a", "new_string": "b"}));
+        assert!(edit.is_some(), "after the order, a new edit is refused");
+    }
+
+    /// A step whose answer already carried the measure gets no second order
+    /// from the hook, even when the conversation crosses the limit right
+    /// after the answer: the measure at the end of the next task decides.
+    #[test]
+    fn a_step_answered_below_the_limit_gets_no_other_order_from_the_hook() {
+        let dir = open_project_in("x", Locale::PtBr);
+        let root = dir.path();
+        let replies = vec![agent_reply(30_000, Some("read")), agent_reply(60_000, Some("edit"))];
+        write_agent(root, &wave_request(Locale::PtBr), &replies);
+        let call = agent_after_tool(root);
+        let report = step_command_report(root, &call);
+        assert!(report["size"].as_str().is_some_and(|size| size.contains("Siga")), "the step goes on: {report}");
+
+        let crossed = vec![agent_reply(30_000, Some("read")), agent_reply(60_000, Some("edit")), agent_reply(210_000, None)];
+        write_agent(root, &wave_request(Locale::PtBr), &crossed);
+        let step = serde_json::json!({"wave": 1, "item": "MSTD-TASK-0001", "text": "feita"});
+        let command = format!("export MUSTARD_SESSION_ID='s1'\nexport MUSTARD_AGENT_ID='a1'\n/x/mustard-rt run write step --spec x --json '{step}'");
+        let mut raw = call.raw.clone();
+        raw["tool_response"] = serde_json::json!({"stdout": serde_json::to_string_pretty(&report).unwrap(), "stderr": ""});
+        let ran = HookInput { tool_name: Some("Bash".into()), tool_input: serde_json::json!({"command": command}), raw, ..call.clone() };
+        assert_eq!(injected(&ran), None, "the hook gives no other order for the answered step");
+        assert!(wave_mark(root, &call, "signal").is_some_and(|signal| !signal.exists()), "no signal was kept");
+
+        let next = step_command_report(root, &call);
+        assert!(next["size"].as_str().is_some_and(|size| size.contains("Grave a entrega")), "the next task end decides: {next}");
+    }
+
+    /// Seeds wave 1 of `x` running, with its agent launched and alive.
+    fn seed_live_wave(root: &Path) {
+        seed_running_wave(root, "x");
+        let path = store::spec_file(&store::spec_root(root), "x").unwrap();
+        let log = store::read(&path).unwrap().unwrap();
+        let sent = crate::commands::flow::round::queue::open_sends(&log)[&1];
+        assert!(crate::commands::flow::round::queue::record_launch(root, "x", 1, log.dispatch_position(sent)));
+    }
+
+    /// Clearing the conversation stops the agents still working: the
+    /// conductor's size notice counts the waves with a live agent and says to
+    /// wait for them before clearing.
+    #[test]
+    fn the_conductor_notice_says_to_wait_for_the_waves_with_a_live_agent() {
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let dir = open_project_in("x", lang);
+            let root = dir.path();
+            seed_live_wave(root);
+            let transcript = root.join("t.jsonl");
+            conductor_transcript_of(&transcript, 200_000);
+            let notice = injected(&conductor_after_tool(root, &transcript)).expect("the notice");
+            let wait = if lang == Locale::EnUs { "1 wave(s) with a live agent (1)" } else { "1 onda(s) com agente vivo (1)" };
+            assert!(notice.contains(wait) && notice.contains("/clear"), "{lang:?}: {notice}");
+        }
+    }
+
+    /// After a clear, the session start lists the waves whose agent the clear
+    /// stopped and how to send them again.
+    #[test]
+    fn the_resume_after_a_clear_lists_the_waves_whose_agent_stopped() {
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let dir = open_project_in("x", lang);
+            let root = dir.path();
+            seed_live_wave(root);
+            let start = |source: &str| {
+                let input = HookInput {
+                    hook_event_name: Some("SessionStart".into()),
+                    session_id: Some("s1".into()),
+                    cwd: Some(root.to_string_lossy().into_owned()),
+                    raw: serde_json::json!({"source": source}),
+                    ..HookInput::default()
+                };
+                match crate::dispatch::run_event(Some(Trigger::SessionStart), &input).verdict {
+                    Verdict::Inject { context } => context,
+                    _ => String::new(),
+                }
+            };
+            let cleared = start("clear");
+            assert!(cleared.contains("<PAUSED>{\"wave\":1}</PAUSED>"), "{lang:?}: {cleared}");
+            assert!(!start("startup").contains("<PAUSED>"), "{lang:?}: only the clear stops the agents");
+        }
+    }
+
+    /// Above the first step, every tool call reaches the notice; the spec is
+    /// read only when the band is new.
+    #[test]
+    fn a_band_already_warned_does_not_read_the_spec() {
+        let dir = open_project("x");
+        let root = dir.path();
+        let transcript = root.join("t.jsonl");
+        conductor_transcript_of(&transcript, 250_000);
+        let call = conductor_after_tool(root, &transcript);
+        assert!(injected(&call).is_some(), "the first band warns");
+        let read = std::cell::Cell::new(false);
+        let again = conductor_text_with(&call, root, || {
+            read.set(true);
+            Some(("line".to_string(), Vec::new()))
+        });
+        assert_eq!(again, None, "the same band is quiet");
+        assert!(!read.get(), "the warned band never reads the spec");
+    }
+
     #[test]
     fn overlapping_notices_without_a_session_id_share_the_transcript_checkpoint() {
         let dir=open_project("x");
@@ -1217,14 +1435,14 @@ mod tests {
                 (
                     "Go on to the next task.",
                     "Record the delivery, with the tasks not started in `undone`.",
-                    "total context, 60 thousand tokens; initial input and inherited summaries, 30 thousand; work, 30 thousand. The signal is initial input + 150 thousand = 180 thousand. The largest task added 30 thousand.",
+                    "total context, 60 thousand tokens; initial input and inherited summaries, 30 thousand; work, 30 thousand. The limit is 200 thousand context tokens. The largest task added 30 thousand.",
                     "Only reading and writing the spec (`mustard-rt run read` and `run write`) and `cargo build` pass",
                 )
             } else {
                 (
                     "Siga para a próxima tarefa.",
                     "Grave a entrega, com as tarefas não começadas em `undone`.",
-                    "contexto total, 60 mil tokens; entrada e resumos herdados, 30 mil; trabalho, 30 mil. O sinal é entrada + 150 mil = 180 mil. A maior tarefa acrescentou 30 mil.",
+                    "contexto total, 60 mil tokens; entrada e resumos herdados, 30 mil; trabalho, 30 mil. O limite é 200 mil tokens de contexto. A maior tarefa acrescentou 30 mil.",
                     "Só passam ler e gravar na spec (`mustard-rt run read` e `run write`) e `cargo build`",
                 )
             };
@@ -1268,9 +1486,9 @@ mod tests {
         let root = dir.path();
         let read = || refused(root, "Read", serde_json::json!({"file_path": root.join("a.rs").to_string_lossy()}));
         let mut replies = vec![agent_reply(30_000, Some("read"))];
-        for (tokens, order, locked) in [(80_000, "Siga", false), (100_000, "Siga", false), (101_000, "Siga", false), (180_000, "Grave a entrega", true)] {
+        for (tokens, order, locked) in [(80_000, "Siga", false), (100_000, "Siga", false), (101_000, "Siga", false), (200_000, "Grave a entrega", true)] {
             let reading = agent_finishes(root, &mut replies, tokens, Locale::PtBr).expect("the task end reads");
-            assert!(reading.contains("entrada + 150 mil = 180 mil") && reading.contains(order), "{tokens}: {reading}");
+            assert!(reading.contains("O limite é 200 mil tokens de contexto") && reading.contains(order), "{tokens}: {reading}");
             assert_eq!(read().is_some(), locked, "{tokens}: the lock");
         }
     }
@@ -1289,7 +1507,7 @@ mod tests {
         let mut replies = vec![agent_reply(30_000, Some("read"))];
         let first = agent_finishes(root, &mut replies, 60_000, Locale::PtBr).expect("the task end reads");
         assert!(first.contains("Siga"), "{first}");
-        replies.push(agent_reply(158_000, Some("edit")));
+        replies.push(agent_reply(190_000, Some("edit")));
         write_agent(root, &wave_request(Locale::PtBr), &replies);
 
         for call in [
@@ -1307,8 +1525,8 @@ mod tests {
         ] {
             assert_eq!(refused(root, tool, input), None, "mid-task over the limit, {tool} passes");
         }
-        let last = agent_finishes(root,&mut replies,188_000,Locale::PtBr).expect("the task end reads");
-        assert!(last.contains("188 mil") && last.contains("Grave a entrega"), "{last}");
+        let last = agent_finishes(root,&mut replies,205_000,Locale::PtBr).expect("the task end reads");
+        assert!(last.contains("205 mil") && last.contains("Grave a entrega"), "{last}");
     }
 
     /// O resumo anterior sai apenas da estimativa de crescimento do trabalho.
@@ -1373,11 +1591,11 @@ mod tests {
             let dir=open_project_in("x",lang); let root=dir.path();
             let mut replies=vec![agent_reply(40_000,Some("summary")),agent_reply(50_000,Some("edit")),agent_reply(199_999,Some("edit"))];
             write_agent(root,&wave_request(lang),&replies);
-            assert!(injected(&agent_after_tool(root)).is_none(),"initial input and summary precede the 150K growth");
+            assert!(injected(&agent_after_tool(root)).is_none(),"below the 200K context limit");
             replies.push(agent_reply(200_000,Some("edit")));
             write_agent(root,&wave_request(lang),&replies);
-            let signal=injected(&agent_after_tool(root)).expect("signal at initial 50K plus work 150K");
-            assert!(signal.contains(if lang==Locale::PtBr {"50 mil tokens; trabalho, 150 mil"} else {"50 thousand tokens; work, 150 thousand"}),"{signal}");
+            let signal=injected(&agent_after_tool(root)).expect("signal at the 200K context limit");
+            assert!(signal.contains(if lang==Locale::PtBr {"entrada e resumos herdados, 50 mil; trabalho, 150 mil"} else {"initial input and inherited summaries, 50 thousand; work, 150 thousand"}),"{signal}");
             assert!(injected(&agent_after_tool(root)).is_none(),"signal is issued once");
             assert!(refused(root,"Edit",json!({"file_path":root.join("a.rs"),"old_string":"a","new_string":"b"})).is_none(),"current task can still be finished");
             let end=agent_finishes(root,&mut replies,215_000,lang).unwrap();
@@ -1402,7 +1620,7 @@ mod tests {
     /// milhão para o de 200 mil, os 149.999 não avisam e os 150 mil avisam
     /// com a de 200 mil. Nos dois idiomas.
     #[test]
-    fn the_wave_signal_is_input_plus_the_work_horizon_capped_by_the_model_window() {
+    fn the_wave_signal_is_a_fixed_context_limit_capped_by_the_model_window() {
         let named = |model: &str, tokens: u64, action: &str| {
             let mut reply: Value = serde_json::from_str(&agent_reply(tokens, Some(action))).unwrap();
             reply["message"]["model"] = model.into();
@@ -1415,22 +1633,22 @@ mod tests {
             let threshold = root.join(".claude/.session/size-threshold-agent-a1");
             let mut replies = vec![named("claude-opus-5-5", 50_000, "read"), named("claude-opus-5-5", 199_999, "edit")];
             write_agent(root, &wave_request(lang), &replies);
-            assert!(injected(&agent_after_tool(root)).is_none(), "{lang:?}: 149,999 of work is below the horizon");
-            assert_eq!(std::fs::read_to_string(&threshold).unwrap_or_default(), "200000", "{lang:?}: the 1M window keeps input + 150 thousand");
+            assert!(injected(&agent_after_tool(root)).is_none(), "{lang:?}: 199,999 is below the limit");
+            assert_eq!(std::fs::read_to_string(&threshold).unwrap_or_default(), "", "{lang:?}: below the fixed limit the conversation is not read");
             replies.push(named("claude-opus-5-5", 200_000, "edit"));
             write_agent(root, &wave_request(lang), &replies);
             let signal = injected(&agent_after_tool(root)).unwrap_or_else(|| panic!("{lang:?}: the 1M window signals at 200 thousand"));
             let said = if pt {
-                ["Janela do modelo claude-opus-5-5: 1 milhão de tokens; o teto do sinal é 75% dela.", "O sinal é entrada + 150 mil = 200 mil."]
+                ["Janela do modelo claude-opus-5-5: 1 milhão de tokens; o teto do sinal é 75% dela.", "O limite é 200 mil tokens de contexto."]
             } else {
-                ["Window of model claude-opus-5-5: 1 million tokens; the signal is capped at 75% of it.", "The signal is initial input + 150 thousand = 200 thousand."]
+                ["Window of model claude-opus-5-5: 1 million tokens; the signal is capped at 75% of it.", "The limit is 200 thousand context tokens."]
             };
             assert!(said.iter().all(|said| signal.contains(said)), "{lang:?}: {signal}");
 
             let others = [
-                ("claude-opus-5-5", 650_000, 750_000, ["1 milhão de tokens; o teto do sinal é 75% dela.", "O sinal é entrada + 100 mil = 750 mil."], ["1 million tokens; the signal is capped at 75% of it.", "The signal is initial input + 100 thousand = 750 thousand."]),
-                ("claude-sonnet-4-5-20250929", 50_000, 150_000, ["Janela do modelo claude-sonnet-4-5-20250929: 200 mil tokens;", "O sinal é entrada + 100 mil = 150 mil."], ["Window of model claude-sonnet-4-5-20250929: 200 thousand tokens;", "The signal is initial input + 100 thousand = 150 thousand."]),
-                ("claude-opus-4-20250514", 50_000, 200_000, ["Janela do modelo desconhecida: o sinal fica sem teto.", "O sinal é entrada + 150 mil = 200 mil."], ["Model window unknown: the signal has no cap.", "The signal is initial input + 150 thousand = 200 thousand."]),
+                ("claude-opus-5-5", 150_000, 200_000, ["1 milhão de tokens; o teto do sinal é 75% dela.", "O limite é 200 mil tokens de contexto."], ["1 million tokens; the signal is capped at 75% of it.", "The limit is 200 thousand context tokens."]),
+                ("claude-sonnet-4-5-20250929", 50_000, 150_000, ["Janela do modelo claude-sonnet-4-5-20250929: 200 mil tokens;", "O limite é 150 mil tokens de contexto."], ["Window of model claude-sonnet-4-5-20250929: 200 thousand tokens;", "The limit is 150 thousand context tokens."]),
+                ("claude-opus-4-20250514", 50_000, 200_000, ["Janela do modelo desconhecida: o sinal fica sem teto.", "O limite é 200 mil tokens de contexto."], ["Model window unknown: the signal has no cap.", "The limit is 200 thousand context tokens."]),
             ];
             for (model, input, at, said_pt, said_en) in others {
                 let dir = open_project_in("x", lang);
@@ -1444,8 +1662,8 @@ mod tests {
             }
 
             let switches = [
-                ("claude-sonnet-4-5-20250929", "claude-opus-5-5", 200_000, ["Janela do modelo claude-opus-5-5: 1 milhão de tokens;", "O sinal é entrada + 150 mil = 200 mil."], ["Window of model claude-opus-5-5: 1 million tokens;", "The signal is initial input + 150 thousand = 200 thousand."]),
-                ("claude-opus-5-5", "claude-sonnet-4-5-20250929", 150_000, ["Janela do modelo claude-sonnet-4-5-20250929: 200 mil tokens;", "O sinal é entrada + 100 mil = 150 mil."], ["Window of model claude-sonnet-4-5-20250929: 200 thousand tokens;", "The signal is initial input + 100 thousand = 150 thousand."]),
+                ("claude-sonnet-4-5-20250929", "claude-opus-5-5", 200_000, ["Janela do modelo claude-opus-5-5: 1 milhão de tokens;", "O limite é 200 mil tokens de contexto."], ["Window of model claude-opus-5-5: 1 million tokens;", "The limit is 200 thousand context tokens."]),
+                ("claude-opus-5-5", "claude-sonnet-4-5-20250929", 150_000, ["Janela do modelo claude-sonnet-4-5-20250929: 200 mil tokens;", "O limite é 150 mil tokens de contexto."], ["Window of model claude-sonnet-4-5-20250929: 200 thousand tokens;", "The limit is 150 thousand context tokens."]),
             ];
             for (before, after, at, said_pt, said_en) in switches {
                 let dir = open_project_in("x", lang);
@@ -1473,13 +1691,25 @@ mod tests {
         assert!(codex_event("PreToolUse",&call).as_ref().is_none_or(|reply|reply["hookSpecificOutput"]["permissionDecision"]!="deny"));
     }
 
+    /// A conversa que abre com o comando de ler o pedido de outra raiz não é
+    /// de uma onda deste projeto: a régua é a mesma do despacho.
+    #[test]
+    fn a_read_command_of_another_root_is_not_a_wave_of_this_project() {
+        let dir=open_project("x");let root=dir.path();let path=root.join("child.jsonl");
+        let save=|text:String| std::fs::write(&path,serde_json::json!({"type":"user","message":{"role":"user","content":text}}).to_string()).unwrap();
+        save("mustard-rt run read request-1 --root /another/project --spec x".into());
+        assert!(wave_opened(&path,root).is_none());
+        save(format!("mustard-rt run read request-1 --root {} --spec x",mustard_core::io::wave_prompt::shown(&store::spec_root(root))));
+        assert_eq!(wave_opened(&path,root),Some(("x".to_string(),1)));
+    }
+
     #[test]
     fn codex_summary_read_is_part_of_initial_input() {
         let dir=open_project("x");let root=dir.path();let path=root.join("child.jsonl");
         let read=serde_json::json!({"type":"response_item","payload":{"type":"function_call","name":"exec_command",
             "arguments":serde_json::json!({"cmd":"mustard-rt run read delivered-1 --spec x"}).to_string(),"call_id":"summary"}});
         native_rollout(&path,"a1",&[codex_sample(40_000,30_000),read,codex_sample(50_000,40_000),codex_sample(200_000,190_000)]);
-        let measured=wave_context(&[path],Locale::PtBr).unwrap();
+        let measured=wave_context(&[path],root).unwrap();
         assert_eq!(measured.baseline(),50_000);
         assert_eq!(measured.growth(),150_000);
     }
@@ -1507,20 +1737,20 @@ mod tests {
     /// avisam dizendo a janela declarada como teto; a mesma conversa sem o
     /// campo avisa nos mesmos 200 mil, com a janela desconhecida.
     #[test]
-    fn codex_declared_window_above_the_work_horizon_keeps_input_plus_the_horizon() {
+    fn codex_declared_window_above_the_limit_keeps_the_fixed_limit() {
         let dir = open_project("x");
         let root = dir.path();
         let mut rows = vec![declared_sample(50_000, 1_000_000), declared_sample(199_999, 1_000_000)];
-        assert_eq!(codex_wave_notice(root, &rows), None, "149,999 of work is below the horizon");
+        assert_eq!(codex_wave_notice(root, &rows), None, "199,999 is below the limit");
         rows.push(declared_sample(200_000, 1_000_000));
-        let signal = codex_wave_notice(root, &rows).expect("the declared 1M window signals at input + 150 thousand");
-        let said = ["Janela do modelo declarada pela conversa: 1 milhão de tokens; o teto do sinal é 75% dela.", "O sinal é entrada + 150 mil = 200 mil."];
+        let signal = codex_wave_notice(root, &rows).expect("the declared 1M window signals at 200 thousand");
+        let said = ["Janela do modelo declarada pela conversa: 1 milhão de tokens; o teto do sinal é 75% dela.", "O limite é 200 mil tokens de contexto."];
         assert!(said.iter().all(|said| signal.contains(said)), "{signal}");
 
         let dir = open_project("x");
         let signal = codex_wave_notice(dir.path(), &[codex_sample(50_000, 40_000), codex_sample(200_000, 190_000)])
             .expect("without the declared window the signal comes at 200 thousand");
-        let said = ["Janela do modelo desconhecida: o sinal fica sem teto.", "O sinal é entrada + 150 mil = 200 mil."];
+        let said = ["Janela do modelo desconhecida: o sinal fica sem teto.", "O limite é 200 mil tokens de contexto."];
         assert!(said.iter().all(|said| signal.contains(said)), "{signal}");
     }
 
@@ -1528,14 +1758,14 @@ mod tests {
     /// mil, teto aos 96 mil, com 30 mil de entrada — avisa no teto, antes dos
     /// 150 mil com que as chamadas sem medida deixam de reler a conversa.
     #[test]
-    fn codex_declared_window_below_the_work_horizon_signals_at_its_cap() {
+    fn codex_declared_window_below_the_limit_signals_at_its_cap() {
         let dir = open_project("x");
         let root = dir.path();
         let mut rows = vec![declared_sample(30_000, 128_000), declared_sample(95_999, 128_000)];
         assert_eq!(codex_wave_notice(root, &rows), None);
         rows.push(declared_sample(96_000, 128_000));
         let signal = codex_wave_notice(root, &rows).expect("75% of the declared 128 thousand is 96 thousand");
-        let said = ["Janela do modelo declarada pela conversa: 128 mil tokens; o teto do sinal é 75% dela.", "O sinal é entrada + 66 mil = 96 mil."];
+        let said = ["Janela do modelo declarada pela conversa: 128 mil tokens; o teto do sinal é 75% dela.", "O limite é 96 mil tokens de contexto."];
         assert!(said.iter().all(|said| signal.contains(said)), "{signal}");
     }
 
@@ -1552,8 +1782,8 @@ mod tests {
         rows.push(declared_sample(199_999, 0));
         assert_eq!(codex_wave_notice(root, &rows), None, "a zero window is no cap");
         rows.push(declared_sample(200_000, 0));
-        let signal = codex_wave_notice(root, &rows).expect("a zero window leaves the signal at input + 150 thousand");
-        let said = ["Janela do modelo desconhecida: o sinal fica sem teto.", "O sinal é entrada + 150 mil = 200 mil."];
+        let signal = codex_wave_notice(root, &rows).expect("a zero window leaves the signal at 200 thousand");
+        let said = ["Janela do modelo desconhecida: o sinal fica sem teto.", "O limite é 200 mil tokens de contexto."];
         assert!(said.iter().all(|said| signal.contains(said)), "{signal}");
     }
 
@@ -1740,11 +1970,11 @@ mod tests {
         let dir=open_project("x");
         let root=dir.path();
         std::fs::write(root.join("mustard.json"),r#"{"language":{"text":"pt-BR"},"buildCommand":"cargo build","testCommand":"cargo test --locked -p app","lintCommand":"cargo clippy -p app"}"#).unwrap();
-        let mut replies=vec![agent_reply(30_000,Some("read")),agent_reply(170_000,Some("edit"))];
+        let mut replies=vec![agent_reply(30_000,Some("read")),agent_reply(190_000,Some("edit"))];
         write_agent(root,&wave_request(Locale::PtBr),&replies);
         assert_eq!(injected(&agent_after_tool(root)),None,"no stop order in the middle of a task");
         assert_eq!(refused(root,"Edit",json!({"file_path":root.join("a.rs"),"old_string":"a","new_string":"b"})),None);
-        assert!(agent_finishes(root,&mut replies,180_000,Locale::PtBr).is_some());
+        assert!(agent_finishes(root,&mut replies,200_000,Locale::PtBr).is_some());
         for command in ["cargo test --locked -p app specific_test","rtk cargo test --locked -p app specific_test","cargo clippy -p app", "cargo build && cargo test --locked -p app specific_test && cargo clippy -p app", "mustard-rt run read request-1 && cargo test --locked -p app"] {
             assert_eq!(refused(root,"Bash",json!({"command":command})),None,"{command}");
         }
@@ -1764,7 +1994,7 @@ mod tests {
         fields.insert("proof".into(), serde_json::json!("./node_modules/.bin/jest --roots=src src/example.spec.ts"));
         store::write(&path, "criterion", fields, &[]).unwrap();
         let mut replies = vec![agent_reply(30_000, Some("read"))];
-        assert!(agent_finishes(root, &mut replies, 180_000, Locale::PtBr).is_some());
+        assert!(agent_finishes(root, &mut replies, 200_000, Locale::PtBr).is_some());
         assert_eq!(refused(root, "Bash", serde_json::json!({"command":"./node_modules/.bin/jest --roots=src src/example.spec.ts"})), None);
         assert!(refused(root, "Edit", serde_json::json!({"file_path":root.join("another-task.rs")})).is_some());
     }

@@ -19,38 +19,6 @@ use crate::commands::scan;
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)] // CLI parser enum - clap-Subcommand; boxing breaks derive
 pub enum ScanCmd {
-    /// Reuse project-specific profiles, with native navigation from the scan.
-    /// Authored procedures are drafts until reviewed by exact fingerprint.
-    #[command(display_order = 32)]
-    Expertise {
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
-        /// Refresh navigation profiles from current indexed sources; no inference.
-        #[arg(long, conflicts_with_all = ["record", "review", "export"]) ]
-        sync: bool,
-        /// Record an authored profile manifest as a draft.
-        #[arg(long, conflicts_with_all = ["review", "export"]) ]
-        record: Option<PathBuf>,
-        /// Review `<name>:<fingerprint>` after inspecting the procedure and sources.
-        #[arg(long, conflicts_with = "export")]
-        review: Option<String>,
-        /// Export an active profile's skill and agent to the selected host.
-        #[arg(long)]
-        export: Option<String>,
-        /// Prepare a missing procedure using a native subagent of this session.
-        #[arg(long, value_parser = ["claude", "codex"], requires = "query", conflicts_with_all = ["sync", "record", "review", "export", "complete_session"])]
-        prepare_session: Option<String>,
-        /// Store the native analysis as a draft procedure, never self-approve.
-        #[arg(long, requires = "query", conflicts_with_all = ["sync", "record", "review", "export"])]
-        complete_session: Option<PathBuf>,
-        #[arg(long)]
-        query: Option<String>,
-        #[arg(long, value_parser = ["claude", "codex"], default_value = "claude")]
-        host: String,
-        /// Only profiles matching the task's files.
-        #[arg(long)]
-        file: Vec<String>,
-    },
     /// Execute a source search, then join its real hits with current scan evidence.
     #[command(display_order = 30)]
     Search {
@@ -198,18 +166,8 @@ pub enum ScanCmd {
     /// summary of the project map, up to 3 kB; with `--file`, the parts of that
     /// file: each declaration with its kind, name and lines, and the line
     /// where its tests start), `dump` (the map database table by
-    /// table, in a fixed order, for debugging), `audit` (native checks of
-    /// database/index consistency and query plans), or `note "<sentence>" --file
-    /// <file> [--name <declaration>]` (writes the one-sentence meaning of that
-    /// file, or declaration, in business words, so the search finds it by
-    /// them; it stays valid until the file changes, and `slice` shows it, as
-    /// stale once the file changed), `notes-package [--limit <chars>]
-    /// [--changed-since <commit>]` (the functions without a current sentence,
-    /// stale ones first, then those of files changed since the commit, each
-    /// with its text, within the analysis prompt ceiling), or `notes-write
-    /// --json '[{"file","name","text"}]'` (writes the sentences the analysis
-    /// agent returned, answering the written and the refused, with the
-    /// reason). Reads `.claude/grain.db`;
+    /// table, in a fixed order, for debugging), or `audit` (native checks of
+    /// database/index consistency and query plans). Reads `.claude/grain.db`;
     /// prints JSON and exits 1 on a refusal.
     #[command(display_order = 16)]
     Map {
@@ -217,8 +175,7 @@ pub enum ScanCmd {
         #[arg(value_enum)]
         question: crate::commands::map::Question,
         /// The text to look for (`search`), the same you would give `Grep`:
-        /// a regular expression, or plain text with `-F`; for `note`, the
-        /// sentence of what the file or declaration is for.
+        /// a regular expression, or plain text with `-F`.
         #[arg(value_name = "PATTERN")]
         pattern: Option<String>,
         /// The folder to look in (`search`); the current one by default.
@@ -265,22 +222,13 @@ pub enum ScanCmd {
         #[arg(long, hide = true)]
         said: Option<String>,
         /// The declaration the question is about (`slice`, `users`,
-        /// `history`, `note`).
+        /// `history`).
         #[arg(long)]
         name: Option<String>,
         /// The pull request whose description `history` shows, first
         /// paragraph only.
         #[arg(long)]
         pr: Option<u32>,
-        /// The character ceiling of the `notes-package` package.
-        #[arg(long)]
-        limit: Option<usize>,
-        /// The commit since which `notes-package` takes files as changed.
-        #[arg(long)]
-        changed_since: Option<String>,
-        /// The sentences `notes-write` writes: `[{"file","name","text"}]`.
-        #[arg(long)]
-        json: Option<String>,
         /// Any directory inside the project. Defaults to the current dir.
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -291,9 +239,6 @@ pub enum ScanCmd {
 /// Dispatch one `scan`-family `run` subcommand.
 pub fn dispatch(cmd: ScanCmd) {
     match cmd {
-        ScanCmd::Expertise { root, sync, record, review, export, prepare_session, complete_session, query, host, file } =>
-            super::expertise::run(&root, sync, record.as_deref(), review.as_deref(), export.as_deref(),
-                prepare_session.as_deref(), complete_session.as_deref(), query.as_deref(), &host, &file),
         ScanCmd::Search{root,request,intent,purpose,choose,raw,shell_output,args,
         }=>super::search::run(&root,request.as_deref(),&args,intent.as_deref(),purpose.as_deref(),choose,raw,shell_output,
         ),
@@ -360,9 +305,6 @@ fn map_opts(cmd: ScanCmd) -> crate::commands::map::MapOpts {
         said,
         name,
         pr,
-        limit,
-        changed_since,
-        json,
         root,
     } = cmd
     else {
@@ -389,9 +331,6 @@ fn map_opts(cmd: ScanCmd) -> crate::commands::map::MapOpts {
         name,
         pr,
         session: crate::shared::spec_state::session_from_env(),
-        limit,
-        changed_since,
-        json,
     }
 }
 

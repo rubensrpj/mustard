@@ -11,6 +11,9 @@
 //! Prova de ponta a ponta, pelo binário de verdade, num repositório
 //! temporário.
 
+#[path = "support/binary.rs"]
+mod binary;
+
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -71,7 +74,7 @@ impl Project {
 
     /// Como [`Self::command`], rodando de dentro de `dir`.
     fn command_in(&self, dir: &Path, args: &[&str], stdin: &str) -> std::process::Output {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+        let mut child = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
             .args(args)
             .current_dir(dir)
             .env("HOME", &self.home)
@@ -322,7 +325,7 @@ fn deliver_wave(project: &Project, wave: u64, text: &str, changes: &[(&str, &str
         .iter()
         .map(|item| json!({"item": item.id, "met": true}))
         .collect();
-    let delivered = json!({"wave": wave, "text": text, "files": files, "commit": format!("ajuste da onda {wave}"),
+    let delivered = json!({"wave": wave, "text": text, "files": files, "commit": format!("ajuste da entrega {wave}"),
         "agreed": agreed});
     project.read_request(wave);
     project.finish_tasks(wave);

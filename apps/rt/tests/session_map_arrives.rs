@@ -12,6 +12,9 @@
 //! pega, tanto numa instalação nova quanto numa que ainda declarava as três
 //! partes do roteador antigo.
 
+#[path = "support/binary.rs"]
+mod binary;
+
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -21,7 +24,7 @@ use serde_json::{json, Value};
 
 /// Roda o binário no projeto, com uma pasta pessoal falsa e sem `claude` à mão.
 fn rt(root: &Path, home: &Path, args: &[&str], stdin: &str) -> String {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+    let mut child = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
         .args(args)
         .current_dir(root)
         .env("CLAUDE_PROJECT_DIR", root)
@@ -179,7 +182,7 @@ fn an_english_fresh_install_tracks_locally_and_exports_only_when_requested() {
     let dir = tempfile::tempdir().unwrap();
     let (root,home) = installed(dir.path(), r#"{"version":"1.0.0","language":{"text":"en-US"}}"#);
     let context = session_start(&root,&home,"startup");
-    assert!(context.contains("/mustard-panel") && context.contains("/mustard-pages"), "{context}");
+    assert!(context.contains("/mustard:mods") && context.contains("/mustard:pages"), "{context}");
     assert!(context.contains("export is not publishing"), "{context}");
     assert!(!root.join(".claude/mustard/pages/project.html").exists());
     assert!(!root.join(".claude/mustard/pages/spec.html").exists());
@@ -285,8 +288,14 @@ fn an_update_renames_the_session_map_and_its_declaration() {
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         left.sort();
-        // A conferência desta instalação fica ao lado do mapa atual.
-        assert_eq!(left, ["installation.json", "session-map.md"], "`{spelling}`: the old map is still on disk");
+        // A conferência desta instalação, a lista das specs de antes dela e a
+        // marca da passagem delas pelo resumo do projeto ficam ao lado do mapa
+        // atual.
+        assert_eq!(
+            left,
+            ["installation.json", "legacy-specs.json", "legacy-summary.json", "session-map.md"],
+            "`{spelling}`: the old map is still on disk"
+        );
         let receipt:Value=serde_json::from_str(&std::fs::read_to_string(root.join(".claude/mustard/installation.json")).unwrap()).unwrap();
         assert_eq!(receipt,report["installation"],"the receipt must describe this update");
         assert_eq!(receipt["version"],mustard_core::harness_version());

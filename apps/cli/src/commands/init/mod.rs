@@ -236,6 +236,11 @@ fn init_with_scan(
     mfs::create_dir_all(&claude_path)
         .with_context(|| format!("creating {}", claude_path.display()))?;
 
+    // The specs already here when this version is first mounted on the
+    // project stay read-only: the list is written once, never redone.
+    mustard_core::io::legacy_specs::mark_once(&project_path, &mustard_core::harness_version())
+        .context("listing the specs of before this version")?;
+
     // The `inject` migrations (idempotent, fail-open): they only touch
     // `mustard.json`, which is Mustard's own file.
     seeding::report_migration(&mustard_core::migrate_inject_declarations(&project_path, &claude_path));
@@ -261,8 +266,9 @@ fn init_with_scan(
     }
     // Mustard's own texts — so the answer to "merge or overwrite?" does not
     // reach them: the seeder takes no such argument and always lays the
-    // shipped text down again, in the text language.
-    for (rel, outcome) in mustard_core::seed_harness_texts(&claude_path, text, config.agent_settings())
+    // shipped text down again, in the text language. The final reviewer gets
+    // the model and effort declared for it, not the wave agents' ones.
+    for (rel, outcome) in mustard_core::platform::project_seed::seed_project_harness_texts(&claude_path, &config)
         .context("seeding Mustard's texts under .claude/")?
     {
         seeding::report_seed(&format!(".claude/{rel}"), outcome, true);
@@ -579,6 +585,28 @@ mod tests {
         assert!(!nested.exists(), ".claude/.claude/ must not be created — I1 rule");
     }
 
+    /// O `init` sobre um projeto que já tem specs grava a lista das antigas
+    /// uma vez; o `init` seguinte não regrava, e a spec de depois é atual.
+    #[test]
+    fn init_over_an_existing_project_lists_its_specs_once() {
+        let work = tempdir().unwrap();
+        let project = work.path().join("project");
+        fs::create_dir_all(project.join(".claude/spec/antiga")).unwrap();
+        fs::write(project.join(".claude/spec/antiga/spec.ndjson"), "").unwrap();
+
+        init(&project, &InitOptions { yes: true, ..InitOptions::default() }).unwrap();
+        let list = mustard_core::io::legacy_specs::path(&project);
+        let written = json_object(&list);
+        assert_eq!(written["specs"], serde_json::json!(["antiga"]), "{written:?}");
+        assert_eq!(written["since"], serde_json::json!(mustard_core::harness_version()));
+
+        fs::create_dir_all(project.join(".claude/spec/nova")).unwrap();
+        let before = fs::read_to_string(&list).unwrap();
+        init(&project, &InitOptions { yes: true, ..InitOptions::default() }).unwrap();
+        assert_eq!(fs::read_to_string(&list).unwrap(), before, "the list is written once");
+        assert!(!mustard_core::io::legacy_specs::is_legacy(&project, "nova"));
+    }
+
     #[test]
     fn init_merge_rewrites_the_session_map_and_backfills() {
         let work = tempdir().unwrap();
@@ -763,6 +791,29 @@ mod tests {
         assert_eq!(carried(&project, "effort"), both("xhigh"));
     }
 
+    /// Com `agents.review` no `mustard.json`, a instalação grava o revisor
+    /// final com o modelo e o esforço dele, e o agente de onda com os de
+    /// `agents`.
+    #[test]
+    fn init_writes_the_reviewer_with_the_model_and_effort_asked_for_it() {
+        let header_of = |project: &Path, name: &str, key: &str| -> String {
+            let text = fs::read_to_string(project.join(format!(".claude/agents/mustard/{name}.md"))).unwrap();
+            let header = text.split("\n---\n").next().unwrap().to_string();
+            let prefix = format!("{key}: ");
+            header.lines().find_map(|line| line.strip_prefix(&prefix)).unwrap_or_default().to_string()
+        };
+        let work = tempdir().unwrap();
+        let project = work.path().join("project");
+        fs::create_dir_all(&project).unwrap();
+        let agents = serde_json::json!({"model": "sonnet", "effort": "high", "review": {"model": "opus", "effort": "max"}});
+        fs::write(project.join("mustard.json"), serde_json::json!({ "agents": agents }).to_string()).unwrap();
+
+        init(&project, &InitOptions { yes: true, ..InitOptions::default() }).unwrap();
+
+        assert_eq!((header_of(&project, "review", "model"), header_of(&project, "review", "effort")), ("opus".into(), "max".into()));
+        assert_eq!((header_of(&project, "wave", "model"), header_of(&project, "wave", "effort")), ("sonnet".into(), "high".into()));
+    }
+
     /// A instalação sobre um projeto de uma versão antiga, que ainda tem o
     /// agente de onda de tarefa única e o que escrevia skills, tira os dois
     /// arquivos e deixa os dois agentes de hoje; o agente do projeto com o
@@ -788,7 +839,7 @@ mod tests {
         agents.sort();
         assert_eq!(agents, ["analysis.md", "review.md", "wave.md"], "the install left another set of agents");
         let analysis=fs::read_to_string(claude.join("agents/mustard/analysis.md")).unwrap();
-        assert!(analysis.contains("model: haiku\n") && analysis.contains("effort: medium\n"));
+        assert!(analysis.contains("model: haiku\n") && analysis.contains("effort: xhigh\n"));
         assert!(analysis.contains("100.000") && !analysis.contains("model: sonnet\n"));
         assert_eq!(fs::read_to_string(claude.join("agents/wave-solo.md")).unwrap(), own, "the project's agent changed");
     }
