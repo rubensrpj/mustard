@@ -35,7 +35,12 @@ pub(super) fn context(input:&HookInput,ctx:&Ctx)->Option<String> {
     // Persist only source witnesses verified by the existing learning policy.
     // A changed/unmapped file is pending for the next native scan, not evidence
     // that the previous declaration is still current. No model or scan here.
-    let _=mustard_core::io::knowledge::observations::record(index,&tree,&facts);
+    // Como a busca: o que se aprendeu grava no fim com a espera curta, e o
+    // mapa com bloco a pôr em dia fica para a passada, sem segurar o agente.
+    let mut later=mustard_core::io::map_db::Later::default();
+    let _=mustard_core::io::knowledge::observations::learn(index,&tree,&facts,&mut later);
+    let _=later.keep(mustard_core::io::knowledge::observations::LEARNING_WAIT);
+    if mustard_core::io::project_map::needs_block_update(&mustard_core::io::project_map::model_path(index)) {return None;}
     let hits:Vec<_>=facts.iter().map(|(file,line,text)|Occurrence {file,line:*line,text}).collect();
     let report=mustard_core::io::knowledge::investigation::cross_hits(index,&tree,&hits).ok()?;
     let owners=report.get("symbols")?.as_array()?;
@@ -133,6 +138,24 @@ mod tests {
         std::fs::remove_file(mustard_core::io::project_map::model_path(root.path())).unwrap();
         assert!(context(&input,&ctx).is_none());
         assert!(!mustard_core::io::project_map::model_path(root.path()).is_file(),"no scan/database is created for a bare Read");
+    }
+    #[test]
+    fn a_map_held_by_another_writer_does_not_hold_the_read() {
+        let root=indexed();let (input,ctx)=read(root.path());
+        let model=mustard_core::io::project_map::model_path(root.path());
+        let (held,holding)=std::sync::mpsc::channel();let (release,released)=std::sync::mpsc::channel::<()>();
+        let base=root.path().to_path_buf();
+        let writer=std::thread::spawn(move||{
+            let mut db=mustard_core::io::map_db::MapDb::open(&model,&base,&[]).unwrap();
+            db.write(|_|{held.send(()).unwrap();let _=released.recv_timeout(std::time::Duration::from_secs(10));Ok(())}).unwrap();
+        });
+        holding.recv().unwrap();
+        let started=std::time::Instant::now();
+        let note=context(&input,&ctx);
+        let spent=started.elapsed();
+        let _=release.send(());writer.join().unwrap();
+        assert!(spent<std::time::Duration::from_secs(1),"the read waited {spent:?} for the map lock");
+        assert!(note.is_some_and(|note|note.contains("quartz: 1-3")),"the owners still come from the map being read");
     }
     #[cfg(unix)]
     #[test]

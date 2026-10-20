@@ -17,8 +17,9 @@ const SHOWN: usize = 40;
 const HELD: [&str; 3] = ["capacity", "cleanup-last", "ready"];
 
 /// Os motivos exatos da pronta com vaga que a montagem deixou de fora: o
-/// julgamento do Jev e a chegada ao backlog nesta rodada.
-const EXACT: [&str; 2] = ["judged-clash", "arrived-this-round"];
+/// julgamento do Jev, a chegada ao backlog nesta rodada e a decisão do Jev
+/// que ela ainda espera.
+const EXACT: [&str; 3] = ["judged-clash", "arrived-this-round", "jev-pending"];
 
 /// A fila declarada: as vagas do projeto, se o número vem do `mustard.json`
 /// (`declared`), as ondas com pedido aberto que ocupam as vagas e cada
@@ -138,6 +139,7 @@ pub(super) fn held(root: &Path, spec: &str, log: &SpecLog, lang: Locale, assembl
             row.reason = EXACT[match hold {
                 Hold::Judged(_) => 0,
                 Hold::Arrived => 1,
+                Hold::JevPending => 2,
             }];
         }
     }
@@ -198,6 +200,7 @@ fn exact(hold: &Hold, lang: Locale) -> String {
     match hold {
         Hold::Judged(chance) => translate("round.queued.judged", lang).replace("{chance}", &chance.to_string()),
         Hold::Arrived => translate("round.queued.arrived", lang).to_string(),
+        Hold::JevPending => translate("round.queued.jev_pending", lang).to_string(),
     }
 }
 
@@ -219,7 +222,7 @@ mod tests {
         let (said, crit) = backlog_project(root);
         backlog_task_on(root, said, crit, "Change running file.", &["src/a.rs"]);
         let log = spec_now(root);
-        dispatch_backlog(root, "x", &log, &log, 4, None).map(|(formed, _)| formed).unwrap();
+        dispatch_backlog(root, "x", &log, &log, 4, (None, None)).map(|(formed, _)| formed).unwrap();
         seed_running(root, 1);
         backlog_task_on(root, said, crit, "Change same file.", &["src/a.rs"]);
         backlog_task_on(root, said, crit, "Change independent file.", &["src/b.rs"]);
@@ -340,7 +343,7 @@ mod tests {
             let tasks = board.backlog.iter().map(|task| (task.id, Judgement { kind: TaskKind::Feature, confidence: 0.9, clash: clash(task.id) }));
             Ok(Judged { tasks: tasks.collect(), usage: mustard_core::domain::map_filter::FilterUsage::default() })
         };
-        let (formed, held) = dispatch_backlog(root, "x", &on_entry, &locked, 4, Some(&judge)).unwrap();
+        let (formed, held) = dispatch_backlog(root, "x", &on_entry, &locked, 4, (Some(&judge), None)).unwrap();
         assert!(formed.is_empty(), "{formed:?}");
         let codes = locked.codes();
         assert_eq!(held, BTreeMap::from([(codes[&clashing].clone(), Hold::Judged(80)), (codes[&late].clone(), Hold::Arrived)]));

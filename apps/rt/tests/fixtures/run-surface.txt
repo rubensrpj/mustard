@@ -6,7 +6,6 @@ deliver-merged
 discard
 doctor
 evidence
-expertise
 find
 grill
 help
@@ -14,7 +13,6 @@ index
 knowledge
 map
 measure
-move-records
 open
 page
 panel

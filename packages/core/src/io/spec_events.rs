@@ -36,8 +36,6 @@ use crate::io::fs::lock::{LockedFile, read_shared};
 use crate::io::workspace;
 use crate::platform::error::Error;
 
-pub mod records;
-
 /// A raiz do projeto em que as specs moram, vista de `start`: o checkout
 /// principal quando `start` está num worktree, e a âncora do Mustard a partir
 /// daí. Sem âncora, o próprio ponto de partida.
@@ -945,7 +943,7 @@ mod tests {
             "skill",
             "skill",
             "09:00",
-            json!({"name": "add-hook-rule", "action": "create", "text": "Passos da regra.", "sha": "3f9a1c2e", "examples": [{"path": "src/render.rs", "why": "mesma pasta"}, {"path": "src/gate.rs", "why": "com teste"}], "origin": msg}),
+            json!({"name": "add-hook-rule", "action": "created", "text": "Passos da regra.", "sha": "3f9a1c2e", "files": ["src/render.rs", "src/gate.rs"], "origin": msg}),
         );
         add(
             "send",

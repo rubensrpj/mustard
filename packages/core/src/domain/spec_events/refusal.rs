@@ -95,6 +95,9 @@ pub enum Refusal {
     /// Uma gravação, ou uma página, numa pasta de spec do formato antigo: o
     /// `spec.md` dela é o documento, e o binário não grava nela.
     OldFormatSpec { spec: String },
+    /// Uma obra numa spec de uma versão anterior do Mustard no projeto: ela
+    /// só se lê.
+    LegacySpec { spec: String },
     /// O pedido adiado (`deferred`) aponta uma pendência que a lista não tem.
     DeferredUnknownPending { pending: String },
     /// O pedido adiado aponta uma pendência já fechada ou descartada.
@@ -196,6 +199,10 @@ pub enum Refusal {
     /// Nada é gravado, e a mensagem nomeia cada item não lido e manda lê-lo de
     /// dentro da cópia.
     DeliveryReadMissing { wave: u64, missing: Vec<String> },
+    /// A leitura, de dentro da cópia da onda, de uma tarefa dela que ainda não
+    /// foi liberada, ou de um item que só tarefas assim atendem: `task` é a
+    /// tarefa. Ela chega na resposta do passo que termina a tarefa atual.
+    TaskNotReleased { task: String },
     /// A entrega da onda `wave` com arquivos entregues, `files`, que a cópia
     /// tem diferentes do que o último passo de término de tarefa guardou: o
     /// passo marca a prova verde, e o arquivo mudado depois dele iria ao
@@ -362,6 +369,7 @@ impl Refusal {
             Self::WaveByBacklog => "wave-by-backlog",
             Self::UserMessageByHook { .. } => "user-message-by-hook",
             Self::OldFormatSpec { .. } => "old-format-spec",
+            Self::LegacySpec { .. } => "legacy-spec",
             Self::DeferredUnknownPending { .. } => "deferred-unknown-pending",
             Self::DeferredClosedPending { .. } => "deferred-closed-pending",
             Self::GoalOriginNotUser { .. } => "goal-origin-not-user",
@@ -392,6 +400,7 @@ impl Refusal {
             Self::AgreedItemsMissing { .. } => "agreed-items-missing",
             Self::DeliveryAgreedMissing { .. } => "delivery-agreed-missing",
             Self::DeliveryReadMissing { .. } => "delivery-read-missing",
+            Self::TaskNotReleased { .. } => "task-not-released",
             Self::DeliveryProofOlderThanFile { .. } => "delivery-proof-older-than-file",
             Self::VerdictReadMissing { .. } => "verdict-read-missing",
             Self::CriterionFormMissing => "criterion-form-missing",
@@ -551,6 +560,7 @@ impl Refusal {
             Self::OldFormatSpec { spec } => {
                 fill("spec_events.old_format_spec", &[("{spec}", spec.clone())])
             }
+            Self::LegacySpec { spec } => fill("spec_events.legacy_spec", &[("{spec}", spec.clone())]),
             Self::StateByFlowOnly { spec } => {
                 fill("spec_events.state_by_flow_only", &[("{spec}", spec.clone())])
             }
@@ -675,6 +685,7 @@ impl Refusal {
                 "spec_events.delivery_read_missing",
                 &[("{wave}", wave.to_string()), ("{missing}", missing.join(", "))],
             ),
+            Self::TaskNotReleased { task } => fill("spec_events.task_not_released", &[("{task}", task.clone())]),
             Self::DeliveryProofOlderThanFile { wave, files } => fill(
                 "spec_events.delivery_proof_older_than_file",
                 &[("{wave}", wave.to_string()), ("{files}", files.join(", "))],

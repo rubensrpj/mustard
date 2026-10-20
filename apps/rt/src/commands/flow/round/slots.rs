@@ -453,6 +453,7 @@ pub(crate) fn remove_copy(root: &Path, path: &Path) -> Result<(), String> {
     if !inside_copies(root, path) {
         return Err(format!("not a copy folder: {}", shown(path)));
     }
+    let learned = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let mut detail = String::new();
     for sub in submodules_of(root) {
         let inner = path.join(&sub);
@@ -479,6 +480,7 @@ pub(crate) fn remove_copy(root: &Path, path: &Path) -> Result<(), String> {
     if path.exists() || has_place(&registered_copies(root), &shown(path)) {
         return Err(if detail.is_empty() { shown(path) } else { detail });
     }
+    let _ = mustard_core::io::knowledge::observations::forget_tree(root, &learned);
     Ok(())
 }
 
@@ -560,9 +562,9 @@ pub(crate) fn leaving_place(root: &Path) -> PathBuf {
 /// (`git worktree prune`). Renomear dentro da mesma pasta das cópias é
 /// instantâneo, qualquer que seja o tamanho da compilação dentro dela. Só a
 /// cópia de dentro da pasta das cópias do projeto. Devolve o lugar novo da
-/// pasta, que quem chama apaga depois de soltar a trava, ou o motivo quando
-/// ela não saiu do caminho.
-fn detach_copy(root: &Path, spec: &str, path: &Path) -> Result<PathBuf, String> {
+/// pasta, que quem chama apaga depois de soltar a trava, com a pasta de
+/// antes como a busca a aprendeu, ou o motivo quando ela não saiu do caminho.
+fn detach_copy(root: &Path, spec: &str, path: &Path) -> Result<(PathBuf, PathBuf), String> {
     if !inside_copies(root, path) || !path.starts_with(copies_dir(root)) {
         return Err(format!("not a copy folder: {}", shown(path)));
     }
@@ -571,12 +573,13 @@ fn detach_copy(root: &Path, spec: &str, path: &Path) -> Result<PathBuf, String> 
     let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|at| at.as_nanos()).unwrap_or_default();
     let target = place.join(format!("{spec}-{name}-{}-{stamp}", std::process::id()));
+    let learned = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     std::fs::rename(path, &target).map_err(|err| format!("{}: {err}", shown(path)))?;
     let _ = git::run(root, &["worktree", "prune"]);
     for sub in submodules_of(root) {
         let _ = git::run(&root.join(&sub), &["worktree", "prune"]);
     }
-    Ok(target)
+    Ok((target, learned))
 }
 
 /// Tira a cópia solta `path` — de um lugar antigo, sem a pasta da obra em
@@ -608,6 +611,9 @@ pub(crate) struct Removal {
     /// que saem: [`Removal::delete_leaving`] as apaga depois de soltar a
     /// trava.
     pub(crate) leaving: Vec<PathBuf>,
+    /// As pastas das cópias que saíram do caminho, como a busca as aprendeu:
+    /// [`Removal::delete_leaving`] tira do mapa o que ela aprendeu nelas.
+    pub(crate) learned: Vec<PathBuf>,
 }
 
 impl Removal {
@@ -616,14 +622,18 @@ impl Removal {
     /// guardado e o git já as esqueceu, e apagar a compilação de uma cópia
     /// leva o tempo que levar sem segurar despacho nem commit de ninguém. A
     /// pasta que o disco não deixa apagar vai em `left`, com o motivo, e a
-    /// limpeza a recolhe depois.
-    pub(crate) fn delete_leaving(&mut self) {
+    /// limpeza a recolhe depois. Por fim, tira do mapa do projeto `root` o
+    /// que a busca aprendeu nas cópias que saíram.
+    pub(crate) fn delete_leaving(&mut self, root: &Path) {
         for path in std::mem::take(&mut self.leaving) {
             if let Err(err) = mustard_core::io::fs::remove_dir_all(&path)
                 && path.exists()
             {
                 self.left.push((shown(&path), err.to_string()));
             }
+        }
+        for copy in std::mem::take(&mut self.learned) {
+            let _ = mustard_core::io::knowledge::observations::forget_tree(root, &copy);
         }
     }
 }
@@ -651,7 +661,7 @@ pub(crate) fn remove_spec_copies(root: &Path, spec: &str, log: Option<&SpecLog>)
         Ok(copies) => remove_spec_copies_under(root, spec, log, &copies),
         Err(detail) => return Removal { left: vec![(shown(&dir), detail)], ..Removal::default() },
     };
-    removal.delete_leaving();
+    removal.delete_leaving(root);
     removal
 }
 
@@ -714,7 +724,10 @@ pub(crate) fn remove_spec_copies_held(root: &Path, spec: &str, log: Option<&Spec
             continue;
         }
         match detach_copy(root, spec, slot) {
-            Ok(leaving) => removal.leaving.push(leaving),
+            Ok((leaving, learned)) => {
+                removal.leaving.push(leaving);
+                removal.learned.push(learned);
+            }
             Err(detail) => removal.left.push((shown(slot), detail)),
         }
     }
@@ -1060,8 +1073,42 @@ mod tests {
         assert!(compiled(&copies_dir(root)), "nothing is deleted while the lock is held: {removal:?}");
 
         drop(held);
-        removal.delete_leaving();
+        removal.delete_leaving(root);
         assert!(removal.left.is_empty() && removal.leaving.is_empty(), "{removal:?}");
         assert!(!compiled(&copies_dir(root)), "the copy is deleted once the lock is released: {removal:?}");
+    }
+
+    /// O que a busca aprendeu numa cópia mora no mapa principal; quando a
+    /// cópia sai, sozinha ou com a obra, o que ela aprendeu sai junto.
+    #[test]
+    fn a_removed_copy_takes_what_the_search_learned_in_it_out_of_the_main_map() {
+        use mustard_core::io::knowledge::observations::record;
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        bare_project(root);
+        std::fs::write(root.join("a.rs"), "pub fn quartz() {}\n").unwrap();
+        git_at(root, &["add", "a.rs"]);
+        git_at(root, &["commit", "-q", "-m", "semente"]);
+        mustard_core::io::project_map::write_text(root, r#"{"modules":[]}"#).unwrap();
+        let hit = || vec![("a.rs".to_string(), 1, "pub fn quartz() {}".to_string())];
+        let (single, of_spec) = (slot_path(root, "x", 0), slot_path(root, "y", 0));
+        let mut learned = Vec::new();
+        for slot in [&single, &of_spec] {
+            std::fs::create_dir_all(slot.parent().unwrap()).unwrap();
+            git_at(root, &["worktree", "add", "-q", "--detach", &shown(slot), "HEAD"]);
+            let tree = slot.canonicalize().unwrap();
+            assert_eq!(record(root, &tree, &hit()).unwrap()["new_facts"], 1);
+            learned.push(tree);
+        }
+
+        remove_copy(root, &single).unwrap();
+        let removal = remove_spec_copies(root, "y", None);
+        assert!(removal.left.is_empty() && removal.unkept.is_empty(), "{removal:?}");
+
+        for tree in &learned {
+            std::fs::create_dir_all(tree).unwrap();
+            std::fs::write(tree.join("a.rs"), "pub fn quartz() {}\n").unwrap();
+            assert_eq!(record(root, tree, &hit()).unwrap()["new_facts"], 1, "nothing learned in {} stayed in the map", tree.display());
+        }
     }
 }

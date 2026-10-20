@@ -33,7 +33,10 @@ use crate::domain::project_map::{
     file_history, lineage_fresh_in, recipe_for_existing, recipe_for_new, recipe_from_lineage, tests_for,
 };
 use crate::domain::spec_events::{Block, BlockQuery, SpecEvent, SpecLog};
-use crate::domain::wave_prompt::{self, Choice, Execution, Material, PatternExample, Skill, TaskPattern, WaveCopy, tasks_text, wave_files};
+use crate::domain::wave_prompt::{
+    self, Choice, Execution, Material, PatternExample, Skill, SkillOption, SkillTie, TaskBlock, TaskPattern, TaskSkill, WaveCopy, tasks_text,
+    wave_files,
+};
 use crate::io::project_map::{MapReader, Need};
 use crate::platform::i18n::Locale;
 
@@ -68,6 +71,9 @@ pub struct WavePrompt {
     /// O esforço pedido para a onda: o que o `mustard.json` declara para os
     /// agentes ([`Execution::requested_effort`]).
     pub effort: String,
+    /// De onde o modelo subiu, quando a onda volta reprovada
+    /// ([`crate::domain::agent_model::wave_model`]).
+    pub escalated_from: Option<crate::domain::agent_model::Escalation>,
     /// O texto do pedido, sempre: a página mostra mesmo o pedido recusado,
     /// que é justamente o que precisa ser visto antes da aprovação.
     pub text: String,
@@ -77,6 +83,10 @@ pub struct WavePrompt {
     /// cada item e `lesson-<número>` de cada lição. É a lista que imprimiu as
     /// linhas do texto ([`wave_prompt::listed`]), não um segundo cálculo.
     pub listed: Vec<String>,
+    /// O bloco de cada tarefa, na ordem de execução: o texto traz o da
+    /// primeira, e o envio guarda todos para a resposta do passo entregar o
+    /// seguinte ([`wave_prompt::task_blocks`]).
+    pub tasks: Vec<TaskBlock>,
     /// As skills que a conferência recusou, pelo nome.
     pub bad_skills: Vec<(String, MapRefusal)>,
     /// As skills que a onda usa e que precisam de revisão, pelo nome.
@@ -86,6 +96,24 @@ pub struct WavePrompt {
     /// onde o aviso sai e quantas vezes.
     pub bad_settings: Vec<BadSetting>,
     pub skills: Vec<Value>,
+    /// As tarefas com mais skills candidatas do que cabem no bloco, ainda sem
+    /// escolha ([`Flight::skill_picks`]): o bloco leva as primeiras.
+    pub skill_ties: Vec<SkillTie>,
+    /// As skills candidatas a alguma tarefa da onda, pelo nome, uma vez cada:
+    /// a nomeada e as que casam com os arquivos dela.
+    pub skill_candidates: Vec<String>,
+}
+
+impl WavePrompt {
+    /// O maior texto que o agente da onda recebe de uma vez, em tokens
+    /// ([`wave_prompt::estimate_tokens`]): o pedido ou o bloco de uma das
+    /// tarefas seguintes, que chega na resposta de um passo. É o que o teto
+    /// do pedido mede.
+    #[must_use]
+    pub fn tokens(&self) -> u64 {
+        let blocks = self.tasks.iter().map(|block| wave_prompt::estimate_tokens(&block.text));
+        blocks.chain(std::iter::once(wave_prompt::estimate_tokens(&self.text))).max().unwrap_or_default()
+    }
 }
 
 /// Um número do `mustard.json` que o pedido leu e que não vale — zero,
@@ -113,6 +141,11 @@ pub struct Flight {
     /// A escolha do orquestrador antes do envio de cada onda que sai agora.
     /// A de uma onda que já saiu vem do envio gravado dela.
     pub choices: BTreeMap<u64, Choice>,
+    /// As skills escolhidas para o bloco de cada tarefa com mais candidatas
+    /// do que cabem nele ([`WavePrompt::skill_ties`]), pelo número da tarefa:
+    /// o caminho de cada uma, da de maior chance para a de menor. A lista
+    /// vazia deixa só a nomeada pela tarefa.
+    pub skill_picks: BTreeMap<u64, Vec<String>>,
 }
 
 /// Os pedidos das ondas `waves` que o plano tem, em ordem de número, com as
@@ -262,7 +295,10 @@ fn project_execution(root: &Path) -> Execution {
         root: shown(root),
         language: config.language(),
         model: config.agent_model().to_string(),
-        effort: config.agent_effort().to_string(),
+        // O esforço é sempre o padrão, em todo agente e modelo: o lançamento
+        // o impõe, e o pedido diz o mesmo.
+        effort: crate::domain::config::DEFAULT_AGENT_EFFORT.to_string(),
+        by_difficulty: config.by_difficulty(),
         ..Execution::default()
     }
 }
@@ -351,6 +387,16 @@ pub fn copies_dir(root: &Path) -> PathBuf {
 #[must_use]
 pub fn development_build_dir(root: &Path) -> PathBuf {
     project_folder(root, "MUSTARD_BUILD_DIR", "build")
+}
+
+/// A pasta da cópia de segurança das skills que o Mustard criou no projeto do
+/// checkout principal `root`, uma pasta por skill: mora fora do projeto, com
+/// a mesma chave por projeto de [`copies_dir`]. A base é a pasta que
+/// `MUSTARD_SKILLS_DIR` indicar, ou `.cache/mustard/skills` sob a pasta
+/// pessoal.
+#[must_use]
+pub fn skills_backup_dir(root: &Path) -> PathBuf {
+    project_folder(root, "MUSTARD_SKILLS_DIR", "skills")
 }
 
 /// A pasta de `leaf` do projeto de `root`: a base que a variável `var`
@@ -803,7 +849,14 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
     let mut bad_skills = Vec::new();
     let mut stale_skills = Vec::new();
     let mut skill_hashes = BTreeMap::new();
-    let mut chosen: Vec<_> = named.iter().map(|name| (name.clone(), read_skill(root, &files, name))).collect();
+    // A tarefa de criar skill nomeia o skill-creator, que mora fora do
+    // projeto: ele entra inteiro, sem a conferência das skills do projeto.
+    let creator = crate::io::skill_creator::folder();
+    let creator_file = creator.as_deref().map(|dir| std::path::absolute(dir.join("SKILL.md")).unwrap_or_else(|_| dir.join("SKILL.md")));
+    let mut chosen: Vec<_> =
+        named.iter().map(|name| (name.clone(), read_skill(root, &files, name).or_else(|| creator_skill(name, creator_file.as_deref())))).collect();
+    // As duas leituras passam por `skills_in`, que dá um arquivo por nome em
+    // todas as pastas da onda: o mesmo caminho é a mesma skill.
     for (name, text, file) in scoped_skills(root, &files) {
         if !chosen.iter().any(|(_, source)| source.as_ref().is_some_and(|(_, path)| path == &file)) {
             chosen.push((name, Some((text, file))));
@@ -814,11 +867,12 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
             bad_skills.push((name.clone(), MapRefusal::SkillMissingPaths { paths: vec![skill_file(name)] }));
             continue;
         };
-        if let Err(refusal) = check_skill(text, |cited| cited_exists(root, map, cited)) {
+        let from_creator = creator_file.as_ref() == Some(file);
+        if !from_creator && let Err(refusal) = check_skill(text, |cited| cited_exists(root, map, cited)) {
             bad_skills.push((name.clone(), refusal));
             continue;
         }
-        let stale = cited_changed_after(map, text, file);
+        let stale = !from_creator && cited_changed_after(map, text, file);
         if stale {
             stale_skills.push(name.clone());
         }
@@ -826,8 +880,19 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
         let mut hash = crate::io::sha256::Sha256::new();
         hash.update(text.as_bytes());
         skill_hashes.insert(path.clone(), hash.hex_digest());
-        skills.push(Skill { name: name.clone(), when: when_to_use(text), path, stale });
+        skills.push(Skill { name: name.clone(), path, stale });
     }
+    let creator_note = creator.as_deref().zip(creator_file.as_deref()).map(|(folder, file)| {
+        let note = crate::platform::i18n::translate("prompt.task.skill_creator", lang)
+            .replace("{folder}", &shown(folder))
+            .replace("{skills}", &shown(&root.join(".claude").join("skills")))
+            .replace("{root}", &shown(root))
+            .replace("{spec}", spec);
+        (file, note)
+    });
+    let picks = &context.flight.skill_picks;
+    let TaskSkills { blocks: task_skills, ties: skill_ties, candidates: skill_candidates } =
+        task_skills(root, log, &of_type("task"), &codes, (&chosen, &skills), creator_note, picks);
 
     let material = Material {
         spec: spec.to_string(),
@@ -857,6 +922,7 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
         // are not optional candidates for probabilistic selection.
         project_rules: project_rules(root, &wave_prompt::wave_files(log, wave)),
         prepared,
+        task_skills,
     };
     let mut text = wave_prompt::write(&material, lang);
     let observed=crate::io::project_profile::summary(root,&wave_prompt::wave_files(log,wave));
@@ -880,7 +946,161 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
     let model = material.execution.requested_model().to_string();
     let effort = material.execution.requested_effort().to_string();
     let listed = wave_prompt::listed(&material);
-    WavePrompt { wave, agent, model, effort, text, lines, listed, bad_skills, stale_skills, bad_settings: Vec::new(), skills }
+    let tasks = wave_prompt::task_blocks(&material, lang);
+    WavePrompt {
+        wave,
+        agent,
+        model,
+        effort,
+        escalated_from: material.execution.escalated_from.clone(),
+        text,
+        lines,
+        listed,
+        tasks,
+        bad_skills,
+        stale_skills,
+        bad_settings: Vec::new(),
+        skills,
+        skill_ties,
+        skill_candidates,
+    }
+}
+
+/// Cada skill que a onda escolheu ler, pelo nome: o texto e o arquivo dela,
+/// ou nada quando não foi achada.
+type Chosen = [(String, Option<(String, PathBuf)>)];
+
+/// As skills de cada tarefa, como a montagem as escolhe ([`task_skills`]).
+struct TaskSkills {
+    /// As skills inteiras de cada tarefa, pelo código dela.
+    blocks: BTreeMap<String, Vec<TaskSkill>>,
+    /// As tarefas com mais candidatas do que cabem, ainda sem escolha.
+    ties: Vec<SkillTie>,
+    /// As candidatas de todas as tarefas, pelo nome, uma vez cada.
+    candidates: Vec<String>,
+}
+
+/// Quantos caracteres do texto da tarefa e dos itens que ela cobre a escolha
+/// das skills mostra.
+const TIE_TEXT_CHARS: usize = 2_000;
+
+/// O texto da tarefa `task` e o dos itens que ela cobre, em `log`, cortado em
+/// [`TIE_TEXT_CHARS`].
+fn tie_text(log: &SpecLog, task: &SpecEvent) -> String {
+    let own = task.str_field("text").unwrap_or_default().trim().to_string();
+    let covered = task.ints("covers").into_iter().filter_map(|id| log.current(id)).filter_map(|item| {
+        let text = item.str_field("text").or_else(|| item.str_field("then")).unwrap_or_default().trim();
+        (!text.is_empty()).then(|| format!("- {text}"))
+    });
+    let joined = std::iter::once(own).chain(covered).filter(|line| !line.is_empty()).collect::<Vec<_>>().join("\n");
+    joined.chars().take(TIE_TEXT_CHARS).collect()
+}
+
+/// A candidata `name`, de texto `text` e arquivo `file`, como a escolha a
+/// mostra: a descrição inteira e o começo do corpo.
+fn skill_option(name: &str, text: &str, file: &Path) -> SkillOption {
+    let description = crate::domain::skill::frontmatter::parse(text).map(|front| front.description).unwrap_or_default();
+    let body = crate::domain::skill::frontmatter::body(text);
+    SkillOption {
+        name: name.to_string(),
+        path: shown(file),
+        description: description.trim().to_string(),
+        excerpt: body.trim().chars().take(wave_prompt::SKILL_EXCERPT_CHARS).collect(),
+    }
+}
+
+/// As skills inteiras de cada tarefa, pelo código dela: a que a tarefa nomeia
+/// primeiro, sempre, depois as que casam com os arquivos dela, sem repetir,
+/// até [`wave_prompt::TASK_SKILLS_MAX`]. Só entra a skill que a conferência
+/// da onda aceitou (`passed`), com o texto que a escolha da onda leu
+/// (`chosen`). Quando sobram mais candidatas do que cabem, entram as que a
+/// escolha deu para a tarefa em `picks`, na ordem dela; sem escolha, as
+/// primeiras, e a tarefa volta entre as que esperam escolha. O skill-creator
+/// (`creator`, o arquivo dele e a instrução) vem com a instrução antes do
+/// corpo.
+fn task_skills(
+    root: &Path,
+    log: &SpecLog,
+    tasks: &[&SpecEvent],
+    codes: &BTreeMap<u64, String>,
+    (chosen, passed): (&Chosen, &[Skill]),
+    creator: Option<(&Path, String)>,
+    picks: &BTreeMap<u64, Vec<String>>,
+) -> TaskSkills {
+    let mut out = TaskSkills { blocks: BTreeMap::new(), ties: Vec::new(), candidates: Vec::new() };
+    let accepted = |file: &Path| passed.iter().find(|skill| skill.path == shown(file));
+    for task in tasks {
+        let files: Vec<String> = declared_files(task);
+        let named = task.str_field("skill").map(str::trim).filter(|name| !name.is_empty());
+        let mut picked: Vec<(String, &str, PathBuf)> = Vec::new();
+        if let Some((name, Some((text, file)))) = named.and_then(|named| chosen.iter().find(|(name, _)| name == named))
+            && accepted(file).is_some()
+        {
+            picked.push((name.clone(), text.as_str(), file.clone()));
+        }
+        let room = wave_prompt::TASK_SKILLS_MAX.saturating_sub(picked.len());
+        let mut others: Vec<(String, &str, PathBuf)> = Vec::new();
+        // A skill da tarefa é a que a onda escolheu com o mesmo nome: a parte
+        // do projeto em que a tarefa mexe pode guardar uma cópia mais velha.
+        for (name, ..) in scoped_skills(root, &files) {
+            let Some((_, Some((text, file)))) = chosen.iter().find(|(chosen, source)| *chosen == name && source.is_some()) else {
+                continue;
+            };
+            let file = file.clone();
+            if accepted(&file).is_some() && !picked.iter().chain(&others).any(|(_, _, had)| *had == file) {
+                others.push((name, text.as_str(), file));
+            }
+        }
+        for (name, ..) in picked.iter().chain(&others) {
+            if !out.candidates.contains(name) {
+                out.candidates.push(name.clone());
+            }
+        }
+        match picks.get(&task.id) {
+            Some(pick) => {
+                picked.extend(pick.iter().filter_map(|path| others.iter().find(|(_, _, file)| shown(file) == *path).cloned()).take(room));
+            }
+            None => {
+                if others.len() > room {
+                    out.ties.push(SkillTie {
+                        task: task.id,
+                        title: wave_prompt::item_title(task).unwrap_or_default(),
+                        text: tie_text(log, task),
+                        room,
+                        candidates: others.iter().map(|(name, text, file)| skill_option(name, text, file)).collect(),
+                    });
+                }
+                picked.extend(others.into_iter().take(room));
+            }
+        }
+        let skills: Vec<TaskSkill> = picked
+            .into_iter()
+            .filter_map(|(name, text, file)| {
+                let skill = accepted(&file)?;
+                let mut body = crate::domain::skill::frontmatter::body(text);
+                if let Some((_, note)) = creator.as_ref().filter(|(at, _)| *at == file.as_path()) {
+                    body = format!("{note}\n\n{}", body.trim_start());
+                }
+                Some(TaskSkill { name, path: skill.path.clone(), stale: skill.stale, body })
+            })
+            .collect();
+        if !skills.is_empty() {
+            out.blocks.insert(codes.get(&task.id).cloned().unwrap_or_else(|| task.id.to_string()), skills);
+        }
+    }
+    out
+}
+
+/// Os caminhos dos arquivos que a tarefa declara.
+fn declared_files(task: &SpecEvent) -> Vec<String> {
+    task.fields
+        .get("files")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|file| file.get("path").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect()
 }
 
 /// As regras da execução da onda `wave`: os comandos do projeto, as outras
@@ -903,6 +1123,13 @@ fn execution(context: &Context, wave: u64) -> Execution {
         .and_then(|copy| crate::io::workspace::checkout_git_dir(Path::new(&copy.path)))
         .is_some_and(|admin| admin.join("mustard-dependencies.sha256").is_file());
     if host==Some("codex") {execution.model="inherit".into();execution.effort="inherit".into();}
+    else if execution.by_difficulty {
+        // O modelo da onda sai da dificuldade das tarefas dela, e sobe um
+        // degrau quando ela volta reprovada.
+        let chosen = crate::domain::agent_model::wave_model(log, wave, &execution.model);
+        execution.model = chosen.model;
+        execution.escalated_from = chosen.escalated_from;
+    }
     execution
 }
 
@@ -915,6 +1142,14 @@ fn skills_named(log: &SpecLog, wave: u64) -> Vec<String> {
         }
     }
     names.into_iter().collect()
+}
+
+/// O skill-creator, quando a tarefa o nomeia (`name`) e o projeto não tem
+/// skill com esse nome: o texto e o caminho absoluto do arquivo dele
+/// (`file`), achado fora do projeto.
+fn creator_skill(name: &str, file: Option<&Path>) -> Option<(String, PathBuf)> {
+    let file = file.filter(|_| name == crate::io::skill_creator::NAME)?;
+    Some((std::fs::read_to_string(file).ok()?, file.to_path_buf()))
 }
 
 /// O caminho de uma skill dentro do subprojeto que a tem.
@@ -930,18 +1165,43 @@ fn skill_file(name: &str) -> String {
 /// abre de primeira pelo projeto principal. A que mora numa pasta do git, como
 /// `.agents/skills`, também entra pelo caminho do projeto principal.
 fn read_skill(root: &Path, files: &[String], name: &str) -> Option<(String, PathBuf)> {
-    for folder in skill_folders(root, files) {
-      for directory in [".claude/skills", ".agents/skills"] {
-        let path = folder.join(directory).join(name).join("SKILL.md");
-        if let Ok(text) = std::fs::read_to_string(&path) {
-            if crate::domain::skill::frontmatter::parse(&text).ok().and_then(|front|front.source()).as_deref() == Some("mustard-expertise")
-                && !crate::io::expertise::is_skill(root, name, &path) { continue; }
+    skills_in(&skill_folders(root, files)).into_iter().find(|(found, ..)| found == name).map(|(_, text, path)| (text, path))
+}
+
+/// As pastas em que um projeto guarda as skills: a do Claude Code e a do
+/// Codex. O projeto que usa os dois costuma ter a mesma skill nas duas.
+const SKILL_DIRECTORIES: [&str; 2] = [".claude/skills", ".agents/skills"];
+
+/// As skills das pastas `folders` do projeto, uma por nome, em ordem de
+/// nome: o nome, o texto e o caminho absoluto do `SKILL.md`. O nome é o
+/// `name` do cabeçalho e, sem ele, o da pasta da skill. A mesma skill em mais
+/// de um lugar — nas duas pastas de [`SKILL_DIRECTORIES`] ou em duas partes do
+/// projeto — entra uma vez só, a do arquivo modificado por último; no empate,
+/// a da primeira pasta e, nela, a do Claude Code. Toda leitura de skill do
+/// pedido passa por aqui, então o caminho devolvido é a identidade da skill.
+fn skills_in(folders: &[PathBuf]) -> Vec<(String, String, PathBuf)> {
+    let mut found: BTreeMap<String, (Option<std::time::SystemTime>, String, PathBuf)> = BTreeMap::new();
+    for directory in folders.iter().flat_map(|folder| SKILL_DIRECTORIES.map(|directory| folder.join(directory))) {
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            continue;
+        };
+        let mut paths: Vec<PathBuf> = entries.flatten().map(|entry| entry.path().join("SKILL.md")).collect();
+        paths.sort();
+        for path in paths {
+            let Ok(text) = std::fs::read_to_string(&path) else { continue };
+            let header = crate::domain::skill::frontmatter::parse(&text).ok().and_then(|front| front.name());
+            let Some(name) = header.or_else(|| path.parent().and_then(Path::file_name).and_then(|name| name.to_str()).map(str::to_string)) else {
+                continue;
+            };
+            let modified = std::fs::metadata(&path).and_then(|meta| meta.modified()).ok();
+            if found.get(&name).is_some_and(|(had, ..)| *had >= modified) {
+                continue;
+            }
             let absolute = std::path::absolute(&path).unwrap_or(path);
-            return Some((text, absolute));
+            found.insert(name, (modified, text, absolute));
         }
-      }
     }
-    None
+    found.into_iter().map(|(name, (_, text, path))| (name, text, path)).collect()
 }
 
 fn skill_folders(root: &Path, files: &[String]) -> Vec<PathBuf> {
@@ -962,41 +1222,15 @@ fn skill_folders(root: &Path, files: &[String]) -> Vec<PathBuf> {
 
 fn scoped_skills(root: &Path, files: &[String]) -> Vec<(String, String, PathBuf)> {
     let mut found = Vec::new();
-    for folder in skill_folders(root, files) {
-      for directory in [".claude/skills", ".agents/skills"] {
-        let Ok(entries) = std::fs::read_dir(folder.join(directory)) else { continue;
-            };
-        let mut paths: Vec<_> = entries.flatten().map(|entry| entry.path().join("SKILL.md")).collect();
-        paths.sort();
-        for path in paths {
-            let Ok(text) = std::fs::read_to_string(&path) else { continue };
-            let Ok(front) = crate::domain::skill::frontmatter::parse(&text) else { continue;
-                };
-            // Managed entries are selected through their current registry,
-            // never rediscovered as manual skills after withdrawal.
-            if front.source().as_deref() == Some("mustard-expertise") { continue; }
-            // A manual-only procedure must not run through automatic scope selection.
-            if front.extra.get("disable-model-invocation").and_then(Value::as_str)
-                .is_some_and(|value| ["true", "yes", "on", "1"].iter().any(|truth| value.eq_ignore_ascii_case(truth)))
-                || rules::matches_paths(&text, files) != Some(true) { continue; }
-            let Some(name) = path.parent().and_then(Path::file_name).and_then(|name| name.to_str()) else { continue;
-                };
-            let absolute = std::path::absolute(&path).unwrap_or_else(|_| path.clone());
-            found.push((name.to_string(), text, absolute));
-        }
-      }
+    for (name, text, path) in skills_in(&skill_folders(root, files)) {
+        let Ok(front) = crate::domain::skill::frontmatter::parse(&text) else { continue };
+        // A manual-only procedure must not run through automatic scope selection.
+        if front.extra.get("disable-model-invocation").and_then(Value::as_str)
+            .is_some_and(|value| ["true", "yes", "on", "1"].iter().any(|truth| value.eq_ignore_ascii_case(truth)))
+            || rules::matches_paths(&text, files) != Some(true) { continue; }
+        found.push((name, text, path));
     }
     found
-}
-
-/// Quando usar a skill, tirado da descrição do frontmatter dela e reduzido a
-/// uma linha. A skill sem frontmatter, ou com a descrição vazia, entra no
-/// pedido só com o nome e o caminho.
-fn when_to_use(text: &str) -> String {
-    let Ok(front) = crate::domain::skill::frontmatter::parse(text) else {
-        return String::new();
-    };
-    front.description.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Um caminho citado (pela skill, ou pela leitura obrigatória de uma tarefa)
@@ -1278,6 +1512,42 @@ mod tests {
         assert_eq!(built.iter().map(|p| p.wave).collect::<Vec<_>>(), vec![2]);
     }
 
+    /// The wave of two graded tasks goes on the largest model of them, at
+    /// effort xhigh whatever the configuration says, and the request names
+    /// them. Turned off in the configuration, it goes on the configured
+    /// model; on Codex, it inherits. Rejected by a verdict after its send, it
+    /// goes one step up and says where it came from.
+    #[test]
+    fn the_wave_goes_on_the_model_of_its_hardest_task_at_effort_xhigh() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), r#"{"agents":{"model":"opus","effort":"low"}}"#).unwrap();
+        let graded = |level: u64| json!({"name": "Soma", "position": 1, "formed": true, "difficulty": {"level": level, "confidence": 0.9}});
+        let plan = [
+            ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
+            ("task", json!({"wave": 1, "text": "Somar", "files": [{"path": "apps/rt/src/a.rs"}], "group": graded(0)})),
+            ("task", json!({"wave": 1, "text": "Subtrair", "files": [{"path": "apps/rt/src/b.rs"}], "group": graded(1)})),
+        ];
+        let claude = Flight { host: Some("claude".into()), ..Flight::default() };
+        let built = |log: &SpecLog, flight: &Flight| prompts(root, "teste", log, Locale::PtBr, flight, &BTreeSet::from([1])).remove(0);
+        let first = built(&log_of(&plan), &claude);
+        assert_eq!((first.model.as_str(), first.effort.as_str(), first.escalated_from.clone()), ("sonnet", "xhigh", None));
+        assert!(first.text.contains("Modelo desta onda: sonnet. Esforço: xhigh."), "{}", first.text);
+        let codex = built(&log_of(&plan), &Flight { host: Some("codex".into()), ..Flight::default() });
+        assert_eq!((codex.model.as_str(), codex.effort.as_str()), ("inherit", "inherit"));
+
+        let mut rejected = plan.to_vec();
+        rejected.push(("send", json!({"wave": 1, "role": "wave", "text": "pedido", "lines": 1, "chars": 6, "mustard": "0", "model": "sonnet"})));
+        rejected.push(("verdict", json!({"wave": 1, "result": "rejected", "text": "faltou o teste", "author": "review"})));
+        let fix = built(&log_of(&rejected), &claude);
+        assert_eq!(fix.model, "opus", "{}", fix.text);
+        assert_eq!(fix.escalated_from, Some(crate::domain::agent_model::Escalation { from: "sonnet".into(), cause: 5 }));
+
+        std::fs::write(root.join("mustard.json"), r#"{"agents":{"model":"opus","by_difficulty":false}}"#).unwrap();
+        let off = built(&log_of(&rejected), &claude);
+        assert_eq!((off.model.as_str(), off.effort.as_str(), off.escalated_from), ("opus", "xhigh", None), "turned off, the configured model");
+    }
+
     fn write_skill(root: &Path, subproject: &str, name: &str, text: &str) {
         let dir = root.join(subproject).join(".claude").join("skills").join(name);
         std::fs::create_dir_all(&dir).unwrap();
@@ -1314,15 +1584,15 @@ mod tests {
         assert!(built[0].bad_skills.is_empty(), "{:?}", built[0].bad_skills);
         let path = skill_path_in(root, "apps/rt", "somar");
         assert!(Path::new(&path).is_absolute() && Path::new(&path).is_file(), "{path}");
-        assert!(built[0].text.contains(&format!("— `{path}`")), "{}", built[0].text);
+        assert!(built[0].text.contains(&format!("`{path}`")), "{}", built[0].text);
         assert!(!built[0].text.contains("`apps/rt/.claude/skills/somar/SKILL.md`"), "{}", built[0].text);
         assert!(!built[0].text.contains(&format!("{copy}/apps/rt/.claude")), "{}", built[0].text);
-        assert!(built[0].text.contains("Use ao somar dois números no motor."), "{}", built[0].text);
-        assert!(!built[0].text.contains("Um passo por linha."), "{}", built[0].text);
+        assert!(built[0].text.contains("# Somar\n\nUm passo por linha."), "the body comes whole: {}", built[0].text);
+        assert!(!built[0].text.contains("Use ao somar dois números no motor."), "the header stays out: {}", built[0].text);
     }
 
-    /// A skill sem frontmatter entra mesmo assim: a linha fica só com o nome e
-    /// o caminho, sem o trecho do quando usar.
+    /// A skill sem frontmatter entra mesmo assim: o bloco da tarefa a traz
+    /// inteira, com o nome e o caminho.
     #[test]
     fn a_skill_without_frontmatter_still_reaches_the_request_by_path() {
         let dir = tempdir().unwrap();
@@ -1331,7 +1601,7 @@ mod tests {
         let built = prompts(root, "teste", &plan_log(), Locale::PtBr, &Flight::default(), &plan_log().planned_waves());
         assert!(built[0].bad_skills.is_empty(), "{:?}", built[0].bad_skills);
         let path = skill_path_in(root, "apps/rt", "somar");
-        assert!(built[0].text.contains(&format!("- **somar** — `{path}`")), "{}", built[0].text);
+        assert!(built[0].text.contains(&format!("#### Skill somar, de `{path}`\n\n# Somar\n\nUm passo por linha.")), "{}", built[0].text);
     }
 
     /// A skill que cita um caminho que não existe, e a que passa do tamanho
@@ -1387,10 +1657,238 @@ mod tests {
         for name in ["root-contract", "area-contract"] {
             assert!(built[0].text.contains(&format!("skills/{name}/SKILL.md")), "{}", built[0].text);
         }
-        for hidden in ["other-contract", "manual-procedure", "Only read this body when needed."] {
+        for hidden in ["other-contract", "manual-procedure"] {
             assert!(!built[0].text.contains(hidden), "{}", built[0].text);
         }
+        assert!(built[0].text.contains("Only read this body when needed."), "the scoped skill comes whole in the task block: {}", built[0].text);
         assert!(built[0].bad_skills.is_empty());
+    }
+
+    /// A origem que o cabeçalho da skill declara não a tira da onda: a que a
+    /// tarefa nomeia e a que casa com os arquivos dela chegam inteiras, mesmo
+    /// com a marca dos procedimentos por área que saíram do Mustard.
+    #[test]
+    fn a_skill_reaches_the_wave_whatever_source_its_header_names() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let header = "metadata: {\"source\":\"mustard-expertise\"}";
+        write_skill(root, "apps/rt", "somar", &format!("---\nname: somar\ndescription: Use ao somar.\n{header}\n---\n\n# Somar\n\nUm passo por linha.\n"));
+        write_skill(root, "", "contrato", &format!("---\nname: contrato\ndescription: Contrato da área.\npaths:\n  - apps/rt/**\n{header}\n---\n\nO corpo do contrato.\n"));
+        let log = log_of(&[
+            ("wave", json!({"n":1,"text":"A onda","criteria":[],"done_when":"passa"})),
+            ("task", json!({"wave":1,"text":"Somar","skill":"somar","files":[{"path":"apps/rt/src/a.rs"}]})),
+        ]);
+        let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default(), &log.planned_waves());
+        assert!(built[0].bad_skills.is_empty(), "{:?}", built[0].bad_skills);
+        assert!(built[0].text.contains("# Somar\n\nUm passo por linha."), "{}", built[0].text);
+        assert!(built[0].text.contains("O corpo do contrato."), "{}", built[0].text);
+    }
+
+    /// O bloco de uma tarefa traz no máximo três skills inteiras: a que a
+    /// tarefa nomeia primeiro, depois as que casam com os arquivos dela, na
+    /// ordem em que a escolha as acha. O corpo vem sem o cabeçalho.
+    #[test]
+    fn a_task_block_brings_at_most_three_whole_skills_the_named_one_first() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("apps/rt/src")).unwrap();
+        std::fs::write(root.join("apps/rt/src/a.rs"), "fn um() {}\n").unwrap();
+        for name in ["b-scoped", "c-scoped", "d-scoped"] {
+            write_skill(root, "apps/rt", name, &format!("---\nname: {name}\ndescription: Area contract.\npaths:\n  - apps/rt/src/**\nsource: manual\n---\n\nBody of {name}.\n"));
+        }
+        write_skill(root, "apps/rt", "somar", "---\nname: somar\ndescription: The named one.\n---\n\nBody of somar.\n");
+        let built = prompts(root, "teste", &plan_log(), Locale::PtBr, &Flight::default(), &plan_log().planned_waves()).remove(0);
+        let block = &built.tasks[0].text;
+        let at = |body: &str| block.find(body).unwrap_or_else(|| panic!("{body}: {block}"));
+        assert!(at("Body of somar.") < at("Body of b-scoped.") && at("Body of b-scoped.") < at("Body of c-scoped."), "{block}");
+        assert!(!block.contains("Body of d-scoped.") && !block.contains("description: The named one."), "{block}");
+        assert!(built.text.contains(block.as_str()), "the request carries the first block: {}", built.text);
+    }
+
+    /// The task that creates a skill carries the whole skill-creator procedure
+    /// from where the machine has it, with the folder of its scripts and the
+    /// instruction to follow it without asking anyone; the real procedure,
+    /// with a scoped skill beside it, still fits the block cap.
+    #[test]
+    fn a_skill_creation_task_block_brings_the_whole_skill_creator_and_the_instruction() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("apps/rt/src")).unwrap();
+        std::fs::write(root.join("apps/rt/src/a.rs"), "fn um() {}\n").unwrap();
+        write_skill(root, "apps/rt", "area", "---\nname: area\ndescription: Area contract.\npaths:\n  - apps/rt/src/**\n---\n\nBody of area.\n");
+        let installed = tempdir().unwrap();
+        let creator = installed.path().join("skill-creator");
+        std::fs::create_dir_all(creator.join("scripts")).unwrap();
+        std::fs::write(creator.join("SKILL.md"), "---\nname: skill-creator\ndescription: Create skills.\n---\n\n# Skill Creator\n\nRun `scripts/run_eval.py`.\n").unwrap();
+        let log = log_of(&[
+            ("wave", json!({"n":1,"text":"A onda","criteria":[],"done_when":"passa"})),
+            ("task", json!({"wave":1,"title":"Criar a skill: falta o teste","text":"Criar","agent":"As ocorrências.","skill":"skill-creator","files":[{"path":"apps/rt/src/a.rs"}]})),
+        ]);
+        crate::io::skill_creator::folder_in_test(Some(creator.clone()));
+        let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default(), &log.planned_waves()).remove(0);
+        assert!(built.bad_skills.is_empty(), "the procedure from outside the project is no bad skill: {:?}", built.bad_skills);
+        let block = &built.tasks[0].text;
+        assert!(block.contains("# Skill Creator\n\nRun `scripts/run_eval.py`."), "{block}");
+        assert!(block.contains(&format!("`{}`", shown(&creator))), "the folder of its scripts: {block}");
+        assert!(block.contains("sem pedir aprovação") && block.contains("run write skill"), "{block}");
+        assert!(block.find("# Skill Creator").unwrap() < block.find("Body of area.").unwrap(), "{block}");
+
+        let bundled = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugin/third-party/skill-creator");
+        crate::io::skill_creator::folder_in_test(Some(bundled.clone()));
+        let real = prompts(root, "teste", &log, Locale::PtBr, &Flight::default(), &log.planned_waves()).remove(0);
+        crate::io::skill_creator::folder_in_test(None);
+        let block = &real.tasks[0].text;
+        let body = crate::domain::skill::frontmatter::body(&std::fs::read_to_string(bundled.join("SKILL.md")).unwrap());
+        assert!(block.contains(body.trim()), "the whole procedure, never cut");
+        let tokens = crate::domain::wave_prompt::estimate_tokens(block);
+        assert!(tokens <= crate::domain::wave_prompt::TASK_BLOCK_TOKEN_CAP, "{tokens} tokens");
+    }
+
+    /// Grava `SKILL.md` em `<directory>/<folder>` com a hora de modificação
+    /// dada, e devolve o caminho como o pedido o escreve.
+    fn write_skill_at(root: &Path, directory: &str, folder: &str, text: &str, modified: std::time::SystemTime) -> String {
+        let dir = root.join(directory).join(folder);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("SKILL.md");
+        std::fs::write(&file, text).unwrap();
+        std::fs::File::options().write(true).open(&file).unwrap().set_modified(modified).unwrap();
+        shown(&file)
+    }
+
+    /// A mesma skill no `.claude/skills` e no `.agents/skills` do mesmo
+    /// subprojeto entra no pedido uma vez só, e é a do arquivo mudado por
+    /// último — ora a do Claude Code, ora a do Codex —, nomeada pela tarefa
+    /// ou achada pelos arquivos dela.
+    #[test]
+    fn the_same_skill_in_both_skill_folders_reaches_the_wave_once_the_newest_copy() {
+        let now = std::time::SystemTime::now();
+        let before = now - std::time::Duration::from_secs(3600);
+        for named in [true, false] {
+            for newest in ["apps/rt/.claude/skills", "apps/rt/.agents/skills"] {
+                let dir = tempdir().unwrap();
+                let root = dir.path();
+                let mut paths = BTreeMap::new();
+                for directory in ["apps/rt/.claude/skills", "apps/rt/.agents/skills"] {
+                    let body = format!("Body from {directory}.");
+                    let text = format!("---\nname: somar\ndescription: Use ao somar.\npaths:\n  - apps/rt/src/**\n---\n\n{body}\n");
+                    let when = if directory == newest { now } else { before };
+                    paths.insert(directory, (write_skill_at(root, directory, "somar", &text, when), body));
+                }
+                let mut task = json!({"wave":1,"text":"Somar","files":[{"path":"apps/rt/src/a.rs"}]});
+                if named {
+                    task["skill"] = json!("somar");
+                }
+                let log = log_of(&[("wave", json!({"n":1,"text":"A onda","criteria":[],"done_when":"passa"})), ("task", task)]);
+                let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default(), &log.planned_waves()).remove(0);
+                let block = &built.tasks[0].text;
+                let (kept, kept_body) = &paths[newest];
+                let context = format!("named={named} newest={newest}: {block}");
+                assert_eq!(built.skills.len(), 1, "{context}");
+                assert_eq!(built.skills[0]["path"], json!(kept), "{context}");
+                assert_eq!(block.matches(kept_body.as_str()).count(), 1, "{context}");
+                assert_eq!(block.matches("#### Skill somar").count(), 1, "{context}");
+                for (directory, (path, body)) in &paths {
+                    if *directory != newest {
+                        assert!(!block.contains(body.as_str()) && !built.text.contains(path.as_str()), "{context}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// A mesma skill em duas partes do projeto, cada uma com a própria pasta
+    /// de skills, entra no pedido uma vez só, a do arquivo mudado por último:
+    /// nomeada pela tarefa ou achada pelos arquivos dela, numa tarefa que
+    /// mexe nas duas partes ou em duas tarefas, uma em cada parte.
+    #[test]
+    fn the_same_skill_in_two_project_parts_reaches_the_wave_once_the_newest_copy() {
+        let now = std::time::SystemTime::now();
+        let before = now - std::time::Duration::from_secs(3600);
+        let parts = ["web/.claude/skills", "api/.agents/skills"];
+        for named in [true, false] {
+            for split in [false, true] {
+                for newest in parts {
+                    let dir = tempdir().unwrap();
+                    let root = dir.path();
+                    let mut paths = BTreeMap::new();
+                    for directory in parts {
+                        let body = format!("Body from {directory}.");
+                        let text = format!("---\nname: somar\ndescription: Use ao somar.\npaths:\n  - web/src/**\n  - api/src/**\n---\n\n{body}\n");
+                        let when = if directory == newest { now } else { before };
+                        paths.insert(directory, (write_skill_at(root, directory, "somar", &text, when), body));
+                    }
+                    let task = |files: &[&str]| {
+                        let mut task = json!({"wave":1,"text":"Somar","files":files.iter().map(|path| json!({"path":path})).collect::<Vec<_>>()});
+                        if named {
+                            task["skill"] = json!("somar");
+                        }
+                        ("task", task)
+                    };
+                    let mut events = vec![("wave", json!({"n":1,"text":"A onda","criteria":[],"done_when":"passa"}))];
+                    if split {
+                        events.extend([task(&["web/src/a.ts"]), task(&["api/src/b.rs"])]);
+                    } else {
+                        events.push(task(&["web/src/a.ts", "api/src/b.rs"]));
+                    }
+                    let log = log_of(&events);
+                    let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default(), &log.planned_waves()).remove(0);
+                    let (kept, kept_body) = &paths[newest];
+                    let context = format!("named={named} split={split} newest={newest}: {}", built.text);
+                    assert_eq!(built.skills.len(), 1, "{context}");
+                    assert_eq!(built.skills[0]["path"], json!(kept), "{context}");
+                    for block in built.tasks.iter().map(|task| &task.text) {
+                        assert_eq!(block.matches(kept_body.as_str()).count(), 1, "{context}");
+                        assert_eq!(block.matches("#### Skill somar").count(), 1, "{context}");
+                    }
+                    for (directory, (path, body)) in &paths {
+                        if *directory != newest {
+                            assert!(!built.text.contains(body.as_str()) && !built.text.contains(path.as_str()), "{context}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Skills de nomes diferentes, uma em cada pasta, entram as duas.
+    #[test]
+    fn skills_with_different_names_in_both_folders_both_reach_the_wave() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let now = std::time::SystemTime::now();
+        for (directory, name) in [("apps/rt/.claude/skills", "somar"), ("apps/rt/.agents/skills", "subtrair")] {
+            let text = format!("---\nname: {name}\ndescription: Area contract.\npaths:\n  - apps/rt/src/**\n---\n\nBody of {name}.\n");
+            write_skill_at(root, directory, name, &text, now);
+        }
+        let log = log_of(&[
+            ("wave", json!({"n":1,"text":"A onda","criteria":[],"done_when":"passa"})),
+            ("task", json!({"wave":1,"text":"Somar","files":[{"path":"apps/rt/src/a.rs"}]})),
+        ]);
+        let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default(), &log.planned_waves()).remove(0);
+        let block = &built.tasks[0].text;
+        assert_eq!(built.skills.len(), 2, "{block}");
+        assert!(block.contains("Body of somar.") && block.contains("Body of subtrair."), "{block}");
+    }
+
+    /// O nome da skill é o `name` do cabeçalho, não o da pasta: a mesma
+    /// skill guardada sob outro nome de pasta no `.agents/skills` ainda é a
+    /// mesma, entra uma vez e com o nome do cabeçalho.
+    #[test]
+    fn the_skill_name_comes_from_the_header_when_the_folder_has_another_name() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let now = std::time::SystemTime::now();
+        let before = now - std::time::Duration::from_secs(3600);
+        let text = |body: &str| format!("---\nname: somar\ndescription: Use ao somar.\npaths:\n  - apps/rt/src/**\n---\n\n{body}\n");
+        let old = write_skill_at(root, "apps/rt/.claude/skills", "somar", &text("Older body."), before);
+        let new = write_skill_at(root, "apps/rt/.agents/skills", "somar-codex", &text("Newer body."), now);
+        let built = prompts(root, "teste", &plan_log(), Locale::PtBr, &Flight::default(), &plan_log().planned_waves()).remove(0);
+        let block = &built.tasks[0].text;
+        assert_eq!(built.skills.len(), 1, "{block}");
+        assert_eq!(built.skills[0]["name"], json!("somar"), "{block}");
+        assert_eq!(built.skills[0]["path"], json!(new), "{block}");
+        assert!(block.contains(&format!("#### Skill somar, de `{new}`")), "{block}");
+        assert!(!block.contains("Older body.") && !built.text.contains(&old) && !block.contains("somar-codex,"), "{block}");
     }
 
     /// As skills de desenvolvimento deste repositório, como estão no git,
@@ -1504,7 +2002,7 @@ mod tests {
             ),
         ]);
         let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default(), &log.planned_waves());
-        assert!(built[0].text.contains("   - Quem testa `apps/rt/src/a.rs`: `apps/rt/tests/a_test.rs`"), "{}", built[0].text);
+        assert!(built[0].text.contains("\n- Quem testa `apps/rt/src/a.rs`: `apps/rt/tests/a_test.rs`"), "{}", built[0].text);
         assert!(!built[0].text.contains("Quem testa `apps/rt/src/b.rs`"), "{}", built[0].text);
     }
 
@@ -1529,8 +2027,8 @@ mod tests {
             ),
         ]);
         let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default(), &log.planned_waves());
-        assert!(built[0].text.contains("   - Leia antes: leia só `soma` em `apps/rt/src/a.rs`"), "{}", built[0].text);
-        assert!(!built[0].text.contains("   - Leia antes: `apps/rt/src/a.rs#soma`"), "{}", built[0].text);
+        assert!(built[0].text.contains("\n- Leia antes: leia só `soma` em `apps/rt/src/a.rs`"), "{}", built[0].text);
+        assert!(!built[0].text.contains("- Leia antes: `apps/rt/src/a.rs#soma`"), "{}", built[0].text);
         assert!(built[0].text.contains("map-source-unverified"), "an unverified map must request a directed read");
         for phrase in ["Ache e leia o código pelo mapa", "só os testes do que mudou", "A suíte inteira e o lint são da rodada"] {
             assert!(!built[0].text.contains(phrase), "{phrase}: {}", built[0].text);
@@ -1668,9 +2166,9 @@ mod tests {
                 Locale::PtBr,
                 "## Como ler cada item",
                 "## O que fazer",
-                "- todos os itens e lições deste pedido: `mustard-rt run read dispatch-3 {root}--spec teste`",
+                "- os itens e lições já liberados deste pedido: `mustard-rt run read dispatch-3 {root}--spec teste`",
                 "- um item só, para reler: `mustard-rt run read item-<código> {root}--spec teste`",
-                "A entrega é recusada se algum item deste pedido não foi lido. A recusa diz qual.",
+                "A entrega é recusada se algum item liberado não foi lido. A recusa diz qual.",
                 "Antes de começar",
                 (
                     "- todos os itens deste pedido: `mustard-rt run read dispatch-review {root}--spec teste`",
@@ -1681,9 +2179,9 @@ mod tests {
                 Locale::EnUs,
                 "## How to read each item",
                 "## What to do",
-                "- every item and lesson of this request: `mustard-rt run read dispatch-3 {root}--spec teste`",
+                "- the items and lessons of this request released so far: `mustard-rt run read dispatch-3 {root}--spec teste`",
                 "- a single item, to reread it: `mustard-rt run read item-<item-code> {root}--spec teste`",
-                "The delivery is refused if any item of this request was not read. The refusal says which.",
+                "The delivery is refused if any released item was not read. The refusal says which.",
                 "Before you start",
                 (
                     "- every item of this request: `mustard-rt run read dispatch-review {root}--spec teste`",
@@ -1911,7 +2409,7 @@ mod tests {
         let wave = &built[0].text;
 
         // A onda tem `order: [9, 8]`: a tarefa 2 (id 9) vem antes da 1 (id 8),
-        // e cada uma leva abaixo o que atende.
+        // e só a primeira vem inteira, com o que ela atende.
         let to_do: Vec<&str> = wave
             .split_once(&format!("## {}\n\n", part("prompt.part.do")))
             .map(|(_, rest)| rest)
@@ -1924,17 +2422,11 @@ mod tests {
         assert_eq!(
             to_do,
             [
-                "1. Leia o texto inteiro de cada item de \"O que obedecer\".",
-                "2. Faça a tarefa MSTD-TASK-0002 — Trocar o texto.",
-                "   - Atende: contexto MSTD-CTX-0001 — O objetivo",
-                "   - Leia a tarefa e o que ela atende, inteiros, antes de mexer.",
-                "   - Arquivo: `src/b.rs`",
-                "3. Faça a tarefa MSTD-TASK-0001 — Montar a lista",
-                "   - Atende: critério MSTD-CRIT-0001 — A lista sai curta",
-                "   - Atende: critério MSTD-CRIT-0002",
-                "   - Leia a tarefa e o que ela atende, inteiros, antes de mexer.",
-                "   - Arquivo: `src/a.rs`",
-                "4. Grave a entrega, como diz \"O que devolver\".",
+                "1. Leia o texto inteiro de cada item de \"O que obedecer\".".to_string(),
+                format!("2. {}", part("prompt.step.tasks")),
+                "   - MSTD-TASK-0002 — Trocar o texto. (a primeira, logo abaixo)".to_string(),
+                "   - MSTD-TASK-0001 — Montar a lista".to_string(),
+                "3. Grave a entrega, como diz \"O que devolver\".".to_string(),
             ],
             "{wave}"
         );
@@ -1951,10 +2443,12 @@ mod tests {
         assert_eq!(wave.matches("mustard-rt run read").count(), 2, "{wave}");
         assert_eq!(wave.matches("--root").count(), 5, "{wave}");
         assert!(!wave.contains("--term"), "the batch reads the lessons too: {wave}");
-        for once in ["MSTD-TASK-0001", "MSTD-TASK-0002", "MSTD-CTX-0001", "MSTD-CRIT-0001", "MSTD-CRIT-0002"] {
-            assert_eq!(wave.matches(once).count(), 1, "{once}: {wave}");
+        for (code, times) in [("MSTD-TASK-0002", 2), ("MSTD-TASK-0001", 1), ("MSTD-CTX-0001", 1)] {
+            assert_eq!(wave.matches(code).count(), times, "{code}: {wave}");
         }
-        for out in ["MSTD-WAVE-0001", "MSTD-CTX-0002", "MSTD-DELIV-0001"] {
+        assert!(wave.contains("- medir o pedido\n\n  - contar as linhas"), "the first task brings what it attends whole: {wave}");
+        assert!(built[0].tasks[1].text.contains("cada item tem uma linha"), "the second task brings its criteria: {}", built[0].tasks[1].text);
+        for out in ["MSTD-WAVE-0001", "MSTD-CTX-0002", "MSTD-DELIV-0001", "MSTD-CRIT-0001", "MSTD-CRIT-0002"] {
             assert!(!wave.contains(out), "{out} não é item deste pedido: {wave}");
         }
         for copied in [
@@ -1971,7 +2465,6 @@ mod tests {
             "o critério é antigo",
             "cargo test -p velho",
             "Hoje a lista só tem códigos",
-            "medir o pedido",
             "`items`",
             "A lista saiu.",
         ] {
@@ -2462,12 +2955,11 @@ mod tests {
         chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default()
     }
 
-    /// As linhas de uma tarefa no pedido: o passo dela e as de baixo, até o
-    /// próximo passo.
-    fn task_lines<'t>(text: &'t str, title: &str) -> Vec<&'t str> {
-        let mut lines = text.lines().skip_while(|line| !line.contains(title));
-        let first = lines.next().into_iter();
-        first.chain(lines.take_while(|line| !line.starts_with(|c: char| c.is_ascii_digit()) && !line.is_empty())).collect()
+    /// As linhas do bloco de uma tarefa, pelo título dela: o pedido traz o da
+    /// primeira, e o envio guarda o de todas.
+    fn task_lines<'t>(prompt: &'t WavePrompt, title: &str) -> Vec<&'t str> {
+        let block = prompt.tasks.iter().find(|block| block.text.lines().next().is_some_and(|line| line.contains(title)));
+        block.map(|block| block.text.lines().collect()).unwrap_or_default()
     }
 
     #[test]
@@ -2478,12 +2970,12 @@ mod tests {
         let whole = prompts_reading(root, "teste", &log, Locale::PtBr, &Flight::default(), &log.planned_waves(), &|_| crate::io::project_map::read(root), &|_, _| false);
         assert_eq!(by_question, whole, "the map parts give the same pattern as the whole map");
         let text = &by_question[0].text;
-        let controller = task_lines(text, "Criar o controller").join("\n");
+        let controller = task_lines(&by_question[0], "Criar o controller").join("\n");
         assert!(controller.contains("regra: controller importa service em 24 de 25 importações"), "{controller}");
         // Só a regra do papel que a tarefa toca: a do repository fica fora.
         assert!(!controller.contains("repository"), "{controller}");
         assert!(controller.contains("exemplo: `Controller0` em `src/controller/controller0.controller.ts`, linhas 3 a 9"), "{controller}");
-        let service = task_lines(text, "Criar o service").join("\n");
+        let service = task_lines(&by_question[0], "Criar o service").join("\n");
         assert!(service.contains("regra: controller importa service"), "{service}");
         assert!(service.contains("exemplo: `Service0`"), "{service}");
         // O service que importa um controller vai contra a regra: nunca é
@@ -2502,10 +2994,10 @@ mod tests {
         let (dir, log) = project_with_a_pattern_read_before(&["src/controller/controller0.controller.ts"]);
         let root = dir.path();
         let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default(), &log.planned_waves());
-        let controller = task_lines(&built[0].text, "Criar o controller").join("\n");
+        let controller = task_lines(&built[0], "Criar o controller").join("\n");
         assert!(controller.contains("exemplo: `Controller0` em `src/controller/controller0.controller.ts`"), "{controller}");
         assert!(!controller.contains("controller0.controller.ts`, linhas"), "{controller}");
-        let service = task_lines(&built[0].text, "Criar o service").join("\n");
+        let service = task_lines(&built[0], "Criar o service").join("\n");
         assert!(service.contains("exemplo: `Service0` em `src/service/service0.service.ts`, linhas 2 a 8"), "{service}");
     }
 
@@ -2553,11 +3045,11 @@ mod tests {
         let built = prompts(dir.path(), "teste", &log, Locale::PtBr, &Flight::default(), &log.planned_waves());
         assert_eq!(built.len(), 1);
         let text = &built[0].text;
-        let big = task_lines(text, "Mexer no grande").join("\n");
+        let big = task_lines(&built[0], "Mexer no grande").join("\n");
         assert!(big.contains("Entre os 5% maiores arquivos do projeto: `src/big.rs`. Ponha o código novo num arquivo novo."), "{big}");
         let head = crate::platform::i18n::translate("prompt.pattern.head_plain", Locale::PtBr);
         assert!(big.contains(head), "{big}");
-        let small = task_lines(text, "Mexer no pequeno").join("\n");
+        let small = task_lines(&built[0], "Mexer no pequeno").join("\n");
         assert!(!small.contains("maiores arquivos") && !small.contains(head), "{small}");
         // O tamanho só informa: o pedido sai inteiro, sem recusa.
         assert!(built[0].bad_skills.is_empty() && built[0].stale_skills.is_empty());
@@ -2613,12 +3105,12 @@ mod tests {
     fn a_task_creating_a_command_gets_the_registry_and_the_test_in_a_block_with_only_the_recipe() {
         let (dir, log) = project_creating_a_command(true);
         let built = prompts(dir.path(), "teste", &log, Locale::PtBr, &Flight::default(), &log.planned_waves());
-        let lines = task_lines(&built[0].text, "Criar o comando").join("\n");
+        let lines = task_lines(&built[0], "Criar o comando").join("\n");
         let head = crate::platform::i18n::translate("prompt.pattern.head_plain", Locale::PtBr);
         assert!(lines.contains(head), "{lines}");
         assert!(lines.contains("Receita do git, de 10 commits que criaram um arquivo `apps/rt/src/commands/*.rs`:"), "{lines}");
-        assert!(lines.contains("      - mudou `apps/rt/src/commands/mod.rs` em 9 de 10"), "{lines}");
-        assert!(lines.contains("      - criou um teste em 7 de 10"), "{lines}");
+        assert!(lines.contains("\n    - mudou `apps/rt/src/commands/mod.rs` em 9 de 10"), "{lines}");
+        assert!(lines.contains("\n    - criou um teste em 7 de 10"), "{lines}");
         // O texto mudou junto em só 3 dos 10: fica fora.
         assert!(!lines.contains("i18n.rs"), "{lines}");
         // Sem regra de importação, o bloco não fala de regra nem de exemplo.
@@ -2632,7 +3124,7 @@ mod tests {
     fn a_project_without_any_test_gets_no_test_line_in_the_recipe() {
         let (dir, log) = project_creating_a_command(false);
         let built = prompts(dir.path(), "teste", &log, Locale::PtBr, &Flight::default(), &log.planned_waves());
-        let lines = task_lines(&built[0].text, "Criar o comando").join("\n");
+        let lines = task_lines(&built[0], "Criar o comando").join("\n");
         assert!(lines.contains("mudou `apps/rt/src/commands/mod.rs` em 9 de 10"), "{lines}");
         assert!(!lines.contains("criou um teste"), "{lines}");
     }
@@ -2646,15 +3138,15 @@ mod tests {
         let (dir, log) = project_creating_a_command(true);
         std::fs::remove_file(dir.path().join("apps/rt/src/commands/mod.rs")).unwrap();
         let built = prompts(dir.path(), "teste", &log, Locale::PtBr, &Flight::default(), &log.planned_waves());
-        let lines = task_lines(&built[0].text, "Criar o comando").join("\n");
+        let lines = task_lines(&built[0], "Criar o comando").join("\n");
         assert!(lines.contains("Receita do git, de 10 commits que criaram um arquivo `apps/rt/src/commands/*.rs`:"), "{lines}");
-        assert!(lines.contains("      - criou um teste em 7 de 10"), "{lines}");
+        assert!(lines.contains("\n    - criou um teste em 7 de 10"), "{lines}");
         assert!(!lines.contains("mod.rs"), "{lines}");
 
         let (dir, log) = project_creating_a_command(false);
         std::fs::remove_file(dir.path().join("apps/rt/src/commands/mod.rs")).unwrap();
         let built = prompts(dir.path(), "teste", &log, Locale::PtBr, &Flight::default(), &log.planned_waves());
-        let lines = task_lines(&built[0].text, "Criar o comando").join("\n");
+        let lines = task_lines(&built[0], "Criar o comando").join("\n");
         assert!(!lines.contains("Receita do git") && !lines.contains(head), "no block at all: {lines}");
     }
 
@@ -2665,7 +3157,7 @@ mod tests {
         map.history = History::default();
         write_map(dir.path(), &serde_json::to_value(&map).unwrap());
         let built = prompts(dir.path(), "teste", &log, Locale::PtBr, &Flight::default(), &log.planned_waves());
-        let lines = task_lines(&built[0].text, "Criar o comando").join("\n");
+        let lines = task_lines(&built[0], "Criar o comando").join("\n");
         assert!(!lines.contains("Receita do git"), "{lines}");
         let head = crate::platform::i18n::translate("prompt.pattern.head_plain", Locale::PtBr);
         assert!(!lines.contains(head), "no block at all: {lines}");
@@ -2722,7 +3214,7 @@ mod tests {
         let read = |need: Need<'_>| crate::io::project_map::read_for(root, need);
         for round in 0..2 {
             let built = prompts_reading(root, "teste", &log, Locale::PtBr, &Flight::default(), &log.planned_waves(), &read, &trace);
-            let lines = task_lines(&built[0].text, "Mudar o antigo").join("\n");
+            let lines = task_lines(&built[0], "Mudar o antigo").join("\n");
             assert!(lines.contains("Receita do git, de 3 commits que mudaram `src/old.rs`:"), "round {round}: {lines}");
             assert!(lines.contains("mudou `src/registry.rs` em 3 de 3"), "round {round}: {lines}");
         }
@@ -2837,7 +3329,7 @@ mod tests {
     /// quando o nome sai seguido da marca.
     fn marked_for_review(prompt: &WavePrompt) -> bool {
         let review = crate::platform::i18n::translate("prompt.skill.stale", Locale::PtBr);
-        prompt.text.contains(&format!("**somar** ({review})"))
+        prompt.text.contains(&format!("/somar/SKILL.md` ({review})"))
     }
 
     /// A skill cujo arquivo citado teve commit depois da data do arquivo

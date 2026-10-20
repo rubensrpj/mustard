@@ -186,6 +186,9 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>) -> Value {
             None => return refuse(&Refusal::NoCurrentSpec),
         },
     };
+    if let Err(refusal) = mustard_core::io::legacy_specs::refuse_legacy(&project.root, &spec) {
+        return refuse(&refusal);
+    }
     let path = match store::spec_file(&project.root, &spec) {
         Ok(path) => path,
         Err(refusal) => return refuse(&refusal),

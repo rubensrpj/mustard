@@ -14,8 +14,10 @@ mod attempts;
 mod call_record;
 mod key_check;
 mod orchestration;
+pub(crate) mod reserve;
+pub(crate) mod yes_no;
 
-pub(crate) use call_record::{ASSEMBLY_CALL, FIND_CALL, ITEMS_CALL, TASK_TRIAGE_CALL, TRIAGE_CALL, measure_filter_call, record_jev_call};
+pub(crate) use call_record::{ASSEMBLY_CALL, FIND_CALL, ITEMS_CALL, RULES_CALL, SUMMARY_CALL, TASK_TRIAGE_CALL, TRIAGE_CALL, measure_filter_call, record_jev_call};
 pub(crate) use key_check::{KeyCheck, check_key, service_url};
 
 use super::judgement::{JudgementProvider, JudgementRequest, JudgementService, Purpose};
@@ -211,6 +213,21 @@ impl JevFilter {
         let mut filter=Self::new(root,loaded.key); filter.spec=Some(spec.into()); filter.purpose=purpose; Some(filter)
     }
 
+    /// O filtro das perguntas do resumo do projeto: só o interruptor geral do
+    /// Jev no `mustard.json` e a chave. As chamadas ficam na spec `spec`; sem
+    /// ela, nas chamadas soltas da máquina.
+    pub(crate) fn for_project(root: &Path, spec: &str) -> Option<Self> {
+        let config = ProjectConfig::load(root);
+        if cfg!(test) || !config.ai_fallback_enabled() {
+            return None;
+        }
+        let loaded = key_in(root, &config, std::env::var(jev_gate::KEY_ENV).ok()).ok()?;
+        let mut filter = Self::new(root, loaded.key);
+        filter.spec = (!spec.trim().is_empty()).then(|| spec.trim().to_string());
+        filter.purpose = Purpose::Context;
+        Some(filter)
+    }
+
     /// As escolhas da orquestração para `payloads`, pedidas ao mesmo tempo e
     /// esperadas até `wait`, na ordem dos pedidos.
     pub(crate) fn choose_orchestration(&self, payloads: &[String], wait: Duration) -> Result<Vec<Value>,FilterError> {
@@ -232,8 +249,16 @@ impl JevFilter {
     }
 
     pub(crate) fn choose_symbols(&self,payload:&str)->Result<Value,FilterError> {
+        self.choose_symbols_until(payload,Instant::now()+self.timeouts.response)
+    }
+
+    /// [`Self::choose_symbols`] que acaba também em `deadline`, o prazo da
+    /// busca que pediu a escolha: o pedido leva o que sobra dele, nunca mais
+    /// que a espera do filtro.
+    pub(crate) fn choose_symbols_until(&self,payload:&str,deadline:Instant)->Result<Value,FilterError> {
         validate_wire_size(payload)?;
-        self.send_all_for(&[payload.to_string()],Instant::now()+self.timeouts.response,Purpose::Search)?
+        let deadline=deadline.min(Instant::now()+self.timeouts.response);
+        self.send_all_for(&[payload.to_string()],deadline,Purpose::Search)?
             .into_iter().next().ok_or_else(||FilterError::Unreadable("missing symbol choice".into()))
     }
 
@@ -270,6 +295,13 @@ impl JevFilter {
             let started = Instant::now();
             let mut status = None;
             let mut wait = Duration::ZERO;
+            // A leitura que um sinal do processo interrompeu não é falha do
+            // serviço: o pedido sai de novo na hora, dentro do mesmo prazo.
+            let interrupted = std::cell::Cell::new(false);
+            let failed = |error: ureq::Error| {
+                interrupted.set(interrupted.get() || matches!(&error, ureq::Error::Io(io) if io.kind() == ErrorKind::Interrupted));
+                transport_error(error)
+            };
             let result = (|| {
                 let mut response = agent
                     .post(&self.endpoint)
@@ -279,11 +311,11 @@ impl JevFilter {
                     .header("Authorization", &auth)
                     .header("Content-Type", "application/json")
                     .send(request.payload.as_bytes())
-                    .map_err(transport_error)?;
+                    .map_err(&failed)?;
                 let code = response.status().as_u16();
                 status = Some(code);
                 if (200..300).contains(&code) {
-                    let text = response.body_mut().read_to_string().map_err(transport_error)?;
+                    let text = response.body_mut().read_to_string().map_err(&failed)?;
                     let mut doc: Value = serde_json::from_str(&text).map_err(|_| FilterError::Unreadable("the body is not JSON".into()))?;
                     let object = doc.as_object_mut().ok_or_else(|| FilterError::Unreadable("the body is not a judgement object".into()))?;
                     object.insert("_attempts".into(), json!(retries + 1));
@@ -294,7 +326,8 @@ impl JevFilter {
                 }
             })();
             self.record_attempt(request, u64::from(retries) + 1, status, &result, started.elapsed());
-            if status.is_some_and(retryable) && retries < MAX_RETRIES && Instant::now() + wait < deadline {
+            let again = interrupted.get() || (status.is_some_and(retryable) && retries < MAX_RETRIES);
+            if again && Instant::now() + wait < deadline {
                 retries += 1;
                 std::thread::sleep(wait);
                 continue;
@@ -956,7 +989,7 @@ fn encode_board(state: Value, questions: Map<String, Value>) -> Result<String, F
 /// ela, em lotes que cabem no teto do serviço ([`interference_payloads`]).
 /// Cada resposta traz as chaves das próprias perguntas, e quem junta as
 /// respostas lê cada tarefa pela chave dela, na ordem do backlog.
-fn backlog_payloads(board: &Board) -> Result<Vec<String>, FilterError> {
+pub(crate) fn backlog_payloads(board: &Board) -> Result<Vec<String>, FilterError> {
     let mut payloads = Vec::new();
     for task in &board.backlog {
         let intrinsic = Board { running: Vec::new(), backlog: vec![task.clone()] };
@@ -1080,7 +1113,7 @@ fn board_parts(board: &Board) -> (Value, Map<String, Value>) {
     (state, questions)
 }
 
-fn read_judgements(doc: &Value, board: &Board) -> Result<BTreeMap<u64, Judgement>, FilterError> {
+pub(crate) fn read_judgements(doc: &Value, board: &Board) -> Result<BTreeMap<u64, Judgement>, FilterError> {
     let answers = doc.get("answers").and_then(Value::as_object).ok_or_else(|| FilterError::Unreadable("no answers".to_string()))?;
     let missing = |what: String| FilterError::Unreadable(format!("no answer for {what}"));
     let mut judged = BTreeMap::new();
@@ -1162,7 +1195,7 @@ impl JevFilter {
 /// pergunta. Os itens se repartem na ordem em que vêm, enquanto o estado e a
 /// maior pergunta cabem num pedido e o pedido inteiro cabe no que o serviço
 /// aceita; as tarefas vão em todas as partes. Quadro sem item não pede nada.
-fn items_payloads(board: &ItemsBoard) -> Result<Vec<(String, Vec<u64>)>, FilterError> {
+pub(crate) fn items_payloads(board: &ItemsBoard) -> Result<Vec<(String, Vec<u64>)>, FilterError> {
     let task: Map<String, Value> = board
         .tasks
         .iter()
@@ -1244,7 +1277,7 @@ fn items_payloads(board: &ItemsBoard) -> Result<Vec<(String, Vec<u64>)>, FilterE
 /// A chance de sim de cada item de `ids`, lida do documento `doc` e posta em
 /// `into`. Falta de `answers`, de uma resposta ou uma chance que não é número
 /// entre 0 e 1 é resposta ilegível.
-fn read_item_chances(doc: &Value, ids: &[u64], into: &mut BTreeMap<u64, f64>) -> Result<(), FilterError> {
+pub(crate) fn read_item_chances(doc: &Value, ids: &[u64], into: &mut BTreeMap<u64, f64>) -> Result<(), FilterError> {
     let answers = doc.get("answers").and_then(Value::as_object).ok_or_else(|| FilterError::Unreadable("no answers".to_string()))?;
     for id in ids {
         let key = item_key(*id);
@@ -2137,6 +2170,22 @@ mod tests {
     }
 
     #[test]
+    fn the_symbol_choice_ends_with_the_deadline_of_the_search() {
+        // O serviço leva 1,5 s; a busca tem 200 ms de prazo: a escolha volta
+        // no prazo dela, não no do filtro (10 s).
+        let service = FakeService::start(|_, _| {
+            std::thread::sleep(Duration::from_millis(1500));
+            Reply::json(200, &json!({"answers":{}}))
+        });
+        let filter = service.filter();
+        let started = Instant::now();
+        let error = filter.choose_symbols_until("{}", started + Duration::from_millis(200)).unwrap_err();
+        let waited = started.elapsed();
+        assert_eq!(error, FilterError::Timeout);
+        assert!(waited < Duration::from_millis(800), "waited {waited:?} past the 200 ms of the search");
+    }
+
+    #[test]
     fn a_repeat_whose_wait_passes_the_deadline_is_not_made() {
         // O serviço pede 2 s antes de repetir; com o prazo de 500 ms, a
         // recusa volta na hora, sem esperar nem repetir.
@@ -2444,7 +2493,6 @@ mod tests {
         assert_eq!(state["running"]["w7"]["t5"]["files"], json!(["module/open.rs"]));
         assert_eq!(state["backlog"]["t12"]["depends_on"], json!(["Task 5"]));
         assert_eq!(state["backlog"]["t11"]["text"], json!("Text of task 11."));
-        assert!(state["backlog"]["t11"].get("expertise").is_none(), "the assembly request carries no area profile");
         assert_eq!(body["questions"]["tipo_t11"]["criteria"].as_object().unwrap().len(), 5);
 
         assert_eq!(judged.tasks[&11], Judgement { kind: TaskKind::Defect, confidence: 0.9, clash: 0.1 });

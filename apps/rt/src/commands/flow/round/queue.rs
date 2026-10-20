@@ -278,11 +278,12 @@ const WAVE_LEFT_KEY: &str = "wave-left-without-tasks";
 /// O pedido de revisão aberto, pelo número dele: o último envio de revisão,
 /// que o fechamento grava, sem veredito oficial depois dele. A volta que o
 /// revisor gravou e ninguém assumiu ainda não fecha o pedido: só o veredito
-/// que a rodada ou o fechamento grava ao assumi-la.
+/// que a rodada ou o fechamento grava ao assumi-la. O veredito do revisor de
+/// uma onda nunca o fecha.
 pub(crate) fn open_review(log: &SpecLog) -> Option<u64> {
     let visible = log.visible();
     let asked = visible.iter().filter(|e| e.event_type == "send" && e.str_field("role") == Some("review")).map(|e| e.id).max()?;
-    (!visible.iter().any(|e| e.event_type == "verdict" && e.id > asked)).then_some(asked)
+    (!visible.iter().any(|e| e.event_type == "verdict" && !super::wave_review::is_wave_verdict(e) && e.id > asked)).then_some(asked)
 }
 
 /// A versão nova do envio mais recente da onda `wave`: os campos dele, tirando
@@ -306,6 +307,36 @@ pub(crate) fn send_revision(log: &SpecLog, wave: u64, extra: Map<String, Value>)
         draft.insert(key, value);
     }
     Some(draft)
+}
+
+/// A subida de modelo do agente novo da onda `wave` de `log`, no projeto em
+/// `root`: os campos da versão do envio com o modelo um degrau acima do dele
+/// e de onde ele subiu, pela volta pendente que a rodada recusou ou quem
+/// conduz reprovou ([`mustard_core::domain::agent_model::escalate`]). Vazio
+/// com o modelo pela dificuldade desligado, no envio de outro hospedeiro, sem
+/// volta pendente, quando o envio já subiu por essa mesma volta e no Opus,
+/// que fica.
+pub(crate) fn new_agent_escalation(root: &Path, log: &SpecLog, wave: u64) -> Map<String, Value> {
+    use mustard_core::domain::agent_model::{ESCALATED_FIELD, Escalation, escalate};
+    let raised = || -> Option<Map<String, Value>> {
+        if !mustard_core::ProjectConfig::load(root).by_difficulty() {
+            return None;
+        }
+        let sent = *log.last_by_wave("send").get(&wave)?;
+        let send = log.get(sent)?;
+        if send.str_field("host").unwrap_or("claude") != "claude" {
+            return None;
+        }
+        let cause = super::rejection::pending_return(log, wave)?;
+        if Escalation::of(send).is_some_and(|before| before.cause == cause) {
+            return None;
+        }
+        let previous = log.send_field(sent, "model").and_then(Value::as_str)?;
+        let chosen = escalate(previous, previous, cause);
+        let from = chosen.escalated_from?;
+        Some(Map::from_iter([("model".to_string(), json!(chosen.model)), (ESCALATED_FIELD.to_string(), from.to_value())]))
+    };
+    raised().unwrap_or_default()
 }
 
 /// O campo do envio gravado quando nenhum hospedeiro foi reconhecido por
@@ -1360,7 +1391,7 @@ mod tests {
         let again = round(root, "x", None);
         assert_eq!(waves_in(&again, "dispatch"), vec![1], "the replanned fix goes out again: {again}");
         let prompt = &request_at(&again, 0);
-        assert!(prompt.lines().any(|l| l.contains(&format!("Faça a tarefa {task_code} — "))), "{prompt}");
+        assert!(prompt.lines().any(|l| l.starts_with(&format!("   - {task_code} — "))), "{prompt}");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let codes = log.codes();
         let newest = log.visible().into_iter().rfind(|e| e.event_type == "send").map(|e| codes[&e.id].clone()).unwrap();
@@ -2078,7 +2109,7 @@ mod tests {
         - Decisão MSTD-DEC-0003 — Da onda um: a coluna é texto.\n";
 
     /// A linha da tarefa da onda 1 que atende uma das regras do projeto todo.
-    const ATTENDED_ITEM: &str = "   - Atende: regra MSTD-RULE-0003 — Vale sempre: a tabela nova tem índice.";
+    const ATTENDED_ITEM: &str = "#### Atende: regra MSTD-RULE-0003 — Vale sempre: a tabela nova tem índice.";
 
     /// A spec aprovada da escolha dos itens: uma onda, com a tarefa que faz
     /// uma das regras do projeto todo, duas regras do projeto todo que ela não
@@ -2142,10 +2173,11 @@ mod tests {
         assert!(out.get("analysis").is_none(), "no choice is asked of the conductor: {out}");
         assert!(!out["next"].as_str().unwrap_or_default().contains("ANALYSIS"), "{out}");
         let prompt = request_at(&out, 0);
+        let reach = request_and_blocks_at(root, "x", &out, 0);
         assert!(prompt.contains(CHOSEN_ITEMS_BY_DEFAULT), "{prompt}");
-        assert!(prompt.lines().any(|l| l == ATTENDED_ITEM), "{prompt}");
+        assert!(reach.lines().any(|l| l == ATTENDED_ITEM), "{reach}");
         for code in ["MSTD-DEC-0001", "MSTD-DEC-0002"] {
-            assert!(!prompt.contains(code), "{code} has no link to the wave and stays out: {prompt}");
+            assert!(!reach.contains(code), "{code} has no link to the wave and stays out: {reach}");
         }
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let sent: Vec<_> = log.visible().into_iter().filter(|e| e.event_type == "send" && e.wave().is_some()).collect();
@@ -2210,7 +2242,7 @@ mod tests {
         candidates.sort_unstable();
         assert_eq!(asked, candidates, "only what the request neither carries nor drops by itself");
         assert!(boards[0].tasks.iter().any(|task| task.text == "Criar o índice da tabela."), "the tasks of the wave go in the state");
-        let prompt = request_at(&out, 0);
+        let prompt = request_and_blocks_at(root, "x", &out, 0);
         for code in ["MSTD-RULE-0001", "MSTD-DEC-0001", "MSTD-DEC-0003", "MSTD-RULE-0003"] {
             assert!(prompt.contains(code), "{code} goes in whatever the chance: {prompt}");
         }
@@ -2305,7 +2337,7 @@ mod tests {
             vec![vec![ids["MSTD-RULE-0001"], ids["MSTD-RULE-0002"]]],
             "only the two file-linked items nobody else carries are asked about"
         );
-        let prompt = request_at(&out, 0);
+        let prompt = request_and_blocks_at(root, "x", &out, 0);
         assert!(!prompt.contains("MSTD-RULE-0001"), "a chance of 0.19 takes it out: {prompt}");
         for code in ["MSTD-RULE-0002", "MSTD-RULE-0003", "MSTD-RULE-0004", "MSTD-DEC-0001"] {
             assert!(prompt.contains(code), "{code} goes: {prompt}");
@@ -2334,7 +2366,7 @@ mod tests {
         let out = round(root, "x", None);
 
         assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
-        let prompt = request_at(&out, 0);
+        let prompt = request_and_blocks_at(root, "x", &out, 0);
         for code in ["MSTD-RULE-0001", "MSTD-RULE-0002", "MSTD-RULE-0003", "MSTD-RULE-0004", "MSTD-DEC-0001"] {
             assert!(prompt.contains(code), "{code} goes: {prompt}");
         }
@@ -2377,27 +2409,34 @@ mod tests {
         assert_eq!(*seen.lock().unwrap(), vec![second], "the Jev is asked only about the unmarked one");
     }
 
-    /// Com o Jev recusando a chamada, a onda sai na mesma rodada com o pedido
+    /// Com o Jev recusando a chamada, a escolha dos itens vai à reserva: a
+    /// onda espera o recibo, e a chamada fica gravada com o motivo. O recibo
+    /// incerto vale como dúvida: a onda sai na rodada seguinte com o pedido
     /// padrão — o projeto todo vai, o sem ligação fica fora —, o envio não
-    /// grava escolha, e a chamada fica gravada com o motivo.
+    /// grava escolha, e o Jev não é chamado de novo.
     #[test]
-    fn a_refused_call_leaves_the_default_request_and_is_recorded_with_its_reason() {
+    fn a_refused_call_goes_to_the_reserve_and_an_unsure_receipt_leaves_the_default_request() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         with_items_to_judge(root);
         let _jev = crate::commands::flow::round::item_choice::fake::refusing();
 
-        let out = round(root, "x", None);
+        let waiting = round(root, "x", None);
+        assert!(waves_in(&waiting, "dispatch").is_empty(), "the wave waits for the receipt: {waiting}");
+        let request = waiting["reserves"][0].clone();
+        let calls = item_calls(root);
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert_eq!(calls[0]["filter"], json!("jev:refused"), "{calls:?}");
 
+        crate::shared::jev::reserve::answer_in_test(root, &request, |_| "yes".into(), "unsure");
+        let out = round(root, "x", None);
         assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
         let prompt = request_at(&out, 0);
         assert!(prompt.contains(CHOSEN_ITEMS_BY_DEFAULT), "{prompt}");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let sent = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(1)).unwrap();
         assert!(log.send_field(sent.id, "analysis").is_none(), "{:?}", sent.fields);
-        let calls = item_calls(root);
-        assert_eq!(calls.len(), 1, "{calls:?}");
-        assert_eq!(calls[0]["filter"], json!("jev:refused"), "{calls:?}");
+        assert_eq!(item_calls(root).len(), 1, "the receipt answers in place of the Jev");
     }
 
     /// O mapa do projeto acompanha o commit atual sem segurar o pedido:
@@ -2964,7 +3003,7 @@ mod tests {
         ));
 
         let log = store::read(&path).unwrap().unwrap();
-        let formed = dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed).expect("formou o lote");
+        let formed = dispatch_backlog(root, "x", &log, &log, max_parallel(root), (None, None)).map(|(formed, _)| formed).expect("formou o lote");
         assert_eq!(formed, vec![2], "as duas tarefas do mesmo arquivo viram uma onda só: {formed:?}");
 
         // A tarefa 1 sai do backlog por remoção, depois de o lote já ter sido
@@ -3088,7 +3127,7 @@ mod tests {
         let again = backlog_task(root, said, crit, "Mexer de novo no código de um.", "src/a.rs");
         let other = backlog_task(root, said, crit, "Mexer no código de dois.", "src/b.rs");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![2, 3]), "cada tarefa nova vira a onda do seu assunto");
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), (None, None)).map(|(formed, _)| formed), Ok(vec![2, 3]), "cada tarefa nova vira a onda do seu assunto");
 
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let waves: Vec<&SpecEvent> = log.visible().into_iter().filter(|e| e.event_type == "wave").collect();
@@ -3156,12 +3195,12 @@ mod tests {
 
         // A outra rodada, que entrou antes da tarefa dois, forma a onda 1 com a
         // tarefa um e solta a trava.
-        assert_eq!(dispatch_backlog(root, "x", &first_entry, &first_entry, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![1]));
+        assert_eq!(dispatch_backlog(root, "x", &first_entry, &first_entry, max_parallel(root), (None, None)).map(|(formed, _)| formed), Ok(vec![1]));
         seed_running(root, 1);
         let three = backlog_task(root, said, crit, "Mexer de novo no código de dois.", "src/b.rs");
 
         let locked = store::read(&path).unwrap().unwrap();
-        assert_eq!(dispatch_backlog(root, "x", &second_entry, &locked, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![2]), "a onda nova é a 2");
+        assert_eq!(dispatch_backlog(root, "x", &second_entry, &locked, max_parallel(root), (None, None)).map(|(formed, _)| formed), Ok(vec![2]), "a onda nova é a 2");
 
         let log = store::read(&path).unwrap().unwrap();
         let order = |n: u64| {
@@ -3372,7 +3411,7 @@ mod tests {
         let second = cleanup_task(root, said, crit, "Acertar o comentário 2.", "src/a.rs");
         let apart = cleanup_task(root, said, crit, "Acertar o comentário 3.", "src/b.rs");
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![1, 2]), "um assunto por onda");
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), (None, None)).map(|(formed, _)| formed), Ok(vec![1, 2]), "um assunto por onda");
         assert_eq!(wave_order(root, 1), vec![first, second], "as duas do mesmo arquivo saem juntas");
         assert_eq!(wave_order(root, 2), vec![apart], "a de outro arquivo sai na sua");
     }
@@ -3448,7 +3487,7 @@ mod tests {
         let bare = uncovered_task(root, "Conferir o código de um.", "src/a.rs", &[covered]);
 
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![1]));
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), (None, None)).map(|(formed, _)| formed), Ok(vec![1]));
         assert_eq!(wave_order(root, 1), vec![covered], "a onda leva só a tarefa que cobre");
         assert_eq!(spec_now(root).current(bare).and_then(SpecEvent::wave), None, "a outra segue no backlog");
     }
@@ -3545,7 +3584,7 @@ mod tests {
         let apart = backlog_task_on(root, said, crit, "Mexer em outro assunto.", &["src/c.rs"]);
 
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![1, 2]));
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), (None, None)).map(|(formed, _)| formed), Ok(vec![1, 2]));
         assert_eq!(wave_order(root, 1), vec![first, second, third], "a corrente é um assunto só");
         assert_eq!(wave_order(root, 2), vec![apart], "o outro assunto sai à parte");
     }
@@ -3560,7 +3599,7 @@ mod tests {
         let tasks: Vec<u64> = (1..=7).map(|n| backlog_task(root, said, crit, &format!("Mexer no código {n}."), "src/a.rs")).collect();
 
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![1]), "uma onda só");
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), (None, None)).map(|(formed, _)| formed), Ok(vec![1]), "uma onda só");
         assert_eq!(wave_order(root, 1), tasks, "a onda 1 leva as sete tarefas");
     }
 
@@ -3590,12 +3629,12 @@ mod tests {
         let (said, crit) = backlog_project(root);
         backlog_task_on(root, said, crit, "Mexer na parte grande.", &SIX_FILES);
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![1]), "seis arquivos saem");
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), (None, None)).map(|(formed, _)| formed), Ok(vec![1]), "seis arquivos saem");
         seed_running(root, 1);
         let small = backlog_task_on(root, said, crit, "Mexer na parte pequena.", &["src/a.rs", "src/b.rs", "src/c.rs"]);
 
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![2]));
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), (None, None)).map(|(formed, _)| formed), Ok(vec![2]));
         assert_eq!(spec_now(root).current(small).and_then(SpecEvent::wave), Some(2));
     }
 
@@ -3609,7 +3648,7 @@ mod tests {
         let small = backlog_task_on(root, said, crit, "Mexer na parte pequena.", &["src/a.rs", "src/b.rs", "src/c.rs"]);
 
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![1]));
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), (None, None)).map(|(formed, _)| formed), Ok(vec![1]));
         assert_eq!(wave_order(root, 1), vec![small]);
     }
 
@@ -3622,18 +3661,18 @@ mod tests {
         let (said, crit) = backlog_project(root);
         backlog_task_on(root, said, crit, "Mexer na parte grande.", &SIX_FILES);
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![1]));
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), (None, None)).map(|(formed, _)| formed), Ok(vec![1]));
         seed_running(root, 1);
         let one = backlog_task_on(root, said, crit, "Mexer na primeira.", &["src/a.rs", "src/b.rs", "src/c.rs"]);
         let two = backlog_task_on(root, said, crit, "Mexer na segunda.", &["src/d.rs", "src/e.rs", "src/f.rs"]);
 
         let apart = judging(|id| if id == one { TaskKind::Defect } else { TaskKind::Feature });
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), Some(&apart)).map(|(formed, _)| formed), Ok(vec![2, 3]), "different independent types can use separate slots");
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), (Some(&apart), None)).map(|(formed, _)| formed), Ok(vec![2, 3]), "different independent types can use separate slots");
 
         let together = judging(|_| TaskKind::Feature);
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), Some(&together)).map(|(formed, _)| formed), Ok(vec![4]));
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), (Some(&together), None)).map(|(formed, _)| formed), Ok(vec![4]));
         assert_eq!(wave_order(root, 4), vec![log.current(one).unwrap().id, log.current(two).unwrap().id], "as duas, do mesmo tipo, numa onda só");
     }
 
@@ -3647,14 +3686,14 @@ mod tests {
         let (said, crit) = backlog_project(root);
         backlog_task_on(root, said, crit, "Mexer na parte grande.", &SIX_FILES);
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![1]));
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), (None, None)).map(|(formed, _)| formed), Ok(vec![1]));
         seed_running(root, 1);
         let small = backlog_task_on(root, said, crit, "Mexer na parte pequena.", &["src/a.rs", "src/b.rs"]);
         let later = backlog_task_on(root, said, crit, "Mexer na parte seguinte.", &["src/a.rs", "doc/1.md", "doc/2.md", "doc/3.md", "doc/4.md", "doc/5.md"]);
 
         let judge = judging(|id| if id == small { TaskKind::Defect } else { TaskKind::Feature });
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), Some(&judge)).map(|(formed, _)| formed), Ok(vec![2, 3]));
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), (Some(&judge), None)).map(|(formed, _)| formed), Ok(vec![2, 3]));
         assert_eq!(spec_now(root).current(small).and_then(SpecEvent::wave), Some(2), "o defeito sai primeiro");
         assert_eq!(spec_now(root).current(later).and_then(SpecEvent::wave), Some(3), "o de seis sai ao lado dele");
     }
@@ -3670,11 +3709,11 @@ mod tests {
         let wide = backlog_task(root, said, crit, "Mexer em todo o código.", "**");
 
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![1]));
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), (None, None)).map(|(formed, _)| formed), Ok(vec![1]));
         assert_eq!(wave_order(root, 1), vec![wide], "o curinga sai sozinho, antes dos outros");
         seed_send(root, 1);
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![]), "o resto espera");
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), (None, None)).map(|(formed, _)| formed), Ok(vec![]), "o resto espera");
         assert_eq!(spec_now(root).current(narrow).and_then(SpecEvent::wave), None, "e segue no backlog");
     }
 
@@ -3688,11 +3727,11 @@ mod tests {
         let (said, crit) = backlog_project(root);
         let task = backlog_task(root, said, crit, "Mexer no código de um.", "src/a.rs");
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, 2, None).map(|(formed, _)| formed), Ok(vec![1]));
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, 2, (None, None)).map(|(formed, _)| formed), Ok(vec![1]));
         let in_wave_one = spec_now(root).current(task).unwrap().id;
 
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, 2, None).map(|(formed, _)| formed), Ok(vec![2]), "a onda 1 se desfaz e a 2 a refaz");
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, 2, (None, None)).map(|(formed, _)| formed), Ok(vec![2]), "a onda 1 se desfaz e a 2 a refaz");
 
         let log = spec_now(root);
         assert_eq!(log.planned_waves().into_iter().collect::<Vec<_>>(), vec![2], "a entrega 1 saiu do plano");
@@ -3730,7 +3769,7 @@ mod tests {
     /// que a rodada gravou com o número da onda.
     fn batched(root: &Path, task: u64) -> u64 {
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![1]), "a tarefa sai na onda 1");
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), (None, None)).map(|(formed, _)| formed), Ok(vec![1]), "a tarefa sai na onda 1");
         let log = spec_now(root);
         let version = log.current(task).expect("a tarefa segue viva");
         assert_eq!(version.wave(), Some(1), "a rodada gravou a versão com a onda");
@@ -3755,7 +3794,7 @@ mod tests {
         let log = spec_now(root);
         assert_eq!(shown_task_versions(&log, &code), Vec::<u64>::new(), "nenhuma versão da tarefa fica na leitura");
         assert!(!log.planned_waves().contains(&1), "a onda sem tarefa sai do plano");
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![]), "nada volta ao backlog");
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), (None, None)).map(|(formed, _)| formed), Ok(vec![]), "nada volta ao backlog");
     }
 
     /// A tarefa tem três versões: a sem onda, a da rodada e a do agente, com
@@ -3783,7 +3822,7 @@ mod tests {
 
         let log = spec_now(root);
         assert_eq!(shown_task_versions(&log, &code), Vec::<u64>::new(), "as três versões saem");
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![]), "nada volta ao backlog");
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), (None, None)).map(|(formed, _)| formed), Ok(vec![]), "nada volta ao backlog");
     }
 
     /// A rodada monta a versão nova de uma tarefa com a onda 2, e antes de
@@ -3807,7 +3846,7 @@ mod tests {
         assert_eq!(refusal.reason(), "replaces-removed", "{refusal:?}");
         let log = spec_now(root);
         assert_eq!(shown_task_versions(&log, &code), Vec::<u64>::new(), "a tarefa segue fora");
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![]), "nada volta ao backlog");
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), (None, None)).map(|(formed, _)| formed), Ok(vec![]), "nada volta ao backlog");
     }
 
     /// A rodada monta a versão nova de uma tarefa, e antes de ela gravar,
@@ -3857,7 +3896,7 @@ mod tests {
         let before = spec_now(root);
         let codes = before.codes();
         let newest = |code: &str| before.events.iter().filter(|e| codes.get(&e.id).map(String::as_str) == Some(code)).map(|e| e.id).max();
-        assert_eq!(dispatch_backlog(root, "x", &before, &before, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![2]), "a outra tarefa sai na onda 2");
+        assert_eq!(dispatch_backlog(root, "x", &before, &before, max_parallel(root), (None, None)).map(|(formed, _)| formed), Ok(vec![2]), "a outra tarefa sai na onda 2");
 
         let after = spec_now(root);
         let written: Vec<&SpecEvent> = after.events.iter().filter(|e| e.id > before.max_id() && e.event_type == "task").collect();
@@ -3937,7 +3976,7 @@ mod tests {
         let log = spec_now(root);
         assert_eq!(log.current(task).map(|e| e.id), Some(task), "a leitura antiga devolve a versão sem onda");
         assert_eq!(
-            dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed),
+            dispatch_backlog(root, "x", &log, &log, max_parallel(root), (None, None)).map(|(formed, _)| formed),
             Err(mustard_core::domain::spec_events::Refusal::ReplacesRemoved { id: with_wave, by }),
             "a rodada não solta a tarefa removida"
         );
@@ -4001,7 +4040,7 @@ mod tests {
         let third = after(second, "Testar o código de um.");
 
         let log = spec_now(root);
-        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![1]), "a cadeia vira um lote só");
+        assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), (None, None)).map(|(formed, _)| formed), Ok(vec![1]), "a cadeia vira um lote só");
         assert_eq!(wave_order(root, 1), vec![first, second, third], "na ordem da cadeia");
         let log = spec_now(root);
         for task in [first, second, third] {

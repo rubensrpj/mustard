@@ -78,7 +78,7 @@ use std::path::PathBuf;
 
 use binaries::check_binaries;
 use drift::check_drift;
-use host::{check_claude_cli, check_nerd_font, check_rtk, lsp_check};
+use host::{check_claude_cli, check_effort_env, check_nerd_font, check_rtk, lsp_check};
 use project::{check_claude_md, check_scan_output, check_switches};
 use protection::check_branch_protection;
 use report::{render_report, render_report_json};
@@ -255,6 +255,7 @@ const CHECKS: &[Check] = &[
     Check { runs: Runs::Round, check: |place| lsp_check(&place.cwd) },
     Check { runs: Runs::Round, check: |_| check_rtk() },
     Check { runs: Runs::Round, check: |_| check_nerd_font() },
+    Check { runs: Runs::Round, check: |_| check_effort_env() },
     Check { runs: Runs::Named("wave-integrity"), check: |place| check_wave_integrity(&place.claude_dir) },
     // O que o provedor realmente protege: uma base que só este binário recusa
     // é uma base aberta para todo mundo, e isso não aparece até um envio

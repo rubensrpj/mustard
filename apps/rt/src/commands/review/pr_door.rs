@@ -1423,7 +1423,7 @@ pub(crate) fn deliver_merged_at(root: &Path, spec: &str, session: Option<&str>) 
     // sem segurar despacho nem commit de ninguém.
     drop(held);
     drop(copies);
-    removal.delete_leaving();
+    removal.delete_leaving(&repo);
     let warnings: Vec<Value> = crate::commands::flow::close::removal_warnings(&removal, lang)
         .into_iter()
         .map(|(reason, hint)| serde_json::json!({ "reason": reason, "hint": hint }))
@@ -2461,6 +2461,11 @@ mod tests {
             Some("s-entrega"),
         );
         assert_eq!(armed_charges(root).len(), 1, "a promoção armou uma cobrança");
+
+        // A entrega deixa a linha da spec no resumo do projeto; a promoção,
+        // nenhuma.
+        let summary: Vec<String> = mustard_core::io::project_summary::read(root).into_iter().map(|entry| entry.spec).collect();
+        assert_eq!(summary, vec!["trava".to_string()]);
     }
 
     /// The pending item that became the spec gets the note in the list, and

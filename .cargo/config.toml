@@ -1,7 +1,12 @@
-# As cópias separadas e a pasta do programa compilado da versão em construção
-# que os testes criam nascem dentro de target/, nunca na pasta de cache de
+# As cópias separadas, a pasta do programa compilado da versão em construção
+# e a cópia de segurança das skills que os testes criam nascem dentro de
+# target/, nunca na pasta de cache de
 # verdade do usuário. O caminho é relativo à raiz do
 # repositório; uma variável já definida no ambiente continua valendo.
+#
+# A configuração do Claude Code que os testes leem também mora em target/,
+# mesmo com a variável definida no ambiente: nenhum teste lê a pasta `.claude`
+# de quem programa, como a procura do skill-creator faria.
 #
 # O git dos testes ignora a configuração do sistema: o `core.autocrlf` que o
 # git do Windows traz nela troca o fim de linha dos arquivos que o teste
@@ -20,7 +25,9 @@
 [env]
 MUSTARD_COPIES_DIR = { value = "target/testes-copias", relative = true }
 MUSTARD_BUILD_DIR = { value = "target/testes-build", relative = true }
+MUSTARD_SKILLS_DIR = { value = "target/testes-skills", relative = true }
 MUSTARD_SPEND_DIR = { value = "target/testes-gasto", relative = true, force = true }
+CLAUDE_CONFIG_DIR = { value = "target/testes-claude", relative = true, force = true }
 GIT_CONFIG_NOSYSTEM = "1"
 MUSTARD_DISK_SYNC = "off"
 GIT_CONFIG_COUNT = "2"

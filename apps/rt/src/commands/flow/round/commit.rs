@@ -18,6 +18,7 @@ use mustard_core::platform::process;
 use serde_json::{Map, Value, json};
 
 use super::answer::RoundRefusal;
+use super::jev_decision::{JevOn, Question, Waiting, decided};
 use super::report::WaveReport;
 use super::stops::HeldReturn;
 use super::slots::{reset_committed_slot, sharing_copy};
@@ -811,6 +812,12 @@ pub(super) struct AfterWave {
 /// que é só dado da onda: vai à resposta da rodada, e nunca ao commit. A onda
 /// cujo código já está num commit (`committed`) fica fora da conferência: não
 /// há mais o que segurar dela.
+///
+/// A onda com nome tirado citado cuja decisão do Jev ainda não existe fica
+/// fora do commit nesta rodada, sem achado nenhum na resposta, e volta com os
+/// pedidos da pergunta ([`Waiting`]): a pergunta sai depois de a trava do
+/// passo do git soltar, e a rodada seguinte confere a onda inteira de novo.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn ensure_after_wave(
     root: &Path,
     spec: &str,
@@ -819,7 +826,8 @@ pub(super) fn ensure_after_wave(
     committed: &BTreeSet<u64>,
     mine: &dyn Fn(&Path, &Path) -> mustard_core::platform::error::Result<ScanReport>,
     lang: Locale,
-) -> (Vec<Value>, Vec<HeldReturn>) {
+    jev_on: JevOn,
+) -> (Vec<Value>, Vec<HeldReturn>, Vec<Waiting>) {
     let changed: Vec<(u64, Vec<String>)> =
         waves.iter().filter(|w| !w.files.is_empty() && !committed.contains(&w.wave)).map(|w| (w.wave, w.files.clone())).collect();
     let Some(maps) = after_wave_maps(root, changed, mine) else {
@@ -838,7 +846,14 @@ pub(super) fn ensure_after_wave(
             }
     }
     let mut found = super::imports_check::findings(root, &maps, log, lang);
-    found.extend(super::removed_check::findings(root, &maps, lang));
+    // A pergunta ao Jev sobre o nome tirado citado nunca sai daqui, com a
+    // trava do passo do git presa: só a decisão já gravada, ou o recibo da
+    // reserva, decide.
+    let decide = |payloads: &[String]| decided(root, log, Question::RemovedName, payloads, jev_on);
+    let (removed, waiting) = super::removed_check::findings(root, &maps, lang, &decide);
+    found.extend(removed);
+    let out: BTreeSet<u64> = waiting.iter().map(|one| one.wave).collect();
+    found.retain(|finding| !out.contains(&finding.wave));
     // A volta que quem conduz aceitou como falso positivo só avisa.
     let accepted = |wave: u64| {
         let last = waves.iter().find(|w| w.wave == wave).and_then(|w| w.returns.iter().max().copied());
@@ -847,12 +862,13 @@ pub(super) fn ensure_after_wave(
     for finding in found.iter_mut().filter(|finding| finding.refuses) {
         finding.refuses = !accepted(finding.wave);
     }
-    let (mut warnings, held) = after_wave_answer(waves, &found, lang);
+    let (mut warnings, mut held) = after_wave_answer(waves, &found, lang);
+    held.extend(waiting.iter().map(|one| HeldReturn { wave: one.wave, refusal: RoundRefusal::JevPending { wave: one.wave, question: one.question } }));
     let files = maps.changed.iter().flat_map(|(_, files)| files.iter().cloned()).collect::<Vec<_>>();
     warnings.extend(super::test_warnings::candidates(root, log, &maps.base, &maps.after, &files, lang));
     let sizes = super::size_check::lines(&super::size_check::measure(root, &maps.changed), lang);
-    warnings.extend(sizes.iter().map(|(wave, hint)| json!({ "reason": "wave-size", "wave": wave, "hint": hint })));
-    (warnings, held)
+    warnings.extend(sizes.iter().filter(|(wave, _)| !out.contains(wave)).map(|(wave, hint)| json!({ "reason": "wave-size", "wave": wave, "hint": hint })));
+    (warnings, held, waiting)
 }
 
 /// Os dois mapas da conferência depois da onda: o da base, lido do mapa do

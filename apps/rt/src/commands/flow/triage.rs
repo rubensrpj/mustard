@@ -7,7 +7,11 @@
 //! A primeira chamada devolve o pedido ao agente de análise da sessão, em
 //! `grouping`; o recibo dele volta por `run knowledge --complete-session`, e
 //! a chamada seguinte, com a mesma lista, acha a leitura pronta e pede a
-//! ordem ao Jev. Sem `--apply`, nada é gravado: a resposta mostra os assuntos
+//! ordem ao Jev. Antes da leitura, a tarefa nova sem assunto, numa spec que
+//! já tem assuntos, passa pelo Jev numa chamada só: com certeza alta de que
+//! cabe num deles, entra nele, depois das tarefas dele, sem ir ao modelo
+//! pequeno ([`task_triage::fit_subjects_with`]); sem ela, vai à leitura.
+//! Sem `--apply`, nada é gravado: a resposta mostra os assuntos
 //! na ordem, as tarefas de cada um na ordem e as que viram uma só. Com
 //! `--apply`, sob a trava do arquivo de eventos e tudo ou nada, a tarefa que
 //! fica ganha a versão nova com o trabalho das que entram nela numa linha da
@@ -27,7 +31,9 @@ use std::path::{Path, PathBuf};
 
 use mustard_core::domain::spec_events::{Refusal, SpecEvent, SpecLog};
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState};
-use mustard_core::io::knowledge::enrichment::{GroupingSummary, GroupingTask, WaveGroup, completed_grouping};
+use mustard_core::io::knowledge::enrichment::{
+    GroupingAnswers, GroupingSummary, GroupingTask, ReserveAnswer, WaveGroup, completed_grouping, completed_grouping_answers,
+};
 use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Map, Value, json};
@@ -38,6 +44,10 @@ use crate::commands::flow::round::queue::{
 use crate::commands::flow::round::{append_agent_line, backlog_return, is_cleanup, waves_left_without_tasks};
 use crate::commands::spec_events::{self, write::record_locked};
 use crate::hooks::session::conversation_size::WAVE_LIMIT;
+use crate::commands::flow::round::dispatch_jev::{Asker, Outcome};
+use crate::shared::jev::TASK_TRIAGE_CALL;
+use crate::shared::jev::yes_no;
+use crate::shared::jev::reserve::{self, record_reserve_call};
 use crate::shared::spec_state::{DiskSpecState, checkout, session_from_env};
 use crate::shared::task_triage::{self, BacklogOrder, Candidate, Excerpt, OrderFacts, OrderedSubject};
 
@@ -52,7 +62,8 @@ pub struct TriageOpts {
 /// O relatório do `run triage`, com a pergunta ao Jev da orquestração, que
 /// espera a resposta o prazo da lista inteira.
 pub(crate) fn triage_at(opts: &TriageOpts) -> Value {
-    triage_with(opts, session_from_env().as_deref(), false, &|root, spec, payloads| task_triage::backlog_jev_ask(root, spec)(payloads))
+    let jev_on = reserve::jev_on(&opts.root);
+    triage_with(opts, session_from_env().as_deref(), false, jev_on, &|root, spec, payloads| task_triage::backlog_jev_ask(root, spec)(payloads))
 }
 
 /// O que a formação das ondas deu dentro da rodada.
@@ -66,17 +77,26 @@ pub(crate) struct RoundForming {
 }
 
 /// A formação das ondas pela rodada da spec `spec` de `root`, na sessão
-/// `session` ([`triage_with`], com a gravação): na aprovação, com a lista
-/// inteira; depois, com as tarefas que voltaram e as que nenhuma onda levou.
-/// Só forma com uma sessão conduzindo, porque a leitura é do modelo pequeno
-/// dela; sem sessão, sem nada a ler ou sem vaga, nada muda, e a rodada monta
-/// as ondas como sempre.
-pub(crate) fn form_for_round(root: &Path, spec: &str, session: Option<&str>) -> RoundForming {
+/// `session` ([`triage_with`]): na aprovação, com a lista inteira; depois,
+/// com as tarefas que voltaram e as que nenhuma onda levou. Só forma com uma
+/// sessão conduzindo, porque a leitura é do modelo pequeno dela; sem sessão,
+/// sem nada a ler ou sem vaga, nada muda, e a rodada monta as ondas como
+/// sempre. A pergunta ao Jev da ordem passa por `asker`: antes das travas da
+/// rodada, ela sai, pelo prazo de toda chamada, e a resposta fica gravada, sem
+/// gravar a formação; com as travas presas, a formação se grava e só lê a
+/// resposta gravada. Sem ela, a ordem sai da leitura do modelo pequeno, a
+/// reserva da formação.
+pub(crate) fn form_for_round(root: &Path, spec: &str, session: Option<&str>, asker: &Asker<'_>) -> RoundForming {
     if session.is_none() {
         return RoundForming::default();
     }
-    let opts = TriageOpts { root: root.to_path_buf(), spec: Some(spec.into()), apply: true };
-    let report = triage_with(&opts, session, true, &|root, spec, payloads| task_triage::backlog_jev_ask(root, spec)(payloads));
+    let opts = TriageOpts { root: root.to_path_buf(), spec: Some(spec.into()), apply: !asker.asks() };
+    let jev = yes_no::orchestration_jev(root, spec, TASK_TRIAGE_CALL);
+    let ask = |_: &Path, _: &str, payloads: &[String]| match asker.answers(TASK_TRIAGE_CALL, payloads, false, jev.as_deref()) {
+        Outcome::Answered(docs) => Some(docs),
+        Outcome::Rule | Outcome::Waiting => None,
+    };
+    let report = triage_with(&opts, session, true, reserve::jev_on(root), &ask);
     if report.get("grouping").is_some() {
         return RoundForming { pending: Some(json!({ "grouping": report["grouping"], "next": report["next"] })), applied: false };
     }
@@ -100,7 +120,11 @@ type AskJev<'a> = dyn Fn(&Path, &str, &[String]) -> Option<Vec<Value>> + 'a;
 /// onda em andamento, tenha o agente dela começado ou não, e cada uma dessas
 /// ondas toma uma vaga. Fora dela, no comando, só a onda com agente vivo
 /// segura as tarefas, e a parada sem agente as solta.
-fn triage_with(opts: &TriageOpts, session: Option<&str>, in_round: bool, ask: &AskJev<'_>) -> Value {
+/// `jev_on` diz que o Jev está ligado: a leitura do modelo pequeno leva
+/// também as perguntas de reserva da ordem ([`task_triage::grouping_extras`]),
+/// e o pedido que o Jev deixar sem resposta se lê delas, sem outro agente.
+/// Com o Jev desligado, nada vai à reserva.
+fn triage_with(opts: &TriageOpts, session: Option<&str>, in_round: bool, jev_on: bool, ask: &AskJev<'_>) -> Value {
     let project = spec_events::project(&opts.root);
     let lang = project.lang;
     let refuse = |refusal: &Refusal| spec_events::refused(refusal, lang);
@@ -200,33 +224,93 @@ fn triage_with(opts: &TriageOpts, session: Option<&str>, in_round: bool, ask: &A
         report["waves"] = json!([]);
         return finish(report, &warnings);
     }
-    // 2. O modelo pequeno da sessão lê tudo isso de uma vez e forma até
-    // `max_waves` ondas, cada uma com um objetivo, juntando as tarefas iguais
-    // ou próximas; a leitura dele, quando já voltou para esta mesma lista, dá
-    // as ondas.
-    let tasks: Vec<GroupingTask> = open
-        .iter()
-        .map(|task| GroupingTask { code: code(task.id), title: task.title.into(), text: task.text.into(), files: task.files.iter().cloned().collect() })
-        .collect();
-    let request = task_triage::grouping_request(&project.root, &tasks, &summaries, max_waves);
-    if let Some(reason) = request.get("unavailable") {
-        report["miss"] = reason.clone();
-        return finish(report, &warnings);
-    }
-    report["read_chars"] = json!(request["delegation"]["request"]["prompt"].as_str().map_or(0, str::len));
-    let Some(formed) = completed_grouping(&project.root, request["request_id"].as_str().unwrap_or_default()) else {
-        report["grouping"] = request;
-        report["next"] = json!(translate("triage.next_grouping", lang));
-        return finish(report, &warnings);
+    // A pergunta ao Jev que falha com ele ligado (sem resposta, fora do
+    // prazo ou ilegível) deixa a decisão à reserva da leitura.
+    let jev_failed = std::cell::Cell::new(false);
+    let jev = |payloads: &[String]| {
+        let answered = ask(&project.root, &spec, payloads);
+        if answered.is_none() && jev_on {
+            jev_failed.set(true);
+        }
+        answered
     };
+    // Antes da leitura, a tarefa nova, sem assunto e sem resumo que a traga,
+    // que o Jev põe com certeza num assunto que a spec já tem entra nele, sem
+    // ir ao modelo pequeno. A spec sem assunto não pergunta nada.
+    let known = known_subjects(&log);
+    let fresh: Vec<&Candidate> =
+        open.iter().filter(|task| !carried.contains_key(&task.id) && log.get(task.id).is_some_and(|event| !event.fields.contains_key("group"))).collect();
+    let mut fitted = if known.is_empty() || fresh.is_empty() { BTreeMap::new() } else { task_triage::fit_subjects_with(&known, &fresh, &jev) };
+    let fit_failed = jev_failed.get();
+    let rest: Vec<&Candidate> = open.iter().filter(|task| !fitted.contains_key(&task.id)).collect();
+    // O assunto que recebe tarefa e não espera vaga com uma onda formada sai
+    // numa onda nova, e toma uma das vagas livres.
+    let room = {
+        let fitted_names: BTreeSet<&String> = fitted.values().collect();
+        max_waves.saturating_sub(fitted_names.iter().filter(|name| !formed_waiting.contains(**name)).count())
+    };
+    // 2. O modelo pequeno da sessão lê o resto de uma vez e forma até as
+    // vagas que sobram, cada onda com um objetivo, juntando as tarefas iguais
+    // ou próximas; a leitura dele, quando já voltou para esta mesma lista, dá
+    // as ondas. A tarefa que sobra sozinha, sem resumo, já é a própria onda.
+    // Com o Jev ligado, a mesma leitura responde as perguntas de reserva da
+    // ordem, para o Jev que falhar.
+    let fresh_in_rest: Vec<&Candidate> = fresh.iter().filter(|task| !fitted.contains_key(&task.id)).copied().collect();
+    let extras = jev_on.then(|| task_triage::grouping_extras(&known, fresh_in_rest.iter().map(|task| code(task.id)).collect()));
+    let (mut formed, answers): (Vec<WaveGroup>, Option<GroupingAnswers>) = if rest.len() + summaries.len() < 2 || room == 0 {
+        (Vec::new(), None)
+    } else {
+        let tasks: Vec<GroupingTask> = rest
+            .iter()
+            .map(|task| GroupingTask { code: code(task.id), title: task.title.into(), text: task.text.into(), files: task.files.iter().cloned().collect() })
+            .collect();
+        let request = task_triage::grouping_request(&project.root, &tasks, &summaries, room, extras.as_ref());
+        if let Some(reason) = request.get("unavailable") {
+            report["miss"] = reason.clone();
+            return finish(report, &warnings);
+        }
+        report["read_chars"] = json!(request["delegation"]["request"]["prompt"].as_str().map_or(0, str::len));
+        let id = request["request_id"].as_str().unwrap_or_default();
+        let Some(formed) = completed_grouping(&project.root, id) else {
+            report["grouping"] = request;
+            report["next"] = json!(translate("triage.next_grouping", lang));
+            return finish(report, &warnings);
+        };
+        (formed, extras.as_ref().and_then(|_| completed_grouping_answers(&project.root, id)))
+    };
+    // O Jev que falhou na pergunta dos assuntos deixa a resposta à reserva da
+    // leitura: a tarefa nova que ela põe com certeza num assunto que já
+    // existe sai da onda formada e entra nele.
+    let mut reserved = false;
+    if fit_failed && let Some(answers) = &answers {
+        let doc = task_triage::fit_reserve_doc(&fresh_in_rest, &code, answers);
+        let refitted = task_triage::fit_subjects_with(&known, &fresh_in_rest, &|_| Some(vec![doc.clone()]));
+        if !refitted.is_empty() {
+            reserved = true;
+            let moved: BTreeSet<String> = refitted.keys().map(|id| code(*id)).collect();
+            formed = without_tasks(formed, &moved);
+            fitted.extend(refitted);
+        }
+    }
+    let fitted_names: BTreeSet<&String> = fitted.values().collect();
     let by_id: BTreeMap<u64, &Candidate> = open.iter().map(|task| (task.id, task)).collect();
-    let by_code: BTreeMap<String, u64> = open.iter().map(|task| (code(task.id), task.id)).collect();
+    let by_code: BTreeMap<String, u64> = rest.iter().map(|task| (code(task.id), task.id)).collect();
     let id_of = |said: &String| by_code.get(said).copied();
     let continued = |wave: &WaveGroup| summaries.iter().find(|summary| summary.tasks.iter().any(|left| wave.tasks.contains(left))).map(|summary| summary.code.clone());
     // O objetivo de cada onda é o nome do grupo e é único: a rodada junta
-    // numa onda as tarefas de mesmo grupo.
+    // numa onda as tarefas de mesmo grupo. O assunto que já existia vem
+    // primeiro, com o nome dele.
     let mut named: BTreeMap<String, usize> = BTreeMap::new();
-    let subjects: Vec<OrderedSubject> = formed
+    let fitted_subjects: Vec<OrderedSubject> = known
+        .iter()
+        .filter(|subject| fitted_names.contains(&subject.name))
+        .map(|subject| {
+            named.insert(subject.name.clone(), 1);
+            let tasks = fresh.iter().filter(|task| fitted.get(&task.id) == Some(&subject.name)).map(|task| (task.id, Vec::new())).collect();
+            OrderedSubject { name: subject.name.clone(), tasks }
+        })
+        .collect();
+    let formed_subjects: Vec<OrderedSubject> = formed
         .iter()
         .map(|wave| {
             let absorbed: BTreeSet<&String> = wave.merges.iter().flat_map(|merge| &merge.absorb).collect();
@@ -241,8 +325,14 @@ fn triage_with(opts: &TriageOpts, session: Option<&str>, in_round: bool, ask: &A
         })
         .collect();
     let continues: BTreeMap<String, String> =
-        formed.iter().zip(&subjects).filter_map(|(wave, subject)| Some((subject.name.clone(), continued(wave)?))).collect();
-    let placed: BTreeSet<u64> = formed.iter().flat_map(|wave| wave.tasks.iter().filter_map(id_of)).collect();
+        formed.iter().zip(&formed_subjects).filter_map(|(wave, subject)| Some((subject.name.clone(), continued(wave)?))).collect();
+    let mut placed: BTreeSet<u64> = formed.iter().flat_map(|wave| wave.tasks.iter().filter_map(id_of)).collect();
+    placed.extend(fitted.keys().copied());
+    // Cada tarefa que entra num assunto que já existia fica depois das que
+    // ele já tem.
+    let starts: BTreeMap<String, u64> =
+        known.iter().filter(|subject| fitted_names.contains(&subject.name)).map(|subject| (subject.name.clone(), subject.last_position)).collect();
+    let subjects: Vec<OrderedSubject> = fitted_subjects.into_iter().chain(formed_subjects).collect();
     let later: Vec<String> = open.iter().filter(|task| !placed.contains(&task.id)).map(|task| code(task.id)).collect();
     // 3. O programa confere se cada onda cabe no limite de uma onda, pelos
     // trechos que o agente lê: a declaração que a tarefa cita pelo nome, o
@@ -276,7 +366,6 @@ fn triage_with(opts: &TriageOpts, session: Option<&str>, in_round: bool, ask: &A
         ids.filter_map(|id| by_id.get(id).map(|task| task_triage::excerpts_of(&task_triage::code_names(&said(id)), &task.files, &declared))).flatten().collect()
     };
     let reading = |excerpts: &BTreeSet<Excerpt>| -> u64 { excerpts.iter().map(cost).sum() };
-    let jev = |payloads: &[String]| ask(&project.root, &spec, payloads);
     // 3. A ordem parte do que o programa já sabe, da mesma fonte da fila; o
     // Jev só desempata.
     let facts: BTreeMap<u64, OrderFacts> = backlog_population(&log, &BTreeSet::new())
@@ -287,7 +376,29 @@ fn triage_with(opts: &TriageOpts, session: Option<&str>, in_round: bool, ask: &A
             (task.id, OrderFacts { priority: task.priority, cleanup, depends_on: task.depends_on })
         })
         .collect();
-    let order = task_triage::order_backlog_with(&open, subjects, &facts, &jev);
+    // A reserva da ordem, da mesma leitura: o valor de cada onda formada e
+    // de cada assunto que já existia, pelo nome, e a nota de cada tarefa lida.
+    let order_reserve = answers.as_ref().map(|answers| {
+        let mut value: BTreeMap<String, ReserveAnswer> = BTreeMap::new();
+        for (at, subject) in known.iter().enumerate() {
+            if let Some(said) = answers.subject_values.get(&format!("s{}", at + 1)) {
+                value.insert(subject.name.clone(), said.clone());
+            }
+        }
+        for (wave, subject) in formed.iter().zip(&subjects[subjects.len() - formed.len()..]) {
+            if let Some(said) = &wave.value {
+                value.insert(subject.name.clone(), said.clone());
+            }
+        }
+        let difficulty = answers.difficulty.iter().filter_map(|(said, answer)| Some((*by_code.get(said)?, answer.clone()))).collect();
+        task_triage::OrderReserve { difficulty, value }
+    });
+    let order = task_triage::order_backlog_with(&open, subjects, &facts, &jev, order_reserve.as_ref().filter(|_| jev_on));
+    // A passada da rodada antes das travas não grava: a reserva usada fica
+    // gravada uma vez, na formação de verdade.
+    if (reserved || order.reserved) && (opts.apply || !in_round) {
+        record_reserve_call(&project.root, &spec, TASK_TRIAGE_CALL);
+    }
     if order.unanswered > 0 {
         warnings.push(
             translate("triage.order_unanswered", lang).replace("{missing}", &order.unanswered.to_string()).replace("{requests}", &order.requests.to_string()),
@@ -334,7 +445,7 @@ fn triage_with(opts: &TriageOpts, session: Option<&str>, in_round: bool, ask: &A
         return report;
     }
     // 4. A gravação: as junções e o assunto de cada tarefa.
-    match apply(&opts.root, &spec, &path, &order, &held, lang) {
+    match apply(&opts.root, &spec, &path, (&order, &starts), &held, lang) {
         Ok(Applied { versions, emptied }) => {
             let after = store::read(&path).ok().flatten().unwrap_or(log);
             let rewrite: Vec<Value> = versions.iter().map(|(version, group)| rewrite_of(&project.root, &after, *version, group)).collect();
@@ -348,6 +459,23 @@ fn triage_with(opts: &TriageOpts, session: Option<&str>, in_round: bool, ask: &A
         }
         Err(refusal) => refuse(&refusal),
     }
+}
+
+/// Os assuntos que a spec lida em `log` já tem, na ordem do nome: o grupo
+/// gravado em cada tarefa vigente, com os títulos das tarefas dele e a última
+/// posição ocupada.
+fn known_subjects(log: &SpecLog) -> Vec<task_triage::KnownSubject> {
+    let mut by_name: BTreeMap<String, task_triage::KnownSubject> = BTreeMap::new();
+    for task in log.visible().into_iter().filter(|event| event.event_type == "task") {
+        let Some(group) = task.fields.get("group") else { continue };
+        let Some(name) = group.get("name").and_then(Value::as_str) else { continue };
+        let position = group.get("position").and_then(Value::as_u64).unwrap_or(1);
+        let subject =
+            by_name.entry(name.to_string()).or_insert_with(|| task_triage::KnownSubject { name: name.to_string(), titles: Vec::new(), last_position: 0 });
+        subject.titles.extend(task.str_field("title").map(str::to_string));
+        subject.last_position = subject.last_position.max(position);
+    }
+    by_name.into_values().collect()
 }
 
 /// Quantos bytes de um arquivo valem um token de leitura, na conta do custo
@@ -369,24 +497,39 @@ struct Applied {
 /// Grava a lista ordenada `order` na spec `spec`, vista de `start`, sob a
 /// trava do arquivo de eventos `path`, sem tocar nas tarefas de `held`, de
 /// onda com agente vivo: em cada assunto, na ordem, a tarefa que fica ganha a
-/// versão nova, sem onda, com o assunto e a posição nele (`group`); a que
+/// versão nova, sem onda, com o assunto e a posição nele (`group`) e, quando
+/// o Jev a deu, a nota de complexidade (`group.difficulty`), de que sai o
+/// modelo do agente da onda ([`mustard_core::domain::agent_model`]); a que
 /// recebe outras ganha nela o trabalho delas ([`joined_version`]), e as que
 /// entram saem, com o motivo no idioma `lang`. A tarefa que já está no
-/// assunto e na posição, sem nada a receber, não grava nada. Uma recusa no
-/// meio volta o arquivo ao que era antes da primeira gravação, e nada fica.
-fn apply(start: &Path, spec: &str, path: &Path, order: &BacklogOrder, held: &BTreeSet<u64>, lang: Locale) -> Result<Applied, Refusal> {
+/// assunto e na posição, sem nada a receber, não grava nada. No assunto que
+/// já existia (`starts`, com a última posição ocupada nele), a posição segue
+/// depois da última. Uma recusa no meio volta o arquivo ao que era antes da
+/// primeira gravação, e nada fica.
+fn apply(
+    start: &Path,
+    spec: &str,
+    path: &Path,
+    (order, starts): (&BacklogOrder, &BTreeMap<String, u64>),
+    held: &BTreeSet<u64>,
+    lang: Locale,
+) -> Result<Applied, Refusal> {
     let locked_result = store::with_locked_writer(path, |locked| {
         let before = locked.content().to_string();
         let in_air = waves_left_without_tasks(locked.log());
         let mut record_all = || -> Result<Applied, Refusal> {
             let mut versions = Vec::new();
             for subject in &order.subjects {
-                for (position, (keep, joined)) in (1u64..).zip(&subject.tasks) {
+                let first = starts.get(&subject.name).copied().unwrap_or(0) + 1;
+                for (position, (keep, joined)) in (first..).zip(&subject.tasks) {
                     if held.contains(keep) {
                         continue;
                     }
                     let group: Vec<u64> = std::iter::once(*keep).chain(joined.iter().copied().filter(|id| !held.contains(id))).collect();
-                    let place = json!({ "name": subject.name, "position": position, "formed": true });
+                    let mut place = json!({ "name": subject.name, "position": position, "formed": true });
+                    if let Some(difficulty) = order.difficulty.get(keep) {
+                        place["difficulty"] = difficulty.to_value();
+                    }
                     let mut draft = if group.len() > 1 {
                         joined_version(locked.log(), &group, lang)?
                     } else {
@@ -454,6 +597,24 @@ fn rewrite_of(root: &Path, after: &SpecLog, version: u64, group: &[u64]) -> Valu
     let source = |id: u64| after.get(id).map(|event| task_triage::rewrite_source(codes.get(&id).cloned().unwrap_or_else(|| id.to_string()), &event.fields));
     let sources: Vec<_> = std::iter::once(version).chain(group[1..].iter().copied()).filter_map(source).collect();
     json!({ "task": codes.get(&version).cloned().unwrap_or_else(|| version.to_string()), "request": task_triage::rewrite_request(root, version, sources) })
+}
+
+/// As ondas `formed` sem as tarefas `moved`, que foram para um assunto que
+/// já existia: a junção cuja tarefa que fica saiu se desfaz, e as que
+/// entrariam nela ficam na onda; a onda que fica sem tarefa sai.
+fn without_tasks(formed: Vec<WaveGroup>, moved: &BTreeSet<String>) -> Vec<WaveGroup> {
+    formed
+        .into_iter()
+        .filter_map(|mut wave| {
+            wave.tasks.retain(|said| !moved.contains(said));
+            wave.merges.retain(|merge| !moved.contains(&merge.keep));
+            for merge in &mut wave.merges {
+                merge.absorb.retain(|said| !moved.contains(said));
+            }
+            wave.merges.retain(|merge| !merge.absorb.is_empty());
+            (!wave.tasks.is_empty()).then_some(wave)
+        })
+        .collect()
 }
 
 /// O objeto JSON de `value`, que é sempre um objeto aqui.
@@ -552,7 +713,7 @@ mod tests {
         let opts = |apply| TriageOpts { root: root.to_path_buf(), spec: Some("x".into()), apply };
         let events = log_of(root).events.len();
 
-        let asked = triage_with(&opts(false), None, false, &|_, _, _| panic!("the Jev only orders, after the reading"));
+        let asked = triage_with(&opts(false), None, false, false, &|_, _, _| panic!("the Jev only orders, after the reading"));
         let prompt = asked["grouping"]["delegation"]["request"]["prompt"].as_str().unwrap_or_else(|| panic!("{asked}"));
         assert!(prompt.contains("A retomada lista as ondas no ar") && prompt.contains("O commit leva título e corpo"), "the whole list in one request");
         assert!(prompt.contains("Form up to 4 waves"), "the free slots: {prompt}");
@@ -564,15 +725,15 @@ mod tests {
         ]));
 
         let jev = scored(&[("value_s0", 1), ("value_s1", 3)]);
-        let shown = triage_with(&opts(false), None, false, &jev);
+        let shown = triage_with(&opts(false), None, false, false, &jev);
         let objectives: Vec<&str> = shown["waves"].as_array().unwrap().iter().map(|wave| wave["objective"].as_str().unwrap()).collect();
         assert_eq!(objectives, ["A busca responde sem esperar a trava", "A retomada mostra as ondas no ar"], "{shown}");
         assert_eq!(shown["waves"][1]["merges"], json!([{ "keep": "MSTD-TASK-0001", "join": ["MSTD-TASK-0003"] }]), "{shown}");
         assert_eq!(shown["later"], json!(["MSTD-TASK-0004"]), "the task left out waits for a later forming: {shown}");
-        assert_eq!(shown["requests"], json!(1), "only the order of the waves; a wave of one task asks nothing about tasks: {shown}");
+        assert_eq!(shown["requests"], json!(1), "only the order of the waves, which also grades each one-task wave: {shown}");
         assert_eq!(log_of(root).events.len(), events, "nothing is recorded without --apply");
 
-        let applied = triage_with(&opts(true), None, false, &jev);
+        let applied = triage_with(&opts(true), None, false, false, &jev);
         assert_eq!(applied["applied"], json!(true), "{applied}");
         let log = log_of(root);
         let visible: Vec<&SpecEvent> = log.visible().into_iter().filter(|e| e.event_type == "task").collect();
@@ -587,12 +748,46 @@ mod tests {
         // A formação seguinte só lê o commit, que nenhuma onda levou: as das
         // duas ondas formadas esperam a vez, e cada uma toma uma vaga. Sozinho,
         // o commit já é a própria onda, e o Haiku nem é chamado.
-        let next = triage_with(&opts(false), None, false, &|_, _, _| panic!("nothing to order"));
+        let next = triage_with(&opts(false), None, false, false, &|_, _, _| panic!("nothing to order"));
         assert_eq!((next["classified"].clone(), next["free_waves"].clone()), (json!(1), json!(2)), "{next}");
         assert!(next.get("grouping").is_none() && next["waves"] == json!([]), "{next}");
         assert!(visible.iter().any(|e| e.id == ids[3] && !e.fields.contains_key("group")), "the task left for later stays as it is");
         assert!(visible.iter().all(|e| e.id != ids[2]), "the joined task leaves");
         assert!(applied["rewrite"][0]["request"]["delegation"]["model_family"].is_string(), "{applied}");
+    }
+
+    /// Two tasks formed into two waves of one task each. The Jev grades the
+    /// first as one small change, with a confident reading, and gives no
+    /// confidence for the second: the first keeps the grade in its group, and
+    /// the second goes without one.
+    #[test]
+    fn the_formation_records_the_difficulty_of_each_task_in_its_group() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let ids = backlog(root, &[("A retomada lista as ondas no ar", "web/flow/resume.ts", &[]), ("A busca não espera a trava do mapa", "web/search/index.ts", &[])]);
+        let opts = |apply| TriageOpts { root: root.to_path_buf(), spec: Some("x".into()), apply };
+        let asked = triage_with(&opts(false), None, false, false, &|_, _, _| panic!("the Jev only orders, after the reading"));
+        read_by_the_session(root, &asked, json!([
+            { "objective": "A retomada mostra as ondas no ar", "tasks": ["MSTD-TASK-0001"], "merges": [] },
+            { "objective": "A busca responde sem esperar a trava", "tasks": ["MSTD-TASK-0002"], "merges": [] },
+        ]));
+        let first = format!("complexity_t{}", ids[0]);
+        let jev = move |_: &Path, _: &str, payloads: &[String]| -> Option<Vec<Value>> {
+            Some(payloads.iter().map(|payload| {
+                let doc: Value = serde_json::from_str(payload).unwrap();
+                let answers: Map<String, Value> = doc["questions"].as_object().unwrap().keys().map(|key| {
+                    let confidence = if *key == first { json!(0.9) } else { Value::Null };
+                    (key.clone(), json!({ "type": "score", "score": 0.0, "confidence": confidence, "probabilities": { "0": 0.9 } }))
+                }).collect();
+                json!({ "answers": answers })
+            }).collect())
+        };
+        let applied = triage_with(&opts(true), None, false, false, &jev);
+        assert_eq!(applied["applied"], json!(true), "{applied}");
+        let log = log_of(root);
+        let version = |id: u64| log.visible().into_iter().find(|e| e.int("replaces") == Some(id)).cloned().unwrap_or_else(|| panic!("{applied}"));
+        assert_eq!(version(ids[0]).fields["group"]["difficulty"], json!({ "level": 0, "confidence": 0.9 }), "{applied}");
+        assert!(version(ids[1]).fields["group"].get("difficulty").is_none(), "no confidence, no grade");
     }
 
     /// Uma tarefa solta e cinco de onda: a de onda parada por mudança de
@@ -642,7 +837,7 @@ mod tests {
         let ask = scored(&[]);
         let opts = |apply| TriageOpts { root: root.to_path_buf(), spec: Some("x".into()), apply };
 
-        let asked = triage_with(&opts(false), None, false, &ask);
+        let asked = triage_with(&opts(false), None, false, false, &ask);
         let prompt = asked["grouping"]["delegation"]["request"]["prompt"].as_str().unwrap_or_else(|| panic!("{asked}")).to_string();
         let title = |id: u64| log_of(root).get(id).unwrap().str_field("title").unwrap().to_string();
         for id in [ids[0], ids[1], ids[2], ids[5]] {
@@ -657,7 +852,7 @@ mod tests {
         read_by_the_session(root, &asked, json!([{ "objective": "A retomada diz o estado de cada onda", "tasks": codes,
             "merges": [{ "keep": codes[0], "absorb": codes[1..] }] }]));
 
-        let applied = triage_with(&opts(true), None, false, &ask);
+        let applied = triage_with(&opts(true), None, false, false, &ask);
         assert_eq!(applied["applied"], json!(true), "{applied}");
         assert_eq!(applied["waves_left_without_tasks"], json!([1, 2, 5]), "{applied}");
         let log = log_of(root);
@@ -681,17 +876,233 @@ mod tests {
         let root = dir.path();
         backlog(root, &[("A retomada lista as ondas no ar", "web/flow/resume.ts", &[]), ("A busca não espera a trava do mapa", "web/search/index.ts", &[])]);
         let events = log_of(root).events.len();
-        let alone = form_for_round(root, "x", None);
+        fn applying(root: &Path) -> crate::commands::flow::round::dispatch_jev::Asker<'_> {
+            crate::commands::flow::round::dispatch_jev::Asker::new(root, root, "x", &log_of(root), crate::commands::flow::round::dispatch_jev::Phase::Read)
+        }
+        let alone = form_for_round(root, "x", None, &applying(root));
         assert!(alone.pending.is_none() && !alone.applied, "without a session the round assembles as always");
-        let asked = form_for_round(root, "x", Some("session"));
+        let asked = form_for_round(root, "x", Some("session"), &applying(root));
         let pending = asked.pending.expect("the request to the session's analysis agent");
         assert!(pending["grouping"]["delegation"]["request"]["prompt"].as_str().is_some_and(|prompt| prompt.contains("A busca")), "{pending}");
         assert_eq!(log_of(root).events.len(), events, "nothing is recorded while the reading is pending");
         read_by_the_session(root, &pending, json!([{ "objective": "A retomada mostra as ondas no ar", "tasks": ["MSTD-TASK-0001"], "merges": [] }]));
-        let formed = form_for_round(root, "x", Some("session"));
+        let formed = form_for_round(root, "x", Some("session"), &applying(root));
         assert!(formed.pending.is_none() && formed.applied, "the formed wave is recorded");
         let log = log_of(root);
         assert!(log.visible().iter().any(|e| e.int("replaces").is_some() && e.fields.get("group").and_then(|g| g.get("formed")) == Some(&json!(true))));
+    }
+
+    /// A spec com dois assuntos já formados — a retomada e a busca, uma
+    /// tarefa em cada — e as tarefas novas `fresh` (título, texto, arquivo),
+    /// sem assunto. Devolve os números das novas.
+    fn with_subjects(root: &Path, fresh: &[(&str, &str, &str)]) -> Vec<u64> {
+        backlog(root, &[("A retomada lista as ondas no ar", "web/flow/resume.ts", &[]), ("A busca não espera a trava do mapa", "web/search/index.ts", &[])]);
+        let opts = |apply| TriageOpts { root: root.to_path_buf(), spec: Some("x".into()), apply };
+        let asked = triage_with(&opts(false), None, false, false, &|_, _, _| panic!("a spec without subjects asks the Jev nothing before the reading"));
+        read_by_the_session(root, &asked, json!([
+            { "objective": "A retomada mostra as ondas no ar", "tasks": ["MSTD-TASK-0001"], "merges": [] },
+            { "objective": "A busca responde sem esperar a trava", "tasks": ["MSTD-TASK-0002"], "merges": [] },
+        ]));
+        assert_eq!(triage_with(&opts(true), None, false, false, &scored(&[]))["applied"], json!(true));
+        let said = record(root, "x", "message", object(json!({ "author": "user", "text": "mais duas" })), PhaseWriter::Binary).unwrap().written.id;
+        fresh
+            .iter()
+            .map(|(title, text, file)| {
+                let draft = json!({ "title": title, "text": text, "agent": "- conferir pelo teste", "files": [{ "path": file }], "depends_on": [], "origin": said });
+                record(root, "x", "task", object(draft), PhaseWriter::Binary).unwrap().written.id
+            })
+            .collect()
+    }
+
+    /// O Jev falso da pergunta dos assuntos: para cada tarefa de `fits`, a
+    /// chance de caber num assunto e o assunto escolhido, com confiança 0,95;
+    /// as outras perguntas vão ao [`scored`]. Cada pedido dos assuntos fica
+    /// em `asked`.
+    fn fitting<'a>(fits: &'a [(u64, f64, &'a str)], asked: &'a std::cell::RefCell<Vec<String>>) -> impl Fn(&Path, &str, &[String]) -> Option<Vec<Value>> + 'a {
+        let order = scored(&[]);
+        move |root, spec, payloads| {
+            if !payloads.iter().any(|payload| payload.contains("subject-fit")) {
+                return order(root, spec, payloads);
+            }
+            asked.borrow_mut().extend(payloads.iter().cloned());
+            let mut answers = Map::new();
+            for (id, chance, subject) in fits {
+                answers.insert(format!("fits_t{id}"), json!({ "type": "noul", "noul": chance }));
+                answers.insert(format!("subject_t{id}"), json!({ "type": "choice", "choice": subject, "confidence": 0.95, "probabilities": { *subject: 0.95 } }));
+            }
+            Some(payloads.iter().map(|_| json!({ "answers": answers })).collect())
+        }
+    }
+
+    /// A tarefa nova que o Jev põe com certeza num assunto que a spec já tem
+    /// entra nele, depois das tarefas dele, sem ir ao modelo pequeno. A
+    /// pergunta é uma chamada só, com os assuntos e as tarefas, sem segredo.
+    #[test]
+    fn a_new_task_that_surely_fits_a_subject_joins_it_without_the_small_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let key = format!("ghp_{}", "a1".repeat(18));
+        let resume = format!("Mostrar a onda parada; o token {key} fica fora.");
+        let ids = with_subjects(root, &[
+            ("A retomada mostra a onda parada", resume.as_str(), "web/flow/stopped.ts"),
+            ("A busca lê o índice sem a trava", "Ler o índice sem a trava.", "web/search/lock.ts"),
+        ]);
+        let asked = std::cell::RefCell::new(Vec::new());
+        let fits = [(ids[0], 0.95, "s2"), (ids[1], 0.92, "s1")];
+        let opts = TriageOpts { root: root.to_path_buf(), spec: Some("x".into()), apply: true };
+        let applied = triage_with(&opts, None, false, false, &fitting(&fits, &asked));
+        assert!(applied.get("grouping").is_none(), "no reading by the small model: {applied}");
+        assert_eq!(applied["applied"], json!(true), "{applied}");
+        let log = log_of(root);
+        let group = |id: u64| log.visible().into_iter().find(|e| e.int("replaces") == Some(id)).map(|e| e.fields["group"].clone()).unwrap_or_else(|| panic!("{applied}"));
+        assert_eq!((group(ids[0])["name"].clone(), group(ids[0])["position"].clone()), (json!("A retomada mostra as ondas no ar"), json!(2)));
+        assert_eq!((group(ids[1])["name"].clone(), group(ids[1])["position"].clone()), (json!("A busca responde sem esperar a trava"), json!(2)));
+        let payloads = asked.borrow();
+        assert_eq!(payloads.len(), 1, "{payloads:?}");
+        assert!(payloads[0].contains("A retomada lista as ondas no ar") && payloads[0].contains("A retomada mostra a onda parada"), "{}", payloads[0]);
+        assert!(!payloads[0].contains(&key), "no secret leaves: {}", payloads[0]);
+    }
+
+    /// A spec sem assunto nenhum não pergunta ao Jev dos assuntos: as tarefas
+    /// vão direto ao modelo pequeno, como sempre.
+    #[test]
+    fn a_spec_without_subjects_asks_the_jev_nothing_before_the_reading() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        backlog(root, &[("A retomada lista as ondas no ar", "web/flow/resume.ts", &[]), ("A busca não espera a trava do mapa", "web/search/index.ts", &[])]);
+        let opts = TriageOpts { root: root.to_path_buf(), spec: Some("x".into()), apply: false };
+        let shown = triage_with(&opts, None, false, false, &|_, _, _| panic!("no subject, no question"));
+        assert!(shown["grouping"]["request_id"].is_string(), "{shown}");
+    }
+
+    /// O Jev em dúvida deixa a tarefa nova ao modelo pequeno, que lê as duas
+    /// e nomeia o assunto.
+    #[test]
+    fn a_new_task_the_jev_doubts_goes_to_the_small_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let ids = with_subjects(root, &[
+            ("A retomada mostra a onda parada", "Mostrar a onda parada.", "web/flow/stopped.ts"),
+            ("O painel mostra o custo", "Mostrar o custo no painel.", "web/panel/cost.ts"),
+        ]);
+        let asked = std::cell::RefCell::new(Vec::new());
+        let fits = [(ids[0], 0.6, "s1"), (ids[1], 0.1, "s2")];
+        let opts = TriageOpts { root: root.to_path_buf(), spec: Some("x".into()), apply: false };
+        let shown = triage_with(&opts, None, false, false, &fitting(&fits, &asked));
+        let prompt = shown["grouping"]["delegation"]["request"]["prompt"].as_str().unwrap_or_else(|| panic!("{shown}"));
+        assert!(prompt.contains("A retomada mostra a onda parada") && prompt.contains("O painel mostra o custo"), "{prompt}");
+        assert_eq!(asked.borrow().len(), 1, "the subjects were asked first");
+    }
+
+    /// O recibo do modelo pequeno com as ondas `waves` e as respostas de
+    /// reserva `extra` (`difficulty`, `fits`, `subject_values`).
+    fn read_with_reserve(root: &Path, shown: &Value, waves: Value, extra: Value) {
+        let mut result = json!({ "waves": waves });
+        result.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        let receipt = mustard_core::io::knowledge::enrichment::SessionReceipt {
+            request_id: shown["grouping"]["request_id"].as_str().unwrap_or_else(|| panic!("{shown}")).into(),
+            model: "inherit".into(),
+            effort: None,
+            result,
+            input_tokens: None,
+            output_tokens: None,
+        };
+        mustard_core::io::knowledge::enrichment::complete_session(root, root, &receipt).unwrap();
+    }
+
+    /// Uma resposta de reserva: a opção e a certeza.
+    fn said(choice: &str, certainty: &str) -> Value {
+        json!({ "choice": choice, "certainty": certainty })
+    }
+
+    /// As chamadas de reserva gravadas na spec `x`.
+    fn reserve_calls(root: &Path) -> usize {
+        let log = log_of(root);
+        crate::commands::spec_events::conversation::observed(root, "x", &log)
+            .iter()
+            .filter(|e| e.event_type == "call" && e.str_field("command") == Some(crate::shared::jev::reserve::RESERVE_CALL))
+            .count()
+    }
+
+    /// Com o Jev ligado e falhando, o pedido de leitura ao modelo pequeno —
+    /// o mesmo agente, sem outro — leva também a nota de dificuldade de cada
+    /// tarefa nos quatro níveis e o valor de cada onda, cada uma com a
+    /// certeza. A ordem e a nota saem dessas respostas como sairiam do Jev: a
+    /// busca, de mais valor, vai antes; na retomada, a mais simples vai antes;
+    /// a nota incerta fica com a confiança abaixo do piso, que sobe um modelo.
+    /// A reserva usada fica gravada.
+    #[test]
+    fn a_failing_jev_orders_the_formation_by_the_reserve_answers_of_the_reading() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let ids = backlog(root, &[
+            ("A retomada lista as ondas no ar", "web/flow/resume.ts", &[]),
+            ("A retomada diz a onda que perdeu o processo", "web/flow/stuck.ts", &[]),
+            ("A busca não espera a trava do mapa", "web/search/index.ts", &[]),
+        ]);
+        let opts = |apply| TriageOpts { root: root.to_path_buf(), spec: Some("x".into()), apply };
+        let failing = |_: &Path, _: &str, _: &[String]| -> Option<Vec<Value>> { None };
+        let asked = triage_with(&opts(false), None, false, true, &failing);
+        let prompt = asked["grouping"]["delegation"]["request"]["prompt"].as_str().unwrap_or_else(|| panic!("{asked}"));
+        for said in ["difficulty", "Several files of one module", "Unblocks several tasks or the user", "`sure`", "`unsure`"] {
+            assert!(prompt.contains(said), "{said}: {prompt}");
+        }
+        read_with_reserve(root, &asked, json!([
+            { "objective": "A retomada mostra o estado das ondas", "tasks": ["MSTD-TASK-0001", "MSTD-TASK-0002"], "merges": [], "value": said("1", "sure") },
+            { "objective": "A busca responde sem esperar a trava", "tasks": ["MSTD-TASK-0003"], "merges": [], "value": said("3", "sure") },
+        ]), json!({ "difficulty": { "MSTD-TASK-0001": said("2", "sure"), "MSTD-TASK-0002": said("0", "sure"), "MSTD-TASK-0003": said("1", "unsure") } }));
+
+        let shown = triage_with(&opts(false), None, false, true, &failing);
+        let objectives: Vec<&str> = shown["waves"].as_array().unwrap().iter().map(|wave| wave["objective"].as_str().unwrap()).collect();
+        assert_eq!(objectives, ["A busca responde sem esperar a trava", "A retomada mostra o estado das ondas"], "{shown}");
+        assert_eq!(shown["waves"][1]["tasks"], json!(["MSTD-TASK-0002", "MSTD-TASK-0001"]), "the simpler first: {shown}");
+        assert!(shown.get("warnings").is_none(), "every order request was answered: {shown}");
+
+        let applied = triage_with(&opts(true), None, false, true, &failing);
+        assert_eq!(applied["applied"], json!(true), "{applied}");
+        let log = log_of(root);
+        let difficulty = |id: u64| log.visible().into_iter().find(|e| e.int("replaces") == Some(id)).map(|e| e.fields["group"]["difficulty"].clone()).unwrap();
+        assert_eq!(difficulty(ids[0]), json!({ "level": 2, "confidence": 0.9 }));
+        assert_eq!(difficulty(ids[1]), json!({ "level": 0, "confidence": 0.9 }));
+        let unsure = difficulty(ids[2]);
+        assert_eq!(unsure["level"], json!(1));
+        assert!(unsure["confidence"].as_f64().unwrap() < mustard_core::domain::agent_model::LOW_CONFIDENCE, "{unsure}");
+        assert!(reserve_calls(root) >= 1, "the reserve is recorded");
+    }
+
+    /// Com o Jev ligado falhando antes da leitura, a tarefa nova de uma spec
+    /// que já tem assuntos vai à leitura, e o pedido pergunta também se ela
+    /// cabe num assunto que já existe. A resposta certa a põe no assunto,
+    /// depois das tarefas dele; a que não cabe fica na onda que o modelo
+    /// formou.
+    #[test]
+    fn a_failing_jev_fits_a_new_task_to_a_subject_by_the_reserve_of_the_reading() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let ids = with_subjects(root, &[
+            ("A retomada mostra a onda parada", "Mostrar a onda parada.", "web/flow/stopped.ts"),
+            ("O painel mostra o custo", "Mostrar o custo no painel.", "web/panel/cost.ts"),
+        ]);
+        let opts = |apply| TriageOpts { root: root.to_path_buf(), spec: Some("x".into()), apply };
+        let failing = |_: &Path, _: &str, _: &[String]| -> Option<Vec<Value>> { None };
+        let asked = triage_with(&opts(false), None, false, true, &failing);
+        let prompt = asked["grouping"]["delegation"]["request"]["prompt"].as_str().unwrap_or_else(|| panic!("{asked}"));
+        assert!(prompt.contains("A retomada mostra as ondas no ar") && prompt.contains("`fits`"), "the subjects and the question: {prompt}");
+        let codes = log_of(root).codes();
+        let (stopped, cost) = (codes[&ids[0]].clone(), codes[&ids[1]].clone());
+        read_with_reserve(root, &asked, json!([
+            { "objective": "As telas mostram o estado", "tasks": [stopped, cost], "merges": [], "value": said("2", "sure") },
+        ]), json!({
+            "difficulty": { stopped.as_str(): said("0", "sure"), cost.as_str(): said("1", "sure") },
+            "fits": { stopped.as_str(): said("s2", "sure"), cost.as_str(): said("none", "sure") },
+            "subject_values": { "s1": said("1", "sure"), "s2": said("2", "sure") },
+        }));
+        let applied = triage_with(&opts(true), None, false, true, &failing);
+        assert_eq!(applied["applied"], json!(true), "{applied}");
+        let log = log_of(root);
+        let group = |id: u64| log.visible().into_iter().find(|e| e.int("replaces") == Some(id)).map(|e| e.fields["group"].clone()).unwrap_or_else(|| panic!("{applied}"));
+        assert_eq!((group(ids[0])["name"].clone(), group(ids[0])["position"].clone()), (json!("A retomada mostra as ondas no ar"), json!(2)));
+        assert_eq!(group(ids[1])["name"], json!("As telas mostram o estado"), "{applied}");
     }
 
     /// Dois assuntos: no primeiro, a segunda entra na primeira e passa; no
@@ -711,7 +1122,7 @@ mod tests {
         ]);
         let opts = |apply| TriageOpts { root: root.to_path_buf(), spec: Some("x".into()), apply };
         let jev = scored(&[]);
-        let asked = triage_with(&opts(false), None, false, &jev);
+        let asked = triage_with(&opts(false), None, false, false, &jev);
         read_by_the_session(root, &asked, json!([
             { "objective": "A retomada diz o estado das ondas", "tasks": ["MSTD-TASK-0001", "MSTD-TASK-0002"],
               "merges": [{ "keep": "MSTD-TASK-0001", "absorb": ["MSTD-TASK-0002"] }] },
@@ -719,7 +1130,7 @@ mod tests {
               "merges": [{ "keep": "MSTD-TASK-0003", "absorb": ["MSTD-TASK-0005"] }] },
         ]));
         let events = log_of(root).events.len();
-        let refused = triage_with(&opts(true), None, false, &jev);
+        let refused = triage_with(&opts(true), None, false, false, &jev);
         assert_eq!(refused["reason"], json!("task-dependency-cycle"), "{refused}");
         assert_eq!(log_of(root).events.len(), events, "a refusal in the middle records nothing");
     }

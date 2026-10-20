@@ -42,12 +42,15 @@
 //! escolhe skill, não injeta memória, não monta pedido de onda e não avalia
 //! a volta do agente. O pedido ao agente de exploração do Claude Code sobe
 //! com a resposta curta do mapa no topo só quando a busca cravou; a resposta
-//! parcial não vai. O lançamento do agente de onda ou do revisor sai com o
-//! modelo e o esforço que o `mustard.json` declara para ele, no lugar do que
-//! a chamada pede, e o recado diz quando a chamada pedia outro.
+//! parcial não vai. O lançamento do agente de onda sai com o modelo do último
+//! envio dela, e o do revisor com o que o `mustard.json` declara para ele,
+//! sempre no esforço `xhigh`, no lugar do que a chamada pede; o recado diz
+//! quando a chamada pedia outro, e o envio da onda grava o esforço que valeu.
+//! O agente novo de uma volta recusada ou reprovada sai um modelo acima.
 
 use std::path::Path;
 
+use mustard_core::domain::config::{AgentSettings, DEFAULT_AGENT_EFFORT};
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::domain::spec_events::{Refusal, SpecLog};
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState as _};
@@ -193,7 +196,9 @@ fn new_agent_fix(root: &Path, spec: &str, wave: u64, host: Option<(u32, u64)>, i
     let taken = store::with_locked_writer(&path, |locked| {
         let file = crate::commands::flow::round::waves_awaiting_new_agent(root, spec, locked.log()).remove(&wave)?;
         let fix = std::fs::read_to_string(file).ok()?;
-        let mut extra = serde_json::Map::new();
+        // O agente novo vem de uma volta recusada ou reprovada: ele sai um
+        // modelo acima do envio.
+        let mut extra = crate::commands::flow::round::new_agent_escalation(root, locked.log(), wave);
         if host.is_some() {
             extra.extend(crate::commands::flow::round::sender_fields(host));
         }
@@ -287,10 +292,9 @@ fn dispatch_prompt(input: &HookInput) -> &str {
 
 /// Se o despacho vai a um agente do Mustard: o `subagent_type` é `mustard-`
 /// seguido do nome de um dos agentes que o instalador grava.
-fn to_mustard_agent(input: &HookInput, root: &Path) -> bool {
+fn to_mustard_agent(input: &HookInput) -> bool {
     input.tool_input.get("subagent_type").and_then(Value::as_str).is_some_and(|kind|
-        kind.strip_prefix("mustard-").is_some_and(|name| AGENT_NAMES.contains(&name))
-        || mustard_core::io::expertise::is_agent(root, kind, input.raw["mustard_host"].as_str().unwrap_or("claude")))
+        kind.strip_prefix("mustard-").is_some_and(|name| AGENT_NAMES.contains(&name)))
 }
 
 /// O despacho com `text` no lugar do texto da tarefa e os outros campos como
@@ -336,7 +340,7 @@ fn explore(input: &HookInput, ctx: &Ctx) -> Verdict {
 /// ([`review_rules`]). O resto passa como veio.
 fn dispatched(input: &HookInput, ctx: &Ctx) -> Verdict {
     let root = ctx.project_dir_or_cwd(input);
-    if !to_mustard_agent(input, Path::new(&root)) || !ProjectConfig::exists(Path::new(&root)) {
+    if !to_mustard_agent(input) || !ProjectConfig::exists(Path::new(&root)) {
         return Verdict::Allow;
     }
     let language = ctx.config.language();
@@ -361,11 +365,13 @@ fn dispatched(input: &HookInput, ctx: &Ctx) -> Verdict {
 /// único caminho delas. São os arquivos de regras da raiz e das pastas dos
 /// arquivos que a obra da spec atual mexe ([`touched_files`]), a mesma
 /// leitura da revisão final. Nada ao agente de onda, ao texto que já traz a
-/// seção e ao que manda ler o pedido gravado da revisão final, que já a traz;
+/// seção e ao que manda ler o pedido gravado da revisão final ou o de uma
+/// onda, que já as trazem;
 /// nada também sem arquivo de regras com texto.
 fn review_rules(input: &HookInput, root: &Path, prompt: &str, lang: Locale) -> Option<String> {
     let to_reviewer = input.tool_input.get("subagent_type").and_then(Value::as_str) == Some("mustard-review");
-    if !to_reviewer || prompt.contains("run read request-review") || carries_project_rules(prompt, lang) {
+    let recorded = prompt.contains("run read request-review") || crate::commands::flow::round::is_wave_review_dispatch(prompt);
+    if !to_reviewer || recorded || carries_project_rules(prompt, lang) {
         return None;
     }
     let disk = DiskSpecState::new(root);
@@ -383,29 +389,57 @@ fn model_alias(model: &str) -> Option<&'static str> {
     MODEL_ALIASES.into_iter().find(|alias| lower.contains(alias))
 }
 
-/// O lançamento do agente de onda ou do revisor com o modelo e o esforço que
-/// o `mustard.json` declara para ele — o do revisor em `agents.review`, o da
-/// onda em `agents` —, no lugar do que a chamada pede: o `model` da chamada
-/// vence o cabeçalho do agente, então o declarado vai nela. O nome inteiro do
+/// A variável do Claude Code que fixa o esforço da sessão inteira: definida
+/// no ambiente do gancho, é ela o esforço que vale para o agente lançado.
+const EFFORT_VARIABLE: &str = "CLAUDE_CODE_EFFORT_LEVEL";
+
+/// [`launch_settings_with`] com o valor de [`EFFORT_VARIABLE`] do ambiente.
+fn launch_settings(verdict: Verdict, input: &HookInput, ctx: &Ctx) -> Verdict {
+    launch_settings_with(verdict, input, ctx, std::env::var(EFFORT_VARIABLE).ok())
+}
+
+/// O lançamento do agente de onda ou do revisor com o modelo que o Mustard
+/// escolheu para ele — o da onda, o do último envio dela, que sai da
+/// dificuldade das tarefas e sobe na reprovação; o do revisor final, o de
+/// `agents.review`; o do revisor de uma onda, o de `agents.wave_review`; o da
+/// onda sem envio legível, o de `agents` — e sempre com
+/// o esforço `xhigh`, no lugar do que a chamada pede: o `model` da chamada
+/// vence o cabeçalho do agente, então o escolhido vai nela. O nome inteiro do
 /// modelo vai pelo apelido que contém ([`model_alias`]); sem apelido, o
 /// modelo fica como veio e, se a chamada pediu outro, sai o aviso. O campo
-/// que a chamada não traz vale o declarado; o modelo bate quando um nome
-/// contém o outro. O recado diz o que a chamada pedia quando era outro.
-/// Nada para outro agente, para outro hospedeiro que não o Claude Code, fora
-/// de um projeto com `mustard.json`, nem para o despacho recusado.
-fn launch_settings(verdict: Verdict, input: &HookInput, ctx: &Ctx) -> Verdict {
+/// que a chamada não traz vale o escolhido; o modelo bate quando um nome
+/// contém o outro. O recado diz o que a chamada pedia quando era outro. O
+/// lançamento de uma onda grava no envio dela o esforço que vale
+/// (`effort_used`): `effort_env`, o valor de [`EFFORT_VARIABLE`], quando
+/// definido, ou o imposto. Nada para outro agente, para outro hospedeiro que
+/// não o Claude Code, fora de um projeto com `mustard.json`, nem para o
+/// despacho recusado.
+fn launch_settings_with(verdict: Verdict, input: &HookInput, ctx: &Ctx, effort_env: Option<String>) -> Verdict {
     if input.raw["mustard_host"].as_str().is_some_and(|host| host != "claude") {
         return verdict;
     }
     let Some(agent) = input.tool_input.get("subagent_type").and_then(Value::as_str) else { return verdict };
-    let declared = match agent {
-        "mustard-wave" => ctx.config.agent_settings(),
-        "mustard-review" => ctx.config.review_settings(),
+    if agent.rsplit(':').next() == Some("mustard-analysis") {
+        return analysis_effort(verdict, input);
+    }
+    let configured = match agent {
+        "mustard-wave" => ctx.config.agent_settings().model,
+        "mustard-review" if crate::commands::flow::round::is_wave_review_dispatch(dispatch_prompt(input)) => ctx.config.wave_review_settings().model,
+        "mustard-review" => ctx.config.review_settings().model,
         _ => return verdict,
     };
-    if !ProjectConfig::exists(Path::new(&ctx.project_dir_or_cwd(input))) {
+    let root = ctx.project_dir_or_cwd(input);
+    if !ProjectConfig::exists(Path::new(&root)) {
         return verdict;
     }
+    let project = crate::commands::spec_events::project(Path::new(&root));
+    let wave = (agent == "mustard-wave").then(|| crate::shared::host_observation::wave_named(&project.root, dispatch_prompt(input))).flatten();
+    let sent_model: Option<String> = wave.as_ref().and_then(|read| {
+        let log = spec_log(&project.root, &read.spec, project.lang).ok()?;
+        let sent = *log.last_by_wave("send").get(&read.wave)?;
+        log.send_field(sent, "model").and_then(Value::as_str).filter(|model| *model != "inherit").map(str::to_string)
+    });
+    let declared = AgentSettings { model: sent_model.as_deref().unwrap_or(configured), effort: DEFAULT_AGENT_EFFORT };
     let asked = |field: &str| input.tool_input.get(field).and_then(Value::as_str).map(str::trim).filter(|value| !value.is_empty());
     let lower = |text: &str| text.to_ascii_lowercase();
     let model = asked("model").unwrap_or(declared.model);
@@ -430,6 +464,10 @@ fn launch_settings(verdict: Verdict, input: &HookInput, ctx: &Ctx) -> Verdict {
         Verdict::Rewrite { tool_input, note } => (tool_input, note),
         other => return with_warning(other, warning),
     };
+    if let Some(read) = &wave {
+        let held = effort_env.as_deref().map(str::trim).filter(|effort| !effort.is_empty()).unwrap_or(declared.effort);
+        record_effort_used(&project.root, &read.spec, read.wave, held);
+    }
     let Some(fields) = tool_input.as_object_mut() else { return with_warning(Verdict::Allow, warning) };
     if let Some(alias) = alias {
         fields.insert("model".into(), json!(alias));
@@ -439,6 +477,42 @@ fn launch_settings(verdict: Verdict, input: &HookInput, ctx: &Ctx) -> Verdict {
         return Verdict::Allow;
     }
     with_warning(Verdict::Rewrite { tool_input, note }, warning)
+}
+
+/// O campo do envio com o esforço que valeu no lançamento do agente.
+const EFFORT_USED: &str = "effort_used";
+
+/// Grava no envio mais novo da onda `wave` da spec `spec`, de `root`, o
+/// esforço `effort` que valeu no lançamento do agente dela, numa versão nova
+/// do envio, com a trava do arquivo de eventos presa. O envio que já o traz
+/// não grava nada, e a falha não segura o lançamento.
+fn record_effort_used(root: &Path, spec: &str, wave: u64, effort: &str) {
+    let Ok(path) = store::spec_file(root, spec) else { return };
+    let _ = store::with_locked_writer(&path, |locked| {
+        let sent = *locked.log().last_by_wave("send").get(&wave)?;
+        if locked.log().get(sent)?.str_field(EFFORT_USED) == Some(effort) {
+            return Some(());
+        }
+        let draft = crate::commands::flow::round::send_revision(locked.log(), wave, serde_json::Map::from_iter([(EFFORT_USED.to_string(), json!(effort))]))?;
+        record_locked(locked, root, spec, "send", draft, PhaseWriter::Binary).ok().map(|_| ())
+    });
+}
+
+/// O lançamento do agente de análise com o esforço máximo, sobre o que a
+/// chamada pedir; o modelo fica como veio, porque o pequeno é o dele e a
+/// política do plugin já recusa outra família. A recusa passa como veio.
+fn analysis_effort(verdict: Verdict, input: &HookInput) -> Verdict {
+    let (mut tool_input, note) = match verdict {
+        Verdict::Allow => (input.tool_input.clone(), None),
+        Verdict::Rewrite { tool_input, note } => (tool_input, note),
+        other => return other,
+    };
+    let Some(fields) = tool_input.as_object_mut() else { return Verdict::Allow };
+    fields.insert("effort".into(), json!(DEFAULT_AGENT_EFFORT));
+    if note.is_none() && tool_input == input.tool_input {
+        return Verdict::Allow;
+    }
+    Verdict::Rewrite { tool_input, note }
 }
 
 /// `verdict` com o aviso `warning` junto: no recado da troca, no aviso que já
@@ -573,9 +647,10 @@ mod tests {
         }
     }
 
-    /// O lançamento do agente de onda ou do revisor com modelo ou esforço
-    /// diferente do que o `mustard.json` declara para ele sai com um aviso.
-    /// O que bate, ou que não diz modelo nem esforço, sai sem aviso.
+    /// O lançamento do agente de onda ou do revisor com modelo diferente do
+    /// que o `mustard.json` declara para ele, ou com esforço diferente do
+    /// `xhigh` que todo agente leva, sai com um aviso. O que bate, ou que não
+    /// diz modelo nem esforço, sai sem aviso.
     #[test]
     fn a_launch_with_another_model_or_effort_than_the_config_warns() {
         let dir = tempdir().unwrap();
@@ -598,15 +673,16 @@ mod tests {
         assert!(warned.contains("mustard-review") && warned.contains("sonnet") && warned.contains("opus"), "{warned}");
         let warned = launch("mustard-wave", json!({"model": "opus", "effort": "max"}));
         assert!(warned.contains("mustard-wave") && warned.contains("opus") && warned.contains("high"), "{warned}");
-        assert_eq!(launch("mustard-review", json!({"model": "opus", "effort": "MAX"})), "");
+        assert_eq!(launch("mustard-review", json!({"model": "opus", "effort": "XHIGH"})), "", "the effort is always xhigh");
+        assert!(launch("mustard-review", json!({"model": "opus", "effort": "max"})).contains("xhigh"), "even over the configured max");
         assert_eq!(launch("mustard-wave", json!({})), "");
     }
 
-    /// O lançamento do agente de onda ou do revisor sai com o modelo e o
-    /// esforço que o `mustard.json` declara para ele, com os outros campos
-    /// como vieram. O nome inteiro do modelo vira o apelido que ele contém;
-    /// sem apelido, o modelo fica como veio e o aviso segue. Outro agente e
-    /// outro hospedeiro passam como vieram.
+    /// O lançamento do agente de onda sem envio, ou do revisor, sai com o
+    /// modelo que o `mustard.json` declara para ele e o esforço `xhigh`, com
+    /// os outros campos como vieram. O nome inteiro do modelo vira o apelido
+    /// que ele contém; sem apelido, o modelo fica como veio e o aviso segue.
+    /// Outro agente e outro hospedeiro passam como vieram.
     #[test]
     fn a_launch_goes_out_with_the_model_and_effort_the_config_declares() {
         let dir = tempdir().unwrap();
@@ -636,7 +712,7 @@ mod tests {
         assert!(wave["prompt"].as_str().unwrap().ends_with("Confira a obra."), "{wave}");
         assert!(note.contains("sonnet") && note.contains("opus"), "{note}");
         let (review, _) = sent(launch("mustard-review", json!({}), None));
-        assert_eq!((review["model"].as_str(), review["effort"].as_str()), (Some("sonnet"), Some("max")), "{review}");
+        assert_eq!((review["model"].as_str(), review["effort"].as_str()), (Some("sonnet"), Some("xhigh")), "{review}");
         match launch("general-purpose", json!({"model": "haiku"}), None) {
             Verdict::Allow => {}
             other => panic!("another agent goes as it came, got {other:?}"),
@@ -648,8 +724,136 @@ mod tests {
         }
         std::fs::write(root.join("mustard.json"), json!({"agents": {"model": "custom-model-1", "effort": "high"}}).to_string()).unwrap();
         let (custom, note) = sent(launch("mustard-wave", json!({"model": "haiku"}), None));
-        assert_eq!((custom["model"].as_str(), custom["effort"].as_str()), (Some("haiku"), Some("high")), "{custom}");
+        assert_eq!((custom["model"].as_str(), custom["effort"].as_str()), (Some("haiku"), Some("xhigh")), "{custom}");
         assert!(note.contains("custom-model-1"), "the warning stays: {note}");
+    }
+
+    /// The wave reviewer, dispatched with the title and the command that
+    /// reads its request, goes out on `agents.wave_review` (Sonnet by
+    /// default) at effort xhigh, while the final reviewer keeps
+    /// `agents.review`; the wave review request already carries the project
+    /// rules, so the dispatch gains none.
+    #[test]
+    fn the_wave_reviewer_launches_on_its_own_settings_and_the_final_one_on_the_review_settings() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("CLAUDE.md"), "Never duplicate types.\n").unwrap();
+        let launch = |prompt: &str| {
+            let mut input = task_input("mustard-review", prompt);
+            input.tool_input["model"] = json!("haiku");
+            input.tool_input["effort"] = json!("low");
+            match SubagentInject.evaluate(&input, &ctx(root)).expect("never errors") {
+                Verdict::Rewrite { tool_input, .. } => tool_input,
+                other => panic!("the launch is rewritten, got {other:?}"),
+            }
+        };
+        let wave = "# x — revisão da onda 2\n\nmustard-rt run read review-request-2 --root /r --spec x";
+        let last = "# x — agente de teste dedicado\n\nmustard-rt run read request-review --root /r --spec x";
+        for (agents, wave_model, final_model) in [
+            (json!({"review": {"model": "opus"}}), "sonnet", "opus"),
+            (json!({"review": {"model": "opus"}, "wave_review": {"model": "haiku"}}), "haiku", "opus"),
+        ] {
+            std::fs::write(root.join("mustard.json"), json!({ "agents": agents }).to_string()).unwrap();
+            let sent = launch(wave);
+            assert_eq!((sent["model"].as_str(), sent["effort"].as_str()), (Some(wave_model), Some("xhigh")), "{agents}: {sent}");
+            assert!(!sent["prompt"].as_str().unwrap().contains("Never duplicate types."), "{sent}");
+            let sent = launch(last);
+            assert_eq!((sent["model"].as_str(), sent["effort"].as_str()), (Some(final_model), Some("xhigh")), "{agents}: {sent}");
+        }
+    }
+
+    /// The wave agent goes out on the model its last send recorded, not the
+    /// configured one, always at effort xhigh, and the send records the
+    /// effort that held: the imposed one, or the value of
+    /// `CLAUDE_CODE_EFFORT_LEVEL` when the hook's environment defines it.
+    #[test]
+    fn the_wave_launch_goes_on_its_send_model_at_effort_xhigh_and_records_the_effort_used() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        planned(root);
+        std::fs::write(root.join("mustard.json"), json!({"agents": {"model": "opus", "effort": "low"}}).to_string()).unwrap();
+        approve(root);
+        let (pid, started) = crate::commands::flow::stuck::this_process();
+        crate::shared::spec_state::seed_event(root, "x", "send", json!({"wave":1,"role":"wave","text":assembled(root),"lines":1,"chars":8,"mustard":"0",
+            "author":"binary","model":"haiku","effort":"xhigh","claude_pid":pid,"claude_started":started}));
+        let canonical = crate::commands::flow::round::wave_dispatch(root, "x", 1, Locale::PtBr);
+        let launch = |env: Option<&str>| {
+            let mut input = task_input("mustard-wave", &canonical);
+            input.tool_input["model"] = json!("opus");
+            let ctx = ctx(root);
+            launch_settings_with(dispatched(&input, &ctx), &input, &ctx, env.map(str::to_string))
+        };
+        let effort_used = || {
+            let log = spec_log(root, "x", Locale::PtBr).unwrap();
+            log.get(log.last_by_wave("send")[&1]).and_then(|send| send.str_field("effort_used").map(str::to_string))
+        };
+        match launch(None) {
+            Verdict::Rewrite { tool_input, note } => {
+                assert_eq!((tool_input["model"].as_str(), tool_input["effort"].as_str()), (Some("haiku"), Some("xhigh")), "{tool_input}");
+                assert!(note.unwrap_or_default().contains("haiku"), "the call asked another model");
+            }
+            other => panic!("the launch is rewritten, got {other:?}"),
+        }
+        assert_eq!(effort_used().as_deref(), Some("xhigh"));
+        assert!(matches!(launch(Some("medium")), Verdict::Rewrite { .. }));
+        assert_eq!(effort_used().as_deref(), Some("medium"), "the variable is the effort that holds");
+    }
+
+    /// The new agent of a wave whose return the round refused, with the
+    /// sender's Claude Code closed, goes one model up from its send, once for
+    /// that return: the send records where the model came from, and the
+    /// launch goes on the new model.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_new_agent_after_a_refused_return_goes_one_model_up_once() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (pid, started) = crate::commands::flow::round::closed_process();
+        let (fix, _) = refused_wave(root, pid, started);
+        std::fs::write(&fix, format!("{SECTION}\n")).unwrap();
+        let log = spec_log(root, "x", Locale::PtBr).unwrap();
+        let back = log.events.iter().rfind(|e| e.event_type == "delivered").map(|e| e.id).expect("the return");
+        let draft = crate::commands::flow::round::send_revision(&log, 1, json!({"model": "haiku", "host": "claude"}).as_object().cloned().unwrap()).unwrap();
+        crate::shared::spec_state::seed_event(root, "x", "send", Value::Object(draft));
+        let title = mustard_core::domain::wave_prompt::wave_title("x", 1, Locale::PtBr);
+        let sent = format!("{title}\n\nConserte a onda.");
+        let last = || {
+            let log = spec_log(root, "x", Locale::PtBr).unwrap();
+            log.get(log.last_by_wave("send")[&1]).cloned().unwrap()
+        };
+        match dispatch_to(root, "mustard-wave", &sent) {
+            Verdict::Rewrite { tool_input, .. } => assert_eq!(tool_input["model"], json!("sonnet"), "{tool_input}"),
+            other => panic!("the dispatch goes to a new agent, got {other:?}"),
+        }
+        let send = last();
+        assert_eq!(send.str_field("model"), Some("sonnet"), "{send:?}");
+        assert_eq!(send.fields.get("escalated_from"), Some(&json!({"model": "haiku", "cause": back})), "{send:?}");
+        let log = spec_log(root, "x", Locale::PtBr).unwrap();
+        assert!(crate::commands::flow::round::new_agent_escalation(root, &log, 1).is_empty(), "once per return");
+    }
+
+    /// O agente de análise sai sempre no esforço máximo, com o modelo que a
+    /// chamada trouxer: o modelo pequeno é dele, o esforço não se negocia.
+    #[test]
+    fn the_analysis_launch_goes_out_at_the_highest_effort() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), json!({"agents": {"model": "sonnet", "effort": "high"}}).to_string()).unwrap();
+        for agent in ["mustard-analysis", "mustard:mustard-analysis"] {
+            for asked in [json!({}), json!({"effort": "medium", "model": "haiku"})] {
+                let mut input = task_input(agent, "Analise o pacote.");
+                for (key, value) in asked.as_object().unwrap() {
+                    input.tool_input[key] = value.clone();
+                }
+                match SubagentInject.evaluate(&input, &ctx(root)).expect("never errors") {
+                    Verdict::Rewrite { tool_input, .. } => {
+                        assert_eq!(tool_input["effort"], "xhigh", "{agent} {tool_input}");
+                        assert_eq!(tool_input["model"], asked.get("model").cloned().unwrap_or(Value::Null), "{agent} keeps its model");
+                    }
+                    other => panic!("the {agent} launch is rewritten, got {other:?}"),
+                }
+            }
+        }
     }
 
     #[test]
@@ -672,9 +876,9 @@ mod tests {
             assert!(matches!(result, Verdict::Rewrite { .. }), "{result:?}");
         }
         let log = spec_log(root, "x", Locale::PtBr).unwrap();
-        let latest = log.get(*log.last_by_wave("send").get(&1).unwrap()).unwrap();
-        assert_eq!(latest.str_field("text").unwrap().matches(instruction).count(), 1);
-        assert!(latest.str_field("text").unwrap().contains("não autorizam alterar escopo"));
+        let latest = log.send_text(*log.last_by_wave("send").get(&1).unwrap()).unwrap();
+        assert_eq!(latest.matches(instruction).count(), 1);
+        assert!(latest.contains("não autorizam alterar escopo"));
     }
 
     /// A onda em andamento cujo agente a observação do hospedeiro já ligou ao

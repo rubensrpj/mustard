@@ -1,4 +1,5 @@
 pub mod config;
+pub mod agent_model;
 pub mod command_detect;
 pub mod scan;
 pub mod source_lang;
@@ -27,5 +28,6 @@ pub mod map_select;
 pub mod triage;
 pub mod wave_prompt;
 pub mod spend;
+pub mod project_summary;
 pub mod measure;
 pub mod context_window;

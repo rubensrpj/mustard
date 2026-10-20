@@ -300,7 +300,12 @@ fn close_in(opts: &CloseOpts, caller: Caller<'_>) -> Value {
     // também quando o fechamento recusa depois disso: a ref já existe, e a
     // próxima chamada acha a cópia limpa e não teria mais o que dizer.
     let mut review_kept = Vec::new();
-    match run_close(opts, &project.root, lang, caller, &mut review_kept) {
+    // A pergunta ao Jev de cada volta que espera a decisão sai depois de
+    // soltas a trava do passo do git e a das cópias, que o fechamento segura
+    // até o fim; a que ele não respondeu vai em `reserves`, e a volta segura
+    // o fechamento até o recibo.
+    let mut asking = (String::new(), Vec::new());
+    let mut value = match run_close(opts, &project.root, lang, caller, (&mut review_kept, &mut asking)) {
         Ok(report) => report,
         Err(refusal) => {
             let mut value = refusal.to_value(lang);
@@ -310,7 +315,11 @@ fn close_in(opts: &CloseOpts, caller: Caller<'_>) -> Value {
             }
             value
         }
-    }
+    };
+    let (spec, waiting) = asking;
+    let reserves = crate::commands::flow::round::ask_after_locks(&opts.root, &project.root, &spec, &waiting, lang);
+    crate::shared::jev::reserve::attach(&mut value, reserves, "mustard-rt run close", lang);
+    value
 }
 
 fn run_close(
@@ -318,13 +327,14 @@ fn run_close(
     root: &Path,
     lang: Locale,
     caller: Caller<'_>,
-    review_kept: &mut Vec<crate::commands::flow::round::Kept>,
+    (review_kept, asking): (&mut Vec<crate::commands::flow::round::Kept>, &mut (String, Vec<crate::commands::flow::round::Waiting>)),
 ) -> Result<Value, CloseRefusal> {
     let session = caller.session;
     let spec = match opts.spec.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(spec) => spec.to_string(),
         None => DiskSpecState::new(&checkout(&opts.root)).active(session).ok_or(CloseRefusal::Refused(Refusal::NoCurrentSpec))?,
     };
+    mustard_core::io::legacy_specs::refuse_legacy(root, &spec).map_err(CloseRefusal::Refused)?;
     let path = store::spec_file(root, &spec).map_err(CloseRefusal::Refused)?;
     let read = |path: &Path| -> Result<SpecLog, CloseRefusal> {
         store::read(path).map_err(CloseRefusal::Refused)?.ok_or_else(|| CloseRefusal::Refused(Refusal::NoSpecFile { spec: spec.clone() }))
@@ -368,7 +378,8 @@ fn run_close(
     // é assumida aqui, com ou sem relatório, e é o commit dela que fecha a
     // última onda.
     let raw = opts.report.as_deref().map(str::trim).filter(|r| !r.is_empty());
-    let taken = crate::commands::flow::round::take_report(&opts.root, root, &spec, raw, &log, lang, caller).map_err(CloseRefusal::Report)?;
+    let mut taken = crate::commands::flow::round::take_report(&opts.root, root, &spec, raw, &log, lang, caller).map_err(CloseRefusal::Report)?;
+    *asking = (spec.clone(), std::mem::take(&mut taken.asking));
     // O commit da última volta pede a passada do mapa em segundo plano; o
     // fechamento, cuja análise final lê o mapa, espera por ela.
     if taken.commit.is_some() {
@@ -395,7 +406,7 @@ fn run_close(
     // O pedido de revisão só fecha com o veredito que o revisor grava e que a
     // leitura acima assume: sem ele, o fechamento não abre outro pedido, e a
     // resposta manda o revisor gravar o veredito.
-    if crate::commands::flow::round::open_review(&log).is_some() {
+    if crate::commands::flow::round::open_review(&log).is_some() && !held.contains(&crate::commands::flow::round::FINAL_REVIEW) {
         missing.push(CloseRefusal::Report(crate::commands::flow::round::RoundRefusal::VerdictMissing));
     }
     if let Some(refusal) = CloseRefusal::all(missing) {
@@ -463,9 +474,11 @@ fn run_close(
         // Os itens que o pedido lista, para o veredito conferir que o revisor
         // leu cada um; o envio sem essa lista é de antes da conferência.
         draft.insert("read_items".into(), json!(review.listed));
+        // O modelo com que o revisor é lançado, o de `agents.review`, e o
+        // esforço que todo agente leva.
         let agents = mustard_core::ProjectConfig::load(root);
-        draft.insert("model".into(), json!(agents.agent_model()));
-        draft.insert("effort".into(), json!(agents.agent_effort()));
+        draft.insert("model".into(), json!(agents.review_settings().model));
+        draft.insert("effort".into(), json!(mustard_core::domain::config::DEFAULT_AGENT_EFFORT));
         draft.insert("mustard".into(), json!(env!("CARGO_PKG_VERSION")));
         draft.insert("author".into(), json!("binary"));
         record(&opts.root, &spec, "send", draft, PhaseWriter::Binary).map_err(CloseRefusal::Refused)?;
@@ -534,7 +547,7 @@ fn run_close(
     let mut removal = crate::commands::flow::round::remove_spec_copies_under(root, &spec, Some(&log), &copies);
     // Apagar o que as cópias têm no disco vem depois de soltar a trava delas.
     drop(copies);
-    removal.delete_leaving();
+    removal.delete_leaving(root);
     // Nenhuma onda volta mais para conserto: os trechos que a conferência
     // depois da onda deixou para o agente saem da pasta da spec.
     crate::commands::flow::round::sweep_fixes(root, &spec, None);
@@ -1867,16 +1880,15 @@ mod tests {
         assert_eq!(approved()["ok"], json!(true), "the verdict passes once every item was read from the copy");
     }
 
-    /// O envio do pedido da revisão final grava o modelo e o esforço que o
-    /// `mustard.json` declara em `agents.model` e `agents.effort`, os mesmos
-    /// que a instalação escreve no agente de revisão, e não valores fixos; um
-    /// esforço fora da lista do Claude Code grava o padrão.
+    /// O envio do pedido da revisão final grava o modelo com que o revisor é
+    /// lançado — o de `agents.review`, e sem ele o de `agents.model` — e o
+    /// esforço `xhigh`, que todo agente leva, sobre o que a configuração diz.
     #[test]
-    fn the_final_review_send_carries_the_model_and_effort_of_the_project_config() {
+    fn the_final_review_send_carries_the_model_the_reviewer_is_launched_with() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         ready_to_close(root, "x", &["git --version"]);
-        std::fs::write(root.join("mustard.json"), br#"{"agents":{"model":"opus","effort":"medium"}}"#).unwrap();
+        std::fs::write(root.join("mustard.json"), br#"{"agents":{"model":"opus","effort":"medium","review":{"model":"haiku","effort":"max"}}}"#).unwrap();
         git_at(root, &["add", "-A"]);
         git_at(root, &["commit", "-q", "-m", "modelo dos agentes"]);
 
@@ -1886,8 +1898,8 @@ mod tests {
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let sent = log.visible().into_iter().rfind(|e| e.event_type == "send").unwrap_or_else(|| panic!("nenhum envio gravado"));
         assert_eq!(sent.str_field("role"), Some("review"), "{sent:?}");
-        assert_eq!(sent.str_field("model"), Some("opus"), "o envio segue o modelo da configuração: {sent:?}");
-        assert_eq!(sent.str_field("effort"), Some("medium"), "o envio segue o esforço da configuração: {sent:?}");
+        assert_eq!(sent.str_field("model"), Some("haiku"), "the reviewer's own model: {sent:?}");
+        assert_eq!(sent.str_field("effort"), Some("xhigh"), "the effort is always xhigh: {sent:?}");
     }
 
     /// Com o `CLAUDE.md` na raiz do projeto e outro na pasta do arquivo de uma

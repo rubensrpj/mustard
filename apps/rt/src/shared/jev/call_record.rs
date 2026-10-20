@@ -27,8 +27,28 @@ pub(crate) const TRIAGE_CALL: &str = "return triage";
 /// volta e a mudança de plano aceita.
 pub(crate) const TASK_TRIAGE_CALL: &str = "task triage";
 
+/// O nome que a escolha das entregas ligadas ao objetivo da spec nova grava.
+pub(crate) const SUMMARY_CALL: &str = "project summary";
+
+/// O nome que a escolha das regras do projeto, na entrega da spec, grava.
+pub(crate) const RULES_CALL: &str = "project rules";
+
 /// O nome que a procura na spec grava quando a palavra fica em dúvida.
 pub(crate) const FIND_CALL: &str = "spec find";
+
+/// O nome que a reserva do Jev grava: a decisão que o Jev não deu e foi ao
+/// agente de análise da sessão ([`super::reserve`]).
+pub(crate) const RESERVE_CALL: &str = "jev reserve";
+
+/// Grava, na spec `spec` de `start`, a chamada de reserva da decisão que a
+/// chamada `command` ao Jev não deu: o filtro `reserve`, sem motivo de falha,
+/// e o nome da chamada em `reserve_for`, para o painel contar.
+pub(crate) fn record_reserve_call(start: &Path, spec: &str, command: &str) {
+    let mut measured = Map::new();
+    measured.insert("filter".to_string(), json!("reserve"));
+    measured.insert("reserve_for".to_string(), json!(command));
+    let _ = record_measured_calls(start, spec, RESERVE_CALL, Instant::now(), vec![measured]);
+}
 
 /// Grava o evento `call` da chamada `command` ao Jev, feita em `called`, na
 /// spec `spec` de `start`. `counts` leva, quando quem chama conta, quantos

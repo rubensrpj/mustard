@@ -124,11 +124,13 @@ use mustard_core::domain::spec_events::{
 };
 use mustard_core::domain::spec_state::SpecState;
 use mustard_core::io::spec_events as store;
+use mustard_core::domain::wave_prompt::{item_body, item_title};
 use mustard_core::io::wave_prompt::{final_review, lesson_bank, request_items};
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Map, Value, json};
 
 use super::read_record::{self, Request};
+use crate::commands::flow::round::task_release::held_in_wave;
 use crate::shared::spec_state::{DiskSpecState, checkout, session_from_env};
 
 /// Options for `mustard-rt run read`.
@@ -225,9 +227,15 @@ fn read_reach(opts: &ReadOpts, session: Option<&str>, from: &Path, reach: Reach)
     let events: Vec<String> = match reading {
         ReadQuery::Request(wave) => return request_text(&log, wave).ok_or_else(|| no_request(Some(wave), lang)),
         ReadQuery::ReviewRequest => return review_request_text(&log).ok_or_else(|| no_request(None, lang)),
+        ReadQuery::WaveReviewRequest(wave) => return crate::commands::flow::round::wave_review_text(&log, wave).ok_or_else(|| no_request(Some(wave), lang)),
         ReadQuery::ReviewPreview => return Ok(final_review(&project.root, &spec, &log, lang).text),
         ReadQuery::ReviewDispatch => {
-            let listed = review_listed(&log).ok_or_else(|| no_request(None, lang))?;
+            let mut listed = review_listed(&log).ok_or_else(|| no_request(None, lang))?;
+            // A cópia de uma onda não lê por aqui o que ela ainda segura.
+            if let Some(Request { wave: Some(wave), .. }) = &request {
+                let held = held_in_wave(&log, *wave);
+                listed.retain(|code| !held.contains_key(code));
+            }
             let (lines, found) = listed_lines(&project.root, &log, &listed, term, &codes, &project.languages, item_view, lang);
             // De dentro da cópia do revisor, a leitura sai em texto e grava
             // um recibo só; a cópia de uma onda não lê o pedido do revisor.
@@ -239,7 +247,13 @@ fn read_reach(opts: &ReadOpts, session: Option<&str>, from: &Path, reach: Reach)
             lines
         }
         ReadQuery::Dispatch(wave) => {
-            let (lines, listed) = dispatch_lines(&project.root, &log, wave, term, &codes, &project.languages, item_view, lang);
+            // De dentro da cópia da onda, só o que as tarefas já liberadas
+            // trazem: as outras chegam, uma por vez, na resposta do passo.
+            let held = match &request {
+                Some(Request { wave: Some(own), .. }) if *own == wave => held_in_wave(&log, wave),
+                _ => BTreeMap::new(),
+            };
+            let (lines, listed) = dispatch_lines(&project.root, &log, wave, term, &codes, &project.languages, item_view, lang, &held);
             // De dentro da cópia, a leitura da onda sai em texto, um bloco por
             // item.
             if item_view == Shown::Agent {
@@ -252,6 +266,15 @@ fn read_reach(opts: &ReadOpts, session: Option<&str>, from: &Path, reach: Reach)
         }
         ReadQuery::Item(target) => {
             let found = find_item(&log, &target, &codes);
+            // De dentro da cópia da onda, ler adiante é recusado: a tarefa
+            // ainda não liberada, ou o item que só ela traz, chega na resposta
+            // do passo que termina a tarefa atual.
+            if let (Some(Request { wave: Some(wave), .. }), Some(event)) = (&request, found) {
+                let code = codes.get(&event.id).cloned().unwrap_or_else(|| event.id.to_string());
+                if let Some(task) = held_in_wave(&log, *wave).remove(&code) {
+                    return Err(refuse(Refusal::TaskNotReleased { task }));
+                }
+            }
             read.extend(found.map(|event| codes.get(&event.id).cloned().unwrap_or_else(|| event.id.to_string())));
             found.map(|event| item_line(&log, event, &codes, item_view)).into_iter().collect()
         }
@@ -328,7 +351,13 @@ fn read_reach(opts: &ReadOpts, session: Option<&str>, from: &Path, reach: Reach)
                     more = Some(translate("spec_events.read_more", lang).replace("{shown}", &BLOCK_CAP.to_string()).replace("{total}", &total));
                     found.truncate(BLOCK_CAP);
                 }
-                found.into_iter().map(|(e, codes)| shown_with_code(&log, e, codes, shown)).collect()
+                // De dentro da cópia da onda, o que as tarefas ainda não
+                // liberadas trazem sai só pelo código e pelo título.
+                let held = match &request {
+                    Some(Request { wave: Some(wave), .. }) => held_in_wave(&log, *wave),
+                    _ => BTreeMap::new(),
+                };
+                found.into_iter().map(|(e, codes)| held_or_shown(&log, e, codes, shown, &held)).collect()
             }
         }
     };
@@ -804,6 +833,7 @@ fn spread(mut values: Vec<u64>) -> Option<Value> {
 /// nas línguas `languages`. A onda que o plano não tem não tem pedido: a
 /// lista vem vazia. Devolve as linhas e, ao lado, o que cada uma é para o
 /// registro da leitura: o código do item e `lesson-<número>` da lição.
+#[allow(clippy::too_many_arguments)]
 fn dispatch_lines(
     root: &Path,
     log: &SpecLog,
@@ -813,16 +843,18 @@ fn dispatch_lines(
     languages: &Languages,
     shown: Shown,
     lang: Locale,
+    held: &BTreeMap<String, String>,
 ) -> (Vec<String>, Vec<String>) {
     if !log.planned_waves().contains(&wave) {
         return (Vec::new(), Vec::new());
     }
     // O envio guarda a lista que o pedido imprimiu: o lote é ela, e nunca uma
     // segunda conta que acharia a onda ou um item que o pedido não listou. O
-    // envio sem a lista, de antes dela, cai na conta da montagem.
+    // envio sem a lista, de antes dela, cai na conta da montagem. O que as
+    // tarefas ainda não liberadas seguram (`held`) fica de fora.
     let sent = log.last_by_wave("send").get(&wave).copied();
     if let Some(listed) = sent.and_then(|sent| log.send_field(sent, "read_items")).and_then(Value::as_array) {
-        let listed: Vec<String> = listed.iter().filter_map(Value::as_str).map(str::to_string).collect();
+        let listed: Vec<String> = listed.iter().filter_map(Value::as_str).filter(|code| !held.contains_key(*code)).map(str::to_string).collect();
         return listed_lines(root, log, &listed, term, codes, languages, shown, lang);
     }
     let bank = lesson_bank(root);
@@ -900,40 +932,18 @@ fn listed_lines(
     (lines, read)
 }
 
-/// Os campos que o bloco de um item na leitura da onda nunca mostra: as
-/// marcas do binário, os números que ligam um item a outro e o que o bloco já
-/// mostra à parte.
-const BLOCK_OMITTED: &[&str] = &[
-    "v", "id", "code", "at", "author", "keys", "search", "type", "title", "replaces", "origin", "covers", "label", "text", "agent",
-    "example", "every_wave", "files",
-];
-
-/// Um trecho colado maior que isto, em bytes, vira aviso na leitura da onda.
-const PASTE_MAX: usize = 1024;
-
 /// O bloco de um item na leitura da onda de dentro da cópia, em texto: o
-/// título e o código e, embaixo, a parte do agente, com os arquivos que o item
-/// declara. Sem parte do agente, o texto; sem texto, os outros campos, um por
-/// linha. A mensagem do usuário leva o dia, com o trecho colado grande trocado
-/// pelo aviso de onde lê-lo. A parte do usuário e o exemplo vêm pelo código.
+/// título e o código e, embaixo, o texto inteiro dele ([`item_body`]), com os
+/// arquivos que o item declara. A mensagem do usuário leva o dia. A parte do
+/// usuário e o exemplo vêm pelo código.
 fn agent_block(item: &SpecEvent, codes: &BTreeMap<u64, String>, lang: Locale) -> String {
     let code = codes.get(&item.id).cloned().unwrap_or_else(|| item.id.to_string());
+    let body = item_body(item, &code, lang);
     if item.event_type == "message" {
         let day = super::find::day_of(item.at()).unwrap_or_default();
-        let text = without_long_paste(item.str_field("text").unwrap_or_default(), &code, lang);
-        return format!("## {} | {day} | {code}\n{text}", translate("spec_events.find_user_message", lang));
+        return format!("## {} | {day} | {code}\n{body}", translate("spec_events.find_user_message", lang));
     }
     let title = item.str_field("title").filter(|t| !t.trim().is_empty()).map_or_else(|| super::find::type_word(&item.event_type, lang), str::to_string);
-    let body = match item.str_field("agent").filter(|agent| !agent.trim().is_empty()).or_else(|| item.str_field("text")) {
-        Some(body) => body.to_string(),
-        None => item
-            .fields
-            .iter()
-            .filter(|(key, _)| !BLOCK_OMITTED.contains(&key.as_str()))
-            .map(|(key, value)| format!("{key}: {}", value.as_str().map_or_else(|| value.to_string(), str::to_string)))
-            .collect::<Vec<_>>()
-            .join("\n"),
-    };
     let mut block = format!("## {title} | {code}\n{body}");
     let files: Vec<&str> = item
         .fields
@@ -953,27 +963,6 @@ fn agent_block(item: &SpecEvent, codes: &BTreeMap<u64, String>, lang: Locale) ->
 /// A lição na leitura da onda: o número dela no banco e o texto.
 fn lesson_block(lesson: &SpecEvent, lang: Locale) -> String {
     format!("## {} {}\n{}", translate("spec_events.find_lesson", lang), lesson.id, lesson.str_field("text").unwrap_or_default())
-}
-
-/// O texto com cada trecho colado maior que [`PASTE_MAX`] trocado pelo aviso
-/// de onde lê-lo inteiro.
-fn without_long_paste(text: &str, code: &str, lang: Locale) -> String {
-    let mut out = String::new();
-    let mut rest = text;
-    while let Some(start) = rest.find("<pasted_content") {
-        let Some(close) = rest[start..].find("</pasted_content").map(|at| start + at) else { break };
-        let end = rest[close..].find('>').map_or(rest.len(), |at| close + at + 1);
-        out.push_str(&rest[..start]);
-        if end - start > PASTE_MAX {
-            let kb = (end - start).div_ceil(1024).to_string();
-            out.push_str(&translate("spec_events.find_pasted", lang).replace("{kb}", &kb).replace("{code}", code));
-        } else {
-            out.push_str(&rest[start..end]);
-        }
-        rest = &rest[end..];
-    }
-    out.push_str(rest);
-    out
 }
 
 /// O bloco `lessons`: fora da spec, no banco do projeto. `--term` é o número
@@ -998,6 +987,12 @@ fn read_lessons(root: &Path, spec: Option<&str>, term: Option<&str>, lang: Local
 /// dela: o envio sem o pedido (`text`) na lista das ondas e no painel, e no
 /// painel sem termo também a injeção e a entrega sem o `text`.
 fn shown_with_code(log: &SpecLog, event: &SpecEvent, codes: &BTreeMap<u64, String>, shown: Shown) -> String {
+    shown_line(&shown_fields(log, event, codes, shown))
+}
+
+/// Os campos que [`shown_with_code`] mostra. O envio que sai sem o pedido
+/// sai também sem os blocos das tarefas, que são o resto dele.
+fn shown_fields(log: &SpecLog, event: &SpecEvent, codes: &BTreeMap<u64, String>, shown: Shown) -> Map<String, Value> {
     let mut fields = log.whole_fields(event);
     if let Some(code) = codes.get(&event.id) {
         fields.insert("code".into(), Value::String(code.clone()));
@@ -1010,9 +1005,33 @@ fn shown_with_code(log: &SpecLog, event: &SpecEvent, codes: &BTreeMap<u64, Strin
     };
     if long_text {
         fields.remove("text");
+        fields.remove("tasks");
     }
     if shown == Shown::Agent {
         without_agent_omissions(&mut fields, kind);
+    }
+    fields
+}
+
+/// A linha de um evento lido de dentro da cópia da onda que segura `held`
+/// ([`held_in_wave`]): o item que só uma tarefa ainda não liberada traz sai
+/// só pelo código, pelo tipo e pelo título, como na lista do pedido; o envio
+/// sai sem os blocos das tarefas. Fora da cópia, `held` vem vazio e só o
+/// envio muda.
+fn held_or_shown(log: &SpecLog, event: &SpecEvent, codes: &BTreeMap<u64, String>, shown: Shown, held: &BTreeMap<String, String>) -> String {
+    let code = codes.get(&event.id).cloned().unwrap_or_else(|| event.id.to_string());
+    if held.contains_key(&code) {
+        let mut fields = Map::new();
+        fields.insert("code".into(), json!(code));
+        fields.insert("type".into(), json!(event.event_type));
+        if let Some(title) = item_title(event) {
+            fields.insert("title".into(), json!(title));
+        }
+        return shown_line(&fields);
+    }
+    let mut fields = shown_fields(log, event, codes, shown);
+    if !held.is_empty() {
+        fields.remove("tasks");
     }
     shown_line(&fields)
 }
@@ -1042,6 +1061,14 @@ const AGENT_OMITTED: &[&str] = &["v", "at", "author", "keys"];
 /// lê ([`AGENT_OMITTED`]). A mensagem do usuário guarda o `at` e o `author`:
 /// dizem quem falou e quando.
 fn without_agent_omissions(fields: &mut Map<String, Value>, event_type: &str) {
+    // O envio, lido de dentro da cópia, sai sem os blocos das tarefas: as
+    // seguintes chegam na resposta do passo.
+    if event_type == "send" {
+        fields.remove("tasks");
+        if let Some(Value::Object(changed)) = fields.get_mut("changed") {
+            changed.remove("tasks");
+        }
+    }
     let kept: &[&str] = if event_type == "message" { &["at", "author"] } else { &[] };
     for key in AGENT_OMITTED.iter().filter(|key| !kept.contains(key)) {
         fields.remove(*key);
@@ -1121,14 +1148,14 @@ pub fn run(opts: &ReadOpts, full: bool, all: bool) {
         Ok(text) => serde_json::from_str(text).unwrap_or_else(|_| json!({"ok":true,"spec":opts.spec})),
         Err(refusal) => refusal.clone(),
     };
-    let exact=matches!(ReadQuery::parse(&opts.block), Some(ReadQuery::Request(_) | ReadQuery::ReviewRequest | ReadQuery::ReviewPreview));
+    let exact=matches!(ReadQuery::parse(&opts.block), Some(ReadQuery::Request(_) | ReadQuery::ReviewRequest | ReadQuery::WaveReviewRequest(_) | ReadQuery::ReviewPreview));
     let output=match &result {
         Ok(text) => if exact {text.clone()} else {format!("{text}\n")},
         Err(refusal) => serde_json::to_string_pretty(refusal).unwrap_or_default()+"\n",
     };
     let _ = super::conversation::record_output_call(&opts.root, "read", opts.spec.as_deref(), started, &report,&output);
     match result {
-        Ok(text) if matches!(ReadQuery::parse(&opts.block), Some(ReadQuery::Request(_) | ReadQuery::ReviewRequest | ReadQuery::ReviewPreview)) => {
+        Ok(text) if matches!(ReadQuery::parse(&opts.block), Some(ReadQuery::Request(_) | ReadQuery::ReviewRequest | ReadQuery::WaveReviewRequest(_) | ReadQuery::ReviewPreview)) => {
             print!("{text}");
         }
         Ok(report) => println!("{report}"),
@@ -1959,6 +1986,114 @@ mod tests {
         assert_eq!(outside, [json!("MSTD-TASK-0001"), json!("MSTD-RULE-0001")]);
     }
 
+    /// O pedido de `open_request` com uma segunda tarefa, que atende uma
+    /// decisão só dela, enviado como a rodada o grava: a lista do que ele
+    /// lista e o bloco de cada tarefa. Só a primeira está liberada. Devolve a
+    /// vaga.
+    fn two_task_request(root: &std::path::Path) -> PathBuf {
+        let (copy, sent) = open_request(root);
+        put(root, "decision", json!({"title": "Em reais", "text": "O total fica em reais.", "agent": "centavos inteiros", "why": "o caixa", "keys": ["total"], "origin": 1}));
+        put(root, "task", json!({"wave": 1, "text": "Escrever o total.", "files": [{"path": "a.rs"}], "depends_on": [], "covers": ["MSTD-DEC-0001"], "origin": 1}));
+        let path = store::spec_file(root, "teste").unwrap();
+        let mut fields = store::read(&path).unwrap().unwrap().get(sent).unwrap().fields.clone();
+        for key in ["v", "id", "code", "at", "type", "search"] {
+            fields.remove(key);
+        }
+        fields.insert("replaces".into(), json!(sent));
+        fields.insert("read_items".into(), json!(["MSTD-TASK-0001", "MSTD-MSG-0001", "MSTD-RULE-0001", "MSTD-TASK-0002", "MSTD-DEC-0001"]));
+        fields.insert(
+            "tasks".into(),
+            json!([
+                {"task": "MSTD-TASK-0001", "text": "### Tarefa 1 de 2", "items": ["MSTD-TASK-0001", "MSTD-MSG-0001"]},
+                {"task": "MSTD-TASK-0002", "text": "### Tarefa 2 de 2", "items": ["MSTD-TASK-0002", "MSTD-DEC-0001"]},
+            ]),
+        );
+        by_program(root, "send", Value::Object(fields));
+        copy
+    }
+
+    /// De dentro da cópia, ler a tarefa que ainda não foi liberada, ou o item
+    /// que só ela atende, é recusado com o código da tarefa; a tarefa atual e
+    /// as regras da onda se leem. De fora da cópia, quem conduz e quem revisa
+    /// leem tudo. Liberada, a tarefa se lê de dentro também.
+    #[test]
+    fn a_task_not_yet_released_is_refused_from_inside_the_copy_and_read_from_outside() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let copy = two_task_request(root);
+        let expected = translate("spec_events.task_not_released", Locale::PtBr).replace("{task}", "MSTD-TASK-0002");
+        for ahead in ["item-MSTD-TASK-0002", "item-MSTD-DEC-0001"] {
+            let refused = read_for(&opts(root, ahead, None), None, &copy).expect_err(ahead);
+            assert_eq!(refused["reason"], json!("task-not-released"), "{ahead}: {refused}");
+            assert_eq!(refused["hint"], json!(expected), "{ahead}: {refused}");
+            assert!(read_for(&opts(root, ahead, None), None, root).is_ok(), "{ahead} reads from outside the copy");
+        }
+        for current in ["item-MSTD-TASK-0001", "item-MSTD-RULE-0001"] {
+            assert!(read_for(&opts(root, current, None), None, &copy).is_ok(), "{current}");
+        }
+        assert!(!recorded_reads(root).iter().any(|(_, item)| item == "MSTD-TASK-0002"), "a refused read leaves no receipt");
+
+        call(root, "read", json!({"ms": 0, "request": "request-1", "items": ["MSTD-TASK-0002", "MSTD-DEC-0001"], "released": "MSTD-TASK-0002"}));
+        assert!(read_for(&opts(root, "item-MSTD-DEC-0001", None), None, &copy).is_ok(), "released, it reads from inside");
+    }
+
+    /// `dispatch-<n>` de dentro da cópia traz só o que as tarefas liberadas e
+    /// a onda inteira pedem, e o recibo leva só isso; de fora, a lista
+    /// inteira, para a revisão.
+    #[test]
+    fn the_dispatch_read_from_inside_the_copy_brings_only_the_released_tasks() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let copy = two_task_request(root);
+        let inside = read_from(root, &copy, "dispatch-1", None);
+        assert!(inside.contains("MSTD-TASK-0001") && inside.contains("MSTD-RULE-0001"), "{inside}");
+        assert!(!inside.contains("MSTD-TASK-0002") && !inside.contains("MSTD-DEC-0001"), "{inside}");
+        let read: Vec<String> = recorded_reads(root).into_iter().map(|(_, item)| item).collect();
+        assert_eq!(read, ["MSTD-TASK-0001", "MSTD-MSG-0001", "MSTD-RULE-0001"]);
+        let outside: Vec<Value> = events(&read_from(root, root, "dispatch-1", None)).iter().map(|e| e["code"].clone()).collect();
+        assert_eq!(outside.len(), 5, "{outside:?}");
+    }
+
+    /// De dentro da cópia, as leituras em bloco — a onda, o combinado, um
+    /// envio pelo código e o lote do revisor — mostram a tarefa ainda não
+    /// liberada, e o que só ela atende, só pelo código, pelo tipo e pelo
+    /// título, e o envio sem os blocos das tarefas. De fora, tudo inteiro.
+    #[test]
+    fn the_block_reads_from_inside_the_copy_never_bring_a_task_not_released() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let copy = two_task_request(root);
+        let path = store::spec_file(root, "teste").unwrap();
+        let log = store::read(&path).unwrap().unwrap();
+        let sent = log.last_by_wave("send")[&1];
+        let send_code = log.codes()[&sent].clone();
+        let review = root.join("copias").join("revisao");
+        std::fs::create_dir_all(&review).unwrap();
+        by_program(
+            root,
+            "send",
+            json!({"author": "binary", "role": "review", "text": "revise", "lines": 1, "chars": 6, "mustard": "0",
+            "copy": mustard_core::io::wave_prompt::shown(&review), "read_items": ["MSTD-TASK-0002", "MSTD-DEC-0001"]}),
+        );
+        let line_of = |report: &str, code: &str| events(report).into_iter().find(|e| e["code"] == json!(code));
+
+        let wave = read_from(root, &copy, "wave-1", None);
+        let task = line_of(&wave, "MSTD-TASK-0002").unwrap_or_else(|| panic!("the rest of the wave by code: {wave}"));
+        assert_eq!(task.as_object().map(|fields| fields.len()), Some(3), "only code, type and title: {task}");
+        let send = line_of(&wave, &send_code).unwrap_or_else(|| panic!("{wave}"));
+        assert!(send.get("tasks").is_none(), "the send comes without the task blocks: {send}");
+        let agreed = read_from(root, &copy, "agreed", None);
+        assert!(!agreed.contains("centavos inteiros"), "{agreed}");
+        let item = read_from(root, &copy, &format!("item-{send_code}"), None);
+        assert!(!item.contains("### Tarefa 2 de 2"), "{item}");
+        let batch = read_from(root, &copy, "dispatch-review", None);
+        assert!(!batch.contains("centavos inteiros") && !batch.contains("Escrever o total."), "{batch}");
+
+        let outside = read_from(root, root, "wave-1", None);
+        assert!(line_of(&outside, "MSTD-TASK-0002").is_some_and(|task| task.get("text").is_some()), "{outside}");
+        assert!(read_from(root, root, "agreed", None).contains("centavos inteiros"));
+    }
+
     /// `dispatch-review` traz, numa leitura só, os itens que o pedido mais
     /// novo do revisor final listou. De dentro da cópia do revisor grava um
     /// recibo só, com todos; de fora, não grava nada.
@@ -2122,17 +2257,6 @@ mod tests {
         for key in STAMPS {
             assert!(!inside.contains(&format!("\"{key}\"")), "{key} left out: {inside}");
         }
-    }
-
-    /// Na leitura da onda de dentro da cópia, o trecho colado maior que 1 KB
-    /// numa mensagem do usuário vira o aviso de onde lê-lo; o pequeno fica.
-    #[test]
-    fn a_long_pasted_text_becomes_a_pointer_to_the_item() {
-        let lang = Locale::PtBr;
-        let small = "veja <pasted_content id=\"a\">curto</pasted_content id=\"a\"> fim";
-        assert_eq!(without_long_paste(small, "MSTD-MSG-0001", lang), small);
-        let long = format!("antes <pasted_content id=\"b\">{}</pasted_content id=\"b\"> depois", "x".repeat(3000));
-        assert_eq!(without_long_paste(&long, "MSTD-MSG-0002", lang), "antes [texto colado, 3 kB: leia por item-MSTD-MSG-0002] depois");
     }
 
     /// O painel sem termo vem sem o texto do envio, da injeção e da entrega,

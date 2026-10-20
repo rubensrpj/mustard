@@ -87,9 +87,14 @@ fn record(root: &Path, session: Option<&str>, event_type: &str, draft: Map<Strin
 /// trava do arquivo, sem as conferências do trabalho, que a observação não
 /// muda, e sem analisar o que já está nele; passando do teto, a parte antiga
 /// vai ao arquivo morto ao lado ([`store::append_operations`]). Os números
-/// gravados, ou `None` sem a spec ou com a gravação recusada.
+/// gravados, ou `None` sem a spec, na spec de antes desta versão do Mustard,
+/// que fica como está, ou com a gravação recusada.
 pub(crate) fn observe(root: &Path, spec: &str, event_type: &str, drafts: Vec<Map<String, Value>>) -> Option<Vec<u64>> {
-    store::spec_file(&store::spec_root(root), spec).ok().filter(|path| path.is_file())?;
+    let base = store::spec_root(root);
+    store::spec_file(&base, spec).ok().filter(|path| path.is_file())?;
+    if mustard_core::io::legacy_specs::is_legacy(&base, spec) {
+        return None;
+    }
     let path = store::operations_file(root, spec)?;
     store::append_operations(&path, drafts.into_iter().map(|draft| (event_type, draft)).collect()).ok()
 }
@@ -99,10 +104,11 @@ pub(crate) fn observe(root: &Path, spec: &str, event_type: &str, drafts: Vec<Map
 /// recibo de leitura só crescem no fim e não mudam a fase, o objetivo nem o
 /// levantamento que as regras da gravação do `run write` conferem. `guard`
 /// recebe o arquivo, lido pelos envelopes, com a trava presa. Numa pasta do
-/// formato antigo, ou sem o arquivo de eventos, nada é gravado.
+/// formato antigo, numa spec de antes desta versão do Mustard, ou sem o
+/// arquivo de eventos, nada é gravado.
 fn record_in_spec(root: &Path, spec: &str, event_type: &str, draft: Map<String, Value>, guard: impl FnOnce(&SpecLog) -> Result<(), Refusal>) -> Option<u64> {
     let base = store::spec_root(root);
-    if super::pages::old_format_spec(&base, spec) {
+    if super::pages::old_format_spec(&base, spec) || mustard_core::io::legacy_specs::is_legacy(&base, spec) {
         return None;
     }
     let path = store::spec_file(&base, spec).ok().filter(|path| path.is_file())?;
@@ -310,7 +316,7 @@ pub(crate) fn record_output_call(root: &Path, command: &str, named: Option<&str>
         // Safe decision metadata only: never persist intent, code, candidates or keys.
         for (field,value) in search_decisions(report) {measured.insert(field,value);}
     }
-    if ["knowledge","expertise"].contains(&command) {
+    if command=="knowledge" {
         // Caller-reported usage is separate from Jev billing and host
         // telemetry. Never persist excerpts, prompt text or receipt contents.
         for (field,path) in [("cached","/cached"),("pending","/pending"),("session_model_calls","/session_model_calls"),
@@ -328,7 +334,10 @@ fn search_decisions(report:&Value)->Map<String,Value> {
     for (field,path) in [("search_tool","/tool"),("search_purpose","/purpose"),
         ("search_choice_gate","/choice_gate"),("search_local_model_calls","/task_context/local_model_calls"),
         ("search_remote_model_calls","/remote_model_calls"),("search_selection_status","/task_context/selection/status"),
-        ("search_selection_cached","/task_context/selection/cached"),("search_accepted_choices","/task_context/selection/accepted_choices")] {
+        ("search_selection_cached","/task_context/selection/cached"),("search_accepted_choices","/task_context/selection/accepted_choices"),
+        // Onde o tempo da busca foi, etapa por etapa.
+        ("search_scan_wait_ms","/timings/scan_wait_ms"),("search_lock_wait_ms","/timings/lock_wait_ms"),("search_vectors_ms","/timings/vectors_ms"),
+        ("search_investigate_ms","/timings/investigate_ms"),("search_jev_ms","/timings/jev_ms")] {
         if let Some(value)=report.pointer(path).filter(|value|!value.is_null()) {fields.insert(field.into(),value.clone());}
     }
     fields
@@ -448,6 +457,14 @@ pub(crate) fn record_receipt(root: &Path, spec: &str, request: &str, items: &[St
     record_in_spec(root, spec, "call", call_fields("read", started, &json!({ "ok": true }), measured), |_| Ok(()))
 }
 
+/// O recibo de [`record_receipt`] da tarefa `task` que a resposta do passo
+/// entregou inteira: os itens do bloco dela contam como lidos, e `released`
+/// diz que ela foi liberada.
+pub(crate) fn record_release(root: &Path, spec: &str, request: &str, task: &str, items: &[String], started: Instant) -> Option<u64> {
+    let measured = draft(json!({ "invocation": false, "request": request, "items": items, "released": task }));
+    record_in_spec(root, spec, "call", call_fields("read", started, &json!({ "ok": true }), measured), |_| Ok(()))
+}
+
 /// Os campos de toda chamada `command`, feita em `started`: o autor, o tempo,
 /// o resultado do relatório `report` e, na recusa, a razão dela; depois, os
 /// da medida de quem chamou (`measured`).
@@ -524,6 +541,18 @@ mod tests {
         assert_eq!(log.events.last().unwrap().int("search_native_bytes"), Some(100));
         assert_eq!(log.events.last().unwrap().int("search_delivered_bytes"), Some(150));
         assert!(!format!("{:?}", log.events).contains("private-code"));
+    }
+
+    #[test]
+    fn the_time_of_each_search_stage_reaches_the_operations_log() {
+        let dir = project_on("medicao");
+        let report = json!({"ok":true,"timings":{"scan_wait_ms":3000,"lock_wait_ms":200,"vectors_ms":40,"investigate_ms":900,"jev_ms":0}});
+        assert!(record_output_call(dir.path(), "search", Some("medicao"), Instant::now(), &report, "result").is_some());
+        let log = recorded_operations(dir.path(), "medicao");
+        let call = log.events.last().unwrap();
+        for (field, ms) in [("scan_wait_ms", 3000), ("lock_wait_ms", 200), ("vectors_ms", 40), ("investigate_ms", 900), ("jev_ms", 0)] {
+            assert_eq!(call.int(&format!("search_{field}")), Some(ms), "{field}: {:?}", call.fields);
+        }
     }
 
     #[test]

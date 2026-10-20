@@ -236,6 +236,11 @@ fn init_with_scan(
     mfs::create_dir_all(&claude_path)
         .with_context(|| format!("creating {}", claude_path.display()))?;
 
+    // The specs already here when this version is first mounted on the
+    // project stay read-only: the list is written once, never redone.
+    mustard_core::io::legacy_specs::mark_once(&project_path, &mustard_core::harness_version())
+        .context("listing the specs of before this version")?;
+
     // The `inject` migrations (idempotent, fail-open): they only touch
     // `mustard.json`, which is Mustard's own file.
     seeding::report_migration(&mustard_core::migrate_inject_declarations(&project_path, &claude_path));
@@ -580,6 +585,28 @@ mod tests {
         assert!(!nested.exists(), ".claude/.claude/ must not be created — I1 rule");
     }
 
+    /// O `init` sobre um projeto que já tem specs grava a lista das antigas
+    /// uma vez; o `init` seguinte não regrava, e a spec de depois é atual.
+    #[test]
+    fn init_over_an_existing_project_lists_its_specs_once() {
+        let work = tempdir().unwrap();
+        let project = work.path().join("project");
+        fs::create_dir_all(project.join(".claude/spec/antiga")).unwrap();
+        fs::write(project.join(".claude/spec/antiga/spec.ndjson"), "").unwrap();
+
+        init(&project, &InitOptions { yes: true, ..InitOptions::default() }).unwrap();
+        let list = mustard_core::io::legacy_specs::path(&project);
+        let written = json_object(&list);
+        assert_eq!(written["specs"], serde_json::json!(["antiga"]), "{written:?}");
+        assert_eq!(written["since"], serde_json::json!(mustard_core::harness_version()));
+
+        fs::create_dir_all(project.join(".claude/spec/nova")).unwrap();
+        let before = fs::read_to_string(&list).unwrap();
+        init(&project, &InitOptions { yes: true, ..InitOptions::default() }).unwrap();
+        assert_eq!(fs::read_to_string(&list).unwrap(), before, "the list is written once");
+        assert!(!mustard_core::io::legacy_specs::is_legacy(&project, "nova"));
+    }
+
     #[test]
     fn init_merge_rewrites_the_session_map_and_backfills() {
         let work = tempdir().unwrap();
@@ -812,7 +839,7 @@ mod tests {
         agents.sort();
         assert_eq!(agents, ["analysis.md", "review.md", "wave.md"], "the install left another set of agents");
         let analysis=fs::read_to_string(claude.join("agents/mustard/analysis.md")).unwrap();
-        assert!(analysis.contains("model: haiku\n") && analysis.contains("effort: medium\n"));
+        assert!(analysis.contains("model: haiku\n") && analysis.contains("effort: xhigh\n"));
         assert!(analysis.contains("100.000") && !analysis.contains("model: sonnet\n"));
         assert_eq!(fs::read_to_string(claude.join("agents/wave-solo.md")).unwrap(), own, "the project's agent changed");
     }

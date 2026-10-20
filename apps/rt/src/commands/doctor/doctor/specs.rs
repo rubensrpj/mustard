@@ -4,6 +4,7 @@
 
 use std::path::Path;
 
+use mustard_core::io::legacy_specs::LegacySpecs;
 use mustard_core::io::spec_index::DISCARDED_DIR;
 use mustard_core::io::{fs, project_map};
 use mustard_core::platform::i18n::{translate, Locale};
@@ -76,7 +77,8 @@ pub(super) fn check_state_health(claude_dir: &Path) -> CheckResult {
 
 /// Collect the directory names under `.claude/spec/` (flat layout — no buckets).
 /// The folder `run discard` keeps the discarded specs in is an archive, not a
-/// spec: it has no event file of its own, and each spec inside it does.
+/// spec: it has no event file of its own, and each spec inside it does. A spec
+/// of before this version of Mustard is left out: it is only read.
 fn collect_active_spec_names(claude_dir: &Path) -> Vec<String> {
     // ClaudePaths-exempt: `claude_dir` is already resolved via the seam in
     // `run()`; re-deriving with `for_project` here would be circular.
@@ -84,14 +86,22 @@ fn collect_active_spec_names(claude_dir: &Path) -> Vec<String> {
     let Ok(entries) = fs::read_dir(&active_dir) else {
         return Vec::new();
     };
+    let legacy = legacy_of(claude_dir);
     entries
         .into_iter()
-        .filter(|e| e.is_dir && e.file_name != DISCARDED_DIR)
+        .filter(|e| e.is_dir && e.file_name != DISCARDED_DIR && !legacy.contains(&e.file_name))
         .map(|e| e.file_name)
         .collect()
 }
 
-/// For each active spec under `.claude/spec/`, parse `wave-plan.md` for
+/// The specs of before this version of Mustard in the project whose `.claude/`
+/// is `claude_dir`.
+fn legacy_of(claude_dir: &Path) -> LegacySpecs {
+    claude_dir.parent().map(LegacySpecs::read).unwrap_or_default()
+}
+
+/// For each active spec under `.claude/spec/` — a spec of before this version
+/// of Mustard is not one —, parse `wave-plan.md` for
 /// `[[wave-N-<role>]]` wikilinks and verify each referenced subdirectory
 /// exists. WARN per broken wikilink (an editor typo or partial scaffold);
 /// FAIL only on an empty result paired with a non-empty wave-plan body.
@@ -106,8 +116,9 @@ pub(super) fn check_wave_integrity(claude_dir: &Path) -> CheckResult {
     };
     let mut warnings: Vec<String> = Vec::new();
     let mut scanned = 0usize;
+    let legacy = legacy_of(claude_dir);
     for entry in entries {
-        if !entry.is_dir {
+        if !entry.is_dir || legacy.contains(&entry.file_name) {
             continue;
         }
         let plan_path = entry.path.join("wave-plan.md");
@@ -286,6 +297,35 @@ mod tests {
 
         let result = check_state_health(&claude_dir);
         assert_eq!(result.status, Status::Ok, "{:?}", result.details);
+    }
+
+    /// A spec de antes desta versão do Mustard fica fora das duas
+    /// conferências: a pasta sem arquivo de eventos e o link de onda quebrado
+    /// dela não viram aviso; a mesma falha numa spec atual vira.
+    #[test]
+    fn the_doctor_leaves_a_legacy_spec_out_of_both_checks() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let claude_dir = root.join(".claude");
+        project_map::write_text(root, "{}").unwrap();
+        let antiga = claude_dir.join("spec").join("antiga");
+        std::fs::create_dir_all(&antiga).unwrap();
+        write_file(&antiga.join("wave-plan.md"), "[[wave-1-rt]]\n");
+        assert_eq!(check_state_health(&claude_dir).status, Status::Warn, "the folder alone warns while it is current");
+        assert_eq!(check_wave_integrity(&claude_dir).status, Status::Warn);
+
+        mustard_core::io::legacy_specs::mark_once(root, "0.2.24").unwrap();
+        let health = check_state_health(&claude_dir);
+        assert_eq!(health.status, Status::Ok, "{:?}", health.details);
+        assert_ne!(check_wave_integrity(&claude_dir).status, Status::Warn);
+
+        let nova = claude_dir.join("spec").join("nova");
+        std::fs::create_dir_all(&nova).unwrap();
+        write_file(&nova.join("wave-plan.md"), "[[wave-1-rt]]\n");
+        let health = check_state_health(&claude_dir);
+        assert!(health.details.iter().any(|d| d.contains("nova")) && !health.details.iter().any(|d| d.contains("antiga")), "{:?}", health.details);
+        let waves = check_wave_integrity(&claude_dir);
+        assert!(waves.details.iter().any(|d| d.contains("nova")) && !waves.details.iter().any(|d| d.contains("antiga")), "{:?}", waves.details);
     }
 
     #[test]

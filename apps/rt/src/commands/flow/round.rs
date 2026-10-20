@@ -22,15 +22,16 @@
 //! pronta, a rodada olha os itens combinados que o pedido dela não leva nem
 //! tira por conta própria (`item_choice`): os do projeto todo, sem a marca de
 //! toda onda, os ligados aos arquivos que as tarefas dela mexem e os sem
-//! ligação com ela. Com algum, uma chamada ao Jev por onda
-//! diz, por item, se ele governa algo que as tarefas dela mudam ou testam; a
-//! onda sai na mesma rodada, sem parada de quem conduz. Os itens que as tarefas
+//! ligação com ela. Com algum, uma chamada ao Jev por onda, feita antes das
+//! travas da rodada (`dispatch_jev`), diz, por item, se ele governa algo que
+//! as tarefas dela mudam ou testam; a onda sai na mesma rodada, sem parada de
+//! quem conduz, e a que ficou sem decisão espera a rodada seguinte, só ela. Os itens que as tarefas
 //! da onda fazem, os de toda onda (`every_wave`), os de que a onda é dona e as
 //! lições vão sempre, sem chamada. O envio gravado leva os itens que ficaram e,
 //! à parte, no campo `analysis`, o que saiu e o que entrou, cada um com a
-//! chance que o Jev deu. Sem chave, ou com a chamada falhando, o pedido leva o
-//! padrão: o projeto todo e os dos arquivos da onda vão, e o sem ligação fica
-//! fora.
+//! chance que o Jev deu. Sem chave, ou com o recibo incerto da reserva do Jev
+//! que falhou, o pedido leva o padrão: o projeto todo e os dos arquivos da
+//! onda vão, e o sem ligação fica fora.
 //!
 //! **A entrega mora na spec, e a rodada a assume.** O agente de onda grava a
 //! própria entrega com `mustard-rt run write delivered`, e só com o envio da
@@ -102,9 +103,11 @@
 //! **As travas.** A rodada segura a trava das cópias da volta ao despacho,
 //! inteira: duas rodadas ao mesmo tempo no mesmo checkout fazem cada passo
 //! uma depois da outra, nunca soltam a mesma onda duas vezes, e o fechamento,
-//! o descarte e a limpeza das cópias esperam por ela. O Jev, a formação e a
-//! montagem das ondas, a escolha dos itens, o preparo das cópias e a montagem
-//! dos pedidos rodam só com ela. A trava do passo do git, a mesma da entrega
+//! o descarte e a limpeza das cópias esperam por ela. A formação e a montagem
+//! das ondas, a escolha dos itens, o preparo das cópias e a montagem dos
+//! pedidos rodam só com ela; as perguntas ao Jev desses passos saem antes
+//! dela, pela spec gravada, e com ela presa o despacho só lê a decisão
+//! gravada (`dispatch_jev`). A trava do passo do git, a mesma da entrega
 //! e do veredito, fica para a leitura do repositório, a junção, o commit e o
 //! desfazer quando o git recusa, e, no despacho, só para reler a spec,
 //! conferir de novo a onda a reenviar ou a relistar e gravar os envios: quem
@@ -153,7 +156,9 @@ mod finish_check;
 mod fixes;
 mod handoff;
 mod imports_check;
+pub(crate) mod dispatch_jev;
 pub(crate) mod item_choice;
+mod jev_decision;
 mod jev_failure;
 mod keep;
 mod leftovers;
@@ -161,6 +166,12 @@ mod lost_commit;
 mod map_pass;
 #[cfg(test)]
 mod off_path_tests;
+#[cfg(test)]
+mod skill_cycle_tests;
+#[cfg(test)]
+mod dispatch_jev_tests;
+#[cfg(test)]
+mod triage_jev_tests;
 mod planning;
 pub(crate) use planning::needs_planning;
 pub(crate) use leftovers::is_cleanup;
@@ -172,16 +183,21 @@ mod removed_check;
 mod report;
 mod request_fit;
 mod resend;
+mod running;
 pub(crate) mod review;
 mod sent_tasks;
 mod size_check;
 mod slots;
 mod stops;
 mod summary_wave;
+pub(crate) mod task_release;
 mod test_warnings;
+mod triage_questions;
 mod usage;
 pub(crate) mod vacancy;
 mod wave_commit;
+mod wave_review;
+pub(crate) use wave_review::{is_dispatch as is_wave_review_dispatch, is_wave_verdict, wave_review_text};
 
 // O processo que já fechou, que os testes da rodada, os do gancho do despacho
 // e os da pasta `tests/` dividem: um arquivo só, trazido pelo caminho.
@@ -206,11 +222,13 @@ use crate::commands::spec_events;
 use crate::shared::spec_state::session_from_env;
 
 pub(crate) use answer::{RoundRefusal, agents_refreshed, minutes_since, read_command, wave_dispatch};
+pub(crate) use jev_decision::{FINAL_REVIEW, Waiting};
+pub(crate) use triage_questions::ask_after_locks;
 pub(crate) use fixes::{fix_file, sweep_fixes};
 pub(crate) use keep::{Kept, landed_kept};
 pub(crate) use queue::{
-    backlog_left, open_review, send_revision, sender_fields, tasks_left, waves_awaiting_new_agent, waves_in_progress, waves_left_without_tasks,
-    waves_pending_fix,
+    backlog_left, new_agent_escalation, open_review, send_revision, sender_fields, tasks_left, waves_awaiting_new_agent, waves_in_progress,
+    waves_left_without_tasks, waves_pending_fix,
 };
 pub(crate) use read_check::request_name;
 pub(crate) use rejection::{replaced_by_rejection, replaced_in_file};
@@ -786,6 +804,21 @@ mod tests {
         request_by_command(&out["dispatch"][at], out)
     }
 
+    /// O pedido da onda despachada em `at` da spec `spec`, seguido do bloco de
+    /// cada tarefa que o envio guarda: tudo o que o agente da onda recebe,
+    /// uma tarefa por vez.
+    pub(super) fn request_and_blocks_at(root: &Path, spec: &str, out: &Value, at: usize) -> String {
+        let mut text = request_at(out, at);
+        let wave = out["dispatch"][at]["wave"].as_u64().unwrap_or_else(|| panic!("no wave dispatched at {at}: {out}"));
+        let log = store::read(&store::spec_file(root, spec).unwrap()).unwrap().unwrap();
+        let sent = log.last_by_wave("send")[&wave];
+        for block in log.send_field(sent, "tasks").and_then(Value::as_array).into_iter().flatten() {
+            text.push_str("\n\n");
+            text.push_str(block["text"].as_str().unwrap_or_default());
+        }
+        text
+    }
+
     /// Roda o comando `read` de um item despachado — `mustard-rt run read
     /// request-<n> --root <raiz> --spec <spec>` — pela mesma leitura do
     /// comando, e devolve o que ele imprime.
@@ -869,37 +902,6 @@ mod tests {
         let again=round(root,"x",None);assert_eq!(again["ok"],true,"{again}");
         let log=mustard_core::io::spec_events::read(&mustard_core::io::spec_events::spec_file(root,"x").unwrap()).unwrap().unwrap();
         assert_eq!(log.visible().into_iter().filter(|event|event.event_type=="send").count(),1,"retry does not dispatch twice");
-    }
-
-    /// A reviewed procedure whose scope and text match the wave's TypeScript
-    /// task reaches neither the send nor the request: the send keeps no
-    /// procedure choice, its skills leave the procedure out, and the round
-    /// response carries no area profile, agent choice nor preparation.
-    #[test]
-    fn a_reviewed_area_procedure_reaches_neither_the_send_nor_the_request() {
-        use mustard_core::io::expertise::{self,Profile};
-        let dir=tempfile::tempdir().unwrap();let root=dir.path();approved(root,"x",&[(1,&["src/a.ts"],&[])]);
-        mustard_core::io::project_map::write_text(root,"{\"modules\":[]}").unwrap();
-        let source=mustard_core::domain::knowledge::Source {file:"src/a.ts".into(),line:1,end_line:1,
-            sha256:mustard_core::io::observations::digest(&std::fs::read(root.join("src/a.ts")).unwrap())};
-        let task="Tarefa da onda 1.".to_string();
-        let draft=expertise::record(root,&Profile {name:"task-procedure".into(),description:task.clone(),
-            paths:vec!["src/a.ts".into()],procedure:task,sources:vec![source],origin:"authored".into(),reviewed:None,rule_context:None}).unwrap();
-        assert_eq!(expertise::review(root,"task-procedure",draft["fingerprint"].as_str().unwrap()).unwrap()["active"],true);
-        let answer=round(root,"x",None);assert_eq!(answer["ok"],true,"{answer}");
-        assert_eq!(answer["dispatch"][0]["wave"],1,"{answer}");
-        for field in ["expertise","preferred_agent","agent_selection"] {
-            assert!(answer["dispatch"][0].get(field).is_none(),"{field}: {answer}");
-        }
-        for field in ["specialization_preparation","preparation_held","preparation_next"] {
-            assert!(answer.get(field).is_none(),"{field}: {answer}");
-        }
-        let log=mustard_core::io::spec_events::read(&mustard_core::io::spec_events::spec_file(root,"x").unwrap()).unwrap().unwrap();
-        let send=log.visible().into_iter().find(|event|event.event_type=="send").unwrap();
-        let send=&mustard_core::domain::spec_events::SpecEvent {fields:log.whole_fields(send),..send.clone()};
-        assert!(send.fields.get("expertise").is_none(),"{:?}",send.fields);
-        assert!(!send.fields["skills"].to_string().contains("task-procedure"),"{}",send.fields["skills"]);
-        assert!(!send.str_field("text").unwrap().contains("task-procedure"));
     }
 
 }

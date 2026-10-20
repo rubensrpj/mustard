@@ -197,23 +197,21 @@ fn the_molds_list_each_map_command_with_its_moment_of_use() {
     }
 }
 
-/// O molde da onda manda deixar a frase de sentido do trecho lido, com o
-/// arquivo e o nome que o comando exige e a hora de usar; o de revisão, que
-/// não escreve no mapa, não a traz.
+/// As frases de sentido saíram do mapa: o comando não aceita mais gravá-las,
+/// nem pedir ou gravar o lote delas, e nenhum molde manda o agente escrevê-las.
 #[test]
-fn the_wave_molds_tell_the_agent_to_leave_a_note_for_the_excerpt_it_read() {
+fn the_map_takes_no_meaning_notes_and_no_mold_asks_for_one() {
     let accepted = accepted_by_the_command();
-    assert!(accepted.questions.contains(&"note".to_string()), "the command has no `note`: {:?}", accepted.questions);
+    for gone in ["note", "notes-package", "notes-write"] {
+        assert!(!accepted.questions.contains(&gone.to_string()), "`run map {gone}` is still accepted: {:?}", accepted.questions);
+    }
+    for gone in ["--limit", "--changed-since", "--json"] {
+        assert!(!accepted.options.contains(&gone.to_string()), "`run map {gone}` is still accepted: {:?}", accepted.options);
+    }
     for lang in ["pt-BR", "en-US"] {
-        let wave = template(lang, "wave");
-        let note = citations(&wave).into_iter().find(|c| c.question == "note");
-        let note = note.unwrap_or_else(|| panic!("the {lang} wave mold does not list `run map note`"));
-        for option in ["--file", "--name"] {
-            assert!(note.options.iter().any(|o| o == option), "the {lang} wave mold cites `note` without `{option}`");
+        for name in ["wave", "review"] {
+            assert!(!template(lang, name).contains("run map note"), "the {lang} `{name}` mold still asks for a note");
         }
-        let line = wave.lines().find(|line| line.contains("run map note ")).unwrap();
-        assert!(line.split("`: ").nth(1).unwrap_or_default().split_whitespace().count() >= 3, "no moment of use: {line}");
-        assert!(!template(lang, "review").contains("run map note"), "the {lang} reviewer does not write notes");
     }
 }
 

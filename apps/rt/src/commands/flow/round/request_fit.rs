@@ -18,7 +18,7 @@ use std::path::Path;
 
 use mustard_core::domain::spec_events::{BlockQuery, Refusal, SpecEvent, SpecLog};
 use mustard_core::domain::spec_state::PhaseWriter;
-use mustard_core::domain::wave_prompt::{WAVE_REQUEST_TOKEN_CAP, backlog_fields, estimate_tokens};
+use mustard_core::domain::wave_prompt::{WAVE_REQUEST_TOKEN_CAP, backlog_fields};
 use mustard_core::io::spec_events as store;
 use mustard_core::io::wave_prompt::{Flight, WavePrompt, prompts};
 use mustard_core::platform::i18n::{Locale, translate};
@@ -58,7 +58,7 @@ pub(super) fn fit_requests(
         let Some(prompt) = built.iter().find(|prompt| prompt.wave == *wave) else {
             continue;
         };
-        if estimate_tokens(&prompt.text) <= WAVE_REQUEST_TOKEN_CAP {
+        if prompt.tokens() <= WAVE_REQUEST_TOKEN_CAP {
             continue;
         }
         let tasks = execution_order(log, *wave);
@@ -172,7 +172,7 @@ fn trial(
         }
     }
     let rebuilt = prompts(root, spec, check.log(), lang, flight, &BTreeSet::from([wave]));
-    let fits = rebuilt.iter().find(|prompt| prompt.wave == wave).is_some_and(|prompt| estimate_tokens(&prompt.text) <= WAVE_REQUEST_TOKEN_CAP);
+    let fits = rebuilt.iter().find(|prompt| prompt.wave == wave).is_some_and(|prompt| prompt.tokens() <= WAVE_REQUEST_TOKEN_CAP);
     Ok(fits.then(|| (kept.len(), tasks.iter().map(|task| task.id).filter(|id| returned.contains(id)).collect(), writes)))
 }
 

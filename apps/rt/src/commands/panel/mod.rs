@@ -46,7 +46,11 @@ pub(crate) fn snapshot_of(start: &Path, name: &str) -> Value {
 
 fn snapshot_with(start: &Path, selected: Option<&str>, session:Option<&str>, only:Option<&str>) -> Value {
     let root = mustard_core::io::spec_events::spec_root(start);
-    let selected = selected.map(str::to_string).or_else(|| crate::shared::context::checkout::current_spec(&start.to_string_lossy()));
+    // A spec de antes desta versão do Mustard fica fora do painel e da
+    // publicação, que sai daqui.
+    let legacy = mustard_core::io::legacy_specs::LegacySpecs::read(&root);
+    let selected = selected.map(str::to_string).or_else(|| crate::shared::context::checkout::current_spec(&start.to_string_lossy()))
+        .filter(|name| !legacy.contains(name));
     let jev = jev_usage::Ledger::read(&root);
     let costs = consumption::costs(&root);
     let logs = match only {
@@ -55,6 +59,7 @@ fn snapshot_with(start: &Path, selected: Option<&str>, session:Option<&str>, onl
             .collect(),
         None => spec_index::read_specs(&root),
     };
+    let logs: Vec<(String, SpecLog)> = logs.into_iter().filter(|(name, _)| !legacy.contains(name)).collect();
     #[cfg(test)]
     SPEC_LOGS_READ.with(|read| read.set(read.get() + logs.len()));
     let mut specs: Vec<Value> =
@@ -91,6 +96,12 @@ pub(crate) fn section(root: &Path, spec: Option<&str>, name: &str) -> Value {
 #[cfg(test)]
 pub(crate) fn dashboard_spec_log(root: &Path, spec: &str) -> Option<SpecLog> {
     dashboard::spec_log(&mustard_core::io::spec_events::spec_root(root), spec)
+}
+
+/// O custo de cada spec que os recibos das sessões do projeto `root`
+/// conhecem, em milionésimos de dólar.
+pub(crate) fn spec_costs(root: &Path) -> std::collections::BTreeMap<String, u64> {
+    consumption::costs(root)["by_spec"].as_object().into_iter().flatten().filter_map(|(spec, cost)| Some((spec.clone(), cost.as_u64()?))).collect()
 }
 
 pub(crate) fn observe_statusline(data:&Value) {
@@ -385,6 +396,28 @@ mod tests {
         assert_eq!(result["search"]["reduced_calls"], 0);
         assert_eq!(result["search"]["native_bytes"], 100);
         assert_eq!(result["search"]["delivered_bytes"], 150);
+    }
+
+    /// A spec de antes desta versão do Mustard some do painel, das listas das
+    /// telas e da publicação do projeto; a atual aparece em todos.
+    #[test]
+    fn a_legacy_spec_leaves_the_panel_and_the_publication() {
+        let dir=tempfile::tempdir().unwrap();let root=dir.path();
+        std::fs::write(root.join("mustard.json"),"{}").unwrap();
+        for spec in ["antiga","nova"] {
+            let folder=root.join(".claude/spec").join(spec);std::fs::create_dir_all(&folder).unwrap();
+            std::fs::write(folder.join("spec.ndjson"),format!("{}\n",json!({"v":1,"id":1,"at":"2026-10-19T10:00:00Z","type":"message","author":"user","text":"um pedido"}))).unwrap();
+            if spec=="antiga" { mustard_core::io::legacy_specs::mark_once(root,"0.2.24").unwrap(); }
+        }
+        let names=|specs:&Value|specs.as_array().unwrap().iter().map(|spec|spec["name"].clone()).collect::<Vec<_>>();
+        assert_eq!(names(&snapshot(root,None)["specs"]),vec![json!("nova")]);
+        assert_eq!(snapshot(root,Some("antiga"))["selected_spec"],Value::Null,"a legacy spec is never the selected one");
+        let (rows,_)=sections::index_rows(root);
+        assert_eq!(rows.iter().map(|row|row.name.as_str()).collect::<Vec<_>>(),vec!["nova"]);
+        let published=publication::publish_project(root,false);
+        assert_eq!(published["ok"],true,"{published}");
+        let data:Value=serde_json::from_slice(&std::fs::read(published["database"].as_str().unwrap()).unwrap()).unwrap();
+        assert_eq!(names(&data["specs"]),vec![json!("nova")]);
     }
 
     /// A etapa da rodada que mora no arquivo de operações aparece no painel

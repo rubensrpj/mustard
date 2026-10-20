@@ -122,26 +122,30 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // esforço diferente do que o `mustard.json` declara para ele: aviso,
         // e o lançamento segue.
         ("subagent.launch_settings", Locale::PtBr) => {
-            "[Mustard] O agente {agent} saiu com modelo {asked_model} e esforço {asked_effort}, e o \
-             `mustard.json` declara modelo {model} e esforço {effort} para ele. Nos próximos \
-             lançamentos, não passe `model` nem `effort`: o agente usa o que o projeto declara."
+            "[Mustard] O agente {agent} saiu com modelo {asked_model} e esforço {asked_effort}. O \
+             Mustard escolheu modelo {model} e esforço {effort} para ele. O modelo da onda é o do envio \
+             dela, e o do revisor vem do `mustard.json`. O esforço é sempre xhigh. Nos próximos \
+             lançamentos, não passe `effort`. Em `model`, passe só o da entrada de `dispatch`."
         }
         ("subagent.launch_settings", Locale::EnUs) => {
-            "[Mustard] The agent {agent} went out with model {asked_model} and effort {asked_effort}, \
-             and `mustard.json` declares model {model} and effort {effort} for it. In the next \
-             launches, do not pass `model` or `effort`: the agent uses what the project declares."
+            "[Mustard] The agent {agent} went out with model {asked_model} and effort {asked_effort}. \
+             Mustard chose model {model} and effort {effort} for it. A wave's model is the one its send \
+             recorded, and the reviewer's comes from `mustard.json`. The effort is always xhigh. In the \
+             next launches, do not pass `effort`. In `model`, pass only the one in the `dispatch` entry."
         }
-        // O lançamento que pedia modelo ou esforço diferente do declarado
-        // sai com o declarado: o gancho troca os dois na chamada.
+        // O lançamento que pedia modelo ou esforço diferente do escolhido sai
+        // com o escolhido: o gancho troca os dois na chamada.
         ("subagent.launch_settings_forced", Locale::PtBr) => {
             "[Mustard] O agente {agent} foi pedido com modelo {asked_model} e esforço {asked_effort}. \
-             Saiu com modelo {model} e esforço {effort}, os do `mustard.json`. Nos próximos \
-             lançamentos, não passe `model` nem `effort`."
+             Saiu com modelo {model} e esforço {effort}. O modelo da onda é o do envio dela, e o do \
+             revisor vem do `mustard.json`. O esforço é sempre xhigh. Nos próximos lançamentos, não \
+             passe `effort`. Em `model`, passe só o da entrada de `dispatch`."
         }
         ("subagent.launch_settings_forced", Locale::EnUs) => {
             "[Mustard] The agent {agent} was asked with model {asked_model} and effort {asked_effort}. \
-             It went out with model {model} and effort {effort}, the ones in `mustard.json`. In the \
-             next launches, do not pass `model` or `effort`."
+             It went out with model {model} and effort {effort}. A wave's model is the one its send \
+             recorded, and the reviewer's comes from `mustard.json`. The effort is always xhigh. In the \
+             next launches, do not pass `effort`. In `model`, pass only the one in the `dispatch` entry."
         }
 
         // O pedido de uma onda: o texto que o agente dela recebe.
@@ -244,23 +248,72 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.kind.item", Locale::PtBr) => "Item",
         ("prompt.kind.item", Locale::EnUs) => "Item",
         // Os passos de "O que fazer". O primeiro manda ler os itens de "O que
-        // obedecer"; cada tarefa é um passo, com o que ela atende, os
-        // arquivos e o que ler antes embaixo; a suíte e a entrega fecham a
-        // lista. `{part}` é o título da seção a que o passo aponta.
+        // obedecer"; o segundo traz as tarefas da onda só pelo código e pelo
+        // título, na ordem, com a primeira marcada; a entrega fecha a lista.
+        // `{part}` é o título da seção a que o passo aponta.
         ("prompt.step.read", Locale::PtBr) => "Leia o texto inteiro de cada item de \"{part}\".",
         ("prompt.step.read", Locale::EnUs) => "Read the whole text of each item under \"{part}\".",
-        ("prompt.step.task", Locale::PtBr) => "Faça a tarefa {item}",
-        ("prompt.step.task", Locale::EnUs) => "Do the task {item}",
+        ("prompt.step.tasks", Locale::PtBr) => {
+            "Faça as tarefas uma por vez, nesta ordem. A primeira vem inteira logo abaixo. Cada uma das \
+             outras chega na resposta do passo que termina a anterior."
+        }
+        ("prompt.step.tasks", Locale::EnUs) => {
+            "Do the tasks one at a time, in this order. The first comes whole right below. Each of the \
+             others arrives in the answer to the step that finishes the one before it."
+        }
+        ("prompt.step.first", Locale::PtBr) => "{item} (a primeira, logo abaixo)",
+        ("prompt.step.first", Locale::EnUs) => "{item} (the first, right below)",
         ("prompt.step.attends", Locale::PtBr) => "Atende: {item}",
         ("prompt.step.attends", Locale::EnUs) => "Addresses: {item}",
         ("prompt.step.user_message", Locale::PtBr) => "mensagem do usuário",
         ("prompt.step.user_message", Locale::EnUs) => "user message",
-        ("prompt.step.read_task_message", Locale::PtBr) => "Leia a tarefa e a mensagem inteiras antes de mexer.",
-        ("prompt.step.read_task_message", Locale::EnUs) => "Read the whole task and the message before you start.",
-        ("prompt.step.read_task", Locale::PtBr) => "Leia a tarefa inteira antes de mexer.",
-        ("prompt.step.read_task", Locale::EnUs) => "Read the whole task before you start.",
-        ("prompt.step.read_task_attends", Locale::PtBr) => "Leia a tarefa e o que ela atende, inteiros, antes de mexer.",
-        ("prompt.step.read_task_attends", Locale::EnUs) => "Read the whole task and what it addresses before you start.",
+        // O bloco de uma tarefa: o título, com a posição dela na onda, e cada
+        // skill dela inteira, pelo nome e pelo caminho. A skill que o teto do
+        // bloco cortou fica numa linha, com o caminho para lê-la.
+        ("prompt.task.heading", Locale::PtBr) => "Tarefa {n} de {total}: {item}",
+        ("prompt.task.heading", Locale::EnUs) => "Task {n} of {total}: {item}",
+        ("prompt.task.skill", Locale::PtBr) => "Skill {name}, de `{path}`",
+        ("prompt.task.skill", Locale::EnUs) => "Skill {name}, from `{path}`",
+        // A tarefa que cria a skill de uma falha repetida, antes do
+        // skill-creator inteiro (`io::wave_prompt`).
+        ("prompt.task.skill_creator", Locale::PtBr) => {
+            "Esta tarefa cria ou atualiza uma skill. Siga o processo do skill-creator abaixo, sem pedir aprovação a \
+             ninguém. Os scripts e os agentes dele ficam em `{folder}`. Use o formato oficial, com nome \
+             curto. A descrição fica em terceira pessoa e diz o que a skill faz e quando usar. O \
+             corpo tem menos de 500 linhas, com o mais importante no topo. No cabeçalho, `paths:` \
+             traz os caminhos onde ela vale. Escreva só o que o modelo não sabe: a armadilha, a convenção não óbvia, a ferramenta \
+             certa. Nada de visão geral do código. Teste com e sem a skill nas tarefas que a \
+             motivaram, pela avaliação do próprio skill-creator, numa pasta fora do projeto. Só \
+             com ganho ela vai para `{skills}/<nome>/SKILL.md`. No fim, grave o resultado: \
+             `mustard-rt run write skill --root {root} --spec {spec} --json \
+             '{\"name\":\"<nome>\",\"action\":\"created\",\"text\":\"<o ganho medido, numa \
+             frase>\",\"files\":[\"<arquivo citado>\"]}'`, com `\"action\":\"updated\"` quando \
+             atualiza uma skill que já existe. Sem ganho, grave `\"action\":\"discarded\"` com o motivo em \
+             `text`."
+        }
+        ("prompt.task.skill_creator", Locale::EnUs) => {
+            "This task creates or updates a skill. Follow the skill-creator process below without asking anyone \
+             for approval. Its scripts and agents live in `{folder}`. Use the official format, with a \
+             short name. The description is in the third person and says what the skill does and \
+             when to use it. The body stays under 500 lines, with the most important part on top. \
+             In the header, `paths:` lists the paths where it applies. Write only what the model does not know: the trap, the non-obvious convention, \
+             the right tool. No overview of the code. Test with and without the skill on the tasks \
+             that motivated it, with the skill-creator's own evaluation, in a folder outside the \
+             project. Only with a gain does it go to `{skills}/<name>/SKILL.md`. At the end, record \
+             the result: `mustard-rt run write skill --root {root} --spec {spec} --json \
+             '{\"name\":\"<name>\",\"action\":\"created\",\"text\":\"<the measured gain, in one \
+             sentence>\",\"files\":[\"<cited file>\"]}'`, with `\"action\":\"updated\"` when it \
+             updates a skill that exists. Without a gain, record `\"action\":\"discarded\"` with the \
+             reason in `text`."
+        }
+        ("prompt.task.skill_cut", Locale::PtBr) => {
+            "A skill {name} ficou fora deste bloco, que passou do teto de tamanho. Se a tarefa pedir, \
+             leia `{path}`."
+        }
+        ("prompt.task.skill_cut", Locale::EnUs) => {
+            "The skill {name} was left out of this block, which went past the size cap. If the task \
+             needs it, read `{path}`."
+        }
         ("prompt.step.file", Locale::PtBr) => "Arquivo: {files}",
         ("prompt.step.file", Locale::EnUs) => "File: {files}",
         ("prompt.step.files", Locale::PtBr) => "Arquivos: {files}",
@@ -282,12 +335,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.return.step", Locale::PtBr) => {
             "Ao provar cada critério e ao terminar cada tarefa, grave o passo: `mustard-rt run write step \
              {root}--spec {spec} --json '{\"wave\":{wave},\"item\":\"<código da tarefa ou do critério>\",\
-             \"text\":\"<o resumo>\"}'`"
+             \"text\":\"<o resumo>\"}'`. A resposta do passo que termina uma tarefa traz a próxima \
+             tarefa inteira, em `next_task`, ou a ordem de entregar. Não tente ler uma tarefa que ainda \
+             não chegou."
         }
         ("prompt.return.step", Locale::EnUs) => {
             "On proving each criterion and on finishing each task, record the step: `mustard-rt run write \
              step {root}--spec {spec} --json '{\"wave\":{wave},\"item\":\"<task or criterion code>\",\
-             \"text\":\"<the summary>\"}'`"
+             \"text\":\"<the summary>\"}'`. The answer to the step that finishes a task brings the next \
+             whole task, in `next_task`, or the order to deliver. Do not try to read a task that has not \
+             arrived yet."
         }
         ("prompt.return.delivered", Locale::PtBr) => {
             "Grave a entrega assim, com os outros campos das suas instruções quando valem: `mustard-rt run \
@@ -414,20 +471,20 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // um recibo só, e um item sozinho pelo código. A entrega sem a leitura
         // completa é recusada.
         ("prompt.read.wave", Locale::PtBr) => {
-            "Este pedido traz só o tipo, o código e o título de cada item. Leia o texto inteiro de \
-             todos numa chamada só:\n\
-             - todos os itens e lições deste pedido: `mustard-rt run read \
+            "A tarefa atual vem inteira neste pedido, com o texto de tudo o que ela atende. Os outros \
+             itens trazem só o tipo, o código e o título. Leia o texto inteiro deles numa chamada só:\n\
+             - os itens e lições já liberados deste pedido: `mustard-rt run read \
              dispatch-{wave} {root}--spec {spec}`\n\
              - um item só, para reler: `mustard-rt run read item-<código> {root}--spec {spec}`\n\
-             A entrega é recusada se algum item deste pedido não foi lido. A recusa diz qual."
+             A entrega é recusada se algum item liberado não foi lido. A recusa diz qual."
         }
         ("prompt.read.wave", Locale::EnUs) => {
-            "This request carries only the type, the code and the title of each item. Read the whole \
-             text of all of them in one call:\n\
-             - every item and lesson of this request: `mustard-rt run read \
+            "The current task comes whole in this request, with the text of all it addresses. The other \
+             items carry only the type, the code and the title. Read their whole text in one call:\n\
+             - the items and lessons of this request released so far: `mustard-rt run read \
              dispatch-{wave} {root}--spec {spec}`\n\
              - a single item, to reread it: `mustard-rt run read item-<item-code> {root}--spec {spec}`\n\
-             The delivery is refused if any item of this request was not read. The refusal says which."
+             The delivery is refused if any released item was not read. The refusal says which."
         }
         // Como ler os itens do pedido do revisor final: a mesma leitura em
         // lote, pelo pedido aberto da revisão, e o aviso de que o veredito sem
@@ -462,8 +519,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.part.criteria", Locale::EnUs) => "Criteria",
         ("prompt.skill.stale", Locale::PtBr) => "a revisar",
         ("prompt.skill.stale", Locale::EnUs) => "to review",
-        ("prompt.skill.read", Locale::PtBr) => "Leia o arquivo da skill antes de começar a tarefa que a nomeia.",
-        ("prompt.skill.read", Locale::EnUs) => "Read the skill file before starting the task that names it.",
 
         // O conserto: a onda que volta por reprovação.
         ("prompt.fix.wave", Locale::PtBr) => {
@@ -689,7 +744,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("prompt.rs"), super::PREFIXES, 109, 0x351a_ed57_6c70_15b7);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("prompt.rs"), super::PREFIXES, 110, 0x87a1_ff80_57ab_9190);
     }
 
     /// O bloco do padrão sob a tarefa passa na conferência de escrita nos
@@ -745,12 +800,13 @@ mod tests {
                 "prompt.read.final",
                 "prompt.fix.wave",
                 "prompt.step.read",
-                "prompt.step.task",
+                "prompt.step.tasks",
+                "prompt.step.first",
                 "prompt.step.attends",
-                "prompt.step.read_task",
-                "prompt.step.read_task_attends",
-                "prompt.step.read_task_message",
                 "prompt.step.user_message",
+                "prompt.task.heading",
+                "prompt.task.skill",
+                "prompt.task.skill_cut",
                 "prompt.step.file",
                 "prompt.step.files",
                 "prompt.step.read_before",
@@ -769,7 +825,11 @@ mod tests {
                     .replace("{tests}", "`order_test`")
                     .replace("{root}", "")
                     .replace("{wave}", "2")
-                    .replace("{spec}", "orders");
+                    .replace("{spec}", "orders")
+                    .replace("{n}", "1")
+                    .replace("{total}", "3")
+                    .replace("{name}", "orders")
+                    .replace("{path}", "/repo/.claude/skills/orders/SKILL.md");
                 assert!(!text.contains('{'), "{key} {lang:?}: {text}");
                 let report = crate::domain::clarity::measure(&text, &[], Some(lang));
                 assert!(report.passed, "{key} {lang:?}: {report:?}");

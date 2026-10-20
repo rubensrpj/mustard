@@ -113,6 +113,7 @@ impl BlockQuery {
                 "request-<n>",
                 "request-review",
                 "request-review-preview",
+                "review-request-<n>",
                 "delivered-<n>",
                 "backlog",
                 "calls",
@@ -146,6 +147,8 @@ pub enum ReadQuery {
     Request(u64),
     ReviewRequest,
     ReviewPreview,
+    /// `review-request-2`: o pedido gravado do revisor da onda `2`.
+    WaveReviewRequest(u64),
     Delivered(u64),
     Backlog,
     Calls,
@@ -177,6 +180,9 @@ impl ReadQuery {
         }
         if let Some(rest) = name.strip_prefix("request-") {
             return number(rest).map(Self::Request);
+        }
+        if let Some(rest) = name.strip_prefix("review-request-") {
+            return number(rest).map(Self::WaveReviewRequest);
         }
         if let Some(rest) = name.strip_prefix("delivered-") {
             return number(rest).map(Self::Delivered);
@@ -366,6 +372,10 @@ const AGENT: Field = opt("agent", Kind::Text);
 /// das atividades o dê como o mesmo de uma tarefa aberta: com o motivo, a
 /// gravação passa e o guarda no evento.
 const DISTINCT: Field = opt("distinct", Kind::Text);
+/// A palavra do usuário de que o pedido é desta spec, embora o Jev o dê como
+/// obra de outra spec ou como pendência do projeto: com ela, a gravação
+/// passa sem perguntar e a palavra fica no evento.
+const SAME_SPEC: Field = opt("same_spec", Kind::Text);
 const APPLIES_TO: Field = opt("applies_to", Kind::TextOrObject);
 /// As ondas donas de um item combinado, além das ondas das tarefas que o
 /// cobrem. O item do projeto diz, em vez disso, que vale no projeto todo
@@ -406,8 +416,11 @@ const RUN_RESULTS: &[&str] = &["pass", "fail"];
 /// critério já gravado sem o campo continua válido na leitura.
 const CRITERION_FORMS: &[&str] =
     &["ubiquitous", "event_driven", "state_driven", "optional_feature", "unwanted_behavior"];
-const SKILL_ACTIONS: &[&str] = &["create", "change", "drop"];
-const ROLES: &[&str] = &["wave", "review"];
+/// O que a tarefa de criar skill fez com a skill: criou, atualizou ou
+/// descartou, porque o teste com e sem ela não mudou o resultado; ou a
+/// saída que o binário grava quando a skill deixa de servir.
+const SKILL_ACTIONS: &[&str] = &["created", "updated", "discarded", "retired"];
+const ROLES: &[&str] = &["wave", "review", "wave-review"];
 const VERDICTS: &[&str] = &["approved", "rejected"];
 /// O resultado de uma marca da máquina numa onda: a reprovação, que põe a
 /// onda em conserto, ou a soltura, que tira a reprovação que não tinha prova.
@@ -475,6 +488,14 @@ pub const TYPES: &[TypeSpec] = &[
             opt("search_selection_status", Kind::Text),
             opt("search_selection_cached", Kind::Bool),
             opt("search_accepted_choices", Kind::Int),
+            // Quanto cada etapa da busca levou: a espera pela passada do
+            // mapa, pela trava da gravação do que ela aprendeu, os vetores, a
+            // investigação e o Jev.
+            opt("search_scan_wait_ms", Kind::Int),
+            opt("search_lock_wait_ms", Kind::Int),
+            opt("search_vectors_ms", Kind::Int),
+            opt("search_investigate_ms", Kind::Int),
+            opt("search_jev_ms", Kind::Int),
             opt("knowledge_cached", Kind::Bool),
             opt("knowledge_pending", Kind::Bool),
             opt("knowledge_session_model_calls", Kind::Int),
@@ -501,6 +522,9 @@ pub const TYPES: &[TypeSpec] = &[
             opt("candidates", Kind::Int),
             opt("returned", Kind::Int),
             opt("model", Kind::Text),
+            // A chamada de reserva do Jev: a chamada cuja decisão o Jev não
+            // deu e foi ao agente de análise da sessão.
+            opt("reserve_for", Kind::Text),
             // A leitura que o agente faz do pedido dele: de qual pedido é
             // (`request-<onda>` ou `request-review`) e os itens que a leitura
             // achou (o código, ou `lesson-<número>`), todos num recibo só. O
@@ -508,6 +532,9 @@ pub const TYPES: &[TypeSpec] = &[
             opt("request", Kind::Text),
             opt("item", Kind::Text),
             opt("items", Kind::Texts),
+            // A tarefa da onda que o recibo liberou: a resposta do passo que
+            // termina uma tarefa entrega o bloco da seguinte e a libera.
+            opt("released", Kind::Text),
         ],
     ),
     // Estado.
@@ -523,6 +550,9 @@ pub const TYPES: &[TypeSpec] = &[
             opt("witness", Kind::Object),
             opt("pr", Kind::Object),
             opt("reason", Kind::Text),
+            // A versão do Mustard em que a spec nasceu: só o nascimento a
+            // traz, e é só informação.
+            opt("mustard", Kind::Text),
         ],
     ),
     // Native explicit publication receipts. Previous milestone/template
@@ -782,9 +812,13 @@ pub const TYPES: &[TypeSpec] = &[
         &[
             req("name", Kind::Text),
             req("action", Kind::OneOf(SKILL_ACTIONS)),
+            // O ganho medido, numa frase; no descarte, o motivo.
             TEXT,
-            req("sha", Kind::Text),
-            opt("examples", Kind::Objects),
+            // A impressão do `SKILL.md`, que o binário grava na criação e na
+            // atualização.
+            opt("sha", Kind::Text),
+            // Os arquivos que a skill cita.
+            opt("files", Kind::Texts),
         ],
     ),
     ty(
@@ -822,6 +856,11 @@ pub const TYPES: &[TypeSpec] = &[
             // lição. A entrega (ou o veredito) só passa com todos lidos; o
             // envio sem este campo é de antes da conferência e não a exige.
             opt("read_items", Kind::Texts),
+            // O bloco de cada tarefa da onda, na ordem de execução: o código
+            // da tarefa (`task`), o texto (`text`) e o que ele entrega inteiro
+            // (`items`). O pedido traz o da primeira; a resposta do passo que
+            // termina uma tarefa traz o da seguinte, sem remontar nada.
+            opt("tasks", Kind::Objects),
             req("mustard", Kind::Text),
             opt("lessons", Kind::Ints),
             opt("skills", Kind::Objects),
@@ -837,6 +876,14 @@ pub const TYPES: &[TypeSpec] = &[
             opt("model", Kind::Text),
             opt("effort", Kind::Text),
             opt("model_used", Kind::Text),
+            // O esforço que valeu no lançamento do agente: o que o gancho do
+            // despacho impõe, ou o da variável `CLAUDE_CODE_EFFORT_LEVEL`
+            // quando ela está definida no ambiente dele.
+            opt("effort_used", Kind::Text),
+            // A subida de modelo da onda que voltou reprovada: o modelo do
+            // envio anterior (`model`) e o evento que a causou (`cause`) — o
+            // veredito que reprovou ou a volta recusada ou reprovada.
+            opt("escalated_from", Kind::Object),
             opt("steps", Kind::Int),
             opt("tokens", Kind::Int),
             opt("caller_steps", Kind::Int),
@@ -873,6 +920,11 @@ pub const TYPES: &[TypeSpec] = &[
             // a regra de antes.
             opt("claude_pid", Kind::Int),
             opt("claude_started", Kind::Int),
+            // O pedido do revisor de uma onda (`role` `wave-review`): a onda
+            // revisada e a impressão do diff dela que o pedido traz. Fica fora
+            // de `wave`, que faria dele o envio da onda.
+            opt("reviews", Kind::Int),
+            opt("fingerprint", Kind::Text),
             // A marca do envio que saiu sem hospedeiro reconhecido por trás
             // da rodada — um script, um teste, a linha de comando ou um
             // hospedeiro fora da lista —, e por isso sem o par: é o que o
@@ -986,6 +1038,10 @@ pub const TYPES: &[TypeSpec] = &[
             // veredito (veja `check_conditions`).
             opt("final", Kind::Bool),
             opt("agreed", Kind::Objects),
+            // O veredito curto do revisor de uma onda, que a gravação marca:
+            // aponta a onda e os arquivos do motivo, sem critério obrigatório.
+            opt("wave_review", Kind::Bool),
+            opt("files", Kind::Texts),
             RETURNED,
         ],
     ),
@@ -1013,7 +1069,7 @@ pub const TYPES: &[TypeSpec] = &[
     // Anotações.
     ty(
         "request", "REQ", Block::Notes, true,
-        &[TEXT, KEYS, req("effect", Kind::OneOf(EFFECTS)), TITLE, AGENT, DISTINCT],
+        &[TEXT, KEYS, req("effect", Kind::OneOf(EFFECTS)), TITLE, AGENT, DISTINCT, SAME_SPEC],
     ),
     ty("deferred", "DEFER", Block::Notes, true, &[TEXT, KEYS, req("pending", Kind::Int)]),
     ty(
@@ -1085,7 +1141,7 @@ mod tests {
         assert_eq!(BlockQuery::parse("wave-x"), None);
         assert_eq!(BlockQuery::parse("everything"), None);
         assert!(BlockQuery::accepted_names().contains(
-            "waves, wave-list, wave-<n>, dispatch-<n>, dispatch-review, request-<n>, request-review, request-review-preview, delivered-<n>, backlog, calls, item-<code|n>, review"
+            "waves, wave-list, wave-<n>, dispatch-<n>, dispatch-review, request-<n>, request-review, request-review-preview, review-request-<n>, delivered-<n>, backlog, calls, item-<code|n>, review"
         ));
     }
 
@@ -1103,6 +1159,8 @@ mod tests {
         assert_eq!(ReadQuery::parse("request-3"), Some(ReadQuery::Request(3)));
         assert_eq!(ReadQuery::parse(" request-review "), Some(ReadQuery::ReviewRequest));
         assert_eq!(ReadQuery::parse("request-review-preview"), Some(ReadQuery::ReviewPreview));
+        assert_eq!(ReadQuery::parse(" review-request-3 "), Some(ReadQuery::WaveReviewRequest(3)));
+        assert_eq!(ReadQuery::parse("review-request-x"), None);
         assert_eq!(ReadQuery::parse(" delivered-3 "), Some(ReadQuery::Delivered(3)));
         assert_eq!(ReadQuery::parse("backlog"), Some(ReadQuery::Backlog));
         assert_eq!(ReadQuery::parse("calls"), Some(ReadQuery::Calls));

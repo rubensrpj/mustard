@@ -532,6 +532,7 @@ fn wave_mark(root: &Path, input: &HookInput, kind: &str) -> Option<PathBuf> {
 /// do modelo ([`declared_window`]), o teto dela ([`WINDOW_SHARE`]) baixa esse
 /// ponto se vier antes dele.
 fn wave_notice_text(input: &HookInput, root: &Path, lang: Locale) -> Option<String> {
+    if answered_step(input) { return None; }
     if finishes_a_task(input) { return task_end_text(input, root, lang); }
     let signal = wave_mark(root, input, "signal")?;
     let (_, order) = wave_marks(root, input)?;
@@ -611,14 +612,30 @@ fn finishes_a_task(input: &HookInput) -> bool {
         .windows(2)
         .find_map(|pair| (pair[0] == "--json").then_some(pair[1]))
         .or_else(|| args.iter().find_map(|arg| arg.strip_prefix("--json=")));
-    let response=&input.raw["tool_response"];
-    if response.get("exit_code").is_some_and(|code|code.as_i64()!=Some(0)) {return false;}
-    let stdout = response.get("stdout").or_else(||response.get("output")).and_then(Value::as_str).or_else(||response.as_str());
     // O relatório que já traz a medida veio do próprio passo
     // ([`answer_step`]): medir de novo contaria o passo duas vezes.
-    let accepted = stdout.and_then(|stdout|serde_json::from_str::<Value>(stdout).ok())
-        .is_some_and(|report|report["ok"]==true && report.get(STEP_SIZE_FIELD).is_none());
+    let accepted = tool_report(input).is_some_and(|report|report["ok"]==true && report.get(STEP_SIZE_FIELD).is_none());
     json.is_some_and(names_a_task) && accepted
+}
+
+/// O relatório JSON que a chamada de terminal `input` imprimiu; `None` na
+/// saída com erro ou que não é JSON.
+fn tool_report(input: &HookInput) -> Option<Value> {
+    let response=&input.raw["tool_response"];
+    if response.get("exit_code").is_some_and(|code|code.as_i64()!=Some(0)) {return None;}
+    let stdout = response.get("stdout").or_else(||response.get("output")).and_then(Value::as_str).or_else(||response.as_str())?;
+    serde_json::from_str::<Value>(stdout).ok()
+}
+
+/// Se a chamada `input` gravou um passo cuja resposta já trouxe a medida
+/// ([`answer_step`]), liberando a próxima tarefa ou mandando entregar: o
+/// gancho não mede de novo nem dá outra ordem para esse mesmo passo, mesmo
+/// com a conversa crescida depois da resposta. Quem decide é a medida do fim
+/// da tarefa seguinte. Vale com qualquer prefixo no comando: o que conta é o
+/// relatório do passo.
+fn answered_step(input: &HookInput) -> bool {
+    input.tool_name.as_deref() == Some("Bash")
+        && tool_report(input).is_some_and(|report| report["ok"] == true && report["type"] == "step" && report.get(STEP_SIZE_FIELD).is_some())
 }
 
 /// Se o `--json` de um passo aponta no `item` o código de uma tarefa.
@@ -640,21 +657,32 @@ pub(crate) const STEP_SIZE_FIELD: &str = "size";
 /// ou de entregar ([`task_end_measure`]). A ordem de entregar fecha a trava
 /// dali em diante. Não depende de o gancho reconhecer o comando, que chega a
 /// ele reescrito com o prefixo da identidade. Fora de um agente de onda, sem
-/// a conversa ou sem medida, o relatório fica como está.
-pub(crate) fn answer_step(report: &mut Value, root: &Path, event_type: &str, json: &str, agent: Option<&str>, session: Option<&str>, transcript: Option<&Path>, lang: Locale) {
+/// a conversa ou sem medida, o relatório fica como está. Devolve se a medida
+/// mandou entregar; `None` sem medida.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn answer_step(
+    report: &mut Value,
+    root: &Path,
+    event_type: &str,
+    json: &str,
+    agent: Option<&str>,
+    session: Option<&str>,
+    transcript: Option<&Path>,
+    lang: Locale,
+) -> Option<bool> {
     if report["ok"] != true || event_type.trim() != "step" || !names_a_task(json) {
-        return;
+        return None;
     }
-    let (Some(agent), Some(transcript)) = (agent, transcript) else { return };
+    let (Some(agent), Some(transcript)) = (agent, transcript) else { return None };
     let input = HookInput {
         session_id: session.map(str::to_string),
         agent_id: Some(agent.to_string()),
         raw: serde_json::json!({ "transcript_path": transcript.to_string_lossy() }),
         ..HookInput::default()
     };
-    if let Some(text) = task_end_measure(&input, root, lang) {
-        report[STEP_SIZE_FIELD] = Value::String(text);
-    }
+    let (text, deliver) = task_end_measure(&input, root, lang)?;
+    report[STEP_SIZE_FIELD] = Value::String(text);
+    Some(deliver)
 }
 
 /// A medida do fim de tarefa ao agente de onda: no resultado do passo de
@@ -670,12 +698,13 @@ fn task_end_text(input: &HookInput, root: &Path, lang: Locale) -> Option<String>
     if !finishes_a_task(input) {
         return None;
     }
-    task_end_measure(input, root, lang)
+    task_end_measure(input, root, lang).map(|(text, _)| text)
 }
 
 /// A medida de [`task_end_text`], já sabido que a chamada terminou uma
-/// tarefa: pelo gancho ou pelo próprio passo ([`answer_step`]).
-fn task_end_measure(input: &HookInput, root: &Path, lang: Locale) -> Option<String> {
+/// tarefa: pelo gancho ou pelo próprio passo ([`answer_step`]), com a ordem
+/// de entregar (`true`) ou de seguir.
+fn task_end_measure(input: &HookInput, root: &Path, lang: Locale) -> Option<(String, bool)> {
     let context = wave_context(&agent_parts(input), root)?;
     let counted = context.now.saturating_sub(context.summary);
     let (steps, order) = wave_marks(root, input)?;
@@ -709,7 +738,7 @@ fn task_end_measure(input: &HookInput, root: &Path, lang: Locale) -> Option<Stri
         write_mark(&order, context.now);
     }
     let key = if deliver { "conversation_size.wave_deliver" } else { "conversation_size.wave_continue" };
-    Some(wave_measurement(key, &context, largest, lang))
+    Some((wave_measurement(key, &context, largest, lang), deliver))
 }
 
 /// O nome do programa de `segment`, como foi escrito, sem a pasta e sem o
@@ -1167,6 +1196,33 @@ mod tests {
         let file = root.join("b.rs").to_string_lossy().into_owned();
         let edit = refused(root, "Edit", serde_json::json!({"file_path": file, "old_string": "a", "new_string": "b"}));
         assert!(edit.is_some(), "after the order, a new edit is refused");
+    }
+
+    /// A step whose answer already carried the measure gets no second order
+    /// from the hook, even when the conversation crosses the limit right
+    /// after the answer: the measure at the end of the next task decides.
+    #[test]
+    fn a_step_answered_below_the_limit_gets_no_other_order_from_the_hook() {
+        let dir = open_project_in("x", Locale::PtBr);
+        let root = dir.path();
+        let replies = vec![agent_reply(30_000, Some("read")), agent_reply(60_000, Some("edit"))];
+        write_agent(root, &wave_request(Locale::PtBr), &replies);
+        let call = agent_after_tool(root);
+        let report = step_command_report(root, &call);
+        assert!(report["size"].as_str().is_some_and(|size| size.contains("Siga")), "the step goes on: {report}");
+
+        let crossed = vec![agent_reply(30_000, Some("read")), agent_reply(60_000, Some("edit")), agent_reply(210_000, None)];
+        write_agent(root, &wave_request(Locale::PtBr), &crossed);
+        let step = serde_json::json!({"wave": 1, "item": "MSTD-TASK-0001", "text": "feita"});
+        let command = format!("export MUSTARD_SESSION_ID='s1'\nexport MUSTARD_AGENT_ID='a1'\n/x/mustard-rt run write step --spec x --json '{step}'");
+        let mut raw = call.raw.clone();
+        raw["tool_response"] = serde_json::json!({"stdout": serde_json::to_string_pretty(&report).unwrap(), "stderr": ""});
+        let ran = HookInput { tool_name: Some("Bash".into()), tool_input: serde_json::json!({"command": command}), raw, ..call.clone() };
+        assert_eq!(injected(&ran), None, "the hook gives no other order for the answered step");
+        assert!(wave_mark(root, &call, "signal").is_some_and(|signal| !signal.exists()), "no signal was kept");
+
+        let next = step_command_report(root, &call);
+        assert!(next["size"].as_str().is_some_and(|size| size.contains("Grave a entrega")), "the next task end decides: {next}");
     }
 
     /// Seeds wave 1 of `x` running, with its agent launched and alive.

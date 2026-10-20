@@ -93,7 +93,6 @@ use crate::io::map_db::MapDb;
 use crate::io::map_fill;
 use crate::io::map_index::{Level, DECL_LEVEL, FILE_LEVEL, SPEC_LEVEL};
 use crate::io::map_lists::{by_words, text, TEXT_FIELDS};
-use crate::io::map_notes_fresh;
 use crate::io::map_check;
 use crate::io::map_order;
 use crate::io::project_map::{model_path, open_existing, unreadable, MapBlock};
@@ -583,9 +582,7 @@ struct FileText {
 }
 
 /// O texto de cada arquivo. O arquivo cuja coluna dos textos fixos não se lê
-/// fica sem eles. As notas de sentido em dia ([`map_notes_fresh::fresh`]) entram como
-/// mais um texto fixo, do campo do texto solto, do arquivo e da declaração que
-/// cada uma nomeia.
+/// fica sem eles.
 fn written_texts(conn: &Connection, scope: Option<&[&str]>) -> Result<Vec<FileText>> {
     let mut stmt =
         conn.prepare(&scoped("SELECT path, texts, file_doc, file_comment, file_doc_in_body FROM texts", "path", scope))?;
@@ -599,27 +596,6 @@ fn written_texts(conn: &Connection, scope: Option<&[&str]>) -> Result<Vec<FileTe
             file_comment: text(row, 3)?,
             file_doc_in_body: row.get::<_, Option<i64>>(4)?.unwrap_or(0).max(0) as usize,
         });
-    }
-    let mut at: HashMap<String, usize> = out.iter().enumerate().map(|(at, file)| (file.path.clone(), at)).collect();
-    for note in map_notes_fresh::fresh(conn, scope)? {
-        let written = Written {
-            line: note.line,
-            kind: TEXT_FIELDS[TEXT_FIELDS.len() - 1].to_string(),
-            value: note.text,
-            owner: note.name,
-        };
-        if let Some(&file) = at.get(&note.file) {
-            out[file].written.push(written);
-        } else {
-            at.insert(note.file.clone(), out.len());
-            out.push(FileText {
-                path: note.file,
-                written: vec![written],
-                file_doc: String::new(),
-                file_comment: String::new(),
-                file_doc_in_body: 0,
-            });
-        }
     }
     Ok(out)
 }

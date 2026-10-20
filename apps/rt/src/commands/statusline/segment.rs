@@ -177,7 +177,9 @@ pub fn unit_segment(cwd: &Path, branch: Option<&str>) -> Option<Segment> {
         return None;
     }
     let root = cwd.to_string_lossy();
-    let slug = crate::shared::context::checkout::current_spec(&root).filter(|s| !s.is_empty())?;
+    // A spec de antes desta versão do Mustard não aparece: ela só se lê.
+    let slug = crate::shared::context::checkout::current_spec(&root)
+        .filter(|s| !s.is_empty() && !mustard_core::io::legacy_specs::is_legacy(&mustard_core::io::spec_events::spec_root(cwd), s))?;
     // O arquivo de eventos é lido uma vez só: o endereço, a fase e as ondas
     // saem da mesma leitura, que antes se repetia para cada um.
     let log = DiskSpecState::new(cwd).log(&slug);
@@ -340,6 +342,19 @@ mod tests {
 
         let seg = unit_segment(root, Some("feature/roteador-didatico")).expect("an active unit must reach the bar");
         assert!(seg.text.contains("plano"), "the stage is missing: {}", seg.text);
+    }
+
+    /// A spec da sessão que é de antes desta versão do Mustard não aparece na
+    /// barra, mesmo com o checkout na branch dela.
+    #[test]
+    fn the_bar_does_not_show_a_legacy_spec() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), r#"{"version":"1.0.0","language":{"text":"pt-BR"}}"#).unwrap();
+        crate::shared::spec_state::seed_event(root, "antiga", "state", serde_json::json!({ "phase": "plan" }));
+        crate::shared::spec_state::stand_on_spec_branch(root, "antiga");
+        mustard_core::io::legacy_specs::mark_once(root, "0.2.24").unwrap();
+        assert!(unit_segment(root, Some("feature/antiga")).is_none(), "a legacy spec stays off the bar");
     }
 
     /// O texto que o terminal mostra: a sequência OSC 8 sai, o rótulo fica.

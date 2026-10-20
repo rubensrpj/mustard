@@ -126,12 +126,6 @@ pub(crate) fn scan_at(
 
     // Only run the map pass when grain succeeded (model file is valid).
     if scan_result.is_ok() {
-        if out.is_none() {
-            match mustard_core::io::expertise::sync(root) {
-                Ok(profiles) => { result["expertise"] = profiles; }
-                Err(reason) => { result["expertise"] = json!({"ok":false,"reason":reason}); }
-            }
-        }
         if let Some(warning) = ceiling_warning(root, session) {
             result["warning"] = json!(warning);
         }

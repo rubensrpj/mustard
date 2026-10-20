@@ -245,7 +245,6 @@ pub(super) fn missing(event_type: &str, field: &str) -> Refusal {
 const NESTED: &[(&str, &str, &[&str])] = &[
     ("point", "facts", &["text"]),
     ("task", "files", &["path"]),
-    ("skill", "examples", &["path", "why"]),
     ("send", "skills", &["name", "sha"]),
     ("send", "rejected", &["delivered", "reason"]),
     // A sobra que a onda relata vira tarefa da spec: sem título ou sem
@@ -349,8 +348,9 @@ fn check_conditions(event: &Map<String, Value>, event_type: &str) -> Result<(), 
         // obra fez é o combinado, não o critério de uma onda, e cobrar os
         // dois campos dela travava o fechamento de toda obra, que não fecha
         // sem essa aprovação.
-        "verdict" => match event.get("final").and_then(Value::as_bool) {
-            Some(true) => Ok(()),
+        "verdict" => match (event.get("final").and_then(Value::as_bool), event.get("wave_review").and_then(Value::as_bool)) {
+            (Some(true), _) => Ok(()),
+            (_, Some(true)) => need("wave"),
             _ => need("wave").and_then(|()| need("criteria")),
         },
         "point" => {
@@ -396,21 +396,6 @@ fn check_conditions(event: &Map<String, Value>, event_type: &str) -> Result<(), 
                 return Err(Refusal::DeliveredTooLong { chars, max: DELIVERED_MAX_CHARS });
             }
             Ok(())
-        }
-        "skill" if word("action") == "create" => {
-            need("examples")?;
-            let count = event.get("examples").and_then(Value::as_array).map_or(0, Vec::len);
-            if (2..=3).contains(&count) {
-                Ok(())
-            } else {
-                Err(Refusal::WrongCount {
-                    event_type: event_type.to_string(),
-                    field: "examples".into(),
-                    min: 2,
-                    max: 3,
-                    count,
-                })
-            }
         }
         "remove" => {
             if !has("targets") && !has("filter") {
@@ -633,12 +618,9 @@ mod tests {
             checked("state", witness).unwrap_err(),
             Refusal::MissingField { event_type: "state".into(), field: "witness.answer".into() }
         );
-        let born = json!({"name": "s", "action": "create", "text": "t", "sha": "1",
-            "examples": [{"path": "a.rs", "why": "w"}]});
-        assert!(matches!(
-            checked("skill", born).unwrap_err(),
-            Refusal::WrongCount { min: 2, max: 3, count: 1, .. }
-        ));
+        let born = json!({"name": "s", "action": "create", "text": "t"});
+        assert!(matches!(checked("skill", born).unwrap_err(), Refusal::InvalidValue { .. }));
+        assert!(checked("skill", json!({"name": "s", "action": "created", "text": "t", "files": ["a.rs"]})).is_ok());
         let nothing = json!({"reason": "engano"});
         assert_eq!(
             checked("remove", nothing).unwrap_err(),
@@ -701,6 +683,22 @@ mod tests {
             checked("verdict", no_wave).unwrap_err(),
             Refusal::MissingField { event_type: "verdict".into(), field: "wave".into() }
         );
+    }
+
+    /// The wave reviewer's short verdict names the wave and may point at
+    /// files without listing criteria; its request is a send of its own
+    /// role, tied to the reviewed wave and diff without being the wave's send.
+    #[test]
+    fn the_wave_review_verdict_and_request_have_their_own_shape() {
+        let short = json!({"author": "review", "wave": 1, "wave_review": true, "result": "rejected", "text": "faltou o teste",
+            "files": ["src/a.rs"]});
+        assert_eq!(checked("verdict", short.clone()), Ok(()));
+        let mut no_wave = short;
+        no_wave.as_object_mut().unwrap().remove("wave");
+        assert_eq!(checked("verdict", no_wave).unwrap_err(), Refusal::MissingField { event_type: "verdict".into(), field: "wave".into() });
+        let asked = json!({"author": "binary", "role": "wave-review", "reviews": 1, "fingerprint": "abc", "text": "# x — revisão da onda 1",
+            "lines": 1, "chars": 22, "mustard": "0", "model": "sonnet", "effort": "xhigh"});
+        assert_eq!(checked("send", asked), Ok(()));
     }
 
     /// O código não vem de quem grava: o evento que o traz é recusado, com a

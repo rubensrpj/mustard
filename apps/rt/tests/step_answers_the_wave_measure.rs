@@ -62,9 +62,9 @@ fn seed(root: &Path, event_type: &str, fields: &Value) -> u64 {
     mustard_core::io::spec_events::write(&path, event_type, draft, &[]).expect(event_type).id
 }
 
-/// Um projeto no git, com a spec aprovada e a onda 1 despachada pela rodada.
-/// Devolve o código da tarefa da onda.
-fn dispatched_wave(root: &Path) -> String {
+/// Um projeto no git, com a spec aprovada e a onda 1, de duas tarefas,
+/// despachada pela rodada. Devolve o código de cada tarefa, na ordem.
+fn dispatched_wave(root: &Path) -> Vec<String> {
     support::copies_leave_with_the_test(root);
     std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"pt-BR"}}"#).expect("config");
     std::fs::write(root.join("a.rs"), "fn one() {}\n").expect("code");
@@ -81,6 +81,8 @@ fn dispatched_wave(root: &Path) -> String {
     let crit = seed(root, "criterion", &json!({"when": "a", "then": "b", "proof": "git --version", "form": "ubiquitous", "origin": said}));
     seed(root, "wave", &json!({"author": "binary", "n": 1, "text": "Onda 1.", "criteria": [crit], "done_when": "x", "origin": said}));
     let task = seed(root, "task", &json!({"wave": 1, "text": "Tarefa 1.", "files": [{"path": "a.rs"}], "origin": said}));
+    let decision = seed(root, "decision", &json!({"title": "O total em reais", "text": "O total fica em reais.", "agent": "- somar em centavos inteiros", "why": "o caixa fecha em reais", "keys": ["total"], "origin": said}));
+    let second = seed(root, "task", &json!({"wave": 1, "text": "Tarefa 2: escrever o total.", "files": [{"path": "a.rs"}], "covers": [decision], "origin": said}));
     seed(root, "state", &json!({"author": "user", "phase": "approved", "witness": {"question": "Aprovar esta spec?", "answer": "Aprovar"}}));
 
     let dispatch = rt(root, &["round", "--dispatch", "--spec", SPEC]).output().expect("dispatch");
@@ -88,9 +90,24 @@ fn dispatched_wave(root: &Path) -> String {
     let sent: Vec<u64> = stdout_json(&dispatch)["dispatch"].as_array().into_iter().flatten().filter_map(|e| e["wave"].as_u64()).collect();
     assert_eq!(sent, vec![1], "the round dispatched wave 1");
 
+    let codes = spec_log(root).codes();
+    [task, second].iter().map(|id| codes.get(id).cloned().expect("the task code")).collect()
+}
+
+/// A spec como está no disco.
+fn spec_log(root: &Path) -> mustard_core::domain::spec_events::SpecLog {
     let path = mustard_core::io::spec_events::spec_file(root, SPEC).expect("spec file");
-    let log = mustard_core::io::spec_events::read(&path).expect("read").expect("the spec file");
-    log.codes().get(&task).cloned().expect("the task code")
+    mustard_core::io::spec_events::read(&path).expect("read").expect("the spec file")
+}
+
+/// As tarefas que um recibo de leitura liberou, na ordem do arquivo.
+fn released(root: &Path) -> Vec<String> {
+    spec_log(root)
+        .events
+        .iter()
+        .filter(|e| e.event_type == "call" && e.str_field("command") == Some("read"))
+        .filter_map(|e| e.str_field("released").map(str::to_string))
+        .collect()
 }
 
 /// Uma resposta do agente com o contexto somando `tokens`.
@@ -142,6 +159,15 @@ fn step(root: &Path, config: &Path, item: &str) -> Value {
     stdout_json(&out)
 }
 
+/// O passo de término da tarefa `item` sem a identidade do agente no
+/// ambiente: a medida não sai.
+fn step_without_measure(root: &Path, item: &str) -> Value {
+    let body = json!({"wave": 1, "item": item, "text": "A tarefa ficou pronta."});
+    let out = rt(root, &["write", "step", "--spec", SPEC, "--json", &body.to_string()]).output().expect("run write step");
+    assert!(out.status.success(), "write step: {}", String::from_utf8_lossy(&out.stdout));
+    stdout_json(&out)
+}
+
 /// A conversa do agente passou do limite de 200 mil tokens: o passo que
 /// termina a tarefa responde, no campo `size`, a ordem de entregar.
 #[test]
@@ -150,12 +176,59 @@ fn the_task_end_step_answers_the_order_to_deliver_above_the_limit() {
     let root = dir.path().join("projeto");
     std::fs::create_dir_all(&root).expect("root");
     let config = dir.path().join("claude-config");
-    let task = dispatched_wave(&root);
+    let tasks = dispatched_wave(&root);
     conversations(&config, &root, &[30_000, 210_000]);
 
-    let report = step(&root, &config, &task);
+    let report = step(&root, &config, &tasks[0]);
     assert_eq!(report["ok"], json!(true), "{report}");
     let size = report["size"].as_str().unwrap_or_else(|| panic!("the step answers the measure: {report}"));
     assert!(size.contains("Grave a entrega"), "the answer orders the delivery: {size}");
     assert!(size.contains("210"), "the answer carries the size of the conversation: {size}");
+    assert!(report.get("next_task").is_none(), "above the limit no task comes next: {report}");
+    assert!(released(&root).is_empty(), "nothing was released: {report}");
+}
+
+/// Abaixo do limite, o passo que termina a primeira tarefa traz na resposta
+/// o bloco inteiro da seguinte — o texto dela e o do que ela atende — e a
+/// libera; sem a medida, também.
+#[test]
+fn below_the_limit_the_task_end_step_brings_the_next_whole_task_and_releases_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().join("projeto");
+    std::fs::create_dir_all(&root).expect("root");
+    let config = dir.path().join("claude-config");
+    let tasks = dispatched_wave(&root);
+    conversations(&config, &root, &[30_000, 60_000]);
+
+    let report = step(&root, &config, &tasks[0]);
+    assert!(report["size"].as_str().is_some_and(|size| size.contains("Siga")), "the answer says to go on: {report}");
+    let next = report["next_task"].as_str().unwrap_or_else(|| panic!("the step brings the next task: {report}"));
+    for whole in [tasks[1].as_str(), "Tarefa 2: escrever o total.", "- somar em centavos inteiros"] {
+        assert!(next.contains(whole), "{whole}: {next}");
+    }
+    assert_eq!(released(&root), [tasks[1].clone()]);
+
+    let again = step_without_measure(&root, &tasks[0]);
+    assert!(again.get("size").is_none(), "{again}");
+    assert!(again["next_task"].as_str().is_some_and(|text| text.contains("Tarefa 2: escrever o total.")), "without a measure it goes on: {again}");
+}
+
+/// O passo que termina a última tarefa diz que todas terminaram e manda
+/// entregar, sem próxima tarefa; o passo de um critério não libera nada.
+#[test]
+fn the_last_task_end_step_says_every_task_finished() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().join("projeto");
+    std::fs::create_dir_all(&root).expect("root");
+    let tasks = dispatched_wave(&root);
+    let criterion = spec_log(&root).codes().values().find(|code| code.contains("-CRIT-")).cloned().expect("the criterion");
+
+    let proved = step_without_measure(&root, &criterion);
+    assert!(proved.get("next_task").is_none() && proved.get("tasks_finished").is_none(), "{proved}");
+    assert!(released(&root).is_empty(), "{proved}");
+    step_without_measure(&root, &tasks[0]);
+    let last = step_without_measure(&root, &tasks[1]);
+    assert!(last.get("next_task").is_none(), "{last}");
+    let finished = last["tasks_finished"].as_str().unwrap_or_else(|| panic!("the last step says every task finished: {last}"));
+    assert!(finished.contains("Grave a entrega"), "{finished}");
 }

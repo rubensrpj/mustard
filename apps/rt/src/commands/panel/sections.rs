@@ -1,7 +1,8 @@
 //! The panel screens: one bounded answer per screen, built from the selected
 //! spec's events and the round's own counts ([`super::progress`]). No other
-//! spec's history is parsed, no delivery text is copied, and nothing is
-//! written, measured or requested over the network.
+//! spec's history is parsed, no wave delivery text is copied (the project
+//! summary's own short lines are, cut), and nothing is written, measured or
+//! requested over the network.
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -45,9 +46,11 @@ pub(super) struct IndexRow {
 }
 
 /// The index rows, plus every spec folder the index does not know yet, plus
-/// how many specs were discarded.
+/// how many specs were discarded. A spec of before this version of Mustard is
+/// in none of them.
 pub(super) fn index_rows(root: &Path) -> (Vec<IndexRow>, usize) {
     let folder = root.join(".claude/spec");
+    let legacy = mustard_core::io::legacy_specs::LegacySpecs::read(root);
     let index = std::fs::read_to_string(folder.join("index.ndjson")).unwrap_or_default();
     let text = |row: &Value, key: &str| row[key].as_str().map(str::to_string);
     let mut rows: Vec<IndexRow> = index.lines().filter_map(|line| serde_json::from_str::<Value>(line).ok()).filter(|row| row["type"] == "spec")
@@ -61,9 +64,11 @@ pub(super) fn index_rows(root: &Path) -> (Vec<IndexRow>, usize) {
             }
         }
     }
+    rows.retain(|row| !legacy.contains(&row.name));
     rows.sort_by(|a, b| a.name.cmp(&b.name));
     let discarded = std::fs::read_dir(folder.join(mustard_core::io::spec_index::DISCARDED_DIR))
-        .map(|entries| entries.flatten().filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir())).count()).unwrap_or(0);
+        .map(|entries| entries.flatten().filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+            .filter(|entry| !legacy.contains(&entry.file_name().to_string_lossy())).count()).unwrap_or(0);
     (rows, discarded)
 }
 
@@ -180,8 +185,34 @@ pub(super) fn overview(start: &Path, root: &Path, name: Option<&str>, log: Optio
     let agents = live["agents"].as_object().map(|agents| agents.values().filter(|agent| agent["status"] == "running").count());
     json!({"spec":spec,"warnings":warnings,
         "others":{"total":rows.len()+discarded.saturating_sub(discarded_listed),"attention":attention,"shown":others},
+        "deliveries":deliveries(root),
         "usage":{"cost_micro_usd":costs["known_micro_usd"],"sessions":costs["observed_sessions"],"tokens":history["project_tokens"],
             "measured_through":history["counted_through"],"session_agents":agents}})
+}
+
+/// How many deliveries of the project summary the overview shows.
+const DELIVERIES_SHOWN: usize = 5;
+
+/// How many characters of each delivery's text the overview carries.
+const DELIVERY_CHARS: usize = 200;
+
+/// The project summary for the overview: the newest deliveries first, a few,
+/// each text cut, and how many the summary holds. Read from the summary file
+/// alone; no spec's events are parsed.
+fn deliveries(root: &Path) -> Value {
+    use mustard_core::domain::project_summary::{cut_at_word, shown};
+    let entries = mustard_core::io::project_summary::read(root);
+    let rows: Vec<Value> = entries
+        .iter()
+        .take(DELIVERIES_SHOWN)
+        .map(|entry| {
+            let mut row = shown(entry);
+            row["delivered"] = json!(cut_at_word(&entry.delivered, DELIVERY_CHARS));
+            row["rules"] = json!(entry.rules.iter().map(|file| file.rules.len()).sum::<usize>());
+            row
+        })
+        .collect();
+    json!({"shown":rows,"total":entries.len()})
 }
 
 /// The spec screen: where it lives, what was agreed in six counters, waves by
@@ -393,6 +424,11 @@ pub(super) fn item(log: &SpecLog, code: &str) -> Value {
         json!({"criterion":codes.get(&criterion.id),"title":title(criterion),"proof":criterion.str_field("proof"),
             "result":run.and_then(|run|run.str_field("result")),"at":run.map(|run|run.at()),"ms":run.and_then(|run|run.int("ms"))})
     }).collect();
+    // The newest verdict of the wave's reviewer, from any attempt: a rejection
+    // explains why the wave runs again until the next verdict replaces it.
+    let review = event.wave().and_then(|n| visible.iter().rev().find(|e| crate::commands::flow::round::is_wave_verdict(e) && e.wave() == Some(n)))
+        .map(|verdict| json!({"result":verdict.str_field("result"),"reason":verdict.str_field("text").map(|text| mustard_core::domain::project_summary::cut_at_word(text, REVIEW_REASON_CHARS)),
+            "files":verdict.fields.get("files").and_then(Value::as_array).cloned().unwrap_or_default(),"at":verdict.at()}));
     let item_code = codes.get(&event.id);
     let mut versions: Vec<&SpecEvent> = log.events.iter().filter(|e| codes.get(&e.id) == item_code).collect();
     versions.sort_by_key(|e| e.id);
@@ -406,12 +442,15 @@ pub(super) fn item(log: &SpecLog, code: &str) -> Value {
         "result":{"unmet":agreed.iter().filter(|answer|answer["met"]==false).count(),"agreed":agreed},"done_when":wave_event.and_then(|e|e.str_field("done_when")),
         "files":files,"delivered_files":delivered.and_then(|e|e.fields.get("files")).and_then(Value::as_array).map(Vec::len),
         "covers":covers.iter().filter_map(|id|describe(*id)).collect::<Vec<_>>(),
-        "wave_request":wave_request,"tests":tests,
+        "wave_request":wave_request,"tests":tests,"review":review,
         "wave_tokens":row.and_then(|row|row.tokens),"resends":row.map(|row|row.resends),"history":history}}))
 }
 
 /// How much of a long text the item screen carries.
 const TEXT_CHARS: usize = 1200;
+
+/// How many characters of the wave reviewer's reason the item screen carries.
+const REVIEW_REASON_CHARS: usize = 200;
 
 /// `text` whole when short; otherwise its first paragraphs up to `max`
 /// characters, cut on a word, with how long the whole text is.
@@ -475,7 +514,39 @@ pub(super) fn usage(root: &Path, name: Option<&str>, log: Option<&SpecLog>, sess
             "search":search_calls(root,name,log,&history)},
         "session":{"started_at":live["main"]["started_at"],"agents":agents.map(serde_json::Map::len),
             "working":agents.map(|agents|agents.values().filter(|agent|agent["status"]=="running").count())},
-        "copies_disk":disk})
+        "copies_disk":disk,"mustard_skills":mustard_skills(root)})
+}
+
+/// Quantos caracteres do último ganho de uma skill a tela mostra.
+const GAIN_CHARS: usize = 160;
+
+/// As skills que o Mustard criou no projeto, pelo registro delas, em ordem de
+/// nome: o estado, quantas vezes cada uma foi com uma tarefa, o último ganho
+/// medido, cortado, e os tokens da onda que a criou, quando medidos. O custo
+/// em dinheiro não é medido por onda, e não aparece.
+fn mustard_skills(root: &Path) -> Value {
+    let registry = mustard_core::io::mustard_skills::read(root);
+    let rows: Vec<Value> = registry
+        .skills
+        .iter()
+        .map(|(name, skill)| {
+            let gain = skill.gain.as_deref().map(|gain| mustard_core::domain::project_summary::cut_at_word(gain, GAIN_CHARS));
+            json!({"name":name,"state":skill.state,"tasks":skill.deliveries,"gain":gain,"wave_tokens":creating_tokens(root, skill)})
+        })
+        .collect();
+    json!(rows)
+}
+
+/// Os tokens da onda que criou a skill `skill`: o consumo medido do agente
+/// dela ou, sem medida, o que o envio gravou. `None` sem onda conhecida ou
+/// sem medida.
+fn creating_tokens(root: &Path, skill: &mustard_core::io::mustard_skills::MustardSkill) -> Option<u64> {
+    let wave = skill.wave?;
+    let file = mustard_core::io::spec_events::spec_file(root, &skill.spec).ok()?;
+    let log = mustard_core::io::spec_events::read(&file).ok()??;
+    let live = super::wave_usage::read(root, &skill.spec);
+    let measured = log.last_dispatch_by_wave().get(&wave).and_then(|dispatch| super::wave_usage::current_at(&live, wave, *dispatch)).and_then(|usage| usage["tokens"].as_u64());
+    measured.or_else(|| log.last_by_wave("send").get(&wave).and_then(|id| sent_field(&log, *id, "tokens")).and_then(Value::as_u64))
 }
 
 /// This spec's measured spend: the waves with a measure, how many lack one,
@@ -522,7 +593,8 @@ fn sent_field<'a>(log: &'a SpecLog, id: u64, field: &str) -> Option<&'a Value> {
 
 /// O que cada onda enviada recebeu e o que deu errado nela, das últimas
 /// [`PAGE`] despachadas, a mais nova primeiro: o modelo que o agente usou
-/// (medido no arquivo dele), o modelo e o esforço que o envio pediu, as
+/// (medido no arquivo dele), o modelo e o esforço que o envio pediu, o
+/// esforço que valeu no lançamento (`effort_used`), as
 /// skills entregues, se o pedido continuou um resumo, as voltas recusadas e
 /// as reprovações da revisão. Depois, o mesmo somado na spec, com o
 /// conhecimento reaproveitado e as chamadas ao Jev e os ganchos que falharam,
@@ -567,6 +639,7 @@ fn wave_agents(root: &Path, name: &str, log: &SpecLog, live: &Value) -> serde_js
         summaries += u64::from(summary);
         let tokens = measured.and_then(|usage| usage["tokens"].as_u64()).or_else(|| sent_field(log, *id, "tokens").and_then(Value::as_u64));
         rows.push((dispatches.get(wave).copied().unwrap_or(*id), json!({"wave":wave,"model_used":used,"model_asked":text("model"),"effort_asked":effort,
+            "effort_used":text("effort_used"),
             "skills":delivered,"summary_reused":summary,"tokens":tokens,
             "refused_returns":refused.get(wave).copied().unwrap_or(0),"review_rejections":reviewed.get(wave).copied().unwrap_or(0)})));
     }
@@ -580,14 +653,16 @@ fn wave_agents(root: &Path, name: &str, log: &SpecLog, live: &Value) -> serde_js
     let operations = crate::commands::spec_events::conversation::recorded_operations(root, name);
     let mut jev: BTreeMap<String, u64> = BTreeMap::new();
     let mut hooks: BTreeMap<String, u64> = BTreeMap::new();
-    let (mut knowledge, mut cached) = (0u64, 0u64);
+    let (mut knowledge, mut cached, mut reserves) = (0u64, 0u64, 0u64);
     for event in operations.visible() {
         match event.event_type.as_str() {
             "call" => {
                 if let Some(reason) = event.str_field("filter").and_then(|filter| filter.strip_prefix("jev:")) {
                     *jev.entry(reason.to_string()).or_default() += 1;
                 }
-                if event.str_field("command").is_some_and(|command| ["knowledge", "expertise"].contains(&command)) {
+                // A decisão que o Jev não deu e foi à reserva dele.
+                reserves += u64::from(event.str_field("command") == Some(crate::shared::jev::reserve::RESERVE_CALL));
+                if event.str_field("command") == Some("knowledge") {
                     knowledge += 1;
                     cached += u64::from(event.fields.get("knowledge_cached") == Some(&Value::Bool(true)));
                 }
@@ -604,7 +679,7 @@ fn wave_agents(root: &Path, name: &str, log: &SpecLog, live: &Value) -> serde_js
     out.insert("models".into(), json!(models.into_iter().map(|((model, effort), waves)| json!({"model":model,"effort":effort,"waves":waves})).collect::<Vec<_>>()));
     out.insert("skills".into(), json!(skills.into_iter().take(PAGE).map(|(name, waves)| json!({"name":name,"waves":waves})).collect::<Vec<_>>()));
     out.insert("reuse".into(), json!({"summaries":summaries,"knowledge_calls":knowledge,"knowledge_cached":cached}));
-    out.insert("failures".into(), json!({"jev":{"calls":jev.values().sum::<u64>(),"reasons":jev},
+    out.insert("failures".into(), json!({"jev":{"calls":jev.values().sum::<u64>(),"reasons":jev,"reserves":reserves},
         "hook_blocks":{"total":hooks.values().sum::<u64>(),"by_hook":hooks},
         "refused_returns":refused.values().sum::<u64>(),"review_rejections":reviewed.values().sum::<u64>()}));
     out
@@ -683,6 +758,37 @@ mod tests {
 
     fn screen(root: &Path, section: &str, params: &Params) -> Value {
         super::super::dashboard::query_with(root, Some("demo"), None, None, section, None, params)
+    }
+
+    /// The overview carries the project summary: the newest deliveries
+    /// first, a bounded few, each text cut, and how many there are.
+    #[test]
+    fn the_overview_shows_the_newest_deliveries_of_the_project() {
+        let dir = fixture();
+        let root = dir.path();
+        let answer = screen(root, "overview", &Params::default());
+        assert_eq!(answer["deliveries"], json!({"shown":[],"total":0}), "{answer}");
+        for n in 1..=7u64 {
+            let entry = mustard_core::domain::project_summary::Entry {
+                spec: format!("obra-{n}"),
+                delivered_at: format!("2026-10-0{n}T10:00:00Z"),
+                pr: Some(mustard_core::domain::project_summary::Pr { number: 100 + n, url: None }),
+                title: format!("Entrega {n}"),
+                delivered: "palavra ".repeat(80),
+                rules: vec![],
+                skills: vec![],
+                cost: None,
+            };
+            mustard_core::io::project_summary::upsert(root, &entry).unwrap();
+        }
+        let answer = screen(root, "overview", &Params::default());
+        let deliveries = &answer["deliveries"];
+        assert_eq!(deliveries["total"], json!(7), "{answer}");
+        let shown: Vec<&str> = deliveries["shown"].as_array().unwrap().iter().map(|d| d["spec"].as_str().unwrap()).collect();
+        assert_eq!(shown, vec!["obra-7", "obra-6", "obra-5", "obra-4", "obra-3"]);
+        let first = &deliveries["shown"][0];
+        assert_eq!((first["pr"].clone(), first["title"].clone(), first["delivered_at"].clone()), (json!(107), json!("Entrega 7"), json!("2026-10-07")));
+        assert!(first["delivered"].as_str().unwrap().chars().count() <= 200, "{first}");
     }
 
     /// A spec in execution, in `language`, whose only wave is delivered and
@@ -822,6 +928,38 @@ mod tests {
         assert_eq!(backlog["item"]["tests"], json!([]), "{backlog}");
     }
 
+    /// A task shows the newest verdict of its wave's reviewer: approved, or
+    /// rejected with a short reason and the files it points at. The final
+    /// review's verdict is not the wave reviewer's.
+    #[test]
+    fn a_task_shows_the_newest_verdict_of_its_wave_reviewer() {
+        let dir = fixture();
+        let path = dir.path().join(".claude/spec/demo/spec.ndjson");
+        let task = |code: &str| screen(dir.path(), "item", &Params { item: Some(code.into()), ..Params::default() });
+        let append = |row: Value| {
+            let mut text = std::fs::read_to_string(&path).unwrap();
+            text.push_str(&format!("{row}\n"));
+            std::fs::write(&path, text).unwrap();
+        };
+        assert!(task("MSTD-TASK-0001")["item"]["review"].is_null(), "no verdict yet");
+        let reason = format!("Falta o teste do caso vazio. {}", "Detalhe longo do revisor. ".repeat(40));
+        append(json!({"v":1,"id":41,"at":"2026-10-05T09:00:00Z","type":"verdict","author":"review","wave":1,"wave_review":true,
+            "result":"rejected","text":reason,"files":["src/alpha.rs"]}));
+        append(json!({"v":1,"id":42,"at":"2026-10-05T09:30:00Z","type":"verdict","author":"review","wave":1,"final":true,"result":"approved","text":"Obra conferida."}));
+        let rejected = task("MSTD-TASK-0001");
+        let review = &rejected["item"]["review"];
+        assert_eq!(review["result"], "rejected", "{rejected}");
+        assert_eq!(review["files"], json!(["src/alpha.rs"]), "{rejected}");
+        let short = review["reason"].as_str().unwrap_or_else(|| panic!("{rejected}"));
+        assert!(short.starts_with("Falta o teste do caso vazio.") && short.chars().count() <= 200 && short.ends_with('…'), "{short}");
+        assert!(task("MSTD-TASK-0002")["item"]["review"].is_null(), "another wave's verdict stays on its tasks");
+        append(json!({"v":1,"id":43,"at":"2026-10-05T10:00:00Z","type":"verdict","author":"review","wave":1,"wave_review":true,
+            "result":"approved","text":"Conferi o diff e as regras."}));
+        let approved = task("MSTD-TASK-0001");
+        assert_eq!(approved["item"]["review"]["result"], "approved", "the newest verdict: {approved}");
+        assert_eq!(approved["item"]["review"]["files"], json!([]), "{approved}");
+    }
+
     #[test]
     fn no_screen_but_the_item_carries_a_delivery_text() {
         let dir = fixture();
@@ -836,6 +974,36 @@ mod tests {
         assert_eq!(spec["spec"]["commits"], 1);
     }
 
+    /// The usage screen lists the skills Mustard made: the name, the state,
+    /// how many times each went with a task, the last measured gain and the
+    /// tokens of the wave that made it, when measured.
+    #[test]
+    fn the_usage_screen_lists_the_mustard_skills() {
+        let dir = fixture();
+        let root = dir.path();
+        let path = root.join(".claude/spec/demo/spec.ndjson");
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        text.push_str(&format!("{}\n", json!({"v":1,"id":50,"at":"2026-10-02T11:01:00Z","type":"send","wave":1,"replaces":8,"tokens":4321})));
+        std::fs::write(&path, text).unwrap();
+        mustard_core::io::mustard_skills::change(root, |held| {
+            held.record("falta-teste", "created", "2026-10-02T10:00:00Z", "Acertou 3 de 3 com a skill.", &["src/alpha.rs".into()], ("demo", Some(1)), &[]);
+            held.count_send(&["falta-teste".into()], &[vec!["falta-teste".into()], vec!["falta-teste".into()]]);
+            held.record("parada", "created", "2026-10-02T10:00:00Z", "Ganho pequeno.", &[], ("antiga", None), &[]);
+            held.record("parada", "retired", "2026-10-03T10:00:00Z", "", &[], ("demo", None), &[]);
+            held.record("sem-ganho", "discarded", "2026-10-03T10:00:00Z", "Sem ganho.", &[], ("demo", None), &[]);
+        })
+        .unwrap();
+        let usage = screen(root, "usage", &Params::default());
+        let skills = usage["mustard_skills"].as_array().unwrap_or_else(|| panic!("{usage}"));
+        assert_eq!(
+            skills[0],
+            json!({"name":"falta-teste","state":"active","tasks":2,"gain":"Acertou 3 de 3 com a skill.","wave_tokens":4321}),
+            "{usage}"
+        );
+        assert_eq!((skills[1]["name"].clone(), skills[1]["state"].clone(), skills[1]["wave_tokens"].clone()), (json!("parada"), json!("retired"), Value::Null));
+        assert_eq!((skills[2]["name"].clone(), skills[2]["state"].clone()), (json!("sem-ganho"), json!("discarded")));
+    }
+
     #[test]
     fn the_usage_screen_shows_each_wave_model_effort_skills_reuse_and_failures() {
         let dir = fixture();
@@ -847,7 +1015,7 @@ mod tests {
             // A versão do envio com o pedido, e a do consumo, que leva só o que mudou.
             json!({"v":1,"id":40,"at":"2026-10-02T09:01:00Z","type":"send","wave":1,"role":"wave","replaces":8,"text":"Pedido da onda 1.",
                 "model":"opus","effort":"xhigh","skills":[skill],"summary":3}),
-            json!({"v":1,"id":41,"at":"2026-10-02T11:01:00Z","type":"send","wave":1,"replaces":40,"model_used":"claude-opus-5-5","tokens":1234}),
+            json!({"v":1,"id":41,"at":"2026-10-02T11:01:00Z","type":"send","wave":1,"replaces":40,"model_used":"claude-opus-5-5","effort_used":"high","tokens":1234}),
             // Onda 2: uma volta que ninguém assumiu, outra assumida, a revisão
             // que reprovou e a volta que quem conduz reprovou.
             json!({"v":1,"id":42,"at":"2026-10-03T10:00:00Z","type":"delivered","wave":2,"returned":true,"text":"Primeira volta.","files":[]}),
@@ -869,6 +1037,7 @@ mod tests {
             json!({"v":1,"id":4,"at":"2026-10-03T09:03:00Z","type":"call","command":"knowledge"}),
             json!({"v":1,"id":5,"at":"2026-10-03T09:04:00Z","type":"hook","author":"hook","hook":"command_guard","action":"block","tool":"Bash","reason":"apaga"}),
             json!({"v":1,"id":6,"at":"2026-10-03T09:05:00Z","type":"hook","author":"hook","hook":"subagent_inject","action":"warn","tool":"Agent","reason":"aviso"}),
+            json!({"v":1,"id":7,"at":"2026-10-03T09:06:00Z","type":"call","command":"jev reserve","filter":"reserve","reserve_for":"task triage"}),
         ];
         std::fs::write(&operations, observed.iter().map(Value::to_string).collect::<Vec<_>>().join("\n") + "\n").unwrap();
 
@@ -879,15 +1048,16 @@ mod tests {
         let first = &waves[1];
         assert_eq!(first["model_used"], "claude-opus-5-5", "{usage}");
         assert_eq!((first["model_asked"].clone(), first["effort_asked"].clone()), (json!("opus"), json!("xhigh")), "{usage}");
+        assert_eq!(first["effort_used"], "high", "the effort that held at the launch: {usage}");
         assert_eq!(first["skills"], json!(["add-run-command"]), "{usage}");
         assert_eq!(first["summary_reused"], true, "{usage}");
         assert_eq!(first["tokens"], 1234, "{usage}");
         let second = &waves[0];
         assert_eq!((second["refused_returns"].clone(), second["review_rejections"].clone()), (json!(2), json!(1)), "{usage}");
-        assert!(second["model_used"].is_null() && second["effort_asked"].is_null(), "nothing recorded, nothing shown: {usage}");
+        assert!(second["model_used"].is_null() && second["effort_asked"].is_null() && second["effort_used"].is_null(), "nothing recorded, nothing shown: {usage}");
         assert_eq!(spec["models"], json!([{"model":"claude-opus-5-5","effort":"xhigh","waves":1}]), "{usage}");
         assert_eq!(spec["reuse"], json!({"summaries":1,"knowledge_calls":2,"knowledge_cached":1}), "{usage}");
-        assert_eq!(spec["failures"]["jev"], json!({"calls":2,"reasons":{"no_credit":2}}), "{usage}");
+        assert_eq!(spec["failures"]["jev"], json!({"calls":2,"reasons":{"no_credit":2},"reserves":1}), "the reserve counts apart: {usage}");
         assert_eq!(spec["failures"]["hook_blocks"], json!({"total":1,"by_hook":{"command_guard":1}}), "{usage}");
         assert_eq!((spec["failures"]["refused_returns"].clone(), spec["failures"]["review_rejections"].clone()), (json!(2), json!(1)), "{usage}");
         for secret in ["Faltou o arquivo.", "Faltou o teste.", "Primeira volta.", "apaga", "/x/.claude"] {

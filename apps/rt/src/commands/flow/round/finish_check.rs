@@ -326,6 +326,14 @@ mod tests {
     /// que o commit traz, e a segunda os arquivos `second`, despachada numa
     /// cópia e com o pedido lido. Devolve a cópia.
     fn wave_of(root: &Path, first: &[&str], second: &[&str]) -> PathBuf {
+        let copy = dispatched_wave_of(root, first, second);
+        read_request(root, "x", 1);
+        copy
+    }
+
+    /// [`wave_of`] sem ler o pedido: só o que o envio já entregou inteiro
+    /// conta como lido.
+    fn dispatched_wave_of(root: &Path, first: &[&str], second: &[&str]) -> PathBuf {
         approved_with(root, "x", &[(1, first, &[])], |said| {
             let files: Vec<Value> = second.iter().map(|path| json!({"path": path})).collect();
             let task = json!({"wave": 1, "text": "Segunda tarefa da onda 1.", "files": files, "depends_on": [],
@@ -334,7 +342,6 @@ mod tests {
         });
         let sent = round(root, "x", None);
         assert_eq!(waves_in(&sent, "dispatch"), vec![1], "{sent}");
-        read_request(root, "x", 1);
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let copy = log.get(open_sends(&log)[&1]).and_then(|send| send.str_field("copy")).expect("the copy");
         PathBuf::from(copy)
@@ -702,5 +709,23 @@ mod tests {
         step(root, "MSTD-TASK-0002", json!({}));
         let wrote = returned_unread(root, body);
         assert_eq!(wrote["ok"], json!(true), "with each task's step the delivery goes in: {wrote}");
+    }
+
+    /// A entrega cobra a leitura só do que foi liberado: o pedido entregou
+    /// inteiro o bloco da primeira tarefa, que conta como lido, e o que só a
+    /// segunda, nunca liberada, traz não recusa a entrega.
+    #[test]
+    fn the_delivery_is_not_refused_for_what_only_a_task_not_released_brings() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let copy = dispatched_wave_of(root, &["src/a.rs", "src/b.rs"], &["src/b.rs"]);
+        edit(&copy, "src/a.rs", "a soma saiu");
+        step(root, "MSTD-TASK-0001", json!({}));
+        edit(&copy, "src/b.rs", "o total saiu");
+        step(root, "MSTD-TASK-0002", json!({}));
+        let body = json!({"wave": 1, "text": "A soma e o total saíram.", "files": ["src/a.rs", "src/b.rs"],
+            "commit": "a soma e o total saem"});
+        let wrote = returned_unread(root, body);
+        assert_eq!(wrote["ok"], json!(true), "{wrote}");
     }
 }

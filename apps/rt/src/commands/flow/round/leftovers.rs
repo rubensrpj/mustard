@@ -8,7 +8,8 @@
 //! mesmo título ou o mesmo texto — vira nota que aponta essa tarefa, sem
 //! pedido, tarefa nova nem versão nova dela. As outras passam pelo
 //! classificador das atividades ([`task_triage`]), num pedido só por volta,
-//! contra todas as tarefas ainda por entregar: a coberta vira a mesma nota,
+//! feito sobre a spec gravada e decidido fora das travas
+//! ([`super::triage_questions`]), contra as tarefas ainda por entregar: a coberta vira a mesma nota,
 //! com o motivo; a de mesmo sentido entra na tarefa escolhida, numa versão
 //! nova, mesmo em outros arquivos; a nova vira tarefa, no grupo de assunto da
 //! tarefa mais próxima. Sem leitura confiante, vale a regra nativa: quando
@@ -43,7 +44,7 @@ use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Map, Value};
 
 use super::queue::{backlog_left, task_files, tasks_not_delivered};
-use super::report::{backlog_return, own_copy_relative};
+use super::report::{WaveReport, backlog_return, own_copy_relative};
 use super::stops::append_agent_line;
 use crate::shared::task_triage::{self, Candidate, Destination, Item, Summary};
 
@@ -207,50 +208,34 @@ pub(super) fn ask_rewrites(root: &Path, log: &SpecLog, joins: &[MeaningJoin], en
 /// uma tarefa ainda por entregar lida em `log` ([`repeats`]), fora as tarefas
 /// das ondas em `returning`, que a volta entrega agora, vira nota que aponta
 /// essa tarefa ([`repeated_note`]), e a tarefa fica como está. As outras vão
-/// ao classificador das atividades ([`task_triage::jev_ask`]), com a chamada
-/// gravada na spec `spec` e os resumos `summaries` da volta no
-/// estado: a coberta vira a nota com o motivo ([`judged_note`]); a de mesmo
-/// sentido entra na tarefa escolhida, numa versão nova com a sobra na seção
-/// do erro da volta ([`join`]), que guarda o pedido dela em `by_meaning`
-/// para a reescrita ([`ask_rewrites`]); a nova vira tarefa nova ([`leftover_task`]),
-/// no grupo da tarefa mais próxima. A que repete uma sobra anterior desta
-/// volta — os mesmos arquivos e o mesmo título ou o mesmo detalhe — vira só
-/// uma linha na tarefa que aquela ganhou, sem pedido novo. Sem leitura
-/// confiante, a sobra cujos arquivos ([`leftover_files`]) estão todos entre
-/// os de uma tarefa aberta do backlog entra nela, na seção dos mesmos
-/// arquivos, e a tarefa que outra sobra da mesma volta acabou de criar vale
-/// como aberta também; com mais de uma tarefa que sirva, fica a de menor
-/// número. O resto vira tarefa nova que cobre o pedido, presa até ser
-/// planejada quando a sobra não tem arquivo nenhum. O pedido aponta em
-/// `origin` a entrega da onda em `delivered`, quando ela está lá. O pedido da
-/// sobra que entra numa tarefa que já existe leva a marca da sobra no título
-/// ([`marked_title`]). Os textos saem no idioma `lang`.
+/// ao destino que o classificador das atividades deu a cada uma, em
+/// `destinations`, na ordem de `found` ([`leftover_destinations`]), pela
+/// versão vigente da tarefa escolhida: a coberta vira a nota com o motivo
+/// ([`judged_note`]); a de mesmo sentido entra na tarefa escolhida, numa
+/// versão nova com a sobra na seção do erro da volta ([`join`]), que guarda o
+/// pedido dela em `by_meaning` para a reescrita ([`ask_rewrites`]); a nova
+/// vira tarefa nova ([`leftover_task`]), no grupo da tarefa mais próxima. A
+/// que repete uma sobra anterior desta volta — os mesmos arquivos e o mesmo
+/// título ou o mesmo detalhe — vira só uma linha na tarefa que aquela ganhou,
+/// sem pedido novo. Sem destino, a sobra cujos arquivos
+/// ([`leftover_files`]) estão todos entre os de uma tarefa aberta do backlog
+/// entra nela, na seção dos mesmos arquivos, e a tarefa que outra sobra da
+/// mesma volta acabou de criar vale como aberta também; com mais de uma
+/// tarefa que sirva, fica a de menor número. O resto vira tarefa nova que
+/// cobre o pedido, presa até ser planejada quando a sobra não tem arquivo
+/// nenhum. O pedido aponta em `origin` a entrega da onda em `delivered`,
+/// quando ela está lá. O pedido da sobra que entra numa tarefa que já existe
+/// leva a marca da sobra no título ([`marked_title`]). Os textos saem no
+/// idioma `lang`.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn leftover_events(
     root: &Path,
-    spec: &str,
     log: &SpecLog,
     found: &[(u64, &Leftover)],
     returning: &BTreeSet<u64>,
     delivered: &BTreeMap<u64, u64>,
-    summaries: &[Summary],
+    destinations: &[Option<Destination>],
     lang: Locale,
-) -> Vec<LeftoverEvent> {
-    leftover_events_with(root, log, found, returning, delivered, summaries, lang, &task_triage::jev_ask(root, spec))
-}
-
-/// [`leftover_events`] com a pergunta ao Jev feita por `ask`, que devolve a
-/// resposta ou `None` quando não há Jev ou ele falhou.
-#[allow(clippy::too_many_arguments)]
-fn leftover_events_with(
-    root: &Path,
-    log: &SpecLog,
-    found: &[(u64, &Leftover)],
-    returning: &BTreeSet<u64>,
-    delivered: &BTreeMap<u64, u64>,
-    summaries: &[Summary],
-    lang: Locale,
-    ask: &dyn Fn(&str) -> Option<Value>,
 ) -> Vec<LeftoverEvent> {
     let left: BTreeSet<u64> = backlog_left(log).into_iter().collect();
     let open: Vec<(&SpecEvent, BTreeSet<String>)> = left
@@ -262,8 +247,8 @@ fn leftover_events_with(
     let unfinished: Vec<&SpecEvent> = tasks_not_delivered(log, returning).into_iter().filter_map(|id| log.get(id)).collect();
     let files_of: Vec<BTreeSet<String>> =
         found.iter().map(|&(wave, leftover)| leftover_files(root, log, wave, leftover).into_iter().collect()).collect();
-    // A repetição de palavras vem antes, e só a sobra que ela não pega vai ao
-    // classificador, contra todas as tarefas ainda por entregar.
+    // A repetição de palavras vem antes, e só a sobra que ela não pega segue
+    // o destino que o classificador deu.
     let exact: Vec<Option<&SpecEvent>> = found
         .iter()
         .zip(&files_of)
@@ -271,26 +256,19 @@ fn leftover_events_with(
             unfinished.iter().copied().find(|task| repeats(&task_files(task), task.str_field("title"), task.str_field("text"), files, leftover))
         })
         .collect();
-    let pending: Vec<usize> = (0..found.len()).filter(|at| exact[*at].is_none()).collect();
-    let candidates: Vec<Candidate> = unfinished
-        .iter()
-        .map(|task| Candidate {
-            id: task.id,
-            title: task.str_field("title").unwrap_or_default(),
-            text: task.str_field("text").unwrap_or_default(),
-            files: task_files(task),
-            joinable: left.contains(&task.id),
+    // A tarefa escolhida vale pela versão vigente: a pergunta é feita sobre
+    // a spec gravada, e o ensaio pode já ter dado versão nova à tarefa.
+    let current = |id: u64| log.current(id).or_else(|| log.get(id)).map(|task| task.id);
+    let decided: BTreeMap<usize, Destination> = (0..found.len())
+        .filter(|at| exact[*at].is_none())
+        .filter_map(|at| {
+            let destination = match destinations.get(at).copied().flatten()? {
+                Destination::Covered { task, chance } => Destination::Covered { task: current(task)?, chance },
+                Destination::Join { task, chance } => Destination::Join { task: current(task)?, chance },
+                Destination::New { near } => Destination::New { near: near.and_then(current) },
+            };
+            Some((at, destination))
         })
-        .collect();
-    let items: Vec<Item> = pending
-        .iter()
-        .map(|&at| Item { title: found[at].1.title.clone(), text: found[at].1.detail.clone(), files: files_of[at].clone() })
-        .collect();
-    let decided: BTreeMap<usize, Destination> = pending
-        .iter()
-        .copied()
-        .zip(task_triage::classify_with(&candidates, &items, summaries, ask))
-        .filter_map(|(at, destination)| Some((at, destination?)))
         .collect();
     let mut requests: Vec<LeftoverEvent> = Vec::new();
     let mut work: Vec<LeftoverEvent> = Vec::new();
@@ -372,6 +350,80 @@ fn leftover_events_with(
     }
     requests.extend(work);
     requests
+}
+
+/// A pergunta ao classificador das atividades sobre as sobras da volta
+/// `wave`, lida na spec gravada `log`: cada sobra que não repete uma tarefa
+/// ainda por entregar — sem contar as das ondas em `returning`, que voltam
+/// agora —, contra as tarefas ainda por entregar fora as da própria onda, e
+/// as que ela devolve ao backlog, que aceitam a sobra, com o resumo da volta
+/// que deixou tarefa por fazer. Só depende da spec gravada e da volta: a
+/// rodada que a deixa esperando, a pergunta depois das travas e a rodada que
+/// aplica a decisão fazem o mesmo pedido. Devolve o pedido e a posição de
+/// cada sobra perguntada em `wave.leftovers`; `None` sem sobra a perguntar.
+pub(super) fn leftover_question(root: &Path, log: &SpecLog, returning: &BTreeSet<u64>, wave: &WaveReport) -> Option<(task_triage::Classifying, Vec<usize>)> {
+    if wave.leftovers.is_empty() {
+        return None;
+    }
+    let undone: Vec<u64> = wave.undone.iter().map(|(id, _)| *id).filter(|id| log.get(*id).is_some()).collect();
+    let unfinished: Vec<&SpecEvent> = tasks_not_delivered(log, returning).into_iter().chain(undone.iter().copied()).filter_map(|id| log.get(id)).collect();
+    let mut asked = Vec::new();
+    let mut items = Vec::new();
+    for (at, leftover) in wave.leftovers.iter().enumerate() {
+        let files: BTreeSet<String> = leftover_files(root, log, wave.wave, leftover).into_iter().collect();
+        if unfinished.iter().any(|task| repeats(&task_files(task), task.str_field("title"), task.str_field("text"), &files, leftover)) {
+            continue;
+        }
+        asked.push(at);
+        items.push(Item { title: leftover.title.clone(), text: leftover.detail.clone(), files });
+    }
+    let own: BTreeSet<u64> = std::iter::once(wave.wave).chain(wave.fixes.iter().copied()).collect();
+    let left = backlog_left(log);
+    let candidates: Vec<Candidate> = tasks_not_delivered(log, &own)
+        .into_iter()
+        .filter(|id| !undone.contains(id))
+        .chain(undone.iter().copied())
+        .filter_map(|id| log.get(id))
+        .map(|task| Candidate {
+            id: task.id,
+            title: task.str_field("title").unwrap_or_default(),
+            text: task.str_field("text").unwrap_or_default(),
+            files: task_files(task),
+            joinable: left.contains(&task.id) || undone.contains(&task.id),
+        })
+        .collect();
+    let summaries: Vec<Summary> = (!undone.is_empty())
+        .then(|| Summary { text: wave.delivered.clone(), tasks: undone.iter().filter_map(|id| log.current(*id).map(|task| task.id)).collect() })
+        .into_iter()
+        .collect();
+    let question = task_triage::classifying(&candidates, &items, &summaries)?;
+    Some((question, asked))
+}
+
+/// O destino que o classificador das atividades deu a cada sobra das voltas
+/// `waves`, na ordem em que elas e as sobras de cada uma vêm: a decisão que
+/// `ask` dá ao pedido de cada volta ([`leftover_question`], feito sobre a
+/// spec gravada `log`, sem as ondas em `returning`) — a já tomada, que nunca
+/// chama o Jev. `None` na sobra sem decisão: vale a regra de sempre.
+pub(super) fn leftover_destinations(
+    root: &Path,
+    (log, returning): (&SpecLog, &BTreeSet<u64>),
+    waves: &[WaveReport],
+    ask: &dyn Fn(&str) -> Option<Value>,
+) -> Vec<Option<Destination>> {
+    let mut out = Vec::new();
+    for wave in waves {
+        let mut own = vec![None; wave.leftovers.len()];
+        if let Some((question, asked)) = leftover_question(root, log, returning, wave)
+            && let Some(doc) = ask(&question.payload)
+        {
+            for (at, destination) in asked.into_iter().zip(question.read(&doc)) {
+                own[at] = destination;
+            }
+        }
+        out.extend(own);
+    }
+    out
 }
 
 /// O evento `kind` da sobra apontada pela onda `wave`, com o rascunho
@@ -651,7 +703,7 @@ mod tests {
         let second = leftover("Para outra vez", "Ainda `src/commit.rs`.", true);
         let found = [(1, &first), (1, &fresh), (1, &fresh_again), (1, &second)];
 
-        let events = leftover_events(root, "x", &log, &found, &BTreeSet::new(), &BTreeMap::new(), &[], Locale::PtBr);
+        let events = leftover_events(root, &log, &found, &BTreeSet::new(), &BTreeMap::new(), &[], Locale::PtBr);
         let kinds: Vec<&str> = events.iter().map(|event| event.kind).collect();
         assert_eq!(kinds, [REQUEST, REQUEST, REQUEST, REQUEST, TASK, TASK]);
         let joined = &events[4];
@@ -672,7 +724,7 @@ mod tests {
         assert_eq!(born.asks, [1, 2]);
 
         let tidy = leftover("Comentário velho", "Em `src/commit.rs`.", true);
-        let events = leftover_events(root, "x", &log, &[(1, &tidy)], &BTreeSet::new(), &BTreeMap::new(), &[], Locale::PtBr);
+        let events = leftover_events(root, &log, &[(1, &tidy)], &BTreeSet::new(), &BTreeMap::new(), &[], Locale::PtBr);
         let tasks = of_kind(&events, TASK);
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].draft.get("replaces"), Some(&json!(1)), "{:?}", tasks[0].draft);
@@ -700,7 +752,7 @@ mod tests {
         let born = Leftover { title: "A some".into(), detail: "Some.".into(), files: Some(vec!["src/a.ts".into()]), cleanup: false };
         let joining = Leftover { title: "B some".into(), detail: "Some.".into(), files: Some(vec!["src/b.ts".into()]), cleanup: false };
 
-        let events = leftover_events(root, "x", &log, &[(1, &born), (1, &joining)], &BTreeSet::new(), &BTreeMap::new(), &[], Locale::PtBr);
+        let events = leftover_events(root, &log, &[(1, &born), (1, &joining)], &BTreeSet::new(), &BTreeMap::new(), &[], Locale::PtBr);
         let tasks = of_kind(&events, TASK);
         assert_eq!(tasks.len(), 2);
         let new = tasks.iter().find(|task| !task.draft.contains_key("replaces")).unwrap();
@@ -726,13 +778,13 @@ mod tests {
         let detail = "O acerto errado aparece em `web/layout.css`, `scripts/install.ps1` e `apps/rt/Cargo.toml`; o conserto é em `src/soma.ts`.";
         let declared = Leftover { title: "Acerto errado".into(), detail: detail.into(), files: Some(vec!["src/soma.ts".into()]), cleanup: false };
 
-        let events = leftover_events(root, "x", &log, &[(1, &declared)], &BTreeSet::new(), &BTreeMap::new(), &[], Locale::PtBr);
+        let events = leftover_events(root, &log, &[(1, &declared)], &BTreeSet::new(), &BTreeMap::new(), &[], Locale::PtBr);
         let task = of_kind(&events, TASK)[0];
         assert_eq!(task.draft.get("files"), Some(&json!([{"path": "src/soma.ts"}])), "{:?}", task.draft);
         assert!(!task.draft.contains_key("blocked_by"), "{:?}", task.draft);
 
         let cited = leftover("Acerto errado", detail, false);
-        let events = leftover_events(root, "x", &log, &[(1, &cited)], &BTreeSet::new(), &BTreeMap::new(), &[], Locale::PtBr);
+        let events = leftover_events(root, &log, &[(1, &cited)], &BTreeSet::new(), &BTreeMap::new(), &[], Locale::PtBr);
         let files = of_kind(&events, TASK)[0].draft.get("files").and_then(Value::as_array).map_or(0, Vec::len);
         assert_eq!(files, 4, "sem a lista, o texto ainda dá os arquivos");
     }
@@ -952,17 +1004,34 @@ mod tests {
             ask_rewrites(root, &after, &meaning_joins(events, 0), &mut entries);
             entries
         };
-        let other = declared("O carrinho não salva o cupom", "O cupom some ao recarregar.", &["src/cart.ts"]);
-        let same = declared("O total não arredonda", "A soma mostra três casas.", &["src/total.ts"]);
-        let covered = declared("Desconto zera quando a quantidade muda", "Mudar a quantidade apaga o desconto.", &["src/cart.ts"]);
-        let found = [(1, &other), (1, &same), (1, &covered)];
+        let wave = WaveReport {
+            wave: 1,
+            delivered: "A volta.".into(),
+            files: Vec::new(),
+            commit: None,
+            proofs: Vec::new(),
+            fixes: Vec::new(),
+            replan: None,
+            undone: Vec::new(),
+            taken_elsewhere: false,
+            leftovers: vec![
+                declared("O carrinho não salva o cupom", "O cupom some ao recarregar.", &["src/cart.ts"]),
+                declared("O total não arredonda", "A soma mostra três casas.", &["src/total.ts"]),
+                declared("Desconto zera quando a quantidade muda", "Mudar a quantidade apaga o desconto.", &["src/cart.ts"]),
+            ],
+            agreed: Vec::new(),
+            returns: Vec::new(),
+            usage: Default::default(),
+        };
+        let found: Vec<(u64, &Leftover)> = wave.leftovers.iter().map(|leftover| (1, leftover)).collect();
         let asked = std::cell::RefCell::new(0);
         let ask = |_: &str| {
             *asked.borrow_mut() += 1;
             Some(json!({"answers": {"i0": sure("new"), "i0_near": sure("t2"), "i1": sure("join:t2"), "i2": sure("covered:t1")}}))
         };
 
-        let events = leftover_events_with(root, &log, &found, &BTreeSet::new(), &BTreeMap::new(), &[], Locale::PtBr, &ask);
+        let destinations = leftover_destinations(root, (&log, &BTreeSet::new()), std::slice::from_ref(&wave), &ask);
+        let events = leftover_events(root, &log, &found, &BTreeSet::new(), &BTreeMap::new(), &destinations, Locale::PtBr);
         assert_eq!(asked.into_inner(), 1, "um pedido só ao Jev");
         let tasks = of_kind(&events, TASK);
         assert!(tasks.iter().all(|task| task.draft.get("replaces") != Some(&json!(1))), "X não recebe a sobra de outro assunto");
@@ -997,7 +1066,7 @@ mod tests {
         let others: Vec<&Value> = entries.iter().enumerate().filter(|(at, _)| *at != at_y).map(|(_, entry)| entry).collect();
         assert!(others.iter().all(|entry| entry.get("rewrite").is_none()), "só a junção pelo sentido pede a reescrita: {entries:?}");
 
-        let without = leftover_events_with(root, &log, &found, &BTreeSet::new(), &BTreeMap::new(), &[], Locale::PtBr, &|_| None);
+        let without = leftover_events(root, &log, &found, &BTreeSet::new(), &BTreeMap::new(), &[], Locale::PtBr);
         let x = of_kind(&without, TASK).into_iter().find(|task| task.draft.get("replaces") == Some(&json!(1))).unwrap();
         let on_files = translate("round.leftover_joined", Locale::PtBr).replace("{wave}", "1").replace("{title}", "O carrinho não salva o cupom");
         assert!(x.draft.get("agent").and_then(Value::as_str).is_some_and(|agent| agent.starts_with(on_files.split("{detail}").next().unwrap())), "{:?}", x.draft);
@@ -1017,7 +1086,7 @@ mod tests {
         let log = log_of(std::slice::from_ref(&task));
         let joining = declared("A leitura para sem índice", "Sem o índice, a leitura para.", &["src/commit.ts"]);
         let fresh = declared("O log não gira", "O arquivo de log cresce.", &["src/log.ts"]);
-        let events = leftover_events(root, "x", &log, &[(1, &joining), (1, &fresh)], &BTreeSet::new(), &BTreeMap::new(), &[], Locale::PtBr);
+        let events = leftover_events(root, &log, &[(1, &joining), (1, &fresh)], &BTreeSet::new(), &BTreeMap::new(), &[], Locale::PtBr);
         let requests = of_kind(&events, REQUEST);
         let marked = marked_title(1, "A leitura para sem índice", Locale::PtBr);
         assert_eq!(requests[0].draft.get("title"), Some(&json!(marked)));

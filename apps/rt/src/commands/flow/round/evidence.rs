@@ -209,7 +209,7 @@ mod tests {
         let b = backlog_task_on(root, said, crit, "Change contract.", &["src/b.rs"]);
         let log = spec_now(root);
         assert_eq!(
-            dispatch_backlog(root, "x", &log, &log, 4, None).map(|(formed, _)| formed),
+            dispatch_backlog(root, "x", &log, &log, 4, (None, None)).map(|(formed, _)| formed),
             Ok(vec![1])
         );
         assert_eq!(wave_order(root, 1), vec![a, b]);

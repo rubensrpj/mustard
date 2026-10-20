@@ -22,6 +22,7 @@ use serde_json::{Map, Value, json};
 
 use super::answer::RoundRefusal;
 use super::commit::git_lock;
+use super::jev_decision::{JevOn, Judged, Question, Waiting, decided};
 use super::report::{PlanChange, PlanRefusal, WaveReport, backlog_return};
 use super::sent_tasks::sent_tasks;
 use crate::commands::spec_events::write::record;
@@ -234,18 +235,22 @@ impl HeldReturn {
         let mut warning = self.refusal.to_value(lang);
         if let Some(fields) = warning.as_object_mut() {
             fields.remove("ok");
-            fields.insert("wave".into(), json!(self.wave));
+            if self.wave != super::jev_decision::FINAL_REVIEW {
+                fields.insert("wave".into(), json!(self.wave));
+            }
         }
         warning
     }
 
     /// A frase do próximo passo, no idioma `lang`: a mudança de plano já diz
     /// a onda e o que perguntar; a volta recusada diz que só ela ficou fora
-    /// da rodada, com o que falta para ela entrar.
+    /// da rodada, com o que falta para ela entrar; o veredito final que
+    /// espera a decisão do Jev já diz o que falta.
     pub(super) fn next_line(&self, lang: Locale) -> String {
         let hint = self.refusal.message(lang);
         match self.refusal {
             RoundRefusal::Replan { .. } => hint,
+            _ if self.wave == super::jev_decision::FINAL_REVIEW => hint,
             _ => translate("round.held_return", lang).replace("{wave}", &self.wave.to_string()).replace("{hint}", &hint),
         }
     }
@@ -298,11 +303,31 @@ fn held_by_change<'a>(change: &str, undone: &'a [(u64, String)]) -> Vec<&'a str>
 /// confiante, a primeira da lista, a que o agente parou. Nunca a onda
 /// inteira: a mudança que não cita tarefa não vai a quem ela não trata.
 fn change_targets<'a>(log: &SpecLog, change: &str, undone: &'a [(u64, String)], ask: &dyn Fn(&str) -> Option<Value>) -> Vec<&'a str> {
-    use crate::shared::task_triage::{Candidate, Destination, Item, classify_with};
+    use crate::shared::task_triage::Destination;
     let cited: Vec<&str> = undone.iter().map(|(_, code)| code.as_str()).filter(|code| cites(change, code)).collect();
     let Some(first) = undone.first().filter(|_| cited.is_empty()) else {
         return cited;
     };
+    let question = change_target_question(log, change, undone);
+    let read = question.and_then(|question| ask(&question.payload).map(|doc| question.read(&doc)));
+    let chosen = read.into_iter().flatten().next().flatten().and_then(|destination| match destination {
+        Destination::Covered { task, .. } | Destination::Join { task, .. } => Some(task),
+        Destination::New { near } => near,
+    });
+    let target = chosen.and_then(|id| undone.iter().find(|(own, _)| *own == id)).unwrap_or(first);
+    vec![target.1.as_str()]
+}
+
+/// A pergunta ao classificador das atividades sobre qual das tarefas de
+/// `undone`, lidas em `log` pelo número, recebe a mudança de plano `change`
+/// que não cita nenhuma; `None` quando ela cita alguma, ou sem tarefa. Só
+/// depende das tarefas gravadas e da volta: a rodada que deixa a volta
+/// esperando e a seguinte fazem o mesmo pedido.
+pub(super) fn change_target_question(log: &SpecLog, change: &str, undone: &[(u64, String)]) -> Option<crate::shared::task_triage::Classifying> {
+    use crate::shared::task_triage::{Candidate, Item, classifying};
+    if undone.is_empty() || undone.iter().any(|(_, code)| cites(change, code)) {
+        return None;
+    }
     let candidates: Vec<Candidate> = undone
         .iter()
         .filter_map(|(id, _)| log.get(*id))
@@ -315,12 +340,7 @@ fn change_targets<'a>(log: &SpecLog, change: &str, undone: &'a [(u64, String)], 
         })
         .collect();
     let item = Item { title: String::new(), text: change.trim().to_string(), files: BTreeSet::new() };
-    let chosen = classify_with(&candidates, &[item], &[], ask).into_iter().next().flatten().and_then(|destination| match destination {
-        Destination::Covered { task, .. } | Destination::Join { task, .. } => Some(task),
-        Destination::New { near } => near,
-    });
-    let target = chosen.and_then(|id| undone.iter().find(|(own, _)| *own == id)).unwrap_or(first);
-    vec![target.1.as_str()]
+    classifying(&candidates, &[item], &[])
 }
 
 /// `text` traz `code` como palavra inteira: sem letra, algarismo, hífen ou
@@ -550,15 +570,11 @@ pub(crate) fn append_agent_line(draft: &mut Map<String, Value>, line: &str) {
 /// A versão nova de cada tarefa que as voltas `waves` não fizeram, com a
 /// onda que a devolveu, lida em `log`: a volta ao backlog de
 /// [`undone_return`]. O impedimento da volta trava todas; a mudança de plano,
-/// só as que a recebem ([`change_targets`]), com o classificador das
-/// atividades da spec `spec` de `root`. A mudança recusada não trava nem
-/// anota nada: a tarefa volta solta, sem o texto dela.
-pub(super) fn undone_returns(root: &Path, spec: &str, log: &SpecLog, waves: &[WaveReport], lang: Locale) -> Vec<(u64, Map<String, Value>)> {
-    undone_returns_with(log, waves, lang, &crate::shared::task_triage::jev_ask(root, spec))
-}
-
-/// [`undone_returns`] com a pergunta ao classificador feita por `ask`.
-fn undone_returns_with(log: &SpecLog, waves: &[WaveReport], lang: Locale, ask: &dyn Fn(&str) -> Option<Value>) -> Vec<(u64, Map<String, Value>)> {
+/// só as que a recebem ([`change_targets`]), pela decisão do classificador
+/// das atividades que `ask` dá ao pedido de [`change_target_question`] — a
+/// já tomada, que nunca chama o Jev. A mudança recusada não trava nem anota
+/// nada: a tarefa volta solta, sem o texto dela.
+pub(super) fn undone_returns(log: &SpecLog, waves: &[WaveReport], lang: Locale, ask: &dyn Fn(&str) -> Option<Value>) -> Vec<(u64, Map<String, Value>)> {
     let mut out = Vec::new();
     for wave in waves {
         let impediment = wave.returns.last().and_then(|id| log.get(*id)).and_then(|event| event.str_field("blocked_by"));
@@ -601,17 +617,50 @@ fn guarded_return(task:&SpecEvent,wave:u64,has_changes:bool,change:Option<&str>,
     draft
 }
 
-pub(super) fn triage_returns(root:&std::path::Path,spec:&str,log:&SpecLog,waves:&[WaveReport],lang:Locale)->Vec<Value> {
-    let evidence:Vec<_>=waves.iter().map(|wave|crate::shared::return_triage::Evidence {
-        wave:wave.wave,assignment:mustard_core::domain::wave_prompt::tasks_text(log,wave.wave),summary:wave.delivered.clone(),
-        has_changes:!wave.files.is_empty(),explicit_replan:wave.replan.is_some(),explicit_undone:!wave.undone.is_empty(),
-        explicit_blocker:wave.returns.last().and_then(|id|log.get(*id)).and_then(|e|e.str_field("blocked_by")).is_some(),
-    }).collect();
-    crate::shared::return_triage::classify(root,spec,&evidence).into_iter().map(|mut warning| {
-        warning["reason"]=json!("no-change-return-needs-verification");
-        if lang==Locale::PtBr {warning["hint"]=json!("Retorno sem mudança: confira as condições externas atuais e os recibos de teste. Divida ou bloqueie o trabalho não concluído antes de outro despacho. A classificação do relato não comprova suas afirmações.");}
-        warning
-    }).collect()
+/// A triagem de cada volta sem mudança de `waves`, ambígua — sem impedimento,
+/// sem mudança de plano nem tarefa devolvida, e com relato —, pela decisão
+/// do Jev já tomada ([`super::jev_decision::decided`]), que nunca o chama: a
+/// trava do passo do git está presa, e `jev_on` foi lido antes dela. Volta o aviso de cada volta classificada,
+/// em `lang`; sem decisão do Jev, com ele desligado, o aviso pede a
+/// conferência de quem conduz, como sempre. A volta cuja decisão ainda não
+/// existe, com o Jev ligado, sai de `waves` e fica fora desta rodada, com a
+/// pergunta dela, que sai depois de a trava soltar.
+pub(super) fn triage_returns(root: &Path, log: &SpecLog, waves: &mut Vec<WaveReport>, lang: Locale, jev_on: JevOn) -> (Vec<Value>, Vec<HeldReturn>, Vec<Waiting>) {
+    use crate::shared::return_triage::{Evidence, payload, verdict};
+    let (mut warnings, mut waiting) = (Vec::new(), Vec::new());
+    let held = hold_refused(waves, |wave| {
+        let evidence = Evidence {
+            wave: wave.wave,
+            assignment: mustard_core::domain::wave_prompt::tasks_text(log, wave.wave),
+            summary: wave.delivered.clone(),
+            has_changes: !wave.files.is_empty(),
+            explicit_replan: wave.replan.is_some(),
+            explicit_undone: !wave.undone.is_empty(),
+            explicit_blocker: wave.returns.last().and_then(|id| log.get(*id)).and_then(|e| e.str_field("blocked_by")).is_some(),
+        };
+        let Some(asked) = payload(&evidence) else {
+            return Ok(());
+        };
+        let payloads = vec![asked];
+        let doc = match decided(root, log, Question::NoChange, &payloads, jev_on) {
+            Judged::Waiting => {
+                waiting.push(Waiting { wave: wave.wave, question: Question::NoChange, payloads });
+                return Err(RoundRefusal::JevPending { wave: wave.wave, question: Question::NoChange });
+            }
+            Judged::Answered(docs) => docs.into_iter().next(),
+            Judged::Rule => None,
+        };
+        let mut warning = verdict(&evidence, doc.as_ref());
+        warning["reason"] = json!("no-change-return-needs-verification");
+        if lang == Locale::PtBr {
+            warning["hint"] = json!(
+                "Retorno sem mudança: confira as condições externas atuais e os recibos de teste. Divida ou bloqueie o trabalho não concluído antes de outro despacho. A classificação do relato não comprova suas afirmações."
+            );
+        }
+        warnings.push(warning);
+        Ok(())
+    });
+    (warnings, held, waiting)
 }
 
 /// O aviso da resposta da rodada de que as tarefas que a volta `wave` não
@@ -1790,5 +1839,84 @@ mod tests {
         let chosen = |_: &str| Some(json!({"answers": {"i0": {"choice": "join:t2", "confidence": 0.9, "probabilities": {"join:t2": 0.9, "new": 0.05}}}}));
         assert_eq!(change_targets(&log, "O plano precisa de outra ordem.", &undone, &chosen), [b]);
         assert_eq!(change_targets(&log, "O plano precisa de outra ordem.", &undone, &|_| None), [a]);
+    }
+
+    /// A classificação de cada pergunta de escolha `choice`, com a certeza
+    /// alta, como o Jev a dá.
+    fn classified(payload: &str, choice: &str) -> Value {
+        let body: Value = serde_json::from_str(payload).unwrap();
+        let answers: Map<String, Value> = body["questions"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(|key| (key.clone(), json!({"type": "choice", "choice": choice, "confidence": 0.95, "probabilities": {choice: 0.95, "insufficient": 0.05}})))
+            .collect();
+        json!({ "answers": answers })
+    }
+
+    /// As voltas da spec `x` de `root` que nenhuma rodada assumiu ainda.
+    fn pending_returns(root: &Path) -> Vec<u64> {
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        super::super::report::returned_waves(&log).0.iter().map(|wave| wave.wave).collect()
+    }
+
+    /// O aviso da volta sem mudança na resposta `out` da rodada.
+    fn no_change_warning(out: &Value) -> Option<Value> {
+        out["warnings"].as_array()?.iter().find(|w| w["reason"] == json!("no-change-return-needs-verification")).cloned()
+    }
+
+    /// A volta sem mudança nunca vai ao Jev com a trava do passo do git
+    /// presa: ela fica fora desta rodada, a pergunta sai depois de a trava
+    /// soltar, e a rodada seguinte a assume com a classificação gravada, sem
+    /// perguntar de novo. O Jev que falha manda a pergunta à reserva, e a
+    /// volta espera o recibo. Com o Jev desligado, a volta é assumida na
+    /// mesma rodada, como sempre, sem classificação.
+    #[test]
+    fn a_no_change_return_waits_for_the_jev_outside_the_git_lock_and_the_next_round_applies_it() {
+        for mode in ["jev", "reserve", "off"] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+            round(root, "x", None);
+            let back = json!({"wave": 1, "text": "Nada a mudar: o conserto já estava no projeto e a prova do critério passou."});
+            assert_eq!(returned(root, back)["ok"], json!(true));
+            let asked = std::rc::Rc::new(std::cell::RefCell::new(Vec::<bool>::new()));
+            if mode != "off" {
+                let (watched, answers) = (root.to_path_buf(), mode == "jev");
+                let seen = std::rc::Rc::clone(&asked);
+                crate::shared::jev::yes_no::ask_in_test(Some(std::rc::Rc::new(move |payloads: &[String]| {
+                    if payloads.iter().any(|payload| payload.contains("return-triage-v1")) {
+                        let free = mustard_core::io::fs::lock::LockedFile::exclusive_if_free(&watched.join(".claude/spec/round-git.lock")).unwrap().is_some();
+                        seen.borrow_mut().push(free);
+                    }
+                    answers.then(|| payloads.iter().map(|payload| classified(payload, "validation-only")).collect())
+                })));
+            }
+            let first = round(root, "x", None);
+            if mode == "off" {
+                assert!(pending_returns(root).is_empty(), "taken in the same round: {first}");
+                assert_eq!(no_change_warning(&first).unwrap_or_else(|| panic!("{first}"))["reported_category"], json!("insufficient"));
+                assert!(first.get("reserves").is_none(), "{first}");
+                continue;
+            }
+            let waiting = first["warnings"].as_array().into_iter().flatten().find(|w| w["reason"] == json!("round-jev-decision-pending")).cloned();
+            assert_eq!(waiting.map(|w| w["wave"].clone()), Some(json!(1)), "{first}");
+            assert_eq!(pending_returns(root), vec![1], "the return waits for the decision: {first}");
+            assert!(no_change_warning(&first).is_none(), "{first}");
+            assert_eq!(asked.take(), vec![true], "one question, asked with the git-step lock free");
+            if mode == "reserve" {
+                let request = first["reserves"][0].clone();
+                let prompt = request["delegation"]["request"]["prompt"].as_str().unwrap_or_else(|| panic!("{first}"));
+                assert!(prompt.contains("What does the agent's summary in w1 report as the reason for no changes?"), "{prompt}");
+                crate::shared::jev::reserve::answer_in_test(root, &request, |_| "validation-only".into(), "sure");
+            }
+            let second = round(root, "x", None);
+            crate::shared::jev::yes_no::ask_in_test(None);
+            assert!(asked.take().is_empty(), "the recorded decision answers in place of the Jev");
+            assert!(pending_returns(root).is_empty(), "{second}");
+            let warning = no_change_warning(&second).unwrap_or_else(|| panic!("{second}"));
+            assert_eq!(warning["reported_category"], json!("validation-only"), "{mode}: {second}");
+            assert_eq!(warning["verified_fact"], json!(false));
+        }
     }
 }

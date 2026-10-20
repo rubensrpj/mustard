@@ -662,6 +662,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("conversation_size.wave_continue", Locale::EnUs) => {
             "[Mustard] Task finished: total context, {now} thousand tokens; initial input and inherited summaries, {baseline} thousand; work, {counted} thousand. The limit is {total_limit} thousand context tokens. The largest task added {largest} thousand. Go on to the next task."
         }
+        // A resposta do passo que termina a última tarefa da onda: não há
+        // próxima, e a ordem é entregar.
+        ("conversation_size.tasks_finished", Locale::PtBr) => {
+            "[Mustard] Todas as tarefas da onda terminaram. Grave a entrega e devolva o relatório a quem \
+             conduz."
+        }
+        ("conversation_size.tasks_finished", Locale::EnUs) => {
+            "[Mustard] Every task of the wave is finished. Record the delivery and return the report to \
+             the conductor."
+        }
         // A mesma medida quando outra tarefa não cabe: a ordem de entregar,
         // que fecha a trava, e como escrever o resumo, em cinco blocos fixos.
         // O texto da entrega é o único lugar do resumo.
@@ -1118,6 +1128,90 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("triage.same_work_covered", Locale::EnUs) => {
             "The open task {task} — {title} already covers this activity: finishing it finishes this one, and nothing was recorded. If it is other work, record again with `distinct` and the reason."
         }
+        ("round.jev_pending.removed_name", Locale::PtBr) => {
+            "A onda {wave} cita um nome que ela tirou, e o Jev ainda não disse se é a peça tirada. A pergunta sai com a trava do git solta, e a rodada seguinte aplica a resposta. Rode `mustard-rt run round` de novo; com `reserves` na resposta, mande antes o recibo da reserva."
+        }
+        ("round.jev_pending.removed_name", Locale::EnUs) => {
+            "Wave {wave} cites a name it removed, and Jev has not yet said whether it is the removed piece. The question goes out with the git lock released, and the next round applies the answer. Run `mustard-rt run round` again; with `reserves` in the answer, send the reserve's receipt first."
+        }
+        ("round.jev_pending.no_change", Locale::PtBr) => {
+            "A onda {wave} voltou sem mudança, e o Jev ainda não classificou o relato dela. A pergunta sai com a trava do git solta, e a rodada seguinte aplica a resposta. Rode `mustard-rt run round` de novo; com `reserves` na resposta, mande antes o recibo da reserva."
+        }
+        ("round.jev_pending.no_change", Locale::EnUs) => {
+            "Wave {wave} came back without changes, and Jev has not yet classified its report. The question goes out with the git lock released, and the next round applies the answer. Run `mustard-rt run round` again; with `reserves` in the answer, send the reserve's receipt first."
+        }
+        ("round.jev_pending.change_target", Locale::PtBr) => {
+            "A onda {wave} pede uma mudança de plano que não cita tarefa, e o Jev ainda não disse qual tarefa ela trava. A pergunta sai com as travas do git e das cópias soltas, e a rodada seguinte aplica a resposta. Rode `mustard-rt run round` de novo; com `reserves` na resposta, mande antes o recibo da reserva."
+        }
+        ("round.jev_pending.change_target", Locale::EnUs) => {
+            "Wave {wave} asks for a plan change that cites no task, and Jev has not yet said which task it holds. The question goes out with the git and copies locks released, and the next round applies the answer. Run `mustard-rt run round` again; with `reserves` in the answer, send the reserve's receipt first."
+        }
+        ("round.jev_pending.unmet_items", Locale::PtBr) => {
+            "A onda {wave} não cumpriu um item combinado, e o Jev ainda não disse para onde ele vai. A pergunta sai com as travas do git e das cópias soltas, e a rodada seguinte aplica a resposta. Rode `mustard-rt run round` de novo; com `reserves` na resposta, mande antes o recibo da reserva."
+        }
+        ("round.jev_pending.unmet_items", Locale::EnUs) => {
+            "Wave {wave} did not meet an agreed item, and Jev has not yet said where it goes. The question goes out with the git and copies locks released, and the next round applies the answer. Run `mustard-rt run round` again; with `reserves` in the answer, send the reserve's receipt first."
+        }
+        ("round.jev_pending.leftovers", Locale::PtBr) => {
+            "A onda {wave} voltou com sobras, e o Jev ainda não disse para onde cada uma vai. A pergunta sai com as travas do git e das cópias soltas, e a rodada seguinte aplica a resposta. Rode `mustard-rt run round` de novo; com `reserves` na resposta, mande antes o recibo da reserva."
+        }
+        ("round.jev_pending.leftovers", Locale::EnUs) => {
+            "Wave {wave} came back with leftovers, and Jev has not yet said where each one goes. The question goes out with the git and copies locks released, and the next round applies the answer. Run `mustard-rt run round` again; with `reserves` in the answer, send the reserve's receipt first."
+        }
+        ("round.jev_pending.review_unmet", Locale::PtBr) => {
+            "A revisão final não cumpriu um item combinado, e o Jev ainda não disse para onde ele vai: o veredito fica fora desta chamada. A pergunta sai com as travas do git e das cópias soltas, e a chamada seguinte aplica a resposta. Rode o mesmo comando de novo; com `reserves` na resposta, mande antes o recibo da reserva."
+        }
+        ("round.jev_pending.review_unmet", Locale::EnUs) => {
+            "The final review did not meet an agreed item, and Jev has not yet said where it goes: the verdict stays out of this call. The question goes out with the git and copies locks released, and the next call applies the answer. Run the same command again; with `reserves` in the answer, send the reserve's receipt first."
+        }
+        ("round.skill_pick_reserve", Locale::PtBr) => {
+            "A onda {wave} não saiu nesta rodada. A escolha das skills de uma tarefa dela espera a decisão do Jev. Com `reserves` na resposta, mande antes o recibo da reserva. Ela sai na rodada seguinte com as skills escolhidas."
+        }
+        ("round.skill_pick_reserve", Locale::EnUs) => {
+            "Wave {wave} did not go out in this round. The skill choice of one of its tasks waits for Jev's decision. With `reserves` in the answer, send the reserve's receipt first. It goes out in the next round with the chosen skills."
+        }
+        ("round.items_jev_pending", Locale::PtBr) => {
+            "A onda {wave} não saiu nesta rodada. A escolha dos itens do pedido dela espera a decisão do Jev. Com `reserves` na resposta, mande antes o recibo da reserva. Ela sai na rodada seguinte."
+        }
+        ("round.items_jev_pending", Locale::EnUs) => {
+            "Wave {wave} did not go out in this round. The choice of the items of its request waits for Jev's decision. With `reserves` in the answer, send the reserve's receipt first. It goes out in the next round."
+        }
+        ("triage.request_new_spec", Locale::PtBr) => {
+            "O Jev leu este pedido como obra fora do objetivo desta spec: nada foi gravado. Abra uma spec nova com ele, pelo texto em `request`. Se o usuário disser que é desta spec, grave de novo com `same_spec` e a palavra dele."
+        }
+        ("triage.request_new_spec", Locale::EnUs) => {
+            "Jev read this request as work outside this spec's goal: nothing was recorded. Open a new spec with it, from the text in `request`. If the user says it belongs to this spec, record it again with `same_spec` and their words."
+        }
+        ("triage.request_pending", Locale::PtBr) => {
+            "O Jev leu este pedido como trabalho para depois, fora do objetivo desta spec. Ele foi gravado na lista de pendências do projeto, como {pending}, e não na spec."
+        }
+        ("triage.request_pending", Locale::EnUs) => {
+            "Jev read this request as work for later, outside this spec's goal. It was recorded on the project's pending list, as {pending}, and not in the spec."
+        }
+        ("triage.request_unsure", Locale::PtBr) => {
+            "O Jev não teve certeza do lugar deste pedido: esta spec, uma spec nova ou a lista de pendências do projeto. O pedido foi gravado aqui; confirme com o usuário."
+        }
+        ("triage.request_unsure", Locale::EnUs) => {
+            "Jev was not sure where this request belongs: this spec, a new spec or the project's pending list. It was recorded here; confirm with the user."
+        }
+        ("triage.request_reserve", Locale::PtBr) => {
+            "O Jev não respondeu a tempo sobre este pedido: nada foi gravado ainda. Lance o agente de análise da sessão com o pedido em `reserve`. Mande o recibo por `mustard-rt run knowledge --complete-session <recibo.json>`. Depois grave o pedido de novo, igual, com `reserve` e o `request_id` dele."
+        }
+        ("triage.request_reserve", Locale::EnUs) => {
+            "Jev did not answer in time about this request: nothing was recorded yet. Launch the session's analysis agent with the request in `reserve`. Send its receipt with `mustard-rt run knowledge --complete-session <receipt.json>`. Then record the request again, unchanged, with `reserve` set to its `request_id`."
+        }
+        ("triage.task_reserve", Locale::PtBr) => {
+            "O Jev não respondeu a tempo sobre esta tarefa: nada foi gravado ainda. Lance o agente de análise da sessão com o pedido em `reserve`. Mande o recibo por `mustard-rt run knowledge --complete-session <recibo.json>`. Depois grave a tarefa de novo, igual, com `reserve` e o `request_id` dele."
+        }
+        ("triage.task_reserve", Locale::EnUs) => {
+            "Jev did not answer in time about this task: nothing was recorded yet. Launch the session's analysis agent with the request in `reserve`. Send its receipt with `mustard-rt run knowledge --complete-session <receipt.json>`. Then record the task again, unchanged, with `reserve` set to its `request_id`."
+        }
+        ("triage.reserve_pass", Locale::PtBr) => {
+            "O Jev não respondeu a tempo: as decisões em `reserves` esperam a reserva dele. Lance o agente de análise da sessão com cada pedido. Mande cada recibo por `mustard-rt run knowledge --complete-session <recibo.json>`. Depois rode `{command}` de novo: o recibo decide no lugar do Jev."
+        }
+        ("triage.reserve_pass", Locale::EnUs) => {
+            "Jev did not answer in time: the decisions in `reserves` wait for its reserve. Launch the session's analysis agent with each request. Send each receipt with `mustard-rt run knowledge --complete-session <receipt.json>`. Then run `{command}` again: the receipt decides in place of the Jev."
+        }
         ("triage.next_grouping", Locale::PtBr) => {
             "O modelo pequeno da sessão ainda não leu esta lista. Entregue o pedido de `grouping` ao agente de análise da sessão. Mande o recibo por `mustard-rt run knowledge --complete-session <recibo.json>` e rode `run triage` de novo. O Jev ordena cada assunto, e a resposta mostra a lista antes de qualquer gravação."
         }
@@ -1137,10 +1231,10 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The wave \"{objective}\" reads {tokens} tokens of files, above the limit of one wave. The agent delivers a part and returns the summary for the next one."
         }
         ("triage.order_unanswered", Locale::PtBr) => {
-            "{missing} de {requests} pedidos de ordem ao Jev ficaram sem resposta usável; esses assuntos ficam na ordem do modelo pequeno da sessão."
+            "{missing} de {requests} pedidos de ordem ao Jev ficaram sem resposta usável. Esses assuntos ficam na ordem do modelo pequeno da sessão. A tarefa sem nota de complexidade vai no modelo da configuração."
         }
         ("triage.order_unanswered", Locale::EnUs) => {
-            "{missing} of {requests} order requests to the Jev got no usable answer; those subjects keep the order of the session's small model."
+            "{missing} of {requests} order requests to the Jev got no usable answer. Those subjects keep the order of the session's small model. A task without a complexity grade goes on the configured model."
         }
         ("triage.held", Locale::PtBr) => "Classificadas, mas fora da gravação, as tarefas de onda com agente trabalhando: {tasks}.",
         ("triage.held", Locale::EnUs) => "Classified but left out of the write, the tasks of a wave whose agent is still working: {tasks}.",
@@ -1311,14 +1405,15 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // A resposta da rodada não traz o pedido da onda: traz o comando que
         // o lê, e é o agente quem o roda.
         ("round.next", Locale::PtBr) => {
-            "Despache cada entrada de `dispatch` a um agente `mustard-wave`. O prompt tem duas \
-             linhas: o título `# <spec> — onda <wave>`, com o número do campo `wave`, e o comando do \
-             campo `read`. Esse comando traz o pedido e as regras."
+            "Despache cada entrada de `dispatch` a um agente `mustard-wave`, com o modelo do campo \
+             `model` dela. O prompt tem duas linhas: o título `# <spec> — onda <wave>`, com o número do \
+             campo `wave`, e o comando do campo `read`. Esse comando traz o pedido e as regras."
         }
         ("round.next", Locale::EnUs) => {
-            "Dispatch each `dispatch` entry to a `mustard-wave` agent. The prompt has two lines: the \
-             title `# <spec> — wave <wave>`, with the number in the `wave` field, and the command in \
-             the `read` field. That command brings the request and the rules."
+            "Dispatch each `dispatch` entry to a `mustard-wave` agent, on the model in its `model` \
+             field. The prompt has two lines: the title `# <spec> — wave <wave>`, with the number in \
+             the `wave` field, and the command in the `read` field. That command brings the request and \
+             the rules."
         }
         // O pedido de publicar e copiar a página fica por extenso só no
         // arquivo, e a resposta leva a linha curta.
@@ -1327,7 +1422,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.report", Locale::PtBr) => {
             "Ao terminar, o agente grava com `mustard-rt run write delivered`; o revisor, com \
              `mustard-rt run write verdict`. Sem volta, mande o agente gravá-la de novo pela ferramenta. Nunca a monte a partir da prosa dele. \
-             Com a volta gravada, veja o resumo com `mustard-rt run review-wave --wave <n>`. Depois rode a rodada com \
+             Com a volta gravada, a rodada pede o `mustard-review` da onda. Lance-o com o título e o comando devolvidos; \
+             leia só o veredito e os arquivos apontados. Sem ele, veja o resumo com `mustard-rt run review-wave --wave <n>` e rode a rodada com \
              `--report '<REVIEWED>{\"wave\":1,\"note\":\"…\"}</REVIEWED>'`, sem impressão nem linha de uso. O binário sabe qual volta \
              você viu e mede o consumo nas conversas. Para recusar, use `<REJECTED>{\"wave\":1,\"reason\":\"…\"}</REJECTED>`. \
              A recusa preserva a cópia e passa o motivo a um agente novo. Commit usa `commit` da entrega."
@@ -1335,7 +1431,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.report", Locale::EnUs) => {
             "On finishing, the agent records with `mustard-rt run write delivered`; the reviewer, with \
              `mustard-rt run write verdict`. Missing return: have the agent record it again through the tool. Never assemble it from its prose. \
-             With the return recorded, see the summary with `mustard-rt run review-wave --wave <n>`. Then run the round with \
+             With the return recorded, the round asks for the wave's `mustard-review`. Launch it with the title and command it returns; \
+             read only the verdict and the files it points at. Without it, see the summary with `mustard-rt run review-wave --wave <n>` and run the round with \
              `--report '<REVIEWED>{\"wave\":1,\"note\":\"…\"}</REVIEWED>'`, with no fingerprint or usage line. The binary knows which \
              return you saw and measures usage from the conversations. To reject, use `<REJECTED>{\"wave\":1,\"reason\":\"…\"}</REJECTED>`. \
              Rejection preserves the copy and sends the reason to a new agent. Commits use the delivery’s `commit`."
@@ -1365,6 +1462,50 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Wave {wave} awaits review before commit. Run `mustard-rt run review-wave --wave {wave} --spec {spec}`, \
              read the summary and accept in the round with `<REVIEWED>{\"wave\":{wave},\"note\":\"…\"}</REVIEWED>` or reject with `REJECTED`. \
              Acceptance holds for the diff seen: if it changed since, view it again. A recorded delivery does not approve code."
+        }
+        ("round.wave_review.required", Locale::PtBr) => {
+            "A onda {wave} passou nas conferências e espera o revisor dela antes do commit. Lance o `mustard-review` \
+             com o despacho de duas linhas: `{title}` e `{read}`. Ele grava um veredito curto; rode a rodada de novo \
+             e leia só o resultado, o motivo e os arquivos apontados. O diff inteiro fica com `run review-wave --wave {wave}`, a pedido."
+        }
+        ("round.wave_review.required", Locale::EnUs) => {
+            "Wave {wave} passed the checks and awaits its reviewer before commit. Launch `mustard-review` \
+             with the two-line dispatch: `{title}` and `{read}`. It records a short verdict; run the round again \
+             and read only the result, the reason and the files it points at. The whole diff stays in `run review-wave --wave {wave}`, on request."
+        }
+        ("round.wave_review.title", Locale::PtBr) => "{spec} — revisão da onda {wave}",
+        ("round.wave_review.title", Locale::EnUs) => "{spec} — review of wave {wave}",
+        ("round.wave_review.request", Locale::PtBr) => {
+            "Revise a volta da onda {wave} sem corrigir nada. Leia só o que este pedido traz; abra um arquivo da cópia `{copy}` \
+             só para conferir um ponto do diff. Responda com um veredito curto, gravado por `{command}`: \
+             `{\"wave\":{wave},\"result\":\"approved\",\"text\":\"…\"}` aprova; \
+             `{\"wave\":{wave},\"result\":\"rejected\",\"text\":\"o motivo em poucas frases\",\"files\":[\"…\"]}` reprova e aponta os arquivos. \
+             Só o defeito crítico reprova. O arquivo marcado com `*` saiu do plano."
+        }
+        ("round.wave_review.request", Locale::EnUs) => {
+            "Review wave {wave}'s return without fixing anything. Read only what this request brings; open a file of the copy `{copy}` \
+             only to check a point of the diff. Answer with a short verdict, recorded by `{command}`: \
+             `{\"wave\":{wave},\"result\":\"approved\",\"text\":\"…\"}` approves; \
+             `{\"wave\":{wave},\"result\":\"rejected\",\"text\":\"the reason in a few sentences\",\"files\":[\"…\"]}` rejects and points at the files. \
+             Only a critical defect rejects. A file marked `*` left the plan."
+        }
+        ("round.wave_review.tasks", Locale::PtBr) => "Tarefas da onda",
+        ("round.wave_review.tasks", Locale::EnUs) => "Tasks of the wave",
+        ("round.wave_review.covered", Locale::PtBr) => "Critérios e pedidos que elas cobrem",
+        ("round.wave_review.covered", Locale::EnUs) => "Criteria and requests they cover",
+        ("round.wave_review.rules", Locale::PtBr) => "Regras e decisões da onda",
+        ("round.wave_review.rules", Locale::EnUs) => "Rules and decisions of the wave",
+        ("round.wave_review.skills", Locale::PtBr) => "Skills que foram com as tarefas",
+        ("round.wave_review.skills", Locale::EnUs) => "Skills sent with the tasks",
+        ("round.wave_review.proofs", Locale::PtBr) => "Provas e passos que passaram",
+        ("round.wave_review.proofs", Locale::EnUs) => "Proofs and steps that passed",
+        ("round.wave_review.diff", Locale::PtBr) => "Diff da onda contra a base dela",
+        ("round.wave_review.diff", Locale::EnUs) => "The wave's diff against its base",
+        ("round.wave_review.left_out", Locale::PtBr) => {
+            "Ficaram de fora do diff, pelo tamanho: {files}. Leia-os na cópia só se o veredito depender deles."
+        }
+        ("round.wave_review.left_out", Locale::EnUs) => {
+            "Left out of the diff for size: {files}. Read them in the copy only if the verdict depends on them."
         }
         ("round.report.checks", Locale::PtBr) => {
             "A rodada junta e comita sem compilar nem rodar prova. O fechamento compila e valida \
@@ -1418,6 +1559,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.queued.behind_lot", Locale::EnUs) => "in the same subject as {task}, which also stayed",
         ("round.queued.arrived", Locale::PtBr) => "chegou ao backlog nesta rodada e entra na montagem da próxima",
         ("round.queued.arrived", Locale::EnUs) => "reached the backlog this round and joins the next round's assembly",
+        ("round.queued.jev_pending", Locale::PtBr) => {
+            "espera a decisão do Jev sobre ela; com `reserves` na resposta, mande antes o recibo da reserva"
+        }
+        ("round.queued.jev_pending", Locale::EnUs) => {
+            "waits for Jev's decision on it; with `reserves` in the answer, send the reserve's receipt first"
+        }
         ("round.queued.line_held", Locale::PtBr) => "{task} ficou: {detail}.",
         ("round.queued.line_held", Locale::EnUs) => "{task} stayed: {detail}.",
         ("round.queued.line_capacity", Locale::PtBr) => "Sem vaga para {tasks}: {detail}. A fila anda quando uma onda voltar.",
@@ -1576,6 +1723,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // cópia; e a onda viva sem sinal por 40 minutos vira aviso.
         ("round.resume.steps", Locale::PtBr) => "Passos já gravados desta onda:",
         ("round.resume.steps", Locale::EnUs) => "Steps already recorded for this wave:",
+        // O reenvio da onda que parou no meio de uma tarefa que não é a
+        // primeira: o bloco dela vem logo depois desta frase.
+        ("round.resume.task", Locale::PtBr) => {
+            "A tarefa em curso, que continua daqui, vem inteira abaixo. As seguintes chegam na resposta \
+             do passo, como antes."
+        }
+        ("round.resume.task", Locale::EnUs) => {
+            "The task in progress, which goes on from here, comes whole below. The next ones arrive in \
+             the answer to the step, as before."
+        }
         ("round.resume.notice", Locale::PtBr) => "Comece vendo o que mudou na cópia.",
         ("round.resume.notice", Locale::EnUs) => "Start by seeing what changed in the copy.",
         ("round.copies_full", Locale::PtBr) => {
@@ -2216,7 +2373,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 320, 0x7716_7bd5_a500_e438);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 347, 0x052f_cc84_6e05_479e);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
@@ -2408,6 +2565,7 @@ mod tests {
             ("conversation_size.window_unknown", &[][..]),
             ("conversation_size.wave_continue", &["{now}", "{baseline}", "{counted}", "{total_limit}", "{largest}"][..]),
             ("conversation_size.wave_deliver", &["{now}", "{baseline}", "{counted}", "{total_limit}", "{largest}"][..]),
+            ("conversation_size.tasks_finished", &[][..]),
             ("conversation_size.wave_locked", &["{build}"][..]),
             ("conversation_size.wave_locked_build", &["{command}"][..]),
             ("wave_prompt.summary.title", &[][..]),
@@ -2468,6 +2626,20 @@ mod tests {
             ("round.leftover_priority", &["{wave}"][..]),
             ("triage.same_work_open", &["{task}", "{title}"][..]),
             ("triage.same_work_covered", &["{task}", "{title}"][..]),
+            ("round.jev_pending.removed_name", &["{wave}"][..]),
+            ("round.jev_pending.no_change", &["{wave}"][..]),
+            ("round.jev_pending.change_target", &["{wave}"][..]),
+            ("round.jev_pending.unmet_items", &["{wave}"][..]),
+            ("round.jev_pending.leftovers", &["{wave}"][..]),
+            ("round.jev_pending.review_unmet", &[][..]),
+            ("round.skill_pick_reserve", &["{wave}"][..]),
+            ("round.items_jev_pending", &["{wave}"][..]),
+            ("triage.request_new_spec", &[][..]),
+            ("triage.request_pending", &["{pending}"][..]),
+            ("triage.request_unsure", &[][..]),
+            ("triage.request_reserve", &[][..]),
+            ("triage.task_reserve", &[][..]),
+            ("triage.reserve_pass", &["{command}"][..]),
             ("triage.held", &["{tasks}"][..]),
             ("triage.order_unanswered", &["{missing}", "{requests}"][..]),
             ("triage.wave_too_big", &["{objective}", "{tokens}"][..]),
@@ -2498,6 +2670,16 @@ mod tests {
             ("round.report.checks", &[][..]),
             ("round.review.hint", &["{wave}"][..]),
             ("round.review.required", &["{wave}", "{spec}"][..]),
+            ("round.wave_review.required", &["{wave}", "{title}", "{read}"][..]),
+            ("round.wave_review.title", &["{spec}", "{wave}"][..]),
+            ("round.wave_review.request", &["{wave}", "{copy}", "{command}"][..]),
+            ("round.wave_review.tasks", &[][..]),
+            ("round.wave_review.covered", &[][..]),
+            ("round.wave_review.rules", &[][..]),
+            ("round.wave_review.skills", &[][..]),
+            ("round.wave_review.proofs", &[][..]),
+            ("round.wave_review.diff", &[][..]),
+            ("round.wave_review.left_out", &["{files}"][..]),
             ("round.waiting", &["{waves}"][..]),
             ("round.close", &["{command}"][..]),
             ("round.review_open", &[][..]),
@@ -2519,6 +2701,7 @@ mod tests {
             ("round.fix_limit.question", &["{wave}", "{max}"][..]),
             ("round.resume.steps", &[][..]),
             ("round.resume.notice", &[][..]),
+            ("round.resume.task", &[][..]),
             ("round.resume.silent", &["{wave}"][..]),
             ("round.copies_full", &["{copies}", "{waves}"][..]),
             ("round.request_split", &["{wave}", "{cap}", "{kept}", "{total}", "{tasks}"][..]),
@@ -2529,7 +2712,7 @@ mod tests {
             ("prompt.final.title", &["{spec}"][..]),
             ("prompt.final.fixed", &[][..]),
             ("prompt.read.final", &["{root}", "{spec}"][..]),
-            ("prompt.read.wave", &["{root}", "{spec}"][..]),
+            ("prompt.read.wave", &["{root}", "{spec}", "{wave}"][..]),
             ("prompt.part.delivers", &[][..]),
             ("prompt.part.read", &[][..]),
             ("prompt.part.do", &[][..]),
@@ -2537,12 +2720,13 @@ mod tests {
             ("prompt.part.return", &[][..]),
             ("prompt.part.work", &[][..]),
             ("prompt.step.read", &["{part}"][..]),
-            ("prompt.step.task", &["{item}"][..]),
+            ("prompt.step.tasks", &[][..]),
+            ("prompt.step.first", &["{item}"][..]),
             ("prompt.step.attends", &["{item}"][..]),
-            ("prompt.step.read_task", &[][..]),
-            ("prompt.step.read_task_attends", &[][..]),
-            ("prompt.step.read_task_message", &[][..]),
             ("prompt.step.user_message", &[][..]),
+            ("prompt.task.heading", &["{n}", "{total}", "{item}"][..]),
+            ("prompt.task.skill", &["{name}", "{path}"][..]),
+            ("prompt.task.skill_cut", &["{name}", "{path}"][..]),
             ("prompt.step.file", &["{files}"][..]),
             ("prompt.step.files", &["{files}"][..]),
             ("prompt.step.read_before", &["{hints}"][..]),
@@ -2559,7 +2743,6 @@ mod tests {
             ("prompt.part.agreed", &[][..]),
             ("prompt.part.criteria", &[][..]),
             ("prompt.skill.stale", &[][..]),
-            ("prompt.skill.read", &[][..]),
             ("prompt.execution.copy", &["{copy}", "{root}"][..]),
             ("prompt.review.copy", &["{copy}", "{root}", "{commit}"][..]),
             ("prompt.review.cleanup", &["{copy}"][..]),

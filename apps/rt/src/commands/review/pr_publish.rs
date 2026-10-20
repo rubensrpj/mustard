@@ -557,6 +557,18 @@ pub fn run_open(root: &Path, base: &str, head: &str, spec: Option<&str>, fill: b
     let started = std::time::Instant::now();
     let repo = project_root(root);
     let provider = provider_for(&repo);
+    // A spec de antes desta versão do Mustard só se lê: nada é enviado nem
+    // aberto por ela.
+    let legacy = spec.map(str::trim).filter(|s| !s.is_empty()).and_then(|slug| {
+        mustard_core::io::legacy_specs::refuse_legacy(&mustard_core::io::spec_events::spec_root(&repo), slug).err()
+    });
+    if let Some(refusal) = legacy {
+        let lang = mustard_core::ProjectConfig::load(&repo).language().text_or_default();
+        let error = format!("{}: {}", refusal.reason(), refusal.message(lang));
+        let report = PrPublishReport::failed(ACTION_OPEN, provider.provider().to_string(), None, error);
+        emit(&OpenAnswer { principal: report, submodules: Vec::new(), hint: None });
+        return;
+    }
     let sourced = if fill {
         fill_from_commits(&repo, base, head)
     } else {

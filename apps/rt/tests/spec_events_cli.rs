@@ -1277,56 +1277,48 @@ fn a_metrics_search_comes_as_a_summary_and_all_brings_the_events() {
     assert_eq!(commands, [&json!("map search"); 3], "{all}");
 }
 
-/// Uma spec antiga, que gravava dentro dela o que os ganchos fizeram, as
-/// injeções, as chamadas e o tempo das etapas da rodada. Sem `--apply`, o
-/// `move-records` só diz quantos eventos e bytes sairiam, e nada muda; com
-/// ele, a spec vai inteira para a cópia de segurança, os registros passam ao
-/// arquivo de operações com a hora deles, e fica na spec o que é trabalho: a
-/// fala, o recibo de leitura, a etapa que a rodada confere e o registro que
-/// outro evento aponta.
+/// A spec de antes desta versão do Mustard só se lê. A gravação, a rodada, a
+/// retomada, o plano, a reabertura, o fechamento e a abertura do pull request
+/// recusam com o código próprio, e o arquivo dela fica com os mesmos bytes; a
+/// leitura passa. O comando que mexia nos registros das
+/// specs antigas saiu.
 #[test]
-fn move_records_only_shows_without_apply_and_moves_with_a_backup() {
+fn a_legacy_spec_is_read_only_and_move_records_is_gone() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
-    open_spec(root);
+    std::fs::write(root.join("mustard.json"), "{}").expect("config");
+    approved_with_waves(root, 1);
+    mustard_core::io::legacy_specs::mark_once(root, "0.2.24").expect("the list");
     let spec = mustard_core::io::spec_events::spec_file(root, "teste").expect("spec file");
-    let lines = [
-        json!({"v":1,"id":1,"code":"MSTD-MSG-0001","at":"2026-09-01T10:00:00-03:00","type":"message","author":"user","text":"arrume"}),
-        json!({"v":1,"id":2,"code":"MSTD-HOOK-0001","at":"2026-09-01T10:01:00-03:00","type":"hook","author":"hook","hook":"command_guard","action":"block","tool":"Bash","reason":"apaga"}),
-        json!({"v":1,"id":3,"code":"MSTD-INJ-0001","at":"2026-09-01T10:02:00-03:00","type":"injection","author":"hook","hook":"prompt_entry","chars":3,"text":"uma"}),
-        json!({"v":1,"id":4,"code":"MSTD-CALL-0001","at":"2026-09-01T10:03:00-03:00","type":"call","author":"binary","command":"round","ms":3,"result":"ok"}),
-        json!({"v":1,"id":5,"code":"MSTD-CALL-0002","at":"2026-09-01T10:04:00-03:00","type":"call","author":"binary","command":"read","ms":1,"result":"ok","request":"request-1","items":["MSTD-RULE-0001"]}),
-        json!({"v":1,"id":6,"code":"MSTD-STAGE-0001","at":"2026-09-01T10:05:00-03:00","type":"stage_run","author":"binary","phase":"delivery","stage":"merge","result":"pass","ms":9,"scope":"leaf","version":"0.2.24","attempt":42}),
-        json!({"v":1,"id":7,"code":"MSTD-STAGE-0002","at":"2026-09-01T10:06:00-03:00","type":"stage_run","author":"binary","phase":"delivery","stage":"wave-review-diff:1","result":"pass","ms":0,"fingerprint":"abc","attempt":3}),
-        json!({"v":1,"id":8,"code":"MSTD-CALL-0003","at":"2026-09-01T10:07:00-03:00","type":"call","author":"binary","command":"plan","ms":2,"result":"ok"}),
-        json!({"v":1,"id":9,"code":"MSTD-RM-0001","at":"2026-09-01T10:08:00-03:00","type":"remove","author":"assistant","targets":[8],"reason":"engano"}),
-    ];
-    let original: String = lines.iter().map(|line| line.to_string() + "\n").collect();
-    std::fs::write(&spec, &original).expect("old spec");
-    let moved_bytes: usize = [&lines[1], &lines[2], &lines[3], &lines[5]].iter().map(|line| line.to_string().len() + 1).sum();
+    let before = std::fs::read(&spec).expect("spec");
 
-    let shown = rt(root, &["move-records", "--spec", "teste"]).output().expect("run move-records");
-    assert!(shown.status.success(), "{}", String::from_utf8_lossy(&shown.stdout));
-    let shown = stdout_json(&shown);
-    assert_eq!((shown["applied"].clone(), shown["events"].clone(), shown["bytes"].clone()), (json!(false), json!(4), json!(moved_bytes)), "{shown}");
-    assert_eq!(std::fs::read_to_string(&spec).expect("spec"), original, "without --apply nothing changes");
+    for args in [
+        vec!["write", "decision", "--spec", "teste", "--json", r#"{"text":"Fica assim.","origin":2}"#],
+        vec!["round", "--spec", "teste", "--dispatch"],
+        vec!["resume", "--spec", "teste"],
+        vec!["plan", "--spec", "teste"],
+        vec!["reopen", "--spec", "teste", "--reason", "mais um ajuste"],
+        vec!["close", "--spec", "teste"],
+    ] {
+        let out = rt(root, &args).output().expect("run");
+        assert_eq!(out.status.code(), Some(1), "{args:?}: {}", String::from_utf8_lossy(&out.stdout));
+        let answer = stdout_json(&out);
+        assert_eq!(answer["reason"], json!("legacy-spec"), "{args:?}: {answer}");
+        assert!(answer["hint"].as_str().unwrap_or_default().contains("teste"), "{answer}");
+        assert_eq!(std::fs::read(&spec).expect("spec"), before, "{args:?} left the legacy spec as it was");
+    }
 
-    let applied = rt(root, &["move-records", "--spec", "teste", "--apply"]).output().expect("run move-records");
-    assert!(applied.status.success(), "{}", String::from_utf8_lossy(&applied.stdout));
-    let applied = stdout_json(&applied);
-    assert_eq!((applied["applied"].clone(), applied["events"].clone()), (json!(true), json!(4)), "{applied}");
-    let backup = root.join(applied["backup"].as_str().expect("the backup path"));
-    assert_eq!(std::fs::read_to_string(backup).expect("backup"), original);
-    let left: Vec<u64> = mustard_core::io::spec_events::read(&spec).expect("read").expect("spec").events.iter().map(|e| e.id).collect();
-    assert_eq!(left, [1, 5, 7, 8, 9]);
-    let operations = mustard_core::io::spec_events::operations_file(root, "teste").expect("operations file");
-    let moved = mustard_core::io::spec_events::read_operations(&operations).expect("read").expect("operations");
-    let kinds: Vec<(&str, &str)> = moved.events.iter().map(|e| (e.event_type.as_str(), e.at())).collect();
-    assert_eq!(kinds, [("hook", "2026-09-01T10:01:00-03:00"), ("injection", "2026-09-01T10:02:00-03:00"), ("call", "2026-09-01T10:03:00-03:00"), ("stage_run", "2026-09-01T10:05:00-03:00")]);
+    let pr = rt(root, &["pr-open", "--base", "dev", "--head", "feature/teste", "--spec", "teste"]).output().expect("run pr-open");
+    let answer = stdout_json(&pr);
+    assert_eq!(answer["ok"], json!(false), "{answer}");
+    assert!(answer["error"].as_str().unwrap_or_default().starts_with("legacy-spec"), "{answer}");
+    assert_eq!(std::fs::read(&spec).expect("spec"), before, "pr-open left the legacy spec as it was");
 
-    let again = stdout_json(&rt(root, &["move-records", "--spec", "teste", "--apply"]).output().expect("run move-records"));
-    assert_eq!((again["applied"].clone(), again["events"].clone()), (json!(false), json!(0)), "{again}");
-    let missing = rt(root, &["move-records", "--spec", "outra"]).output().expect("run move-records");
-    assert_eq!(missing.status.code(), Some(1));
-    assert_eq!(stdout_json(&missing)["reason"], json!("no-spec-file"));
+    let read = rt(root, &["read", "state", "--spec", "teste"]).output().expect("run read");
+    assert!(read.status.success(), "{}", String::from_utf8_lossy(&read.stdout));
+
+    let gone = rt(root, &["move-records", "--spec", "teste"]).output().expect("run move-records");
+    assert!(!gone.status.success());
+    let gone = stdout_json(&gone);
+    assert_eq!(gone["kind"], json!("InvalidSubcommand"), "{gone}");
 }

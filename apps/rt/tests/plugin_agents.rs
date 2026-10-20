@@ -1052,8 +1052,9 @@ fn the_wave_and_review_agents_carry_the_project_wide_execution_rules() {
     }
 }
 
-/// A revisão de onda lê o diff, o código e os recibos da prova da onda, e não
-/// compila, não roda teste nem binário e não corta. Tudo o que roda — reler os
+/// A revisão de onda lê só o pedido que o despacho manda ler, não corrige,
+/// não compila nem roda teste, e dá um veredito curto: aprovado, ou reprovado
+/// com o motivo e os arquivos. Tudo o que roda — reler os
 /// recibos do fechamento e reexecutar o que ficou incerto, a prova de ponta a
 /// ponta pelo caminho do usuário e o caso da proteção tirada com duas voltas
 /// ao mesmo tempo — mora só no bloco da revisão final da obra,
@@ -1068,9 +1069,9 @@ fn only_the_final_review_runs_checks_and_the_wave_review_reads_the_diff_and_rece
             "pt-BR",
             "## Gravidade",
             ("- Revisão de onda:", [
-                "leia o diff, o código e os recibos da prova da onda",
-                "`run panel --wave N --observations`",
-                "Não compile, não rode teste nem binário e não corte nada",
+                "leia só o pedido que o despacho manda ler (diff, tarefas, critérios, regras, skills e provas)",
+                "Não corrija, não compile nem rode teste",
+                "`rejected` com o motivo em poucas frases e os arquivos em `files`",
             ]),
             "- Revisão final da obra, completa:",
             [
@@ -1089,9 +1090,9 @@ fn only_the_final_review_runs_checks_and_the_wave_review_reads_the_diff_and_rece
             "en-US",
             "## Severity",
             ("- Wave review:", [
-                "read the diff, the code and the wave's proof receipts",
-                "`run panel --wave N --observations`",
-                "Do not build, run tests or binaries, or cut anything",
+                "read only the request the dispatch points to (diff, tasks, criteria, rules, skills and proofs)",
+                "Do not fix, build or run tests",
+                "`rejected` with the reason in a few sentences and the files in `files`",
             ]),
             "- The work's final review, in full:",
             [

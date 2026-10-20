@@ -496,6 +496,18 @@ impl AgentsConfig {
 /// A chave de `agents` com o modelo e o esforço do revisor final.
 pub const REVIEW_AGENT: &str = "review";
 
+/// A chave de `agents` com o modelo do revisor de cada onda e o interruptor
+/// dele (`enabled`).
+pub const WAVE_REVIEW_AGENT: &str = "wave_review";
+
+/// O modelo do revisor de onda quando `agents.wave_review.model` não declara
+/// um que valha.
+pub const DEFAULT_WAVE_REVIEW_MODEL: &str = "sonnet";
+
+/// A chave de `agents` que liga o modelo de cada onda pela dificuldade das
+/// tarefas dela ([`ProjectConfig::by_difficulty`]).
+pub const BY_DIFFICULTY: &str = "by_difficulty";
+
 /// As finalidades em que o Jev pode ser ligado, cada uma em
 /// `judgement.<finalidade>.filter`.
 pub const JEV_PURPOSES: [&str; 4] = ["search", "wave-planning", "context", "spec-search"];
@@ -1119,6 +1131,15 @@ impl ProjectConfig {
         true
     }
 
+    /// Se o modelo do agente de cada onda sai da dificuldade das tarefas dela
+    /// ([`crate::domain::agent_model`]): ligado, salvo quando
+    /// `agents.by_difficulty` é `false`. Desligado, toda onda vai no modelo de
+    /// `agents.model`, sem subida na reprovação.
+    #[must_use]
+    pub fn by_difficulty(&self) -> bool {
+        self.agents.extra.get(BY_DIFFICULTY).and_then(Value::as_bool).unwrap_or(true)
+    }
+
     /// O modelo e o esforço dos agentes, os dois já conferidos.
     #[must_use]
     pub fn agent_settings(&self) -> AgentSettings<'_> {
@@ -1135,6 +1156,24 @@ impl ProjectConfig {
         let model = field("model").filter(|model| is_model_name(model)).unwrap_or_else(|| self.agent_model());
         let effort = field("effort").and_then(|effort| AGENT_EFFORTS.into_iter().find(|known| known.eq_ignore_ascii_case(effort))).unwrap_or_else(|| self.agent_effort());
         AgentSettings { model, effort }
+    }
+
+    /// O modelo e o esforço do revisor de cada onda: o modelo de
+    /// `agents.wave_review.model`, conferido como o dos agentes, ou
+    /// [`DEFAULT_WAVE_REVIEW_MODEL`]; o esforço é sempre o
+    /// [`DEFAULT_AGENT_EFFORT`], que o lançamento impõe a todo agente.
+    #[must_use]
+    pub fn wave_review_settings(&self) -> AgentSettings<'_> {
+        let model = self.agents.extra.get(WAVE_REVIEW_AGENT).and_then(|review| review.get("model")).and_then(Value::as_str).map(str::trim);
+        AgentSettings { model: model.filter(|model| is_model_name(model)).unwrap_or(DEFAULT_WAVE_REVIEW_MODEL), effort: DEFAULT_AGENT_EFFORT }
+    }
+
+    /// Se a volta de cada onda vai ao revisor de onda antes do commit:
+    /// ligado, salvo quando `agents.wave_review.enabled` é `false`. Desligado,
+    /// quem conduz aceita a volta com a linha `REVIEWED`.
+    #[must_use]
+    pub fn wave_review_enabled(&self) -> bool {
+        self.agents.extra.get(WAVE_REVIEW_AGENT).and_then(|review| review.get("enabled")).and_then(Value::as_bool).unwrap_or(true)
     }
 }
 
@@ -1957,6 +1996,18 @@ mod tests {
         assert_eq!(AgentSettings::default(), AgentSettings { model: "sonnet", effort: "xhigh" });
     }
 
+    /// The model by difficulty is on unless `agents.by_difficulty` says
+    /// `false`; anything else that is not a boolean keeps it on.
+    #[test]
+    fn the_model_by_difficulty_is_on_unless_the_config_turns_it_off() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("mustard.json");
+        for (agents, on) in [("{}", true), (r#"{"by_difficulty":true}"#, true), (r#"{"by_difficulty":false}"#, false), (r#"{"by_difficulty":"no"}"#, true)] {
+            std::fs::write(&path, format!(r#"{{"agents":{agents}}}"#)).unwrap();
+            assert_eq!(ProjectConfig::load(dir.path()).by_difficulty(), on, "{agents}");
+        }
+    }
+
     /// O padrão do esforço só é escrito com o campo faltando: o que a pessoa
     /// já escreveu, valendo ou não, não muda, e o resto da seção `agents`
     /// (o modelo e as chaves que o Mustard não conhece) fica como estava.
@@ -1981,5 +2032,25 @@ mod tests {
         let mut invalid = ProjectConfig::load(dir.path());
         assert!(!invalid.ensure_agent_effort(), "what is written is never overwritten, valid or not");
         assert_eq!(invalid.agent_effort(), DEFAULT_AGENT_EFFORT, "the agent falls back to the default");
+    }
+
+    /// The wave reviewer has its own model, Sonnet by default whatever the
+    /// wave agents use, always at effort xhigh, and is on unless
+    /// `agents.wave_review.enabled` is `false`.
+    #[test]
+    fn the_wave_reviewer_defaults_to_sonnet_at_xhigh_and_is_on_unless_turned_off() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("mustard.json");
+        for (agents, model, on) in [
+            (r#"{"model":"opus"}"#, "sonnet", true),
+            (r#"{"wave_review":{"model":"haiku","effort":"low"}}"#, "haiku", true),
+            (r#"{"wave_review":{"model":"bad name","enabled":false}}"#, "sonnet", false),
+            (r#"{"wave_review":{"enabled":"no"}}"#, "sonnet", true),
+        ] {
+            std::fs::write(&path, format!(r#"{{"agents":{agents}}}"#)).unwrap();
+            let cfg = ProjectConfig::load(dir.path());
+            assert_eq!(cfg.wave_review_settings(), AgentSettings { model, effort: DEFAULT_AGENT_EFFORT }, "{agents}");
+            assert_eq!(cfg.wave_review_enabled(), on, "{agents}");
+        }
     }
 }

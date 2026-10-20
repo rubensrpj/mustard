@@ -9,7 +9,7 @@ Binário busca e calcula; LLM decide e implementa.
 - Spec: `mustard-rt run read`/`run write`; procure com `mustard-rt run find "<texto>"`; nunca edite `spec.*`. Fatos: `mustard-rt run answer --facts '<JSON>'`. Medida: `mustard-rt run evidence --spec <spec>`; não generalize uma amostra.
 - Mesmo assunto: `write request`, não pendência. Registre o autorizado; na dúvida, pergunte uma vez. Em spec fechada ou com pull request aberto, `mustard-rt run reopen --reason "<motivo>"` vem antes de `write request`. PR reprovado pelo servidor: `mustard-rt run reopen --fix --reason "<motivo>"`. Outro assunto: `mustard-rt run pending --add`; se quiser fazer já, sugira outra conversa. Backlog aberto: `mustard-rt run triage`.
 - Mudança não autorizada exige aceite; corrija o Mustard no produto.
-- Antes do commit: `mustard-rt run review-wave --wave <n> --spec <spec>` mostra o resumo (`--diff` traz o diff); confira regras, skills e testes. Aceite na rodada com `<REVIEWED>{"wave":<n>,"note":"…"}</REVIEWED>` ou REJECTED com motivo. Tarefa bloqueada não vira onda igual.
+- Antes do commit: lance o `mustard-review` pedido; leia só o veredito. Sem ele, `mustard-rt run review-wave --wave <n> --spec <spec>` dá o resumo, e `--diff` o diff. Aceite com `<REVIEWED>{"wave":<n>,"note":"…"}</REVIEWED>` ou REJECTED com motivo. Tarefa bloqueada não vira onda igual.
 - `/mustard:mods`: projeto e consumo local. `/mustard:pages`, `run publish` e `mustard-rt run page` (markdown) só sob pedido; exportar não é publicar; `--include-consumption` exige autorização.
 
 Responda na ordem de explicar do estilo de resposta. Commit/PR não levam cliente, e-mail ou caminho local.

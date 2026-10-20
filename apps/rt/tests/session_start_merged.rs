@@ -767,6 +767,8 @@ fn a_running_spec_merged_outside_frees_its_copies_then_is_delivered() {
     let report = scene.background_report(SPEC);
     assert_eq!(report["ok"], json!(true), "{report}");
     assert_eq!(scene.phase_of(SPEC), "delivered", "{report}");
+    let summary: Vec<String> = mustard_core::io::project_summary::read(&scene.work).into_iter().map(|entry| entry.spec).collect();
+    assert_eq!(summary, vec![SPEC.to_string()], "the delivery outside also leaves the summary line: {report}");
     assert!(!slot.exists(), "the slot left the disk: {report}");
     let leaving = mustard_core::io::wave_prompt::copies_dir(&scene.work).join(".leaving");
     let still: Vec<_> = std::fs::read_dir(&leaving).map(|entries| entries.flatten().map(|e| e.path()).collect()).unwrap_or_default();
@@ -794,6 +796,23 @@ fn a_running_spec_merged_outside_frees_its_copies_then_is_delivered() {
     assert_eq!(refused["reason"], json!("spec-not-open"), "{refused}");
     let hint = refused["hint"].as_str().unwrap_or_default();
     assert!(hint.contains("entregue") && !hint.contains("delivered"), "the phase is said by its name: {hint}");
+}
+
+/// A spec de antes desta versão do Mustard fica fora da conferência do
+/// início da sessão: juntada na base por um colega, ela não é entregue nem
+/// citada.
+#[test]
+fn a_legacy_spec_merged_outside_is_left_alone() {
+    let scene = Outside::new();
+    scene.running_spec(SPEC, BRANCH);
+    scene.round_commit(SPEC, "entrega.txt", "a entrega\n");
+    scene.installed();
+    mustard_core::io::legacy_specs::mark_once(&scene.work, "0.2.24").expect("the list");
+    scene.merged_by_a_colleague(BRANCH, false);
+
+    let (context, _) = scene.start("startup");
+    assert!(!context.contains("fora do fechamento"), "{context}");
+    assert_eq!(scene.phase_of(SPEC), "running", "{context}");
 }
 
 /// Com uma onda despachada e sem volta, a obra não está pronta, mesmo com a

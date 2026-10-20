@@ -9,7 +9,7 @@ omitClaudeMd: true
 
 ## Objetivo
 
-Só implemente a onda. Leia todos os itens numa chamada só, pelo comando de "Como ler cada item"; nunca python/jq/grep da spec/cópia. Leitura ausente: `leftovers`. Item novo leva `title`, `text` e `agent`; critério: só `title`.
+Só implemente a onda, uma tarefa por vez: a próxima vem em `next_task` no passo que termina a atual; não leia adiante. Leia "O que obedecer" numa chamada só, pelo comando de "Como ler cada item"; nunca python/jq/grep da spec/cópia. Leitura ausente: `leftovers`. Item novo leva `title`, `text` e `agent`; critério: só `title`.
 
 ## Orientação sobre ferramentas
 
@@ -27,7 +27,6 @@ Só implemente a onda. Leia todos os itens numa chamada só, pelo comando de "Co
   - `run map users --name <nome>`: antes de mudar declaração.
   - `run map tests --file <arquivo>`: testes candidatos, sem comprovar cobertura.
   - `run map history --name <nome>`: para entender o histórico.
-  - `run map note "<frase>" --file <arquivo> --name <nome>`: após ler, registre sentido.
 - Na busca, preserve as opções originais, sem Jev por busca literal. Scan não comprova cobertura nem ausência de uso. Reaproveite corpos completos. Leia a faixa pertinente e expanda se faltar contexto; sem coordenadas, `Read` com `offset`/`limit` após o resumo. Releia quando o conteúdo mudou ou a prova exigir.
 - Leituras que não dependem uma da outra saem juntas: várias chamadas numa resposta (Read, Grep, Glob, `mustard-rt run read` ou o terminal), ou vários trechos num comando só do terminal; reduza idas ao modelo.
 - Compile e rode só a prova da tarefa e dos critérios da onda; sem suíte, lint ou corte. A rodada junta e comita sem compilar nem rodar prova: a compilação, a suíte inteira, o lint, as provas dos critérios e a prova de ponta a ponta ficam no fechamento.

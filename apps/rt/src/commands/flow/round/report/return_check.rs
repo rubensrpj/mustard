@@ -20,6 +20,7 @@ use super::super::commit_title::message;
 use super::super::finish_check::{proof_older_than_files, unfinished_work};
 use super::super::queue::{open_review, open_sends};
 use super::super::read_check::{request_name, unread_items, without_undone};
+use super::super::task_release::held_back;
 use super::{RoundRefusal, criterion_id, observations, proof_target, wave_report_of};
 
 /// As conferências da volta que só leem a própria volta, feitas na gravação
@@ -115,9 +116,12 @@ pub(crate) fn check_return(
     }
     // E de ter lido cada item que o pedido lista: o pedido de antes desta
     // conferência não grava a lista, e a onda dele não é cobrada. A leitura é
-    // das tarefas feitas: o que só as devolvidas em `undone` pedem não conta.
+    // das tarefas feitas: o que só as devolvidas em `undone` pedem não conta,
+    // nem o que só as tarefas ainda não liberadas trazem.
     let undone: Vec<String> = report.undone.iter().map(|(_, code)| code.clone()).collect();
+    let not_released = held_back(&log, sent, wave);
     let unread = without_undone(&log, wave, &undone, unread_items(&log, sent, &request_name(Some(wave))));
+    let unread: Vec<String> = unread.into_iter().filter(|item| !not_released.contains_key(item)).collect();
     if !unread.is_empty() {
         return Err(RoundRefusal::Refused(Refusal::DeliveryReadMissing { wave, missing: unread }));
     }
@@ -145,6 +149,17 @@ pub(crate) fn check_return(
 /// rodada o resolve de novo ao assumi-lo.
 pub(crate) fn check_verdict_return(start: &Path, spec: &str, draft: &mut Map<String, Value>) -> Result<(), RoundRefusal> {
     let (_, log) = spec_log(start, spec)?;
+    // O veredito com a onda de um pedido de revisão de onda aberto responde a
+    // ele, e nunca à revisão final: a gravação o marca, e só ele leva a marca.
+    let wave = draft.get("wave").and_then(Value::as_u64);
+    if draft.get("final") != Some(&Value::Bool(true)) && wave.is_some_and(|wave| super::super::wave_review::open_requests(&log).contains_key(&wave)) {
+        settle_verdict(&log, &mut draft.clone()).map_err(RoundRefusal::Refused)?;
+        draft.insert("wave_review".into(), json!(true));
+        draft.insert("returned".into(), json!(true));
+        draft.insert("author".into(), json!("review"));
+        return Ok(());
+    }
+    draft.remove("wave_review");
     let Some(asked) = open_review(&log) else {
         return Err(RoundRefusal::NoOpenReview);
     };
@@ -170,7 +185,7 @@ pub(crate) fn check_verdict_return(start: &Path, spec: &str, draft: &mut Map<Str
 /// classificador lhe dar destino
 /// ([`place_review_unmet`](super::super::agreed::place_review_unmet)): são
 /// esses itens que a função devolve.
-pub(super) fn settle_verdict(log: &SpecLog, draft: &mut Map<String, Value>) -> Result<Vec<Unmet>, Refusal> {
+pub(in crate::commands::flow::round) fn settle_verdict(log: &SpecLog, draft: &mut Map<String, Value>) -> Result<Vec<Unmet>, Refusal> {
     if let Some(Value::Array(criteria)) = draft.get_mut("criteria") {
         for item in criteria.iter_mut() {
             if let Some(reference) = item.get("criterion").cloned() {

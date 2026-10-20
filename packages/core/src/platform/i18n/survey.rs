@@ -222,6 +222,28 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("survey.gap.green_order", Locale::EnUs) => "The order, with green tests at every step",
         ("survey.gap.before_after", Locale::PtBr) => "Os números antes e depois: linhas, tempo e tokens",
         ("survey.gap.before_after", Locale::EnUs) => "The numbers before and after: lines, time and tokens",
+        ("survey.project_summary", Locale::PtBr) => {
+            "Entregas anteriores do projeto ligadas a este objetivo. São contexto para você: \
+             nenhuma vira ponto da lista."
+        }
+        ("survey.project_summary", Locale::EnUs) => {
+            "Earlier project deliveries related to this goal. They are context for you: none \
+             becomes a point of the list."
+        }
+        ("survey.project_summary.reserve", Locale::PtBr) => {
+            "O Jev não respondeu a tempo sobre as entregas do projeto ligadas a este objetivo. Lance o agente de análise da sessão com o pedido em `reserve`. Mande o recibo por `mustard-rt run knowledge --complete-session <recibo.json>`. Depois rode `mustard-rt run grill` de novo: o recibo escolhe as entregas."
+        }
+        ("survey.project_summary.reserve", Locale::EnUs) => {
+            "Jev did not answer in time about the project deliveries related to this goal. Launch the session's analysis agent with the request in `reserve`. Send its receipt with `mustard-rt run knowledge --complete-session <receipt.json>`. Then run `mustard-rt run grill` again: the receipt chooses the deliveries."
+        }
+        ("survey.project_summary.recent", Locale::PtBr) => {
+            "As entregas mais recentes do projeto, sem a escolha pelo objetivo. São contexto para \
+             você: nenhuma vira ponto da lista."
+        }
+        ("survey.project_summary.recent", Locale::EnUs) => {
+            "The project's most recent deliveries, not chosen by the goal. They are context for \
+             you: none becomes a point of the list."
+        }
         _ => return None,
     })
 }
@@ -236,7 +258,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("survey.rs"), super::PREFIXES, 41, 0xa680_0fe3_45b7_8986);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("survey.rs"), super::PREFIXES, 44, 0x6b6e_b1c8_82a6_1413);
     }
 
     /// As recusas e os passos do levantamento e o rótulo de cada lacuna saem

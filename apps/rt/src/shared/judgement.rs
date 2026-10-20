@@ -297,7 +297,7 @@ impl<'a> JudgementService<'a> {
 
 /// Only an intrinsic single-task profile has stable aliases. Running-wave
 /// relations keep their actual IDs and complete changing state in the key.
-fn profile_aliases(payload: &str) -> (String, BTreeMap<String, String>) {
+pub(crate) fn profile_aliases(payload: &str) -> (String, BTreeMap<String, String>) {
     let Ok(mut value) = serde_json::from_str::<Value>(payload) else {
         return (payload.into(), BTreeMap::new());
     };
@@ -334,7 +334,7 @@ fn profile_aliases(payload: &str) -> (String, BTreeMap<String, String>) {
     value["state"]["backlog"] = json!({"t0":task});
     (value.to_string(), names.into_iter().collect())
 }
-fn remap_answers(doc: &mut Value, aliases: &BTreeMap<String, String>, restore: bool) {
+pub(crate) fn remap_answers(doc: &mut Value, aliases: &BTreeMap<String, String>, restore: bool) {
     let Some(answers) = doc.get_mut("answers").and_then(Value::as_object_mut) else {
         return;
     };

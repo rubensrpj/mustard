@@ -6,14 +6,18 @@
 //! Nenhuma tarefa espera por arquivo: cada onda trabalha na própria cópia, e
 //! a rodada junta no commit. Seguram a tarefa só a dependência declarada, a
 //! limpeza por último e as vagas.
-//! O Jev responde decisões tipadas não atendidas pelo cache; na falha,
-//! o agrupamento segue pelas evidências nativas.
+//! O Jev responde decisões tipadas não atendidas pelo cache, antes das
+//! travas da rodada ([`super::dispatch_jev`]): com elas presas, a montagem só
+//! lê a decisão gravada, e a tarefa sem decisão espera a rodada seguinte, só
+//! ela. O Jev que falha manda a pergunta à reserva, e a tarefa espera o
+//! recibo; o recibo incerto, como o Jev desligado, deixa o agrupamento pelas
+//! evidências nativas.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::Instant;
 
-use mustard_core::domain::map_filter::FilterError;
+use mustard_core::domain::map_filter::{FilterError, FilterUsage};
 use mustard_core::domain::spec_events::{Block, BlockQuery, SpecEvent, SpecLog};
 use mustard_core::domain::spec_state::PhaseWriter;
 use serde_json::{Map, Value, json};
@@ -28,7 +32,8 @@ use super::stops::waves_stuck;
 use super::summary_wave::{group_waves, summary_waves};
 use crate::commands::spec_events::write::{RecordCheck, record};
 use crate::shared::dag::{BacklogTask, CLASH_FROM, pack_by_kind, sets_cross, touches_whole_tree};
-use crate::shared::jev::{ASSEMBLY_CALL, record_jev_call};
+use super::dispatch_jev::{Asker, unsure};
+use crate::shared::jev::{ASSEMBLY_CALL, backlog_payloads, read_judgements, record_jev_call};
 use crate::shared::judgement::{Board, BoardTask, BoardWave, Judged};
 
 /// Quem julga o backlog para a montagem: uma avaliação do quadro inteiro
@@ -53,6 +58,9 @@ pub(crate) enum Hold {
     /// Chegou ao backlog nesta rodada, devolvida pelo corte de uma onda ou
     /// nascida agora, e entra na montagem da rodada seguinte.
     Arrived,
+    /// Espera a decisão do Jev, ou o recibo da reserva dele, que a passada
+    /// antes das travas da rodada seguinte lê.
+    JevPending,
 }
 
 /// Monta as ondas que saem nesta rodada, olhando o backlog inteiro
@@ -172,28 +180,128 @@ pub(crate) fn dispatch_backlog(
     on_entry: &SpecLog,
     locked: &SpecLog,
     limit: usize,
-    judge: Option<&Judge<'_>>,
+    (judge, asker): (Option<&Judge<'_>>, Option<&Asker<'_>>),
 ) -> Result<Assembly, mustard_core::domain::spec_events::Refusal> {
-    assemble(start, spec, (on_entry, locked), limit, judge, false)
+    assemble(start, spec, (on_entry, locked), limit, (judge, asker), (false, false)).map(|(assembly, _)| assembly)
+}
+
+/// A montagem que a rodada faria agora na spec lida em `log`, sem gravar
+/// nada: a spec como as gravações dela a deixariam. É a passada antes das
+/// travas, com as perguntas ao Jev feitas e gravadas por `asker`; com
+/// `formed_only`, só as ondas do classificador.
+///
+/// # Errors
+///
+/// A recusa da conferência das gravações.
+pub(crate) fn planned_backlog(
+    start: &Path,
+    spec: &str,
+    log: &SpecLog,
+    limit: usize,
+    (judge, asker): (Option<&Judge<'_>>, &Asker<'_>),
+    formed_only: bool,
+) -> Result<SpecLog, mustard_core::domain::spec_events::Refusal> {
+    let (_, planned) = assemble(start, spec, (log, log), limit, (judge, Some(asker)), (formed_only, true))?;
+    Ok(planned.unwrap_or_else(|| log.clone()))
 }
 
 /// [`dispatch_backlog`] com a formação do classificador pendente: só as
 /// ondas que ele já formou saem, inteiras; as tarefas que ele ainda vai ler
 /// esperam a leitura, sem Jev e sem a montagem de sempre.
 pub(crate) fn dispatch_formed(start: &Path, spec: &str, on_entry: &SpecLog, locked: &SpecLog, limit: usize) -> Result<Assembly, mustard_core::domain::spec_events::Refusal> {
-    assemble(start, spec, (on_entry, locked), limit, None, true)
+    assemble(start, spec, (on_entry, locked), limit, (None, None), (true, false)).map(|(assembly, _)| assembly)
 }
 
-/// O corpo de [`dispatch_backlog`] e de [`dispatch_formed`]: com
-/// `formed_only`, só as ondas do classificador saem.
+/// O julgamento do quadro de uma montagem: as tarefas que foram ao Jev, o
+/// julgamento das que têm decisão (`None` deixa a montagem pelas evidências
+/// nativas), as que esperam a decisão e a chamada que saiu agora, com o uso
+/// ou a falha.
+struct Judging {
+    asked: usize,
+    judged: Option<Judged>,
+    undecided: BTreeSet<u64>,
+    call: Option<(Instant, Result<FilterUsage, FilterError>)>,
+}
+
+/// As tarefas do backlog que o pedido `payload` da montagem pergunta.
+fn tasks_of(payload: &str) -> Vec<u64> {
+    let body: Value = serde_json::from_str(payload).unwrap_or(Value::Null);
+    body["state"]["backlog"].as_object().into_iter().flatten().filter_map(|(key, _)| key.strip_prefix('t')?.parse().ok()).collect()
+}
+
+/// A resposta, na forma da do Jev, ao pedido `payload` da montagem, pelo que
+/// `judged` diz de cada tarefa dele; `None` quando falta alguma.
+fn board_doc(payload: &str, judged: &Judged) -> Option<Value> {
+    let body: Value = serde_json::from_str(payload).ok()?;
+    let mut answers = Map::new();
+    for key in body["questions"].as_object()?.keys() {
+        let id: u64 = key.rsplit("_t").next()?.parse().ok()?;
+        let judgement = judged.tasks.get(&id)?;
+        let answer = if key.starts_with("tipo_") {
+            let kind = judgement.kind.key();
+            json!({ "type": "choice", "choice": kind, "confidence": judgement.confidence, "probabilities": { kind: judgement.confidence } })
+        } else {
+            json!({ "type": "noul", "noul": judgement.clash })
+        };
+        answers.insert(key.clone(), answer);
+    }
+    Some(json!({ "answers": answers }))
+}
+
+/// O julgamento do quadro `board` por `judge`, decidido por `asker`: antes
+/// das travas, a chamada sai para os pedidos sem decisão e a resposta fica
+/// gravada; com as travas presas, só se lê. A tarefa de um pedido sem decisão
+/// espera; a decisão incerta da reserva, ou a regra gravada, deixa a montagem
+/// pelas evidências nativas. Sem `asker`, a chamada sai na hora, inteira.
+fn judged_board(board: &Board, judge: &Judge<'_>, asker: Option<&Asker<'_>>) -> Judging {
+    let asked = board.backlog.len();
+    let Some(asker) = asker else {
+        let called = Instant::now();
+        let answer = judge(board);
+        return Judging { asked, judged: answer.as_ref().ok().cloned(), undecided: BTreeSet::new(), call: Some((called, answer.map(|judged| judged.usage))) };
+    };
+    let payloads = match backlog_payloads(board) {
+        Ok(payloads) => payloads,
+        Err(error) => return Judging { asked, judged: None, undecided: BTreeSet::new(), call: asker.asks().then(|| (Instant::now(), Err(error))) },
+    };
+    let mut call = None;
+    if asker.asks() && !asker.missing(ASSEMBLY_CALL, &payloads).is_empty() && !asker.take_receipt(ASSEMBLY_CALL, &payloads) {
+        let wanted = asker.missing(ASSEMBLY_CALL, &payloads);
+        let called = Instant::now();
+        let answer = judge(board);
+        let docs = answer.as_ref().ok().and_then(|judged| wanted.iter().map(|payload| board_doc(payload, judged)).collect::<Option<Vec<_>>>());
+        asker.settle(ASSEMBLY_CALL, &wanted, docs, true, called);
+        call = Some((called, answer.map(|judged| judged.usage)));
+    }
+    let known = asker.lookup(ASSEMBLY_CALL, &payloads);
+    let docs: Vec<Value> = known.iter().flatten().cloned().collect();
+    if docs.iter().any(Value::is_null) || unsure(&docs) {
+        return Judging { asked, judged: None, undecided: BTreeSet::new(), call };
+    }
+    let undecided: BTreeSet<u64> = payloads.iter().zip(&known).filter(|(_, doc)| doc.is_none()).flat_map(|(payload, _)| tasks_of(payload)).collect();
+    let decided = Board { running: board.running.clone(), backlog: board.backlog.iter().filter(|task| !undecided.contains(&task.id)).cloned().collect() };
+    let mut answers = Map::new();
+    for doc in &docs {
+        answers.extend(doc["answers"].as_object().cloned().unwrap_or_default());
+    }
+    match read_judgements(&json!({ "answers": answers }), &decided) {
+        Ok(tasks) => Judging { asked, judged: Some(Judged { tasks, usage: FilterUsage::default() }), undecided, call },
+        Err(_) => Judging { asked, judged: None, undecided: BTreeSet::new(), call },
+    }
+}
+
+/// O corpo de [`dispatch_backlog`], de [`dispatch_formed`] e de
+/// [`planned_backlog`]: com `formed_only`, só as ondas do classificador
+/// saem; com `dry`, nada se grava, e volta também a spec como as gravações a
+/// deixariam.
 fn assemble(
     start: &Path,
     spec: &str,
     (on_entry, locked): (&SpecLog, &SpecLog),
     limit: usize,
-    judge: Option<&Judge<'_>>,
-    formed_only: bool,
-) -> Result<Assembly, mustard_core::domain::spec_events::Refusal> {
+    (judge, asker): (Option<&Judge<'_>>, Option<&Asker<'_>>),
+    (formed_only, dry): (bool, bool),
+) -> Result<(Assembly, Option<SpecLog>), mustard_core::domain::spec_events::Refusal> {
     use crate::shared::dag::{Batch, pack_by_local_evidence};
 
     let log = locked;
@@ -288,14 +396,18 @@ fn assemble(
                 if let Some(known) = affinity_board.backlog.iter().find(|known| known.id == task.id) {task.reads.clone_from(&known.reads);}
             }
             board.running.clone_from(&affinity_board.running);
-            let called = Instant::now();
-            Some((board.backlog.len(), called, judge(&board)))
+            Some(judged_board(&board, judge, asker))
         }
         _ => None,
     };
+    let undecided: BTreeSet<u64> = judging.as_ref().map(|judging| judging.undecided.clone()).unwrap_or_default();
     let batches = match &judging {
         _ if formed_only => Vec::new(),
-        Some((_, _, Ok(judged))) => pack_by_kind(&population, &order, &waiting, &judged.tasks, &code_of),
+        Some(Judging { judged: Some(judged), .. }) => {
+            // A tarefa sem decisão do Jev espera a rodada seguinte, só ela.
+            let decided = |ids: &[u64]| -> Vec<u64> { ids.iter().copied().filter(|id| !undecided.contains(id)).collect() };
+            pack_by_kind(&population, &decided(&order), &decided(&waiting), &judged.tasks, &code_of)
+        }
         _ => {
             let mut batches = if order.is_empty() { Vec::new() } else {
                 pack_by_local_evidence(&population, &order, &waiting, &super::evidence::links(&affinity_board))
@@ -337,9 +449,9 @@ fn assemble(
     // A chamada da montagem fica gravada, com quantas tarefas foram ao Jev e
     // quantas saíram em onda; na falha, com o motivo, e a montagem seguiu
     // pelo arquivo.
-    if let Some((asked, called, answer)) = &judging {
+    if let Some(Judging { asked, call: Some((called, answer)), .. }) = &judging {
         let returned = chosen.iter().filter(|(_, summary)| summary.is_none()).map(|(batch, _)| batch.tasks.len()).sum();
-        record_jev_call(start, spec, ASSEMBLY_CALL, *called, Some((*asked, returned)), answer.as_ref().map(|judged| &judged.usage));
+        record_jev_call(start, spec, ASSEMBLY_CALL, *called, Some((*asked, returned)), answer.as_ref());
     }
 
     // Attach a ready, small cleanup to the last functional batch when local
@@ -360,11 +472,14 @@ fn assemble(
         }
     }
     let judged = match &judging {
-        Some((_, _, Ok(judged))) => Some(&judged.tasks),
+        Some(Judging { judged: Some(judged), .. }) => Some(&judged.tasks),
         _ => None,
     };
     let assembled = Assembled { codes: &codes, claimed: &claimed, order: &order, chosen: &chosen };
-    let held = why_held(&assembled, judged, arrived);
+    let mut held = why_held(&assembled, judged, arrived);
+    for id in &undecided {
+        held.insert(codes.get(id).cloned().unwrap_or_else(|| id.to_string()), Hold::JevPending);
+    }
 
     let mut writes: Vec<(&str, Map<String, Value>)> = Vec::new();
     // Os comandos que o projeto declara: o de teste reconhece a prova que o
@@ -420,16 +535,19 @@ fn assemble(
         writes.push(("task", backlog_return(task)));
     }
     if writes.is_empty() {
-        return Ok((formed, held));
+        return Ok(((formed, held), dry.then(|| locked.clone())));
     }
     let mut check = RecordCheck::open(start, spec, PhaseWriter::Binary)?;
     for (event_type, draft) in &writes {
         check.record(event_type, draft.clone())?;
     }
+    if dry {
+        return Ok(((formed, held), Some(check.log().clone())));
+    }
     for (event_type, draft) in writes {
         record(start, spec, event_type, draft, PhaseWriter::Binary)?;
     }
-    Ok((formed, held))
+    Ok(((formed, held), None))
 }
 
 /// O que a montagem decidiu, para dizer por que cada tarefa pronta ficou: o
@@ -617,7 +735,7 @@ mod tests {
         }
         let first = backlog_task_on(root, said, crit, "Change the contract.", &["src/contract.ts"]);
         let log = spec_x(root);
-        assert_eq!(super::dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![1]));
+        assert_eq!(super::dispatch_backlog(root, "x", &log, &log, max_parallel(root), (None, None)).map(|(formed, _)| formed), Ok(vec![1]));
         seed_running(root, 1);
         scan.scan(root, &mustard_core::io::project_map::model_path(root)).expect("the scan writes the map");
 
@@ -637,7 +755,7 @@ mod tests {
         };
 
         let log = spec_x(root);
-        let (formed, held) = super::dispatch_backlog(root, "x", &log, &log, max_parallel(root), Some(&judge)).unwrap();
+        let (formed, held) = super::dispatch_backlog(root, "x", &log, &log, max_parallel(root), (Some(&judge), None)).unwrap();
         assert_eq!(formed, vec![2], "as cinco do mesmo tipo saem na onda 2, sem teto");
         let now = spec_x(root);
         let wave_of = |task: u64| now.current(task).and_then(mustard_core::domain::spec_events::SpecEvent::wave);

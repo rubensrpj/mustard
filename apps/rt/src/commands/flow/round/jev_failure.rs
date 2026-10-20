@@ -110,11 +110,12 @@ mod tests {
     }
 
     /// O Jev sem crédito recusa a escolha dos itens com 402 em cada rodada
-    /// que solta uma onda: a primeira rodada da sessão avisa uma vez, com o
-    /// motivo `no_credit` e o remédio de crédito, nunca o de trocar a chave;
-    /// a seguinte, na mesma sessão, cala, mas grava a chamada; outra sessão
-    /// avisa de novo. A sessão nova cuja rodada não chamou o Jev cala: a
-    /// falha velha, de outra rodada, não é dela.
+    /// que monta uma onda, e a escolha vai à reserva: a primeira rodada da
+    /// sessão avisa uma vez, com o motivo `no_credit` e o remédio de crédito,
+    /// nunca o de trocar a chave; a seguinte, na mesma sessão, cala, mas
+    /// grava a chamada; outra sessão avisa de novo. A rodada que solta a onda
+    /// pelo recibo da reserva não chama o Jev, e a sessão nova cuja rodada não
+    /// o chamou cala: a falha velha, de outra rodada, não é dela.
     #[test]
     fn a_jev_failure_reaches_the_round_once_per_session_with_its_reason() {
         let dir = tempdir().unwrap();
@@ -129,10 +130,20 @@ mod tests {
             ));
         });
         let _jev = fake::refusing_with(402);
+        // O recibo de cada reserva da resposta `out`, com o sim certo, e a
+        // rodada da sessão `session` que solta a onda que esperava por ele.
+        let sent_by_receipt = |out: &Value, session: &str| {
+            for request in out["reserves"].as_array().into_iter().flatten() {
+                crate::shared::jev::reserve::answer_in_test(root, request, |_| "yes".into(), "sure");
+            }
+            let sent = round_in(root, Some(session));
+            assert_eq!(sent["dispatch"].as_array().map(Vec::len), Some(1), "{sent}");
+            assert!(jev_warnings(&sent).is_empty(), "{sent}");
+        };
 
         loose_task(root, "um", "src/a.ts");
         let first = round_in(root, Some("sessao-1"));
-        assert_eq!(first["dispatch"].as_array().map(Vec::len), Some(1), "{first}");
+        assert!(first["reserves"].as_array().is_some_and(|reserves| !reserves.is_empty()), "the choice goes to the reserve: {first}");
         let warned = jev_warnings(&first);
         assert_eq!(warned.len(), 1, "{first}");
         assert_eq!(warned[0]["failure"], json!("no_credit"), "{first}");
@@ -140,18 +151,22 @@ mod tests {
         assert!(hint.contains("no_credit"), "{first}");
         assert!(hint.contains(translate("round.jev_remedy_credit", Locale::PtBr)), "{first}");
         assert!(!hint.contains(translate("round.jev_remedy_key", Locale::PtBr)), "no credit is not a key to change: {first}");
+        sent_by_receipt(&first, "sessao-1");
 
         loose_task(root, "dois", "src/b.ts");
         let again = round_in(root, Some("sessao-1"));
-        assert_eq!(again["dispatch"].as_array().map(Vec::len), Some(1), "{again}");
         assert!(jev_warnings(&again).is_empty(), "one warning per session: {again}");
+        sent_by_receipt(&again, "sessao-1");
 
         loose_task(root, "três", "src/c.ts");
         let other = round_in(root, Some("sessao-2"));
         assert_eq!(jev_warnings(&other).len(), 1, "another session warns: {other}");
+        for request in other["reserves"].as_array().into_iter().flatten() {
+            crate::shared::jev::reserve::answer_in_test(root, request, |_| "yes".into(), "sure");
+        }
 
         let quiet = round_in(root, Some("sessao-3"));
-        assert_eq!(quiet["dispatch"].as_array().map_or(0, Vec::len), 0, "{quiet}");
+        assert_eq!(quiet["dispatch"].as_array().map(Vec::len), Some(1), "the wave leaves by its receipt: {quiet}");
         assert!(jev_warnings(&quiet).is_empty(), "an old failure of another round stays silent: {quiet}");
 
         let observed = super::recorded_operations(root, "x");

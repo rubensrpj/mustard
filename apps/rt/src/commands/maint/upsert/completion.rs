@@ -392,7 +392,7 @@ mod tests {
     fn installed_project(root:&Path)->Report {
         assert!(std::process::Command::new("git").args(["init","-q"]).current_dir(root).status().unwrap().success());
         let project=mustard_core::platform::project_seed::upsert_project(root,Some(&mustard_core::harness_version()),mustard_core::platform::project_seed::InstallMode::Private).unwrap();
-        Report{project,plugin_refresh:super::super::skipped(None,"no installed host".into()),code_tool_warnings:vec![],search_warning:None,local_files_found:None,installation:None,scan:None}
+        Report{project,plugin_refresh:super::super::skipped(None,"no installed host".into()),code_tool_warnings:vec![],search_warning:None,summary_warning:None,reserves:Vec::new(),reserves_hint:None,local_files_found:None,installation:None,scan:None}
     }
 
     /// O projeto instalado em `root` com a busca pelo Jev e a chave no

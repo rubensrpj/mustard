@@ -130,6 +130,12 @@ export function renderPanel({elements,surface,columns,state,screens={},project,u
       ...d.others.shown.map(other=>Box({flexDirection:'column',children:[press(`spec-${other.name}`,other.name,()=>actions.selectSpec(other.name)),
         text(join(name(phases[other.phase]) ?? other.phase,other.warning?.kind==='pr-merged'?`PR #${other.warning.pr ?? '?'} ${t('na base desde','in the base since')} ${day(other.warning.at)}`:''),{color:'warning'})]})),
       label(`${d.others.attention} ${t('de','of')} ${d.others.total} specs`)]));
+    // The project summary as the binary gave it: the newest deliveries first.
+    if(d.deliveries?.shown?.length)body.push(block(t('Entregas do projeto','Project deliveries'),[
+      ...d.deliveries.shown.map(item=>Box({flexDirection:'column',children:[text(item.title,{bold:true}),
+        label(join(day(item.delivered_at),item.pr!=null?`PR #${item.pr}`:'',item.rules?`${int(item.rules)} ${t(item.rules===1?'regra':'regras',item.rules===1?'rule':'rules')}`:'')),
+        ...(item.delivered?[text(item.delivered)]:[])]})),
+      label(`${int(d.deliveries.shown.length)} ${t('de','of')} ${int(d.deliveries.total)} ${t('entregas','deliveries')}`)]));
     const limits=Object.fromEntries((usage?.rateLimits || []).map(limit=>[limit.kind,limit]));
     const host=[`${t('contexto','context')} ${percent(usage?.context?.percent)}`,`${t('cota 5 h','5 h quota')} ${percent(limits.five_hour?.percentUsed)}`,
       `${t('semana','week')} ${percent(limits.seven_day?.percentUsed)}`];
@@ -275,6 +281,11 @@ export function renderPanel({elements,surface,columns,state,screens={},project,u
     if(item.tests?.length)body.push(block(t('Testes','Tests'),item.tests.flatMap(run=>[
       text(join(named({kind:'criterion',title:run.title}),run.result?name(results[run.result]) ?? run.result:t('não rodado','not run'),run.at?day(run.at):''),
         {color:run.result==='fail'?'warning':run.result==='pass'?'success':'subtle'}),...(run.proof?[label(run.proof)]:[])])));
+    // The wave reviewer's newest verdict: approved, or rejected with its reason and the files it points at.
+    if(item.review){const approved=item.review.result==='approved';
+      body.push(block(null,[text(approved?t('Revisão: aprovada','Review: approved')
+        :`${t('Revisão: reprovada','Review: rejected')}${item.review.reason?` — ${item.review.reason}`:''}`,{color:approved?'success':'warning'}),
+        ...(approved?[]:(item.review.files || []).map(file=>label(file)))]));}
     // The wave's request goes whole, as the agent got it, only on its key.
     if(item.wave_request!=null) {
       key('wave-request','p',`${state_.waveRequest?t('esconder pedido da onda','hide wave request'):t('pedido da onda','wave request')} (${int(item.wave_request.length)} ${t('caracteres','characters')})`,actions.toggleWaveRequest);
@@ -326,6 +337,7 @@ export function renderPanel({elements,surface,columns,state,screens={},project,u
       ...(d.spec.waves_without_measure?[label(`${d.spec.waves_without_measure} ${t('ondas sem medida','waves without measure')}`)]:[]),
       text(join(t('condutor','conductor'),d.spec.conductor_tokens==null?t('não medido','not measured'):`${compact(d.spec.conductor_tokens)} tokens`))]));
     if(d.spec?.waves)waveAgents(d.spec);
+    if(d.mustard_skills?.length)mustardSkills(d.mustard_skills);
     const tools=d.tools,jev=tools.jev,purposes={'wave-planning':['montagem','planning'],context:['contexto','context'],search:['busca','search'],'spec-search':['busca na spec','spec search']};
     body.push(block(t('Ferramentas','Tools'),[
       text(tools.rtk.configured?join('RTK',tools.rtk.percent!=null?`${percent(tools.rtk.percent)} ${t('a menos','less')}`:t('não medido','not measured')):join('RTK',t('desligado','off'))),
@@ -352,7 +364,8 @@ export function renderPanel({elements,surface,columns,state,screens={},project,u
 
   // What each wave's agent got and what went wrong, as the sends recorded
   // it: the model it used (measured) or, unmeasured, the one asked; the
-  // effort asked; the skills; the summary it continued. Then the failures.
+  // effort that held at the launch or, unrecorded, the one asked; the
+  // skills; the summary it continued. Then the failures.
   function waveAgents(s) {
     const plural=(n,one,many)=>`${int(n)} ${n===1?one:many}`;
     const reasons={no_credit:['sem crédito','no credit'],missing_key:['sem chave','no key'],key_refused:['chave recusada','key refused'],
@@ -361,8 +374,9 @@ export function renderPanel({elements,surface,columns,state,screens={},project,u
     const counted=(map,names={})=>Object.entries(map || {}).sort((a,b)=>b[1]-a[1]).map(([key,count])=>`${name(names[key]) ?? key} (${int(count)})`).join(', ');
     const refused=n=>n?plural(n,t('volta recusada','refused return'),t('voltas recusadas','refused returns')):'';
     const rejected=n=>n?plural(n,t('reprovação da revisão','review rejection'),t('reprovações da revisão','review rejections')):'';
-    // The effort is the one the send asked: the one used is never recorded.
+    // The effort the send asked; a wave shows the one that held at the launch instead, when the send recorded it.
     const effort=value=>value?`${t('esforço pedido','effort asked')} ${value}`:'';
+    const held=value=>`${t('esforço','effort')} ${value}`;
     const reuse=s.reuse || {};
     body.push(block(t('Agentes das ondas','Wave agents'),[
       ...(s.models || []).map(m=>text(join(m.model,effort(m.effort),plural(m.waves,t('onda','wave'),t('ondas','waves'))))),
@@ -373,7 +387,8 @@ export function renderPanel({elements,surface,columns,state,screens={},project,u
       s.waves.map(w=>{
         const used=w.model_used ?? (w.model_asked?`${w.model_asked} ${t('(pedido)','(asked)')}`:t('modelo não medido','model not measured'));
         const extra=join((w.skills || []).join(', '),w.summary_reused?t('continuou um resumo','continued a summary'):'',refused(w.refused_returns),rejected(w.review_rejections));
-        return Box({flexDirection:'column',children:[text(join(`${t('onda','wave')} ${w.wave}`,used,effort(w.effort_asked),w.tokens!=null?`${compact(w.tokens)} tokens`:'')),
+        return Box({flexDirection:'column',children:[text(join(`${t('onda','wave')} ${w.wave}`,used,w.effort_used?held(w.effort_used):effort(w.effort_asked),
+          w.tokens!=null?`${compact(w.tokens)} tokens`:'')),
           ...(extra?[label(extra)]:[])]});
       })));
     const f=s.failures || {},lines=[];
@@ -382,6 +397,16 @@ export function renderPanel({elements,surface,columns,state,screens={},project,u
     const returns=join(refused(f.refused_returns),rejected(f.review_rejections));
     if(returns)lines.push(text(returns));
     body.push(block(t('Falhas','Failures'),lines.length?lines:[label(t('Nenhuma falha gravada.','No failure recorded.'))]));
+  }
+
+  // The skills Mustard made: the state, how many times each went with a
+  // task, the tokens of the wave that made it and the last measured gain.
+  function mustardSkills(skills) {
+    const states={active:['ativa','active'],discarded:['descartada','discarded'],retired:['retirada','retired']};
+    body.push(block(t('Skills do Mustard','Mustard skills'),skills.map(s=>Box({flexDirection:'column',children:[
+      text(join(s.name,name(states[s.state]) ?? s.state,`${int(s.tasks)} ${s.tasks===1?t('tarefa','task'):t('tarefas','tasks')}`,
+        s.wave_tokens!=null?`${compact(s.wave_tokens)} ${t('tokens na onda que a criou','tokens in the wave that made it')}`:'')),
+      ...(s.gain?[label(s.gain)]:[])]}))));
   }
 
   function measureButton() {

@@ -15,6 +15,10 @@ const overview={ok:true,schema_version:1,section:'overview',revision:'rev-overvi
     {kind:'review-reopened',approved_at:'2026-10-02T14:09:35-03:00',reopened_at:'2026-10-02T17:13:51-03:00'}],
   others:{total:14,attention:2,shown:[{name:'falha-fora-da-obra',phase:'running',updated:'2026-10-18T01:38:29-03:00',warning:{kind:'pr-merged',pr:326,at:'2026-10-17T16:52:14-03:00'}},
     {name:'mustard-enxuto',phase:'pr_open',updated:'2026-09-17T19:21:15-03:00',warning:{kind:'pr-merged',pr:277,at:'2026-09-17T21:23:52-03:00'}}]},
+  // The project summary is made up: two deliveries of the twelve it holds.
+  deliveries:{total:12,shown:[{spec:'falha-fora-da-obra',delivered_at:'2026-10-17',pr:326,title:'Recibo nomeia o programa atrás do plugin',
+    delivered:'O recibo diz qual programa respondeu atrás do plugin.',rules:2},
+    {spec:'mustard-enxuto',delivered_at:'2026-09-17',pr:null,title:'Mustard mais enxuto',delivered:'Tira o que perdeu o sentido.',rules:0}]},
   usage:{cost_micro_usd:1571885643,sessions:38,tokens:21904658267,measured_through:'2026-10-13',session_agents:null}};
 const spec={ok:true,schema_version:1,section:'spec',revision:'rev-spec',project,selected_spec:'ajuste-na-spec-fechada',
   spec:{name:'ajuste-na-spec-fechada',goal:'Spec fechada aceita pedido novo na mesma branch.',phase:'running',branch:'fix/ajuste-na-spec-fechada',base:'dev',
@@ -44,6 +48,8 @@ const item={ok:true,schema_version:1,section:'item',revision:'rev-item',project,
   done_when:'cargo test -p mustard-core -- a_final_approval_before_the_last_reopen_does_not_count',files:['packages/core/src/domain/spec_state.rs'],delivered_files:10,
   wave_request:'# ajuste-na-spec-fechada — onda 1\n\nRode de dentro da cópia.\n'+'Linha do pedido da onda. '.repeat(200)+'\nÚltima linha do pedido.',
   tests:[{criterion:'MSTD-CRIT-0007',title:'A spec tem uma aprovação final e depois é reaberta, sem entrega nova.',proof:'cargo test -p mustard-core -- reopen',result:'pass',at:'2026-09-24T17:00:00-03:00',ms:5990}],
+  // The wave reviewer's verdict is made up: a rejection, its reason and the file it points at.
+  review:{result:'rejected',reason:'Falta o teste da reabertura sem entrega nova.',files:['packages/core/src/domain/spec_state/tests.rs'],at:'2026-09-24T16:10:00-03:00'},
   covers:[{code:'MSTD-CRIT-0007',kind:'criterion',title:'A spec tem uma aprovação final e depois é reaberta, sem entrega nova.'},
     {code:'MSTD-DEC-0001',kind:'decision',title:'A spec fechada e a spec com o pull request aberto são reabertas pelo reopen.'}],wave_tokens:220008,resends:0,
   history:[{at:'2026-09-24T15:39:38-03:00',author:'assistant',wave:null,changed:null},{at:'2026-09-24T15:50:49-03:00',author:'assistant',wave:1,changed:{wave:{from:null,to:1}}}]}};
@@ -57,14 +63,17 @@ const usage={ok:true,schema_version:1,section:'usage',revision:'rev-usage',proje
   spec:{name:'ajuste-na-spec-fechada',wave_tokens:3794138764,waves_without_measure:25,conductor_tokens:2138804723,
     // The waves' agents are made up: what each send recorded and what failed.
     waves_sent:367,waves:[
-      {wave:367,model_used:'claude-opus-5-5',model_asked:'opus',effort_asked:'xhigh',skills:['add-run-command'],summary_reused:true,tokens:220008,refused_returns:2,review_rejections:1},
-      {wave:366,model_used:null,model_asked:'opus',effort_asked:'xhigh',skills:[],summary_reused:false,tokens:null,refused_returns:0,review_rejections:0}],
+      {wave:367,model_used:'claude-opus-5-5',model_asked:'opus',effort_asked:'xhigh',effort_used:'high',skills:['add-run-command'],summary_reused:true,tokens:220008,refused_returns:2,review_rejections:1},
+      {wave:366,model_used:null,model_asked:'opus',effort_asked:'xhigh',effort_used:null,skills:[],summary_reused:false,tokens:null,refused_returns:0,review_rejections:0}],
     models:[{model:'claude-opus-5-5',effort:'xhigh',waves:340}],skills:[{name:'add-run-command',waves:12}],
     reuse:{summaries:30,knowledge_calls:10,knowledge_cached:4},
     failures:{jev:{calls:3,reasons:{no_credit:3}},hook_blocks:{total:5,by_hook:{command_guard:5}},refused_returns:9,review_rejections:2}},
   tools:{rtk:{configured:true,status:'measured',commands:54112,saved_tokens:71580138,percent:68.90729102135397},
     jev:{calls:1083,by_purpose:{search:22,'wave-planning':853,context:208},input_tokens:5438822,cost_micro_usd:null},search:{total:8732,in_spec:0}},
-  session:{started_at:null,agents:null,working:null},copies_disk:null};
+  session:{started_at:null,agents:null,working:null},copies_disk:null,
+  // The skills Mustard made are made up: one in use, one that left.
+  mustard_skills:[{name:'falta-teste',state:'active',tasks:12,gain:'Acertou 3 de 3 com a skill.',wave_tokens:220008},
+    {name:'parada',state:'retired',tasks:0,gain:null,wave_tokens:null}]};
 const settingsValues={enabled:true,rtk:true,vectors:true,jev:true,agent_model:'opus',agent_effort:'xhigh',search_answer:true,session_claude_model:'haiku',
   session_codex_model:'gpt-6-luna',jev_search:true,jev_wave_planning:true,jev_context:true,jev_spec_search:true,max_compiling_waves:5,review_model:'opus',
   review_effort:'xhigh',cloudflare_account:null,cloudflare_project:null,cloudflare_token:null};
@@ -73,7 +82,7 @@ const SURFACES=['terminal','desktop'] as const;
 const TOKEN='synthetic-cloudflare-token-0001';
 const NO_TOKEN='Grave o token em publication.apiToken do mustard.json, ou forneça CLOUDFLARE_API_TOKEN no ambiente, que vence. Os arquivos continuam locais.';
 
-async function open($,on,surface,{theme='dark',conflict=false}:{theme?:string,conflict?:boolean}={}) {
+async function open($,on,surface,{theme='dark',conflict=false,review}:{theme?:string,conflict?:boolean,review?:any}={}) {
   const clock=mock.clock(on);mock.env(on,{});mock.store(on,{});
   const commands:string[][]=[],patches:any[]=[],during:any[]=[];
   let mounted:any;
@@ -103,7 +112,7 @@ async function open($,on,surface,{theme='dark',conflict=false}:{theme?:string,co
       const section=at('--section');
       // What the pane shows while the measure runs.
       if(e.argv.includes('--refresh-consumption')){during.push({button:await mounted?.find({key:'measure'}),note:await mounted?.find({text:/Medindo/})});measured=true;}
-      value=section==='overview'?overview:section==='spec'?spec:section==='items'?items(e.argv):section==='item'?item
+      value=section==='overview'?overview:section==='spec'?spec:section==='items'?items(e.argv):section==='item'?(review?{...item,item:{...item.item,review}}:item)
         :section==='usage'?{...usage,copies_disk:measured?{bytes:126000000000,measured_at:'2026-10-18T13:00:00Z'}:null}:{ok:false,reason:'panel-invalid-section'};
       if(at('--if-revision')===value.revision)value={ok:true,schema_version:1,unchanged:true,revision:value.revision,section};
     } else if(e.argv[2]==='publish') {
@@ -140,6 +149,16 @@ for(const surface of SURFACES)test(`the overview shows the counts of the binary 
   await has(pane,/PR #289 na base desde 05\/10/);await has(pane,/revisão aprovada em 02\/10 e reaberta/i);
   await lacks(pane,/onda 193/);await lacks(pane,/sem agente/);
   await has(pane,'falha-fora-da-obra');await has(pane,/contexto 50%/i);await has(pane,/US\$\s?1\.572/);
+  await pane.press({key:'quit'});
+});
+
+for(const surface of SURFACES)test(`the overview lists the project's deliveries, the newest first · ${surface}`,async ($,on)=>{
+  const {pane}=await open($,on,surface);
+  await has(pane,'Entregas do projeto');
+  await has(pane,'Recibo nomeia o programa atrás do plugin');await has(pane,/17\/10\s+·\s+PR #326\s+·\s+2 regras/);
+  await has(pane,'O recibo diz qual programa respondeu atrás do plugin.');
+  await has(pane,'Mustard mais enxuto');await lacks(pane,/PR #null/);
+  await has(pane,'2 de 12 entregas');
   await pane.press({key:'quit'});
 });
 
@@ -245,6 +264,21 @@ for(const surface of SURFACES)test(`a task shows the tests run and, on p, its wa
   await f.pane.press({key:'quit'});
 });
 
+for(const surface of SURFACES)test(`a task shows its wave reviewer's rejection with the reason and the files pointed at · ${surface}`,async ($,on)=>{
+  const f=await open($,on,surface);await f.pane.press({key:'go-items'});await f.pane.press({key:'item-MSTD-TASK-0003'});
+  await has(f.pane,/^Revisão: reprovada — Falta o teste da reabertura sem entrega nova\.$/);
+  await has(f.pane,'packages/core/src/domain/spec_state/tests.rs');
+  await lacks(f.pane,'Revisão: aprovada');
+  await f.pane.press({key:'quit'});
+});
+
+for(const surface of SURFACES)test(`a task shows its wave reviewer's approval · ${surface}`,async ($,on)=>{
+  const f=await open($,on,surface,{review:{result:'approved',reason:'Conferi o diff e as regras.',files:[],at:'2026-09-24T16:10:00-03:00'}});
+  await f.pane.press({key:'go-items'});await f.pane.press({key:'item-MSTD-TASK-0003'});
+  await has(f.pane,/^Revisão: aprovada$/);await lacks(f.pane,/Revisão: reprovada/);await lacks(f.pane,/Conferi o diff/);
+  await f.pane.press({key:'quit'});
+});
+
 for(const surface of SURFACES)test(`a light theme draws no fixed background and colors only by theme keys · ${surface}`,async ($,on)=>{
   const keys=new Set(['text','subtle','success','error','warning','claude','suggestion','inactive']);
   const f=await open($,on,surface,{theme:'light'});
@@ -275,7 +309,7 @@ for(const surface of SURFACES)test(`the days draw in Svg on desktop and in block
 
 for(const surface of SURFACES)test(`the usage shows each wave's model, effort, skills, reuse and failures · ${surface}`,async ($,on)=>{
   const f=await open($,on,surface);await f.pane.press({key:'go-usage'});
-  await has(f.pane,/^onda 367\s+·\s+claude-opus-5-5\s+·\s+esforço pedido xhigh\s+·\s+220 mil tokens$/);
+  await has(f.pane,/^onda 367\s+·\s+claude-opus-5-5\s+·\s+esforço high\s+·\s+220 mil tokens$/);
   await has(f.pane,/^onda 366\s+·\s+opus \(pedido\)\s+·\s+esforço pedido xhigh$/);
   await has(f.pane,/add-run-command\s+·\s+continuou um resumo\s+·\s+2 voltas recusadas\s+·\s+1 reprovação da revisão/);
   await has(f.pane,/claude-opus-5-5\s+·\s+esforço pedido xhigh\s+·\s+340 ondas/);
@@ -284,6 +318,15 @@ for(const surface of SURFACES)test(`the usage shows each wave's model, effort, s
   await has(f.pane,/Jev falhou 3 vezes: sem crédito \(3\)/);
   await has(f.pane,/5 bloqueios de gancho: command_guard \(5\)/);
   await has(f.pane,/9 voltas recusadas\s+·\s+2 reprovações da revisão/);
+  await f.pane.press({key:'quit'});
+});
+
+for(const surface of SURFACES)test(`the usage lists the skills Mustard made, with state, tasks, gain and the wave that made each · ${surface}`,async ($,on)=>{
+  const f=await open($,on,surface);await f.pane.press({key:'go-usage'});
+  await has(f.pane,/^Skills do Mustard$/);
+  await has(f.pane,/^falta-teste\s+·\s+ativa\s+·\s+12 tarefas\s+·\s+220 mil tokens na onda que a criou$/);
+  await has(f.pane,/^Acertou 3 de 3 com a skill\.$/);
+  await has(f.pane,/^parada\s+·\s+retirada\s+·\s+0 tarefas$/);
   await f.pane.press({key:'quit'});
 });
 

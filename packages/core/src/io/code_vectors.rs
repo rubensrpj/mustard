@@ -6,7 +6,8 @@ use std::{collections::{BTreeMap, BTreeSet}, path::Path, sync::OnceLock};
 use model2vec_rs::model::StaticModel;
 use rusqlite::{Connection, params};
 use serde_json::Value;
-use crate::{domain::knowledge::Card, io::{map_db::{Block, Kind, MapDb, table_exists}, sha256::Sha256}, platform::error::{Error, Result}};
+use crate::{domain::knowledge::Card, io::{map_db::{Block, Kind, Later, MapDb, table_exists}, sha256::Sha256}, platform::error::{Error, Result}};
+use std::time::Instant;
 
 const TOKENIZER: &[u8] = include_bytes!("../../assets/code-meaning/tokenizer.json");
 const WEIGHTS: &[u8] = include_bytes!("../../assets/code-meaning/model.safetensors");
@@ -64,9 +65,57 @@ pub fn fill_at(path:&Path,root:&Path)->Result<Option<usize>> {
     fill(path,root).map(Some)
 }
 
+/// [`fill_at`] que não grava nem segura quem pediu: calcula os vetores do que
+/// mudou até `deadline` e junta a gravação deles em `later`, que grava com o
+/// resto do que a busca aprendeu. O arquivo que o prazo deixou de fora segue
+/// sem vetor novo, para a próxima busca ou a passada do scan. Devolve quantos
+/// documentos foram calculados e se o prazo cortou o cálculo; `None` quando
+/// outro cálculo do mesmo mapa está em andamento ou o bloco dos vetores ainda
+/// não existe, que a passada do scan cria.
+pub fn fill_later(path:&Path,root:&Path,deadline:Instant,later:&mut Later)->Result<Option<(usize,bool)>> {
+    if !crate::domain::config::ProjectConfig::load(root).ai_vectors_enabled(){return Ok(Some((0,false)));}
+    let Some(_alone)=crate::io::fs::lock::LockedFile::exclusive_if_free(&crate::io::fs::lock::temp_lock_path("code-vectors",path))? else {return Ok(None)};
+    let db=MapDb::open_waiting(path,root,&[],deadline.saturating_duration_since(Instant::now()))?;
+    if db.version(BLOCK.name)?!=Some(BLOCK.version) {return Ok(None);}
+    if !table_exists(db.conn(),"texts")? {return Ok(Some((0,false)));}
+    let changes=changes(&db,root,Some(deadline))?;
+    let counted=(changes.computed,changes.cut);
+    if !changes.is_empty() {later.defer(path,root,BLOCK,move |tx|apply(tx,&changes));}
+    Ok(Some(counted))
+}
+
 fn fill(path:&Path,root:&Path)->Result<usize> {
     let mut db=MapDb::open(path,root,&[BLOCK])?;
     if !table_exists(db.conn(),"texts")? {return Ok(0);}
+    let changes=changes(&db,root,None)?;
+    if changes.is_empty() {return Ok(0);}
+    db.write(|tx|apply(tx,&changes))?;Ok(changes.computed)
+}
+
+/// Um documento de um arquivo: o símbolo, o pedaço, o hash da fonte, o hash
+/// do texto que o modelo lê e o texto.
+type Document=(String,usize,String,String,String);
+
+/// Os vetores novos de um arquivo: o caminho, a marca da análise, os
+/// documentos e o vetor de cada um.
+type FileVectors=(String,String,Vec<Document>,Vec<Option<Vec<u8>>>);
+
+/// Os vetores a gravar no mapa: os dos arquivos que saíram, a apagar, e os
+/// dos arquivos mudados, cada um com a marca da análise que os deu.
+struct Changes {
+    removed:Vec<String>,
+    files:Vec<FileVectors>,
+    computed:usize,
+    cut:bool,
+}
+
+impl Changes {
+    fn is_empty(&self)->bool {self.files.is_empty() && self.removed.is_empty()}
+}
+
+/// O que mudou desde os vetores gravados, calculado até `until`: passado o
+/// prazo, o arquivo seguinte fica para depois.
+fn changes(db:&MapDb,root:&Path,until:Option<Instant>)->Result<Changes> {
     let known:BTreeMap<String,String>={let mut q=db.conn().prepare("SELECT path,fingerprint FROM code_vector_files WHERE model=?1")?;
         q.query_map([MODEL],|r|Ok((r.get(0)?,r.get(1)?)))?.collect::<rusqlite::Result<_>>()?};
     // Catalogue fingerprints use the same analysis hash. Avoid loading every
@@ -79,10 +128,11 @@ fn fill(path:&Path,root:&Path)->Result<usize> {
     let present:BTreeSet<String>={let mut q=db.conn().prepare("SELECT path FROM texts WHERE analysis IS NOT NULL")?;
         q.query_map([],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?};
     let registry=crate::domain::knowledge::resources::Registry::load().map_err(Error::config)?;
-    let mut changes=Vec::new();let mut count=0;
+    let mut changes=Changes{removed:known.keys().filter(|p|!present.contains(*p)).cloned().collect(),files:Vec::new(),computed:0,cut:false};
     for (file,analysis) in files {
         let fingerprint=hash(analysis.as_bytes());
         if known.get(&file)==Some(&fingerprint) {continue;}
+        if until.is_some_and(|until|Instant::now()>=until) {changes.cut=true;break;}
         let value:Value=serde_json::from_str(&analysis).map_err(|e|Error::Parse(e.to_string()))?;
         let mut documents=Vec::new();
         if let Some(text)=crate::io::knowledge::investigation::safe_read(root,&file,&registry) {
@@ -105,24 +155,25 @@ fn fill(path:&Path,root:&Path)->Result<usize> {
             let texts:Vec<String>=fresh.iter().map(|at|documents[*at].4.clone()).collect();
             texts.chunks(256).flat_map(|batch|encoder.encode_with_args(batch,None,256)).map(|v|blob(&v)).collect::<Vec<_>>()
         };
-        count+=encoded.len();
+        changes.computed+=encoded.len();
         let mut vectors:Vec<Option<Vec<u8>>>=documents.iter().map(|document|kept.get(&document.3).cloned()).collect();
         for (at,vector) in fresh.into_iter().zip(encoded) {vectors[at]=Some(vector);}
-        changes.push((file,fingerprint,documents,vectors));
+        changes.files.push((file,fingerprint,documents,vectors));
     }
-    if changes.is_empty() && known.keys().all(|p|present.contains(p)) {return Ok(0);}
-    db.write(|tx| {
-        for path in known.keys().filter(|p|!present.contains(*p)) {tx.execute("DELETE FROM code_vectors WHERE path=?1",[path])?;tx.execute("DELETE FROM code_vector_files WHERE path=?1",[path])?;}
-        for (path,fingerprint,documents,vectors) in &changes {
-            tx.execute("DELETE FROM code_vectors WHERE path=?1",[path])?;
-            for ((id,at,sha,document,_),vector) in documents.iter().zip(vectors) {
-                let Some(vector)=vector else {continue};
-                tx.execute("INSERT INTO code_vectors(id,chunk,path,sha256,document,vector) VALUES(?1,?2,?3,?4,?5,?6)",params![id,*at as i64,path,sha,document,vector])?;
-            }
-            tx.execute("INSERT OR REPLACE INTO code_vector_files(path,fingerprint,model) VALUES(?1,?2,?3)",params![path,fingerprint,MODEL])?;
+    Ok(changes)
+}
+
+fn apply(tx:&Connection,changes:&Changes)->Result<()> {
+    for path in &changes.removed {tx.execute("DELETE FROM code_vectors WHERE path=?1",[path])?;tx.execute("DELETE FROM code_vector_files WHERE path=?1",[path])?;}
+    for (path,fingerprint,documents,vectors) in &changes.files {
+        tx.execute("DELETE FROM code_vectors WHERE path=?1",[path])?;
+        for ((id,at,sha,document,_),vector) in documents.iter().zip(vectors) {
+            let Some(vector)=vector else {continue};
+            tx.execute("INSERT INTO code_vectors(id,chunk,path,sha256,document,vector) VALUES(?1,?2,?3,?4,?5,?6)",params![id,*at as i64,path,sha,document,vector])?;
         }
-        Ok(())
-    })?;Ok(count)
+        tx.execute("INSERT OR REPLACE INTO code_vector_files(path,fingerprint,model) VALUES(?1,?2,?3)",params![path,fingerprint,MODEL])?;
+    }
+    Ok(())
 }
 
 fn documents_for(card:&Card,text:&str)->Vec<String> {

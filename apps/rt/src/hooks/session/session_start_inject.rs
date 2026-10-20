@@ -372,7 +372,10 @@ fn spec_merged_elsewhere(root: &Path, session: Option<&str>) -> Vec<(String, Mer
     if !mustard_core::ProjectConfig::exists(root) {
         return Vec::new();
     }
-    let active = crate::shared::spec_state::DiskSpecState::new(root).active(session);
+    // A spec de antes desta versão do Mustard fica como está: nem a atual
+    // nem as do índice são conferidas.
+    let legacy = mustard_core::io::legacy_specs::LegacySpecs::read(&mustard_core::io::spec_events::spec_root(root));
+    let active = crate::shared::spec_state::DiskSpecState::new(root).active(session).filter(|spec| !legacy.contains(spec));
     let mut found: Vec<(String, MergedElsewhere)> = active
         .iter()
         .filter_map(|spec| merged_elsewhere(root, spec, session).map(|found| (spec.clone(), found)))
@@ -380,6 +383,7 @@ fn spec_merged_elsewhere(root: &Path, session: Option<&str>) -> Vec<(String, Mer
     found.extend(
         mustard_core::io::spec_index::read(root)
             .into_iter()
+            .filter(|line| !legacy.contains(&line.name))
             .filter(|line| line.phase.as_deref().is_some_and(|phase| NOT_DELIVERED.contains(&phase)))
             .filter_map(|line| {
                 let phases: &[&str] = if Some(&line.name) == active.as_ref() { &["running", "closed"] } else { &NOT_DELIVERED };

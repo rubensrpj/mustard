@@ -58,6 +58,9 @@ pub(crate) fn resume_for(opts: &ResumeOpts, session: Option<&str>) -> Value {
             None => return refuse(&Refusal::NoCurrentSpec),
         },
     };
+    if let Err(refusal) = mustard_core::io::legacy_specs::refuse_legacy(&project.root, &spec) {
+        return refuse(&refusal);
+    }
     let path = match store::spec_file(&project.root, &spec) {
         Ok(path) => path,
         Err(refusal) => return refuse(&refusal),
@@ -244,10 +247,11 @@ pub(crate) fn current_block_within(root: &Path, session: Option<&str>, cap: usiz
 
 /// A spec atual da sessão `session`, o arquivo de eventos dela, o idioma do
 /// projeto e o que o programa observou dela ([`observed`]). `None` sem spec
-/// atual, sem arquivo de eventos e na spec que já terminou.
+/// atual, na spec de antes desta versão do Mustard, sem arquivo de eventos e
+/// na spec que já terminou.
 fn current_log(root: &Path, session: Option<&str>) -> Option<(String, SpecLog, Locale, Vec<SpecEvent>)> {
     let project = spec_events::project(root);
-    let spec = DiskSpecState::new(&checkout(root)).active(session)?;
+    let spec = DiskSpecState::new(&checkout(root)).active(session).filter(|spec| !mustard_core::io::legacy_specs::is_legacy(&project.root, spec))?;
     let log = store::read(&store::spec_file(&project.root, &spec).ok()?).ok()??;
     let phase = State::from_log(&log).phase;
     if matches!(phase, Some("delivered" | "discarded")) {
@@ -580,6 +584,29 @@ mod tests {
 
     fn resume(root: &Path, spec: &str) -> Value {
         resume_for(&ResumeOpts { root: root.to_path_buf(), spec: Some(spec.to_string()) }, None)
+    }
+
+    /// A spec da sessão que é de antes desta versão do Mustard não se retoma:
+    /// a retomada recusa com o código próprio, pelo nome e pela branch, e o
+    /// início da sessão não traz a linha nem o bloco dela.
+    #[test]
+    fn resuming_a_legacy_spec_is_refused() {
+        if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_some() {
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
+        assert_eq!(record_open(root, "x", "feature/x", "dev"), Ok(true));
+        crate::shared::spec_state::stand_on_spec_branch(root, "x");
+        mustard_core::io::legacy_specs::mark_once(root, "0.2.24").unwrap();
+
+        let named = resume(root, "x");
+        assert_eq!(named["reason"], json!("legacy-spec"), "{named}");
+        let current = resume_for(&ResumeOpts { root: root.to_path_buf(), spec: None }, None);
+        assert_eq!(current["reason"], json!("legacy-spec"), "{current}");
+        assert!(current_line(root, None).is_none());
+        assert!(current_block(root, None).is_none());
     }
 
     /// A retomada lê só o estado e devolve, por fase, o próximo passo em

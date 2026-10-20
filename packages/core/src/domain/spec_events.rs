@@ -97,7 +97,7 @@ pub const PURGED_MARK: &str = "…";
 /// Os campos do pedido de um envio: o texto enviado e o que o descreve. A
 /// versão nova de um envio (`replaces`) não os repete, e quem os lê os acha
 /// na versão mais nova que os tem ([`SpecLog::send_field`]).
-pub const SEND_REQUEST_FIELDS: &[&str] = &["text", "lines", "chars", "items", "read_items", "analysis", "skills", "summary", "lessons"];
+pub const SEND_REQUEST_FIELDS: &[&str] = &["text", "lines", "chars", "items", "read_items", "tasks", "analysis", "skills", "summary", "lessons"];
 
 /// O que os testes das partes dividem — o objeto de um JSON, a conferência
 /// de um rascunho e uma linha do arquivo —, os testes que as provas gravadas

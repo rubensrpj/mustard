@@ -9,7 +9,7 @@ Binary searches and computes; LLM decides and implements.
 - Spec: `mustard-rt run read`/`run write`; find with `mustard-rt run find "<text>"`; never edit `spec.*`. Facts: `mustard-rt run answer --facts '<JSON>'`. Measures: `mustard-rt run evidence --spec <spec>`; do not generalize one sample.
 - Same subject: `write request`, not a pending item. Record authorized changes; when uncertain, ask once. On a closed spec or with the pull request open, `mustard-rt run reopen --reason "<why>"` comes first, before `write request`. PR the server failed: `mustard-rt run reopen --fix --reason "<why>"`. Another subject uses `mustard-rt run pending --add`; if one wants it done now, suggest another conversation. Open backlog: `mustard-rt run triage`.
 - Unauthorized changes require acceptance; fix Mustard in the product.
-- Before commit: `mustard-rt run review-wave --wave <n> --spec <spec>` shows the summary (`--diff` adds the diff); check rules, skills and tests. Accept in the round with `<REVIEWED>{"wave":<n>,"note":"…"}</REVIEWED>` or REJECTED and reason. Blocked work never becomes the same wave.
+- Before commit: launch the asked `mustard-review`; read its verdict only. Else `mustard-rt run review-wave --wave <n> --spec <spec>` sums up; `--diff` adds it. Accept with `<REVIEWED>{"wave":<n>,"note":"…"}</REVIEWED>` or REJECTED and reason. Blocked work never becomes the same wave.
 - `/mustard:mods`: local project and usage. `/mustard:pages`, `run publish` and `mustard-rt run page` (markdown): only on request; export is not publishing; `--include-consumption` requires authorization.
 
 Answer in the order of explaining from the response style. Commit/PR omit clients, email and local paths.

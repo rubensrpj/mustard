@@ -28,7 +28,7 @@ use crate::domain::project_map::{
     Commit, DeclLineage, FileLineage, History, LineageCommit, MapDecl, MapDegree, MapGraph, MapLanguage, MapModule, MapProject, MapRefusal, MapSkeleton, ProjectMap,
     PullComment, PullOfCommit, PullText, Pulls,
 };
-use crate::io::map_db::{self, Block, Kind, MapDb};
+use crate::io::map_db::{self, Block, Kind, MapDb, Retired};
 pub use crate::io::map_db::{MAP_FILE, MAP_FILE_NAME, model_path};
 use crate::io::map_listing::inside_work_tree;
 pub use crate::io::map_listing::{Base, Listing, base_of, listing};
@@ -428,49 +428,10 @@ pub const GLOSSARY: MapBlock = written(block!("glossary", version 1, {
     "glossary_marks" at list(&["marks"]) => ["forms" Json, "file" Text, "name" Text]
 }));
 
-/// As notas de sentido: de cada arquivo ou declaração, uma frase curta em
-/// palavras de negócio, escrita pelo agente que leu o trecho — o arquivo, o
-/// nome da declaração (vazio na nota do arquivo inteiro), o texto, a spec que
-/// a escreveu, o blob e o SHA-256 do arquivo no momento em que foi escrita e,
-/// na nota de uma declaração, o SHA-256 do texto dela. A nota do arquivo
-/// inteiro vale enquanto o conteúdo do arquivo no mapa for o dela; a de uma
-/// declaração, também enquanto o texto da declaração for o dela. O que mudou
-/// a deixa velha, e quem lê o trecho a reescreve. Quem grava e lê é
-/// `io::map_notes`. Não se refaz do código: fica fora de [`BLOCKS`] e, na
-/// troca de versão, é convertido, nunca apagado.
-pub const NOTES: MapBlock = notes_with_hash(block!("notes", version 3, {
-    "notes" at list(&["notes"]) => [
-        "file" Text, "name" Text, "text" Text, "spec" Text, "blob" Text, "sha256" Text, "declaration_sha256" Text
-    ]
-}));
-const fn notes_with_hash(mut block: MapBlock) -> MapBlock {
-    block.block.kind = Kind::Written(convert_notes);
-    block
-}
-/// A conversão das notas: cada coluna que a versão gravada não tinha entra
-/// vazia, e a nota sem o SHA-256 fica velha até ser escrita de novo.
-fn convert_notes(conn: &Connection, _: u32) -> Result<()> {
-    let present: Vec<String> =
-        conn.prepare("SELECT name FROM pragma_table_info('notes')")?.query_map([], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?;
-    for column in ["sha256", "declaration_sha256"] {
-        if !present.iter().any(|name| name == column) {
-            conn.execute_batch(&format!("ALTER TABLE notes ADD COLUMN {column} TEXT;"))?;
-        }
-    }
-    Ok(())
-}
-
 /// Multi-source interpretations remain separate from extracted syntax and
 /// survive scans. Every source hash must match before retrieval can use one.
 pub const KNOWLEDGE_NOTES: MapBlock = written(block!("knowledge_notes", version 1, {
     "knowledge_notes" at list(&["knowledge_notes"]) => ["id" Text, "payload" Text]
-}));
-
-/// Reviewed procedures and native navigation profiles share the project's
-/// database. Scans preserve them; their source hashes govern reuse.
-pub const EXPERTISE: MapBlock = written(block!("expertise", version 1, {
-    "expertise" at list(&["expertise"]) => ["id" Text, "payload" Text],
-    "expertise_exports" at list(&["expertise_exports"]) => ["id" Text, "payload" Text]
 }));
 
 /// Native observations, bound to the scanned snapshot, never project rules.
@@ -550,13 +511,30 @@ const INDEXED_FROM: [&MapBlock; 4] = [&FILES, &DECLS, &GRAPH, &HISTORY];
 
 /// Todo bloco que a porta declara, na ordem do despejo: os da montagem e,
 /// depois deles, o da história de cada declaração, o dos pull requests, o
-/// das specs, o do glossário e o das notas de sentido.
-const DECLARED: [&MapBlock; 15] = [&CENSUS, &FILES, &DECLS, &ROUTES, &GRAPH, &HISTORY, &RESOURCES, &LINEAGE, &PULLS, &SPECS, &GLOSSARY, &NOTES, &KNOWLEDGE_NOTES, &EXPERTISE, &PROJECT_PROFILE];
+/// das specs, o do glossário, o das interpretações e o do perfil do projeto.
+const DECLARED: [&MapBlock; 13] = [&CENSUS, &FILES, &DECLS, &ROUTES, &GRAPH, &HISTORY, &RESOURCES, &LINEAGE, &PULLS, &SPECS, &GLOSSARY, &KNOWLEDGE_NOTES, &PROJECT_PROFILE];
 
 /// Os mesmos blocos, como o banco os abre.
-pub(crate) const DB_BLOCKS: [Block; 18] =
-    [CENSUS.block, FILES.block, DECLS.block, ROUTES.block, GRAPH.block, HISTORY.block, RESOURCES.block, LINEAGE.block, PULLS.block, SPECS.block, GLOSSARY.block, NOTES.block, KNOWLEDGE_NOTES.block, crate::io::knowledge::catalog::BLOCK, crate::io::knowledge::observations::BLOCK,
-    crate::io::knowledge::precise::BLOCK, EXPERTISE.block, PROJECT_PROFILE.block];
+pub(crate) const DB_BLOCKS: [Block; 16] =
+    [CENSUS.block, FILES.block, DECLS.block, ROUTES.block, GRAPH.block, HISTORY.block, RESOURCES.block, LINEAGE.block, PULLS.block, SPECS.block, GLOSSARY.block, KNOWLEDGE_NOTES.block, crate::io::knowledge::catalog::BLOCK, crate::io::knowledge::observations::BLOCK,
+    crate::io::knowledge::precise::BLOCK, PROJECT_PROFILE.block];
+
+/// Os blocos que saíram do programa e que a abertura do mapa tira dele, com
+/// as tabelas de cada um. Bloco que sai deixa [`DB_BLOCKS`] e entra aqui com
+/// as tabelas que tinha; a linha do formato dele em `block_formats` fica.
+pub(crate) const RETIRED: [Retired; 2] = [
+    // As frases de sentido por arquivo e por declaração.
+    Retired { name: "notes", tables: &["notes"] },
+    // Os perfis por área e os procedimentos revisados, com o registro dos
+    // arquivos que se exportavam deles.
+    Retired { name: "expertise", tables: &["expertise", "expertise_exports"] },
+];
+
+/// Abre o banco em `model` com os blocos do mapa em dia e os que saíram
+/// ([`RETIRED`]) fora dele, esperando `wait` pela trava de outra gravação.
+pub(crate) fn open_declared(model: &Path, root: &Path, wait: std::time::Duration) -> Result<MapDb> {
+    MapDb::open_retiring(model, root, &DB_BLOCKS, &RETIRED, wait)
+}
 
 #[cfg(test)]
 mod block_formats;
@@ -1602,7 +1580,8 @@ pub(crate) fn read_only_existing(model:&Path)->std::result::Result<MapDb,MapRefu
 
 /// Se a abertura do mapa em `model` teria de pôr algum bloco em dia: um bloco
 /// que a porta declara falta ou foi gravado noutra versão do formato, como no
-/// mapa herdado de outra versão do programa. A abertura refaz esse bloco sob a
+/// mapa herdado de outra versão do programa, ou um bloco que saiu ainda está
+/// nele ([`RETIRED`]). A abertura refaz esse bloco, ou tira o que saiu, sob a
 /// trava de gravação ([`MapDb::open`]) — o índice de conhecimento relê todo
 /// texto analisado, dezenas de segundos num projeto grande —, e com a passada
 /// do scan refazendo o mesmo bloco, quem abre espera a trava dela e desiste.
@@ -1611,26 +1590,27 @@ pub(crate) fn read_only_existing(model:&Path)->std::result::Result<MapDb,MapRefu
 /// espera a trava. `false` sem o mapa, com um arquivo que não é banco ou com a
 /// tabela que não se lê: aí a abertura responde como sempre.
 #[must_use]
-pub(crate) fn needs_block_update(model: &Path) -> bool {
+pub fn needs_block_update(model: &Path) -> bool {
     read_only_existing(model).is_ok_and(|db| outdated_block(&db).unwrap_or(false))
 }
 
 /// Se algum bloco que a porta declara falta no mapa aberto `db` ou está
-/// gravado noutra versão do formato que a deste programa.
+/// gravado noutra versão do formato que a deste programa, ou se o mapa ainda
+/// guarda algum bloco que saiu ([`RETIRED`]).
 pub(crate) fn outdated_block(db: &MapDb) -> Result<bool> {
     for block in &DB_BLOCKS {
         if db.version(block.name)? != Some(block.version) {
             return Ok(true);
         }
     }
-    Ok(false)
+    map_db::holds_retired(db.conn(), &RETIRED)
 }
 
 /// [`open_existing`] com a espera `wait` pela trava de outra gravação, para
 /// quem desiste logo em vez de segurar a ação de quem o chamou.
 pub(crate) fn open_existing_waiting(model: &Path, wait: std::time::Duration) -> std::result::Result<MapDb, MapRefusal> {
     existing(model)?;
-    MapDb::open_waiting(model, project_of(model), &DB_BLOCKS, wait).map_err(unreadable)
+    open_declared(model, project_of(model), wait).map_err(unreadable)
 }
 
 /// A recusa do mapa que falta ou que não começa como um banco.
@@ -1646,7 +1626,7 @@ pub(crate) fn existing(model: &Path) -> std::result::Result<(), MapRefusal> {
 
 /// Abre o banco em `model` com os blocos do mapa em dia.
 fn open(model: &Path) -> Result<MapDb> {
-    MapDb::open(model, project_of(model), &DB_BLOCKS)
+    open_declared(model, project_of(model), map_db::BUSY_WAIT)
 }
 
 /// A raiz do projeto do mapa em `model`. Ela só serve ao bloco refeito, e
@@ -3288,10 +3268,7 @@ mod tests {
                 "spec_marks",
                 "glossary_asks",
                 "glossary_marks",
-                "notes",
                 "knowledge_notes",
-                "expertise",
-                "expertise_exports",
                 "project_profile",
                 "blocks"
             ]
@@ -3393,5 +3370,52 @@ mod tests {
         assert_eq!(back["graph"], json!({"nodes": 2, "edges": 1, "top_fan_in": [{"module": "src/b.rs", "degree": 1}]}));
         assert_eq!(back["manifests"][0]["dependencies"], json!(["serde"]));
         assert_eq!(back["projects"][0].get("dependencies"), None, "{}", back["projects"]);
+    }
+
+    /// O bloco que saiu do programa sai do mapa na abertura: as tabelas dele e
+    /// a linha dele na tabela de blocos somem, e quem só lê deixa esse mapa
+    /// para a passada do scan. O mapa já limpo abre sem pedir a trava.
+    #[test]
+    fn a_retired_block_leaves_the_map_on_opening_and_a_clean_map_opens_without_writing() {
+        for name in ["notes", "expertise"] {
+            assert!(RETIRED.iter().any(|retired| retired.name == name), "the block `{name}` is not retired");
+        }
+        for retired in &RETIRED {
+            let declared = DB_BLOCKS.iter().any(|block| block.name == retired.name || retired.tables.iter().any(|table| block.tables.contains(table)));
+            assert!(!declared, "the retired block `{}` is still declared", retired.name);
+        }
+        let dir = tempdir().unwrap();
+        let model = model_path(dir.path());
+        assert!(save_at(&model, &scan_map(), "scan 1", &languages()).unwrap());
+        Connection::open(&model)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS notes(file TEXT, name TEXT, text TEXT); \
+                 INSERT INTO notes(file, name, text) VALUES ('src/a.rs', '', 'Lê o pedido.'); \
+                 INSERT OR REPLACE INTO blocks(name, version) VALUES ('notes', 3); \
+                 CREATE TABLE IF NOT EXISTS expertise(id TEXT, payload TEXT); \
+                 INSERT INTO expertise(id, payload) VALUES ('area-src-service', '{}'); \
+                 CREATE TABLE IF NOT EXISTS expertise_exports(id TEXT, payload TEXT); \
+                 INSERT INTO expertise_exports(id, payload) VALUES ('.claude/agents/mustard-area.md', 'abc'); \
+                 INSERT OR REPLACE INTO blocks(name, version) VALUES ('expertise', 1);",
+            )
+            .unwrap();
+        assert!(needs_block_update(&model), "a map still holding a retired block is left for the scan");
+
+        drop(open_existing(&model).unwrap());
+        let conn = Connection::open(&model).unwrap();
+        let tables = tables_and_columns(&conn);
+        for table in ["notes", "expertise", "expertise_exports"] {
+            assert!(!tables.contains_key(table), "the table `{table}` of a retired block stays");
+        }
+        let rows: i64 =
+            conn.query_row("SELECT count(*) FROM blocks WHERE name IN ('notes', 'expertise')", [], |row| row.get(0)).unwrap();
+        assert_eq!(rows, 0, "the line of a retired block stays");
+        assert!(!needs_block_update(&model));
+
+        // Outra gravação segura a trava: a abertura do mapa limpo não a pede.
+        conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+        assert!(open_existing_waiting(&model, std::time::Duration::from_millis(20)).is_ok(), "a clean map asked for the lock");
+        conn.execute_batch("ROLLBACK").unwrap();
     }
 }

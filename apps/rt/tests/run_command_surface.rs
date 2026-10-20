@@ -340,7 +340,7 @@ fn map_dump_brings_one_entry_per_table() {
             "census", "projects", "languages", "manifests", "skeleton", "files", "decls", "texts", "routes", "links",
             "graph", "fan_in", "history_base", "history_paths", "commits", "resource_files", "lineage_files", "lineage_commits",
             "lineage_decls", "pr_texts", "pr_comments", "pr_commits", "spec_items", "spec_commits", "spec_pulls",
-            "spec_marks", "glossary_asks", "glossary_marks", "notes", "knowledge_notes", "expertise", "expertise_exports", "project_profile", "blocks"
+            "spec_marks", "glossary_asks", "glossary_marks", "knowledge_notes", "project_profile", "blocks"
         ],
         "uma entrada por tabela, na ordem fixa: {report}"
     );
@@ -792,52 +792,6 @@ fn a_knowledge_answer_fits_the_conversation_cap() {
     let small: serde_json::Value = serde_json::from_str(&ask(&["--query", "quartz_marker"])).unwrap();
     assert_eq!(small["cards"][0]["name"], "quartz_marker", "{small}");
     assert!(small.get("conversation_cap").is_none(), "an answer within the cap is not compacted: {small}");
-}
-
-/// Exercise the actual binary's native-session handoff, source-bound draft,
-/// separate review, host export and reuse. The reply here is a fixture, not
-/// evidence that an authenticated host ran Haiku or Luna.
-#[test]
-fn expertise_session_review_export_and_reuse_work_through_the_cli_for_both_hosts() {
-    for host in ["claude","codex"] {
-        let dir=tempfile::tempdir().unwrap();let root=dir.path();
-        let source="fn restore() { /* restores a backup */ }\n";
-        fs::write(root.join("backup.rs"),source).unwrap();
-        fs::write(root.join("mustard.json"),r#"{"ai":{"fallback":false},"language":{"text":"en-US"}}"#).unwrap();
-        let mut hash=mustard_core::io::sha256::Sha256::new();hash.update(source.as_bytes());
-        let mut map=serde_json::json!({"modules":[{"path":"backup.rs","language":"rust","analysis":{"content_sha256":hash.hex_digest(),"parse_complete":true},
-            "declarations":[{"name":"restore","kind":"function","line":1,"end_line":1,"signature":"fn restore()"}]}]});
-        mustard_core::domain::knowledge::enrich(&mut map);
-        mustard_core::io::project_map::write_text(root,&map.to_string()).unwrap();
-        let run=|args:&[&str]| {
-            let out=binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
-                .args(["run","expertise","--root"]).arg(root).args(args).current_dir(root)
-                .env_remove("CLAUDE_PROJECT_DIR").env_remove("MUSTARD_WORKSPACE_ROOT").output().unwrap();
-            let report:serde_json::Value=serde_json::from_slice(&out.stdout).unwrap_or_else(|e|panic!("{e}: {}",String::from_utf8_lossy(&out.stdout)));
-            assert!(out.status.success(),"{report}");report
-        };
-        let args=["--prepare-session",host,"--query","restore backup","--file","backup.rs"];
-        let prepared=run(&args);
-        assert_eq!(prepared["delegation"]["execution"],"native-subagent-in-current-session");
-        assert_eq!(prepared["session_model_calls"],0);
-        let receipt=serde_json::json!({"request_id":prepared["request_id"],"model":"inherit","effort":"medium","input_tokens":1000,"output_tokens":50,
-            "result":{"title":"Backup restoration","text":"Inspect restore and its existing callers before changing persistence [s0].","source_ids":["s0"]}});
-        let path=root.join("receipt.json");fs::write(&path,receipt.to_string()).unwrap();
-        let drafted=run(&["--complete-session",path.to_str().unwrap(),"--query","restore backup","--file","backup.rs"]);
-        assert_eq!(drafted["draft_result"]["active"],false);
-        let name=drafted["draft_result"]["name"].as_str().unwrap();
-        assert!(name.starts_with("restore-backup-"));
-        let agent=format!("mustard-{name}");
-        assert!(!mustard_core::io::expertise::is_agent(root,&agent,host),"unreviewed prose cannot become an executor");
-        let review=format!("{name}:{}",drafted["draft_result"]["fingerprint"].as_str().unwrap());
-        run(&["--review",&review]);
-        run(&["--export",name,"--host",host]);
-        assert!(mustard_core::io::expertise::is_agent(root,&agent,host));
-        let reused=run(&args);assert_eq!(reused["cached"],true);assert_eq!(reused["session_model_calls"],0);
-        assert_eq!(run(&["--export",name,"--host",host])["changed"],0);
-        fs::write(root.join("AGENTS.md"),"Use the current schema contract.\n").unwrap();
-        assert!(!mustard_core::io::expertise::is_agent(root,&agent,host),"changed rules withdraw the previously reviewed executor");
-    }
 }
 
 /// Exact reproduction of the reported range. One authorized native Read is

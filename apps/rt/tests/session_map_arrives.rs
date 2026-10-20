@@ -288,8 +288,14 @@ fn an_update_renames_the_session_map_and_its_declaration() {
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         left.sort();
-        // A conferência desta instalação fica ao lado do mapa atual.
-        assert_eq!(left, ["installation.json", "session-map.md"], "`{spelling}`: the old map is still on disk");
+        // A conferência desta instalação, a lista das specs de antes dela e a
+        // marca da passagem delas pelo resumo do projeto ficam ao lado do mapa
+        // atual.
+        assert_eq!(
+            left,
+            ["installation.json", "legacy-specs.json", "legacy-summary.json", "session-map.md"],
+            "`{spelling}`: the old map is still on disk"
+        );
         let receipt:Value=serde_json::from_str(&std::fs::read_to_string(root.join(".claude/mustard/installation.json")).unwrap()).unwrap();
         assert_eq!(receipt,report["installation"],"the receipt must describe this update");
         assert_eq!(receipt["version"],mustard_core::harness_version());

@@ -213,9 +213,12 @@ use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Map, Value, json};
 
 use super::proof_check::{created_files, proof_defect, relative_path};
+use super::request_route::Route;
 use crate::commands::flow::round::queue::{task_files, tasks_not_delivered};
 use crate::commands::flow::round::{backlog_left, backlog_return, waves_left_without_tasks};
-use crate::shared::task_triage::{self, Candidate, Destination, Item};
+use crate::shared::jev::TASK_TRIAGE_CALL;
+use crate::shared::jev::reserve::{self, Asked, RESERVE_FIELD, Reserved};
+use crate::shared::task_triage::{self, Candidate, Classifying, Destination, Item};
 use crate::shared::spec_state::{DiskSpecState, checkout, session_from_env};
 
 /// Os tipos que só o binário grava: a execução de um critério, que o
@@ -302,16 +305,30 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
 /// O núcleo testável de [`run`]: o relatório da gravação ou a recusa. Com
 /// `copy`, a resposta só avisa que a cópia virou publicação explícita.
 /// A tarefa e o pedido novos passam antes pelo classificador das atividades,
-/// com a pergunta ao Jev da orquestração ([`same_work_open`]). Nunca entra em
-/// pânico.
+/// com a pergunta ao Jev da orquestração ([`same_work_open`]); o pedido novo,
+/// ao mesmo tempo, pela pergunta do lugar dele ([`super::request_route`]).
+/// Nunca entra em pânico.
 pub(crate) fn write_at_with(opts: &WriteOpts, copy: bool) -> Value {
-    write_triaged(opts, copy, &|root, spec, payload| task_triage::jev_ask(root, spec)(payload))
+    write_triaged(opts, copy, &|root, spec, payload| reserve::ask_orchestration(root, spec, TASK_TRIAGE_CALL, payload))
 }
 
-/// [`write_at_with`] com a pergunta ao classificador feita por `ask`, que
-/// recebe a raiz do projeto, a spec e o pedido, e devolve a resposta do Jev
-/// ou `None` sem ele.
-fn write_triaged(opts: &WriteOpts, copy: bool, ask: &dyn Fn(&Path, &str, &str) -> Option<Value>) -> Value {
+/// A pergunta ao Jev que [`write_triaged`] faz: recebe a raiz do projeto, a
+/// spec e o pedido, e diz o que o Jev deu. As perguntas de uma gravação saem
+/// ao mesmo tempo, cada uma na sua linha de execução.
+type AskJev<'a> = dyn Fn(&Path, &str, &str) -> Asked<Value> + Sync + 'a;
+
+/// As perguntas `payloads` ao Jev por `ask`, todas ao mesmo tempo: a espera
+/// é a da mais lenta, não a soma delas. As respostas voltam na ordem.
+fn ask_together(root: &Path, spec: &str, payloads: &[String], ask: &AskJev<'_>) -> Vec<Asked<Value>> {
+    std::thread::scope(|scope| {
+        let running: Vec<_> = payloads.iter().map(|payload| scope.spawn(move || ask(root, spec, payload))).collect();
+        running.into_iter().map(|asking| asking.join().unwrap_or(Asked::Failed)).collect()
+    })
+}
+
+/// [`write_at_with`] com a pergunta ao classificador e ao lugar do pedido
+/// feita por `ask` ([`AskJev`]).
+fn write_triaged(opts: &WriteOpts, copy: bool, ask: &AskJev<'_>) -> Value {
     let project = super::project(&opts.root);
     let lang = project.lang;
     let refuse = move |refusal: Refusal| super::refused(&refusal, lang);
@@ -319,6 +336,13 @@ fn write_triaged(opts: &WriteOpts, copy: bool, ask: &dyn Fn(&Path, &str, &str) -
     let mut draft = match draft_object(&opts.json) {
         Ok(draft) => draft,
         Err(refusal) => return refuse(refusal),
+    };
+    // A tarefa ou o pedido gravado de novo depois da reserva do Jev traz o
+    // número dela, que decide no lugar do Jev e não fica no evento.
+    let reserve_id = if matches!(opts.event_type.trim(), "task" | "request") {
+        draft.remove(RESERVE_FIELD).and_then(|id| id.as_str().map(str::to_string))
+    } else {
+        None
     };
     if draft.get("author").and_then(Value::as_str).map(str::trim) == Some("binary") {
         return refuse(Refusal::BinaryAuthor);
@@ -340,6 +364,11 @@ fn write_triaged(opts: &WriteOpts, copy: bool, ask: &dyn Fn(&Path, &str, &str) -
             Refusal::UnknownType { found: event_type.to_string() }
         });
     };
+    // A spec de antes desta versão do Mustard só se lê: a recusa vem antes de
+    // qualquer conferência do item.
+    if let Err(refusal) = mustard_core::io::legacy_specs::refuse_legacy(&project.root, spec) {
+        return refuse(refusal);
+    }
     if matches!(event_type, "task" | "request")
         && let Ok(path) = store::spec_file(&project.root, spec)
             && let Ok(Some(log)) = store::read(&path) {
@@ -362,9 +391,93 @@ fn write_triaged(opts: &WriteOpts, copy: bool, ask: &dyn Fn(&Path, &str, &str) -
     if let Err(refusal) = spec_was_opened(&project.root, spec) {
         return refuse(refusal);
     }
-    if let Some(refusal) = same_work_open(&project.root, spec, event_type, &draft, lang, &|payload| ask(&project.root, spec, payload)) {
+    // O pedido novo passa pela pergunta do lugar dele — desta spec, de uma
+    // spec nova ou da lista de pendências do projeto — e, ao mesmo tempo, a
+    // tarefa e o pedido novos passam pela comparação com as tarefas abertas.
+    let route_question = if event_type == "request" {
+        store::spec_file(&project.root, spec).and_then(|path| store::read(&path)).ok().flatten().and_then(|log| super::request_route::question(&log, &draft))
+    } else {
+        None
+    };
+    let same_work = same_work_question(&project.root, spec, event_type, &draft);
+    let payloads: Vec<String> = route_question.iter().chain(same_work.as_ref().map(|same| &same.classifying.payload)).cloned().collect();
+    // Com o recibo da reserva desta mesma decisão, ele responde no lugar do
+    // Jev; sem o recibo ainda, a decisão segue pendente.
+    let reserved = match reserve_id.as_deref().map(|id| reserve::reserved(&project.root, id, &payloads)) {
+        Some(Reserved::Ready(docs)) => Some(docs),
+        Some(Reserved::Pending) => {
+            let pending = reserve::reserve_request(&project.root, spec, TASK_TRIAGE_CALL, &payloads);
+            if pending.get("unavailable").is_none() {
+                return super::request_route::to_reserve(pending, event_type, lang);
+            }
+            None
+        }
+        Some(Reserved::Stale) | None => None,
+    };
+    let from_reserve = reserved.is_some();
+    let mut answers = reserved.map_or_else(|| ask_together(&project.root, spec, &payloads, ask), |docs| docs.into_iter().map(Asked::Answered).collect()).into_iter();
+    let route_answer = route_question.as_ref().and_then(|_| answers.next());
+    let same_answer = same_work.as_ref().and_then(|_| answers.next());
+    // O Jev ligado que falhou, passou do prazo ou voltou ilegível, numa
+    // pergunta que ainda decide, manda a tarefa ou o pedido novo à reserva.
+    let missed = |answer: &Asked<Value>, readable: &dyn Fn(&Value) -> bool| match answer {
+        Asked::Failed => true,
+        Asked::Answered(doc) => !readable(doc),
+        Asked::Off => false,
+    };
+    let mut to_reserve = false;
+    let mut route_warning = None;
+    let confirm = || Some(translate("triage.request_unsure", lang).to_string());
+    match &route_answer {
+        Some(Asked::Answered(doc)) => match super::request_route::read(doc) {
+            Some(Route::NewSpec) => return super::request_route::new_spec(&draft, lang),
+            Some(Route::Pending) => match super::request_route::to_pending(&project.root, spec, &draft, lang) {
+                Ok(moved) => return moved,
+                Err(_) => route_warning = confirm(),
+            },
+            Some(Route::Unsure) => route_warning = confirm(),
+            Some(Route::ThisSpec) => {}
+            None => to_reserve = true,
+        },
+        Some(Asked::Failed) => to_reserve = true,
+        Some(Asked::Off) | None => {}
+    }
+    to_reserve |= same_answer.as_ref().is_some_and(|answer| missed(answer, &|doc| doc["answers"].is_object()));
+    if to_reserve && !from_reserve {
+        let request = reserve::reserve_request(&project.root, spec, TASK_TRIAGE_CALL, &payloads);
+        if request.get("unavailable").is_none() {
+            return super::request_route::to_reserve(request, event_type, lang);
+        }
+        // Sem a reserva, a decisão do pedido fica em dúvida: grava, e quem
+        // conduz confirma com o usuário; a tarefa grava como sempre.
+        if event_type == "request" {
+            route_warning = confirm();
+        }
+    }
+    let same_doc = match (&same_work, same_answer) {
+        (Some(_), Some(Asked::Answered(doc))) => Some(doc),
+        _ => None,
+    };
+    if let (Some(same), Some(doc)) = (&same_work, same_doc)
+        && let Some(mut refusal) = same_work_open(same, event_type, &draft, lang, &doc)
+    {
+        if let Some(warning) = route_warning {
+            refusal["warnings"] = json!([warning]);
+        }
         return refusal;
     }
+    // A skill criada ou atualizada vem da cópia da onda para o projeto, com a
+    // impressão do arquivo; depois de gravada, sai do git e ganha a cópia de
+    // segurança.
+    let skill = if event_type == "skill" {
+        if let Err(refusal) = crate::shared::failure_skills::prepare_skill(&opts.root, spec, &mut draft, lang) {
+            return refusal;
+        }
+        let field = |name: &str| draft.get(name).and_then(Value::as_str).map(str::trim).unwrap_or_default().to_string();
+        Some((field("name"), field("action")))
+    } else {
+        None
+    };
     // O passo de término de uma tarefa guarda a impressão da cópia da onda,
     // que a entrega compara com a cópia dela na hora de entregar.
     // O passo cujo item não é tarefa nem critério da onda grava, com aviso.
@@ -437,6 +550,10 @@ fn write_triaged(opts: &WriteOpts, copy: bool, ask: &dyn Fn(&Path, &str, &str) -
             }
             warnings.extend(stray_step);
             warnings.extend(proof_warnings);
+            warnings.extend(route_warning);
+            if let Some((name, action)) = &skill {
+                warnings.extend(crate::shared::failure_skills::after_skill_written(&opts.root, spec, (written.id, name, action), lang));
+            }
             // Só a gravação com `--copy` prepara a cópia: a última de um
             // pedido do usuário que muda o plano, que a leva uma vez, já com
             // tudo o que o pedido gerou. A ordem sai sem marco: a página que
@@ -466,24 +583,20 @@ fn write_triaged(opts: &WriteOpts, copy: bool, ask: &dyn Fn(&Path, &str, &str) -
     }
 }
 
-/// A recusa da tarefa ou do pedido novo, do assistente ou do plano, que o
-/// classificador das atividades ([`task_triage::classify_with`]), com a
-/// pergunta feita por `ask`, dá como o mesmo trabalho de uma tarefa ainda por
-/// entregar da spec `spec` de `root`: a coberta (terminar a tarefa termina a
-/// atividade) ou a de mesmo sentido, que entra nela. A recusa
-/// (`same-work-open`) nomeia a tarefa, no idioma `lang`, e manda gravar a
-/// versão nova dela; na junção, traz em `rewrite` o pedido ao agente de
-/// análise da sessão, que escreve o texto da versão nova. A versão nova
-/// (`replaces`), a gravação com o motivo em `distinct`, a spec sem tarefa por
-/// entregar e a leitura sem confiança, ou sem Jev, gravam como sempre: `None`.
-fn same_work_open(
-    root: &Path,
-    spec: &str,
-    event_type: &str,
-    draft: &Map<String, Value>,
-    lang: Locale,
-    ask: &dyn Fn(&str) -> Option<Value>,
-) -> Option<Value> {
+/// A pergunta do classificador das atividades sobre a tarefa ou o pedido
+/// novo, com a spec lida em que ela se responde.
+struct SameWork {
+    root: std::path::PathBuf,
+    log: SpecLog,
+    classifying: Classifying,
+}
+
+/// A pergunta do classificador das atividades ([`task_triage::classifying`])
+/// sobre a tarefa ou o pedido novo `draft`, com as tarefas ainda por entregar
+/// da spec `spec` de `root`. A versão nova (`replaces`), a gravação com o
+/// motivo em `distinct` e a spec sem tarefa por entregar não perguntam:
+/// `None`.
+fn same_work_question(root: &Path, spec: &str, event_type: &str, draft: &Map<String, Value>) -> Option<SameWork> {
     if !matches!(event_type, "task" | "request") || draft.contains_key("replaces") || draft.contains_key("distinct") {
         return None;
     }
@@ -513,18 +626,31 @@ fn same_work_open(
         .map(str::to_string)
         .collect();
     let item = Item { title: said("title"), text: said("text"), files };
-    let (task, key, joins) = match task_triage::classify_with(&candidates, &[item], &[], ask).into_iter().next().flatten()? {
+    let classifying = task_triage::classifying(&candidates, &[item], &[])?;
+    Some(SameWork { root: root.to_path_buf(), log, classifying })
+}
+
+/// A recusa da tarefa ou do pedido novo, do assistente ou do plano, que a
+/// resposta `doc` do Jev à pergunta `same` ([`same_work_question`]) — ou da
+/// reserva dele — dá como o mesmo trabalho de uma tarefa ainda por entregar:
+/// a coberta (terminar a tarefa termina a atividade) ou a de mesmo sentido,
+/// que entra nela. A recusa (`same-work-open`) nomeia a tarefa, no idioma
+/// `lang`, e manda gravar a versão nova dela; na junção, traz em `rewrite` o
+/// pedido ao agente de análise da sessão, que escreve o texto da versão nova.
+/// O trabalho novo e a leitura sem confiança gravam como sempre: `None`.
+fn same_work_open(same: &SameWork, event_type: &str, draft: &Map<String, Value>, lang: Locale, doc: &Value) -> Option<Value> {
+    let (task, key, joins) = match same.classifying.read(doc).into_iter().next().flatten()? {
         Destination::Covered { task, .. } => (task, "triage.same_work_covered", false),
         Destination::Join { task, .. } => (task, "triage.same_work_open", true),
         Destination::New { .. } => return None,
     };
-    let event = log.get(task)?;
-    let code = log.codes().get(&task).cloned().unwrap_or_else(|| task.to_string());
+    let event = same.log.get(task)?;
+    let code = same.log.codes().get(&task).cloned().unwrap_or_else(|| task.to_string());
     let hint = translate(key, lang).replace("{task}", &code).replace("{title}", event.str_field("title").unwrap_or_default());
     let mut out = json!({ "ok": false, "reason": "same-work-open", "hint": hint, "task": code, "id": task });
     if joins {
         let sources = vec![task_triage::rewrite_source(code, &event.fields), task_triage::rewrite_source(event_type.to_string(), draft)];
-        out["rewrite"] = task_triage::rewrite_request(root, task, sources);
+        out["rewrite"] = task_triage::rewrite_request(&same.root, task, sources);
     }
     Some(out)
 }
@@ -1076,6 +1202,7 @@ fn record_to(
     if super::pages::old_format_spec(&project.root, spec) {
         return Err(Refusal::OldFormatSpec { spec: spec.trim().to_string() });
     }
+    mustard_core::io::legacy_specs::refuse_legacy(&project.root, spec)?;
     let file = store::spec_file(&project.root, spec);
     let declaration_issue = task_declared(event_type, &draft, by.is_none()).err().map(|refusal| {
         let source = file.as_deref().ok().map(|path| Source::of(path, locked.as_deref()));
@@ -1372,6 +1499,7 @@ impl RecordCheck {
         if super::pages::old_format_spec(&project.root, spec) {
             return Err(Refusal::OldFormatSpec { spec: spec.trim().to_string() });
         }
+        mustard_core::io::legacy_specs::refuse_legacy(&project.root, spec)?;
         let path = store::spec_file(&project.root, spec)?;
         let roots = store::citation_roots(start, &project.root);
         let dry = store::DryRun::open(&path, roots, &crate::shared::secret::secret_excerpts)?;
@@ -1541,6 +1669,14 @@ pub(crate) fn record_phase(start: &Path, spec: &str, phase: &str, session: Optio
     if matches!(phase, "closed" | "delivered") {
         let _ = crate::commands::event::pending::arm_charge(start, spec.trim(), recorded.written.id, session);
     }
+    // A entrega deixa ao projeto a linha da spec no resumo e as regras dela;
+    // a falha só avisa, e a entrega fica gravada.
+    if phase == "delivered"
+        && let Err(detail) = crate::shared::project_summary::record_delivered(start, spec.trim())
+    {
+        let lang = mustard_core::ProjectConfig::load(&store::spec_root(start)).language().text_or_default();
+        eprintln!("{}", translate("spec_index.summary_failed", lang).replace("{spec}", spec.trim()).replace("{detail}", &detail));
+    }
     true
 }
 
@@ -1584,9 +1720,9 @@ fn advance_phase(start: &Path, spec: &str, phase: &str, mut fields: Map<String, 
 }
 
 /// O nascimento de uma spec com arquivo de eventos e sem nenhum `state`, pela
-/// testemunha da aprovação: um `state` na fase `plan`, com a branch da spec,
-/// quando se sabe, pela mesma gravação do `run write`. O `meta.json` nunca é
-/// lido.
+/// testemunha da aprovação: um `state` na fase `plan`, com a versão do
+/// Mustard e a branch da spec, quando se sabe, pela mesma gravação do `run
+/// write`. O `meta.json` nunca é lido.
 ///
 /// A branch é `branch`, quando o chamador a sabe; senão, a do checkout,
 /// quando ela é a desta spec. Uma spec que já tem fase nunca volta ao plano, e
@@ -1605,6 +1741,7 @@ pub(crate) fn record_birth(start: &Path, spec: &str, branch: Option<&str>) -> Re
     let mut draft = Map::new();
     draft.insert("phase".to_string(), json!("plan"));
     draft.insert("author".to_string(), json!("binary"));
+    draft.insert("mustard".to_string(), json!(env!("CARGO_PKG_VERSION")));
     if let Some(branch) = branch {
         draft.insert("branch".to_string(), json!(branch));
     }
@@ -1612,8 +1749,8 @@ pub(crate) fn record_birth(start: &Path, spec: &str, branch: Option<&str>) -> Re
 }
 
 /// O nascimento de uma spec aberta pelo `open`: um `state` em levantamento,
-/// com a branch que ele acabou de criar e a base de que ela saiu, pela mesma
-/// gravação do `run write`. Uma spec que já tem fase nunca volta ao
+/// com a branch que ele acabou de criar, a base de que ela saiu e a versão do
+/// Mustard que a abriu, pela mesma gravação do `run write`. Uma spec que já tem fase nunca volta ao
 /// levantamento: aí nada é gravado, e a resposta é `Ok(false)`.
 pub(crate) fn record_open(start: &Path, spec: &str, branch: &str, base: &str) -> Result<bool, Refusal> {
     if DiskSpecState::new(start).log(spec).is_some_and(|log| State::from_log(&log).phase.is_some()) {
@@ -1622,6 +1759,7 @@ pub(crate) fn record_open(start: &Path, spec: &str, branch: &str, base: &str) ->
     let mut draft = Map::new();
     draft.insert("phase".to_string(), json!("survey"));
     draft.insert("author".to_string(), json!("binary"));
+    draft.insert("mustard".to_string(), json!(env!("CARGO_PKG_VERSION")));
     draft.insert("branch".to_string(), json!(branch));
     draft.insert("base".to_string(), json!(base));
     record(start, spec, "state", draft, PhaseWriter::Binary).map(|_| true)
@@ -1765,6 +1903,35 @@ fn open_spec_for_the_fix(root: &Path, spec: Option<&str>) -> Option<String> {
     state.phase.is_none_or(not_closed_yet).then_some(spec)
 }
 
+/// O campo da resposta do passo com o bloco da próxima tarefa da onda.
+pub(crate) const NEXT_TASK_FIELD: &str = "next_task";
+
+/// O campo da resposta do passo que diz que todas as tarefas da onda
+/// terminaram, com a ordem de entregar.
+pub(crate) const TASKS_FINISHED_FIELD: &str = "tasks_finished";
+
+/// Põe na resposta do passo aceito `report` o que vem depois dele
+/// ([`after_step`](crate::commands::flow::round::task_release::after_step)):
+/// o bloco da próxima tarefa, já liberada, ou o aviso de que todas terminaram.
+/// A spec é a do relatório, a do `--spec` ou a ativa.
+fn answer_next_task(report: &mut Value, project: &super::Project, named: Option<&str>, json: &str, started: std::time::Instant) {
+    use crate::commands::flow::round::task_release::{Next, after_step};
+    let spec = report
+        .get("spec")
+        .and_then(Value::as_str)
+        .or(named)
+        .map(str::trim)
+        .filter(|spec| !spec.is_empty())
+        .map(str::to_string)
+        .or_else(|| DiskSpecState::new(&checkout(&project.root)).active(session_from_env().as_deref()));
+    let Some(spec) = spec else { return };
+    match after_step(&project.root, &spec, json, started) {
+        Some(Next::Task(text)) => report[NEXT_TASK_FIELD] = Value::String(text),
+        Some(Next::Finished) => report[TASKS_FINISHED_FIELD] = Value::String(translate("conversation_size.tasks_finished", project.lang).to_string()),
+        None => {}
+    }
+}
+
 /// Run `write` and print the JSON report; with `copy`, the write also
 /// prepares the copy of the spec page. Exit 1 on a refusal.
 pub fn run(opts: &WriteOpts, copy: bool) {
@@ -1777,7 +1944,7 @@ pub fn run(opts: &WriteOpts, copy: bool) {
         let project = super::project(&opts.root);
         let session = crate::shared::spec_state::session_from_env();
         let transcript = session.as_deref().and_then(|session| crate::shared::typed_messages::session_transcript(&project.root, session));
-        crate::hooks::session::conversation_size::answer_step(
+        let deliver = crate::hooks::session::conversation_size::answer_step(
             &mut report,
             &project.root,
             &opts.event_type,
@@ -1787,6 +1954,11 @@ pub fn run(opts: &WriteOpts, copy: bool) {
             transcript.as_deref(),
             project.lang,
         );
+        // Abaixo do limite, ou sem medida, a resposta traz a próxima tarefa
+        // da onda, que fica liberada; acima, só a ordem de entregar.
+        if deliver != Some(true) {
+            answer_next_task(&mut report, &project, opts.spec.as_deref(), &opts.json, started);
+        }
     }
     let _ = super::conversation::record_call(&opts.root, "write", opts.spec.as_deref(), started, &report);
     println!("{}", serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".into()));
@@ -1866,7 +2038,7 @@ mod tests {
         let events = || store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap().events.len();
         let before = events();
 
-        let refused = write_triaged(&opts(&again), false, &|_, _, _| Some(triaged(&format!("join:t{open}"))));
+        let refused = write_triaged(&opts(&again), false, &|_, _, _| Asked::Answered(triaged(&format!("join:t{open}"))));
         assert_eq!(refused["reason"], json!("same-work-open"), "{refused}");
         assert_eq!(refused["task"], json!("MSTD-TASK-0001"), "{refused}");
         assert!(refused["hint"].as_str().unwrap().contains("MSTD-TASK-0001 — Subtrair"), "{refused}");
@@ -1880,7 +2052,7 @@ mod tests {
         let id = recorded["id"].as_u64().unwrap();
         assert_eq!(log.get(id).and_then(|event| event.str_field("distinct")), Some("Outra conta: tira um número do outro."));
 
-        let plain = write_triaged(&opts(&again), false, &|_, _, _| None);
+        let plain = write_triaged(&opts(&again), false, &|_, _, _| Asked::Off);
         assert_eq!(plain["ok"], json!(true), "without Jev the task is recorded: {plain}");
     }
 
@@ -1897,7 +2069,7 @@ mod tests {
         let again = json!({"title": "Tirar um número do outro", "text": "Tirar um número do outro.", "agent": "- tirar",
             "files": [{"path": "src/calc.ts"}], "depends_on": [], "covers": [request], "origin": asked});
         let opts = WriteOpts { root: root.to_path_buf(), spec: Some("teste".into()), event_type: "task".into(), json: again.to_string() };
-        let refused = write_triaged(&opts, false, &|_, _, _| Some(triaged(&format!("join:t{open}"))));
+        let refused = write_triaged(&opts, false, &|_, _, _| Asked::Answered(triaged(&format!("join:t{open}"))));
         let delegation = &refused["rewrite"]["delegation"];
         let family = if delegation["host"] == json!("claude") { "haiku" } else { "luna" };
         assert_eq!(delegation["model_family"], json!(family), "{refused}");
@@ -1922,6 +2094,274 @@ mod tests {
         assert_eq!(recorded["ok"], json!(true), "{recorded}");
         let log = store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap();
         assert_eq!(log.current(open).and_then(|task| task.str_field("title")), Some("Subtrair de dois jeitos"));
+    }
+
+    /// A tarefa nova que o Jev ligado não classifica não grava: a resposta
+    /// traz o pedido de reserva com a mesma pergunta, e gravar de novo sem o
+    /// recibo só a devolve. O recibo certo da junção recusa como o Jev; o
+    /// incerto vale como dúvida e grava. Sem Jev, grava sem reserva.
+    #[test]
+    fn a_new_task_the_jev_misses_is_not_recorded_and_goes_to_the_reserve() {
+        for certainty in ["sure", "unsure"] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            let (asked, request, open) = subtraction_backlog(root);
+            let again = json!({"title": "Tirar um número do outro", "text": "Tirar um número do outro.", "agent": "- tirar",
+                "files": [{"path": "src/calc.ts"}], "depends_on": [], "covers": [request], "origin": asked});
+            let opts = |extra: &Value| {
+                let mut draft = again.clone();
+                for (key, value) in extra.as_object().into_iter().flatten() {
+                    draft[key] = value.clone();
+                }
+                WriteOpts { root: root.to_path_buf(), spec: Some("teste".into()), event_type: "task".into(), json: draft.to_string() }
+            };
+            let tasks = || store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap().visible().iter().filter(|e| e.event_type == "task").count();
+            let before = tasks();
+            let out = write_triaged(&opts(&json!({})), false, &|_, _, _| Asked::Failed);
+            assert_eq!(out["reason"], json!("jev-reserve"), "{out}");
+            assert_eq!(tasks(), before, "nothing is recorded yet");
+            let prompt = out["reserve"]["delegation"]["request"]["prompt"].as_str().unwrap();
+            assert!(prompt.contains("Where does `items.i0` belong?"), "{prompt}");
+            let id = out["reserve"]["request_id"].as_str().unwrap().to_string();
+            let pending = write_triaged(&opts(&json!({ "reserve": id })), false, &|_, _, _| panic!("a pending reserve asks no Jev"));
+            assert_eq!(pending["reason"], json!("jev-reserve"), "{pending}");
+
+            let said = |choice: &str| json!({ "choice": choice, "certainty": certainty });
+            let receipt = mustard_core::io::knowledge::enrichment::SessionReceipt {
+                request_id: id.clone(),
+                model: "inherit".into(),
+                effort: None,
+                result: json!({ "answers": { "q1": said(&format!("join:t{open}")), "q2": said("none") } }),
+                input_tokens: None,
+                output_tokens: None,
+            };
+            mustard_core::io::knowledge::enrichment::complete_session(root, root, &receipt).unwrap();
+            let applied = write_triaged(&opts(&json!({ "reserve": id })), false, &|_, _, _| panic!("the receipt answers in place of the Jev"));
+            if certainty == "sure" {
+                assert_eq!(applied["reason"], json!("same-work-open"), "{applied}");
+                assert_eq!(tasks(), before);
+            } else {
+                assert_eq!(applied["ok"], json!(true), "an unsure receipt is a doubt: {applied}");
+                assert_eq!(tasks(), before + 1);
+                let log = store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap();
+                assert!(log.visible().iter().all(|event| !event.fields.contains_key("reserve")), "the reserve number stays out of the event");
+            }
+        }
+    }
+
+    /// A spec com o objetivo da calculadora e a mensagem do usuário que pede
+    /// `asked`; devolve as opções da gravação do pedido com esse texto.
+    fn routed_request(root: &std::path::Path, asked: &str) -> impl Fn(&Value) -> WriteOpts {
+        std::fs::write(root.join("mustard.json"), "{}").unwrap();
+        let goal = message(root, "user", "Somar dois números na calculadora.");
+        assert_eq!(context(root, "Somar dois números na calculadora.", goal)["ok"], json!(true));
+        let said = message(root, "user", asked);
+        let base = json!({"title": "Pedido do usuário", "text": asked, "keys": ["pedido"], "effect": "new_waves",
+            "agent": "- conferir pelo teste", "origin": said});
+        let root = root.to_path_buf();
+        move |extra: &Value| {
+            let mut draft = base.clone();
+            for (key, value) in extra.as_object().into_iter().flatten() {
+                draft[key] = value.clone();
+            }
+            WriteOpts { root: root.clone(), spec: Some("teste".into()), event_type: "request".into(), json: draft.to_string() }
+        }
+    }
+
+    /// A resposta do Jev à pergunta do pedido: a escolha `choice`, com a
+    /// confiança `confidence`, e a chance `fits` de o pedido ser do objetivo.
+    fn route_answer(choice: &str, confidence: f64, fits: f64) -> Value {
+        json!({"answers": {
+            "fits": {"type": "noul", "noul": fits},
+            "route": {"type": "choice", "choice": choice, "confidence": confidence, "probabilities": {choice: confidence}},
+        }})
+    }
+
+    /// Só a pergunta do pedido ganha `answer`; a das tarefas abertas não tem
+    /// resposta. Cada pergunta feita fica em `asked`.
+    fn route_jev(answer: Value, asked: &std::sync::Mutex<Vec<String>>) -> impl Fn(&Path, &str, &str) -> Asked<Value> + Sync + '_ {
+        move |_: &Path, _: &str, payload: &str| {
+            asked.lock().unwrap().push(payload.to_string());
+            if payload.contains("request-route") { Asked::Answered(answer.clone()) } else { Asked::Off }
+        }
+    }
+
+    fn requests(root: &std::path::Path) -> usize {
+        let log = store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap();
+        log.visible().into_iter().filter(|event| event.event_type == "request").count()
+    }
+
+    /// O Jev certo de que o pedido é obra de outra spec: nada se grava, a
+    /// recusa manda abrir uma spec nova e devolve o texto do pedido. A
+    /// pergunta sai sem segredo. Com `same_spec`, a palavra do usuário de que
+    /// o pedido é desta spec, a gravação passa sem perguntar.
+    #[test]
+    fn a_request_jev_reads_as_a_new_spec_is_refused_with_its_text() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let key = format!("ghp_{}", "a1".repeat(18));
+        let asked_text = format!("Trocar o tema do site para escuro; o token {key} está no painel.");
+        let opts = routed_request(root, &asked_text);
+        let asked = std::sync::Mutex::new(Vec::new());
+        let refused = write_triaged(&opts(&json!({})), false, &route_jev(route_answer("new_spec", 0.93, 0.04), &asked));
+        assert_eq!(refused["ok"], json!(false), "{refused}");
+        assert_eq!(refused["reason"], json!("request-new-spec"), "{refused}");
+        assert!(refused["hint"].as_str().unwrap().contains("spec nova"), "{refused}");
+        assert_eq!(refused["request"]["text"], json!(asked_text), "the request goes back: {refused}");
+        assert_eq!(requests(root), 0, "nothing is recorded");
+        let payloads = asked.lock().unwrap();
+        assert_eq!(payloads.len(), 1, "one call: {payloads:?}");
+        assert!(payloads[0].contains("Somar dois números") && payloads[0].contains("Trocar o tema"), "{}", payloads[0]);
+        assert!(!payloads[0].contains(&key), "no secret leaves: {}", payloads[0]);
+        drop(payloads);
+
+        let confirmed = write_triaged(&opts(&json!({"same_spec": "O usuário disse que o tema é desta obra."})), false, &|_, _, payload| {
+            assert!(!payload.contains("request-route"), "a confirmed request asks nothing");
+            Asked::Off
+        });
+        assert_eq!(confirmed["ok"], json!(true), "{confirmed}");
+        assert_eq!(requests(root), 1);
+    }
+
+    /// O Jev certo de que o pedido fica para depois: ele vai à lista de
+    /// pendências do projeto, e não à spec, e a resposta diz onde está.
+    #[test]
+    fn a_request_jev_reads_as_for_later_goes_to_the_project_pending_list() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let opts = routed_request(root, "Mais para frente, revisar a política de backup do servidor.");
+        let asked = std::sync::Mutex::new(Vec::new());
+        let out = write_triaged(&opts(&json!({})), false, &route_jev(route_answer("project_pending", 0.9, 0.1), &asked));
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!(out["pending"], json!("P-1"), "{out}");
+        assert!(out["hint"].as_str().unwrap().contains("P-1"), "{out}");
+        assert_eq!(requests(root), 0, "the spec does not get it");
+        let ledger = std::fs::read_to_string(root.join(".claude/pending/ledger.json")).unwrap();
+        assert!(ledger.contains("revisar a política de backup"), "{ledger}");
+    }
+
+    /// O Jev certo de que o pedido é desta spec, e coerente na pergunta do
+    /// objetivo: a gravação segue como sempre, sem aviso.
+    #[test]
+    fn a_request_jev_reads_as_this_spec_is_recorded_as_before() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let opts = routed_request(root, "Somar também números negativos.");
+        let asked = std::sync::Mutex::new(Vec::new());
+        let out = write_triaged(&opts(&json!({})), false, &route_jev(route_answer("same_spec", 0.95, 0.97), &asked));
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert!(out.get("warnings").is_none(), "{out}");
+        assert_eq!(requests(root), 1);
+        assert_eq!(asked.lock().unwrap().len(), 1);
+    }
+
+    /// O Jev em dúvida — a escolha fraca, ou a escolha forte que a pergunta
+    /// do objetivo desmente — grava como sempre, com o aviso de confirmar com
+    /// o usuário.
+    #[test]
+    fn a_request_jev_doubts_is_recorded_with_a_warning_to_confirm() {
+        for answer in [route_answer("new_spec", 0.55, 0.1), route_answer("new_spec", 0.95, 0.9), route_answer("same_spec", 0.95, 0.5)] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            let opts = routed_request(root, "Trocar o tema do site para escuro.");
+            let asked = std::sync::Mutex::new(Vec::new());
+            let out = write_triaged(&opts(&json!({})), false, &route_jev(answer.clone(), &asked));
+            assert_eq!(out["ok"], json!(true), "{answer}: {out}");
+            assert_eq!(requests(root), 1);
+            let warnings = out["warnings"].to_string();
+            assert!(warnings.contains("confirme com o usuário"), "{answer}: {out}");
+        }
+    }
+
+    /// As duas perguntas do pedido novo ao Jev — o lugar dele e a comparação
+    /// com as tarefas abertas — saem ao mesmo tempo: com o Jev levando 5 s em
+    /// cada uma, a gravação espera uns 5 s, não 10.
+    #[test]
+    fn a_new_request_asks_both_jev_questions_at_the_same_time() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let opts = routed_request(root, "Somar também números negativos.");
+        subtraction_backlog(root);
+        let before = requests(root);
+        let asked = std::sync::Mutex::new(Vec::new());
+        let started = std::time::Instant::now();
+        let out = write_triaged(&opts(&json!({})), false, &|_, _, payload| {
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            asked.lock().unwrap().push(payload.to_string());
+            Asked::Answered(if payload.contains("request-route") { route_answer("same_spec", 0.95, 0.97) } else { triaged("new") })
+        });
+        let waited = started.elapsed();
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!(requests(root), before + 1);
+        assert_eq!(asked.lock().unwrap().len(), 2, "both questions went out");
+        assert!(waited < std::time::Duration::from_secs(8), "waited {waited:?}: one after the other");
+    }
+
+    /// O Jev que não responde a tempo (o filtro desiste em 10 s): o pedido
+    /// não grava, e a resposta traz o pedido de reserva ao agente de análise
+    /// com as duas perguntas. Sem o recibo, gravar de novo com a reserva só a
+    /// devolve, pendente. Com o recibo certo de que o pedido fica para depois,
+    /// a gravação de novo vai à lista de pendências do projeto, sem perguntar
+    /// ao Jev; com o recibo incerto, grava na spec e manda confirmar.
+    #[test]
+    fn a_new_request_the_jev_misses_is_not_recorded_and_goes_to_the_reserve() {
+        for (certainty, place) in [("sure", "pending"), ("unsure", "spec")] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            let opts = routed_request(root, "Mais para frente, revisar a política de backup do servidor.");
+            subtraction_backlog(root);
+            let before = requests(root);
+            let out = write_triaged(&opts(&json!({})), false, &|_, _, _| Asked::Failed);
+            assert_eq!(out["ok"], json!(false), "{out}");
+            assert_eq!(out["reason"], json!("jev-reserve"), "{out}");
+            assert!(out["hint"].as_str().unwrap().contains("`reserve`"), "{out}");
+            assert_eq!(requests(root), before, "nothing is recorded yet");
+            let prompt = out["reserve"]["delegation"]["request"]["prompt"].as_str().unwrap();
+            assert!(prompt.contains("Where does the request in `request` belong?") && prompt.contains("Where does `items.i0` belong?"), "both questions: {prompt}");
+            let id = out["reserve"]["request_id"].as_str().unwrap().to_string();
+
+            let again = write_triaged(&opts(&json!({ "reserve": id })), false, &|_, _, _| panic!("a pending reserve asks no Jev"));
+            assert_eq!((again["reason"].clone(), again["reserve"]["request_id"].clone()), (json!("jev-reserve"), json!(id)), "{again}");
+            assert_eq!(requests(root), before, "still pending");
+            let log = store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap();
+            let observed = crate::commands::spec_events::conversation::observed(root, "teste", &log);
+            let reserves = observed.iter().filter(|e| e.event_type == "call" && e.str_field("command") == Some(reserve::RESERVE_CALL)).count();
+            assert_eq!(reserves, 1, "one reserve, recorded once");
+
+            let said = |choice: &str| json!({ "choice": choice, "certainty": certainty });
+            let receipt = mustard_core::io::knowledge::enrichment::SessionReceipt {
+                request_id: id.clone(),
+                model: "inherit".into(),
+                effort: None,
+                result: json!({ "answers": { "q1": said("no"), "q2": said("project_pending"), "q3": said("new"), "q4": said("none") } }),
+                input_tokens: None,
+                output_tokens: None,
+            };
+            mustard_core::io::knowledge::enrichment::complete_session(root, root, &receipt).unwrap();
+            let applied = write_triaged(&opts(&json!({ "reserve": id })), false, &|_, _, _| panic!("the receipt answers in place of the Jev"));
+            assert_eq!(applied["ok"], json!(true), "{applied}");
+            if place == "pending" {
+                assert_eq!(applied["pending"], json!("P-1"), "{applied}");
+                assert_eq!(requests(root), before, "the spec does not get it");
+            } else {
+                assert_eq!(requests(root), before + 1, "{applied}");
+                assert!(applied["warnings"].to_string().contains("confirme com o usuário"), "an unsure receipt is a doubt: {applied}");
+                let log = store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap();
+                assert!(log.visible().iter().all(|event| !event.fields.contains_key("reserve")), "the reserve number stays out of the event");
+            }
+        }
+    }
+
+    /// Sem Jev, o pedido grava como sempre, sem aviso novo.
+    #[test]
+    fn a_request_without_jev_is_recorded_without_the_new_warning() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let opts = routed_request(root, "Trocar o tema do site para escuro.");
+        let out = write_triaged(&opts(&json!({})), false, &|_, _, _| Asked::Off);
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert!(out.get("warnings").is_none(), "{out}");
+        assert_eq!(requests(root), 1);
     }
 
     #[test]
@@ -2207,6 +2647,43 @@ mod tests {
 
         assert_eq!(std::fs::read_to_string(spec.join("spec.md")).unwrap(), document, "the document is left alone");
         assert!(!spec.join("spec.ndjson").exists(), "no event file in an old spec");
+    }
+
+    /// Toda spec nova nasce com a versão do Mustard que a abriu: pela porta do
+    /// `open` e pela testemunha da aprovação.
+    #[test]
+    fn a_new_spec_is_born_with_the_mustard_version() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        assert_eq!(record_open(root, "aberta", "feature/aberta", "dev"), Ok(true));
+        open_spec(root, "rascunho");
+        assert_eq!(record_birth(root, "rascunho", None), Ok(true));
+        for spec in ["aberta", "rascunho"] {
+            let log = DiskSpecState::new(root).log(spec).unwrap();
+            let birth = log.events.iter().find(|e| e.event_type == "state").unwrap();
+            assert_eq!(birth.str_field("mustard"), Some(env!("CARGO_PKG_VERSION")), "{spec}");
+        }
+    }
+
+    /// Na spec de antes desta versão do Mustard, nenhuma gravação passa: a do
+    /// modelo e a do binário recusam com o código próprio, e o arquivo fica
+    /// com os mesmos bytes. A spec nova ao lado grava.
+    #[test]
+    fn nothing_is_written_to_a_legacy_spec() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        open_spec(root, "teste");
+        let path = store::spec_file(root, "teste").unwrap();
+        mustard_core::io::legacy_specs::mark_once(root, "0.2.24").unwrap();
+        let before = std::fs::read(&path).unwrap();
+
+        let out = write(root, "message", r#"{"author":"user","text":"um recado"}"#);
+        assert_eq!(out["reason"], json!("legacy-spec"), "{out}");
+        assert!(out["hint"].as_str().unwrap().contains("teste"), "{out}");
+        assert_eq!(record_birth(root, "teste", None).unwrap_err().reason(), "legacy-spec");
+        assert_eq!(std::fs::read(&path).unwrap(), before, "the legacy spec keeps its bytes");
+
+        assert_eq!(write_to(root, Some("nova"), "message", r#"{"author":"user","text":"um recado"}"#)["ok"], json!(true));
     }
 
     /// Uma spec aberta pelo `open`, mesmo com um `meta.json` posto ao lado por

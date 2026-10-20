@@ -6,7 +6,7 @@ use crate::domain::knowledge::precise::{
 };
 use crate::domain::knowledge::{Source, resources::Registry};
 use crate::io::{
-    map_db::{Block, Kind, MapDb},
+    map_db::{Block, Kind},
     project_map as store,
     sha256::Sha256,
 };
@@ -251,13 +251,7 @@ pub fn import(
             return Err("precise-source-changed-during-import".into());
         }
     }
-    let mut db = MapDb::open_waiting(
-        &store::model_path(root),
-        root,
-        &store::DB_BLOCKS,
-        std::time::Duration::from_millis(100),
-    )
-    .map_err(|e| e.to_string())?;
+    let mut db = store::open_declared(&store::model_path(root), root, std::time::Duration::from_millis(100)).map_err(|e| e.to_string())?;
     db.write(|tx| {
         tx.execute_batch("DELETE FROM precise_documents; DELETE FROM precise_occurrences; DELETE FROM precise_relationships; DELETE FROM precise_meta;")?;
         for (file,sha256) in &sources {tx.execute("INSERT INTO precise_documents VALUES(?1,?2)",params![file,sha256])?;}
@@ -520,6 +514,7 @@ pub fn references(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::io::map_db::MapDb;
     fn occurrence(line: i32, start: i32, end: i32, symbol: &str, roles: i32) -> wire::Occurrence {
         wire::Occurrence {
             range: vec![],

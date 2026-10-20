@@ -8,7 +8,9 @@ use mustard_core::domain::knowledge::{
 use mustard_core::domain::map_filter::FilterError;
 use mustard_core::domain::normalize::Languages;
 use serde_json::{Value, json};
+use std::cell::Cell;
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 type Invoke = dyn Fn(&str) -> Result<Value, FilterError> + Send + Sync;
 pub(crate) struct KnowledgeSelector {
@@ -19,6 +21,48 @@ impl KnowledgeSelector {
     pub(crate) fn configured(root: &Path) -> Option<Self> {
         let filter = JevFilter::for_knowledge(root)?;
         Some(Self { invoke: Box::new(move |payload| filter.choose_symbols(payload)), languages: Languages::of_project(root) })
+    }
+}
+
+/// A escolha do Jev dentro do prazo da busca que a pede: vencido o prazo, a
+/// escolha fica nativa, sem pedido nenhum; dentro dele, o pedido acaba com o
+/// prazo. Conta o tempo gasto nas escolhas, para o relato da busca.
+pub(crate) struct Budgeted {
+    selector: KnowledgeSelector,
+    deadline: Instant,
+    spent: Cell<Duration>,
+}
+
+impl Budgeted {
+    pub(crate) fn new(selector: KnowledgeSelector, deadline: Instant) -> Self {
+        Self { selector, deadline, spent: Cell::new(Duration::ZERO) }
+    }
+
+    /// O seletor do projeto em `root`, cujo pedido acaba em `deadline`.
+    pub(crate) fn configured(root: &Path, deadline: Instant) -> Option<Self> {
+        let filter = JevFilter::for_knowledge(root)?;
+        let selector = KnowledgeSelector {
+            invoke: Box::new(move |payload| filter.choose_symbols_until(payload, deadline)),
+            languages: Languages::of_project(root),
+        };
+        Some(Self::new(selector, deadline))
+    }
+
+    /// O tempo gasto nas escolhas até aqui.
+    pub(crate) fn spent(&self) -> Duration {
+        self.spent.get()
+    }
+}
+
+impl SymbolSelector for Budgeted {
+    fn select(&self, query: &str, groups: &[Ambiguity]) -> Decisions {
+        if Instant::now() >= self.deadline {
+            return Decisions { usage: json!({"status":"native; search-budget-spent","remote_model_calls":0}), ..Decisions::default() };
+        }
+        let started = Instant::now();
+        let decisions = self.selector.select(query, groups);
+        self.spent.set(self.spent.get() + started.elapsed());
+        decisions
     }
 }
 
@@ -231,6 +275,35 @@ mod tests {
         assert_eq!(decision.usage["remote_model_calls"], 0);
         assert_eq!(decision.outcomes["a.rs"], Outcome::InvalidAnswer);
     }
+    /// O Jev da busca cabe no prazo dela: vencido o prazo, a escolha fica
+    /// nativa sem pedido nenhum; dentro dele, o tempo do pedido se conta.
+    #[test]
+    fn the_search_choice_fits_the_search_budget_and_counts_its_time() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let asked = Arc::new(AtomicUsize::new(0));
+        let selector = |deadline: Instant| {
+            let asked = asked.clone();
+            Budgeted::new(KnowledgeSelector { languages: Languages::new(["en-US"]), invoke: Box::new(move |_| {
+                asked.fetch_add(1, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(30));
+                Ok(json!({"answers":{}}))
+            })}, deadline)
+        };
+
+        let late = selector(Instant::now());
+        let decision = late.select("quartz beacon", &[group()]);
+        assert_eq!(asked.load(Ordering::SeqCst), 0, "no request after the search budget");
+        assert_eq!(decision.usage["remote_model_calls"], 0);
+        assert_eq!(decision.usage["status"], "native; search-budget-spent");
+        assert_eq!(late.spent(), Duration::ZERO);
+
+        let timely = selector(Instant::now() + Duration::from_secs(2));
+        timely.select("quartz beacon", &[group()]);
+        assert_eq!(asked.load(Ordering::SeqCst), 1);
+        assert!(timely.spent() >= Duration::from_millis(30), "{:?}", timely.spent());
+    }
+
     #[test]
     fn unknown_physical_attempts_stay_unknown_after_failure() {
         let selector = KnowledgeSelector { languages: Languages::new(["en-US"]), invoke: Box::new(|_| Err(FilterError::Unreadable("fixture".into()))) };

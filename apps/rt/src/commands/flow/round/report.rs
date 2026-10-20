@@ -21,7 +21,7 @@ use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Map, Value, json};
 
 use super::agreed::{
-    join_unmet, place_review_unmet, settle_wave_agreed, unmet_meaning_joins, Unmet,
+    join_unmet, place_review_unmet, settle_wave_agreed, unmet_meaning_joins,
 };
 use super::answer::RoundRefusal;
 use super::commit::{
@@ -31,7 +31,7 @@ use super::commit::{
 use super::wave_commit::{commit_waves, made_drafts, record_made, removed_warnings};
 use super::commit_title::{check_summary, wave_commits};
 use super::copy_check::check_against_copies;
-use super::leftovers::{Leftover, LeftoverEvent, MeaningJoin, ask_rewrites, leftover_events, leftovers_of, meaning_joins};
+use super::leftovers::{Leftover, LeftoverEvent, MeaningJoin, ask_rewrites, leftover_destinations, leftover_events, leftovers_of, meaning_joins};
 use super::queue::{backlog_wave, open_review, open_sends, waves_in_progress};
 use super::rehearsal::{Recording, Rehearsed, rehearse};
 use super::rejection::{held_rejection, keep_rejections, record_rejections, rejected_lines};
@@ -39,8 +39,9 @@ use super::lost_commit::already_committed;
 use super::stops::{HeldReturn, hold_refused, hold_waiting_changes, plan_refusals_point_at_changes, tasks_returned, undone_of, undone_returns};
 use super::usage::{Caller, Usage, measure_usage, usage_missing};
 use super::fixes::{keep_fixes, new_agents_named};
+use super::jev_decision::Waiting;
+use super::triage_questions::Triage;
 use crate::commands::spec_events::write::{RecordCheck, record};
-use crate::shared::task_triage::Summary;
 
 /// A linha da entrega que o agente de onda devolvia colada no relatório: a
 /// entrega mora na spec, e a linha que ainda chega é recusada.
@@ -183,6 +184,10 @@ pub(crate) struct Taken {
     /// A compilação depois do commit refez o programa da branch, e saiu
     /// verde: o despacho que vem a seguir passa ao programa novo.
     pub program_rebuilt: bool,
+    /// As voltas que ficaram fora à espera da decisão do Jev, com a pergunta
+    /// de cada uma: quem chamou a faz depois de soltar a trava do passo do
+    /// git e a das cópias ([`super::triage_questions::ask_after_locks`]).
+    pub asking: Vec<Waiting>,
 }
 
 /// Assume o que voltou de uma rodada: a volta que cada onda gravou na spec
@@ -260,6 +265,9 @@ pub(crate) fn take_report_with_mine(
     // da trava do passo do git — quem entrega não espera por ela — e segura a
     // trava dela até o commit.
     let map_pass = super::map_pass::pass_lock(root);
+    // Se o Jev está ligado é lido antes da trava: a leitura da chave pode
+    // perguntar ao git, e nada lento roda com ela presa.
+    let jev_on = super::jev_decision::JevOn::read(root, spec);
     let mut timing = super::super::validation::Stage::new(root, spec, "delivery", "lock-wait", false);
     let held_lock = git_lock(root)?;
     timing.passed();
@@ -272,7 +280,12 @@ pub(crate) fn take_report_with_mine(
     // A reprovação de quem conduz a obra é gravada antes de tudo, presa à
     // volta que ela reprova, e a spec é lida de novo: a volta reprovada passa
     // a ser segurada pela mesma leitura que a segura nas rodadas seguintes.
-    let (rejections, unmeasured) = record_rejections(start, spec, &path, &mut fresh, &report.rejected, caller, lang)?;
+    // O veredito do revisor de cada onda é assumido antes: o reprovado entra
+    // pela mesma reprovação, com o motivo e os arquivos que ele apontou.
+    let (reviewed, by_reviewer) = super::wave_review::take_verdicts(start, spec, &path, &mut fresh)?;
+    report.rejected.extend(by_reviewer);
+    let (mut rejections, unmeasured) = record_rejections(start, spec, &path, &mut fresh, &report.rejected, caller, lang)?;
+    rejections.splice(0..0, reviewed);
     // O falso positivo de quem conduz também é gravado antes, preso à volta
     // pendente da onda: a conferência depois da onda o lê da spec.
     if super::stops::record_false_positives(start, spec, &fresh, &report.false_positive)? {
@@ -300,7 +313,11 @@ pub(crate) fn take_report_with_mine(
     }
     let measured = report.waves.iter_mut().map(|w| (w.wave, &mut w.usage));
     measure_usage(root, &fresh, caller, measured.chain(report.usage.iter_mut().map(|(n, u)| (*n, u))));
-    let mut taken = take_returns(start, root, spec, report, &fresh, lang, mine, (held_lock, map_pass), &cut)?;
+    let mut taken = take_returns(start, root, spec, report, &fresh, lang, mine, (held_lock, map_pass), &cut, jev_on)?;
+    // A pergunta de cada volta que espera a decisão do Jev volta em
+    // `asking`: quem chamou a faz depois de soltar também a trava das
+    // cópias ([`super::triage_questions::ask_after_locks`]), e a decisão vale
+    // na rodada seguinte.
     waiting.append(&mut taken.waiting);
     taken.warnings.splice(0..0, waiting.iter().map(|one| one.warning(lang)).chain(unmeasured));
     taken.recorded.splice(0..0, rejections);
@@ -311,7 +328,7 @@ pub(crate) fn take_report_with_mine(
 impl Taken {
     /// Nada assumido: só as ondas que pausaram, que a rodada reenvia.
     fn only_paused(paused: Vec<u64>) -> Self {
-        Taken { recorded: Vec::new(), formatted: Vec::new(), warnings: Vec::new(), commit: None, paused, waiting: Vec::new(), program_rebuilt: false }
+        Taken { recorded: Vec::new(), formatted: Vec::new(), warnings: Vec::new(), commit: None, paused, waiting: Vec::new(), program_rebuilt: false, asking: Vec::new() }
     }
 }
 
@@ -327,12 +344,12 @@ fn found_drafts(root: &Path, waves: &[WaveReport], found: &[super::lost_commit::
 /// Cada volta de `report` cujas gravações, ensaiadas sozinhas, a spec recusa,
 /// tirada do relatório com a recusa dela: segura só a própria onda. Nenhuma
 /// recusada sozinha quer dizer que a recusa não é de onda nenhuma.
-fn hold_rehearsal(start: &Path, root: &Path, spec: &str, report: &mut Report, lang: Locale) -> Vec<HeldReturn> {
+fn hold_rehearsal(start: &Path, root: &Path, spec: &str, report: &mut Report, lang: Locale, triage: &Triage<'_>) -> Vec<HeldReturn> {
     let mut alone = Report::default();
     let mut held = Vec::new();
     for wave in std::mem::take(&mut report.waves) {
         alone.waves.push(wave);
-        let rehearsed = check_reports(start, root, spec, &alone, Vec::new(), lang);
+        let rehearsed = check_reports(start, root, spec, &alone, Vec::new(), lang, triage);
         let Some(wave) = alone.waves.pop() else { continue };
         match rehearsed {
             Ok(_) => report.waves.push(wave),
@@ -356,6 +373,7 @@ fn take_returns(
     mine: &dyn Fn(&Path, &Path) -> mustard_core::platform::error::Result<ScanReport>,
     (held_lock, map_pass): (LockedFile, Option<LockedFile>),
     cut: &[u64],
+    jev_on: super::jev_decision::JevOn,
 ) -> Result<Taken, RoundRefusal> {
     // Da leitura das voltas e do repositório à junção, ao commit e ao desfazer
     // quando o git recusa, a trava do passo do git fica presa, uma vez: outra
@@ -375,9 +393,20 @@ fn take_returns(
     if report.waves.iter().any(|wave| needs_commit(&wave.files)) {
         on_spec_branch(root, log)?;
     }
-    warnings.extend(super::stops::triage_returns(root, spec, log, &report.waves, lang));
+    // A volta sem mudança cuja classificação o Jev ainda não deu fica fora
+    // desta rodada: a pergunta sai depois de a trava soltar.
+    let (triaged, triage_held, mut asking) = super::stops::triage_returns(root, log, &mut report.waves, lang, jev_on);
+    warnings.extend(triaged);
+    refused.extend(triage_held);
     refused.extend(super::review::hold_unreviewed(root, spec, log, &mut report.waves, &report.reviewed, lang));
     refused.extend(hold_refused(&mut report.waves, |wave| check_summary(wave).and_then(|()| ignored_by_git(root, wave))));
+    // A triagem das atividades que a rodada grava — o alvo da mudança de
+    // plano, o item não cumprido e a sobra — só lê a decisão já tomada: a
+    // volta, ou o veredito final, cuja decisão ainda não existe fica fora
+    // desta rodada, e a pergunta sai depois de as travas soltarem.
+    let (triage, triage_held, triage_asking) = super::triage_questions::decide(start, root, spec, log, &mut report, jev_on);
+    refused.extend(triage_held);
+    asking.extend(triage_asking);
     // A junção, as conferências da spec e as depois da onda passam de novo,
     // sem as ondas que uma delas segurou, até nenhuma segurar mais nada: a
     // onda que fica de fora não deixa nada dela no disco nem no commit das
@@ -422,10 +451,10 @@ fn take_returns(
             planned.extend(repos.subs.iter().map(|(sub, own)| commit_draft(&root.join(sub), UNMADE_SHA, title, &one.covered, own)));
         }
         planned.extend(found_drafts(root, &report.waves, &found));
-        let checked = match check_reports(start, root, spec, &report, planned, lang) {
+        let checked = match check_reports(start, root, spec, &report, planned, lang, &triage) {
             Ok(checked) => checked,
             Err(refusal) => {
-                let alone = hold_rehearsal(start, root, spec, &mut report, lang);
+                let alone = hold_rehearsal(start, root, spec, &mut report, lang, &triage);
                 if alone.is_empty() {
                     return Err(RoundRefusal::Refused(refusal));
                 }
@@ -469,7 +498,8 @@ fn take_returns(
             }
             let mut gates = super::super::validation::Stage::new(root, spec, "delivery", "structural-gates", false);
             let skipped: BTreeSet<u64> = earlier.union(&after_checked).copied().collect();
-            let (after, after_held) = ensure_after_wave(root, spec, log, &report.waves, &skipped, mine, lang);
+            let (after, after_held, after_asking) = ensure_after_wave(root, spec, log, &report.waves, &skipped, mine, lang, jev_on);
+            asking.extend(after_asking);
             if !after_held.is_empty() {
                 drop(write_joined(root, &join.joined, false));
                 let out: BTreeSet<u64> = after_held.iter().map(|one| one.wave).collect();
@@ -510,7 +540,7 @@ fn take_returns(
         refused.extend(report.waves.iter().map(|wave| HeldReturn { wave: wave.wave, refusal: RoundRefusal::Git { detail: detail_of(wave.wave) } }));
         let recorded = return_cut_batches(start, spec, log, cut).map_err(RoundRefusal::Refused)?;
         drop(held_lock);
-        return Ok(Taken { recorded, formatted, warnings, commit: None, paused: report.paused, waiting: refused, program_rebuilt: false });
+        return Ok(Taken { recorded, formatted, warnings, commit: None, paused: report.paused, waiting: refused, program_rebuilt: false, asking });
     }
     if !git_refused.is_empty() {
         // Com outros commits já feitos, só as ondas recusadas ficam de fora:
@@ -520,7 +550,7 @@ fn take_returns(
         report.waves.retain(|wave| !out.contains(&wave.wave));
         refused.extend(git_refused.iter().map(|(wave, detail)| HeldReturn { wave: *wave, refusal: RoundRefusal::Git { detail: detail.clone() } }));
         let drafts = made_drafts(root, &made).into_iter().chain(found_drafts(root, &report.waves, &found)).collect();
-        checked = check_reports(start, root, spec, &report, drafts, lang).map_err(RoundRefusal::Refused)?;
+        checked = check_reports(start, root, spec, &report, drafts, lang, &triage).map_err(RoundRefusal::Refused)?;
     }
     timing.passed();
     drop(timing);
@@ -610,7 +640,7 @@ fn take_returns(
             warnings.push(usage_missing(wave, lang));
         }
     }
-    Ok(Taken { recorded, formatted, warnings, commit, paused: report.paused, waiting: refused, program_rebuilt })
+    Ok(Taken { recorded, formatted, warnings, commit, paused: report.paused, waiting: refused, program_rebuilt, asking })
 }
 
 /// O envio que despachou a onda `wave` por último, na posição em que a onda
@@ -662,13 +692,14 @@ pub(super) fn returned_waves(log: &SpecLog) -> (Vec<WaveReport>, Vec<HeldReturn>
 /// O veredito que a rodada ou o fechamento assume agora: a última volta que o
 /// revisor gravou depois do pedido de revisão aberto — vale a última —, com
 /// todas as voltas dele desde esse pedido. Sem pedido aberto, nada espera.
-fn returned_verdict(log: &SpecLog) -> Vec<VerdictReport> {
+pub(super) fn returned_verdict(log: &SpecLog) -> Vec<VerdictReport> {
     let Some(asked) = open_review(log) else {
         return Vec::new();
     };
     let hidden = log.hidden();
-    let returns: Vec<&SpecEvent> =
-        log.events.iter().filter(|e| e.event_type == "verdict" && e.id > asked && hidden.get(&e.id) == Some(&Hidden::Returned)).collect();
+    let returns: Vec<&SpecEvent> = log.events.iter()
+        .filter(|e| e.event_type == "verdict" && !super::wave_review::is_wave_verdict(e) && e.id > asked && hidden.get(&e.id) == Some(&Hidden::Returned))
+        .collect();
     let Some(last) = returns.last() else {
         return Vec::new();
     };
@@ -800,8 +831,10 @@ mod knowledge;
 mod observations;
 mod references;
 mod return_check;
+mod verdicts;
+pub(super) use verdicts::rehearse_verdicts;
 pub(crate) use return_check::{check_return, check_verdict_return};
-use return_check::settle_verdict;
+pub(in crate::commands::flow::round) use return_check::settle_verdict;
 pub(super) use references::agreed_item_id;
 use references::{criterion_id, proof_target};
 pub(crate) use input::parse_report;
@@ -915,33 +948,25 @@ pub(super) fn own_copy_relative(log: &SpecLog, wave: u64, file: &str) -> String 
 /// onda não fez volta ao backlog antes das entregas, com a mudança aceita
 /// anotada no idioma `lang`, e leva o item combinado que a onda não cumpriu
 /// ([`join_unmet`]), que então não vira tarefa nova.
-fn check_reports(start: &Path, root: &Path, spec: &str, report: &Report, commits: Vec<Map<String, Value>>, lang: Locale) -> Result<CheckedReport, Refusal> {
+#[allow(clippy::too_many_arguments)]
+fn check_reports(
+    start: &Path,
+    root: &Path,
+    spec: &str,
+    report: &Report,
+    commits: Vec<Map<String, Value>>,
+    lang: Locale,
+    triage: &Triage<'_>,
+) -> Result<CheckedReport, Refusal> {
     let mut check = RecordCheck::open(start, spec, PhaseWriter::Binary)?;
     // Os critérios citados existem, antes de qualquer gravação.
-    let mut verdicts = Vec::new();
-    let mut review_unmet: Vec<Unmet> = Vec::new();
-    for verdict in &report.verdicts {
-        let mut draft = verdict.fields.clone();
-        review_unmet.extend(settle_verdict(check.log(), &mut draft)?);
-        // A revisão final não aponta onda: ela responde pelo combinado
-        // inteiro, não por uma onda dele. Só a revisão de uma onda usa a
-        // última onda do plano quando o veredito não diz qual.
-        let is_final = draft.get("final") == Some(&Value::Bool(true));
-        let wave = if is_final { verdict.wave } else { verdict.wave.or_else(|| check.log().planned_waves().last().copied()) };
-        if let Some(wave) = wave {
-            draft.insert("wave".into(), json!(wave));
-        }
-        // O veredito oficial aponta em `replaces` todas as voltas do revisor
-        // desde o pedido de revisão: é ele que fecha o pedido.
-        if let Some(returns) = replaced(&verdict.returns) {
-            draft.insert("replaces".into(), returns);
-        }
-        draft.insert("author".into(), json!("review"));
-        verdicts.push((wave, rehearse(&mut check, "verdict", draft)?));
-    }
+    let (verdicts, review_unmet) = rehearse_verdicts(&mut check, &report.verdicts)?;
+    // A triagem de cada atividade lê só a decisão já tomada: o Jev nunca é
+    // chamado daqui, com a trava do passo do git presa.
+    let ask = |payload: &str| triage.decisions.answer(payload);
     // O item que a revisão final não cumpriu passa pelo classificador, como o
     // da volta de uma onda: a nota, a versão nova de uma tarefa ou a tarefa nova.
-    let (review_events, review_joins) = place_review_unmet(root, spec, check.log(), review_unmet, lang);
+    let (review_events, review_joins) = place_review_unmet(check.log(), review_unmet, lang, &ask);
     let agreed_tasks =
         review_events.into_iter().map(|(kind, draft)| Ok((kind, rehearse(&mut check, kind, draft)?))).collect::<Result<Vec<_>, Refusal>>()?;
     let mut meaning = unmet_meaning_joins(review_joins, verdicts.len(), verdicts.len());
@@ -950,8 +975,8 @@ fn check_reports(start: &Path, root: &Path, spec: &str, report: &Report, commits
     // solta, e o item combinado que só ela cobre não vira tarefa nova. O
     // item que a onda não cumpriu entra nessa mesma versão, e também não
     // vira tarefa nova.
-    let mut returned = undone_returns(root, spec, check.log(), &report.waves, lang);
-    let (unmet, unmet_joins) = join_unmet(root, spec, check.log(), &report.waves, &mut returned, lang)?;
+    let mut returned = undone_returns(check.log(), &report.waves, lang, &ask);
+    let (unmet, unmet_joins) = join_unmet((triage.log, &triage.returning), check.log(), &report.waves, &mut returned, lang, &ask)?;
     let mut undone_tasks = Vec::new();
     for (wave, task) in returned {
         undone_tasks.push((wave, rehearse(&mut check, "task", task)?));
@@ -1037,18 +1062,10 @@ fn check_reports(start: &Path, root: &Path, spec: &str, report: &Report, commits
     // entrega e é coberto pelo número que o ensaio deu a ele: a gravação de
     // verdade troca cada um pelo dela.
     let returning: BTreeSet<u64> = report.waves.iter().flat_map(|wave| std::iter::once(wave.wave).chain(wave.fixes.iter().copied())).collect();
-    // O resumo de cada volta que deixou tarefa por fazer vai ao classificador
-    // com as tarefas que ele acompanha, pela versão que acabou de voltar.
-    let summaries: Vec<Summary> = report
-        .waves
-        .iter()
-        .filter(|wave| !wave.undone.is_empty())
-        .map(|wave| Summary {
-            text: wave.delivered.clone(),
-            tasks: wave.undone.iter().filter_map(|(id, _)| check.log().current(*id).map(|task| task.id)).collect(),
-        })
-        .collect();
-    let leftovers = leftover_events(root, spec, check.log(), &found, &returning, &reported, &summaries, lang);
+    // O destino de cada sobra sai da pergunta da volta dela, feita sobre a
+    // spec gravada, com o resumo da volta que deixou tarefa por fazer.
+    let destinations = leftover_destinations(root, (triage.log, &triage.returning), &report.waves, &ask);
+    let leftovers = leftover_events(root, check.log(), &found, &returning, &reported, &destinations, lang);
     // As posições das junções pelo sentido entre as entradas que a rodada
     // grava, na ordem de [`record_reports`]: vereditos, o que a revisão final
     // deu, as tarefas devolvidas, as entregas e o que os itens e as sobras viram.
@@ -1939,7 +1956,7 @@ mod tests {
                 "covers": [crit], "origin": said}),
         ));
         let log = store::read(&path).unwrap().unwrap();
-        let formed = dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed).expect("formou o lote");
+        let formed = dispatch_backlog(root, "x", &log, &log, max_parallel(root), (None, None)).map(|(formed, _)| formed).expect("formou o lote");
         assert_eq!(formed, vec![2], "a tarefa solta vira a onda de lote 2: {formed:?}");
 
         // Antes de o lote sair, a tarefa é regravada sem onda: volta ao
@@ -2848,6 +2865,15 @@ mod tests {
         listed.expect("the send records the list").iter().filter_map(|v| v.as_str().map(str::to_string)).collect()
     }
 
+    /// O que o pedido da onda `wave` entregou inteiro, no bloco da primeira
+    /// tarefa: conta como lido desde o envio.
+    fn first_block_of(root: &Path, wave: u64) -> Vec<String> {
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let sent = *open_sends(&log).get(&wave).expect("an open send");
+        let tasks = log.send_field(sent, "tasks").and_then(Value::as_array).cloned().expect("the send records the task blocks");
+        tasks[0]["items"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(str::to_string)).collect()
+    }
+
     /// A entrega que responde por todo o combinado do pedido da onda 1 de
     /// `sent_with_a_decision`, sem nada a mais.
     fn delivery_with_the_decision() -> Value {
@@ -2881,7 +2907,10 @@ mod tests {
         let before = spec_lines(root);
         let refused = returned_unread(root, delivery_with_the_decision());
         assert_eq!(refused["reason"], json!("delivery-read-missing"), "{refused}");
-        let expected = translate("spec_events.delivery_read_missing", Locale::PtBr).replace("{wave}", "1").replace("{missing}", &listed.join(", "));
+        let whole = first_block_of(root, 1);
+        assert!(whole.contains(&"MSTD-TASK-0001".to_string()), "the request brings the first task whole: {whole:?}");
+        let missing: Vec<String> = listed.iter().filter(|code| !whole.contains(code)).cloned().collect();
+        let expected = translate("spec_events.delivery_read_missing", Locale::PtBr).replace("{wave}", "1").replace("{missing}", &missing.join(", "));
         assert_eq!(refused["hint"], json!(expected), "{refused}");
         assert_eq!(spec_lines(root), before, "nothing was written: {refused}");
 
@@ -2970,14 +2999,17 @@ mod tests {
                 assert_eq!(hint.contains(item.as_str()), missing.contains(&item), "{item} in the refusal: {refused}");
             }
         };
-        refused_all(&listed.iter().collect::<Vec<_>>());
+        // O bloco da primeira tarefa veio inteiro no pedido: ele conta como lido.
+        let whole = first_block_of(root, 1);
+        let unread: Vec<&String> = listed.iter().filter(|item| !whole.contains(item)).collect();
+        refused_all(&unread);
 
         // O pedido da outra onda, e um item que o pedido não lista, não valem.
         for item in &listed {
             crate::commands::flow::round::seed_read(root, "x", "request-2", item);
         }
         crate::commands::flow::round::seed_read(root, "x", "request-1", "MSTD-RULE-0099");
-        refused_all(&listed.iter().collect::<Vec<_>>());
+        refused_all(&unread);
 
         // O item lido pelo código conta; a lição pelo número também.
         for item in listed.iter().filter(|item| **item != lesson) {
@@ -3520,20 +3552,20 @@ mod tests {
         assert_eq!(refused["hint"], json!(expected), "the path stays as it came: {refused}");
     }
 
-    /// O modelo e o esforço do agente vêm do `mustard.json` do projeto: a onda
-    /// de várias tarefas e a de uma só saem com o modelo de `agents.model` e o
-    /// esforço de `agents.effort` nos campos `model` e `effort` do envio
-    /// gravado, e o pedido que o agente recebe diz o mesmo na linha do modelo,
-    /// nos dois idiomas. Sem os campos, o padrão é o Sonnet com esforço xhigh,
-    /// e nem o envio nem o pedido falam do Opus; um esforço fora da lista do
-    /// Claude Code sai como o padrão.
+    /// Sem nota de dificuldade nas tarefas, o modelo do agente vem do
+    /// `mustard.json` do projeto, e o esforço é sempre xhigh: a onda de várias
+    /// tarefas e a de uma só saem com o modelo de `agents.model` e o esforço
+    /// xhigh nos campos `model` e `effort` do envio gravado, seja qual for o
+    /// `agents.effort`, e o pedido que o agente recebe diz o mesmo na linha do
+    /// modelo, nos dois idiomas. Sem os campos, o padrão é o Sonnet, e nem o
+    /// envio nem o pedido falam do Opus.
     #[test]
-    fn the_wave_request_and_send_carry_the_model_and_effort_of_the_project_config() {
+    fn the_wave_request_and_send_carry_the_configured_model_at_effort_xhigh() {
         for (lang, declared, model, effort) in [
             (Locale::PtBr, None, "sonnet", "xhigh"),
             (Locale::EnUs, None, "sonnet", "xhigh"),
-            (Locale::PtBr, Some(("opus", "medium")), "opus", "medium"),
-            (Locale::EnUs, Some(("opus", "max")), "opus", "max"),
+            (Locale::PtBr, Some(("opus", "medium")), "opus", "xhigh"),
+            (Locale::EnUs, Some(("opus", "max")), "opus", "xhigh"),
             (Locale::EnUs, Some(("opus", "ultra")), "opus", "xhigh"),
         ] {
             let dir = tempdir().unwrap();
@@ -3569,7 +3601,7 @@ mod tests {
             assert_eq!(sends.len(), 2, "both waves were dispatched: {sends:?}");
             for sent in &sends {
                 assert_eq!(sent.str_field("model"), Some(model), "the send carries the configured model: {sent:?}");
-                assert_eq!(sent.str_field("effort"), Some(effort), "the send carries the configured effort: {sent:?}");
+                assert_eq!(sent.str_field("effort"), Some(effort), "the send carries effort xhigh: {sent:?}");
             }
             let agents: Vec<_> = (0..2).map(|at| out["dispatch"][at]["agent"].as_str().unwrap_or_default()).collect();
             assert_eq!(agents, vec!["wave", "wave"], "every wave goes to the wave agent, whatever its size: {out}");

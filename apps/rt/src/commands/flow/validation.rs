@@ -89,7 +89,6 @@ pub(super) fn fingerprint(root: &Path, log: &SpecLog) -> Option<String> {
         // not code inputs; criteria and config enter the digest separately.
         if name.starts_with(".claude/spec/")
             || name.starts_with(".claude/mustard/operations/")
-            || name.starts_with(".claude/mustard/backups/")
             || name.starts_with(".claude/project/")
             || name.starts_with(".claude/pending/")
             || name.starts_with(".claude/grain.db")

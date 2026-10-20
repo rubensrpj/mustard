@@ -300,6 +300,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("map.search.not_found", Locale::EnUs) => {
             "Found nothing for {words} in the map. Go on with your tools: `Grep`, `Glob` and `Read`. To start, search the exact text: {next}"
         }
+        // A busca que pediu a escolha ao Jev e ficou sem ela: o Jev falhou ou
+        // o prazo único da busca venceu. A escolha fica com quem buscou.
+        ("map.search_choice_left", Locale::PtBr) => {
+            "O Jev não escolheu a tempo: a escolha é sua, entre os candidatos abaixo."
+        }
+        ("map.search_choice_left", Locale::EnUs) => "Jev did not choose in time: the choice is yours, among the candidates below.",
         // A busca que o mapa não responde, perguntada pelo comando: a pasta
         // fora do código do mapa, o padrão que a leitura não entende e o tipo
         // que ela não conhece.
@@ -485,8 +491,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("map.rs"),
             super::PREFIXES,
-            82,
-            0x7d2e_b7bc_f049_3538,
+            83,
+            0x8cbd_d65d_82c6_58d3,
         );
     }
 

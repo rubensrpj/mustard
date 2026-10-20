@@ -34,17 +34,7 @@
 //!   partes do arquivo — cada declaração fora dos testes, com o tipo, o nome
 //!   e as linhas, e a linha em que os testes começam; perguntado de dentro de
 //!   uma cópia de trabalho do projeto, com as linhas do arquivo da cópia;
-//! - `dump`: o banco do mapa tabela por tabela, em ordem fixa, para depurar;
-//! - `note "<frase>" --file <arquivo> [--name <declaração>]`: grava a nota de
-//!   sentido do arquivo, ou da declaração, em palavras de negócio, para a
-//!   busca achar o trecho por elas; a nota da spec atual entra no lugar da que
-//!   o trecho já tinha, e vale enquanto o arquivo não mudar. O `slice` mostra a
-//!   nota da declaração, dita velha quando o arquivo mudou depois dela;
-//! - `notes-package [--limit <caracteres>] [--changed-since <commit>]`: o
-//!   pacote das funções sem frase em dia para o agente de análise, as de nota
-//!   velha primeiro, depois as dos arquivos mudados, cada uma com o trecho;
-//! - `notes-write --json '[{"file","name","text"}]'`: grava as frases que o
-//!   agente devolveu, e diz as gravadas e as recusadas, com o motivo.
+//! - `dump`: o banco do mapa tabela por tabela, em ordem fixa, para depurar.
 //!
 //! A regra mora em `mustard_core::domain::project_map`, e a leitura do banco
 //! na porta `mustard_core::io::project_map`; a busca lê o índice de palavras
@@ -64,7 +54,6 @@ use mustard_core::domain::project_map::{self as project_map, DeclAt, FoundItem, 
 use mustard_core::domain::scan::{HistoryReport, NativePass, ScanReport};
 use mustard_core::domain::search::TOP;
 use mustard_core::io::map_glossary::{self, Place};
-use mustard_core::io::map_notes::{self, NewNote};
 use mustard_core::io::map_search;
 use mustard_core::io::map_specs;
 use mustard_core::io::map_triage::{self, Triaged};
@@ -80,7 +69,6 @@ use crate::shared::search_door::{self as door, Assemble, Numbers, first_warning,
 use crate::shared::triage_view;
 
 mod grep_answer;
-mod notes;
 mod refreshing;
 
 /// A pergunta feita ao mapa.
@@ -96,9 +84,6 @@ pub enum Question {
     History,
     Dump,
     Audit,
-    Note,
-    NotesPackage,
-    NotesWrite,
 }
 
 impl Question {
@@ -114,9 +99,6 @@ impl Question {
             Self::History => "history",
             Self::Dump => "dump",
             Self::Audit => "audit",
-            Self::Note => "note",
-            Self::NotesPackage => "notes-package",
-            Self::NotesWrite => "notes-write",
         }
     }
 }
@@ -159,12 +141,6 @@ pub struct MapOpts {
     pub pr: Option<u32>,
     /// A sessão de quem pergunta, que guarda os avisos já dados.
     pub session: Option<String>,
-    /// O teto de caracteres do pacote de `notes-package`.
-    pub limit: Option<usize>,
-    /// O commit desde o qual `notes-package` dá os arquivos por mudados.
-    pub changed_since: Option<String>,
-    /// As frases que `notes-write` grava, como JSON.
-    pub json: Option<String>,
 }
 
 fn refused(refusal: &MapRefusal, lang: Locale) -> Value {
@@ -246,7 +222,7 @@ pub(crate) fn map_at(opts: &MapOpts, mine: &Mine<'_>, trace: &Trace<'_>, assembl
 fn reads_specs(question: Question) -> bool {
     !matches!(
         question,
-        Question::Summary | Question::Slice | Question::Users | Question::Importers | Question::Tests | Question::NotesPackage | Question::NotesWrite
+        Question::Summary | Question::Slice | Question::Users | Question::Importers | Question::Tests
     )
 }
 
@@ -407,31 +383,7 @@ fn answer_from(
         Question::Examples => examples(opts, root, lang, read, trace),
         Question::Dump => dump(root),
         Question::Audit => mustard_core::io::knowledge::audit::run(root),
-        Question::Note => note(opts, root, read),
-        Question::NotesPackage => notes::package(opts, root),
-        Question::NotesWrite => notes::write(opts, root, lang, read),
     }
-}
-
-/// Grava a nota de sentido do `--file` (e da `--name`, quando vem) com a frase
-/// que o comando recebeu, na spec atual da sessão, e diz o que ficou gravado.
-/// O trecho que já tinha nota a troca pela nova.
-fn note(opts: &MapOpts, root: &Path, read: &Reader<'_>) -> Result<Value, MapRefusal> {
-    let question = opts.question;
-    let file = after_the_map(required(opts.file.as_deref(), question, "--file"), read)?;
-    let text = after_the_map(required(opts.grep.as_ref().map(|grep| grep.pattern.as_str()), question, "<text>"), read)?;
-    let session = opts.session.as_deref().filter(|session| !session.is_empty());
-    let spec = crate::shared::spec_state::active_spec(&root.to_string_lossy(), session).unwrap_or_default();
-    let saved =
-        map_notes::write(&store::model_path(root), root, &NewNote { file: &file, name: opts.name.as_deref().unwrap_or_default(), text: &text, spec: &spec })?;
-    Ok(json!({
-        "ok": true,
-        "question": "note",
-        "file": saved.file,
-        "name": saved.name,
-        "text": saved.text,
-        "spec": saved.spec,
-    }))
 }
 
 /// A busca por assunto. O filtro se escolhe aqui, num ponto só: desligado
@@ -610,7 +562,7 @@ fn slice(opts: &MapOpts, root: &Path, read: &Reader<'_>) -> Result<Value, MapRef
             (text, line, end_line)
         }
     };
-    let mut report = json!({
+    Ok(json!({
         "ok": true,
         "question": "slice",
         "file": place.file,
@@ -621,13 +573,7 @@ fn slice(opts: &MapOpts, root: &Path, read: &Reader<'_>) -> Result<Value, MapRef
         "doc": place.doc,
         "signature": place.signature,
         "slice": project_map::lines_of(&text, line, end_line),
-    });
-    // A nota de sentido do trecho, quando alguém a escreveu: velha, o arquivo
-    // mudou depois dela, e quem lê o trecho a reescreve.
-    if let Ok(Some(note)) = map_notes::of_at(&store::model_path(root), &place.file, &place.name) {
-        report["note"] = json!({ "text": note.text, "spec": note.spec, "stale": note.stale });
-    }
-    Ok(report)
+    }))
 }
 
 /// As linhas da declaração `place` no texto `copy` do arquivo numa cópia de
@@ -1089,9 +1035,6 @@ mod tests {
             name: None,
             pr: None,
             session: None,
-            limit: None,
-            changed_since: None,
-            json: None,
         }
     }
 
@@ -1446,11 +1389,10 @@ mod tests {
         let log = mustard_core::domain::spec_events::parse_log(&(lines.join("\n") + "\n"));
         let flight = mustard_core::io::wave_prompt::Flight::default();
         let built = mustard_core::io::wave_prompt::prompts(root, "teste", &log, Locale::PtBr, &flight, &log.planned_waves());
-        let text = &built.iter().find(|p| p.wave == 1).expect("the request of wave 1").text;
+        let blocks = &built.iter().find(|p| p.wave == 1).expect("the request of wave 1").tasks;
         let under = |task: &str| -> String {
-            let mut rest = text.lines().skip_while(|line| !line.contains(task));
-            let first = rest.next().into_iter();
-            first.chain(rest.take_while(|line| !line.starts_with("- ") && !line.is_empty())).collect::<Vec<_>>().join("\n")
+            let block = blocks.iter().find(|block| block.text.lines().next().is_some_and(|line| line.contains(task)));
+            block.map(|block| block.text.clone()).unwrap_or_default()
         };
 
         for (file, task, recipe, head) in &cases {
@@ -1591,141 +1533,6 @@ mod tests {
         assert_eq!(report["reason"], json!("unknown-declaration"), "{report}");
         assert!(report["hint"].as_str().unwrap().contains("sumiu"), "{report}");
         assert!(report["hint"].as_str().unwrap().contains(&format!("`{file}`")), "the file asked is named: {report}");
-    }
-
-    /// Um projeto com o arquivo `src/ids.rs`, no blob `blob`, que valida um
-    /// número sem dizer nada de CPF, de CNPJ nem de cadastro, e outro arquivo
-    /// de outro assunto.
-    fn project_with_ids(blob: &str) -> tempfile::TempDir {
-        let dir = tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("src")).unwrap();
-        std::fs::write(dir.path().join("src/ids.rs"), ids_code(blob)).unwrap();
-        std::fs::write(dir.path().join("mustard.json"), r#"{"language": {"text": "pt-BR", "code": "en-US"}}"#).unwrap();
-        write_ids_map(dir.path(), blob);
-        dir
-    }
-
-    /// Os módulos do projeto de ids, com o arquivo de ids no blob dado.
-    fn ids_modules(blob: &str) -> Value {
-        let mut hash=mustard_core::io::sha256::Sha256::new(); hash.update(ids_code(blob).as_bytes());
-        json!({"modules": [
-          {"path": "src/ids.rs", "loc": 3, "blob": blob, "analysis":{"content_sha256":hash.hex_digest()}, "declarations": [
-            {"kind": "function", "name": "check_digits", "line": 1, "end_line": 3,
-             "signature": "pub fn check_digits(number: &str) -> bool"}]},
-          {"path": "src/invoice.rs", "loc": 9, "blob": "invoice-1", "declarations": [
-            {"kind": "function", "name": "charge_invoice", "line": 1, "end_line": 9,
-             "doc": "Charge the customer invoice with the tax."}]}
-        ]})
-    }
-
-    fn ids_code(blob: &str) -> String { format!("pub fn check_digits(number: &str) -> bool {{\n    number.len() == 11\n}}\n// {blob}\n") }
-
-    fn write_ids_map(root: &Path, blob: &str) {
-        store::write_text(root, &ids_modules(blob).to_string()).unwrap();
-    }
-
-    /// O scan que grava de novo o mesmo projeto, com o arquivo de ids no blob
-    /// dado: as notas escritas ficam.
-    fn rescan_ids_map(root: &Path, blob: &str) {
-        std::fs::write(root.join("src/ids.rs"), ids_code(blob)).unwrap();
-        let languages = Languages::new(["pt-BR", "en-US"]);
-        store::save_at(&store::model_path(root), &ids_modules(blob), "scan 2", &languages).unwrap();
-        mustard_core::io::map_meaning::fill_at(&store::model_path(root), root).unwrap();
-    }
-
-    /// O comando de nota com a frase, o arquivo e, se vier, a função.
-    fn note_opts(root: &Path, file: Option<&str>, name: Option<&str>, text: Option<&str>) -> MapOpts {
-        MapOpts {
-            file: file.map(str::to_string),
-            name: name.map(str::to_string),
-            grep: text.map(|text| GrepSearch { pattern: text.to_string(), ..GrepSearch::default() }),
-            session: Some("s-nota".to_string()),
-            ..ask(root, Question::Note)
-        }
-    }
-
-    /// O primeiro arquivo que a busca por palavras devolve.
-    fn first_found(root: &Path, query: &str) -> Option<String> {
-        let report = answered(&search_opts(root, query, None, None));
-        report["pieces"][0]["path"].as_str().or_else(|| report["files"][0]["path"].as_str()).map(str::to_string)
-    }
-
-    const BUSINESS_WORDS: &str = "validar CPF e CNPJ no cadastro do cliente";
-
-    /// O comando de nota grava a frase do arquivo na spec da sessão, e a busca
-    /// por palavras de negócio, que não citam nenhum nome do código, passa a
-    /// achar o arquivo; o trecho da função traz a nota da função.
-    #[test]
-    fn the_note_command_writes_the_sentence_and_the_search_and_the_slice_read_it() {
-        let dir = project_with_ids("ids-1");
-        let root = dir.path();
-        crate::shared::context::session::bind_session_spec(&root.to_string_lossy(), "s-nota", "cadastro");
-        assert_ne!(first_found(root, BUSINESS_WORDS).as_deref(), Some("src/ids.rs"));
-
-        let sentence = "Valida CPF e CNPJ na entrada do cadastro do cliente.";
-        let saved = answered(&note_opts(root, Some("src/ids.rs"), None, Some(sentence)));
-        assert_eq!(saved["ok"], json!(true), "{saved}");
-        assert_eq!(saved["question"], json!("note"), "{saved}");
-        assert_eq!(saved["file"], json!("src/ids.rs"), "{saved}");
-        assert_eq!(saved["text"], json!(sentence), "{saved}");
-        if std::env::var_os("MUSTARD_ACTIVE_SPEC").is_none() {
-            assert_eq!(saved["spec"], json!("cadastro"), "the note carries the spec of the session: {saved}");
-        }
-        assert_eq!(first_found(root, BUSINESS_WORDS).as_deref(), Some("src/ids.rs"));
-
-        let function = answered(&note_opts(root, Some("src/ids.rs"), Some("check_digits"), Some("Confere o tamanho do documento.")));
-        assert_eq!(function["ok"], json!(true), "{function}");
-        let mut slice = ask(root, Question::Slice);
-        slice.file = Some("src/ids.rs".to_string());
-        slice.name = Some("check_digits".to_string());
-        let report = answered(&slice);
-        assert_eq!(report["note"]["text"], json!("Confere o tamanho do documento."), "{report}");
-        assert_eq!(report["note"]["stale"], json!(false), "{report}");
-    }
-
-    /// Depois que o arquivo muda, o trecho traz a nota como velha e a busca
-    /// deixa de achar o arquivo por ela.
-    #[test]
-    fn a_slice_after_the_file_changed_says_the_note_is_stale_and_the_search_drops_it() {
-        let dir = project_with_ids("ids-1");
-        let root = dir.path();
-        let sentence = "Valida CPF e CNPJ na entrada do cadastro do cliente.";
-        answered(&note_opts(root, Some("src/ids.rs"), Some("check_digits"), Some(sentence)));
-        assert_eq!(first_found(root, BUSINESS_WORDS).as_deref(), Some("src/ids.rs"));
-
-        rescan_ids_map(root, "ids-2");
-        let mut slice = ask(root, Question::Slice);
-        slice.file = Some("src/ids.rs".to_string());
-        slice.name = Some("check_digits".to_string());
-        let report = answered(&slice);
-        assert_eq!(report["note"]["stale"], json!(true), "{report}");
-        assert_eq!(report["note"]["text"], json!(sentence), "the stale note is still shown: {report}");
-        assert_ne!(first_found(root, BUSINESS_WORDS).as_deref(), Some("src/ids.rs"));
-    }
-
-    /// Sem a frase, sem o arquivo, com um arquivo que o mapa não tem ou com
-    /// uma função que o arquivo não tem, o comando recusa e diz o que falta.
-    #[test]
-    fn the_note_command_refuses_a_missing_sentence_file_or_function_and_writes_nothing() {
-        let dir = project_with_ids("ids-1");
-        let root = dir.path();
-        let refused = |opts: MapOpts| answered(&opts);
-        let no_text = refused(note_opts(root, Some("src/ids.rs"), None, None));
-        assert_eq!(no_text["reason"], json!("missing-argument"), "{no_text}");
-        assert!(no_text["hint"].as_str().unwrap().contains("<text>"), "{no_text}");
-        let no_file = refused(note_opts(root, None, None, Some("Uma frase.")));
-        assert_eq!(no_file["reason"], json!("missing-argument"), "{no_file}");
-        assert!(no_file["hint"].as_str().unwrap().contains("--file"), "{no_file}");
-        let blank = refused(note_opts(root, Some("src/ids.rs"), None, Some("   ")));
-        assert_eq!(blank["reason"], json!("missing-argument"), "{blank}");
-        let gone = refused(note_opts(root, Some("src/gone.rs"), None, Some("Uma frase.")));
-        assert_eq!(gone["reason"], json!("unknown-file"), "{gone}");
-        let no_such = refused(note_opts(root, Some("src/ids.rs"), Some("no_such"), Some("Uma frase.")));
-        assert_eq!(no_such["reason"], json!("unknown-declaration"), "{no_such}");
-        let mut slice = ask(root, Question::Slice);
-        slice.file = Some("src/ids.rs".to_string());
-        slice.name = Some("check_digits".to_string());
-        assert!(answered(&slice).get("note").is_none(), "nothing was written");
     }
 
     /// A função do controlador que atende uma rota traz, na resposta de quem

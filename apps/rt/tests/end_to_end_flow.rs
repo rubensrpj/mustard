@@ -667,7 +667,7 @@ fn approve(project: &Project) {
 /// escrita e as buscas pela linha de comando também gravam a chamada delas
 /// ali, e não são passo.
 fn calls(project: &Project) -> BTreeMap<String, usize> {
-    const TRANSPORT: [&str; 5] = ["read", "write", "search", "knowledge", "expertise"];
+    const TRANSPORT: [&str; 4] = ["read", "write", "search", "knowledge"];
     let (log, operations) = (project.log(), project.operations());
     let receipts = log.visible().into_iter().filter(|e| e.event_type == "call" && e.fields.contains_key("request"));
     let steps = operations.visible().into_iter().filter(|e| e.event_type == "call" && !TRANSPORT.contains(&e.str_field("command").unwrap_or_default()));

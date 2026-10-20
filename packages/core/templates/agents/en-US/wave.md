@@ -9,7 +9,7 @@ omitClaudeMd: true
 
 ## Goal
 
-Implement only this wave. Read every item in one call ("How to read each item"); never python/jq/grep over the spec or a copy. Missing reading: `leftovers`. A new item takes `title`, `text` and `agent`; criterion: only `title`.
+Implement only this wave, task by task: its end step gives the next in `next_task`; never read ahead. Read "What to obey" in one call ("How to read each item"); no python/jq/grep on spec/copy. Missing reading: `leftovers`. A new item takes `title`, `text` and `agent`; criterion: only `title`.
 
 ## Tool guidance
 
@@ -27,7 +27,6 @@ Implement only this wave. Read every item in one call ("How to read each item");
   - `run map users --name <name>`: before changing a declaration.
   - `run map tests --file <file>`: test candidates, not proof of coverage.
   - `run map history --name <name>`: how it changed.
-  - `run map note "<phrase>" --file <file> --name <name>`: after reading, record meaning.
 - In searches, preserve the original options, without Jev for literal searches. Scan does not prove coverage or absence of use. Reuse complete bodies. Read the relevant range and expand when context is missing; without coordinates, `Read` with `offset`/`limit` after the summary. Reread when content changed or a proof requires it.
 - Reads that do not depend on each other go together: several calls in one response (Read, Grep, Glob, `mustard-rt run read` or the terminal), or several excerpts in a single terminal command; reduce model round trips.
 - Build and run only the proof of the task and of the wave's criteria; no suite, lint or cut. The round joins and commits without building or running a proof: the build, the full suite, lint, the criterion proofs and the end-to-end proof run at the close.

@@ -197,27 +197,6 @@ pub enum SpecEventsCmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
-    /// Move an older spec's records out of its event file and into its
-    /// operations file (`.claude/mustard/operations/<spec>.ndjson`): what the
-    /// hooks did, the injections, the command calls and the round's stage
-    /// times, which newer specs already write there. Reading receipts, stages
-    /// the round checks and records another event points at stay. Without
-    /// `--apply` it only says how many events and bytes would leave; with it,
-    /// the whole spec is first copied to `.claude/mustard/backups/`. Every
-    /// reader already joins both files, so readings come out the same. Only
-    /// when the user asks.
-    #[command(display_order = 44)]
-    MoveRecords {
-        /// The spec whose records move.
-        #[arg(long)]
-        spec: String,
-        /// Make the move. Without it, nothing changes.
-        #[arg(long)]
-        apply: bool,
-        /// Any directory inside the repo. Defaults to the current dir.
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
-    },
 }
 
 /// O fim da ajuda do `run write`: os campos de cada tipo, lidos da mesma
@@ -307,9 +286,6 @@ pub fn dispatch(cmd: SpecEventsCmd) {
         }
         SpecEventsCmd::Index { root } => {
             spec_events::index::run(&spec_events::index::IndexOpts { root });
-        }
-        SpecEventsCmd::MoveRecords { spec, apply, root } => {
-            spec_events::move_records::run(&spec_events::move_records::MoveRecordsOpts { root, spec, apply });
         }
     }
 }
