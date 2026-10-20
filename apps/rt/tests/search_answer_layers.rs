@@ -11,6 +11,8 @@
 //! caminhos voltariam a depender um do outro em círculo. O teste lê o código
 //! dos arquivos, sem os comentários, e confere as importações.
 
+// Every test that runs the program here is Unix-only.
+#[cfg(unix)]
 #[path = "support/binary.rs"]
 mod binary;
 
