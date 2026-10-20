@@ -580,6 +580,7 @@ mod tests {
     /// O despacho de `prompt` ao agente da onda 1 da spec `x`, com o processo
     /// do próprio teste como o hospedeiro que despacha: aberto até o fim do
     /// teste, ele não depende de quem lançou a suíte.
+    #[cfg(target_os = "linux")]
     fn dispatch_from_this_process(root: &Path, prompt: &str) -> Verdict {
         wave_dispatch(&task_input("mustard-wave", prompt), root, "x", 1, || Some(crate::commands::flow::stuck::this_process()))
     }

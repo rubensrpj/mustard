@@ -175,7 +175,8 @@ pub(crate) fn resend_block(root: &Path, spec: &str, log: &SpecLog, previous: u64
     Some(format!("\n\n{}\n\n{}", translate("round.resume.task", lang), current.text))
 }
 
-#[cfg(test)]
+// The one test reads processes the Linux way.
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use mustard_core::io::spec_events as store;
     use serde_json::json;
@@ -189,7 +190,6 @@ mod tests {
     /// bloco inteiro da tarefa em curso — a primeira sem passo de término —,
     /// e a deixa liberada: o agente novo continua dela sem ler adiante.
     #[test]
-    #[cfg(target_os = "linux")]
     fn the_resend_of_an_orphan_wave_brings_the_task_in_progress_whole_and_releases_it() {
         let dir = tempdir().unwrap();
         let root = dir.path();

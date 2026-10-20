@@ -1,6 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Exercise the installed native door against real source and the scan built
 //! with it; no model call, application build or real Claude session is needed.
+// Only the Unix blocks below run the installed program.
+#[cfg(unix)]
 #[path = "support/binary.rs"]
 mod binary;
 

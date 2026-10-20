@@ -16,6 +16,8 @@ mod binary;
 
 #[path = "support/manifest_dir.rs"]
 mod manifest_dir;
+// Only the Unix wave copies below leave with the test.
+#[cfg(unix)]
 #[path = "support/mod.rs"]
 mod support;
 

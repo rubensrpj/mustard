@@ -214,6 +214,7 @@ fn stat_of(pid: u32) -> Option<(u32, u64)> {
 /// `node` roda. Do Codex: o binário nativo, de nome `codex`, e o pacote npm
 /// `@openai/codex`, que o `node` roda. O nome sozinho não basta: no aplicativo
 /// de desktop ele é a versão, e nada nele diz `claude`.
+#[cfg(any(target_os = "linux", test))]
 pub(crate) fn is_host_process(comm: &str, exe: &str, cmdline: &str) -> bool {
     matches!(comm.trim(), "claude" | "codex")
         || Path::new(exe).parent().and_then(Path::file_name).is_some_and(|folder| folder == "ccd-cli")
