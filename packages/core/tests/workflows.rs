@@ -51,11 +51,7 @@ const SAVING_BRANCHES: [&str; 2] = ["dev", "main"];
 /// GitHub's six-hour default; the slowest job measured took 16 minutes.
 const LONGEST_JOB_MINUTES: i64 = 30;
 const MACOS_INTEL_JOB_MINUTES: i64 = 45;
-/// The test matrix: Linux keeps the 30-minute cap; Windows and the Intel
-/// macOS fallback get 60, because the Windows run 39416582482 spent 20m36s in
-/// the mustard-rt unit tests alone and was cut at 30m, and the last green
-/// Windows runs already took 25-26m.
-const MACOS_MATRIX_TIMEOUT: &str = "${{ matrix.os == 'ubuntu-latest' && 30 || 60 }}";
+const MACOS_MATRIX_TIMEOUT: &str = "${{ matrix.os == 'macos-latest' && 45 || 30 }}";
 
 /// The Rust cache action, compared without case: the two files spell its
 /// owner differently.
@@ -306,6 +302,11 @@ fn cache_problems(ci: &Workflow, release: &Workflow) -> Vec<String> {
                     found.as_deref().unwrap_or("(absent, which saves)")
                 ));
             }
+            // The verification saves only on pushes; one red push must not
+            // leave every pull request after it compiling from scratch.
+            if rel == &ci.rel && present(&with["cache-on-failure"]).and_then(scalar).as_deref() != Some("true") {
+                problems.push(format!("{rel}: job `{}` drops the build when a test fails; it must say `cache-on-failure: true`", step.job));
+            }
             shared_keys.insert(present(&with["shared-key"]).and_then(scalar).unwrap_or_default());
         }
         for step in workflow.steps_using(RUST_TOOLCHAIN) {
@@ -338,7 +339,9 @@ fn timeout_problems(workflow: &Workflow) -> Vec<String> {
         problems.push(format!("{rel}: no jobs found"));
     }
     for (id, job) in jobs {
-        let intel_release = rel == RELEASE && id == "macos-installer" && job["runs-on"].as_str() == Some("macos-15-intel");
+        // The macOS installer compiles two Apple targets cold, on whichever
+        // macOS runner the release names.
+        let intel_release = rel == RELEASE && id == "macos-installer" && job["runs-on"].as_str().is_some_and(|runner| runner.starts_with("macos"));
         let intel_matrix = rel == VERIFICATION && id == "test"
             && job["runs-on"].as_str() == Some("${{ matrix.runner || matrix.os }}")
             && job["strategy"]["matrix"]["include"].as_vec().is_some_and(|entries| entries.iter().any(|entry|
@@ -549,6 +552,61 @@ fn the_verification_runs_on_pull_requests_and_on_pushes_to_dev_and_main() {
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
 
+/// Windows and macOS split the suite into parts that run at the same time on
+/// separate runners, and Linux runs it whole: every test runs in exactly one
+/// part of each system. `rest` takes everything it does not skip and skips
+/// each prefix another part takes; a part that takes a prefix holding another
+/// part's prefix skips it; no prefix is taken twice.
+#[test]
+fn the_split_test_parts_cover_every_test_once() {
+    type Part = (String, Vec<String>, Vec<String>);
+    let ci = Workflow::read(VERIFICATION);
+    let jobs = ci.jobs();
+    let test = jobs.iter().find(|(id, _)| id == "test").map(|(_, job)| *job).expect("the test job");
+    let mut systems: std::collections::BTreeMap<String, Vec<Part>> = std::collections::BTreeMap::new();
+    for entry in test["strategy"]["matrix"]["include"].as_vec().expect("the matrix lists its parts") {
+        let (os, part) = (scalar(&entry["os"]).expect("each part names its system"), scalar(&entry["part"]).expect("each entry names its part"));
+        let (mut take, mut skip) = (Vec::new(), Vec::new());
+        let filter = scalar(&entry["filter"]).unwrap_or_default();
+        let mut words = filter.split_whitespace().map(str::to_string);
+        while let Some(word) = words.next() {
+            if word == "--skip" {
+                skip.push(words.next().expect("a prefix after --skip"));
+            } else {
+                take.push(word);
+            }
+        }
+        systems.entry(os).or_default().push((part, take, skip));
+    }
+    let linux = &systems["ubuntu-latest"];
+    assert_eq!(linux.len(), 1, "Linux runs the suite whole: {linux:?}");
+    assert!(linux[0].1.is_empty() && linux[0].2.is_empty(), "Linux filters nothing: {linux:?}");
+    for os in ["windows-latest", "macos-latest"] {
+        let parts = &systems[os];
+        let rest = parts.iter().find(|(part, ..)| part == "rest").unwrap_or_else(|| panic!("{os} has no rest part"));
+        assert!(rest.1.is_empty(), "{os}: rest takes only by skipping");
+        let others: Vec<&Part> = parts.iter().filter(|(part, ..)| part != "rest").collect();
+        let taken: Vec<&String> = others.iter().flat_map(|(_, take, _)| take).collect();
+        assert_eq!(taken.len(), taken.iter().collect::<BTreeSet<_>>().len(), "{os}: a prefix is taken twice: {taken:?}");
+        for prefix in &rest.2 {
+            assert!(taken.contains(&prefix), "{os}: rest skips `{prefix}`, which no part takes");
+        }
+        for (part, take, skip) in &others {
+            assert!(!take.is_empty(), "{os}: {part} takes nothing");
+            for prefix in take {
+                assert!(rest.2.iter().any(|skipped| prefix.starts_with(skipped.as_str())), "{os}: `{prefix}` runs in {part} and in rest");
+                for inner in taken.iter().filter(|inner| **inner != prefix && inner.starts_with(prefix.as_str())) {
+                    assert!(skip.contains(inner), "{os}: `{inner}` runs in {part} and in the part that takes it");
+                }
+            }
+            for prefix in skip {
+                assert!(taken.contains(&prefix), "{os}: {part} skips `{prefix}`, which no part takes");
+            }
+        }
+    }
+    assert_eq!(systems["windows-latest"], systems["macos-latest"], "Windows and macOS split alike");
+}
+
 /// The three installers bring rtk in the version `checksums.txt` fixes,
 /// checked against its sum; the release stops without it; and no step
 /// compiles it.
@@ -590,6 +648,7 @@ jobs:
         with:
           shared-key: one
           save-if: ${{ github.event_name == 'push' }}
+          cache-on-failure: true
       - name: Test
         run: |
           - name: not a step
@@ -640,10 +699,10 @@ fn the_checks_accept_the_good_shape_and_read_it_as_written() {
 }
 
 #[test]
-fn extended_timeout_is_restricted_to_the_measured_slow_matrix_jobs() {
-    let ci = "jobs:\n  test:\n    runs-on: ${{ matrix.runner || matrix.os }}\n    timeout-minutes: ${{ matrix.os == 'ubuntu-latest' && 30 || 60 }}\n    strategy:\n      matrix:\n        os: [ubuntu-latest, macos-latest, windows-latest]\n        include:\n          - os: macos-latest\n            runner: macos-15-intel\n";
+fn extended_timeout_is_restricted_to_the_measured_intel_macos_jobs() {
+    let ci = "jobs:\n  test:\n    runs-on: ${{ matrix.runner || matrix.os }}\n    timeout-minutes: ${{ matrix.os == 'macos-latest' && 45 || 30 }}\n    strategy:\n      matrix:\n        os: [ubuntu-latest, macos-latest, windows-latest]\n        include:\n          - os: macos-latest\n            runner: macos-15-intel\n";
     assert!(timeout_problems(&Workflow::parse(VERIFICATION, ci)).is_empty());
-    for broken in [ci.replace("60", "90"), ci.replace("  test:", "  other:"), ci.replace("runner: macos-15-intel", "runner: ubuntu-latest")] {
+    for broken in [ci.replace("45", "60"), ci.replace("  test:", "  other:"), ci.replace("runner: macos-15-intel", "runner: ubuntu-latest")] {
         assert!(!timeout_problems(&Workflow::parse(VERIFICATION, &broken)).is_empty());
     }
     let release = "jobs:\n  macos-installer:\n    runs-on: macos-15-intel\n    timeout-minutes: 45\n";
@@ -664,6 +723,7 @@ fn the_checks_refuse_each_broken_piece() {
         ("a tag push saves too", false, "  workflow_dispatch:", "    tags: ['v*']\n  workflow_dispatch:"),
         ("the pull request saves", false, SAVE_ON_PUSH, "true"),
         ("the cache saves by default", false, "          save-if: ${{ github.event_name == 'push' }}\n", ""),
+        ("a failed push drops the build", false, "          cache-on-failure: true\n", ""),
         ("the toolchain caches on its own", false, "          cache: false\n", ""),
         ("a plain cache saves on every run", false, "uses: actions/checkout@v4", "uses: actions/cache@v4"),
         ("the release saves", true, "save-if: false", "save-if: true"),

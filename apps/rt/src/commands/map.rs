@@ -3947,10 +3947,32 @@ mod tests {
             assert_eq!(unsupported["exit_code"],2);
             assert!(!unsupported["result"]["stderr"].as_str().unwrap().is_empty());
         }
+        /// A busca `grep` em `root`, repetida até uma que não deixe passada do
+        /// mapa por trás. A busca espera a passada até o prazo dela; passado o
+        /// prazo, responde com o mapa de antes e a passada segue sozinha, e o
+        /// que a busca aprendeu só se dá por lido numa busca que viu a passada
+        /// acabar. Quem decide é a resposta da busca, e não um relógio: entre
+        /// uma tentativa e outra, só se espera a trava da passada ficar livre.
+        /// 60 s de limite para nunca prender a suíte.
+        fn asked_and_settled(root: &Path, grep: &GrepSearch) -> Value {
+            let model = mustard_core::io::project_map::model_path(&root.canonicalize().unwrap());
+            let lock = mustard_core::domain::scan::native_pass_lock_path(&model);
+            let limit = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            loop {
+                let report = asked(root, grep.clone());
+                if report["learning"]["scan"]["status"] != "in-progress" {
+                    return report;
+                }
+                assert!(std::time::Instant::now() < limit, "a busca ainda deixava a passada do mapa por trás depois de 60 s: {report}");
+                while mustard_core::io::fs::lock::LockedFile::exclusive_if_free(&lock).ok().flatten().is_none() && std::time::Instant::now() < limit {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+            }
+        }
         #[test]
         fn repeated_searches_keep_results_and_reuse_verified_facts() {
             let (_dir,root)=fixture::repo("{}");
-            let first=asked(&root,pattern("calcular_frete"));
+            let first=asked_and_settled(&root,&pattern("calcular_frete"));
             let second=asked(&root,pattern("calcular_frete"));
             assert!(!stdout(&first).is_empty());
             let lines=|report:&Value|{let mut lines:Vec<_>=stdout(report).lines().map(str::to_string).collect();lines.sort();lines};

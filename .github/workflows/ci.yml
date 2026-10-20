@@ -59,7 +59,7 @@ jobs:
     name: Cache (${{ matrix.os }})
     needs: route
     if: needs.route.outputs.warm_cache == 'true'
-    runs-on: ${{ matrix.runner || matrix.os }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     env:
       CARGO_INCREMENTAL: 0
@@ -67,11 +67,6 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        # ARM64 hosted capacity failed to acquire both macOS jobs on
-        # 2026-10-13. Keep check names stable; use the standard Intel pool.
-        include:
-          - os: macos-latest
-            runner: macos-15-intel
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -84,6 +79,10 @@ jobs:
         with:
           shared-key: mustard-workspace
           save-if: ${{ github.event_name == 'push' }}
+          # Saved even when a test fails: the push runs that save are the only
+          # ones, and a red push used to leave every pull request compiling
+          # from scratch (run 39426184868: "No cache found" on Windows).
+          cache-on-failure: true
       # rust-cache stores dependencies by default. An existing exact cache
       # needs no repeated compilation; a missing cache is warmed without
       # executing the test suite already approved in the PR.
@@ -95,15 +94,12 @@ jobs:
     needs: route
     if: needs.route.outputs.validate == 'true'
     name: Mods (${{ matrix.os }})
-    runs-on: ${{ matrix.runner || matrix.os }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        include:
-          - os: macos-latest
-            runner: macos-15-intel
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -121,14 +117,12 @@ jobs:
   test:
     needs: route
     if: needs.route.outputs.validate == 'true'
-    name: Test (${{ matrix.os }})
-    runs-on: ${{ matrix.runner || matrix.os }}
-    # Keep a bounded job. On the Intel macOS fallback, run 38457019967 took
-    # 7m38s to compile cold and was still progressing through scan tests at
-    # 30m. On Windows, run 39416582482 spent 20m36s in the mustard-rt unit
-    # tests alone and was cut at 30m before the integration tests; the last
-    # green Windows runs already took 25-26m. Linux finished in under 18m.
-    timeout-minutes: ${{ matrix.os == 'ubuntu-latest' && 30 || 60 }}
+    name: Test (${{ matrix.os }} ${{ matrix.part }})
+    runs-on: ${{ matrix.os }}
+    # Keep a bounded job. The suite is split in parts on Windows and macOS, and
+    # macOS runs on the standard Apple runner: the Intel pool it used to need
+    # 45 minutes on also kept the release waiting 47 minutes for a machine.
+    timeout-minutes: 30
     env:
       # A runner is discarded after every job, so incremental state is WRITTEN
       # and never read back — pure cost here. Declared rather than inherited,
@@ -142,11 +136,44 @@ jobs:
       # One OS failing should not cancel the others — we want the full
       # cross-platform picture on every run.
       fail-fast: false
+      # Windows and macOS split the suite in four parts that run at the same
+      # time on separate runners; Linux runs it whole. Run 39426184868 took
+      # 35m on Windows and 33m on macOS against 11m on Linux: 21m of the
+      # Windows run were the mustard-rt unit tests, and 93% of their time is
+      # in the round and close tests (they spawn git, and a process costs far
+      # more on Windows). Each test runs in exactly one part: `rest` skips the
+      # prefixes the other parts name, and `round` skips the round modules
+      # that `close` and `report` take. The check in
+      # packages/core/tests/workflows.rs holds that cover.
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
         include:
+          - os: ubuntu-latest
+            part: all
+            filter: ''
           - os: macos-latest
-            runner: macos-15-intel
+            part: close
+            filter: 'commands::flow::close:: commands::flow::plan:: commands::flow::round::queue::'
+          - os: macos-latest
+            part: report
+            filter: 'commands::flow::round::report:: commands::flow::round::removed_check:: commands::flow::round::commit::'
+          - os: macos-latest
+            part: round
+            filter: 'commands::flow::round:: --skip commands::flow::round::queue:: --skip commands::flow::round::report:: --skip commands::flow::round::removed_check:: --skip commands::flow::round::commit::'
+          - os: macos-latest
+            part: rest
+            filter: '--skip commands::flow::round:: --skip commands::flow::close:: --skip commands::flow::plan::'
+          - os: windows-latest
+            part: close
+            filter: 'commands::flow::close:: commands::flow::plan:: commands::flow::round::queue::'
+          - os: windows-latest
+            part: report
+            filter: 'commands::flow::round::report:: commands::flow::round::removed_check:: commands::flow::round::commit::'
+          - os: windows-latest
+            part: round
+            filter: 'commands::flow::round:: --skip commands::flow::round::queue:: --skip commands::flow::round::report:: --skip commands::flow::round::removed_check:: --skip commands::flow::round::commit::'
+          - os: windows-latest
+            part: rest
+            filter: '--skip commands::flow::round:: --skip commands::flow::close:: --skip commands::flow::plan::'
     steps:
       - uses: actions/checkout@v4
 
@@ -179,6 +206,10 @@ jobs:
         with:
           shared-key: mustard-workspace
           save-if: ${{ github.event_name == 'push' }}
+          # Saved even when a test fails: the push runs that save are the only
+          # ones, and a red push used to leave every pull request compiling
+          # from scratch (run 39426184868: "No cache found" on Windows).
+          cache-on-failure: true
 
       - name: Expose the scan binary to the tests that spawn it
         shell: bash
@@ -239,7 +270,7 @@ jobs:
       # next batch, one round trip per batch. With the flag the run tries every
       # file and lists every failure at once.
       - name: Test
-        run: cargo test --locked --no-fail-fast -p mustard-core -p mustard-cli -p mustard-rt -p scan -- --test-threads=8
+        run: cargo test --locked --no-fail-fast -p mustard-core -p mustard-cli -p mustard-rt -p scan -- --test-threads=8 ${{ matrix.filter }}
 
       # `-D warnings`: EVERY warning fails the build, not only the deny-level
       # ones. The lint table used to keep pedantic at warn "without drowning in
@@ -275,7 +306,7 @@ jobs:
       # `target_os = "macos"`, e ele é o que menos paga o passo. O limite de
       # tempo do job não sobe para caber a lentidão: a causa é que se corta.
       - name: Clippy
-        if: runner.os != 'macOS'
+        if: runner.os == 'Linux' || (runner.os == 'Windows' && matrix.part == 'round')
         run: cargo clippy --locked --all-targets -p mustard-core -p mustard-cli -p mustard-rt -p scan -- -D warnings
 
       # A válvula de escape do passo acima é desligar o lint. Isto garante que
