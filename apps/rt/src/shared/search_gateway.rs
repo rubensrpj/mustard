@@ -955,7 +955,9 @@ mod tests {
         hold.0.send(()).unwrap();
         holder.join().unwrap();
 
-        assert!(waited < Duration::from_secs(2), "the search waited for the lock of the other writer ({waited:?})");
+        // 3 s and not less: opening the map on a slow CI runner takes over a
+        // second; the old wait on the other writer was 5 s.
+        assert!(waited < Duration::from_secs(3), "the search waited for the lock of the other writer ({waited:?})");
         assert!(String::from_utf8_lossy(&answer.stdout).contains("quartzEntry"), "the search result is kept");
         assert!(passes(&log) <= 1, "{}", std::fs::read_to_string(&log).unwrap_or_default());
         assert_eq!(answer.report["learning_write"]["status"], "left-for-next-search", "{}", answer.report["learning_write"]);

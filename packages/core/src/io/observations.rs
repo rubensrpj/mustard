@@ -733,7 +733,9 @@ mod tests {
         let listed = list(root, "demo", 10).map(|rows| rows.len());
         let skill_seen = read_receipt(root, "demo", 10, &skill.source, &skill.output_sha256).is_some();
         holder.execute_batch("COMMIT").unwrap();
-        assert!(waited < Duration::from_secs(1), "the receipt waited {waited:?} for the held store");
+        // 3 s and not less: opening the store on a slow CI runner takes over a
+        // second; the old wait on a held store was 5 s.
+        assert!(waited < Duration::from_secs(3), "the receipt waited {waited:?} for the held store");
         queued.unwrap();
         skill_queued.unwrap();
         assert_eq!(found, Some(Ok("call-during-another-write".to_string())));

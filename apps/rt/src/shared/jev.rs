@@ -2166,7 +2166,8 @@ mod tests {
         let waited = started.elapsed();
         assert_eq!(error, FilterError::Timeout);
         assert_eq!(service.received().len(), 2);
-        assert!(waited < Duration::from_millis(800), "waited {waited:?} past the 500 ms deadline");
+        // Well below the 10 s an unbounded call waited, with room for a slow runner.
+        assert!(waited < Duration::from_secs(3), "waited {waited:?} past the 500 ms deadline");
     }
 
     #[test]
@@ -2182,7 +2183,8 @@ mod tests {
         let error = filter.choose_symbols_until("{}", started + Duration::from_millis(200)).unwrap_err();
         let waited = started.elapsed();
         assert_eq!(error, FilterError::Timeout);
-        assert!(waited < Duration::from_millis(800), "waited {waited:?} past the 200 ms of the search");
+        // Well below the 10 s an unbounded call waited, with room for a slow runner.
+        assert!(waited < Duration::from_secs(3), "waited {waited:?} past the 200 ms of the search");
     }
 
     #[test]

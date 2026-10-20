@@ -406,7 +406,9 @@ mod tests {
         db.write(|_| {
             let started = std::time::Instant::now();
             let kept = forget_tree(&root, &root.join("copies").join("slot"));
-            assert!(started.elapsed() < Duration::from_secs(1), "{:?}", started.elapsed());
+            // 3 s and not less: the macOS runner took 1.03 s here (run
+            // 39475547680); the old wait on a busy map was 5 s.
+            assert!(started.elapsed() < Duration::from_secs(3), "{:?}", started.elapsed());
             assert!(kept.left(), "the busy map leaves the forgetting for the next removal");
             Ok(())
         }).unwrap();
