@@ -1,28 +1,23 @@
-use clap::Subcommand;
+use clap::{Args, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Debug, Subcommand)]
 pub enum PanelCmd {
-    /// Read or explicitly edit project ideas in the existing pending ledger.
-    #[command(display_order=34)]
-    Ideas { #[arg(long,default_value=".")] root:PathBuf, #[arg(long)] json:Option<String> },
-    /// Read or explicitly edit presentation profiles; never changes execution.
-    #[command(display_order=35)]
-    PanelPreferences { #[arg(long,default_value=".")] root:PathBuf, #[arg(long)] json:Option<String> },
-    /// Preview consequences without executing the supplied operation.
-    #[command(display_order=36)]
-    Impact { #[arg(long,default_value=".")] root:PathBuf, #[arg(long)] json:String },
-    /// Export sanitized diagnostics locally, or record metadata from stdin.
+    /// Record one failure's metadata from stdin for the local diagnostics.
     #[command(display_order=37)]
-    PanelDiagnostics { #[arg(long,default_value=".")] root:PathBuf, #[arg(long)] record:bool, #[arg(long,conflicts_with="record")] export:bool },
+    PanelDiagnostics { #[arg(long,default_value=".")] root:PathBuf, #[arg(long)] record:bool },
     /// Read safe project settings, or apply an explicit versioned patch.
     #[command(display_order = 31)]
     Settings {
         #[arg(long, default_value = ".")]
         root: PathBuf,
-        /// {schema_version:1,revision,changes:{vectors,jev,rtk,build_command,test_command,lint_command,max_compiling_waves,...}}; never credentials.
-        #[arg(long)]
+        /// {schema_version:1,revision,changes:{vectors,jev,rtk,build_command,test_command,lint_command,max_compiling_waves,...}}; the publication token is write-only and comes only with --stdin.
+        #[arg(long, conflicts_with = "stdin")]
         json: Option<String>,
+        /// Read the same patch from standard input, the only way the
+        /// publication token is taken: an argument is visible to other processes.
+        #[arg(long)]
+        stdin: bool,
         /// The whole answer: besides the current values and the revision,
         /// the state of Jev, rtk, the index and the integrations.
         #[arg(long)]
@@ -42,7 +37,7 @@ pub enum PanelCmd {
         #[arg(long, conflicts_with = "document")]
         include_consumption: bool,
     },
-    /// Query local project, specs, execution and measured consumption.
+    /// Read one panel screen: the overview, the spec, a page of items, one item or the usage.
     #[command(display_order = 26)]
     Panel {
         #[arg(long, default_value = ".")]
@@ -67,12 +62,14 @@ pub enum PanelCmd {
         /// Read one receipt of this wave whole, with the command as recorded.
         #[arg(long, requires = "observations", conflicts_with = "observations_before")]
         receipt: Option<String>,
-        /// Query only the visible dashboard section.
+        /// The screen to read.
         #[arg(long,value_parser=clap::builder::PossibleValuesParser::new(super::dashboard::SECTIONS.iter().copied()))]
         section:Option<String>,
         /// Return unchanged without rebuilding a projection when sources match.
         #[arg(long,requires="section")]
         if_revision:Option<String>,
+        #[command(flatten)]
+        screen:Box<ScreenArgs>,
     },
     /// Record a host measurement from standard input, without a model turn.
     #[command(display_order = 29)]
@@ -84,28 +81,47 @@ pub enum PanelCmd {
     },
 }
 
+/// What the list and item screens of `run panel` were asked for.
+#[derive(Debug, Args)]
+pub struct ScreenArgs {
+    /// The list screen's item kind.
+    #[arg(long,requires="section",value_parser=clap::builder::PossibleValuesParser::new(super::sections::KINDS.iter().copied()))]
+    kind:Option<String>,
+    /// Search the list screen's items by words or file path.
+    #[arg(long,requires="section")]
+    query:Option<String>,
+    /// The list screen's filter.
+    #[arg(long,requires="section",value_parser=clap::builder::PossibleValuesParser::new(super::sections::FILTERS.iter().copied()))]
+    filter:Option<String>,
+    /// Skip this many rows of the list screen.
+    #[arg(long,requires="section")]
+    offset:Option<usize>,
+    /// Rows of the list screen (8 when absent).
+    #[arg(long,requires="section")]
+    limit:Option<usize>,
+    /// The item screen's code.
+    #[arg(long,requires="section")]
+    item:Option<String>,
+}
+
 pub fn dispatch(cmd: PanelCmd) {
     match cmd {
-        PanelCmd::Ideas {root,json}=>println!("{}",super::safe_value(crate::commands::event::pending::ideas::run(&root,json.as_deref()))),
-        PanelCmd::PanelPreferences {root,json}=>println!("{}",super::safe_value(super::preferences::run(&root,json.as_deref()))),
-        PanelCmd::Impact {root,json}=>println!("{}",super::impact::preview(&root,&json)),
-        PanelCmd::PanelDiagnostics {root,record,export}=>{
+        PanelCmd::PanelDiagnostics {root,record}=>{
             let root=mustard_core::io::spec_events::spec_root(&root);
-            let mut result=if record {read_stdin().map_or_else(||serde_json::json!({"ok":false,"reason":"diagnostic-invalid"}),|value|super::diagnostics::record(&root,&value))}
-                else {super::diagnostics::snapshot(&root)};
-            if export {
-                if !mustard_core::ProjectConfig::exists(&root) {println!("{}",serde_json::json!({"ok":false,"reason":"project-not-initialized"}));return;}
-                let path=root.join(".claude/mustard/panel/diagnostics-export.json");
-                let safe=super::safe_value(result.clone());
-                result=match mustard_core::io::fs::write_atomic(&path,safe.to_string().as_bytes()) {
-                    Ok(())=>serde_json::json!({"ok":true,"path":path,"published":false}),
-                    Err(_)=>serde_json::json!({"ok":false,"reason":"diagnostics-export-failed"}),
-                };
-            }
+            let result=if record {read_stdin().map_or_else(||serde_json::json!({"ok":false,"reason":"diagnostic-invalid"}),|value|super::diagnostics::record(&root,&value))}
+                else {serde_json::json!({"ok":false,"reason":"diagnostic-needs-record"})};
             println!("{}",super::safe_value(result));
         },
-        PanelCmd::Settings {root,json,full} => {
-            let report=super::settings::run(&root,json.as_deref());
+        PanelCmd::Settings {root,json,stdin,full} => {
+            let report=if stdin {
+                use std::io::Read;let mut text=String::new();
+                match std::io::stdin().take(16_385).read_to_string(&mut text) {
+                    Ok(_)=>super::settings::run(&root,Some(&text)),
+                    Err(_)=>serde_json::json!({"ok":false,"schema_version":1,"reason":"settings-invalid-request"}),
+                }
+            } else if json.as_deref().is_some_and(super::settings::carries_token) {
+                serde_json::json!({"ok":false,"schema_version":1,"reason":"settings-token-argument"})
+            } else {super::settings::run(&root,json.as_deref())};
             println!("{}",crate::commands::flow::projection("settings",&report,full).unwrap_or(report));
         }
         PanelCmd::Publish {
@@ -132,7 +148,7 @@ pub fn dispatch(cmd: PanelCmd) {
                 name.map_or_else(||serde_json::json!({"ok":false,"reason":"no-current-spec","hint":"Use --project para publicar o projeto sem spec aberta."}),|name|super::publication::publish(&root,&name,include_consumption))
             }
         ),
-        PanelCmd::Panel { root, spec, refresh_consumption, session, wave, observations, observations_before,receipt,section,if_revision } => {
+        PanelCmd::Panel { root, spec, refresh_consumption, session, wave, observations, observations_before,receipt,section,if_revision,screen } => {
             if observations {
                 let name=spec.or_else(||crate::shared::context::checkout::current_spec(&root.to_string_lossy()));
                 let root=mustard_core::io::spec_events::spec_root(&root);
@@ -166,15 +182,18 @@ pub fn dispatch(cmd: PanelCmd) {
                 let mut refresh=crate::commands::spec::spend::spend_at(
                     &crate::commands::spec::spend::SpendOpts{root:root.clone(),publish:false,republish:false,url:None},&machine);
                 refresh["waves"]=super::wave_usage::refresh(&root,spec.as_deref(),session.as_deref(),machine.config.as_deref());
+                refresh["copies_disk"]=super::sections::measure_copies_disk(&mustard_core::io::spec_events::spec_root(&root));
                 refresh
             });
-            let mut result=if let Some(section)=section.as_deref() {super::dashboard::query(&root,spec.as_deref(),session.as_deref(),wave,section,if_revision.as_deref())}
+            let ScreenArgs{kind,query,filter,offset,limit,item}=*screen;
+            let params=super::sections::Params{kind,query,filter,offset,limit,item};
+            let mut result=if let Some(section)=section.as_deref() {super::dashboard::query_with(&root,spec.as_deref(),session.as_deref(),wave,section,if_revision.as_deref(),&params)}
                 else {super::snapshot_session(&root,spec.as_deref(),session.as_deref())};
             if section.is_none() && let (Some(wave), Some(name)) = (wave, result["selected_spec"].as_str()) {
                 let detail = super::wave_detail(&root, name, wave);
                 result["wave_detail"] = detail;
             }
-            if let Some(refresh)=refresh {result["consumption_refresh"]=serde_json::json!({"ok":refresh["ok"],"reason":refresh["reason"],"project":refresh["project"]});}
+            if let Some(refresh)=refresh {result["consumption_refresh"]=serde_json::json!({"ok":refresh["ok"],"reason":refresh["reason"],"project":refresh["project"],"copies_disk":refresh["copies_disk"]});}
             println!("{result}");
         },
         PanelCmd::UsageRecord {root,session} => {

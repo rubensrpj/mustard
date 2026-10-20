@@ -7,6 +7,9 @@
 //! de status que lê o arquivo dele. A pasta do gasto e a de configuração do
 //! Claude Code são de mentira, numa pasta temporária.
 
+#[path = "support/binary.rs"]
+mod binary;
+
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -39,7 +42,7 @@ impl Scene {
 
     /// Roda `mustard-rt` no projeto e devolve a saída padrão.
     fn rt(&self, args: &[&str], stdin: &str) -> String {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+        let mut child = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
             .args(args)
             .current_dir(&self.project)
             .env("CLAUDE_PROJECT_DIR", &self.project)
@@ -217,7 +220,7 @@ fn historical_consumption_stays_in_the_panel_without_expanding_the_status_bar() 
 
     let shown = bar(&scene);
     assert!(shown.contains("loja") && shown.contains("Opus 5") && shown.lines().count()==1, "compact current state: {shown:?}");
-    assert!(!shown.contains(panel) && !shown.contains("consumo") && shown.contains("/mustard-panel"), "history belongs in Mods; the compact bar retains panel access: {shown:?}");
+    assert!(!shown.contains(panel) && !shown.contains("consumo") && shown.contains("/mustard:mods"), "history belongs in Mods; the compact bar retains panel access: {shown:?}");
     let before=std::fs::read(scene.spend.join("ledger.json")).unwrap();
     let snapshot:Value=serde_json::from_str(&scene.rt(&["run","panel"],"")).unwrap();
     assert_eq!(snapshot["consumption"]["trend"]["change_percent"],-25);

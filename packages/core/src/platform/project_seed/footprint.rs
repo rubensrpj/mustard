@@ -91,6 +91,9 @@ const HARNESS_CLAUDE_FILES: &[&str] = &[
     "mustard/prepared-context/",
     "mustard/pages/spec.html",
     "mustard/pages/project.html",
+    // As regras que a spec entregue deixa ao Claude Code. Só a pasta
+    // `mustard/`: `.claude/rules/` é da pessoa, e as regras dela ficam no git.
+    "rules/mustard/",
     // NOT `skills/`. The shelf is a directory a client may also author in; what
     // the scan writes there is the `{role}-pattern` mold, and every one of the
     // 30 in this repository carries that suffix. The rule is the mold, not the
@@ -451,6 +454,24 @@ mod tests {
         assert!(is_written_footprint(MUSTARD_JSON), "a real seed IS removable residue");
     }
 
+    /// The project rules a delivered spec writes under `.claude/rules/mustard/`
+    /// leave git the way the specs do, and the person's own rules beside them
+    /// stay visible.
+    #[test]
+    fn the_generated_project_rules_are_hidden_and_the_persons_own_rules_are_not() {
+        let probe = tempdir().unwrap();
+        let exclude = probe_repo(probe.path());
+        let ours = [".claude/rules/mustard/demo-1.md", ".claude/rules/mustard/demo-2.md"];
+        let mut hidden: Vec<String> = footprint_rules().iter().flat_map(|rule| check_ignore(probe.path(), &exclude, rule, &ours)).collect();
+        hidden.sort();
+        hidden.dedup();
+        assert_eq!(hidden, ours, "{:?}", footprint_rules());
+        for rule in footprint_rules() {
+            let theirs = check_ignore(probe.path(), &exclude, &rule, &[".claude/rules/their-rule.md", ".claude/rules/team/style.md"]);
+            assert!(theirs.is_empty(), "{rule:?} hides {theirs:?}");
+        }
+    }
+
     /// The mode is read back off the exclude file, so the marks the detector
     /// looks for must be rules some install really writes.
     #[test]
@@ -495,6 +516,8 @@ mod tests {
         ".claude/commands/their-command.md",
         ".claude/agents/their-agent.md",
         ".claude/refs/their-notes.md",
+        ".claude/rules/their-rule.md",
+        ".claude/rules/team/style.md",
         ".claude/skills/their-own-skill/SKILL.md",
         "packages/api/.claude/skills/their-other-skill/SKILL.md",
         ".github/pull_request_template.md",
@@ -576,6 +599,8 @@ mod tests {
             // outside every unit, so a worktree and the main checkout share it.
             ("pending/ledger.json", "{\"items\":[]}\n"),
             ("plans/2026-08-19-demo.md", "# plan\n"),
+            // The project rules a delivered spec leaves for Claude Code.
+            ("rules/mustard/demo-1.md", "# Rules from spec demo\n"),
             ("scratch/probe.json", "{}\n"),
             ("worktrees/fix/demo/CLAUDE.md", "# unit\n"),
         ] {

@@ -19,6 +19,9 @@
 //! dele, e refazê-lo apagaria o que o mais novo gravou — com duas compilações
 //! no mesmo mapa, cada abertura de uma esvaziaria o bloco da outra.
 //!
+//! O bloco que saiu do programa ([`Retired`]) sai do mapa na abertura que o
+//! recebe: as tabelas dele e a linha dele na tabela de blocos se apagam.
+//!
 //! A tabela de blocos guarda também a marca de quem encheu cada bloco: quem
 //! grava a põe junto das linhas ([`set_mark`]), e o bloco refeito volta sem
 //! ela. Assim quem lê sabe se o bloco foi enchido pela mesma versão dele.
@@ -69,7 +72,7 @@ const BLOCKS_TABLE: &str = "blocks";
 
 /// Quanto uma gravação espera a trava de outra antes de desistir. O scan
 /// inteiro regrava o mapa em cerca de um segundo num projeto grande.
-const BUSY_WAIT: Duration = Duration::from_secs(5);
+pub(crate) const BUSY_WAIT: Duration = Duration::from_secs(5);
 
 /// Refaz um bloco a partir do código, do git ou das specs do projeto em
 /// `root`. Roda dentro da transação que já apagou e recriou as tabelas do
@@ -89,7 +92,7 @@ pub enum Kind {
     /// Refeito: o que ele guarda se tira de novo do código, do git ou das
     /// specs, então as tabelas velhas saem inteiras.
     Rebuilt(Rebuild),
-    /// Escrito por agente (notas de sentido, palavras aprendidas): o que ele
+    /// Escrito por agente (palavras aprendidas, interpretações): o que ele
     /// guarda não se refaz, então é convertido e nunca apagado.
     Written(Convert),
 }
@@ -108,6 +111,17 @@ pub struct Block {
     pub schema: &'static str,
     /// Refeito ou escrito por agente.
     pub kind: Kind,
+}
+
+/// Um bloco que saiu do programa: o nome com que a tabela de blocos o guardou
+/// e as tabelas que ele tinha. A abertura que o recebe ([`MapDb::open_retiring`])
+/// tira do mapa as tabelas e a linha dele.
+#[derive(Debug, Clone, Copy)]
+pub struct Retired {
+    /// O nome do bloco na tabela de blocos.
+    pub name: &'static str,
+    /// As tabelas do bloco, inclusive as virtuais.
+    pub tables: &'static [&'static str],
 }
 
 impl From<rusqlite::Error> for Error {
@@ -143,6 +157,13 @@ impl MapDb {
     /// ação de quem chamou — o gancho que roda depois de cada edição — espera
     /// pouco e desiste, em vez de esperar a regravação inteira do scan.
     pub fn open_waiting(path: &Path, root: &Path, blocks: &[Block], wait: Duration) -> Result<Self> {
+        Self::open_retiring(path, root, blocks, &[], wait)
+    }
+
+    /// [`Self::open_waiting`] que antes tira do mapa os blocos de `retired`
+    /// que ainda estão nele ([`retire`]), para que um bloco novo possa usar o
+    /// nome de uma tabela que saiu.
+    pub(crate) fn open_retiring(path: &Path, root: &Path, blocks: &[Block], retired: &[Retired], wait: Duration) -> Result<Self> {
         for block in blocks {
             if block.name == BLOCKS_TABLE || block.tables.contains(&BLOCKS_TABLE) {
                 return Err(Error::config(format!("map block `{}` uses the reserved name `{BLOCKS_TABLE}`", block.name)));
@@ -165,6 +186,7 @@ impl MapDb {
         if !mode.eq_ignore_ascii_case("wal") && !mode.eq_ignore_ascii_case("delete") {
             return Err(Error::Io(std::io::Error::other(format!("map journal stayed `{mode}`"))));
         }
+        retire(&mut conn, retired)?;
         for block in blocks {
             keep_up(&mut conn, block, root)?;
         }
@@ -216,6 +238,12 @@ pub(crate) fn mark_of(conn: &Connection, name: &str) -> Result<Option<String>> {
 pub fn set_mark(conn: &Connection, name: &str, mark: &str) -> Result<()> {
     conn.execute(&format!("UPDATE {BLOCKS_TABLE} SET mark = ?2 WHERE name = ?1"), params![name, mark])?;
     Ok(())
+}
+
+/// Se `err` é a trava de outra gravação que não se soltou a tempo.
+pub(crate) fn busy(err: &Error) -> bool {
+    matches!(err, Error::Io(io) if io.get_ref().and_then(|inner| inner.downcast_ref::<rusqlite::Error>())
+        .and_then(rusqlite::Error::sqlite_error_code) == Some(ErrorCode::DatabaseBusy))
 }
 
 /// A pausa entre duas tentativas de trocar o diário de um banco.
@@ -290,6 +318,38 @@ fn keep_up(conn: &mut Connection, block: &Block, root: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Tira do mapa cada bloco de `retired` que ainda está nele: apaga as tabelas
+/// dele e a linha dele na tabela de blocos, numa transação só, com a trava. O
+/// mapa sem nenhum deles não pede a trava nem grava.
+fn retire(conn: &mut Connection, retired: &[Retired]) -> Result<()> {
+    if !holds_retired(conn, retired)? {
+        return Ok(());
+    }
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let listed = table_exists(&tx, BLOCKS_TABLE)?;
+    for block in retired {
+        for table in block.tables {
+            tx.execute_batch(&format!("DROP TABLE IF EXISTS {}", quoted(table)))?;
+        }
+        if listed {
+            tx.execute(&format!("DELETE FROM {BLOCKS_TABLE} WHERE name = ?1"), params![block.name])?;
+        }
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// Se o mapa aberto em `conn` ainda guarda algum bloco de `retired`: a linha
+/// dele na tabela de blocos ou alguma tabela dele. Só lê.
+pub(crate) fn holds_retired(conn: &Connection, retired: &[Retired]) -> Result<bool> {
+    for block in retired {
+        if stored_version(conn, block.name)?.is_some() || any_table_exists(conn, block.tables)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// A recusa do bloco `block` gravado na versão `found`, quando ela é mais
 /// nova que a deste programa: um programa mais novo gravou o bloco, e este
 /// não o refaz nem o converte para trás.
@@ -330,6 +390,127 @@ fn any_table_exists(conn: &Connection, tables: &[&str]) -> Result<bool> {
         }
     }
     Ok(false)
+}
+
+/// Uma gravação adiada no mapa: roda dentro da transação de [`Later::keep`].
+type Deferred = Box<dyn FnOnce(&Connection) -> Result<()>>;
+
+/// As gravações no mapa que uma busca junta enquanto responde e faz só no
+/// fim, numa transação só por mapa ([`Later::keep`]): o que a busca aprendeu
+/// não segura a resposta esperando a trava de outra gravação. A transação que
+/// não pega a trava a tempo não grava nada, e o que ela levava se aprende de
+/// novo na próxima busca.
+///
+/// Guarda também as chaves do que já juntou ([`Later::note`]): quem lê o mapa
+/// antes da gravação conta com o que ela vai gravar.
+#[derive(Default)]
+pub struct Later {
+    maps: Vec<Pending>,
+    noted: std::collections::BTreeSet<String>,
+}
+
+/// As gravações adiadas de um mapa.
+struct Pending {
+    path: PathBuf,
+    root: PathBuf,
+    blocks: Vec<Block>,
+    writes: Vec<Deferred>,
+}
+
+/// Como acabou a gravação de [`Later::keep`].
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Kept {
+    /// Quantas gravações estavam juntas.
+    pub writes: usize,
+    /// Quantas delas ficaram no mapa.
+    pub stored: usize,
+    /// Quanto se esperou pela trava, somando os mapas.
+    pub lock_wait: Duration,
+    /// Quanto a gravação levou, a espera inclusive.
+    pub elapsed: Duration,
+    /// Por que alguma gravação ficou de fora.
+    pub reason: Option<String>,
+}
+
+impl Kept {
+    /// Se alguma gravação ficou para a próxima busca.
+    #[must_use]
+    pub fn left(&self) -> bool {
+        self.stored < self.writes
+    }
+
+    /// O relato da gravação, para o relato da busca.
+    #[must_use]
+    pub fn report(&self) -> serde_json::Value {
+        let status = if self.writes == 0 {
+            "nothing-to-store"
+        } else if self.left() {
+            "left-for-next-search"
+        } else {
+            "stored"
+        };
+        serde_json::json!({"status":status,"writes":self.writes,"stored":self.stored,
+            "lock_wait_ms":self.lock_wait.as_millis(),"ms":self.elapsed.as_millis(),"reason":self.reason})
+    }
+}
+
+impl Later {
+    /// Junta `write` às gravações do mapa em `path`, do projeto em `root`,
+    /// com `block` posto em dia antes dela.
+    pub(crate) fn defer(&mut self, path: &Path, root: &Path, block: Block, write: impl FnOnce(&Connection) -> Result<()> + 'static) {
+        let at = self.maps.iter().position(|map| map.path == path).unwrap_or_else(|| {
+            self.maps.push(Pending { path: path.to_path_buf(), root: root.to_path_buf(), blocks: Vec::new(), writes: Vec::new() });
+            self.maps.len() - 1
+        });
+        let map = &mut self.maps[at];
+        if !map.blocks.iter().any(|known| known.name == block.name) {
+            map.blocks.push(block);
+        }
+        map.writes.push(Box::new(write));
+    }
+
+    /// Anota `key` entre o que já está junto; `false` quando já estava.
+    pub(crate) fn note(&mut self, key: String) -> bool {
+        self.noted.insert(key)
+    }
+
+    /// Se `key` já está entre o que está junto.
+    pub(crate) fn noted(&self, key: &str) -> bool {
+        self.noted.contains(key)
+    }
+
+    /// Grava tudo o que está junto, numa transação por mapa, esperando a
+    /// trava de cada uma até `wait`. A transação que não pega a trava a tempo
+    /// ou falha não grava nada daquele mapa.
+    #[must_use]
+    pub fn keep(self, wait: Duration) -> Kept {
+        let started = Instant::now();
+        let mut kept = Kept::default();
+        for map in self.maps {
+            let count = map.writes.len();
+            kept.writes += count;
+            let asked = Instant::now();
+            let mut waited = None;
+            let result = (|| -> Result<()> {
+                let mut db = MapDb::open_waiting(&map.path, &map.root, &map.blocks, wait)?;
+                let tx = db.conn.transaction_with_behavior(TransactionBehavior::Immediate);
+                waited = Some(asked.elapsed());
+                let tx = tx?;
+                for write in map.writes {
+                    write(&tx)?;
+                }
+                tx.commit()?;
+                Ok(())
+            })();
+            kept.lock_wait += waited.unwrap_or_else(|| asked.elapsed());
+            match result {
+                Ok(()) => kept.stored += count,
+                Err(err) => kept.reason = Some(err.to_string()),
+            }
+        }
+        kept.elapsed = started.elapsed();
+        kept
+    }
 }
 
 /// O nome de tabela entre aspas duplas, com as aspas de dentro dobradas.

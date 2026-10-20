@@ -76,7 +76,7 @@ pub(crate) fn capture(
         return None;
     }
     let root = spec_events::spec_root(root);
-    let binding = super::host_observation::tool_binding(&root, host, input).or_else(|| {
+    let binding = super::host_observation::tool_binding(&root, host, input).map(|binding| (binding.spec, binding.wave, binding.dispatch)).or_else(|| {
         let copies = mustard_core::io::wave_prompt::copies_dir(&root);
         let marker = format!("{}/", mustard_core::io::wave_prompt::shown(&copies));
         let normalized = command.replace('\\', "/");
@@ -218,14 +218,16 @@ fn routed_native_search(args: &[crate::hooks::bash::lex::Word]) -> bool {
 }
 
 fn skill_read(root:&Path,host:&str,input:&HookInput)->Option<Result<(),&'static str>> {
-    let (spec,wave,dispatch)=super::host_observation::tool_binding(root,host,input)?;
+    // Só o arquivo de uma skill pede a ligação: as outras leituras do agente
+    // param aqui.
+    if input.tool_input["file_path"].as_str().and_then(|path|Path::new(path).file_name()).is_none_or(|name|name!="SKILL.md") {return None;}
+    // O envio já veio lido com a ligação: o arquivo de eventos não é lido de novo.
+    let super::host_observation::Binding{spec,wave,dispatch,send}=super::host_observation::tool_binding(root,host,input)?;
     let call=input.raw.get("tool_use_id").or_else(||input.raw.get("call_id"))?.as_str()?;
     let actor=input.agent_id.as_deref()?;
     let path=input.tool_input["file_path"].as_str()?;
     let content=input.raw.pointer("/tool_response/file/content")?.as_str()?;
-    let log=spec_events::read(&spec_events::spec_file(root,&spec).ok()?).ok()??;
-    let send=log.events.iter().rev().find(|e|e.event_type=="send" && e.wave()==Some(wave) && log.dispatch_position(e.id)==dispatch)?;
-    let sha=observed_skill(send,path,content)?;
+    let sha=observed_skill(&send,path,content)?;
     let receipt=Receipt {version:1,spec,dispatch,wave,host:host.into(),actor:actor.into(),call:call.into(),tool:"Read".into(),source:path.into(),
         input_sha256:observations::digest(input.tool_input.to_string().as_bytes()),output_sha256:sha,exit_code:None,
         result_status:"succeeded".into(),observed_at:chrono::Utc::now().to_rfc3339()};

@@ -1,19 +1,32 @@
 //! Explicit, native settings edits. Only the allowlisted projection leaves the
 //! binary; credentials and unknown project choices never enter a Mods response.
+//! The publication token is written here and never read back: the answer only
+//! says whether one is saved.
 use std::path::Path;
 use mustard_core::{ProjectConfig,domain::config::{AGENT_EFFORTS,FilterSetting}};
 use serde_json::{Value,json};
 
-const FIELDS:[&str;16]=["enabled","rtk","vectors","jev","jev_search","jev_wave_planning","jev_context","agent_model","agent_effort","search_answer","session_claude_model","session_codex_model",
-    "build_command","test_command","lint_command","max_compiling_waves"];
+const FIELDS:[&str;22]=["enabled","rtk","vectors","jev","jev_search","jev_wave_planning","jev_context","jev_spec_search","agent_model","agent_effort",
+    "review_model","review_effort","search_answer","session_claude_model","session_codex_model",
+    "build_command","test_command","lint_command","max_compiling_waves","cloudflare_account","cloudflare_project","cloudflare_token"];
 /// Os comandos do projeto, gravados na raiz do `mustard.json` com o nome em
 /// camelCase; o nome antigo, em snake_case, é o próprio campo.
 const COMMANDS:[(&str,&str);3]=[("build_command","buildCommand"),("test_command","testCommand"),("lint_command","lintCommand")];
-const PURPOSES:[(&str,&str);3]=[("jev_search","search"),("jev_wave_planning","wave-planning"),("jev_context","context")];
+const PURPOSES:[(&str,&str);4]=[("jev_search","search"),("jev_wave_planning","wave-planning"),("jev_context","context"),("jev_spec_search","spec-search")];
+/// The Cloudflare fields, under `publication` with the provider written next
+/// to them.
+const PUBLICATION:[(&str,&str);3]=[("cloudflare_account","accountId"),("cloudflare_project","projectName"),("cloudflare_token",mustard_core::domain::config::PUBLICATION_TOKEN_FIELD)];
+const PROVIDER:&str="cloudflare-pages";
 
 pub(super) fn run(start:&Path,patch:Option<&str>)->Value {
     let root=mustard_core::io::spec_events::spec_root(start);
     if let Some(patch)=patch {apply(&root,patch)} else {read(&root)}
+}
+
+/// Whether a patch sets the publication token: such a patch only comes on
+/// standard input, never as an argument other processes can read.
+pub(super) fn carries_token(patch:&str)->bool {
+    serde_json::from_str::<Value>(patch).is_ok_and(|request|request["changes"].get("cloudflare_token").is_some_and(|token|!token.is_null()))
 }
 
 /// A resposta curta dos ajustes: só os valores atuais e a revisão, que a
@@ -22,7 +35,7 @@ pub(super) fn run(start:&Path,patch:Option<&str>)->Value {
 /// `--full`.
 pub(crate) fn short(report:&Value)->Value {
     let mut out=serde_json::Map::new();
-    for key in ["ok","schema_version","revision","values","saved","pending","scan_recommended","agent_changes_apply_to"] {
+    for key in ["ok","schema_version","revision","values","publication","saved","pending","scan_recommended","agent_changes_apply_to"] {
         if let Some(value)=report.get(key) {out.insert(key.into(),value.clone());}
     }
     Value::Object(out)
@@ -51,8 +64,17 @@ fn read(root:&Path)->Value {
     for (field,purpose) in PURPOSES {values[field]=json!(config.judgement_filter(purpose)==FilterSetting::Jev);}
     values["build_command"]=json!(config.build_command);values["test_command"]=json!(config.test_command);values["lint_command"]=json!(config.lint_command);
     values["max_compiling_waves"]=json!(crate::commands::flow::round::queue::max_parallel(root));
+    let review=config.review_settings();
+    values["review_model"]=json!(review.model);values["review_effort"]=json!(review.effort);
+    let publication=config.publication.as_ref();
+    let text_of=|value:Option<&str>|value.map(str::trim).filter(|value|!value.is_empty()).map(str::to_string);
+    values["cloudflare_account"]=json!(text_of(publication.map(|p|p.account_id.as_str())));
+    values["cloudflare_project"]=json!(text_of(publication.map(|p|p.project_name.as_str())));
+    values["cloudflare_token"]=Value::Null;
     let switches=mustard_core::Switches::read(root);
     json!({"ok":true,"schema_version":1,"revision":revision(root,&text),"values":values,
+        "publication":{"token_saved":publication.and_then(|p|p.token()).is_some(),
+            "mustard_json_out_of_git":mustard_core::io::project_secret::kept_out_of_git(root,"mustard.json")},
         "jev":super::jev_usage::configuration(root,&config,std::env::var(mustard_core::io::jev_gate::KEY_ENV).ok()),
         "rtk":{"own_hook_left":switches.rtk_hook},
         "index_present":mustard_core::io::project_map::model_path(root).is_file(),
@@ -61,8 +83,13 @@ fn read(root:&Path)->Value {
 
 fn valid(field:&str,value:&Value)->bool {
     match field {
-        "agent_model" | "session_claude_model" | "session_codex_model"=>value.as_str().is_some_and(|name|name.len()<=160 && !name.is_empty() && name.chars().all(|c|c.is_ascii_alphanumeric() || matches!(c,'.'|'_'|':'|'/'|'-'|'['|']'))),
-        "agent_effort"=>value.as_str().is_some_and(|effort|AGENT_EFFORTS.contains(&effort)),
+        "agent_model" | "review_model" | "session_claude_model" | "session_codex_model"=>value.as_str().is_some_and(|name|name.len()<=160 && !name.is_empty() && name.chars().all(|c|c.is_ascii_alphanumeric() || matches!(c,'.'|'_'|':'|'/'|'-'|'['|']'))),
+        "agent_effort" | "review_effort"=>value.as_str().is_some_and(|effort|AGENT_EFFORTS.contains(&effort)),
+        // The publication's own rule, so the screen never saves what it refuses.
+        "cloudflare_account"=>value.is_null() || value.as_str().is_some_and(crate::shared::publication::valid_account),
+        "cloudflare_project"=>value.is_null() || value.as_str().is_some_and(crate::shared::publication::valid_project),
+        "cloudflare_token"=>value.is_null() || value.as_str().is_some_and(|token|(1..=512).contains(&token.len())
+            && !token.chars().any(|c|c.is_whitespace() || c.is_control())),
         "build_command" | "test_command" | "lint_command"=>value.is_null() || value.as_str().is_some_and(|command|
             !command.trim().is_empty() && command.chars().count()<=1_000 && !command.contains(['\n','\r','\0'])),
         "max_compiling_waves"=>value.as_u64().is_some_and(|waves|(1..=16).contains(&waves)),
@@ -91,10 +118,16 @@ fn apply(root:&Path,text:&str)->Value {
     let Ok(Some(_lock))=mustard_core::io::fs::lock::LockedFile::exclusive_if_free(&root.join(".claude/mustard/settings.lock")) else {return refused("settings-busy");};
     let Some((before,mut next))=document(root) else {return refused("settings-unreadable");};
     if request["revision"]!=revision(root,&before) {return refused("settings-conflict");}
+    // A token in a mustard.json the git sees would go out in the next commit.
+    if changes.get("cloudflare_token").is_some_and(|token|!token.is_null()) && !mustard_core::io::project_secret::kept_out_of_git(root,"mustard.json") {
+        return refused("settings-token-exposed");
+    }
     for (field,value) in changes {
         let path:Vec<&str>=match field.as_str() {
             "vectors"=>vec!["ai","vectors"],"jev"=>vec!["ai","fallback"],
             "agent_model"=>vec!["agents","model"],
+            "review_model"=>vec!["agents",mustard_core::domain::config::REVIEW_AGENT,"model"],
+            "review_effort"=>vec!["agents",mustard_core::domain::config::REVIEW_AGENT,"effort"],
             "session_claude_model"=>vec!["ai","sessionModels","claude"],
             "session_codex_model"=>vec!["ai","sessionModels","codex"],"agent_effort"=>vec!["agents","effort"],
             "search_answer"=>vec!["search","answer"],"max_compiling_waves"=>vec!["maxCompilingWaves"],
@@ -109,6 +142,14 @@ fn apply(root:&Path,text:&str)->Value {
             })
         }else if let Some((_,purpose))=PURPOSES.iter().find(|(name,_)|name==field) {
             put(&mut next,&["judgement",purpose,"filter"],json!(if value==true {"jev"}else{"none"}))
+        }else if let Some((_,key))=PUBLICATION.iter().find(|(name,_)|name==field) {
+            // `null` takes the key out; any value names the provider too.
+            let section=next.as_object_mut().map(|object|object.entry("publication").or_insert_with(||json!({})));
+            section.and_then(Value::as_object_mut).is_some_and(|section|{
+                section.shift_remove(*key);
+                if !value.is_null() {section.insert((*key).into(),value.clone());section.insert("provider".into(),json!(PROVIDER));}
+                true
+            })
         }else {put(&mut next,&path,value.clone())};
         if !ok {return refused("settings-invalid-section");}
     }
@@ -135,7 +176,7 @@ fn apply(root:&Path,text:&str)->Value {
     let mut pending=Vec::new();
     if let Some(local)=local
         && serde_json::to_vec_pretty(&local).ok().is_none_or(|bytes|mustard_core::io::fs::write_atomic(&local_path,&bytes).is_err()) {pending.push("rtk-hook");}
-    if (changes.contains_key("agent_model") || changes.contains_key("agent_effort"))
+    if ["agent_model","agent_effort","review_model","review_effort"].iter().any(|field|changes.contains_key(*field))
         && (!root.join(".claude/agents/mustard").is_dir() || mustard_core::refresh_agent_texts(root).is_err()) {pending.push("agent-files");}
     if before.as_bytes()!=bytes {
         // A receipt from before these choices cannot certify this configuration.
@@ -297,5 +338,72 @@ mod tests {
         let _lock=mustard_core::io::fs::lock::LockedFile::exclusive(&root.join(".claude/mustard/settings.lock")).unwrap();
         assert_eq!(patch(root,json!({"jev":true}))["reason"],"settings-busy");
         assert_eq!(apply(root,r#"{"schema_version":2,"revision":"x","changes":{"jev":true}}"#)["reason"],"settings-invalid-request");
+    }
+    #[test]
+    fn spec_search_is_a_jev_purpose_of_its_own_that_stays_off_until_chosen() {
+        let dir=fixture();let root=dir.path();
+        assert_eq!(patch(root,json!({"jev_wave_planning":true}))["saved"],true);
+        let shown=read(root);
+        assert_eq!(shown["values"]["jev_spec_search"],false,"absent, it stays off: {shown}");
+        assert_eq!(shown["jev"]["purposes"]["spec-search"]["chosen"],false,"{shown}");
+        assert_eq!(shown["jev"]["purposes"]["wave-planning"]["chosen"],true,"{shown}");
+        let saved=patch(root,json!({"jev_spec_search":true}));
+        assert_eq!(saved["saved"],true,"{saved}");
+        assert_eq!(saved["values"]["jev_spec_search"],true);assert_eq!(saved["values"]["jev_wave_planning"],true);
+        assert_eq!(read(root)["jev"]["purposes"]["spec-search"]["chosen"],true);
+        assert_eq!(patch(root,json!({"jev_spec_search":false}))["saved"],true);
+        let config=ProjectConfig::load(root);
+        assert_eq!(config.judgement_filter("spec-search"),FilterSetting::Off);
+        assert_eq!(config.judgement_filter("wave-planning"),FilterSetting::Jev);
+    }
+    #[test]
+    fn the_final_reviewer_has_a_model_and_effort_of_its_own() {
+        let dir=fixture();let root=dir.path();
+        let saved=patch(root,json!({"review_model":"opus","review_effort":"max"}));
+        assert_eq!(saved["saved"],true,"{saved}");
+        assert_eq!(saved["values"]["review_model"],"opus");assert_eq!(saved["values"]["review_effort"],"max");
+        assert_eq!(saved["values"]["agent_model"],"custom-model-1","the wave agent keeps its model");
+        let review=std::fs::read_to_string(root.join(".claude/agents/mustard/review.md")).unwrap();
+        let wave=std::fs::read_to_string(root.join(".claude/agents/mustard/wave.md")).unwrap();
+        assert!(review.contains("model: opus") && review.contains("effort: max"),"{review}");
+        assert!(wave.contains("model: custom-model-1"),"{wave}");
+    }
+    #[test]
+    fn the_cloudflare_token_is_saved_and_never_comes_back() {
+        const TOKEN:&str="synthetic-cloudflare-token-0001";
+        let dir=fixture();let root=dir.path();
+        let saved=patch(root,json!({"cloudflare_account":"0123456789abcdef0123456789abcdef","cloudflare_project":"meu-projeto","cloudflare_token":TOKEN}));
+        assert_eq!(saved["saved"],true,"{saved}");
+        assert!(!saved.to_string().contains(TOKEN),"the answer never carries the token");
+        assert!(!read(root).to_string().contains(TOKEN));
+        assert_eq!(saved["values"]["cloudflare_project"],"meu-projeto");
+        assert_eq!(saved["publication"]["token_saved"],true,"{saved}");
+        let file:Value=serde_json::from_str(&std::fs::read_to_string(root.join("mustard.json")).unwrap()).unwrap();
+        assert_eq!(file["publication"]["apiToken"],TOKEN);assert_eq!(file["publication"]["provider"],"cloudflare-pages");
+        assert_eq!(file["jev"]["key"],SECRET,"the other secret stays");
+        // Inside a repository that does not ignore mustard.json the token is refused.
+        let repo=fixture();let root=repo.path();
+        assert!(mustard_core::platform::git::run(root,&["init","-q"]).out().is_some());
+        let refused=patch(root,json!({"cloudflare_token":TOKEN}));
+        assert_eq!(refused["reason"],"settings-token-exposed","{refused}");
+        assert!(!std::fs::read_to_string(root.join("mustard.json")).unwrap().contains(TOKEN));
+    }
+    /// The screen takes only the account and the project the publication
+    /// accepts: an account of 32 hex digits, a project in lowercase letters,
+    /// digits and inner hyphens up to 58 characters.
+    #[test]
+    fn the_cloudflare_screen_refuses_what_the_publication_refuses() {
+        let dir=fixture();let root=dir.path();
+        let before=std::fs::read_to_string(root.join("mustard.json")).unwrap();
+        for (field,value) in [("cloudflare_account","abc"),("cloudflare_account","0123456789ABCDEF0123456789abcdeg"),
+            ("cloudflare_project","Meu-Projeto"),("cloudflare_project","-meu"),("cloudflare_project","meu-"),("cloudflare_project",&"a".repeat(59))] {
+            let refused=patch(root,json!({field:value}));
+            assert_eq!(refused["reason"],"settings-invalid-fields","{field}={value}: {refused}");
+            assert!(!crate::shared::publication::valid_account(value) || field!="cloudflare_account");
+            assert!(!crate::shared::publication::valid_project(value) || field!="cloudflare_project");
+        }
+        assert_eq!(std::fs::read_to_string(root.join("mustard.json")).unwrap(),before);
+        let saved=patch(root,json!({"cloudflare_account":"0123456789ABCDEF0123456789abcdef","cloudflare_project":"meu-projeto-2"}));
+        assert_eq!(saved["saved"],true,"{saved}");
     }
 }

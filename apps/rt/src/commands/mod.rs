@@ -30,7 +30,6 @@
 //! command that no prose or argv calls, with no exception list.
 
 pub mod agent;
-pub mod expertise;
 pub mod doctor;
 pub mod event;
 pub mod flow;

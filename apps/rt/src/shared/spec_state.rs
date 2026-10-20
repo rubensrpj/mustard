@@ -34,6 +34,13 @@ pub(crate) fn shell_export(session: &str) -> String {
     format!("export {}='{}'\n", SESSION_VARS[0], session.replace('\'', "'\\''"))
 }
 
+/// Passa a sessão `session` ao programa que `command` vai iniciar, pela
+/// primeira variável de [`SESSION_VARS`]: é por ela que a entrada `run` dele a
+/// lê ([`session_from_env`]).
+pub(crate) fn hand_session(command: &mut std::process::Command, session: &str) {
+    command.env(SESSION_VARS[0], session);
+}
+
 /// The session id the `run` face was handed through the environment, by the
 /// order of [`SESSION_VARS`]. Never a guess from the newest session folder,
 /// which could name another session's spec. Só as entradas `run` perguntam

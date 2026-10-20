@@ -33,7 +33,6 @@ use rusqlite::{Connection, OptionalExtension,params};
 
 use crate::domain::normalize::{Languages, Normalizer,plain_words, split_identifier};
 use crate::io::map_db::{Block, Kind, MapDb,table_exists};
-use crate::io::map_notes_fresh;
 use crate::io::map_revision;
 use crate::platform::error::Result;
 
@@ -514,9 +513,8 @@ fn words_of(text: &str) -> String {
 /// O texto compilado de uma declaração, sem corte, nesta ordem: o nome em
 /// palavras, o tipo, a documentação, os textos de log, erro e texto de que ela
 /// é dona, o comentário do corpo, a assinatura, a documentação inteira, os
-/// membros, o dono em palavras, os supertipos, as palavras do caminho, os
-/// títulos de commit e as notas de sentido (a da declaração e a do arquivo).
-/// Os espaços se juntam em um só.
+/// membros, o dono em palavras, os supertipos, as palavras do caminho e os
+/// títulos de commit. Os espaços se juntam em um só.
 fn compiled_text(parts: &Parts<'_>) -> String {
     let path_words = words_of(parts.file);
     let pieces = [
@@ -532,7 +530,6 @@ fn compiled_text(parts: &Parts<'_>) -> String {
         parts.supertypes.to_string(),
         path_words,
         parts.titles.join(" "),
-        parts.notes.to_string(),
     ];
     pieces.join(" ").split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -551,7 +548,6 @@ struct Parts<'a> {
     supertypes: &'a str,
     owned_texts: &'a [String],
     titles: &'a [String],
-    notes: &'a str,
 }
 
 /// As declarações do mapa, na ordem do mapa, cada uma com o texto compilado.
@@ -559,7 +555,6 @@ fn read_declarations(conn: &Connection) -> Result<Vec<Declaration>> {
     let texts = owned_texts(conn)?;
     let file_titles = newest_titles_by_file(conn)?;
     let lineage = lineage_titles(conn)?;
-    let notes = map_notes_fresh::Texts::read(conn)?;
     let mut statement = conn.prepare(
         "SELECT file, kind, name, signature, doc, whole_doc, body_comment, supertypes, owner, members FROM decls ORDER BY rowid",
     )?;
@@ -590,7 +585,6 @@ fn read_declarations(conn: &Connection) -> Result<Vec<Declaration>> {
             supertypes: &supertypes,
             owned_texts: own,
             titles,
-            notes: &notes.of(&file, &name),
         });
         out.push(Declaration { file, name, nth: this, text });
     }
@@ -962,8 +956,7 @@ mod tests {
     /// O texto compilado junta, sem corte e nesta ordem: o nome em palavras, o
     /// tipo, a documentação, os textos de que a declaração é dona, o comentário
     /// do corpo, a assinatura, a documentação inteira, os membros, o dono em
-    /// palavras, os supertipos, as palavras do caminho, os títulos de commit e a
-    /// nota escrita.
+    /// palavras, os supertipos, as palavras do caminho e os títulos de commit.
     #[test]
     fn the_compiled_text_joins_the_fields_in_the_agreed_order() {
         let owned = vec!["creating directory".to_string()];
@@ -981,13 +974,11 @@ mod tests {
             supertypes: "[\"Drop\"]",
             owned_texts: &owned,
             titles: &titles,
-            notes: "Copies a tree for the backup.",
         });
         assert_eq!(
             text,
             "copy dir function Copies the folder. creating directory walks the tree fn copy_dir() \
-             Copies the folder. Slowly. [\"a\"] file ops [\"Drop\"] src copy dir rs Fix the backup \
-             Copies a tree for the backup."
+             Copies the folder. Slowly. [\"a\"] file ops [\"Drop\"] src copy dir rs Fix the backup"
         );
     }
 

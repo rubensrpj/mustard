@@ -543,11 +543,6 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>, listing: Option<&Lis
             let folder = markup::imports_above(&imports_files, &sf.rel_path, &sf.language);
             let project = routes::Project { global_imports: &[], manifest_deps: &manifest_deps, path: &sf.rel_path, folder: &folder };
             let extracted = analyzer.map(|a| a.extract(&sf.content, keep, &project)).unwrap_or_default();
-            // O texto de cada declaração, por nome: a nota dela envelhece só quando ele muda.
-            let declared = mustard_core::io::map_notes::declaration_digests(
-                &sf.content,
-                extracted.declarations.iter().map(|d| (d.name.as_str(), d.line, d.end_line)),
-            );
             Some(Module {
                 path: sf.rel_path.clone(),
                 blob: String::new(),
@@ -576,7 +571,6 @@ fn read_modules(root: &Path, reuse: Option<&ingest::Reuse>, listing: Option<&Lis
                 analysis: Some(serde_json::json!({"parse_complete":extracted.parse_complete,
                     "file_identifiers":extracted.file_identifiers,"end_line":sf.content.lines().count(),
                     "content_sha256":({let mut hash=mustard_core::io::sha256::Sha256::new();hash.update(sf.content.as_bytes());hash.hex_digest()}),
-                    "declaration_sha256":declared,
                     "origin":if analyzer.is_some(){"tree-sitter"}else{"unsupported"},
                     "relations":"syntactic-candidates", "tests":"candidates-not-coverage"})),
                 signals: code_signals(&sf.content),

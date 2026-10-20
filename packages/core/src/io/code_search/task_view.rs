@@ -76,6 +76,11 @@ pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> 
             );
         }
     }
+    // The choice the Jev did not make in time stays with the agent, among the
+    // candidates below.
+    if let Some(left) = context["selection"]["choice_left"].as_str() {
+        let _ = writeln!(text, "# {left}");
+    }
     // An implementation search for a pattern: its hit lines come first, every
     // one of them, and a file the pattern did not hit is left out.
     let pattern: BTreeSet<&str> = context["pattern_files"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();

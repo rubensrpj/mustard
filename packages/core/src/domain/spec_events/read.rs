@@ -215,6 +215,60 @@ pub enum Step {
 pub struct SpecLog {
     pub events: Vec<SpecEvent>,
     pub skipped: Vec<SkippedLine>,
+    /// Os ocultos desta leitura, contados uma vez ([`SpecLog::hidden`]).
+    memo: Memo,
+}
+
+/// O que a leitura esconde e as substituições que valem, contados juntos.
+#[derive(Debug)]
+struct Derived {
+    hidden: BTreeMap<u64, Hidden>,
+    replaced_by: BTreeMap<u64, u64>,
+    /// A posição de cada evento que a leitura mostra, em ordem.
+    visible: Vec<usize>,
+    /// As posições dos que a leitura mostra, por bloco.
+    by_block: BTreeMap<Block, Vec<usize>>,
+    /// As posições das métricas que a leitura mostra.
+    metrics: Vec<usize>,
+}
+
+/// A forma dos eventos quando a conta foi feita: os eventos que ganham,
+/// perdem ou trocam de lugar mudam a forma, e a conta se refaz.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Shape {
+    len: usize,
+    at: usize,
+    first: u64,
+    last: u64,
+}
+
+impl Shape {
+    fn of(events: &[SpecEvent]) -> Self {
+        Self { len: events.len(), at: events.as_ptr() as usize, first: events.first().map_or(0, |e| e.id), last: events.last().map_or(0, |e| e.id) }
+    }
+}
+
+/// A conta guardada de uma leitura. A cópia da leitura começa sem conta, e
+/// duas leituras se comparam só pelos eventos.
+#[derive(Default)]
+struct Memo(std::sync::Mutex<Option<(Shape, std::sync::Arc<Derived>)>>);
+
+impl Clone for Memo {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl PartialEq for Memo {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl std::fmt::Debug for Memo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Memo")
+    }
 }
 
 /// Lê o conteúdo do arquivo. Nunca falha: a linha que não se entende é
@@ -345,10 +399,22 @@ fn leading_string(tail: &mut &str, key: &str) -> Option<String> {
 }
 
 impl SpecLog {
+    /// Uma leitura só com `events`, sem linha pulada: o recorte de outra
+    /// leitura.
+    #[must_use]
+    pub fn with_events(events: Vec<SpecEvent>) -> Self {
+        Self { events, ..Self::default() }
+    }
+
     /// O evento de número `id`, removido ou não.
     #[must_use]
     pub fn get(&self, id: u64) -> Option<&SpecEvent> {
-        self.events.iter().find(|e| e.id == id)
+        // Os números crescem com o arquivo: a busca binária acha o evento, e
+        // o arquivo editado à mão fora de ordem cai na procura de um a um.
+        match self.events.binary_search_by_key(&id, |e| e.id) {
+            Ok(at) => self.events.get(at),
+            Err(_) => self.events.iter().find(|e| e.id == id),
+        }
     }
 
     /// O maior número do arquivo, contando o que as linhas estragadas parecem
@@ -378,7 +444,31 @@ impl SpecLog {
     /// voltas separa a que espera a rodada da que já foi assumida.
     #[must_use]
     pub fn hidden(&self) -> BTreeMap<u64, Hidden> {
+        self.derived().hidden.clone()
+    }
+
+    /// Os ocultos e as substituições que valem, contados uma vez por leitura:
+    /// a conta fica guardada até os eventos mudarem ([`Shape`]).
+    fn derived(&self) -> std::sync::Arc<Derived> {
+        let shape = Shape::of(&self.events);
+        let mut memo = self.memo.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((kept, derived)) = memo.as_ref()
+            && *kept == shape
+        {
+            return derived.clone();
+        }
+        let derived = std::sync::Arc::new(self.count_hidden());
+        *memo = Some((shape, derived.clone()));
+        derived
+    }
+
+    /// A conta de [`SpecLog::hidden`], feita do zero.
+    fn count_hidden(&self) -> Derived {
+        #[cfg(test)]
+        HIDDEN_RUNS.with(|runs| runs.set(runs.get() + 1));
         let removed = self.removals();
+        let replacements = self.replacements(&removed);
+        let replaced_by: BTreeMap<u64, u64> = replacements.iter().copied().collect();
         let mut hidden = BTreeMap::new();
         // Só a linha que o formato antigo esvaziou sai da leitura: o expurgo
         // de hoje deixa o item com o resto do texto.
@@ -395,7 +485,7 @@ impl SpecLog {
         // como a leitura antiga fazia.
         let mut in_order: Vec<(u64, u64, Hidden)> =
             removed.iter().filter(|(_, r)| !r.gives_back).map(|(id, r)| (r.by, *id, Hidden::Removed { by: r.by })).collect();
-        in_order.extend(self.replacements(&removed).into_iter().map(|(old, by)| (by, old, Hidden::Replaced { by })));
+        in_order.extend(replacements.into_iter().map(|(old, by)| (by, old, Hidden::Replaced { by })));
         in_order.sort_by_key(|(by, _, _)| *by);
         for (_, id, why) in in_order {
             hidden.entry(id).or_insert(why);
@@ -403,7 +493,19 @@ impl SpecLog {
         for event in self.events.iter().filter(|e| e.returned()) {
             hidden.entry(event.id).or_insert(Hidden::Returned);
         }
-        hidden
+        let visible: Vec<usize> = self.events.iter().enumerate().filter(|(_, e)| !hidden.contains_key(&e.id)).map(|(at, _)| at).collect();
+        let mut by_block: BTreeMap<Block, Vec<usize>> = BTreeMap::new();
+        let mut metrics = Vec::new();
+        for &at in &visible {
+            let event = &self.events[at];
+            if METRIC_TYPES.contains(&event.event_type.as_str()) {
+                metrics.push(at);
+            }
+            if let Some(block) = event.block() {
+                by_block.entry(block).or_default().push(at);
+            }
+        }
+        Derived { hidden, replaced_by, visible, by_block, metrics }
     }
 
     /// Os números que uma remoção tira da leitura, cada um com a primeira
@@ -468,8 +570,7 @@ impl SpecLog {
     /// Os eventos que a leitura mostra, em ordem.
     #[must_use]
     pub fn visible(&self) -> Vec<&SpecEvent> {
-        let hidden = self.hidden();
-        self.events.iter().filter(|e| !hidden.contains_key(&e.id)).collect()
+        self.derived().visible.iter().map(|at| &self.events[*at]).collect()
     }
 
     /// A versão vigente de um item: segue as substituições que valem a partir
@@ -479,7 +580,8 @@ impl SpecLog {
     /// tem versão vigente.
     #[must_use]
     pub fn current(&self, id: u64) -> Option<&SpecEvent> {
-        let replaced_by: BTreeMap<u64, u64> = self.replacements(&self.removals()).into_iter().collect();
+        let derived = self.derived();
+        let replaced_by = &derived.replaced_by;
         let mut id = id;
         for _ in 0..=self.events.len() {
             match replaced_by.get(&id) {
@@ -487,8 +589,7 @@ impl SpecLog {
                 None => break,
             }
         }
-        let hidden = self.hidden();
-        self.get(id).filter(|e| !hidden.contains_key(&e.id))
+        self.get(id).filter(|e| !derived.hidden.contains_key(&e.id))
     }
 
     /// Resolve a batch of references against one immutable event snapshot.
@@ -497,8 +598,8 @@ impl SpecLog {
     /// a change to the log.
     #[must_use]
     pub fn current_versions(&self) -> BTreeMap<u64, &SpecEvent> {
-        let replaced_by:BTreeMap<u64,u64>=self.replacements(&self.removals()).into_iter().collect();
-        let hidden=self.hidden();
+        let derived=self.derived();
+        let (replaced_by,hidden)=(&derived.replaced_by,&derived.hidden);
         let events:BTreeMap<u64,&SpecEvent>=self.events.iter().map(|event|(event.id,event)).collect();
         let ids:BTreeSet<_>=events.keys().chain(replaced_by.keys()).copied().collect();
         ids.into_iter().filter_map(|original| {
@@ -603,7 +704,8 @@ impl SpecLog {
     /// dela.
     #[must_use]
     pub fn unassumed_returns(&self) -> Vec<&SpecEvent> {
-        let hidden = self.hidden();
+        let derived = self.derived();
+        let hidden = &derived.hidden;
         let mut official: BTreeMap<(&str, Option<u64>), u64> = BTreeMap::new();
         let mut last: BTreeMap<(&str, Option<u64>), &SpecEvent> = BTreeMap::new();
         for event in self.events.iter().filter(|e| matches!(e.event_type.as_str(), "delivered" | "verdict")) {
@@ -655,21 +757,6 @@ impl SpecLog {
             .filter(|e| e.str_field("author") != Some("binary") || e.wave().is_some_and(|n| with_task.contains(&n)))
             .filter_map(SpecEvent::wave)
             .collect()
-    }
-
-    /// As ondas que contam no andamento da obra: das que a leitura mostra, a
-    /// que já tem entrega e a que a última versão de alguma tarefa não
-    /// removida aponta. A onda esvaziada — as tarefas dela foram para outra
-    /// onda, voltaram ao backlog ou saíram da obra — não conta, seja qual for
-    /// o autor dela, e assim não infla o total nem a lista do que falta. É
-    /// a única conta das ondas que a barra de status e a retomada mostram, para
-    /// as duas dizerem o mesmo número; [`Self::planned_waves`] segue sendo o
-    /// que a rodada despacha e confere.
-    #[must_use]
-    pub fn counted_waves(&self) -> BTreeSet<u64> {
-        let waves = self.block(BlockQuery::Block(Block::Waves));
-        let alive: BTreeSet<u64> = waves.iter().filter(|e| matches!(e.event_type.as_str(), "task" | "delivered")).filter_map(|e| e.wave()).collect();
-        waves.into_iter().filter(|e| e.event_type == "wave").filter_map(SpecEvent::wave).filter(|n| alive.contains(n)).collect()
     }
 
     /// O maior número de onda gravado no arquivo, com a onda que saiu do
@@ -766,6 +853,49 @@ impl SpecLog {
         chain_root(&self.send_versions(), id)
     }
 
+    /// O campo `field` do envio `id` como vale nele: o da própria versão ou,
+    /// sem ele, o da versão anterior mais nova que o tem, pela cadeia de
+    /// `replaces` entre envios. A versão nova de um envio não repete o pedido
+    /// ([`super::SEND_REQUEST_FIELDS`]); a spec antiga, que o repetia em cada
+    /// versão, responde pela própria. Quem lê o pedido de um envio lê daqui.
+    #[must_use]
+    pub fn send_field(&self, id: u64, field: &str) -> Option<&Value> {
+        let mut at = self.get(id).filter(|event| event.event_type == "send")?;
+        // A cadeia é finita, mas a spec é um arquivo de texto: o passo conta
+        // os saltos para um círculo gravado à mão não prender a leitura.
+        for _ in 0..=self.events.len() {
+            if let Some(value) = at.fields.get(field) {
+                return Some(value);
+            }
+            at = at.int("replaces").and_then(|older| self.get(older)).filter(|older| older.event_type == "send")?;
+        }
+        None
+    }
+
+    /// Os campos de `event` como valem: no envio, com o pedido que a versão
+    /// não repete ([`Self::send_field`]); nos outros, os dele. É o que a
+    /// leitura mostra e compara de cada versão.
+    #[must_use]
+    pub fn whole_fields(&self, event: &SpecEvent) -> Map<String, Value> {
+        let mut fields = event.fields.clone();
+        if event.event_type == "send" {
+            for field in super::SEND_REQUEST_FIELDS {
+                if !fields.contains_key(*field)
+                    && let Some(value) = self.send_field(event.id, field)
+                {
+                    fields.insert((*field).to_string(), value.clone());
+                }
+            }
+        }
+        fields
+    }
+
+    /// O texto do pedido do envio `id` ([`Self::send_field`]).
+    #[must_use]
+    pub fn send_text(&self, id: u64) -> Option<&str> {
+        self.send_field(id, "text").and_then(Value::as_str)
+    }
+
     /// O último envio de cada onda do bloco das ondas, na posição em que ele
     /// despachou a onda ([`Self::dispatch_position`]): o número que a entrega,
     /// o veredito e o plano que vêm depois dele são comparados. A onda sem
@@ -792,11 +922,13 @@ impl SpecLog {
     /// tarefas dela nomeiam.
     #[must_use]
     pub fn block(&self, query: BlockQuery) -> Vec<&SpecEvent> {
-        let visible = self.visible();
+        let derived = self.derived();
+        let pick = |at: &[usize]| at.iter().map(|at| &self.events[*at]).collect::<Vec<_>>();
         match query {
-            BlockQuery::Block(Block::Metrics) => visible.into_iter().filter(|e| METRIC_TYPES.contains(&e.event_type.as_str())).collect(),
-            BlockQuery::Block(block) => visible.into_iter().filter(|e| e.block() == Some(block)).collect(),
+            BlockQuery::Block(Block::Metrics) => pick(&derived.metrics),
+            BlockQuery::Block(block) => derived.by_block.get(&block).map_or_else(Vec::new, |at| pick(at)),
             BlockQuery::Wave(n) => {
+                let visible = pick(&derived.visible);
                 let skills: BTreeSet<&str> =
                     visible.iter().filter(|e| e.event_type == "task" && e.wave() == Some(n)).filter_map(|e| e.str_field("skill")).collect();
                 visible
@@ -894,6 +1026,12 @@ impl SpecLog {
 }
 
 #[cfg(test)]
+thread_local! {
+    /// Quantas vezes os ocultos foram contados nesta linha de execução.
+    static HIDDEN_RUNS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -984,47 +1122,6 @@ mod tests {
         assert_eq!(left, [3]);
     }
 
-    /// Conta a onda entregue e a que a última versão de uma tarefa não
-    /// removida aponta, e só elas, de qualquer autor: a que perdeu a tarefa
-    /// para outra onda, a que a remoção esvaziou e a combinada à mão sem
-    /// tarefa nenhuma ficam de fora, e a entregue sem tarefa fica. A onda que
-    /// só tem entrega gravada em nome de um número fora do plano não entra.
-    #[test]
-    fn the_waves_that_count_are_the_delivered_one_and_the_one_a_task_still_points_to() {
-        let waves: Vec<serde_json::Value> = (1..=8)
-            .map(|n| {
-                serde_json::json!({"v":1,"id":n,"at":"t","type":"wave","n":n,"text":"Onda.","author":
-                    if n % 2 == 0 { "binary" } else { "assistant" }})
-            })
-            .collect();
-        let mut lines = waves;
-        lines.extend([
-            // Onda 1: entregue, com a tarefa.
-            serde_json::json!({"v":1,"id":11,"at":"t","type":"task","wave":1,"text":"Um."}),
-            serde_json::json!({"v":1,"id":12,"at":"t","type":"delivered","wave":1,"text":"Saiu."}),
-            // Onda 2: a tarefa vive; a 3 perdeu a dela para a 2 numa versão nova.
-            serde_json::json!({"v":1,"id":13,"at":"t","type":"task","wave":3,"text":"Três."}),
-            serde_json::json!({"v":1,"id":14,"at":"t","type":"task","wave":2,"text":"Três, na dois.","replaces":13}),
-            // Onda 4: a tarefa foi removida.
-            serde_json::json!({"v":1,"id":15,"at":"t","type":"task","wave":4,"text":"Quatro."}),
-            serde_json::json!({"v":1,"id":16,"at":"t","type":"remove","targets":[15]}),
-            // Onda 5: combinada à mão, nunca teve tarefa.
-            // Onda 6: a tarefa voltou ao backlog, sem onda.
-            serde_json::json!({"v":1,"id":17,"at":"t","type":"task","wave":6,"text":"Seis."}),
-            serde_json::json!({"v":1,"id":18,"at":"t","type":"task","text":"Seis, no backlog.","replaces":17}),
-            // Onda 7: entregue, sem tarefa nenhuma.
-            serde_json::json!({"v":1,"id":19,"at":"t","type":"delivered","wave":7,"text":"Saiu."}),
-            // Onda 8: só tem a tarefa e vale; a 9 não está no plano.
-            serde_json::json!({"v":1,"id":20,"at":"t","type":"task","wave":8,"text":"Oito."}),
-            serde_json::json!({"v":1,"id":21,"at":"t","type":"task","wave":9,"text":"Nove."}),
-            serde_json::json!({"v":1,"id":22,"at":"t","type":"delivered","wave":9,"text":"Saiu."}),
-        ]);
-        let log = log_of(&lines);
-        assert_eq!(log.counted_waves(), BTreeSet::from([1, 2, 7, 8]));
-        // O plano da rodada segue como era: a combinada à mão sem tarefa fica.
-        assert!(log.planned_waves().contains(&5), "a rodada continua vendo a onda combinada à mão");
-    }
-
     /// Os arquivos entregues são os dos eventos `commit`, sem repetir, e não
     /// os de outro tipo de evento — a tarefa que só declara o que uma onda
     /// vai tocar não conta, porque nada garante que ela tocou aquilo de
@@ -1045,11 +1142,51 @@ mod tests {
         parse_log(&lines.iter().map(serde_json::Value::to_string).collect::<Vec<_>>().join("\n"))
     }
 
+    /// Os ocultos se contam uma vez por leitura: o bloco, a leitura visível, a
+    /// versão vigente e os ocultos de novo reusam a mesma conta.
+    #[test]
+    fn hidden_events_are_counted_once_per_read() {
+        let log = log_of(&[
+            serde_json::json!({"v":1,"id":1,"at":"t","type":"send","wave":2,"role":"wave","text":"Pedido."}),
+            serde_json::json!({"v":1,"id":2,"at":"t","type":"send","wave":2,"role":"wave","text":"Outro.","replaces":1}),
+        ]);
+        HIDDEN_RUNS.with(|runs| runs.set(0));
+        let _ = log.block(BlockQuery::Block(Block::Waves));
+        let _ = log.visible();
+        assert_eq!(log.current(1).map(|e| e.id), Some(2));
+        assert_eq!(log.hidden().get(&1), Some(&Hidden::Replaced { by: 2 }));
+        assert_eq!(log.get(2).map(|e| e.id), Some(2));
+        assert_eq!(HIDDEN_RUNS.with(std::cell::Cell::get), 1);
+    }
+
     /// A versão de um envio que só traz o consumo mantém o lugar em que o
     /// envio despachou a onda, gravada antes ou depois da entrega, do
     /// veredito ou de uma mudança de plano; o reenvio, que não substitui
     /// nada, é um despacho novo. Só um envio conta como envio substituído, e
     /// a cadeia fechada em círculo por um arquivo editado à mão termina.
+    #[test]
+    fn a_send_field_is_read_from_the_newest_version_that_has_it() {
+        use serde_json::json;
+        let log = log_of(&[
+            json!({"v":1,"id":1,"at":"t","type":"wave","n":2,"text":"Duas."}),
+            json!({"v":1,"id":2,"at":"t","type":"send","wave":2,"role":"wave","text":"Pedido.","read_items":["A"],"copy":"c"}),
+            json!({"v":1,"id":3,"at":"t","type":"send","wave":2,"role":"wave","tokens":5,"replaces":2}),
+            json!({"v":1,"id":4,"at":"t","type":"send","wave":2,"role":"wave","text":"Pedido com mais.","replaces":3}),
+            json!({"v":1,"id":5,"at":"t","type":"step","wave":2,"text":"Passo.","replaces":4}),
+            // A spec antiga repetia o pedido inteiro em cada versão.
+            json!({"v":1,"id":6,"at":"t","type":"send","wave":3,"role":"wave","text":"Velho.","read_items":["B"]}),
+            json!({"v":1,"id":7,"at":"t","type":"send","wave":3,"role":"wave","text":"Velho.","read_items":["B"],"tokens":1,"replaces":6}),
+        ]);
+        assert_eq!(log.send_text(3), Some("Pedido."));
+        assert_eq!(log.send_field(3, "read_items"), Some(&json!(["A"])));
+        assert_eq!(log.send_text(4), Some("Pedido com mais."));
+        assert_eq!(log.send_field(4, "read_items"), Some(&json!(["A"])));
+        assert_eq!(log.send_field(4, "tokens"), Some(&json!(5)));
+        assert_eq!(log.send_field(4, "analysis"), None);
+        assert_eq!(log.send_text(7), Some("Velho."));
+        assert_eq!(log.send_field(5, "read_items"), None, "only a send version carries the request");
+    }
+
     #[test]
     fn a_consumption_version_of_a_send_keeps_the_place_where_the_send_dispatched_the_wave() {
         use serde_json::json;

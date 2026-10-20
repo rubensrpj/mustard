@@ -69,15 +69,16 @@
 //! ## Os pontos abertos barram
 //!
 //! A aprovação passa pela mesma gravação do `run write`, e a regra do núcleo
-//! recusa aprovar uma spec com ponto do levantamento aberto. Na recusa, nada é
-//! gravado, e o motivo do núcleo, com o código e a lacuna de cada ponto, vai
-//! ao assistente. A regra lê a spec no checkout principal, também quando a
-//! pergunta é respondida num worktree.
+//! recusa aprovar uma spec com ponto do levantamento aberto, sem tarefa
+//! nenhuma, ou cujo último plano não passou ou mudou depois de passar. Na
+//! recusa, nada é gravado, e o motivo do núcleo vai ao assistente. A regra lê
+//! a spec no checkout principal, também quando a pergunta é respondida num
+//! worktree.
 //!
-//! Uma spec ainda sem nascimento — sem nenhum `state`, com ou sem arquivo de
-//! eventos — recebe no "Aprovar" a aprovação direto, na mesma gravação única.
-//! Gravada a aprovação, a branch que falta entra no estado, quando a branch do
-//! checkout é a desta spec.
+//! Uma spec ainda sem nascimento — sem nenhum `state` — nunca passou por um
+//! plano, e o "Aprovar" dela é recusado pela mesma regra. Gravada a
+//! aprovação, a branch que falta entra no estado, quando a branch do checkout
+//! é a desta spec.
 //!
 //! ## Nunca barra, nunca cala
 //!
@@ -360,8 +361,8 @@ fn decide_approval(answer: &Answered<'_>) -> Option<String> {
 }
 
 /// Aprova a spec `spec`, que esperava aprovação: uma gravação só, a da
-/// aprovação, tanto na spec que já nasceu quanto na que ainda não tem fase.
-/// Recusada, ela não deixa nada no arquivo, e a recusa diz a verdade sobre o
+/// aprovação. A spec que ainda não tem fase nunca passou por um plano, e o
+/// núcleo a recusa como recusa o plano que não passou. Recusada, ela não deixa nada no arquivo, e a recusa diz a verdade sobre o
 /// próprio efeito. Devolve o que dizer ao assistente: a sugestão de `/clear`
 /// depois de gravar, ou, na recusa, o motivo do núcleo.
 fn approve(root: &str, spec: &str, question: &str, answer: &str, lang: Locale) -> String {
@@ -520,10 +521,11 @@ impl Check for ApprovalWitness {
             // O objetivo mostrado no mesmo turno da pergunta só viraria
             // resposta no fim do turno: lida da conversa, a fala é gravada
             // antes do clique, que a regra do objetivo compara com ela.
-            if matches!(gesture.keyed, Keyed::Goal) && witness.is_some() {
-                if let Some(transcript) = input.transcript_path() {
-                    record_said_before_click(Path::new(&root), session, &last_said(Path::new(transcript)));
-                }
+            if matches!(gesture.keyed, Keyed::Goal)
+                && witness.is_some()
+                && let Some(transcript) = input.transcript_path()
+            {
+                record_said_before_click(Path::new(&root), session, &last_said(Path::new(transcript)));
             }
             // O código da mudança fica ao lado da resposta: é por ele, e não
             // pela frase mostrada, que a rodada reconhece o "sim".
@@ -716,10 +718,10 @@ mod tests {
         let shown = format!("O objetivo é: {GOAL}");
         let notes = tempdir().unwrap();
         witness(root, &short_goal_click_in(&transcript_showing(notes.path(), &shown)));
-        assert_eq!(responses(root), [shown.clone()]);
+        assert_eq!(responses(root), std::slice::from_ref(&shown));
         let end_of_turn = format!("O objetivo é:\n{GOAL}\n");
         assert_eq!(crate::commands::spec_events::conversation::record_response(root, Some(SESSION), &end_of_turn), None);
-        assert_eq!(responses(root), [shown.clone()]);
+        assert_eq!(responses(root), std::slice::from_ref(&shown));
         record_message(root, Some(SESSION), "e agora?");
         assert!(crate::commands::spec_events::conversation::record_response(root, Some(SESSION), &end_of_turn).is_some());
         assert_eq!(responses(root).len(), 2);
@@ -789,8 +791,13 @@ mod tests {
         dir
     }
 
+    /// Uma spec `epic` com uma tarefa e o plano passado depois dela.
     fn in_plan() -> TempDir {
-        spec_with(&[json!({ "phase": "plan", "branch": "feature/epic", "base": "dev" })])
+        let dir = tempdir().unwrap();
+        record_for(dir.path(), "epic", "task", json!({ "text": "Somar dois números.", "author": "binary" }));
+        record(dir.path(), json!({ "phase": "plan", "branch": "feature/epic", "base": "dev" }));
+        bind_session_spec(&dir.path().to_string_lossy(), SESSION, "epic");
+        dir
     }
 
     fn state(root: &Path) -> State {
@@ -1225,22 +1232,47 @@ mod tests {
     }
 
     /// Um arquivo de eventos sem nenhum `state` e sem `meta.json` é uma spec
-    /// em plano, sem nascimento: o "Aprovar" grava a aprovação, e só ela.
+    /// que a trava lê em plano, mas que nunca passou por um plano: o
+    /// "Aprovar" não grava nada, e a testemunha diz que falta o plano.
     #[test]
-    fn a_spec_file_without_a_state_is_born_and_approved() {
+    fn a_spec_file_without_a_state_is_not_approved_before_a_plan() {
         if ambient_override() {
             return;
         }
         let dir = tempdir().unwrap();
         let root = dir.path();
         record_for(root, "epic", "message", json!({ "author": "user", "text": "oi" }));
+        record_for(root, "epic", "task", json!({ "text": "Somar dois números.", "author": "binary" }));
         bind_session_spec(&root.to_string_lossy(), SESSION, "epic");
-        witness(root, &approve_or_adjust("Aprovar"));
-        assert!(state(root).approved, "the spec with no phase is approved");
+        let said = witness(root, &approve_or_adjust("Aprovar"));
+        assert!(!state(root).approved, "a spec that never passed a plan is not approved");
+        match said {
+            Verdict::Inject { context } => assert!(context.contains("run plan"), "names the plan: {context}"),
+            other => panic!("the refusal is explained, got {other:?}"),
+        }
         let log = std::fs::read_to_string(store::spec_file(root, "epic").unwrap()).unwrap();
         let phases: Vec<String> =
             log.lines().filter_map(|l| serde_json::from_str::<Value>(l).unwrap()["phase"].as_str().map(str::to_string)).collect();
-        assert_eq!(phases, ["approved"], "one single write, {log}");
+        assert!(phases.is_empty(), "nothing was written: {log}");
+    }
+
+    /// O plano passou e depois uma tarefa foi gravada sem o plano rodar de
+    /// novo: o "Aprovar" não grava nada. Um plano sem tarefa também não
+    /// aprova.
+    #[test]
+    fn approval_needs_the_last_plan_passed_and_a_task() {
+        if ambient_override() {
+            return;
+        }
+        let dir = in_plan();
+        let root = dir.path();
+        record_for(root, "epic", "task", json!({ "text": "Tarefa nova.", "author": "binary" }));
+        witness(root, &approve_or_adjust("Aprovar"));
+        assert!(!state(root).approved, "the plan changed after it passed");
+
+        let bare = spec_with(&[json!({ "phase": "plan", "branch": "feature/epic", "base": "dev" })]);
+        witness(bare.path(), &approve_or_adjust("Aprovar"));
+        assert!(!state(bare.path()).approved, "a plan without any task approves nothing");
     }
 
     /// Um ajuste ligado à sessão, com o `meta.json` que nomeia como mãe a
@@ -1380,7 +1412,7 @@ mod tests {
 
         witness(root, &approve_or_adjust("Aprovar"));
         let after = state(root);
-        assert!(after.approved, "the spec with no phase is approved");
+        assert!(!after.approved, "the spec with no phase never passed a plan");
         assert_eq!(after.base, None, "the base of the meta.json never enters");
         assert_eq!(after.branch, None, "the parent's branch never enters");
     }

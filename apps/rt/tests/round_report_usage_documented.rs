@@ -8,11 +8,12 @@
 //! com `run write delivered` ou `run write verdict`. Sem essa frase, o
 //! marcador funciona mas ninguém descobre que ele existe.
 
-use std::process::Command;
+#[path = "support/binary.rs"]
+mod binary;
 
 /// `mustard-rt run round --help`, como o orquestrador o veria.
 fn round_help() -> String {
-    let out = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+    let out = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
         .args(["run", "round", "--help"])
         .output()
         .expect("run mustard-rt");
@@ -50,7 +51,28 @@ fn round_help_documents_the_rejected_line() {
 #[test]
 fn round_help_explains_that_usage_does_not_approve_code() {
     let help = round_help();
-    for field in ["review-wave", "REVIEWED", "fingerprint", "note", "`USAGE`", "sozinho não aprova"] {
+    for field in ["review-wave", "REVIEWED", "note", "`USAGE`", "sozinho não aprova"] {
         assert!(help.contains(field), "missing {field}: {help}");
     }
+}
+
+/// O aceite da revisão vem sem a impressão: o binário sabe qual volta quem
+/// conduz viu. A onda que gravou a entrega não pede linha de uso.
+#[test]
+fn round_help_accepts_the_review_without_fingerprint_or_usage_line() {
+    let help = round_help();
+    assert!(help.contains(r#"<REVIEWED>{"wave":1,"note":"…"}</REVIEWED>"#), "{help}");
+    assert!(help.contains("sem linha de uso"), "{help}");
+}
+
+/// A ajuda do `--copy` do `run write` diz o que ele faz hoje: nada prepara
+/// cópia, e a resposta só aponta a publicação explícita.
+#[test]
+fn write_help_says_copy_only_points_to_explicit_publishing() {
+    let out = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt")).args(["run", "write", "--help"]).output().expect("run mustard-rt");
+    assert!(out.status.success(), "run write --help failed: {}", String::from_utf8_lossy(&out.stderr));
+    let help = String::from_utf8_lossy(&out.stdout).to_string();
+    let copy = help.split("--copy").nth(1).unwrap_or_default().split("--root").next().unwrap_or_default();
+    assert!(copy.contains("/mustard:pages"), "{copy}");
+    assert!(!copy.contains("prepare the copy") && !copy.contains("answer the order to copy"), "{copy}");
 }

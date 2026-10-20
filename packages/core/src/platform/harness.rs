@@ -286,7 +286,7 @@ pub fn is_behind(running: &str, installed: &str) -> bool {
 
 /// Order two dotted version strings by their numeric components. See
 /// [`is_behind`] for why a non-numeric component counts as 0.
-fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
+pub(crate) fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
     let parts = |v: &str| -> Vec<u64> { v.split(['.', '-', '+']).map(|p| p.parse::<u64>().unwrap_or(0)).collect() };
     let (left, right) = (parts(a), parts(b));
     let width = left.len().max(right.len());

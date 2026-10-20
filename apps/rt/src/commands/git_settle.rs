@@ -80,6 +80,38 @@ use crate::shared::branch_state::{self, BranchEnumerator, BranchRefs, PrEvidence
 /// O arquivo da trava do passo do git, na pasta das specs do checkout.
 const GIT_LOCK_FILE: &str = "round-git.lock";
 
+/// O arquivo da trava das cópias, ao lado da do passo do git.
+const COPIES_LOCK_FILE: &str = "round-copies.lock";
+
+/// A trava das cópias das ondas do checkout: quem a tem é o único que forma,
+/// prepara, limpa ou tira cópia, e o único que despacha. A rodada a segura do
+/// relatório ao despacho, inteira — o Jev, a montagem, os itens, o preparo das
+/// cópias e a montagem dos pedidos rodam só com ela —, e o fechamento, o
+/// descarte, o `run clean` e a entrega da spec juntada fora a pegam no começo.
+/// Ela vem sempre antes das outras: rodada (esta), passada do mapa, passo do
+/// git ([`git_step_lock`]), arquivo da spec, índice. A entrega e o veredito,
+/// que só gravam na spec, pegam só a do git, e nunca esperam o Jev nem o
+/// preparo de uma cópia.
+#[derive(Debug)]
+pub(crate) struct CopiesLock {
+    _held: LockedFile,
+}
+
+/// Pega a trava das cópias do checkout `root`, esperando a de outra rodada
+/// ou de outra sessão soltar. Quem já a tem passa adiante a que tem: pedida
+/// de novo pelo mesmo processo, ela esperaria por si mesma.
+pub(crate) fn copies_lock(root: &Path) -> Result<CopiesLock, String> {
+    let paths = ClaudePaths::for_project(root).map_err(|e| e.to_string())?;
+    LockedFile::exclusive(&paths.spec_dir().join(COPIES_LOCK_FILE)).map(|held| CopiesLock { _held: held }).map_err(|e| e.to_string())
+}
+
+/// [`copies_lock`] sem esperar: `None` quando outra rodada ou outra sessão a
+/// segura agora, ou quando ela não pode ser pega.
+pub(crate) fn copies_lock_if_free(root: &Path) -> Option<CopiesLock> {
+    let paths = ClaudePaths::for_project(root).ok()?;
+    LockedFile::exclusive_if_free(&paths.spec_dir().join(COPIES_LOCK_FILE)).ok().flatten().map(|held| CopiesLock { _held: held })
+}
+
 /// Pega a trava do passo do git do checkout `root`, esperando a de outra
 /// rodada ou de outra sessão soltar. É uma trava própria, e não a do arquivo
 /// de eventos da spec: o gancho do commit pode demorar, e a trava da spec
@@ -87,19 +119,12 @@ const GIT_LOCK_FILE: &str = "round-git.lock";
 ///
 /// É uma trava só para todo passo que escreve no git do projeto — o commit da
 /// rodada e o ponteiro dos submódulos —, porque os dois disputam o mesmo
-/// índice. A mesma trava pedida duas vezes pelo mesmo processo esperaria por
-/// si mesma: quem já a tem passa adiante a que tem.
+/// índice. Quem também precisa da trava das cópias ([`copies_lock`]) a pega
+/// antes desta. A mesma trava pedida duas vezes pelo mesmo processo esperaria
+/// por si mesma: quem já a tem passa adiante a que tem.
 pub(crate) fn git_step_lock(root: &Path) -> Result<LockedFile, String> {
     let paths = ClaudePaths::for_project(root).map_err(|e| e.to_string())?;
     LockedFile::exclusive(&paths.spec_dir().join(GIT_LOCK_FILE)).map_err(|e| e.to_string())
-}
-
-/// [`git_step_lock`] sem esperar: `None` quando outra rodada ou outra sessão
-/// segura a trava agora, ou quando ela não pode ser pega. É para quem tem
-/// teto curto e não pode ficar parado atrás do commit de uma rodada.
-pub(crate) fn git_step_lock_if_free(root: &Path) -> Option<LockedFile> {
-    let paths = ClaudePaths::for_project(root).ok()?;
-    LockedFile::exclusive_if_free(&paths.spec_dir().join(GIT_LOCK_FILE)).ok().flatten()
 }
 
 /// `true` quando a lista de travas do sistema (`/proc/locks`) mostra este
@@ -613,6 +638,91 @@ fn is_merged(
     };
     let verdicts = branch_state::ref_verdicts(unit, &contained, &evidence, main);
     branch_state::all_refs_accounted(&verdicts)
+}
+
+/// A obra de uma spec já entrou na base do servidor, pelo que o git prova
+/// sozinho, sem perguntar ao provedor. Pelo merge, três fatos, juntos:
+///
+/// 1. `commit`, o último commit que a rodada gravou para a spec, está em
+///    `origin/<base>`. Uma spec sem commit gravado não entregou nada: a branch
+///    recém-cortada está "contida" na base desde que nasceu.
+/// 2. Ele está fora da linha principal de `origin/<base>`
+///    ([`branch_state::off_mainline`]): chegou por um merge. O avanço rápido
+///    deixa o commit na linha principal, do mesmo jeito que um commit da
+///    própria base, e fica de fora — no meio da obra, a base pode ter avançado
+///    sobre a branch sem que a obra tenha acabado.
+/// 3. Toda ref que ainda carrega a branch está contida em `origin/<base>`: a
+///    branch que andou depois do merge segue em obra. Sem ref nenhuma, sobra o
+///    commit gravado, que é a prova.
+///
+/// O squash e o rebase do provedor põem na base commits novos, e o commit
+/// gravado nunca vira antepassado dela. Aí a prova é o conteúdo
+/// ([`content_in_base`]): o que `commit` mudou desde que saiu da base já está
+/// nela, arquivo por arquivo. E cada ref da branch fica coberta do mesmo
+/// jeito — contida na base, antepassada do commit gravado ou com o conteúdo
+/// dela já na base —: a branch que andou depois do squash, com mudança que a
+/// base não tem, segue em obra.
+///
+/// As duas medidas leem a mesma referência, a base do servidor como o último
+/// fetch a deixou: com a base local atrasada, um avanço rápido feito no
+/// servidor pareceria um merge. Sem fetch novo, a resposta só se atrasa.
+///
+/// `None` quando não está provado — também quando o fluxo não reconhece a
+/// branch como unidade, e as refs dela não se contariam. `Some(true)` quando
+/// está provado e alguma ref da branch ainda existe, e `Some(false)` quando não
+/// sobrou nenhuma: não há branch a arrumar.
+pub(crate) fn spec_work_in_base(
+    main: &Path,
+    branch: &str,
+    base: &str,
+    commit: &str,
+    flow: &crate::shared::work_kind::BaseFlow,
+) -> Option<bool> {
+    if branch.is_empty() || base.is_empty() || commit.is_empty() || !flow.base_of(branch).is_unit() {
+        return None;
+    }
+    let reference = format!("origin/{base}");
+    let merged = git_ok(main, &["merge-base", "--is-ancestor", commit, &reference]);
+    if merged && !branch_state::off_mainline(main, &reference, commit) {
+        return None;
+    }
+    if !merged && !content_in_base(main, commit, &reference) {
+        return None;
+    }
+    let swept = BranchEnumerator::sweep(main, flow);
+    let Some(unit) = swept.units().iter().find(|u| u.branch == branch) else {
+        return Some(false);
+    };
+    let contained = branch_state::refs_merged_into(main, &reference);
+    let covered = |refname: &String| {
+        contained.contains(refname)
+            || (!merged
+                && (git_ok(main, &["merge-base", "--is-ancestor", refname, commit])
+                    || content_in_base(main, refname, &reference)))
+    };
+    unit.refnames().iter().all(covered).then_some(true)
+}
+
+/// O que o commit `tip` mudou desde que saiu da base `reference` já está
+/// nela, com o mesmo conteúdo: cada arquivo que difere entre o ponto em que
+/// os dois se separaram e `tip` é igual em `tip` e em `reference`. É o que o
+/// squash e o rebase do provedor deixam na base, com commits novos. Só o git
+/// local, sem rede; os nomes vêm das duas listas de arquivos, sem passar
+/// caminho na linha de comando. `false` quando `tip` não mudou nada — a
+/// branch recém-cortada não entregou nada — ou quando o git não responde.
+fn content_in_base(main: &Path, tip: &str, reference: &str) -> bool {
+    let Some(fork) = git_out(main, &["merge-base", tip, reference]) else {
+        return false;
+    };
+    let names = |from: &str, to: &str| {
+        git_out(main, &["diff", "--name-only", "--no-renames", from, to]).map(|listed| {
+            listed.lines().map(str::trim).filter(|name| !name.is_empty()).map(str::to_string).collect::<std::collections::BTreeSet<String>>()
+        })
+    };
+    let (Some(changed), Some(differs)) = (names(fork.trim(), tip), names(tip, reference)) else {
+        return false;
+    };
+    !changed.is_empty() && changed.is_disjoint(&differs)
 }
 
 /// Advance every local base: the MAIN checkout's own branch via ff-only merge,

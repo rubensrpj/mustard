@@ -7,9 +7,12 @@
 //! the Bash tool the way the Claude Code sends it, always in a temporary
 //! project, never in the real one.
 
+#[path = "support/binary.rs"]
+mod binary;
+
 use std::io::Write;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use serde_json::Value;
 use tempfile::TempDir;
@@ -27,21 +30,38 @@ fn run_guard(dir: &Path, command: &str) -> String {
     run_hook(dir, &input, None)
 }
 
-/// Run `mustard-rt on PreToolUse` with the whole `input`, from `dir`, and,
-/// when given, with Claude Code's config folder moved to `config`.
+/// The program under test in a folder of its own, under the target's
+/// temporary folder: a hard link of the built `mustard-rt`, or a copy where
+/// the link cannot be made. The hook looks for the bundled rtk beside the
+/// running program, and nothing that sits beside the build — an `rtk` left
+/// in `target/debug` on one machine — may reach the test. The folder leaves
+/// with the returned guard.
+fn own_program() -> (TempDir, std::path::PathBuf) {
+    let built = Path::new(env!("CARGO_BIN_EXE_mustard-rt"));
+    let folder = TempDir::new_in(env!("CARGO_TARGET_TMPDIR")).expect("folder of the program");
+    let program = folder.path().join(built.file_name().expect("program name"));
+    if std::fs::hard_link(built, &program).is_err() {
+        std::fs::copy(built, &program).expect("copy of the program");
+    }
+    (folder, program)
+}
+
+/// Run `mustard-rt on PreToolUse` with the whole `input`, from `dir`, with
+/// Claude Code's config folder moved to `config`, or to an empty folder: the
+/// plugin installed on the machine never takes part.
 fn run_hook(dir: &Path, input: &Value, config: Option<&Path>) -> String {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_mustard-rt"));
+    let (_folder, program) = own_program();
+    let empty = TempDir::new().expect("empty config folder");
+    let mut command = binary::isolated(&program);
     command
         .args(["on", "PreToolUse"])
         .current_dir(dir)
         .env_remove("CLAUDE_PROJECT_DIR")
         .env_remove("MUSTARD_WORKSPACE_ROOT")
+        .env("CLAUDE_CONFIG_DIR", config.unwrap_or(empty.path()))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    if let Some(config) = config {
-        command.env("CLAUDE_CONFIG_DIR", config);
-    }
     let mut child = command.spawn().expect("spawn mustard-rt");
     child
         .stdin

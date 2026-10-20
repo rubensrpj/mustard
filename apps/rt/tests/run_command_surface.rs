@@ -22,6 +22,9 @@ mod manifest_dir;
 #[path = "support/executable.rs"]
 mod executable;
 
+#[path = "support/binary.rs"]
+mod binary;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -110,7 +113,7 @@ fn map_returns_who_uses_a_declaration_by_name() {
     )
     .unwrap();
     let ask = |name: &str| {
-        let out = std::process::Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+        let out = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
             .args(["run", "map", "users", "--name", name, "--root"])
             .arg(root)
             .current_dir(root)
@@ -175,7 +178,7 @@ fn the_users_answer_puts_proven_links_first_and_groups_the_suspect_ones() {
         ),
     )
     .unwrap();
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+    let out = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
         .args(["run", "map", "users", "--name", "run", "--root"])
         .arg(root)
         .current_dir(root)
@@ -221,7 +224,7 @@ fn one_common_call_reads_in_the_singular_and_three_in_the_plural() {
            ]}"#,
     )
     .unwrap();
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+    let out = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
         .args(["run", "map", "users", "--name", "run", "--root"])
         .arg(root)
         .current_dir(root)
@@ -242,7 +245,7 @@ fn one_common_call_reads_in_the_singular_and_three_in_the_plural() {
 /// Pergunta ao mapa pelo comando que a pessoa roda, na raiz `root`: o JSON da
 /// resposta e se o comando saiu sem erro.
 fn ask_map(root: &Path, question: &str) -> (bool, serde_json::Value) {
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+    let out = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
         .args(["run", "map", question, "--root"])
         .arg(root)
         .current_dir(root)
@@ -273,7 +276,7 @@ fn file_summary_brings_the_parts_and_where_the_tests_start() {
     )
     .unwrap();
     let summary = |file: Option<&str>| {
-        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_mustard-rt"));
+        let mut command = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"));
         command.args(["run", "map", "summary", "--root"]).arg(root).current_dir(root);
         if let Some(file) = file {
             command.args(["--file", file]);
@@ -337,7 +340,7 @@ fn map_dump_brings_one_entry_per_table() {
             "census", "projects", "languages", "manifests", "skeleton", "files", "decls", "texts", "routes", "links",
             "graph", "fan_in", "history_base", "history_paths", "commits", "resource_files", "lineage_files", "lineage_commits",
             "lineage_decls", "pr_texts", "pr_comments", "pr_commits", "spec_items", "spec_commits", "spec_pulls",
-            "spec_marks", "glossary_asks", "glossary_marks", "notes", "knowledge_notes", "expertise", "expertise_exports", "project_profile", "blocks"
+            "spec_marks", "glossary_asks", "glossary_marks", "knowledge_notes", "project_profile", "blocks"
         ],
         "uma entrada por tabela, na ordem fixa: {report}"
     );
@@ -459,7 +462,7 @@ impl PullRequestProject {
     /// Roda `mustard-rt run <args>` com `path` no lugar do caminho dos
     /// programas: o JSON da resposta e se saiu sem erro.
     fn run(&self, args: &[&str], path: &str) -> (bool, serde_json::Value) {
-        let out = std::process::Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+        let out = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
             .arg("run")
             .args(args)
             .arg("--root")
@@ -472,6 +475,22 @@ impl PullRequestProject {
         let report = serde_json::from_slice(&out.stdout)
             .unwrap_or_else(|e| panic!("{e}: {} {}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)));
         (out.status.success(), report)
+    }
+
+    /// Roda a pergunta ao mapa e a repete enquanto a resposta diz que o mapa
+    /// segue em atualização: a pergunta não espera a passada além do prazo
+    /// dela, e a máquina lenta a acaba em segundo plano. Passados 120 s,
+    /// devolve a última resposta.
+    fn ask_until_refreshed(&self, args: &[&str], path: &str) -> serde_json::Value {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        loop {
+            let (ok, report) = self.run(args, path);
+            assert!(ok, "{report}");
+            if report.get("refreshing").is_none() || std::time::Instant::now() > deadline {
+                return report;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
     }
 
     /// O caminho dos programas com o `gh` falso na frente.
@@ -514,7 +533,7 @@ fn path_with_git_only(folder: &Path) -> String {
 /// O scan seguinte não lê de novo; com a chave desligada, nada chama o
 /// provedor; sem o `gh` a história sai com o título e o número, sem erro; e
 /// o commit novo da base, visto pela pergunta ao mapa, traz o texto do pull
-/// request dele na mesma resposta.
+/// request dele, também quando a passada acaba fora da pergunta.
 #[test]
 fn history_carries_the_pull_request_text_read_once_after_the_scan() {
     assert!(
@@ -574,10 +593,21 @@ fn history_carries_the_pull_request_text_read_once_after_the_scan() {
 
     fs::write(project.fake.path().join("pull9.json"), r#"{"number": 9, "title": "Ler dobrado", "body": "O ler dobra."}"#).unwrap();
     project.commit("pub fn ler(x: u32) -> u32 {\n    x * 2\n}\n", "dobra o ler (#9)");
-    let (ok, report) = project.run(&["map", "history", "--pr", "9"], &path);
-    assert!(ok, "{report}");
+    let report = project.ask_until_refreshed(&["map", "history", "--pr", "9"], &path);
     assert_eq!(report["pull"]["description"], "O ler dobra.", "a atualização do mapa antes da resposta leu o texto: {report}");
     assert!(project.calls().contains(&"api -i repos/{owner}/{repo}/pulls/9".to_string()));
+
+    // A passada que acaba fora da pergunta, em segundo plano, não lê o
+    // provedor: a pergunta da história acha o mapa em dia e lê o que falta.
+    fs::write(project.fake.path().join("pull10.json"), r#"{"number": 10, "title": "Ler triplo", "body": "O ler triplica."}"#).unwrap();
+    project.commit("pub fn ler(x: u32) -> u32 {\n    x * 3\n}\n", "triplica o ler (#10)");
+    let model = mustard_core::io::project_map::model_path(project.root());
+    let pass = mustard_core::Scan::locate().scan_native_within(project.root(), &model, std::time::Duration::from_secs(300)).unwrap();
+    assert!(matches!(pass, mustard_core::domain::scan::NativePass::Done(_)), "{pass:?}");
+    let (ok, report) = project.run(&["map", "history", "--pr", "10"], &path);
+    assert!(ok, "{report}");
+    assert!(report.get("refreshing").is_none(), "the map is up to date: {report}");
+    assert_eq!(report["pull"]["description"], "O ler triplica.", "a pergunta com o mapa em dia leu o texto: {report}");
 }
 
 /// Perguntar a um projeto fora do git, que ainda não tem mapa, recusa com mapa
@@ -602,7 +632,7 @@ fn asking_the_project_without_a_map_refuses_and_does_not_create_the_file() {
 /// por uma quebra no lugar do número.
 #[test]
 fn the_pending_help_shows_the_item_id_as_p_n() {
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+    let out = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
         .args(["run", "pending", "--help"])
         .output()
         .expect("mustard-rt run pending --help");
@@ -621,7 +651,7 @@ fn the_pending_help_shows_the_item_id_as_p_n() {
 /// e a ajuda não pode mandar o leitor procurá-lo lá.
 #[test]
 fn the_map_help_describes_the_summary_of_the_map_and_not_the_session_start() {
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+    let out = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
         .args(["run", "map", "--help"])
         .output()
         .expect("mustard-rt run map --help");
@@ -655,7 +685,7 @@ fn knowledge_session_protocol_supports_both_hosts_and_checks_current_sources() {
         mustard_core::domain::knowledge::enrich(&mut map);
         mustard_core::io::project_map::write_text(root,&map.to_string()).unwrap();
         let run=|args:&[&str]| {
-            let out=std::process::Command::new(env!("CARGO_BIN_EXE_mustard-rt")).args(["run","knowledge","--root"])
+            let out=binary::isolated(env!("CARGO_BIN_EXE_mustard-rt")).args(["run","knowledge","--root"])
                 .arg(root).args(args).current_dir(root).env_remove("CLAUDE_PROJECT_DIR").env_remove("MUSTARD_WORKSPACE_ROOT").output().unwrap();
             let report:serde_json::Value=serde_json::from_slice(&out.stdout).unwrap_or_else(|e|panic!("{e}: {}",String::from_utf8_lossy(&out.stdout)));
             (out.status.success(),report)
@@ -728,7 +758,7 @@ fn a_knowledge_answer_fits_the_conversation_cap() {
     mustard_core::domain::knowledge::enrich(&mut map);
     mustard_core::io::project_map::write_text(root, &map.to_string()).unwrap();
     let ask = |args: &[&str]| {
-        let out = std::process::Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+        let out = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
             .args(["run", "knowledge", "--root"])
             .arg(root)
             .args(args)
@@ -764,52 +794,6 @@ fn a_knowledge_answer_fits_the_conversation_cap() {
     assert!(small.get("conversation_cap").is_none(), "an answer within the cap is not compacted: {small}");
 }
 
-/// Exercise the actual binary's native-session handoff, source-bound draft,
-/// separate review, host export and reuse. The reply here is a fixture, not
-/// evidence that an authenticated host ran Haiku or Luna.
-#[test]
-fn expertise_session_review_export_and_reuse_work_through_the_cli_for_both_hosts() {
-    for host in ["claude","codex"] {
-        let dir=tempfile::tempdir().unwrap();let root=dir.path();
-        let source="fn restore() { /* restores a backup */ }\n";
-        fs::write(root.join("backup.rs"),source).unwrap();
-        fs::write(root.join("mustard.json"),r#"{"ai":{"fallback":false},"language":{"text":"en-US"}}"#).unwrap();
-        let mut hash=mustard_core::io::sha256::Sha256::new();hash.update(source.as_bytes());
-        let mut map=serde_json::json!({"modules":[{"path":"backup.rs","language":"rust","analysis":{"content_sha256":hash.hex_digest(),"parse_complete":true},
-            "declarations":[{"name":"restore","kind":"function","line":1,"end_line":1,"signature":"fn restore()"}]}]});
-        mustard_core::domain::knowledge::enrich(&mut map);
-        mustard_core::io::project_map::write_text(root,&map.to_string()).unwrap();
-        let run=|args:&[&str]| {
-            let out=std::process::Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
-                .args(["run","expertise","--root"]).arg(root).args(args).current_dir(root)
-                .env_remove("CLAUDE_PROJECT_DIR").env_remove("MUSTARD_WORKSPACE_ROOT").output().unwrap();
-            let report:serde_json::Value=serde_json::from_slice(&out.stdout).unwrap_or_else(|e|panic!("{e}: {}",String::from_utf8_lossy(&out.stdout)));
-            assert!(out.status.success(),"{report}");report
-        };
-        let args=["--prepare-session",host,"--query","restore backup","--file","backup.rs"];
-        let prepared=run(&args);
-        assert_eq!(prepared["delegation"]["execution"],"native-subagent-in-current-session");
-        assert_eq!(prepared["session_model_calls"],0);
-        let receipt=serde_json::json!({"request_id":prepared["request_id"],"model":"inherit","effort":"medium","input_tokens":1000,"output_tokens":50,
-            "result":{"title":"Backup restoration","text":"Inspect restore and its existing callers before changing persistence [s0].","source_ids":["s0"]}});
-        let path=root.join("receipt.json");fs::write(&path,receipt.to_string()).unwrap();
-        let drafted=run(&["--complete-session",path.to_str().unwrap(),"--query","restore backup","--file","backup.rs"]);
-        assert_eq!(drafted["draft_result"]["active"],false);
-        let name=drafted["draft_result"]["name"].as_str().unwrap();
-        assert!(name.starts_with("restore-backup-"));
-        let agent=format!("mustard-{name}");
-        assert!(!mustard_core::io::expertise::is_agent(root,&agent,host),"unreviewed prose cannot become an executor");
-        let review=format!("{name}:{}",drafted["draft_result"]["fingerprint"].as_str().unwrap());
-        run(&["--review",&review]);
-        run(&["--export",name,"--host",host]);
-        assert!(mustard_core::io::expertise::is_agent(root,&agent,host));
-        let reused=run(&args);assert_eq!(reused["cached"],true);assert_eq!(reused["session_model_calls"],0);
-        assert_eq!(run(&["--export",name,"--host",host])["changed"],0);
-        fs::write(root.join("AGENTS.md"),"Use the current schema contract.\n").unwrap();
-        assert!(!mustard_core::io::expertise::is_agent(root,&agent,host),"changed rules withdraw the previously reviewed executor");
-    }
-}
-
 /// Exact reproduction of the reported range. One authorized native Read is
 /// sufficient; its post-hook adds current owners without replacing its output
 /// or forcing a second model/tool turn. Configuration secrets still refuse.
@@ -832,7 +816,7 @@ fn an_exact_read_range_is_not_refused_and_its_executed_excerpt_is_crossed() {
     let hook=|event:&str,input:&serde_json::Value,response:Option<&serde_json::Value>| {
         let mut request=serde_json::json!({"hook_event_name":event,"tool_name":"Read","cwd":root,"session_id":"native-read-range","tool_input":input});
         if let Some(response)=response {request["tool_response"]=response.clone();}
-        let mut child=std::process::Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+        let mut child=binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
             .args(["on",event]).current_dir(root).env("MUSTARD_RT_DELEGATED","1")
             .env_remove("CLAUDE_PROJECT_DIR").env_remove("MUSTARD_WORKSPACE_ROOT")
             .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap();
@@ -914,7 +898,7 @@ fn hook_answer_to_grep(root: &Path, pattern: &str) -> Option<String> {
         "session_id": "grep-parity-test",
         "tool_input": { "pattern": pattern, "output_mode": "content" }
     });
-    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+    let mut child = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
         .args(["on", "PreToolUse"])
         .current_dir(root)
         .env_remove("CLAUDE_PROJECT_DIR")
@@ -944,7 +928,7 @@ fn the_grep_handoff_and_explicit_map_search_preserve_the_native_pattern() {
     assert!(handoff.contains("mcp__mustard__search"), "{handoff}");
     let request = serde_json::json!({"tool":"Grep","input":{"pattern":pattern,"output_mode":"content"},"intent":"","purpose":"locate","choose":false});
     assert!(handoff.contains(&request.to_string()), "complete transported request: {handoff}");
-    let gateway = std::process::Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+    let gateway = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
         .args(["run", "search", "--request", &request.to_string(), "--root"])
         .arg(root).current_dir(root).output().unwrap();
     assert!(gateway.status.success(), "{}",String::from_utf8_lossy(&gateway.stderr));
@@ -956,7 +940,7 @@ fn the_grep_handoff_and_explicit_map_search_preserve_the_native_pattern() {
     assert_eq!(response["remote_model_calls"],0);
 
     let run = |args: &[&str]| {
-        std::process::Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+        binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
             .args(["run", "map"])
             .args(args)
             .arg("--root")
@@ -994,7 +978,7 @@ fn the_grep_handoff_and_explicit_map_search_preserve_the_native_pattern() {
 /// `--described` e `--said`, que seguem aceitas, escondidas.
 #[test]
 fn the_map_help_teaches_the_search_with_the_text_of_grep_and_hides_the_measuring_options() {
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+    let out = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
         .args(["run", "map", "--help"])
         .output()
         .expect("mustard-rt run map --help");
@@ -1009,7 +993,7 @@ fn the_map_help_teaches_the_search_with_the_text_of_grep_and_hides_the_measuring
 
     let project = installments_project();
     let root = project.path();
-    let old = std::process::Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+    let old = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
         .args(["run", "map", "search", "--query", "splitInstallments", "--root"])
         .arg(root)
         .current_dir(root)
@@ -1018,7 +1002,7 @@ fn the_map_help_teaches_the_search_with_the_text_of_grep_and_hides_the_measuring
     let report: serde_json::Value = serde_json::from_slice(&old.stdout).unwrap();
     assert_eq!(report["ok"], true, "the hidden option is still accepted: {report}");
 
-    let described = std::process::Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+    let described = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
         .args(["run", "map", "search", "--query", "splitInstallments", "--described", "Procura o parcelamento"])
         .args(["--said", "Vou olhar o parcelamento.", "--root"])
         .arg(root)

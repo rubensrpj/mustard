@@ -13,7 +13,7 @@ pub(crate) fn prepare(start: &Path, name: &str, include_consumption: bool) -> Va
     {
         return json!({"ok":false,"reason":"invalid-spec-name"});
     }
-    let local = super::snapshot(start, Some(name));
+    let local = super::snapshot_of(start, name);
     let Some(spec) = local["specs"]
         .as_array()
         .and_then(|specs| specs.iter().find(|s| s["name"] == name))
@@ -304,6 +304,18 @@ mod tests {
         let next = prepare(dir.path(), "demo", false);
         assert_eq!(first["snapshot_id"], next["snapshot_id"]);
         assert_eq!(first["page"], next["page"]);
+    }
+    /// Preparar a publicação de uma spec lê só o arquivo de eventos dela.
+    #[test]
+    fn preparing_one_spec_reads_only_its_event_file() {
+        let dir = project();
+        let other = dir.path().join(".claude/spec/other");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(other.join("spec.ndjson"), "{\"v\":1,\"id\":1,\"type\":\"state\",\"phase\":\"survey\",\"author\":\"binary\"}\n").unwrap();
+        super::super::SPEC_LOGS_READ.with(|read| read.set(0));
+        let prepared = prepare(dir.path(), "demo", false);
+        assert_eq!(prepared["ok"], true, "{prepared}");
+        assert_eq!(super::super::SPEC_LOGS_READ.with(std::cell::Cell::get), 1);
     }
     fn project() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();

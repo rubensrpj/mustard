@@ -22,7 +22,7 @@ Review waves/deliveries/criteria/commits and surveys/PRs, without fixing. Read "
   - `run map history --name <name>`: to understand its history.
 - In searches, preserve the original options, without Jev for literal searches. Scan does not prove coverage or absence of use. Reuse complete bodies. Read the relevant range and expand when context is missing; without coordinates, `Read` with `offset`/`limit` after the summary. Reread when content changed or a proof requires it.
 - Run every command from inside the copy.
-- Wave review: read the diff, the code and the wave's proof receipts (the test written and run, in `run panel --wave N --observations`, same --root/--spec). Do not build, run tests or binaries, or cut anything; what the receipt does not prove becomes a finding.
+- Wave review: read only the request the dispatch points to (diff, tasks, criteria, rules, skills and proofs); open a copy file only to check a point. Do not fix, build or run tests. The verdict is short: `approved`, or `rejected` with the reason in a few sentences and the files in `files`.
 - Did a wave delete or move anything in git? Check that nothing was lost. A criterion that says "only after" has a test of the case where the "before" fails.
 - A new comment or test name citing an item code, wave, spec, pending item or Mustard is a finding.
 - In a fix round, check the fix delta and its impact on affected criteria, consumers and integrations.
@@ -48,7 +48,7 @@ A mistake that can happen again? Write, as a finding of the verdict, the fix in 
 
 ## What to return
 
-In the text language: the verdict, each finding (file/line/severity) and the proposals, one per line. In the work's final review, record them in `text` with `run write verdict --json '<the line>'`, same --root and --spec; recording it is mandatory, and the last message only says it did. In a survey review or a colleague's pull request, return the text to whoever dispatched you.
+In the text language: the verdict, each finding (file/line/severity) and the proposals, one per line. In the work's final review or a wave review, record them in `text` with `run write verdict --json '<the line>'`, same --root and --spec; recording it is mandatory, and the last message only says it did. In a survey review or a colleague's pull request, return the text to whoever dispatched you.
 {"final":true,"result":"approved","text":"the verdict\na.rs:42 critical: the finding","criteria":[{"criterion":"MSTD-CRIT-0001","tests_rule":true}],"agreed":[],"lessons":[{"lesson":7,"repeated":false}]}
 
 `result` is `approved`/`rejected`; `criterion` is the item's code; `agreed`, the request explains.

@@ -18,6 +18,9 @@
 #[path = "support/executable.rs"]
 mod executable;
 
+#[path = "support/binary.rs"]
+mod binary;
+
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -138,7 +141,7 @@ impl Setup {
     /// Roda a cópia do programa no projeto, com uma pasta pessoal falsa, e
     /// devolve o que ele imprimiu.
     fn run(&self, args: &[&str], stdin: &str) -> String {
-        let mut child = Command::new(&self.rt)
+        let mut child = binary::isolated(&self.rt)
             .args(args)
             .current_dir(&self.project)
             .env("CLAUDE_PROJECT_DIR", &self.project)
@@ -194,8 +197,9 @@ fn the_search_creates_a_missing_map_and_again_after_it_is_deleted() {
     assert_ne!(answer["reason"], json!("map-missing"), "{answer}");
     let passes = setup.passes();
     assert_eq!(passes.len(), 1, "the first search asks for one pass: {passes:?}");
+    // A pergunta ao mapa pede a passada nativa, que ela não espera além do prazo.
     assert!(
-        passes[0].starts_with(&format!("scan {root} --out ")) && passes[0].ends_with(" --json"),
+        passes[0].starts_with(&format!("scan {root} --out ")) && passes[0].ends_with(" --json --native"),
         "the pass is over the project and its map: {passes:?}"
     );
     assert!(passes[0].contains(setup.model().to_str().unwrap()), "{passes:?}");

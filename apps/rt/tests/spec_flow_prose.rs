@@ -24,6 +24,9 @@
 #[path = "support/manifest_dir.rs"]
 mod manifest_dir;
 
+#[path = "support/binary.rs"]
+mod binary;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -65,7 +68,7 @@ fn project(root: &Path) {
 
 /// Roda um comando do binário na pasta `dir` e devolve a saída como JSON.
 fn run(dir: &Path, args: &[&str]) -> serde_json::Value {
-    let out = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+    let out = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
         .arg("run")
         .args(args)
         .current_dir(dir)

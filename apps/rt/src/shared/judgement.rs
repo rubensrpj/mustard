@@ -136,35 +136,6 @@ pub(crate) struct BoardItem {
     pub(crate) text: String,
 }
 
-impl Board {
-    /// Inverted indices generate only explicit criterion/read/dependency pairs.
-    /// This is local evidence, not a semantic judgement of every ready pair.
-    pub(crate) fn affinities(&self) -> crate::shared::dag::Affinities<u64> {
-        let mut criteria: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
-        let mut reads: BTreeMap<&str, Vec<u64>> = BTreeMap::new();
-        let mut pairs = BTreeMap::new();
-        let titles: BTreeMap<&str, u64> = self.backlog.iter().map(|t| (t.title.as_str(), t.id)).collect();
-        for task in &self.backlog {
-            for criterion in &task.criteria { criteria.entry(*criterion).or_default().push(task.id); }
-            for read in &task.reads { reads.entry(read).or_default().push(task.id); }
-            for dependency in &task.depends_on {
-                if let Some(&other) = titles.get(dependency.as_str()) { pairs.entry((task.id.min(other), task.id.max(other))).or_insert((false, false)).0 = true; }
-            }
-        }
-        for (buckets, flow) in [(criteria.into_values().collect::<Vec<_>>(), true), (reads.into_values().collect(), false)] {
-            for ids in buckets {
-                for (at, &left) in ids.iter().enumerate() {
-                    for &right in ids.iter().skip(at + 1) {
-                        let flags = pairs.entry((left.min(right), left.max(right))).or_insert((false, false));
-                        if flow { flags.0 = true; } else { flags.1 = true; }
-                    }
-                }
-            }
-        }
-        pairs
-    }
-}
-
 /// O quadro dos itens de uma onda: as tarefas dela e os itens a julgar.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ItemsBoard {
@@ -186,6 +157,7 @@ pub enum Purpose {
     Search,
     WavePlanning,
     Context,
+    SpecSearch,
 }
 
 impl Purpose {
@@ -194,6 +166,7 @@ impl Purpose {
             Self::Search => "search",
             Self::WavePlanning => "wave-planning",
             Self::Context => "context",
+            Self::SpecSearch => "spec-search",
         }
     }
 }
@@ -324,7 +297,7 @@ impl<'a> JudgementService<'a> {
 
 /// Only an intrinsic single-task profile has stable aliases. Running-wave
 /// relations keep their actual IDs and complete changing state in the key.
-fn profile_aliases(payload: &str) -> (String, BTreeMap<String, String>) {
+pub(crate) fn profile_aliases(payload: &str) -> (String, BTreeMap<String, String>) {
     let Ok(mut value) = serde_json::from_str::<Value>(payload) else {
         return (payload.into(), BTreeMap::new());
     };
@@ -337,14 +310,11 @@ fn profile_aliases(payload: &str) -> (String, BTreeMap<String, String>) {
     let Some((old, task)) = backlog.iter().next().map(|(key, value)| (key.clone(), value.clone())) else {
         return (payload.into(), BTreeMap::new());
     };
-    let names = [(format!("tipo_{old}"), "tipo_t0".to_string()), (format!("tam_{old}"), "tam_t0".to_string())];
+    let names = [(format!("tipo_{old}"), "tipo_t0".to_string())];
     let Some(questions) = value["questions"].as_object() else {
         return (payload.into(), BTreeMap::new());
     };
-    if questions.len() != 2
-        || questions.get(&names[0].0).is_none_or(|q| q["type"] != "choice")
-        || questions.get(&names[1].0).is_none_or(|q| q["type"] != "score")
-    {
+    if questions.len() != 1 || questions.get(&names[0].0).is_none_or(|q| q["type"] != "choice") {
         return (payload.into(), BTreeMap::new());
     }
     let mut canonical = serde_json::Map::new();
@@ -364,7 +334,7 @@ fn profile_aliases(payload: &str) -> (String, BTreeMap<String, String>) {
     value["state"]["backlog"] = json!({"t0":task});
     (value.to_string(), names.into_iter().collect())
 }
-fn remap_answers(doc: &mut Value, aliases: &BTreeMap<String, String>, restore: bool) {
+pub(crate) fn remap_answers(doc: &mut Value, aliases: &BTreeMap<String, String>, restore: bool) {
     let Some(answers) = doc.get_mut("answers").and_then(Value::as_object_mut) else {
         return;
     };

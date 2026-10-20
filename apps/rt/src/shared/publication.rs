@@ -9,13 +9,13 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
-use mustard_core::domain::config::PublicationConfig;
+use mustard_core::domain::config::{PublicationConfig, PUBLICATION_TOKEN_ENV};
 use mustard_core::io::fs::lock::LockedFile;
+use mustard_core::io::project_secret::{self, SecretError};
 use mustard_core::io::sha256::Sha256;
 use serde_json::{Value, json};
 
 const API: &str = "https://api.cloudflare.com/client/v4";
-const TOKEN_ENV: &str = "CLOUDFLARE_API_TOKEN";
 const TIMEOUT: Duration = Duration::from_secs(60);
 
 pub(crate) struct Asset {
@@ -32,7 +32,7 @@ pub(crate) fn publish(root: &Path, dir: &Path, scope: &str, assets: &[Asset]) ->
     }
     let Some(config) = project.publication else {
         return json!({"published":false,"transport_required":true,"reason":"publication-not-configured",
-            "hint":"Configure publication com provider cloudflare-pages, accountId e projectName; forneça CLOUDFLARE_API_TOKEN no ambiente. Os arquivos continuam locais."});
+            "hint":"Configure publication com provider cloudflare-pages, accountId, projectName e apiToken no mustard.json. Os arquivos continuam locais."});
     };
     if let Err(reason) = validate(&config, scope, assets) {
         let hint = if reason == "publication-invalid-assets" {
@@ -43,12 +43,9 @@ pub(crate) fn publish(root: &Path, dir: &Path, scope: &str, assets: &[Asset]) ->
         return json!({"published":false,"transport_required":true,"reason":reason,
             "hint":hint});
     }
-    let token = std::env::var(TOKEN_ENV)
-        .ok()
-        .filter(|token| !token.trim().is_empty());
-    let Some(token) = token else {
-        return json!({"published":false,"transport_required":true,"reason":"publication-token-missing",
-            "hint":"Forneça CLOUDFLARE_API_TOKEN no ambiente do processo; o token não é lido de mustard.json. Os arquivos continuam locais."});
+    let token = match token(root, &config, std::env::var(PUBLICATION_TOKEN_ENV).ok()) {
+        Ok(token) => token,
+        Err(refusal) => return refusal,
     };
     let http = Http {
         api: API.into(),
@@ -63,6 +60,20 @@ pub(crate) fn publish(root: &Path, dir: &Path, scope: &str, assets: &[Asset]) ->
     match deploy(&http, &config, &token, dir, scope, assets) {
         Ok(receipt) => receipt,
         Err(reason) => json!({"published":false,"transport_required":false,"reason":reason}),
+    }
+}
+
+/// O token da publicação, pela regra dos segredos do projeto: `env`, o valor
+/// de [`PUBLICATION_TOKEN_ENV`], vence; sem ele, `publication.apiToken` do
+/// `mustard.json`, só enquanto o git não vê o arquivo. A recusa nunca leva o
+/// token.
+fn token(root: &Path, config: &PublicationConfig, env: Option<String>) -> Result<String, Value> {
+    match project_secret::find(root, PUBLICATION_TOKEN_ENV, env, config.token()) {
+        Ok(found) => Ok(found.value().to_string()),
+        Err(SecretError::Missing) => Err(json!({"published":false,"transport_required":true,"reason":"publication-token-missing",
+            "hint":"Grave o token em publication.apiToken do mustard.json, ou forneça CLOUDFLARE_API_TOKEN no ambiente, que vence. Os arquivos continuam locais."})),
+        Err(SecretError::InGit) => Err(json!({"published":false,"transport_required":true,"reason":"publication-token-in-git",
+            "hint":"O token em publication.apiToken não vale: o git guarda o mustard.json ou não o ignora, e o próximo commit o levaria. Tire o arquivo do git com `git rm --cached mustard.json`, rode `mustard-rt run upsert` para escondê-lo de novo e troque o token na Cloudflare. Os arquivos continuam locais."})),
     }
 }
 
@@ -284,26 +295,26 @@ fn deploy(
     )
 }
 
+/// The Cloudflare account the publication accepts: 32 hex digits. The
+/// settings screen takes the same, so nothing saved there is refused here.
+pub(crate) fn valid_account(account: &str) -> bool {
+    account.len() == 32 && account.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// The Pages project the publication accepts: lowercase letters, digits and
+/// inner hyphens, up to 58 characters. The settings screen takes the same.
+pub(crate) fn valid_project(project: &str) -> bool {
+    let bytes = project.as_bytes();
+    (1..=58).contains(&bytes.len())
+        && bytes.first().is_some_and(u8::is_ascii_alphanumeric)
+        && bytes.last().is_some_and(u8::is_ascii_alphanumeric)
+        && bytes.iter().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
+}
+
 fn validate(config: &PublicationConfig, scope: &str, assets: &[Asset]) -> Result<(), String> {
     if config.provider != "cloudflare-pages"
-        || config.account_id.len() != 32
-        || !config.account_id.bytes().all(|b| b.is_ascii_hexdigit())
-        || !config
-            .project_name
-            .as_bytes()
-            .first()
-            .is_some_and(u8::is_ascii_alphanumeric)
-        || !config
-            .project_name
-            .as_bytes()
-            .last()
-            .is_some_and(u8::is_ascii_alphanumeric)
-        || config.project_name.is_empty()
-        || config.project_name.len() > 58
-        || !config
-            .project_name
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        || !valid_account(&config.account_id)
+        || !valid_project(&config.project_name)
         || scope.is_empty()
         || scope.len() > 58
         || !scope

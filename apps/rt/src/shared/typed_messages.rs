@@ -17,16 +17,17 @@ use serde_json::Value;
 
 use crate::shared::prompt::is_harness_notice;
 
-/// O arquivo da conversa principal da sessão `session`, guardado pelo Claude
-/// Code em `<pasta de configuração>/projects/<pasta do projeto>/<sessão>.jsonl`,
-/// pela mesma procura que a medição do consumo usa
+/// O arquivo da conversa principal da sessão `session` no projeto de `root`,
+/// guardado pelo Claude Code em
+/// `<pasta de configuração>/projects/<pasta do projeto>/<sessão>.jsonl`, pela
+/// mesma procura que a medição do consumo usa
 /// ([`mustard_core::io::transcript::session_dir`]). `None` quando a sessão não
-/// é um nome de arquivo simples ou quando nenhuma pasta a tem, como numa
-/// sessão do Codex.
-pub(crate) fn session_transcript(session: &str) -> Option<PathBuf> {
+/// é um nome de arquivo simples, quando a conversa dela é de outro projeto ou
+/// quando nenhuma pasta a tem, como numa sessão do Codex.
+pub(crate) fn session_transcript(root: &Path, session: &str) -> Option<PathBuf> {
     let session = session.trim();
     let config = mustard_core::platform::harness::claude_config_dir()?;
-    let folder = mustard_core::io::transcript::session_dir(&config, session)?;
+    let folder = mustard_core::io::transcript::session_dir(&config, root, session)?;
     Some(folder.parent()?.join(format!("{session}.jsonl")))
 }
 
@@ -90,28 +91,29 @@ fn typed_text(entry: &Value) -> Option<String> {
         .into_iter()
         .map(str::trim)
         .filter(|block| !block.is_empty() && !HARNESS_BLOCKS.iter().any(|tag| block.starts_with(tag)))
-        .map(|block| slash_command(block).unwrap_or_else(|| Some(block.to_string())))
+        .map(typed_back)
         .collect::<Option<Vec<String>>>()?
         .join("\n\n");
     (!text.is_empty() && !is_harness_notice(&text)).then_some(text)
 }
 
-/// O comando de barra que o Claude Code guarda em marcas, de volta como foi
-/// digitado: `Some(Some("/nome argumentos"))`, `Some(None)` quando ele não
-/// traz argumentos, e `None` quando o bloco não é um comando.
-fn slash_command(block: &str) -> Option<Option<String>> {
-    if !block.starts_with("<command-message>") && !block.starts_with("<command-name>") {
-        return None;
-    }
+/// O texto que um bloco leva à mensagem: o próprio bloco quando ele não é um
+/// comando de barra; o comando que o Claude Code guarda em marcas, de volta
+/// como foi digitado (`/nome argumentos`); e `None` quando o comando não traz
+/// argumentos.
+fn typed_back(block: &str) -> Option<String> {
+    let command = block.starts_with("<command-message>") || block.starts_with("<command-name>");
     let inside = |tag: &str| {
         let open = format!("<{tag}>");
         let start = block.find(&open)? + open.len();
         let end = block[start..].find(&format!("</{tag}>"))? + start;
         Some(block[start..end].trim())
     };
-    let name = inside("command-name")?;
+    let Some(name) = inside("command-name").filter(|_| command) else {
+        return Some(block.to_string());
+    };
     let args = inside("command-args").unwrap_or_default();
-    Some((!args.is_empty()).then(|| format!("{name} {args}")))
+    (!args.is_empty()).then(|| format!("{name} {args}"))
 }
 
 #[cfg(test)]

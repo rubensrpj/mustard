@@ -326,14 +326,19 @@ struct JevCall {
     cost_micro_usd: u64,
 }
 
-/// As chamadas ao Jev gravadas nas specs da pasta `root` nos dias de `range`:
-/// toda chamada que levou os tokens ou o custo dele, de qualquer comando. A
-/// que falhou antes de ele responder não gastou nada e não entra, e a que não
-/// o usa, como a leitura de um item, também não.
+/// As chamadas ao Jev de cada spec da pasta `root` nos dias de `range`: toda
+/// chamada que levou os tokens ou o custo dele, de qualquer comando. A
+/// chamada mora no arquivo de operações da spec; a spec antiga a gravou no
+/// próprio arquivo de eventos, e as duas fontes somam — cada chamada foi
+/// gravada num lugar só. A que falhou antes de ele responder não gastou nada
+/// e não entra, e a que não o usa, como a leitura de um item, também não.
 fn jev_calls(root: &Path, range: &Range) -> Vec<JevCall> {
     let mut found = Vec::new();
-    for (_, log) in crate::io::spec_index::read_specs(root) {
-        for event in log.visible().into_iter().filter(|event| event.event_type == "call") {
+    for (name, log) in crate::io::spec_index::read_specs(root) {
+        let operations = crate::io::spec_events::operations_file(root, &name)
+            .and_then(|path| crate::io::spec_events::read_operations(&path).ok().flatten())
+            .unwrap_or_default();
+        for event in log.visible().into_iter().chain(operations.visible()).filter(|event| event.event_type == "call") {
             let (tokens, cost_micro_usd) = (event.int("tokens"), event.int("cost_micro_usd"));
             if tokens.is_none() && cost_micro_usd.is_none() {
                 continue;
@@ -468,6 +473,19 @@ pub fn project_conversations(config_dir: &Path, root: &Path, since: SystemTime) 
     transcript_files(config_dir).into_iter().filter(|file| changed(&file.0) && owned(file)).map(|(path, _)| path).collect()
 }
 
+/// Se a conversa principal `conversation` é do projeto de `root`, pela regra
+/// de [`project_conversations`]: o projeto da primeira linha dela com uma
+/// pasta de projeto é o de `root`, pela pasta inteira. A conversa aberta
+/// noutro projeto, ou sem pasta de projeto nenhuma, não é.
+#[must_use]
+pub fn is_project_conversation(conversation: &Path, root: &Path) -> bool {
+    let Some(key) = project_place(root).map(|place| place.to_string_lossy().into_owned()) else {
+        return false;
+    };
+    let mut projects = Projects { by_place: true, ..Projects::default() };
+    owner_project(conversation, &mut projects).as_deref() == Some(key.as_str())
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -590,6 +608,44 @@ mod tests {
             [("2026-10-01".to_string(), 1800, 1450), ("2026-10-02".to_string(), 700, 600)],
             "the four billed calls of the first day, the assembly alone on the second, and no row for the read"
         );
+    }
+
+    /// O gasto do Jev soma as duas fontes de cada spec: a chamada que a spec
+    /// antiga gravou nela mesma e a que mora no arquivo de operações dela.
+    #[test]
+    fn jev_spend_counts_calls_from_the_operations_file() {
+        let dir = tempdir().unwrap();
+        let config = dir.path().join("config");
+        let root = project(dir.path(), "meu-projeto");
+        conversation(&config, "p", "s1", &[reply("m1", "2026-10-01T15:00:00Z", &root, 10, &[])]);
+        let call = |id: u64, at: &str, command: &str, extra: Value| {
+            let mut event = json!({"v": 1, "id": id, "code": format!("X-CALL-{id:04}"), "at": at, "type": "call",
+                "author": "binary", "command": command});
+            event.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            event.to_string()
+        };
+        let billed = |tokens: u64, cost: u64| json!({"filter": "jev", "tokens": tokens, "cost_micro_usd": cost});
+        let spec = root.join(".claude/spec/uma-spec");
+        fs::create_dir_all(&spec).unwrap();
+        fs::write(spec.join("spec.ndjson"), call(1, "2026-10-01T10:00:00-03:00", "word search", billed(1000, 900)) + "\n").unwrap();
+        let operations = root.join(".claude/mustard/operations");
+        fs::create_dir_all(&operations).unwrap();
+        let observed = [
+            call(1, "2026-10-01T11:00:00-03:00", "wave assembly", billed(500, 400)),
+            call(2, "2026-10-01T12:00:00-03:00", "round", json!({"ms": 3})),
+        ];
+        fs::write(operations.join("uma-spec.ndjson"), observed.join("\n") + "\n").unwrap();
+
+        let rows = count(&config, None, &range(None, "2026-10-01"));
+        let seen: Vec<_> = rows.iter().map(|row| (row.day.clone(), row.jev_tokens, row.jev_cost_micro_usd)).collect();
+        assert_eq!(seen, [("2026-10-01".to_string(), 1500, 1300)]);
+
+        // A parte antiga que o teto mandou ao arquivo morto também conta.
+        let archived = call(3, "2026-10-01T09:00:00-03:00", "wave items", billed(100, 50));
+        fs::write(operations.join("uma-spec.archive.ndjson"), archived + "\n").unwrap();
+        let rows = count(&config, None, &range(None, "2026-10-01"));
+        let seen: Vec<_> = rows.iter().map(|row| (row.day.clone(), row.jev_tokens, row.jev_cost_micro_usd)).collect();
+        assert_eq!(seen, [("2026-10-01".to_string(), 1600, 1350)]);
     }
 
     /// A conversa de um agente que trabalhou numa cópia já apagada fica com o

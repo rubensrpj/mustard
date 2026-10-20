@@ -7,7 +7,7 @@ use serde_json::{Value,json};
 use std::collections::BTreeSet;
 use std::path::Path;
 
-pub(super) fn probe(root:&Path,tree:&Path,request:&Request,scope:&Scope,seeds:&mut Vec<String>)->Value {
+pub(super) fn probe(root:&Path,tree:&Path,request:&Request,scope:&Scope,seeds:&mut Vec<String>,later:&mut crate::io::map_db::Later)->Value {
     let names=crate::domain::code_search::pattern_names(&scope.clues);
     if names.len()==1 && seeds.iter().any(|id|id.rsplit(':').next().is_some_and(|name|names.iter().any(|asked|name.eq_ignore_ascii_case(asked)))) {
         return json!({"status":"exact-name; native discovery sufficient","remote_model_calls":0});
@@ -43,7 +43,7 @@ pub(super) fn probe(root:&Path,tree:&Path,request:&Request,scope:&Scope,seeds:&m
             if !seeds.iter().any(|seed|seed==id){seeds.push(id.into());}
         }
     }
-    let learning=knowledge::observations::record(root,tree,&hits).ok();
+    let learning=knowledge::observations::learn(root,tree,&hits,later).ok();
     json!({"status":"native-question-probe","method":"native area + co-occurring rare question clues -> scoped rg -> full normalized source match -> current owners",
         "files":admitted.len(),"bytes_admitted":bytes,"candidate_files":paths.len(),"skipped_or_unavailable":skipped,
         "partial":admitted.len()<paths.len(),"verified_occurrences":hits.len(),"added_owners":seeds.iter().filter(|id|!before.contains(*id)).count(),

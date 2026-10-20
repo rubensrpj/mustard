@@ -27,6 +27,7 @@ pub(super) fn investigate(
     request: &Request,
     answer: &Answer,
     selector: Option<&dyn SymbolSelector>,
+    later: &mut crate::io::map_db::Later,
 ) -> Result<Value, String> {
     let scope = scope::inventory(tree, cwd, request, answer)?;
     let mut seeds: Vec<_> = answer.report["evidence"]["current_owner_ids"]
@@ -83,7 +84,7 @@ pub(super) fn investigate(
     let named = !native_files.is_empty() && scope.files == native_files;
     let pattern_files: BTreeSet<String> =
         if (request.purpose == Purpose::Implement || named) && !listing { native_files.clone() } else { BTreeSet::new() };
-    let complementary=super::discovery::probe(root,tree,request,&scope,&mut seeds);
+    let complementary=super::discovery::probe(root,tree,request,&scope,&mut seeds,later);
     let opts = Query {
         text: if scope.clues.trim().is_empty() {
             &request.intent
@@ -219,7 +220,7 @@ pub(super) fn investigate(
             Some((file.to_string(), line, text.to_string()))
         })
         .collect();
-    let pending = knowledge::observations::record(root, tree, &live_facts)
+    let pending = knowledge::observations::learn(root, tree, &live_facts, later)
         .is_ok_and(|learning| learning["needs_scan"] == true);
     if !verify(root, tree, &generation, &cards, &report) {
         return Err("task-source-changed-before-selection".into());
@@ -488,7 +489,7 @@ pub(super) fn investigate(
     report["remote_model_calls"] = report["selection"]["remote_model_calls"].clone();
     report["written_clues"] = json!({"covered_slots":covered.len(),"slots":matcher.slots.len(),"uncovered":uncovered,"meaning":"written clue coverage only; not semantic completeness or proof of absence"});
     report["native_fallback"] = json!({"request":Request{purpose:Purpose::Locate,choose:false,..request.clone()},"raw_native":"Repeat the same CLI request with --raw for exact native stdout/stderr/status."});
-    report["learning"] = knowledge::observations::record(root, tree, &facts)
+    report["learning"] = knowledge::observations::learn(root, tree, &facts, later)
         .unwrap_or_else(|reason| json!({"status":"not-stored","reason":reason}));
     Ok(report)
 }

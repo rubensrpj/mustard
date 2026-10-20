@@ -1,6 +1,6 @@
 #[path = "support/model.rs"]
 mod model;
-use mustard_core::io::{knowledge, map_notes, project_map as store};
+use mustard_core::io::{knowledge, project_map as store};
 use serde_json::{Value, json};
 
 fn query(root: &std::path::Path, text: &str) -> Value {
@@ -244,62 +244,21 @@ fn native_audit_checks_receipts_indexes_and_plans_and_detects_a_missing_posting(
     assert!(missing["issues"].as_array().unwrap().iter().any(|i| i["check"] == "canonical_symbol_missing"), "{missing}");
 }
 
-/// A auditoria conta as frases de uma linha num projeto em TypeScript lido
-/// pelo scan: a frase da função cujo arquivo não mudou e a do arquivo inteiro
-/// seguem em dia; a do método cujo arquivo mudou e a da função cujo texto
-/// analisado não é JSON envelhecem, sem derrubar a auditoria, que aponta o
-/// texto estragado. O método e essa função passam a contar como funções sem
-/// frase; a classe e a frase do arquivo inteiro não contam.
+/// A auditoria aponta o texto analisado que não é JSON num projeto em
+/// TypeScript lido pelo scan, sem cair por ele.
 #[test]
-fn audit_counts_fresh_and_stale_notes_and_functions_without_a_fresh_note() {
+fn audit_points_out_an_analysis_that_is_not_json() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"pt-BR","code":"en-US"}}"#).unwrap();
-    std::fs::write(root.join("src/price.ts"), "export function priceOf(amount: number): number { return amount * 2; }\n").unwrap();
-    std::fs::write(root.join("src/order.ts"), "export class Order {\n  total(): number { return 1; }\n}\n").unwrap();
     std::fs::write(root.join("src/tax.ts"), "export function taxOf(amount: number): number { return amount / 10; }\n").unwrap();
     model::scan(root, &root.join(".claude"), &[]);
-    let model = store::model_path(root);
-    for (file, name, text) in [
-        ("src/price.ts", "priceOf", "Calcula o preço cobrado do cliente."),
-        ("src/price.ts", "", "Regras de preço da loja."),
-        ("src/order.ts", "total", "Soma o pedido do cliente."),
-        ("src/tax.ts", "taxOf", "Calcula o imposto do pedido."),
-    ] {
-        map_notes::write(&model, root, &map_notes::NewNote { file, name, text, spec: "loja" }).unwrap();
-    }
-    std::fs::write(root.join("src/order.ts"), "export class Order {\n  total(): number { return 2; }\n}\n").unwrap();
-    model::scan(root, &root.join(".claude"), &[]);
-    let db = rusqlite::Connection::open(&model).unwrap();
+    let db = rusqlite::Connection::open(store::model_path(root)).unwrap();
     db.execute("UPDATE texts SET analysis='not-json' WHERE path='src/tax.ts'", []).unwrap();
     drop(db);
     let audit = knowledge::audit::run(root).unwrap();
-    let counts = &audit["counts"];
-    assert_eq!((&counts["notes_fresh"], &counts["notes_stale"], &counts["functions_without_note"]), (&json!(2), &json!(2), &json!(2)), "{audit}");
     assert!(audit["issues"].as_array().unwrap().iter().any(|i| i["check"] == "invalid_analysis_json"), "{audit}");
-}
-
-/// Num arquivo em TypeScript lido pelo scan, com duas funções e a frase de
-/// cada uma, mudar o corpo da segunda envelhece só a frase dela: a da
-/// primeira segue em dia, e a do arquivo inteiro envelhece com ele.
-#[test]
-fn a_changed_function_ages_only_its_own_note_in_a_scanned_typescript_file() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path();
-    std::fs::create_dir_all(root.join("src")).unwrap();
-    std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"pt-BR","code":"en-US"}}"#).unwrap();
-    let body = |refund: &str| format!("export function charge(amount: number): number {{\n  return amount;\n}}\n\nexport function refund(amount: number): number {{\n  return {refund};\n}}\n");
-    std::fs::write(root.join("src/pay.ts"), body("amount")).unwrap();
-    model::scan(root, &root.join(".claude"), &[]);
-    let model = store::model_path(root);
-    for (name, text) in [("charge", "Cobra o cliente."), ("refund", "Devolve o dinheiro do cliente."), ("", "Pagamentos da loja.")] {
-        map_notes::write(&model, root, &map_notes::NewNote { file: "src/pay.ts", name, text, spec: "loja" }).unwrap();
-    }
-    std::fs::write(root.join("src/pay.ts"), body("-amount")).unwrap();
-    model::scan(root, &root.join(".claude"), &[]);
-    let stale = |name: &str| map_notes::of_at(&model, "src/pay.ts", name).unwrap().unwrap().stale;
-    assert_eq!((stale("charge"), stale("refund"), stale("")), (false, true, true));
 }
 
 #[test]

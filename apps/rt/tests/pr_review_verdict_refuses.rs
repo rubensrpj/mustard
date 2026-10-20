@@ -20,6 +20,9 @@
 #[path = "support/manifest_dir.rs"]
 mod manifest_dir;
 
+#[path = "support/binary.rs"]
+mod binary;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -40,7 +43,7 @@ fn git(root: &Path, args: &[&str]) -> String {
 
 /// `mustard-rt run <args>` no projeto `root`.
 fn run(root: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+    binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
         .arg("run")
         .args(args)
         .current_dir(root)

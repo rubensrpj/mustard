@@ -6,7 +6,9 @@
 //! ([`ranked_by`]): de 1 a 5 itens com todas as palavras, a resposta sai
 //! direto; mais que isso, ou nenhum com todas, os 30 melhores vão ao Jev numa
 //! pergunta só, e ele diz quais respondem. Sem Jev, vem a ordem da nota, com
-//! os itens parciais marcados e o aviso. Um código traz o item inteiro, pela
+//! os itens parciais marcados e o aviso; com o Jev que falhou ou passou do
+//! prazo, a mesma ordem e a linha que deixa a escolha entre os candidatos a
+//! quem procurou, sem reserva. Um código traz o item inteiro, pela
 //! leitura do item. A resposta é uma linha por item, com o código, o tipo, a
 //! onda, o dia e o título: só o assistente e o agente a leem.
 
@@ -60,7 +62,7 @@ pub(crate) enum JevAnswer {
 
 /// A pergunta `payload` ao Jev, gravada na spec `spec` de `root`.
 pub(crate) fn ask_jev(root: &Path, spec: &str, payload: &str) -> JevAnswer {
-    let Some(filter) = JevFilter::for_orchestration(root, spec) else { return JevAnswer::NoKey };
+    let Some(filter) = JevFilter::for_spec_search(root, spec) else { return JevAnswer::NoKey };
     filter.choose_recorded(root, spec, FIND_CALL, payload).map_or(JevAnswer::NoAnswer, JevAnswer::Doc)
 }
 
@@ -185,8 +187,13 @@ pub(crate) fn found_text(log: &SpecLog, codes: &BTreeMap<u64, String>, pool: Vec
             if complete > SHOWN {
                 out.push(more(SHOWN, complete));
             }
-            let reason = if matches!(other, JevAnswer::NoKey) { "spec_events.find_no_key" } else { "spec_events.find_no_answer" };
-            out.push(translate("spec_events.find_jev_off", lang).replace("{reason}", translate(reason, lang)));
+            // O Jev ligado que falhou ou passou do prazo deixa a escolha entre
+            // os candidatos a quem procurou, como a busca do mapa: a procura é
+            // pergunta do próprio agente, e não vai à reserva.
+            match other {
+                JevAnswer::NoKey => out.push(translate("spec_events.find_jev_off", lang).replace("{reason}", translate("spec_events.find_no_key", lang))),
+                _ => out.push(translate("spec_events.find_choice_left", lang).to_string()),
+            }
         }
     }
     out.join("\n")
@@ -358,6 +365,24 @@ mod tests {
         let got = find(root, "rodada", &["note"], &jev);
         assert_eq!(got.lines().count(), 1, "{got}");
         assert!(got.ends_with("A certa"), "{got}");
+    }
+
+    /// The Jev that fails, or answers too late, leaves the choice among the
+    /// candidates to the agent that searched, in one line, with no reserve:
+    /// the search is the agent's own question.
+    #[test]
+    fn a_failed_jev_leaves_the_choice_among_the_candidates_to_the_agent() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = put(root, "message", json!({"author": "user", "text": "nada"}));
+        put(root, "note", json!({"title": "Commit da onda", "text": "A página mostra o commit.", "keys": ["x"], "origin": said}));
+        put(root, "note", json!({"title": "Rodada formata", "text": "A rodada formata os arquivos antes do commit.", "keys": ["x"], "origin": said}));
+
+        let got = find(root, "rodada formata arquivos commit onda", &["note"], &|_, _| JevAnswer::NoAnswer);
+        let lines: Vec<&str> = got.lines().collect();
+        assert_eq!(lines.len(), 3, "{got}");
+        assert_eq!(lines[2], translate("spec_events.find_choice_left", Locale::PtBr), "{got}");
+        assert!(lines[2].contains("escolha é sua"), "{got}");
     }
 
     #[test]

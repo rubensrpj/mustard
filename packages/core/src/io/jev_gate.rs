@@ -2,11 +2,11 @@
 //!
 //! A busca usa regras nativas por padrão. O Jev exige `ai.fallback: true`,
 //! um filtro `jev` explicitamente escolhido para a finalidade e uma chave
-//! válida. A chave vem de [`KEY_ENV`] no
-//! ambiente ou, sem ela, de `jev.key` no `mustard.json`; o git não pode
-//! guardar esse arquivo: guardado, a chave dele não se usa. A busca monta o
-//! filtro com a chave chamando as funções daqui, e nenhuma outra regra liga o
-//! filtro.
+//! válida. A chave vem de [`KEY_ENV`] no ambiente ou, sem ela, de `jev.key`
+//! no `mustard.json`, pela regra dos segredos do projeto
+//! ([`project_secret`]): o arquivo que o git guarda ou não ignora não entrega
+//! a chave. A busca monta o filtro com a chave chamando as funções daqui, e
+//! nenhuma outra regra liga o filtro.
 //!
 //! Nenhum erro, aviso ou texto de depuração leva a chave.
 
@@ -15,12 +15,13 @@ use std::path::Path;
 
 use crate::domain::config::{FilterSetting, ProjectConfig};
 use crate::domain::map_filter::FilterError;
+use crate::io::project_secret::{self, SecretError};
 
 /// A variável de ambiente da chave do Jev; vence o `mustard.json`.
 pub const KEY_ENV: &str = "TYPESAFE_API_KEY";
 
-/// A chave achada e, quando o git guarda o `mustard.json` que também traz
-/// uma chave, o aviso para tirá-lo do git. A chave do ambiente vale do mesmo
+/// A chave achada e, quando o git guarda ou não ignora o `mustard.json` que
+/// também traz uma chave, o aviso para tirá-lo do git. A chave do ambiente vale do mesmo
 /// jeito. Não se imprime: o `Debug` escreve reticências, e não há `Display`.
 #[derive(Clone, PartialEq, Eq)]
 pub struct FoundKey {
@@ -35,7 +36,7 @@ impl FoundKey {
         &self.value
     }
 
-    /// O aviso da chave do `mustard.json` que o git guarda, mesmo quando a do
+    /// O aviso da chave do `mustard.json` que o git vê, mesmo quando a do
     /// ambiente vale.
     #[must_use]
     pub fn warning(&self) -> Option<&FilterError> {
@@ -55,59 +56,33 @@ pub fn setting_allows(setting: FilterSetting) -> bool {
     matches!(setting, FilterSetting::Jev)
 }
 
-/// A chave do projeto em `root`: `env` (o valor de [`KEY_ENV`], que quem
-/// chama lê) no ambiente; sem ela, o env local privado e então `jev.key`
-/// do `mustard.json` que `config` leu. Sem chave, [`FilterError::MissingKey`]; com a do arquivo
-/// que o git guarda, [`FilterError::KeyInGit`].
+/// A chave do projeto em `root`, pela regra dos segredos do projeto
+/// ([`project_secret::find`]): `env` (o valor de [`KEY_ENV`], que quem chama
+/// lê) no ambiente; sem ela, o env local privado e então `jev.key` do
+/// `mustard.json` que `config` leu. Sem chave, [`FilterError::MissingKey`];
+/// com a do arquivo que o git guarda ou não ignora, [`FilterError::KeyInGit`].
 ///
 /// # Errors
-/// A chave que falta ou que o git guarda, como acima.
+/// A chave que falta ou que o git vê, como acima.
 pub fn find_key(root: &Path, config: &ProjectConfig, env: Option<String>) -> Result<FoundKey, FilterError> {
-    let env=env.filter(|s|!s.trim().is_empty()).or_else(|| local_environment_key(root)).or_else(|| {
-        let top=crate::platform::git::run(root,&["rev-parse","--show-toplevel"]).out()?;
-        let top=Path::new(top.trim());
-        if top==root || !root.canonicalize().ok()?.starts_with(top.canonicalize().ok()?) {return None;}
-        local_environment_key(top)
-    });
-    key_from(env, config.jev_key(), || tracked_by_git(root))
+    found(project_secret::find(root, KEY_ENV, env, config.jev_key()))
 }
 
-/// Claude applies local env settings to its children; a native CLI or Codex
-/// may not. Resolve the same private project credential for every consumer.
-/// A tracked, unignored or linked-outside file is never a credential source.
-fn local_environment_key(root:&Path)->Option<String> {
-    const FILE:&str=".claude/settings.local.json";
-    if crate::platform::git::run(root,&["ls-files","--error-unmatch","--",FILE]).ok
-        || !crate::platform::git::run(root,&["check-ignore","-q","--",FILE]).ok {return None;}
-    let path=root.join(FILE);
-    if !path.canonicalize().ok()?.starts_with(root.canonicalize().ok()?) {return None;}
-    if path.metadata().ok()?.len()>1_048_576 {return None;}
-    let value:serde_json::Value=serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
-    value["env"][KEY_ENV].as_str().map(str::trim).filter(|s|!s.is_empty()).map(str::to_owned)
+/// A escolha da chave pela regra dos segredos ([`project_secret::choose`]),
+/// com os erros e o aviso do filtro.
+#[cfg(test)]
+fn key_from(env: Option<String>, project: Option<&str>, exposed: impl FnOnce() -> bool) -> Result<FoundKey, FilterError> {
+    found(project_secret::choose(env, project, exposed))
 }
 
-/// A escolha da chave, sobre o valor do ambiente e o do `mustard.json`; o
-/// valor em branco vale como ausente. `tracked` diz se o git guarda o
-/// arquivo, e só se pergunta quando ele traz uma chave: a chave guardada no
-/// git não se usa, e o aviso sai mesmo quando a do ambiente vale.
-fn key_from(env: Option<String>, project: Option<&str>, tracked: impl FnOnce() -> bool) -> Result<FoundKey, FilterError> {
-    let project = project.map(str::trim).filter(|key| !key.is_empty());
-    let in_git = project.is_some() && tracked();
-    let warning = in_git.then_some(FilterError::KeyInGit);
-    if let Some(key) = env.map(|value| value.trim().to_string()).filter(|value| !value.is_empty()) {
-        return Ok(FoundKey { value: key, warning });
+/// O segredo achado como chave do filtro: o arquivo que o git vê vira o aviso
+/// ou a recusa [`FilterError::KeyInGit`].
+fn found(secret: Result<project_secret::FoundSecret, SecretError>) -> Result<FoundKey, FilterError> {
+    match secret {
+        Ok(secret) => Ok(FoundKey { value: secret.value().to_string(), warning: secret.in_git().then_some(FilterError::KeyInGit) }),
+        Err(SecretError::Missing) => Err(FilterError::MissingKey),
+        Err(SecretError::InGit) => Err(FilterError::KeyInGit),
     }
-    if in_git {
-        return Err(FilterError::KeyInGit);
-    }
-    let key = project.ok_or(FilterError::MissingKey)?;
-    Ok(FoundKey { value: key.to_string(), warning: None })
-}
-
-/// O git guarda o `mustard.json` de `root`, no índice ou num commit. Sem git
-/// ou fora de um repositório, não guarda.
-fn tracked_by_git(root: &Path) -> bool {
-    crate::platform::git::run(root, &["ls-files", "--error-unmatch", "--", "mustard.json"]).ok
 }
 
 #[cfg(test)]

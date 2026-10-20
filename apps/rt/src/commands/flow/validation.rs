@@ -36,13 +36,25 @@ impl<'a> Stage<'a> {
     }
 }
 
+/// A fase das etapas da rodada. O tempo delas é observação: ninguém decide
+/// por ele, e ele mora no arquivo de operações da spec, que só recebe a linha,
+/// em vez de regravar a spec a cada etapa. A etapa do fechamento fica na spec:
+/// a máquina que falha depois do recibo da validação final o desfaz.
+const ROUND_PHASE: &str = "delivery";
+
 impl Drop for Stage<'_> {
     fn drop(&mut self) {
         let draft = json!({"phase":self.phase,"stage":self.name,"result":self.result,
             "ms":self.started.elapsed().as_millis() as u64,"scope":if self.inclusive {"inclusive"}else{"leaf"},
             "version":mustard_core::harness_version(),
             "attempt":std::process::id(),"author":"binary"});
-        if let Err(error) = record(self.root, self.spec, "stage_run", draft.as_object().cloned().unwrap_or_default(), PhaseWriter::Binary) {
+        let draft = draft.as_object().cloned().unwrap_or_default();
+        if self.phase == ROUND_PHASE {
+            // Como toda observação, a que não fica não falha para quem mede.
+            let _ = crate::commands::spec_events::conversation::observe(self.root, self.spec, "stage_run", vec![draft]);
+            return;
+        }
+        if let Err(error) = record(self.root, self.spec, "stage_run", draft, PhaseWriter::Binary) {
             eprintln!("[Mustard] stage measurement was not recorded: {}", error.reason());
         }
     }
@@ -76,6 +88,7 @@ pub(super) fn fingerprint(root: &Path, log: &SpecLog) -> Option<String> {
         // The log and its projection change while validating. They are state,
         // not code inputs; criteria and config enter the digest separately.
         if name.starts_with(".claude/spec/")
+            || name.starts_with(".claude/mustard/operations/")
             || name.starts_with(".claude/project/")
             || name.starts_with(".claude/pending/")
             || name.starts_with(".claude/grain.db")
@@ -1223,5 +1236,39 @@ src/a.ts(1,10): error TS6133: 'lonelyTotal' is declared but its value is never r
         assert!(std::process::Command::new("git").args(["init", "-q"]).current_dir(root).status().unwrap().success());
         let (web, api, manifest) = ("packages/web/src/a.ts".to_string(), "packages/api/src/a.ts".to_string(), "packages/web/package.json".to_string());
         Work { changed: BTreeSet::from([web.clone(), api.clone(), manifest.clone()]), waves: vec![(1, vec![api]), (2, vec![web, manifest])] }
+    }
+
+    /// O tempo de cada etapa da rodada vai para o arquivo de operações da
+    /// spec, e a spec fica como estava. A etapa do fechamento continua na spec:
+    /// a máquina que falha depois do recibo da validação final o desfaz.
+    #[test]
+    fn round_stage_timings_go_to_the_operations_file_and_leave_the_spec_as_it_was() {
+        use mustard_core::io::spec_events as store;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), "{}").unwrap();
+        crate::shared::spec_state::stand_on_spec_branch(root, "etapas");
+        crate::commands::spec_events::write::record_open(root, "etapas", "feature/etapas", "dev").expect("open");
+        let path = store::spec_file(root, "etapas").unwrap();
+        let before = std::fs::read_to_string(&path).unwrap();
+
+        for stage in ["lock-wait", "join", "commit"] {
+            let mut timing = super::Stage::new(root, "etapas", "delivery", stage, false);
+            timing.passed();
+        }
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before, "the round's timings leave the spec as it was");
+        let observed = crate::commands::spec_events::conversation::recorded_operations(root, "etapas");
+        let stages: Vec<(&str, &str)> = observed
+            .events
+            .iter()
+            .filter(|e| e.event_type == "stage_run")
+            .filter_map(|e| e.str_field("stage").zip(e.str_field("result")))
+            .collect();
+        assert_eq!(stages, [("lock-wait", "pass"), ("join", "pass"), ("commit", "pass")]);
+
+        drop(super::Stage::new(root, "etapas", "final", "machine", true));
+        let log = store::read(&path).unwrap().unwrap();
+        let machine = log.events.iter().find(|e| e.event_type == "stage_run" && e.str_field("stage") == Some("machine"));
+        assert_eq!(machine.and_then(|e| e.str_field("result")), Some("fail"), "the close's stage stays in the spec");
     }
 }

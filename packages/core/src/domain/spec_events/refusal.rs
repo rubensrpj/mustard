@@ -95,6 +95,9 @@ pub enum Refusal {
     /// Uma gravação, ou uma página, numa pasta de spec do formato antigo: o
     /// `spec.md` dela é o documento, e o binário não grava nela.
     OldFormatSpec { spec: String },
+    /// Uma obra numa spec de uma versão anterior do Mustard no projeto: ela
+    /// só se lê.
+    LegacySpec { spec: String },
     /// O pedido adiado (`deferred`) aponta uma pendência que a lista não tem.
     DeferredUnknownPending { pending: String },
     /// O pedido adiado aponta uma pendência já fechada ou descartada.
@@ -119,6 +122,12 @@ pub enum Refusal {
     /// A passagem para o plano de uma spec com lacunas do tipo de trabalho
     /// ainda sem ponto; a mensagem as nomeia no idioma de quem lê.
     SurveyGapsUnrecorded { spec: String, gaps: Vec<GapKey> },
+    /// A aprovação de uma spec sem tarefa nenhuma, ou o plano dela: não há o
+    /// que aprovar.
+    PlanWithoutTask { spec: String },
+    /// A aprovação de uma spec cujo último plano não passou, ou cujo plano
+    /// mudou depois do último que passou.
+    PlanNotPassed { spec: String },
     /// Um `point` novo no mesmo bloco e com a mesma lacuna de um ponto que já
     /// está aberto: o que existe volta no lugar do segundo.
     PointAlreadyOpen { code: String, block: String },
@@ -190,6 +199,10 @@ pub enum Refusal {
     /// Nada é gravado, e a mensagem nomeia cada item não lido e manda lê-lo de
     /// dentro da cópia.
     DeliveryReadMissing { wave: u64, missing: Vec<String> },
+    /// A leitura, de dentro da cópia da onda, de uma tarefa dela que ainda não
+    /// foi liberada, ou de um item que só tarefas assim atendem: `task` é a
+    /// tarefa. Ela chega na resposta do passo que termina a tarefa atual.
+    TaskNotReleased { task: String },
     /// A entrega da onda `wave` com arquivos entregues, `files`, que a cópia
     /// tem diferentes do que o último passo de término de tarefa guardou: o
     /// passo marca a prova verde, e o arquivo mudado depois dele iria ao
@@ -356,6 +369,7 @@ impl Refusal {
             Self::WaveByBacklog => "wave-by-backlog",
             Self::UserMessageByHook { .. } => "user-message-by-hook",
             Self::OldFormatSpec { .. } => "old-format-spec",
+            Self::LegacySpec { .. } => "legacy-spec",
             Self::DeferredUnknownPending { .. } => "deferred-unknown-pending",
             Self::DeferredClosedPending { .. } => "deferred-closed-pending",
             Self::GoalOriginNotUser { .. } => "goal-origin-not-user",
@@ -364,6 +378,8 @@ impl Refusal {
             Self::SurveyOpen { .. } => "survey-open",
             Self::SurveyNotStarted { .. } => "survey-not-started",
             Self::SurveyGapsUnrecorded { .. } => "survey-gaps-unrecorded",
+            Self::PlanWithoutTask { .. } => "plan-without-task",
+            Self::PlanNotPassed { .. } => "plan-not-passed",
             Self::PointAlreadyOpen { .. } => "point-already-open",
             Self::PointNotOpen { .. } => "point-not-open",
             Self::ClosingPointOpen => "closing-point-open",
@@ -384,6 +400,7 @@ impl Refusal {
             Self::AgreedItemsMissing { .. } => "agreed-items-missing",
             Self::DeliveryAgreedMissing { .. } => "delivery-agreed-missing",
             Self::DeliveryReadMissing { .. } => "delivery-read-missing",
+            Self::TaskNotReleased { .. } => "task-not-released",
             Self::DeliveryProofOlderThanFile { .. } => "delivery-proof-older-than-file",
             Self::VerdictReadMissing { .. } => "verdict-read-missing",
             Self::CriterionFormMissing => "criterion-form-missing",
@@ -543,6 +560,7 @@ impl Refusal {
             Self::OldFormatSpec { spec } => {
                 fill("spec_events.old_format_spec", &[("{spec}", spec.clone())])
             }
+            Self::LegacySpec { spec } => fill("spec_events.legacy_spec", &[("{spec}", spec.clone())]),
             Self::StateByFlowOnly { spec } => {
                 fill("spec_events.state_by_flow_only", &[("{spec}", spec.clone())])
             }
@@ -578,6 +596,8 @@ impl Refusal {
                 &[("{spec}", spec.clone()), ("{count}", count.to_string()), ("{points}", points.clone())],
             ),
             Self::SurveyNotStarted { spec } => fill("spec_events.survey_not_started", &[("{spec}", spec.clone())]),
+            Self::PlanWithoutTask { spec } => fill("spec_events.plan_without_task", &[("{spec}", spec.clone())]),
+            Self::PlanNotPassed { spec } => fill("spec_events.plan_not_passed", &[("{spec}", spec.clone())]),
             Self::SurveyGapsUnrecorded { spec, gaps } => fill(
                 "spec_events.survey_gaps_unrecorded",
                 &[
@@ -665,6 +685,7 @@ impl Refusal {
                 "spec_events.delivery_read_missing",
                 &[("{wave}", wave.to_string()), ("{missing}", missing.join(", "))],
             ),
+            Self::TaskNotReleased { task } => fill("spec_events.task_not_released", &[("{task}", task.clone())]),
             Self::DeliveryProofOlderThanFile { wave, files } => fill(
                 "spec_events.delivery_proof_older_than_file",
                 &[("{wave}", wave.to_string()), ("{files}", files.join(", "))],

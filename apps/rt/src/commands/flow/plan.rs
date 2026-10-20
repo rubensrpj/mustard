@@ -186,6 +186,9 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>) -> Value {
             None => return refuse(&Refusal::NoCurrentSpec),
         },
     };
+    if let Err(refusal) = mustard_core::io::legacy_specs::refuse_legacy(&project.root, &spec) {
+        return refuse(&refusal);
+    }
     let path = match store::spec_file(&project.root, &spec) {
         Ok(path) => path,
         Err(refusal) => return refuse(&refusal),
@@ -198,7 +201,7 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>) -> Value {
 
     let running = crate::commands::flow::round::waves_in_progress(&log).into_keys().collect();
     let host=crate::shared::host_observation::caller_host(&project.root,crate::shared::spec_state::session_from_env().as_deref());
-    let built = prompts(&project.root, &spec, &log, lang, &Flight { host:Some(host.into()), running, ..Flight::default() });
+    let built = prompts(&project.root, &spec, &log, lang, &Flight { host:Some(host.into()), running, ..Flight::default() }, &log.planned_waves());
     let findings = check(&opts.root, &project.root, &spec, &log, &built);
     // Cada achado vira anotação no arquivo de eventos, aqui, uma vez por
     // plano: a página o mostra de lá, sem olhar o disco nem o git ao ser
@@ -212,6 +215,13 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>) -> Value {
     let waves: Vec<Value> = built.iter().map(|p| json!({ "wave": p.wave, "lines": p.lines, "skills": p.stale_skills })).collect();
 
     if !blocking.is_empty() {
+        // Com a spec já em plano, o plano recusado deixa a marca dele: um
+        // `state` na mesma fase, com a razão da recusa. A aprovação lê o
+        // último plano por ela e fica travada até um plano passar de novo,
+        // mesmo quando a recusa veio só do disco, sem nada novo gravado.
+        if let Err(refusal) = mark_refused_plan(&opts.root, &spec, &log) {
+            return refuse(&refusal);
+        }
         // O plano travado não é marco: nada vai para o banco da página, e o
         // item que guarda um trecho com cara de segredo sai dito, para ser
         // expurgado antes da cópia.
@@ -226,10 +236,13 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>) -> Value {
     }
 
     // A fase passa pela mesma porta de gravação de fase das outras, e ela já
-    // refaz a linha da spec no índice. Uma spec que já está em plano não grava
-    // nada e tem a linha refeita aqui.
+    // refaz a linha da spec no índice. Uma spec que já está em plano, com o
+    // último plano passado e nada do plano gravado depois dele, não grava
+    // nada e tem a linha refeita aqui; com o plano mudado ou recusado desde
+    // então, grava a marca nova do plano que passou, que é o que a aprovação
+    // lê.
     let from = State::from_log(&log).phase.unwrap_or("-").to_string();
-    let recorded = if from == "plan" {
+    let recorded = if from == "plan" && mustard_core::domain::spec_state::plan_passed(&log) {
         if let Ok(paths) = mustard_core::ClaudePaths::for_project(&project.root)
             && let Err(refusal) = mustard_core::io::spec_index::refresh_line(&paths.spec_index_path(), &spec, &log)
         {
@@ -261,10 +274,31 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>) -> Value {
     // só reconhece essa pergunta, e outro texto não aprova nada.
     let ask = translate("plan.next", lang).replace("{question}", translate("approval.question", lang)).replace("{option}", translate("approval.option", lang));
     report["next"] = json!(ask);
-    report["panel"] = json!("/mustard-panel");
+    report["panel"] = json!("/mustard:mods");
     let withheld = spec_events::pages::secrets::withheld(&log);
     spec_events::pages::note_withheld(&mut report, &spec, &withheld, lang);
     report
+}
+
+/// A marca do plano recusado: um `state` em `plan` com a razão
+/// [`PLAN_NOT_READY`](mustard_core::domain::spec_state::PLAN_NOT_READY), só
+/// só com a spec em plano e só quando a última marca não é já a de uma
+/// recusa. Fora do plano a aprovação já está travada, e a marca repetida não
+/// diria nada de novo.
+///
+/// # Errors
+///
+/// A recusa da gravação do estado.
+fn mark_refused_plan(start: &Path, spec: &str, log: &SpecLog) -> Result<(), Refusal> {
+    use mustard_core::domain::spec_state::{PLAN_NOT_READY, plan_refused};
+    if State::from_log(log).phase != Some("plan") || plan_refused(log) {
+        return Ok(());
+    }
+    let mut draft = Map::new();
+    draft.insert("phase".to_string(), json!("plan"));
+    draft.insert("reason".to_string(), json!(PLAN_NOT_READY));
+    draft.insert("author".to_string(), json!("binary"));
+    record(start, spec, "state", draft, PhaseWriter::Binary).map(|_| ())
 }
 
 /// Grava cada achado da conferência como anotação, no idioma do projeto, que
@@ -311,6 +345,11 @@ fn check(start: &Path, root: &Path, spec: &str, log: &SpecLog, built: &[WaveProm
     let open = open_points(log);
     if !open.is_empty() {
         out.push(PlanFinding::Refused(open_refusal(spec, log, &open)));
+    }
+
+    // Um plano sem tarefa nenhuma não tem o que aprovar.
+    if !log.visible().iter().any(|event| event.event_type == "task") {
+        out.push(PlanFinding::Refused(Refusal::PlanWithoutTask { spec: spec.to_string() }));
     }
 
     // A onda já entregue: as conferências das tarefas olham só o que ainda
@@ -565,7 +604,7 @@ mod tests {
         assert!(!next.contains("{question}"), "{next}");
         assert!(report.get("publish").is_none() && report.get("copy").is_none(), "{report}");
         assert!(!next.contains("ArtifactData") && !next.contains("write publish"), "{next}");
-        assert_eq!(report["panel"], "/mustard-panel");
+        assert_eq!(report["panel"], "/mustard:mods");
         assert!(!root.join(".claude/mustard/publications").exists());
         for page in ["spec.html", "spec.md"] {
             assert!(!root.join(".claude/spec/x").join(page).exists(), "{page}");
@@ -615,7 +654,7 @@ mod tests {
             let next = resumed["next"].as_str().unwrap_or_default();
             assert!(next.contains(check) && next.contains(&format!("\"{question}\"")), "{language}: {next}");
             let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-            let block = resume_block("x", &log, lang, MAX_BYTES);
+            let block = resume_block("x", &log, &crate::commands::spec_events::conversation::observed(root, "x", &log), lang, MAX_BYTES);
             let round = round_for(&RoundOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None }, None);
             assert_eq!(round["reason"], json!("round-not-approved"), "{language}: {round}");
 
@@ -659,7 +698,7 @@ mod tests {
         let report = plan(root, "x");
         assert_eq!(report["ok"], json!(true), "{report}");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let built = prompts(root, "x", &log, Locale::PtBr, &Flight::default());
+        let built = prompts(root, "x", &log, Locale::PtBr, &Flight::default(), &log.planned_waves());
         assert_eq!(built.len(), 2, "duas ondas, dois pedidos");
         assert!(report.get("copy").is_none() && report.get("publish").is_none());
         assert!(!root.join(".claude/spec/x/copy").exists());
@@ -925,7 +964,7 @@ mod tests {
             assert!(!hints.iter().any(|h| h.contains(present)), "{present} está declarado: {hints:?}");
 
             let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-            let built = prompts(root, "x", &log, Locale::PtBr, &Flight::default());
+            let built = prompts(root, "x", &log, Locale::PtBr, &Flight::default(), &log.planned_waves());
             assert_eq!(built.len(), 1, "{built:?}");
             let text = &built[0].text;
             assert!(!text.contains(mustard_core::BUILD_COMMAND_FALLBACK), "{text}");
@@ -1304,5 +1343,87 @@ mod tests {
             assert!(!root.join(".claude/mustard/publications").exists());
             assert!(report["next"].as_str().unwrap().contains("Aprovar esta spec?"));
         }
+    }
+
+    /// A gravação da aprovação, pela mesma porta da testemunha.
+    fn approve(root: &Path, spec: &str) -> Result<(), Refusal> {
+        let mut draft = Map::new();
+        draft.insert("phase".to_string(), json!("approved"));
+        draft.insert("author".to_string(), json!("user"));
+        draft.insert("witness".to_string(), json!({ "question": "Aprovar esta spec?", "answer": "Aprovar" }));
+        record(root, spec, "state", draft, PhaseWriter::Witness).map(|_| ())
+    }
+
+    /// O plano passa, uma tarefa nova cita um arquivo que não existe, e o
+    /// plano roda de novo e recusa: o "Aprovar" não grava nada. Tirada a
+    /// tarefa e passado o plano de novo, a aprovação grava.
+    #[test]
+    fn approval_after_a_refused_replan_is_refused() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        sound_plan(root, "x", said);
+        assert_eq!(plan(root, "x")["ok"], json!(true));
+
+        let bad = id_of(&write(root, Some("x"), "task", json!({"wave": 1, "text": "Mexer no que falta.", "files": [{"path": "src/falta.rs"}], "origin": said})));
+        let refused = plan(root, "x");
+        assert_eq!(refused["ok"], json!(false), "{refused}");
+        assert!(approve(root, "x").is_err(), "a refused plan is never approved");
+        assert_eq!(State::from_log(&store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap()).phase, Some("plan"));
+
+        write(root, Some("x"), "remove", json!({"targets": [bad], "reason": "Cita arquivo que não existe."}));
+        assert_eq!(plan(root, "x")["ok"], json!(true));
+        assert!(approve(root, "x").is_ok(), "the plan passed again and nothing changed since");
+    }
+
+    /// O plano passa e depois some do disco um arquivo citado: o plano roda
+    /// de novo e recusa sem nenhuma tarefa nova gravada, e o "Aprovar" não
+    /// grava nada.
+    #[test]
+    fn approval_after_a_replan_refused_by_the_disk_alone_is_refused() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        sound_plan(root, "x", said);
+        assert_eq!(plan(root, "x")["ok"], json!(true));
+
+        std::fs::remove_file(root.join("src/a.rs")).unwrap();
+        let refused = plan(root, "x");
+        assert_eq!(refused["ok"], json!(false), "{refused}");
+        // The refusal notes its findings and holds the approval, and its hint says so.
+        let hint = refused["hint"].as_str().unwrap_or_default();
+        assert!(!hint.contains("Nada foi gravado") && hint.contains("anotados") && hint.contains("travada"), "{refused}");
+        assert!(approve(root, "x").is_err(), "the last plan did not pass");
+    }
+
+    /// O plano passa e depois uma tarefa nova é gravada sem o plano rodar de
+    /// novo: o "Aprovar" não grava nada até o plano conferir a tarefa.
+    #[test]
+    fn approval_after_a_plan_change_without_replan_is_refused() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        sound_plan(root, "x", said);
+        assert_eq!(plan(root, "x")["ok"], json!(true));
+
+        write(root, Some("x"), "task", json!({"wave": 1, "text": "Mexer em b.", "files": [{"path": "src/b.rs"}], "origin": said}));
+        let refusal = approve(root, "x").expect_err("the plan has not seen the new task");
+        assert!(refusal.message(Locale::PtBr).contains("run plan"), "{}", refusal.message(Locale::PtBr));
+
+        assert_eq!(plan(root, "x")["ok"], json!(true));
+        assert!(approve(root, "x").is_ok());
+    }
+
+    /// Um plano sem tarefa nenhuma não passa: não há o que aprovar.
+    #[test]
+    fn a_plan_without_any_task_is_not_ready() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        criterion(root, "x", said);
+
+        let report = plan(root, "x");
+        assert_eq!(report["ok"], json!(false), "{report}");
+        assert!(reasons(&report, "blocking").contains(&"plan-without-task".to_string()), "{report}");
     }
 }

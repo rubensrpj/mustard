@@ -65,9 +65,6 @@ fn usage_of(doc: &Value, called: Instant) -> FilterUsage {
 
 #[cfg(test)]
 mod tests {
-    use std::io::{BufRead, BufReader, Write};
-    use std::net::TcpListener;
-
     use mustard_core::io::spec_events as store;
     use serde_json::{Map, json};
 
@@ -83,40 +80,19 @@ mod tests {
         serving(Duration::ZERO, status, String::new())
     }
 
-    /// Um serviço em 127.0.0.1 que responde `status` com `body` a todo pedido,
-    /// `delay` depois de lê-lo, um pedido por vez, e conta quantos chegaram.
+    /// [`crate::shared::test_fixture::jev_service`].
     fn serving(delay: Duration, status: u16, body: String) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("http://{}/v1/systemone", listener.local_addr().unwrap());
-        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let seen = std::sync::Arc::clone(&count);
-        std::thread::spawn(move || {
-            for stream in listener.incoming().flatten() {
-                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                let mut reader = BufReader::new(&stream);
-                let mut length = 0usize;
-                loop {
-                    let mut line = String::new();
-                    if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
-                        break;
-                    }
-                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-                        length = value.trim().parse().unwrap_or(0);
-                    }
-                }
-                let mut request = vec![0; length];
-                let _ = std::io::Read::read_exact(&mut reader, &mut request);
-                std::thread::sleep(delay);
-                let mut stream = &stream;
-                let _ = write!(stream, "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
-            }
-        });
-        (url, count)
+        crate::shared::test_fixture::jev_service(delay, status, body)
     }
 
+    /// As chamadas `command` que o programa observou na spec `x`.
     fn calls(root: &Path, command: &str) -> Vec<Map<String, Value>> {
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        log.visible().into_iter().filter(|e| e.event_type == "call" && e.str_field("command") == Some(command)).map(|e| e.fields.clone()).collect()
+        crate::commands::spec_events::conversation::observed(root, "x", &log)
+            .into_iter()
+            .filter(|e| e.event_type == "call" && e.str_field("command") == Some(command))
+            .map(|e| e.fields)
+            .collect()
     }
 
     /// A escolha que o serviço recusa por falta de crédito volta vazia e deixa
@@ -167,7 +143,7 @@ mod tests {
         let subject = OrderedSubject { name: "Retomada".into(), tasks: vec![(1, vec![]), (2, vec![])] };
         let backlog = order_backlog_with(&open, vec![subject], &Default::default(), &|payloads| {
             filter.choose_all_recorded_within(root, "x", TASK_TRIAGE_CALL, payloads, Duration::from_secs(5))
-        });
+        }, None);
         assert_eq!((backlog.subjects[0].tasks.clone(), backlog.unanswered), (vec![(2, vec![]), (1, vec![])], 0));
 
         let item = Item { title: "Retomada avisa a onda sem agente".into(), text: String::new(), files: BTreeSet::from(["src/resume.ts".to_string()]) };

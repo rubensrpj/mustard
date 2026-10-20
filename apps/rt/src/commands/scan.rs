@@ -49,6 +49,12 @@ use super::scan_claude;
 /// `CLAUDE.md` is ever written. The hard cap guards the map against a runaway
 /// generator.
 pub fn run(root: &Path, out: Option<&Path>, full: bool) {
+    // A passada que a rodada soltou em segundo plano depois do commit: segura
+    // a trava própria e relê o mapa enquanto ele estiver atrás do commit.
+    if out.is_none() && !full && std::env::var_os(crate::commands::flow::round::BACKGROUND_PASS_ENV).is_some() {
+        crate::commands::flow::round::refresh_map_while_behind(root);
+        return;
+    }
     let session = crate::shared::spec_state::session_from_env();
     let result = scan_at(root, out, full, session.as_deref(), |root, model| Scan::locate().scan_then_read_history(root, model));
     // Com o mapa do projeto gravado, o texto dos pull requests que a
@@ -120,12 +126,6 @@ pub(crate) fn scan_at(
 
     // Only run the map pass when grain succeeded (model file is valid).
     if scan_result.is_ok() {
-        if out.is_none() {
-            match mustard_core::io::expertise::sync(root) {
-                Ok(profiles) => { result["expertise"] = profiles; }
-                Err(reason) => { result["expertise"] = json!({"ok":false,"reason":reason}); }
-            }
-        }
         if let Some(warning) = ceiling_warning(root, session) {
             result["warning"] = json!(warning);
         }

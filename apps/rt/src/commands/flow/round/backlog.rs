@@ -6,30 +6,34 @@
 //! Nenhuma tarefa espera por arquivo: cada onda trabalha na própria cópia, e
 //! a rodada junta no commit. Seguram a tarefa só a dependência declarada, a
 //! limpeza por último e as vagas.
-//! O Jev responde decisões tipadas não atendidas pelo cache; na falha,
-//! o agrupamento segue pelas evidências nativas.
+//! O Jev responde decisões tipadas não atendidas pelo cache, antes das
+//! travas da rodada ([`super::dispatch_jev`]): com elas presas, a montagem só
+//! lê a decisão gravada, e a tarefa sem decisão espera a rodada seguinte, só
+//! ela. O Jev que falha manda a pergunta à reserva, e a tarefa espera o
+//! recibo; o recibo incerto, como o Jev desligado, deixa o agrupamento pelas
+//! evidências nativas.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::Instant;
 
-use mustard_core::domain::map_filter::FilterError;
+use mustard_core::domain::map_filter::{FilterError, FilterUsage};
 use mustard_core::domain::spec_events::{Block, BlockQuery, SpecEvent, SpecLog};
 use mustard_core::domain::spec_state::PhaseWriter;
 use serde_json::{Map, Value, json};
 
 use super::leftovers::is_cleanup;
 use super::queue::{
-    backlog_left, backlog_left_without, backlog_population, backlog_ready_without, covers_nothing, open_sends, outgoing, task_revision,
+    backlog_left, backlog_left_without, backlog_population, backlog_ready_without, covers_nothing, outgoing, task_revision,
     tasks_not_delivered, waves_done, waves_in_progress,
 };
 use super::report::backlog_return;
 use super::stops::waves_stuck;
 use super::summary_wave::{group_waves, summary_waves};
 use crate::commands::spec_events::write::{RecordCheck, record};
-use crate::hooks::session::conversation_size::WAVE_LIMIT;
-use crate::shared::dag::{BacklogTask, CLASH_FROM, pack_by_affinity, pack_by_kind, sets_cross, touches_whole_tree};
-use crate::shared::jev::{ASSEMBLY_CALL, record_jev_call};
+use crate::shared::dag::{BacklogTask, CLASH_FROM, pack_by_kind, sets_cross, touches_whole_tree};
+use super::dispatch_jev::{Asker, unsure};
+use crate::shared::jev::{ASSEMBLY_CALL, backlog_payloads, read_judgements, record_jev_call};
 use crate::shared::judgement::{Board, BoardTask, BoardWave, Judged};
 
 /// Quem julga o backlog para a montagem: uma avaliação do quadro inteiro
@@ -54,6 +58,9 @@ pub(crate) enum Hold {
     /// Chegou ao backlog nesta rodada, devolvida pelo corte de uma onda ou
     /// nascida agora, e entra na montagem da rodada seguinte.
     Arrived,
+    /// Espera a decisão do Jev, ou o recibo da reserva dele, que a passada
+    /// antes das travas da rodada seguinte lê.
+    JevPending,
 }
 
 /// Monta as ondas que saem nesta rodada, olhando o backlog inteiro
@@ -67,14 +74,12 @@ pub(crate) enum Hold {
 /// O assunto pode vir do Jev (`judge`), avaliando apenas decisões tipadas
 /// ainda não atendidas pelo cache, quando há vaga livre e tarefa elegível.
 /// O quadro leva as ondas em andamento
-/// e o backlog pronto, e a resposta diz o tipo de trabalho de cada tarefa, o
-/// tamanho dela e o quanto ela muda o mesmo que cada onda em andamento. A onda
-/// junta as tarefas do mesmo tipo, tenham ou não arquivo em comum, até a soma
-/// do tamanho delas chegar ao que um agente faz antes do limite da conversa
-/// de trabalho adicional (`WAVE_LIMIT`): entrada e resumos herdados não
-/// reduzem esse horizonte. O que
-/// passa disso fecha a onda e vai para outra, e a tarefa que sozinha passa do
-/// teto sai sozinha. A de tipo incerto sai sozinha, e a que o Jev julga mudar
+/// e o backlog pronto, e a resposta diz o tipo de trabalho de cada tarefa e o
+/// quanto ela muda o mesmo que cada onda em andamento. A onda junta todas as
+/// tarefas do mesmo tipo, tenham ou não arquivo em comum, sem teto de tarefas
+/// nem de tamanho: quem segura o tamanho é o sinal de conclusão dentro da
+/// conversa do agente, que o manda terminar a tarefa atual e devolver o
+/// resumo. A de tipo incerto sai sozinha, e a que o Jev julga mudar
 /// o mesmo que uma onda aberta espera no backlog. As ondas saem na ordem fixa
 /// dos tipos — defeito primeiro, limpeza no fim — e, dentro do tipo, pelo
 /// número ([`pack_by_kind`]). Duas ondas com arquivo em comum saem juntas, e
@@ -82,10 +87,8 @@ pub(crate) enum Hold {
 /// trabalha na própria cópia, e a rodada junta no commit. A chamada grava um evento `call` com os tokens, o custo e
 /// o modelo, como a busca. Sem `judge` (sem chave, ou o Jev desligado), ou com
 /// a chamada falhando, o assunto combina os arquivos declarados e as relações
-/// atuais do scan, dentro da estimativa de tamanho. O grupo que divide
-/// arquivo sai junto enquanto cabe no mesmo teto (`WAVE_LIMIT`); o que passa
-/// é cortado em ondas seguidas, na ordem das tarefas, e a tarefa que espera
-/// por ele só entra se couber ([`pack_by_local_evidence`](crate::shared::dag::pack_by_local_evidence)). Em qualquer
+/// atuais do scan: o grupo que divide arquivo sai inteiro numa onda, com a
+/// tarefa que espera só por ele ([`pack_by_local_evidence`](crate::shared::dag::pack_by_local_evidence)). Em qualquer
 /// dos dois, a tarefa com o curinga da árvore inteira só sai sozinha, sem nada
 /// em andamento.
 ///
@@ -177,8 +180,128 @@ pub(crate) fn dispatch_backlog(
     on_entry: &SpecLog,
     locked: &SpecLog,
     limit: usize,
-    judge: Option<&Judge<'_>>,
+    (judge, asker): (Option<&Judge<'_>>, Option<&Asker<'_>>),
 ) -> Result<Assembly, mustard_core::domain::spec_events::Refusal> {
+    assemble(start, spec, (on_entry, locked), limit, (judge, asker), (false, false)).map(|(assembly, _)| assembly)
+}
+
+/// A montagem que a rodada faria agora na spec lida em `log`, sem gravar
+/// nada: a spec como as gravações dela a deixariam. É a passada antes das
+/// travas, com as perguntas ao Jev feitas e gravadas por `asker`; com
+/// `formed_only`, só as ondas do classificador.
+///
+/// # Errors
+///
+/// A recusa da conferência das gravações.
+pub(crate) fn planned_backlog(
+    start: &Path,
+    spec: &str,
+    log: &SpecLog,
+    limit: usize,
+    (judge, asker): (Option<&Judge<'_>>, &Asker<'_>),
+    formed_only: bool,
+) -> Result<SpecLog, mustard_core::domain::spec_events::Refusal> {
+    let (_, planned) = assemble(start, spec, (log, log), limit, (judge, Some(asker)), (formed_only, true))?;
+    Ok(planned.unwrap_or_else(|| log.clone()))
+}
+
+/// [`dispatch_backlog`] com a formação do classificador pendente: só as
+/// ondas que ele já formou saem, inteiras; as tarefas que ele ainda vai ler
+/// esperam a leitura, sem Jev e sem a montagem de sempre.
+pub(crate) fn dispatch_formed(start: &Path, spec: &str, on_entry: &SpecLog, locked: &SpecLog, limit: usize) -> Result<Assembly, mustard_core::domain::spec_events::Refusal> {
+    assemble(start, spec, (on_entry, locked), limit, (None, None), (true, false)).map(|(assembly, _)| assembly)
+}
+
+/// O julgamento do quadro de uma montagem: as tarefas que foram ao Jev, o
+/// julgamento das que têm decisão (`None` deixa a montagem pelas evidências
+/// nativas), as que esperam a decisão e a chamada que saiu agora, com o uso
+/// ou a falha.
+struct Judging {
+    asked: usize,
+    judged: Option<Judged>,
+    undecided: BTreeSet<u64>,
+    call: Option<(Instant, Result<FilterUsage, FilterError>)>,
+}
+
+/// As tarefas do backlog que o pedido `payload` da montagem pergunta.
+fn tasks_of(payload: &str) -> Vec<u64> {
+    let body: Value = serde_json::from_str(payload).unwrap_or(Value::Null);
+    body["state"]["backlog"].as_object().into_iter().flatten().filter_map(|(key, _)| key.strip_prefix('t')?.parse().ok()).collect()
+}
+
+/// A resposta, na forma da do Jev, ao pedido `payload` da montagem, pelo que
+/// `judged` diz de cada tarefa dele; `None` quando falta alguma.
+fn board_doc(payload: &str, judged: &Judged) -> Option<Value> {
+    let body: Value = serde_json::from_str(payload).ok()?;
+    let mut answers = Map::new();
+    for key in body["questions"].as_object()?.keys() {
+        let id: u64 = key.rsplit("_t").next()?.parse().ok()?;
+        let judgement = judged.tasks.get(&id)?;
+        let answer = if key.starts_with("tipo_") {
+            let kind = judgement.kind.key();
+            json!({ "type": "choice", "choice": kind, "confidence": judgement.confidence, "probabilities": { kind: judgement.confidence } })
+        } else {
+            json!({ "type": "noul", "noul": judgement.clash })
+        };
+        answers.insert(key.clone(), answer);
+    }
+    Some(json!({ "answers": answers }))
+}
+
+/// O julgamento do quadro `board` por `judge`, decidido por `asker`: antes
+/// das travas, a chamada sai para os pedidos sem decisão e a resposta fica
+/// gravada; com as travas presas, só se lê. A tarefa de um pedido sem decisão
+/// espera; a decisão incerta da reserva, ou a regra gravada, deixa a montagem
+/// pelas evidências nativas. Sem `asker`, a chamada sai na hora, inteira.
+fn judged_board(board: &Board, judge: &Judge<'_>, asker: Option<&Asker<'_>>) -> Judging {
+    let asked = board.backlog.len();
+    let Some(asker) = asker else {
+        let called = Instant::now();
+        let answer = judge(board);
+        return Judging { asked, judged: answer.as_ref().ok().cloned(), undecided: BTreeSet::new(), call: Some((called, answer.map(|judged| judged.usage))) };
+    };
+    let payloads = match backlog_payloads(board) {
+        Ok(payloads) => payloads,
+        Err(error) => return Judging { asked, judged: None, undecided: BTreeSet::new(), call: asker.asks().then(|| (Instant::now(), Err(error))) },
+    };
+    let mut call = None;
+    if asker.asks() && !asker.missing(ASSEMBLY_CALL, &payloads).is_empty() && !asker.take_receipt(ASSEMBLY_CALL, &payloads) {
+        let wanted = asker.missing(ASSEMBLY_CALL, &payloads);
+        let called = Instant::now();
+        let answer = judge(board);
+        let docs = answer.as_ref().ok().and_then(|judged| wanted.iter().map(|payload| board_doc(payload, judged)).collect::<Option<Vec<_>>>());
+        asker.settle(ASSEMBLY_CALL, &wanted, docs, true, called);
+        call = Some((called, answer.map(|judged| judged.usage)));
+    }
+    let known = asker.lookup(ASSEMBLY_CALL, &payloads);
+    let docs: Vec<Value> = known.iter().flatten().cloned().collect();
+    if docs.iter().any(Value::is_null) || unsure(&docs) {
+        return Judging { asked, judged: None, undecided: BTreeSet::new(), call };
+    }
+    let undecided: BTreeSet<u64> = payloads.iter().zip(&known).filter(|(_, doc)| doc.is_none()).flat_map(|(payload, _)| tasks_of(payload)).collect();
+    let decided = Board { running: board.running.clone(), backlog: board.backlog.iter().filter(|task| !undecided.contains(&task.id)).cloned().collect() };
+    let mut answers = Map::new();
+    for doc in &docs {
+        answers.extend(doc["answers"].as_object().cloned().unwrap_or_default());
+    }
+    match read_judgements(&json!({ "answers": answers }), &decided) {
+        Ok(tasks) => Judging { asked, judged: Some(Judged { tasks, usage: FilterUsage::default() }), undecided, call },
+        Err(_) => Judging { asked, judged: None, undecided: BTreeSet::new(), call },
+    }
+}
+
+/// O corpo de [`dispatch_backlog`], de [`dispatch_formed`] e de
+/// [`planned_backlog`]: com `formed_only`, só as ondas do classificador
+/// saem; com `dry`, nada se grava, e volta também a spec como as gravações a
+/// deixariam.
+fn assemble(
+    start: &Path,
+    spec: &str,
+    (on_entry, locked): (&SpecLog, &SpecLog),
+    limit: usize,
+    (judge, asker): (Option<&Judge<'_>>, Option<&Asker<'_>>),
+    (formed_only, dry): (bool, bool),
+) -> Result<(Assembly, Option<SpecLog>), mustard_core::domain::spec_events::Refusal> {
     use crate::shared::dag::{Batch, pack_by_local_evidence};
 
     let log = locked;
@@ -187,7 +310,9 @@ pub(crate) fn dispatch_backlog(
     let by_id: BTreeMap<u64, &SpecEvent> = log.visible().into_iter().filter(|e| e.event_type == "task").map(|t| (t.id, t)).collect();
     let codes = log.codes();
     // A onda de lote montada e não enviada se desfaz: só existe a que roda.
-    let undone = unsent_batch_waves(log);
+    // A recusa da rodada que a segura é das chamadas que o programa observou.
+    let observed = crate::commands::spec_events::conversation::observed(start, spec, log);
+    let undone = unsent_batch_waves(log, &observed);
     let in_undone = |id: &u64| by_id.get(id).and_then(|task| task.wave()).is_some_and(|wave| undone.contains(&wave));
     let cleanup = |id: &u64| by_id.get(id).is_some_and(|task| is_cleanup(task));
     // A tarefa que não cobre item nenhum não forma onda, sozinha ou de carona:
@@ -218,11 +343,12 @@ pub(crate) fn dispatch_backlog(
     // As ondas do plano que ainda não terminaram: em andamento, por sair,
     // mantidas ou com conserto pendente. Elas vão ao Jev e seguram a limpeza
     // que pegaria carona, nunca uma tarefa pelo arquivo.
-    let open_waves = open_plan_waves(log);
+    let open_waves = open_plan_waves(log, &observed);
     // As vagas que as ondas já montadas deixam livres. O ciclo entre ondas é
     // recusado pela escolha das ondas prontas, logo depois: aqui só não sobra
     // vaga para onda nova.
-    let (free, alone) = outgoing(log, limit, &open_sends(log), &waves_stuck(log), &undone).map_or((0, false), |out| (out.free, out.alone));
+    let vacancies = super::vacancy::vacancies_with(&crate::commands::spec_events::project(start).root, spec, log, limit);
+    let (free, alone) = outgoing(log, &vacancies, &waves_stuck(log), &undone).map_or((0, false), |out| (out.free, out.alone));
 
     let code_of = |id: &u64| -> u64 { codes.get(id).and_then(|code| code.rsplit('-').next()).and_then(|number| number.parse().ok()).unwrap_or(*id) };
     // Cada resumo que ainda vale vira a base de uma onda, antes de qualquer outra;
@@ -270,18 +396,21 @@ pub(crate) fn dispatch_backlog(
                 if let Some(known) = affinity_board.backlog.iter().find(|known| known.id == task.id) {task.reads.clone_from(&known.reads);}
             }
             board.running.clone_from(&affinity_board.running);
-            let called = Instant::now();
-            Some((board.backlog.len(), called, judge(&board)))
+            Some(judged_board(&board, judge, asker))
         }
         _ => None,
     };
-    let affinity = affinity_board.affinities();
+    let undecided: BTreeSet<u64> = judging.as_ref().map(|judging| judging.undecided.clone()).unwrap_or_default();
     let batches = match &judging {
-        Some((_, _, Ok(judged))) if affinity.is_empty() => pack_by_kind(&population, &order, &waiting, &judged.tasks, &code_of, WAVE_LIMIT),
-        Some((_, _, Ok(judged))) => pack_by_affinity(&population, &order, &waiting, &judged.tasks, &code_of, (WAVE_LIMIT, &affinity)),
+        _ if formed_only => Vec::new(),
+        Some(Judging { judged: Some(judged), .. }) => {
+            // A tarefa sem decisão do Jev espera a rodada seguinte, só ela.
+            let decided = |ids: &[u64]| -> Vec<u64> { ids.iter().copied().filter(|id| !undecided.contains(id)).collect() };
+            pack_by_kind(&population, &decided(&order), &decided(&waiting), &judged.tasks, &code_of)
+        }
         _ => {
             let mut batches = if order.is_empty() { Vec::new() } else {
-                pack_by_local_evidence(&population, &order, &waiting, &super::evidence::links(&affinity_board), WAVE_LIMIT)
+                pack_by_local_evidence(&population, &order, &waiting, &super::evidence::links(&affinity_board))
             };
             // O lote com a tarefa marcada como prioridade primeiro; depois o
             // curinga da árvore inteira; os outros pela tarefa de código mais
@@ -293,7 +422,7 @@ pub(crate) fn dispatch_backlog(
     let batches: Vec<(Batch<u64>, Option<u64>)> =
         by_group
             .into_iter()
-            .chain(by_summary.into_iter().map(|wave| (wave.batch, Some(wave.summary))))
+            .chain(by_summary.into_iter().filter(|_| !formed_only).map(|wave| (wave.batch, Some(wave.summary))))
             .chain(batches.into_iter().map(|batch| (batch, None)))
             .collect();
     // Cada lote ocupa uma vaga, na ordem de prioridade, divida ele arquivo
@@ -320,27 +449,22 @@ pub(crate) fn dispatch_backlog(
     // A chamada da montagem fica gravada, com quantas tarefas foram ao Jev e
     // quantas saíram em onda; na falha, com o motivo, e a montagem seguiu
     // pelo arquivo.
-    if let Some((asked, called, answer)) = &judging {
+    if let Some(Judging { asked, call: Some((called, answer)), .. }) = &judging {
         let returned = chosen.iter().filter(|(_, summary)| summary.is_none()).map(|(batch, _)| batch.tasks.len()).sum();
-        record_jev_call(start, spec, ASSEMBLY_CALL, *called, Some((*asked, returned)), answer.as_ref().map(|judged| &judged.usage));
+        record_jev_call(start, spec, ASSEMBLY_CALL, *called, Some((*asked, returned)), answer.as_ref());
     }
 
     // Attach a ready, small cleanup to the last functional batch when local
     // source evidence links it. Never add unrelated work or reopen active waves.
-    let complete = open_waves.is_empty() && left_on_entry.iter().filter(|id| !cleanup(id))
+    let complete = !formed_only && open_waves.is_empty() && left_on_entry.iter().filter(|id| !cleanup(id))
         .all(|id| chosen.iter().any(|(batch, _)| batch.tasks.contains(id)));
     if complete {
         let links = super::evidence::links(&affinity_board);
-        let weight = |id: &u64| {
-            let native = crate::shared::task_size::native_growth(population.iter().find(|task| task.id == *id).map_or(0, |task| task.files.len()));
-            match &judging { Some((_, _, Ok(judged))) => judged.tasks.get(id).map_or(native, |size| native.max(size.growth_tokens())), _ => native }
-        };
         for id in tidy {
             let Some(task) = population.iter().find(|task| task.id == id && task.files.len() == 1) else { continue; };
             if chosen.iter().any(|(batch, _)| batch.tasks.contains(&id)) { continue; }
             let target = chosen.iter().position(|(batch, _)| !touches_whole_tree(&batch.files)
-                && (sets_cross(&task.files, &batch.files) || batch.tasks.iter().any(|other| links.contains(&(id,*other)) || links.contains(&(*other,id))))
-                && batch.tasks.iter().map(&weight).sum::<u64>().saturating_add(weight(&id)) <= WAVE_LIMIT);
+                && (sets_cross(&task.files, &batch.files) || batch.tasks.iter().any(|other| links.contains(&(id,*other)) || links.contains(&(*other,id)))));
             let Some(at) = target else { continue; };
             if chosen.iter().enumerate().any(|(other,(batch,_))| other != at && sets_cross(&task.files, &batch.files)) { continue; }
             chosen[at].0.tasks.push(id);
@@ -348,11 +472,14 @@ pub(crate) fn dispatch_backlog(
         }
     }
     let judged = match &judging {
-        Some((_, _, Ok(judged))) => Some(&judged.tasks),
+        Some(Judging { judged: Some(judged), .. }) => Some(&judged.tasks),
         _ => None,
     };
     let assembled = Assembled { codes: &codes, claimed: &claimed, order: &order, chosen: &chosen };
-    let held = why_held(&assembled, judged, arrived);
+    let mut held = why_held(&assembled, judged, arrived);
+    for id in &undecided {
+        held.insert(codes.get(id).cloned().unwrap_or_else(|| id.to_string()), Hold::JevPending);
+    }
 
     let mut writes: Vec<(&str, Map<String, Value>)> = Vec::new();
     // Os comandos que o projeto declara: o de teste reconhece a prova que o
@@ -408,16 +535,19 @@ pub(crate) fn dispatch_backlog(
         writes.push(("task", backlog_return(task)));
     }
     if writes.is_empty() {
-        return Ok((formed, held));
+        return Ok(((formed, held), dry.then(|| locked.clone())));
     }
     let mut check = RecordCheck::open(start, spec, PhaseWriter::Binary)?;
     for (event_type, draft) in &writes {
         check.record(event_type, draft.clone())?;
     }
+    if dry {
+        return Ok(((formed, held), Some(check.log().clone())));
+    }
     for (event_type, draft) in writes {
         record(start, spec, event_type, draft, PhaseWriter::Binary)?;
     }
-    Ok((formed, held))
+    Ok(((formed, held), None))
 }
 
 /// O que a montagem decidiu, para dizer por que cada tarefa pronta ficou: o
@@ -484,9 +614,9 @@ fn board_of(log: &SpecLog, by_id: &BTreeMap<u64, &SpecEvent>, population: &[Back
 /// enviada, que a montagem desfaz. O Jev as vê como as ondas em andamento, e
 /// a limpeza só pega carona sem nenhuma delas; o arquivo delas não segura
 /// tarefa nenhuma.
-fn open_plan_waves(log: &SpecLog) -> Vec<u64> {
+fn open_plan_waves(log: &SpecLog, observed: &[SpecEvent]) -> Vec<u64> {
     let done = waves_done(log, &waves_in_progress(log));
-    let undone = unsent_batch_waves(log);
+    let undone = unsent_batch_waves(log, observed);
     log.planned_waves().into_iter().filter(|n| !done.contains(n) && !undone.contains(n)).collect()
 }
 
@@ -495,11 +625,14 @@ fn open_plan_waves(log: &SpecLog) -> Vec<u64> {
 /// [`dispatch_backlog`] grava, com a ordem das tarefas no campo `order` e
 /// autor binário; a onda combinada à mão no plano, sem ordem, segue como está
 /// até a rodada despachá-la. É a onda de lote que a rodada desfaz.
-fn unsent_batch_waves(log: &SpecLog) -> BTreeSet<u64> {
-    let failure=log.visible().into_iter().filter(|e|e.event_type=="call" && e.str_field("command")==Some("round") && e.str_field("result")==Some("refused"))
-        .map(|e|e.id).next_back();
+fn unsent_batch_waves(log: &SpecLog, observed: &[SpecEvent]) -> BTreeSet<u64> {
+    use mustard_core::io::spec_index::later;
+    // A rodada recusada é a chamada mais nova que o programa observou; ela
+    // mora fora da spec, então o antes e o depois se dizem pela hora.
+    let failure=observed.iter().rfind(|e|e.event_type=="call" && e.str_field("command")==Some("round") && e.str_field("result")==Some("refused"))
+        .map(SpecEvent::at);
     let revised=log.visible().into_iter().filter(|e|e.str_field("author")!=Some("binary") && ["task","request","criterion","wave"].contains(&e.event_type.as_str()))
-        .map(|e|e.id).max().unwrap_or(0);
+        .map(SpecEvent::at).reduce(|newest,at| if later(at,newest) {at} else {newest});
     let sent: BTreeSet<u64> = log.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|e| e.event_type == "send").filter_map(SpecEvent::wave).collect();
     let delivered = log.delivered_waves();
     let formed: BTreeSet<u64> = log
@@ -509,7 +642,8 @@ fn unsent_batch_waves(log: &SpecLog) -> BTreeSet<u64> {
         .filter_map(SpecEvent::wave)
         .collect();
     log.planned_waves().into_iter().filter(|n| {
-        let recoverable=failure.is_some_and(|failed| failed>revised && log.visible().into_iter().any(|e|e.event_type=="wave" && e.wave()==Some(*n) && e.id<failed));
+        let recoverable=failure.is_some_and(|failed| revised.is_none_or(|revised| later(failed,revised))
+            && log.visible().into_iter().any(|e|e.event_type=="wave" && e.wave()==Some(*n) && later(failed,e.at())));
         formed.contains(n) && !sent.contains(n) && !delivered.contains(n) && !recoverable
     }).collect()
 }
@@ -521,7 +655,7 @@ mod tests {
     use serde_json::json;
     use tempfile::tempdir;
 
-    use super::super::tests::{approved, git_at, returned, round, waves_in};
+    use super::super::tests::{approved, returned, round, waves_in};
 
     /// A spec `x` como está gravada agora.
     fn spec_x(root: &std::path::Path) -> SpecLog {
@@ -546,7 +680,6 @@ mod tests {
         approved(root, "x", &[(1, &["src/a.ts"], &[])]);
         std::fs::write(root.join("mustard.json"), json!({"buildCommand": "echo build", "testCommand": "npm test"}).to_string()).unwrap();
         std::fs::write(root.join("src/soma.ts"), "export function soma(a: number, b: number): number { return a + b; }\n").unwrap();
-        git_at(root, &["checkout", "-q", "-b", "feature/x"]);
         round(root, "x", None);
 
         std::fs::write(root.join("src/a.ts"), "export const one = 1;\n").unwrap();
@@ -573,8 +706,8 @@ mod tests {
     /// Num projeto TypeScript, a onda 1 está em andamento mudando o contrato
     /// `src/contract.ts`. Cinco tarefas pequenas, sem dependência, ficam
     /// prontas: duas no mesmo contrato, uma no consumidor que, pelo mapa do
-    /// scan, lê esse contrato, e duas em arquivos à parte. As cinco saem nesta
-    /// rodada ao lado da onda 1, em ondas cheias até o teto de trabalho, e
+    /// scan, lê esse contrato, e duas em arquivos à parte. As cinco, do mesmo
+    /// tipo, saem nesta rodada ao lado da onda 1, numa onda só, sem teto, e
     /// nenhuma fica com motivo; só a sexta, que depende da tarefa da onda 1,
     /// espera.
     #[test]
@@ -602,7 +735,7 @@ mod tests {
         }
         let first = backlog_task_on(root, said, crit, "Change the contract.", &["src/contract.ts"]);
         let log = spec_x(root);
-        assert_eq!(super::dispatch_backlog(root, "x", &log, &log, max_parallel(root), None).map(|(formed, _)| formed), Ok(vec![1]));
+        assert_eq!(super::dispatch_backlog(root, "x", &log, &log, max_parallel(root), (None, None)).map(|(formed, _)| formed), Ok(vec![1]));
         seed_running(root, 1);
         scan.scan(root, &mustard_core::io::project_map::model_path(root)).expect("the scan writes the map");
 
@@ -617,16 +750,16 @@ mod tests {
         let dependent = id_of(&write(root, "x", "task", body));
         // Todas pequenas e do mesmo tipo, sem choque com a onda em andamento.
         let judge = |board: &Board| {
-            let small = Judgement { kind: TaskKind::Feature, confidence: 0.9, clash: 0.0, size: 0.0 };
+            let small = Judgement { kind: TaskKind::Feature, confidence: 0.9, clash: 0.0 };
             Ok(Judged { tasks: board.backlog.iter().map(|task| (task.id, small)).collect(), usage: Default::default() })
         };
 
         let log = spec_x(root);
-        let (formed, held) = super::dispatch_backlog(root, "x", &log, &log, max_parallel(root), Some(&judge)).unwrap();
-        assert_eq!(formed, vec![2, 3], "quatro de 35 mil cabem nos 150 mil da onda 2; a quinta vai na 3");
+        let (formed, held) = super::dispatch_backlog(root, "x", &log, &log, max_parallel(root), (Some(&judge), None)).unwrap();
+        assert_eq!(formed, vec![2], "as cinco do mesmo tipo saem na onda 2, sem teto");
         let now = spec_x(root);
         let wave_of = |task: u64| now.current(task).and_then(mustard_core::domain::spec_events::SpecEvent::wave);
-        assert_eq!(ready.map(wave_of), [Some(2), Some(2), Some(2), Some(2), Some(3)], "nenhuma espera pelo arquivo nem pelo contrato da onda 1");
+        assert_eq!(ready.map(wave_of), [Some(2); 5], "nenhuma espera pelo arquivo nem pelo contrato da onda 1");
         assert_eq!(wave_of(dependent), None, "a que depende da tarefa da onda 1 espera");
         assert!(held.is_empty(), "nenhuma pronta ficou com motivo: {held:?}");
     }

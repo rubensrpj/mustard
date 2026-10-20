@@ -145,25 +145,15 @@ impl ProofRun {
     }
 }
 
-/// A prova de um critério que não passou: o código dele, o comando inteiro
-/// que tentou rodar e o motivo — o que a recusa do fechamento e da rodada
-/// nomeiam.
-pub(crate) struct FailedProof {
-    pub code: String,
-    pub command: String,
-    pub fault: ProofFault,
-}
-
 /// Roda a prova de cada critério de `criteria` (id, código, comando), na
 /// ordem em que a lista chega, uma de cada vez, e devolve a execução de cada
-/// um junto do primeiro que não passou. É o mesmo laço que o fechamento roda
+/// um; o motivo de cada uma que não passou sai de [`ProofRun::fault`]. É o mesmo laço que o fechamento roda
 /// para os critérios da spec inteira, em `close.rs`, e que a rodada roda,
 /// antes de comitar, só para os que as ondas do relatório cobrem: quem chama
 /// decide o que grava com cada execução e como nomeia a recusa — aqui só se
 /// roda e se lê o resultado.
-pub(crate) fn run_criteria_proofs(root: &Path, criteria: &[(u64, String, String)]) -> (Vec<(u64, String, ProofRun)>, Option<FailedProof>) {
+pub(crate) fn run_criteria_proofs(root: &Path, criteria: &[(u64, String, String)]) -> Vec<(u64, String, ProofRun)> {
     let mut runs = Vec::new();
-    let mut failed = None;
     let mut cache = std::collections::BTreeMap::<String, ProofRun>::new();
     for (id, code, proof) in criteria {
         let canonical = canonical_test_command(proof);
@@ -177,14 +167,9 @@ pub(crate) fn run_criteria_proofs(root: &Path, criteria: &[(u64, String, String)
             cache.insert(canonical, out.clone());
             out
         };
-        if failed.is_none()
-            && let Some(fault) = out.fault()
-        {
-            failed = Some(FailedProof { code: code.clone(), command: proof.clone(), fault });
-        }
         runs.push((*id, code.clone(), out));
     }
-    (runs, failed)
+    runs
 }
 
 /// Uma execução classificada como o fechamento a grava. As duas portas
@@ -382,8 +367,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let command = "sh -c 'printf x >> proof-count'".to_string();
         let criteria = [(1, "first".into(), command.clone()), (2, "second".into(), command.clone()), (3, "third".into(), command)];
-        let (outcomes, failure) = run_criteria_proofs(dir.path(), &criteria);
-        assert!(failure.is_none());
+        let outcomes = run_criteria_proofs(dir.path(), &criteria);
+        assert!(outcomes.iter().all(|(_, _, out)| out.fault().is_none()));
         assert_eq!(outcomes.len(), 3);
         assert!(!outcomes[0].2.reused && outcomes[1].2.reused && outcomes[2].2.reused);
         assert_eq!(outcomes[1].2.ms, 0);

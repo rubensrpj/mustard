@@ -252,6 +252,18 @@ struct Report {
     /// Presente só quando a busca falhou.
     #[serde(skip_serializing_if = "Option::is_none")]
     search_warning: Option<String>,
+    /// O aviso de que uma passagem do resumo do projeto — a única das specs
+    /// antigas ou a das regras pendentes — não terminou. Presente só quando
+    /// uma delas falhou.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    summary_warning: Option<String>,
+    /// Os pedidos de reserva das decisões das passagens que o Jev ligado não
+    /// deu ([`crate::shared::jev::reserve`]), e o que fazer com eles.
+    /// Presentes só com reserva à espera do recibo.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    reserves: Vec<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reserves_hint: Option<String>,
     /// Os arquivos que o git ignora fora de uma pasta ignorada, para a pessoa
     /// confirmar uma vez ([`ignored_files`]). Presente só enquanto o
     /// `mustard.json` não tem `localFiles`; vazia quando não há nenhum.
@@ -374,6 +386,15 @@ fn upsert_with_index<R: ToolRunner>(
     // comum só acrescenta a linha nova. A falha vira aviso, nunca aborta.
     let search_warning = mustard_core::io::spec_index::refresh_search(root).err().map(|failed| failed.to_string());
 
+    // As specs antigas entregues ganham, uma vez, a linha no resumo do
+    // projeto, e as regras que esperam o Jev são decididas. A falha vira
+    // aviso; a próxima montagem ou abertura de spec tenta de novo.
+    let lang = ProjectConfig::load(root).language().text_or_default();
+    let passed = crate::shared::project_summary::run_pending(root, lang);
+    let summary_warning = (!passed.warnings.is_empty()).then(|| passed.warnings.join(" "));
+    let reserves_hint = (!passed.reserves.is_empty()).then(|| crate::shared::jev::reserve::hint("mustard-rt run upsert", lang));
+    let reserves = passed.reserves;
+
     // Both steps below run only on the path where the project was really
     // seeded: a run that wrote nothing has no installation to finish. They come
     // after the files, so a step that fails or stalls leaves the project
@@ -392,7 +413,7 @@ fn upsert_with_index<R: ToolRunner>(
             .map(ToString::to_string)
             .collect();
 
-    Ok(Report { project, plugin_refresh, code_tool_warnings, search_warning, local_files_found, installation:None,scan })
+    Ok(Report { project, plugin_refresh, code_tool_warnings, search_warning, summary_warning, reserves, reserves_hint, local_files_found, installation:None,scan })
 }
 
 #[cfg(test)]
@@ -987,6 +1008,9 @@ mod tests {
             plugin_refresh: skipped(None, "no install".to_string()),
             code_tool_warnings: Vec::new(),
             search_warning: None,
+            summary_warning: None,
+            reserves: Vec::new(),
+            reserves_hint: None,
             local_files_found: None,
             installation: None,
             scan: None,
@@ -1854,6 +1878,40 @@ mod tests {
             git_config,
             "the upsert never writes the git config",
         );
+    }
+
+    /// A primeira montagem da versão nova num projeto com uma spec antiga
+    /// entregue dá a ela a linha no resumo do projeto, uma vez: a montagem
+    /// seguinte não refaz nada, nem com uma spec nova entregue depois.
+    #[test]
+    fn the_first_upsert_summarizes_the_old_delivered_specs_once() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        git_repo(root);
+        let spec_with = |name: &str, phase: &str| {
+            let folder = root.join(".claude/spec").join(name);
+            std::fs::create_dir_all(&folder).expect("the spec folder");
+            let lines = [
+                serde_json::json!({"v":1,"id":1,"at":"2026-09-01T10:00:00Z","type":"context","title":"Objetivo","text":format!("Obra {name}.")}),
+                serde_json::json!({"v":1,"id":2,"at":"2026-09-02T10:00:00Z","type":"pr_summary","text":format!("Entregou {name}.")}),
+                serde_json::json!({"v":1,"id":3,"at":"2026-09-03T10:00:00Z","type":"state","phase":phase,"author":"binary"}),
+            ];
+            std::fs::write(folder.join("spec.ndjson"), lines.iter().map(|line| line.to_string() + "\n").collect::<String>()).expect("the events");
+        };
+        spec_with("antiga", "delivered");
+        spec_with("em-obra", "running");
+
+        let report = upsert_json(root, &UpsertOpts::default());
+        assert!(report.get("summaryWarning").is_none(), "{report:#}");
+        let summary = mustard_core::io::project_summary::read(root);
+        assert_eq!(summary.iter().map(|entry| entry.spec.as_str()).collect::<Vec<_>>(), vec!["antiga"], "{summary:?}");
+        assert_eq!(summary[0].delivered, "Entregou antiga.");
+        assert!(mustard_core::io::project_summary::legacy_pass_done(root));
+
+        spec_with("nova", "delivered");
+        let before = std::fs::read_to_string(mustard_core::io::project_summary::path(root)).expect("the summary");
+        upsert_json(root, &UpsertOpts::default());
+        assert_eq!(std::fs::read_to_string(mustard_core::io::project_summary::path(root)).expect("the summary"), before, "the pass runs once");
     }
 
     /// Num projeto sem a pasta das specs não há busca a acertar: a

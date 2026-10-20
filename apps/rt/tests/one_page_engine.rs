@@ -16,9 +16,11 @@
 #[path = "support/manifest_dir.rs"]
 mod manifest_dir;
 
+#[path = "support/binary.rs"]
+mod binary;
+
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use serde_json::Value;
 
@@ -110,7 +112,7 @@ fn page_run(root: &Path, args: &[&str]) -> (bool, Value) {
 /// Roda `mustard-rt run <command>` com `args` no projeto `root`: se saiu com
 /// sucesso, e o relatório.
 fn rt(root: &Path, command: &str, args: &[&str]) -> (bool, Value) {
-    let out = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+    let out = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
         .args(["run", command])
         .args(args)
         .arg("--root")

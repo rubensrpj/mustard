@@ -178,6 +178,55 @@ pub(crate) fn repo_from_template(root: &Path, key: &str, build: impl FnOnce(&Pat
     copy_dir_all(template.path(), root);
 }
 
+/// Deixa a spec `spec` de `root` com o plano passado, como a aprovação pede:
+/// uma tarefa, quando ainda não há nenhuma, e depois dela a marca do plano,
+/// um `state` em `plan`. Escreve direto no arquivo de eventos, sem as regras
+/// da gravação, como os testes montam a spec à mão.
+pub(crate) fn pass_plan(root: &Path, spec: &str) {
+    use mustard_core::io::spec_events as store;
+    let path = store::spec_file(root, spec).expect("spec file");
+    std::fs::create_dir_all(path.parent().expect("spec folder")).expect("spec folder");
+    let has_task = store::read(&path).ok().flatten().is_some_and(|log| log.visible().iter().any(|e| e.event_type == "task"));
+    let fields = |value: serde_json::Value| value.as_object().cloned().unwrap_or_default();
+    if !has_task {
+        store::write(&path, "task", fields(serde_json::json!({ "text": "Somar dois números.", "author": "binary" })), &[]).expect("task");
+    }
+    store::write(&path, "state", fields(serde_json::json!({ "phase": "plan" })), &[]).expect("plan mark");
+}
+
+/// Um serviço do Jev falso em 127.0.0.1 que responde `status` com `body` a
+/// todo pedido, `delay` depois de lê-lo, um pedido por vez, e conta quantos
+/// chegaram. Devolve o endereço e a contagem.
+pub(crate) fn jev_service(delay: std::time::Duration, status: u16, body: String) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+    use std::io::{BufRead, BufReader, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/v1/systemone", listener.local_addr().unwrap());
+    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen = Arc::clone(&count);
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut reader = BufReader::new(&stream);
+            let mut length = 0usize;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                    break;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse().unwrap_or(0);
+                }
+            }
+            let mut request = vec![0; length];
+            let _ = std::io::Read::read_exact(&mut reader, &mut request);
+            std::thread::sleep(delay);
+            let mut stream = &stream;
+            let _ = write!(stream, "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+        }
+    });
+    (url, count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -41,7 +41,7 @@ fn build_segments(data: &Value) -> Vec<Segment> {
     segments.extend(context_segment(data, lang));
     segments.extend(inert_segment(&root));
     if mustard_core::ProjectConfig::exists(&root) {
-        segments.push(Segment::new(segment::SegmentKind::Module,"/mustard-panel"));
+        segments.push(Segment::new(segment::SegmentKind::Module,"/mustard:mods"));
     }
     segments
 }
@@ -122,7 +122,7 @@ mod tests {
         let output = rows(ThemeId::Mustard.theme(), segments.clone());
         assert_eq!(output.len(), 1);
         let shown = &output[0];
-        for value in ["project","checkout", "em execução", "Sonnet 5.5", "contexto 7%","/mustard-panel"] {
+        for value in ["project","checkout", "em execução", "Sonnet 5.5", "contexto 7%","/mustard:mods"] {
             assert!(shown.contains(value), "{shown}");
         }
         for absent in ["feature/checkout", "Mustard 0.", "rtk poupou", "vs média", "191000", "$12.5"] {
@@ -172,7 +172,7 @@ mod tests {
         let copy = mustard_core::io::wave_prompt::slot_path(&root, "checkout", 0);
         assert!(mustard_core::platform::git::run(&root, &["worktree", "add", "--detach", copy.to_str().unwrap(), "HEAD"]).ok);
         let line = rows(ThemeId::Mustard.theme(), build_segments(&payload(&copy))).join("");
-        assert!(line.contains("project") && line.contains("cópia a") && line.contains("/mustard-panel"), "{line}");
+        assert!(line.contains("project") && line.contains("cópia a") && line.contains("/mustard:mods"), "{line}");
         assert!(mustard_core::platform::git::run(&root, &["worktree", "remove", "--force", copy.to_str().unwrap()]).ok);
     }
 }

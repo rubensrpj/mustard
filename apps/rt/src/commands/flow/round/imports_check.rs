@@ -159,7 +159,7 @@ pub(super) mod tests {
     use mustard_core::io::spec_events as store;
     use tempfile::tempdir;
 
-    use super::super::tests::{approved_with, delivered, round, round_with_mine, write};
+    use super::super::tests::{approved_with, delivered, last_commit, round, round_with_mine, warning_of, write};
     // Só o teste do envio fechado o usa, e ele roda só no Linux.
     #[cfg(target_os = "linux")]
     use super::super::tests::orphan_the_send;
@@ -250,6 +250,16 @@ pub(super) mod tests {
         round_with_mine(root, "x", Some(&report), &mine_giving(after))
     }
 
+    /// [`back`] da volta que a rodada segura. A onda segurada não deixa nada
+    /// no repositório principal, mas aqui a entrega mexe direto nele, e o
+    /// despacho que segue a rodada relê o mapa do disco: o mapa da base volta
+    /// a `base`, o do commit.
+    fn back_held(root: &Path, after: Value, base: &Value) -> Value {
+        let out = back(root, after);
+        mustard_core::io::project_map::write_text(root, &base.to_string()).unwrap();
+        out
+    }
+
     /// Um mapa de `language` com as importações de cada arquivo (`deps`), o
     /// que a passada do scan grava de um projeto pequeno.
     fn small_map(language: &str, deps: &[(&str, &[&str])]) -> Value {
@@ -278,9 +288,10 @@ pub(super) mod tests {
         project(root, SERVICE, None, &two_roles(24, 1, &[]));
         let head = super::super::tests::git_text(root, &["rev-parse", "HEAD"]);
         let out = back(root, two_roles(24, 1, &[(SERVICE, CONTROLLER)]));
-        assert_eq!(out["ok"], json!(false), "{out}");
-        assert_eq!(out["reason"], json!("round-after-wave"), "{out}");
-        let hint = out["hint"].as_str().unwrap_or_default();
+        assert_eq!(out["ok"], json!(true), "{out}");
+        let held = warning_of(&out, "round-after-wave");
+        assert_eq!(held["wave"], json!(1), "{out}");
+        let hint = held["hint"].as_str().unwrap_or_default();
         assert!(hint.contains(&format!("`{SERVICE}` linha 1 importa `{CONTROLLER}`")), "{hint}");
         assert!(hint.contains("regra controller importa service, seguida em 24 de 25 importações"), "{hint}");
         assert!(hint.contains("Leve essa chamada para um arquivo de controller"), "{hint}");
@@ -288,20 +299,109 @@ pub(super) mod tests {
         assert_eq!(super::super::tests::git_text(root, &["rev-parse", "HEAD"]), head, "nothing committed: {out}");
     }
 
+    /// A importação contra a regra segura só a onda que a trouxe: a outra
+    /// onda da mesma rodada é comitada e gravada, e a recusa vem como aviso
+    /// da onda segurada, com o trecho dela para o agente.
+    #[test]
+    fn an_import_against_the_rule_holds_only_its_wave_and_the_other_commits() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let other = "src/outro/outro.ts";
+        approved_with(root, "x", &[], |said| {
+            let log = mustard_core::io::spec_events::read(&mustard_core::io::spec_events::spec_file(root, "x").unwrap())
+                .unwrap()
+                .unwrap();
+            let crit = log.visible().into_iter().find(|e| e.event_type == "criterion").unwrap().id;
+            for (n, file) in [(1, SERVICE), (2, other)] {
+                write(root, "x", "wave", json!({"n": n, "text": format!("Onda {n}."), "criteria": [crit], "done_when": "A suíte passa.", "origin": said}));
+                write(root, "x", "task", json!({"wave": n, "text": format!("Tarefa da onda {n}."), "files": [{"path": file}], "depends_on": [], "origin": said}));
+            }
+        });
+        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":2}"#).unwrap();
+        for file in [SERVICE, other] {
+            let path = root.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "export const one = 1;\n").unwrap();
+        }
+        round(root, "x", None);
+        mustard_core::io::project_map::write_text(root, &two_roles(24, 1, &[]).to_string()).unwrap();
+        let _ = delivered(root, 1, "A onda mudou.", &[SERVICE]);
+        let _ = delivered(root, 2, "A outra onda mudou.", &[other]);
+
+        let out = round_with_mine(root, "x", None, &mine_giving(two_roles(24, 1, &[(SERVICE, CONTROLLER)])));
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!(last_commit(root).0, "feat: a entrega 2 saiu", "{out}");
+        let held = warning_of(&out, "round-after-wave");
+        assert_eq!(held["wave"], json!(1), "{out}");
+        let hint = held["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains(&format!("`{SERVICE}` linha 1 importa `{CONTROLLER}`")), "{hint}");
+        assert!(hint.contains("Onda 1, rodada de conserto 1 de 2"), "{hint}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let recorded: Vec<Option<u64>> = log.visible().iter().filter(|e| e.event_type == "delivered").map(|e| e.wave()).collect();
+        assert_eq!(recorded, [Some(2)], "{out}");
+        let fix = crate::commands::flow::round::fix_file(root, "x", &log, 1).expect("the held return");
+        assert!(fix.exists(), "the section goes to the agent of the held wave: {}", fix.display());
+    }
+
+    /// A onda que a conferência depois da onda segura não faz a rodada reler
+    /// o mapa de novo para as outras, com a trava presa: elas já passaram
+    /// pela conferência na mesma leitura.
+    #[test]
+    fn a_wave_held_after_the_scan_does_not_make_the_round_scan_again() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let other = "src/outro/outro.ts";
+        approved_with(root, "x", &[], |said| {
+            let log = mustard_core::io::spec_events::read(&mustard_core::io::spec_events::spec_file(root, "x").unwrap())
+                .unwrap()
+                .unwrap();
+            let crit = log.visible().into_iter().find(|e| e.event_type == "criterion").unwrap().id;
+            for (n, file) in [(1, SERVICE), (2, other)] {
+                write(root, "x", "wave", json!({"n": n, "text": format!("Onda {n}."), "criteria": [crit], "done_when": "A suíte passa.", "origin": said}));
+                write(root, "x", "task", json!({"wave": n, "text": format!("Tarefa da onda {n}."), "files": [{"path": file}], "depends_on": [], "origin": said}));
+            }
+        });
+        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":2}"#).unwrap();
+        for file in [SERVICE, other] {
+            let path = root.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "export const one = 1;\n").unwrap();
+        }
+        round(root, "x", None);
+        mustard_core::io::project_map::write_text(root, &two_roles(24, 1, &[]).to_string()).unwrap();
+        let _ = delivered(root, 1, "A onda mudou.", &[SERVICE]);
+        let _ = delivered(root, 2, "A outra onda mudou.", &[other]);
+
+        let model = mustard_core::io::project_map::model_path(root);
+        let scans = std::cell::Cell::new(0);
+        let giving = mine_giving(two_roles(24, 1, &[(SERVICE, CONTROLLER)]));
+        let counting = |at: &Path, out: &Path| {
+            if out != model {
+                scans.set(scans.get() + 1);
+            }
+            giving(at, out)
+        };
+        let out = round_with_mine(root, "x", None, &counting);
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!(last_commit(root).0, "feat: a entrega 2 saiu", "{out}");
+        assert_eq!(warning_of(&out, "round-after-wave")["wave"], json!(1), "{out}");
+        assert_eq!(scans.get(), 1, "one scan after the waves, not one per held wave: {out}");
+    }
+
     #[test]
     fn at_the_fix_limit_the_refused_import_goes_to_the_user() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        project(root, SERVICE, None, &two_roles(24, 1, &[]));
+        let base = two_roles(24, 1, &[]);
+        project(root, SERVICE, None, &base);
         let after = two_roles(24, 1, &[(SERVICE, CONTROLLER)]);
         // A entrega e as duas voltas de conserto, todas com a mesma
         // importação contra a regra.
-        let rounds: Vec<Value> = (0..3).map(|_| back(root, after.clone())).collect();
-        assert_eq!(rounds[1]["reason"], json!("round-after-wave"), "{}", rounds[1]);
-        assert!(rounds[1]["hint"].as_str().unwrap_or_default().contains("Onda 1, rodada de conserto 2 de 2"), "{}", rounds[1]);
-        assert_eq!(rounds[1].get("question"), None, "{}", rounds[1]);
-        let last = &rounds[2];
-        assert_eq!(last["reason"], json!("round-after-wave-limit"), "{last}");
+        let rounds: Vec<Value> = (0..3).map(|_| back_held(root, after.clone(), &base)).collect();
+        let second = warning_of(&rounds[1], "round-after-wave");
+        assert!(second["hint"].as_str().unwrap_or_default().contains("Onda 1, rodada de conserto 2 de 2"), "{}", rounds[1]);
+        assert_eq!(second.get("question"), None, "{}", rounds[1]);
+        let last = &warning_of(&rounds[2], "round-after-wave-limit");
         let question = last["question"].as_str().unwrap_or_default();
         assert!(question.contains("A onda 1 ainda tem o que consertar depois de 2 rodadas de conserto"), "{last}");
         let hint = last["hint"].as_str().unwrap_or_default();
@@ -311,6 +411,32 @@ pub(super) mod tests {
         let log = mustard_core::io::spec_events::read(&mustard_core::io::spec_events::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let fix = crate::commands::flow::round::fix_file(root, "x", &log, 1).expect("the last return");
         assert!(!fix.exists(), "{}", fix.display());
+    }
+
+    /// No limite de consertos, a recusa oferece a saída do falso positivo: a
+    /// linha `FALSE_POSITIVE` da rodada, com a onda e o motivo, aceita a onda
+    /// como está, o commit sai e o motivo fica gravado na spec.
+    #[test]
+    fn at_the_fix_limit_a_false_positive_line_accepts_the_wave_and_records_the_reason() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let base = two_roles(24, 1, &[]);
+        project(root, SERVICE, None, &base);
+        let after = two_roles(24, 1, &[(SERVICE, CONTROLLER)]);
+        let rounds: Vec<Value> = (0..3).map(|_| back_held(root, after.clone(), &base)).collect();
+        let last = warning_of(&rounds[2], "round-after-wave-limit");
+        assert!(last["hint"].as_str().unwrap_or_default().contains("FALSE_POSITIVE"), "{last}");
+        assert!(last["question"].as_str().unwrap_or_default().contains("falso positivo"), "{last}");
+        let head = super::super::tests::git_text(root, &["rev-parse", "HEAD"]);
+
+        let reason = "o service só repassa o tipo do controller, sem chamar nada dele";
+        let line = format!("<FALSE_POSITIVE>{}</FALSE_POSITIVE>", json!({"wave": 1, "reason": reason}));
+        let out = round_with_mine(root, "x", Some(&line), &mine_giving(after));
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_ne!(super::super::tests::git_text(root, &["rev-parse", "HEAD"]), head, "the wave was committed: {out}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        assert!(log.visible().iter().any(|e| e.event_type == "delivered" && e.wave() == Some(1)), "{out}");
+        assert!(log.events.iter().any(|e| e.str_field("output").is_some_and(|said| said.contains(reason))), "the reason stays in the spec: {out}");
     }
 
     /// A mensagem com que o condutor manda `message` ao agente `to`, na
@@ -342,8 +468,7 @@ pub(super) mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         project(root, SERVICE, None, &two_roles(24, 1, &[]));
-        let out = back(root, two_roles(24, 1, &[(SERVICE, CONTROLLER)]));
-        assert_eq!(out["reason"], json!("round-after-wave"), "{out}");
+        let out = warning_of(&back(root, two_roles(24, 1, &[(SERVICE, CONTROLLER)])), "round-after-wave");
         let hint = out["hint"].as_str().unwrap_or_default();
         let section = &hint[hint.find("Onda 1, rodada de conserto 1 de 2:").unwrap_or_else(|| panic!("{hint}"))..];
 
@@ -385,17 +510,16 @@ pub(super) mod tests {
     fn the_refusal_asks_for_a_new_agent_once_the_sender_of_the_wave_closed() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        project(root, SERVICE, None, &two_roles(24, 1, &[]));
+        let base = two_roles(24, 1, &[]);
+        project(root, SERVICE, None, &base);
         let after = two_roles(24, 1, &[(SERVICE, CONTROLLER)]);
         let title = mustard_core::domain::wave_prompt::wave_title("x", 1, Locale::PtBr);
         let new_agent = translate("round.after_wave.new_agent", Locale::PtBr).replace("{wave}", "1").replace("{title}", &title);
-        let open = back(root, after.clone());
-        assert_eq!(open["reason"], json!("round-after-wave"), "{open}");
+        let open = warning_of(&back_held(root, after.clone(), &base), "round-after-wave");
         assert!(!open["hint"].as_str().unwrap_or_default().contains(&new_agent), "{open}");
 
         orphan_the_send(root, 1);
-        let closed = round_with_mine(root, "x", None, &mine_giving(after));
-        assert_eq!(closed["reason"], json!("round-after-wave"), "{closed}");
+        let closed = warning_of(&round_with_mine(root, "x", None, &mine_giving(after)), "round-after-wave");
         assert!(closed["hint"].as_str().unwrap_or_default().ends_with(&format!("\n\n{new_agent}")), "{closed}");
     }
 
@@ -418,12 +542,13 @@ pub(super) mod tests {
     fn a_new_refused_return_drops_the_fix_of_the_old_one() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        project(root, SERVICE, None, &two_roles(24, 1, &[]));
+        let base = two_roles(24, 1, &[]);
+        project(root, SERVICE, None, &base);
         let against = two_roles(24, 1, &[(SERVICE, CONTROLLER)]);
-        assert_eq!(back(root, against.clone())["reason"], json!("round-after-wave"));
+        assert_eq!(warning_of(&back_held(root, against.clone(), &base), "round-after-wave")["wave"], json!(1));
         let (first, old) = fixes_kept(root);
         assert_eq!(first, old.clone().into_iter().collect::<Vec<_>>(), "the first fix");
-        assert_eq!(back(root, against)["reason"], json!("round-after-wave"));
+        assert_eq!(warning_of(&back(root, against), "round-after-wave")["wave"], json!(1));
         let (kept, pending) = fixes_kept(root);
         assert_ne!(pending, old, "the new return has its own fix");
         assert_eq!(kept, pending.into_iter().collect::<Vec<_>>(), "only the pending return's fix stays");
@@ -437,7 +562,7 @@ pub(super) mod tests {
         let root = dir.path();
         let clean = two_roles(24, 1, &[]);
         project(root, SERVICE, None, &clean);
-        assert_eq!(back(root, two_roles(24, 1, &[(SERVICE, CONTROLLER)]))["reason"], json!("round-after-wave"));
+        assert_eq!(warning_of(&back(root, two_roles(24, 1, &[(SERVICE, CONTROLLER)])), "round-after-wave")["wave"], json!(1));
         assert_eq!(fixes_kept(root).0.len(), 1, "the fix for the agent");
         let out = back(root, clean);
         assert_eq!(out["ok"], json!(true), "{out}");

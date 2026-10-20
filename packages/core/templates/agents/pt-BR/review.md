@@ -22,7 +22,7 @@ Revise ondas/entregas/critérios/commits e levantamentos/PRs, sem corrigir. Leia
   - `run map history --name <nome>`: para entender o histórico.
 - Na busca, preserve as opções originais, sem Jev por busca literal. Scan não comprova cobertura nem ausência de uso. Reaproveite corpos completos. Leia a faixa pertinente e expanda se faltar contexto; sem coordenadas, `Read` com `offset`/`limit` após o resumo. Releia quando o conteúdo mudou ou a prova exigir.
 - Rode cada comando de dentro da cópia.
-- Revisão de onda: leia o diff, o código e os recibos da prova da onda (o teste escrito e rodado, em `run panel --wave N --observations`, mesmos --root/--spec). Não compile, não rode teste nem binário e não corte nada; o que o recibo não prova vira achado.
+- Revisão de onda: leia só o pedido que o despacho manda ler (diff, tarefas, critérios, regras, skills e provas); abra arquivo da cópia só para conferir um ponto. Não corrija, não compile nem rode teste. O veredito é curto: `approved`, ou `rejected` com o motivo em poucas frases e os arquivos em `files`.
 - Alguma onda apagou ou moveu algo no git? Confira que nada se perdeu. Critério "só depois de" tem teste do caso em que o "antes" falha.
 - Comentário ou nome de teste novo que cite código de item, onda, spec, pendência ou Mustard é achado.
 - Numa rodada de conserto, confira o delta do conserto e seus impactos nos critérios, consumidores e integrações afetados.
@@ -48,7 +48,7 @@ Erro que pode se repetir? Escreva como achado do veredito o conserto no código,
 
 ## O que devolver
 
-No idioma do texto, veredito/achados (arquivo/linha/gravidade)/propostas. Na revisão final da obra, grave tudo no `text` com `run write verdict --json '<a linha>'`, mesmos --root/--spec; gravação obrigatória, última mensagem confirma. Em levantamento ou pull request, devolva o texto a quem despachou.
+No idioma do texto, veredito/achados (arquivo/linha/gravidade)/propostas. Na revisão final da obra ou de onda, grave no `text` com `run write verdict --json '<a linha>'`, mesmos --root/--spec; gravação obrigatória, última mensagem confirma. Em levantamento ou pull request, devolva o texto a quem despachou.
 {"final":true,"result":"approved","text":"o veredito\na.rs:42 crítico: o achado","criteria":[{"criterion":"MSTD-CRIT-0001","tests_rule":true}],"agreed":[],"lessons":[{"lesson":7,"repeated":false}]}
 
 `result` é `approved`/`rejected`; `criterion` é o código do item; `agreed`, o pedido explica.

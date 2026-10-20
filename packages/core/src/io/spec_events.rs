@@ -53,6 +53,64 @@ pub fn spec_file(root: &Path, name: &str) -> Result<PathBuf, Refusal> {
     paths.for_spec(name.trim()).map(|spec| spec.spec_ndjson_path()).map_err(|_| Refusal::BadSpecName { spec: name.to_string() })
 }
 
+/// O arquivo de operações da spec `name` no projeto `root`: o que o programa
+/// observou de si enquanto a spec corria — o que cada gancho fez e cada
+/// chamada de comando —, fora do `spec.ndjson`, que guarda o trabalho. Mora na
+/// pasta do Mustard do checkout principal, com o nome da pasta da spec.
+#[must_use]
+pub fn operations_file(root: &Path, name: &str) -> Option<PathBuf> {
+    let events = spec_file(root, name).ok()?;
+    let folder = events.parent()?.file_name()?;
+    Some(spec_root(root).join(".claude/mustard/operations").join(folder).with_extension("ndjson"))
+}
+
+/// O tamanho, em bytes, a partir do qual o arquivo de operações manda a parte
+/// antiga ao arquivo morto ao lado ([`operations_archive`]). Toda observação
+/// lê o arquivo vivo inteiro para achar o número seguinte: numa obra longa ele
+/// passava de 1,5 MB, lido a cada gancho que agia e a cada chamada. Com o teto,
+/// a leitura de cada observação fica em no máximo 256 KiB, e a spec comum,
+/// que fica em poucos KiB, nunca chega a ele.
+pub const OPERATIONS_CAP: u64 = 256 * 1024;
+
+/// O arquivo morto ao lado do arquivo de operações `live`: a parte antiga que
+/// o teto tirou dele, `<nome>.archive.ndjson`.
+#[must_use]
+pub fn operations_archive(live: &Path) -> PathBuf {
+    live.with_extension("archive.ndjson")
+}
+
+/// O histórico inteiro do arquivo de operações `live`: o arquivo morto e o
+/// vivo juntos, cada evento uma vez, na ordem do número. É a leitura de quem
+/// conta tudo — métricas, consumo, chamadas —; a gravação lê só o vivo. O vivo
+/// é lido antes do morto: a parte que o teto manda ao morto é escrita lá antes
+/// de sair do vivo, então nenhum evento escapa entre as duas leituras, e o que
+/// aparece nas duas conta uma vez. `Ok(None)` sem nenhum dos dois.
+///
+/// # Errors
+///
+/// [`Refusal::Io`] quando um dos arquivos existe e não pode ser lido.
+pub fn read_operations(live: &Path) -> Result<Option<SpecLog>, Refusal> {
+    let recent = read(live)?;
+    let Some(old) = read(&operations_archive(live))? else {
+        return Ok(recent);
+    };
+    let mut skipped = old.skipped;
+    let mut by_id = std::collections::BTreeMap::new();
+    for event in old.events {
+        by_id.entry(event.id).or_insert(event);
+    }
+    if let Some(recent) = recent {
+        skipped.extend(recent.skipped);
+        for event in recent.events {
+            by_id.entry(event.id).or_insert(event);
+        }
+    }
+    skipped.retain(|line| !matches!(line.reason, model::SkipReason::DuplicateId(id) if by_id.contains_key(&id)));
+    let mut log = SpecLog::with_events(by_id.into_values().collect());
+    log.skipped = skipped;
+    Ok(Some(log))
+}
+
 /// O que uma gravação deixou no arquivo.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Written {
@@ -165,6 +223,244 @@ fn write_inner(
     let file = LockedFile::exclusive(path).map_err(io_refusal)?;
     let mut locked = LockedLog::read(file, path)?;
     locked.write_prepared(prepared, event_type, at, find, guard, then)
+}
+
+/// Os tipos que só crescem no fim do arquivo e nunca apontam outro item: a
+/// conversa e o que o programa observa de si.
+const APPEND_ONLY: &[&str] = &["message", "response", "call", "hook", "injection", "stage_run"];
+
+/// Os campos com que um evento aponta outro item, que só a leitura do
+/// arquivo inteiro confere.
+const POINTERS: &[&str] = &["replaces", "closes", "targets", "origin", "returned"];
+
+/// Acrescenta ao fim do arquivo `path` os eventos de `drafts`, cada um com o
+/// tipo dele, numa escrita só e com a trava do arquivo presa, sem analisar o
+/// arquivo inteiro: é a gravação da conversa e do que o programa observa de
+/// si, que numa spec grande custava segundos a cada fala.
+///
+/// Cada evento passa pela conferência dele sozinho, como em [`write`], e
+/// todos levam a mesma hora. Do arquivo, só o envelope de cada linha é lido
+/// ([`envelope_log`]), e dele saem o número seguinte ao maior, contando o
+/// das linhas cortadas, e o código seguinte de cada tipo, os mesmos que a
+/// gravação completa daria. Uma última linha pela metade fica sozinha na
+/// linha dela. A linha cortada no meio fica como está, para o conserto da
+/// próxima gravação completa, e a linha da spec no índice não é refeita: a
+/// conversa e a observação não mudam nada do que ela mostra além da hora da
+/// última gravação.
+///
+/// `guard` recebe o arquivo lido pelos envelopes antes da escrita, com a
+/// trava presa, e a recusa dele deixa o arquivo como estava. Os números
+/// gravados voltam na ordem; sem eventos, nada é aberto.
+///
+/// O evento de outro tipo, ou que aponta outro item, não cabe aqui: a lista
+/// que traz um passa pela gravação completa ([`write_guarded`]), um evento
+/// por vez, com `guard` sobre o arquivo antes do primeiro.
+///
+/// # Errors
+///
+/// A recusa da conferência de um evento ou de `guard`, sem nada gravado, ou
+/// [`Refusal::Io`] quando a trava, a leitura ou a escrita falham.
+pub fn append(path: &Path, drafts: Vec<(&str, Map<String, Value>)>, guard: impl FnOnce(&SpecLog) -> Result<(), Refusal>) -> Result<Vec<u64>, Refusal> {
+    append_capped(path, drafts, guard, None)
+}
+
+/// Acrescenta ao arquivo de operações `path` os eventos de `drafts`, como
+/// [`append`], e, quando o arquivo passa de [`OPERATIONS_CAP`], manda a parte
+/// antiga ao arquivo morto ao lado ([`operations_archive`]) ainda com a trava
+/// presa. Do vivo fica só o último evento de cada tipo, de que saem o número
+/// e o código seguintes; quem conta o histórico inteiro lê os dois
+/// ([`read_operations`]).
+///
+/// # Errors
+///
+/// Os de [`append`]. A troca para o arquivo morto nunca falha a gravação: o
+/// evento já está no vivo, e a troca que não termina fica para a próxima.
+pub fn append_operations(path: &Path, drafts: Vec<(&str, Map<String, Value>)>) -> Result<Vec<u64>, Refusal> {
+    append_capped(path, drafts, |_| Ok(()), Some(OPERATIONS_CAP))
+}
+
+/// A gravação de [`append`], com a troca para o arquivo morto quando o
+/// arquivo passa de `cap`.
+fn append_capped(
+    path: &Path,
+    drafts: Vec<(&str, Map<String, Value>)>,
+    guard: impl FnOnce(&SpecLog) -> Result<(), Refusal>,
+    cap: Option<u64>,
+) -> Result<Vec<u64>, Refusal> {
+    if drafts.is_empty() {
+        return Ok(Vec::new());
+    }
+    let whole = |(event_type, draft): &(&str, Map<String, Value>)| {
+        !APPEND_ONLY.contains(event_type) || POINTERS.iter().any(|field| draft.contains_key(*field))
+    };
+    if drafts.iter().any(whole) {
+        let mut guard = Some(guard);
+        return drafts
+            .into_iter()
+            .map(|(event_type, draft)| {
+                let first = guard.take();
+                let check = |before: &SpecLog, _: &SpecLog| first.map_or(Ok(()), |guard| guard(before));
+                write_guarded(path, event_type, draft, &[], &|_| Vec::new(), check, |_| {}).map(|written| written.id)
+            })
+            .collect();
+    }
+    let events = drafts
+        .into_iter()
+        .map(|(event_type, draft)| prepare(event_type, draft, &[]).map(|p| (event_type.to_string(), p.event, None)))
+        .collect::<Result<Vec<_>, _>>()?;
+    append_stamped(path, events, guard, cap)
+}
+
+/// O fim de [`append_capped`], com os eventos já conferidos: cada um com o
+/// tipo, os campos e a hora, que, sem ela, é a de agora, a mesma para todos.
+/// A mudança dos registros de uma spec antiga passa a hora de cada um.
+fn append_stamped(
+    path: &Path,
+    events: Vec<(String, Map<String, Value>, Option<String>)>,
+    guard: impl FnOnce(&SpecLog) -> Result<(), Refusal>,
+    cap: Option<u64>,
+) -> Result<Vec<u64>, Refusal> {
+    let mut file = LockedFile::exclusive(path).map_err(io_refusal)?;
+    let content = file.read_to_string().map_err(io_refusal)?;
+    let mut log = envelope_log(&content);
+    guard(&log)?;
+    let now = now();
+    let mut id = log.max_id();
+    let mut lines = Vec::with_capacity(events.len());
+    let mut ids = Vec::with_capacity(events.len());
+    for (event_type, event, at) in events {
+        id = id.saturating_add(1);
+        let code = model::code_after(&log, &event);
+        let stamped = model::stamp(event, id, code.as_deref(), at.as_deref().unwrap_or(&now));
+        lines.push(model::render_line(&stamped));
+        // O evento entra na leitura para o código do seguinte da mesma lista.
+        log.events.push(model::SpecEvent { id, event_type, line: 0, fields: stamped });
+        ids.push(id);
+    }
+    let block = lines.join("\n");
+    let clean = content.is_empty() || content.ends_with('\n');
+    let written = if clean { block } else { format!("\n{block}") };
+    file.append_line(&written).map_err(io_refusal)?;
+    if let Some(cap) = cap
+        && u64::try_from(content.len() + written.len() + 1).unwrap_or(u64::MAX) > cap
+    {
+        archive_old_part(&mut file, path, &format!("{content}{written}\n"));
+    }
+    Ok(ids)
+}
+
+/// Manda ao arquivo morto ao lado de `path` as linhas de `content`, o arquivo
+/// vivo como acabou de ficar, menos o último evento de cada tipo, que fica no
+/// vivo: dele saem o número e o código seguintes, os mesmos de antes da
+/// troca. A parte antiga é escrita no morto antes de sair do vivo, e o vivo é
+/// trocado de uma vez, com a trava de `file` presa: quem lê os dois nunca
+/// perde um evento, e a troca que falha no meio deixa o evento repetido, que
+/// a leitura conta uma vez ([`read_operations`]).
+fn archive_old_part(file: &mut LockedFile, path: &Path, content: &str) {
+    let log = envelope_log(content);
+    let mut last_of: std::collections::BTreeMap<&str, (u64, usize)> = std::collections::BTreeMap::new();
+    for event in &log.events {
+        let slot = last_of.entry(event.event_type.as_str()).or_insert((event.id, event.line));
+        if event.id >= slot.0 {
+            *slot = (event.id, event.line);
+        }
+    }
+    let kept: std::collections::BTreeSet<usize> = last_of.values().map(|(_, line)| *line).collect();
+    let (mut old, mut live) = (Vec::new(), String::new());
+    for (i, raw) in content.split('\n').enumerate() {
+        if raw.trim().is_empty() {
+            continue;
+        }
+        if kept.contains(&(i + 1)) {
+            live.push_str(raw);
+            live.push('\n');
+        } else {
+            old.push(raw);
+        }
+    }
+    if old.is_empty() {
+        return;
+    }
+    let Ok(mut archive) = LockedFile::exclusive(&operations_archive(path)) else {
+        return;
+    };
+    if archive.append_line(&old.join("\n")).is_err() {
+        return;
+    }
+    drop(archive);
+    let _ = file.replace(live.as_bytes());
+}
+
+/// O envelope que o gravador põe no começo de cada linha, na ordem fixa,
+/// depois do número: o código, a hora, o tipo e o autor.
+const ENVELOPE: &[(&str, &str)] = &[("code", ",\"code\":\""), ("at", ",\"at\":\""), ("type", ",\"type\":\""), ("author", ",\"author\":\"")];
+
+/// O arquivo `content` lido só pelo envelope de cada linha, sem analisar o
+/// resto dela. A linha que não começa pelo envelope do formato com o código
+/// e o tipo, ou que não fecha, é lida pela leitura de sempre
+/// ([`model::parse_log`]), sozinha: a linha antiga sem código traz o que o
+/// código dela precisa, e a linha cortada fica pulada, com o número que
+/// parece ter. O número repetido fica de fora, como na leitura de sempre.
+fn envelope_log(content: &str) -> SpecLog {
+    let opening = format!("{{\"v\":{},\"id\":", model::FORMAT_VERSION);
+    let mut log = SpecLog::default();
+    let mut seen = std::collections::BTreeSet::new();
+    for (i, raw) in content.split('\n').enumerate() {
+        let raw = raw.trim_end_matches('\r');
+        if raw.trim().is_empty() {
+            continue;
+        }
+        let line = i + 1;
+        let event = match envelope(raw, &opening) {
+            Some((id, event_type, fields)) => model::SpecEvent { id, event_type, line, fields },
+            None => {
+                let mut alone = model::parse_log(raw);
+                if let Some(mut skipped) = alone.skipped.pop() {
+                    skipped.line = line;
+                    log.skipped.push(skipped);
+                    continue;
+                }
+                let Some(mut event) = alone.events.pop() else {
+                    continue;
+                };
+                event.line = line;
+                event
+            }
+        };
+        if seen.insert(event.id) {
+            log.events.push(event);
+        } else {
+            log.skipped.push(model::SkippedLine { line, reason: model::SkipReason::DuplicateId(event.id), id_hint: Some(event.id) });
+        }
+    }
+    log
+}
+
+/// O número, o tipo e os campos do envelope da linha `raw`, que começa por
+/// `opening`; `None` quando ela não fecha ou não traz o código e o tipo no
+/// lugar deles.
+fn envelope(raw: &str, opening: &str) -> Option<(u64, String, Map<String, Value>)> {
+    let rest = raw.strip_prefix(opening).filter(|_| raw.ends_with('}'))?;
+    let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+    let id = rest[..digits].parse::<u64>().ok().filter(|n| *n > 0)?;
+    let mut tail = &rest[digits..];
+    let mut fields = Map::new();
+    fields.insert("v".into(), Value::from(model::FORMAT_VERSION));
+    fields.insert("id".into(), Value::from(id));
+    for (key, start) in ENVELOPE {
+        let Some(after) = tail.strip_prefix(start) else {
+            continue;
+        };
+        let end = after.find('"')?;
+        let value = &after[..end];
+        if value.contains('\\') {
+            return None;
+        }
+        fields.insert((*key).into(), Value::String(value.to_string()));
+        tail = &after[end + 1..];
+    }
+    let event_type = fields.get("type").and_then(Value::as_str)?.to_string();
+    fields.contains_key("code").then_some((id, event_type, fields))
 }
 
 /// O arquivo de eventos com a trava exclusiva presa, para quem lê o
@@ -647,7 +943,7 @@ mod tests {
             "skill",
             "skill",
             "09:00",
-            json!({"name": "add-hook-rule", "action": "create", "text": "Passos da regra.", "sha": "3f9a1c2e", "examples": [{"path": "src/render.rs", "why": "mesma pasta"}, {"path": "src/gate.rs", "why": "com teste"}], "origin": msg}),
+            json!({"name": "add-hook-rule", "action": "created", "text": "Passos da regra.", "sha": "3f9a1c2e", "files": ["src/render.rs", "src/gate.rs"], "origin": msg}),
         );
         add(
             "send",
@@ -1628,5 +1924,43 @@ mod tests {
         assert_eq!(crate::domain::spec_state::final_approval(&log).map(|e| e.id), Some(official));
         assert_eq!(log.hidden()[&first], Hidden::Returned);
         assert_eq!(ids_of(&log.unassumed_returns()), [delivery], "a entrega da onda 1 segue à espera");
+    }
+
+    /// O acréscimo dá o número e o código que a gravação completa daria, num
+    /// arquivo com linhas antigas sem código, uma linha estragada, um número
+    /// repetido e uma última linha cortada; o que já estava fica intocado, e
+    /// a lista sai numa escrita só, com códigos seguidos.
+    #[test]
+    fn appending_gives_the_number_and_code_the_whole_write_gives() {
+        let dir = tempfile::tempdir().unwrap();
+        let whole = dir.path().join("whole/spec.ndjson");
+        seed_message(&whole);
+        put(&whole, &[], "response", &at("09:01"), json!({"author": "assistant", "text": "ok", "reply_to": 1}));
+        let content = format!(
+            "{}{{\"v\":1,\"id\":3,\"at\":\"{}\",\"type\":\"message\",\"author\":\"user\",\"text\":\"antiga\"}}\n\
+             isto não é um evento\n\
+             {{\"v\":1,\"id\":3,\"code\":\"MSTD-MSG-0009\",\"at\":\"{}\",\"type\":\"message\",\"author\":\"user\",\"text\":\"repetida\"}}\n\
+             {{\"v\":1,\"id\":6,\"code\":\"MSTD-MSG-00",
+            std::fs::read_to_string(&whole).unwrap(),
+            at("09:02"),
+            at("09:03"),
+        );
+        std::fs::write(&whole, &content).unwrap();
+        let appended = dir.path().join("appended/spec.ndjson");
+        std::fs::create_dir_all(appended.parent().unwrap()).unwrap();
+        std::fs::write(&appended, &content).unwrap();
+
+        let draft = || obj(json!({"author": "user", "text": "nova"}));
+        let expected = write(&whole, "message", draft(), &[]).unwrap();
+        let ids = append(&appended, vec![("message", draft()), ("response", obj(json!({"author": "assistant", "text": "sim", "reply_to": 7})))], |_| Ok(()))
+            .unwrap();
+        assert_eq!(ids, [expected.id, expected.id + 1]);
+        let after = std::fs::read_to_string(&appended).unwrap();
+        assert!(after.starts_with(&content), "{after}");
+        assert_eq!(after[content.len()..].matches('\n').count(), 3, "a new line, then one line per event: {after}");
+        let log = read(&appended).unwrap().unwrap();
+        assert_eq!(log.get(ids[0]).and_then(|e| e.str_field("code")), expected.code.as_deref());
+        assert_eq!(log.get(ids[1]).and_then(|e| e.str_field("code")), Some("MSTD-RESP-0002"));
+        assert_eq!(log.get(ids[0]).map(model::SpecEvent::at), log.get(ids[1]).map(model::SpecEvent::at));
     }
 }

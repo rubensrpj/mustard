@@ -1,10 +1,10 @@
 //! O tamanho de cada onda: as linhas que ela pôs, as que tirou e os arquivos
 //! que mudou. A conferência depois da onda o mede, com o disco já juntado.
-//! Ele vira a linha de tamanho, que vai à resposta da rodada e ao corpo do
-//! commit para quem conduz e quem lê o histórico verem o tamanho de cada
-//! entrega. A linha é só dado: a rodada nunca devolve uma onda pelo tamanho,
-//! e a onda pronta e testada sai inteira no commit, com quantas linhas e
-//! quantos testes ela trouxer.
+//! Ele vira a linha de tamanho, que vai à resposta da rodada para quem conduz
+//! ver o tamanho de cada entrega, e nunca ao commit: o histórico do git é da
+//! equipe, e não leva medida do Mustard. A linha é só dado: a rodada nunca
+//! devolve uma onda pelo tamanho, e a onda pronta e testada sai inteira no
+//! commit, com quantas linhas e quantos testes ela trouxer.
 //!
 //! - Postas e tiradas: o `git diff --numstat` do último commit contra o disco,
 //!   nos arquivos da onda, repositório por repositório; o arquivo novo, que o
@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 use mustard_core::platform::i18n::{Locale, translate};
 
-use super::commit::{check_commit_text, git, repo_of};
+use super::commit::{git, repo_of};
 use crate::commands::git_settle::submodules_of;
 
 /// O tamanho de uma onda: o que a linha de tamanho mostra.
@@ -54,24 +54,6 @@ pub(super) fn lines(sizes: &[Size], lang: Locale) -> Vec<(u64, String)> {
             (size.wave, line)
         })
         .collect()
-}
-
-/// A mensagem de commit com as linhas de tamanho no fim do corpo, uma por
-/// onda, depois de uma linha em branco. A linha é dado e nunca recusa: se com
-/// ela a mensagem deixa de caber no modelo, volta a de antes.
-pub(super) fn in_body(message: Option<(String, String)>, sizes: &[(u64, String)]) -> Option<(String, String)> {
-    let (title, body) = message?;
-    let listed: Vec<String> = sizes.iter().map(|(_, line)| format!("- {line}")).collect();
-    let (text, trailer) = body.rsplit_once("\n\nMustard-Waves: ").map_or((body.as_str(), None), |(text, ids)| (text, Some(ids)));
-    let mut longer = format!("{text}\n\n{}", listed.join("\n"));
-    if let Some(ids) = trailer {
-        longer.push_str("\n\nMustard-Waves: ");
-        longer.push_str(ids);
-    }
-    if listed.is_empty() || check_commit_text(&title, &longer).is_err() {
-        return Some((title, body));
-    }
-    Some((title, longer))
 }
 
 /// As linhas postas e as tiradas nos arquivos `files`, contra o último commit
@@ -171,8 +153,10 @@ mod tests {
         assert_eq!(size["hint"], json!("onda 1: +6 -1, 3 arquivos"), "{out}");
     }
 
+    /// A linha de tamanho vai só à resposta da rodada: a mensagem do commit
+    /// traz o resumo da entrega e nada mais.
     #[test]
-    fn the_round_commit_body_carries_the_size_line() {
+    fn the_round_commit_body_never_carries_the_size_line() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let base = json!({"modules": [module("src/a.rs", &[("sum", 1)], &[]), module("src/b.rs", &[("old", 1)], &[])]});
@@ -187,9 +171,8 @@ mod tests {
         ]});
         let out = round_with_mine(root, "x", Some(&report), &mine_giving(after));
         assert_eq!(out["ok"], json!(true), "{out}");
-        let (_, body) = last_commit(root);
-        assert!(body.contains("- onda 1: a onda 1 saiu"), "{body}");
-        assert!(body.ends_with("\n\n- onda 1: +4 -0, 3 arquivos\n\nMustard-Waves: 1"), "{body}");
+        assert_eq!(last_commit(root), ("feat: a entrega 1 saiu".to_string(), String::new()), "{out}");
+        assert_eq!(warning_of(&out, "wave-size")["hint"], json!("onda 1: +4 -0, 3 arquivos"), "{out}");
     }
 
     #[test]
@@ -224,15 +207,6 @@ mod tests {
             assert_eq!(text_lines(&path), lines, "{bytes:?}");
         }
         assert_eq!(text_lines(&root.join("missing")), 0);
-    }
-
-    #[test]
-    fn a_message_that_would_not_fit_with_the_lines_keeps_the_body_it_had() {
-        let body = "- onda 1: resumo\n".repeat(235);
-        let message = Some(("feat(onda-1): resumo".to_string(), body.trim().to_string()));
-        assert!(check_commit_text("feat(onda-1): resumo", body.trim()).is_ok());
-        let sizes = vec![(1, "onda 1: +2 -0, 2 arquivos".to_string())];
-        assert_eq!(in_body(message.clone(), &sizes), message);
     }
 
     /// O arquivo de `path` com `count` linhas que começam por `prefix`.

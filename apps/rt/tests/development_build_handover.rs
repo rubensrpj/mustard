@@ -21,6 +21,9 @@
 #[path = "support/executable.rs"]
 mod executable;
 
+#[path = "support/binary.rs"]
+mod binary;
+
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -124,7 +127,7 @@ impl Machine {
 
     /// `program` com `args` e `stdin`, de dentro de `cwd`, e o que imprimiu.
     fn run(&self, program: &Path, cwd: &Path, args: &[&str], stdin: &str, delegated: bool) -> String {
-        let mut command = Command::new(program);
+        let mut command = binary::isolated(program);
         command
             .args(args)
             .current_dir(cwd)

@@ -131,6 +131,10 @@ fn selection_note(answer: &Answer, request: &Request) -> String {
     for outcome in outcomes {
         let _ = writeln!(note,"# selection: {outcome} (model judgement; verify source)");
     }
+    // The choice the Jev did not make in time stays with the agent.
+    if let Some(left) = answer.report["evidence"]["selection"]["choice_left"].as_str() {
+        let _ = writeln!(note, "# {left}");
+    }
     if note.is_empty() && answer.report["evidence"]["remaining_ambiguities"].as_u64().is_some_and(|n|n>0) {
         note.push_str("# selection: unresolved; inspect source\n");
     }

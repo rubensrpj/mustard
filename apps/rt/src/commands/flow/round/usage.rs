@@ -65,10 +65,10 @@ impl Usage {
 /// da onda, no arquivo dele, e o da conversa principal, o mesmo para todas,
 /// no ramo da spec desde o começo dela. Sem a pasta da sessão, nada é medido.
 pub(super) fn measure_usage<'u>(root: &Path, log: &SpecLog, caller: Caller<'_>, waves: impl IntoIterator<Item = (u64, &'u mut Usage)>) {
-    let session = (crate::shared::host_observation::caller_host(root,caller.session)!="codex").then_some(caller.config_dir.zip(caller.session)).flatten().and_then(|(dir, id)| transcript::session_dir(dir, id));
+    let session = (crate::shared::host_observation::caller_host(root,caller.session)!="codex").then_some(caller.config_dir.zip(caller.session)).flatten().and_then(|(dir, id)| transcript::session_dir(dir, root, id));
     let main = session.as_deref().and_then(|session|main_usage(log,session));
     for (wave, usage) in waves {
-        let spec=log.last_by_wave("send").get(&wave).and_then(|id|log.get(*id)).and_then(|e|e.str_field("text"))
+        let spec=log.last_by_wave("send").get(&wave).and_then(|id|log.send_text(*id))
             .and_then(|text|mustard_core::domain::wave_prompt::ReadDispatch::of(text).map(|r|r.spec)
                 .or_else(||text.lines().next().and_then(|heading|mustard_core::domain::wave_prompt::wave_of_title(heading,Locale::PtBr).or_else(||mustard_core::domain::wave_prompt::wave_of_title(heading,Locale::EnUs))).map(|r|r.0)));
         let native=spec.as_deref().and_then(|spec|crate::shared::host_observation::wave_usage(root,spec,log,wave));
@@ -221,9 +221,10 @@ pub(super) mod tests {
                     "cache_read_input_tokens": usage[2], "output_tokens": usage[3]}}})
     }
 
-    /// A conversa principal de uma sessão, só com a mensagem de quem a abriu.
-    fn session(config: &Path, project: &str, name: &str, at: &str) {
-        let opened = json!({"type": "user", "isSidechain": false, "gitBranch": "feature/x", "timestamp": at,
+    /// A conversa principal de uma sessão aberta na pasta `cwd`, só com a
+    /// mensagem de quem a abriu.
+    fn session(config: &Path, project: &str, cwd: &Path, name: &str, at: &str) {
+        let opened = json!({"type": "user", "isSidechain": false, "gitBranch": "feature/x", "timestamp": at, "cwd": cwd,
             "message": {"role": "user", "content": "siga a obra"}});
         platform_file(config, project, &format!("{name}.jsonl"), &[opened]);
     }
@@ -255,24 +256,27 @@ pub(super) mod tests {
         assert!(prompt.starts_with("# "), "o pedido abre com o título da onda: {out}");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let send = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(1)).unwrap().clone();
-        let sent = send.at();
+        // A hora do envio que despachou a onda, e não a da versão que marca o
+        // agente lançado.
+        let dispatched = log.get(log.dispatch_position(send.id)).unwrap().at().to_string();
+        let sent = dispatched.as_str();
 
         let platform = tempdir().unwrap();
         let config = platform.path();
-        session(config, "-tmp-obra", "antiga", &instant(sent, -1_000));
+        session(config, "-tmp-obra", root,"antiga", &instant(sent, -1_000));
         let read = format!("Idiomas deste projeto.\n\nLeia o seu pedido com: mustard-rt run read request-1 --root {} --spec x\nConclua e entregue.",mustard_core::io::wave_prompt::shown(root));
         agent(config, "-tmp-obra", "antiga/subagents/agent-onda.jsonl", &instant(sent, 200), &read, "r1", [2, 100, 1_000, 40]);
         agent(config, "-tmp-obra", "antiga/subagents/agent-outro-root.jsonl", &instant(sent, 100), &read.replace(&mustard_core::io::wave_prompt::shown(root),"/another/project"), "foreign", [90_000,0,0,0]);
         agent(config, "-tmp-obra", "antiga/subagents/agent-antes.jsonl", &instant(sent, -1), &prompt, "a1", [9_000, 0, 0, 0]);
         agent(config, "-tmp-obra", "antiga/subagents/agent-depois.jsonl", &instant(sent, 201), &prompt, "d1", [7_000, 0, 0, 0]);
-        session(config, "-tmp-obra", "nova", &instant(sent, 50));
+        session(config, "-tmp-obra", root,"nova", &instant(sent, 50));
         let other_wave = "# x — onda 2\n\nOutro pedido.\n";
         agent(config, "-tmp-obra", "nova/subagents/agent-outra.jsonl", &instant(sent, 100), other_wave, "b1", [8_000, 0, 0, 0]);
-        session(config, "-tmp-outro", "alheia", &instant(sent, -1_000));
+        session(config, "-tmp-outro", Path::new("/another/project"), "alheia", &instant(sent, -1_000));
         agent(config, "-tmp-outro", "alheia/subagents/agent-onda.jsonl", &instant(sent, 100), &prompt, "o1", [6_000, 0, 0, 0]);
 
         std::fs::write(root.join("src/a.rs"), "fn one() {}\n// A soma saiu.\n").unwrap();
-        let delivery = json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": "a onda 1 saiu"});
+        let delivery = json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": "a entrega 1 saiu"});
         assert_eq!(returned(root, delivery)["ok"], json!(true));
         let opts = RoundOpts { root: root.to_path_buf(), spec: Some("x".to_string()), report: Some(line("USAGE", json!({"wave": 1}))) };
         super::super::review::test_conductor_review(root, "x");
@@ -311,7 +315,7 @@ pub(super) mod tests {
         let answer = |millis, id: &str, usage, tools: &[&str]| answer_line(&at(millis), "feature/x", true, id, usage, tools);
         let second = answer(60_000, "r2", [3, 0, 2_000, 50], &["t2", "t3"]);
         for (name, start) in [("antiga", -1_000), ("meio", 50_000), ("nova", 100_000)] {
-            session(config, "-tmp-obra", name, &at(start));
+            session(config, "-tmp-obra", root,name, &at(start));
         }
         let piece = |name: &str| format!("{name}/subagents/agent-onda.jsonl");
         let first = answer(300, "r1", [2, 100, 1_000, 40], &["t1"]);
@@ -320,7 +324,7 @@ pub(super) mod tests {
         platform_file(config, "-tmp-obra", &piece("nova"), &[second, answer(120_000, "r3", [4, 0, 3_000, 60], &["t4"])]);
 
         std::fs::write(root.join("src/a.rs"), "fn one() {}\n// A soma saiu.\n").unwrap();
-        let delivery = json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": "a onda 1 saiu"});
+        let delivery = json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": "a entrega 1 saiu"});
         assert_eq!(returned(root, delivery)["ok"], json!(true));
         let opts = RoundOpts { root: root.to_path_buf(), spec: Some("x".to_string()), report: Some(line("USAGE", json!({"wave": 1}))) };
         super::super::review::test_conductor_review(root, "x");
@@ -355,7 +359,7 @@ pub(super) mod tests {
     /// consumo.
     fn measured_return(root: &Path, config: &Path, session: &str) -> (Value, mustard_core::domain::spec_events::SpecEvent) {
         std::fs::write(root.join("src/a.rs"), "fn one() {}\n// A soma saiu.\n").unwrap();
-        let delivery = json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": "a onda 1 saiu"});
+        let delivery = json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": "a entrega 1 saiu"});
         assert_eq!(returned(root, delivery)["ok"], json!(true));
         let opts = RoundOpts { root: root.to_path_buf(), spec: Some("x".to_string()), report: Some(line("USAGE", json!({"wave": 1}))) };
         super::super::review::test_conductor_review(root, "x");
@@ -384,7 +388,7 @@ pub(super) mod tests {
         let (_, resent, dispatch) = resent_wave(root);
         let platform = tempdir().unwrap();
         let config = platform.path();
-        session(config, "-tmp-obra", "desktop", &instant(&resent, -60_000));
+        session(config, "-tmp-obra", root,"desktop", &instant(&resent, -60_000));
         agent(config, "-tmp-obra", "desktop/subagents/agent-x.jsonl", &instant(&resent, 200), &dispatch, "r1", [2, 100, 1_000, 40]);
         platform_file(config, "-tmp-obra", "desktop/subagents/agent-x.meta.json", &[json!({"agentType": "mustard-wave", "description": "Onda 1 x"})]);
 
@@ -407,7 +411,7 @@ pub(super) mod tests {
         let (first, _, dispatch) = resent_wave(root);
         let platform = tempdir().unwrap();
         let config = platform.path();
-        session(config, "-tmp-obra", "desktop", &instant(&first, -60_000));
+        session(config, "-tmp-obra", root,"desktop", &instant(&first, -60_000));
         agent(config, "-tmp-obra", "desktop/subagents/agent-antes.jsonl", &instant(&first, 1), &dispatch, "a1", [9_000, 0, 0, 0]);
 
         let (out, revised) = measured_return(root, config, "desktop");
@@ -425,7 +429,7 @@ pub(super) mod tests {
         let (first, resent, dispatch) = resent_wave(root);
         let platform = tempdir().unwrap();
         let config = platform.path();
-        session(config, "-tmp-obra", "desktop", &instant(&first, -60_000));
+        session(config, "-tmp-obra", root,"desktop", &instant(&first, -60_000));
         agent(config, "-tmp-obra", "desktop/subagents/agent-antes.jsonl", &instant(&first, 0), &dispatch, "a1", [9_000, 0, 0, 0]);
         agent(config, "-tmp-obra", "desktop/subagents/agent-x.jsonl", &instant(&resent, 200), &dispatch, "r1", [2, 100, 1_000, 40]);
         let transcript = config.join("projects/-tmp-obra/desktop/subagents/agent-x.jsonl");

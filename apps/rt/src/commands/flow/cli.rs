@@ -125,12 +125,13 @@ pub enum FlowCmd {
         /// onda e o veredito não vêm aqui: o agente de onda grava a entrega
         /// com `run write delivered`, o revisor grava o veredito com `run
         /// write verdict`, e a linha `<DELIVERED>` ou `<VERDICT>` no relatório
-        /// é recusada. Quem despacha escreve, para cada onda cujo agente
-        /// terminou, a linha `<USAGE>{"wave":1}</USAGE>`, só com a onda — o
-        /// consumo a rodada mede nos arquivos de conversa que a plataforma
-        /// grava, nunca digitado pelo agente nem por quem despacha — e a
-        /// `<PAUSED>`. Para reprovar a volta de uma onda, no lugar da `USAGE`
-        /// dela vai a linha `<REJECTED>{"wave":1,"reason":"…"}</REJECTED>`,
+        /// é recusada. A onda que gravou a entrega vai sem linha de uso: o
+        /// binário sabe quem voltou, e o consumo a rodada mede nos arquivos
+        /// de conversa que a plataforma grava, nunca digitado pelo agente nem
+        /// por quem despacha. A linha `<USAGE>{"wave":1}</USAGE>`, só com a
+        /// onda, fica para o agente que terminou sem gravar a entrega, e a
+        /// `<PAUSED>` para a pausa. Para reprovar a volta de uma onda, vai a
+        /// linha `<REJECTED>{"wave":1,"reason":"…"}</REJECTED>`,
         /// com o motivo: a rodada segura a volta fora do commit, a onda espera
         /// um agente novo, e o motivo vai a ele. Para recusar a mudança de
         /// plano que uma onda propôs, quando a mensagem do usuário já recusa,
@@ -139,10 +140,12 @@ pub enum FlowCmd {
         /// devolve as tarefas dela soltas ao backlog. A onda que mudou código
         /// leva a `REVIEWED` dela na mesma rodada. Aceitar a mudança é só
         /// pelo clique do usuário.
-        /// Código exige revisão prévia por `run review-wave`. Depois de ler
-        /// o diff e conferir regras/testes, aceite com
-        /// `<REVIEWED>{"wave":1,"fingerprint":"…","note":"…"}</REVIEWED>`.
-        /// `USAGE` sozinho não aprova; alteração invalida a revisão.
+        /// Código exige revisão prévia por `run review-wave`, que responde com
+        /// o resumo. Depois de ler e conferir regras/testes, aceite com
+        /// `<REVIEWED>{"wave":1,"note":"…"}</REVIEWED>`: o aceite vale para a
+        /// impressão da volta que você viu, sem copiá-la; `fingerprint` na
+        /// linha prende o aceite a outra. `USAGE` sozinho não aprova;
+        /// alteração invalida a revisão.
         #[arg(long)]
         report: Option<String>,
         /// Autoriza avançar a execução e despachar ondas. Sem relatório nem
@@ -157,20 +160,25 @@ pub enum FlowCmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
-    /// Prepara e mostra o diff real da onda para revisão antes do commit.
-    /// Depois de ler o diff, passe `REVIEWED` com wave, fingerprint e note no
-    /// relatório da rodada. Mudança posterior invalida a revisão. A resposta
-    /// abre com a impressão digital, traz o diff inteiro e cada regra do
-    /// projeto pelo caminho e pelo tamanho.
+    /// Mostra o resumo do diff real da onda para revisão antes do commit: os
+    /// arquivos com as linhas postas e tiradas, o que saiu do plano e os
+    /// passos e provas da onda. Depois de ler, passe
+    /// `<REVIEWED>{"wave":1,"note":"…"}</REVIEWED>` no relatório da rodada,
+    /// sem copiar a impressão. Mudança posterior invalida a revisão. A
+    /// resposta abre com a impressão digital e traz cada regra do projeto
+    /// pelo caminho e pelo tamanho.
     #[command(display_order = 22)]
     ReviewWave {
         #[arg(long)]
         wave: u64,
         #[arg(long)]
         spec: Option<String>,
-        /// A resposta inteira, com o texto de cada regra do projeto.
+        /// A resposta inteira, com o diff e o texto de cada regra do projeto.
         #[arg(long)]
         full: bool,
+        /// O diff inteiro da onda, junto do resumo.
+        #[arg(long)]
+        diff: bool,
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
@@ -376,8 +384,8 @@ pub fn dispatch(cmd: FlowCmd) {
             let opts = flow::round::RoundOpts { root, spec, report };
             flow::answer("round", &opts.root, opts.spec.as_deref(), started, &flow::round::round_at(&opts), full);
         }
-        FlowCmd::ReviewWave { wave, spec, full, root } => {
-            let out = flow::round::review::view_at(&root, spec.as_deref(), wave);
+        FlowCmd::ReviewWave { wave, spec, full, diff, root } => {
+            let out = flow::round::review::view_at(&root, spec.as_deref(), wave, diff || full);
             flow::answer("review-wave", &root, spec.as_deref(), started, &out, full);
         }
         FlowCmd::Close { spec, report, pending_later, root } => {

@@ -1,6 +1,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Exercise the installed native door against real source and the scan built
 //! with it; no model call, application build or real Claude session is needed.
+#[path = "support/binary.rs"]
+mod binary;
+
 use std::{fs,process::Command};
 use serde_json::{Value,json};
 
@@ -16,7 +19,7 @@ fn native_installation_prepares_the_index_and_an_update_preserves_personal_choic
         fs::set_permissions(root.join("mustard.json"),fs::Permissions::from_mode(0o600)).unwrap();
     }
     let upsert=|| {
-        let output=Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+        let output=binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
             .args(["run","upsert"]).current_dir(root)
             .env("CLAUDE_CONFIG_DIR",root.join("isolated-host"))
             .env("CLAUDE_PROJECT_DIR",root).env("MUSTARD_RT_DELEGATED","1")

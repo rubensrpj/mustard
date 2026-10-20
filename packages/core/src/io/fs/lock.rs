@@ -572,8 +572,11 @@ mod tests {
         SideWritten,
     }
 
+    /// O que a linha atual pediu para rodar em cada ponto ([`on_step`]).
+    type StepHook = Box<dyn FnMut(Step)>;
+
     thread_local! {
-        static ON_STEP: std::cell::RefCell<Option<Box<dyn FnMut(Step)>>> = const { std::cell::RefCell::new(None) };
+        static ON_STEP: std::cell::RefCell<Option<StepHook>> = const { std::cell::RefCell::new(None) };
     }
 
     /// Roda o que a linha atual pediu para `step`; nas outras linhas, nada.

@@ -3,6 +3,8 @@
 use crate::domain::code_search::Request;
 use crate::domain::knowledge::selection::SymbolSelector;
 use crate::io::knowledge::investigation::{Occurrence, cross_hits_for};
+use crate::io::knowledge::observations::{MAX_SOURCE_BYTES, MAX_SOURCES};
+use crate::io::map_db::{Kept, Later};
 use serde_json::{Value, json};
 use std::path::Path;
 use std::process::Stdio;
@@ -32,12 +34,32 @@ pub fn execute(
     request: &Request,
     selector: Option<&dyn SymbolSelector>,
 ) -> Result<Answer, String> {
-    if operations::requested(request) {
-        return operations::execute(root, tree, cwd, request);
-    }
-    let mut answer = execute_native(cwd, request)?;
-    enrich(root, tree, cwd, request, &mut answer, selector);
+    let mut later = Later::default();
+    let mut answer = if operations::requested(request) {
+        operations::execute(root, tree, cwd, request, &mut later)?
+    } else {
+        let mut answer = execute_native(cwd, request)?;
+        enrich(root, tree, cwd, request, &mut answer, selector, &mut later);
+        answer
+    };
+    // Quem chama a biblioteca sem prazo grava o que aprendeu esperando a
+    // trava como toda gravação.
+    settle(&mut answer, &later.keep(crate::io::map_db::BUSY_WAIT));
     Ok(answer)
+}
+
+/// Diz no relato como acabou a gravação do que a busca aprendeu. A que ficou
+/// para a próxima busca tira dos relatos de aprendizado o "gravado".
+pub fn settle(answer: &mut Answer, kept: &Kept) {
+    answer.report["learning_write"] = kept.report();
+    if kept.left() {
+        for pointer in ["/learning", "/task_context/learning"] {
+            if let Some(learning) = answer.report.pointer_mut(pointer).filter(|learning| learning["status"] == "stored-current-source-facts") {
+                learning["status"] = json!("not-stored");
+                learning["reason"] = json!("map-busy; the next search learns it again");
+            }
+        }
+    }
 }
 
 /// The runtime can refresh the scan between native execution/observation and
@@ -47,11 +69,15 @@ pub fn execute_native(cwd: &Path, request: &Request) -> Result<Answer, String> {
     if request.tool == "Read" {read(cwd,request)} else {run(cwd,request)}
 }
 
-pub fn observe(root: &Path, tree: &Path, cwd: &Path, request: &Request, answer: &mut Answer) {
+/// O que o resultado nativo ensina, junto em `later`. A saída longa se lê só
+/// até o teto de fontes do aprendizado: o resto não entraria nele.
+pub fn observe(root: &Path, tree: &Path, cwd: &Path, request: &Request, answer: &mut Answer, later: &mut Later) {
     if answer.report.get("learning").is_none() {
-        let hits=occurrences(tree,cwd,request,&answer.report["result"],&answer.stdout);
-        answer.report["learning"]=crate::io::knowledge::observations::record(root,tree,&hits)
+        let (hits,cut)=read_occurrences(tree,cwd,request,&answer.report["result"],&answer.stdout,MAX_SOURCES,MAX_SOURCE_BYTES);
+        let mut learning=crate::io::knowledge::observations::learn(root,tree,&hits,later)
             .unwrap_or_else(|reason|json!({"status":"not-stored","reason":reason,"needs_scan":false}));
+        learning["occurrences"]=json!({"read":hits.len(),"cut":cut});
+        answer.report["learning"]=learning;
     }
 }
 
@@ -67,9 +93,10 @@ pub fn enrich(
     request: &Request,
     answer: &mut Answer,
     selector: Option<&dyn SymbolSelector>,
+    later: &mut Later,
 ) {
     let hits = occurrences(tree, cwd, request, &answer.report["result"], &answer.stdout);
-    observe(root,tree,cwd,request,answer);
+    observe(root,tree,cwd,request,answer,later);
     let task_requested=task::requested(request) && matches!(answer.exit_code,0|1);
     let outdated = crate::io::project_map::needs_block_update(&crate::io::project_map::model_path(root));
     let borrowed: Vec<_> = hits
@@ -137,7 +164,7 @@ pub fn enrich(
             answer.report["task_context"]=json!({"status":"native-fallback","reason":"map-block-outdated; the scan pass rebuilds it","remote_model_calls":0});
             return;
         }
-        match task::investigate(root,tree,cwd,request,answer,if request.choose {selector}else{None}) {
+        match task::investigate(root,tree,cwd,request,answer,if request.choose {selector}else{None},later) {
             Ok(context)=>{
                 answer.report["remote_model_calls"]=context["remote_model_calls"].clone();
                 answer.report["local_model_calls"]=context["local_model_calls"].clone();
@@ -395,25 +422,47 @@ pub fn occurrences(
     result: &Value,
     stdout: &[u8],
 ) -> Vec<(String, u64, String)> {
+    read_occurrences(tree, cwd, request, result, stdout, usize::MAX, usize::MAX).0
+}
+
+/// [`occurrences`] lidas só até a `files`-ésima fonte e os primeiros `bytes`
+/// da saída: a linha de outra fonte depois disso, ou além desses bytes, não se
+/// lê. Diz se cortou.
+fn read_occurrences(
+    tree: &Path,
+    cwd: &Path,
+    request: &Request,
+    result: &Value,
+    stdout: &[u8],
+    files: usize,
+    bytes: usize,
+) -> (Vec<(String, u64, String)>, bool) {
     let mut hits = Vec::new();
     // Both sides of containment must use the same filesystem spelling (for
     // example macOS /var versus /private/var). A failed resolution admits no
     // indexed evidence while the already executed native result stays intact.
-    let Ok(tree) = tree.canonicalize() else { return hits; };
+    let Ok(tree) = tree.canonicalize() else { return (hits, false); };
     let mut paths = std::collections::BTreeMap::<String, Option<String>>::new();
+    let mut sources = std::collections::BTreeSet::<String>::new();
+    // `false` quando a linha é de uma fonte além do teto.
     let mut push = |file: &str, line: u64, text: &str| {
         let relative=paths.entry(file.into()).or_insert_with(||cwd.join(file).canonicalize().ok()
             .and_then(|path|path.strip_prefix(&tree).ok().map(|path|path.to_string_lossy().replace('\\',"/"))));
-        let Some(relative)=relative else {return;};
+        let Some(relative)=relative else {return true;};
+        if !sources.contains(relative.as_str()) {
+            if sources.len() >= files {return false;}
+            sources.insert(relative.clone());
+        }
         hits.push((
             relative.clone(),
             line,
             text.to_string(),
         ));
+        true
     };
     if request.tool == "Read" {
         let Some(file) = result["file_path"].as_str() else {
-            return hits;
+            return (hits, false);
         };
         for (at, text) in result["content"]
             .as_str()
@@ -421,13 +470,15 @@ pub fn occurrences(
             .lines()
             .enumerate()
         {
-            push(
+            if !push(
                 file,
                 result["offset"].as_u64().unwrap_or(1) + at as u64,
                 text,
-            );
+            ) {
+                return (hits, true);
+            }
         }
-        return hits;
+        return (hits, false);
     }
     let native_files = request.tool == "rg"
         && request.input["args"]
@@ -448,7 +499,8 @@ pub fn occurrences(
                 .filter_map(Value::as_str)
                 .collect()
         };
-        for file in listed.into_iter().take(96) {
+        let cut = listed.len() > files.min(96);
+        for file in listed.into_iter().take(files.min(96)) {
             if std::fs::metadata(cwd.join(file)).is_ok_and(|meta| meta.len() <= 2 * 1024 * 1024)
                 && let Ok(content) = std::fs::read_to_string(cwd.join(file))
                 && let Some(text) = content.lines().next()
@@ -456,16 +508,18 @@ pub fn occurrences(
                 push(file, 1, text);
             }
         }
-        return hits;
+        return (hits, cut);
     }
     // Only content output with actual filename/line/text coordinates is crossable.
     // Counts, binary notices, custom separators and context rows stay native.
-    let text = if request.tool == "Grep" {
-        result["content"].as_str().unwrap_or_default().to_string()
+    let whole = if request.tool == "Grep" {
+        result["content"].as_str().unwrap_or_default().as_bytes()
     } else {
-        String::from_utf8_lossy(stdout).into_owned()
+        stdout
     };
-    for row in text.lines() {
+    let head = whole_lines(whole, bytes);
+    let mut cut = head.len() < whole.len();
+    'rows: for row in String::from_utf8_lossy(head).lines() {
         for (at, _) in row.match_indices(':') {
             let file = &row[..at];
             let Some((line, text)) = row[at + 1..].split_once(':') else {
@@ -474,10 +528,50 @@ pub fn occurrences(
             if let Ok(line) = line.parse::<u64>()
                 && cwd.join(file).is_file()
             {
-                push(file, line, text);
+                if !push(file, line, text) {
+                    cut = true;
+                    break 'rows;
+                }
                 break;
             }
         }
     }
-    hits
+    (hits, cut)
+}
+
+/// O começo de `output` até `bytes`, em linhas inteiras.
+fn whole_lines(output: &[u8], bytes: usize) -> &[u8] {
+    if output.len() <= bytes {
+        return output;
+    }
+    output[..bytes].iter().rposition(|byte| *byte == b'\n').map_or(&[], |end| &output[..=end])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A saída do rg com mais arquivos do que o aprendizado lê não é lida
+    /// inteira para ele: a leitura para no teto de fontes, e o aprendizado
+    /// diz que cortou. A resposta do rg fica inteira.
+    #[test]
+    fn a_native_output_past_the_learning_ceiling_is_read_only_up_to_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        for at in 0..150 {
+            std::fs::write(root.join(format!("m{at:03}.rs")), format!("pub fn quartz_{at}() {{}}\n")).unwrap();
+        }
+        let request = Request::native(&["rg".into(), "-n".into(), "--sort".into(), "path".into(), "quartz_".into(), ".".into()]).unwrap();
+        let mut answer = execute_native(&root, &request).unwrap();
+        assert_eq!(String::from_utf8_lossy(&answer.stdout).lines().count(), 150, "the native result stays whole");
+
+        let mut later = Later::default();
+        observe(&root, &root, &root, &request, &mut answer, &mut later);
+
+        let learning = &answer.report["learning"];
+        assert_eq!(learning["occurrences"]["cut"], true, "{}", learning["occurrences"]);
+        assert_eq!(learning["occurrences"]["read"], 96, "{}", learning["occurrences"]);
+        assert_eq!(learning["source_hashes"].as_object().map(serde_json::Map::len), Some(96));
+        assert_eq!(String::from_utf8_lossy(&answer.stdout).lines().count(), 150, "the native result stays whole");
+    }
 }

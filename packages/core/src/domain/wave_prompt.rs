@@ -12,25 +12,26 @@
 //!
 //! O pedido de uma onda tem sempre as mesmas seções, nesta ordem: o que a
 //! onda entrega (a frase do `done_when`), como ler cada item, o que fazer, o
-//! que obedecer, o que devolver e como trabalhar. Cada item ocupa uma linha,
-//! com o tipo por extenso, o código e o título; a mensagem do usuário, que não
-//! tem título, vai com o começo do texto. O texto do item nunca vai no pedido:
-//! o agente o lê inteiro pelo código (`run read item-<código>`) ou, na lição,
-//! pelo número dela no banco (`run read lessons --term <número>`), e a entrega
-//! é recusada se faltar ler algum. O pedido diz o caminho do repositório
-//! principal quando o agente trabalha numa cópia, porque de dentro dela a spec
-//! só se lê por lá.
+//! que obedecer, o que devolver e como trabalhar. O que vale para a onda
+//! inteira ocupa uma linha por item, com o tipo por extenso, o código e o
+//! título; o agente lê o texto pelo código (`run read item-<código>`) ou, na
+//! lição, pelo número dela no banco, e a entrega é recusada se faltar ler
+//! algum já liberado. O pedido diz o caminho do repositório principal quando
+//! o agente trabalha numa cópia, porque de dentro dela a spec só se lê por lá.
 //!
-//! "O que fazer" tem um passo por tarefa, na ordem de execução que a onda
-//! declara (sem ela, na ordem do arquivo), com o que a tarefa atende, os
-//! arquivos dela e o que ler antes embaixo; a entrega fecha a lista, e a
-//! suíte do projeto fica fora dela, porque quem a roda é a rodada. "O que obedecer" leva as regras e decisões que valem para a
-//! onda e as lições dos arquivos dela, cada skill como recomendação de uma
-//! linha. O item sai uma vez só, mesmo que a onda o cite de mais de um jeito.
-//! O pedido da revisão final tem o mesmo formato de item: uma linha por item,
-//! com o tipo, o código e o título, e a mesma seção de como ler cada item; o
-//! veredito é recusado se faltar ler algum ([`listed_final_review`]). O
-//! pedido não tem teto de linhas.
+//! A onda anda uma tarefa por vez. "O que fazer" lista as tarefas só pelo
+//! código e pelo título, na ordem de execução que a onda declara (sem ela, na
+//! ordem do arquivo), com a primeira marcada, e traz inteiro só o bloco dela
+//! ([`task_blocks`]): o texto da tarefa e o de tudo o que ela atende, os
+//! arquivos, o que ler antes, quem testa, o padrão do projeto e as skills
+//! dela inteiras. O bloco de cada uma das outras chega na resposta do passo
+//! que termina a anterior. A suíte do projeto fica fora, porque quem a roda é
+//! a rodada. "O que obedecer" leva as regras e decisões que valem para a onda
+//! e as lições dos arquivos dela. O item sai uma vez só, mesmo que a onda o
+//! cite de mais de um jeito. O pedido da revisão final lista uma linha por
+//! item, com o tipo, o código e o título, e a mesma seção de como ler cada
+//! item; o veredito é recusado se faltar ler algum ([`listed_final_review`]).
+//! O pedido não tem teto de linhas.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -56,7 +57,7 @@ mod summary;
 pub use changed::TaskChange;
 pub use dispatch::ReadDispatch;
 pub use request::listed;
-pub use review::listed_final_review;
+pub use review::{Proven, listed_final_review};
 pub use rules::{ROOT_RULES_FILE, RulesFile, carries_project_rules, project_rules_section, touched_by};
 pub use summary::summary_of;
 
@@ -96,14 +97,13 @@ pub fn wave_of_title(heading: &str, lang: Locale) -> Option<(String, u64)> {
     (!spec.is_empty() && !spec.contains(char::is_whitespace) && wave > 0).then(|| (spec.to_string(), wave))
 }
 
-/// A skill que uma tarefa da onda nomeia, recomendada no pedido. O texto dela
-/// não entra: a skill mora num arquivo do projeto, e o agente da onda o lê.
+/// Uma skill que a onda usa: a que uma tarefa nomeia ou a que casa com os
+/// arquivos dela. O envio a grava com a impressão do arquivo; o texto entra
+/// no bloco da tarefa ([`TaskSkill`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Skill {
     /// O nome pelo qual a tarefa a chama.
     pub name: String,
-    /// Quando usar, na própria descrição da skill.
-    pub when: String,
     /// O caminho absoluto do arquivo no projeto principal, com barras
     /// normais: a pasta das skills fica fora do git, e a cópia da onda não a
     /// tem.
@@ -111,6 +111,78 @@ pub struct Skill {
     /// `true` quando um dos arquivos que a skill cita teve commit depois da
     /// data do arquivo dela: o pedido a marca como a revisar.
     pub stale: bool,
+}
+
+/// Uma skill inteira no bloco de uma tarefa: o corpo do `SKILL.md`, sem o
+/// cabeçalho, com o nome, o caminho e a marca de a revisar.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TaskSkill {
+    /// O nome da pasta da skill.
+    pub name: String,
+    /// O caminho absoluto do arquivo no projeto principal ([`Skill::path`]).
+    pub path: String,
+    /// A skill a revisar ([`Skill::stale`]).
+    pub stale: bool,
+    /// O corpo do arquivo, sem o cabeçalho.
+    pub body: String,
+}
+
+/// Quantas skills inteiras o bloco de uma tarefa leva, no máximo: as que a
+/// tarefa nomeia primeiro, depois as que casam com os arquivos dela.
+pub const TASK_SKILLS_MAX: usize = 3;
+
+/// Quantos caracteres do corpo de cada skill candidata a escolha mostra, logo
+/// depois da descrição inteira dela.
+pub const SKILL_EXCERPT_CHARS: usize = 700;
+
+/// Uma skill candidata ao bloco de uma tarefa, como a escolha a mostra: o
+/// nome, o caminho que identifica a skill ([`Skill::path`]), a descrição
+/// inteira e o começo do corpo, até [`SKILL_EXCERPT_CHARS`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SkillOption {
+    pub name: String,
+    pub path: String,
+    pub description: String,
+    pub excerpt: String,
+}
+
+/// Uma tarefa com mais skills candidatas do que cabem no bloco dela, fora a
+/// que ela nomeia: a escolha pergunta de cada candidata se ela faz o que a
+/// tarefa pede. Até a escolha, o bloco leva as primeiras.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SkillTie {
+    /// O número da tarefa.
+    pub task: u64,
+    /// O título da tarefa.
+    pub title: String,
+    /// O texto da tarefa e o dos itens que ela cobre.
+    pub text: String,
+    /// Quantas candidatas cabem no bloco, fora a nomeada pela tarefa.
+    pub room: usize,
+    /// As candidatas, na ordem em que a procura as acha.
+    pub candidates: Vec<SkillOption>,
+}
+
+/// O teto, em tokens ([`estimate_tokens`]), do bloco de uma tarefa: o bloco
+/// que passa dele perde a última skill, uma de cada vez, e diz qual cortou. O
+/// resto do bloco — a tarefa, o que ela atende, os arquivos e o padrão — sai
+/// sempre inteiro.
+pub const TASK_BLOCK_TOKEN_CAP: u64 = 12_000;
+
+/// O bloco de uma tarefa, como o pedido o traz para a primeira e a resposta
+/// do passo para cada uma das seguintes: o mesmo texto, de um renderizador
+/// só.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TaskBlock {
+    /// O código da tarefa.
+    pub task: String,
+    /// O texto do bloco.
+    pub text: String,
+    /// O que o bloco entrega inteiro: o código da tarefa e o de cada item que
+    /// só ela traz. Entregar o texto conta como ler.
+    pub items: Vec<String>,
+    /// As skills que entraram inteiras no bloco, pelo nome.
+    pub skills: Vec<String>,
 }
 
 /// Uma cópia separada do repositório: a vaga fixa em que a onda trabalha e
@@ -177,23 +249,29 @@ pub struct Execution {
     /// O modelo dos agentes que o `mustard.json` declara em `agents.model`;
     /// vazio, o padrão da instalação ([`Execution::requested_model`]).
     pub model: String,
-    /// O esforço dos agentes que o `mustard.json` declara em `agents.effort`;
-    /// vazio, o padrão da instalação ([`Execution::requested_effort`]).
+    /// O esforço do agente, sempre o padrão da instalação (`xhigh`), que o
+    /// lançamento impõe; vazio, o mesmo padrão
+    /// ([`Execution::requested_effort`]).
     pub effort: String,
+    /// Se o modelo de cada onda sai da dificuldade das tarefas dela
+    /// (`agents.by_difficulty`, [`crate::domain::agent_model::wave_model`]).
+    pub by_difficulty: bool,
+    /// De onde o modelo da onda subiu, quando ela volta reprovada.
+    pub escalated_from: Option<crate::domain::agent_model::Escalation>,
 }
 
 impl Execution {
-    /// O modelo que o pedido diz e o envio grava: o da configuração do
-    /// projeto, o mesmo que a instalação escreve no cabeçalho de cada agente,
-    /// ou o padrão quando a configuração não o traz.
+    /// O modelo que o pedido diz e o envio grava: o da onda, pela dificuldade
+    /// das tarefas dela, ou o da configuração do projeto, o mesmo que a
+    /// instalação escreve no cabeçalho de cada agente, ou o padrão quando a
+    /// configuração não o traz.
     #[must_use]
     pub fn requested_model(&self) -> &str {
         if self.model.trim().is_empty() { crate::domain::config::DEFAULT_AGENT_MODEL } else { &self.model }
     }
 
-    /// O esforço que o pedido diz e o envio grava: o da configuração do
-    /// projeto, o mesmo que a instalação escreve no cabeçalho de cada agente,
-    /// ou o padrão quando a configuração não o traz.
+    /// O esforço que o pedido diz e o envio grava: o que a execução traz, ou
+    /// o padrão da instalação quando ela não traz nenhum.
     #[must_use]
     pub fn requested_effort(&self) -> &str {
         if self.effort.trim().is_empty() { crate::domain::config::DEFAULT_AGENT_EFFORT } else { &self.effort }
@@ -270,6 +348,9 @@ pub struct Material<'a> {
     pub project_rules: Vec<RulesFile>,
     /// Current source components; they do not satisfy canonical item reads.
     pub prepared: Vec<PreparedSource>,
+    /// As skills inteiras de cada tarefa, pelo código dela, até
+    /// [`TASK_SKILLS_MAX`], na ordem em que o bloco as traz.
+    pub task_skills: BTreeMap<String, Vec<TaskSkill>>,
 }
 
 /// A versioned current-source excerpt or an explicit recovery location.
@@ -327,7 +408,8 @@ pub struct TaskPattern {
 }
 
 /// Um exemplo do padrão: o nome da função, o arquivo e a faixa de linhas
-/// dela. Nunca o código: o agente lê o trecho se precisar.
+/// dela, zerada quando o arquivo mudou depois do mapa. Nunca o código: o
+/// agente lê o trecho se precisar.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PatternExample {
     pub name: String,
@@ -387,7 +469,8 @@ pub fn pattern_block(pattern: &TaskPattern, lang: Locale) -> String {
         .examples
         .iter()
         .map(|e| {
-            let line = translate("prompt.pattern.example", lang)
+            let key = if e.end == 0 { "prompt.pattern.example_named" } else { "prompt.pattern.example" };
+            let line = translate(key, lang)
                 .replace("{name}", &e.name)
                 .replace("{path}", &e.path)
                 .replace("{start}", &e.start.to_string())
@@ -416,19 +499,18 @@ pub fn pattern_block(pattern: &TaskPattern, lang: Locale) -> String {
 }
 
 /// Quantos espaços recuam as linhas sob um passo numerado de "O que fazer":
-/// o que a tarefa atende, o arquivo, o que ler antes e o bloco do padrão.
+/// a lista das tarefas da onda.
 pub const STEP_INDENT: usize = 3;
 
-/// O bloco do padrão como o pedido o escreve sob o passo de uma tarefa: o
-/// mesmo de [`pattern_block`], que nasce para uma lista de dois espaços,
-/// recuado até o recuo do passo. É o que a medida do padrão pesa, porque é o
-/// que o agente recebe.
+/// O bloco do padrão como o bloco de uma tarefa o escreve: o mesmo de
+/// [`pattern_block`], que nasce para uma lista de dois espaços, trazido para
+/// o primeiro nível, ao lado das linhas da tarefa. É o que a medida do padrão
+/// pesa, porque é o que o agente recebe.
 #[must_use]
-pub fn pattern_block_in_step(pattern: &TaskPattern, lang: Locale) -> String {
-    let extra = " ".repeat(STEP_INDENT.saturating_sub(2));
+pub fn pattern_block_in_task(pattern: &TaskPattern, lang: Locale) -> String {
     let mut out = String::new();
     for line in pattern_block(pattern, lang).lines() {
-        let _ = writeln!(out, "{extra}{line}");
+        let _ = writeln!(out, "{}", line.strip_prefix("  ").unwrap_or(line));
     }
     out
 }
@@ -454,8 +536,10 @@ pub fn recipe_lines(recipe: &Recipe, lang: Locale) -> String {
     out
 }
 
-/// O teto de tokens do pedido de uma onda: acima dele, quem despacha recusa
-/// e diz o tamanho medido e o teto, para dividir o lote em dois. O teto é
+/// O teto de tokens do pedido de uma onda: acima dele, quem despacha divide
+/// a onda, deixando nela as tarefas que cabem e devolvendo as outras ao
+/// backlog; a onda cuja primeira tarefa sozinha já passa dele é recusada,
+/// com o tamanho medido e o teto. O teto é
 /// de despachar, não de montar — [`write`] continua escrevendo
 /// o pedido inteiro, do tamanho que for, porque é esse texto que a página
 /// mostra antes da aprovação; ninguém corta linha para caber.
@@ -516,6 +600,66 @@ pub fn write(material: &Material, lang: Locale) -> String {
 #[must_use]
 pub fn write_final_review(material: &Material, lang: Locale) -> String {
     Writer { material, lang }.final_review_text()
+}
+
+/// O bloco de cada tarefa da onda, na ordem de execução: o pedido traz o da
+/// primeira, e a resposta do passo que termina uma tarefa traz o da seguinte.
+#[must_use]
+pub fn task_blocks(material: &Material, lang: Locale) -> Vec<TaskBlock> {
+    Writer { material, lang }.task_blocks()
+}
+
+/// Os campos que o texto de um item nunca mostra: as marcas do binário, os
+/// números que ligam um item a outro e o que o título já mostra à parte.
+const BODY_OMITTED: &[&str] = &[
+    "v", "id", "code", "at", "author", "keys", "search", "type", "title", "replaces", "origin", "covers", "label", "text", "agent",
+    "example", "every_wave", "files",
+];
+
+/// Um trecho colado maior que isto, em bytes, vira aviso no texto do item.
+const PASTE_MAX: usize = 1024;
+
+/// O texto inteiro de um item, como quem implementa o lê: a parte do agente;
+/// sem ela, o texto; sem texto, os outros campos, um por linha. A mensagem do
+/// usuário sai com o texto dela, com o trecho colado grande trocado pelo aviso
+/// de onde lê-lo pelo código `code`. Sem título nem arquivos: quem mostra o
+/// item os põe em volta.
+#[must_use]
+pub fn item_body(item: &SpecEvent, code: &str, lang: Locale) -> String {
+    if item.event_type == "message" {
+        return without_long_paste(item.str_field("text").unwrap_or_default(), code, lang);
+    }
+    match item.str_field("agent").filter(|agent| !agent.trim().is_empty()).or_else(|| item.str_field("text")) {
+        Some(body) => body.to_string(),
+        None => item
+            .fields
+            .iter()
+            .filter(|(key, _)| !BODY_OMITTED.contains(&key.as_str()))
+            .map(|(key, value)| format!("{key}: {}", value.as_str().map_or_else(|| value.to_string(), str::to_string)))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    }
+}
+
+/// O texto com cada trecho colado maior que [`PASTE_MAX`] trocado pelo aviso
+/// de onde lê-lo inteiro.
+fn without_long_paste(text: &str, code: &str, lang: Locale) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("<pasted_content") {
+        let Some(close) = rest[start..].find("</pasted_content").map(|at| start + at) else { break };
+        let end = rest[close..].find('>').map_or(rest.len(), |at| close + at + 1);
+        out.push_str(&rest[..start]);
+        if end - start > PASTE_MAX {
+            let kb = (end - start).div_ceil(1024).to_string();
+            out.push_str(&translate("spec_events.find_pasted", lang).replace("{kb}", &kb).replace("{code}", code));
+        } else {
+            out.push_str(&rest[start..end]);
+        }
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -596,7 +740,7 @@ impl Writer<'_> {
     }
 
     /// O código e o título de um item, sem o tipo: o que sobra da linha dele
-    /// quando a frase em volta já diz o tipo ("Faça a tarefa …").
+    /// quando a frase em volta já diz o tipo (a lista das tarefas, o título do bloco).
     fn item_tail(&self, item: &SpecEvent) -> String {
         let code = code_of(self.material, item);
         let title =
@@ -769,6 +913,24 @@ pub fn unowned(log: &SpecLog) -> Vec<&SpecEvent> {
 #[must_use]
 pub fn all_agreed(log: &SpecLog) -> Vec<&SpecEvent> {
     agreed_items(log)
+}
+
+/// O combinado que o veredito final responde: o que o pedido mais novo da
+/// revisão listou (`read_items`) e o que nenhuma tarefa terminada cobre agora
+/// ([`Proven`]) — o item gravado depois do pedido também. O combinado que uma
+/// tarefa terminada cobre e o pedido não listou já tem prova. O pedido sem a
+/// lista, de antes dela, responde por todo o combinado ([`all_agreed`]).
+#[must_use]
+pub fn review_agreed(log: &SpecLog) -> Vec<&SpecEvent> {
+    let visible = log.visible();
+    let sent = visible.iter().filter(|e| e.event_type == "send" && e.str_field("role") == Some("review")).max_by_key(|e| e.id);
+    let Some(listed) = sent.and_then(|e| e.fields.get("read_items")).and_then(Value::as_array) else {
+        return all_agreed(log);
+    };
+    let listed: BTreeSet<&str> = listed.iter().filter_map(Value::as_str).collect();
+    let codes = log.codes();
+    let proven = Proven::of(log);
+    all_agreed(log).into_iter().filter(|e| codes.get(&e.id).is_some_and(|code| listed.contains(code.as_str())) || !proven.covers(e)).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -961,8 +1123,8 @@ impl Choice {
 /// A escolha gravada no envio mais novo da onda `wave`, quando ele tem uma.
 #[must_use]
 pub fn recorded_choice(log: &SpecLog, wave: u64) -> Option<Choice> {
-    let sent = log.last_by_wave("send").get(&wave).and_then(|id| log.get(*id))?;
-    Choice::from_value(sent.fields.get("analysis")?)
+    let sent = *log.last_by_wave("send").get(&wave)?;
+    Choice::from_value(log.send_field(sent, "analysis")?)
 }
 
 /// A escolha que vale para o pedido da onda `wave`: a dada (`fresh`) ou, sem
@@ -1406,10 +1568,19 @@ impl Writer<'_> {
     /// lê por lá. Sem cópia, o agente roda no próprio repositório principal,
     /// e o caminho sobra.
     fn read_example(&self, out: &mut String, key: &str, in_copy: bool) {
-        let root = &self.material.execution.root;
-        let flag = if in_copy && !root.is_empty() { format!("--root {root} ") } else { String::new() };
-        let line = self.t(key).replace("{root}", &flag).replace("{spec}", &self.material.spec);
+        let line = self
+            .t(key)
+            .replace("{root}", &self.root_flag(in_copy))
+            .replace("{spec}", &self.material.spec)
+            .replace("{wave}", &self.material.wave.to_string());
         let _ = writeln!(out, "{line}\n");
+    }
+
+    /// `--root <repositório principal> ` nos comandos da spec de quem
+    /// trabalha numa cópia (`in_copy`); nada fora dela.
+    fn root_flag(&self, in_copy: bool) -> String {
+        let root = &self.material.execution.root;
+        if in_copy && !root.is_empty() { format!("--root {root} ") } else { String::new() }
     }
 
     /// As regras da execução do revisor: a cópia que o fechamento já criou no
@@ -1574,14 +1745,13 @@ mod tests {
         assert!(choice.removed_lessons.is_empty(), "sem o campo, nenhuma lição tirada: {choice:?}");
     }
 
-    /// Cada item do pedido ocupa uma linha só — o tipo por extenso, o código e o
-    /// título — e o texto do item, a parte do agente dele, o porquê da tarefa
-    /// e o `when`, o `then` e a prova do critério nunca entram: o agente lê
-    /// tudo isso pelo código. A tarefa é um passo de "O que fazer" e o que ela
-    /// atende vem logo abaixo dela; a onda, que nenhuma tarefa atende, não é
-    /// listada. Nenhum código aparece duas vezes.
+    /// O pedido lista as tarefas pelo código e pelo título, na ordem, e traz
+    /// inteiro só o bloco da primeira: a parte do agente dela e o texto do
+    /// critério que ela atende. O texto da onda, o porquê da tarefa e a
+    /// segunda tarefa inteira nunca entram; a onda, que nenhuma tarefa atende,
+    /// não é listada.
     #[test]
-    fn a_request_lists_each_item_in_one_line_and_never_its_text_or_agent_part() {
+    fn a_request_lists_the_tasks_by_title_and_never_the_wave_text_or_a_task_still_to_come() {
         let log = log(&[
             (
                 "criterion",
@@ -1601,52 +1771,37 @@ mod tests {
             ),
             ("task", json!({"wave": 1, "text": "Escrever a página. Ela mostra a soma.", "files": [{"path": "src/b.rs"}]})),
         ]);
-        let expected = [
-            (
-                Locale::PtBr,
-                vec![
-                    "",
-                    "1. Faça a tarefa MSTD-TASK-0001 — Escrever o motor",
-                    "   - Atende: critério MSTD-CRIT-0001 — A suíte roda inteira",
-                    "   - Leia a tarefa e o que ela atende, inteiros, antes de mexer.",
-                    "   - Arquivo: `src/a.rs`",
-                    "2. Faça a tarefa MSTD-TASK-0002 — Escrever a página.",
-                    "   - Leia a tarefa inteira antes de mexer.",
-                    "   - Arquivo: `src/b.rs`",
-                    "3. Grave a entrega, como diz \"O que devolver\".",
-                ],
-            ),
-            (
-                Locale::EnUs,
-                vec![
-                    "",
-                    "1. Do the task MSTD-TASK-0001 — Escrever o motor",
-                    "   - Addresses: criterion MSTD-CRIT-0001 — A suíte roda inteira",
-                    "   - Read the whole task and what it addresses before you start.",
-                    "   - File: `src/a.rs`",
-                    "2. Do the task MSTD-TASK-0002 — Escrever a página.",
-                    "   - Read the whole task before you start.",
-                    "   - File: `src/b.rs`",
-                    "3. Record the delivery, as \"What to return\" says.",
-                ],
-            ),
-        ];
-        for (lang, steps) in expected {
+        for lang in [Locale::PtBr, Locale::EnUs] {
             let prompt = write(&material(&log, 1), lang);
-            for text in ["Ela abre o motor", "Hoje não há motor", "Depois, ele soma", "a suíte passa", "-p suite", "-p motor", "`soma`", "Ela mostra a soma"]
-            {
+            for text in ["Ela abre o motor", "Hoje não há motor", "Ela mostra a soma"] {
                 assert!(!prompt.contains(text), "{text:?} foi copiado: {prompt}");
             }
+            for text in ["- src/a.rs: `soma`", "-p motor", "a suíte passa", "-p suite"] {
+                assert!(prompt.contains(text), "{text:?} is part of the first block: {prompt}");
+            }
             assert!(prompt.contains("a onda termina"), "o done_when abre o pedido: {prompt}");
-            assert_eq!(section(&prompt, translate("prompt.part.do", lang)).lines().collect::<Vec<_>>(), steps, "{prompt}");
-            let example = translate("prompt.read.wave", lang).replace("{root}", "").replace("{spec}", "teste");
+            let steps: Vec<&str> = section(&prompt, translate("prompt.part.do", lang)).lines().take(6).collect();
+            let first = translate("prompt.step.first", lang).replace("{item}", "MSTD-TASK-0001 — Escrever o motor");
+            let deliver = translate("prompt.step.deliver", lang).replace("{part}", translate("prompt.part.return", lang));
+            assert_eq!(
+                steps,
+                [
+                    String::new(),
+                    format!("1. {}", translate("prompt.step.tasks", lang)),
+                    format!("   - {first}"),
+                    "   - MSTD-TASK-0002 — Escrever a página.".to_string(),
+                    format!("2. {deliver}"),
+                    String::new(),
+                ],
+                "{prompt}"
+            );
+            let example = translate("prompt.read.wave", lang).replace("{root}", "").replace("{spec}", "teste").replace("{wave}", "1");
             assert!(prompt.contains(&example), "{}", prompt);
-            // O comando que lê um item pelo código e o que lê uma lição, os
+            // O comando que lê um item pelo código e o que lê o lote, os
             // dois só na seção de como ler.
             assert_eq!(prompt.matches("mustard-rt run read").count(), 2, "{prompt}");
-            assert_eq!(prompt.matches("--term").count(), 1, "{prompt}");
-            for code in ["MSTD-TASK-0001", "MSTD-TASK-0002", "MSTD-CRIT-0001"] {
-                assert_eq!(prompt.matches(code).count(), 1, "{code}: {prompt}");
+            for (code, times) in [("MSTD-TASK-0001", 2), ("MSTD-TASK-0002", 1), ("MSTD-CRIT-0001", 1)] {
+                assert_eq!(prompt.matches(code).count(), times, "{code}: {prompt}");
             }
             assert!(!prompt.contains("MSTD-WAVE-0001"), "a onda não é item do pedido: {prompt}");
         }
@@ -1679,38 +1834,33 @@ mod tests {
         }
     }
 
-    /// A tarefa que atende uma mensagem e mais um item de outro tipo lê os
-    /// dois, e a linha de leitura fala do que ela atende em geral; a que
-    /// atende só uma mensagem fala da mensagem. Nas duas, a mensagem se chama
-    /// "mensagem do usuário".
+    /// A tarefa que atende uma mensagem e mais um item de outro tipo traz os
+    /// dois inteiros no bloco dela, cada um sob o título "Atende:"; a
+    /// mensagem se chama "mensagem do usuário", e a decisão sai pela parte do
+    /// agente.
     #[test]
-    fn a_task_that_attends_a_message_and_a_decision_reads_both_under_the_general_line() {
+    fn a_task_that_attends_a_message_and_a_decision_brings_both_whole_in_its_block() {
         let log = log(&[
             ("message", json!({"text": "Só isto, curto.", "author": "user"})),
             ("decision", json!({"title": "Fica assim", "text": "Decidido.", "agent": "- x"})),
             ("wave", json!({"n": 1, "text": "Onda", "criteria": [], "done_when": "pronto"})),
             ("task", json!({"wave": 1, "title": "Conferir", "text": "Conferir.", "covers": [1, 2], "files": [{"path": "src/b.rs"}]})),
         ]);
-        for (lang, said, attends, read, other) in [
+        for (lang, attends) in [
             (
                 Locale::PtBr,
-                "1. Faça a tarefa MSTD-TASK-0001 — Conferir",
-                ["   - Atende: mensagem do usuário MSTD-MSG-0001 — \"Só isto, curto.\"", "   - Atende: decisão MSTD-DEC-0001 — Fica assim"],
-                "   - Leia a tarefa e o que ela atende, inteiros, antes de mexer.",
-                "Leia a tarefa e a mensagem inteiras",
+                ["#### Atende: mensagem do usuário MSTD-MSG-0001 — \"Só isto, curto.\"\n\nSó isto, curto.\n", "#### Atende: decisão MSTD-DEC-0001 — Fica assim\n\n- x\n"],
             ),
             (
                 Locale::EnUs,
-                "1. Do the task MSTD-TASK-0001 — Conferir",
-                ["   - Addresses: user message MSTD-MSG-0001 — \"Só isto, curto.\"", "   - Addresses: decision MSTD-DEC-0001 — Fica assim"],
-                "   - Read the whole task and what it addresses before you start.",
-                "Read the whole task and the message",
+                ["#### Addresses: user message MSTD-MSG-0001 — \"Só isto, curto.\"\n\nSó isto, curto.\n", "#### Addresses: decision MSTD-DEC-0001 — Fica assim\n\n- x\n"],
             ),
         ] {
-            let prompt = write(&material(&log, 1), lang);
-            let steps: Vec<&str> = section(&prompt, translate("prompt.part.do", lang)).lines().collect();
-            assert_eq!(&steps[1..5], [said, attends[0], attends[1], read], "{prompt}");
-            assert!(!prompt.contains(other), "{prompt}");
+            let block = task_blocks(&material(&log, 1), lang).remove(0);
+            for part in attends {
+                assert!(block.text.contains(part), "{part}: {}", block.text);
+            }
+            assert_eq!(block.items, ["MSTD-TASK-0001", "MSTD-MSG-0001", "MSTD-DEC-0001"]);
         }
     }
 
@@ -1731,25 +1881,16 @@ mod tests {
             ("task", json!({"wave": 1, "title": "Liberar espaço", "text": "Liberar.", "origin": 1, "files": [{"path": "src/a.rs"}]})),
             ("task", json!({"wave": 1, "title": "Conferir", "text": "Conferir.", "covers": [1, 3], "files": [{"path": "src/b.rs"}]})),
         ]);
-        let prompt = write(&material(&log, 1), Locale::PtBr);
-        let steps: Vec<&str> = section(&prompt, translate("prompt.part.do", Locale::PtBr)).lines().collect();
-        assert_eq!(
-            &steps[..8],
-            [
-                "",
-                "1. Faça a tarefa MSTD-TASK-0001 — Liberar espaço",
-                "   - Atende: mensagem do usuário MSTD-MSG-0001 — \"Pode liberar mais espaço, é voce que está lotando o disco e…\"",
-                "   - Leia a tarefa e a mensagem inteiras antes de mexer.",
-                "   - Arquivo: `src/a.rs`",
-                "2. Faça a tarefa MSTD-TASK-0002 — Conferir",
-                "   - Atende: mensagem do usuário MSTD-MSG-0003 — \"Só isto, curto.\"",
-                "   - Leia a tarefa e a mensagem inteiras antes de mexer.",
-            ],
-            "{prompt}"
-        );
+        let m = material(&log, 1);
+        let prompt = write(&m, Locale::PtBr);
+        let blocks = task_blocks(&m, Locale::PtBr);
+        let heading = "#### Atende: mensagem do usuário MSTD-MSG-0001 — \"Pode liberar mais espaço, é voce que está lotando o disco e…\"";
+        assert!(prompt.contains(&format!("{heading}\n\n{long}\n")), "the heading in twelve words, the text whole below: {prompt}");
+        assert!(blocks[1].text.contains("#### Atende: mensagem do usuário MSTD-MSG-0003 — \"Só isto, curto.\""), "{}", blocks[1].text);
+        assert!(blocks[1].text.contains("\n- Atende: mensagem do usuário MSTD-MSG-0001 — "), "the message covered twice comes whole once: {}", blocks[1].text);
+        assert!(!blocks[1].text.contains(long), "{}", blocks[1].text);
         assert_eq!(prompt.matches("MSTD-MSG-0001").count(), 1, "{prompt}");
         assert!(!prompt.contains("MSTD-MSG-0002") && !prompt.contains("Ninguém atende"), "{}", prompt);
-        assert!(!prompt.contains("mais coisas aqui agora"), "{}", prompt);
         let words = long.split_whitespace().take(MESSAGE_WORDS).count();
         assert_eq!(words, 12);
         let read = listed(&material(&log, 1));
@@ -1796,9 +1937,9 @@ mod tests {
         assert_eq!(
             steps,
             [
-                "1. Leia o texto inteiro de cada item de \"O que obedecer\".",
-                "2. Faça a tarefa MSTD-TASK-0001 — Fazer",
-                "3. Grave a entrega, como diz \"O que devolver\".",
+                "1. Leia o texto inteiro de cada item de \"O que obedecer\".".to_string(),
+                format!("2. {}", translate("prompt.step.tasks", Locale::PtBr)),
+                "3. Grave a entrega, como diz \"O que devolver\".".to_string(),
             ],
             "{text}"
         );
@@ -2056,12 +2197,13 @@ mod tests {
         assert!(big.contains(&format!("MSTD-TASK-{MANY:04}")), "{}", big);
     }
 
-    /// A lista que a entrega confere é a que o pedido imprime: os itens da
-    /// spec pelo código e as lições por `lesson-<número>`, na ordem das linhas
-    /// do pedido, sem faltar nem sobrar nenhuma — o conserto, as tarefas com o
-    /// que atendem, o que se obedece e as lições.
+    /// A lista que a entrega confere é a do que o pedido e os blocos das
+    /// tarefas entregam: os itens da spec pelo código e as lições por
+    /// `lesson-<número>`, na ordem — as tarefas com o que atendem, o que se
+    /// obedece e as lições —, sem faltar nem sobrar nenhum. O que só a segunda
+    /// tarefa atende sai no bloco dela, e não no pedido.
     #[test]
-    fn the_listed_items_are_exactly_the_ones_the_request_prints() {
+    fn the_listed_items_are_exactly_the_ones_the_request_and_the_task_blocks_bring() {
         let bank = log(&[("lesson", json!({"text": "Nunca apague o cache. Ele custa caro.", "keys": ["cache"], "class": "defect"}))]);
         let log = log(&[
             ("message", json!({"text": "Faça isto agora", "author": "user"})),
@@ -2072,24 +2214,18 @@ mod tests {
         ]);
         let mut m = with_agreed(&log, 1);
         m.lessons = bank.visible();
-        let lesson = m.lessons[0].id;
+        let lesson = format!("lesson-{}", m.lessons[0].id);
         let printed = write(&m, Locale::PtBr);
-        let mut in_text: Vec<String> = Vec::new();
-        for line in printed.lines() {
-            let Some(at) = line.find("MSTD-") else {
-                continue;
-            };
-            if line.starts_with("- tarefa") || line.contains("run read") {
-                continue;
-            }
-            in_text.push(line[at..].split(' ').next().unwrap_or_default().to_string());
-        }
-        in_text.push(format!("lesson-{lesson}"));
-        assert_eq!(listed(&m), in_text, "{printed}");
+        let blocks = task_blocks(&m, Locale::PtBr);
+        let mut brought: Vec<String> = blocks.iter().flat_map(|block| block.items.clone()).collect();
+        brought.push(lesson.clone());
+        assert_eq!(listed(&m), brought, "{printed}");
+        assert_eq!(listed(&m), ["MSTD-TASK-0001", "MSTD-MSG-0001", "MSTD-TASK-0002", "MSTD-RULE-0001", lesson.as_str()]);
+        assert!(printed.contains(&blocks[0].text) && printed.contains(&format!("- Lição {} — ", m.lessons[0].id)), "{printed}");
         // A regra que a segunda tarefa cobre e que a onda também obedece sai
-        // uma vez só, sob a tarefa.
-        assert_eq!(listed(&m), ["MSTD-TASK-0001", "MSTD-MSG-0001", "MSTD-TASK-0002", "MSTD-RULE-0001", format!("lesson-{lesson}").as_str()]);
-        assert_eq!(printed.matches("MSTD-RULE-0001").count(), 1, "{printed}");
+        // uma vez só, no bloco da tarefa.
+        assert_eq!(printed.matches("MSTD-RULE-0001").count(), 0, "{printed}");
+        assert_eq!(blocks[1].text.matches("MSTD-RULE-0001").count(), 1, "{}", blocks[1].text);
     }
 
     /// O mesmo material escrito duas vezes dá os mesmos bytes.
@@ -2149,36 +2285,6 @@ mod tests {
         assert_eq!(estimate_tokens("abcd"), 1);
         assert_eq!(estimate_tokens("abcde"), 2, "cinco caracteres arredondam para cima");
         assert_eq!(estimate_tokens(&"a".repeat(100_000)), 25_000, "cem mil caracteres batem exatos no teto");
-    }
-
-    /// Cada skill nomeada entra no pedido como uma linha — nome, quando usar e
-    /// o caminho do arquivo —, sem o texto dela, e a skill cujo arquivo
-    /// citado mudou depois dela sai marcada como a revisar.
-    #[test]
-    fn a_named_skill_is_recommended_by_path_and_a_stale_one_is_marked() {
-        let log = log(&[("wave", json!({"n": 1, "text": "Onda", "criteria": [], "done_when": "pronto"}))]);
-        let mut m = material(&log, 1);
-        m.skills = vec![
-            Skill {
-                name: "add-run-command".into(),
-                when: "acrescentar um comando run".into(),
-                path: "/home/ana/loja/apps/rt/.claude/skills/add-run-command/SKILL.md".into(),
-                stale: false,
-            },
-            Skill {
-                name: "add-hook-rule".into(),
-                when: "acrescentar uma regra de gancho".into(),
-                path: "/home/ana/loja/.claude/skills/add-hook-rule/SKILL.md".into(),
-                stale: true,
-            },
-        ];
-        let prompt = write(&m, Locale::PtBr);
-        assert!(prompt.contains("`/home/ana/loja/apps/rt/.claude/skills/add-run-command/SKILL.md`"), "{}", prompt);
-        assert!(prompt.contains("acrescentar um comando run"), "{}", prompt);
-        assert!(prompt.contains(translate("prompt.skill.read", Locale::PtBr)), "{}", prompt);
-        let stale = translate("prompt.skill.stale", Locale::PtBr);
-        assert!(prompt.contains(&format!("**add-hook-rule** ({stale})")), "{}", prompt);
-        assert!(!prompt.contains(&format!("**add-run-command** ({stale})")), "{}", prompt);
     }
 
     /// A lição entra como os outros itens — "Lição", o número dela no banco e o
@@ -2644,7 +2750,7 @@ mod tests {
         let codes_in_order = |prompt: &str| -> Vec<String> {
             section(prompt, translate("prompt.part.do", Locale::PtBr))
                 .lines()
-                .filter_map(|line| line.split_once(". Faça a tarefa MSTD-TASK-").map(|(_, rest)| rest))
+                .filter_map(|line| line.strip_prefix("   - MSTD-TASK-"))
                 .filter_map(|rest| rest.split(' ').next())
                 .map(str::to_string)
                 .collect()
@@ -2680,19 +2786,23 @@ mod tests {
         assert!(prompt.contains(&format!("- Lição {last_id} — ")), "{}", prompt);
     }
 
-    /// O que o agente devolve é o mesmo em todo pedido, no idioma do projeto: a
-    /// entrega pela ferramenta, o campo `commit` e a ordem de não deixar texto
-    /// solto fora da entrega — e mais nada de instrução fixa antes disso.
+    /// O que o agente devolve é o mesmo em todo pedido, no idioma do projeto: o
+    /// comando do passo, a entrega pela ferramenta, com o comando dela, o
+    /// campo `commit` e a ordem de não deixar texto solto fora da entrega — e
+    /// mais nada de instrução fixa antes disso.
     #[test]
     fn every_request_carries_the_same_return_rules() {
         let log = log(&[("wave", json!({"n": 1, "text": "Onda", "criteria": [], "done_when": "pronto"}))]);
         for lang in [Locale::PtBr, Locale::EnUs] {
             let prompt = write(&material(&log, 1), lang);
+            let command = |key: &str| translate(key, lang).replace("{root}", "").replace("{spec}", "teste").replace("{wave}", "1");
             assert_eq!(
                 section(&prompt, translate("prompt.part.return", lang)).lines().collect::<Vec<_>>(),
                 [
                     String::new(),
+                    format!("- {}", command("prompt.return.step")),
                     format!("- {}", translate("prompt.execution.report_lines", lang)),
+                    format!("- {}", command("prompt.return.delivered")),
                     format!("- {}", translate("prompt.execution.commit_field", lang)),
                     format!("- {}", translate("prompt.return.loose", lang)),
                 ],
@@ -2701,22 +2811,69 @@ mod tests {
         }
     }
 
-    /// O texto do agente da onda, que ele carrega uma vez, diz que ele lê cada
-    /// item pelo comando da seção de como ler, e que o item novo que ele gravar leva as três
-    /// partes; a ordem antiga de ler só na dúvida saiu, e o pedido não repete
-    /// essas frases.
+    /// "O que devolver" traz prontos os dois comandos com que o agente grava a
+    /// volta — o passo e a entrega —, com a spec, o número da onda e, na
+    /// cópia, o caminho do repositório principal: ele grava sem pedir a ajuda
+    /// do comando.
+    #[test]
+    fn the_return_section_carries_the_step_and_delivery_commands_ready_to_run() {
+        let log = log(&[("wave", json!({"n": 4, "text": "Onda", "criteria": [], "done_when": "pronto"}))]);
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let bare = write(&material(&log, 4), lang);
+            let returns = section(&bare, translate("prompt.part.return", lang));
+            assert!(returns.contains(r#"`mustard-rt run write step --spec teste --json '{"wave":4,"item":""#), "{lang:?}: {returns}");
+            assert!(returns.contains(r#"`mustard-rt run write delivered --spec teste --json '{"wave":4,"text":""#), "{lang:?}: {returns}");
+            let in_copy = write(&Material { execution: with_copy(), ..material(&log, 4) }, lang);
+            let returns = section(&in_copy, translate("prompt.part.return", lang));
+            for kind in ["step", "delivered"] {
+                let command = format!("`mustard-rt run write {kind} --root /repo --spec teste --json '{{\"wave\":4,");
+                assert!(returns.contains(&command), "{lang:?} {kind}: {returns}");
+            }
+        }
+    }
+
+    /// Com a cópia, a linha logo depois do título manda rodar cada comando de
+    /// dentro dela, pelo caminho, sem `cd` para fora: o título continua na
+    /// primeira linha e é reconhecido. Sem cópia, essa linha não existe.
+    #[test]
+    fn the_line_after_the_title_says_to_run_every_command_inside_the_copy() {
+        let log = log(&[("wave", json!({"n": 2, "text": "Onda", "criteria": [], "done_when": "pronto"}))]);
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let request = write(&Material { execution: with_copy(), ..material(&log, 2) }, lang);
+            let lines: Vec<&str> = request.lines().collect();
+            assert_eq!(wave_of_title(lines[0], lang), Some(("teste".to_string(), 2)), "{request}");
+            assert!(lines[1].is_empty(), "{request}");
+            assert!(lines[2].contains("`/repo/copia-1`") && lines[2].contains("`cd`"), "{lang:?}: {request}");
+            let bare = write(&material(&log, 2), lang);
+            assert!(!bare.lines().nth(2).unwrap_or_default().contains("`cd`"), "{lang:?}: {bare}");
+        }
+    }
+
+    /// O texto do agente da onda, que ele carrega uma vez, diz que ele faz uma
+    /// tarefa por vez, que a próxima chega na resposta do passo e que não lê
+    /// adiante; que lê o que obedecer pelo comando da seção de como ler; e que
+    /// o item novo que ele gravar leva as três partes. A ordem antiga de ler
+    /// só na dúvida saiu, e o pedido não repete essas frases.
     #[test]
     fn the_wave_agent_reads_the_whole_text_of_each_item_before_working() {
         let log = log(&[("wave", json!({"n": 1, "text": "Onda", "criteria": [], "done_when": "pronto"}))]);
         for (lang, said, gone) in [
             (
                 Locale::PtBr,
-                ["cada item pelo comando de \"Como ler cada item\"", "leva `title`, `text` e `agent`"],
+                [
+                    "uma tarefa por vez: a próxima vem em `next_task` no passo que termina a atual; não leia adiante",
+                    "Leia \"O que obedecer\" numa chamada só, pelo comando de \"Como ler cada item\"",
+                    "leva `title`, `text` e `agent`",
+                ],
                 "na dúvida, o comando que ele dá lê o texto completo",
             ),
             (
                 Locale::EnUs,
-                ["Read each item with the command under \"How to read each item\"", "takes `title`, `text` and `agent`"],
+                [
+                    "task by task: its end step gives the next in `next_task`; never read ahead",
+                    "Read \"What to obey\" in one call (\"How to read each item\")",
+                    "takes `title`, `text` and `agent`",
+                ],
                 "when in doubt, the command it gives reads the whole text",
             ),
         ] {
@@ -2798,7 +2955,7 @@ mod tests {
             assert!(reading.trim_start().starts_with(&example), "{text}");
             assert!(text.find(&example) < text.find(&format!("## {}", translate("prompt.part.waves", lang))), "{text}");
             assert_eq!(text.matches("mustard-rt run read").count(), 2, "{text}");
-            assert_eq!(text.matches("--term").count(), 1, "{text}");
+            assert_eq!(text.matches("--term").count(), 0, "{text}");
             for secret in ["Detalhe secreto", "Corpo secreto", "a spec fecha"] {
                 assert!(!text.contains(secret), "no item text is copied: {text}");
             }
@@ -3028,11 +3185,13 @@ mod tests {
         for line in [format!("- {}", t("prompt.execution.commit_field")), format!("- {}", t("prompt.execution.report_lines"))] {
             assert!(returns.contains(&line), "{line}: {returns}");
         }
-        // De onde ler a spec, só a linha de como ler diz, uma vez, nos dois
-        // comandos dela.
-        let wave_example = t("prompt.read.wave").replace("{root}", "--root /repo ").replace("{spec}", "teste");
+        // De onde ler a spec dizem a linha de como ler, nos dois comandos
+        // dela, e os dois comandos de gravar a volta; a linha logo abaixo do
+        // título só diz para que o `--root` serve.
+        let wave_example = t("prompt.read.wave").replace("{root}", "--root /repo ").replace("{spec}", "teste").replace("{wave}", &m.wave.to_string());
         assert!(wave.contains(&wave_example) && !rules.contains("--root"), "{wave}");
-        assert_eq!(wave.matches("--root").count(), 2, "{wave}");
+        assert_eq!(wave.matches("--root /repo ").count(), 4, "{wave}");
+        assert_eq!(wave.matches("--root").count(), 5, "{wave}");
 
         let example = t("prompt.read.final").replace("{root}", "--root /repo ").replace("{spec}", "teste");
         m.execution = with_final_copy();
@@ -3305,5 +3464,92 @@ mod tests {
         }
         assert_eq!(wave_of_title("# x — wave 7", Locale::PtBr), None, "the title is read in the language of the text");
         assert_eq!(wave_of_title("# x — onda 7", Locale::EnUs), None, "the title is read in the language of the text");
+    }
+
+    /// Uma onda de duas tarefas, cada uma atendendo um item próprio: a
+    /// primeira um critério, a segunda uma decisão.
+    fn two_tasks() -> SpecLog {
+        log(&[
+            ("criterion", json!({"title": "A soma confere", "when": "a soma roda", "then": "o total bate", "proof": "cargo test -p motor"})),
+            ("decision", json!({"title": "Fica em reais", "text": "Os valores ficam em reais.", "agent": "- usar centavos inteiros"})),
+            ("wave", json!({"n": 1, "text": "Onda", "criteria": [1], "done_when": "pronto"})),
+            (
+                "task",
+                json!({"wave": 1, "title": "Escrever o motor", "text": "Hoje não há motor.", "agent": "- src/a.rs: `soma`",
+                       "covers": [1], "files": [{"path": "src/a.rs"}]}),
+            ),
+            (
+                "task",
+                json!({"wave": 1, "title": "Escrever a página", "text": "A página mostra.", "agent": "- src/b.rs: `pagina`",
+                       "covers": [2], "files": [{"path": "src/b.rs"}]}),
+            ),
+        ])
+    }
+
+    /// O pedido traz inteiro só o bloco da primeira tarefa — o texto dela e o
+    /// de tudo o que ela atende —, e as outras só pelo código e pelo título,
+    /// na ordem, com a primeira marcada. O bloco de cada tarefa sai do mesmo
+    /// renderizador, com o que ele entrega inteiro.
+    #[test]
+    fn the_request_brings_only_the_first_task_whole_and_the_others_by_title() {
+        let log = two_tasks();
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let m = material(&log, 1);
+            let prompt = write(&m, lang);
+            let blocks = task_blocks(&m, lang);
+            assert_eq!(blocks.iter().map(|block| block.task.as_str()).collect::<Vec<_>>(), ["MSTD-TASK-0001", "MSTD-TASK-0002"]);
+            assert_eq!(blocks[0].items, ["MSTD-TASK-0001", "MSTD-CRIT-0001"]);
+            assert_eq!(blocks[1].items, ["MSTD-TASK-0002", "MSTD-DEC-0001"]);
+            assert!(prompt.contains(&blocks[0].text), "the first block comes whole: {prompt}");
+            for whole in ["- src/a.rs: `soma`", "o total bate"] {
+                assert!(prompt.contains(whole), "{whole}: {prompt}");
+            }
+            for ahead in ["- src/b.rs: `pagina`", "usar centavos inteiros", "A página mostra."] {
+                assert!(!prompt.contains(ahead), "{ahead} came ahead of time: {prompt}");
+                assert!(blocks[1].text.contains(ahead) || ahead == "A página mostra.", "{ahead}: {}", blocks[1].text);
+            }
+            let first = translate("prompt.step.first", lang).replace("{item}", "MSTD-TASK-0001 — Escrever o motor");
+            let list = section(&prompt, translate("prompt.part.do", lang));
+            assert!(list.contains(&format!("   - {first}\n   - MSTD-TASK-0002 — Escrever a página\n")), "{list}");
+            assert_eq!(prompt.matches("MSTD-TASK-0002").count(), 1, "the second task only by its title: {prompt}");
+            assert_eq!(listed(&m), ["MSTD-TASK-0001", "MSTD-CRIT-0001", "MSTD-TASK-0002", "MSTD-DEC-0001"]);
+        }
+    }
+
+    /// O bloco traz as skills da tarefa inteiras, o corpo de cada uma com o
+    /// nome e o caminho, a revisar marcada. Passado o teto do bloco, a última
+    /// skill sai e uma linha diz qual saiu e onde lê-la; o resto do bloco
+    /// fica inteiro.
+    #[test]
+    fn a_task_block_carries_its_skills_whole_and_cuts_the_last_one_past_the_cap() {
+        let log = two_tasks();
+        let skill = |name: &str, stale: bool, body: String| TaskSkill { name: name.into(), path: format!("/repo/.claude/skills/{name}/SKILL.md"), stale, body };
+        let mut m = material(&log, 1);
+        m.task_skills.insert("MSTD-TASK-0001".into(), vec![skill("somar", false, "Some pelo motor.".into()), skill("mostrar", true, "Mostre o total.".into())]);
+        let stale = translate("prompt.skill.stale", Locale::PtBr);
+        let block = task_blocks(&m, Locale::PtBr).remove(0).text;
+        assert!(block.contains("Some pelo motor.") && block.contains("Mostre o total."), "{block}");
+        assert!(block.contains("`/repo/.claude/skills/somar/SKILL.md`"), "{block}");
+        assert!(block.contains(&format!("`/repo/.claude/skills/mostrar/SKILL.md` ({stale})")), "{block}");
+
+        let huge = "palavra ".repeat(usize::try_from(TASK_BLOCK_TOKEN_CAP).unwrap());
+        m.task_skills.insert("MSTD-TASK-0001".into(), vec![skill("somar", false, "Some pelo motor.".into()), skill("grande", false, huge.clone())]);
+        let block = task_blocks(&m, Locale::PtBr).remove(0).text;
+        assert!(estimate_tokens(&block) <= TASK_BLOCK_TOKEN_CAP, "{}", block.len());
+        assert!(block.contains("Some pelo motor.") && block.contains("- src/a.rs: `soma`"), "{block}");
+        assert!(!block.contains(huge.trim()), "the last skill was cut");
+        let cut = translate("prompt.task.skill_cut", Locale::PtBr).replace("{name}", "grande").replace("{path}", "/repo/.claude/skills/grande/SKILL.md");
+        assert!(block.contains(&cut), "{block}");
+    }
+
+    /// No texto de um item, o trecho colado maior que 1 KB numa mensagem do
+    /// usuário vira o aviso de onde lê-lo; o pequeno fica.
+    #[test]
+    fn a_long_pasted_text_becomes_a_pointer_to_the_item() {
+        let lang = Locale::PtBr;
+        let small = "veja <pasted_content id=\"a\">curto</pasted_content id=\"a\"> fim";
+        assert_eq!(without_long_paste(small, "MSTD-MSG-0001", lang), small);
+        let long = format!("antes <pasted_content id=\"b\">{}</pasted_content id=\"b\"> depois", "x".repeat(3000));
+        assert_eq!(without_long_paste(&long, "MSTD-MSG-0002", lang), "antes [texto colado, 3 kB: leia por item-MSTD-MSG-0002] depois");
     }
 }

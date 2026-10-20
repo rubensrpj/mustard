@@ -8,6 +8,9 @@
 //! ou atualizar. Os testes rodam upsert, início de sessão, gravação histórica
 //! e statusline em repositório temporário com pasta pessoal falsa.
 
+#[path = "support/binary.rs"]
+mod binary;
+
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -31,7 +34,7 @@ fn rt(root: &Path, home: &Path, args: &[&str], stdin: &str) -> Output {
 
 /// O `rt`, com as variáveis de ambiente `envs` a mais no processo.
 fn rt_with_env(root: &Path, home: &Path, args: &[&str], stdin: &str, envs: &[(&str, &str)]) -> Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+    let mut child = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
         .args(args)
         .envs(envs.iter().copied())
         .current_dir(root)
@@ -113,7 +116,7 @@ fn assert_installed(root: &Path, allow: &[&str], ask: &[&str], deny: &[&str], te
     let pages = root.join(".claude/mustard/pages");
     assert!(!pages.join("spec.html").exists() && !pages.join("project.html").exists(), "{case}: no automatic public resources");
     let map = std::fs::read_to_string(root.join(".claude/mustard/session-map.md")).unwrap();
-    assert!(map.contains("/mustard-panel") && map.contains("/mustard-pages"), "{case}: local tracking and explicit export");
+    assert!(map.contains("/mustard:mods") && map.contains("/mustard:pages"), "{case}: local tracking and explicit export");
     assert!(map.contains(if text == Locale::PtBr { "Mustard neste projeto" } else { "Mustard in this project" }), "{case}: text language");
 
 }
@@ -208,7 +211,8 @@ fn a_session_without_project_page_tracks_locally_and_preserves_a_legacy_link() {
     assert!(!root.join(template).exists());
     for source in ["startup", "clear", "compact"] {
         let context = session_start(&root, &home, source);
-        assert!(context.contains("/mustard-panel") && context.contains("/mustard-publish"), "{context}");
+        assert!(context.contains("/mustard:mods") && context.contains("/mustard:pages"), "{context}");
+        assert!(!context.contains("/mustard-publish"), "no command that does not exist: {context}");
         assert!(!context.contains(template), "no automatic publication instruction: {context}");
     }
     let failed = record_project_page(&root, &home, &json!({"page":"project","ok":false,"reason":"offline"}));
@@ -220,8 +224,9 @@ fn a_session_without_project_page_tracks_locally_and_preserves_a_legacy_link() {
     assert!(recorded.status.success(), "{}", String::from_utf8_lossy(&recorded.stdout));
     rt_ok(&root, &home, &["run", "index"], "");
     let bar = rt_ok(&root, &home, &["run", "statusline"], &json!({"workspace":{"current_dir":root}}).to_string());
-    assert!(bar.contains(url) && bar.lines().count()==1 && bar.contains("/mustard-panel"), "compact bar preserves the legacy project link and local panel access: {bar}");
+    assert!(bar.contains(url) && bar.lines().count()==1 && bar.contains("/mustard:mods"), "compact bar preserves the legacy project link and local panel access: {bar}");
     let panel:Value=serde_json::from_str(&rt_ok(&root,&home,&["run","panel"],"")).unwrap();
+    assert!(panel.get("commands").is_none(), "no field nobody reads: {panel}");
     assert_eq!(panel["project"]["publication_url"],url,"the local panel retains the recorded external page");
     assert!(!session_start(&root,&home,"startup").contains(template));
 }

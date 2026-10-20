@@ -85,7 +85,7 @@ mod tests {
         let line = "O git mudou o arquivo desta tarefa depois que o texto dela foi escrito \
                     (commits: abc1234, def5678; arquivos: `src/a.rs`). Confira no código antes de mudar. \
                     Se o que ela pede já está feito, diga na entrega que já estava feita e não mude nada.";
-        assert!(text.contains(&format!("   - Arquivo: `src/a.rs`\n   - {line}\n2. ")), "{text}");
+        assert!(text.contains(&format!("- Arquivo: `src/a.rs`\n- {line}\n")), "the line comes under the file in the task block: {text}");
         let en = request(&log, BTreeMap::from([(code, TaskChange { commits: vec!["abc1234".into()], files: vec!["src/a.rs".into()] })]), Locale::EnUs);
         assert!(en.contains("(commits: abc1234; files: `src/a.rs`). Check the code before changing anything."), "{en}");
     }

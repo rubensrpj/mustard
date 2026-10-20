@@ -351,7 +351,7 @@ mod tests {
             r#"{"v":1,"id":1,"at":"2026-09-18T10:00:00-03:00","type":"wave","n":1,"text":"A onda","criteria":[],"done_when":"passa"}"#,
             r#"{"v":1,"id":2,"at":"2026-09-18T10:00:00-03:00","type":"task","wave":1,"text":"Apagar a pasta velha e rodar a suíte em primeiro plano.","files":[{"path":"src/a.rs"}]}"#,
         ));
-        let built = crate::io::wave_prompt::prompts(root, "teste", &log, crate::platform::i18n::Locale::PtBr, &Default::default());
+        let built = crate::io::wave_prompt::prompts(root, "teste", &log, crate::platform::i18n::Locale::PtBr, &Default::default(), &log.planned_waves());
         built[0].text.clone()
     }
 

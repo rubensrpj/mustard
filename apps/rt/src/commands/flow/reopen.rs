@@ -242,6 +242,9 @@ pub(crate) fn reopen_with_provider(
             None => return refuse(ReopenRefusal::Spec(Refusal::NoCurrentSpec)),
         },
     };
+    if let Err(refusal) = mustard_core::io::legacy_specs::refuse_legacy(&project.root, &spec) {
+        return refuse(ReopenRefusal::Spec(refusal));
+    }
     let path = match store::spec_file(&project.root, &spec) {
         Ok(path) => path,
         Err(refusal) => return refuse(ReopenRefusal::Spec(refusal)),
@@ -298,7 +301,7 @@ pub(crate) fn reopen_with_provider(
                 warnings.push(fill("reopen.merge_unchecked", lang, &[("{spec}", &spec), ("{reason}", &reason)]));
             }
             Some(MergedElsewhere::Closed { pr }) => closed_pr = Some(pr),
-            Some(MergedElsewhere::Submodules(_)) | None => {}
+            Some(MergedElsewhere::Submodules(_) | MergedElsewhere::Leaving { .. } | MergedElsewhere::TasksLeft { .. }) | None => {}
         }
     }
 

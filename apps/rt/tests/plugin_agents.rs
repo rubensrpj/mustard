@@ -19,6 +19,9 @@
 #[path = "support/manifest_dir.rs"]
 mod manifest_dir;
 
+#[path = "support/binary.rs"]
+mod binary;
+
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -70,7 +73,7 @@ fn git(root: &Path, args: &[&str]) {
 
 /// Roda o binário no projeto, com uma pasta pessoal falsa e sem `claude` à mão.
 fn rt(root: &Path, home: &Path, args: &[&str], stdin: Option<&str>) -> Value {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+    let mut child = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
         .args(args)
         .current_dir(root)
         .env("CLAUDE_PROJECT_DIR", root)
@@ -102,7 +105,7 @@ fn request_by_command(root: &Path, home: &Path, entry: &Value) -> String {
     let command = entry["read"].as_str().unwrap_or_else(|| panic!("the dispatch carries no read command: {entry}"));
     let words: Vec<&str> = command.split_whitespace().collect();
     assert_eq!(words.first(), Some(&"mustard-rt"), "{command}");
-    let out = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+    let out = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
         .args(&words[1..])
         .current_dir(root)
         .env("HOME", home)
@@ -310,7 +313,8 @@ fn the_mustard_agents_carry_the_prefix_and_live_beside_a_project_agent_of_the_sa
 
     for lang in [Locale::PtBr, Locale::EnUs] {
         let next = translate("round.next", lang);
-        assert!(next.contains("`mustard-wave`") && next.contains("`mustard-review`"), "{next}");
+        // The round dispatches only waves; the final review leaves from the close.
+        assert!(next.contains("`mustard-wave`") && !next.contains("mustard-review"), "{next}");
     }
 }
 
@@ -378,7 +382,7 @@ fn the_wave_agent_calls_an_agreed_item_met_when_it_still_holds_after_the_change(
 /// a linha do passo nomeia cada campo que a gravação do passo exige, para a
 /// primeira gravação não voltar recusada; que o passo responde, com a marca
 /// do Mustard, se o agente segue ou entrega, e que a resposta se obedece; que
-/// o sinal chega após a entrada mais 150 mil de trabalho, com a janela do
+/// o sinal chega aos 200 mil tokens de contexto, com a janela do
 /// modelo só de teto; que tarefa começada se conclui antes da entrega; e
 /// não manda mais parar no meio da tarefa, nem conta chamadas de folga.
 #[test]
@@ -390,9 +394,9 @@ fn the_wave_agent_reads_the_size_at_each_task_end_and_finishes_what_it_started()
             [
                 "ao terminar tarefa, com o número da onda no `wave`, o código dela no `item`",
                 "O resultado traz, com a marca [Mustard], se você segue ou entrega",
-                "O sinal chega com entrada inicial + resumos herdados + 150 mil tokens de trabalho;",
+                "O sinal chega aos 200 mil tokens de contexto, contando a entrada inicial e os resumos herdados;",
                 "a janela do modelo só é teto, aos 75% dela",
-                "termine a tarefa atual, testes mínimos e resumo; não comece outra",
+                "termine a tarefa em curso, testes mínimos e resumo, e volte; não comece outra",
             ],
             ["Pare:", "8 chamadas", "pare aos 150 mil", "sem janela conhecida"],
         ),
@@ -402,9 +406,9 @@ fn the_wave_agent_reads_the_size_at_each_task_end_and_finishes_what_it_started()
             [
                 "on finishing a task, with the wave number in `wave`, its code in `item`",
                 "The result says, marked [Mustard], whether you go on or deliver",
-                "The signal comes at initial input + inherited summaries + 150 thousand work tokens;",
+                "The signal comes at 200 thousand context tokens, input and inherited summaries included;",
                 "the model's window is only a cap, at 75% of it",
-                "finish the current task, minimal tests and summary; start no other task",
+                "finish the current task, minimal tests and summary, and return; start no other task",
             ],
             ["Stop:", "8 calls", "stop at 150 thousand", "with no known window"],
         ),
@@ -1022,18 +1026,18 @@ fn the_wave_and_review_agents_carry_the_project_wide_execution_rules() {
           "Rode cada comando de dentro da cópia"],
           ["pasta de compilação", "passa de uma cópia para a seguinte"],
           ["Compile e rode só a prova da tarefa e dos critérios da onda; sem suíte, lint ou corte",
-           "A rodada executa o build e as provas pertinentes antes do commit",
-           "a suíte inteira, o lint e a prova de ponta a ponta ficam no fechamento"],
-          ["vermelho", "Agrupe cortes", "rode só os testes do que mudou"]),
+           "A rodada junta e comita sem compilar nem rodar prova",
+           "a compilação, a suíte inteira, o lint, as provas dos critérios e a prova de ponta a ponta ficam no fechamento"],
+          ["vermelho", "Agrupe cortes", "rode só os testes do que mudou", "A rodada executa o build"]),
         ("en-US", ["Use map commands when location or current evidence is missing",
           "Read the relevant range and expand when context is missing", "Reread when content changed or a proof requires it",
           "Never send a build or test to the background", "Do not commit and do not use `git add`: the commit belongs to the round",
           "Run every command from inside the copy"],
           ["build folder", "passes from one copy to the next"],
           ["Build and run only the proof of the task and of the wave's criteria; no suite, lint or cut",
-           "The round runs the build and pertinent criterion proofs before the commit",
-           "the full suite, lint and the end-to-end proof run at the close"],
-          [" red ", "Group independent cuts", "run only the tests of what changed"]),
+           "The round joins and commits without building or running a proof",
+           "the build, the full suite, lint, the criterion proofs and the end-to-end proof run at the close"],
+          [" red ", "Group independent cuts", "run only the tests of what changed", "The round runs the build"]),
     ] {
         for name in ["wave", "review"] {
             let agent = template(lang, name);
@@ -1048,8 +1052,9 @@ fn the_wave_and_review_agents_carry_the_project_wide_execution_rules() {
     }
 }
 
-/// A revisão de onda lê o diff, o código e os recibos da prova da onda, e não
-/// compila, não roda teste nem binário e não corta. Tudo o que roda — reler os
+/// A revisão de onda lê só o pedido que o despacho manda ler, não corrige,
+/// não compila nem roda teste, e dá um veredito curto: aprovado, ou reprovado
+/// com o motivo e os arquivos. Tudo o que roda — reler os
 /// recibos do fechamento e reexecutar o que ficou incerto, a prova de ponta a
 /// ponta pelo caminho do usuário e o caso da proteção tirada com duas voltas
 /// ao mesmo tempo — mora só no bloco da revisão final da obra,
@@ -1064,9 +1069,9 @@ fn only_the_final_review_runs_checks_and_the_wave_review_reads_the_diff_and_rece
             "pt-BR",
             "## Gravidade",
             ("- Revisão de onda:", [
-                "leia o diff, o código e os recibos da prova da onda",
-                "`run panel --wave N --observations`",
-                "Não compile, não rode teste nem binário e não corte nada",
+                "leia só o pedido que o despacho manda ler (diff, tarefas, critérios, regras, skills e provas)",
+                "Não corrija, não compile nem rode teste",
+                "`rejected` com o motivo em poucas frases e os arquivos em `files`",
             ]),
             "- Revisão final da obra, completa:",
             [
@@ -1085,9 +1090,9 @@ fn only_the_final_review_runs_checks_and_the_wave_review_reads_the_diff_and_rece
             "en-US",
             "## Severity",
             ("- Wave review:", [
-                "read the diff, the code and the wave's proof receipts",
-                "`run panel --wave N --observations`",
-                "Do not build, run tests or binaries, or cut anything",
+                "read only the request the dispatch points to (diff, tasks, criteria, rules, skills and proofs)",
+                "Do not fix, build or run tests",
+                "`rejected` with the reason in a few sentences and the files in `files`",
             ]),
             "- The work's final review, in full:",
             [
@@ -1328,7 +1333,8 @@ fn request_says_to_write_the_delivery_through_the_tool() {
             Locale::EnUs => "have the agent record it again through the tool",
         };
         assert!(next.contains(record_again), "{lang} round output misses the instruction to record again: {next}");
-        assert!(next.contains("<USAGE>"), "{lang} round output does not ask for the usage line: {next}");
+        assert!(!next.contains("<USAGE>"), "{lang} round output still asks for the usage line: {next}");
+        assert!(next.contains(r#"<REVIEWED>{"wave":1,"note":"…"}</REVIEWED>"#), "{lang} round output does not teach the review without fingerprint: {next}");
         assert!(!next.contains("<DELIVERED>") && !next.contains("<VERDICT>"), "{lang} round output teaches a pasted line: {next}");
     }
 }

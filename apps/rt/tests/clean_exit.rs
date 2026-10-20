@@ -13,6 +13,9 @@
 //! no alcance do teste. `std::env::temp_dir()` lê `TMPDIR` no Unix e `TMP`/
 //! `TEMP` no Windows, então as três apontam para ele.
 
+#[path = "support/binary.rs"]
+mod binary;
+
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
@@ -26,7 +29,7 @@ fn project_copy(dir: &Path) {
 /// Roda `mustard-rt run clean <args>` com o temp apontado para `temp`,
 /// a partir de `cwd`.
 fn scratch_gc(cwd: &Path, temp: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+    binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
         .args(["run", "clean"])
         .args(args)
         .current_dir(cwd)
@@ -63,7 +66,7 @@ fn clean_path_exit_codes() {
     assert!(copy.join("Cargo.toml").exists(), "--dry-run never deletes");
 
     // Temp que é a própria home (`TMPDIR=$HOME`): recusado, exit 1, nada tocado.
-    let out = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+    let out = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
         .args(["run", "clean", "--path", copy.to_str().unwrap()])
         .current_dir(&cwd)
         .env("TMPDIR", &temp)
@@ -155,7 +158,7 @@ fn clean_in_a_project_removes_the_copy_of_a_closed_work_and_keeps_the_open_one()
         fs::write(slot.join("target").join("compilado"), "x").unwrap();
     }
     let clean = |args: &[&str]| {
-        let out = Command::new(env!("CARGO_BIN_EXE_mustard-rt"))
+        let out = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
             .args(["run", "clean"])
             .args(args)
             .current_dir(&root)

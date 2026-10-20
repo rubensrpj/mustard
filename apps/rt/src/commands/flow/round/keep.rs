@@ -297,3 +297,107 @@ fn keep_folder_through(
     }
     store_tree(root, folder, &tree, head, files, keeping).map(Some)
 }
+
+/// As refs guardadas da spec `spec` (`refs/mustard/kept/<spec>/…`) cujo
+/// código a base dela já tem, conferido pelo git: cada arquivo que a ref
+/// mudou em relação ao commit de onde saiu está igual na base — na branch
+/// local ou na que ela acompanha no remoto. Com `apply`, cada uma sai. Só a
+/// spec entregue entra; a ref que o git não confere, ou cujo código a base
+/// não tem, fica.
+pub(crate) fn landed_kept(root: &Path, spec: &str, apply: bool) -> Vec<String> {
+    use mustard_core::domain::spec_state::{SpecState as _, State};
+    let Some(log) = crate::shared::spec_state::DiskSpecState::new(root).log(spec) else { return Vec::new() };
+    let state = State::from_log(&log);
+    let (Some("delivered"), Some(base)) = (state.phase, state.base.as_deref()) else { return Vec::new() };
+    let bases: Vec<String> = [format!("refs/heads/{base}"), format!("{base}@{{upstream}}")]
+        .iter()
+        .filter_map(|name| git(root, &["rev-parse", "--verify", "--quiet", &format!("{name}^{{commit}}")]).ok())
+        .map(|sha| sha.trim().to_string())
+        .filter(|sha| !sha.is_empty())
+        .collect();
+    if bases.is_empty() {
+        return Vec::new();
+    }
+    let listed = git(root, &["for-each-ref", "--format=%(refname)", &format!("refs/mustard/kept/{spec}/")]).unwrap_or_default();
+    let in_base = |refname: &str| {
+        let Ok(changed) = git(root, &["diff", "--name-only", "-z", "--no-renames", &format!("{refname}^"), refname]) else { return false };
+        let files: Vec<&str> = changed.split('\0').filter(|file| !file.is_empty()).collect();
+        !files.is_empty()
+            && bases.iter().any(|base| {
+                let mut args = vec!["--literal-pathspecs", "diff", "--quiet", base.as_str(), refname, "--"];
+                args.extend(files.iter().copied());
+                git(root, &args).is_ok()
+            })
+    };
+    listed
+        .lines()
+        .filter(|refname| !refname.is_empty() && in_base(refname))
+        .filter(|refname| !apply || git(root, &["update-ref", "-d", refname]).is_ok())
+        .map(str::to_string)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use serde_json::json;
+
+    use super::*;
+    use crate::commands::flow::round::tests::{git_at, git_text};
+
+    /// A kept ref of `spec` holding `file` with `text` on top of `parent`.
+    fn kept_ref(root: &Path, spec: &str, name: &str, parent: &str, file: &str, text: &str) -> String {
+        git_at(root, &["checkout", "-q", "--detach", parent]);
+        std::fs::write(root.join(file), text).unwrap();
+        git_at(root, &["add", file]);
+        git_at(root, &["commit", "-q", "-m", "guardado"]);
+        let commit = git_text(root, &["rev-parse", "HEAD"]);
+        git_at(root, &["checkout", "-q", "dev"]);
+        let refname = format!("refs/mustard/kept/{spec}/{name}");
+        git_at(root, &["update-ref", &refname, &commit]);
+        refname
+    }
+
+    /// A project on `dev` with the spec `spec` in `phase`, based on `dev`.
+    fn project(root: &Path, spec: &str, phase: &str) {
+        git_at(root, &["init", "-q", "-b", "dev", "."]);
+        std::fs::write(root.join(".gitignore"), ".claude/\n").unwrap();
+        std::fs::write(root.join("a.txt"), "antes\n").unwrap();
+        git_at(root, &["add", "-A"]);
+        git_at(root, &["commit", "-q", "-m", "semente"]);
+        let path = mustard_core::io::spec_events::spec_file(root, spec).unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let rows = [json!({"v":1,"id":1,"type":"state","author":"binary","phase":"survey","branch":format!("feature/{spec}"),"base":"dev"}),
+            json!({"v":1,"id":2,"type":"state","author":"binary","phase":phase})];
+        std::fs::write(path, rows.iter().map(|row| row.to_string() + "\n").collect::<String>()).unwrap();
+    }
+
+    /// Of a delivered spec, only the kept ref whose code the base already has
+    /// leaves; the one whose code the base lacks stays, and nothing leaves
+    /// without `apply`, nor of a spec not yet delivered.
+    #[test]
+    fn only_the_kept_code_the_base_already_has_leaves_once_the_spec_is_delivered() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        project(root, "x", "delivered");
+        let seed = git_text(root, &["rev-parse", "HEAD"]);
+        let landed = kept_ref(root, "x", "1-3-aaaa", &seed, "a.txt", "depois\n");
+        let lost = kept_ref(root, "x", "2-4-bbbb", &seed, "b.txt", "só aqui\n");
+        std::fs::write(root.join("a.txt"), "depois\n").unwrap();
+        git_at(root, &["commit", "-q", "-am", "a mudança entrou na base"]);
+
+        assert_eq!(landed_kept(root, "x", false), vec![landed.clone()], "listed, not removed");
+        assert_eq!(git_text(root, &["for-each-ref", "--format=%(refname)", "refs/mustard/kept/"]).lines().count(), 2);
+        assert_eq!(landed_kept(root, "x", true), vec![landed]);
+        assert_eq!(git_text(root, &["for-each-ref", "--format=%(refname)", "refs/mustard/kept/"]), lost);
+
+        let open = tempfile::tempdir().unwrap();
+        project(open.path(), "y", "running");
+        let seed = git_text(open.path(), &["rev-parse", "HEAD"]);
+        kept_ref(open.path(), "y", "1-3-aaaa", &seed, "a.txt", "depois\n");
+        std::fs::write(open.path().join("a.txt"), "depois\n").unwrap();
+        git_at(open.path(), &["commit", "-q", "-am", "a mudança entrou na base"]);
+        assert!(landed_kept(open.path(), "y", true).is_empty(), "a spec not delivered keeps every ref");
+    }
+}

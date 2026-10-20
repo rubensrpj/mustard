@@ -68,8 +68,8 @@ pub mod settings;
 
 pub use cleanup::{CleanupDone, CleanupPlan, PendingList};
 pub use files::{
-    default_inject_entries, harness_text_paths, harness_texts, migrate_inject_declarations, refresh_agent_texts,
-    same_declared_path, seed_gitignore, seed_harness_texts, session_map_declared_path,
+    default_inject_entries, harness_text_paths, harness_texts, migrate_inject_declarations, project_harness_texts, refresh_agent_texts,
+    same_declared_path, seed_gitignore, seed_harness_texts, seed_project_harness_texts, session_map_declared_path,
 };
 pub use footprint::{
     FootprintEntry, InstallMode, PRIVATE_MARKS, carries_private_marks, detect_install_mode, footprint, footprint_pathspecs, footprint_rules,
@@ -319,6 +319,12 @@ pub fn upsert_project_with(root: &Path, version: Option<&str>, mode: InstallMode
     let claude_dir = root.join(".claude");
     fs::create_dir_all(&claude_dir)?;
 
+    // As specs que já existem quando esta versão é montada no projeto pela
+    // primeira vez ficam de antes dela, só para ler; a lista é gravada uma
+    // vez e nunca refeita.
+    let harness = crate::harness_version();
+    crate::io::legacy_specs::mark_once(root, version.unwrap_or(&harness))?;
+
     // 1. The `inject` migrations (fail-open).
     report.migrated = migrate_inject_declarations(root, &claude_dir);
 
@@ -329,7 +335,7 @@ pub fn upsert_project_with(root: &Path, version: Option<&str>, mode: InstallMode
     for (name, outcome) in seed_settings(&claude_dir, false, mode, text)? {
         report.record(name, outcome);
     }
-    for (rel, outcome) in seed_harness_texts(&claude_dir, text, config.agent_settings())? {
+    for (rel, outcome) in seed_project_harness_texts(&claude_dir, &config)? {
         report.record(&format!(".claude/{rel}"), outcome);
     }
     report.record(CLAUDE_GITIGNORE_PATH, seed_gitignore(&claude_dir, false)?);
@@ -367,6 +373,30 @@ mod tests {
     use serde_json::{Value, json};
     use std::fs as std_fs;
     use tempfile::tempdir;
+
+    // --- upsert_project: the specs of before this version ---------------------
+
+    /// A montagem sobre um projeto que já tem specs grava a lista das antigas
+    /// com a versão dela; a montagem seguinte, de outra versão, não regrava,
+    /// e a spec nascida depois fica atual.
+    #[test]
+    fn upsert_lists_the_specs_that_already_exist_once() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std_fs::create_dir_all(root.join(".claude/spec/antiga")).unwrap();
+        std_fs::write(root.join(".claude/spec/antiga/spec.ndjson"), "").unwrap();
+
+        upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
+        let list = crate::io::legacy_specs::path(root);
+        let written: Value = serde_json::from_str(&std_fs::read_to_string(&list).unwrap()).unwrap();
+        assert_eq!(written, json!({"since": "9.9.9", "specs": ["antiga"]}));
+
+        std_fs::create_dir_all(root.join(".claude/spec/nova")).unwrap();
+        upsert_project(root, Some("9.9.10"), InstallMode::Shared).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&std_fs::read_to_string(&list).unwrap()).unwrap(), written, "the list is written once");
+        assert!(crate::io::legacy_specs::is_legacy(root, "antiga"));
+        assert!(!crate::io::legacy_specs::is_legacy(root, "nova"));
+    }
 
     // --- upsert_project: fresh install --------------------------------------
 

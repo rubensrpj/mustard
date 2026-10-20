@@ -1,6 +1,8 @@
 //! Exercise the actual Mods/native boundary with synthetic credentials.
 #![allow(clippy::unwrap_used)] // Disposable fixtures and process output must be valid in this regression.
-use std::process::Command;
+#[path = "support/binary.rs"]
+mod binary;
+
 use serde_json::{Value,json};
 
 #[test]
@@ -11,7 +13,7 @@ fn native_settings_are_safe_versioned_and_change_only_selected_fields() {
     std::fs::write(root.join("mustard.json"),json!({"ai":{"fallback":false},"jev":{"key":secret},"future":"preserve"}).to_string()).unwrap();
     std::fs::write(root.join(".claude/settings.local.json"),r#"{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"rtk hook claude"}]}]}}"#).unwrap();
     let run=|patch:Option<Value>| {
-        let mut command=Command::new(env!("CARGO_BIN_EXE_mustard-rt"));
+        let mut command=binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"));
         command.args(["run","settings","--root"]).arg(root).current_dir(root).env("MUSTARD_RT_DELEGATED","1");
         if let Some(patch)=patch {command.args(["--json",&patch.to_string()]);}
         let output=command.output().unwrap();assert!(output.status.success());
@@ -48,7 +50,7 @@ fn observation_cli_pages_only_the_requested_dispatch_without_loading_a_project_p
             exit_code:Some(0),result_status:"returned".into(),observed_at:"2026-01-02T00:00:00Z".into()}).unwrap();
     }
     let run=|cursor:Option<&str>| {
-        let mut command=Command::new(env!("CARGO_BIN_EXE_mustard-rt"));
+        let mut command=binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"));
         command.args(["run","panel","--root"]).arg(root).args(["--spec","demo","--wave","2","--observations"])
             .current_dir(root).env("MUSTARD_RT_DELEGATED","1");
         if let Some(cursor)=cursor {command.args(["--observations-before",cursor]);}
@@ -90,7 +92,7 @@ fn the_receipt_page_shows_one_short_command_line_and_the_receipt_returns_the_who
     let whole=record("short-call",7,short,"returned",0);
     let foreign=record("other-wave",9,&long,"returned",0);
     let run=|extra:&[&str]| {
-        let output=Command::new(env!("CARGO_BIN_EXE_mustard-rt")).args(["run","panel","--root"]).arg(root)
+        let output=binary::isolated(env!("CARGO_BIN_EXE_mustard-rt")).args(["run","panel","--root"]).arg(root)
             .args(["--spec","demo","--wave","2","--observations"]).args(extra)
             .current_dir(root).env("MUSTARD_RT_DELEGATED","1").output().unwrap();
         assert!(output.status.success(),"{}",String::from_utf8_lossy(&output.stderr));
@@ -144,7 +146,7 @@ fn the_receipt_page_skips_the_identity_a_hook_puts_ahead_of_the_command() {
         input_sha256:observations::digest(source.as_bytes()),output_sha256:observations::digest(b"output"),
         exit_code:Some(0),result_status:"returned".into(),observed_at:"2026-01-02T00:00:00Z".into()}).unwrap().0;
     let (agent,written)=(record("prefixed",&prefixed),record("own-export",own));
-    let output=Command::new(env!("CARGO_BIN_EXE_mustard-rt")).args(["run","panel","--root"]).arg(root)
+    let output=binary::isolated(env!("CARGO_BIN_EXE_mustard-rt")).args(["run","panel","--root"]).arg(root)
         .args(["--spec","demo","--wave","2","--observations"]).current_dir(root).env("MUSTARD_RT_DELEGATED","1").output().unwrap();
     let page:Value=serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(page["ok"],true,"{page}");
@@ -153,4 +155,30 @@ fn the_receipt_page_skips_the_identity_a_hook_puts_ahead_of_the_command() {
     assert!(line.starts_with("mustard-rt run search --shell-output ") && line.ends_with('…'),"{line}");
     assert!(search.starts_with(line.trim_end_matches('…')),"{line}");
     assert_eq!(shown(&written),"export NODE_ENV=test…");
+}
+
+/// The publication token reaches the binary only on standard input: the
+/// same patch as an argument, where another process could read it, is
+/// refused without touching the file.
+#[test]
+fn the_token_patch_comes_on_standard_input_and_never_as_an_argument() {
+    use std::io::Write;
+    let dir=tempfile::tempdir().unwrap();let root=dir.path();
+    std::fs::write(root.join("mustard.json"),r#"{"ai":{"fallback":false}}"#).unwrap();
+    let token="synthetic-cloudflare-token-stdin";
+    let command=||{let mut command=binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"));
+        command.args(["run","settings","--root"]).arg(root).current_dir(root).env("MUSTARD_RT_DELEGATED","1");command};
+    let read=|output:std::process::Output|{assert!(output.status.success());let text=String::from_utf8(output.stdout).unwrap();
+        assert!(!text.contains(token));serde_json::from_str::<Value>(&text).unwrap()};
+    let initial=read(command().output().unwrap());
+    let patch=json!({"schema_version":1,"revision":initial["revision"],"changes":{"cloudflare_token":token}}).to_string();
+    let before=std::fs::read_to_string(root.join("mustard.json")).unwrap();
+    let refused=read(command().args(["--json",&patch]).output().unwrap());
+    assert_eq!(refused["reason"],"settings-token-argument","{refused}");
+    assert_eq!(std::fs::read_to_string(root.join("mustard.json")).unwrap(),before);
+    let mut child=command().arg("--stdin").stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn().unwrap();
+    child.stdin.take().unwrap().write_all(patch.as_bytes()).unwrap();
+    let saved=read(child.wait_with_output().unwrap());
+    assert_eq!(saved["saved"],true,"{saved}");assert_eq!(saved["publication"]["token_saved"],true,"{saved}");
+    assert!(std::fs::read_to_string(root.join("mustard.json")).unwrap().contains(token));
 }
