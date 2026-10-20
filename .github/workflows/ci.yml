@@ -177,6 +177,20 @@ jobs:
           # from scratch (run 39426184868: "No cache found" on Windows).
           cache-on-failure: true
 
+      # The tests create thousands of temporary repositories and maps. On the
+      # hosted Windows runners the C: drive, where TEMP points, is far slower
+      # than D:, where the workspace already lives; uv, Zed and Dioxus move
+      # their build and temporary folders to the fast drive for the same
+      # reason. Run 39459781536 spent 13.5 minutes in the mustard-rt unit
+      # tests on Windows against 47 seconds on Linux.
+      - name: Temporary files on the fast drive
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path D:\tmp | Out-Null
+          "TEMP=D:\tmp" >> $env:GITHUB_ENV
+          "TMP=D:\tmp" >> $env:GITHUB_ENV
+
       - name: Expose the scan binary to the tests that spawn it
         shell: bash
         run: echo "${GITHUB_WORKSPACE}/target/debug" >> "$GITHUB_PATH"
