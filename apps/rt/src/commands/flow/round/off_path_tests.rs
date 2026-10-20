@@ -224,6 +224,7 @@ fn a_return_that_arrives_while_the_round_prepares_a_copy_is_never_resent() {
 /// plano, vem depois do envio dela.
 #[test]
 fn the_next_waves_go_out_before_the_scan() {
+    crate::commands::flow::round::map_after_rounds();
     let dir = tempdir().unwrap();
     let root = dir.path();
     approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[1])]);

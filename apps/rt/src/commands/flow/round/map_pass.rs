@@ -16,6 +16,17 @@ thread_local! {
     /// Os projetos cuja passada esta linha de execução pediu e que ainda não
     /// rodou ([`PassesAfterTheRound`]).
     static PENDING: std::cell::RefCell<Vec<std::path::PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// Se as rodadas desta linha de execução rodam a passada pedida
+    /// ([`map_after_rounds`]).
+    static MAP_AFTER_ROUNDS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Liga, para o teste que chama, a passada do mapa no fim de cada rodada.
+/// Desligada por padrão: rodar o scan de verdade a cada rodada era a maior
+/// parte do tempo dos testes da rodada, e só quem confere o mapa precisa dela.
+#[cfg(test)]
+pub(crate) fn map_after_rounds() {
+    MAP_AFTER_ROUNDS.with(|on| on.set(true));
 }
 
 /// Nos testes da biblioteca, a passada que a rodada pediu roda quando a
@@ -30,6 +41,9 @@ pub(super) struct PassesAfterTheRound<'a> {
 impl Drop for PassesAfterTheRound<'_> {
     fn drop(&mut self) {
         let mut roots = PENDING.with(|pending| pending.take());
+        if !MAP_AFTER_ROUNDS.with(std::cell::Cell::get) {
+            return;
+        }
         roots.dedup();
         for root in roots {
             refresh_while_behind_with(&root, self.mine, &installed_scan_format);

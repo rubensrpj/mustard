@@ -213,6 +213,8 @@ pub(crate) use stops::{append_agent_line, change_accepted, change_code_of, repla
 
 pub(crate) use commit::{refresh_map_if_stale, waves_checked_only};
 pub(crate) use map_pass::{BACKGROUND_PASS_ENV, refresh_map_while_behind, refresh_now as refresh_map_now};
+#[cfg(test)]
+pub(crate) use map_pass::map_after_rounds;
 
 use std::path::PathBuf;
 

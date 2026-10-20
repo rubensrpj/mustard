@@ -2137,6 +2137,7 @@ mod tests {
     /// resposta do fechamento traz a linha inteira do pull request.
     #[test]
     fn closing_runs_each_criterion_once_and_leaves_three_files_in_the_folder() {
+        crate::commands::flow::round::map_after_rounds();
         let dir = tempdir().unwrap();
         let root = dir.path();
         ready_to_close(root, "x", &["git --version", "git --help"]);

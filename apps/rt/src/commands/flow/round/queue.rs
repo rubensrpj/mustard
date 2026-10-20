@@ -2450,6 +2450,7 @@ mod tests {
     /// despachar; a segunda volta libera o teto.
     #[test]
     fn the_map_follows_the_code_without_holding_the_request() {
+        crate::commands::flow::round::map_after_rounds();
         let dir = tempdir().unwrap();
         let root = dir.path();
         std::fs::create_dir_all(root.join("src")).unwrap();

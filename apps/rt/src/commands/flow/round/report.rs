@@ -1402,6 +1402,7 @@ mod tests {
     /// rodada em que nenhuma onda volta não traz entrada de entrega.
     #[test]
     fn the_round_answer_shows_the_text_files_and_proofs_of_each_returned_wave() {
+        crate::commands::flow::round::map_after_rounds();
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
