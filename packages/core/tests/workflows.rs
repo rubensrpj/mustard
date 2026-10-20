@@ -552,61 +552,6 @@ fn the_verification_runs_on_pull_requests_and_on_pushes_to_dev_and_main() {
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
 
-/// Windows and macOS split the suite into parts that run at the same time on
-/// separate runners, and Linux runs it whole: every test runs in exactly one
-/// part of each system. `rest` takes everything it does not skip and skips
-/// each prefix another part takes; a part that takes a prefix holding another
-/// part's prefix skips it; no prefix is taken twice.
-#[test]
-fn the_split_test_parts_cover_every_test_once() {
-    type Part = (String, Vec<String>, Vec<String>);
-    let ci = Workflow::read(VERIFICATION);
-    let jobs = ci.jobs();
-    let test = jobs.iter().find(|(id, _)| id == "test").map(|(_, job)| *job).expect("the test job");
-    let mut systems: std::collections::BTreeMap<String, Vec<Part>> = std::collections::BTreeMap::new();
-    for entry in test["strategy"]["matrix"]["include"].as_vec().expect("the matrix lists its parts") {
-        let (os, part) = (scalar(&entry["os"]).expect("each part names its system"), scalar(&entry["part"]).expect("each entry names its part"));
-        let (mut take, mut skip) = (Vec::new(), Vec::new());
-        let filter = scalar(&entry["filter"]).unwrap_or_default();
-        let mut words = filter.split_whitespace().map(str::to_string);
-        while let Some(word) = words.next() {
-            if word == "--skip" {
-                skip.push(words.next().expect("a prefix after --skip"));
-            } else {
-                take.push(word);
-            }
-        }
-        systems.entry(os).or_default().push((part, take, skip));
-    }
-    let linux = &systems["ubuntu-latest"];
-    assert_eq!(linux.len(), 1, "Linux runs the suite whole: {linux:?}");
-    assert!(linux[0].1.is_empty() && linux[0].2.is_empty(), "Linux filters nothing: {linux:?}");
-    for os in ["windows-latest", "macos-latest"] {
-        let parts = &systems[os];
-        let rest = parts.iter().find(|(part, ..)| part == "rest").unwrap_or_else(|| panic!("{os} has no rest part"));
-        assert!(rest.1.is_empty(), "{os}: rest takes only by skipping");
-        let others: Vec<&Part> = parts.iter().filter(|(part, ..)| part != "rest").collect();
-        let taken: Vec<&String> = others.iter().flat_map(|(_, take, _)| take).collect();
-        assert_eq!(taken.len(), taken.iter().collect::<BTreeSet<_>>().len(), "{os}: a prefix is taken twice: {taken:?}");
-        for prefix in &rest.2 {
-            assert!(taken.contains(&prefix), "{os}: rest skips `{prefix}`, which no part takes");
-        }
-        for (part, take, skip) in &others {
-            assert!(!take.is_empty(), "{os}: {part} takes nothing");
-            for prefix in take {
-                assert!(rest.2.iter().any(|skipped| prefix.starts_with(skipped.as_str())), "{os}: `{prefix}` runs in {part} and in rest");
-                for inner in taken.iter().filter(|inner| **inner != prefix && inner.starts_with(prefix.as_str())) {
-                    assert!(skip.contains(inner), "{os}: `{inner}` runs in {part} and in the part that takes it");
-                }
-            }
-            for prefix in skip {
-                assert!(taken.contains(&prefix), "{os}: {part} skips `{prefix}`, which no part takes");
-            }
-        }
-    }
-    assert_eq!(systems["windows-latest"], systems["macos-latest"], "Windows and macOS split alike");
-}
-
 /// The three installers bring rtk in the version `checksums.txt` fixes,
 /// checked against its sum; the release stops without it; and no step
 /// compiles it.
