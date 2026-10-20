@@ -51,7 +51,11 @@ const SAVING_BRANCHES: [&str; 2] = ["dev", "main"];
 /// GitHub's six-hour default; the slowest job measured took 16 minutes.
 const LONGEST_JOB_MINUTES: i64 = 30;
 const MACOS_INTEL_JOB_MINUTES: i64 = 45;
-const MACOS_MATRIX_TIMEOUT: &str = "${{ matrix.os == 'macos-latest' && 45 || 30 }}";
+/// The test matrix: Linux keeps the 30-minute cap; Windows and the Intel
+/// macOS fallback get 60, because the Windows run 39416582482 spent 20m36s in
+/// the mustard-rt unit tests alone and was cut at 30m, and the last green
+/// Windows runs already took 25-26m.
+const MACOS_MATRIX_TIMEOUT: &str = "${{ matrix.os == 'ubuntu-latest' && 30 || 60 }}";
 
 /// The Rust cache action, compared without case: the two files spell its
 /// owner differently.
@@ -636,10 +640,10 @@ fn the_checks_accept_the_good_shape_and_read_it_as_written() {
 }
 
 #[test]
-fn extended_timeout_is_restricted_to_the_measured_intel_macos_jobs() {
-    let ci = "jobs:\n  test:\n    runs-on: ${{ matrix.runner || matrix.os }}\n    timeout-minutes: ${{ matrix.os == 'macos-latest' && 45 || 30 }}\n    strategy:\n      matrix:\n        os: [ubuntu-latest, macos-latest, windows-latest]\n        include:\n          - os: macos-latest\n            runner: macos-15-intel\n";
+fn extended_timeout_is_restricted_to_the_measured_slow_matrix_jobs() {
+    let ci = "jobs:\n  test:\n    runs-on: ${{ matrix.runner || matrix.os }}\n    timeout-minutes: ${{ matrix.os == 'ubuntu-latest' && 30 || 60 }}\n    strategy:\n      matrix:\n        os: [ubuntu-latest, macos-latest, windows-latest]\n        include:\n          - os: macos-latest\n            runner: macos-15-intel\n";
     assert!(timeout_problems(&Workflow::parse(VERIFICATION, ci)).is_empty());
-    for broken in [ci.replace("45", "60"), ci.replace("  test:", "  other:"), ci.replace("runner: macos-15-intel", "runner: ubuntu-latest")] {
+    for broken in [ci.replace("60", "90"), ci.replace("  test:", "  other:"), ci.replace("runner: macos-15-intel", "runner: ubuntu-latest")] {
         assert!(!timeout_problems(&Workflow::parse(VERIFICATION, &broken)).is_empty());
     }
     let release = "jobs:\n  macos-installer:\n    runs-on: macos-15-intel\n    timeout-minutes: 45\n";
