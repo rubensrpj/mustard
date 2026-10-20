@@ -125,8 +125,10 @@ jobs:
     runs-on: ${{ matrix.runner || matrix.os }}
     # Keep a bounded job. On the Intel macOS fallback, run 38457019967 took
     # 7m38s to compile cold and was still progressing through scan tests at
-    # 30m. Allow that measured workload to finish, without lifting other caps.
-    timeout-minutes: ${{ matrix.os == 'macos-latest' && 45 || 30 }}
+    # 30m. On Windows, run 39416582482 spent 20m36s in the mustard-rt unit
+    # tests alone and was cut at 30m before the integration tests; the last
+    # green Windows runs already took 25-26m. Linux finished in under 18m.
+    timeout-minutes: ${{ matrix.os == 'ubuntu-latest' && 30 || 60 }}
     env:
       # A runner is discarded after every job, so incremental state is WRITTEN
       # and never read back — pure cost here. Declared rather than inherited,

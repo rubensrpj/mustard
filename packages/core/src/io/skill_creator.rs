@@ -116,8 +116,26 @@ mod tests {
     fn the_tests_never_read_the_real_claude_config() {
         let config = crate::platform::harness::claude_config_dir().expect("the test environment names a configuration folder");
         let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target");
-        let target = target.canonicalize().unwrap_or(target);
+        // Lexical on both sides: canonicalizing only one gives the Windows
+        // `\\?\` prefix to it and never to the other.
+        let (config, target) = (lexical(&config), lexical(&target));
         assert!(config.starts_with(&target), "the tests read {} instead of a folder under {}", config.display(), target.display());
+    }
+
+    /// `path` with `.` dropped and each `..` taking the part before it, without
+    /// touching the disk.
+    fn lexical(path: &Path) -> std::path::PathBuf {
+        let mut out = std::path::PathBuf::new();
+        for part in path.components() {
+            match part {
+                std::path::Component::CurDir => {}
+                std::path::Component::ParentDir => {
+                    out.pop();
+                }
+                other => out.push(other),
+            }
+        }
+        out
     }
 
     /// A marca da linha que o [`folder_reader`] imprime.

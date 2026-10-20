@@ -244,14 +244,18 @@ mod tests {
             serde_json::from_value(json!({"cwd":root,"tool_name":"Bash","tool_input":{"command":format!("cd '{}' && ls", scratch.display())}})).unwrap();
         assert!(matches!(isolate(&input, &ctx, Verdict::Allow, true, NO_RTK), Verdict::Allow));
         // `<checkout>/../../<copy without the leading folder>`: the text starts
-        // in the main checkout and the folder is the copy.
-        let normal = |path: &Path| path.components().filter(|part| matches!(part, std::path::Component::Normal(_))).count();
-        let up: std::path::PathBuf = (0..normal(root)).map(|_| "..").collect();
-        let below: std::path::PathBuf = copy.components().filter(|part| matches!(part, std::path::Component::Normal(_))).collect();
-        let through_root = root.join(up).join(below);
-        input.tool_input["command"] = json!(format!("cd '{}' && pwd", through_root.display()));
-        let Verdict::Rewrite { tool_input, .. } = isolate(&input, &ctx, Verdict::Allow, true, NO_RTK) else { panic!("copy through ..") };
-        assert!(tool_input["command"].as_str().unwrap().starts_with("(\n"), "{}", tool_input["command"]);
+        // in the main checkout and the folder is the copy. A Windows `\\?\`
+        // path takes `..` as a plain name, so the climb exists only on Linux
+        // and macOS.
+        if !cfg!(windows) {
+            let normal = |path: &Path| path.components().filter(|part| matches!(part, std::path::Component::Normal(_))).count();
+            let up: std::path::PathBuf = (0..normal(root)).map(|_| "..").collect();
+            let below: std::path::PathBuf = copy.components().filter(|part| matches!(part, std::path::Component::Normal(_))).collect();
+            let through_root = root.join(up).join(below);
+            input.tool_input["command"] = json!(format!("cd '{}' && pwd", through_root.display()));
+            let Verdict::Rewrite { tool_input, .. } = isolate(&input, &ctx, Verdict::Allow, true, NO_RTK) else { panic!("copy through ..") };
+            assert!(tool_input["command"].as_str().unwrap().starts_with("(\n"), "{}", tool_input["command"]);
+        }
         assert!(mustard_core::platform::git::run(root, &["worktree", "remove", "--force", copy.to_str().unwrap()]).ok);
         std::fs::remove_dir_all(wave_prompt::copies_dir(root)).unwrap();
     }
