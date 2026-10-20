@@ -121,8 +121,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     # Keep a bounded job. macOS runs on the standard Apple runner: the Intel
     # pool it used to need 45 minutes on also kept the release waiting 47
-    # minutes for a machine.
-    timeout-minutes: 30
+    # minutes for a machine. Windows gets 45: run 39445783794 compiled cold in
+    # 7m, spent 16m in the mustard-rt unit tests (47s on Linux) and was cut at
+    # 30m with every test it reached green.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 45 || 30 }}
     env:
       # A runner is discarded after every job, so incremental state is WRITTEN
       # and never read back — pure cost here. Declared rather than inherited,

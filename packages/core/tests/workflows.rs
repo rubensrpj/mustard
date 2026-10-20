@@ -51,7 +51,10 @@ const SAVING_BRANCHES: [&str; 2] = ["dev", "main"];
 /// GitHub's six-hour default; the slowest job measured took 16 minutes.
 const LONGEST_JOB_MINUTES: i64 = 30;
 const MACOS_INTEL_JOB_MINUTES: i64 = 45;
-const MACOS_MATRIX_TIMEOUT: &str = "${{ matrix.os == 'macos-latest' && 45 || 30 }}";
+/// The test matrix: Windows gets 45 minutes. Run 39445783794 compiled cold in
+/// 7 minutes, spent 16 in the mustard-rt unit tests (47 s on Linux) and was
+/// cut at 30 with every test it reached green.
+const TEST_MATRIX_TIMEOUT: &str = "${{ matrix.os == 'windows-latest' && 45 || 30 }}";
 
 /// The Rust cache action, compared without case: the two files spell its
 /// owner differently.
@@ -342,11 +345,10 @@ fn timeout_problems(workflow: &Workflow) -> Vec<String> {
         // The macOS installer compiles two Apple targets cold, on whichever
         // macOS runner the release names.
         let intel_release = rel == RELEASE && id == "macos-installer" && job["runs-on"].as_str().is_some_and(|runner| runner.starts_with("macos"));
-        let intel_matrix = rel == VERIFICATION && id == "test"
-            && job["runs-on"].as_str() == Some("${{ matrix.runner || matrix.os }}")
-            && job["strategy"]["matrix"]["include"].as_vec().is_some_and(|entries| entries.iter().any(|entry|
-                entry["os"].as_str() == Some("macos-latest") && entry["runner"].as_str() == Some("macos-15-intel")));
-        if intel_matrix && job["timeout-minutes"].as_str() == Some(MACOS_MATRIX_TIMEOUT) {
+        let windows_matrix = rel == VERIFICATION && id == "test"
+            && job["runs-on"].as_str() == Some("${{ matrix.os }}")
+            && list(&job["strategy"]["matrix"]["os"]).iter().any(|os| os == "windows-latest");
+        if windows_matrix && job["timeout-minutes"].as_str() == Some(TEST_MATRIX_TIMEOUT) {
             continue;
         }
         let cap = if intel_release { MACOS_INTEL_JOB_MINUTES } else { LONGEST_JOB_MINUTES };
@@ -644,10 +646,10 @@ fn the_checks_accept_the_good_shape_and_read_it_as_written() {
 }
 
 #[test]
-fn extended_timeout_is_restricted_to_the_measured_intel_macos_jobs() {
-    let ci = "jobs:\n  test:\n    runs-on: ${{ matrix.runner || matrix.os }}\n    timeout-minutes: ${{ matrix.os == 'macos-latest' && 45 || 30 }}\n    strategy:\n      matrix:\n        os: [ubuntu-latest, macos-latest, windows-latest]\n        include:\n          - os: macos-latest\n            runner: macos-15-intel\n";
+fn extended_timeout_is_restricted_to_the_measured_slow_jobs() {
+    let ci = "jobs:\n  test:\n    runs-on: ${{ matrix.os }}\n    timeout-minutes: ${{ matrix.os == 'windows-latest' && 45 || 30 }}\n    strategy:\n      matrix:\n        os: [ubuntu-latest, macos-latest, windows-latest]\n";
     assert!(timeout_problems(&Workflow::parse(VERIFICATION, ci)).is_empty());
-    for broken in [ci.replace("45", "60"), ci.replace("  test:", "  other:"), ci.replace("runner: macos-15-intel", "runner: ubuntu-latest")] {
+    for broken in [ci.replace("45", "60"), ci.replace("  test:", "  other:"), ci.replace(", windows-latest]", "]")] {
         assert!(!timeout_problems(&Workflow::parse(VERIFICATION, &broken)).is_empty());
     }
     let release = "jobs:\n  macos-installer:\n    runs-on: macos-15-intel\n    timeout-minutes: 45\n";
