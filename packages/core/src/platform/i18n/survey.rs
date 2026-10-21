@@ -86,13 +86,17 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("survey.present_point", Locale::PtBr) => {
             "Apresente o ponto {code}, e só ele, na ordem de explicar do estilo de resposta. Com a \
              resposta do usuário, grave o item e feche o ponto num comando só: `mustard-rt run \
-             answer --point {id} --type <tipo> --json '{…}'`. A resposta já gravada vai em \
+             answer --point {id} --type <tipo> --json '{…}'`. Se o ponto não tem fato, o \
+             fechamento leva `--facts` (lista JSON de `{\"text\":\"…\",\"source\":\"arquivo:linha\"}`), \
+             ou os fatos entram antes numa versão do ponto. A resposta já gravada vai em \
              `--result`, e o ponto que não se aplica fecha com `--not-applicable` e `--reason`."
         }
         ("survey.present_point", Locale::EnUs) => {
             "Present point {code}, and only it, in the order of explaining from the response style. \
              With the user's answer, record the item and close the point in one command: \
-             `mustard-rt run answer --point {id} --type <type> --json '{…}'`. An answer already \
+             `mustard-rt run answer --point {id} --type <type> --json '{…}'`. If the point has no \
+             fact, the closing takes `--facts` (JSON array of `{\"text\":\"…\",\"source\":\"file:line\"}`), \
+             or the facts go first into a version of the point. An answer already \
              recorded goes in `--result`, and a point that does not apply closes with \
              `--not-applicable` and `--reason`."
         }
@@ -100,14 +104,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Pedido pequeno: os pontos abertos estão em `points`. Antes do sim, preencha cada lacuna \
              a partir do pedido e do código, mostre tudo de uma vez e peça um sim só. Com o sim, \
              grave a resposta de cada ponto com `mustard-rt run answer --point <número> --type \
-             <tipo> --json '{…}'`. Cada resposta fecha o ponto. Ela devolve em `points` o código, o \
+             <tipo> --json '{…}'`. Se o ponto não tem fato, o fechamento leva `--facts` (lista JSON de \
+             `{\"text\":\"…\",\"source\":\"arquivo:linha\"}`), ou os fatos entram antes numa versão do ponto. \
+             Cada resposta fecha o ponto. Ela devolve em `points` o código, o \
              número e a lacuna de cada ponto ainda aberto, e em `point` o próximo inteiro."
         }
         ("survey.present_all", Locale::EnUs) => {
             "Small request: the open points are in `points`. Before the yes, fill every gap from the \
              request and the code, show it all at once and ask for a single yes. With the yes, \
              record the answer to each point with `mustard-rt run answer --point <number> --type \
-             <type> --json '{…}'`. Each answer closes the point. It returns in `points` the code, \
+             <type> --json '{…}'`. If the point has no fact, the closing takes `--facts` (JSON \
+             array of `{\"text\":\"…\",\"source\":\"file:line\"}`), or the facts go first into a version of \
+             the point. Each answer closes the point. It returns in `points` the code, \
              the number and the gap of each point still open, and in `point` the next one in full."
         }
         ("survey.touched", Locale::PtBr) => {
@@ -258,7 +266,22 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("survey.rs"), super::PREFIXES, 44, 0x6b6e_b1c8_82a6_1413);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("survey.rs"), super::PREFIXES, 44, 0x5c31_42d0_0913_ac97);
+    }
+
+    /// O ponto aberto sem fato só fecha com os fatos: a dica de fechar um
+    /// ponto e a do pedido pequeno citam `--facts` nos dois idiomas, com a
+    /// forma de cada fato, e o caminho pela versão do ponto.
+    #[test]
+    fn the_closing_hints_name_the_facts_a_point_without_fact_needs() {
+        for key in ["survey.present_point", "survey.present_all"] {
+            for lang in [Locale::PtBr, Locale::EnUs] {
+                let text = translate(key, lang);
+                assert!(text.contains("`--facts`"), "{key} ({lang}): {text}");
+                assert!(text.contains("\"text\"") && text.contains("\"source\""), "{key} ({lang}): {text}");
+                assert!(text.contains("versão do ponto") || text.contains("version of the point"), "{key} ({lang}): {text}");
+            }
+        }
     }
 
     /// As recusas e os passos do levantamento e o rótulo de cada lacuna saem

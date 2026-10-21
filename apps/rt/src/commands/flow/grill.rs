@@ -1347,8 +1347,15 @@ mod tests {
             let asked = write(root, Some("x"), "message", json!({"text": "E agora?"}));
             for report in [&last, &asked] {
                 assert!(report.get("points").is_none(), "{case}: the gap is not asked again: {report}");
-                assert_eq!(report["point"]["id"], json!(ids[1]), "{case}: {report}");
             }
+            // O fechamento mostra o ponto seguinte; o expurgo, a remoção e a
+            // mensagem que vêm depois não mudam os pontos abertos e não o repetem.
+            if leaves.is_none() {
+                assert_eq!(last["point"]["id"], json!(ids[1]), "{case}: {last}");
+            } else {
+                assert!(last.get("point").is_none(), "{case}: {last}");
+            }
+            assert!(asked.get("point").is_none(), "{case}: {asked}");
             let after = grill(root, "x", Some("fix"), false);
             assert_eq!(items(&after)[0]["status"], json!("closed"), "{case}: {after}");
             let shown = if leaves == Some("remove") { closing } else { version.unwrap_or(ids[0]) };

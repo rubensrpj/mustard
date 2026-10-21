@@ -46,8 +46,11 @@
 //! uma vez. Dois campos vêm depois: `swept`, o dia em que a faxina mostrou o
 //! item, e `became`, a nota "virou a spec X".
 //!
-//! O início da sessão mostra só uma linha, com a contagem ([`count_line`]); a
-//! lista inteira sai da listagem.
+//! O início da sessão mostra só uma linha, com a contagem ([`count_line`]); as
+//! abertas saem da listagem. A listagem traz as abertas inteiras e só a
+//! contagem das fechadas e descartadas: elas saem com `--all`, ou pela busca
+//! (`--term`), que olha título e detalhe de todas e devolve até
+//! [`SEARCH_CAP`] achados.
 //!
 //! Recusa sai com exit 1 e o JSON `ok: false`, como a gravação de material.
 
@@ -92,8 +95,12 @@ pub struct PendingOpts {
     pub remove: bool,
     /// Seletor da remoção: os números, separados por vírgula (`P-2,P-5`).
     pub id: Option<String>,
-    /// Seletor da remoção: as palavras, pela busca sobre título e detalhe.
+    /// As palavras, pela busca sobre título e detalhe. Com `remove`, é o
+    /// seletor da remoção; sem ele, é a busca, nas abertas e nas fechadas.
     pub term: Option<String>,
+    /// A listagem inteira, com as fechadas e as descartadas. Sem ela, a
+    /// listagem traz as abertas e a contagem das outras.
+    pub all: bool,
     /// Seletor da remoção: as que entraram antes deste dia, `AAAA-MM-DD`.
     pub before: Option<String>,
     /// O código que a prévia devolveu: a remoção tira exatamente aquele
@@ -230,7 +237,8 @@ fn duplicate(open: &PendingItem, lang: Locale) -> Value {
 
 /// O que a chamada pede — exatamente uma ação.
 enum Action {
-    List,
+    List { all: bool },
+    Search { term: String },
     Add { title: String, detail: String },
     Close { id: String, reason: String },
     Remove { selector: Selector, reason: String, confirm: Option<String> },
@@ -240,12 +248,16 @@ enum Action {
 }
 
 /// O que a resposta leva além do resultado da própria ação. Só a listagem
-/// traz as listas inteiras: numa lista longa, repeti-las a cada gravação
-/// enche a conversa de quem grava com o que ele não pediu.
+/// traz as listas: numa lista longa, repeti-las a cada gravação enche a
+/// conversa de quem grava com o que ele não pediu, e a das fechadas só sai
+/// com `--all`.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Reply {
-    /// A listagem: o caminho, as listas aberta e fechada e a contagem.
+    /// A listagem: o caminho, as abertas inteiras, a contagem das fechadas e
+    /// a contagem das abertas.
     Listing,
+    /// A listagem inteira: o caminho, as listas aberta e fechada e a contagem.
+    Everything,
     /// Uma gravação: o caminho e a contagem, sem as listas.
     Written,
     /// A faxina e a prévia da remoção: só a lista que cada uma mostra.
@@ -391,6 +403,19 @@ fn resolve_action(opts: &PendingOpts, lang: Locale) -> Result<Action, Value> {
              `--drop <id>` or `--remove`",
         ));
     }
+    if opts.term.is_some() && !opts.remove && chosen > 0 {
+        return Err(refused(
+            "stray-flag",
+            "`--term` alone searches the list, and with `--remove` it picks the items to take \
+             out — pass it with nothing else",
+        ));
+    }
+    if opts.all && (chosen > 0 || opts.term.is_some()) {
+        return Err(refused(
+            "stray-flag",
+            "`--all` widens the plain listing — pass it with no other flag",
+        ));
+    }
 
     if opts.add {
         let title = opts.title.as_deref().map(one_line).unwrap_or_default();
@@ -444,7 +469,17 @@ fn resolve_action(opts: &PendingOpts, lang: Locale) -> Result<Action, Value> {
     if opts.expire {
         return Ok(Action::Expire { keep: opts.keep.as_deref().map(parse_ids).unwrap_or_default() });
     }
-    Ok(Action::List)
+    if let Some(term) = &opts.term {
+        let term = one_line(term);
+        if term.is_empty() {
+            return Err(refused(
+                "missing-term",
+                "name the words to search for, e.g. `--term deploy`",
+            ));
+        }
+        return Ok(Action::Search { term });
+    }
+    Ok(Action::List { all: opts.all })
 }
 
 /// A recusa de um número que não está na lista.
@@ -460,6 +495,33 @@ fn already_settled(id: &str, status: Status) -> Value {
 /// O número `n` de `P-n`.
 fn number(id: &str) -> Option<u64> {
     id.strip_prefix("P-").and_then(|n| n.parse().ok())
+}
+
+/// O teto de achados de uma busca: o resto sai só na contagem.
+const SEARCH_CAP: usize = 30;
+
+/// As pendências de `items` que casam com `term`, pela busca sobre título e
+/// detalhe, da que casa melhor à que casa pior; o termo casa nas línguas
+/// `languages`.
+fn term_hits<'a>(
+    items: impl Iterator<Item = &'a PendingItem>,
+    term: &str,
+    languages: &Languages,
+) -> Vec<&'a PendingItem> {
+    let items: Vec<&PendingItem> = items.collect();
+    let mut normalizer = Normalizer::new(languages);
+    let docs: Vec<(u64, Vec<Vec<String>>)> = items
+        .iter()
+        .filter_map(|i| {
+            let search = search_field(Some(&format!("{} {}", i.title, i.detail)), &[]);
+            Some((number(&i.id)?, normalizer.forms(&search)))
+        })
+        .collect();
+    let total = docs.len();
+    let hits = SearchIndex::build(docs).top(&normalizer.query(term), total);
+    hits.iter()
+        .filter_map(|hit| items.iter().copied().find(|i| number(&i.id) == Some(hit.id)))
+        .collect()
 }
 
 /// As pendências abertas que o seletor pega, na ordem da lista; o termo casa
@@ -480,17 +542,11 @@ fn select(ledger: &Ledger, selector: &Selector, lang: Locale, languages: &Langua
             open().filter(|i| ids.contains(&i.id)).map(|i| i.id.clone()).collect()
         }
         Selector::Term(term) => {
-            let mut normalizer = Normalizer::new(languages);
-            let docs: Vec<(u64, Vec<Vec<String>>)> = open()
-                .filter_map(|i| {
-                    let search = search_field(Some(&format!("{} {}", i.title, i.detail)), &[]);
-                    Some((number(&i.id)?, normalizer.forms(&search)))
-                })
-                .collect();
-            let total = docs.len();
-            let hits = SearchIndex::build(docs).top(&normalizer.query(term), total);
-            let found: Vec<String> = hits.iter().map(|hit| format!("P-{}", hit.id)).collect();
-            open().filter(|i| found.contains(&i.id)).map(|i| i.id.clone()).collect()
+            let found = term_hits(open(), term, languages);
+            open()
+                .filter(|i| found.iter().any(|hit| hit.id == i.id))
+                .map(|i| i.id.clone())
+                .collect()
         }
         Selector::Before(day) => open()
             .filter(|i| i.created.as_deref().is_some_and(|entered| entered < day.as_str()))
@@ -733,12 +789,25 @@ pub(crate) fn pending_at(opts: &PendingOpts) -> Value {
 
     let mut extra = Map::new();
     let reply = match &action {
-        Action::List => Reply::Listing,
+        Action::List { all: false } => Reply::Listing,
+        Action::List { all: true } => Reply::Everything,
         Action::Stale | Action::Remove { confirm: None, .. } => Reply::OwnList,
         _ => Reply::Written,
     };
     match action {
-        Action::List => {}
+        Action::List { .. } => {}
+        Action::Search { term } => {
+            // A busca olha as abertas e as fechadas; a resposta leva até
+            // `SEARCH_CAP` achados, os que casam melhor primeiro, e diz
+            // quantos casaram ao todo.
+            let found = term_hits(ledger.items.iter(), &term, &Languages::of_project(&project));
+            let line = mustard_core::translate("pending.search.found", lang)
+                .replace("{shown}", &found.len().min(SEARCH_CAP).to_string())
+                .replace("{total}", &found.len().to_string());
+            let shown = found.into_iter().take(SEARCH_CAP).map(item_json).collect();
+            extra.insert("found".into(), Value::Array(shown));
+            extra.insert("found_line".into(), json!(line));
+        }
         Action::Add { title, detail } => {
             // Uma pendência entra uma vez só: o título é comparado sem
             // maiúscula nem acento ("Humanize" e "humanize" são a mesma), e a
@@ -915,11 +984,21 @@ pub(crate) fn pending_at(opts: &PendingOpts) -> Value {
                 .to_string_lossy()
                 .replace('\\', "/")),
         );
-        if reply == Reply::Listing {
+        if matches!(reply, Reply::Listing | Reply::Everything) {
             let (open, closed): (Vec<&PendingItem>, Vec<&PendingItem>) =
                 ledger.items.iter().partition(|i| i.status == Status::Open);
             report.insert("open".into(), Value::Array(open.into_iter().map(item_json).collect()));
-            report.insert("closed".into(), Value::Array(closed.into_iter().map(item_json).collect()));
+            if reply == Reply::Everything {
+                let closed = closed.into_iter().map(item_json).collect();
+                report.insert("closed".into(), Value::Array(closed));
+            } else {
+                report.insert("closed_count".into(), json!(closed.len()));
+                if !closed.is_empty() {
+                    let hint = mustard_core::translate("pending.list.closed_hidden", lang)
+                        .replace("{count}", &closed.len().to_string());
+                    report.insert("hint".into(), json!(hint));
+                }
+            }
         }
         report.insert("count_line".into(), json!(count_line_of(&ledger, &today, lang)));
     }
@@ -1364,7 +1443,8 @@ mod tests {
         assert_eq!(read["ok"], json!(true), "report: {read}");
         assert_eq!(ids(&read["open"]), vec!["P-1"], "the item survives the branch switch: {read}");
         assert_eq!(read["open"][0]["title"], json!("Humanize"));
-        assert_eq!(read["closed"], json!([]));
+        assert_eq!(read["closed_count"], json!(0));
+        assert_eq!(pending_at(&PendingOpts { all: true, ..opts(root) })["closed"], json!([]));
 
         // Um worktree resolve o checkout principal e lê o MESMO arquivo — nada
         // é gravado dentro dele.
@@ -1510,7 +1590,7 @@ mod tests {
         });
         assert_eq!(closed["ok"], json!(true), "{closed}");
         assert_eq!(closed["status"], json!("closed"));
-        let listed = pending_at(&opts(root));
+        let listed = pending_at(&PendingOpts { all: true, ..opts(root) });
         assert_eq!(listed["open"], json!([]), "{listed}");
         assert_eq!(listed["closed"][0]["reason"], json!("PR 271 mergeado"), "{listed}");
 
@@ -1705,7 +1785,7 @@ mod tests {
 
         let expired = pending_at(&PendingOpts { expire: true, keep: Some("p-2".into()), ..opts(root) });
         assert_eq!(expired["expired"], json!(["P-1", "P-3"]), "{expired}");
-        let listed = pending_at(&opts(root));
+        let listed = pending_at(&PendingOpts { all: true, ..opts(root) });
         assert_eq!(ids(&listed["open"]), vec!["P-2", "P-4", "P-5"], "the marked one stays: {listed}");
         let reason = mustard_core::translate("pending.expired_reason", Locale::default());
         for item in listed["closed"].as_array().expect("closed list") {
@@ -1894,7 +1974,7 @@ mod tests {
         };
         let gone = drop(drop(None)["token"].as_str().map(str::to_string));
         assert_eq!(gone["removed"], json!(["P-1"]), "{gone}");
-        let listed = pending_at(&opts(root));
+        let listed = pending_at(&PendingOpts { all: true, ..opts(root) });
         let dropped = &listed["closed"][0];
         assert_eq!(dropped["id"], json!("P-1"), "{listed}");
         assert_eq!(dropped["status"], json!("dropped"));

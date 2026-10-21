@@ -18,17 +18,34 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // (`apps/rt/src/hooks/session/session_start_inject.rs`) and in the
         // `run pending` listing. `{count}` comes from the caller.
         ("pending.count.one", Locale::PtBr) => {
-            "[Mustard] 1 pendência aberta. A lista inteira sai com `mustard-rt run pending`."
+            "[Mustard] 1 pendência aberta. Ela sai com `mustard-rt run pending`, e `--term <texto>` \
+             busca nas fechadas também."
         }
         ("pending.count.one", Locale::EnUs) => {
-            "[Mustard] 1 open pending item. The whole list comes from `mustard-rt run pending`."
+            "[Mustard] 1 open pending item. It comes from `mustard-rt run pending`, and `--term \
+             <text>` searches the closed ones too."
         }
         ("pending.count.many", Locale::PtBr) => {
-            "[Mustard] {count} pendências abertas. A lista inteira sai com `mustard-rt run pending`."
+            "[Mustard] {count} pendências abertas. As abertas saem com `mustard-rt run pending`, e \
+             `--term <texto>` busca nas fechadas também."
         }
         ("pending.count.many", Locale::EnUs) => {
-            "[Mustard] {count} open pending items. The whole list comes from `mustard-rt run pending`."
+            "[Mustard] {count} open pending items. The open ones come from `mustard-rt run \
+             pending`, and `--term <text>` searches the closed ones too."
         }
+        // The listing without a flag leaves the closed and dropped items out
+        // and says how many they are; the search says how many items matched.
+        // `{count}`, `{shown}` and `{total}` come from the caller.
+        ("pending.list.closed_hidden", Locale::PtBr) => {
+            "{count} pendências fechadas ou descartadas ficam de fora. `--term <texto>` busca nelas, \
+             e `--all` traz a lista inteira."
+        }
+        ("pending.list.closed_hidden", Locale::EnUs) => {
+            "{count} closed or dropped items are left out. `--term <text>` searches them, and \
+             `--all` brings the whole list."
+        }
+        ("pending.search.found", Locale::PtBr) => "Achadas pelo termo: {shown} de {total}.",
+        ("pending.search.found", Locale::EnUs) => "Found by the term: {shown} of {total}.",
         // The complement of the count line, when there are idle items. It
         // starts with a space: it goes glued to its end. `{stale}` comes from
         // the caller.
@@ -155,8 +172,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("pending.rs"),
             super::PREFIXES,
-            14,
-            0xf567_337e_bc54_74b0,
+            16,
+            0xa42f_2627_5d24_c982,
         );
     }
 
@@ -188,6 +205,8 @@ mod tests {
             ("pending.count.one", &[][..]),
             ("pending.count.many", &["{count}"][..]),
             ("pending.count.stale", &["{stale}"][..]),
+            ("pending.list.closed_hidden", &["{count}"][..]),
+            ("pending.search.found", &["{shown}", "{total}"][..]),
             ("pending.stale.question", &[][..]),
             ("pending.expired_reason", &[][..]),
             ("pending.remove.preview", &["{count}", "{items}", "{reason}", "{token}"][..]),

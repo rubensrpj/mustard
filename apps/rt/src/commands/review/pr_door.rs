@@ -2478,7 +2478,7 @@ mod tests {
         let root = dir.path();
         assert!(mark_became(root, "P-1", "trava"), "the note is recorded");
         assert!(mark_became(root, "P-2", "outra"));
-        let list = || pending_at(&PendingOpts { root: root.to_path_buf(), ..PendingOpts::default() });
+        let list = || pending_at(&PendingOpts { root: root.to_path_buf(), all: true, ..PendingOpts::default() });
         assert_eq!(list()["open"][0]["became"], json!("trava"), "the list shows the note");
 
         let done = merged(root, 320, "feature/trava");
@@ -2519,7 +2519,7 @@ mod tests {
             Some(vec![OpenPending { id: "P-3".into(), title: "Adiada".into() }]),
             "the item born in the spec comes back open",
         );
-        let after = pending_at(&PendingOpts { root: root.to_path_buf(), ..PendingOpts::default() });
+        let after = pending_at(&PendingOpts { root: root.to_path_buf(), all: true, ..PendingOpts::default() });
         let closed: Vec<_> = after["closed"].as_array().unwrap().iter().map(|i| i["id"].clone()).collect();
         assert_eq!(closed, [json!("P-1"), json!("P-2")], "{after}");
         assert_eq!(after["closed"][1]["reason"], json!("PR #330 mergeado"), "{after}");
@@ -2619,7 +2619,7 @@ mod tests {
         let expired = sweep(false, Some("P-2"));
         assert_eq!(expired["expired"], json!(["P-1", "P-3"]), "{expired}");
         let reason = mustard_core::translate("pending.expired_reason", lang);
-        let listed = pending_at(&PendingOpts { root: root.to_path_buf(), ..PendingOpts::default() });
+        let listed = pending_at(&PendingOpts { root: root.to_path_buf(), all: true, ..PendingOpts::default() });
         let gone: Vec<&Value> = listed["closed"].as_array().map(|a| a.iter().collect()).unwrap_or_default();
         assert_eq!(gone.len(), 2, "{listed}");
         assert!(gone.iter().all(|item| item["reason"] == json!(reason)), "{listed}");

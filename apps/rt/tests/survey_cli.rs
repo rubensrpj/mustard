@@ -191,7 +191,7 @@ fn a_test_survey_goes_through_every_point_and_the_plan_is_refused_while_one_is_o
 
     let mut reviewed = Vec::new();
     for (i, item) in items.iter().enumerate() {
-        let point = current["id"].as_u64().expect("the next point");
+        assert!(current["id"].is_u64(), "the next point: {current}");
         let code = current["code"].as_str().expect("the point's code").to_string();
         assert_eq!(current["gap"], item["gap"]);
         let answer = write(
@@ -200,7 +200,7 @@ fn a_test_survey_goes_through_every_point_and_the_plan_is_refused_while_one_is_o
             &json!({"title": "Combinar o item", "agent": format!("- ponto {code}"), "text": "O usuário respondeu ao ponto.", "keys": ["levantamento"], "why": "o usuário respondeu",
                 "origin": said}),
         );
-        assert_eq!(answer["point"]["id"], json!(point), "an answer returns the same point: {answer}");
+        assert!(answer.get("point").is_none(), "an answer that closes no point does not repeat the open one: {answer}");
 
         if i == items.len() / 2 {
             let refusal = to_plan(root).expect_err("an open point holds the survey");
