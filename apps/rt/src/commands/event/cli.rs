@@ -25,8 +25,11 @@ pub enum EventCmd {
     /// yet. It lives outside every unit, in `.claude/pending/ledger.json` of the
     /// main checkout. So it is recorded with no unit open, survives a branch
     /// switch and outlives the unit that delivers it. Without a flag it lists
-    /// `{ok, path, open, closed, count_line}`, the only answer carrying the
-    /// whole lists. Every write answers `ok`, `path`, `count_line` and what it
+    /// `{ok, path, open, closed_count, count_line}`: the open items in full
+    /// and only the count of the closed ones. `--all` brings the closed lists
+    /// too, and `--term <words>` alone searches the title and the detail of
+    /// every item, open or closed, and answers up to 30 hits with how many
+    /// matched. Every write answers `ok`, `path`, `count_line` and what it
     /// wrote. `--add` records one item and prints its `P-N` id; `--close`
     /// settles one as delivered, always with a non-blank `--reason`. A removal
     /// (`--remove`, `--drop`) takes two calls: the first shows what would
@@ -63,9 +66,14 @@ pub enum EventCmd {
         /// Removal selector: the items `P-N`, comma-separated.
         #[arg(long, value_name = "IDS", requires = "remove")]
         id: Option<String>,
-        /// Removal selector: words searched in the title and the detail.
-        #[arg(long, requires = "remove")]
+        /// Words searched in the title and the detail. Alone, it searches
+        /// every item, open or closed; with `--remove`, it picks the items to
+        /// take out.
+        #[arg(long)]
         term: Option<String>,
+        /// List the closed and dropped items too, not only their count.
+        #[arg(long)]
+        all: bool,
         /// Removal selector: the items recorded before this day, `YYYY-MM-DD`.
         #[arg(long, value_name = "DAY", requires = "remove")]
         before: Option<String>,
@@ -106,6 +114,7 @@ pub fn dispatch(cmd: EventCmd) {
             remove,
             id,
             term,
+            all,
             before,
             confirm,
             reopen,
@@ -126,6 +135,7 @@ pub fn dispatch(cmd: EventCmd) {
                 remove,
                 id,
                 term,
+                all,
                 before,
                 confirm,
                 reopen,

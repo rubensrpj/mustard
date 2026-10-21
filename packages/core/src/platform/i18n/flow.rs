@@ -1951,8 +1951,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // senão. `{url}` vem de quem chama.
         ("open.pending_project.list_page", Locale::PtBr) => "A lista inteira está na página do projeto: {url}.",
         ("open.pending_project.list_page", Locale::EnUs) => "The whole list is on the project page: {url}.",
-        ("open.pending_project.list_command", Locale::PtBr) => "A lista inteira sai com `mustard-rt run pending`.",
-        ("open.pending_project.list_command", Locale::EnUs) => "The whole list comes from `mustard-rt run pending`.",
+        ("open.pending_project.list_command", Locale::PtBr) => "As abertas saem com `mustard-rt run pending`.",
+        ("open.pending_project.list_command", Locale::EnUs) => "The open ones come from `mustard-rt run pending`.",
         ("retired.wait_round", Locale::PtBr) => {
             "O `{command}` não grava mais o veredito na spec: o veredito de cada onda é gravado \
              pelo `mustard-rt run round`. Nada foi gravado."
@@ -2373,7 +2373,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 347, 0x052f_cc84_6e05_479e);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 347, 0x057b_9f75_685a_9c00);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do

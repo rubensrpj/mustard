@@ -47,7 +47,7 @@
 //!    total, em qualquer sessão.
 //!
 //! Qualquer fato que falte libera. Uma pendência que não nasceu na spec nunca
-//! é cobrada aqui: a lista inteira fica na listagem do `run pending`.
+//! é cobrada aqui: as abertas ficam na listagem do `run pending`.
 //!
 //! ## O contador
 //!

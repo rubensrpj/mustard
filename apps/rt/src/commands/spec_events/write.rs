@@ -179,7 +179,8 @@
 //! a saída traz o passo seguinte (`mustard_core::domain::survey::next_step`):
 //! em `next`, o que fazer; em `points`, enquanto alguma lacuna do tipo não
 //! tem ponto, os pontos que faltam gravar; em `point`, o próximo ponto
-//! aberto, o mesmo enquanto ele não fecha; em `review`, o bloco cujo último ponto a gravação fechou, com a
+//! aberto, quando a gravação muda os pontos abertos (a que não os muda não o
+//! repete); em `review`, o bloco cujo último ponto a gravação fechou, com a
 //! pergunta da revisão e as opções; no último bloco, `next` manda rodar o
 //! revisor de fora antes do fim, enquanto nenhum ponto veio dele;
 //! em `unrouted`, no fim, as mensagens do usuário que nenhum registro aponta.
@@ -1538,9 +1539,15 @@ impl RecordCheck {
 ///
 /// Com `brief`, o levantamento condensado não repete o texto dos pontos
 /// abertos: `points` traz o código, o número e a lacuna de cada um, e `point`
-/// traz inteiro só o próximo.
+/// traz inteiro só o próximo. Em qualquer relatório, cada fato do ponto vem só
+/// com `text` e `source` ([`shown_point`]).
+///
+/// A gravação que não muda os pontos abertos e deixa como próximo o ponto que
+/// o relatório de antes já apresentou ([`already_presented`]) não o repete:
+/// sem outro passo, não há relatório do levantamento.
 pub(crate) fn survey_report(spec: &str, before: &SpecLog, after: &SpecLog, lang: Locale, brief: bool) -> Option<Map<String, Value>> {
-    let steps = survey::next_step(before, after);
+    let mut steps = survey::next_step(before, after);
+    steps.retain(|step| !matches!(step, SurveyStep::Point(point) if already_presented(before, after, point)));
     if steps.is_empty() {
         return None;
     }
@@ -1575,9 +1582,9 @@ pub(crate) fn survey_report(spec: &str, before: &SpecLog, after: &SpecLog, lang:
                 let open = survey::open_points(after);
                 if brief {
                     out.insert("points".to_string(), json!(survey::describe(after, &open)));
-                    out.insert("point".to_string(), super::shown(point, &codes));
+                    out.insert("point".to_string(), shown_point(point, &codes));
                 } else {
-                    let open: Vec<Value> = open.into_iter().map(|p| super::shown(p, &codes)).collect();
+                    let open: Vec<Value> = open.into_iter().map(|p| shown_point(p, &codes)).collect();
                     out.insert("points".to_string(), json!(open));
                 }
             }
@@ -1588,7 +1595,7 @@ pub(crate) fn survey_report(spec: &str, before: &SpecLog, after: &SpecLog, lang:
                     next.push(translate("survey.covered_point", lang).replace("{records}", &covered.iter().map(code_of).collect::<Vec<_>>().join(", ")));
                 }
                 next.push(translate("survey.present_point", lang).replace("{code}", &code_of(&point.id)).replace("{id}", &point.id.to_string()));
-                out.insert("point".to_string(), super::shown(point, &codes));
+                out.insert("point".to_string(), shown_point(point, &codes));
             }
             SurveyStep::Done { unrouted } => {
                 next.push(translate("survey.done", lang).replace("{scale}", translate("plan.points_scale", lang)));
@@ -1602,6 +1609,29 @@ pub(crate) fn survey_report(spec: &str, before: &SpecLog, after: &SpecLog, lang:
     }
     out.insert("next".to_string(), json!(next.join(" ")));
     Some(out)
+}
+
+/// O ponto `point` já foi apresentado pelo relatório da gravação anterior: o
+/// arquivo de antes (`before`) já tinha como próximo passo este mesmo ponto,
+/// na mesma versão, e a gravação não abriu, fechou nem trocou de versão ponto
+/// nenhum. Um ponto que ganhou versão, ou que o relatório de antes ainda não
+/// apresentava (faltava ponto de lacuna por gravar), não entra aqui.
+fn already_presented(before: &SpecLog, after: &SpecLog, point: &SpecEvent) -> bool {
+    let presented = survey::next_step(before, before).into_iter().any(|step| matches!(step, SurveyStep::Point(p) if p.id == point.id));
+    presented && survey::open_points(before).iter().map(|p| p.id).eq(survey::open_points(after).iter().map(|p| p.id))
+}
+
+/// O ponto como o relatório do levantamento o mostra: cada fato só com o
+/// texto e a fonte. A conferência que o `grill` grava junto do fato fica no
+/// arquivo da spec, e a leitura do item a mostra.
+fn shown_point(point: &SpecEvent, codes: &BTreeMap<u64, String>) -> Value {
+    let mut shown = super::shown(point, codes);
+    if let Some(facts) = shown.get_mut("facts").and_then(Value::as_array_mut) {
+        for fact in facts.iter_mut().filter_map(Value::as_object_mut) {
+            fact.retain(|name, _| matches!(name.as_str(), "text" | "source"));
+        }
+    }
+    shown
 }
 
 /// A regra da mudança de fase sobre o arquivo antes e depois da gravação.
@@ -4996,21 +5026,67 @@ mod tests {
         record(root, "teste", "state", draft, PhaseWriter::Binary)
     }
 
-    /// Cada resposta gravada devolve o próximo ponto aberto: o mesmo, enquanto
-    /// ele não fecha, com o código e o número para o fechamento; o
-    /// fechamento devolve o seguinte.
+    /// Cada fechamento devolve o próximo ponto aberto, com o código e o número
+    /// para o fechamento; a gravação que não fecha ponto não o repete.
     #[test]
-    fn each_answer_returns_the_next_open_point() {
+    fn each_closing_returns_the_next_open_point_and_a_plain_write_does_not_repeat_it() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let (said, points) = listed(root, &["fix"], false);
-        let answered = answer(root, said);
-        assert_eq!(answered["point"]["id"], json!(points[0].id), "{answered}");
-        let next = answered["next"].as_str().unwrap();
-        assert!(next.contains(&points[0].code) && next.contains(&points[0].id.to_string()), "{next}");
-        assert!(answered.get("review").is_none(), "{answered}");
-        assert_eq!(answer(root, said)["point"]["id"], json!(points[0].id), "the same point until it closes");
-        assert_eq!(settle(root, &points[0], said)["point"]["id"], json!(points[1].id));
+        for _ in 0..2 {
+            let answered = answer(root, said);
+            assert_eq!(answered["ok"], json!(true), "{answered}");
+            for field in ["point", "points", "next", "review", "unrouted"] {
+                assert!(answered.get(field).is_none(), "the point was already shown: {field}: {answered}");
+            }
+        }
+        let closed = settle(root, &points[0], said);
+        assert_eq!(closed["point"]["id"], json!(points[1].id), "{closed}");
+        let next = closed["next"].as_str().unwrap();
+        assert!(next.contains(&points[1].code) && next.contains(&points[1].id.to_string()), "{next}");
+        assert!(closed.get("review").is_none(), "{closed}");
+    }
+
+    /// Gravar um contexto com o ponto aberto devolve só o item: nenhum passo
+    /// do levantamento, porque o ponto e o que fazer com ele já foram ditos.
+    #[test]
+    fn a_context_written_with_an_open_point_returns_only_the_item() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, _) = listed(root, &["fix"], false);
+        let recorded = context(root, "Mais um contexto do pedido.", said);
+        let mut fields: Vec<&str> = recorded.as_object().unwrap().keys().map(String::as_str).collect();
+        fields.sort_unstable();
+        assert_eq!(fields, ["code", "id", "ok", "spec", "type"], "{recorded}");
+    }
+
+    /// Um ponto que ganha versão com fatos conferidos volta no relatório com
+    /// cada fato só com o texto e a fonte, nos dois relatórios; a conferência
+    /// fica no arquivo da spec.
+    #[test]
+    fn a_revised_point_is_shown_with_each_fact_reduced_to_text_and_source() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, points) = listed(root, &["fix"], true);
+        let log_of = || DiskSpecState::new(root).log("teste").unwrap();
+        let before = log_of();
+        let fact = json!({"text": "Conferido no mapa.", "source": format!("mensagem {said}"), "source_version": null,
+            "classification": "syntax-candidate", "verification": "requires-source-confirmation"});
+        let mut draft = Map::new();
+        draft.insert("replaces".to_string(), json!(points[0].id));
+        draft.insert("facts".to_string(), json!([fact]));
+        draft.insert("author".to_string(), json!("binary"));
+        let revised = record(root, "teste", "point", draft, PhaseWriter::Binary).unwrap().written.id;
+        let after = log_of();
+        let stored = after.get(revised).unwrap().fields["facts"][1].clone();
+        assert_eq!(stored["classification"], json!("syntax-candidate"), "the file keeps the check: {stored}");
+        let reduced = json!([{"text": GOAL, "source": format!("mensagem {said}")}, {"text": "Conferido no mapa.", "source": format!("mensagem {said}")}]);
+        for brief in [true, false] {
+            let report = survey_report("teste", &before, &after, Locale::PtBr, brief).expect("a new version of the point is shown");
+            let shown = if brief { &report["point"] } else { &report["points"][0] };
+            assert_eq!(shown["id"], json!(revised), "brief {brief}: {report:?}");
+            assert_eq!(shown["facts"], reduced, "brief {brief}: {report:?}");
+        }
     }
 
     /// Fechar o último ponto de um bloco devolve a revisão dele: a pergunta,
@@ -5238,7 +5314,8 @@ mod tests {
     }
 
     /// De um worktree, a gravação vai para o arquivo do checkout principal e
-    /// devolve o mesmo próximo ponto que a gravação feita de lá.
+    /// devolve o mesmo que a gravação feita de lá: a que não fecha ponto não
+    /// repete o ponto, e o fechamento devolve o próximo.
     #[test]
     fn a_write_from_a_linked_worktree_returns_the_same_next_point() {
         let tmp = tempdir().unwrap();
@@ -5251,8 +5328,8 @@ mod tests {
         let decision = json!({"text": "Resposta.", "keys": ["k"], "why": "w", "origin": said}).to_string();
         let from_main = write(&main, "decision", &decision);
         let from_wt = write_to(&wt, Some("teste"), "decision", &decision);
-        assert_eq!(from_wt["point"], from_main["point"], "{from_wt}");
-        assert_eq!(from_wt["point"]["id"], json!(points[0].id));
+        assert!(from_main.get("point").is_none() && from_wt.get("point").is_none(), "{from_main} {from_wt}");
+        assert_eq!(from_wt["ok"], json!(true), "{from_wt}");
         let closing = json!({"block": points[0].block, "gap": points[0].gap, "from": "gap", "status": "closed",
             "closes": points[0].id, "result": [from_wt["id"]], "origin": said});
         let closed = write_to(&wt, Some("teste"), "point", &closing.to_string());
@@ -5509,7 +5586,10 @@ mod tests {
         let revision = json!({"block": points[0].block, "gap": points[0].gap, "from": "gap", "status": "closed",
             "closes": points[0].id, "reason": "Resposta revista.", "replaces": closing, "origin": said});
         let revised = write(root, "point", &revision.to_string());
-        assert_eq!(revised["point"]["id"], json!(points[1].id), "{revised}");
+        assert_eq!(revised["ok"], json!(true), "{revised}");
+        assert!(revised.get("point").is_none(), "no point closed, so the next one is not repeated: {revised}");
+        let log = DiskSpecState::new(root).log("teste").unwrap();
+        assert_eq!(survey::open_points(&log).first().map(|point| point.id), Some(points[1].id));
     }
 
     /// Um ponto aberto não sai com `remove`, nem pelo número nem pelo código:
@@ -5580,7 +5660,7 @@ mod tests {
 
         let purged = write(root, "purge", &json!({"targets": [code], "reason": "secret"}).to_string());
         assert_eq!(purged["ok"], json!(true), "{purged}");
-        assert_eq!(purged["point"]["code"], json!(code), "the point is still the next one: {purged}");
+        assert!(purged.get("point").is_none(), "the point was shown before, so the purge does not repeat it: {purged}");
         let raw = std::fs::read_to_string(&file).unwrap();
         assert!(!raw.contains("S3nh4F0rte"), "the excerpt left the file");
         let log = DiskSpecState::new(root).log("teste").unwrap();
@@ -5772,8 +5852,10 @@ mod tests {
             assert_eq!(refused["reason"], json!("closing-point-open"), "{refused}");
         }
         assert_eq!(std::fs::read(&file).unwrap(), before, "the file stays the same");
-        let asked = answer(root, said);
-        assert_eq!(asked["point"]["id"], json!(points[1].id), "the point stays closed: {asked}");
+        let log = DiskSpecState::new(root).log("teste").unwrap();
+        let open: Vec<u64> = survey::open_points(&log).iter().map(|point| point.id).collect();
+        assert_eq!(open.first(), Some(&points[1].id), "the point stays closed: {open:?}");
+        assert!(!open.contains(&points[0].id), "{open:?}");
     }
 
     /// A versão nova de um fechamento que aponta outro ponto em `closes` é
@@ -5794,7 +5876,8 @@ mod tests {
         let written = log.get(revised["id"].as_u64().unwrap()).unwrap();
         assert_eq!(written.int("closes"), Some(points[0].id));
         assert_eq!(written.str_field("gap"), Some(points[0].gap.as_str()));
-        assert_eq!(revised["point"]["id"], json!(points[1].id), "the other point stays open: {revised}");
+        let open: Vec<u64> = survey::open_points(&log).iter().map(|point| point.id).collect();
+        assert_eq!(open.first(), Some(&points[1].id), "the other point stays open: {open:?}");
     }
 
     /// A porta que fica arma a cobrança no fechamento e na entrega, com a

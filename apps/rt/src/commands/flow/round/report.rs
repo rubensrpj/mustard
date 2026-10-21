@@ -4358,7 +4358,7 @@ fn main() { sum_comes_out_right(); double_comes_out_right(); }
         });
         assert_eq!(open["ok"], json!(true), "{open}");
         let ledger = || {
-            let listed = pending_at(&PendingOpts { root: root.to_path_buf(), ..PendingOpts::default() });
+            let listed = pending_at(&PendingOpts { root: root.to_path_buf(), all: true, ..PendingOpts::default() });
             (listed["open"].clone(), listed["closed"].clone())
         };
         let born = || -> Vec<String> { crate::commands::event::pending::open_pending_born_in(root, "x").into_iter().map(|p| p.title).collect() };
