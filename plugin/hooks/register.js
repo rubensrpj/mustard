@@ -24,6 +24,8 @@ let publication;
 let settings,settingsRevision=0;
 let runtimeBinary;
 let panelWanted=false;
+// The key of the element holding the pane's focus ring, as `ui.focus` names it.
+let focused;
 let openingQueue=Promise.resolve(), presentationQueue=Promise.resolve(), stateQueue=Promise.resolve();
 async function panel($) {
   try {const {value}=await $.state.get(panelState);if(value)mirror={...initialPanelState(),...value};}catch{/* Older hosts keep the module's copy. */}
@@ -551,6 +553,12 @@ export function register(on) {
     if(result.usage)await recordMeasurement($,hostReceipt(e,result));
     return result;
   });
+  // The element holding the pane's focus ring: the terminal's list marks its row.
+  on('ui.focus',{requestId:id},async ($,e,next)=>{
+    const result=await next(e);
+    if(!result?.deny && focused!==e.element){focused=e.element;$.ui.invalidate('ui.render');}
+    return result;
+  });
   on('ui.render', { component: 'Pane' }, async ($, e, next) => {
     if (e.requestId !== id) return next(e);
     // Observe every opening independently, without logging each redraw.
@@ -560,7 +568,7 @@ export function register(on) {
     // A screen shows only the answer read for what it shows now.
     const screens=Object.fromEntries(Object.entries(cache).filter(([screen,held])=>screen!==state.screen || held.identity===identityOf(state)).map(([screen,held])=>[screen,held.value]));
     return renderPanel({elements:await $.ui.resolve(e),surface:e.surface,columns:e.props.bodyColumns ?? e.viewport?.columns,
-      state,screens,project,usage,settings,measuring,publication,problem,theme:themeName,actions:{
+      state,screens,project,usage,settings,measuring,publication,problem,theme:themeName,focused,actions:{
         go:(screen,patch)=>navigate($,screen,patch),
         back:()=>goBack($),
         openItem:code=>navigate($,'item',{item:code}),
@@ -571,7 +579,6 @@ export function register(on) {
         openSearch:()=>setPanel($,{searching:true}),
         search:query=>reread($,{query:String(query ?? '').trim(),rows:PAGE,searching:false}),
         more:()=>showMore($),
-        toggleHistory:()=>setPanel($,now=>({history:!now.history})),
         toggleWaveRequest:()=>setPanel($,now=>({waveRequest:!now.waveRequest})),
         toggleSpecs:()=>setPanel($,now=>({pickSpec:!now.pickSpec})),
         toggleDelivered:()=>setPanel($,now=>({delivered:!now.delivered})),

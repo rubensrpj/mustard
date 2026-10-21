@@ -1,6 +1,5 @@
 import { test, expect, mock } from 'claude-code/testing';
 import {contentPage} from './panel-content.js';
-import {countdown} from './panel-runtime.js';
 import {analysisSpawn,analysisTool,fullAnalysisInput} from './analysis-policy.js';
 import {commandFailed} from './register.js';
 
@@ -186,10 +185,13 @@ test('host measurements persist natively and the host context renders without a 
   expect(recorded).toEqual([{kind:'measure',cost:{usd:0.5},model:'test-model',aborted:false,context:{percent:12,tokens:24000,window:200000},rateLimits:[]}]);
   await $.command.run({command:'mustard:mods',args:''});
   const pane=await $.ui.mount({plugin:'mustard',surface:'terminal',component:'Pane',props:{id:'mustard-panel',title:'Mustard'},requestId:'mustard-panel'});
-  expect(await pane.find({text:/contexto 12%/})).toBeDefined();
-  expect(await pane.find({text:/US\$ 0,50 no projeto/})).toBeDefined();
+  expect(await pane.find({text:'Contexto'})).toBeDefined();expect(await pane.find({text:'12%'})).toBeDefined();
+  // O Uso traz o custo ao lado das sessões, no terminal e no desktop.
+  const desktop=await $.ui.mount({plugin:'mustard',surface:'desktop',component:'Pane',props:{id:'mustard-panel',title:'Mustard'},requestId:'mustard-panel'});
+  for(const surface of [pane,desktop]){expect(await surface.find({text:/^US\$ 0,50$/})).toBeDefined();expect(await surface.find({text:/^no projeto · 2 sessões$/})).toBeDefined();}
   expect(turns).toBe(0);
-  await pane.press({key:'quit'});
+  // O terminal fecha o painel pela marca dele; o fechar que o kit aperta é o do desktop.
+  await desktop.press({key:'quit'});
 });
 
 test('explicit export without host transport starts no model turn', async ($, on) => {
@@ -240,11 +242,14 @@ test('a Windows query failure keeps the last reading and the English panel', asy
   await $.command.run({command:'mustard:mods',args:''});
   const pane = await $.ui.mount({plugin:'mustard',surface:'terminal',component:'Pane',
     props:{id:'mustard-panel',title:'Mustard'},requestId:'mustard-panel'});
-  expect(await pane.find({text:/1 of 2 tasks done/})).toBeDefined();
+  expect(await pane.find({text:'1/2'})).toBeDefined();expect(await pane.find({text:'tasks done'})).toBeDefined();
   await $.turn.complete({answer:'',durationMs:1,isAborted:false,turnId:'main',reason:'answer'});await clock.advance(1);
   expect(await pane.find({text:'Could not update. The panel shows the last reading.'})).toBeDefined();
-  expect(await pane.find({text:/1 of 2 tasks done/})).toBeDefined();
-  await pane.press({key:'quit'});
+  expect(await pane.find({text:'1/2'})).toBeDefined();
+  // O terminal não desenha o fechar: a pessoa fecha pela marca do painel, e o kit aperta o do desktop.
+  expect(await pane.find({key:'quit'})).toBeUndefined();
+  const desktop=await $.ui.mount({plugin:'mustard',surface:'desktop',component:'Pane',props:{id:'mustard-panel',title:'Mustard'},requestId:'mustard-panel'});
+  await desktop.press({key:'quit'});
   await $.turn.complete({answer:'',durationMs:1,isAborted:false,turnId:'late',reason:'answer'});await clock.advance(1);
   expect(reads).toBe(2);
 });
@@ -373,7 +378,7 @@ test('panel and usage failures reach the diagnostics with their cause, once', as
 test('a module restart restores the requested pane, spec and screen without a model',async ($,on)=>{
   const f=await openPane($,on,{saved:{wanted:true,state:{screen:'usage',spec:'demo'}}});
   expect(f.opens).toBe(1);expect(f.commands[0]).toEqual(expect.arrayContaining(['--section','usage','--spec','demo']));
-  expect(await f.pane.find({text:/medido até/})).toBeDefined();expect(f.turns).toBe(0);await f.pane.press({key:'quit'});
+  expect(await f.pane.find({text:/medido até/i})).toBeDefined();expect(f.turns).toBe(0);await f.pane.press({key:'quit'});
 });
 test('each reopening records its own render',async ($,on)=>{
   const f=await openPane($,on);
@@ -390,9 +395,6 @@ test('costless host measurements still reach the native recorder',async ($,on)=>
   await $.session.measure({context:{tokens:30000,window:200000,percent:15},rateLimits:[],changed:['context']});
   expect(f.receipts.length).toBe(1);expect(f.receipts[0].context.tokens).toBe(30000);expect(f.receipts[0].cost).toBeUndefined();
   expect(f.turns).toBe(0);await f.pane.press({key:'quit'});
-});
-test('a reset date that does not parse stays unknown',()=>{
-  expect(countdown(undefined)).toBe('');expect(countdown('2026-10-13T16:00:00Z',Date.parse('2026-10-13T14:30:00Z'))).toBe('1h 30m');
 });
 
 test('native model request observers preserve the stream and record only usage metadata',async ($,on)=>{

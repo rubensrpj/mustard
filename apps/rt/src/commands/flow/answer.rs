@@ -446,6 +446,30 @@ mod tests {
         assert_eq!(open_ids(root), vec![points[1]]);
     }
 
+    /// O ponto seguinte volta com cada fato só com o texto e a fonte: a
+    /// conferência que o programa gravou junto do fato fica no arquivo da spec.
+    #[test]
+    fn the_next_point_comes_back_with_each_fact_reduced_to_text_and_source() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let points = surveyed(root, "rules", 1);
+        let fact = json!({"text": GOAL, "source": "mensagem 2", "source_version": null, "classification": "syntax-candidate",
+            "verification": "requires-source-confirmation"});
+        let mut next = Map::new();
+        for (field, value) in [("block", "rules"), ("gap", "Lacuna do mapa"), ("from", "gap"), ("status", "open"), ("author", "binary")] {
+            next.insert(field.to_string(), json!(value));
+        }
+        next.insert("facts".to_string(), json!([fact]));
+        let next = record(root, "x", "point", next, PhaseWriter::Binary).expect("the binary records the point").written.id;
+
+        let report = answer(&with_item(root, DECISION));
+        assert_eq!(report["closed"]["closes"], json!(points[0]), "{report}");
+        assert_eq!(report["point"]["id"], json!(next), "{report}");
+        assert_eq!(report["point"]["facts"], json!([{"text": GOAL, "source": "mensagem 2"}]), "{report}");
+        let stored = log_of(root).get(next).map(|event| event.fields["facts"][0].clone()).unwrap();
+        assert_eq!(stored["classification"], json!("syntax-candidate"), "the file keeps the check: {stored}");
+    }
+
     /// O item que a porta do `run write` recusa, pela forma ou pelo autor do
     /// programa, não fecha o ponto, e nada é gravado.
     #[test]

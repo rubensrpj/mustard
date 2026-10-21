@@ -186,9 +186,161 @@ fn every_pending_write_answers_without_the_whole_lists() {
     assert_eq!(expired["expired"], serde_json::json!(["P-182"]), "{expired}");
 
     let listed = pending(root, &[]);
-    assert_eq!(keys(&listed), vec!["closed", "count_line", "ok", "open", "path"], "{listed}");
+    assert_eq!(keys(&listed), vec!["closed_count", "count_line", "hint", "ok", "open", "path"], "{listed}");
     assert_eq!(listed["open"].as_array().map(Vec::len), Some(9), "{listed}");
-    assert_eq!(listed["closed"].as_array().map(Vec::len), Some(174), "{listed}");
+    assert_eq!(listed["closed_count"], 174, "{listed}");
+    let everything = pending(root, &["--all"]);
+    assert_eq!(keys(&everything), vec!["closed", "count_line", "ok", "open", "path"], "{everything}");
+    assert_eq!(everything["open"].as_array().map(Vec::len), Some(9), "{everything}");
+    assert_eq!(everything["closed"].as_array().map(Vec::len), Some(174), "{everything}");
+}
+
+/// Uma lista com `open` abertas e `closed` fechadas, cada uma com um detalhe
+/// e um motivo de quatro frases, como as de um projeto em uso. O título de
+/// metade delas cita o painel e o da outra metade, o gancho. Três palavras
+/// aparecem em um item só: `zarabatana` no título do 7º (fechado),
+/// `alabastro` no detalhe do 9º (fechado) e `xilofone` no título do 3º aberto.
+fn a_ledger_of(root: &Path, open: usize, closed: usize) {
+    let detail = "O comando devolvia a lista inteira de uma vez, abertas e fechadas, e a conversa de quem lia \
+                  enchia com o que ele não pediu. A busca por palavras sobre o título e o detalhe resolve o caso.";
+    let items: Vec<Value> = (1..=closed + open)
+        .map(|n| {
+            let theme = if n % 2 == 0 { "painel" } else { "gancho" };
+            let extra = match n {
+                7 => " e a zarabatana",
+                n if n == closed + 3 => " e o xilofone",
+                _ => "",
+            };
+            let mut item = serde_json::json!({
+                "id": format!("P-{n}"),
+                "title": format!("Pendência {n} sobre o tema {theme}{extra}"),
+                "detail": if n == 9 { format!("{detail} Cita o alabastro.") } else { detail.to_string() },
+                "status": "open",
+                "created": "2026-10-01",
+            });
+            if n <= closed {
+                item["status"] = "closed".into();
+                item["reason"] = "Entregue na obra anterior, com o teste que falha se o defeito voltar, e conferido pelo revisor.".into();
+            }
+            item
+        })
+        .collect();
+    let ledger = root.join(".claude").join("pending");
+    std::fs::create_dir_all(&ledger).expect("pending dir");
+    std::fs::write(ledger.join("ledger.json"), serde_json::json!({ "items": items }).to_string()).expect("ledger");
+}
+
+/// A listagem sem opção traz as abertas inteiras e só a contagem das
+/// fechadas: numa lista de 13 abertas e 300 fechadas, a resposta cabe numa
+/// fração da de `--all`, que continua trazendo tudo.
+#[test]
+fn the_plain_listing_carries_the_open_items_and_only_the_count_of_the_closed() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    std::fs::write(root.join("mustard.json"), b"{}").expect("config");
+    a_ledger_of(root, 13, 300);
+    let bytes = |args: &[&str]| {
+        let out = rt(root, &[&["pending"], args].concat()).output().expect("pending");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+        out.stdout.len()
+    };
+
+    let plain = pending(root, &[]);
+    assert_eq!(plain["open"].as_array().map(Vec::len), Some(13), "{plain}");
+    let whole = plain["open"].as_array().into_iter().flatten().all(|i| i["title"].is_string() && i["detail"].is_string() && i["created"].is_string());
+    assert!(whole, "the open items come complete: {plain}");
+    assert_eq!(plain["closed_count"], 300, "{plain}");
+    assert!(plain.get("closed").is_none(), "{plain}");
+    assert!(plain["hint"].as_str().is_some_and(|hint| hint.contains("300") && hint.contains("--term") && hint.contains("--all")), "{plain}");
+
+    let everything = pending(root, &["--all"]);
+    assert_eq!(everything["open"].as_array().map(Vec::len), Some(13), "{everything}");
+    assert_eq!(everything["closed"].as_array().map(Vec::len), Some(300), "{everything}");
+
+    let (plain_bytes, all_bytes) = (bytes(&[]), bytes(&["--all"]));
+    eprintln!("pending bytes: plain {plain_bytes}, --all {all_bytes}");
+    assert!(plain_bytes * 10 < all_bytes, "the plain answer is a fraction of the whole list: {plain_bytes} against {all_bytes}");
+}
+
+/// `--term` sem `--remove` busca no título e no detalhe, nas abertas e nas
+/// fechadas, e responde até 30 achados com quantos casaram ao todo.
+#[test]
+fn a_term_alone_searches_every_item_and_caps_the_hits() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    std::fs::write(root.join("mustard.json"), b"{}").expect("config");
+    a_ledger_of(root, 13, 300);
+    let ids = |report: &Value| -> Vec<String> {
+        report["found"].as_array().into_iter().flatten().filter_map(|i| i["id"].as_str().map(str::to_string)).collect()
+    };
+
+    let by_title = pending(root, &["--term", "painel"]);
+    assert_eq!(by_title["ok"], true, "{by_title}");
+    assert_eq!(by_title["found"].as_array().map(Vec::len), Some(30), "{by_title}");
+    assert_eq!(by_title["found_line"], "Achadas pelo termo: 30 de 156.", "{by_title}");
+    assert!(by_title.get("open").is_none() && by_title.get("closed").is_none(), "{by_title}");
+    assert!(by_title["found"][0]["status"].is_string() && by_title["found"][0]["detail"].is_string(), "{by_title}");
+
+    // A busca olha o título de uma fechada e o de uma aberta, e o detalhe.
+    let closed_one = pending(root, &["--term", "zarabatana"]);
+    assert_eq!(ids(&closed_one), ["P-7"], "a closed item is searched by its title: {closed_one}");
+    assert_eq!(closed_one["found_line"], "Achadas pelo termo: 1 de 1.", "{closed_one}");
+    let open_one = pending(root, &["--term", "xilofone"]);
+    assert_eq!(ids(&open_one), ["P-303"], "an open item is searched by its title: {open_one}");
+    let by_detail = pending(root, &["--term", "alabastro"]);
+    assert_eq!(ids(&by_detail), ["P-9"], "the detail is searched too: {by_detail}");
+
+    let none = pending(root, &["--term", "inexistente"]);
+    assert_eq!(none["found"], serde_json::json!([]), "{none}");
+    assert_eq!(none["found_line"], "Achadas pelo termo: 0 de 0.", "{none}");
+}
+
+/// `--term` com `--remove` segue sendo o seletor da remoção: só as abertas
+/// entram na prévia, e a lista não muda sem a confirmação.
+#[test]
+fn a_term_with_remove_still_selects_the_items_to_take_out() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    std::fs::write(root.join("mustard.json"), b"{}").expect("config");
+    a_ledger_of(root, 13, 300);
+
+    let shown = pending(root, &["--remove", "--term", "xilofone", "--reason", "mudou"]);
+    assert_eq!(shown["preview"], true, "{shown}");
+    assert_eq!(shown["remove"], serde_json::json!([{ "id": "P-303", "title": "Pendência 303 sobre o tema gancho e o xilofone" }]), "{shown}");
+    assert!(shown.get("found").is_none(), "{shown}");
+    let token = shown["token"].as_str().expect("the preview code").to_string();
+    let removed = pending(root, &["--remove", "--term", "xilofone", "--reason", "mudou", "--confirm", &token]);
+    assert_eq!(removed["removed"], serde_json::json!(["P-303"]), "{removed}");
+    assert_eq!(pending(root, &[])["open"].as_array().map(Vec::len), Some(12));
+
+    // A remoção só pega as abertas: o termo de uma fechada não casa nada.
+    let closed_only = rt(root, &["pending", "--remove", "--term", "zarabatana", "--reason", "mudou"]).output().expect("pending");
+    assert_eq!(closed_only.status.code(), Some(1), "{}", String::from_utf8_lossy(&closed_only.stdout));
+}
+
+/// `--all` e `--term` sozinhos não se misturam com outra ação: a chamada é
+/// recusada com saída 1 e nada é gravado.
+#[test]
+fn a_search_or_all_beside_another_action_is_refused() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    std::fs::write(root.join("mustard.json"), b"{}").expect("config");
+    a_ledger_of(root, 2, 2);
+    let before = std::fs::read(root.join(".claude").join("pending").join("ledger.json")).expect("ledger");
+    for args in [
+        &["--add", "--title", "T", "--detail", "D", "--term", "x"][..],
+        &["--drop", "P-3", "--reason", "r", "--term", "x"][..],
+        &["--all", "--term", "x"][..],
+        &["--all", "--stale"][..],
+        &["--term", "   "][..],
+    ] {
+        let out = rt(root, &[&["pending"], args].concat()).output().expect("pending");
+        assert_eq!(out.status.code(), Some(1), "{args:?}: {}", String::from_utf8_lossy(&out.stdout));
+        let report: Value = serde_json::from_slice(&out.stdout).expect("JSON");
+        assert_eq!(report["ok"], false, "{args:?}: {report}");
+    }
+    let after = std::fs::read(root.join(".claude").join("pending").join("ledger.json")).expect("ledger");
+    assert_eq!(after, before, "a refusal writes nothing");
 }
 
 /// A faxina responde só as pendências paradas e a pergunta, e a prévia da
