@@ -108,7 +108,7 @@ jobs:
       # Pin the host that validates the Mods contract. No login or model turn
       # is needed: the official test kit runs the hooks with local stubs.
       - name: Install Claude Code test host
-        run: npm install --global --no-audit --no-fund @anthropic-ai/claude-code@2.1.296
+        run: npm install --global --no-audit --no-fund @anthropic-ai/claude-code@2.1.306
       - name: Validate plugin
         run: claude plugin validate ./plugin
       - name: Test Mods search and panel contracts
