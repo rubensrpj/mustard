@@ -1073,17 +1073,43 @@ fn agent_detail_in(text: &str) -> Option<String> {
     mustard_core::domain::clarity::file_paths_in(text).next().map(str::to_string)
 }
 
+/// Os campos de um item que a conferência de escrita mede: o título e a
+/// parte do usuário.
+const MEASURED: &[&str] = &["title", "text", "why", "when", "then"];
+
+/// As siglas que os itens da spec já explicam, pelos campos que a
+/// conferência mede: o objetivo e cada item fora da conversa. A página mostra
+/// a spec inteira, e a sigla explicada no objetivo não precisa ser explicada
+/// de novo em cada item seguinte.
+fn explained_in_spec(log: &SpecLog) -> Vec<String> {
+    let mut explained: Vec<String> = Vec::new();
+    for event in log.visible() {
+        if event.block().is_none_or(|block| block == mustard_core::domain::spec_events::Block::Conversation) {
+            continue;
+        }
+        for text in MEASURED.iter().filter_map(|field| event.str_field(field)) {
+            for acronym in mustard_core::domain::clarity::measure(text, &[], None).explained {
+                if !explained.contains(&acronym) {
+                    explained.push(acronym);
+                }
+            }
+        }
+    }
+    explained
+}
+
 /// A conferência de escrita das respostas sobre o título e a parte do usuário
 /// de um item (`title`, `text`, `why`, `when` e `then`), com o que o projeto
 /// em `root` declara. A parte do agente, a prova, o exemplo e os outros
 /// campos do agente ficam de fora: são feitos de caminhos e comandos. A sigla
 /// explicada num campo vale nos outros, porque a página mostra o item
-/// inteiro. Os campos com defeito, na ordem, cada um com a medição dele.
-fn unclear_fields(root: &Path, draft: &Map<String, Value>, lang: Locale) -> Vec<(String, ClarityReport)> {
+/// inteiro, e a já explicada na spec (`known`) também. Os campos com defeito,
+/// na ordem, cada um com a medição dele.
+fn unclear_fields(root: &Path, draft: &Map<String, Value>, known: &[String], lang: Locale) -> Vec<(String, ClarityReport)> {
     use crate::hooks::task::clarity_check::measure_in_project;
-    const MEASURED: &[&str] = &["title", "text", "why", "when", "then"];
     let parts: Vec<(&str, &str)> = MEASURED.iter().filter_map(|field| filled(draft, field).map(|text| (*field, text))).collect();
-    let explained: Vec<String> = parts.iter().flat_map(|(_, text)| measure_in_project(root, text, &[]).explained).collect();
+    let explained: Vec<String> =
+        known.iter().cloned().chain(parts.iter().flat_map(|(_, text)| measure_in_project(root, text, &[]).explained)).collect();
     parts
         .into_iter()
         .map(|(field, text)| (field.to_string(), measure_in_project(root, text, &explained)))
@@ -1230,7 +1256,8 @@ fn record_to(
         if !missing.is_empty() {
             issues.push(Refusal::ItemFormMissing { missing });
         }
-        let unclear = unclear_fields(&project.root, &draft, project.lang);
+        let known = Source::of(&path, locked.as_deref()).log()?.map(|log| explained_in_spec(&log)).unwrap_or_default();
+        let unclear = unclear_fields(&project.root, &draft, &known, project.lang);
         if !unclear.is_empty() {
             issues.push(Refusal::ItemUnclear { fields: unclear });
         }

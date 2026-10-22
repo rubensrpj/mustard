@@ -220,6 +220,18 @@ pub(crate) fn record_witnessed_message(root: &Path, session: Option<&str>, text:
     record_user_message(root, session, fields)
 }
 
+/// A resposta do usuário a uma pergunta sem testemunha — a pergunta comum, ou
+/// o texto digitado em "Outro" —, com a pergunta do assistente em
+/// `question`, fora do texto: o texto é só o que o usuário disse. As duas vão
+/// sem os segredos, como a mensagem.
+pub(crate) fn record_answered_message(root: &Path, session: Option<&str>, text: &str, question: &str) -> Option<u64> {
+    if text.trim().is_empty() {
+        return None;
+    }
+    let fields = json!({ "author": "user", "text": without_secrets(text), "question": without_secrets(question) });
+    record_user_message(root, session, fields)
+}
+
 /// A resposta do assistente ao fim do turno, ligada à última mensagem do
 /// usuário. No turno em que a spec nasce ainda não há mensagem do usuário
 /// gravada nela: a resposta vai sem `reply_to`, e o sim à sugestão feita ali
@@ -535,6 +547,17 @@ fn call_fields(command: &str, started: Instant, report: &Value, measured: Map<St
     let reason = report.get("reason").or_else(|| report.get("error")).and_then(Value::as_str);
     if let Some(reason) = reason.filter(|_| !ok) {
         fields["refusal"] = json!(reason);
+    }
+    // O que a conferência de escrita achou, na recusa dela ou entre as
+    // recusas juntas: sem isso, só se sabia que o item foi recusado.
+    let defects: Vec<&str> = std::iter::once(report)
+        .chain(report.get("issues").and_then(Value::as_array).into_iter().flatten())
+        .filter_map(|issue| issue.get("defects").and_then(Value::as_array))
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    if !ok && !defects.is_empty() {
+        fields["refusal_detail"] = json!(defects.join("; "));
     }
     let mut fields = draft(fields);
     fields.extend(measured);
@@ -1075,7 +1098,7 @@ mod tests {
         answer_choice(root, question, code, &["Aceitar", "Recusar"], "Aceitar", &notes);
 
         let message = &events_of(root, "escolha", "message")[0];
-        assert_eq!(message["text"], json!(format!("{question}\nAceitar\na senha: … e o token …")));
+        assert_eq!(message["text"], json!("Aceitar\na senha: … e o token …"));
         assert_eq!(message["witness"], json!({ "question": question, "answer": "Aceitar", "change": code }));
         for line in file_lines(root, "escolha") {
             assert!(!line.contains(&password) && !line.contains(&token), "a secret reached the file: {line}");
@@ -1095,7 +1118,7 @@ mod tests {
         answer_choice(root, &question, code, &["Aceitar", "Recusar", &option], &option, "");
 
         let message = &events_of(root, "opcao", "message")[0];
-        assert_eq!(message["text"], json!("Uso o token … na onda 2?\nUsar o token …"));
+        assert_eq!(message["text"], json!("Usar o token …"));
         let witness = json!({ "question": "Uso o token … na onda 2?", "answer": "Usar o token …", "change": code });
         assert_eq!(message["witness"], witness);
         for line in file_lines(root, "opcao") {

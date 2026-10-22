@@ -482,13 +482,21 @@ const PURGE_REASONS: &[&str] = &["secret", "client_data"];
 /// obrigatórios, e o gravador recusa o evento sem eles.
 pub const TYPES: &[TypeSpec] = &[
     // Conversa. A mensagem que responde a um gesto de aprovação leva a
-    // testemunha: a pergunta e a opção que o usuário clicou. A resposta do
+    // testemunha: a pergunta e a opção que o usuário clicou. A que responde a
+    // outra pergunta com opções leva a pergunta do assistente em `question`:
+    // o texto das duas é só o que o usuário disse. A resposta do
     // assistente aponta a mensagem que respondeu; só a do turno em que a spec
     // nasce, antes de qualquer mensagem do usuário, vai sem ela
     // (`spec_state::reply_rule`). A fala do usuário que chega com um ponto do
     // levantamento aberto leva o número dele em `during`: a mensagem já tem
     // lugar no levantamento e não é dita solta.
-    ty("message", "MSG", Block::Conversation, false, &[TEXT, opt("witness", Kind::Object), opt("during", Kind::Int)]),
+    ty(
+        "message",
+        "MSG",
+        Block::Conversation,
+        false,
+        &[TEXT, opt("witness", Kind::Object), opt("during", Kind::Int), opt("question", Kind::Text)],
+    ),
     ty("response", "RESP", Block::Conversation, false, &[TEXT, opt("reply_to", Kind::Int)]),
     ty(
         "injection",
@@ -524,6 +532,8 @@ pub const TYPES: &[TypeSpec] = &[
             req("ms", Kind::Int),
             req("result", Kind::OneOf(CALL_RESULTS)),
             opt("refusal", Kind::Text),
+            // O que a conferência de escrita achou, na recusa `item-unclear`.
+            opt("refusal_detail", Kind::Text),
             opt("invocation", Kind::Bool),
             opt("search_enriched", Kind::Bool),
             opt("search_task_evidence", Kind::Bool),

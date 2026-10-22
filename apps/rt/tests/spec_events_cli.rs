@@ -1322,3 +1322,33 @@ fn a_legacy_spec_is_read_only_and_move_records_is_gone() {
     let gone = stdout_json(&gone);
     assert_eq!(gone["kind"], json!("InvalidSubcommand"), "{gone}");
 }
+
+/// A sigla explicada num item da spec vale nas gravações seguintes: o
+/// objetivo diz "Planejamento Integrado (PI)", e a regra que cita só "PI"
+/// passa. A sigla nunca explicada é recusada, a recusa cita a chave
+/// `acronyms`, e a chamada recusada guarda o motivo.
+#[test]
+fn an_acronym_explained_in_the_spec_counts_for_the_whole_spec() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"pt-BR"}}"#).expect("config");
+    seed_state(root, &json!({"author": "binary", "phase": "survey", "branch": "feature/teste", "base": "dev"}));
+    let msg = seed_binary(root, "message", &json!({"author": "user", "text": "o pedido"}));
+    write(root, "context", &json!({"title": "Planejamento da carga", "agent": "- conferir a carga",
+        "text": "Ligar o Planejamento Integrado (PI) ao estoque.", "origin": msg}));
+    let rule = |text: &str| json!({"title": "Carga do dia", "agent": "- conferir a carga", "text": text,
+        "keys": ["carga"], "example": "A carga sai às oito.", "origin": msg});
+
+    let (code, explained) = write_out(root, "rule", &rule("O PI fecha a carga do dia."));
+    assert_eq!(code, Some(0), "the acronym explained in the goal counts: {explained}");
+
+    let (code, refused) = write_out(root, "rule", &rule("O MRP fecha a carga do dia."));
+    assert_ne!(code, Some(0), "{refused}");
+    assert_eq!(refused["reason"], json!("item-unclear"), "{refused}");
+    assert!(refused["hint"].as_str().is_some_and(|hint| hint.contains("acronyms")), "the refusal names the key: {refused}");
+    let operations = mustard_core::io::spec_events::operations_file(root, "teste").expect("the operations file");
+    let calls = std::fs::read_to_string(operations).expect("the calls");
+    let call: Value = serde_json::from_str(calls.lines().last().expect("the refused call")).expect("a call");
+    assert_eq!(call["refusal"], json!("item-unclear"), "{call}");
+    assert!(call["refusal_detail"].as_str().is_some_and(|detail| detail.contains("MRP")), "the call keeps the reason: {call}");
+}

@@ -1033,8 +1033,14 @@ mod tests {
         let bare = measure("O CI falhou de novo.", &[], Some(Locale::PtBr));
         assert_eq!(bare.unexpanded_acronyms, vec!["CI"]);
         assert!(!bare.passed);
-        assert_eq!(bare.defects(Locale::PtBr), vec!["CI é uma sigla sem explicação; diga o nome por extenso"]);
-        assert_eq!(bare.defects(Locale::EnUs), vec!["CI is an unexplained acronym; spell out its full name"]);
+        assert_eq!(
+            bare.defects(Locale::PtBr),
+            vec!["CI é uma sigla sem explicação; diga o nome por extenso, ou liste a sigla na chave `acronyms` do mustard.json"]
+        );
+        assert_eq!(
+            bare.defects(Locale::EnUs),
+            vec!["CI is an unexplained acronym; spell out its full name, or list it under the `acronyms` key of mustard.json"]
+        );
 
         let expanded = measure("O CI (integração contínua) falhou de novo.", &[], Some(Locale::PtBr));
         assert!(expanded.unexpanded_acronyms.is_empty(), "{expanded:?}");

@@ -616,10 +616,10 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "sentence with {words} words: \"{opening}…\"; say the same idea in short sentences"
         }
         ("clarity.unexpanded_acronym", Locale::PtBr) => {
-            "{acronym} é uma sigla sem explicação; diga o nome por extenso"
+            "{acronym} é uma sigla sem explicação; diga o nome por extenso, ou liste a sigla na chave `acronyms` do mustard.json"
         }
         ("clarity.unexpanded_acronym", Locale::EnUs) => {
-            "{acronym} is an unexplained acronym; spell out its full name"
+            "{acronym} is an unexplained acronym; spell out its full name, or list it under the `acronyms` key of mustard.json"
         }
         ("clarity.internal_code", Locale::PtBr) => {
             "{code} é um código interno; diga o assunto pelo nome"
