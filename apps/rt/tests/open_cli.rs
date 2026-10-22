@@ -4,11 +4,13 @@
 
 #[path = "support/binary.rs"]
 mod binary;
+#[path = "support/one_wave_spec.rs"]
+mod one_wave_spec;
 
 use std::path::Path;
 use std::process::{Command, Output};
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 fn git(root: &Path, args: &[&str]) {
     let ok = Command::new("git")
@@ -80,6 +82,28 @@ fn open_answers_a_step_with_exit_0_a_refusal_with_exit_1_and_opens_the_spec() {
     assert_eq!(opened["branch"], "feature/trava-de-pendencias");
     assert_eq!(opened["step"], "ask_goal");
     assert!(root.join(".claude").join("spec").join("trava-de-pendencias").join("spec.ndjson").is_file());
+}
+
+/// A conferência do lint na base sai da abertura e roda uma vez, no primeiro
+/// despacho de onda da spec: a abertura não roda o lint, a primeira rodada que
+/// solta a onda roda e grava a base, e a rodada seguinte, que assume a volta,
+/// não roda de novo. Em campo, a abertura gastava 27 segundos no lint, que só
+/// o fechamento lê.
+#[test]
+fn the_base_lint_runs_once_at_the_first_wave_dispatch_and_never_at_the_opening() {
+    let project = one_wave_spec::Project::new("conferencia", &json!({"lintCommand": "echo ran >> lint-runs.log"}), &["lint-runs.log"]);
+    let runs = || std::fs::read_to_string(project.root.join("lint-runs.log")).unwrap_or_default().lines().count();
+    let base_marks = || project.log().events.iter().filter(|e| e.event_type == "stage_run" && e.str_field("phase") == Some("base")).count();
+
+    project.approved();
+    assert_eq!((runs(), base_marks()), (0, 0), "the opening does not run the lint");
+
+    let first = project.run(&["round", "--dispatch", "--spec", "conferencia"]);
+    assert_eq!(first["dispatch"][0]["wave"], json!(1), "{first}");
+    assert_eq!((runs(), base_marks()), (1, 1), "the first wave dispatch runs the lint and records the base: {first}");
+
+    let second = project.deliver_the_first_wave();
+    assert_eq!((runs(), base_marks()), (1, 1), "the next round does not run it again: {second}");
 }
 
 /// A conversa da sessão `session`, aberta na pasta `project`, como o Claude

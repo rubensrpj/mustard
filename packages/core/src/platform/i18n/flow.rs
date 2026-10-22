@@ -175,6 +175,10 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("resume.line", Locale::EnUs) => "Resume: spec {spec}, phase {phase}; last step: {last}; next: {next}.",
         ("resume.none", Locale::PtBr) => "nenhum",
         ("resume.none", Locale::EnUs) => "none",
+        ("resume.no_spec", Locale::PtBr) => {
+            "Nenhuma spec em andamento neste projeto. Para começar uma obra, abra a spec com `mustard-rt run open`."
+        }
+        ("resume.no_spec", Locale::EnUs) => "No spec in progress in this project. To start a piece of work, open the spec with `mustard-rt run open`.",
         ("resume.wave", Locale::PtBr) => "onda {n}",
         ("resume.wave", Locale::EnUs) => "wave {n}",
         ("resume.next.survey", Locale::PtBr) => "A spec está no levantamento: rode o levantamento e grave a resposta de cada ponto.",
@@ -2446,7 +2450,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 358, 0x006e_9fdb_6968_7418);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 359, 0x3128_47fb_0fc2_67c2);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do

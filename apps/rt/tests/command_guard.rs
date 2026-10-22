@@ -246,3 +246,39 @@ fn the_refusal_follows_the_project_language() {
     let reason = refusal(&out).unwrap_or_else(|| panic!("rm -rf pasta must be refused: {out}"));
     assert!(reason.starts_with("Command blocked: deleting a folder by force"), "{reason}");
 }
+
+/// O comando pronto da recusa grava a resposta de cada etapa do Mustard num
+/// arquivo próprio, com o nome da etapa, na pasta temporária, fora do
+/// repositório; a etapa de ajuda, que passa sozinha, sai intacta, com o corte
+/// dela. Antes a sugestão gravava todas as etapas no mesmo `arquivo`, na
+/// pasta do projeto — que o `git add -A` de um pre-commit leva ao commit —, e
+/// reescrevia também a ajuda.
+#[test]
+fn the_ready_command_writes_each_answer_to_its_own_file_outside_the_project() {
+    let dir = project_with(r#"{"language":{"text":"pt-BR"}}"#);
+    let ready = |command: &str| {
+        let reason = refusal(&run_guard(dir.path(), command)).unwrap_or_else(|| panic!("{command} must be refused"));
+        reason.lines().last().unwrap_or_default().to_string()
+    };
+    let targets = |line: &str| -> Vec<String> {
+        let words: Vec<&str> = line.split_whitespace().collect();
+        words.windows(2).filter(|pair| pair[0] == ">").map(|pair| pair[1].to_string()).collect()
+    };
+
+    let mixed = ready("mustard-rt run answer --help | head && mustard-rt run resume | head");
+    assert!(mixed.starts_with("mustard-rt run answer --help | head && mustard-rt run resume > "), "the help step stays as written: {mixed}");
+    let resume = targets(&mixed);
+    assert_eq!(resume.len(), 1, "{mixed}");
+    assert!(resume[0].contains("resume"), "{mixed}");
+
+    let two = ready("mustard-rt run read backlog --spec x 2>&1 | head; mustard-rt run read criteria --spec x");
+    let files = targets(&two);
+    assert_eq!(files.len(), 2, "{two}");
+    assert_ne!(files[0], files[1], "one file per step: {two}");
+    assert!(files[0].contains("backlog") && files[1].contains("criteria"), "the name says the step: {two}");
+    for file in resume.iter().chain(&files) {
+        let path = Path::new(file);
+        assert!(path.is_absolute() && !path.starts_with(dir.path()), "{file} must sit outside the project");
+        assert!(path.starts_with(std::env::temp_dir()), "{file} must sit in the temporary folder");
+    }
+}

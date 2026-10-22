@@ -50,6 +50,7 @@ mod round_status;
 mod round_report_usage_documented;
 mod run_command_surface;
 mod search_answer_layers;
+mod server_commands_cores;
 mod session_map_arrives;
 mod session_start_merged;
 mod spec_events_cli;

@@ -605,13 +605,6 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
     // A nota da pendência, e o mapa, só no que mudou; a falha de cada um só
     // avisa.
     let mut warnings: Vec<String> = note_pending(&project.root, pending.as_deref(), &name, lang).into_iter().collect();
-    // O que o lint do projeto diz da base, gravado agora, com a branch recém
-    // cortada e sem commit nenhum: é por esta marca que o fechamento sabe
-    // separar o erro que a obra criou do que já estava aqui. Só avisa quando
-    // não pôde gravar.
-    if born {
-        warnings.extend(super::validation::record_base_check(&project.root, &name));
-    }
     let map = match refresh(&project.root) {
         Ok(report) => Some(json!({ "full": report.full, "read": report.read.len() })),
         Err(detail) => {

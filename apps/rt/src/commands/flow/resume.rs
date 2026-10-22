@@ -54,9 +54,12 @@ pub(crate) fn resume_for(opts: &ResumeOpts, session: Option<&str>) -> Value {
 
     let spec = match opts.spec.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(spec) => spec.to_string(),
+        // Sem spec nenhuma, a retomada não é erro: o mapa da sessão manda
+        // rodá-la sempre, e o próximo passo do projeto que ainda não começou
+        // obra é abrir a spec. Sem fase, não há comando de fase.
         None => match DiskSpecState::new(&checkout(&opts.root)).active(session) {
             Some(spec) => spec,
-            None => return refuse(&Refusal::NoCurrentSpec),
+            None => return json!({ "ok": true, "next": translate("resume.no_spec", lang) }),
         },
     };
     if let Err(refusal) = mustard_core::io::legacy_specs::refuse_legacy(&project.root, &spec) {
@@ -1045,7 +1048,9 @@ mod tests {
         }
     }
 
-    /// Sem spec nenhuma, a retomada recusa dizendo que não há spec atual.
+    /// A spec pedida pelo nome e que não existe é recusada, dizendo que o
+    /// arquivo dela falta. Sem spec pedida nem atual, a retomada não recusa:
+    /// diz para abrir uma.
     #[test]
     fn resuming_without_a_current_spec_is_refused() {
         let dir = tempdir().unwrap();

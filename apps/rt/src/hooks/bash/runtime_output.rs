@@ -109,22 +109,29 @@ fn summary_asked(segments: &[Segment]) -> Option<(&'static str, &'static str)> {
 }
 
 /// O mesmo comando `cmd` com a resposta inteira num arquivo: a etapa que
-/// corta sai, com o encadeamento dela, e a do Mustard grava num arquivo.
+/// corta a resposta do Mustard sai, com o encadeamento dela, e cada etapa do
+/// Mustard grava num arquivo próprio ([`answer_file`]). A etapa de ajuda ou
+/// de versão, que passa sozinha, fica como foi escrita, com o corte dela.
 /// `None` quando a reescrita não acha as duas etapas — a resposta chega ao
 /// script por substituição, e não por encadeamento.
 fn with_the_answer_in_a_file(segments: &[Segment], cmd: &str) -> Option<String> {
     if !segments.iter().any(runs_a_script) {
         return None;
     }
+    // A etapa anterior foi uma do Mustard reescrita: só o corte que vem logo
+    // depois dela sai. O corte da ajuda, ou de outro programa, fica.
+    let cutting = std::cell::Cell::new(false);
+    let names = std::cell::RefCell::new(Vec::<String>::new());
     let out = super::rewrite::rewritten_steps(cmd, |step| {
         // A etapa se lê pelo mesmo analisador do comando inteiro: o programa
         // dela vem depois dos invólucros, como `rtk head -5`.
         let read = super::lex::segments(step);
         let first = read.first()?;
         if runs_a_script(first) {
-            return Some(super::rewrite::Step::Out);
+            return cutting.get().then_some(super::rewrite::Step::Out);
         }
-        if !runs_the_runtime(first) {
+        cutting.set(runs_the_runtime(first) && !asks_a_fixed_answer(first));
+        if !cutting.get() {
             return None;
         }
         // O `2>&1` no fim vai depois do arquivo: antes dele, o erro seguiria
@@ -133,10 +140,39 @@ fn with_the_answer_in_a_file(segments: &[Segment], cmd: &str) -> Option<String> 
             Some(body) => (body.trim_end(), " 2>&1"),
             None => (step, ""),
         };
-        Some(super::rewrite::Step::Put(format!("{body} > arquivo{errors}")))
+        let file = answer_file(first, &mut names.borrow_mut());
+        Some(super::rewrite::Step::Put(format!("{body} > {file}{errors}")))
     })?;
     let out = out.trim().to_string();
     (!out.is_empty()).then_some(out)
+}
+
+/// O arquivo em que a etapa do Mustard `segment` grava a resposta: na pasta
+/// temporária, fora do repositório, com o nome da etapa — `read-backlog`,
+/// `resume`. Um arquivo dentro do projeto entrava no commit de quem roda
+/// `git add -A`, e duas etapas no mesmo arquivo perdiam a primeira resposta.
+/// O nome que já saiu neste comando (`taken`) ganha um número.
+fn answer_file(segment: &Segment, taken: &mut Vec<String>) -> String {
+    let words: Vec<String> = segment
+        .args
+        .iter()
+        .map(|arg| arg.text.as_str())
+        .skip_while(|word| *word != "run")
+        .skip(1)
+        .take_while(|word| !word.starts_with('-'))
+        .take(2)
+        .map(|word| word.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect())
+        .collect();
+    let stem = if words.is_empty() { "mustard".to_string() } else { format!("mustard-{}", words.join("-")) };
+    let mut name = stem.clone();
+    let mut n = 1;
+    while taken.contains(&name) {
+        n += 1;
+        name = format!("{stem}-{n}");
+    }
+    taken.push(name.clone());
+    let path = std::env::temp_dir().join(format!("{name}.txt")).display().to_string();
+    if path.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '\\' | '.' | '_' | '-' | ':')) { path } else { format!("'{path}'") }
 }
 
 /// A conferência: recusa o comando `cmd`, já lido em `segments`, quando a
@@ -229,9 +265,10 @@ mod tests {
     }
 
     /// A recusa devolve o comando pronto: a etapa que corta sai, com o
-    /// encadeamento dela, a do Mustard grava num arquivo, e as etapas sem
-    /// relação ficam como foram escritas. O `2>&1` vai depois do arquivo.
-    /// Quando o corte é de um bloco grande, a recusa diz o bloco de resumo.
+    /// encadeamento dela, a do Mustard grava num arquivo com o nome da etapa
+    /// na pasta temporária, e as etapas sem relação ficam como foram escritas.
+    /// O `2>&1` vai depois do arquivo. Quando o corte é de um bloco grande, a
+    /// recusa diz o bloco de resumo.
     ///
     /// Em campo (21/10/2026) o gancho barrava o comando todo e só dizia o que
     /// fazer: eram 93 bloqueios, e o agente remontava à mão as etapas que não
@@ -243,14 +280,15 @@ mod tests {
             other => panic!("{cmd} must be refused, got {other:?}"),
         };
 
+        let file = |name: &str| std::env::temp_dir().join(format!("{name}.txt")).display().to_string();
         let said = ready("mustard-rt run resume | head -80");
-        assert!(said.contains("mustard-rt run resume > arquivo"), "{said}");
+        assert!(said.contains(&format!("mustard-rt run resume > {}", file("mustard-resume"))), "{said}");
         // A etapa sem relação com o motivo fica como foi escrita.
         let said = ready("mustard-rt run read request-1 | head -5 && git log --oneline -3");
-        assert!(said.contains("mustard-rt run read request-1 > arquivo && git log --oneline -3"), "{said}");
+        assert!(said.contains(&format!("mustard-rt run read request-1 > {} && git log --oneline -3", file("mustard-read-request-1"))), "{said}");
         // O `2>&1` vai depois do arquivo, senão o erro não entra nele.
         let said = ready("mustard-rt run round --spec x 2>&1 | python3 -c 'x'");
-        assert!(said.contains("mustard-rt run round --spec x > arquivo 2>&1"), "{said}");
+        assert!(said.contains(&format!("mustard-rt run round --spec x > {} 2>&1", file("mustard-round"))), "{said}");
         // O bloco grande tem resumo, e a recusa o diz.
         let said = ready("mustard-rt run read metrics --spec x | head -40");
         assert!(said.contains("run read calls"), "{said}");

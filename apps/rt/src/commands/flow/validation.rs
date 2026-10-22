@@ -151,16 +151,27 @@ fn listed_files(root: &Path) -> Option<Vec<String>> {
     Some(files.split('\0').filter(|s| !s.is_empty()).map(str::to_string).collect())
 }
 
-/// A fase em que a conferência da base fica gravada, na abertura da spec.
+/// A fase em que a conferência da base fica gravada, no primeiro despacho de
+/// onda da spec.
 pub(super) const BASE_PHASE: &str = "base";
 
 /// A etapa da conferência da base: o lint declarado do projeto.
 const BASE_STAGE: &str = "lintCommand";
 
-/// Roda o lint declarado do projeto na base e grava o que ele disse, na
-/// abertura da spec `spec`, antes de a obra ter commit nenhum. Devolve o
-/// aviso quando o projeto não declara lint, e `None` quando gravou ou quando
-/// não havia o que gravar.
+/// A conferência da base ainda cabe na spec lida em `log`: nenhuma onda foi
+/// enviada e nenhuma marca da base foi gravada. Uma vez só por spec, e nunca
+/// depois de uma onda sair: com onda enviada, a volta dela pode já ter
+/// commit na branch, e o disco deixa de ser a base.
+pub(super) fn base_check_due(log: &SpecLog) -> bool {
+    !log.events.iter().any(|e| {
+        e.event_type == "send" || e.event_type == "stage_run" && e.str_field("phase") == Some(BASE_PHASE) && e.str_field("stage") == Some(BASE_STAGE)
+    })
+}
+
+/// Roda o lint declarado do projeto na base e grava o que ele disse, no
+/// primeiro despacho de onda da spec `spec`, antes de a obra ter commit
+/// nenhum. Devolve o motivo quando não pôde gravar, e `None` quando gravou ou
+/// quando o projeto não declara lint.
 ///
 /// Existe para o fechamento saber de quem é cada erro. Sem essa marca, o
 /// fechamento só sabe se a obra tocou o arquivo que a saída cita, e um erro
@@ -168,10 +179,12 @@ const BASE_STAGE: &str = "lintCommand";
 /// obra tirou o último que a usava — passaria como erro da base. Com ela, a
 /// pergunta é outra: a base já acusava este arquivo?
 ///
-/// A base é o que o checkout tem agora: a branch acabou de ser cortada e não
-/// tem commit nenhum, então o disco é a base. É também por isso que a
+/// A base é o que o checkout tem agora: antes da primeira onda a branch não
+/// tem commit da obra, então o disco é a base. É também por isso que a
 /// conferência roda aqui e não no fechamento: aqui o projeto está instalado,
-/// com as dependências no lugar, e uma cópia limpa da base não estaria.
+/// com as dependências no lugar, e uma cópia limpa da base não estaria. Roda
+/// no despacho, e não na abertura: só o fechamento lê a marca, e a abertura
+/// gastava no lint dezenas de segundos de quem só queria começar a conversa.
 ///
 /// Melhor esforço: o lint que não roda não grava nada, e o fechamento volta a
 /// cobrar tudo, como antes desta marca.
@@ -182,11 +195,11 @@ pub(super) fn record_base_check(root: &Path, spec: &str) -> Option<String> {
     record_run(root, spec, BASE_PHASE, BASE_STAGE, &command, &out).err().map(|refusal| refusal.reason().to_string())
 }
 
-/// Os arquivos que a conferência da base já acusava, lidos do que a abertura
-/// gravou: os que a saída dela cita e que a obra não mudou. Vazio quando a
-/// abertura não gravou nada, e vazio quando a base passou.
+/// Os arquivos que a conferência da base já acusava, lidos do que o primeiro
+/// despacho gravou: os que a saída dela cita e que a obra não mudou. Vazio
+/// quando nada foi gravado, e vazio quando a base passou.
 ///
-/// A obra que mudou um arquivo depois da abertura sai desta lista pela própria
+/// A obra que mudou um arquivo depois da conferência sai desta lista pela própria
 /// leitura: um arquivo da obra nunca é da base.
 pub(super) fn base_findings(root: &Path, log: &SpecLog, work: &Work) -> Vec<String> {
     let Some(output) = log
