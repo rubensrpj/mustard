@@ -1643,12 +1643,22 @@ pub(crate) fn survey_report(spec: &str, before: &SpecLog, after: &SpecLog, lang:
     let code_of = |id: &u64| codes.get(id).cloned().unwrap_or_else(|| id.to_string());
     let mut out = Map::new();
     let mut next: Vec<String> = Vec::new();
+    // A cópia do modelo visual aprovado é pedida uma vez, antes do revisor de
+    // fora que o passo manda rodar, ou antes do fim: o despacho só aponta o
+    // desenho ao revisor quando o arquivo já está na pasta da spec.
+    let mut design_asked = false;
+    let mut ask_design = |next: &mut Vec<String>| {
+        if !std::mem::replace(&mut design_asked, true) {
+            next.push(translate("survey.save_design", lang).replace("{spec}", spec));
+        }
+    };
     for step in steps {
         match step {
             SurveyStep::ReviewBlock { block, closed, records, outside_review } => {
                 let go_on = translate("survey.continue_option", lang);
                 next.push(translate("survey.review_step", lang).replace("{block}", &block).replace("{continue}", go_on));
                 if outside_review {
+                    ask_design(&mut next);
                     next.push(translate("survey.outside_review_step", lang).replace("{spec}", spec));
                 }
                 out.insert(
@@ -1663,6 +1673,7 @@ pub(crate) fn survey_report(spec: &str, before: &SpecLog, after: &SpecLog, lang:
                 );
             }
             SurveyStep::OutsideReview => {
+                ask_design(&mut next);
                 next.push(translate("survey.outside_review_step", lang).replace("{spec}", spec));
             }
             SurveyStep::Point(point) if point.str_field("block").map(str::trim) == Some(survey::CONDENSED) => {
@@ -1686,6 +1697,7 @@ pub(crate) fn survey_report(spec: &str, before: &SpecLog, after: &SpecLog, lang:
                 out.insert("point".to_string(), shown_point(point, &codes));
             }
             SurveyStep::Done { unrouted } => {
+                ask_design(&mut next);
                 next.push(translate("survey.done", lang).replace("{scale}", translate("plan.points_scale", lang)));
                 out.insert("unrouted".to_string(), json!(super::unrouted::lines(unrouted, &codes)));
             }
@@ -5253,7 +5265,8 @@ mod tests {
             assert!(last.get("point").is_none(), "{last}");
             let review = translate("survey.review_step", lang).replace("{block}", "proof").replace("{continue}", go_on);
             let done = translate("survey.done", lang).replace("{scale}", translate("plan.points_scale", lang));
-            assert_eq!(last["next"], json!(format!("{review} {outside} {done}")), "review, reviewer, then the end");
+            let design = translate("survey.save_design", lang).replace("{spec}", "teste");
+            assert_eq!(last["next"], json!(format!("{review} {design} {outside} {done}")), "review, design copy, reviewer, then the end");
             assert!(last["unrouted"].is_array(), "{last}");
         }
     }
@@ -5372,7 +5385,8 @@ mod tests {
             } else {
                 assert!(report["unrouted"].is_array(), "{report}");
                 let done = translate("survey.done", Locale::PtBr).replace("{scale}", translate("plan.points_scale", Locale::PtBr));
-                assert_eq!(report["next"], json!(done));
+                let design = translate("survey.save_design", Locale::PtBr).replace("{spec}", "teste");
+                assert_eq!(report["next"], json!(format!("{design} {done}")));
             }
         }
     }

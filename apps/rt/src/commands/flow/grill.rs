@@ -303,7 +303,9 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
         }
     } else {
         report["unrouted"] = json!(spec_events::unrouted::lines(survey::unrouted_messages(&log), &codes));
-        report["hint"] = json!(translate("survey.done", lang).replace("{scale}", translate("plan.points_scale", lang)));
+        let design = translate("survey.save_design", lang).replace("{spec}", &spec);
+        let done = translate("survey.done", lang).replace("{scale}", translate("plan.points_scale", lang));
+        report["hint"] = json!(format!("{design} {done}"));
     }
     report
 }
@@ -1290,7 +1292,8 @@ mod tests {
         let done = grill(root, "x", Some("fix"), false);
         assert!(done.get("next").is_none(), "{done}");
         let scale = translate("plan.points_scale", Locale::PtBr);
-        assert_eq!(done["hint"], json!(translate("survey.done", Locale::PtBr).replace("{scale}", scale)));
+        let design = translate("survey.save_design", Locale::PtBr).replace("{spec}", "x");
+        assert_eq!(done["hint"], json!(format!("{design} {}", translate("survey.done", Locale::PtBr).replace("{scale}", scale))));
         let path = store::spec_file(&store::spec_root(root), "x").expect("spec file");
         let code = store::read(&path).unwrap().unwrap().codes()[&loose].clone();
         assert_eq!(done["unrouted"], json!([format!("{code}: E o painel?")]), "{done}");

@@ -92,17 +92,15 @@ fn user_says(root: &Path, text: &str) -> u64 {
     log.events.last().expect("the message just written").id
 }
 
-/// A fala do usuário pelo gancho da entrada, como o Claude Code o chama: o
-/// binário lê o evento no `stdin` e grava a fala na spec atual. Devolve o
-/// número da fala gravada.
-fn hook_says(root: &Path, home: &Path, text: &str) -> u64 {
+/// Um gancho do Claude Code pelo binário, com o JSON do evento no `stdin`, na
+/// sessão do levantamento e com a spec atual. Devolve a saída do gancho, que
+/// sempre sai com 0.
+fn on(root: &Path, home: &Path, event: &str, payload: &Value) -> String {
     use std::io::Write;
     use std::process::Stdio;
 
-    let payload = json!({"hook_event_name": "UserPromptSubmit", "prompt": text, "session_id": "s-levantamento",
-        "cwd": root.to_string_lossy()});
     let mut child = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
-        .args(["on", "UserPromptSubmit"])
+        .args(["on", event])
         .current_dir(root)
         .env("HOME", home)
         .env("USERPROFILE", home)
@@ -120,6 +118,16 @@ fn hook_says(root: &Path, home: &Path, text: &str) -> u64 {
     }
     let out = child.wait_with_output().expect("the binary finishes");
     assert_eq!(out.status.code(), Some(0), "a hook always exits 0: {}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// A fala do usuário pelo gancho da entrada, como o Claude Code o chama: o
+/// binário lê o evento no `stdin` e grava a fala na spec atual. Devolve o
+/// número da fala gravada.
+fn hook_says(root: &Path, home: &Path, text: &str) -> u64 {
+    let payload = json!({"hook_event_name": "UserPromptSubmit", "prompt": text, "session_id": "s-levantamento",
+        "cwd": root.to_string_lossy()});
+    on(root, home, "UserPromptSubmit", &payload);
     let path = store::spec_file(root, SPEC).expect("the spec's file");
     let log = store::read(&path).expect("a readable file").expect("the spec has its file");
     log.visible()
@@ -647,6 +655,70 @@ fn the_end_of_the_survey_shows_each_unrouted_message_once_as_a_short_line() {
     // O texto inteiro sai pelo código da linha.
     let full = rt(root, &["read", &format!("item-{}", codes[0]), "--spec", SPEC]);
     assert!(String::from_utf8_lossy(&full.stdout).contains(TAIL), "the item's reading has the whole message");
+}
+
+/// A resposta que fecha o último ponto manda quem conduz salvar, na pasta da
+/// spec, a cópia do modelo visual que o usuário aprovou, uma vez e antes de
+/// mandar rodar o revisor de fora; com um ponto ainda aberto, nenhuma resposta
+/// fala da cópia. A escrita no caminho dito passa pelo gancho de escrita, e o
+/// despacho do revisor de fora, pelo gancho, passa a apontar esse arquivo.
+#[test]
+fn the_end_of_the_survey_says_where_the_approved_design_goes_and_the_reviewer_is_pointed_to_it() {
+    let dir = repo();
+    let home = tempfile::tempdir().expect("home");
+    let root = dir.path();
+    let opened = rt(root, &["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    assert_eq!(opened.status.code(), Some(0), "{}", String::from_utf8_lossy(&opened.stdout));
+    let said = user_says(root, GOAL);
+    write(root, "context", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": GOAL, "origin": said}));
+    let items = report(&rt(root, &["grill", "--kinds", "feature", "--spec", SPEC, "--full"]))["points"]
+        .as_array()
+        .cloned()
+        .expect("the point list");
+    let mut current = Value::Null;
+    for item in &items {
+        let facts = json!([{"text": "O merge começa no arquivo de entrada.", "source": "src/main.rs:2"}]);
+        current = write(root, "point", &json!({"replaces": item["id"], "facts": facts}))["point"].clone();
+    }
+    let decision = json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": "O usuário aprovou o modelo da tela.",
+        "keys": ["levantamento"], "why": "o usuário respondeu"})
+    .to_string();
+    let mut ended = String::new();
+    for (i, _) in items.iter().enumerate() {
+        let code = current["code"].as_str().expect("the point's code").to_string();
+        let out = rt(root, &["answer", "--spec", SPEC, "--point", &code, "--type", "decision", "--json", &decision]);
+        let answered = report(&out);
+        assert_eq!(out.status.code(), Some(0), "answer {i}: {answered}");
+        current = answered["point"].clone();
+        let next = answered["next"].as_str().unwrap_or_default().to_string();
+        if i + 1 < items.len() {
+            assert!(!next.contains("desenho.html"), "a point is still open: {next}");
+        } else {
+            ended = next;
+        }
+    }
+
+    let design = format!(".claude/spec/{SPEC}/desenho.html");
+    let save = ended.find(&format!("`{design}`")).unwrap_or_else(|| panic!("the end of the survey says where the approved design goes: {ended}"));
+    let reviewer = ended.find("rode o revisor de fora").unwrap_or_else(|| panic!("the end of the survey orders the outside reviewer: {ended}"));
+    assert!(save < reviewer, "the copy is saved before the outside reviewer goes: {ended}");
+    assert_eq!(ended.matches("desenho.html").count(), 1, "{ended}");
+
+    // Quem conduz segue o passo: a escrita no caminho dito não é barrada.
+    let target = root.join(&design);
+    let html = "<html><body><main>tela aprovada</main></body></html>\n";
+    let writing = json!({"hook_event_name": "PreToolUse", "tool_name": "Write", "session_id": "s-levantamento",
+        "cwd": root.to_string_lossy(), "tool_input": {"file_path": target.to_string_lossy(), "content": html}});
+    let gate = on(root, home.path(), "PreToolUse", &writing);
+    assert!(!gate.contains("\"deny\""), "the conductor may save the copy where it was told: {gate}");
+    std::fs::write(&target, html).expect("the conductor saves the copy");
+
+    let prompt = format!("Revise o levantamento da spec {SPEC}: os pontos, as regras e as decisões.");
+    let dispatch = json!({"hook_event_name": "PreToolUse", "tool_name": "Agent", "session_id": "s-levantamento",
+        "cwd": root.to_string_lossy(), "tool_input": {"subagent_type": "mustard-review", "description": "revisão", "prompt": prompt}});
+    let answer: Value = serde_json::from_str(&on(root, home.path(), "PreToolUse", &dispatch)).expect("the hook answers JSON");
+    let sent = answer["hookSpecificOutput"]["updatedInput"]["prompt"].as_str().unwrap_or_else(|| panic!("no rewritten prompt: {answer}"));
+    assert!(sent.contains(&format!("{design}`")), "the outside reviewer is pointed to the saved copy: {sent}");
 }
 
 /// Duas tarefas que passam a depender uma da outra, em círculo, são

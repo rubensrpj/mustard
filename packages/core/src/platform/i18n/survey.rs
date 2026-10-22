@@ -188,6 +188,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              its findings as an open point, with `block` and `from` outside_review, and present it \
              like the others. With no finding, go on."
         }
+        // O nome do arquivo é o mesmo nos dois idiomas: é ele que o gancho do
+        // despacho procura na pasta da spec para apontar o desenho ao revisor.
+        ("survey.save_design", Locale::PtBr) => {
+            "Se o usuário aprovou um modelo visual de tela neste levantamento, salve a cópia aprovada \
+             em `.claude/spec/{spec}/desenho.html` antes de despachar qualquer revisor: com o arquivo \
+             ali, o pedido do revisor aponta o desenho."
+        }
+        ("survey.save_design", Locale::EnUs) => {
+            "If the user approved a visual model of a screen in this survey, save the approved copy at \
+             `.claude/spec/{spec}/desenho.html` before dispatching any reviewer: with the file there, \
+             the reviewer's request points to the design."
+        }
         ("survey.fact_declared", Locale::PtBr) => "`{name}` é declarado em {path}, linha {line}.",
         ("survey.fact_declared", Locale::EnUs) => "`{name}` is declared in {path}, line {line}.",
         ("survey.fact_importers", Locale::PtBr) => "{path} é importado por: {importers}.",
@@ -274,7 +286,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("survey.rs"), super::PREFIXES, 45, 0xf9ff_1556_bdc4_cd7c);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("survey.rs"), super::PREFIXES, 46, 0x8f0c_f47e_b46f_8550);
     }
 
     /// O ponto aberto sem fato só fecha com os fatos: a dica de fechar um
@@ -323,6 +335,7 @@ mod tests {
             ("survey.review_question".into(), &[][..]),
             ("survey.continue_option".into(), &[][..]),
             ("survey.outside_review_step".into(), &["{spec}"][..]),
+            ("survey.save_design".into(), &["{spec}"][..]),
             ("survey.fact_declared".into(), &["{name}", "{path}", "{line}"][..]),
             ("survey.fact_importers".into(), &["{path}", "{importers}"][..]),
             ("survey.fact_test_candidates".into(), &["{path}", "{tests}", "{inline}"][..]),
