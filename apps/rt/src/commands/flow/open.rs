@@ -61,7 +61,7 @@ use crate::commands::event::work_branch::{
     CheckoutWork, RefusalCause,
 };
 use crate::commands::spec_events::conversation::record_earlier_messages;
-use crate::commands::spec_events::{self, write::record_open};
+use crate::commands::spec_events::{self, session_spec, write::record_open};
 use crate::shared::typed_messages::{session_transcript, typed_messages};
 use crate::shared::spec_state::DiskSpecState;
 use crate::shared::work_kind::WorkKind;
@@ -524,7 +524,7 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
             note_pending(&project.root, pending.as_deref(), &name, lang).into_iter().collect();
         let base = state.base.unwrap_or_default();
         let pending_project = pending_project_notice(&project.root, lang);
-        bind_conversation(&project.root, opts.session.as_deref(), &name);
+        session_spec::bind(&project.root, opts.session.as_deref(), &name);
         let mut report = opened(&name, &target, &base, &kind, None, &warnings, pending_project, lang);
         report["already_open"] = json!(true);
         if let Some(id) = pending {
@@ -599,7 +599,7 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
             return refuse(OpenRefusal::Spec(refusal));
         }
     };
-    bind_conversation(&project.root, opts.session.as_deref(), &name);
+    session_spec::bind(&project.root, opts.session.as_deref(), &name);
     // O pedido que o usuário fez antes da abertura entra na spec que acabou
     // de nascer, nas palavras dele.
     let earlier = born.then(|| bring_earlier_messages(&root, &name, opts.session.as_deref(), lang));
@@ -636,15 +636,6 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
         None => {}
     }
     report
-}
-
-/// Liga a conversa da sessão `session` à spec `spec` do projeto em `root`: a
-/// fala, a resposta e as chamadas dela passam a ir para essa spec. Sem
-/// sessão, fora de uma conversa, nada é ligado.
-fn bind_conversation(root: &Path, session: Option<&str>, spec: &str) {
-    if let Some(session) = session {
-        crate::shared::context::session::bind_session_spec(&root.to_string_lossy(), session, spec);
-    }
 }
 
 /// As mensagens que o usuário digitou na conversa da sessão `session` antes

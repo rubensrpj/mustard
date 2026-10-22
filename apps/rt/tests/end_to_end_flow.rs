@@ -1235,6 +1235,37 @@ fn the_wave_agent_calls_from_its_copy_count_without_a_binding() {
     assert!(invoked.contains(&("read", "request-1")) && invoked.contains(&("write", "step")), "{invoked:?}");
 }
 
+/// A conversa que abriu a spec na raiz do projeto segue gravando nela de uma
+/// subpasta: a fala e a resposta que o gancho recebe com o `cwd` ali, e a
+/// busca rodada dali. A sessão cujo nome sairia da pasta das sessões não
+/// liga nada: a retomada por ela não grava arquivo fora dali.
+#[test]
+fn the_conversation_opened_at_the_root_records_from_a_subfolder() {
+    let project = Project::new();
+    project.open();
+    let sub = project.root.join("src");
+    let cwd = sub.to_string_lossy().to_string();
+
+    let said = "Da subpasta, a fala segue na obra.";
+    project.hook("UserPromptSubmit", &json!({"hook_event_name": "UserPromptSubmit", "prompt": said, "session_id": SESSION, "cwd": cwd}));
+    let replied = "A resposta dada na subpasta.";
+    project.hook("Stop", &json!({"hook_event_name": "Stop", "last_assistant_message": replied, "session_id": SESSION, "cwd": cwd}));
+    let log = project.log();
+    let recorded = |kind: &str, text: &str| log.visible().into_iter().any(|e| e.event_type == kind && e.str_field("text") == Some(text));
+    assert!(recorded("message", said) && recorded("response", replied), "the message and the reply from the subfolder enter the spec");
+
+    let search = ["run", "search", "--shell-output", "--intent", "Find the greeting", "--purpose", "locate", "--", "grep", "-n", "println", "main.rs"];
+    let out = project.command_as(Some(SESSION), &sub, &search, "");
+    assert!(out.status.success(), "{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    let searches = project.operations().visible().into_iter().filter(|e| e.event_type == "call" && e.str_field("command") == Some("search")).count();
+    assert_eq!(searches, 1, "the search run from the subfolder counts as a call of the conversation");
+
+    let escaping = "../../fora";
+    let resumed = project.command_as(Some(escaping), &project.root, &["run", "resume"], "");
+    assert!(resumed.status.success(), "{}", String::from_utf8_lossy(&resumed.stdout));
+    assert!(!project.root.join("fora").exists(), "a session named outside the sessions folder writes nothing out there");
+}
+
 /// Outra pessoa mergeia o pull request do submódulo, pelo `gh` de fora do
 /// binário.
 fn someone_merges_the_submodule(project: &Project) {

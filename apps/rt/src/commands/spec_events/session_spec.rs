@@ -1,10 +1,35 @@
-//! A spec da gravação sem `--spec`: a que a abertura ou a retomada ligou à
-//! conversa que grava. A spec da branch não vale aqui: por ela, uma conversa
+//! A ligação da conversa com a spec: a abertura e a retomada a gravam, e a
+//! fala, a resposta, as chamadas e a gravação sem `--spec` a leem. As duas
+//! pontas passam por aqui e pela mesma raiz, a do projeto em que as specs
+//! moram ([`store::spec_root`]): a ligação gravada pela abertura na raiz é a
+//! que se lê de uma subpasta, e a gravada de um worktree é a que o checkout
+//! principal lê. A spec da branch não vale aqui: por ela, uma conversa
 //! paralela na mesma branch gravaria na obra da outra.
 
 use std::path::Path;
 
 use mustard_core::domain::spec_events::Refusal;
+use mustard_core::io::spec_events as store;
+
+/// Liga a conversa da sessão `session` à spec `spec` do projeto visto de
+/// `root`: a fala, a resposta e as chamadas dela passam a ir para essa spec.
+/// Sem sessão, fora de uma conversa, nada é ligado.
+pub(crate) fn bind(root: &Path, session: Option<&str>, spec: &str) {
+    if let Some(session) = session {
+        crate::shared::context::session::bind_session_spec(&store::spec_root(root).to_string_lossy(), session, spec);
+    }
+}
+
+/// A spec ligada à conversa da sessão `session`, no projeto visto de `root`,
+/// ou a variável `MUSTARD_ACTIVE_SPEC`, quando dita. Sem sessão nenhuma, fora
+/// de uma conversa, vale a escada da spec atual, que lê a branch do checkout
+/// em `root`.
+pub(crate) fn bound(root: &Path, session: Option<&str>) -> Option<String> {
+    match session {
+        Some(_) => crate::shared::spec_state::conversation_bound_spec(&store::spec_root(root).to_string_lossy(), session),
+        None => crate::shared::spec_state::conversation_bound_spec(&root.to_string_lossy(), None),
+    }
+}
 
 /// A spec em que a gravação do tipo `event_type` sem `--spec` entra, no
 /// projeto em `root`: a ligada à conversa da sessão `session`. A conversa sem
@@ -15,8 +40,7 @@ pub(crate) fn of_conversation(root: &Path, session: Option<&str>, event_type: &s
     let Some(session) = session else {
         return Err(Refusal::SpecRequired { event_type });
     };
-    crate::shared::spec_state::conversation_bound_spec(&root.to_string_lossy(), Some(session))
-        .ok_or(Refusal::SessionUnbound { event_type })
+    bound(root, Some(session)).ok_or(Refusal::SessionUnbound { event_type })
 }
 
 #[cfg(test)]
@@ -32,7 +56,7 @@ mod tests {
         }
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        crate::shared::context::session::bind_session_spec(&root.to_string_lossy(), "s-ligada", "obra");
+        bind(root, Some("s-ligada"), "obra");
         assert_eq!(of_conversation(root, Some("s-ligada"), "context"), Ok("obra".to_string()));
         assert_eq!(of_conversation(root, Some("s-solta"), "context"), Err(Refusal::SessionUnbound { event_type: "context".into() }));
         assert_eq!(of_conversation(root, None, "context"), Err(Refusal::SpecRequired { event_type: "context".into() }));

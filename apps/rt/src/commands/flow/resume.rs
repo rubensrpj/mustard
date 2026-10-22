@@ -46,9 +46,8 @@ pub struct ResumeOpts {
 pub(crate) fn resume_at(opts: &ResumeOpts) -> Value {
     let session = session_from_env();
     let report = resume_for(opts, session.as_deref());
-    if let (Some(session), Some(spec)) = (session.as_deref(), report["spec"].as_str().filter(|_| report["ok"] == json!(true))) {
-        let root = spec_events::project(&opts.root).root;
-        crate::shared::context::session::bind_session_spec(&root.to_string_lossy(), session, spec);
+    if let Some(spec) = report["spec"].as_str().filter(|_| report["ok"] == json!(true)) {
+        spec_events::session_spec::bind(&opts.root, session.as_deref(), spec);
     }
     report
 }

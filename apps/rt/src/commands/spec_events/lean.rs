@@ -8,9 +8,10 @@
 //! sai pelo código do item apontado: os campos que o tipo declara como
 //! referência (`result`, `closes`, `covers`, `contracts`, `criteria`,
 //! `depends_on` da tarefa e os outros) e os que qualquer linha pode trazer
-//! (`origin`, `replaces`, `reply_to`, `covered_by`). O número sem código fica
-//! como está, e o número que não aponta item (a ordem das ondas em
-//! `depends_on` da onda) não vira código.
+//! (`origin`, `replaces`, `reply_to`, `covered_by`), e os números simples
+//! que apontam itens (as tarefas e a entrega da onda, os itens e a entrega do
+//! envio, o critério medido). O número sem código fica como está, e o número
+//! que não aponta item (as ondas em `depends_on` da onda) não vira código.
 //!
 //! Cada fato sai sem as marcas de conferência: as impressões da fonte, a
 //! classificação, a verificação e a situação da fonte. O mesmo fato (a mesma
@@ -35,6 +36,21 @@ const STAMPS: &[&str] = &["v", "session"];
 /// a linha enxuta mostra pelo código. As que o tipo declara como referência
 /// vêm da declaração dele ([`points_at_item`]).
 const LINKS: &[&str] = &["origin", "replaces", "reply_to", "covered_by"];
+
+/// Os campos que o tipo declara como número simples, mas que apontam itens:
+/// as tarefas da onda em ordem e a entrega que ela continua, os itens e a
+/// entrega do envio, e o critério que a medida rodou. A gravação e a
+/// conferência seguem com o número, que a resolução dos códigos lê como
+/// ordinal; só a leitura os mostra pelo código. O `depends_on` da onda leva
+/// números de onda e fica fora.
+const ITEM_NUMBERS: &[(&str, &str)] = &[
+    ("wave", "order"),
+    ("wave", "summary"),
+    ("send", "items"),
+    ("send", "summary"),
+    ("criterion_run", "criterion"),
+    ("stage_run", "criterion"),
+];
 
 /// As marcas de conferência de um fato: as impressões da fonte e da medida,
 /// a classificação, a verificação e a situação da fonte.
@@ -85,11 +101,7 @@ impl<'a> Lean<'a> {
             fields.remove("at");
             fields.remove("author");
         }
-        for (name, value) in fields.iter_mut() {
-            if points_at_item(spec, name) {
-                *value = self.by_code(value);
-            }
-        }
+        link_by_code(spec, fields, self.codes);
         if let Some(Value::Array(facts)) = fields.get_mut("facts") {
             self.facts(facts, own.as_deref().unwrap_or_default());
         }
@@ -112,23 +124,40 @@ impl<'a> Lean<'a> {
             }
         }
     }
+}
 
-    /// O número apontado, ou a lista deles, pelo código do item; o número
-    /// sem código e o que já é texto ficam como estão.
-    fn by_code(&self, value: &Value) -> Value {
-        match value {
-            Value::Array(list) => Value::Array(list.iter().map(|one| self.by_code(one)).collect()),
-            one => one.as_u64().and_then(|id| self.codes.get(&id)).map_or_else(|| one.clone(), |code| json!(code)),
+/// Troca pelo código do item cada número de `fields`, uma linha do tipo
+/// `spec`, que aponta outro item ([`points_at_item`]), com os códigos
+/// `codes` da spec. É o único tradutor das ligações: a leitura enxuta e o
+/// painel passam por ele.
+pub(crate) fn link_by_code(spec: Option<&TypeSpec>, fields: &mut Map<String, Value>, codes: &BTreeMap<u64, String>) {
+    for (name, value) in fields.iter_mut() {
+        if points_at_item(spec, name) {
+            *value = by_code(codes, value);
         }
     }
 }
 
+/// O número apontado, ou a lista deles, pelo código do item; o número sem
+/// código e o que já é texto ficam como estão.
+fn by_code(codes: &BTreeMap<u64, String>, value: &Value) -> Value {
+    match value {
+        Value::Array(list) => Value::Array(list.iter().map(|one| by_code(codes, one)).collect()),
+        one => one.as_u64().and_then(|id| codes.get(&id)).map_or_else(|| one.clone(), |code| json!(code)),
+    }
+}
+
 /// O campo `name` de uma linha do tipo `spec` aponta outro item: é uma das
-/// ligações comuns ou o tipo o declara como referência (o número ou o código
-/// de um item). O campo que só leva números, como a ordem das ondas, não
-/// aponta item, ainda que outro tipo use o mesmo nome para apontar.
+/// ligações comuns, o tipo o declara como referência (o número ou o código
+/// de um item) ou é um dos números simples que apontam itens
+/// ([`ITEM_NUMBERS`]). O campo que só leva números de onda não aponta item,
+/// ainda que outro tipo use o mesmo nome para apontar.
 fn points_at_item(spec: Option<&TypeSpec>, name: &str) -> bool {
-    LINKS.contains(&name) || spec.is_some_and(|spec| spec.fields.iter().any(|field| field.name == name && matches!(field.kind, Kind::Ref | Kind::Refs)))
+    LINKS.contains(&name)
+        || spec.is_some_and(|spec| {
+            ITEM_NUMBERS.contains(&(spec.name, name))
+                || spec.fields.iter().any(|field| field.name == name && matches!(field.kind, Kind::Ref | Kind::Refs))
+        })
 }
 
 /// A hora até o minuto, quando ela tem a forma `AAAA-MM-DDTHH:MM…`; a que
@@ -184,17 +213,34 @@ mod tests {
         }
     }
 
-    /// O mesmo nome de campo é número de onda num tipo e item em outro: a
-    /// onda aponta as outras pela ordem, e a ordem não vira código.
+    /// O mesmo nome de campo aponta outras ondas num tipo e itens em outro:
+    /// o `depends_on` da onda leva o número das ondas de que ela depende e
+    /// fica número; o da tarefa aponta tarefas e sai pelo código.
     #[test]
     fn a_wave_number_that_shares_a_reference_name_stays_a_number() {
         let codes = BTreeMap::from([(1, "MSTD-MSG-0001".to_string()), (2, "MSTD-CTX-0001".to_string())]);
-        for (field, value) in [("depends_on", json!([1, 2])), ("order", json!([2, 1])), ("summary", json!(2))] {
-            let line = read_lean(&codes, event("wave", field, value.clone()));
-            assert_eq!(line[field], value, "the wave keeps {field} as numbers: {line}");
-        }
+        let wave = read_lean(&codes, event("wave", "depends_on", json!([1, 2])));
+        assert_eq!(wave["depends_on"], json!([1, 2]), "the wave keeps the waves it depends on as numbers: {wave}");
         let task = read_lean(&codes, event("task", "depends_on", json!([1, 2])));
         assert_eq!(task["depends_on"], json!(["MSTD-MSG-0001", "MSTD-CTX-0001"]));
+    }
+
+    /// Os números simples que apontam itens saem pelo código: as tarefas e a
+    /// entrega da onda, os itens e a entrega do envio, e o critério medido.
+    #[test]
+    fn the_plain_numbers_that_point_at_items_read_by_the_item_code() {
+        let codes = BTreeMap::from([(1, "MSTD-TASK-0001".to_string()), (2, "MSTD-DELIV-0002".to_string())]);
+        for (kind, field, given, shown) in [
+            ("wave", "order", json!([2, 1]), json!(["MSTD-DELIV-0002", "MSTD-TASK-0001"])),
+            ("wave", "summary", json!(2), json!("MSTD-DELIV-0002")),
+            ("send", "items", json!([1, 2]), json!(["MSTD-TASK-0001", "MSTD-DELIV-0002"])),
+            ("send", "summary", json!(2), json!("MSTD-DELIV-0002")),
+            ("criterion_run", "criterion", json!(1), json!("MSTD-TASK-0001")),
+            ("stage_run", "criterion", json!(1), json!("MSTD-TASK-0001")),
+        ] {
+            let line = read_lean(&codes, event(kind, field, given));
+            assert_eq!(line[field], shown, "{kind} shows {field} by code: {line}");
+        }
     }
 
     #[test]

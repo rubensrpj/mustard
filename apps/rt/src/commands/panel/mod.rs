@@ -307,20 +307,9 @@ fn definitions(log: &SpecLog) -> Value {
 }
 
 fn display_item(event: &mustard_core::domain::spec_events::SpecEvent, codes: &std::collections::BTreeMap<u64,String>) -> Value {
-    use mustard_core::domain::spec_events::{Kind,type_spec};
     let mut item=crate::commands::spec_events::shown(event,codes);
-    if let Some(spec)=type_spec(&event.event_type) {
-        for field in spec.fields {
-            if let Some(value)=item.get_mut(field.name) {
-                match field.kind {
-                    Kind::Ref => { if let Some(code)=value.as_u64().and_then(|id|codes.get(&id)) {*value=json!(code);} }
-                    Kind::Refs => { if let Some(values)=value.as_array_mut() { for value in values {
-                        if let Some(code)=value.as_u64().and_then(|id|codes.get(&id)) {*value=json!(code);}
-                    } } }
-                    _ => {}
-                }
-            }
-        }
+    if let Some(fields)=item.as_object_mut() {
+        crate::commands::spec_events::lean::link_by_code(mustard_core::domain::spec_events::type_spec(&event.event_type),fields,codes);
     }
     item
 }

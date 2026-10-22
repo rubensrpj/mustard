@@ -65,7 +65,7 @@ impl HookAction {
 /// busca. Sem a linha no índice, vale o arquivo de eventos.
 pub(crate) fn conversation_spec(root: &Path, session: Option<&str>) -> Option<String> {
     use mustard_core::io::spec_events as store;
-    let spec = crate::shared::spec_state::conversation_bound_spec(&root.to_string_lossy(), session)?;
+    let spec = super::session_spec::bound(root, session)?;
     let base = store::spec_root(root);
     let events = store::spec_file(&base, &spec).ok().filter(|path| path.is_file())?;
     let phase = match mustard_core::io::spec_index::read(&base).into_iter().find(|line| line.name == spec) {
@@ -532,7 +532,7 @@ fn record_in_call_spec(
     measured: Map<String, Value>,
 ) -> Option<u64> {
     let unbound = session.is_some()
-        && crate::shared::spec_state::conversation_bound_spec(&store::spec_root(root).to_string_lossy(), session).is_none();
+        && super::session_spec::bound(root, session).is_none();
     let spec = report
         .get("spec")
         .and_then(Value::as_str)

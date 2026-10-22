@@ -1281,8 +1281,15 @@ fn a_metrics_search_comes_as_a_summary_and_all_brings_the_events() {
 /// As marcas de conferência de um fato, que só a leitura do item traz.
 const FACT_MARKS: [&str; 5] = ["source_version", "current_source_version", "classification", "verification", "source_status"];
 
-/// As ligações entre itens, que a leitura de um bloco mostra pelo código.
-const LINKS: [&str; 7] = ["origin", "result", "reused_results", "replaces", "closes", "reply_to", "covered_by"];
+/// O campo `name` de uma linha do tipo `kind` aponta outro item, e a leitura
+/// de um bloco o mostra pelo código: o tipo o declara como referência, ou ele
+/// é uma ligação que qualquer linha traz sem o tipo declarar (a origem, a
+/// versão que ela substitui e a mensagem a que a resposta responde).
+fn links_an_item(kind: &str, name: &str) -> bool {
+    use mustard_core::domain::spec_events::{Kind, type_spec};
+    ["origin", "replaces", "reply_to"].contains(&name)
+        || type_spec(kind).is_some_and(|spec| spec.fields.iter().any(|field| field.name == name && matches!(field.kind, Kind::Ref | Kind::Refs)))
+}
 
 /// O número de um evento, ou a lista deles, trocado pelo código do item.
 fn by_code(codes: &std::collections::BTreeMap<u64, String>, value: &Value) -> Value {
@@ -1296,7 +1303,8 @@ fn by_code(codes: &std::collections::BTreeMap<u64, String>, value: &Value) -> Va
 /// carimba (versão do formato, número, hora em nanossegundos, autor e
 /// sessão); dois pontos com os mesmos fatos; e as ligações: a origem, a
 /// resposta a uma mensagem, a versão nova de uma decisão, o ponto que fecha
-/// outro com o resultado e o ponto que reaproveita resultados de antes.
+/// outro com o resultado e o ponto que reaproveita resultados de antes; e
+/// cada referência que o tipo declara, apontando a primeira mensagem.
 /// Devolve os códigos de cada número.
 fn spec_with_every_item_type(root: &Path) -> std::collections::BTreeMap<u64, String> {
     open_spec(root);
@@ -1309,9 +1317,18 @@ fn spec_with_every_item_type(root: &Path) -> std::collections::BTreeMap<u64, Str
     let mut first_of: std::collections::BTreeMap<&str, u64> = std::collections::BTreeMap::new();
     for spec in mustard_core::domain::spec_events::TYPES.iter().filter(|spec| spec.name != "message") {
         first_of.insert(spec.name, lines.len() as u64 + 1);
-        lines.push(json!({"type": spec.name, "author": "assistant", "title": format!("Título {}", spec.name),
+        let mut line = json!({"type": spec.name, "author": "assistant", "title": format!("Título {}", spec.name),
             "text": format!("Texto {}.", spec.name), "agent": "- a parte do agente", "keys": ["chave"], "example": "um exemplo",
-            "why": "um porquê", "expected": "o esperado", "value": "um valor", "effect": "new_waves", "origin": 1}));
+            "why": "um porquê", "expected": "o esperado", "value": "um valor", "effect": "new_waves", "origin": 1});
+        // Os alvos da remoção e do expurgo somem da leitura: eles ficam fora.
+        for field in spec.fields.iter().filter(|field| field.name != "targets") {
+            match field.kind {
+                mustard_core::domain::spec_events::Kind::Ref => line[field.name] = json!(1),
+                mustard_core::domain::spec_events::Kind::Refs => line[field.name] = json!([1]),
+                _ => {}
+            }
+        }
+        lines.push(line);
     }
     let point = |facts: Vec<Value>| json!({"type": "point", "author": "binary", "block": "defect", "gap": "Onde a fatura soma",
         "from": "gap", "status": "open", "origin": 1, "facts": facts});
@@ -1394,7 +1411,7 @@ fn a_block_read_shows_each_item_without_the_internal_marks_and_links_by_code() {
                 match key.as_str() {
                     "v" | "id" | "session" | "at" | "author" | "changed" | "replaced_by" | "removed" => {}
                     "text" | "tasks" if kind == "send" => {}
-                    link if LINKS.contains(&link) => {
+                    link if links_an_item(&kind, link) => {
                         assert_eq!(lean[link], by_code(&codes, value), "{block}: {kind} links {link} by code: {lean}");
                         assert!(lean[link].to_string().contains("MSTD-"), "{block}: {lean}");
                     }

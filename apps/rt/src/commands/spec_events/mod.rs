@@ -20,13 +20,13 @@ pub mod cli;
 pub(crate) mod conversation;
 pub mod find;
 pub mod index;
-mod lean;
+pub(crate) mod lean;
 pub(crate) mod pages;
 pub(crate) mod proof_check;
 pub mod read;
 mod read_record;
 mod request_route;
-mod session_spec;
+pub(crate) mod session_spec;
 pub(crate) mod unrouted;
 pub mod write;
 
