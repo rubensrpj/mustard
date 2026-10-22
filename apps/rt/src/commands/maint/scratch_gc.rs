@@ -85,7 +85,9 @@
 //! JSON pretty, campos em ordem de declaração e listas ordenadas por caminho.
 //! Nada nela depende da hora em que o comando roda: a candidata traz a data da
 //! última mudança (`changed_at`, UTC), não a idade, e duas execuções sobre o
-//! mesmo temp saem iguais byte a byte.
+//! mesmo temp saem iguais byte a byte. O `warn_bytes` diz, lido de
+//! `MUSTARD_SCRATCH_WARN_BYTES`, a partir de quantos bytes de candidatas o
+//! aviso de disco do início da sessão aparece.
 //! Exit 0 sempre, exceto recusa (exit 1): `--path` recusado, ou — em qualquer
 //! modo, inclusive a lista e o `--apply` — um diretório temporário inseguro
 //! (a raiz do disco, a home, ou uma pasta acima da home).
@@ -112,6 +114,13 @@ pub const DEFAULT_SHARED_TARGET_CAP_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 /// Variável que ajusta o teto (em bytes) — existe para teste e para máquina
 /// com disco apertado.
 pub const CAP_ENV: &str = "MUSTARD_SCRATCH_TARGET_CAP_BYTES";
+
+/// Variável que ajusta, em bytes, a partir de quanto o aviso de disco do
+/// início da sessão aparece.
+const WARN_ENV: &str = "MUSTARD_SCRATCH_WARN_BYTES";
+
+/// O limite padrão do aviso de disco: 5 GiB.
+pub(crate) const DEFAULT_WARN_BYTES: u64 = 5 * 1024 * 1024 * 1024;
 
 /// Prefixo da raiz das sessões do Claude Code no temp (`claude-<uid>`).
 const SESSION_ROOT_PREFIX: &str = "claude-";
@@ -181,6 +190,9 @@ pub(crate) struct SharedTargetRecord {
 pub(crate) struct ScratchGcReport {
     pub dry_run: bool,
     pub min_age_hours: u64,
+    /// O limite, em bytes, com que o aviso de disco do início da sessão
+    /// compara o total das candidatas: só acima dele o aviso aparece.
+    pub warn_bytes: u64,
     pub candidates: Vec<ScratchRecord>,
     pub candidates_bytes: u64,
     pub kept: Vec<KeptRecord>,
@@ -204,6 +216,9 @@ pub(crate) struct ScratchRoots {
     pub temp_root: PathBuf,
     pub shared_target: Option<PathBuf>,
     pub cap_bytes: u64,
+    /// A partir de quantos bytes de candidatas o aviso de disco do início da
+    /// sessão aparece.
+    pub warn_bytes: u64,
     pub current_session: String,
     pub current_dir: Option<PathBuf>,
     /// A home do usuário: o temp não pode ser ela nem uma pasta acima dela.
@@ -225,6 +240,7 @@ impl ScratchRoots {
             temp_root: std::env::temp_dir(),
             shared_target: shared_target_dir(),
             cap_bytes: cap_bytes_from_env(),
+            warn_bytes: warn_bytes_from(|key| std::env::var(key).ok()),
             current_session: session_id(),
             current_dir: std::env::current_dir().ok(),
             home: mustard_core::platform::harness::home_dir(),
@@ -353,6 +369,13 @@ fn cap_bytes_from_env() -> u64 {
         .ok()
         .and_then(|v| v.trim().parse::<u64>().ok())
         .unwrap_or(DEFAULT_SHARED_TARGET_CAP_BYTES)
+}
+
+/// O limite do aviso de disco que `var` diz em [`WARN_ENV`]: um número de
+/// bytes, com ou sem espaços em volta. Variável ausente ou que não é um
+/// número deixa o limite padrão ([`DEFAULT_WARN_BYTES`]).
+fn warn_bytes_from(var: impl Fn(&str) -> Option<String>) -> u64 {
+    var(WARN_ENV).and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(DEFAULT_WARN_BYTES)
 }
 
 /// Uma pasta onde uma cópia descartável pode morar (filtro 1), com o nome da
@@ -644,6 +667,7 @@ fn gc(roots: &ScratchRoots, apply: bool) -> (ScratchGcReport, bool) {
             let report = ScratchGcReport {
                 dry_run: !apply,
                 min_age_hours: MIN_AGE_HOURS,
+                warn_bytes: roots.warn_bytes,
                 candidates: Vec::new(),
                 candidates_bytes: 0,
                 kept: Vec::new(),
@@ -660,6 +684,7 @@ fn gc(roots: &ScratchRoots, apply: bool) -> (ScratchGcReport, bool) {
     let mut report = ScratchGcReport {
         dry_run: !apply,
         min_age_hours: MIN_AGE_HOURS,
+        warn_bytes: roots.warn_bytes,
         candidates: survey.candidates,
         candidates_bytes,
         kept: survey.kept,
@@ -915,6 +940,7 @@ fn path_report(target: &Path, roots: &ScratchRoots) -> (ScratchGcReport, bool) {
     let mut report = ScratchGcReport {
         dry_run: false,
         min_age_hours: MIN_AGE_HOURS,
+        warn_bytes: roots.warn_bytes,
         candidates: Vec::new(),
         candidates_bytes: 0,
         kept: Vec::new(),
@@ -1042,6 +1068,7 @@ mod tests {
             temp_root,
             shared_target: Some(base.join("cache").join("scratch-target")),
             cap_bytes: DEFAULT_SHARED_TARGET_CAP_BYTES,
+            warn_bytes: DEFAULT_WARN_BYTES,
             current_session: CURRENT.to_string(),
             current_dir: None,
             home: Some(base.join("home")),
@@ -1710,6 +1737,27 @@ mod tests {
             assert!(err.contains("registered git worktree — use git worktree remove"), "{err}");
         }
         assert!(wt.join("Cargo.toml").exists() && in_session.join("Cargo.toml").exists());
+    }
+
+    /// O limite do aviso de disco vem da variável `MUSTARD_SCRATCH_WARN_BYTES`,
+    /// e só dela: um número de bytes, com espaços em volta ou o zero que liga
+    /// o aviso para qualquer sobra. Sem a variável, ou com um valor que não é
+    /// número, vale o padrão de 5 GiB. O ambiente de teste serve só esta
+    /// variável, então a leitura de outro nome cai no padrão.
+    #[test]
+    fn the_warn_limit_comes_from_the_warn_bytes_variable() {
+        fn env(value: &'static str) -> impl Fn(&str) -> Option<String> {
+            move |key| (key == "MUSTARD_SCRATCH_WARN_BYTES").then(|| value.to_string())
+        }
+        assert_eq!(warn_bytes_from(env("2048")), 2048);
+        assert_eq!(warn_bytes_from(env("  4096\n")), 4096);
+        assert_eq!(warn_bytes_from(env("0")), 0);
+        for invalid in ["", "muito", "-1", "1.5", "5GiB"] {
+            assert_eq!(warn_bytes_from(env(invalid)), DEFAULT_WARN_BYTES, "{invalid:?} is not a byte count");
+        }
+        assert_eq!(DEFAULT_WARN_BYTES, 5 * 1024 * 1024 * 1024);
+        assert_eq!(warn_bytes_from(|_| None), DEFAULT_WARN_BYTES, "without the variable the default stays");
+        assert_eq!(warn_bytes_from(|key| (key == "MUSTARD_OTHER").then(|| "2048".to_string())), DEFAULT_WARN_BYTES, "only this variable counts");
     }
 
     #[test]

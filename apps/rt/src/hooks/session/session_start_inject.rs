@@ -120,7 +120,7 @@ struct Probe<'a> {
     /// respondeu.
     installed: Option<&'a str>,
     /// Onde procurar as cópias descartáveis e a partir de quanto avisar.
-    scratch: Option<&'a ScratchProbe>,
+    scratch: Option<&'a ScratchRoots>,
     /// O que o provedor respondeu sobre o pull request da spec atual, e o que
     /// foi feito com a resposta, e cada outra spec cuja obra o git prova na
     /// base: a spec e o resultado.
@@ -186,7 +186,7 @@ impl Check for SessionStartInject {
     /// programa compilado da branch — e entrega a leitura
     /// a [`session_start_core`], que decide.
     fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error> {
-        let scratch = ScratchProbe::from_env(input);
+        let scratch = scratch_roots(input);
         let build = (ctx.trigger == Some(Trigger::SessionStart)).then(|| development_build(Path::new(&ctx.project_dir_or_cwd(input)))).flatten();
         session_start_core(
             input,
@@ -205,7 +205,7 @@ fn session_start_core(
     input: &HookInput,
     ctx: &Ctx,
     installed: Option<&str>,
-    scratch: Option<&ScratchProbe>,
+    scratch: Option<&ScratchRoots>,
     build: Option<&DevelopmentBuild>,
     version: Option<&str>,
 ) -> Result<Verdict, Error> {
@@ -588,12 +588,12 @@ fn disk_notice(probe: &Probe<'_>) -> Option<String> {
 
 /// As cópias descartáveis antigas do disco ([`Probe::disk`]), pela mesma
 /// varredura do `clean`.
-fn disk_residue(root: &Path, scratch: Option<&ScratchProbe>) -> Option<(u64, usize)> {
+fn disk_residue(root: &Path, scratch: Option<&ScratchRoots>) -> Option<(u64, usize)> {
     let scratch = scratch?;
     if !mustard_core::ProjectConfig::exists(root) {
         return None;
     }
-    let found = survey(&scratch.roots);
+    let found = survey(scratch);
     Some((found.candidates_bytes(), found.candidates.len()))
 }
 
@@ -687,39 +687,17 @@ fn plugin_behind(running: &str, plugin: Option<&str>, lang: Locale) -> Option<St
     Some(translate("session.version.behind", lang).replace("{running}", running).replace("{plugin}", plugin))
 }
 
-/// Variável que ajusta, em bytes, a partir de quanto o aviso de disco aparece.
-const SCRATCH_WARN_ENV: &str = "MUSTARD_SCRATCH_WARN_BYTES";
-
-/// O limite padrão do aviso de disco: 5 GiB.
-const DEFAULT_SCRATCH_WARN_BYTES: u64 = 5 * 1024 * 1024 * 1024;
-
-/// O que o aviso de disco precisa da máquina: onde varrer e a partir de quanto
-/// avisar.
-struct ScratchProbe {
-    roots: ScratchRoots,
-    warn_bytes: u64,
-}
-
-impl ScratchProbe {
-    /// As raízes desta máquina e o limite de `MUSTARD_SCRATCH_WARN_BYTES`. A
-    /// pasta da sessão que está abrindo nunca conta como sobra, e a
-    /// compilação compartilhada fica fora: medi-la seria mais uma passada pela
-    /// árvore inteira em todo início de sessão.
-    fn from_env(input: &HookInput) -> Self {
-        let mut roots = ScratchRoots::from_env();
-        if let Some(session) = session_of(input) {
-            roots.current_session = session;
-        }
-        roots.shared_target = None;
-        Self { roots, warn_bytes: scratch_warn_bytes(|key| std::env::var(key).ok()) }
+/// As raízes desta máquina para o aviso de disco, e o limite dele. A pasta da
+/// sessão que está abrindo nunca conta como sobra, e a compilação
+/// compartilhada fica fora: medi-la seria mais uma passada pela árvore inteira
+/// em todo início de sessão.
+fn scratch_roots(input: &HookInput) -> ScratchRoots {
+    let mut roots = ScratchRoots::from_env();
+    if let Some(session) = session_of(input) {
+        roots.current_session = session;
     }
-}
-
-/// O limite do aviso de disco que `var` diz em [`SCRATCH_WARN_ENV`]: um número
-/// de bytes, com ou sem espaços em volta. Variável ausente ou que não é um
-/// número deixa o limite padrão.
-fn scratch_warn_bytes(var: impl Fn(&str) -> Option<String>) -> u64 {
-    var(SCRATCH_WARN_ENV).and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(DEFAULT_SCRATCH_WARN_BYTES)
+    roots.shared_target = None;
+    roots
 }
 
 /// O texto do início da sessão depois de `/clear` na sessão `session`, sem as
@@ -751,7 +729,7 @@ mod tests {
     const NO_REGISTRY: Option<&str> = None;
 
     /// A varredura do temporário que um teste entrega: nenhuma.
-    const NO_SCRATCH: Option<&ScratchProbe> = None;
+    const NO_SCRATCH: Option<&ScratchRoots> = None;
 
     /// O programa compilado que um teste entrega: em dia, sem nada a dizer.
     const NO_BUILD: Option<&DevelopmentBuild> = None;
@@ -773,7 +751,7 @@ mod tests {
         }
     }
 
-    fn context_of(root: &Path, input: &HookInput, installed: Option<&str>, scratch: Option<&ScratchProbe>) -> String {
+    fn context_of(root: &Path, input: &HookInput, installed: Option<&str>, scratch: Option<&ScratchRoots>) -> String {
         match session_start_core(input, &ctx(root), installed, scratch, NO_BUILD, NO_VERSION).unwrap() {
             Verdict::Inject { context } => context,
             _ => String::new(),
@@ -1070,19 +1048,17 @@ mod tests {
             std::fs::write(old.join("Cargo.toml"), "[workspace]\n").unwrap();
             std::fs::write(old.join("apps").join("rt").join("big.bin"), vec![0u8; 4096]).unwrap();
             crate::commands::maint::scratch_gc::backdate_tree(&old, 24);
-            let scratch = ScratchProbe {
-                roots: ScratchRoots {
-                    temp_root,
-                    shared_target: None,
-                    cap_bytes: u64::MAX,
-                    current_session: "s-mapa".to_string(),
-                    current_dir: None,
-                    home: None,
-                    clock: crate::commands::maint::scratch_gc::AgeClock::Modified,
-                    owner_uid: crate::commands::maint::scratch_gc::current_uid(),
-                    now: std::time::SystemTime::now(),
-                },
+            let scratch = ScratchRoots {
+                temp_root,
+                shared_target: None,
+                cap_bytes: u64::MAX,
                 warn_bytes: 1024,
+                current_session: "s-mapa".to_string(),
+                current_dir: None,
+                home: None,
+                clock: crate::commands::maint::scratch_gc::AgeClock::Modified,
+                owner_uid: crate::commands::maint::scratch_gc::current_uid(),
+                now: std::time::SystemTime::now(),
             };
 
             let map = mustard_core::session_map(lang).trim().to_string();
@@ -1265,19 +1241,17 @@ mod tests {
         crate::commands::maint::scratch_gc::backdate_tree(&old, 24);
         let total = std::fs::metadata(old.join("Cargo.toml")).unwrap().len() + 4096;
 
-        let probe = |warn_bytes: u64| ScratchProbe {
-            roots: ScratchRoots {
-                temp_root: temp_root.clone(),
-                shared_target: None,
-                cap_bytes: u64::MAX,
-                current_session: "s-scratch".to_string(),
-                current_dir: None,
-                home: None,
-                clock: crate::commands::maint::scratch_gc::AgeClock::Modified,
-                owner_uid: crate::commands::maint::scratch_gc::current_uid(),
-                now: std::time::SystemTime::now(),
-            },
+        let probe = |warn_bytes: u64| ScratchRoots {
+            temp_root: temp_root.clone(),
+            shared_target: None,
+            cap_bytes: u64::MAX,
             warn_bytes,
+            current_session: "s-scratch".to_string(),
+            current_dir: None,
+            home: None,
+            clock: crate::commands::maint::scratch_gc::AgeClock::Modified,
+            owner_uid: crate::commands::maint::scratch_gc::current_uid(),
+            now: std::time::SystemTime::now(),
         };
         let above = context_of(&root, &session_input("s-scratch", "startup"), NO_REGISTRY, Some(&probe(1024)));
         assert!(above.contains(&human_bytes(total)), "carries the total: {above}");
@@ -1289,27 +1263,6 @@ mod tests {
         let again = context_of(&root, &session_input("s-scratch-3", "startup"), NO_REGISTRY, Some(&probe(1024)));
         assert!(again.contains("mustard-rt run clean"), "after nothing to count, the residue is news again: {again}");
         assert!(old.exists(), "the notice only reads");
-    }
-
-    /// O limite do aviso de disco vem da variável `MUSTARD_SCRATCH_WARN_BYTES`,
-    /// e só dela: um número de bytes, com espaços em volta ou o zero que liga
-    /// o aviso para qualquer sobra. Sem a variável, ou com um valor que não é
-    /// número, vale o padrão de 5 GiB. O ambiente de teste serve só esta
-    /// variável, então a leitura de outro nome cai no padrão.
-    #[test]
-    fn the_disk_limit_comes_from_the_warn_bytes_variable() {
-        fn env(value: &'static str) -> impl Fn(&str) -> Option<String> {
-            move |key| (key == "MUSTARD_SCRATCH_WARN_BYTES").then(|| value.to_string())
-        }
-        let default = 5 * 1024 * 1024 * 1024;
-        assert_eq!(scratch_warn_bytes(env("2048")), 2048);
-        assert_eq!(scratch_warn_bytes(env("  4096\n")), 4096);
-        assert_eq!(scratch_warn_bytes(env("0")), 0);
-        for invalid in ["", "muito", "-1", "1.5", "5GiB"] {
-            assert_eq!(scratch_warn_bytes(env(invalid)), default, "{invalid:?} is not a byte count");
-        }
-        assert_eq!(scratch_warn_bytes(|_| None), default, "without the variable the default stays");
-        assert_eq!(scratch_warn_bytes(|key| (key == "MUSTARD_OTHER").then(|| "2048".to_string())), default, "only this variable counts");
     }
 
     /// A versão velha do Mustard fala por um dos três lados, e cala quando

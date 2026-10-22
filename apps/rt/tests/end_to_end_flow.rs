@@ -643,9 +643,11 @@ fn survey(project: &Project) {
     survey_with(project, "Combinar o item", GOAL);
 }
 
-/// [`survey`] com o objetivo de título `title` e texto `goal`, que o usuário
-/// diz.
-fn survey_with(project: &Project, title: &str, goal: &str) {
+/// O começo do levantamento: o objetivo de título `title` e texto `goal`, que
+/// o usuário diz, o `grill`, que grava os pontos, e cada ponto com os fatos
+/// somados, ainda aberto. Devolve o número da fala do objetivo, os pontos do
+/// `grill` e o ponto que ficou aberto por último.
+fn open_the_points(project: &Project, title: &str, goal: &str) -> (u64, Vec<Value>, Value) {
     let said = user_says(project, goal);
     project.write("context", &json!({"title": title, "agent": "- conferir pelo teste", "text": goal, "origin": said}));
     let grilled = project.run(&["grill", "--spec", SPEC, "--kinds", "feature", "--full"]);
@@ -656,6 +658,13 @@ fn survey_with(project: &Project, title: &str, goal: &str) {
         let facts = json!([{"text": "A saudação mora no programa.", "source": "src/main.rs:2"}]);
         current = project.write("point", &json!({"replaces": point["id"], "facts": facts}))["point"].clone();
     }
+    (said, points, current)
+}
+
+/// [`survey`] com o objetivo de título `title` e texto `goal`, que o usuário
+/// diz.
+fn survey_with(project: &Project, title: &str, goal: &str) {
+    let (said, points, mut current) = open_the_points(project, title, goal);
     for point in &points {
         let code = current["code"].as_str().expect("the open point").to_string();
         let answer = project.write(
@@ -1365,14 +1374,7 @@ fn the_mcp_search_server_counts_its_calls_in_the_spec_of_the_conversation() {
 fn a_message_said_during_an_open_point_reads_with_the_point_code() {
     let project = Project::new();
     project.open();
-    let said = user_says(&project, GOAL);
-    project.write("context", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": GOAL, "origin": said}));
-    let grilled = project.run(&["grill", "--spec", SPEC, "--kinds", "feature", "--full"]);
-    let mut open = Value::Null;
-    for point in grilled["points"].as_array().expect("the point list") {
-        let facts = json!([{"text": "A saudação mora no programa.", "source": "src/main.rs:2"}]);
-        open = project.write("point", &json!({"replaces": point["id"], "facts": facts}))["point"].clone();
-    }
+    let (_, _, open) = open_the_points(&project, "Combinar o item", GOAL);
     let code = open["code"].as_str().unwrap_or_else(|| panic!("an open point: {open}")).to_string();
     let question = "A saudação muda em todo lugar?";
     let asked = user_says(&project, question);

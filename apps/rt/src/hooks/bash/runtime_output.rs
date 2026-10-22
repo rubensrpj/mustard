@@ -653,8 +653,8 @@ mod tests {
         let ready = format!("{}{}", "x".repeat(2 * READY_EDGE + ELLIPSIS.len()), edges_only[0]);
         assert_eq!(shortened(&ready, &edges_only), None);
 
-        // O trecho de 120 bytes dá 40 do meio, que valem 37 depois da marca, e
-        // faltam 120 para o limite.
+        // O comando passa 120 bytes do limite, e o trecho de 120 bytes dá 40 do
+        // meio, que valem 37 depois da marca: ainda passam 83 bytes do limite.
         let long_file = ["f".repeat(600)];
         let ready = format!("{}{}", "x".repeat(120), long_file[0]);
         let short = shortened(&ready, &long_file).expect("the stretch gives something");
