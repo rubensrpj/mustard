@@ -1610,6 +1610,31 @@ fn an_acronym_explained_in_the_spec_counts_for_the_whole_spec() {
     assert!(call["refusal_detail"].as_str().is_some_and(|detail| detail.contains("MRP")), "the call keeps the reason: {call}");
 }
 
+/// A recusa por texto confuso cita o começo da frase longa; se a frase abre
+/// com uma chave, a chamada recusada guarda o motivo sem a chave: o arquivo
+/// de operações da spec nunca recebe o segredo, e o resto do motivo fica.
+#[test]
+fn a_refusal_detail_quoting_a_key_never_reaches_the_operations_file() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = &dir.path().canonicalize().expect("the folder");
+    let msg = opened_by_a_session(root, "o pedido");
+    let key = "AKIAIOSFODNN7EXAMPLE";
+    let long = format!("{key} {}", vec!["palavra"; 30].join(" "));
+
+    let (code, refused) = write_out(root, "rule", &json!({"title": "Carga do dia", "agent": "- conferir a carga",
+        "text": long, "keys": ["carga"], "example": "A carga sai às oito.", "origin": msg}));
+    assert_ne!(code, Some(0), "{refused}");
+    assert_eq!(refused["reason"], json!("item-unclear"), "{refused}");
+
+    let operations = mustard_core::io::spec_events::operations_file(root, "teste").expect("the operations file");
+    let calls = std::fs::read_to_string(operations).expect("the calls");
+    assert!(!calls.contains(key), "the key reached the operations file: {calls}");
+    let call: Value = serde_json::from_str(calls.lines().last().expect("the refused call")).expect("a call");
+    assert_eq!(call["refusal"], json!("item-unclear"), "{call}");
+    let detail = call["refusal_detail"].as_str().expect("the call keeps the reason");
+    assert!(detail.contains("…") && detail.contains("palavra"), "the reason keeps the rest of the sentence opening: {call}");
+}
+
 /// O objetivo que o painel mostra da spec `teste`, nas três leituras dele: a
 /// visão geral, a tela da spec e a lista das specs.
 fn panel_goals(root: &Path) -> Vec<Value> {

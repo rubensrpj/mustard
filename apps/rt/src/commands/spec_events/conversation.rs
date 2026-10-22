@@ -574,7 +574,9 @@ fn call_fields(command: &str, started: Instant, report: &Value, measured: Map<St
         fields["refusal"] = json!(reason);
     }
     // O que a conferência de escrita achou, na recusa dela ou entre as
-    // recusas juntas: sem isso, só se sabia que o item foi recusado.
+    // recusas juntas: sem isso, só se sabia que o item foi recusado. O
+    // defeito cita o começo da frase do usuário, e a frase pode abrir com uma
+    // chave: o detalhe grava sem ela, como os outros campos.
     let defects: Vec<&str> = std::iter::once(report)
         .chain(report.get("issues").and_then(Value::as_array).into_iter().flatten())
         .filter_map(|issue| issue.get("defects").and_then(Value::as_array))
@@ -582,7 +584,7 @@ fn call_fields(command: &str, started: Instant, report: &Value, measured: Map<St
         .filter_map(Value::as_str)
         .collect();
     if !ok && !defects.is_empty() {
-        fields["refusal_detail"] = json!(defects.join("; "));
+        fields["refusal_detail"] = json!(without_secrets(&defects.join("; ")));
     }
     let mut fields = draft(fields);
     fields.extend(measured);
