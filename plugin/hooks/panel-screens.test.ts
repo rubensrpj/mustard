@@ -1527,6 +1527,8 @@ for(const surface of SURFACES)test(`the waves screen pages through every wave, n
     const tree:any=await f.pane.drawn();
     seen.push(...reading(tree).filter(value=>/^Onda \d+$/.test(value)).map(value=>Number(value.slice(5))));
     await has(f.pane,`página ${page} de 26`);
+    // Entre a primeira e a última, as duas páginas: no terminal a anterior no r e a seguinte no m.
+    if(page===2)expect(hotkeys(tree)).toEqual(surface==='terminal'?['go-settings: a','go-usage: c','back: v','waves-previous: r','waves-next: m']:[]);
     if(page<26)await f.pane.press({key:'waves-next'});
   }
   expect(seen).toEqual(Array.from({length:208},(_,n)=>208-n));
