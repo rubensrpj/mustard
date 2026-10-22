@@ -8,7 +8,10 @@
 //! A sessão A abre a spec e fala; ela termina sem `/clear` — o usuário saiu,
 //! a janela fechou. A sessão B retoma a spec e grava: a gravação não avisa
 //! que outra conversa está na obra, porque a sessão A já não está ligada a
-//! ela. Tudo pelo binário, com o JSON dos ganchos e os comandos do uso real.
+//! ela. A mesma sessão A, retomada pelo mesmo id, volta sem ligação e o início
+//! dela manda rodar o `resume`. O gancho e o comando sem sessão nenhuma não
+//! decidem spec pela branch. Tudo pelo binário, com o JSON dos ganchos e os
+//! comandos do uso real.
 
 #[path = "support/binary.rs"]
 mod binary;
@@ -73,9 +76,14 @@ fn binary(root: &Path, home: &Path, session: Option<&str>, args: &[&str], stdin:
     String::from_utf8_lossy(&child.wait_with_output().expect("the binary finishes").stdout).to_string()
 }
 
-/// O gancho `event` com o JSON que o Claude Code entrega.
-fn hook(root: &Path, home: &Path, event: &str, payload: &Value) {
-    binary(root, home, None, &["on", event], &payload.to_string());
+/// O gancho `event` com o JSON que o Claude Code entrega. Devolve o que ele
+/// disse ao assistente, ou vazio.
+fn hook(root: &Path, home: &Path, event: &str, payload: &Value) -> String {
+    let out = binary(root, home, None, &["on", event], &payload.to_string());
+    serde_json::from_str::<Value>(out.trim())
+        .ok()
+        .and_then(|v| v.pointer("/hookSpecificOutput/additionalContext").and_then(Value::as_str).map(str::to_string))
+        .unwrap_or_default()
 }
 
 /// Um comando `run` da conversa da sessão `session`, que responde JSON.
@@ -114,4 +122,70 @@ fn a_session_ended_without_clear_no_longer_counts_as_another_conversation() {
 
     assert_eq!(written["ok"], json!(true), "{written}");
     assert!(!written.to_string().contains(FIRST), "the ended session is not another conversation: {written}");
+}
+
+/// O arquivo de eventos da spec [`SPEC`], linha a linha.
+fn spec_events(root: &Path) -> Vec<String> {
+    let file = root.join(".claude/spec").join(SPEC).join("spec.ndjson");
+    std::fs::read_to_string(file).expect("the spec file").lines().map(str::to_string).collect()
+}
+
+/// O arquivo de operações da spec [`SPEC`], onde moram as chamadas; vazio
+/// enquanto nenhuma foi gravada.
+fn spec_operations(root: &Path) -> String {
+    std::fs::read_to_string(root.join(".claude/mustard/operations").join(SPEC).with_extension("ndjson")).unwrap_or_default()
+}
+
+/// O gancho e o comando que chegam sem sessão nenhuma não decidem a spec pela
+/// branch: a fala não entra na spec do checkout e a chamada não é gravada nas
+/// operações dela. A conversa ligada, no mesmo projeto, grava as duas.
+#[test]
+fn a_hook_and_a_command_without_a_session_decide_no_spec_by_the_branch() {
+    let (_dir, root, home) = project();
+    let cwd = root.to_string_lossy().to_string();
+    let opened = run(&root, &home, FIRST, &["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    assert_eq!(opened["ok"], json!(true), "{opened}");
+    let events = spec_events(&root);
+    let operations = spec_operations(&root);
+
+    hook(&root, &home, "UserPromptSubmit",
+        &json!({"hook_event_name": "UserPromptSubmit", "prompt": "uma fala sem sessão nenhuma", "cwd": cwd}));
+    binary(&root, &home, None, &["run", "find", "leitura"], "");
+
+    assert_eq!(spec_events(&root), events, "the message of a hook without a session stays out of the branch spec");
+    assert_eq!(spec_operations(&root), operations, "the call of a command without a session stays out of the branch spec");
+
+    hook(&root, &home, "UserPromptSubmit",
+        &json!({"hook_event_name": "UserPromptSubmit", "prompt": "uma fala da conversa ligada", "session_id": FIRST, "cwd": cwd}));
+    binary(&root, &home, Some(FIRST), &["run", "find", "leitura"], "");
+
+    assert_eq!(spec_events(&root).len(), events.len() + 1, "the bound conversation records its message");
+    assert_ne!(spec_operations(&root), operations, "the bound conversation records its call");
+}
+
+/// A conversa que acabou e volta pelo mesmo id (`source: resume`) está sem
+/// ligação: o início dela manda rodar o `resume`, e depois de rodá-lo o aviso
+/// some.
+#[test]
+fn a_resumed_conversation_without_the_binding_is_told_to_run_resume() {
+    let (_dir, root, home) = project();
+    let cwd = root.to_string_lossy().to_string();
+    let opened = run(&root, &home, FIRST, &["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    assert_eq!(opened["ok"], json!(true), "{opened}");
+    let start = json!({"hook_event_name": "SessionStart", "source": "resume", "session_id": FIRST, "cwd": cwd});
+
+    let bound = hook(&root, &home, "SessionStart", &start);
+    assert!(bound.contains("Retomada: spec fim"), "the bound conversation still gets the resume line:\n{bound}");
+    assert!(!bound.contains("não está ligada"), "a bound conversation is not told to bind:\n{bound}");
+
+    hook(&root, &home, "SessionEnd", &json!({"hook_event_name": "SessionEnd", "reason": "logout", "session_id": FIRST, "cwd": cwd}));
+    let unbound = hook(&root, &home, "SessionStart", &start);
+    assert!(unbound.contains("Retomada: spec fim"), "{unbound}");
+    assert!(unbound.contains("não está ligada"), "the unbound conversation is told so:\n{unbound}");
+    assert!(unbound.contains("mustard-rt run resume"), "and told the command that binds it:\n{unbound}");
+
+    let resumed = run(&root, &home, FIRST, &["resume"]);
+    assert_eq!(resumed["ok"], json!(true), "{resumed}");
+    let again = hook(&root, &home, "SessionStart", &start);
+    assert!(!again.contains("não está ligada"), "after the resume the notice is gone:\n{again}");
 }

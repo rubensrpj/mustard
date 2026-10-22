@@ -354,7 +354,7 @@ fn user_answers(project: &Project, question: &str, options: &[&str], answer: &st
 /// gancho gravou, o código dela e o texto do pedido.
 fn request_sent_for_an_answer(answered: impl Fn(&Project) -> u64) -> (SpecEvent, String, String) {
     let project = Project::new();
-    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    project.open();
     let said = survey(&project);
     let answer = answered(&project);
     let criterion = project.write(

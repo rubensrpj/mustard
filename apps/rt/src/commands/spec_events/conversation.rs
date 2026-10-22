@@ -757,6 +757,9 @@ mod tests {
         assert!(!text.contains("private code sentinel") && !text.contains("private prompt sentinel"));
     }
 
+    /// A sessão das conversas destes testes: a que abriu a spec.
+    const SESSION: &str = "s1";
+
     /// Um projeto com a spec `spec` aberta e o checkout na branch dela.
     fn project_on(spec: &str) -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -765,7 +768,7 @@ mod tests {
         stand_on_spec_branch(root, spec);
         record_open(root, spec, &format!("feature/{spec}"), "dev").expect("open");
         // A conversa dos ganchos destes testes abriu a spec.
-        crate::shared::context::session::bind_session_spec(&root.to_string_lossy(), "s1", spec);
+        crate::shared::context::session::bind_session_spec(&root.to_string_lossy(), SESSION, spec);
         dir
     }
 
@@ -782,8 +785,8 @@ mod tests {
     fn the_conversation_lands_in_the_current_spec() {
         let dir = project_on("conversa");
         let root = dir.path();
-        let asked = record_message(root, None, "arrume o login").expect("message recorded");
-        record_response(root, None, "Arrumei.").expect("response recorded");
+        let asked = record_message(root, Some(SESSION), "arrume o login").expect("message recorded");
+        record_response(root, Some(SESSION), "Arrumei.").expect("response recorded");
 
         let message = &events_of(root, "conversa", "message")[0];
         assert_eq!((message["author"].as_str(), message["text"].as_str()), (Some("user"), Some("arrume o login")));
@@ -817,8 +820,8 @@ mod tests {
         let root = dir.path();
         let path = mustard_core::io::spec_events::spec_file(root, "ganchos").unwrap();
         let before = std::fs::read_to_string(&path).unwrap();
-        record_hook(root, None, "command_guard", HookAction::Block, "Bash", "apaga trabalho").expect("hook");
-        record_injection(root, None, "prompt_entry", "uma linha").expect("injection");
+        record_hook(root, Some(SESSION), "command_guard", HookAction::Block, "Bash", "apaga trabalho").expect("hook");
+        record_injection(root, Some(SESSION), "prompt_entry", "uma linha").expect("injection");
 
         assert_eq!(std::fs::read_to_string(&path).unwrap(), before, "the spec is left as it was");
         let observed = recorded_operations(root, "ganchos");
@@ -861,18 +864,18 @@ mod tests {
         let dir = project_on("acrescenta");
         let root = dir.path();
         let path = mustard_core::io::spec_events::spec_file(root, "acrescenta").unwrap();
-        let first = record_message(root, None, "primeira").expect("first message");
+        let first = record_message(root, Some(SESSION), "primeira").expect("first message");
         let cut = first + 5;
         let before = format!("{}{{\"v\":1,\"id\":{cut},\"code\":\"MSTD-MSG-0", std::fs::read_to_string(&path).unwrap());
         std::fs::write(&path, &before).unwrap();
 
-        let asked = record_message(root, None, "segunda").expect("message recorded");
+        let asked = record_message(root, Some(SESSION), "segunda").expect("message recorded");
         let after = std::fs::read_to_string(&path).unwrap();
         assert!(after.starts_with(&before), "the message rewrote what was there:\n{after}");
         assert!(after[before.len()..].starts_with('\n'), "the message starts on a new line");
         assert_eq!(asked, cut + 1, "the next number counts the cut line");
 
-        let answered = record_response(root, None, "Feito.").expect("response recorded");
+        let answered = record_response(root, Some(SESSION), "Feito.").expect("response recorded");
         let last = std::fs::read_to_string(&path).unwrap();
         assert!(last.starts_with(&after), "the answer rewrote what was there:\n{last}");
         assert_eq!(answered, asked + 1);
@@ -889,13 +892,13 @@ mod tests {
     fn an_observation_only_appends_its_line_to_the_operations_file() {
         let dir = project_on("operacoes");
         let root = dir.path();
-        record_hook(root, None, "command_guard", HookAction::Warn, "Bash", "primeiro").expect("first hook");
+        record_hook(root, Some(SESSION), "command_guard", HookAction::Warn, "Bash", "primeiro").expect("first hook");
         let path = mustard_core::io::spec_events::operations_file(root, "operacoes").unwrap();
         let mut before = std::fs::read_to_string(&path).unwrap();
         before.push_str("{\"v\":1,\"id\":7,\"code\":\"MSTD-HOOK-0\n");
         std::fs::write(&path, &before).unwrap();
 
-        let id = record_hook(root, None, "command_guard", HookAction::Block, "Bash", "segundo").expect("hook recorded");
+        let id = record_hook(root, Some(SESSION), "command_guard", HookAction::Block, "Bash", "segundo").expect("hook recorded");
         let after = std::fs::read_to_string(&path).unwrap();
         assert!(after.starts_with(&before), "the observation rewrote what was there:\n{after}");
         assert_eq!(id, 8);
@@ -934,7 +937,7 @@ mod tests {
         let root = dir.path();
         let text = "x".repeat(1000);
         let injection = || draft(json!({"author": "hook", "hook": "prompt_entry", "chars": 1000, "text": text}));
-        record_hook(root, None, "command_guard", HookAction::Warn, "Bash", "antigo").expect("hook");
+        record_hook(root, Some(SESSION), "command_guard", HookAction::Warn, "Bash", "antigo").expect("hook");
         for _ in 0..12 {
             observe(root, "teto", "injection", (0..100).map(|_| injection()).collect()).expect("recorded");
         }
@@ -944,7 +947,7 @@ mod tests {
 
         let next = observe(root, "teto", "injection", vec![injection()]).expect("recorded")[0];
         assert_eq!(next, 1202, "the numbers go on from where they were");
-        let hook = record_hook(root, None, "command_guard", HookAction::Block, "Bash", "novo").expect("hook");
+        let hook = record_hook(root, Some(SESSION), "command_guard", HookAction::Block, "Bash", "novo").expect("hook");
         let log = recorded_operations(root, "teto");
         let ids: Vec<u64> = log.events.iter().map(|e| e.id).collect();
         assert_eq!(ids, (1..=1203).collect::<Vec<u64>>(), "every event once, in order");
@@ -1012,9 +1015,9 @@ mod tests {
     fn only_the_answer_before_any_message_goes_without_reply_to() {
         let dir = project_on("abertura");
         let root = dir.path();
-        record_response(root, None, "Sugiro um objetivo.").expect("the opening answer is recorded");
-        let asked = record_message(root, None, "pode usar essa").expect("message");
-        record_response(root, None, "Gravei.").expect("response");
+        record_response(root, Some(SESSION), "Sugiro um objetivo.").expect("the opening answer is recorded");
+        let asked = record_message(root, Some(SESSION), "pode usar essa").expect("message");
+        record_response(root, Some(SESSION), "Gravei.").expect("response");
         let responses = events_of(root, "abertura", "response");
         assert_eq!(responses.len(), 2);
         assert_eq!(responses[0].get("reply_to"), None);
@@ -1040,11 +1043,11 @@ mod tests {
             std::thread::scope(|scope| {
                 scope.spawn(|| {
                     gate.wait();
-                    record_message(root, None, "pode usar essa")
+                    record_message(root, Some(SESSION), "pode usar essa")
                 });
                 scope.spawn(|| {
                     gate.wait();
-                    record_response(root, None, "Sugiro um objetivo.")
+                    record_response(root, Some(SESSION), "Sugiro um objetivo.")
                 });
             });
             let log = DiskSpecState::new(root).log("junto").expect("log");

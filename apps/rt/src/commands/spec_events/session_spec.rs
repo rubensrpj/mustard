@@ -32,13 +32,10 @@ pub(crate) fn unbind(root: &Path, session: Option<&str>) {
 
 /// A spec ligada à conversa da sessão `session`, no projeto visto de `root`,
 /// ou a variável `MUSTARD_ACTIVE_SPEC`, quando dita. Sem sessão nenhuma, fora
-/// de uma conversa, vale a escada da spec atual, que lê a branch do checkout
-/// em `root`.
+/// de uma conversa, não há spec da conversa: a branch do checkout não a
+/// decide.
 pub(crate) fn bound(root: &Path, session: Option<&str>) -> Option<String> {
-    match session {
-        Some(_) => crate::shared::spec_state::conversation_bound_spec(&store::spec_root(root).to_string_lossy(), session),
-        None => crate::shared::spec_state::conversation_bound_spec(&root.to_string_lossy(), None),
-    }
+    crate::shared::spec_state::conversation_bound_spec(&store::spec_root(root).to_string_lossy(), session)
 }
 
 /// A spec em que a gravação do tipo `event_type` sem `--spec` entra, no

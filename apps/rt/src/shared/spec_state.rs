@@ -85,15 +85,13 @@ pub(crate) fn active_spec(root: &str, session: Option<&str>) -> Option<String> {
 /// A spec da conversa da sessão `session` no projeto em `root`: a variável
 /// `MUSTARD_ACTIVE_SPEC`, quando dita, e depois a spec que a abertura ou a
 /// retomada ligou à sessão. A branch não conta: uma conversa paralela na mesma
-/// branch não tem ligação e fica sem spec. Sem sessão nenhuma, fora de uma
-/// conversa, vale a escada de [`active_spec`].
+/// branch não tem ligação e fica sem spec. Sem sessão nenhuma, nada liga a
+/// conversa a uma spec, e a branch também não a decide: quem chama sem sessão
+/// fica sem spec da conversa.
 #[must_use]
 pub(crate) fn conversation_bound_spec(root: &str, session: Option<&str>) -> Option<String> {
-    let Some(session) = session else {
-        return active_spec(root, None);
-    };
     let env = std::env::var("MUSTARD_ACTIVE_SPEC").ok();
-    resolve(env.as_deref(), None, spec_for_session(root, session))
+    resolve(env.as_deref(), None, session.and_then(|session| spec_for_session(root, session)))
 }
 
 /// O checkout em que o comando roda, cuja branch diz qual é a spec atual: a

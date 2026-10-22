@@ -9,7 +9,10 @@
 //!    `mustard.json#inject`, que voltam depois de `/clear` e da compactação.
 //! 2. **A retomada** — a spec atual, a fase, o último passo e o próximo item,
 //!    a mesma linha que o `resume` devolve; depois da compactação, o bloco de
-//!    retomada inteiro, o mesmo que o aviso antes dela mostrou.
+//!    retomada inteiro, o mesmo que o aviso antes dela mostrou. Quando a
+//!    conversa da sessão não está ligada à spec — a que voltou pelo mesmo id
+//!    ou depois do `/clear` —, a linha leva o aviso que manda rodar o
+//!    `resume`.
 //! 3. **O painel local** — `/mustard:mods` reúne projeto, specs e consumo.
 //!    O início da sessão não gera páginas ou lotes externos.
 //! 4. **As pendências** — uma linha só, com a contagem.
@@ -337,7 +340,9 @@ fn declared_notice(probe: &Probe<'_>) -> Option<String> {
 }
 
 /// A retomada da spec atual: depois da compactação, o bloco de retomada; nas
-/// outras aberturas, a linha.
+/// outras aberturas, a linha, e o aviso de que a conversa não está ligada à
+/// spec quando a abertura, a retomada ou o `/clear` deixou a sessão sem
+/// ligação ([`unbound_notice`]).
 ///
 /// O bloco nunca cede o lugar, e o texto declarado, onde mora o mapa do início
 /// da sessão, sairia no lugar dele quando os dois passam do teto. As listas do
@@ -349,8 +354,12 @@ fn resume_notice(probe: &Probe<'_>) -> Option<String> {
     use crate::commands::flow::resume::{current_block, current_block_within, current_line, lost_by_clear};
     if !probe.compacted {
         let line = current_line(probe.root, probe.session)?;
-        return Some(match probe.cleared.then(|| lost_by_clear(probe.root, probe.session)).flatten() {
+        let line = match probe.cleared.then(|| lost_by_clear(probe.root, probe.session)).flatten() {
             Some(lost) => format!("{line}\n{lost}"),
+            None => line,
+        };
+        return Some(match unbound_notice(probe) {
+            Some(unbound) => format!("{line}\n{unbound}"),
             None => line,
         });
     }
@@ -360,6 +369,18 @@ fn resume_notice(probe: &Probe<'_>) -> Option<String> {
         return Some(block);
     }
     current_block(probe.root, probe.session)
+}
+
+/// O aviso de que a conversa da sessão não está ligada a nenhuma spec, com o
+/// comando que a liga. A sessão que terminou perde a ligação, e a que volta
+/// pelo mesmo id (`claude --resume`) ou depois do `/clear` começa sem ela: sem
+/// o `resume`, a fala e a resposta dela não entrariam na spec. `None` sem
+/// sessão, que nada liga, e com a conversa ligada. Depois da compactação a
+/// sessão é a mesma e a ligação segue, por isso o bloco não leva o aviso.
+fn unbound_notice(probe: &Probe<'_>) -> Option<String> {
+    let session = probe.session?;
+    let unbound = crate::commands::spec_events::session_spec::bound(probe.root, Some(session)).is_none();
+    unbound.then(|| translate("resume.unbound", probe.lang).to_string())
 }
 
 /// Quantos bytes do teto sobram ao bloco de retomada ao lado do texto

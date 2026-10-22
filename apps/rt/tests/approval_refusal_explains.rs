@@ -375,17 +375,23 @@ impl GoalProject {
     /// O clique em "Aprovar" na pergunta da aprovação, pela conversa da
     /// sessão `session`. Devolve o que a testemunha disse ao assistente.
     fn approve_as(&self, session: &str) -> String {
-        self.hook(
-            "PostToolUse",
-            &json!({
-                "hook_event_name": "PostToolUse",
-                "tool_name": "AskUserQuestion",
-                "tool_input": {"questions": [{"question": QUESTION, "options": [{"label": "Aprovar"}, {"label": "Ajustar"}]}]},
-                "tool_response": {"questions": [], "answers": {QUESTION: "Aprovar"}},
-                "session_id": session,
-                "cwd": self.root.to_string_lossy(),
-            }),
-        )
+        self.click_approve(Some(session))
+    }
+
+    /// O clique em "Aprovar" que chega sem sessão nenhuma no JSON do gancho
+    /// (`session` vazio) ou com a sessão dita.
+    fn click_approve(&self, session: Option<&str>) -> String {
+        let mut payload = json!({
+            "hook_event_name": "PostToolUse",
+            "tool_name": "AskUserQuestion",
+            "tool_input": {"questions": [{"question": QUESTION, "options": [{"label": "Aprovar"}, {"label": "Ajustar"}]}]},
+            "tool_response": {"questions": [], "answers": {QUESTION: "Aprovar"}},
+            "cwd": self.root.to_string_lossy(),
+        });
+        if let Some(session) = session {
+            payload["session_id"] = json!(session);
+        }
+        self.hook("PostToolUse", &payload)
     }
 
     /// A fase do último `state` da spec.
@@ -431,6 +437,25 @@ fn a_click_from_an_unbound_session_records_nothing_in_the_branch_spec() {
     assert!(said.contains("nada foi gravado"), "the witness says nothing was recorded:\n{said}");
 
     let bound = project.approve_as(GOAL_SESSION);
+
+    assert_eq!(project.phase().as_deref(), Some("approved"), "the bound conversation approves:\n{bound}");
+}
+
+/// O clique cujo JSON do gancho não traz sessão nenhuma não decide spec
+/// nenhuma: a branch do checkout espera aprovação, e ele não a aprova nem
+/// grava a resposta nela. Com a sessão ligada, o mesmo clique aprova.
+#[test]
+fn a_click_without_a_session_decides_no_spec_by_the_branch() {
+    let project = GoalProject::new();
+    project.plan_passed();
+    let before = project.events().len();
+
+    let said = project.click_approve(None);
+
+    assert_eq!(project.phase().as_deref(), Some("plan"), "the branch spec still awaits approval:\n{said}");
+    assert_eq!(project.events().len(), before, "nothing of the click enters the spec");
+
+    let bound = project.click_approve(Some(GOAL_SESSION));
 
     assert_eq!(project.phase().as_deref(), Some("approved"), "the bound conversation approves:\n{bound}");
 }

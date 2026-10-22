@@ -175,6 +175,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("resume.line", Locale::EnUs) => "Resume: spec {spec}, phase {phase}; last step: {last}; next: {next}.",
         ("resume.none", Locale::PtBr) => "nenhum",
         ("resume.none", Locale::EnUs) => "none",
+        ("resume.unbound", Locale::PtBr) => {
+            "Esta conversa não está ligada à spec: o que se diz aqui não entra nela. Rode `mustard-rt run resume` (ou `/mustard:continue`) para ligá-la."
+        }
+        ("resume.unbound", Locale::EnUs) => {
+            "This conversation is not bound to the spec: what is said here does not enter it. Run `mustard-rt run resume` (or `/mustard:continue`) to bind it."
+        }
         ("resume.no_spec", Locale::PtBr) => {
             "Nenhuma spec em andamento neste projeto. Para começar uma obra, abra a spec com `mustard-rt run open`."
         }
@@ -2470,7 +2476,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 361, 0xa329_5790_bca2_57ff);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 362, 0x81c7_a863_c52c_7189);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
@@ -2561,6 +2567,7 @@ mod tests {
             ("discard.done", &[][..]),
             ("resume.line", &["{spec}", "{phase}", "{last}", "{next}"][..]),
             ("resume.none", &[][..]),
+            ("resume.unbound", &[][..]),
             ("resume.wave", &["{n}"][..]),
             ("resume.next.survey", &[][..]),
             ("resume.next.plan", &["{question}", "{option}"][..]),

@@ -3270,12 +3270,17 @@ mod tests {
         }
     }
 
-    /// Um projeto com a spec `spec` aberta, o checkout na branch dela e o
-    /// mapa da busca com filtro.
+    /// A sessão da conversa que abriu a spec de [`search_project_on`]: as
+    /// chamadas dela ficam na spec.
+    const SPEC_SESSION: &str = "sessao-da-spec";
+
+    /// Um projeto com a spec `spec` aberta pela conversa [`SPEC_SESSION`], o
+    /// checkout na branch dela e o mapa da busca com filtro.
     fn search_project_on(spec: &str) -> tempfile::TempDir {
         let dir = search_project(FILTER_MAP, &json!({}));
         crate::shared::spec_state::stand_on_spec_branch(dir.path(), spec);
         crate::commands::spec_events::write::record_open(dir.path(), spec, &format!("feature/{spec}"), "dev").unwrap();
+        crate::shared::context::session::bind_session_spec(&dir.path().to_string_lossy(), SPEC_SESSION, spec);
         dir
     }
 
@@ -3301,7 +3306,7 @@ mod tests {
     fn a_filtered_search_in_an_open_spec_records_the_call_with_time_tokens_and_cost() {
         let dir = search_project_on("busca");
         let fake = FakeFilter::scoring(&[0.7, 0.9, 0.8]);
-        searched(&search_opts(dir.path(), "pedido", Some("onde o pedido é gravado"), None), &fake.assemble());
+        searched(&search_opts(dir.path(), "pedido", Some("onde o pedido é gravado"), Some(SPEC_SESSION)), &fake.assemble());
         let calls = calls_of(dir.path(), "busca");
         assert_eq!(calls.len(), 1, "{calls:?}");
         let call = &calls[0];
@@ -3319,7 +3324,7 @@ mod tests {
     #[test]
     fn a_search_without_the_filter_records_no_call() {
         let dir = search_project_on("sem-filtro");
-        searched(&search_opts(dir.path(), "pedido", Some("onde o pedido é gravado"), None), &|_, _| Err(FilterError::MissingKey));
+        searched(&search_opts(dir.path(), "pedido", Some("onde o pedido é gravado"), Some(SPEC_SESSION)), &|_, _| Err(FilterError::MissingKey));
         assert!(calls_of(dir.path(), "sem-filtro").is_empty());
     }
 
@@ -3506,7 +3511,7 @@ mod tests {
     fn a_failing_filter_records_the_reason_in_the_call() {
         let dir = search_project_on("falha");
         let fake = FakeFilter::failing(FilterError::Refused { status: 429 });
-        searched(&search_opts(dir.path(), "pedido", None, None), &fake.assemble());
+        searched(&search_opts(dir.path(), "pedido", None, Some(SPEC_SESSION)), &fake.assemble());
         let calls = calls_of(dir.path(), "falha");
         assert_eq!(calls.len(), 1, "{calls:?}");
         assert_eq!(calls[0]["filter"], json!("jev:busy"));
@@ -3527,7 +3532,7 @@ mod tests {
         };
 
         let dir = search_project_on("medida");
-        searched(&search_opts(dir.path(), "pedido", Some("onde o pedido é gravado"), None), &FakeFilter::scoring(&[0.7, 0.9, 0.8]).assemble());
+        searched(&search_opts(dir.path(), "pedido", Some("onde o pedido é gravado"), Some(SPEC_SESSION)), &FakeFilter::scoring(&[0.7, 0.9, 0.8]).assemble());
         let usage = FilterUsage { incomplete: false, input_tokens: 21_000, millis: 40, cost_micro_usd: 882, requests: 3, model: "jev-1.13.0".to_string() };
         record_jev_call(dir.path(), "medida", ITEMS_CALL, Instant::now(), None, Ok(&usage));
         let calls = calls_of(dir.path(), "medida");
@@ -3539,14 +3544,14 @@ mod tests {
         // Outro nome de filtro, com a mesma medida: a gravação leva o nome do
         // filtro montado, e não um nome fixo.
         let other = search_project_on("outro-filtro");
-        searched(&search_opts(other.path(), "pedido", Some("onde o pedido é gravado"), None), &FakeFilter::scoring(&[0.7, 0.9, 0.8]).assemble_named("outro"));
+        searched(&search_opts(other.path(), "pedido", Some("onde o pedido é gravado"), Some(SPEC_SESSION)), &FakeFilter::scoring(&[0.7, 0.9, 0.8]).assemble_named("outro"));
         let calls = calls_of(other.path(), "outro-filtro");
         assert_eq!(calls.len(), 1, "{calls:?}");
         assert_eq!(measure(&calls[0]), vec![json!("outro"), json!(21_000), json!(882), json!(3), json!("jev-1.13.0")], "{calls:?}");
 
         let failing = search_project_on("falha-medida");
         let refused = FilterError::Refused { status: 429 };
-        searched(&search_opts(failing.path(), "pedido", None, None), &FakeFilter::failing(refused.clone()).assemble());
+        searched(&search_opts(failing.path(), "pedido", None, Some(SPEC_SESSION)), &FakeFilter::failing(refused.clone()).assemble());
         record_jev_call(failing.path(), "falha-medida", ITEMS_CALL, Instant::now(), None, Err(&refused));
         let failed = calls_of(failing.path(), "falha-medida");
         assert_eq!(failed.len(), 2, "{failed:?}");
@@ -3624,7 +3629,7 @@ mod tests {
         written_by_the_scan(root, &serde_json::from_str(FILTER_MAP).unwrap());
         opened_by_an_older_scan(root);
         let fake = FakeFilter::scoring(&[0.9]);
-        let report = searched(&search_opts(root, "pedido", Some("onde o pedido é gravado"), None), &fake.assemble());
+        let report = searched(&search_opts(root, "pedido", Some("onde o pedido é gravado"), Some(SPEC_SESSION)), &fake.assemble());
         assert_eq!(report["ok"], json!(false), "{report}");
         assert_eq!(report["reason"], json!("map-unfilled"), "{report}");
         let refusal = MapRefusal::MapUnfilled { blocks: vec!["decls".to_string()] };
