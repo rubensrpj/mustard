@@ -565,9 +565,7 @@ fn run_close(
     // das pendências. A função antiga de fechar, que grava arquivos do formato
     // velho, não é chamada.
     crate::commands::spec_events::write::record_phase(&opts.root, &spec, "closed", session);
-    if let Some(sid) = session {
-        crate::shared::context::session::unbind_session_spec(&opts.root.to_string_lossy(), sid);
-    }
+    crate::commands::spec_events::session_spec::unbind(&opts.root, session);
     // A obra fechou: ninguém mais trabalha nas cópias dela, e todas saem
     // daqui, cada vaga com o que tiver dentro e com a compilação — o que o
     // revisor cortou para ver a prova cair não é trabalho de ninguém. A que

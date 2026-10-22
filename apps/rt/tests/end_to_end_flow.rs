@@ -503,11 +503,17 @@ impl Project {
 
     /// Um comando `run` que pode recusar: a resposta vem como veio.
     fn answer(&self, args: &[&str]) -> Value {
+        self.answer_in(None, &self.root, args)
+    }
+
+    /// Como [`Self::answer`], rodando de dentro de `dir` e, com `session`,
+    /// na conversa dela.
+    fn answer_in(&self, session: Option<&str>, dir: &Path, args: &[&str]) -> Value {
         let mut owned: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
         if matches!(args.first(), Some(&"round" | &"close")) {
             let previous = args.windows(2).find(|pair| pair[0] == "--report").map(|pair| pair[1]).unwrap_or_default();
             let report = wave_review::review_report(&self.root, SPEC, previous, |wave| {
-                self.answer(&["review-wave", "--wave", &wave.to_string(), "--spec", SPEC])
+                self.answer_in(session, dir, &["review-wave", "--wave", &wave.to_string(), "--spec", SPEC])
             });
             if !report.is_empty() {
                 if let Some(at) = owned.iter().position(|arg| arg == "--report") {
@@ -519,7 +525,7 @@ impl Project {
         }
         let mut all = vec!["run"];
         all.extend(owned.iter().map(String::as_str));
-        let out = self.command(&all, "");
+        let out = self.command_as(session, dir, &all, "");
         let text = String::from_utf8_lossy(&out.stdout).to_string();
         serde_json::from_str(&text)
             .unwrap_or_else(|e| panic!("{args:?} did not answer JSON ({e}): {text}{}", String::from_utf8_lossy(&out.stderr)))
@@ -847,6 +853,13 @@ fn closed_with_one_wave(project: &Project) -> Vec<String> {
 
 /// [`closed_with_one_wave`] com o objetivo de título `title` e texto `goal`.
 fn closed_with_goal(project: &Project, title: &str, goal: &str) -> Vec<String> {
+    closed_by(project, title, goal, &|args| project.run(args))
+}
+
+/// [`closed_with_goal`] com as duas chamadas do `close` feitas por `closing`:
+/// é por ela que um teste fecha a spec de dentro de uma pasta e de uma
+/// conversa.
+fn closed_by(project: &Project, title: &str, goal: &str, closing: &dyn Fn(&[&str]) -> Value) -> Vec<String> {
     project.open();
     survey_with(project, title, goal);
     plan(project);
@@ -863,12 +876,12 @@ fn closed_with_goal(project: &Project, title: &str, goal: &str) -> Vec<String> {
     project.finish_tasks(1);
     project.run(&["write", "delivered", "--spec", SPEC, "--json", &delivered.to_string()]);
     project.run(&["round", "--dispatch", "--spec", SPEC]);
-    project.run(&["close", "--spec", SPEC]);
+    closing(&["close", "--spec", SPEC]);
     let verdict = json!({"final": true, "result": "approved", "text": "A saudação mudou.",
         "agreed": agreed_all_met(project)});
     project.read_review();
     project.run(&["write", "verdict", "--spec", SPEC, "--json", &verdict.to_string()]);
-    let closed = project.run(&["close", "--spec", SPEC]);
+    let closed = closing(&["close", "--spec", SPEC]);
     let line = closed["command"].as_str().expect("the pr-open line").to_string();
     line.split_whitespace().skip(2).map(str::to_string).collect()
 }
@@ -1265,6 +1278,51 @@ fn the_conversation_opened_at_the_root_records_from_a_subfolder() {
     let resumed = project.command_as(Some(escaping), &project.root, &["run", "resume"], "");
     assert!(resumed.status.success(), "{}", String::from_utf8_lossy(&resumed.stdout));
     assert!(!project.root.join("fora").exists(), "a session named outside the sessions folder writes nothing out there");
+}
+
+/// A marca da ligação da conversa `session` com a spec, onde a abertura a
+/// grava: na raiz do projeto, e não na pasta de onde a conversa roda.
+fn binding_mark(project: &Project, session: &str) -> PathBuf {
+    project.root.join(".claude/.session").join(session).join("active-spec")
+}
+
+/// O fechamento rodado de uma subpasta, pela conversa que abriu a spec na
+/// raiz, apaga a ligação que a abertura gravou lá: a conversa seguinte não
+/// grava mais na spec fechada.
+#[test]
+fn closing_from_a_subfolder_clears_the_binding_the_open_wrote_at_the_root() {
+    let project = Project::new();
+    let sub = project.root.join("src");
+    let mark = binding_mark(&project, SESSION);
+
+    let line = closed_by(&project, "Combinar o item", GOAL, &|args| {
+        assert!(mark.exists(), "the conversation stays bound until the spec closes: {}", mark.display());
+        let report = project.answer_in(Some(SESSION), &sub, args);
+        assert_eq!(report["ok"], json!(true), "{args:?}: {report}");
+        report
+    });
+
+    assert!(!line.is_empty(), "the close still names the pull request line");
+    assert!(!mark.exists(), "the closed spec leaves no binding mark at the root: {}", mark.display());
+}
+
+/// O descarte rodado de uma subpasta, pela conversa que abriu a spec na raiz,
+/// apaga a ligação que a abertura gravou lá.
+#[test]
+fn discarding_from_a_subfolder_clears_the_binding_the_open_wrote_at_the_root() {
+    let project = Project::new();
+    let sub = project.root.join("src");
+    let mark = binding_mark(&project, SESSION);
+    project.open();
+    assert!(mark.exists(), "the open binds the conversation at the root: {}", mark.display());
+
+    let preview = project.answer_in(Some(SESSION), &sub, &["discard", "--spec", SPEC]);
+    let token = preview["token"].as_str().expect("the discard code").to_string();
+    assert!(mark.exists(), "the preview discards nothing");
+    let done = project.answer_in(Some(SESSION), &sub, &["discard", "--spec", SPEC, "--confirm", &token]);
+
+    assert_eq!(done["ok"], json!(true), "{done}");
+    assert!(!mark.exists(), "the discarded spec leaves no binding mark at the root: {}", mark.display());
 }
 
 /// Outra pessoa mergeia o pull request do submódulo, pelo `gh` de fora do

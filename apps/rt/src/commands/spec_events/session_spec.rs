@@ -20,6 +20,16 @@ pub(crate) fn bind(root: &Path, session: Option<&str>, spec: &str) {
     }
 }
 
+/// Solta a ligação da conversa da sessão `session` com a spec do projeto visto
+/// de `root`, quando a spec fecha ou é descartada: a marca que a abertura
+/// gravou na raiz do projeto é a que sai, mesmo com o comando rodado de uma
+/// subpasta. Sem sessão, fora de uma conversa, nada foi ligado e nada sai.
+pub(crate) fn unbind(root: &Path, session: Option<&str>) {
+    if let Some(session) = session {
+        crate::shared::context::session::unbind_session_spec(&store::spec_root(root).to_string_lossy(), session);
+    }
+}
+
 /// A spec ligada à conversa da sessão `session`, no projeto visto de `root`,
 /// ou a variável `MUSTARD_ACTIVE_SPEC`, quando dita. Sem sessão nenhuma, fora
 /// de uma conversa, vale a escada da spec atual, que lê a branch do checkout
