@@ -188,7 +188,7 @@ pub(crate) fn unanswered_sends(log: &SpecLog) -> BTreeMap<u64, u64> {
 /// pedido, estejam ou não no plano: a leitura que [`unanswered_sends`]
 /// restringe às do plano e que [`waves_left_without_tasks`] restringe às que
 /// saíram dele.
-pub(crate) fn sends_without_return(log: &SpecLog) -> BTreeMap<u64, u64> {
+fn sends_without_return(log: &SpecLog) -> BTreeMap<u64, u64> {
     let verdicts = log.verdicts_by_wave();
     let dispatches=log.last_dispatch_by_wave();
     let mut deliveries: BTreeMap<u64, Vec<u64>> = BTreeMap::new();

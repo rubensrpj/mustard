@@ -4021,45 +4021,6 @@ fn main() { sum_comes_out_right(); double_comes_out_right(); }
         assert_eq!(spec_lines(root), after, "{again}");
     }
 
-    /// A onda que ganhou versão nova de plano depois de sair ainda aceita a
-    /// entrega do agente: ele trabalhou sobre o pedido que recebeu, e a
-    /// mudança não é culpa dele. A entrega entra com o aviso de que o plano
-    /// mudou, e a onda sem envio nenhum segue recusada.
-    ///
-    /// Em campo (21/10/2026) foram 93 das 406 recusas por isso, e foi a causa
-    /// de duas ondas que nunca saíram: a entrega chegava, o plano tinha
-    /// mudado no meio, e o trabalho do agente ia embora.
-    #[test]
-    fn a_delivery_of_a_wave_replanned_while_the_agent_worked_is_accepted() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
-        assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1], "{root:?}");
-
-        // O plano da onda 1 ganha outra versão depois de ela sair.
-        let path = store::spec_file(root, "x").unwrap();
-        let log = store::read(&path).unwrap().unwrap();
-        let planned = log.visible().into_iter().find(|e| e.event_type == "wave" && e.wave() == Some(1)).expect("a onda 1 no plano");
-        let mut fields = planned.fields.clone();
-        for key in ["v", "id", "code", "at", "search", "type", "author"] {
-            fields.remove(key);
-        }
-        fields.insert("replaces".into(), json!(planned.id));
-        fields.insert("done_when".into(), json!("A suíte passa e o teste novo também."));
-        assert_eq!(write(root, "x", "wave", Value::Object(fields))["ok"], json!(true));
-
-        // A entrega do envio que o agente recebeu entra, com o aviso.
-        std::fs::write(root.join("src/a.rs"), "fn one() {}\n// A soma saiu.\n").unwrap();
-        let wrote = returned(root, json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": "a soma sai"}));
-        assert_eq!(wrote["ok"], json!(true), "a entrega do envio que ele recebeu entra: {wrote}");
-        let said = wrote.to_string();
-        assert!(said.contains("plano da onda 1"), "a resposta diz que o plano mudou: {wrote}");
-
-        // A onda que não tem envio nenhum segue recusada.
-        let never = returned(root, json!({"wave": 7, "text": "Saiu.", "files": ["src/a.rs"], "commit": "sete sai"}));
-        assert_eq!(never["reason"], json!("no-open-send"), "{never}");
-    }
-
     /// A volta que a onda grava enquanto a rodada assume a mesma onda — com
     /// as voltas já lidas e a entrega oficial ainda por gravar — espera a
     /// trava do passo do git, que a rodada segura, e é conferida depois: o
