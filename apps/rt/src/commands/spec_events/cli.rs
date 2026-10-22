@@ -90,6 +90,11 @@ pub enum SpecEventsCmd {
         /// not an item code shows a summary by type, with the newest codes.
         #[arg(long)]
         all: bool,
+        /// Only the records of this Claude Code session, in `calls` and
+        /// `metrics`: two conversations in the same project write to the same
+        /// spec, and their usage numbers added up as one.
+        #[arg(long)]
+        session: Option<String>,
         /// Any directory inside the repo. Defaults to the current dir.
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -105,7 +110,9 @@ pub enum SpecEventsCmd {
     /// item, every version of it; by the number, only that version, and the
     /// version it replaced comes back, except on a `task`, where any version
     /// takes out the whole task. A new agreed item written here comes
-    /// in three parts: a short `title` (up to 70 characters), the user's part
+    /// in three parts: a short `title` (the item's own name, up to 70
+    /// characters — not the 60 of a commit or pull request title, which is
+    /// built from the goal's first sentence and is another thing), the user's part
     /// in `text`, which says why by the effect the user sees and carries no
     /// backtick, file path or item code, and the agent's part in `agent`, in
     /// markdown, with files, lines, commands and what to test. A `request` or
@@ -275,8 +282,8 @@ pub fn write_help_for_type(args: &[String]) -> Option<String> {
 /// Dispatch one `spec_events`-family `run` subcommand.
 pub fn dispatch(cmd: SpecEventsCmd) {
     match cmd {
-        SpecEventsCmd::Read { block, spec, term, full, all, root } => {
-            spec_events::read::run(&spec_events::read::ReadOpts { root, spec, block, term }, full, all);
+        SpecEventsCmd::Read { block, spec, term, full, all, session, root } => {
+            spec_events::read::run(&spec_events::read::ReadOpts { root, spec, block, term, session }, full, all);
         }
         SpecEventsCmd::Write { event_type, spec, json, copy, root } => {
             spec_events::write::run(&spec_events::write::WriteOpts { root, spec, event_type, json }, copy);
@@ -385,5 +392,34 @@ mod tests {
         assert!(hint.contains("keys, why"), "{refused}");
         assert_eq!(std::fs::read_to_string(&events).expect("events"), before, "a refusal writes nothing");
         assert_eq!(refused.get("id"), None::<&Value>);
+    }
+}
+
+#[cfg(test)]
+mod title_limits_tests {
+    use clap::{Parser, Subcommand};
+
+    /// O comando montado só para ler a ajuda da família.
+    #[derive(Debug, Parser)]
+    struct Harness {
+        #[command(subcommand)]
+        cmd: super::SpecEventsCmd,
+    }
+
+    /// A ajuda do `write` diz de que é cada teto de título: o de 70 é do nome
+    /// do item, e o de 60 é do título de um commit e de um pull request,
+    /// montado da primeira frase do objetivo. Quem lia a ajuda achava que era
+    /// o mesmo teto com dois valores.
+    #[test]
+    fn the_help_says_what_each_title_limit_is_of() {
+        let tree = super::SpecEventsCmd::augment_subcommands(clap::Command::new("run"));
+        let write = tree.find_subcommand("write").expect("o comando write");
+        let said = write.get_about().map(ToString::to_string).unwrap_or_default();
+        assert!(said.contains("70"), "{said}");
+        assert!(said.contains("60"), "a ajuda cita os dois tetos: {said}");
+        let at = said.find("70").expect("o teto do item");
+        let around = &said[at.saturating_sub(60)..(at + 200).min(said.len())];
+        assert!(around.contains("item"), "o de 70 é do item: {around}");
+        assert!(around.contains("goal") || around.contains("pull request"), "e diz do que é o outro: {around}");
     }
 }

@@ -50,7 +50,7 @@
 
 use std::path::Path;
 
-use mustard_core::domain::config::{AgentSettings, DEFAULT_AGENT_EFFORT};
+use mustard_core::domain::config::{AgentSettings, DEFAULT_AGENT_EFFORT, DEFAULT_AGENT_MODEL};
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::domain::spec_events::{Refusal, SpecLog};
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState as _};
@@ -393,6 +393,24 @@ fn model_alias(model: &str) -> Option<&'static str> {
 /// no ambiente do gancho, é ela o esforço que vale para o agente lançado.
 const EFFORT_VARIABLE: &str = "CLAUDE_CODE_EFFORT_LEVEL";
 
+/// `true` quando `agent` escreve código no projeto, e por isso nunca sai no
+/// modelo pequeno da sessão. O revisor, que só lê, fica de fora.
+fn writes_code(agent: &str) -> bool {
+    agent == "mustard-wave"
+}
+
+/// O modelo que recebe a onda quando o que iria valer é o modelo pequeno da
+/// sessão: o usuário decidiu em 20/10/2026 que código nunca vai no modelo
+/// pequeno, e que o simples vai ao Sonnet.
+///
+/// Sai do apelido que o Mustard já escolheu para a onda, e cai no padrão dos
+/// agentes do projeto ([`DEFAULT_AGENT_MODEL`]) quando o escolhido não tem
+/// apelido ou é o próprio pequeno. Nenhum valor novo nasce aqui: um piso
+/// escrito neste arquivo precisaria de recompilação para mudar.
+fn code_floor(declared: &str, small: &str) -> &'static str {
+    model_alias(declared).filter(|alias| *alias != small).unwrap_or(DEFAULT_AGENT_MODEL)
+}
+
 /// [`launch_settings_with`] com o valor de [`EFFORT_VARIABLE`] do ambiente.
 fn launch_settings(verdict: Verdict, input: &HookInput, ctx: &Ctx) -> Verdict {
     launch_settings_with(verdict, input, ctx, std::env::var(EFFORT_VARIABLE).ok())
@@ -446,6 +464,16 @@ fn launch_settings_with(verdict: Verdict, input: &HookInput, ctx: &Ctx, effort_e
     let effort = asked("effort").unwrap_or(declared.effort);
     let same_model = lower(model).contains(&lower(declared.model)) || lower(declared.model).contains(&lower(model));
     let alias = model_alias(declared.model);
+    // O modelo que vai valer no lançamento: o apelido do declarado, ou o que a
+    // chamada pediu quando o declarado não tem apelido conhecido e por isso
+    // passa como veio. O agente que escreve código nunca sai no modelo pequeno
+    // da sessão, e sobe para [`CODE_MODEL_FLOOR`] — enquanto a decisão do
+    // usuário não estava aqui, uma chamada que pedia o modelo pequeno passava
+    // inteira nesse segundo caso (campo, 21/10/2026).
+    let effective = alias.unwrap_or(model);
+    let small = mustard_core::platform::session_models::CLAUDE_SESSION_MODEL;
+    let raised = writes_code(agent) && model_alias(effective) == Some(small);
+    let floor = code_floor(declared.model, small);
     let lang = ctx.config.language().text_or_default();
     let warning = match alias {
         Some(_) if !(same_model && effort.eq_ignore_ascii_case(declared.effort)) => {
@@ -459,6 +487,18 @@ fn launch_settings_with(verdict: Verdict, input: &HookInput, ctx: &Ctx, effort_e
         }
         _ => None,
     };
+    // A subida de modelo é dita sempre, e some junto com o aviso de modelo
+    // trocado: quem lê precisa saber qual modelo entrou e por quê.
+    let warning = if raised {
+        let slots = [("{agent}", agent), ("{asked_model}", effective), ("{model}", floor)];
+        let raised_text = say("subagent.no_small_model_for_code", lang, &slots);
+        Some(match warning {
+            Some(before) => format!("{raised_text} {before}"),
+            None => raised_text,
+        })
+    } else {
+        warning
+    };
     let (mut tool_input, note) = match verdict {
         Verdict::Allow => (input.tool_input.clone(), None),
         Verdict::Rewrite { tool_input, note } => (tool_input, note),
@@ -469,7 +509,9 @@ fn launch_settings_with(verdict: Verdict, input: &HookInput, ctx: &Ctx, effort_e
         record_effort_used(&project.root, &read.spec, read.wave, held);
     }
     let Some(fields) = tool_input.as_object_mut() else { return with_warning(Verdict::Allow, warning) };
-    if let Some(alias) = alias {
+    if raised {
+        fields.insert("model".into(), json!(floor));
+    } else if let Some(alias) = alias {
         fields.insert("model".into(), json!(alias));
     }
     fields.insert("effort".into(), json!(declared.effort));
@@ -724,9 +766,17 @@ mod tests {
             other => panic!("another host keeps the model, got {other:?}"),
         }
         std::fs::write(root.join("mustard.json"), json!({"agents": {"model": "custom-model-1", "effort": "high"}}).to_string()).unwrap();
+        // O modelo configurado não tem apelido conhecido, então o pedido da
+        // chamada passava como veio — e uma onda pedida no modelo pequeno
+        // saía nele. O usuário decidiu em 20/10/2026 que código nunca vai no
+        // modelo pequeno: a onda sobe para o Sonnet, e o aviso diz por quê.
         let (custom, note) = sent(launch("mustard-wave", json!({"model": "haiku"}), None));
-        assert_eq!((custom["model"].as_str(), custom["effort"].as_str()), (Some("haiku"), Some("xhigh")), "{custom}");
+        assert_eq!((custom["model"].as_str(), custom["effort"].as_str()), (Some("sonnet"), Some("xhigh")), "{custom}");
         assert!(note.contains("custom-model-1"), "the warning stays: {note}");
+        assert!(note.contains("haiku") && note.contains("sonnet"), "the warning says which model went out: {note}");
+        // O revisor só lê, e segue aceitando o modelo pequeno.
+        let (review, _) = sent(launch("mustard-review", json!({"model": "haiku"}), None));
+        assert_eq!(review["model"].as_str(), Some("haiku"), "{review}");
     }
 
     /// The wave reviewer, dispatched with the title and the command that
@@ -776,7 +826,7 @@ mod tests {
         approve(root);
         let (pid, started) = crate::commands::flow::stuck::this_process();
         crate::shared::spec_state::seed_event(root, "x", "send", json!({"wave":1,"role":"wave","text":assembled(root),"lines":1,"chars":8,"mustard":"0",
-            "author":"binary","model":"haiku","effort":"xhigh","claude_pid":pid,"claude_started":started}));
+            "author":"binary","model":"sonnet","effort":"xhigh","claude_pid":pid,"claude_started":started}));
         let canonical = crate::commands::flow::round::wave_dispatch(root, "x", 1, Locale::PtBr);
         let launch = |env: Option<&str>| {
             let mut input = task_input("mustard-wave", &canonical);
@@ -790,8 +840,8 @@ mod tests {
         };
         match launch(None) {
             Verdict::Rewrite { tool_input, note } => {
-                assert_eq!((tool_input["model"].as_str(), tool_input["effort"].as_str()), (Some("haiku"), Some("xhigh")), "{tool_input}");
-                assert!(note.unwrap_or_default().contains("haiku"), "the call asked another model");
+                assert_eq!((tool_input["model"].as_str(), tool_input["effort"].as_str()), (Some("sonnet"), Some("xhigh")), "{tool_input}");
+                assert!(note.unwrap_or_default().contains("sonnet"), "the call asked another model");
             }
             other => panic!("the launch is rewritten, got {other:?}"),
         }

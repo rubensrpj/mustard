@@ -257,9 +257,8 @@ pub(super) fn refresh_map(root: &Path, mine: &dyn Fn(&Path, &Path) -> mustard_co
 /// fica de fora: ela sai dos commits da obra, e o commit de duas ondas daria a
 /// cada uma os arquivos da outra; quem reabre se decide pelo arquivo citado.
 pub(crate) fn final_unused(root: &Path, spec: &str, log: &SpecLog, lang: Locale, outputs: &[String]) -> Vec<(bool, String)> {
-    let base = mustard_core::io::spec_events::spec_file(root, spec)
+    let base = std::fs::read(mustard_core::io::wave_prompt::validation_base_map(root, spec))
         .ok()
-        .and_then(|p| std::fs::read(p.parent()?.join("validation-base-map.json")).ok())
         .and_then(|bytes| serde_json::from_slice(&bytes).ok());
     let after = mustard_core::io::project_map::read(root).ok();
     let (Some(base), Some(after)) = (base, after) else {
@@ -388,15 +387,31 @@ pub(super) fn covered<'a>(waves: impl IntoIterator<Item = &'a WaveReport>) -> Ve
 
 /// O evento do commit `sha` feito pela rodada no checkout `root`, como a spec
 /// o grava.
+///
+/// A lista de `files` é a do git, lida do próprio commit, e não a da entrega:
+/// é o commit que o pull request carrega. Em campo, o registro listou 12
+/// arquivos e o commit tinha 13 (21/10/2026). Hoje a rodada desfaz o commit
+/// que leva arquivo de fora, então as duas listas batem — mas quem grava a
+/// história lê a história, não a intenção. Um commit que o git não souber ler
+/// cai na lista da entrega, para a gravação nunca ficar sem nada.
 pub(super) fn commit_draft(root: &Path, sha: &str, title: &str, waves: &[u64], files: &[String]) -> Map<String, Value> {
     let mut draft = Map::new();
     draft.insert("sha".into(), json!(sha));
     draft.insert("title".into(), json!(title));
     draft.insert("waves".into(), json!(waves));
-    draft.insert("files".into(), json!(files));
+    draft.insert("files".into(), json!(committed_files(root, sha).unwrap_or_else(|| files.to_vec())));
     draft.insert("repo".into(), json!(repo_name(root)));
     draft.insert("author".into(), json!("binary"));
     draft
+}
+
+/// Os arquivos que o commit `sha` levou, pelo git. `None` quando o commit não
+/// se lê: quem chama cai na lista que recebeu.
+fn committed_files(root: &Path, sha: &str) -> Option<Vec<String>> {
+    let listed = git(root, &["show", "--name-only", "--no-renames", "--pretty=format:", sha]).ok()?;
+    let files: Vec<String> =
+        listed.lines().map(str::trim).filter(|file| !file.is_empty()).map(str::to_string).collect();
+    (!files.is_empty()).then_some(files)
 }
 
 /// Grava no arquivo de eventos o commit `sha` feito pela rodada.
@@ -834,16 +849,19 @@ pub(super) fn ensure_after_wave(
         return Default::default();
     };
     {
-        if let Ok(path) = mustard_core::io::spec_events::spec_file(root, spec)
-            && let Some(dir) = path.parent() {
-                // The git-step lock serializes delivery. Atomic replacement
-                // cannot leave a torn base when the process dies mid-write.
-                let base = dir.join("validation-base-map.json");
-                if !base.is_file()
-                    && let Ok(bytes) = serde_json::to_vec(&maps.base) {
-                        let _ = mustard_core::io::fs::write_atomic(&base, &bytes);
-                    }
+        // The git-step lock serializes delivery. Atomic replacement cannot
+        // leave a torn base when the process dies mid-write. O retrato mora
+        // fora do projeto: ele é cache, e chegou a 89 MB dentro da pasta da
+        // spec numa máquina de verdade.
+        let base = mustard_core::io::wave_prompt::validation_base_map(root, spec);
+        if !base.is_file()
+            && let Ok(bytes) = serde_json::to_vec(&maps.base)
+        {
+            if let Some(dir) = base.parent() {
+                let _ = std::fs::create_dir_all(dir);
             }
+            let _ = mustard_core::io::fs::write_atomic(&base, &bytes);
+        }
     }
     let mut found = super::imports_check::findings(root, &maps, log, lang);
     // A pergunta ao Jev sobre o nome tirado citado nunca sai daqui, com a
@@ -1296,23 +1314,24 @@ mod tests {
         assert_eq!(made.title, "feat: Aviso curto", "a wave scope is not the project's");
     }
 
-    /// O título de cada onda segue o escopo do histórico dos arquivos dela e
-    /// o tipo do ramo, com o resumo só dela; o corpo traz o resumo inteiro só
-    /// quando o título o cortou.
+    /// O título de cada onda segue o tipo do ramo e o escopo dos arquivos
+    /// dela, com o resumo só dela. A pasta de código sozinha não é escopo, e
+    /// o histórico dos arquivos não dá mais nenhum: o escopo diz onde ESTE
+    /// commit mexe, e não onde aqueles arquivos já estiveram.
     #[test]
-    fn the_title_follows_the_project_scope_and_the_branch_kind() {
+    fn the_title_follows_the_branch_kind_and_the_files_folder() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        approved(root, "x", &[(3, &["src/a.rs"], &[]), (4, &["src/b.rs"], &[])]);
-        std::fs::write(root.join("src/a.rs"), "fn existing() {}\n").unwrap();
-        git_at(root, &["add", "src/a.rs"]);
+        approved(root, "x", &[(3, &["src/leitor/a.rs"], &[]), (4, &["src/b.rs"], &[])]);
+        std::fs::write(root.join("src/leitor/a.rs"), "fn existing() {}\n").unwrap();
+        git_at(root, &["add", "src/leitor/a.rs"]);
         git_at(root, &["commit", "-q", "-m", "feat(storage): existing convention"]);
         git_at(root, &["checkout", "-q", "-b", "fix/native-title"]);
-        let (four, three) = (wave_report(4, "src/a.rs", "Reader contract"), wave_report(3, "src/b.rs", "Cell values"));
+        let (four, three) = (wave_report(4, "src/leitor/a.rs", "Reader contract"), wave_report(3, "src/b.rs", "Cell values"));
         let made = super::super::commit_title::message(root, &four, Locale::PtBr).unwrap_or_else(|_| panic!("valid summaries")).unwrap();
-        assert_eq!((made.title.as_str(), made.body.as_str()), ("fix(storage): Reader contract", ""));
+        assert_eq!((made.title.as_str(), made.body.as_str()), ("fix(leitor): Reader contract", ""), "a pasta do arquivo, e não o `storage` do histórico");
         let made = super::super::commit_title::message(root, &three, Locale::PtBr).unwrap_or_else(|_| panic!("valid summaries")).unwrap();
-        assert_eq!((made.title.as_str(), made.body.as_str()), ("fix: Cell values", ""));
+        assert_eq!((made.title.as_str(), made.body.as_str()), ("fix: Cell values", ""), "a pasta de código sozinha não é escopo");
     }
 
     /// Duas entregas tomadas na mesma rodada, cada uma com o seu arquivo,
@@ -1387,7 +1406,7 @@ mod tests {
         let out = round(root, "x", None);
         assert_eq!(out["ok"], json!(true), "{out}");
         assert_eq!(last_commit(root).0, "feat: a muda", "{out}");
-        assert_eq!(warning_of(&out, "git-refused")["wave"], json!(2), "{out}");
+        assert_eq!(warning_of(&out, "project-hook-refused")["wave"], json!(2), "{out}");
         assert_eq!(std::fs::read_to_string(root.join("src/b.rs")).unwrap(), before_b, "the refused wave's file is back: {out}");
         let commits = || {
             let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
@@ -1410,15 +1429,18 @@ mod tests {
     fn the_round_commit_says_what_changed_and_nothing_of_the_waves() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
-        std::fs::write(root.join("src/a.rs"), "fn one() {}\n// antes\n").unwrap();
-        git_at(root, &["commit", "-q", "-am", "fix(storage-and-indexing-layer): leitura antiga"]);
+        // A pasta de nome longo da onda 1 é o escopo dela, e é ele que não
+        // deixa espaço para o resumo inteiro no título.
+        let deep = "src/camada-de-armazenamento/a.rs";
+        approved(root, "x", &[(1, &[deep], &[]), (2, &["src/b.rs"], &[])]);
+        std::fs::write(root.join(deep), "fn one() {}\n// antes\n").unwrap();
+        git_at(root, &["commit", "-q", "-am", "fix: leitura antiga"]);
         round(root, "x", None);
         let copy = |wave: u64| mustard_core::io::wave_prompt::slot_path(root, "x", usize::try_from(wave).unwrap() - 1);
-        std::fs::write(copy(1).join("src/a.rs"), "fn one() { first(); }\nfn first() {}\n").unwrap();
+        std::fs::write(copy(1).join(deep), "fn one() { first(); }\nfn first() {}\n").unwrap();
         std::fs::write(copy(2).join("src/b.rs"), "fn one() { second(); }\nfn second() {}\n").unwrap();
         let first = "Leitura das planilhas grandes sem travar";
-        let one = json!({"wave": 1, "text": "Saiu.", "files": ["src/a.rs"], "commit": first});
+        let one = json!({"wave": 1, "text": "Saiu.", "files": [deep], "commit": first});
         let two = json!({"wave": 2, "text": "Saiu.", "files": ["src/b.rs"], "commit": "Aviso da rodada e envio"});
         assert_eq!(returned(root, one)["ok"], json!(true));
         assert_eq!(returned(root, two)["ok"], json!(true));
@@ -1426,7 +1448,7 @@ mod tests {
         let out = round(root, "x", None);
         assert_eq!(out["ok"], json!(true), "{out}");
         let shown = git_text(root, &["log", "-1", "--format=%s%n%b", "HEAD~1"]);
-        assert_eq!(shown, format!("feat(storage-and-indexing-layer): Leitura das planilhas\n{first}"), "{out}");
+        assert_eq!(shown, format!("feat(camada-de-armazenamento): Leitura das planilhas grandes\n{first}"), "{out}");
         assert_eq!(last_commit(root), ("feat: Aviso da rodada e envio".to_string(), String::new()), "{out}");
         assert_eq!(out["commit"]["title"], json!("feat: Aviso da rodada e envio"), "{out}");
     }
@@ -1702,7 +1724,7 @@ mod tests {
         git_at(root, &["config", "core.hooksPath", &hooks.to_string_lossy()]);
 
         std::fs::write(root.join("src/a.rs"), "fn one() {}\n// Saiu.\n").unwrap();
-        let wrong = [(listing(&["src/a.rs"]), "git-refused")];
+        let wrong = [(listing(&["src/a.rs"]), "project-hook-refused")];
         refused_by_git_records_nothing(root, &wrong, || std::fs::remove_file(&hook).unwrap(), &["src/a.rs"]);
     }
 
@@ -1733,7 +1755,7 @@ mod tests {
         git_at(root, &["config", "core.hooksPath", &hooks.to_string_lossy()]);
         let report = json!({"wave": 1, "text": "Saiu.", "files": ["src/a.rs", "libs/sub/lib.txt"], "commit": "a entrega 1 sai"});
         assert_eq!(returned(root, report)["ok"], json!(true));
-        let refused = warning_of(&round(root, "x", None), "git-refused");
+        let refused = warning_of(&round(root, "x", None), "project-hook-refused");
         assert_eq!(refused["wave"], json!(1), "the refusal holds the wave: {refused}");
         assert_eq!(git_text(&sub, &["rev-parse", "HEAD"]), before, "the submodule commit was undone");
         assert_eq!(git_text(&sub, &["status", "--porcelain"]), "", "the submodule disk and index are back");
@@ -2047,7 +2069,7 @@ mod tests {
         delivered(root, 1, "Saiu.", &["src/a.rs"]);
         let out = round(root, "x", None);
         assert_eq!(out["ok"], json!(true), "{out}");
-        let held = warning_of(&out, "git-refused");
+        let held = warning_of(&out, "project-hook-refused");
         assert_eq!(held["wave"], json!(1), "{out}");
         assert!(held["hint"].as_str().unwrap_or_default().contains("o gancho recusou"), "{out}");
         assert_eq!(waves_in(&out, "dispatch"), vec![2], "{out}");

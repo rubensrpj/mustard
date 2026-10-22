@@ -285,24 +285,31 @@ fn a_search_hitting_a_line_over_a_megabyte_answers_under_the_conversation_cap() 
     let stdout = String::from_utf8(out.stdout).unwrap();
     let detail = format!("{} bytes\n{}\n{}", stdout.len(), &stdout[..stdout.len().min(4_000)], String::from_utf8_lossy(&out.stderr));
     assert_eq!(out.status.code(), Some(0), "{detail}");
-    assert!(stdout.len() <= 25_000, "{detail}");
+    // Esta busca não enriquece, então vale o teto do modo reserva: metade do
+    // da conversa, porque quem não sabe escolher não ocupa mais que quem sabe.
+    let cap = 12_500;
+    assert!(stdout.len() <= cap, "{detail}");
 
-    let lines: Vec<&str> = stdout.lines().collect();
+    // As linhas de aviso do topo não são resultado: a do modo barato diz que
+    // a busca correu sem vetores nem filtro pago, e vem antes dos achados.
+    let lines: Vec<&str> = stdout.lines().skip_while(|line| line.starts_with('#')).collect();
     let kept = lines.iter().position(|line| line.starts_with("# Answer cut")).unwrap_or_else(|| panic!("no cut note: {detail}"));
     let whole: Vec<&str> = native.lines().collect();
     assert!(kept > 1 && kept < whole.len(), "the TypeScript hits after the long line show, and the tail is left out: {detail}");
     for (shown, line) in lines[..kept].iter().zip(&whole) {
         assert_eq!(*shown, format!("{} [line cut: {} more bytes]", &line[..1_000], line.len() - 1_000), "{detail}");
     }
+    // A resposta do Mustard tem uma linha de cabeçalho que a nativa não tem:
+    // a do modo barato, que diz que a busca correu sem vetores nem filtro
+    // pago. A conta do corte inclui essa linha.
+    let note = "# locate mode: no vectors, no paid filter. Use purpose=understand/spec/implement for current-source investigation.\n";
+    let (whole_bytes, whole_lines) = (native.len() + note.len(), whole.len() + 1);
     assert_eq!(
         lines[kept],
         format!(
-            "# Answer cut to fit the conversation cap of 25000 bytes; the whole answer has {} bytes in {} lines. \
-             Lines over 1000 bytes showing only their start: {kept}. Lines {} to {} are left out.",
-            native.len(),
-            whole.len(),
-            kept + 1,
-            whole.len()
+            "# Answer cut to fit the conversation cap of {cap} bytes; the whole answer has {whole_bytes} bytes in {whole_lines} lines. \
+             Lines over 1000 bytes showing only their start: {kept}. Lines {} to {whole_lines} are left out.",
+            kept + 2
         ),
         "{detail}"
     );

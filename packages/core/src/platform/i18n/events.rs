@@ -405,6 +405,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              message that defines it. Put the goal in `text` and that message's number in `origin`; \
              {origin} is not a user message. Nothing was written."
         }
+        ("spec_events.goal_title_too_long", Locale::PtBr) => {
+            "A primeira frase do objetivo tem {chars} caracteres e o limite é {max}: ela é o título \
+             do pull request. A frase: \"{sentence}\". Escreva outra primeira frase, mais curta: o \
+             corte automático mentiria sobre o que a mensagem diz. O resto do objetivo e o `title` \
+             do item não foram medidos. Nada foi gravado."
+        }
+        ("spec_events.goal_title_too_long", Locale::EnUs) => {
+            "The goal's first sentence has {chars} characters and the limit is {max}: that sentence \
+             is the pull request title. The sentence: \"{sentence}\". Write a shorter first \
+             sentence: truncating would misstate what the message says. The rest of the goal and \
+             the item's `title` were not measured. Nothing was written."
+        }
         ("spec_events.survey_open", Locale::PtBr) => {
             "A spec {spec} ainda tem pontos abertos no levantamento ({count}): {points}. Feche cada um, \
              com a resposta ou com \"não se aplica\" e o motivo, antes de passar para o plano. Nada \
@@ -673,6 +685,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("spec_events.unknown_block", Locale::PtBr) => "O bloco {block} não existe. Blocos: {blocks}. Tipos: {types}. Para qualquer item, use `mustard-rt run read item-<código>`.",
         ("spec_events.unknown_block", Locale::EnUs) => "There is no {block} block. Blocks: {blocks}. Types: {types}. Read any item by its code, for example `mustard-rt run read item-MSTD-RULE-0001`.",
+        ("spec_events.another_session", Locale::PtBr) => {
+            "Esta spec já tem registro da sessão {session}, e esta gravação veio da sessão {mine}. Duas conversas no mesmo projeto gravam na mesma spec. Confira com o usuário quem conduz esta obra antes de seguir."
+        }
+        ("spec_events.another_session", Locale::EnUs) => {
+            "This spec already holds records from session {session}, and this write came from session {mine}. Two conversations in the same project write to the same spec. Check with the user who is driving this work before going on."
+        }
+        ("spec_events.block_alias", Locale::PtBr) => {
+            "Você pediu `{asked}`, e o nome do bloco é `{block}`. A leitura é esta mesma. Na próxima vez, peça pelo nome."
+        }
+        ("spec_events.block_alias", Locale::EnUs) => {
+            "You asked for `{asked}`, and the block is named `{block}`. This is that read. Next time, ask by the name."
+        }
         ("spec_events.bad_spec_name", Locale::PtBr) => {
             "{spec} não serve como nome de spec: use um nome sem barra e sem \"..\"."
         }
@@ -1216,8 +1240,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            174,
-            0x53f6_afe2_c777_cc21,
+            177,
+            0xf8f0_c803_3d22_68e3,
         );
     }
 
@@ -1285,6 +1309,7 @@ mod tests {
             ("spec_events.name_unknown", &["{fact}", "{name}"][..]),
             ("spec_events.names_unchecked", &[][..]),
             ("spec_events.goal_origin_not_user", &["{spec}", "{origin}"][..]),
+            ("spec_events.goal_title_too_long", &["{chars}", "{max}", "{sentence}"][..]),
             ("spec_events.survey_open", &["{spec}", "{count}", "{points}"][..]),
             ("spec_events.survey_not_started", &["{spec}"][..]),
             ("spec_events.plan_without_task", &["{spec}"][..]),
@@ -1322,6 +1347,8 @@ mod tests {
             ("spec_events.depends_outside_wave", &["{wave}", "{missing}"][..]),
             ("spec_events.filter_matches_nothing", &["{type}", "{from}", "{to}"][..]),
             ("spec_events.unknown_block", &["{block}", "{blocks}", "{types}"][..]),
+            ("spec_events.block_alias", &["{asked}", "{block}"][..]),
+            ("spec_events.another_session", &["{session}", "{mine}"][..]),
             ("spec_events.bad_spec_name", &["{spec}"][..]),
             ("spec_events.no_spec_file", &["{spec}"][..]),
             ("spec_events.spec_not_open", &["{spec}"][..]),

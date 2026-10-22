@@ -703,7 +703,10 @@ fn knowledge_session_protocol_supports_both_hosts_and_checks_current_sources() {
         let (ok,refused)=run(&complete);assert!(!ok,"{refused}");
         assert_eq!(refused["detail"],"knowledge-session-input-exceeds-100000");
         receipt["input_tokens"]=serde_json::json!(100_000);
-        receipt["effort"]=serde_json::json!("medium");
+        // O esforço do recibo é o que o dono do par modelo e esforço pede para
+        // este hospedeiro: máximo no Claude, médio no Codex. Era "medium"
+        // escrito aqui, e o recibo honesto do Haiku era recusado (21/10/2026).
+        receipt["effort"]=serde_json::json!(mustard_core::platform::session_models::effort(host));
         fs::write(&path,receipt.to_string()).unwrap();
         let (ok,done)=run(&complete);assert!(ok,"{done}");
         assert_eq!(done["session_model_calls"],1);

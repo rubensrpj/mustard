@@ -64,7 +64,8 @@ pub fn run(
                     mustard_core::io::code_search::delivery::prepare(&mut answer,&request,&tree,context))}else{None};
                 let output = if shell_output {
                     let view = mustard_core::io::code_search::presentation::agent(&answer, &request, root).stdout;
-                    conversation_answer(root, &request, view, receipt.as_deref())
+                    let enriched = answer.report["crossing_status"] == "enriched";
+                    conversation_answer(root, &request, view, receipt.as_deref(), enriched)
                 } else {
                     answer.stdout.clone()
                 };
@@ -104,10 +105,23 @@ pub fn run(
 }
 
 /// A resposta da busca de `request` que vai para a conversa, pelo terminal ou
-/// pelo MCP: `view` no teto de [`super::knowledge::CONVERSATION_BYTES`], com a
-/// linha que diz como pedir o resultado inteiro quando sai cortada.
-pub(crate) fn conversation_answer(root: &Path, request: &Request, view: Vec<u8>, token: Option<&str>) -> Vec<u8> {
-    conversation_output(view, token, super::knowledge::CONVERSATION_BYTES, || rest_line(root, request))
+/// pelo MCP: `view` no teto que [`conversation_cap`] der, com a linha que diz
+/// como pedir o resultado inteiro quando sai cortada.
+pub(crate) fn conversation_answer(root: &Path, request: &Request, view: Vec<u8>, token: Option<&str>, enriched: bool) -> Vec<u8> {
+    conversation_output(view, token, conversation_cap(enriched), || rest_line(root, request))
+}
+
+/// O teto da resposta: cheio para a busca enriquecida, metade para a que caiu
+/// no modo reserva.
+///
+/// O modo reserva entrega o que o programa nativo achou, sem a triagem que
+/// escolhe o que importa. Em campo, uma busca assim devolveu 34.568 bytes de
+/// uma vez, enquanto as maiores enriquecidas ficaram perto de 9.800
+/// (21/10/2026). Quem não sabe escolher não pode ocupar mais que quem sabe: o
+/// corte diz quantas linhas ficaram de fora e como pedir o resto.
+pub(crate) fn conversation_cap(enriched: bool) -> usize {
+    let cap = super::knowledge::CONVERSATION_BYTES;
+    if enriched { cap } else { cap / 2 }
 }
 
 /// A resposta da busca que vai para a conversa. A que cabe em `cap` bytes sai

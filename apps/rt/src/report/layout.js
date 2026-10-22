@@ -74,7 +74,7 @@
   });
 
   // busca
-  var index=null,saved=null,byRun=[],cur=-1,counts=null;
+  var index=null,sectionIndex=null,saved=null,byRun=[],cur=-1,counts=null;
   function fold(s){return s.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();}
   function clearMarks(){
     [].slice.call(document.querySelectorAll('mark.hl')).forEach(function(m){
@@ -157,6 +157,25 @@
       else for(var k=0;k<ts.length;k++){if(index[i].indexOf(ts[k])<0){ok=false;break;}}
       d.hidden=!ok;if(ok)found.push(d);
     });
+    // A pagina avulsa, gerada de markdown, nao tem item nem grupo: ela tem
+    // secoes com texto. Ali a busca filtra as secoes pelo texto delas. Sem
+    // isto, nada casava e TODA secao desaparecia, porque uma secao so ficava
+    // visivel com um grupo visivel dentro (pendencia do usuario, 21/10/2026).
+    if(!items.length){
+      if(!sectionIndex)sectionIndex=sections.map(function(s){return fold(s.textContent);});
+      sections.forEach(function(s,i){
+        var ok=true;
+        for(var k=0;k<ts.length;k++){if(sectionIndex[i].indexOf(ts[k])<0){ok=false;break;}}
+        s.hidden=!ok;if(ok)found.push(s);
+      });
+      found.slice(0,300).forEach(function(s){highlight(s,ts);});
+      hits.textContent=counted(found.length);
+      empty.hidden=found.length>0;
+      searchBox.classList.add('on');
+      if(overview)overview.hidden=true;
+      box.scrollTop=0;spy();
+      return;
+    }
     groups.forEach(function(g){var any=g.querySelector('details.item:not([hidden])');g.hidden=!any;g.open=!!any;});
     sections.forEach(function(s){s.hidden=!s.querySelector('details.group:not([hidden])');});
     if(overview)overview.hidden=true;

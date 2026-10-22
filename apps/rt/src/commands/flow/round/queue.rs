@@ -3654,6 +3654,10 @@ mod tests {
     }
 
     /// Independent kinds use separate slots; compatible kinds can pack together.
+    ///
+    /// Três candidatas, e não duas: a chamada que decide o tipo de cada uma só
+    /// sai com mais de duas, e com duas a montagem sairia pela regra de
+    /// arquivos, sem tipo nenhum para separar.
     #[test]
     fn independent_kinds_use_slots_and_one_kind_can_pack_together() {
         use crate::shared::dag::TaskKind;
@@ -3666,6 +3670,7 @@ mod tests {
         seed_running(root, 1);
         let one = backlog_task_on(root, said, crit, "Mexer na primeira.", &["src/a.rs", "src/b.rs", "src/c.rs"]);
         let two = backlog_task_on(root, said, crit, "Mexer na segunda.", &["src/d.rs", "src/e.rs", "src/f.rs"]);
+        let three = backlog_task_on(root, said, crit, "Mexer na terceira.", &["doc/1.md", "doc/2.md", "doc/3.md"]);
 
         let apart = judging(|id| if id == one { TaskKind::Defect } else { TaskKind::Feature });
         let log = spec_now(root);
@@ -3674,11 +3679,18 @@ mod tests {
         let together = judging(|_| TaskKind::Feature);
         let log = spec_now(root);
         assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), (Some(&together), None)).map(|(formed, _)| formed), Ok(vec![4]));
-        assert_eq!(wave_order(root, 4), vec![log.current(one).unwrap().id, log.current(two).unwrap().id], "as duas, do mesmo tipo, numa onda só");
+        assert_eq!(
+            wave_order(root, 4),
+            vec![log.current(one).unwrap().id, log.current(two).unwrap().id, log.current(three).unwrap().id],
+            "as três, do mesmo tipo, numa onda só"
+        );
     }
 
     /// Duas ondas de tipos diferentes que dividem `src/a.rs` saem juntas, ao
     /// lado da onda em andamento: a de depois não espera a de antes.
+    ///
+    /// Três candidatas, e não duas, pelo mesmo motivo do teste dos tipos
+    /// independentes: a chamada que decide o tipo só sai com mais de duas.
     #[test]
     fn a_later_group_sharing_a_file_with_an_earlier_one_leaves_beside_it() {
         use crate::shared::dag::TaskKind;
@@ -3691,6 +3703,7 @@ mod tests {
         seed_running(root, 1);
         let small = backlog_task_on(root, said, crit, "Mexer na parte pequena.", &["src/a.rs", "src/b.rs"]);
         let later = backlog_task_on(root, said, crit, "Mexer na parte seguinte.", &["src/a.rs", "doc/1.md", "doc/2.md", "doc/3.md", "doc/4.md", "doc/5.md"]);
+        backlog_task_on(root, said, crit, "Mexer na parte de fora.", &["lib/x.rs"]);
 
         let judge = judging(|id| if id == small { TaskKind::Defect } else { TaskKind::Feature });
         let log = spec_now(root);

@@ -208,6 +208,10 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
         languages: &project.languages,
     });
     drop_stale_facts(&mut list, &opts.root, &project.root);
+    // O pedido que já traz o diagnóstico não é refeito do zero: cada arquivo
+    // e linha que as mensagens do usuário citam entra como fato dos pontos do
+    // defeito, dito como vindo do documento dele e marcado a conferir.
+    prefill_from_the_request(&mut list, &log, lang);
 
     // Os pontos que faltam são gravados aqui, abertos, com os fatos que a
     // lista traz e os lembretes; o assistente soma os fatos que conferiu antes
@@ -430,6 +434,40 @@ fn record_work_type(start: &Path, spec: &str, kinds: &[&str], origin: Option<u64
 /// passa do fim dele, pela mesma conferência que recusaria a gravação do
 /// ponto: o mapa velho, que ainda cita o arquivo apagado, não para o
 /// levantamento. O ponto pode ficar sem fato nenhum, e os outros fatos ficam.
+/// As lacunas do defeito, que o diagnóstico do pedido responde: o sintoma, a
+/// reprodução, o esperado contra o obtido e a causa.
+const DEFECT_GAPS: [survey::GapKey; 4] =
+    [survey::GapKey::Symptom, survey::GapKey::Reproduction, survey::GapKey::ExpectedVsActual, survey::GapKey::Cause];
+
+/// Põe nos pontos do defeito que nasceram sem fato as citações de arquivo e
+/// linha que as mensagens do usuário trazem, cada uma com a marca de conferir.
+///
+/// O levantamento junta os fatos antes de planejar. Num caso real o pedido já
+/// trazia o diagnóstico inteiro, com arquivos e linhas, e o levantamento
+/// perguntou sintoma, causa e reprodução de novo: foram uma hora e dezenove
+/// minutos até a aprovação, para duas tarefas. O fato pré-preenchido não
+/// fecha o ponto: ele entra a conferir, e quem confere soma ou tira.
+fn prefill_from_the_request(list: &mut [survey::Proposed], log: &SpecLog, lang: Locale) {
+    use mustard_core::domain::citation::file_citations;
+
+    let said: Vec<String> = log
+        .visible()
+        .into_iter()
+        .filter(|event| event.event_type == "message" && event.str_field("author") == Some("user"))
+        .filter_map(|event| event.str_field("text").map(str::to_string))
+        .collect();
+    let cited: Vec<String> = said.iter().flat_map(|text| file_citations(text)).collect();
+    if cited.is_empty() {
+        return;
+    }
+    for item in list.iter_mut().filter(|item| item.facts.is_empty() && item.key.is_some_and(|key| DEFECT_GAPS.contains(&key))) {
+        item.facts = cited
+            .iter()
+            .map(|source| survey::Fact { text: translate("grill.cited_in_the_request", lang).to_string(), source: source.clone() })
+            .collect();
+    }
+}
+
 fn drop_stale_facts(list: &mut [survey::Proposed], start: &Path, root: &Path) {
     let world = DiskWorld::new(store::citation_roots(start, root), None);
     for item in list {
@@ -730,6 +768,59 @@ mod tests {
         ));
         id_of(&write(root, old, "decision", json!({"text": "A cobrança da pendência sai no merge.", "keys": ["pendência"], "why": "w", "origin": said})));
         id_of(&write(root, old, "message", json!({"author": "user", "text": "O merge com pendência aberta passou sem aviso."})));
+    }
+
+    /// O pedido que já traz o diagnóstico não é refeito: cada arquivo e linha
+    /// que a mensagem do usuário cita entra como fato dos pontos do defeito,
+    /// a conferir, e as outras lacunas nascem sem fato. Sem citação nenhuma,
+    /// todo ponto nasce sem fato, como antes.
+    ///
+    /// Em campo (21/10/2026) o pedido trazia o diagnóstico inteiro, com
+    /// arquivos e linhas, e o levantamento perguntou sintoma, causa e
+    /// reprodução de novo: foram uma hora e dezenove minutos até a aprovação,
+    /// para duas tarefas.
+    #[test]
+    fn the_survey_takes_the_citations_the_request_already_brings() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        crate::shared::test_fixture::seeded_repo(
+            root,
+            &[("mustard.json", "{}"), ("src/a.rs", "fn one() {}\nfn two() {}\n"), ("src/b.rs", "fn three() {}\n")],
+        );
+        let said = surveyed(root, "x");
+        id_of(&write(
+            root,
+            Some("x"),
+            "message",
+            json!({"author": "user", "text": "O defeito está em `src/a.rs:2` e a chamada em src/b.rs:1, com o mesmo motivo.", "origin": said}),
+        ));
+
+        let report = grill(root, "x", Some("fix"), false);
+        assert_eq!(report["ok"], json!(true), "{report}");
+        let points = recorded_points(root, "x");
+        let with_facts: Vec<&str> = points
+            .iter()
+            .filter(|point| point.fields.get("facts").and_then(Value::as_array).is_some_and(|facts| !facts.is_empty()))
+            .filter_map(|point| point.str_field("gap"))
+            .collect();
+        assert!(!with_facts.is_empty(), "os pontos do defeito nascem com os fatos do pedido: {points:?}");
+        let sources: Vec<String> = points
+            .iter()
+            .flat_map(|point| point.fields.get("facts").and_then(Value::as_array).cloned().unwrap_or_default())
+            .filter_map(|fact| fact["source"].as_str().map(str::to_string))
+            .collect();
+        assert!(sources.iter().any(|source| source == "src/a.rs:2"), "{sources:?}");
+        assert!(sources.iter().any(|source| source == "src/b.rs:1"), "{sources:?}");
+        // Os pontos que o diagnóstico não responde seguem sem fato.
+        assert!(points.len() > with_facts.len(), "{points:?}");
+
+        // Sem citação nenhuma, todo ponto nasce sem fato.
+        let other = tempdir().unwrap();
+        let bare = other.path();
+        std::fs::write(bare.join("mustard.json"), b"{}").unwrap();
+        surveyed(bare, "y");
+        assert_eq!(grill(bare, "y", Some("fix"), false)["ok"], json!(true));
+        assert!(recorded_points(bare, "y").iter().all(|point| point.fields.get("facts").is_none()), "sem citação, nenhum fato");
     }
 
     /// O `grill` numa spec nova grava o tipo de trabalho, com o autor e a

@@ -71,6 +71,13 @@ pub mod dag;
 /// O programa compilado da branch do Mustard: se está em dia com o commit e a
 /// compilação dele, em primeiro e em segundo plano.
 pub mod development_build;
+/// A vez de um evento do hospedeiro, quando duas raízes de plugin do Mustard
+/// estão ligadas e o mesmo evento chega duas vezes: a primeira trata, a
+/// segunda sai calada.
+pub(crate) mod event_once;
+/// A devolução do relatório a quem conduz: a mesma peça para todas as
+/// travas de agente.
+pub(crate) mod handback;
 pub(crate) mod evidence;
 pub(crate) mod host_observation;
 pub(crate) mod integration_health;

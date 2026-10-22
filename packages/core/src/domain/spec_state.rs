@@ -318,7 +318,7 @@ fn goal_title_rule(after: &SpecLog) -> Result<(), Refusal> {
     };
     let chars = title.chars().count();
     if chars > max {
-        return Err(Refusal::GoalTitleTooLong { chars, max });
+        return Err(Refusal::GoalTitleTooLong { chars, max, sentence: title });
     }
     Ok(())
 }
@@ -1168,6 +1168,9 @@ mod tests {
     /// Três casos, um por aresta: 64 caracteres é recusado, 60 exatos passam,
     /// e o objetivo comprido cuja PRIMEIRA frase cabe passa — é a frase que
     /// vira título, não o texto inteiro.
+    ///
+    /// A recusa também é conferida: ela traz a frase que mediu e o teto, e não
+    /// é a redação da abertura do pull request, que nomeia um campo `title`.
     #[test]
     fn a_goal_with_a_long_first_sentence_is_refused_on_write() {
         use crate::domain::spec_events::{MessageRefusal, MESSAGE_TITLE_MAX};
@@ -1181,16 +1184,27 @@ mod tests {
         assert_eq!(MESSAGE_TITLE_MAX, 60, "o teto do título do pull request");
         assert_eq!(
             goal_with(&lines, too_long, said),
-            Err(Refusal::GoalTitleTooLong { chars: 64, max: 60 }),
-            "a gravação recusa a primeira frase acima do teto",
+            Err(Refusal::GoalTitleTooLong { chars: 64, max: 60, sentence: too_long.to_string() }),
+            "a gravação recusa a primeira frase acima do teto e devolve a frase medida",
         );
 
-        // A mesma frase que a abertura do pull request mostraria, palavra por
-        // palavra: é o mesmo limite, dito uma vez só.
-        let goal_refusal = Refusal::GoalTitleTooLong { chars: 64, max: 60 };
+        // A recusa diz o que mediu, com a frase dentro, e cita o mesmo teto da
+        // abertura do pull request. O que ela NÃO faz é emprestar a redação de
+        // lá: ali a parte medida se chama `title`, e aqui o `title` do item
+        // nem foi olhado — quem escreveu um título curto com uma primeira
+        // frase longa foi encurtar o campo errado (campo, 21/10/2026).
+        let goal_refusal =
+            Refusal::GoalTitleTooLong { chars: 64, max: 60, sentence: too_long.to_string() };
         let message_refusal = MessageRefusal::TooLong { part: "title", chars: 64, max: 60 };
         for lang in [Locale::PtBr, Locale::EnUs] {
-            assert_eq!(goal_refusal.message(lang), message_refusal.message(lang), "{lang:?}");
+            let refused = goal_refusal.message(lang);
+            assert!(refused.contains(too_long), "a frase medida vai na recusa ({lang:?}): {refused}");
+            assert!(refused.contains("60"), "o teto do título vai na recusa ({lang:?}): {refused}");
+            assert_ne!(
+                refused,
+                message_refusal.message(lang),
+                "a recusa do objetivo não empresta a redação do pull request ({lang:?})",
+            );
         }
 
         let at_the_cap = "Travar o merge com pendência aberta em toda spec do projeto.";

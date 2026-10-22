@@ -148,6 +148,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              next launches, do not pass `effort`. In `model`, pass only the one in the `dispatch` entry."
         }
 
+        // O agente que escreve código nunca sai no modelo pequeno da sessão.
+        ("subagent.no_small_model_for_code", Locale::PtBr) => {
+            "[Mustard] O agente {agent} escreve código, e código não vai no modelo {asked_model}. \
+             Saiu com modelo {model}. O modelo pequeno da sessão lê e decide; quem escreve é um \
+             modelo maior."
+        }
+        ("subagent.no_small_model_for_code", Locale::EnUs) => {
+            "[Mustard] The agent {agent} writes code, and code does not go on model {asked_model}. \
+             It went out with model {model}. The session's small model reads and decides; writing \
+             goes to a larger one."
+        }
+
         // O pedido de uma onda: o texto que o agente dela recebe.
         ("prompt.title", Locale::PtBr) => "{spec} — onda {n}",
         ("prompt.title", Locale::EnUs) => "{spec} — wave {n}",
@@ -744,7 +756,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("prompt.rs"), super::PREFIXES, 110, 0x87a1_ff80_57ab_9190);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("prompt.rs"), super::PREFIXES, 111, 0xb3ba_e150_7f0e_0d54);
     }
 
     /// O bloco do padrão sob a tarefa passa na conferência de escrita nos

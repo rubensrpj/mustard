@@ -318,7 +318,7 @@ mod tests {
         returned_wave_with(root, None, &[("src/big.rs", "// filler line for the cap\n".repeat(6_000))]);
         std::fs::write(root.join("CLAUDE.md"), "Use shared schemas; never duplicate types.\n").unwrap();
         waiting(&bare_round(root));
-        let opts = crate::commands::spec_events::read::ReadOpts { root: root.into(), spec: Some("x".into()), block: "review-request-1".into(), term: None };
+        let opts = crate::commands::spec_events::read::ReadOpts { root: root.into(), spec: Some("x".into()), block: "review-request-1".into(), term: None , session: None };
         let text = crate::commands::spec_events::read::read_at(&opts).unwrap_or_else(|refusal| panic!("{refusal}"));
         assert!(text.starts_with("# x — revisão da onda 1"), "{text}");
         let log = log_of(root);

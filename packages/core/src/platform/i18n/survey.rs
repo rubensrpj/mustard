@@ -14,6 +14,12 @@ pub(super) const PREFIXES: &[&str] = &["grill", "survey"];
 /// O texto de `key` em `lang`, ou `None` quando a chave não está aqui.
 pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
     Some(match (key, lang) {
+        ("grill.cited_in_the_request", Locale::PtBr) => {
+            "O documento do usuário cita este lugar no diagnóstico dele. A conferir."
+        }
+        ("grill.cited_in_the_request", Locale::EnUs) => {
+            "The user's own document cites this place in its diagnosis. To be checked."
+        }
         ("grill.goal_missing", Locale::PtBr) => {
             "A spec {spec} ainda não tem o objetivo. Pergunte ao usuário \"Qual o objetivo, numa \
              frase?\" e rode o grill depois da resposta. Nada foi gravado."
@@ -266,7 +272,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("survey.rs"), super::PREFIXES, 44, 0x5c31_42d0_0913_ac97);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("survey.rs"), super::PREFIXES, 45, 0x17b0_0296_cbf5_fd8e);
     }
 
     /// O ponto aberto sem fato só fecha com os fatos: a dica de fechar um

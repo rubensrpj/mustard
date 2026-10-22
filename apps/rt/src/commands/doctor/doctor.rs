@@ -234,6 +234,7 @@ struct Check {
 /// conferência desconhecida e a rodada inteira.
 const CHECKS: &[Check] = &[
     Check {runs:Runs::Named("session-plugins"),check:|place| session_plugins(crate::shared::host_installation::snapshot(&place.project().root))},
+    Check {runs:Runs::Named("hook-roots"),check:|_| hook_roots(mustard_core::claude_config_dir().as_deref())},
     Check {runs:Runs::Named("integrations"),check:|place| {
         let report=crate::shared::integration_health::snapshot(&place.project().root);
         if report["ok"]==true {CheckResult::ok("integrations")}
@@ -302,6 +303,57 @@ const CHECKS: &[Check] = &[
         check: |_| check_scratch_residue(&crate::commands::maint::scratch_gc::ScratchRoots::from_env()),
     },
 ];
+
+/// As pastas de plugin com ganchos do Mustard que a pasta de configuração
+/// `config` guarda, cada uma com a versão que o caminho dela diz.
+///
+/// Mais de uma é aviso: cada uma põe os ganchos dela na sessão, e o usuário
+/// recebe tudo em dobro. Foi o que aconteceu com a cópia de desenvolvimento ao
+/// lado da instalada. Uma só, ou nenhuma, passa.
+fn hook_roots(config: Option<&std::path::Path>) -> CheckResult {
+    let found = mustard_hook_roots(config);
+    if found.len() < 2 {
+        return CheckResult::ok("hook-roots");
+    }
+    let listed: Vec<String> = found.iter().map(|(path, version)| format!("{version}: {path}")).collect();
+    CheckResult::warn("hook-roots", vec![format!("more than one plugin root with Mustard hooks ({}): {}", found.len(), listed.join(" · "))])
+}
+
+/// Cada pasta de plugin sob `config` cujo manifesto de ganchos
+/// (`hooks/hooks.json`) chama o `mustard-boot`, com a versão que o caminho
+/// dela diz, em ordem de caminho. Sem pasta de configuração, nenhuma.
+///
+/// O manifesto é lido, e não o nome da pasta: o plugin de outro produto que
+/// tenha `mustard` no caminho não conta, e a cópia de desenvolvimento, que
+/// tem outro nome, conta.
+fn mustard_hook_roots(config: Option<&std::path::Path>) -> Vec<(String, String)> {
+    let Some(config) = config else {
+        return Vec::new();
+    };
+    let mut found: Vec<(String, String)> = Vec::new();
+    let mut stack = vec![config.join("plugins")];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                continue;
+            }
+            let manifest = path.join("hooks").join("hooks.json");
+            match std::fs::read_to_string(&manifest) {
+                Ok(text) if text.contains("mustard-boot") => {
+                    let version = path.file_name().map(|name| name.to_string_lossy().to_string()).unwrap_or_default();
+                    found.push((path.to_string_lossy().to_string(), version));
+                }
+                _ => stack.push(path),
+            }
+        }
+    }
+    found.sort();
+    found
+}
 
 /// A pasta do plugin que cada sessão do projeto usa, com o binário que o
 /// gancho dela executa e a linha de versão dele. Sem sessão observada, pula;
@@ -596,4 +648,39 @@ mod tests {
         let gate = crate::manifest_dir::manifest_dir().join("src").join("commands").join("doctor").join("doctor.rs");
         assert_eq!(mustard_core::io::fs::files_over_code_line_cap(&gate), Ok(Vec::new()));
     }
+    /// Mais de uma pasta de plugin com ganchos do Mustard é aviso, e a linha
+    /// nomeia cada uma com a versão dela: cada pasta põe os ganchos dela na
+    /// sessão, e o usuário recebe tudo em dobro. Uma só passa. O plugin de
+    /// outro produto não conta, porque o manifesto dele não chama o
+    /// `mustard-boot`.
+    ///
+    /// Em campo (21/10/2026) a cópia de desenvolvimento ficou ao lado da
+    /// instalada, e o usuário recebeu cada aviso duas vezes.
+    #[test]
+    fn more_than_one_plugin_root_with_mustard_hooks_is_a_warning() {
+        let dir = tempfile::tempdir().expect("temp");
+        let config = dir.path();
+        let put = |path: &str, text: &str| {
+            let file = config.join("plugins").join(path).join("hooks").join("hooks.json");
+            std::fs::create_dir_all(file.parent().expect("a pasta")).expect("pasta");
+            std::fs::write(&file, text).expect("manifesto");
+        };
+        let mustard = r#"{"hooks":{"PreToolUse":[{"command":"${CLAUDE_PLUGIN_ROOT}/bin/mustard-boot on PreToolUse"}]}}"#;
+        put("cache/mustard-local/mustard/0.2.25", mustard);
+        put("outro/plugin-de-outro-produto", r#"{"hooks":{"Stop":[{"command":"./bin/outro"}]}}"#);
+
+        // Uma só raiz do Mustard: nada a dizer.
+        assert_eq!(hook_roots(Some(config)).status, Status::Ok);
+
+        put("cache/mustard-local/mustard/0.2.26", mustard);
+        let said = hook_roots(Some(config));
+        let line = said.details.join(" ");
+        assert_eq!(said.status, Status::Warn, "{line}");
+        assert!(line.contains("0.2.25") && line.contains("0.2.26"), "a linha diz a versão de cada uma: {line}");
+        assert!(!line.contains("outro-produto"), "o plugin de outro produto não conta: {line}");
+
+        // Sem pasta de configuração, nada a dizer.
+        assert_eq!(hook_roots(None).status, Status::Ok);
+    }
+
 }

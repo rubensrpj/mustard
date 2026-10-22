@@ -3,7 +3,7 @@
 //! chamada `read` com os itens achados —, e a entrega da onda e o veredito da
 //! revisão final se recusam quando algum item da lista ficou sem recibo.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use mustard_core::domain::spec_events::{BlockQuery, SpecLog};
 use serde_json::Value;
@@ -16,21 +16,54 @@ pub(crate) fn request_name(wave: Option<u64>) -> String {
 }
 
 /// A posição a partir da qual as leituras e os passos valem para o pedido
-/// `sent`: a em que o pedido despachou ([`SpecLog::dispatch_position`]) e,
-/// num reenvio, a do primeiro pedido da cadeia dele — o reenvio não zera as
-/// leituras nem os passos da onda.
+/// `sent`: a em que a onda abriu esta rodada dela.
+///
+/// Recua por dois caminhos, até o primeiro pedido da rodada. Pelo `resends`,
+/// quando o pedido é um reenvio: o reenvio não zera as leituras nem os passos
+/// da onda. E pelo pedido anterior da mesma onda quando nada voltou entre os
+/// dois ([`same_round_before`]): um pedido novo gravado enquanto o agente
+/// ainda trabalha não apaga o que ele já leu pelo pedido de antes. Em campo,
+/// essa troca de pedido no meio do trabalho recusou a entrega do agente, e é a
+/// mesma causa de ondas que nunca saíram (93 recusas até 21/10/2026).
+///
+/// Ampliar a janela não afrouxa a conferência: [`unread_items`] cobra recibo
+/// por CÓDIGO de item, então o item que o pedido novo trouxe segue sem recibo
+/// e segue cobrado. O que a janela maior salva é só o que o agente leu de
+/// verdade.
 pub(super) fn opened_at(log: &SpecLog, sent: u64) -> u64 {
     let mut first = sent;
-    // A cadeia de reenvios é finita, mas a spec é um arquivo de texto: o
-    // passo conta os saltos para um círculo gravado à mão não prender a volta.
+    // As duas cadeias são finitas, mas a spec é um arquivo de texto: o passo
+    // conta os saltos para um círculo gravado à mão não prender a volta.
     for _ in 0..log.events.len() {
-        let Some(earlier) = log.get(first).and_then(|e| e.int("resends")).filter(|n| log.get(*n).is_some_and(|e| e.event_type == "send"))
-        else {
+        let resent = log
+            .get(first)
+            .and_then(|e| e.int("resends"))
+            .filter(|n| log.get(*n).is_some_and(|e| e.event_type == "send"));
+        let Some(earlier) = resent.or_else(|| same_round_before(log, first)) else {
             break;
         };
         first = earlier;
     }
     log.dispatch_position(first)
+}
+
+/// O pedido anterior da mesma onda, quando nada da onda voltou entre os dois:
+/// nem entrega, nem veredito. `None` quando `sent` é o primeiro pedido da
+/// onda, ou quando a onda voltou antes dele — aí ele abre uma rodada nova, e
+/// as leituras da rodada anterior não valem.
+fn same_round_before(log: &SpecLog, sent: u64) -> Option<u64> {
+    let wave = log.get(sent)?.wave()?;
+    let of_wave = |kind: &str| -> Vec<u64> {
+        log.events
+            .iter()
+            .filter(|e| e.event_type == kind && e.wave() == Some(wave))
+            .map(|e| e.id)
+            .collect()
+    };
+    let earlier = of_wave("send").into_iter().rfind(|id| *id < sent)?;
+    let answered = of_wave("delivered").into_iter().chain(of_wave("verdict"));
+    let between = answered.filter(|id| *id > earlier && *id < sent).count() > 0;
+    (!between).then_some(earlier)
 }
 
 /// Os itens que o pedido `sent` lista e que ninguém leu desde que ele saiu
@@ -44,15 +77,39 @@ pub(crate) fn unread_items(log: &SpecLog, sent: u64, request: &str) -> Vec<Strin
     };
     let since = opened_at(log, sent);
     // O recibo de agora traz todos os itens de uma leitura em `items`; o de
-    // antes, um por item, em `item`. Os dois contam.
-    let read: BTreeSet<&str> = log
-        .events
+    // antes, um por item, em `item`. Os dois contam. Guarda o recibo MAIS NOVO
+    // de cada item: é ele que se compara com a versão do item.
+    let mut read: BTreeMap<String, u64> = BTreeMap::new();
+    for event in log.events.iter().filter(|e| e.id > since && e.event_type == "call") {
+        if event.str_field("command") != Some("read") || event.str_field("request") != Some(request) {
+            continue;
+        }
+        let items = event
+            .str_field("item")
+            .into_iter()
+            .chain(event.fields.get("items").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str));
+        for item in items {
+            let at = read.entry(item.to_string()).or_insert(event.id);
+            *at = (*at).max(event.id);
+        }
+    }
+    // A versão mais nova de cada código. O item que ganhou versão depois de
+    // ser lido volta a ser cobrado: o recibo é de um texto que não existe
+    // mais. A lição não tem código de item e nunca entra aqui.
+    let mut newest: BTreeMap<String, u64> = BTreeMap::new();
+    for (id, code) in log.codes() {
+        let at = newest.entry(code).or_insert(id);
+        *at = (*at).max(id);
+    }
+    listed
         .iter()
-        .filter(|e| e.id > since && e.event_type == "call")
-        .filter(|e| e.str_field("command") == Some("read") && e.str_field("request") == Some(request))
-        .flat_map(|e| e.str_field("item").into_iter().chain(e.fields.get("items").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str)))
-        .collect();
-    listed.iter().filter_map(Value::as_str).filter(|item| !read.contains(item)).map(str::to_string).collect()
+        .filter_map(Value::as_str)
+        .filter(|item| match read.get(*item) {
+            None => true,
+            Some(at) => newest.get(*item).is_some_and(|version| version > at),
+        })
+        .map(str::to_string)
+        .collect()
 }
 
 /// Tira de `unread` o que só as tarefas devolvidas em `undone` pedem: o código
@@ -106,9 +163,14 @@ mod tests {
     }
 
     /// O reenvio não zera as leituras: o que o agente leu depois do primeiro
-    /// envio vale para o reenvio, que é o mesmo pedido. O envio novo de
-    /// verdade, sem `resends`, começa do zero, e a leitura de antes do envio
-    /// nunca conta.
+    /// envio vale para o reenvio, que é o mesmo pedido. O pedido novo gravado
+    /// enquanto nada voltou também não zera, porque o agente leu pelo pedido
+    /// de antes dele. E a leitura de antes do primeiro envio nunca conta.
+    ///
+    /// O pedido novo zerava a leitura, e era isso que recusava a entrega de um
+    /// agente cujo pedido o condutor trocou no meio do trabalho: a mesma causa
+    /// de ondas que nunca saíram (93 recusas até 21/10/2026). O que passou a
+    /// cobrar releitura é o item mudar de versão, não chegar pedido novo.
     #[test]
     fn a_resend_keeps_the_reading_made_since_the_first_send() {
         let dir = tempfile::tempdir().unwrap();
@@ -126,7 +188,39 @@ mod tests {
         assert_eq!(unread(root, again), ["lesson-3"], "and so does the resend of the resend");
 
         let fresh = send(root, &items, None);
-        assert_eq!(unread(root, fresh), items, "a new request starts the reading over");
+        assert_eq!(unread(root, fresh), ["lesson-3"], "a new request with nothing returned keeps the reading");
+    }
+
+    /// O item que ganhou versão nova depois de ser lido volta a ser cobrado: o
+    /// recibo é de um texto que não existe mais. É isto que cobra a releitura,
+    /// no lugar de um pedido novo zerar tudo.
+    #[test]
+    fn an_item_that_got_a_new_version_after_the_reading_is_charged_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let items = ["MSTD-TASK-0001"];
+        let said = seed_event(root, "x", "message", json!({"author": "user", "text": "o plano"}));
+        let task = seed_event(
+            root,
+            "x",
+            "task",
+            json!({"text": "a tarefa", "origin": said, "files": [{"path": "src/a.rs"}], "depends_on": [], "wave": 1}),
+        );
+        let first = send(root, &items, None);
+        seed_read(root, "x", &request_name(Some(1)), "MSTD-TASK-0001");
+        assert!(unread(root, first).is_empty(), "o item lido não é cobrado");
+
+        // A versão nova da tarefa herda o código da que ela substitui.
+        seed_event(
+            root,
+            "x",
+            "task",
+            json!({"text": "a tarefa, de novo", "origin": said, "files": [{"path": "src/a.rs"}], "depends_on": [], "wave": 1,
+                "replaces": [task]}),
+        );
+        assert_eq!(unread(root, first), items, "a versão nova volta a cobrar a leitura");
+        seed_read(root, "x", &request_name(Some(1)), "MSTD-TASK-0001");
+        assert!(unread(root, first).is_empty(), "e a releitura fecha a conta");
     }
 
     /// A tarefa devolvida em `undone` não cobra leitura: nem o código dela, nem

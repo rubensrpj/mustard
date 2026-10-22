@@ -46,6 +46,26 @@ pub fn file_citation(source: &str) -> Option<(String, u64)> {
     Some((path, start.max(end)))
 }
 
+/// As citações de arquivo e linha que um texto traz, na ordem em que
+/// aparecem e sem repetir: cada pedaço dele que [`file_citation`] reconhece,
+/// sem a pontuação da frase em volta.
+///
+/// Serve ao levantamento: o pedido que já traz o diagnóstico, com arquivo e
+/// linha, não precisa ser refeito do zero. Num caso real o pedido trazia o
+/// diagnóstico inteiro, e o levantamento perguntou sintoma, causa e
+/// reprodução de novo.
+#[must_use]
+pub fn file_citations(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for piece in text.split(|c: char| c.is_whitespace() || "`\"'()[]{}<>,;".contains(c)) {
+        let piece = piece.trim_end_matches(['.', ':']);
+        if file_citation(piece).is_some() && !out.iter().any(|seen| seen == piece) {
+            out.push(piece.to_string());
+        }
+    }
+    out
+}
+
 /// Os nomes de código que um texto cita entre crases, na ordem em que
 /// aparecem, sem repetir. Conta como nome o identificador com `_`, o que tem
 /// letra maiúscula (`SpecLog`, `State`), o qualificado (`a::b`, que vale pelo

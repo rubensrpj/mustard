@@ -1210,6 +1210,14 @@ fn record_to(
         with_uncovered_items(source.as_ref(), refusal)
     });
     let mut draft = draft;
+    // De qual sessão veio: o registro diz quem gravou, e o consumo de duas
+    // conversas no mesmo projeto deixa de sair somado. Quem já disse a sessão
+    // no rascunho manda nela.
+    if !draft.contains_key("session")
+        && let Some(session) = crate::shared::spec_state::session_from_env()
+    {
+        draft.insert("session".into(), Value::String(session));
+    }
     let path = file?;
     // O item que descreve o trabalho, gravado pelo modelo, entra com as
     // partes da forma fixa, e o título e a parte do usuário passam pela
@@ -1523,6 +1531,52 @@ impl RecordCheck {
         let (carried, replaces) = phase_carried(event_type, &draft);
         let (name, by) = (&self.name, self.by);
         self.dry.write(event_type, draft, |before, after| record_rules(name, before, after, carried.as_deref(), replaces, Some(by)))
+    }
+}
+
+/// O aviso de que esta gravação veio de outra sessão: a spec já tinha
+/// registro de uma sessão, e esta é outra. `None` quando a sessão é a mesma,
+/// quando a spec não tem registro de sessão nenhuma, ou quando esta chamada
+/// não sabe de que sessão veio.
+///
+/// Uma conversa paralela no mesmo projeto gravou as leituras dela dentro da
+/// spec da conversa principal, e pelo registro não se sabia quem fez o quê. O
+/// aviso é só aviso: duas sessões na mesma spec podem ser o que o usuário
+/// quer, e travar a gravação travaria o condutor pelo motivo errado.
+fn another_session_wrote(root: &Path, spec: Option<&str>, lang: Locale) -> Option<String> {
+    let mine = crate::shared::spec_state::session_from_env()?;
+    let spec = spec.map(str::trim).filter(|spec| !spec.is_empty())?;
+    let path = store::spec_file(root, spec).ok()?;
+    let log = store::read(&path).ok().flatten()?;
+    let theirs = another_session_in(&log, &mine)?;
+    Some(crate::shared::say::say("spec_events.another_session", lang, &[("{session}", &theirs), ("{mine}", &mine)]))
+}
+
+/// A sessão mais recente da spec lida em `log` que não é `mine`; `None`
+/// quando toda sessão registrada é a minha, ou quando não há nenhuma.
+fn another_session_in(log: &SpecLog, mine: &str) -> Option<String> {
+    log.events.iter().rev().filter_map(|event| event.str_field("session")).find(|session| *session != mine).map(str::to_string)
+}
+
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+    use mustard_core::domain::spec_events::parse_log;
+
+    /// A spec com registro de outra sessão acusa qual é ela, e a sessão mais
+    /// recente que não é a minha é a que o aviso nomeia. Com só a minha, ou
+    /// sem sessão nenhuma, nada se diz.
+    #[test]
+    fn the_write_sees_the_other_session_in_the_spec() {
+        let line = |id: u64, session: &str| {
+            format!("{{\"v\":1,\"id\":{id},\"at\":\"2026-10-22T10:0{id}:00Z\",\"type\":\"call\",\"author\":\"binary\",\"command\":\"read\",\"ms\":1,\"result\":\"ok\",\"session\":\"{session}\"}}")
+        };
+        let log = parse_log(&format!("{}\n{}\n{}\n", line(1, "a"), line(2, "b"), line(3, "a")));
+        assert_eq!(another_session_in(&log, "a").as_deref(), Some("b"), "a mais recente que não é a minha");
+        assert_eq!(another_session_in(&log, "b").as_deref(), Some("a"));
+        let only_mine = parse_log(&format!("{}\n", line(1, "a")));
+        assert_eq!(another_session_in(&only_mine, "a"), None, "só a minha não é outra");
+        assert_eq!(another_session_in(&parse_log(""), "a"), None, "sem registro, nada a dizer");
     }
 }
 
@@ -1967,6 +2021,15 @@ fn answer_next_task(report: &mut Value, project: &super::Project, named: Option<
 pub fn run(opts: &WriteOpts, copy: bool) {
     let started = std::time::Instant::now();
     let mut report = write_at_with(opts, copy);
+    // A gravação que veio de outra sessão avisa: duas conversas no mesmo
+    // projeto gravam na mesma spec, e quem conduz não via a gravação da
+    // outra. O aviso não segura nada — a decisão é de quem lê.
+    if report["ok"] == json!(true) {
+        let project = super::project(&opts.root);
+        if let Some(hint) = another_session_wrote(&project.root, opts.spec.as_deref(), project.lang) {
+            super::pages::push_warning(&mut report, "another-session", &hint);
+        }
+    }
     // O passo que termina uma tarefa responde, ele mesmo, a medida da
     // conversa do agente de onda que o gravou, pela identidade que o gancho
     // do terminal exporta ao comando.
@@ -2639,7 +2702,7 @@ mod tests {
         assert_eq!(removal["removed"], json!([3]), "{removal}");
         assert!(removal.get("warnings").is_none(), "{removal}");
 
-        let agreed = read_at(&ReadOpts { root: root.to_path_buf(), spec: Some("teste".into()), block: "agreed".into(), term: None }).unwrap();
+        let agreed = read_at(&ReadOpts { root: root.to_path_buf(), spec: Some("teste".into()), block: "agreed".into(), term: None , session: None }).unwrap();
         assert!(!agreed.contains("Regra dois.") && agreed.contains("Regra três."), "{agreed}");
         let spec = root.join(".claude").join("spec").join("teste");
         let events = std::fs::read_to_string(spec.join("spec.ndjson")).unwrap();
@@ -3590,7 +3653,7 @@ mod tests {
             spec: None,
             block: "lessons".into(),
             term: Some(id.to_string()),
-        })
+         session: None })
         .expect("the lesson block reads");
         let read: Value = serde_json::from_str(&read).expect("the reading is JSON");
         assert_eq!(read["events"][0]["id"], json!(id), "{read}");
@@ -3969,7 +4032,7 @@ mod tests {
             spec: Some("teste".into()),
             block: "agreed".into(),
             term: None,
-        })
+         session: None })
         .expect("the agreed block reads");
         let read: Value = serde_json::from_str(&read).expect("the reading is JSON");
         assert_eq!(read["warnings"], Value::Null, "{read}");
@@ -4034,7 +4097,7 @@ mod tests {
                 spec: Some("teste".into()),
                 block: "agreed".into(),
                 term: Some(term.into()),
-            })
+             session: None })
             .expect("the agreed block reads");
             // A busca por termo responde em texto, uma linha por item.
             let codes: Vec<&str> = read.lines().filter_map(|line| line.split_whitespace().next()).collect();

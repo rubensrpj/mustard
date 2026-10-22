@@ -389,6 +389,25 @@ pub fn development_build_dir(root: &Path) -> PathBuf {
     project_folder(root, "MUSTARD_BUILD_DIR", "build")
 }
 
+/// O arquivo onde mora o retrato do mapa do código como a base estava, da
+/// spec `spec` do projeto `root`: a análise de declarações sem uso compara o
+/// mapa de agora com ele.
+///
+/// Mora fora do projeto, ao lado das cópias, com a mesma chave por projeto de
+/// [`copies_dir`]. A base é a pasta que `MUSTARD_MAPS_DIR` indicar, ou
+/// `.cache/mustard/mapas` sob a pasta pessoal. Ele ficava dentro da pasta da
+/// spec, e lá chegou a 89 MB numa máquina de verdade, sem o fechamento
+/// apagá-lo: um arquivo desse tamanho não é estado da obra, é cache, e cache
+/// não mora no projeto.
+#[must_use]
+pub fn validation_base_map(root: &Path, spec: &str) -> PathBuf {
+    project_folder(root, "MUSTARD_MAPS_DIR", "mapas").join(format!("{spec}.json"))
+}
+
+/// O nome do arquivo do mapa da base dentro da pasta de uma spec, de antes de
+/// ele sair do projeto: a limpeza o recolhe das specs que já acabaram.
+pub const OLD_VALIDATION_MAP: &str = "validation-base-map.json";
+
 /// A pasta da cópia de segurança das skills que o Mustard criou no projeto do
 /// checkout principal `root`, uma pasta por skill: mora fora do projeto, com
 /// a mesma chave por projeto de [`copies_dir`]. A base é a pasta que

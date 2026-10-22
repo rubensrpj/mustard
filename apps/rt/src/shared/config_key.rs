@@ -192,6 +192,16 @@ fn holds_key(file: &Path) -> bool {
 /// resposta é a que protege a chave: o de entrada casa, o de saída não.
 fn reads_config(walk: Walk, filters: &[NameFilter], name:&str) -> bool {
     let braces = walk != Walk::Grep;
+    // No `grep`, `--exclude` vence `--include` em qualquer ordem: o programa
+    // descarta o arquivo excluído antes de olhar as inclusões. Só no `rg` o
+    // último glob que casa é que decide. Enquanto esta leitura tratava os dois
+    // iguais, uma linha com os dois filtros era recusada mesmo deixando o
+    // arquivo da chave de fora (21/10/2026).
+    if walk == Walk::Grep
+        && filters.iter().any(|filter| filter.exclude && surely_takes(&filter.glob, name, braces))
+    {
+        return false;
+    }
     let deciding = filters.iter().rev().find(|filter| {
         if filter.exclude {
             surely_takes(&filter.glob, name, braces)
@@ -384,19 +394,24 @@ mod tests {
     }
 
     /// Os filtros de nome decidem como o `grep` e o `rg` decidem, conferido
-    /// contra os dois programas. No `grep`, o último filtro que casa vale;
-    /// sem nenhum, o arquivo entra, salvo quando o primeiro é de entrada; as
-    /// chaves são texto. No `rg`, o arquivo que o git ignora só entra com
-    /// `-u` ou com um filtro de entrada que casa com o nome, e o último que
-    /// casa vale. Um filtro que esta leitura não conhece conta como o que
-    /// protege a chave.
+    /// contra os dois programas. No `grep`, a exclusão que casa vence em
+    /// qualquer ordem; sem nenhum filtro, o arquivo entra, salvo quando o
+    /// primeiro é de entrada; as chaves são texto. No `rg`, o arquivo que o
+    /// git ignora só entra com `-u` ou com um filtro de entrada que casa com o
+    /// nome, e o último que casa vale. Um filtro que esta leitura não conhece
+    /// conta como o que protege a chave.
     #[test]
     fn the_name_filters_decide_like_grep_and_rg() {
         let grep = |globs: &[&str]| reads(Walk::Grep, globs);
         assert!(grep(&[]));
         assert!(grep(&["*.json"]));
         assert!(grep(&["!foo", "*.rs"]), "the first filter leaves out, so an unmatched file enters");
-        assert!(grep(&["!mustard.json", "*.json"]), "the last matching filter wins");
+        // Conferido contra o GNU grep 3.11 em 21/10/2026, nas duas ordens: com
+        // `--exclude=mustard.json --include=*.json` e com os dois trocados de
+        // lugar, o programa não lê o arquivo excluído. Esta leitura tratava a
+        // ordem como no `rg`, e por isso recusava uma linha que já deixava o
+        // arquivo da chave de fora.
+        assert!(!grep(&["!mustard.json", "*.json"]), "no grep, a exclusão vence em qualquer ordem");
         assert!(grep(&["!*.{json,md}"]), "grep reads braces as text");
         assert!(grep(&["!**/mustard.json"]), "grep compares the name without its folder");
         assert!(!grep(&["!mustard.json"]));

@@ -141,6 +141,10 @@ pub struct ReadOpts {
     pub spec: Option<String>,
     pub block: String,
     pub term: Option<String>,
+    /// Só os registros desta sessão do Claude Code, em `calls` e `metrics`.
+    /// Sem ela, os de todas: duas conversas no mesmo projeto gravam na mesma
+    /// spec, e o consumo das duas saía somado.
+    pub session: Option<String>,
 }
 
 /// Quantos eventos um bloco mostra a quem conduz, sem `--all`: os mais
@@ -202,7 +206,12 @@ fn read_reach(opts: &ReadOpts, session: Option<&str>, from: &Path, reach: Reach)
         }
         return Ok(report);
     }
-    let reading = ReadQuery::parse(block).ok_or_else(|| refuse(Refusal::UnknownBlock { found: block.to_string() }))?;
+    // O nome que o agente chutou vale pelo bloco que ele quis, e a resposta
+    // diz o nome certo: cinquenta e uma recusas eram só isso, e cada uma
+    // custava uma volta inteira do agente.
+    let alias = ReadQuery::alias_of(block);
+    let asked = alias.unwrap_or(block);
+    let reading = ReadQuery::parse(asked).ok_or_else(|| refuse(Refusal::UnknownBlock { found: block.to_string() }))?;
     let spec = match opts.spec.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(spec) => spec.to_string(),
         None => DiskSpecState::new(&checkout(&opts.root)).active(session).ok_or_else(|| refuse(Refusal::NoCurrentSpec))?,
@@ -292,7 +301,11 @@ fn read_reach(opts: &ReadOpts, session: Option<&str>, from: &Path, reach: Reach)
             extra.push(("total", total));
             lines
         }
-        ReadQuery::Calls => calls_lines(&super::conversation::observed(&project.root, &spec, &log), term),
+        ReadQuery::Calls => {
+            let seen = super::conversation::observed(&project.root, &spec, &log);
+            let seen: Vec<SpecEvent> = seen.into_iter().filter(|event| of_session(event, opts.session.as_deref())).collect();
+            calls_lines(&seen, term)
+        }
         ReadQuery::Block(query) => {
             if query == BlockQuery::Block(Block::State)
                 && let Some(id) = last_user_message(&log)
@@ -313,6 +326,8 @@ fn read_reach(opts: &ReadOpts, session: Option<&str>, from: &Path, reach: Reach)
             }
             let found = found_by(log.block(query), term, &codes, &project.languages);
             let found = if query == BlockQuery::Block(Block::State) { latest_copies(found) } else { found };
+            // Só os registros da sessão pedida, quando ela foi pedida.
+            let found: Vec<&SpecEvent> = found.into_iter().filter(|event| of_session(event, opts.session.as_deref())).collect();
             let mut found: Vec<(&SpecEvent, &BTreeMap<u64, String>)> = found.into_iter().map(|e| (e, &codes)).collect();
             // O painel junta o que o programa observou de si e mora no arquivo
             // de operações, cada evento com o código que ele tem lá, na ordem
@@ -323,7 +338,10 @@ fn read_reach(opts: &ReadOpts, session: Option<&str>, from: &Path, reach: Reach)
                 SpecLog::default()
             };
             let operation_codes = operations.codes();
-            let observed = found_by(operations.block(query), term, &operation_codes, &project.languages);
+            let observed: Vec<&SpecEvent> = found_by(operations.block(query), term, &operation_codes, &project.languages)
+                .into_iter()
+                .filter(|event| of_session(event, opts.session.as_deref()))
+                .collect();
             if !observed.is_empty() {
                 found.extend(observed.into_iter().map(|e| (e, &operation_codes)));
                 found.sort_by_key(|(e, _)| super::conversation::time_of(e));
@@ -371,8 +389,15 @@ fn read_reach(opts: &ReadOpts, session: Option<&str>, from: &Path, reach: Reach)
         })
         .collect::<Vec<_>>();
     note_reading(&project.root, &spec, request.as_ref(), only_wave, &read, started);
-    let warnings: Vec<String> = log.skipped.iter().map(|s| s.message(lang)).collect();
-    Ok(render(&spec, block, more.as_deref(), &events, &extra, &warnings))
+    let mut warnings: Vec<String> = log.skipped.iter().map(|s| s.message(lang)).collect();
+    // O apelido entregou o bloco, e a resposta diz o nome certo: a próxima
+    // leitura sai direto, sem a volta que a recusa custava.
+    if alias.is_some() {
+        warnings.push(
+            crate::shared::say::say("spec_events.block_alias", lang, &[("{asked}", block), ("{block}", asked)]),
+        );
+    }
+    Ok(render(&spec, asked, more.as_deref(), &events, &extra, &warnings))
 }
 
 /// A recusa da leitura de um pedido que nunca saiu: o da onda `wave` ou, sem
@@ -554,9 +579,11 @@ fn item_line(log: &SpecLog, event: &SpecEvent, codes: &BTreeMap<u64, String>, sh
     shown_line(&fields)
 }
 
-/// Os campos de uma linha que não são do item: o envelope, a busca e o
-/// apontador da versão anterior.
-const NOT_COMPARED: &[&str] = &["v", "id", "code", "at", "type", "search", "replaces"];
+/// Os campos de uma linha que não são do item: o envelope, a busca, o
+/// apontador da versão anterior e a sessão de quem gravou. A sessão não é
+/// conteúdo do item, é registro de quem o escreveu: uma versão nova gravada
+/// noutra conversa não mudou o item por isso.
+const NOT_COMPARED: &[&str] = &["v", "id", "code", "at", "type", "search", "replaces", "session"];
 
 /// O que mudou de `old` para `new`, campo a campo. Uma lista diz o que entrou
 /// (`added`) e o que saiu (`removed`) — os arquivos pelo caminho —; um
@@ -1081,6 +1108,17 @@ fn without_agent_omissions(fields: &mut Map<String, Value>, event_type: &str) {
     }
 }
 
+/// O evento é da sessão `session`, quando uma sessão foi pedida. Sem sessão
+/// pedida, todo evento passa; com ela, só o que a diz. O registro de antes
+/// desta versão não tem o campo, e fica de fora da leitura por sessão: dizer
+/// que ele é da sessão pedida seria inventar.
+fn of_session(event: &SpecEvent, session: Option<&str>) -> bool {
+    let Some(session) = session.map(str::trim).filter(|session| !session.is_empty()) else {
+        return true;
+    };
+    event.str_field("session") == Some(session)
+}
+
 /// A saída de uma leitura: o envelope, com `more` antes dos eventos quando a
 /// leitura deixou algo de fora, um evento por linha, depois os campos de
 /// `extra` que a leitura dá além dos eventos, e os avisos por último.
@@ -1128,7 +1166,7 @@ pub(crate) fn read_by_command(command: &str) -> String {
         spec: flag("--spec"),
         block: words[3].to_string(),
         term: None,
-    };
+     session: None };
     read_at(&opts).unwrap_or_else(|refusal| panic!("{command}: {refusal}"))
 }
 
@@ -1173,7 +1211,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn opts(root: &std::path::Path, block: &str, term: Option<&str>) -> ReadOpts {
-        ReadOpts { root: root.to_path_buf(), spec: Some("teste".into()), block: block.into(), term: term.map(str::to_string) }
+        ReadOpts { root: root.to_path_buf(), spec: Some("teste".into()), block: block.into(), term: term.map(str::to_string), session: None }
     }
 
     fn without_spec(root: &std::path::Path, block: &str) -> ReadOpts {
@@ -1326,6 +1364,68 @@ mod tests {
         assert!(unknown["hint"].as_str().unwrap().contains("specification"));
         let missing = read_at(&opts(root, "state", None)).unwrap_err();
         assert_eq!(missing["reason"], json!("no-spec-file"));
+    }
+
+    /// O nome chutado entrega o bloco que o agente quis, com o aviso do nome
+    /// certo, e a resposta diz o nome aceito no campo do bloco. O nome sem
+    /// correspondência segue recusado, com a lista.
+    ///
+    /// Em campo (21/10/2026) foram cinquenta e uma recusas de nome chutado, e
+    /// cada uma custava uma volta inteira do agente.
+    #[test]
+    fn a_guessed_block_name_delivers_the_right_block_with_the_name_said() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        by_program(root, "state", json!({"author": "binary", "phase": "survey"}));
+
+        for (asked, name) in [("tarefas", "backlog"), ("Contexto", "specification"), ("ondas", "waves"), ("métricas", "metrics")] {
+            let text = read_at(&opts(root, asked, None)).unwrap_or_else(|e| panic!("{asked}: {e}"));
+            let out: Value = serde_json::from_str(&text).unwrap_or_else(|_| panic!("{asked}: {text}"));
+            assert_eq!(out["block"], json!(name), "a resposta diz o nome aceito: {text}");
+            let warnings = out["warnings"].as_array().cloned().unwrap_or_default();
+            let said = warnings.iter().filter_map(|w| w.as_str()).collect::<Vec<_>>().join(" ");
+            assert!(said.contains(asked) && said.contains(name), "o aviso diz os dois nomes: {text}");
+        }
+
+        // O nome que não é apelido de nada segue recusado.
+        let unknown = read_at(&opts(root, "everything", None)).unwrap_err();
+        assert_eq!(unknown["reason"], json!("unknown-block"), "{unknown}");
+    }
+
+    /// Cada registro diz de qual sessão veio, e a leitura por sessão separa
+    /// as duas: `calls` e `metrics` com `--session` trazem só os daquela
+    /// conversa. Sem a opção, trazem os de todas.
+    ///
+    /// Em campo (21/10/2026) uma conversa paralela no mesmo projeto gravou as
+    /// leituras dela dentro da spec da conversa principal, e os números de
+    /// consumo saíam somados.
+    #[test]
+    fn each_record_says_its_session_and_the_reading_separates_them() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        by_program(root, "state", json!({"author": "binary", "phase": "survey"}));
+        let call = |session: &str, command: &str| {
+            by_program(root, "call", json!({"author": "binary", "command": command, "ms": 1, "result": "ok", "session": session}))
+        };
+        call("sessao-a", "round");
+        call("sessao-b", "close");
+
+        let commands = |session: Option<&str>| -> Vec<Value> {
+            let mut read = opts(root, "calls", None);
+            read.session = session.map(str::to_string);
+            events(&read_at(&read).unwrap()).iter().map(|e| e["command"].clone()).collect()
+        };
+        assert_eq!(commands(None), [json!("close"), json!("round")], "sem a opção, as duas sessões");
+        assert_eq!(commands(Some("sessao-a")), [json!("round")], "só a sessão pedida");
+        assert_eq!(commands(Some("sessao-b")), [json!("close")], "só a sessão pedida");
+        assert!(commands(Some("sessao-c")).is_empty(), "a sessão que não gravou nada");
+
+        // O mesmo filtro no bloco das medidas.
+        let mut metrics = opts(root, "metrics", None);
+        metrics.session = Some("sessao-a".to_string());
+        let only = events(&read_at(&metrics).unwrap());
+        assert!(only.iter().all(|e| e["session"] == json!("sessao-a")), "{only:?}");
+        assert_eq!(only.len(), 1, "{only:?}");
     }
 
     #[test]

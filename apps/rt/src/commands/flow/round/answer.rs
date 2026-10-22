@@ -66,6 +66,14 @@ pub(crate) enum RoundRefusal {
     MergeConflict { wave: u64, copy: String, conflicts: Vec<String>, head: String },
     /// Um arquivo entregue não está no disco nem é conhecido do git.
     FileUnknown { file: String, wave: u64 },
+    /// O commit levou arquivo que a entrega não listou, e foi desfeito.
+    ///
+    /// A rodada monta um índice à parte e põe nele só os arquivos da entrega,
+    /// mas o gancho de pre-commit do projeto roda dentro do `git commit`: um
+    /// que termine em `git add -A` junta ao commit tudo o que estiver alterado
+    /// no checkout. Em campo, a configuração do editor do usuário, alterada
+    /// antes da obra e sem relação com ela, foi para a branch (21/10/2026).
+    CommitCarriedMore { extra: Vec<String>, repo: String },
     /// A spec ainda não foi aprovada.
     NotApproved { phase: String },
     /// A spec fechou, ou está com o pull request aberto, e não tem onda de
@@ -133,6 +141,12 @@ pub(crate) enum RoundRefusal {
     RejectedCommitted { wave: u64, sha: String },
     /// O git recusou o commit.
     Git { detail: String },
+    /// O gancho que o projeto roda antes de cada commit barrou o commit da
+    /// rodada: o nome do gancho, o que ele disse e os arquivos do commit que a
+    /// saída dele citou. A barreira é do projeto, e nada do Mustard a
+    /// contorna; dizer só "o git recusou" deixava o usuário sem saber de quem
+    /// era a conferência nem onde mexer.
+    ProjectHook { hook: String, detail: String, files: Vec<String> },
     /// O checkout está num ramo (`current`) que não é o da spec (`branch`):
     /// a rodada não comita nem abre cópia fora dele.
     WrongBranch { current: String, branch: String },
@@ -166,6 +180,7 @@ impl RoundRefusal {
             Self::LineField { .. } => "round-line-field-missing".into(),
             Self::MergeConflict { .. } => "round-merge-conflict".into(),
             Self::FileUnknown { .. } => "round-file-unknown".into(),
+            Self::CommitCarriedMore { .. } => "round-commit-carried-more".into(),
             Self::NotApproved { .. } => "round-not-approved".into(),
             Self::SpecClosed { .. } => "round-spec-closed".into(),
             Self::SpecFinished { .. } => "round-spec-finished".into(),
@@ -186,6 +201,7 @@ impl RoundRefusal {
             Self::RejectedWithoutReturn { .. } => "round-rejected-without-return".into(),
             Self::RejectedCommitted { .. } => "round-rejected-committed".into(),
             Self::Git { .. } => "git-refused".into(),
+            Self::ProjectHook { .. } => "project-hook-refused".into(),
             Self::WrongBranch { .. } => "round-wrong-branch".into(),
             Self::InvalidPath { .. } => "round-invalid-path".into(),
             Self::TokenCap { .. } => "wave-token-cap".into(),
@@ -219,6 +235,23 @@ impl RoundRefusal {
                 &[("{wave}", wave.to_string()), ("{conflicts}", conflicts.join(", ")), ("{copy}", copy.clone()), ("{head}", head.clone())],
             ),
             Self::FileUnknown { file, wave } => fill("round.file_unknown", &[("{file}", file.clone()), ("{wave}", wave.to_string())]),
+            // Os dois comandos vão prontos, com os arquivos dentro: parar e
+            // dizer o nome deixava o usuário montar a linha à mão, e uma
+            // mudança local permanente barraria toda rodada (decisão do
+            // usuário, 21/10/2026). Guardar e devolver por conta própria não
+            // entra: falhando no meio, perderia trabalho dele.
+            Self::CommitCarriedMore { extra, repo } => {
+                let paths = extra.join(" ");
+                fill(
+                    "round.commit_carried_more",
+                    &[
+                        ("{extra}", extra.join(", ")),
+                        ("{repo}", repo.clone()),
+                        ("{stash}", format!("git -C {repo} stash push -- {paths}")),
+                        ("{restore}", format!("git -C {repo} stash pop")),
+                    ],
+                )
+            }
             Self::NotApproved { phase } => fill("round.not_approved", &[("{phase}", phase.clone())]),
             Self::SpecClosed { spec, phase } => fill("round.closed", &[("{spec}", spec.clone()), ("{phase}", phase.clone())]),
             Self::SpecFinished { spec, phase } => fill("round.finished", &[("{spec}", spec.clone()), ("{phase}", phase.clone())]),
@@ -258,6 +291,7 @@ impl RoundRefusal {
             Self::RejectedWithoutReturn { wave } => fill("round.rejected_without_return", &[("{wave}", wave.to_string())]),
             Self::RejectedCommitted { wave, sha } => fill("round.rejected_committed", &[("{wave}", wave.to_string()), ("{sha}", sha.clone())]),
             Self::Git { detail } => fill("round.git_refused", &[("{detail}", detail.clone())]),
+            Self::ProjectHook { hook, detail, files } => super::wave_commit::project_hook_said(hook, detail, files, lang),
             Self::WrongBranch { current, branch } => fill("round.wrong_branch", &[("{current}", current.clone()), ("{branch}", branch.clone())]),
             Self::InvalidPath { file } => fill("round.invalid_path", &[("{file}", file.clone())]),
             Self::PreparationRequired(detail) => detail["hint"].as_str().unwrap_or_default().into(),
@@ -1047,6 +1081,10 @@ fn dispatch_round(
     // spec.
     let jev_asked = jev.is_some() || super::item_choice::asks_jev(context_jev.filter.as_deref());
     warnings.extend(super::jev_failure::warning(root, &spec, &operations_on_entry, jev_asked, session, lang));
+    // A montagem que chamou o Jev e não formou onda, e o terminal que está
+    // dentro de uma cópia de onda — uma pasta que a rodada pode apagar, e o
+    // shell que perde a pasta em que está não roda mais nada.
+    warnings.extend([super::jev_failure::by_files_warning(root, &spec, &operations_on_entry, jev_asked, session, lang), super::standing_in_a_copy(root, lang)].into_iter().flatten());
 
     // O sinal de vida: a onda em andamento, viva, sem nenhuma ação gravada
     // (pelo observador da cópia, ou, sem ela, a hora do próprio envio) há mais
@@ -2071,7 +2109,7 @@ mod tests {
         assert_eq!(sent.str_field("template"), None, "{sent:?}");
 
         let read = |block: &str| -> Value {
-            let opts = ReadOpts { root: root.to_path_buf(), spec: Some("x".into()), block: block.into(), term: None };
+            let opts = ReadOpts { root: root.to_path_buf(), spec: Some("x".into()), block: block.into(), term: None , session: None };
             serde_json::from_str(&read_for(&opts, None, root).expect("the block reads")).expect("the output is JSON")
         };
         let send_of = |shown: &Value| -> Value { shown["events"].as_array().unwrap().iter().find(|e| e["type"] == json!("send")).cloned().expect("send") };
@@ -3084,3 +3122,4 @@ mod tests {
         }
     }
 }
+

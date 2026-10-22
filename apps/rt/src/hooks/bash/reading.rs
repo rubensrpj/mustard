@@ -7,8 +7,9 @@ use std::path::{Path, PathBuf};
 
 use mustard_core::domain::model::contract::{Ctx, HookInput, Verdict};
 
-use super::lex::{Segment, Word};
+use super::lex::{self, Segment, Word};
 use crate::hooks::write::write_gate::say;
+use crate::shared::search_gateway::literal_shell;
 use crate::shared::config_key::{self, CONFIG_FILE, NameFilter, Walk};
 use crate::shared::word_search;
 #[cfg(test)]
@@ -87,6 +88,12 @@ const GIT_GREP_SHORT_VALUE: &[char] = &['e', 'f', 'm', 'A', 'B', 'C'];
 const GIT_GREP_LONG_VALUE: &[&str] = &["max-depth", "threads", "max-count", "after-context", "before-context", "context"];
 
 /// A conferência inteira: a primeira recusa da linha, na ordem dos comandos.
+///
+/// Ela só julga. Montar o comando pronto é de quem responde
+/// ([`super::command_guard`], por [`excluded_command`]), como já era com a
+/// leitura do arquivo de configuração. Enquanto a reescrita morava aqui, esta
+/// função precisava de um sinal de liga e desliga para não chamar a si mesma
+/// sem fim (21/10/2026).
 pub(super) fn bash_reading(segments: &[Segment], cmd: &str, input: &HookInput, ctx: &Ctx) -> Option<Verdict> {
     let root = ctx.project_dir_or_cwd(input);
     let lang = ctx.config.language().text_or_default();
@@ -99,6 +106,33 @@ pub(super) fn bash_reading(segments: &[Segment], cmd: &str, input: &HookInput, c
             mustard_core::translate("config_key.shell_unsupported",lang).replace("{file}",CONFIG_FILE),
             match lang {mustard_core::SupportedLocale::PtBr=>"O script não foi executado, incluindo etapas encadeadas; rode as demais separadamente.",mustard_core::SupportedLocale::EnUs=>"The script and chained steps were not executed; run unrelated steps separately."})});
     }
+    match found_in(segments, cmd, input, ctx)? {
+        Found::Reader(reason) => Some(Verdict::Deny { reason }),
+        Found::Swept { file, option, .. } => Some(Verdict::Deny {
+            reason: say("config_key.swept", lang, &[("{file}", &file), ("{fix}", &format!("`{option}`"))]),
+        }),
+    }
+}
+
+/// O que a travessia da linha achou de errado.
+enum Found {
+    /// Um leitor, ou um programa alimentado por `<`, que mostraria o arquivo
+    /// da chave. Carrega o motivo já em palavras.
+    Reader(String),
+    /// Uma busca que varre o arquivo da chave: o arquivo, a opção que o tira
+    /// e se ela pode ser posta na linha.
+    Swept { file: String, option: String, placeable: bool },
+}
+
+/// A travessia da linha: o primeiro achado, na ordem dos comandos.
+///
+/// Uma travessia só, para dois usos. A conferência a lê para dizer o motivo da
+/// recusa, e [`excluded_command`] para saber que opção pôr no comando pronto.
+/// O `cd` de uma etapa vale para as seguintes, e por isso a travessia é uma: o
+/// caminho de onde a busca corre depende do que veio antes dela.
+fn found_in(segments: &[Segment], cmd: &str, input: &HookInput, ctx: &Ctx) -> Option<Found> {
+    let root = ctx.project_dir_or_cwd(input);
+    let lang = ctx.config.language().text_or_default();
     let mut cwd = PathBuf::from(input.cwd.as_deref().filter(|cwd| !cwd.is_empty()).unwrap_or(&root));
     // O `grep` que o `xargs` alimenta com a saída do `find` anterior já foi
     // lido junto com ele.
@@ -111,7 +145,7 @@ pub(super) fn bash_reading(segments: &[Segment], cmd: &str, input: &HookInput, c
             continue;
         }
         if let Some(reason) = config_refusal(segment, &cwd, lang) {
-            return Some(Verdict::Deny { reason });
+            return Some(Found::Reader(reason));
         }
         if std::mem::take(&mut fed) {
             continue;
@@ -131,16 +165,61 @@ pub(super) fn bash_reading(segments: &[Segment], cmd: &str, input: &HookInput, c
         }
         let folders: Vec<PathBuf> = searched.iter().map(|path| cwd.join(path)).collect();
         if let Some(file) = config_key::swept(&folders, Path::new(&root), search.walk, &search.filters) {
-            let name=Path::new(&file).file_name().and_then(|name|name.to_str()).unwrap_or(CONFIG_FILE);
-            let fix = match search.walk {
-                _ if search.git => format!("`':!{name}'`"),
-                Walk::Grep => format!("`--exclude={name}`"),
-                Walk::Rg { .. } => format!("`-g '!{name}'`"),
-            };
-            return Some(Verdict::Deny { reason: say("config_key.swept", lang, &[("{file}", &file), ("{fix}", &fix)]) });
+            let name = Path::new(&file).file_name().and_then(|name| name.to_str()).unwrap_or(CONFIG_FILE);
+            let (option, placeable) = exclusion(search.walk, search.git, name);
+            return Some(Found::Swept { file, option, placeable });
         }
     }
     None
+}
+
+/// A opção que tira `name` de uma busca, e se ela pode entrar logo depois do
+/// programa.
+///
+/// O `grep` e o `rg` aceitam a opção em qualquer posição, então o comando
+/// inteiro pode ser reescrito com ela. O pathspec do `git grep` vai no fim,
+/// depois do `--`, e mudar argumento de lugar não é seguro aqui: ali a recusa
+/// segue dizendo só o que acrescentar.
+fn exclusion(walk: Walk, git: bool, name: &str) -> (String, bool) {
+    if git {
+        return (format!("':!{name}'"), false);
+    }
+    match walk {
+        Walk::Grep => (format!("--exclude={name}"), true),
+        Walk::Rg { .. } => (format!("-g '!{name}'"), true),
+    }
+}
+
+/// `command` com a opção que tira o arquivo da chave posta na busca que o
+/// varre, e as outras etapas na mesma ordem e intactas.
+///
+/// `None` quando a linha não varre o arquivo, quando a opção não pode ser
+/// posta com segurança (o pathspec do `git grep` vai depois do `--`), ou
+/// quando o comando reescrito ainda varreria o arquivo. Nesses casos a recusa
+/// fica com o texto que diz só o que acrescentar.
+///
+/// Quem chama é [`super::command_guard`], depois da recusa, como já fazia com
+/// a leitura do arquivo de configuração. A travessia é a de [`found_in`] e a
+/// troca é a de [`super::rewrite::rewritten`]: nenhuma parte da linha de quem
+/// chamou é executada.
+pub(super) fn excluded_command(command: &str, input: &HookInput, ctx: &Ctx) -> Option<String> {
+    let segments = lex::segments(command);
+    let Found::Swept { option, placeable: true, .. } = found_in(&segments, command, input, ctx)? else {
+        return None;
+    };
+    // No FIM da etapa, e não depois do programa, porque o `rg` deixa o último
+    // glob decidir: `rg -g '!x' -g '*.json'` volta a ler o arquivo. No `grep`
+    // a exclusão vence em qualquer posição, e no fim serve aos dois. Conferido
+    // contra o GNU grep 3.11 e o ripgrep 15.2.0 em 21/10/2026.
+    let ready = super::rewrite::rewritten(command, |step| {
+        let parts = lex::segments(step);
+        let [part] = parts.as_slice() else { return None };
+        let searches = text_search(part).is_some() && part.redirects.is_empty() && literal_shell(step);
+        searches.then(|| format!("{step} {option}"))
+    })?;
+    // A linha inteira de novo, não só a etapa consertada: uma segunda
+    // varredura, por outro caminho, continua recusando.
+    bash_reading(&lex::segments(&ready), &ready, input, ctx).is_none().then_some(ready)
 }
 
 /// O nome que o `find` busca: o padrão do `-name`, `-iname` ou `-path`.
@@ -249,10 +328,39 @@ fn find_text_search(find: &FindRead, next: Option<&Segment>, cmd: &str) -> Optio
     Some((search, feeds))
 }
 
+/// `true` quando o comando escreve no arquivo no lugar e não imprime nada
+/// dele: aí não há chave para proteger.
+///
+/// Hoje é o `sed -i`. Com `-i`, toda a saída do `sed` vai para o arquivo, e
+/// nada dela chega à conversa. A guarda da chave barrava esse comando com a
+/// frase "leitura bloqueada", que diz o motivo errado, e quem quis mudar um
+/// campo da própria configuração não tinha por onde: nem pela porta do
+/// Mustard, que não tem comando para isso (campo, 21/10/2026).
+///
+/// Só a opção escrita por inteiro conta — `-i`, `-i.bak`, `--in-place` ou
+/// `--in-place=.bak`. As curtas agrupadas, como `-ni`, seguem barradas: `-e`
+/// leva valor, e confundir as duas liberaria uma leitura de verdade.
+///
+/// Esta guarda protege a CHAVE, não a configuração. Impedir que o arquivo seja
+/// editado fora da porta do Mustard, se for o caso, é outra guarda, com outra
+/// mensagem.
+fn writes_in_place(segment: &Segment) -> bool {
+    segment.name() == "sed"
+        && segment.args.iter().any(|word| {
+            let text = word.text.as_str();
+            text == "-i" || text == "--in-place" || text.starts_with("--in-place=") || {
+                text.strip_prefix("-i").is_some_and(|rest| !rest.is_empty() && !rest.starts_with('-'))
+            }
+        })
+}
+
 /// A recusa do comando que mostraria o arquivo de configuração com a chave:
 /// um leitor com o arquivo nos argumentos, ou qualquer programa com o arquivo
 /// entrando por `<`, pelo nome ou por um curinga que o alcança.
 fn config_refusal(segment: &Segment, cwd: &Path, lang: mustard_core::platform::i18n::Locale) -> Option<String> {
+    if writes_in_place(segment) {
+        return None;
+    }
     let reader = READERS.contains(&segment.name());
     let named = segment.args.iter().filter(|_| reader);
     let fed = segment.redirects.iter().filter(|redirect| redirect.op == "<").map(|redirect| &redirect.target);
@@ -880,22 +988,75 @@ mod tests {
         // O terminal come a barra invertida de uma palavra sem aspas: a pasta
         // de cima entra na linha com barras normais, como a pessoa a escreve.
         let above = format!("grep -rn jev {}", crate::shared::paths::canonical(&root.parent().expect("a folder above the project").to_string_lossy()));
-        let (grep, rg) = ("`--exclude=mustard.json`", "`-g '!mustard.json'`");
-        for (command, fix) in [
-            ("grep -r jev .", grep),
-            ("grep -rn jev", grep),
-            ("cd src && grep -R key ..", grep),
-            ("grep -r -e jev -e key .", grep),
-            ("grep -r --include=*.json key .", grep),
-            (above.as_str(), grep),
-            ("rtk rg -u jev", rg),
-            ("rg --no-ignore-vcs jev .", rg),
-            ("rg -g '*.json' key", rg),
+        // A recusa devolve o comando inteiro reescrito, com a opção no fim da
+        // etapa que varre e as outras etapas intactas: a que só dizia o que
+        // acrescentar custava uma volta ao agente, e no comando composto ele
+        // ainda tinha de remontar as etapas sem relação (campo, 21/10/2026).
+        let (grep, rg) = ("--exclude=mustard.json", "-g '!mustard.json'");
+        let above_ready = format!("{above} {grep}");
+        for (command, ready) in [
+            ("grep -r jev .", format!("grep -r jev . {grep}")),
+            ("grep -rn jev", format!("grep -rn jev {grep}")),
+            ("cd src && grep -R key ..", format!("cd src && grep -R key .. {grep}")),
+            ("grep -r -e jev -e key .", format!("grep -r -e jev -e key . {grep}")),
+            ("grep -r --include=*.json key .", format!("grep -r --include=*.json key . {grep}")),
+            (above.as_str(), above_ready.clone()),
+            ("rtk rg -u jev", format!("rtk rg -u jev {rg}")),
+            ("rg --no-ignore-vcs jev .", format!("rg --no-ignore-vcs jev . {rg}")),
+            ("rg -g '*.json' key", format!("rg -g '*.json' key {rg}")),
         ] {
             let reason = refused(run(&root, command), command);
             assert!(!reason.contains(fixture::FAKE_KEY), "`{command}`: the key leaked");
-            assert!(reason.contains(fix) && reason.contains("mustard.json"), "{command}: {reason}");
+            assert!(reason.contains(&ready), "{command}: the ready command is missing from {reason}");
         }
+    }
+
+    /// Escrever no arquivo de configuração no lugar passa, e lê-lo continua
+    /// barrado.
+    ///
+    /// Em campo (21/10/2026) o usuário pediu para desligar um portão do
+    /// Mustard, e a guarda da chave barrou o `sed -i` que mudaria o campo,
+    /// dizendo "leitura bloqueada". O comando não imprime nada: não havia
+    /// chave para proteger, e não havia outra porta para mudar o campo.
+    #[test]
+    fn writing_the_config_file_in_place_passes_while_reading_it_stays_refused() {
+        let config = format!(r#"{{"jev": {{"key": "{}"}}}}"#, fixture::FAKE_KEY);
+        let (_dir, root) = fixture::project(&config, true);
+        for command in [
+            "sed -i '1a\\  \"enabled\": false,' mustard.json",
+            "sed -i.bak 's/true/false/' mustard.json",
+            "sed --in-place 's/true/false/' mustard.json",
+            "sed --in-place=.bak 's/true/false/' mustard.json",
+        ] {
+            assert!(
+                matches!(run(&root, command), Verdict::Allow),
+                "`{command}` escreve e não imprime, então passa",
+            );
+        }
+        // Ler segue barrado, inclusive pelo mesmo programa sem a opção, e as
+        // curtas agrupadas não valem por ela.
+        for command in ["sed -n '1p' mustard.json", "sed -ni '1p' mustard.json", "cat mustard.json"] {
+            let reason = refused(run(&root, command), command);
+            assert!(!reason.contains(fixture::FAKE_KEY), "`{command}`: the key leaked");
+        }
+    }
+
+    /// Num comando composto, só a etapa que varre o arquivo da chave é
+    /// consertada: as outras voltam na reescrita como foram escritas.
+    ///
+    /// Em campo (21/10/2026) um comando com três etapas foi barrado inteiro, e
+    /// a resposta não devolveu nada pronto: o agente remontou a linha à mão.
+    #[test]
+    fn a_composed_command_comes_back_rewritten_with_the_other_steps_intact() {
+        let config = format!(r#"{{"jev": {{"key": "{}"}}}}"#, fixture::FAKE_KEY);
+        let (_dir, root) = fixture::project(&config, true);
+        let command = "grep -rn jev . && git log --oneline -3";
+        let reason = refused(run(&root, command), command);
+        assert!(!reason.contains(fixture::FAKE_KEY), "the key leaked: {reason}");
+        assert!(
+            reason.contains("grep -rn jev . --exclude=mustard.json && git log --oneline -3"),
+            "the ready command keeps the git log: {reason}",
+        );
     }
 
     /// O leitor com um curinga sem aspas que o terminal abre e que alcança o

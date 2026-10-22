@@ -14,32 +14,27 @@ use crate::shared::{config_key, search_gateway::{literal_shell, quote}};
 /// replaced safely, or when the replaced command would still expose the key.
 pub(super) fn masked_command(command: &str, input: &HookInput, ctx: &Ctx) -> Option<String> {
     let binary = std::env::current_exe().ok()?;
-    let mut changes = Vec::new();
-    for range in lex::command_ranges(command) {
-        let source = command.get(range.clone())?;
-        let trimmed = source.trim();
+    let binary = quote(&crate::shared::paths::canonical(&binary.to_string_lossy()));
+    // A travessia das etapas e a troca de trás para frente moram em
+    // [`super::rewrite`], com a recusa da busca que varre o arquivo: as duas
+    // reescritas fazem a mesma coisa, e a faziam cada uma na sua cópia
+    // (21/10/2026).
+    let rewritten = super::rewrite::rewritten(command, |trimmed| {
         let parts = lex::segments(trimmed);
         // Redirects, wrappers, nested shells/substitutions and scripts stay on
         // the refusal path. Literal patterns remain data, including $ in ''.
-        let [part] = parts.as_slice() else { continue };
-        let Some(file) = part.args.last().filter(|w| config_key::is_config_file(&w.text)) else { continue };
+        let [part] = parts.as_slice() else { return None };
+        let file = part.args.last().filter(|w| config_key::is_config_file(&w.text))?;
         if !part.redirects.is_empty() || !part.leading.is_empty()
             || !literal_shell(trimmed) || part.program.text != part.name()
             || !trimmed.strip_prefix(&part.program.raw).is_some_and(|rest| rest.starts_with(char::is_whitespace))
             || part.args.iter().any(|word| !literal_word(&word.raw))
-        { continue; }
+        { return None; }
         let args: Vec<String> = part.args[..part.args.len()-1].iter().map(|w| w.text.clone()).collect();
-        if !supported(part.name(), &args) { continue; }
-        let replacement = format!("{} run config-read --file {} --reader {} --args-json {}",
-            quote(&crate::shared::paths::canonical(&binary.to_string_lossy())), quote(&file.text), quote(part.name()),
-            quote(&serde_json::to_string(&args).ok()?));
-        let start = range.start + source.len() - source.trim_start().len();
-        let end = range.end - (source.len() - source.trim_end().len());
-        changes.push((start..end, replacement));
-    }
-    if changes.is_empty() { return None; }
-    let mut rewritten = command.to_string();
-    for (range, replacement) in changes.into_iter().rev() { rewritten.replace_range(range, &replacement); }
+        if !supported(part.name(), &args) { return None; }
+        Some(format!("{binary} run config-read --file {} --reader {} --args-json {}",
+            quote(&file.text), quote(part.name()), quote(&serde_json::to_string(&args).ok()?)))
+    })?;
     // Recheck the whole command, not just the first offending segment. A
     // second read through a wildcard, recursion or substitution still denies.
     if reading::bash_reading(&lex::segments(&rewritten), &rewritten, input, ctx).is_some() { return None; }
