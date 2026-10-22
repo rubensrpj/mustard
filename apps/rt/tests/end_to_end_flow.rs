@@ -1298,6 +1298,66 @@ fn the_conversation_opened_at_the_root_records_from_a_subfolder() {
     assert!(!project.root.join("fora").exists(), "a session named outside the sessions folder writes nothing out there");
 }
 
+/// Uma busca pelo servidor `mustard-rt mcp` do projeto, rodado sem pasta de
+/// sessão no ambiente a menos que `env_session` a dê: `initialize` e depois o
+/// `tools/call`, com `meta` no `_meta` da chamada quando há. Devolve a
+/// resposta da chamada.
+fn mcp_search(project: &Project, env_session: Option<&str>, meta: Option<Value>) -> Value {
+    let request = json!({"tool": "Grep", "input": {"pattern": "println", "path": project.root.join("src"), "output_mode": "content"},
+        "intent": "Find the greeting", "purpose": "locate"});
+    let mut params = json!({"name": "search", "arguments": {"request": request}});
+    if let Some(meta) = meta {
+        params["_meta"] = meta;
+    }
+    let lines = [
+        json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-11-25"}}),
+        json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+        json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": params}),
+    ]
+    .map(|line| line.to_string() + "\n")
+    .concat();
+    let root = project.root.to_string_lossy().to_string();
+    let out = project.command_as(env_session, &project.root, &["mcp", "--root", &root], &lines);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let replies: Vec<Value> = String::from_utf8_lossy(&out.stdout).lines().filter_map(|line| serde_json::from_str(line).ok()).collect();
+    let reply = replies.into_iter().find(|reply| reply["id"] == json!(2)).expect("the server answers the call");
+    assert_eq!(reply["result"]["isError"], json!(false), "{reply}");
+    reply
+}
+
+/// A busca que a conversa faz pelo servidor `mustard-rt mcp` conta nas
+/// operações da spec a que a sessão dela está ligada, venha a sessão pelo
+/// `_meta` da chamada, pelo turno que o Codex manda ou pelo ambiente de quem
+/// subiu o servidor. O `_meta` vale mais que o ambiente, que fica velho
+/// depois do `/clear`; a chamada sem sessão, ou de sessão sem ligação, não
+/// entra na spec de ninguém.
+#[test]
+fn the_mcp_search_server_counts_its_calls_in_the_spec_of_the_conversation() {
+    let project = Project::new();
+    project.open();
+    let searches = || -> Vec<SpecEvent> {
+        project.operations().visible().into_iter().filter(|e| e.event_type == "call" && e.str_field("command") == Some("search")).cloned().collect()
+    };
+    assert!(searches().is_empty(), "a spec recém-aberta não tem busca");
+
+    mcp_search(&project, None, Some(json!({"session_id": SESSION})));
+    let counted = searches();
+    assert_eq!(counted.len(), 1, "a sessão dita no _meta da chamada conta na spec");
+    assert_eq!(counted[0].str_field("session"), Some(SESSION), "a chamada leva a sessão que a gravou");
+
+    mcp_search(&project, None, Some(json!({"x-codex-turn-metadata": {"session_id": "s-raiz", "thread_id": SESSION, "turn_id": "t1"}})));
+    assert_eq!(searches().len(), 2, "o turno que o Codex manda no _meta também liga a chamada à conversa");
+
+    mcp_search(&project, None, None);
+    assert_eq!(searches().len(), 2, "sem sessão nenhuma, a chamada não entra na spec");
+
+    mcp_search(&project, Some(SESSION), None);
+    assert_eq!(searches().len(), 3, "a sessão do ambiente do servidor segue valendo");
+
+    mcp_search(&project, Some(SESSION), Some(json!({"session_id": "s-outra"})));
+    assert_eq!(searches().len(), 3, "o _meta vale mais que o ambiente: a sessão sem ligação não grava na spec da outra");
+}
+
 /// A fala que o usuário diz com um ponto do levantamento aberto entra pelo
 /// gancho com o número do ponto, e a leitura da conversa pelo comando a
 /// mostra apontando o ponto pelo código dele.

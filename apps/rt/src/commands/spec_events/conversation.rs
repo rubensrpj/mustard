@@ -378,8 +378,17 @@ pub(crate) fn record_call(root: &Path, command: &str, named: Option<&str>, start
 
 /// Record the actual output when a command returns plain text or compact
 /// JSON. Do not substitute a synthetic JSON object for a byte measurement.
+/// A sessão é a do ambiente de quem chamou ([`record_output_call_as`]).
 pub(crate) fn record_output_call(root: &Path, command: &str, named: Option<&str>, started: Instant, report: &Value, output:&str) -> Option<u64> {
     let session = crate::shared::spec_state::session_from_env();
+    record_output_call_as(root, session.as_deref(), command, named, started, report, output)
+}
+
+/// [`record_output_call`] da sessão `session`, para quem a recebe de outro
+/// lugar que o ambiente do processo: o servidor `mustard-rt mcp` a lê do
+/// `_meta` de cada chamada, e o ambiente dele é o de quem o subiu, que fica
+/// velho depois do `/clear`.
+pub(crate) fn record_output_call_as(root: &Path, session: Option<&str>, command: &str, named: Option<&str>, started: Instant, report: &Value, output:&str) -> Option<u64> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut measured=transport_metrics(&args,output);
     measured.insert("invocation".into(),json!(true));
@@ -411,7 +420,7 @@ pub(crate) fn record_output_call(root: &Path, command: &str, named: Option<&str>
             if let Some(value)=report.pointer(path).filter(|v|!v.is_null()) {measured.insert(format!("knowledge_{field}"),value.clone());}
         }
     }
-    record_measured_call(root, command, named, session.as_deref(), started, report, measured)
+    record_measured_call(root, command, named, session, started, report, measured)
 }
 
 fn search_decisions(report:&Value)->Map<String,Value> {
@@ -552,7 +561,12 @@ fn record_in_call_spec(
     } else if command != "knowledge" {
         return None;
     }
-    let fields = call_fields(command, started, report, measured);
+    let mut fields = call_fields(command, started, report, measured);
+    // De qual conversa veio a chamada: quem a recebeu de outro lugar que o
+    // ambiente do processo ([`record_output_call_as`]) não a teria gravada.
+    if let Some(session) = session.filter(|session| !session.trim().is_empty()) {
+        fields.entry("session").or_insert_with(|| Value::String(session.to_string()));
+    }
     let Some(spec) = spec else {
         return store::append_operations(&project_operations_path(root), vec![("call", fields)]).ok()?.first().copied();
     };
