@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 const THEME: &str = include_str!("../../../../plugin/ui/theme.js");
 const LAYOUT: &str = include_str!("layout.css");
 
-fn palettes() -> Value {
+pub(super) fn palettes() -> Value {
     serde_json::from_str(
         THEME
             .trim()
@@ -80,6 +80,18 @@ mod tests {
         }
         assert_eq!(design["font"], "Inter");
         assert_eq!(design["dark"]["accent"], "#e1ad01");
+
+        // O fundo é carvão, e carvão não puxa para o azul. O vermelho de cada
+        // tom escuro fica igual ou acima do azul, e é isso que faz a página
+        // conversar com o mostarda. A paleta saía arroxeada — o azul catorze
+        // pontos acima do vermelho no papel —, e o usuário cobrou o carvão
+        // aprovado (21/10/2026).
+        for key in ["paper", "surface", "sidebar", "inset", "ink", "muted", "line"] {
+            let hex = design["dark"][key].as_str().expect("um tom do tema");
+            let channel = |at: usize| u8::from_str_radix(&hex[at..at + 2], 16).expect("hexadecimal");
+            let (red, blue) = (channel(1), channel(5));
+            assert!(red >= blue, "dark.{key} ({hex}) puxa para o azul: {red} de vermelho, {blue} de azul");
+        }
         assert!(design.get("light").is_none());
         assert!(style().contains("color-scheme:dark"));
         assert!(!style().contains("prefers-color-scheme"));

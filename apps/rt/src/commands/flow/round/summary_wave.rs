@@ -315,7 +315,7 @@ mod tests {
         assert_eq!(refused["hint"], json!(expected), "only the summary is missing: {refused}");
 
         let copy = log.get(open).and_then(|send| send.str_field("copy")).expect("the copy of the wave").to_string();
-        let opts = ReadOpts { root: root.to_path_buf(), spec: Some("x".into()), block: format!("item-{code}"), term: None };
+        let opts = ReadOpts { root: root.to_path_buf(), spec: Some("x".into()), block: format!("item-{code}"), term: None , session: None };
         read_for(&opts, None, Path::new(&copy)).unwrap_or_else(|refused| panic!("{code}: {refused}"));
         crate::commands::flow::round::finish_tasks(root, "x", 1);
         let wrote = returned_unread(root, delivery);

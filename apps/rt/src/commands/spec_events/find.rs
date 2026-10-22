@@ -91,7 +91,7 @@ pub(crate) fn find_for(opts: &FindOpts, session: Option<&str>, from: &Path, jev:
     let codes = log.codes();
     let term = opts.term.as_deref().map(str::trim).unwrap_or_default();
     if let Some(code) = codes.values().find(|code| code.eq_ignore_ascii_case(term)) {
-        let item = ReadOpts { root: opts.root.clone(), spec: Some(spec.clone()), block: format!("item-{code}"), term: None };
+        let item = ReadOpts { root: opts.root.clone(), spec: Some(spec.clone()), block: format!("item-{code}"), term: None, session: None };
         return read_for(&item, session, from);
     }
     let types = wanted_types(&opts.types).map_err(refuse)?;

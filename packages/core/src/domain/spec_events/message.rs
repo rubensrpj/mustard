@@ -6,7 +6,13 @@ use crate::platform::i18n::{translate, Locale};
 
 use super::SpecLog;
 
-/// O teto de caracteres do título de um pull request e de um commit.
+/// O teto de caracteres do título de um pull request e de um commit, montado
+/// da primeira frase do objetivo da obra.
+///
+/// É outro teto, de outra coisa, que o de
+/// [`TASK_TITLE_MAX`](super::refusal::TASK_TITLE_MAX): aquele é o do título de
+/// um item da spec. Os dois juntos na ajuda pareciam o mesmo teto com dois
+/// valores.
 pub const MESSAGE_TITLE_MAX: usize = 60;
 /// O teto de caracteres do corpo de um pull request e de um commit.
 pub const MESSAGE_BODY_MAX: usize = 4_000;

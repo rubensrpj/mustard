@@ -330,7 +330,7 @@ pub(super) mod tests {
 
         let out = round_with_mine(root, "x", None, &mine_giving(two_roles(24, 1, &[(SERVICE, CONTROLLER)])));
         assert_eq!(out["ok"], json!(true), "{out}");
-        assert_eq!(last_commit(root).0, "feat: a entrega 2 saiu", "{out}");
+        assert_eq!(last_commit(root).0, "feat(outro): a entrega 2 saiu", "{out}");
         let held = warning_of(&out, "round-after-wave");
         assert_eq!(held["wave"], json!(1), "{out}");
         let hint = held["hint"].as_str().unwrap_or_default();
@@ -383,7 +383,7 @@ pub(super) mod tests {
         };
         let out = round_with_mine(root, "x", None, &counting);
         assert_eq!(out["ok"], json!(true), "{out}");
-        assert_eq!(last_commit(root).0, "feat: a entrega 2 saiu", "{out}");
+        assert_eq!(last_commit(root).0, "feat(outro): a entrega 2 saiu", "{out}");
         assert_eq!(warning_of(&out, "round-after-wave")["wave"], json!(1), "{out}");
         assert_eq!(scans.get(), 1, "one scan after the waves, not one per held wave: {out}");
     }

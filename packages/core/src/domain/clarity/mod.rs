@@ -156,6 +156,10 @@ pub struct ClarityReport {
     pub reading_ease: Option<i32>,
     /// A nota ficou abaixo de [`MIN_READING_EASE`].
     pub hard_to_read: bool,
+    /// As primeiras palavras da frase que mais pesou na nota, quando ela ficou
+    /// abaixo do mínimo: a de pior nota própria. Quem escreve recebia só a
+    /// nota do texto inteiro e adivinhava qual frase refazer.
+    pub hardest_sentence: Option<String>,
     /// A prosa saiu noutro idioma que não o do projeto.
     pub wrong_language: Option<WrongLanguage>,
     /// Nenhum defeito encontrado.
@@ -184,10 +188,12 @@ impl ClarityReport {
             out.push(translate("clarity.internal_code", lang).replace("{code}", code));
         }
         if let (true, Some(score)) = (self.hard_to_read, self.reading_ease) {
+            let key = if self.hardest_sentence.is_some() { "clarity.hard_to_read_at" } else { "clarity.hard_to_read" };
             out.push(
-                translate("clarity.hard_to_read", lang)
+                translate(key, lang)
                     .replace("{score}", &score.to_string())
-                    .replace("{min}", &MIN_READING_EASE.to_string()),
+                    .replace("{min}", &MIN_READING_EASE.to_string())
+                    .replace("{opening}", self.hardest_sentence.as_deref().unwrap_or_default()),
             );
         }
         if let Some(wrong) = self.wrong_language {
@@ -216,6 +222,7 @@ pub fn measure(text: &str, already_explained: &[String], expected: Option<Locale
     let internal_codes = internal_codes(&sentences);
     let reading_ease = reading_ease(&lines, &sentences);
     let hard_to_read = reading_ease.is_some_and(|score| score < MIN_READING_EASE);
+    let hardest_sentence = hard_to_read.then(|| hardest(&sentences)).flatten();
     let wrong_language = expected.and_then(|lang| wrong_language(&lines, lang));
     let passed = long_sentences.is_empty()
         && unexpanded_acronyms.is_empty()
@@ -230,6 +237,7 @@ pub fn measure(text: &str, already_explained: &[String], expected: Option<Locale
         prose_lines: lines.len(),
         reading_ease,
         hard_to_read,
+        hardest_sentence,
         wrong_language,
         passed,
         explained,
@@ -283,6 +291,36 @@ fn reading_ease(lines: &[String], sentences: &[&str]) -> Option<i32> {
     let per_sentence = word_count as f64 / sentences.len() as f64;
     let per_word = syllable_count as f64 / word_count as f64;
     Some((248.835 - 1.015 * per_sentence - 84.6 * per_word).round() as i32)
+}
+
+/// A frase de pior nota própria entre `sentences`, pelas primeiras palavras
+/// dela: é a que mais pesou na nota do texto. `None` quando não há frase, ou
+/// quando nenhuma tem palavra com letra.
+///
+/// A nota de uma frase é a mesma fórmula do texto, medida nela só: a que puxa
+/// a média para baixo é a mais longa e a de palavras mais compridas, que é
+/// exatamente o que quem escreve precisa achar para refazer.
+fn hardest(sentences: &[&str]) -> Option<String> {
+    sentences
+        .iter()
+        .filter_map(|sentence| {
+            let (mut word_count, mut syllable_count) = (0_usize, 0_usize);
+            for word in words(sentence) {
+                let letters: String = word.chars().filter(|c| c.is_alphabetic()).flat_map(char::to_lowercase).collect();
+                if !letters.is_empty() {
+                    word_count += 1;
+                    syllable_count += syllables_pt(&letters);
+                }
+            }
+            if word_count == 0 {
+                return None;
+            }
+            let per_word = syllable_count as f64 / word_count as f64;
+            let score = 248.835 - 1.015 * word_count as f64 - 84.6 * per_word;
+            Some((score, *sentence))
+        })
+        .min_by(|(a, _), (b, _)| a.total_cmp(b))
+        .map(|(_, sentence)| words_of(sentence, OPENING_WORDS))
 }
 
 /// As sílabas de uma palavra em português, já em minúsculas. Cada grupo de
@@ -872,7 +910,10 @@ fn split_sentences(line: &str) -> Vec<&str> {
     let mut sentences = Vec::new();
     let mut start = 0;
     for (at, ch) in line.char_indices() {
-        if at < start || !matches!(ch, '.' | '!' | '?' | '…') {
+        // O ponto e vírgula fecha frase: numa lista separada por ele, cada
+        // item é uma oração, e contar a lista como uma frase só a fez pesar
+        // vinte e sete palavras numa medição de verdade.
+        if at < start || !matches!(ch, '.' | '!' | '?' | '…' | ';') {
             continue;
         }
         let closed = line[at + ch.len_utf8()..].trim_start_matches(CLOSERS);
@@ -1241,18 +1282,44 @@ Detalhes em [a página](https://example.com/CI/slug?x=1) e em https://docs.rs/XY
         let report = measure(dense, &[], Some(Locale::PtBr));
         let score = report.reading_ease.unwrap_or_else(|| panic!("dense prose is scored: {report:?}"));
         assert!(score < MIN_READING_EASE && report.hard_to_read && !report.passed, "{report:?}");
+        // A recusa nomeia a frase que mais pesou: quem escreve recebia só a
+        // nota do texto inteiro e adivinhava qual frase refazer.
+        let opening = report.hardest_sentence.clone().unwrap_or_else(|| panic!("a frase que pesou: {report:?}"));
+        assert!(opening.starts_with("A coordenação interdepartamental"), "{opening}");
         let defect = report.defects(Locale::PtBr).pop().unwrap_or_default();
         assert_eq!(
             defect,
             format!(
-                "texto difícil de ler: nota {score} no índice de Flesch, e o mínimo é 25; faça um \
-                 resumo curto em palavras simples"
+                "texto difícil de ler: nota {score} no índice de Flesch, e o mínimo é 25. A frase que \
+                 mais pesou começa em \"{opening}\". Refaça-a em palavras simples."
             )
         );
 
         // Inglês e prosa curta não recebem nota.
         assert_eq!(measure(ENGLISH_REPLY, &[], Some(Locale::EnUs)).reading_ease, None);
         assert_eq!(measure("Frase curta.", &[], Some(Locale::PtBr)).reading_ease, None);
+    }
+
+    /// O ponto e vírgula fecha frase na contagem: a lista separada por ele
+    /// não conta como uma frase longa só, e a nota de leitura mede cada item
+    /// dela à parte.
+    ///
+    /// Em campo (21/10/2026) uma lista separada por ponto e vírgula contou
+    /// como frase de vinte e sete palavras, e a gravação foi recusada por
+    /// frase longa.
+    #[test]
+    fn a_semicolon_closes_a_sentence_in_the_count() {
+        let listed = "O aviso traz três partes: a onda que ficou de fora, com o motivo; \
+                      o arquivo que a conferência apontou, com a linha dele; \
+                      e o comando que roda a prova de novo, pronto para copiar.";
+        let report = measure(listed, &[], Some(Locale::PtBr));
+        assert!(report.long_sentences.is_empty(), "cada item é uma frase: {report:?}");
+
+        // Sem o ponto e vírgula, a mesma lista é uma frase longa só.
+        let joined = listed.replace(';', ",");
+        let one = measure(&joined, &[], Some(Locale::PtBr));
+        assert_eq!(one.long_sentences.len(), 1, "{one:?}");
+        assert!(one.long_sentences[0].words > MAX_SENTENCE_WORDS, "{one:?}");
     }
 
     /// Longa e difícil de ler ao mesmo tempo, a resposta leva só a linha da
@@ -1272,18 +1339,19 @@ Detalhes em [a página](https://example.com/CI/slug?x=1) e em https://docs.rs/XY
         assert!(report.hard_to_read && !report.passed, "{report:?}");
         let score = report.reading_ease.unwrap_or_else(|| panic!("dense prose is scored: {report:?}"));
 
+        let opening = report.hardest_sentence.clone().unwrap_or_default();
         assert_eq!(
             report.defects(Locale::PtBr),
             vec![format!(
                 "texto difícil de ler: nota {score} no índice de Flesch, e o mínimo é \
-                 {MIN_READING_EASE}; faça um resumo curto em palavras simples"
+                 {MIN_READING_EASE}. A frase que mais pesou começa em \"{opening}\". Refaça-a em palavras simples."
             )]
         );
         assert_eq!(
             report.defects(Locale::EnUs),
             vec![format!(
                 "hard to read: {score} on the Flesch reading-ease index, and the minimum is \
-                 {MIN_READING_EASE}; write a short summary in plain words"
+                 {MIN_READING_EASE}. The sentence that weighed most starts at \"{opening}\". Rewrite it in plain words."
             )]
         );
 

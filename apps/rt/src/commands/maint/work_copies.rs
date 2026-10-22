@@ -35,7 +35,10 @@ use mustard_core::io::spec_index::DISCARDED_DIR;
 use mustard_core::io::wave_prompt::{copies_dir, shown};
 use serde::Serialize;
 
-use super::scratch_gc::ErrorRecord;
+use mustard_core::platform::i18n::{Locale, translate};
+
+use super::scratch_gc::{ErrorRecord, human_bytes, tree_bytes};
+use crate::commands::event::work_branch::branch_exists;
 use crate::commands::flow::discard::{DISCARD_COPIES, sweep_old_discard_copies};
 use crate::commands::flow::round::{LEAVING_COPIES, Removal, landed_kept, leaving_place, remove_single_copy, remove_spec_copies};
 
@@ -48,6 +51,16 @@ const FINAL_REVIEW_SUFFIX: &str = "-final-review";
 /// As fases de obra que acabou: a cópia dela sai.
 const FINISHED: [&str; 4] = ["closed", "pr_open", "delivered", "discarded"];
 
+/// A fase em que as ondas rodam, e a única em que a cópia de obra existe para
+/// ser trabalhada.
+const RUNNING: &str = "running";
+
+/// O motivo, no relatório, da cópia de uma obra que ficou em execução depois
+/// de a branch dela sair do repositório. A obra em execução segura a cópia
+/// dela, e sem a branch ninguém retoma essa obra: a cópia era peso parado,
+/// e a limpeza passava ao lado dela por anos.
+const RUNNING_WITHOUT_BRANCH: &str = "spec running without its branch";
+
 /// O motivo, no relatório, da cópia de página de descarte que sai.
 const OLD_DISCARD_COPY: &str = "discard page copy older than a day";
 
@@ -55,6 +68,11 @@ const OLD_DISCARD_COPY: &str = "discard page copy older than a day";
 /// guardado e o git sem ela, e ficou no disco porque apagá-la, depois de
 /// soltar a trava, não terminou.
 const LEFT_ON_DISK: &str = "copy already out of its work, left on disk";
+
+/// O motivo, no relatório, do retrato do mapa da base de uma obra que acabou
+/// ou que não existe mais. São dezenas de megabytes por spec, e ninguém os
+/// apagava: numa máquina de verdade um deles chegou a 89 MB.
+const OLD_MAP: &str = "validation base map of a finished spec";
 
 /// Uma cópia de obra achada, com a obra dela e o motivo de sair ou ficar.
 #[derive(Debug, Serialize)]
@@ -125,7 +143,8 @@ pub(crate) fn clean(start: &Path, apply: bool) -> Option<CopiesReport> {
     report.kept_landed = kept_specs(&root).iter().flat_map(|spec| landed_kept(&root, spec, apply)).collect();
     let discard = sweep_old_discard_copies(&root, apply).into_iter().map(|swept| (swept, OLD_DISCARD_COPY));
     let left_on_disk = sweep_left_on_disk(&root, apply).into_iter().map(|swept| (swept, LEFT_ON_DISK));
-    for ((dir, error), reason) in discard.chain(left_on_disk) {
+    let maps = sweep_old_maps(&root, apply).into_iter().map(|swept| (swept, OLD_MAP));
+    for ((dir, error), reason) in discard.chain(left_on_disk).chain(maps) {
         let path = shown(&dir);
         if apply {
             match error {
@@ -139,6 +158,64 @@ pub(crate) fn clean(start: &Path, apply: bool) -> Option<CopiesReport> {
     report.candidates.sort_by(|a, b| a.path.cmp(&b.path));
     report.removed.sort();
     Some(report)
+}
+
+/// A branch que a obra perdeu: o nome dela quando a obra está em execução e a
+/// branch já não existe no repositório, e `None` em qualquer outro caso.
+///
+/// É uma regra com dois leitores, e por isso vive num lugar só: a limpeza tira
+/// do caminho a cópia de uma obra assim ([`fate`]), e a retomada diz ao
+/// usuário que a obra não tem mais como ser retomada. Antes de `running` a
+/// obra não tem cópia nem trabalho na branch, e uma branch ainda não cortada
+/// não é uma branch perdida.
+pub(crate) fn lost_branch(root: &Path, state: &State) -> Option<String> {
+    let branch = state.branch.clone().filter(|_| state.phase == Some(RUNNING))?;
+    (!branch_exists(root, &branch)).then_some(branch)
+}
+
+/// Uma cópia de obra que já não serve a ninguém, com o tamanho que ela ocupa
+/// no disco: a obra dela acabou, não existe mais, ou ficou em execução sem a
+/// branch ([`fate`] diz qual é o caso em `reason`).
+#[derive(Debug, Serialize)]
+pub(crate) struct Orphan {
+    pub path: String,
+    pub spec: String,
+    pub reason: String,
+    pub bytes: u64,
+}
+
+/// As cópias de obra que a limpeza tiraria do projeto em que `start` está, em
+/// ordem de caminho, cada uma medida. Nada sai do disco aqui: quem apaga é
+/// `mustard-rt run clean --apply`, e esta é a lista que a retomada e o
+/// fechamento mostram para o usuário saber que ela tem o que tirar.
+///
+/// Só as sobras são medidas. Num projeto arrumado não há nenhuma, e a função
+/// não toca em disco além de ler as fases das obras; a passada por uma árvore
+/// de gigabytes só acontece quando existe o peso parado que a medida vai
+/// nomear.
+pub(crate) fn orphans(start: &Path) -> Vec<Orphan> {
+    let root = crate::commands::spec_events::project(start).root;
+    if !root.join(".git").exists() {
+        return Vec::new();
+    }
+    found(&root)
+        .into_iter()
+        .filter(|record| record.leaves)
+        .map(|record| Orphan { bytes: tree_bytes(&record.dir), path: record.path, spec: record.spec, reason: record.reason })
+        .collect()
+}
+
+/// O aviso das sobras, com o total e cada cópia pelo caminho e pelo tamanho,
+/// ou `None` quando não há nenhuma. É o mesmo texto na retomada e no
+/// fechamento: os dois mostram a mesma lista, e uma segunda frase seria uma
+/// segunda verdade.
+pub(crate) fn orphans_hint(orphans: &[Orphan], lang: Locale) -> Option<String> {
+    if orphans.is_empty() {
+        return None;
+    }
+    let total = orphans.iter().fold(0u64, |sum, orphan| sum.saturating_add(orphan.bytes));
+    let list: Vec<String> = orphans.iter().map(|orphan| format!("`{}` ({})", orphan.path, human_bytes(orphan.bytes))).collect();
+    Some(translate("copies.left", lang).replace("{total}", &human_bytes(total)).replace("{list}", &list.join(", ")))
 }
 
 /// Tira as candidatas: a pasta nova de cada obra por [`remove_spec_copies`],
@@ -209,6 +286,46 @@ fn sweep_left_on_disk(root: &Path, apply: bool) -> Vec<(PathBuf, Option<String>)
         .collect()
 }
 
+/// Os retratos do mapa da base que já não servem a ninguém: o da obra que
+/// acabou e o da que não existe mais ([`fate`]), nos dois lugares — a pasta de
+/// fora do projeto, onde eles moram agora, e a pasta da spec, onde moravam. Com
+/// `apply`, cada um sai, e o texto ao lado dele diz por que não saiu; sem
+/// `apply`, nada sai.
+///
+/// O da obra aberta fica: a análise de declarações sem uso ainda vai compará-lo
+/// com o mapa de agora.
+fn sweep_old_maps(root: &Path, apply: bool) -> Vec<(PathBuf, Option<String>)> {
+    use mustard_core::io::wave_prompt::{OLD_VALIDATION_MAP, validation_base_map};
+
+    let outside = validation_base_map(root, "x");
+    let mut found: Vec<PathBuf> = std::fs::read_dir(outside.parent().unwrap_or(root))
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| path.extension().is_some_and(|kind| kind == "json") && path.is_file())
+                .filter(|path| path.file_stem().is_some_and(|spec| fate(root, &spec.to_string_lossy()).0))
+                .collect()
+        })
+        .unwrap_or_default();
+    let specs = store::spec_file(root, "x").ok().and_then(|path| path.parent().and_then(Path::parent).map(Path::to_path_buf));
+    found.extend(
+        folders(&specs.unwrap_or_else(|| root.to_path_buf()))
+            .into_iter()
+            .filter(|dir| dir.file_name().is_some_and(|spec| fate(root, &spec.to_string_lossy()).0))
+            .map(|dir| dir.join(OLD_VALIDATION_MAP))
+            .filter(|path| path.is_file()),
+    );
+    found.sort();
+    found
+        .into_iter()
+        .map(|path| {
+            let error = apply.then(|| std::fs::remove_file(&path).err().map(|e| e.to_string())).flatten();
+            (path, error)
+        })
+        .collect()
+}
+
 /// Toda cópia de obra dos dois lugares, em ordem de caminho, cada uma com o
 /// motivo de sair ou ficar. A pasta das cópias de página dos descartes e a
 /// das cópias que já saíram da obra ([`LEAVING_COPIES`]) não são cópia de
@@ -263,8 +380,9 @@ fn old_spec(name: &str) -> Option<String> {
     (!spec.is_empty() && !wave.is_empty() && wave.bytes().all(|b| b.is_ascii_digit())).then(|| spec.to_string())
 }
 
-/// Se a cópia da obra `spec` sai, e por quê: sai a da obra que acabou ou
-/// que não existe mais — nem entre as specs, nem entre as descartadas —; fica
+/// Se a cópia da obra `spec` sai, e por quê: sai a da obra que acabou, a da
+/// que não existe mais — nem entre as specs, nem entre as descartadas — e a da
+/// que ficou em execução sem a branch dela ([`RUNNING_WITHOUT_BRANCH`]); fica
 /// a da obra aberta e a da obra que não se pôde ler.
 fn fate(root: &Path, spec: &str) -> (bool, String) {
     let Ok(file) = store::spec_file(root, spec) else {
@@ -272,8 +390,15 @@ fn fate(root: &Path, spec: &str) -> (bool, String) {
     };
     match store::read(&file) {
         Ok(Some(log)) => {
-            let phase = State::from_log(&log).phase.unwrap_or("unknown");
-            if FINISHED.contains(&phase) { (true, format!("spec {phase}")) } else { (false, format!("spec still open: {phase}")) }
+            let state = State::from_log(&log);
+            let phase = state.phase.unwrap_or("unknown");
+            if FINISHED.contains(&phase) {
+                return (true, format!("spec {phase}"));
+            }
+            if let Some(branch) = lost_branch(root, &state) {
+                return (true, format!("{RUNNING_WITHOUT_BRANCH}: {branch}"));
+            }
+            (false, format!("spec still open: {phase}"))
         }
         Ok(None) => {
             let specs = file.parent().and_then(Path::parent).unwrap_or(root);
@@ -314,11 +439,14 @@ mod tests {
         crate::commands::flow::round::copies_leave_with_the_test(root);
     }
 
-    /// A obra `spec` levada, passo a passo do fluxo, até a fase `phase`.
+    /// A obra `spec` levada, passo a passo do fluxo, até a fase `phase`, com a
+    /// branch dela cortada no repositório, como o fluxo a corta ao abrir: a
+    /// obra em execução sem a branch é outro caso, e tem teste próprio.
     fn work(root: &Path, spec: &str, phase: &str) {
         const STEPS: &[&str] = &["survey", "plan", "approved", "running", "closed"];
         let path = store::spec_file(root, spec).expect("spec file");
         std::fs::create_dir_all(path.parent().expect("spec folder")).expect("spec folder");
+        git(root, &["branch", &format!("feature/{spec}")]);
         for step in STEPS {
             let mut fields = json!({"phase": step, "author": "binary"});
             if *step == "survey" {
@@ -445,6 +573,74 @@ mod tests {
         let built = root.join("target").join("debug").join("mustard");
         assert_eq!(std::fs::read_to_string(built).unwrap(), "compilado", "a compilação principal fica");
         assert!(root.join("mustard.json").is_file() && root.join(".git").is_dir(), "a pasta principal fica");
+    }
+
+    /// A obra que ficou em execução depois de a branch dela sair do
+    /// repositório não segura mais a cópia: ela entra entre as que saem, com
+    /// o motivo que nomeia a branch que faltou, e a lista de sobras a traz
+    /// medida, com o aviso que a retomada e o fechamento mostram. A obra em
+    /// execução com a branch no lugar segue segurando a dela.
+    #[test]
+    fn a_work_running_without_its_branch_stops_holding_its_copy() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        project(root);
+        work(root, "viva", "running");
+        work(root, "orfa", "running");
+        let alive = slot_path(root, "viva", 0);
+        let lost = slot_path(root, "orfa", 0);
+        copy(root, &alive);
+        copy(root, &lost);
+        git(root, &["branch", "-D", "feature/orfa"]);
+
+        let listed = clean(root, false).expect("um projeto git");
+        let folder = |spec: &str| shown(&copies_dir(root).join(spec));
+        assert_eq!(paths(&listed.kept), vec![folder("viva")], "a obra com a branch no lugar fica: {listed:?}");
+        assert_eq!(paths(&listed.candidates), vec![folder("orfa")], "a obra sem a branch sai: {listed:?}");
+        assert_eq!(listed.candidates[0].reason, "spec running without its branch: feature/orfa", "{listed:?}");
+
+        let left = orphans(root);
+        assert_eq!(left.iter().map(|one| one.path.clone()).collect::<Vec<_>>(), vec![folder("orfa")], "{left:?}");
+        assert!(left[0].bytes > 0, "a sobra vai medida: {left:?}");
+        let hint = orphans_hint(&left, Locale::PtBr).expect("o aviso das sobras");
+        assert!(hint.contains(&folder("orfa")) && hint.contains("run clean --apply"), "{hint}");
+        assert!(orphans_hint(&[], Locale::PtBr).is_none(), "sem sobra, sem aviso");
+        assert!(lost.join("target").is_dir() && alive.join("target").is_dir(), "listar não apaga nada");
+    }
+
+    /// O retrato do mapa da base de uma obra que acabou sai na limpeza, nos
+    /// dois lugares: a pasta de fora do projeto, onde ele mora agora, e a
+    /// pasta da spec, onde ele morava. O da obra aberta fica.
+    ///
+    /// Em campo (21/10/2026) três desses retratos somavam cerca de 200 MB na
+    /// máquina do usuário, e um deles tinha 89 MB.
+    #[test]
+    fn the_validation_base_map_of_a_finished_spec_leaves_in_the_clean() {
+        use mustard_core::io::wave_prompt::{OLD_VALIDATION_MAP, validation_base_map};
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        project(root);
+        work(root, "fechada", "closed");
+        work(root, "aberta", "running");
+        let outside = |spec: &str| validation_base_map(root, spec);
+        std::fs::create_dir_all(outside("fechada").parent().expect("a pasta dos mapas")).unwrap();
+        for spec in ["fechada", "aberta"] {
+            std::fs::write(outside(spec), "{}").unwrap();
+            let inside = store::spec_file(root, spec).expect("a spec").parent().expect("a pasta").join(OLD_VALIDATION_MAP);
+            std::fs::write(&inside, "{}").unwrap();
+        }
+        let inside = |spec: &str| store::spec_file(root, spec).expect("a spec").parent().expect("a pasta").join(OLD_VALIDATION_MAP);
+
+        let listed = clean(root, false).expect("um projeto git");
+        let gone: Vec<String> = listed.candidates.iter().filter(|one| one.reason == OLD_MAP).map(|one| one.path.clone()).collect();
+        assert_eq!(gone, vec![shown(&inside("fechada")), shown(&outside("fechada"))].into_iter().collect::<std::collections::BTreeSet<_>>().into_iter().collect::<Vec<_>>(), "{listed:?}");
+        assert!(outside("fechada").is_file() && inside("fechada").is_file(), "sem a opção de apagar, nada sai");
+
+        let applied = clean(root, true).expect("um projeto git");
+        assert!(applied.errors.is_empty(), "{applied:?}");
+        assert!(!outside("fechada").exists() && !inside("fechada").exists(), "o mapa da obra fechada saiu");
+        assert!(outside("aberta").is_file() && inside("aberta").is_file(), "o da obra aberta fica");
     }
 
     /// Fora de projeto git, a limpeza não olha cópia de obra nenhuma.

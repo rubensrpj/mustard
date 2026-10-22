@@ -1,9 +1,14 @@
-//! A falha do Jev na rodada. A montagem das ondas, a escolha dos itens do
-//! pedido, a triagem das voltas e o classificador das atividades seguem sem
-//! o Jev quando ele falha, e cada uma grava a chamada com o motivo
-//! (`jev:<motivo>`). A rodada lê as chamadas que gravou e diz numa linha, uma
-//! vez por sessão, que o Jev falhou e por quê: sem isso a falha ficava só no
-//! registro, e a rodada seguia calada.
+//! O que a rodada diz do Jev quando a decisão dele não vale. A montagem das
+//! ondas, a escolha dos itens do pedido, a triagem das voltas e o
+//! classificador das atividades seguem sem o Jev quando ele falha, e cada uma
+//! grava a chamada com o motivo (`jev:<motivo>`). A rodada lê as chamadas que
+//! gravou e diz numa linha, uma vez por sessão, que o Jev falhou e por quê:
+//! sem isso a falha ficava só no registro, e a rodada seguia calada.
+//!
+//! A segunda linha é da montagem que chamou e não teve onda nenhuma da
+//! resposta: a chamada não falhou, e por isso a primeira linha se cala, mas a
+//! montagem saiu pela regra de arquivos do mesmo jeito. Sem dizer isso, a
+//! decisão trocava de dono sem ninguém saber.
 
 use std::path::Path;
 
@@ -19,8 +24,11 @@ use crate::shared::jev::{ASSEMBLY_CALL, ITEMS_CALL, TASK_TRIAGE_CALL, TRIAGE_CAL
 /// atividades.
 const ROUND_CALLS: [&str; 4] = [ASSEMBLY_CALL, ITEMS_CALL, TRIAGE_CALL, TASK_TRIAGE_CALL];
 
-/// A marca da sessão que já ouviu o aviso.
+/// A marca da sessão que já ouviu o aviso da falha.
 const MARK: &str = "round.jev_failed";
+
+/// A marca da sessão que já ouviu o aviso da montagem pela regra de arquivos.
+const BY_FILES_MARK: &str = "round.assembly_by_files";
 
 /// O motivo da primeira falha do Jev entre as chamadas da rodada gravadas
 /// depois do último evento de `on_entry`, o arquivo de operações da spec como
@@ -32,6 +40,22 @@ fn failure_since(now: &SpecLog, on_entry: &SpecLog) -> Option<String> {
         .filter(|event| event.id > since && event.event_type == "call")
         .filter(|event| event.str_field("command").is_some_and(|command| ROUND_CALLS.contains(&command)))
         .find_map(|event| event.str_field("filter")?.strip_prefix("jev:").map(str::to_string))
+}
+
+/// Quantas candidatas foram à montagem que chamou o Jev sem falha e não teve
+/// onda nenhuma da resposta dele, entre as chamadas gravadas depois do último
+/// evento de `on_entry`; `None` quando não houve chamada assim.
+///
+/// A chamada que falhou não entra: dela fala [`failure_since`], que diz o
+/// motivo e o que fazer. Esta é a que voltou inteira e vazia.
+fn assembly_without_waves(now: &SpecLog, on_entry: &SpecLog) -> Option<u64> {
+    let since = on_entry.events.iter().map(|event| event.id).max().unwrap_or(0);
+    now.visible()
+        .into_iter()
+        .filter(|event| event.id > since && event.event_type == "call")
+        .filter(|event| event.str_field("command") == Some(ASSEMBLY_CALL))
+        .filter(|event| event.str_field("filter").is_some_and(|filter| !filter.contains(':')))
+        .find_map(|event| event.int("candidates").filter(|asked| *asked > 0 && event.int("returned") == Some(0)))
 }
 
 /// O que fazer diante da falha de motivo `reason`: a chave recusada pede
@@ -68,6 +92,23 @@ pub(super) fn warning(root: &Path, spec: &str, on_entry: &SpecLog, asked: bool, 
             .replace("{reason}", &failure)
             .replace("{remedy}", translate(remedy_key(&failure), lang));
         json!({ "reason": "jev-failed", "failure": failure, "hint": hint })
+    })
+}
+
+/// O aviso `assembly-by-files` da rodada da spec `spec`: a montagem chamou o
+/// Jev, a chamada voltou sem falha e nenhuma onda saiu da resposta dela,
+/// então a montagem saiu pela regra de arquivos. Uma vez só na sessão
+/// `session`, e sempre sem sessão conhecida. Sem Jev na rodada (`asked`
+/// falso), nenhuma chamada saiu, e o arquivo nem é relido.
+pub(super) fn by_files_warning(root: &Path, spec: &str, on_entry: &SpecLog, asked: bool, session: Option<&str>, lang: Locale) -> Option<Value> {
+    if !asked {
+        return None;
+    }
+    let now = recorded_operations(root, spec);
+    let candidates = assembly_without_waves(&now, on_entry)?;
+    crate::shared::search_door::first_warning(root, session, BY_FILES_MARK).then(|| {
+        let hint = translate("round.assembly_by_files", lang).replace("{candidates}", &candidates.to_string());
+        json!({ "reason": "assembly-by-files", "candidates": candidates, "hint": hint })
     })
 }
 
@@ -187,6 +228,47 @@ mod tests {
 
         assert!(super::warning(root, "x", &on_entry, true, None, Locale::PtBr).is_some(), "the failure is there to read");
         assert_eq!(super::warning(root, "x", &on_entry, false, None, Locale::PtBr), None);
+    }
+
+    /// A montagem que chamou o Jev e não teve onda nenhuma da resposta dele
+    /// vira o aviso `assembly-by-files`, com quantas candidatas foram: a
+    /// chamada não falhou, então o aviso da falha se cala, e sem este a
+    /// decisão trocava de dono sem ninguém saber. A chamada de que saiu onda
+    /// não avisa nada, e a que falhou é do outro aviso. Uma vez por sessão.
+    #[test]
+    fn an_assembly_that_formed_no_wave_says_the_files_decided() {
+        use mustard_core::domain::map_filter::FilterUsage;
+
+        use crate::shared::jev::ASSEMBLY_CALL;
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved_with(root, "x", &[], |_| {});
+        let on_entry = super::recorded_operations(root, "x");
+        let usage = FilterUsage::default();
+
+        // Saiu onda da resposta: nada a dizer.
+        record_jev_call(root, "x", ASSEMBLY_CALL, Instant::now(), Some((3, 2)), Ok(&usage));
+        assert_eq!(super::by_files_warning(root, "x", &on_entry, true, None, Locale::PtBr), None);
+
+        // Nenhuma onda saiu: o aviso diz quantas candidatas foram.
+        record_jev_call(root, "x", ASSEMBLY_CALL, Instant::now(), Some((4, 0)), Ok(&usage));
+        let warned = super::by_files_warning(root, "x", &on_entry, true, None, Locale::PtBr).expect("o aviso");
+        assert_eq!(warned["reason"], json!("assembly-by-files"), "{warned}");
+        assert_eq!(warned["candidates"], json!(4), "{warned}");
+        assert!(warned["hint"].as_str().unwrap_or_default().contains('4'), "{warned}");
+
+        // Sem Jev na rodada, nada se relê; na sessão que já ouviu, cala.
+        assert_eq!(super::by_files_warning(root, "x", &on_entry, false, None, Locale::PtBr), None);
+        assert!(super::by_files_warning(root, "x", &on_entry, true, Some("sessao-1"), Locale::PtBr).is_some());
+        assert_eq!(super::by_files_warning(root, "x", &on_entry, true, Some("sessao-1"), Locale::PtBr), None);
+
+        // A chamada que falhou é do outro aviso, não deste.
+        let only_failed = super::recorded_operations(root, "x");
+        let refused = FilterError::Refused { status: 402 };
+        record_jev_call(root, "x", ASSEMBLY_CALL, Instant::now(), Some((4, 0)), Err(&refused));
+        assert_eq!(super::by_files_warning(root, "x", &only_failed, true, None, Locale::PtBr), None);
+        assert!(super::warning(root, "x", &only_failed, true, None, Locale::PtBr).is_some());
     }
 
     /// A falha gravada do classificador das atividades vira o aviso

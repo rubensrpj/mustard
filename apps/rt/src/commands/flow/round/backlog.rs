@@ -279,7 +279,8 @@ fn judged_board(board: &Board, judge: &Judge<'_>, asker: Option<&Asker<'_>>) -> 
         return Judging { asked, judged: None, undecided: BTreeSet::new(), call };
     }
     let undecided: BTreeSet<u64> = payloads.iter().zip(&known).filter(|(_, doc)| doc.is_none()).flat_map(|(payload, _)| tasks_of(payload)).collect();
-    let decided = Board { running: board.running.clone(), backlog: board.backlog.iter().filter(|task| !undecided.contains(&task.id)).cloned().collect() };
+    let decided =
+        Board { work: board.work.clone(), running: board.running.clone(), backlog: board.backlog.iter().filter(|task| !undecided.contains(&task.id)).cloned().collect() };
     let mut answers = Map::new();
     for doc in &docs {
         answers.extend(doc["answers"].as_object().cloned().unwrap_or_default());
@@ -396,7 +397,10 @@ fn assemble(
                 if let Some(known) = affinity_board.backlog.iter().find(|known| known.id == task.id) {task.reads.clone_from(&known.reads);}
             }
             board.running.clone_from(&affinity_board.running);
-            Some(judged_board(&board, judge, asker))
+            // A chamada paga só sai com candidatas bastante para a escolha
+            // dela importar. Com duas ou menos, a regra de arquivos já diz se
+            // elas saem juntas, e a chamada só gasta.
+            crate::shared::jev::worth_asking(&board).then(|| judged_board(&board, judge, asker))
         }
         _ => None,
     };
@@ -578,10 +582,20 @@ fn why_held(at: &Assembled<'_>, judged: Option<&BTreeMap<u64, crate::shared::dag
     held.into_iter().map(|(id, hold)| (code(&id), hold)).collect()
 }
 
-/// O quadro que o Jev recebe: as ondas do plano ainda abertas
-/// (`open_waves`), cada uma com as tarefas e os arquivos delas, e o backlog
-/// pronto (`ready`), na ordem de prontidão, com o que cada tarefa diz de si e
-/// os títulos das tarefas de que depende.
+/// A obra da spec lida em `log`, como o quadro a mostra: o tipo do prefixo da
+/// branch e o objetivo que o usuário gravou. Um deles pode faltar, e o quadro
+/// manda o que tem.
+fn work_of(log: &SpecLog) -> crate::shared::judgement::BoardWork {
+    use mustard_core::domain::survey;
+    let kind = mustard_core::domain::spec_state::State::from_log(log).branch.as_deref().and_then(crate::shared::work_kind::WorkKind::of_branch).map(|kind| kind.token().to_string());
+    let goal = survey::goal(log).and_then(|goal| goal.str_field("text").map(str::to_string)).filter(|text| !text.trim().is_empty());
+    crate::shared::judgement::BoardWork { kind, goal }
+}
+
+/// O quadro que o Jev recebe: a obra de que a montagem é ([`work_of`]), as
+/// ondas do plano ainda abertas (`open_waves`), cada uma com as tarefas e os
+/// arquivos delas, e o backlog pronto (`ready`), na ordem de prontidão, com o
+/// que cada tarefa diz de si e os títulos das tarefas de que depende.
 fn board_of(log: &SpecLog, by_id: &BTreeMap<u64, &SpecEvent>, population: &[BacklogTask<u64>], ready: &[u64], open_waves: &[u64]) -> Board {
     let seen = BoardTask::of;
     let running = open_waves
@@ -606,7 +620,7 @@ fn board_of(log: &SpecLog, by_id: &BTreeMap<u64, &SpecEvent>, population: &[Back
             Some(seen(task, depends_on))
         })
         .collect();
-    Board { running, backlog }
+    Board { work: work_of(log), running, backlog }
 }
 
 /// As ondas do plano que ainda não terminaram — em andamento, por sair,

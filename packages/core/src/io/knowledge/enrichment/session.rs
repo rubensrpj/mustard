@@ -650,24 +650,38 @@ pub fn completed_grouping_answers(root: &Path, request_id: &str) -> Option<Group
 /// prepared task rewrite ([`prepare_rewrite`]) completes here too, through
 /// the same receipt, and returns the new task version instead.
 pub fn complete_session(root: &Path, tree: &Path, receipt: &SessionReceipt) -> Result<Value, String> {
-    if receipt.request_id.len() != 64 || !receipt.request_id.bytes().all(|b| b.is_ascii_hexdigit()) || !token(&receipt.model)
-        || receipt.effort.as_deref().is_some_and(|value| !crate::domain::config::AGENT_EFFORTS.contains(&value)) {
-        return Err("knowledge-session-invalid-receipt".into());
+    // Cada campo inválido tem o seu motivo: um código para os três mandava
+    // quem lê adivinhar qual deles estava errado (21/10/2026).
+    if receipt.request_id.len() != 64 || !receipt.request_id.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("knowledge-session-receipt-request-id-invalid".into());
+    }
+    if !token(&receipt.model) {
+        return Err("knowledge-session-receipt-model-invalid".into());
+    }
+    if receipt.effort.as_deref().is_some_and(|value| !crate::domain::config::AGENT_EFFORTS.contains(&value)) {
+        return Err("knowledge-session-receipt-effort-unknown".into());
     }
     // Unknown host telemetry remains unknown. Observed noncompliance must
     // never become a reusable analysis merely because its prose is valid.
     if receipt.input_tokens.is_some_and(|tokens| tokens > context::TARGET) {
         return Err("knowledge-session-input-exceeds-100000".into());
     }
-    if receipt.effort.as_deref().is_some_and(|effort| effort != "medium") {
-        return Err("knowledge-session-medium-effort-required".into());
-    }
     let folder = directory(root);
     let _lock = LockedFile::exclusive_if_free(&folder.join(format!("{}.lock", receipt.request_id))).map_err(|e| e.to_string())?.ok_or("knowledge-session-busy-retry")?;
     let path = folder.join(format!("{}.json", receipt.request_id));
     if std::fs::metadata(&path).map_err(|e| e.to_string())?.len() > 100_000 { return Err("knowledge-session-request-too-large".into()); }
     let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
-    let kind = serde_json::from_slice::<Value>(&bytes).ok().map(|saved| saved["kind"].clone());
+    let saved = serde_json::from_slice::<Value>(&bytes).ok();
+    // O esforço esperado vem do dono do par modelo e esforço, pelo hospedeiro
+    // do pedido: máximo no Claude, médio no Codex. Um valor escrito aqui
+    // recusava o recibo honesto do Haiku, que o molde instalado pede com
+    // esforço máximo (21/10/2026).
+    let host = saved.as_ref().and_then(|saved| saved["host"].as_str()).unwrap_or("claude");
+    let wanted = crate::platform::session_models::effort(host);
+    if receipt.effort.as_deref().is_some_and(|effort| effort != wanted) {
+        return Err(format!("knowledge-session-receipt-effort-must-be-{wanted}"));
+    }
+    let kind = saved.map(|saved| saved["kind"].clone());
     if kind.as_ref().is_some_and(|kind| kind == REWRITE) {
         return complete_rewrite(receipt, &bytes);
     }
@@ -699,7 +713,10 @@ pub fn complete_session(root: &Path, tree: &Path, receipt: &SessionReceipt) -> R
     record_at(root, tree, &note).map_err(|e| format!("{e:?}"))?;
     Ok(json!({"ok":true,"cached":false,"interpretation":note,"semantic_proof":false,"session_model_calls":1,
         "remote_model_calls":0,"local_model_calls":0,"host":prepared.host,"model":receipt.model,
-        "effort":receipt.effort,"effort_target":"medium","effort_observed":receipt.effort.as_deref().map(|e|e=="medium"),
+        // O esforço esperado sai do dono, como na conferência acima: era
+        // "medium" escrito aqui, e a resposta dizia que o recibo do Haiku não
+        // cumpriu o alvo (21/10/2026).
+        "effort":receipt.effort,"effort_target":wanted,"effort_observed":receipt.effort.as_deref().map(|e|e==wanted),
         "model_policy":"latest-available-in-family; actual selection requires host verification",
         "model_family_observed":if receipt.model=="inherit" {Value::Null}else{json!(true)},
         "input_tokens":receipt.input_tokens,"output_tokens":receipt.output_tokens,
@@ -857,10 +874,19 @@ mod tests {
             reply.input_tokens = Some(context::TARGET + 1);
             assert_eq!(complete_session(dir.path(), dir.path(), &reply).unwrap_err(), "knowledge-session-input-exceeds-100000");
             reply.input_tokens = Some(context::TARGET);
-            reply.effort = Some("high".into());
-            assert_eq!(complete_session(dir.path(), dir.path(), &reply).unwrap_err(), "knowledge-session-medium-effort-required");
+            // O esforço esperado é o do dono, pelo hospedeiro: máximo no
+            // Claude, médio no Codex. Antes era "medium" escrito aqui, e o
+            // recibo honesto do Haiku, que o molde instalado pede com esforço
+            // máximo, era recusado (21/10/2026).
+            let wanted = crate::platform::session_models::effort(host);
+            let other = if wanted == "high" { "low" } else { "high" };
+            reply.effort = Some(other.into());
+            assert_eq!(
+                complete_session(dir.path(), dir.path(), &reply).unwrap_err(),
+                format!("knowledge-session-receipt-effort-must-be-{wanted}"),
+            );
             assert!(interpretations(dir.path()).unwrap().is_empty());
-            reply.effort = Some("medium".into());
+            reply.effort = Some(wanted.into());
             let accepted = complete_session(dir.path(), dir.path(), &reply).unwrap();
             assert_eq!(accepted["context"]["target_observed"], true);
             assert_eq!(accepted["effort_observed"], true);

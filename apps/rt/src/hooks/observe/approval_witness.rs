@@ -564,6 +564,12 @@ mod tests {
     /// usuário que o originou não começa por ele, então só a confirmação
     /// conta. Devolve a pasta e o número dessa mensagem.
     fn suggested_goal() -> (TempDir, u64) {
+        suggested_goal_text(GOAL)
+    }
+
+    /// Como [`suggested_goal`], com o objetivo que o teste quiser gravar: é
+    /// por ele que se prova o que a comparação do texto perdoa.
+    fn suggested_goal_text(goal: &str) -> (TempDir, u64) {
         let dir = tempdir().unwrap();
         let root = dir.path();
         crate::commands::spec_events::write::record_open(root, "x", "fix/x", "dev").unwrap();
@@ -573,7 +579,7 @@ mod tests {
             root,
             "x",
             "context",
-            json!({"text": GOAL, "title": "Leitura", "agent": "Conferir a leitura.", "origin": said}),
+            json!({"text": goal, "title": "Leitura", "agent": "Conferir a leitura.", "origin": said}),
         );
         (dir, said)
     }
@@ -651,6 +657,48 @@ mod tests {
         }
         assert!(status["hint"].as_str().unwrap().contains("objetivo inteiro"), "{status}");
         assert!(english["hint"].as_str().unwrap().contains("whole goal"), "{english}");
+        // O clique que veio e não valeu é dito pelo nome, com o número da
+        // mensagem: a pergunta repetida sem motivo fazia o usuário clicar duas
+        // vezes no mesmo botão (campo, 21/10/2026).
+        assert_eq!(status["reason"], "goal-text-differs", "{status}");
+        assert!(status["clicked"].is_u64(), "{status}");
+        // E o objetivo como está gravado vai junto: foi mostrando outro texto
+        // que o clique se perdeu, e sem ele quem lê não sabe o que mostrar.
+        assert_eq!(status["goal_text"], json!(GOAL), "{status}");
+        for hint in [&status["hint"], &english["hint"]] {
+            let hint = hint.as_str().expect("the hint is text");
+            assert!(hint.contains("MustardGoal"), "a dica do motivo não apaga a de como perguntar: {hint}");
+        }
+    }
+
+    /// O objetivo gravado sem acento e a fala acentuada são o mesmo objetivo:
+    /// o clique confirma.
+    ///
+    /// Em campo (21/10/2026) a comparação era letra por letra. O objetivo foi
+    /// gravado sem acento — e a gravação aceita —, o assistente mostrou a
+    /// versão acentuada, como o estilo de resposta do projeto manda, e o
+    /// clique do usuário em "Confirmar objetivo" se perdeu calado: a retomada
+    /// seguiu pedindo a confirmação, e ele clicou de novo.
+    #[test]
+    fn goal_approval_counts_when_only_the_accents_and_the_case_differ() {
+        if ambient_override() {
+            return;
+        }
+        let recorded = "Corrigir a recusa que mede a frase e nao o titulo.";
+        let (dir, said) = suggested_goal_text(recorded);
+        let root = dir.path();
+        // A fala que o estilo do projeto manda escrever, com acento e com a
+        // maiúscula no lugar.
+        assistant_said(root, "Corrigir a recusa que mede a frase e não o título.", said);
+        let Verdict::Inject { context } = witness(root, &short_goal_question("Confirmar objetivo"))
+        else {
+            panic!("o clique confirma, e a testemunha diz que confirmou");
+        };
+        assert!(context.contains("confirmado"), "{context}");
+        let status = goal_status(root, Locale::PtBr);
+        assert_eq!(status["confirmed"], true, "{status}");
+        assert_eq!(status["source"], "native-question-witness", "{status}");
+        assert!(status["reason"].is_null(), "o que confirmou não tem motivo de recusa: {status}");
     }
 
     /// A conversa do Claude Code em `folder`: a mensagem do usuário, a fala

@@ -21,7 +21,7 @@ pub(crate) use call_record::{ASSEMBLY_CALL, FIND_CALL, ITEMS_CALL, RULES_CALL, S
 pub(crate) use key_check::{KeyCheck, check_key, service_url};
 
 use super::judgement::{JudgementProvider, JudgementRequest, JudgementService, Purpose};
-use crate::shared::judgement::{Board, BoardTask, BoardWave, ItemsBoard, ItemsJudged, Judged, WaveJudge};
+use crate::shared::judgement::{Board, BoardTask, BoardWave, BoardWork, ItemsBoard, ItemsJudged, Judged, WaveJudge};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::{self, Write as _};
 use std::io::ErrorKind;
@@ -885,6 +885,34 @@ const WAVE_DEFINITION: &str = "A wave is the complete package of tasks one agent
 /// Quando duas obras mudam a mesma coisa, para a pergunta de bloqueio.
 const SAME_CHANGE: &str = "Two works change the same thing when both change the same feature, behavior or text, so that doing them at the same time would conflict in meaning, even in different files.";
 
+/// O que o quadro diz da obra inteira, para a tarefa não ser classificada
+/// contra o que a obra é. Numa obra de correção, duas tarefas voltaram
+/// classificadas como funcionalidade nova, e nada no pedido dizia ao modelo
+/// para que a obra existia.
+const WORK_PURPOSE: &str = "`work` is what the whole spec is for: `work.kind` is the kind its own branch declares, and `work.goal` is the one sentence the user wrote. Weigh both: a task of a defect-fixing spec is rarely new functionality.";
+
+/// Quantas candidatas justificam a chamada paga só pela escolha da onda: mais
+/// de duas. Com duas ou menos, a regra de arquivos já decide se elas saem
+/// juntas, e a chamada só gasta — numa correção real ela recebeu duas tarefas
+/// e não devolveu nenhuma.
+pub(crate) const ASSEMBLY_MIN_CANDIDATES: usize = 2;
+
+/// `true` quando a chamada paga da montagem tem o que decidir: mais de duas
+/// candidatas ([`ASSEMBLY_MIN_CANDIDATES`]), ou alguma candidata que pode
+/// mudar o mesmo que uma onda em andamento.
+///
+/// São duas perguntas na mesma chamada, e só uma delas depende do número: o
+/// tipo de cada tarefa serve para juntá-las numa onda, e com duas ou menos a
+/// regra de arquivos já as junta. A outra — esta tarefa muda o mesmo que
+/// aquela onda que está rodando? — a regra de arquivos não responde, e ela
+/// existe mesmo com uma candidata só. Onde ela existe, a chamada sai.
+pub(crate) fn worth_asking(board: &Board) -> bool {
+    if board.backlog.len() > ASSEMBLY_MIN_CANDIDATES {
+        return true;
+    }
+    board.backlog.iter().any(|task| board.running.iter().flat_map(|wave| &wave.tasks).any(|other| related_tasks(task, other)))
+}
+
 fn kind_meaning(kind: TaskKind) -> &'static str {
     match kind {
         TaskKind::Defect => "Fixes behavior that is wrong for the user or breaks something",
@@ -992,7 +1020,7 @@ fn encode_board(state: Value, questions: Map<String, Value>) -> Result<String, F
 pub(crate) fn backlog_payloads(board: &Board) -> Result<Vec<String>, FilterError> {
     let mut payloads = Vec::new();
     for task in &board.backlog {
-        let intrinsic = Board { running: Vec::new(), backlog: vec![task.clone()] };
+        let intrinsic = Board { work: board.work.clone(), running: Vec::new(), backlog: vec![task.clone()] };
         let (state, questions) = board_parts(&intrinsic);
         payloads.push(encode_board(state, questions)?);
     }
@@ -1036,11 +1064,17 @@ fn interference_payloads(wave: &BoardWave, plausible: Vec<BoardTask>) -> Result<
 /// as perguntas de choque.
 fn interference_payload(wave: &BoardWave, lot: &[BoardTask]) -> Result<String, FilterError> {
     let running = wave.tasks.iter().filter(|other| lot.iter().any(|task| related_tasks(task, other))).cloned().collect();
-    let pair = Board { backlog: lot.to_vec(), running: vec![BoardWave { n: wave.n, tasks: running }] };
+    let pair = Board { work: BoardWork::default(), backlog: lot.to_vec(), running: vec![BoardWave { n: wave.n, tasks: running }] };
     let (mut state, mut questions) = board_parts(&pair);
     questions.retain(|key, _| key.starts_with("blk_"));
     if let Some(definition) = state["definition"].as_object_mut() {
         definition.remove("kinds");
+        // A pergunta de choque é "as duas mudam a mesma coisa?": para que a
+        // obra existe não ajuda a respondê-la, e cada linha a mais é token.
+        definition.remove("work");
+    }
+    if let Some(state) = state.as_object_mut() {
+        state.remove("work");
     }
     encode_board(state, questions)
 }
@@ -1077,9 +1111,17 @@ fn board_parts(board: &Board) -> (Value, Map<String, Value>) {
     let relations: Map<String, Value> = board.backlog.iter().flat_map(|task| board.running.iter().flat_map(move |wave|
         wave.tasks.iter().filter(move |other| related_tasks(task, other)).map(move |other|
             (format!("{}:{}:{}", wave_key(wave.n), task_key(task.id), task_key(other.id)), json!(task.relation(other)))))).collect();
+    let mut work = Map::new();
+    if let Some(kind) = &board.work.kind {
+        work.insert("kind".to_string(), json!(kind));
+    }
+    if let Some(goal) = &board.work.goal {
+        work.insert("goal".to_string(), json!(without_secrets(goal)));
+    }
     let state = json!({
         "relations": relations,
-        "definition": { "wave": WAVE_DEFINITION, "same_change": SAME_CHANGE, "kinds": kinds.clone() },
+        "definition": { "wave": WAVE_DEFINITION, "same_change": SAME_CHANGE, "work": WORK_PURPOSE, "kinds": kinds.clone() },
+        "work": Value::Object(work),
         "running": running,
         "backlog": backlog,
     });
@@ -2450,7 +2492,7 @@ mod tests {
     fn board() -> Board {
         let mut second = board_task(12, &["module/b.rs"]);
         second.depends_on = vec!["Task 5".to_string()];
-        Board { running: vec![BoardWave { n: 7, tasks: vec![board_task(5, &["module/open.rs"])] }], backlog: vec![board_task(11, &["module/a.rs"]), second] }
+        Board { running: vec![BoardWave { n: 7, tasks: vec![board_task(5, &["module/open.rs"])] }], backlog: vec![board_task(11, &["module/a.rs"]), second], ..Board::default() }
     }
 
     /// A resposta do serviço ao quadro `board()`: a tarefa 11 é um defeito
@@ -2502,12 +2544,66 @@ mod tests {
         assert_eq!((judged.usage.input_tokens, judged.usage.cost_micro_usd, judged.usage.requests, judged.usage.model.as_str()), (6000, 252, 3, "jev-1.13.0"));
     }
 
+    /// O pedido da montagem diz para que a obra inteira existe: o tipo que a
+    /// branch dela declara, o objetivo que o usuário escreveu e a definição do
+    /// que esses dois são. Sem isso cada tarefa era julgada contra nada, e
+    /// duas tarefas de uma obra de correção voltaram como funcionalidade nova.
+    /// A pergunta de choque não leva nada disso: ela não pergunta pelo tipo.
+    #[test]
+    fn the_assembly_request_says_what_the_whole_spec_is_for() {
+        let mut asked = board();
+        asked.work = BoardWork { kind: Some("fix".to_string()), goal: Some("Travar o merge que separa as histórias.".to_string()) };
+        let payloads = backlog_payloads(&asked).unwrap();
+        let bodies: Vec<Value> = payloads.iter().map(|payload| serde_json::from_str(payload).unwrap()).collect();
+
+        for body in bodies.iter().filter(|body| body["questions"].as_object().unwrap().keys().any(|key| key.starts_with("tipo_"))) {
+            assert_eq!(body["state"]["work"]["kind"], json!("fix"), "{body}");
+            assert_eq!(body["state"]["work"]["goal"], json!("Travar o merge que separa as histórias."), "{body}");
+            assert!(body["state"]["definition"]["work"].is_string(), "o pedido diz o que `work` é: {body}");
+        }
+        let clash = bodies.iter().find(|body| body["questions"].as_object().unwrap().keys().all(|key| key.starts_with("blk_"))).expect("o pedido de choque");
+        assert!(clash["state"].get("work").is_none(), "{clash}");
+        assert!(clash["state"]["definition"].get("work").is_none(), "{clash}");
+
+        // A obra sem branch nesse formato e sem objetivo gravado manda o campo
+        // vazio, e não uma frase inventada.
+        let mut bare = board();
+        bare.work = BoardWork::default();
+        let first: Value = serde_json::from_str(&backlog_payloads(&bare).unwrap()[0]).unwrap();
+        assert_eq!(first["state"]["work"], json!({}), "{first}");
+    }
+
+    /// A chamada paga da montagem só sai quando tem o que decidir: com mais de
+    /// duas candidatas, ou com alguma candidata que pode mudar o mesmo que uma
+    /// onda em andamento. Com duas candidatas soltas, a regra de arquivos já
+    /// as junta, e a chamada só gastaria.
+    #[test]
+    fn the_paid_assembly_call_only_goes_out_with_something_to_decide() {
+        let loose = |files: &[&[&str]]| Board {
+            running: Vec::new(),
+            backlog: files.iter().enumerate().map(|(n, paths)| board_task(11 + n as u64, paths)).collect(),
+            ..Board::default()
+        };
+        assert!(!worth_asking(&loose(&[&["a/one.rs"]])), "uma candidata solta não decide nada");
+        assert!(!worth_asking(&loose(&[&["a/one.rs"], &["b/two.rs"]])), "duas candidatas soltas saem pela regra de arquivos");
+        assert!(worth_asking(&loose(&[&["a/one.rs"], &["b/two.rs"], &["c/three.rs"]])), "três candidatas pedem a escolha");
+
+        // Com uma candidata só, mas vizinha de uma onda em andamento, sobra a
+        // pergunta que a regra de arquivos não responde.
+        let mut neighbour = loose(&[&["module/a.rs"]]);
+        neighbour.running = vec![BoardWave { n: 7, tasks: vec![board_task(5, &["module/open.rs"])] }];
+        assert!(worth_asking(&neighbour), "a pergunta de choque existe com uma candidata");
+        let mut apart = loose(&[&["far/away.rs"]]);
+        apart.running = vec![BoardWave { n: 7, tasks: vec![board_task(5, &["module/open.rs"])] }];
+        assert!(!worth_asking(&apart), "onda em andamento sem relação não é pergunta");
+    }
+
     /// Sem onda em andamento não há pergunta de bloqueio, e a tarefa fica sem
     /// choque; a falta de uma resposta, um tipo que não existe e a confiança
     /// ausente são resposta ilegível, e o serviço que recusa é falha.
     #[test]
     fn an_answer_that_misses_a_question_or_a_kind_is_unreadable_and_a_refusal_is_a_failure() {
-        let no_wave = Board { running: Vec::new(), backlog: vec![board_task(11, &["a.rs"])] };
+        let no_wave = Board { running: Vec::new(), backlog: vec![board_task(11, &["a.rs"])], ..Board::default() };
         let service = FakeService::start(|_, _| {
             Reply::json(200, &{
                 let mut answer = judged_answer();
@@ -2600,7 +2696,7 @@ mod tests {
                 BoardTask { text: format!("Text of task {id}. {}", "word ".repeat(600)), ..board_task(id, &[file.as_str()]) }
             })
             .collect();
-        let mut board = Board { running: vec![BoardWave { n: 7, tasks: vec![board_task(5, &["module/open.ts"])] }], backlog };
+        let mut board = Board { running: vec![BoardWave { n: 7, tasks: vec![board_task(5, &["module/open.ts"])] }], backlog, ..Board::default() };
         let whole = interference_payload(&board.running[0], &board.backlog);
         assert!(matches!(whole, Err(FilterError::TooLarge { .. })), "one question for the whole backlog passes the cap");
 
@@ -2802,7 +2898,7 @@ mod tests {
         let dir=tempfile::tempdir().unwrap();let mut filter=service.filter();filter.cache=Some(dir.path().into());
         let mut candidate=board_task(11,&["one/writer.rs"]);candidate.criteria.insert(90);
         let mut running=board_task(5,&["two/reader.rs"]);running.criteria.insert(90);
-        let mut board=Board{backlog:vec![candidate],running:vec![BoardWave{n:7,tasks:vec![running]}]};
+        let mut board=Board{backlog:vec![candidate],running:vec![BoardWave{n:7,tasks:vec![running]}],..Board::default()};
         let first=filter.judge_backlog(&board).unwrap();
         assert_eq!(first.usage.requests,1,"only the intrinsic profile is needed");
         assert_eq!(service.received().len(),1);
@@ -2818,10 +2914,10 @@ mod tests {
         let mut other = board_task(5, &["reader.rs"]);
         first.reads.push("contract.rs".into());
         other.reads.push("contract.rs".into());
-        let board = Board { backlog: vec![first.clone()], running: vec![BoardWave { n: 7, tasks: vec![other.clone()] }] };
+        let board = Board { backlog: vec![first.clone()], running: vec![BoardWave { n: 7, tasks: vec![other.clone()] }], ..Board::default() };
         assert_eq!(backlog_payloads(&board).unwrap().len(), 1, "common reading alone needs no Jev interference call");
         other.reads.push("writer.rs".into());
-        let mut board = Board { backlog: vec![first], running: vec![BoardWave { n: 7, tasks: vec![other] }] };
+        let mut board = Board { backlog: vec![first], running: vec![BoardWave { n: 7, tasks: vec![other] }], ..Board::default() };
         let parts = backlog_payloads(&board).unwrap();
         assert_eq!(parts.len(), 2);
         let pair: Value = serde_json::from_str(&parts[1]).unwrap();

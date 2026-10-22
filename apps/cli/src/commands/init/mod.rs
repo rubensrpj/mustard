@@ -839,7 +839,15 @@ mod tests {
         agents.sort();
         assert_eq!(agents, ["analysis.md", "review.md", "wave.md"], "the install left another set of agents");
         let analysis=fs::read_to_string(claude.join("agents/mustard/analysis.md")).unwrap();
-        assert!(analysis.contains("model: haiku\n") && analysis.contains("effort: xhigh\n"));
+        // Lado a lado com o dono do par modelo e esforço do modelo pequeno da
+        // sessão: o molde gravado não pode discordar dele. Enquanto cada um
+        // tinha o seu, o esforço era "máximo" aqui e "médio" na resolução, e o
+        // corpo do molde dizia um terceiro valor (campo, 21/10/2026).
+        let small = mustard_core::platform::session_models::CLAUDE_SESSION_MODEL;
+        let effort = mustard_core::platform::session_models::effort("claude");
+        assert!(analysis.contains(&format!("model: {small}\n")), "{analysis}");
+        assert!(analysis.contains(&format!("effort: {effort}\n")), "{analysis}");
+        assert!(!analysis.contains("medium"), "o corpo do molde não repete o esforço: {analysis}");
         assert!(analysis.contains("100.000") && !analysis.contains("model: sonnet\n"));
         assert_eq!(fs::read_to_string(claude.join("agents/wave-solo.md")).unwrap(), own, "the project's agent changed");
     }

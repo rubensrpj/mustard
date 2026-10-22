@@ -11,6 +11,7 @@ pub mod ranking;
 pub mod search;
 pub mod code_search;
 pub mod normalize;
+pub mod event_once;
 pub mod lessons;
 pub mod clarity;
 pub mod text;

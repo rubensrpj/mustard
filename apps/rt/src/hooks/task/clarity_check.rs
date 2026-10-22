@@ -729,6 +729,7 @@ mod tests {
             prose_lines: 16,
             reading_ease: Some(12),
             hard_to_read: true,
+            hardest_sentence: Some("A coordenação interdepartamental".to_string()),
             wrong_language: Some(WrongLanguage { found, expected }),
             passed: false,
             explained: Vec::new(),

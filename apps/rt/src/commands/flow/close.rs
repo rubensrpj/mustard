@@ -309,6 +309,10 @@ fn close_in(opts: &CloseOpts, caller: Caller<'_>) -> Value {
         Ok(report) => report,
         Err(refusal) => {
             let mut value = refusal.to_value(lang);
+            // A recusa fica gravada na spec, e não só na resposta desta
+            // chamada: é dela que a retomada sabe que o último fechamento
+            // caiu, e por quê, em vez de mandar rodar outra rodada.
+            record_refused_close(&opts.root, opts.spec.as_deref(), &value);
             for kept in &review_kept {
                 let hint = crate::commands::flow::round::code_kept_hint(kept, lang);
                 spec_events::pages::push_warning(&mut value, "code-kept", &hint);
@@ -320,6 +324,27 @@ fn close_in(opts: &CloseOpts, caller: Caller<'_>) -> Value {
     let reserves = crate::commands::flow::round::ask_after_locks(&opts.root, &project.root, &spec, &waiting, lang);
     crate::shared::jev::reserve::attach(&mut value, reserves, "mustard-rt run close", lang);
     value
+}
+
+/// A etapa em que o fechamento recusado fica gravado, para a retomada.
+pub(crate) const REFUSED_STAGE: &str = "close-refused";
+
+/// Grava, na spec, que este fechamento caiu, e com que motivo. Melhor
+/// esforço: a gravação que falha não muda a resposta, e a retomada volta a
+/// não saber do fechamento, como antes desta marca.
+///
+/// Sem spec nomeada não há onde gravar: a recusa de "nenhuma spec atual" é
+/// justamente a de quem não tem spec.
+fn record_refused_close(start: &Path, spec: Option<&str>, value: &Value) {
+    let Some(spec) = spec.map(str::trim).filter(|spec| !spec.is_empty()) else {
+        return;
+    };
+    let Some(reason) = value.get("reason").and_then(Value::as_str) else {
+        return;
+    };
+    let draft = json!({"phase": "final", "stage": REFUSED_STAGE, "result": "fail", "ms": 0,
+        "output": reason, "author": "binary"});
+    let _ = record(start, spec, "stage_run", draft.as_object().cloned().unwrap_or_default(), PhaseWriter::Binary);
 }
 
 fn run_close(
@@ -433,14 +458,14 @@ fn run_close(
     // cada critério, uma vez por fechamento. A volta que só
     // confere a aprovação, sem nada mudado desde a máquina verde, não roda
     // nada de novo.
-    let (runs, undeclared, reused) = {
+    let (Machine { runs, undeclared, from_base }, reused) = {
         let _held = crate::commands::git_settle::git_step_lock(root)
             .map_err(|detail| CloseRefusal::Report(crate::commands::flow::round::RoundRefusal::Git { detail }))?;
         if super::validation::reusable(root, &log) {
-            (Vec::new(), Vec::new(), true)
+            (Machine::default(), true)
         } else {
             match machine(opts, root, &spec, &log, lang) {
-                Ok((runs, undeclared)) => (runs, undeclared, false),
+                Ok(ran) => (ran, false),
                 Err(failure) => return Err(authorize_final_repair(root, &spec, &log, failure, lang)),
             }
         }
@@ -502,6 +527,9 @@ fn run_close(
         for hint in &undeclared {
             spec_events::pages::push_warning(&mut out, "server-command-not-declared", hint);
         }
+        for hint in &from_base {
+            spec_events::pages::push_warning(&mut out, "lint-from-the-base", hint);
+        }
         for hint in &unused_hints {
             spec_events::pages::push_warning(&mut out, "unused-analysis", hint);
         }
@@ -551,6 +579,10 @@ fn run_close(
     // Nenhuma onda volta mais para conserto: os trechos que a conferência
     // depois da onda deixou para o agente saem da pasta da spec.
     crate::commands::flow::round::sweep_fixes(root, &spec, None);
+    // O retrato do mapa da base não serve mais a ninguém: a obra fechou, e a
+    // análise de declarações sem uso já rodou contra ele. São dezenas de
+    // megabytes por spec, e ninguém os apagava.
+    let _ = std::fs::remove_file(mustard_core::io::wave_prompt::validation_base_map(root, &spec));
     // Por último, a pasta de compilação que o projeto declarou descartável
     // sai da pasta principal: ela só cresce, e a próxima obra a refaz uma vez.
     let build_output = remove_build_output(root, lang);
@@ -577,9 +609,21 @@ fn run_close(
     for (reason, hint) in removal_warnings(&removal, lang) {
         spec_events::pages::push_warning(&mut out, reason, &hint);
     }
+    // As cópias das OUTRAS obras que a limpeza tiraria, já que as desta
+    // acabaram de sair: a obra que fechou é quando o usuário olha o projeto
+    // inteiro, e a sobra de uma obra antiga ficava invisível até o disco
+    // encher. A lista é a mesma da retomada.
+    let orphans = crate::commands::maint::work_copies::orphans(root);
+    if let Some(hint) = crate::commands::maint::work_copies::orphans_hint(&orphans, lang) {
+        out["copies_left"] = json!(orphans);
+        spec_events::pages::push_warning(&mut out, "copies-left", &hint);
+    }
     build_output.tell(&mut out);
     for hint in &undeclared {
         spec_events::pages::push_warning(&mut out, "server-command-not-declared", hint);
+    }
+    for hint in &from_base {
+        spec_events::pages::push_warning(&mut out, "lint-from-the-base", hint);
     }
     for hint in &unused_hints {
         spec_events::pages::push_warning(&mut out, "unused-analysis", hint);
@@ -712,11 +756,12 @@ fn hand_pending_to_project(root: &Path, spec: &str, log: &SpecLog, answers: &[St
 /// sem nada que ele pudesse consertar no código da obra. A compilação que
 /// falta nem aviso dá: há linguagem sem passo de compilar, e o plano já avisa
 /// o projeto que não a declara.
-fn machine(opts: &CloseOpts, root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Result<(Vec<Value>, Vec<String>), CloseRefusal> {
+fn machine(opts: &CloseOpts, root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Result<Machine, CloseRefusal> {
     let mut timing = super::validation::Stage::new(root, spec, "final", "machine", true);
     let before = super::validation::fingerprint(root, log);
     let declared = mustard_core::ProjectConfig::load(root).commands();
     let mut undeclared: Vec<String> = Vec::new();
+    let mut from_base: Vec<String> = Vec::new();
     let mut native_outputs = Vec::new();
     // Tudo o que cai entra numa recusa só. A compilação vermelha é a exceção:
     // o lint, a suíte e os critérios cairiam pelo mesmo erro dela.
@@ -739,6 +784,22 @@ fn machine(opts: &CloseOpts, root: &Path, spec: &str, log: &SpecLog, lang: Local
         if out.result != "pass" {
             if key == "buildCommand" {
                 return Err(CloseRefusal::BuildFailed { command, output: out.output, no_wave: None });
+            }
+            // O lint que só acusa arquivo que a obra não tocou e que a base
+            // já acusava não é erro da obra: ele vira aviso, e o fechamento
+            // segue. A suíte não entra nesta conta: um teste que cai fala de
+            // código de qualquer lugar, e não do arquivo em que ele mora.
+            if key == "lintCommand"
+                && let Some(base_files) = already_in_the_base(root, log, &out.output)
+            {
+                let files = base_files.iter().map(|file| format!("`{file}`")).collect::<Vec<_>>().join(", ");
+                let hint = translate("close.lint_from_the_base", lang)
+                    .replace("{command}", &command)
+                    .replace("{files}", &files)
+                    .replace("{output}", &out.output);
+                from_base.push(hint);
+                native_outputs.push(out.evidence);
+                continue;
             }
             failures.push(match key {
                 "lintCommand" => CloseRefusal::LintFailed { command, output: out.output, no_wave: None },
@@ -791,7 +852,7 @@ fn machine(opts: &CloseOpts, root: &Path, spec: &str, log: &SpecLog, lang: Local
         super::validation::receipt(root, spec, &key).map_err(CloseRefusal::Refused)?;
     }
     timing.passed();
-    Ok((runs, undeclared))
+    Ok(Machine { runs, undeclared, from_base })
 }
 
 /// A falha da máquina do fechamento (`failure`) reabre, por um evento próprio
@@ -799,6 +860,36 @@ fn machine(opts: &CloseOpts, root: &Path, spec: &str, log: &SpecLog, lang: Local
 /// autorizado de sempre; não se passa por revisão nem aceita volta que
 /// ninguém pediu. Devolve a recusa que o fechamento mostra.
 ///
+/// O que a máquina do fechamento rodou e tem a dizer: a execução de cada
+/// critério, os avisos dos comandos que o projeto não declara e os do lint que
+/// só caiu no que já era da base.
+#[derive(Default)]
+struct Machine {
+    runs: Vec<Value>,
+    undeclared: Vec<String>,
+    from_base: Vec<String>,
+}
+
+/// Os arquivos que a saída `output` acusa e que já eram da base: a saída não
+/// cita arquivo nenhum da obra, cita ao menos um de fora, e todos os de fora
+/// já apareciam na conferência que a abertura gravou. `None` quando a falha é
+/// da obra, e é ela que trava o fechamento.
+///
+/// Sem a marca da abertura, nada é da base: o fechamento cobra tudo, como
+/// antes dela. Na correção do usuário o fechamento caiu num arquivo de outro
+/// time, mudado na base seis dias antes, que a obra não toca; o projeto dele
+/// já tinha cinco exceções para contornar isso.
+fn already_in_the_base(root: &Path, log: &SpecLog, output: &str) -> Option<Vec<String>> {
+    let planned: Vec<u64> = log.planned_waves().into_iter().collect();
+    let work = super::validation::Work::of(root, log, &planned);
+    let cited = super::validation::cited(root, output, &work);
+    if cited.none || !cited.mine.is_empty() || cited.outside.is_empty() {
+        return None;
+    }
+    let base = super::validation::base_findings(root, log, &work);
+    cited.outside.iter().all(|file| base.contains(file)).then_some(cited.outside)
+}
+
 /// A compilação, o lint e a suíte reabrem só as ondas que declararam ou
 /// entregaram um arquivo da obra que a saída cita, pela mesma leitura da
 /// rodada ([`super::validation::cited`]). Sem onda citada, nenhuma reabre:
@@ -1749,7 +1840,7 @@ mod tests {
         let path = store::spec_file(root, "x").unwrap();
         let before = std::fs::read(&path).unwrap();
 
-        let opts = ReadOpts { root: root.to_path_buf(), spec: Some("x".into()), block: "request-review-preview".into(), term: None };
+        let opts = ReadOpts { root: root.to_path_buf(), spec: Some("x".into()), block: "request-review-preview".into(), term: None , session: None };
         let preview = read_for(&opts, None, root).unwrap_or_else(|refused| panic!("{refused}"));
         assert!(preview.lines().any(|line| line.starts_with("- ") && line.contains("MSTD-")), "{preview}");
         assert_eq!(std::fs::read(&path).unwrap(), before, "the preview records nothing");
@@ -1846,7 +1937,7 @@ mod tests {
         let answers: Vec<Value> = recorded.iter().map(|code| json!({"item": code, "met": true})).collect();
         let copy = sent.str_field("copy").expect("the reviewer's copy").to_string();
         let read = |code: &str, from: &Path| {
-            let opts = ReadOpts { root: root.to_path_buf(), spec: Some("x".into()), block: format!("item-{code}"), term: None };
+            let opts = ReadOpts { root: root.to_path_buf(), spec: Some("x".into()), block: format!("item-{code}"), term: None , session: None };
             read_for(&opts, None, from).unwrap_or_else(|refused| panic!("{code}: {refused}"));
         };
         let approved = || {
@@ -2178,10 +2269,14 @@ mod tests {
         assert!(runs.iter().all(|e| e.str_field("result") == Some("pass")), "{runs:?}");
         assert_eq!(State::from_log(&log).phase, Some("closed"));
 
+        // A pasta da spec fechada guarda o estado, e mais nada: o retrato do
+        // mapa da base mora fora do projeto, e o fechamento o apaga. Ele
+        // chegou a 89 MB dentro da pasta de uma spec numa máquina de verdade.
         let folder = root.join(".claude").join("spec").join("x");
         let mut names: Vec<String> = std::fs::read_dir(&folder).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
         names.sort();
-        assert_eq!(names, ["spec.ndjson", "validation-base-map.json"], "state and validation baseline, no automatic copy");
+        assert_eq!(names, ["spec.ndjson"], "state only, no automatic copy and no validation baseline");
+        assert!(!mustard_core::io::wave_prompt::validation_base_map(root, "x").exists(), "o fechamento apagou o retrato do mapa da base");
         assert!(!root.join(".claude/spec/project.html").exists(), "nem a página do projeto");
     }
 
@@ -2285,6 +2380,32 @@ mod tests {
         assert!(!listed.contains(&shown) && !listed.contains(&mustard_core::io::wave_prompt::shown(&second)), "{listed}");
         assert_eq!(std::fs::read_to_string(&built).unwrap(), "compilado", "a compilação principal fica");
         assert!(root.join(wave_file(1)).is_file() && root.join(".git").is_dir(), "a pasta principal fica");
+    }
+
+    /// A obra que fecha tira as cópias dela, e a resposta avisa das cópias
+    /// que sobraram de OUTRA obra, cada uma com o tamanho: o fechamento é
+    /// quando o usuário olha o projeto inteiro, e a sobra de uma obra antiga
+    /// ficava invisível até o disco encher.
+    #[test]
+    fn the_close_warns_about_the_copies_another_work_left_on_disk() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+        // Uma obra fechada antes desta, cuja cópia ficou no disco.
+        crate::shared::spec_state::seed_event(root, "velha", "state", json!({"phase": "closed", "author": "binary"}));
+        let left = mustard_core::io::wave_prompt::copies_dir(root).join("velha").join("0");
+        std::fs::create_dir_all(left.join("target")).unwrap();
+        std::fs::write(left.join("target").join("compilado"), "x".repeat(4096)).unwrap();
+
+        let closed = close(root, "x");
+        assert_eq!(closed["phase"], json!("closed"), "{closed}");
+        let shown = mustard_core::io::wave_prompt::shown(&mustard_core::io::wave_prompt::copies_dir(root).join("velha"));
+        let hints = hints_of(&closed, "copies-left");
+        assert_eq!(hints.len(), 1, "{closed}");
+        assert!(hints[0].contains(&shown) && hints[0].contains("run clean --apply"), "{}", hints[0]);
+        assert_eq!(closed["copies_left"][0]["path"], json!(shown), "{closed}");
+        assert!(closed["copies_left"][0]["bytes"].as_u64().unwrap_or_default() >= 4096, "a sobra vai medida: {closed}");
+        assert!(left.exists(), "o fechamento avisa da sobra de outra obra, e não a apaga");
     }
 
     /// As refs em que a limpeza das cópias guarda código, no repositório
@@ -2826,6 +2947,102 @@ exit "${2:-0}"
         assert_eq!(out["reason"], json!("lint-failed"), "{out}");
         assert!(out["hint"].as_str().unwrap_or_default().contains("--no-fix"), "{out}");
         assert_eq!(std::fs::read_to_string(root.join("source.txt")).unwrap(), "original");
+    }
+
+    /// O lint que só acusa arquivo que a obra não tocou e que a base já
+    /// acusava na abertura não trava o fechamento: ele vira aviso, com os
+    /// arquivos e com o que o comando disse. O mesmo lint acusando um arquivo
+    /// da obra segue recusando. Sem a marca da abertura, o fechamento cobra
+    /// tudo, como antes dela.
+    ///
+    /// Em campo (21/10/2026) o fechamento caiu num arquivo de outro time,
+    /// mudado na base seis dias antes, que a obra não toca; o projeto do
+    /// usuário já tinha cinco exceções escritas para contornar isso.
+    #[cfg(unix)]
+    #[test]
+    fn the_close_does_not_block_on_a_lint_error_the_base_already_had() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+        // O arquivo do outro time: o projeto o tem, e a obra não o toca.
+        std::fs::write(root.join("src").join("outro.rs"), "fn outro() {}\n").unwrap();
+        let lint = |named: &str| {
+            let script = root.join("lint");
+            std::fs::write(&script, format!("#!/bin/sh\necho '{named}:1:1 erro de formatação'\nexit 1\n")).unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::write(root.join("mustard.json"), json!({"lintCommand":"./lint", "testCommand":"git --version"}).to_string()).unwrap();
+            "./lint"
+        };
+        let closing = || close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), ..Default::default() }, None);
+        let hints = |out: &Value, reason: &str| hints_of(out, reason).into_iter().map(str::to_string).collect::<Vec<_>>();
+
+        // Sem a marca da abertura, o lint que cai trava o fechamento.
+        lint("src/outro.rs");
+        let strict = closing();
+        assert_eq!(strict["reason"], json!("lint-failed"), "sem a marca da base, cobra tudo: {strict}");
+
+        // A marca da base fica gravada com esse mesmo erro.
+        assert_eq!(crate::commands::flow::validation::record_base_check(root, "x"), None, "a conferência da base ficou gravada");
+
+        // O lint que acusa um arquivo da obra recusa, marca ou não.
+        lint(&wave_file(1));
+        let mine = closing();
+        assert_eq!(mine["reason"], json!("lint-failed"), "o erro no arquivo da obra recusa: {mine}");
+
+        // O mesmo erro do começo, agora reconhecido como da base, não trava.
+        lint("src/outro.rs");
+        let out = closing();
+        assert_eq!(out["ok"], json!(true), "{out}");
+        let said = hints(&out, "lint-from-the-base");
+        assert_eq!(said.len(), 1, "{out}");
+        assert!(said[0].contains("`src/outro.rs`"), "o aviso nomeia o arquivo da base: {}", said[0]);
+        assert!(said[0].contains("erro de formatação"), "e repassa o que o comando disse: {}", said[0]);
+        assert!(hints(&out, "lint-failed").is_empty(), "{out}");
+    }
+
+    /// Depois de um fechamento recusado, com todas as ondas entregues e o
+    /// backlog vazio, a retomada diz o motivo e as saídas, e o comando do
+    /// próximo passo é o do fechamento, nunca o da rodada: uma rodada ali
+    /// sairia sem nada para enviar, e o motivo do fechamento não chegaria a
+    /// ninguém.
+    ///
+    /// Em campo (21/10/2026) as duas tarefas estavam entregues e aprovadas, o
+    /// fechamento tinha caído no lint, e a retomada mandou rodar a próxima
+    /// rodada de ondas.
+    #[cfg(unix)]
+    #[test]
+    fn the_resume_after_a_refused_close_says_the_reason_instead_of_the_round() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+        let script = root.join("lint");
+        std::fs::write(&script, format!("#!/bin/sh\necho '{}:1:1 erro'\nexit 1\n", wave_file(1))).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(root.join("mustard.json"), json!({"lintCommand":"./lint", "testCommand":"git --version"}).to_string()).unwrap();
+
+        let refused = close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), ..Default::default() }, None);
+        assert_eq!(refused["reason"], json!("lint-failed"), "{refused}");
+
+        let resumed = crate::commands::flow::resume::resume_for(
+            &crate::commands::flow::resume::ResumeOpts { root: root.to_path_buf(), spec: Some("x".into()) },
+            None,
+        );
+        let said = resumed["close_refused"].as_str().unwrap_or_default();
+        assert!(said.contains("lint-failed"), "a retomada diz o motivo: {resumed}");
+        assert_eq!(resumed["next"], json!(said), "e é isso que ela manda fazer: {resumed}");
+        assert_eq!(resumed["command"], json!("mustard-rt run close --spec x"), "{resumed}");
+
+        // Com o lint verde, a retomada volta a falar só do fechamento.
+        std::fs::write(root.join("mustard.json"), json!({"lintCommand":"git --version", "testCommand":"git --version"}).to_string()).unwrap();
+        let again = close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), ..Default::default() }, None);
+        assert_eq!(again["review"]["final"], json!(true), "{again}");
+        let after = crate::commands::flow::resume::resume_for(
+            &crate::commands::flow::resume::ResumeOpts { root: root.to_path_buf(), spec: Some("x".into()) },
+            None,
+        );
+        assert!(after.get("close_refused").is_none(), "{after}");
     }
 
     /// O que o roteiro gravou para o papel `role`, uma chave por linha.

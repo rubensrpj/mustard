@@ -443,6 +443,24 @@ pub(crate) fn inside_copies(root: &Path, path: &Path) -> bool {
         && path.components().all(|part| !matches!(part, std::path::Component::ParentDir))
 }
 
+/// O aviso de quem chamou a rodada de dentro de uma cópia de onda: a pasta em
+/// que o terminal está pode ser apagada pela própria rodada
+/// ([`remove_spec_copies`]), e um shell que perde a pasta em que está não roda
+/// mais nada.
+///
+/// `None` quando o terminal está na pasta principal, ou quando não se sabe
+/// onde ele está. Nenhuma chamada de `exit` ou `kill` existe nesse caminho: o
+/// terminal morria por isso, e não por alguém o encerrar (reproduzido em
+/// 22/10/2026).
+pub(crate) fn standing_in_a_copy(root: &Path, lang: mustard_core::platform::i18n::Locale) -> Option<serde_json::Value> {
+    let here = std::env::current_dir().ok()?;
+    let here = here.canonicalize().unwrap_or(here);
+    inside_copies(root, &here).then(|| {
+        let hint = crate::shared::say::say("round.terminal_inside_a_copy", lang, &[("{folder}", &shown(&here))]);
+        serde_json::json!({"reason": "terminal-inside-a-copy", "hint": hint})
+    })
+}
+
 /// Tira a cópia `path` do checkout `root`: primeiro a cópia de cada
 /// submódulo dentro dela, depois a própria cópia (`git worktree remove
 /// --force`), o que sobrar da pasta e o registro do git que ficou sem pasta
@@ -1112,3 +1130,37 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod standing_tests {
+    use super::*;
+
+    /// O aviso sai quando a pasta de onde a rodada foi chamada está dentro das
+    /// cópias do projeto, e não sai da pasta principal. É assim que o terminal
+    /// morria: a rodada apaga a cópia, e o shell perde a pasta em que está.
+    /// Nenhuma chamada de `exit` ou `kill` existe nesse caminho.
+    ///
+    /// O teste não troca a pasta do processo — a suíte roda em paralelo —: ele
+    /// confere a regra que o aviso usa, a mesma do apagar.
+    #[test]
+    fn the_round_warns_when_the_terminal_stands_in_a_wave_copy() {
+        let dir = tempfile::tempdir().expect("temp");
+        let root = dir.path();
+        let copies = mustard_core::io::wave_prompt::copies_dir(root);
+        let slot = copies.join("obra").join("0");
+        assert!(crate::commands::flow::round::slots::inside_copies(root, &slot), "a vaga de uma onda está dentro das cópias");
+        assert!(!crate::commands::flow::round::slots::inside_copies(root, root), "a pasta principal não");
+        assert!(!crate::commands::flow::round::slots::inside_copies(root, &root.join("src")), "nem uma pasta do projeto");
+
+        let said = crate::shared::say::say(
+            "round.terminal_inside_a_copy",
+            mustard_core::platform::i18n::Locale::PtBr,
+            &[("{folder}", &mustard_core::io::wave_prompt::shown(&slot))],
+        );
+        assert!(said.contains(&mustard_core::io::wave_prompt::shown(&slot)), "o aviso nomeia a pasta: {said}");
+        assert!(said.contains("pasta principal"), "e diz para onde ir: {said}");
+        // Da pasta principal não sai aviso nenhum.
+        assert_eq!(standing_in_a_copy(root, mustard_core::platform::i18n::Locale::PtBr), None);
+    }
+}
+

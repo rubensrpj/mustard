@@ -29,6 +29,10 @@ use crate::shared::proc::resolves;
 const SHELL_WORDS: &[&str] = &[
     "cd", "test", "[", "[[", "env", "exit", "export", "set", "source", ".", ":", "eval", "exec", "command", "time",
     "true", "false", "if", "for", "while", "until", "case",
+    // O grupo de comandos: `{` é palavra reservada do bash, e o programa que
+    // roda é o primeiro comando de dentro dele, que esta mesma conferência
+    // lê quando chega lá.
+    "{",
 ];
 
 /// As construções em que o ponto e vírgula faz parte da sintaxe.
@@ -123,6 +127,67 @@ fn pieces(proof: &str) -> Vec<Piece> {
     }
     flush(&mut out, &mut word, &mut open);
     out
+}
+
+/// `true` quando algum `;` da prova encadeia comandos de verdade — e é por
+/// isso que a prova é recusada: uma falha no meio sairia sem ninguém ver.
+///
+/// Dois `;` não encadeiam nada, e eram recusados junto com o resto:
+///
+/// - o que fecha um grupo (`; }`) é sintaxe do shell: sem ele o bash não
+///   aceita o grupo, e o autor não tem como escrevê-lo de outro jeito;
+/// - o que fecha uma atribuição cujo valor uma comparação adiante usa
+///   (`out=$(…); [ "$out" = … ]`) descarta o código de saída de propósito: o
+///   que o autor testa é o valor guardado, e ele está ali, na mesma prova.
+///
+/// A atribuição que ninguém usa depois segue recusada: `out=$(cargo test);
+/// echo ok` esconde a falha do teste, que é o caso para o qual esta
+/// conferência existe.
+fn chains_commands(all: &[Piece]) -> bool {
+    let mut current: Vec<&str> = Vec::new();
+    for (at, piece) in all.iter().enumerate() {
+        match piece {
+            Piece::Word(word) if word == "{" || word == "}" => current.clear(),
+            Piece::Word(word) => current.push(word),
+            Piece::Op(op) if op == ";" => {
+                let rest = &all[at + 1..];
+                let next = rest.iter().find_map(|piece| match piece {
+                    Piece::Word(word) => Some(word.as_str()),
+                    Piece::Op(_) => None,
+                });
+                let used = assigned_name(&current).is_some_and(|name| {
+                    rest.iter().any(|piece| matches!(piece, Piece::Word(word) if uses_variable(word, name)))
+                });
+                if next != Some("}") && !used {
+                    return true;
+                }
+                current.clear();
+            }
+            Piece::Op(_) => current.clear(),
+        }
+    }
+    false
+}
+
+/// O nome da variável quando o comando `words` é só uma atribuição.
+fn assigned_name<'a>(words: &[&'a str]) -> Option<&'a str> {
+    let [only] = words else { return None };
+    env_assignment(only).then(|| only.split_once('=').map(|(name, _)| name)).flatten()
+}
+
+/// `true` quando a palavra `word` usa a variável `name`: `$name`, `${name}` ou
+/// `"$name"`. O nome seguido de letra, número ou `_` é outra variável, e
+/// `$outra` não usa `$out`.
+fn uses_variable(word: &str, name: &str) -> bool {
+    let plain = format!("${name}");
+    let braced = format!("${{{name}}}");
+    if word.contains(&braced) {
+        return true;
+    }
+    word.match_indices(&plain).any(|(at, _)| {
+        let after = word[at + plain.len()..].chars().next();
+        !after.is_some_and(|c| c.is_alphanumeric() || c == '_')
+    })
 }
 
 /// `true` quando `word` é uma atribuição de variável de ambiente à frente do
@@ -523,7 +588,7 @@ fn proof_defect_finding(root: &Path, proof: &str, created: &BTreeSet<String>, fi
     if COMPOUND.contains(&program) {
         return None;
     }
-    if all.contains(&Piece::Op(";".into())) {
+    if chains_commands(&all) {
         return Some(Refusal::ProofChainedBySemicolon { found: proof.to_string() });
     }
     let args = &first[at + 1..];
@@ -600,6 +665,37 @@ mod tests {
             "if git --version; then git --help; fi",
         ] {
             assert_eq!(reason(fine), None, "{fine}");
+        }
+    }
+
+    /// O `;` que fecha um grupo é sintaxe do shell, e passa. O que fecha uma
+    /// atribuição cujo valor uma comparação adiante usa também passa: o autor
+    /// descarta o código de saída de propósito e testa o valor guardado. A
+    /// atribuição que ninguém usa depois segue recusada, e dois comandos
+    /// ligados por `;` dentro de um grupo também.
+    ///
+    /// Em campo (21/10/2026) uma prova do projeto do usuário foi recusada por
+    /// dois pontos e vírgulas: o último, antes do fecha-chaves, obrigatório no
+    /// bash, e o primeiro, depois da atribuição que ele mesmo testava.
+    #[test]
+    fn a_semicolon_the_shell_syntax_demands_is_accepted() {
+        for fine in [
+            "git --version && { out=$(git --help 2>&1); [ -n \"$out\" ] && [ -z \"${out##*usage*}\" ]; }",
+            "{ out=$(git --version); [ -n \"$out\" ]; }",
+            "{ git --version; }",
+        ] {
+            assert_eq!(reason(fine), None, "{fine}");
+        }
+        for refused in [
+            // A atribuição que ninguém usa depois esconde a falha dela.
+            "{ out=$(git --version); git --help; }",
+            // Dois comandos ligados por `;`, dentro do grupo ou fora dele.
+            "{ git --version; git --help; }",
+            "git --version; git --help",
+            // A variável parecida não é a mesma: `$outra` não usa `$out`.
+            "{ out=$(git --version); [ -n \"$outra\" ]; }",
+        ] {
+            assert_eq!(reason(refused), Some("proof-chained-by-semicolon"), "{refused}");
         }
     }
 

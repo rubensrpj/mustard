@@ -96,7 +96,18 @@ pub(crate) fn observe(root: &Path, spec: &str, event_type: &str, drafts: Vec<Map
         return None;
     }
     let path = store::operations_file(root, spec)?;
-    store::append_operations(&path, drafts.into_iter().map(|draft| (event_type, draft)).collect()).ok()
+    let session = crate::shared::spec_state::session_from_env();
+    let drafts = drafts.into_iter().map(|mut draft| {
+        // De qual sessão veio a chamada, o bloqueio ou a injeção: sem isso o
+        // consumo de duas conversas no mesmo projeto saía somado.
+        if !draft.contains_key("session")
+            && let Some(session) = &session
+        {
+            draft.insert("session".into(), Value::String(session.clone()));
+        }
+        (event_type, draft)
+    });
+    store::append_operations(&path, drafts.collect()).ok()
 }
 
 /// Acrescenta um evento ao fim da spec `spec`, com a trava dela e sem
@@ -277,7 +288,51 @@ fn messages_after_the_same_response<'a>(log: &'a SpecLog, text: &str) -> Option<
 /// Um gancho barrou ou avisou: quem, o quê, em que ferramenta (ou evento) e
 /// por quê.
 pub(crate) fn record_hook(root: &Path, session: Option<&str>, hook: &str, action: HookAction, tool: &str, reason: &str) -> Option<u64> {
-    record(root, session, "hook", draft(json!({ "author": "hook", "hook": hook, "action": action.name(), "tool": tool, "reason": reason })))
+    record_hook_shaped(root, session, hook, action, tool, reason, None)
+}
+
+/// [`record_hook`] com a forma do que a ferramenta barrada trazia
+/// (`shape`): cada campo pelo nome e o tamanho dele em caracteres, nunca o
+/// conteúdo. É o que diz, depois, se a recusa foi justa.
+pub(crate) fn record_hook_shaped(
+    root: &Path,
+    session: Option<&str>,
+    hook: &str,
+    action: HookAction,
+    tool: &str,
+    reason: &str,
+    shape: Option<Value>,
+) -> Option<u64> {
+    let mut fields = json!({ "author": "hook", "hook": hook, "action": action.name(), "tool": tool, "reason": reason });
+    if let Some(shape) = shape.filter(|shape| shape.as_object().is_some_and(|fields| !fields.is_empty())) {
+        fields["shape"] = shape;
+    }
+    record(root, session, "hook", draft(fields))
+}
+
+/// A forma de `input`, para o registro de um bloqueio: cada campo do objeto
+/// pelo nome e o tamanho dele em caracteres, nunca o conteúdo, que pode
+/// trazer código do projeto. `None` quando não é objeto ou está vazio.
+///
+/// O tamanho de um texto é o número de caracteres dele; o de qualquer outro
+/// valor, o do JSON que o escreve. Nome de campo não é conteúdo: ele vem do
+/// contrato da ferramenta, e é justamente o que falta saber na recusa.
+pub(crate) fn shape_of(input: &Value) -> Option<Value> {
+    let fields = input.as_object()?;
+    if fields.is_empty() {
+        return None;
+    }
+    let sizes: Map<String, Value> = fields
+        .iter()
+        .map(|(name, value)| {
+            let size = match value.as_str() {
+                Some(text) => text.chars().count(),
+                None => value.to_string().chars().count(),
+            };
+            (name.clone(), json!(size))
+        })
+        .collect();
+    Some(Value::Object(sizes))
 }
 
 /// Um gancho colocou texto na conversa: quem, o texto e o tamanho dele em
@@ -651,6 +706,22 @@ mod tests {
     /// O que um gancho fez — barrar, avisar, colocar texto — vai para o
     /// arquivo de operações da spec atual, e a spec fica como estava: ela
     /// guarda o trabalho, e cada gancho que agia regravava o arquivo inteiro.
+    /// O bloqueio guarda a forma do que a ferramenta trazia: cada campo pelo
+    /// nome e o tamanho dele, nunca o conteúdo, que pode ter código do
+    /// projeto. Sem a forma não se sabia, depois, se a recusa foi justa.
+    #[test]
+    fn a_block_records_the_shape_of_what_the_tool_carried() {
+        let shape = shape_of(&json!({"command": "ls -la", "reason": "ver", "quiet": true}))
+            .expect("a forma do que a ferramenta trazia");
+        assert_eq!(shape["command"], json!(6), "o tamanho do texto em caracteres");
+        assert_eq!(shape["reason"], json!(3));
+        assert_eq!(shape["quiet"], json!(4), "o que não é texto conta pelo JSON dele");
+        assert!(!shape.to_string().contains("ls -la"), "o conteúdo não entra: {shape}");
+
+        assert_eq!(shape_of(&json!({})), None, "sem campo, sem forma");
+        assert_eq!(shape_of(&json!("texto")), None, "o que não é objeto não tem forma");
+    }
+
     #[test]
     fn hook_actions_are_recorded_in_the_operations_file_not_in_the_spec() {
         let dir = project_on("ganchos");

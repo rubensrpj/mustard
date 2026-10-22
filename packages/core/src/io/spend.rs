@@ -202,7 +202,7 @@ fn entries(dir: &Path) -> Vec<PathBuf> {
 fn transcript_files(config_dir: &Path) -> Vec<(PathBuf, Option<PathBuf>)> {
     let jsonl = |path: &PathBuf| path.is_file() && path.extension().is_some_and(|ext| ext == "jsonl");
     let (mut main, mut agents) = (Vec::new(), Vec::new());
-    for folder in entries(&config_dir.join("projects")).into_iter().filter(|path| path.is_dir()) {
+    for folder in entries(&config_dir.join("projects")).into_iter().filter(|path| path.is_dir()).filter(|path| !of_a_throwaway_folder(path)) {
         for path in entries(&folder) {
             if jsonl(&path) {
                 main.push((path, None));
@@ -214,6 +214,25 @@ fn transcript_files(config_dir: &Path) -> Vec<(PathBuf, Option<PathBuf>)> {
     }
     main.extend(agents);
     main
+}
+
+/// A conversa desta pasta é de uma pasta descartável, e não de um projeto do
+/// usuário: o nome da pasta de projeto do Claude Code é o caminho dela com
+/// cada separador trocado por `-`, e é por esse nome que a pasta de teste e a
+/// do laboratório se reconhecem.
+///
+/// Três famílias ficam de fora da conta: a pasta temporária do sistema, onde
+/// nascem as cópias dos testes; o rascunho de uma sessão, que mora dentro
+/// dela; e o laboratório de medida do Mustard, que o usuário conta à parte do
+/// uso real. Numa máquina de verdade eram seis pastas assim, com conversas
+/// que entravam no gasto como se fossem trabalho.
+fn of_a_throwaway_folder(folder: &Path) -> bool {
+    /// O que o nome de uma pasta descartável traz: a pasta temporária do
+    /// sistema no começo, e a do laboratório de medida em qualquer lugar do
+    /// caminho, porque ela mora sob a pasta pessoal de quem roda.
+    const LAB: &str = "-cache-mustard-medida";
+    let name = folder.file_name().map(|name| name.to_string_lossy().to_string()).unwrap_or_default();
+    name == "-tmp" || name.starts_with("-tmp-") || name.contains(LAB)
 }
 
 /// Quantas linhas do começo da conversa principal a procura do projeto de um
@@ -817,4 +836,36 @@ mod tests {
         let rows = load(&project_history_dir(&left)).unwrap().rows;
         assert_eq!(rows.iter().map(|row| (row.day.as_str(), row.tokens)).collect::<Vec<_>>(), [("2026-10-01", 100)]);
     }
+    /// A conversa de uma pasta descartável fica fora da conta: a pasta
+    /// temporária do sistema, o rascunho de uma sessão e o laboratório de
+    /// medida do Mustard. A de um projeto de verdade entra.
+    ///
+    /// Reproduzido em 22/10/2026 na máquina do usuário: de quinze pastas de
+    /// conversa, seis eram descartáveis, com cerca de dois megabytes de
+    /// conversa de teste entrando no gasto como trabalho, mais vinte e cinco
+    /// do laboratório.
+    #[test]
+    fn a_conversation_of_a_throwaway_folder_stays_out_of_the_count() {
+        let dir = tempdir().unwrap();
+        let projects = dir.path().join("projects");
+        let folder = |name: &str| {
+            let path = projects.join(name);
+            fs::create_dir_all(&path).unwrap();
+            fs::write(path.join("s.jsonl"), "{}\n").unwrap();
+            path
+        };
+        let real = folder("-home-alguem-projetos-api");
+        let temp = folder("-tmp");
+        let inside = folder("-tmp-claude-1000--home-alguem-projetos-api-abc-scratchpad");
+        let lab = folder("-home-alguem--cache-mustard-medida-ao-vivo-proj");
+
+        assert!(!of_a_throwaway_folder(&real), "o projeto de verdade entra");
+        assert!(of_a_throwaway_folder(&temp), "a pasta temporária do sistema fica fora");
+        assert!(of_a_throwaway_folder(&inside), "o rascunho de uma sessão fica fora");
+        assert!(of_a_throwaway_folder(&lab), "o laboratório de medida fica fora");
+
+        let read: Vec<PathBuf> = transcript_files(dir.path()).into_iter().map(|(path, _)| path).collect();
+        assert_eq!(read, vec![real.join("s.jsonl")], "só a conversa do projeto de verdade é lida");
+    }
+
 }

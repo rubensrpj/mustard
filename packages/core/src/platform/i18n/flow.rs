@@ -25,6 +25,7 @@ pub(super) const PREFIXES: &[&str] = &[
     "retired",
     "banner",
     "stuck",
+    "copies",
     "conversation_size",
     "wave_prompt",
     "triage",
@@ -121,6 +122,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("plan.task_could_name_a_skill", Locale::PtBr) => "A tarefa {task} não nomeia skill, e a skill {skill} serve para ela. Nomeie-a na tarefa.",
         ("plan.task_could_name_a_skill", Locale::EnUs) => "Task {task} names no skill, and skill {skill} fits it. Name it in the task.",
+        ("plan.dependency_only_files.one", Locale::PtBr) => {
+            "A tarefa {task} espera a tarefa {waits_for}, e as duas mexem em {files}. Se a espera é só por esse arquivo, passe-o para uma das duas e tire a dependência. Aí as ondas delas saem juntas."
+        }
+        ("plan.dependency_only_files.one", Locale::EnUs) => {
+            "Task {task} waits for task {waits_for}, and both touch {files}. If that file is the only reason to wait, move it into one of them and drop the dependency. Their waves then go out together."
+        }
+        ("plan.dependency_only_files.many", Locale::PtBr) => {
+            "A tarefa {task} espera a tarefa {waits_for}, e as duas mexem em {files}. Se a espera é só por esses arquivos, passe-os para uma das duas e tire a dependência. Aí as ondas delas saem juntas."
+        }
+        ("plan.dependency_only_files.many", Locale::EnUs) => {
+            "Task {task} waits for task {waits_for}, and both touch {files}. If those files are the only reason to wait, move them into one of them and drop the dependency. Their waves then go out together."
+        }
         ("plan.command_not_declared", Locale::PtBr) => {
             "O projeto não declara `{field}` no mustard.json: preencha esse campo com o comando de \
              verdade. Até lá, o pedido de cada onda sai sem essa linha."
@@ -188,6 +201,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("resume.next.discarded", Locale::EnUs) => "The spec was discarded: there is no next step.",
         // O próximo passo em palavras do dia a dia, para quem lê o painel: o
         // que o comando do passo faz pela spec agora.
+        ("resume.close_refused", Locale::PtBr) => {
+            "O último fechamento desta spec caiu por `{reason}`. Não há mais onda nem tarefa a rodar. Não rode outra rodada: ela sairia sem nada. Rode o fechamento de novo para ver o motivo inteiro. As saídas são três. Abra uma tarefa nova para consertar. Ou ajuste com o usuário o que a conferência do projeto cobra. Ou feche de novo, com o que caiu já resolvido."
+        }
+        ("resume.close_refused", Locale::EnUs) => {
+            "This spec's last close failed with `{reason}`. No wave or task is left to run. Do not run another round: it would go out with nothing. Run the close again to see the whole reason. There are three ways out. Open a new task to fix it. Or settle with the user what the project's check demands. Or close again, with what failed resolved."
+        }
         ("resume.step.survey", Locale::PtBr) => "Seguir o levantamento e responder os pontos em aberto",
         ("resume.step.survey", Locale::EnUs) => "Continue the survey and answer the open points",
         ("resume.step.plan", Locale::PtBr) => "Conferir o plano e pedir a aprovação",
@@ -322,6 +341,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("close.build_failed", Locale::EnUs) => {
             "The project build (`{command}`), run in a clean environment the way the server runs it, \
              did not pass, and the spec did not close: {output}"
+        }
+        ("close.lint_from_the_base", Locale::PtBr) => {
+            "O `{command}` do projeto falhou, e só em arquivos que esta obra não tocou: {files}. A base já os acusava na abertura da spec, então o erro não é da obra e não trava o fechamento. Foi isto que o comando disse:\n{output}"
+        }
+        ("close.lint_from_the_base", Locale::EnUs) => {
+            "The project's `{command}` failed, and only in files this work never touched: {files}. The base already flagged them when the spec opened, so the error is not the work's and does not block the close. This is what the command said:\n{output}"
         }
         ("close.lint_failed", Locale::PtBr) => "O lint do projeto (`{command}`) não passou, e a spec não fechou: {output}",
         ("close.lint_failed", Locale::EnUs) => "The project lint (`{command}`) did not pass, and the spec did not close: {output}",
@@ -576,6 +601,20 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("stuck.reason.deleted_copy", Locale::EnUs) => "deleted wave copy",
         ("stuck.reason.idle_copy", Locale::PtBr) => "cópia sem onda em andamento",
         ("stuck.reason.idle_copy", Locale::EnUs) => "copy with no wave running",
+        // As cópias de obra que sobraram no disco, na retomada e no
+        // fechamento, e a obra em execução que perdeu a branch dela.
+        ("copies.left", Locale::PtBr) => {
+            "Cópias de obra sobraram no disco, somando {total}: {list}. Tire-as com `mustard-rt run clean --apply`."
+        }
+        ("copies.left", Locale::EnUs) => {
+            "Work copies were left on disk, {total} in all: {list}. Remove them with `mustard-rt run clean --apply`."
+        }
+        ("copies.branch_missing", Locale::PtBr) => {
+            "A obra está marcada como em execução, e a branch {branch} já não existe. Ninguém a retoma assim: feche a obra ou corte a branch de novo. A cópia dela já conta como sobra."
+        }
+        ("copies.branch_missing", Locale::EnUs) => {
+            "This work is marked as running, and branch {branch} no longer exists. Nobody can resume it: close the work or cut the branch again. Its copy already counts as leftover."
+        }
         // O bloco de retomada, no aviso antes de compactar (`PreCompact`) e
         // no início da sessão depois do resumo.
         ("conversation_size.block", Locale::PtBr) => {
@@ -888,6 +927,20 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.development_build_failed", Locale::EnUs) => {
             "The commit landed, but the development build of Mustard did not compile, and the session \
              stays on the previous compiled program: {output}"
+        }
+        ("round.commit_carried_more", Locale::PtBr) => {
+            "O commit levou arquivo que a entrega não listou: {extra}, em {repo}. Isso acontece \
+             quando um gancho de pre-commit do projeto acrescenta ao commit tudo o que está \
+             alterado na pasta. O commit foi desfeito, e nada no disco foi tocado. O trabalho da \
+             onda e a sua mudança local seguem onde estavam. Guarde a sua mudança, rode a rodada \
+             de novo e devolva a mudança depois:\n{stash}\n{restore}"
+        }
+        ("round.commit_carried_more", Locale::EnUs) => {
+            "The commit carried a file the delivery did not list: {extra}, in {repo}. This happens \
+             when a project pre-commit hook adds everything changed in the folder to the commit. \
+             The commit was undone and nothing on disk was touched. The wave's work and your local \
+             change are where they were. Stash your change, run the round again, and restore the \
+             change afterwards:\n{stash}\n{restore}"
         }
         ("round.file_unknown", Locale::PtBr) => {
             "A onda {wave} entregou {file}, que não está no disco nem no git: o commit não teria o que \
@@ -1371,6 +1424,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("round.held_return", Locale::PtBr) => "A volta da onda {wave} ficou fora desta rodada, e só ela: o resto seguiu. {hint}",
         ("round.held_return", Locale::EnUs) => "Wave {wave}'s return was left out of this round, and only it: the rest went on. {hint}",
+        ("round.project_hook_refused", Locale::PtBr) => {
+            "O gancho `{hook}` deste projeto barrou o commit da rodada. A barreira é do projeto, e o Mustard não passa por ela. Ele reprovou: {files}. Foi isto que ele disse:\n{detail}\nNada foi gravado. Corrija o que ele apontou e rode a rodada de novo."
+        }
+        ("round.project_hook_refused", Locale::EnUs) => {
+            "This project's `{hook}` hook blocked the round's commit. The check is the project's, and Mustard does not bypass it. It rejected: {files}. This is what it said:\n{detail}\nNothing was recorded. Fix what it pointed at and run the round again."
+        }
+        ("round.project_hook_no_file", Locale::PtBr) => "nenhum arquivo que ele tenha citado pelo nome",
+        ("round.project_hook_no_file", Locale::EnUs) => "no file it named",
         ("round.git_refused", Locale::PtBr) => {
             "O git recusou: {detail}\nNada do que ele recusou foi gravado. Corrija o que o git \
              apontou, ou peça ao agente que grave a entrega corrigida, e rode a rodada de novo."
@@ -1612,6 +1673,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         // O aviso da rodada: uma chamada dela ao Jev falhou, e a rodada seguiu
         // sem ele. O remédio sai pelo motivo da falha.
+        ("round.terminal_inside_a_copy", Locale::PtBr) => {
+            "Este terminal está dentro de uma cópia de onda: `{folder}`. A rodada apaga as cópias dela, e o shell que perde a pasta em que está não roda mais nada. Saia para a pasta principal do projeto antes da próxima rodada."
+        }
+        ("round.terminal_inside_a_copy", Locale::EnUs) => {
+            "This terminal stands inside a wave copy: `{folder}`. The round deletes its copies, and a shell that loses the folder it stands in runs nothing more. Move to the project's main folder before the next round."
+        }
+        ("round.assembly_by_files", Locale::PtBr) => {
+            "A montagem perguntou ao Jev por {candidates} tarefas e nenhuma onda saiu da resposta dele. As ondas desta rodada saíram pela regra de arquivos."
+        }
+        ("round.assembly_by_files", Locale::EnUs) => {
+            "The assembly asked Jev about {candidates} tasks and no wave came out of its answer. This round's waves were formed by the file rule."
+        }
         ("round.jev_failed", Locale::PtBr) => {
             "O Jev falhou nesta rodada ({reason}), e a rodada seguiu sem ele, pelas regras nativas. {remedy}"
         }
@@ -2373,7 +2446,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 347, 0x057b_9f75_685a_9c00);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 358, 0x006e_9fdb_6968_7418);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
@@ -2449,6 +2522,8 @@ mod tests {
             ("plan.owner_missing", &["{type}"][..]),
             ("plan.contract_without_criterion", &["{code}"][..]),
             ("plan.task_without_file", &["{task}"][..]),
+            ("plan.dependency_only_files.one", &["{task}", "{waits_for}", "{files}"][..]),
+            ("plan.dependency_only_files.many", &["{task}", "{waits_for}", "{files}"][..]),
             ("plan.task_could_name_a_skill", &["{task}", "{skill}"][..]),
             ("plan.finding.label", &[][..]),
             ("discard.preview", &["{spec}", "{branch}", "{remote}", "{what}", "{token}"][..]),
@@ -2470,6 +2545,7 @@ mod tests {
             ("resume.next.pr_open", &[][..]),
             ("resume.next.delivered", &[][..]),
             ("resume.next.discarded", &[][..]),
+            ("resume.close_refused", &["{reason}"][..]),
             ("resume.step.survey", &[][..]),
             ("resume.step.plan", &[][..]),
             ("resume.step.closed", &[][..]),
@@ -2497,6 +2573,7 @@ mod tests {
             ("close.criterion_missing_test", &["{code}", "{name}"][..]),
             ("close.build_failed", &["{command}", "{output}"][..]),
             ("close.lint_failed", &["{command}", "{output}"][..]),
+            ("close.lint_from_the_base", &["{command}", "{files}", "{output}"][..]),
             ("close.suite_failed", &["{command}", "{output}"][..]),
             ("close.cited_outside", &["{files}"][..]),
             ("close.cited_nothing", &[][..]),
@@ -2546,6 +2623,8 @@ mod tests {
             ("stuck.reason.waiting_loop", &[][..]),
             ("stuck.reason.deleted_copy", &[][..]),
             ("stuck.reason.idle_copy", &[][..]),
+            ("copies.left", &["{total}", "{list}"][..]),
+            ("copies.branch_missing", &["{branch}"][..]),
             (
                 "conversation_size.block",
                 &["{spec}", "{phase}", "{delivered}", "{running}", "{returned}", "{stuck}", "{missing}", "{recorded}", "{command}", "{next}"][..],
@@ -2572,6 +2651,7 @@ mod tests {
             ("wave_prompt.summary.read", &["{code}", "{root}", "{spec}"][..]),
             ("wave_prompt.task_changed", &["{commits}", "{files}"][..]),
             ("round.file_unknown", &["{file}", "{wave}"][..]),
+            ("round.commit_carried_more", &["{extra}", "{repo}", "{stash}", "{restore}"][..]),
             ("round.files_diverged", &["{wave}", "{changed}", "{declared}", "{missing}"][..]),
             ("round.usage_missing", &["{wave}"][..]),
             ("round.tests_failed", &["{command}", "{output}"][..]),
@@ -2662,6 +2742,8 @@ mod tests {
             ("round.resend_gone", &["{wave}", "{copy}"][..]),
             ("round.resend_gone_no_copy", &["{wave}", "{copy}"][..]),
             ("round.git_refused", &["{detail}"][..]),
+            ("round.project_hook_refused", &["{hook}", "{files}", "{detail}"][..]),
+            ("round.project_hook_no_file", &[][..]),
             ("round.wrong_branch", &["{current}", "{branch}"][..]),
             ("round.invalid_path", &["{file}"][..]),
             ("round.next", &[][..]),
@@ -2689,6 +2771,8 @@ mod tests {
             ("round.backlog_stuck", &["{tasks}"][..]),
             ("round.task_without_covers", &["{tasks}"][..]),
             ("round.jev_failed", &["{reason}", "{remedy}"][..]),
+            ("round.assembly_by_files", &["{candidates}"][..]),
+            ("round.terminal_inside_a_copy", &["{folder}"][..]),
             ("round.jev_remedy_key", &[][..]),
             ("round.jev_remedy_missing_key", &[][..]),
             ("round.jev_remedy_key_in_git", &[][..]),

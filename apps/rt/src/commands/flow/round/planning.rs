@@ -56,7 +56,7 @@ mod tests {
 
     /// A linha do backlog lido agora que traz a tarefa de código `code`.
     fn backlog_line(root: &std::path::Path, code: &str) -> Value {
-        let opts = ReadOpts { root: root.to_path_buf(), spec: Some("x".into()), block: "backlog".into(), term: None };
+        let opts = ReadOpts { root: root.to_path_buf(), spec: Some("x".into()), block: "backlog".into(), term: None , session: None };
         let read: Value = serde_json::from_str(&read_at(&opts).unwrap()).unwrap();
         read["events"].as_array().into_iter().flatten().find(|line| line["code"] == json!(code)).cloned().unwrap_or(Value::Null)
     }

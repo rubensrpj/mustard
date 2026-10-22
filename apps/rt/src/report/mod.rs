@@ -360,8 +360,12 @@ mod tests {
         let css = html.split_once("<style>").and_then(|(_, tail)| tail.split_once("</style>")).map(|(style, _)| style).expect("página sem <style>");
 
         // O padrão é sempre escuro, com amarelo e cores de situação legíveis.
-        for token in ["#e1ad01", "#292735", "#f5f1fa", "#f2cf4a", "#a0dfbc", "#f4cf92"] {
-            assert!(css.contains(token), "token {token} ausente do layout");
+        // As cores saem do tema, nunca copiadas para cá: uma lista escrita
+        // aqui envelhece sozinha quando a paleta muda (21/10/2026).
+        let design = super::design::palettes();
+        for key in ["accent", "paper", "ink", "accentText", "positive", "warning"] {
+            let token = design["dark"][key].as_str().expect("um token do tema");
+            assert!(css.contains(token), "token {key} ({token}) ausente do layout");
         }
         assert!(css.contains("\"Inter\"") && css.contains("\"Geist Mono\""));
 
@@ -469,6 +473,11 @@ mod tests {
         }
         assert_eq!(pt.matches("<script>").count(), 1, "one script");
         assert!(pt.contains(&format!("<script>{SCRIPT}</script>")), "the script comes from layout.js");
+        // A busca da página avulsa, que não tem item nem grupo, filtra as
+        // seções pelo texto delas. Sem este caminho, nada casava e toda seção
+        // desaparecia (pendência do usuário, 21/10/2026).
+        assert!(SCRIPT.contains("if(!items.length)"), "a busca trata a página sem itens");
+        assert!(SCRIPT.contains("sectionIndex"), "e indexa o texto das seções");
         for hook in ["getElementById('q')", "'Escape'", "'Enter'", "e.key==='/'", "openAll", "closeAll", "data-of"] {
             assert!(SCRIPT.contains(hook), "the script lost {hook}");
         }

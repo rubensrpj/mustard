@@ -47,6 +47,12 @@ fn run_for_host(trigger: Option<Trigger>, input: &HookInput, codex: bool) -> Out
     let Some(trigger) = trigger else {
         return Outcome::allow();
     };
+    // Duas raízes de plugin do Mustard ligadas na mesma máquina recebem o
+    // mesmo evento duas vezes, uma por raiz: a primeira trata, a segunda sai
+    // calada. Fora do hospedeiro — terminal, teste — não há vez a disputar.
+    if !crate::shared::event_once::first_run(trigger.as_event_name(), input) {
+        return Outcome::allow();
+    }
     let ctx = build_ctx(trigger, input);
     // O projeto que desligou o Mustard no `mustard.json` não tem gancho que
     // aja: nem barra, nem avisa, nem coloca texto, nem grava.
@@ -157,7 +163,18 @@ fn record_action(hook: &str, verdict: &Verdict, input: &HookInput, ctx: &Ctx, ro
         .or_else(|| ctx.trigger.map(Trigger::as_event_name))
         .unwrap_or_default();
     let _ = match verdict {
-        Verdict::Deny { reason } => record_hook(root, session, hook, HookAction::Block, tool, reason),
+        // O bloqueio guarda a forma do que a ferramenta trazia: os campos
+        // pelo nome e o tamanho de cada um, nunca o conteúdo. Sem isso não se
+        // sabia depois se a recusa foi justa.
+        Verdict::Deny { reason } => crate::commands::spec_events::conversation::record_hook_shaped(
+            root,
+            session,
+            hook,
+            HookAction::Block,
+            tool,
+            reason,
+            crate::commands::spec_events::conversation::shape_of(&input.tool_input),
+        ),
         Verdict::Warn { message } => record_hook(root, session, hook, HookAction::Warn, tool, message),
         Verdict::Inject { context } if !context.is_empty() => record_injection(root, session, hook, context),
         _ => None,

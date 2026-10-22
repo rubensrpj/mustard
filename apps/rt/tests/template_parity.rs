@@ -246,6 +246,10 @@ fn forward_corpus(root: &Path) -> Vec<PathBuf> {
     let mut files = reverse_prose_corpus(root);
     walk_files(&root.join("packaging"), &mut files);
     files.push(root.join("MUSTARD-COMMANDS.md"));
+    // The reference lives in two files: the path and the day-to-day commands in
+    // the main one, the internals (install, Jev, publishing, code search) in the
+    // second. A flag only the internals spell is documented all the same.
+    files.push(root.join("docs/mustard-por-dentro.md"));
     files
 }
 

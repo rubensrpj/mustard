@@ -57,7 +57,7 @@ use serde_json::{json, Value};
 use crate::commands::event::census_settlement::{settle, CensusSettlement, CheckoutPosition};
 use crate::commands::event::pending::{mark_became, open_project_pending, pending_id, pending_is_open};
 use crate::commands::event::work_branch::{
-    checkout_work_branch, local_branch_exists, name_dirty_paths, remote_branch_exists, BusyCheckout,
+    branch_exists, checkout_work_branch, local_branch_exists, name_dirty_paths, remote_branch_exists, BusyCheckout,
     CheckoutWork, RefusalCause,
 };
 use crate::commands::spec_events::conversation::record_earlier_messages;
@@ -253,12 +253,6 @@ fn split_full_name(raw: &str) -> Option<(WorkKind, String)> {
 /// mais adiante, depois de a pasta da spec já ter sido decidida.
 fn git_accepts(root: &Path, branch: &str) -> bool {
     git::run(root, &["check-ref-format", "--branch", branch]).ok
-}
-
-/// A branch existe no repositório, local ou no `origin`. Sem resposta do git,
-/// não existe.
-fn branch_exists(root: &Path, branch: &str) -> bool {
-    local_branch_exists(root, branch) || remote_branch_exists(root, branch)
 }
 
 /// As bases que o `git.flow` declara, na ordem do fluxo: a do trabalho comum
@@ -611,6 +605,13 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
     // A nota da pendência, e o mapa, só no que mudou; a falha de cada um só
     // avisa.
     let mut warnings: Vec<String> = note_pending(&project.root, pending.as_deref(), &name, lang).into_iter().collect();
+    // O que o lint do projeto diz da base, gravado agora, com a branch recém
+    // cortada e sem commit nenhum: é por esta marca que o fechamento sabe
+    // separar o erro que a obra criou do que já estava aqui. Só avisa quando
+    // não pôde gravar.
+    if born {
+        warnings.extend(super::validation::record_base_check(&project.root, &name));
+    }
     let map = match refresh(&project.root) {
         Ok(report) => Some(json!({ "full": report.full, "read": report.read.len() })),
         Err(detail) => {

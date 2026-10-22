@@ -144,11 +144,21 @@ pub(crate) fn check(root: &Path, input: &HookInput, trigger: Trigger) -> Verdict
     if trigger == Trigger::PreToolUse && input.raw["mustard_host"] == "codex" && requested {
         let resolution = mustard_core::platform::session_models::resolve("codex", None);
         let definition = mustard_core::platform::codex::analysis_configuration(root);
+        // O esforço esperado vem do dono do par modelo e esforço, nunca de um
+        // valor escrito aqui: a trava e o molde que ela confere têm de ler a
+        // mesma coisa (regra de 21/10/2026).
         if resolution["ready"] != true
             || definition["model"] != resolution["model"]
-            || definition["effort"] != "medium"
+            || definition["effort"] != resolution["effort"]
         {
-            return Verdict::Deny {reason:"[Mustard] Native Luna/medium capabilities are unavailable or the installed analysis definition is outdated. Use current scan evidence. Refresh the Codex adapter against its fresh native model catalogue before delegating; do not inherit another family or start a separate CLI/API.".into()};
+            // O esforço no texto vem do dono, nunca escrito aqui: a mensagem
+            // que crava o valor passa a mentir quando o dono muda. E o texto
+            // sai do catálogo, na língua do projeto, como as outras recusas.
+            let effort = mustard_core::platform::session_models::effort("codex");
+            let lang = mustard_core::ProjectConfig::load(root).language().text_or_default();
+            return Verdict::Deny {
+                reason: crate::shared::say::say("analysis_guard.codex_unavailable", lang, &[("{effort}", effort)]),
+            };
         }
     }
     if !analysis(root, input, trigger) || trigger != Trigger::PreToolUse {
@@ -159,15 +169,28 @@ pub(crate) fn check(root: &Path, input: &HookInput, trigger: Trigger) -> Verdict
     {
         return Verdict::Deny {reason:"[Mustard] Analysis is near its fixed 100000-token input budget; keep headroom for the final response. Return the source-bound result now; do not read more or start another task. Unknown usage is never treated as verified compliance.".into()};
     }
+    // O esforço esperado sai do dono do par modelo e esforço, na comparação e
+    // no texto: um valor escrito aqui passa a mentir quando o dono muda.
+    let codex_effort = mustard_core::platform::session_models::effort("codex");
     if input.raw["mustard_host"] == "codex"
         && (input.raw["model"]
             .as_str()
             .is_some_and(|model| !model.split('-').any(|part| part == "luna"))
             || input.raw["effort"]
                 .as_str()
-                .is_some_and(|effort| effort != "medium"))
+                .is_some_and(|effort| effort != codex_effort))
     {
-        return Verdict::Deny {reason:"[Mustard] Analysis requires Luna with medium effort. Native telemetry reports a different model/effort; return to the conductor and use native evidence.".into()};
+        let lang = mustard_core::ProjectConfig::load(root).language().text_or_default();
+        return Verdict::Deny {
+            reason: crate::shared::say::say("analysis_guard.codex_family", lang, &[("{effort}", codex_effort)]),
+        };
+    }
+    // A devolução do relatório a quem conduz nunca é barrada, pela peça que
+    // todas as travas usam: a mensagem abaixo manda devolver o recibo, e
+    // enquanto esta lista não conhecia a ferramenta da devolução era ela mesma
+    // que o impedia (campo, 21/10/2026).
+    if crate::shared::handback::hands_back_the_report(input) {
+        return Verdict::Allow;
     }
     let allowed = match input.tool_name.as_deref() {
         Some("Read" | "Grep" | "Glob" | "ToolSearch") => true,
@@ -180,7 +203,9 @@ pub(crate) fn check(root: &Path, input: &HookInput, trigger: Trigger) -> Verdict
     if allowed {
         Verdict::Allow
     } else {
-        Verdict::Deny {reason:"[Mustard] The analysis agent is read-only. Use supplied evidence or Mustard Read/Grep/Glob/Symbol/Trace; return the JSON receipt to the conductor. Editing, arbitrary shell execution, external writes and further delegation are outside this role.".into()}
+        let lang = mustard_core::ProjectConfig::load(root).language().text_or_default();
+        let tool = input.tool_name.as_deref().unwrap_or("-");
+        Verdict::Deny { reason: crate::shared::say::say("analysis_guard.read_only", lang, &[("{tool}", tool)]) }
     }
 }
 
@@ -210,6 +235,35 @@ mod tests {
             assert!(!read_command(command), "{command}");
         }
     }
+    /// A devolução do recibo a quem conduz passa, e a recusa das outras
+    /// ferramentas sai na língua do projeto, nomeando a ferramenta barrada.
+    ///
+    /// Em campo (21/10/2026) a devolução do agente de análise foi barrada duas
+    /// vezes, com a mensagem que mandava devolver o recibo: a lista de
+    /// permitidas não conhecia a ferramenta da devolução. A trava do agente de
+    /// onda já a conhecia, e é dela que esta agora pergunta.
+    #[test]
+    fn handing_the_receipt_back_passes_and_the_refusal_speaks_the_project_language() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let analysis = |tool: &str| HookInput {
+            tool_name: Some(tool.into()),
+            raw: json!({"agent_id": "child", "agent_type": "mustard-analysis"}),
+            agent_type: Some("mustard-analysis".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            check(root, &analysis("SubagentHandback"), Trigger::PreToolUse),
+            Verdict::Allow,
+            "a devolução do recibo nunca é barrada",
+        );
+        let Verdict::Deny { reason } = check(root, &analysis("Edit"), Trigger::PreToolUse) else {
+            panic!("editar continua barrado para o agente de análise");
+        };
+        assert!(reason.contains("Edit"), "a recusa nomeia a ferramenta barrada: {reason}");
+        assert!(reason.contains("só lê"), "a recusa sai em português, a língua padrão: {reason}");
+    }
+
     #[test]
     fn native_child_role_binding_guards_later_tools_without_affecting_parent() {
         let dir = tempfile::tempdir().unwrap();
