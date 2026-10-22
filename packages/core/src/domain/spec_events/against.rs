@@ -16,9 +16,10 @@ use super::{is_empty, Block, BlockQuery, EventRef, Hidden, Refusal, SpecEvent, S
 
 /// Troca cada código (`MSTD-RULE-NNNN`) dos campos que apontam eventos pelos
 /// números que ele nomeia no arquivo como está, para que a linha gravada
-/// guarde só números: em `replaces` (um só ou a lista) e no `closes` de um
-/// ponto, a versão mais nova do item; nos alvos de `remove` e `purge`, todas
-/// as versões dele. Um código que não existe na spec recusa o evento.
+/// guarde só números: em `origin`, em `replaces` (um só ou a lista) e no
+/// `closes` de um ponto, a versão mais nova do item; nos alvos de `remove` e
+/// `purge`, todas as versões dele. Um código que não existe na spec recusa o
+/// evento.
 ///
 /// Na remoção, a tarefa sai sempre inteira: o número de qualquer versão dela,
 /// e a versão dela que o filtro pega, viram todas as versões da tarefa nos
@@ -56,6 +57,13 @@ pub fn resolve_codes(log: &SpecLog, event: &mut Map<String, Value>) -> Result<()
                     let resolved = resolve(value)?;
                     event.insert(field.name.into(), resolved);
                 }
+        }
+        // O `origin` é comum a todo tipo e por isso nenhum o declara, mas
+        // aponta um evento como qualquer campo de referência: aceita o
+        // código do item e grava o número.
+        if let Some(value) = event.get("origin") {
+            let resolved = resolve(value)?;
+            event.insert("origin".into(), resolved);
         }
     }
     let is_code = |v: &Value| matches!(EventRef::from_value(v), Some(EventRef::Code(_)));
@@ -579,6 +587,33 @@ mod tests {
         unknown.insert("depends_on".into(),json!(["MSTD-TASK-9999"]));
         resolve_codes(&log,&mut unknown).unwrap();
         assert_eq!(unknown["depends_on"],json!(["MSTD-TASK-9999"]),"unknown dependencies retain the task-specific refusal in the runtime");
+    }
+
+    /// O `origin` aceita o código da mensagem e grava o número dela: o número
+    /// segue como veio, o código que a spec não tem é recusado citando o
+    /// código, e o texto fora do formato do código nem passa da conferência.
+    #[test]
+    fn the_origin_accepts_a_code_and_resolves_it_to_the_number() {
+        let log = parse_log(&line(1, "message", ",\"code\":\"MSTD-MSG-0001\",\"author\":\"user\""));
+        let note = |origin: Value| json!({"text": "t", "keys": ["k"], "origin": origin});
+        for origin in [json!("MSTD-MSG-0001"), json!(1)] {
+            assert_eq!(checked("note", note(origin.clone())), Ok(()), "{origin}");
+            let mut event = obj(note(origin.clone()));
+            event.insert("type".into(), json!("note"));
+            resolve_codes(&log, &mut event).unwrap();
+            assert_eq!(event["origin"], json!(1), "{origin}");
+        }
+
+        let mut unknown = obj(note(json!("MSTD-MSG-0009")));
+        unknown.insert("type".into(), json!("note"));
+        assert_eq!(
+            resolve_codes(&log, &mut unknown),
+            Err(Refusal::UnknownTarget { target: EventRef::Code("MSTD-MSG-0009".into()) })
+        );
+        assert!(matches!(
+            checked("note", note(json!("a mensagem"))).unwrap_err(),
+            Refusal::InvalidValue { ref field, expected: Kind::Ref, .. } if field == "origin"
+        ));
     }
 
     /// Na remoção, o número de qualquer versão de uma tarefa vira todas as

@@ -1446,6 +1446,48 @@ fn reading_messages_brings_the_conversation_and_says_its_name() {
     assert!(warned.contains("messages") && warned.contains("conversation"), "{read}");
 }
 
+/// A leitura de um bloco mostra a origem pelo código da mensagem, e a gravação
+/// aceita esse mesmo código em `origin`: o arquivo guarda o número da
+/// mensagem. O código que a spec não tem e o texto fora do formato do código
+/// são recusados pelo nome, sem gravar nada, e o número segue valendo.
+#[test]
+fn the_origin_of_a_write_accepts_the_item_code_and_stores_its_number() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = &dir.path().canonicalize().expect("the folder");
+    let said = opened_by_a_session(root, "o pedido");
+    let path = mustard_core::io::spec_events::spec_file(root, "teste").expect("spec file");
+    let stored = |id: u64| {
+        let log = mustard_core::io::spec_events::read(&path).expect("read").expect("the spec file");
+        log.get(id).and_then(|event| event.fields.get("origin").cloned())
+    };
+    let code = mustard_core::io::spec_events::read(&path)
+        .expect("read")
+        .expect("the spec file")
+        .codes()
+        .get(&said)
+        .cloned()
+        .expect("the message has its code");
+    let context = |origin: &Value, text: &str| json!({"title": "Combinar o item", "agent": "- conferir pelo teste",
+        "text": text, "origin": origin});
+
+    let by_code = write(root, "context", &context(&json!(code), "A fatura soma centavos."));
+    assert_eq!(stored(by_code), Some(json!(said)), "the file keeps the message number, not its code");
+    let by_number = write(root, "context", &context(&json!(said), "O total soma a fatura."));
+    assert_eq!(stored(by_number), Some(json!(said)), "the number keeps working");
+    let shown = read(root, "specification")["events"].to_string();
+    assert!(shown.contains(&format!("\"origin\":\"{code}\"")), "the block read links the origin by code: {shown}");
+
+    let (stem, _) = code.rsplit_once('-').expect("a code has its number");
+    let before = event_lines(root);
+    let (status, unknown) = write_out(root, "context", &context(&json!(format!("{stem}-9999")), "Outro texto."));
+    assert_ne!(status, Some(0), "{unknown}");
+    assert_eq!(unknown["reason"], json!("unknown-target"), "{unknown}");
+    let (status, malformed) = write_out(root, "context", &context(&json!("a mensagem do pedido"), "Mais um texto."));
+    assert_ne!(status, Some(0), "{malformed}");
+    assert_eq!(malformed["reason"], json!("invalid-value"), "{malformed}");
+    assert_eq!(event_lines(root), before, "a refused origin writes nothing");
+}
+
 /// A spec de antes desta versão do Mustard só se lê. A gravação, a rodada, a
 /// retomada, o plano, a reabertura, o fechamento e a abertura do pull request
 /// recusam com o código próprio, e o arquivo dela fica com os mesmos bytes; a
