@@ -64,6 +64,22 @@ impl Project {
     }
 
     fn command(&self, args: &[&str], stdin: &str) -> std::process::Output {
+        self.command_as(None, args, stdin)
+    }
+
+    /// A abertura da spec pela conversa da sessão [`SESSION`], como quem
+    /// conduz a roda: o gancho do terminal passa a sessão ao comando, e é a
+    /// conversa dela que fica ligada à spec.
+    fn open(&self) -> Value {
+        let out = self.command_as(Some(SESSION), &["run", "open", "--kind", "feature", "--name", SPEC, "--base", "dev"], "");
+        let report: Value = serde_json::from_slice(&out.stdout).expect("the opening answers JSON");
+        assert_eq!(report["ok"], json!(true), "{report}");
+        report
+    }
+
+    /// Como [`Self::command`], com a sessão `session` no ambiente, como o
+    /// gancho do terminal a passa ao comando numa conversa.
+    fn command_as(&self, session: Option<&str>, args: &[&str], stdin: &str) -> std::process::Output {
         let mut child = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
             .args(args)
             .current_dir(&self.root)
@@ -80,6 +96,7 @@ impl Project {
             .env_remove("MUSTARD_SESSION_ID")
             .env_remove("CLAUDE_SESSION_ID")
             .env_remove("CLAUDE_CODE_SESSION_ID")
+            .envs(session.map(|session| ("MUSTARD_SESSION_ID", session)))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -242,7 +259,7 @@ fn criterion_citing(project: &Project, said: u64, proof: &str) -> Value {
 #[test]
 fn a_file_another_item_creates_passes_the_write_and_the_plan() {
     let project = Project::new();
-    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    project.open();
     survey(&project);
     let said = user_says(&project, "A soma ganha um módulo novo, com o teste dele.");
     let criterion = criterion_citing(&project, said, "git diff --exit-code -- web/x.spec.ts");
@@ -273,7 +290,7 @@ fn a_file_another_item_creates_passes_the_write_and_the_plan() {
 #[test]
 fn a_file_no_item_creates_holds_the_plan() {
     let project = Project::new();
-    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    project.open();
     survey(&project);
     let said = user_says(&project, "A soma ganha um módulo que ninguém cria.");
     let criterion = criterion_citing(&project, said, "git diff --exit-code -- web/ninguem.spec.ts");
@@ -298,7 +315,7 @@ fn a_file_no_item_creates_holds_the_plan() {
 #[test]
 fn after_approval_the_write_refuses_a_file_no_item_creates() {
     let project = Project::new();
-    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    project.open();
     survey(&project);
     let (said, criterion, planned) = plan(&project);
     assert_eq!(planned["ok"], json!(true), "{planned}");
@@ -324,7 +341,7 @@ fn no_automatic_publication(project: &Project, report: &Value) {
 #[test]
 fn approval_round_and_request_do_not_export_without_an_explicit_publication() {
     let project = Project::new();
-    let opened = project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    let opened = project.open();
     assert_eq!(opened["step"], json!("ask_goal"));
     survey(&project);
     let (_, _, planned) = plan(&project);
@@ -362,7 +379,7 @@ fn approval_round_and_request_do_not_export_without_an_explicit_publication() {
 fn an_explicit_export_reuses_unchanged_public_state_and_versions_a_phase_change() {
     for lang in [Locale::PtBr, Locale::EnUs] {
         let project = Project::in_language(lang);
-        project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+        project.open();
         survey(&project);
         let (said, _, planned) = plan(&project);
         no_automatic_publication(&project, &planned);

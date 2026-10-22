@@ -74,6 +74,22 @@ impl Project {
 
     /// Como [`Self::command`], rodando de dentro de `dir`.
     fn command_in(&self, dir: &Path, args: &[&str], stdin: &str) -> std::process::Output {
+        self.command_as(None, dir, args, stdin)
+    }
+
+    /// A abertura da spec pela conversa da sessão [`SESSION`], como quem
+    /// conduz a roda: o gancho do terminal passa a sessão ao comando, e é a
+    /// conversa dela que fica ligada à spec.
+    fn open(&self) -> Value {
+        let out = self.command_as(Some(SESSION), &self.root, &["run", "open", "--kind", "feature", "--name", SPEC, "--base", "dev"], "");
+        let report: Value = serde_json::from_slice(&out.stdout).expect("the opening answers JSON");
+        assert_eq!(report["ok"], json!(true), "{report}");
+        report
+    }
+
+    /// Como [`Self::command_in`], com a sessão `session` no ambiente, como o
+    /// gancho do terminal a passa ao comando numa conversa.
+    fn command_as(&self, session: Option<&str>, dir: &Path, args: &[&str], stdin: &str) -> std::process::Output {
         let mut child = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
             .args(args)
             .current_dir(dir)
@@ -90,6 +106,7 @@ impl Project {
             .env_remove("MUSTARD_SESSION_ID")
             .env_remove("CLAUDE_SESSION_ID")
             .env_remove("CLAUDE_CODE_SESSION_ID")
+            .envs(session.map(|session| ("MUSTARD_SESSION_ID", session)))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -337,7 +354,7 @@ fn deliver_wave(project: &Project, wave: u64, text: &str, changes: &[(&str, &str
 /// aprovada, com a onda 1 despachada e entregue. Devolve a gravação de cada
 /// decisão do projeto todo — o combinado vigente que nenhuma onda carrega.
 fn ready(project: &Project) -> Vec<Value> {
-    let opened = project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    let opened = project.open();
     assert_eq!(opened["step"], json!("ask_goal"), "{opened}");
     let decisions = survey(project);
     plan(project);
@@ -353,7 +370,7 @@ fn ready(project: &Project) -> Vec<Value> {
 #[test]
 fn a_delivery_whose_added_comment_cites_a_spec_item_code_is_refused() {
     let project = Project::new();
-    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    project.open();
     survey(&project);
     plan(&project);
     approve(&project);
