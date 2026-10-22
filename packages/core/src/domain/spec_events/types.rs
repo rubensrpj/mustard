@@ -531,6 +531,8 @@ pub const TYPES: &[TypeSpec] = &[
         false,
         &[
             req("command", Kind::Text),
+            // O bloco que a chamada pediu: o da leitura, o tipo da gravação.
+            opt("block", Kind::Text),
             req("ms", Kind::Int),
             req("result", Kind::OneOf(CALL_RESULTS)),
             opt("refusal", Kind::Text),

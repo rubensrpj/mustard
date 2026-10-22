@@ -382,6 +382,9 @@ pub(crate) fn record_output_call(root: &Path, command: &str, named: Option<&str>
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut measured=transport_metrics(&args,output);
     measured.insert("invocation".into(),json!(true));
+    if let Some(block) = asked_block(&args) {
+        measured.insert("block".into(), json!(block));
+    }
     if command=="search" {
         measured.insert("search_enriched".into(),json!(report["crossing_status"]=="enriched"));
         measured.insert("search_task_evidence".into(),json!(report["task_context"]["cards"].as_array().is_some_and(|cards|!cards.is_empty())));
@@ -422,6 +425,21 @@ fn search_decisions(report:&Value)->Map<String,Value> {
         if let Some(value)=report.pointer(path).filter(|value|!value.is_null()) {fields.insert(field.into(),value.clone());}
     }
     fields
+}
+
+/// Os comandos `run` cuja primeira palavra é o bloco pedido: o bloco da
+/// leitura e o tipo da gravação. O termo do `find` é texto de quem procura,
+/// e não bloco.
+const BLOCK_COMMANDS: [&str; 2] = ["read", "write"];
+
+/// O bloco que a chamada `run <comando> <bloco> …` pediu, quando o comando é
+/// um de [`BLOCK_COMMANDS`] e a palavra logo depois dele não é opção. O valor
+/// de uma opção, como o texto de `--json`, nunca entra.
+fn asked_block(args: &[String]) -> Option<&str> {
+    match args {
+        [run, command, block, ..] if run == "run" && BLOCK_COMMANDS.contains(&command.as_str()) && !block.starts_with('-') => Some(block),
+        _ => None,
+    }
 }
 
 fn transport_metrics(args:&[String],output:&str)->Map<String,Value> {
@@ -501,7 +519,9 @@ fn project_operations_path(root:&Path)->std::path::PathBuf {
 ///
 /// A chamada de uma sessão sem ligação neste projeto não fica em spec
 /// nenhuma: nem a da conversa paralela na mesma branch, nem a leitura que uma
-/// conversa faz com `--root` de outro projeto.
+/// conversa faz com `--root` de outro projeto. A exceção é a chamada feita de
+/// dentro de uma cópia da própria spec ([`inside_spec_copy`]): é o agente da
+/// onda ou o revisor, que trabalham na cópia, e a chamada deles conta.
 fn record_in_call_spec(
     root: &Path,
     command: &str,
@@ -511,11 +531,8 @@ fn record_in_call_spec(
     report: &Value,
     measured: Map<String, Value>,
 ) -> Option<u64> {
-    if session.is_some()
-        && crate::shared::spec_state::conversation_bound_spec(&store::spec_root(root).to_string_lossy(), session).is_none()
-    {
-        return None;
-    }
+    let unbound = session.is_some()
+        && crate::shared::spec_state::conversation_bound_spec(&store::spec_root(root).to_string_lossy(), session).is_none();
     let spec = report
         .get("spec")
         .and_then(Value::as_str)
@@ -524,6 +541,9 @@ fn record_in_call_spec(
         .filter(|spec| !spec.is_empty())
         .map(str::to_string)
         .or_else(|| conversation_spec(root, session));
+    if unbound && !spec.as_deref().is_some_and(|spec| inside_spec_copy(root, spec)) {
+        return None;
+    }
     if let Some(spec) = &spec {
         store::spec_file(&store::spec_root(root), spec).ok().filter(|path| path.is_file())?;
     } else if command != "knowledge" {
@@ -534,6 +554,18 @@ fn record_in_call_spec(
         return store::append_operations(&project_operations_path(root), vec![("call", fields)]).ok()?.first().copied();
     };
     observe(root, &spec, "call", vec![fields])?.first().copied()
+}
+
+/// `true` quando o programa roda de dentro da pasta das cópias da spec `spec`
+/// do projeto de `root` ([`spec_copies_dir`](mustard_core::io::wave_prompt::spec_copies_dir)), onde moram as
+/// cópias das ondas e a do revisor. Os dois caminhos são comparados pelo
+/// disco.
+fn inside_spec_copy(root: &Path, spec: &str) -> bool {
+    let copies = mustard_core::io::wave_prompt::spec_copies_dir(&store::spec_root(root), spec);
+    match (std::env::current_dir().and_then(|cwd| cwd.canonicalize()), copies.canonicalize()) {
+        (Ok(cwd), Ok(copies)) => cwd.starts_with(copies),
+        _ => false,
+    }
 }
 
 /// O recibo da leitura de um pedido: uma chamada `read` com o pedido

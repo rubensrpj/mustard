@@ -14,7 +14,7 @@
 //!    para o bloco da conversa, como ele a escreveu. O aviso que o próprio
 //!    Claude Code manda pelo mesmo canal (o fim de um comando em segundo
 //!    plano, a volta de um subagente) não é mensagem de ninguém e não é
-//!    gravado. A mensagem dita antes de a spec existir, a do turno da
+//!    gravado, e o lembrete do sistema que vem dentro da fala sai dela. A mensagem dita antes de a spec existir, a do turno da
 //!    abertura inclusive, quem grava é a abertura (`run open`), lida da
 //!    conversa da sessão com o mesmo filtro do aviso; daqui saem só as
 //!    seguintes, sem repetir nenhuma.
@@ -36,7 +36,7 @@ use mustard_core::ProjectConfig;
 
 use crate::commands::spec_events::conversation::record_message;
 use crate::hooks::task::clarity_check::take_next_note;
-use crate::shared::prompt::is_harness_notice;
+use crate::shared::prompt::person_text;
 
 /// A entrada da mensagem.
 pub struct PromptEntry;
@@ -108,8 +108,8 @@ impl Check for PromptEntry {
             }
             return Ok(Verdict::Allow);
         }
-        if !is_harness_notice(prompt) {
-            let _ = record_message(root, input.session_id.as_deref(), prompt);
+        if let Some(text) = person_text(prompt) {
+            let _ = record_message(root, input.session_id.as_deref(), &text);
         }
         let Some(line) = message_line(root) else {
             return Ok(Verdict::Allow);

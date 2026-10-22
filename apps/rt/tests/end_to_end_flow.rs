@@ -1198,6 +1198,43 @@ fn only_the_conversation_bound_to_the_spec_records_in_it() {
     assert_eq!(reads, 0, "a reading from another conversation's project leaves no call there");
 }
 
+/// O agente da onda roda numa sessão sem ligação com a spec. De dentro da
+/// cópia da onda, a leitura do pedido e a gravação do passo deixam na spec o
+/// recibo da leitura e as duas chamadas.
+#[test]
+fn the_wave_agent_calls_from_its_copy_count_without_a_binding() {
+    const AGENT: &str = "s-agente-da-onda";
+    let project = Project::new();
+    project.open();
+    survey(&project);
+    plan(&project);
+    approve(&project);
+    first_round(&project);
+    let log = project.log();
+    let sent = log.visible().into_iter().rfind(|e| e.event_type == "send" && e.wave() == Some(1)).expect("the wave was sent");
+    let copy = PathBuf::from(sent.str_field("copy").expect("the copy"));
+    let task = log.visible().into_iter().find(|e| e.event_type == "task" && e.wave() == Some(1)).expect("the wave task").id;
+    let task = log.codes().get(&task).cloned().expect("the task code");
+    let root = project.root.display().to_string();
+
+    let read = project.command_as(Some(AGENT), &copy, &["run", "read", "request-1", "--root", &root, "--spec", SPEC], "");
+    assert!(read.status.success(), "{}", String::from_utf8_lossy(&read.stdout));
+    let step = json!({"wave": 1, "item": task, "text": "A tarefa ficou pronta."}).to_string();
+    let written = project.command_as(Some(AGENT), &copy, &["run", "write", "step", "--root", &root, "--spec", SPEC, "--json", &step], "");
+    assert!(written.status.success(), "{}", String::from_utf8_lossy(&written.stdout));
+
+    let receipts = project.log().visible().into_iter().filter(|e| e.event_type == "call" && e.str_field("request") == Some("request-1")).count();
+    assert!(receipts > 0, "the reading of the request left its receipt");
+    let operations = project.operations();
+    let invoked: Vec<(&str, &str)> = operations
+        .visible()
+        .into_iter()
+        .filter(|e| e.event_type == "call" && e.fields.get("invocation") == Some(&json!(true)))
+        .filter_map(|e| Some((e.str_field("command")?, e.str_field("block")?)))
+        .collect();
+    assert!(invoked.contains(&("read", "request-1")) && invoked.contains(&("write", "step")), "{invoked:?}");
+}
+
 /// Outra pessoa mergeia o pull request do submódulo, pelo `gh` de fora do
 /// binário.
 fn someone_merges_the_submodule(project: &Project) {

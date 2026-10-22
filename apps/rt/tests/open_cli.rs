@@ -278,3 +278,62 @@ fn opening_never_brings_the_messages_of_a_conversation_from_another_project() {
     assert!(opened.get("earlier_messages").is_none(), "{opened}");
     assert!(opened["earlier_messages_missing"].as_str().is_some_and(|note| !note.is_empty()), "{opened}");
 }
+
+/// As falas do usuário que a spec guarda, em ordem.
+fn user_texts(root: &Path, spec: &str) -> Vec<String> {
+    let log = std::fs::read_to_string(root.join(".claude").join("spec").join(spec).join("spec.ndjson")).expect("the spec was born");
+    log.lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|event| event["type"] == "message" && event["author"] == "user")
+        .filter_map(|event| event["text"].as_str().map(str::to_string))
+        .collect()
+}
+
+/// O Claude Code repete a fala digitada numa linha `api-request-blob`, e põe
+/// o lembrete do sistema dentro da fala. A abertura grava a fala uma vez, sem
+/// o lembrete; e a fala seguinte, que chega pelo gancho com o JSON do Claude
+/// Code, também entra sem ele, pelo mesmo filtro.
+#[test]
+fn the_typed_message_enters_once_and_without_the_system_text() {
+    let dir = repo();
+    let root = dir.path();
+    let config = tempfile::tempdir().expect("config dir");
+    let session = "3c9d1e7f-5a2b-4c6d-9e8f-1a2b3c4d5e6f";
+    let asked = "Quero que a leitura da spec fique menor.";
+    let human = json!({ "origin": { "kind": "human" } });
+    conversation(
+        config.path(),
+        root,
+        session,
+        &[
+            user_line(json!(asked), human.clone()),
+            json!({ "type": "api-request-blob", "sessionId": session, "hash": "0".repeat(64),
+                "message": { "role": "user", "content": [{ "type": "text", "text": asked }] } }),
+            user_line(json!("Pode abrir a spec.\n\n<system-reminder>texto do sistema na abertura</system-reminder>"), human),
+        ],
+    );
+    let out = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
+        .args(["run", "open", "--name", "feature/leitura-menor", "--base", "dev", "--root"])
+        .arg(root)
+        .current_dir(root)
+        .env("CLAUDE_CONFIG_DIR", config.path())
+        .env("MUSTARD_SESSION_ID", session)
+        .output()
+        .expect("run open");
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stdout));
+    assert_eq!(user_texts(root, "leitura-menor"), vec![asked, "Pode abrir a spec."], "{}", String::from_utf8_lossy(&out.stdout));
+
+    let mut hook = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
+        .args(["on", "UserPromptSubmit"])
+        .current_dir(root)
+        .env("CLAUDE_CONFIG_DIR", config.path())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("the hook runs");
+    let payload = json!({ "hook_event_name": "UserPromptSubmit", "session_id": session, "cwd": root.to_string_lossy(),
+        "prompt": "E o painel também.\n\n<system-reminder>texto do sistema no gancho</system-reminder>" });
+    std::io::Write::write_all(&mut hook.stdin.take().expect("stdin"), payload.to_string().as_bytes()).expect("payload");
+    assert_eq!(hook.wait_with_output().expect("the hook finishes").status.code(), Some(0));
+    assert_eq!(user_texts(root, "leitura-menor"), vec![asked, "Pode abrir a spec.", "E o painel também."]);
+}

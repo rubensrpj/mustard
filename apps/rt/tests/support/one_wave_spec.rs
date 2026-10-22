@@ -121,7 +121,10 @@ impl Project {
         }
         let mut all = vec!["run"];
         all.extend(owned.iter().map(String::as_str));
-        let out = self.command_in(&self.root, &all, "");
+        // A abertura sai da conversa da sessão e a liga à spec: só a fala
+        // dessa sessão entra pelo gancho.
+        let session: &[(&str, &Path)] = if args.first() == Some(&"open") { &[("MUSTARD_SESSION_ID", Path::new(SESSION))] } else { &[] };
+        let out = self.command_with(&self.root, &all, "", session);
         let text = String::from_utf8_lossy(&out.stdout).to_string();
         let report: Value = serde_json::from_str(&text)
             .unwrap_or_else(|e| panic!("{args:?} did not answer JSON ({e}): {text}{}", String::from_utf8_lossy(&out.stderr)));
