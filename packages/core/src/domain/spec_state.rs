@@ -274,11 +274,10 @@ pub fn phase_write_allowed(before: &State, after: &State, carried: Option<&str>,
 /// O tamanho é conferido aqui, e não só na abertura do pull request. O título
 /// do pull request é o `title` do objetivo ou, sem ele, a primeira frase, e o
 /// título tem teto ([`crate::domain::spec_events::MESSAGE_TITLE_MAX`]).
-/// Enquanto o teto só era
-/// lido na abertura, a pessoa escrevia um objetivo de duas linhas no primeiro
-/// minuto, tocava a obra inteira e descobria no último passo que precisava
-/// reescrever o objetivo de que tudo tinha saído. A recusa vem na gravação,
-/// quando reescrever ainda é de graça.
+/// Enquanto o teto só era lido na abertura, a pessoa escrevia um objetivo de
+/// duas linhas no primeiro minuto, tocava a obra inteira e descobria no último
+/// passo que precisava reescrever o objetivo de que tudo tinha saído. A recusa
+/// vem na gravação, quando reescrever ainda é de graça.
 ///
 /// # Errors
 ///
@@ -1162,10 +1161,10 @@ mod tests {
     /// pull request é recusado na hora de gravar, e não lá na abertura do pull
     /// request.
     ///
-    /// Sem `title`, a primeira frase do objetivo VIRA o título, e o título tem teto de 60
-    /// caracteres. Enquanto a conferência morava só na abertura, a pessoa
-    /// escrevia o objetivo no primeiro minuto, tocava a obra inteira em cima
-    /// dele e só no último passo descobria que precisava reescrevê-lo.
+    /// Sem `title`, a primeira frase do objetivo VIRA o título, e o título tem
+    /// teto de 60 caracteres. Enquanto a conferência morava só na abertura, a
+    /// pessoa escrevia o objetivo no primeiro minuto, tocava a obra inteira em
+    /// cima dele e só no último passo descobria que precisava reescrevê-lo.
     ///
     /// Três casos, um por aresta: 64 caracteres é recusado, 60 exatos passam,
     /// e o objetivo comprido cuja PRIMEIRA frase cabe passa — é a frase que
@@ -1215,7 +1214,8 @@ mod tests {
         assert_eq!(goal_with(&lines, at_the_cap, said), Ok(()), "o teto ainda passa");
 
         let with_tail = format!(
-            "{at_the_cap} Depois dele vem toda a prosa que o objetivo quiser ter, porque o título              sai só da primeira frase e o resto nunca chega ao pull request."
+            "{at_the_cap} Depois dele vem toda a prosa que o objetivo quiser ter, porque o título \
+             sai só da primeira frase e o resto nunca chega ao pull request."
         );
         assert!(with_tail.chars().count() > 60, "o texto inteiro passa do teto");
         assert_eq!(

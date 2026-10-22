@@ -766,7 +766,8 @@ mod tests {
         open_spec(root, "antiga");
         let old = Some("antiga");
         let said = id_of(&write(root, old, "message", json!({"author": "user", "text": "Travar o merge com pendência aberta."})));
-        id_of(&write(root, old, "context", json!({"text": "Travar o merge com pendência aberta.", "origin": said})));
+        let goal = "Travar o merge com pendência aberta.";
+        id_of(&write(root, old, "context", json!({"title": goal, "text": goal, "origin": said})));
         id_of(&write(
             root,
             old,

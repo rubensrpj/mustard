@@ -298,12 +298,12 @@ pub enum TaskDeclaration {
 /// outros saem contados.
 const UNCOVERED_SHOWN: usize = 10;
 
-/// O tamanho máximo do título de uma tarefa, em caracteres.
 /// O teto de caracteres do título de um ITEM da spec: a tarefa, a regra, a
 /// nota, o critério. É outro teto, de outra coisa, que o de
 /// [`MESSAGE_TITLE_MAX`](super::message::MESSAGE_TITLE_MAX): aquele é o do
-/// título de um commit e de um pull request, montado da primeira frase do
-/// objetivo. Os dois juntos na ajuda pareciam o mesmo teto com dois valores.
+/// título de um commit e de um pull request, e o do pull request é o `title`
+/// do objetivo ou, sem `title`, a primeira frase dele. Os dois juntos na ajuda
+/// pareciam o mesmo teto com dois valores.
 pub const TASK_TITLE_MAX: usize = 70;
 
 /// Uma das partes da forma fixa de um item que descreve o trabalho.

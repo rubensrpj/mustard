@@ -13,9 +13,10 @@
 //! `render_line`: os mesmos eventos dão sempre os mesmos bytes, e o índice
 //! refeito do zero sai igual ao que as gravações deixaram.
 //!
-//! O objetivo é a primeira frase do primeiro `context` da spec, na versão
-//! vigente dele. A linha que é só título (um cabeçalho `#` ou um trecho em
-//! negrito sozinho na linha) não é frase e é pulada, e o negrito sai do texto.
+//! O objetivo é o `title` do primeiro `context` da spec, na versão vigente
+//! dele, ou, sem `title`, a primeira frase do texto. A linha que é só título
+//! (um cabeçalho `#` ou um trecho em negrito sozinho na linha) não é frase e
+//! é pulada, e o negrito sai do `title` e da frase.
 //! O título de uma regra ou de uma decisão é o trecho em negrito do começo do
 //! texto; sem negrito, a primeira frase, cortada em 120 caracteres.
 //!
@@ -210,8 +211,8 @@ pub enum GoalSource {
 /// o painel, o índice e o resumo do projeto. É o `title` do primeiro
 /// `context`, na versão vigente dele; sem `title`, como nos objetivos de
 /// antes da forma fixa, a primeira frase do texto, depois das linhas que são
-/// só título e sem o negrito. `None` sem `context`, ou sem `title` e com o
-/// texto só de título.
+/// só título. Nos dois casos, sem o negrito. `None` sem `context`, ou sem
+/// `title` e com o texto só de título.
 #[must_use]
 pub fn goal_of(log: &SpecLog) -> Option<String> {
     goal_with_source(log).map(|(goal, _)| goal)
@@ -222,8 +223,9 @@ pub fn goal_of(log: &SpecLog) -> Option<String> {
 #[must_use]
 pub fn goal_with_source(log: &SpecLog) -> Option<(String, GoalSource)> {
     let goal = crate::domain::survey::goal(log)?;
-    if let Some(title) = goal.str_field("title").map(str::trim).filter(|title| !title.is_empty()) {
-        return Some((title.to_string(), GoalSource::Title));
+    let title = goal.str_field("title").map(|title| title.replace("**", "").trim().to_string());
+    if let Some(title) = title.filter(|title| !title.is_empty()) {
+        return Some((title, GoalSource::Title));
     }
     let plain = after_titles(goal.str_field("text")?).replace("**", "");
     let sentence = first_sentence(&plain);

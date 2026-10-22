@@ -4788,8 +4788,11 @@ mod tests {
         write(root, "message", &json!({ "author": author, "text": text }).to_string())["id"].as_u64().unwrap()
     }
 
+    /// Um `context` cujo `title` é o próprio texto: o índice mostra o `title`
+    /// do objetivo, e cada `context` com o seu deixa ver qual deles é o
+    /// objetivo vigente.
     fn context(root: &std::path::Path, text: &str, origin: u64) -> Value {
-        write(root, "context", &json!({ "text": text, "origin": origin }).to_string())
+        write(root, "context", &json!({ "title": text, "text": text, "origin": origin }).to_string())
     }
 
     /// O primeiro `context` de uma spec em levantamento aponta em `origin` a
@@ -4939,8 +4942,10 @@ mod tests {
             .and_then(|line| line["goal"].as_str().map(str::to_string))
     }
 
+    /// A versão nova do `context` `id`, com o texto também no `title`, como
+    /// em [`context`].
     fn revise(root: &std::path::Path, id: u64, text: &str, origin: u64) -> Value {
-        write(root, "context", &json!({ "text": text, "origin": origin, "replaces": id }).to_string())
+        write(root, "context", &json!({ "title": text, "text": text, "origin": origin, "replaces": id }).to_string())
     }
 
     fn remove(root: &std::path::Path, id: u64) -> Value {
@@ -5004,7 +5009,7 @@ mod tests {
                 Some(goal) => {
                     let said = goal.int("origin").and_then(|id| log.get(id)).expect("the goal has its origin");
                     assert_eq!((said.event_type.as_str(), said.str_field("author")), ("message", Some("user")));
-                    assert_eq!(shown.as_deref(), goal.str_field("text"));
+                    assert_eq!(shown.as_deref(), goal.str_field("title"));
                 }
                 None => assert_eq!(shown, None),
             }

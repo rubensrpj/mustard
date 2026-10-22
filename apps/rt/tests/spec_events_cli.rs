@@ -1553,7 +1553,13 @@ fn opened_by_a_session(root: &Path, said: &str) -> u64 {
     git(&["add", "-A"]);
     git(&["commit", "-q", "-m", "init"]);
     git(&["checkout", "-q", "-b", "dev"]);
-    let opened = stdout_json(&rt(root, &["open", "--kind", "feature", "--name", "teste", "--base", "dev"]).output().expect("run open"));
+    // A conversa que abre a spec é a mesma que fala depois: o gancho do
+    // terminal passa a sessão ao comando, e só a spec ligada a ela grava a fala.
+    let opening = rt(root, &["open", "--kind", "feature", "--name", "teste", "--base", "dev"])
+        .env("MUSTARD_SESSION_ID", "s-teste")
+        .output()
+        .expect("run open");
+    let opened = stdout_json(&opening);
     assert_eq!(opened["ok"], json!(true), "{opened}");
 
     let prompt = json!({"hook_event_name": "UserPromptSubmit", "prompt": said, "session_id": "s-teste", "cwd": root.to_string_lossy()});
@@ -1682,6 +1688,24 @@ fn the_goal_title_is_measured_and_shown_instead_of_the_first_sentence() {
     let hint = refused["hint"].as_str().unwrap_or_default();
     assert!(hint.contains(long) && hint.contains("61") && hint.contains("60"), "the refusal names the measured title: {hint}");
     assert_eq!(event_lines(root), before, "nothing was written");
+}
+
+/// O `title` do objetivo escrito em negrito sai sem o negrito, como já sai a
+/// primeira frase: o painel mostra o título limpo, e o teto do título do pull
+/// request mede o título limpo. Um título de 60 caracteres entre asteriscos
+/// passa, porque os asteriscos não chegam ao pull request.
+#[test]
+fn a_bold_goal_title_is_shown_and_measured_without_the_bold() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = &dir.path().canonicalize().expect("the folder");
+    let msg = opened_by_a_session(root, "o pedido");
+    let plain = "Travar o merge enquanto houver pendência aberta em toda spec";
+    assert_eq!(plain.chars().count(), 60, "the plain title is at the cap");
+    let goal = json!({"title": format!("**{plain}**"), "agent": "- conferir o título", "text": "O merge espera a pendência fechar.", "origin": msg});
+
+    let (code, written) = write_out(root, "context", &goal);
+    assert_eq!(code, Some(0), "the asterisks are not measured: {written}");
+    assert_eq!(panel_goals(root), vec![json!(plain); 3], "every panel reading shows the title without the bold");
 }
 
 /// O objetivo de antes do `title`, como as specs de antes da forma fixa o

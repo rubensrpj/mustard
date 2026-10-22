@@ -60,6 +60,7 @@ mod stale_task_wave_leaves_without_a_check;
 mod step_answers_the_wave_measure;
 mod survey_cli;
 mod template_parity;
+mod title_limits_documented;
 mod version_full;
 mod vocabulary;
 mod wave_request_token_cap;

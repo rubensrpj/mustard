@@ -1460,12 +1460,12 @@ mod tests {
     /// O caminho de verdade da abertura: a spec nasce pelo `open`, e o
     /// usuário responde, pelo gancho da mensagem, com o objetivo na primeira
     /// frase e, junto, o card, os critérios de aceite e os documentos
-    /// antigos. O `run write` grava como objetivo a primeira frase, com
-    /// `origin` na mensagem, e o card como `context` logo depois; o índice
-    /// mostra a primeira frase. O objetivo que não aponta uma mensagem do
-    /// usuário é recusado, e nada é gravado.
+    /// antigos. O `run write` grava o objetivo com um `title` e com `origin`
+    /// na mensagem, e o card como `context` logo depois; o índice mostra o
+    /// `title` do objetivo. O objetivo que não aponta uma mensagem do usuário
+    /// é recusado, e nada é gravado.
     #[test]
-    fn the_goal_is_the_first_sentence_of_an_answer_that_brings_the_card() {
+    fn the_goal_of_an_answer_that_brings_the_card_is_indexed_by_its_title() {
         use crate::commands::spec_events::write::write_at;
         let dir = repo(DEV_MAIN);
         let root = dir.path();
