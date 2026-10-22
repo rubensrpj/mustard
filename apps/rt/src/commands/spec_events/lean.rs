@@ -4,10 +4,13 @@
 //! Cada linha sai sem a versão do formato (`v`) e sem a sessão. O número
 //! (`id`) sai quando a linha tem código, que é o jeito de citar o item. Fora
 //! da conversa, saem a hora e o autor; na conversa, o autor fica, e a hora
-//! fica até o minuto, porque diz quem falou e quando. As ligações entre itens
-//! (`origin`, `result`, `reused_results`, `replaces`, `closes`, `reply_to`,
-//! `covered_by`) saem pelo código do item apontado; o número sem código fica
-//! como está.
+//! fica até o minuto, porque diz quem falou e quando. Toda ligação entre itens
+//! sai pelo código do item apontado: os campos que o tipo declara como
+//! referência (`result`, `closes`, `covers`, `contracts`, `criteria`,
+//! `depends_on` da tarefa e os outros) e os que qualquer linha pode trazer
+//! (`origin`, `replaces`, `reply_to`, `covered_by`). O número sem código fica
+//! como está, e o número que não aponta item (a ordem das ondas em
+//! `depends_on` da onda) não vira código.
 //!
 //! Cada fato sai sem as marcas de conferência: as impressões da fonte, a
 //! classificação, a verificação e a situação da fonte. O mesmo fato (a mesma
@@ -22,14 +25,16 @@
 
 use std::collections::BTreeMap;
 
-use mustard_core::domain::spec_events::{Block, shown_line, type_spec};
+use mustard_core::domain::spec_events::{Block, Kind, TypeSpec, shown_line, type_spec};
 use serde_json::{Map, Value, json};
 
 /// As marcas que nenhuma linha enxuta mostra.
 const STAMPS: &[&str] = &["v", "session"];
 
-/// As ligações entre itens, que a linha enxuta mostra pelo código.
-const LINKS: &[&str] = &["origin", "result", "reused_results", "replaces", "closes", "reply_to", "covered_by"];
+/// As ligações que qualquer linha pode trazer sem o tipo declará-las, e que
+/// a linha enxuta mostra pelo código. As que o tipo declara como referência
+/// vêm da declaração dele ([`points_at_item`]).
+const LINKS: &[&str] = &["origin", "replaces", "reply_to", "covered_by"];
 
 /// As marcas de conferência de um fato: as impressões da fonte e da medida,
 /// a classificação, a verificação e a situação da fonte.
@@ -70,7 +75,8 @@ impl<'a> Lean<'a> {
         if fields.contains_key("code") {
             fields.remove("id");
         }
-        let conversation = fields.get("type").and_then(Value::as_str).and_then(type_spec).is_some_and(|spec| spec.block == Block::Conversation);
+        let spec = fields.get("type").and_then(Value::as_str).and_then(type_spec);
+        let conversation = spec.is_some_and(|spec| spec.block == Block::Conversation);
         if conversation {
             if let Some(Value::String(at)) = fields.get_mut("at") {
                 *at = to_the_minute(at);
@@ -79,8 +85,8 @@ impl<'a> Lean<'a> {
             fields.remove("at");
             fields.remove("author");
         }
-        for link in LINKS {
-            if let Some(value) = fields.get_mut(*link) {
+        for (name, value) in fields.iter_mut() {
+            if points_at_item(spec, name) {
                 *value = self.by_code(value);
             }
         }
@@ -117,6 +123,14 @@ impl<'a> Lean<'a> {
     }
 }
 
+/// O campo `name` de uma linha do tipo `spec` aponta outro item: é uma das
+/// ligações comuns ou o tipo o declara como referência (o número ou o código
+/// de um item). O campo que só leva números, como a ordem das ondas, não
+/// aponta item, ainda que outro tipo use o mesmo nome para apontar.
+fn points_at_item(spec: Option<&TypeSpec>, name: &str) -> bool {
+    LINKS.contains(&name) || spec.is_some_and(|spec| spec.fields.iter().any(|field| field.name == name && matches!(field.kind, Kind::Ref | Kind::Refs)))
+}
+
 /// A hora até o minuto, quando ela tem a forma `AAAA-MM-DDTHH:MM…`; a que
 /// não tem fica como está.
 fn to_the_minute(at: &str) -> String {
@@ -127,7 +141,61 @@ fn to_the_minute(at: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
+    use mustard_core::domain::spec_events::TYPES;
+
     use super::*;
+
+    fn read_lean(codes: &BTreeMap<u64, String>, fields: Map<String, Value>) -> Value {
+        let line = Lean::new(codes).line(&Value::Object(fields).to_string());
+        serde_json::from_str(&line).expect("a lean line is a JSON object")
+    }
+
+    fn event(kind: &str, field: &str, value: Value) -> Map<String, Value> {
+        let mut fields = Map::new();
+        fields.insert("type".into(), json!(kind));
+        fields.insert("id".into(), json!(9));
+        fields.insert("code".into(), json!("MSTD-TASK-0009"));
+        fields.insert(field.into(), value);
+        fields
+    }
+
+    /// A lista dos vínculos sai da declaração de cada tipo, a mesma que a
+    /// conferência usa para aceitar o número ou o código: o campo novo que
+    /// aponta um item entra na lista sozinho.
+    #[test]
+    fn every_reference_a_type_declares_reads_by_the_item_code() {
+        let codes = BTreeMap::from([(1, "MSTD-MSG-0001".to_string()), (2, "MSTD-CTX-0001".to_string())]);
+        let mut seen = BTreeSet::new();
+        for spec in TYPES {
+            for field in spec.fields.iter().filter(|field| matches!(field.kind, Kind::Ref | Kind::Refs)) {
+                let (given, shown) = match field.kind {
+                    Kind::Refs => (json!([1, 2]), json!(["MSTD-MSG-0001", "MSTD-CTX-0001"])),
+                    _ => (json!(1), json!("MSTD-MSG-0001")),
+                };
+                let line = read_lean(&codes, event(spec.name, field.name, given));
+                assert_eq!(line[field.name], shown, "{} links {} by code: {line}", spec.name, field.name);
+                seen.insert(field.name);
+            }
+        }
+        for named in ["covers", "contracts", "criteria", "depends_on"] {
+            assert!(seen.contains(named), "{named} is a declared reference: {seen:?}");
+        }
+    }
+
+    /// O mesmo nome de campo é número de onda num tipo e item em outro: a
+    /// onda aponta as outras pela ordem, e a ordem não vira código.
+    #[test]
+    fn a_wave_number_that_shares_a_reference_name_stays_a_number() {
+        let codes = BTreeMap::from([(1, "MSTD-MSG-0001".to_string()), (2, "MSTD-CTX-0001".to_string())]);
+        for (field, value) in [("depends_on", json!([1, 2])), ("order", json!([2, 1])), ("summary", json!(2))] {
+            let line = read_lean(&codes, event("wave", field, value.clone()));
+            assert_eq!(line[field], value, "the wave keeps {field} as numbers: {line}");
+        }
+        let task = read_lean(&codes, event("task", "depends_on", json!([1, 2])));
+        assert_eq!(task["depends_on"], json!(["MSTD-MSG-0001", "MSTD-CTX-0001"]));
+    }
 
     #[test]
     fn a_time_without_the_date_and_hour_shape_stays_as_it_is() {
