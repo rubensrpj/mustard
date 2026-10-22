@@ -28,10 +28,11 @@
 //! resposta e o fechamento numa transação. Cada item da resposta traz o número, o código e a situação do
 //! ponto que o registra. A resposta devolve em `next` o primeiro ponto aberto
 //! ou, no condensado, pede para mostrar todos de uma vez; sem ponto aberto,
-//! lista em `unrouted` as mensagens do usuário sem destino. Chamar de novo
-//! com os mesmos tipos não grava nada e devolve o mesmo passo. Com entregas
-//! no resumo do projeto, `project_summary` traz ao condutor as ligadas ao
-//! objetivo (ou, sem o Jev, as mais recentes): contexto, nunca ponto.
+//! lista em `unrouted` o código e o começo de cada mensagem do usuário sem
+//! destino, uma por linha. Chamar de novo com os mesmos tipos não grava nada e
+//! devolve o mesmo passo. Com entregas no resumo do projeto, `project_summary`
+//! traz ao condutor as ligadas ao objetivo (ou, sem o Jev, as mais recentes):
+//! contexto, nunca ponto.
 //!
 //! ```text
 //! {"ok": true, "spec": "x", "work_type": 4, "kinds": ["feature"], "condensed": false,
@@ -301,8 +302,7 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
             report["hint"] = json!(translate("survey.present_point", lang).replace("{code}", &code).replace("{id}", &first.id.to_string()));
         }
     } else {
-        let unrouted: Vec<Value> = survey::unrouted_messages(&log).into_iter().map(|m| shown(m, &codes)).collect();
-        report["unrouted"] = json!(unrouted);
+        report["unrouted"] = json!(spec_events::unrouted::lines(survey::unrouted_messages(&log), &codes));
         report["hint"] = json!(translate("survey.done", lang).replace("{scale}", translate("plan.points_scale", lang)));
     }
     report
@@ -1291,8 +1291,9 @@ mod tests {
         assert!(done.get("next").is_none(), "{done}");
         let scale = translate("plan.points_scale", Locale::PtBr);
         assert_eq!(done["hint"], json!(translate("survey.done", Locale::PtBr).replace("{scale}", scale)));
-        let unrouted: Vec<u64> = done["unrouted"].as_array().unwrap().iter().map(|m| m["id"].as_u64().unwrap()).collect();
-        assert_eq!(unrouted, [loose]);
+        let path = store::spec_file(&store::spec_root(root), "x").expect("spec file");
+        let code = store::read(&path).unwrap().unwrap().codes()[&loose].clone();
+        assert_eq!(done["unrouted"], json!([format!("{code}: E o painel?")]), "{done}");
     }
 
     /// Lado a lado: a leitura única dos pontos e o `grill` contam pela mesma

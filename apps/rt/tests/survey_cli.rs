@@ -133,6 +133,28 @@ fn id(report: &Value) -> u64 {
     report["id"].as_u64().unwrap_or_else(|| panic!("no id: {report}"))
 }
 
+/// O código que a spec dá ao item de número `id`.
+fn code_of(root: &Path, id: u64) -> String {
+    let path = store::spec_file(root, SPEC).expect("the spec's file");
+    let log = store::read(&path).expect("a readable file").expect("the spec has its file");
+    log.codes().get(&id).cloned().unwrap_or_else(|| panic!("no code for {id}"))
+}
+
+/// As linhas que o relatório traz em `unrouted`: o código, dois pontos e o
+/// começo do texto da mensagem, numa linha só.
+fn unrouted_lines(report: &Value) -> Vec<String> {
+    let lines = report["unrouted"].as_array().unwrap_or_else(|| panic!("no unrouted: {report}"));
+    lines.iter().map(|line| line.as_str().unwrap_or_else(|| panic!("not a line: {line}")).to_string()).collect()
+}
+
+/// Os códigos das mensagens que o relatório lista em `unrouted`.
+fn unrouted_codes(report: &Value) -> Vec<String> {
+    unrouted_lines(report)
+        .into_iter()
+        .map(|line| line.split_once(": ").map(|(code, _)| code.to_string()).unwrap_or_else(|| panic!("not code and start: {line}")))
+        .collect()
+}
+
 /// Um critério gravado pelo `run write`, para as tarefas cobrirem: a tarefa
 /// do modelo diz os itens que ela entrega.
 fn criterion(root: &Path, said: u64) -> u64 {
@@ -237,9 +259,8 @@ fn a_test_survey_goes_through_every_point_and_the_plan_is_refused_while_one_is_o
                     next.contains("rode o revisor de fora") && next.contains("`mustard-review`") && next.contains(SPEC),
                     "the end of the survey orders the outside reviewer: {next}"
                 );
-                let unrouted: Vec<u64> =
-                    closed["unrouted"].as_array().expect("the end").iter().map(|m| m["id"].as_u64().expect("a number")).collect();
-                assert_eq!(unrouted, loose, "{closed}");
+                let loose_codes: Vec<String> = loose.iter().map(|id| code_of(root, *id)).collect();
+                assert_eq!(unrouted_codes(&closed), loose_codes, "{closed}");
             }
         }
     }
@@ -449,13 +470,85 @@ fn a_question_said_during_an_open_point_is_not_left_loose_at_the_end() {
         current = closed["point"].clone();
         ended = closed;
     }
-    let unrouted: Vec<u64> =
-        ended["unrouted"].as_array().expect("the end of the survey").iter().map(|m| m["id"].as_u64().expect("a number")).collect();
-    assert_eq!(unrouted, [before_points], "only the message that came with no open point is left loose: {ended}");
+    assert_eq!(unrouted_codes(&ended), [code_of(root, before_points)], "only the message that came with no open point is left loose: {ended}");
 
     let late = hook_says(root, home.path(), "E agora?");
     let log = store::read(&path).expect("a readable file").expect("the spec has its file");
     assert_eq!(log.get(late).and_then(|m| m.int("during")), None, "with every point closed nothing is carried");
+}
+
+/// A mensagem longa sem destino aparece no fim do levantamento como uma linha
+/// com o código e o começo, só na resposta que fecha o último ponto: antes
+/// dele e depois, na gravação seguinte, o relatório não traz `unrouted`, e o
+/// texto inteiro sai pela leitura do item.
+#[test]
+fn the_end_of_the_survey_shows_each_unrouted_message_once_as_a_short_line() {
+    const TAIL: &str = "FIM-DO-TEXTO-COLADO";
+    let dir = repo();
+    let home = tempfile::tempdir().expect("home");
+    let root = dir.path();
+    let opened = rt(root, &["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    assert_eq!(opened.status.code(), Some(0), "{}", String::from_utf8_lossy(&opened.stdout));
+    let said = hook_says(root, home.path(), GOAL);
+    write(root, "context", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": GOAL, "origin": said}));
+
+    // O mesmo texto longo colado duas vezes, sem ponto aberto e sem registro
+    // que o aponte; a fala curta que vem depois é a que a primeira resposta
+    // aponta como origem.
+    let pasted = format!("{}{TAIL}", "Linha colada do registro, com bastante detalhe sobre o merge.\n".repeat(60));
+    let long = [hook_says(root, home.path(), &pasted), hook_says(root, home.path(), &pasted)];
+    hook_says(root, home.path(), "Pode seguir.");
+
+    let items = report(&rt(root, &["grill", "--kinds", "feature", "--spec", SPEC, "--full"]))["points"]
+        .as_array()
+        .cloned()
+        .expect("the point list");
+    let mut current = Value::Null;
+    for item in &items {
+        let facts = json!([{"text": "O merge começa no arquivo de entrada.", "source": "src/main.rs:2"}]);
+        current = write(root, "point", &json!({"replaces": item["id"], "facts": facts}))["point"].clone();
+    }
+    let decision = json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": "O usuário respondeu ao ponto.",
+        "keys": ["levantamento"], "why": "o usuário respondeu"})
+    .to_string();
+    let mut ended = None;
+    for (i, _) in items.iter().enumerate() {
+        let code = current["code"].as_str().expect("the point's code").to_string();
+        let out = rt(root, &["answer", "--spec", SPEC, "--point", &code, "--type", "decision", "--json", &decision]);
+        let answered = report(&out);
+        assert_eq!(out.status.code(), Some(0), "answer {i}: {answered}");
+        current = answered["point"].clone();
+        if i + 1 < items.len() {
+            assert!(answered.get("unrouted").is_none(), "an open point is left, so the end is not shown: {answered}");
+        } else {
+            ended = Some((answered, out.stdout.len(), String::from_utf8_lossy(&out.stdout).into_owned()));
+        }
+    }
+
+    let (answered, size, raw) = ended.expect("the last answer");
+    assert!(!raw.contains(TAIL), "the long text does not come back whole: {size} bytes");
+    assert!(size < pasted.len(), "the answer that ends the survey is shorter than one pasted message: {size} bytes");
+    let lines = unrouted_lines(&answered);
+    let codes: Vec<String> = long.iter().map(|id| code_of(root, *id)).collect();
+    assert_eq!(unrouted_codes(&answered), codes, "{answered}");
+    for line in &lines {
+        assert!(line.chars().count() < 200 && !line.contains('\n'), "one short line: {line}");
+        assert!(line.contains("Linha colada do registro"), "the line carries the start of the text: {line}");
+    }
+
+    // A fala que chega depois do último ponto fica sem destino, e a decisão
+    // seguinte a aponta: as duas colagens já foram mostradas, e a gravação
+    // não as repete.
+    hook_says(root, home.path(), "E o painel?");
+    let out = rt(root, &["write", "decision", "--spec", SPEC, "--json", &decision]);
+    let decided = report(&out);
+    assert_eq!(out.status.code(), Some(0), "{decided}");
+    assert!(decided.get("unrouted").is_none(), "the end of the survey is shown once: {decided}");
+    assert!(!String::from_utf8_lossy(&out.stdout).contains(TAIL), "{decided}");
+
+    // O texto inteiro sai pelo código da linha.
+    let full = rt(root, &["read", &format!("item-{}", codes[0]), "--spec", SPEC]);
+    assert!(String::from_utf8_lossy(&full.stdout).contains(TAIL), "the item's reading has the whole message");
 }
 
 /// Duas tarefas que passam a depender uma da outra, em círculo, são

@@ -566,9 +566,10 @@ pub enum SurveyStep<'a> {
 ///   tem ponto (a gravação do `grill` parou no meio, ou um ponto saiu), rodar
 ///   o `grill` de novo, que grava os que faltam; senão, o próximo ponto aberto,
 ///   o primeiro na ordem dos blocos; sem ponto aberto, o fim, com as
-///   mensagens do usuário sem destino. O fim sai na gravação que fecha o
-///   último ponto e, depois dela, em cada gravação que muda a lista dessas
-///   mensagens.
+///   mensagens do usuário sem destino. O fim sai, com todas elas, na gravação
+///   que fecha o último ponto e, depois dela, só na gravação que deixa uma
+///   mensagem de novo sem destino (o registro que a apontava foi tirado), e
+///   com essa mensagem: cada mensagem sem destino sai uma vez.
 #[must_use]
 pub fn next_step<'a>(before: &SpecLog, after: &'a SpecLog) -> Vec<SurveyStep<'a>> {
     if !matches!(State::from_log(after).phase, Some("survey" | "plan")) {
@@ -601,9 +602,15 @@ pub fn next_step<'a>(before: &SpecLog, after: &'a SpecLog) -> Vec<SurveyStep<'a>
     match now.first() {
         Some(point) => steps.push(SurveyStep::Point(point)),
         None => {
-            let unrouted = unrouted_messages(after);
-            let changed = unrouted.iter().map(|m| m.id).ne(unrouted_messages(before).iter().map(|m| m.id));
-            if !was.is_empty() || changed {
+            let mut unrouted = unrouted_messages(after);
+            // Depois da gravação que fecha o último ponto, o fim só volta com
+            // a mensagem que esta gravação deixou sem destino; a que já
+            // estava na lista, ou saiu dela, não se mostra de novo.
+            if was.is_empty() {
+                let listed: BTreeSet<u64> = unrouted_messages(before).iter().map(|m| m.id).collect();
+                unrouted.retain(|m| !listed.contains(&m.id));
+            }
+            if !was.is_empty() || !unrouted.is_empty() {
                 steps.push(SurveyStep::Done { unrouted });
             }
         }

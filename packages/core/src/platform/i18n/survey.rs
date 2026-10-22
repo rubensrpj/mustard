@@ -147,13 +147,15 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("survey.done", Locale::PtBr) => {
             "O levantamento não tem ponto aberto. Mostre ao usuário as mensagens de `unrouted`, que \
-             nenhum registro aponta, e pergunte o que fazer com cada uma. Depois grave a \
-             especificação e as tarefas."
+             nenhum registro aponta (cada linha traz o código e o começo da mensagem; o texto \
+             inteiro sai por `mustard-rt run read item-<código>`), e pergunte o que fazer com cada \
+             uma. Depois grave a especificação e as tarefas."
         }
         ("survey.done", Locale::EnUs) => {
             "The survey has no open point. Show the user the messages in `unrouted`, which no record \
-             points to, and ask what to do with each one. Then record the specification and the \
-             tasks."
+             points to (each line has the code and the start of the message; the whole text comes \
+             from `mustard-rt run read item-<code>`), and ask what to do with each one. Then record \
+             the specification and the tasks."
         }
         ("survey.review_step", Locale::PtBr) => {
             "O bloco {block} fechou. Releia só as decisões dele e ache o que pode ter ficado de fora \
@@ -272,7 +274,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("survey.rs"), super::PREFIXES, 45, 0x17b0_0296_cbf5_fd8e);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("survey.rs"), super::PREFIXES, 45, 0xf9ff_1556_bdc4_cd7c);
     }
 
     /// O ponto aberto sem fato só fecha com os fatos: a dica de fechar um

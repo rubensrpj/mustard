@@ -183,7 +183,9 @@
 //! repete); em `review`, o bloco cujo último ponto a gravação fechou, com a
 //! pergunta da revisão e as opções; no último bloco, `next` manda rodar o
 //! revisor de fora antes do fim, enquanto nenhum ponto veio dele;
-//! em `unrouted`, no fim, as mensagens do usuário que nenhum registro aponta.
+//! em `unrouted`, no fim, uma linha (o código e o começo do texto) por mensagem
+//! do usuário que nenhum registro aponta, uma vez só (o texto inteiro sai por
+//! `run read item-<código>`).
 //! O ponto aberto só sai fechado, por um `point` que o aponta em `closes`: o
 //! `remove` dele é recusado. A passagem do levantamento para o plano, e a
 //! aprovação, pedem nenhum ponto aberto (`survey_rule`), na mesma conferência
@@ -1613,8 +1615,8 @@ mod session_tests {
 /// rodar o `grill` de novo; em `point`, o ponto a apresentar; em `points`, os
 /// pontos abertos do levantamento condensado, mostrados de uma vez; em
 /// `review`, o bloco que fechou, com os pontos, os registros que os fecharam,
-/// a pergunta e as opções, "Seguir" por último; em `unrouted`, as mensagens
-/// do usuário sem destino. Com a revisão e outro passo juntos, `next` traz os
+/// a pergunta e as opções, "Seguir" por último; em `unrouted`, uma linha com o
+/// código e o começo de cada mensagem do usuário sem destino. Com a revisão e outro passo juntos, `next` traz os
 /// dois, na ordem; no fim do levantamento, entre a revisão e o fim, a ordem
 /// de rodar o revisor de fora. `None` quando não há passo.
 ///
@@ -1680,8 +1682,7 @@ pub(crate) fn survey_report(spec: &str, before: &SpecLog, after: &SpecLog, lang:
             }
             SurveyStep::Done { unrouted } => {
                 next.push(translate("survey.done", lang).replace("{scale}", translate("plan.points_scale", lang)));
-                let listed: Vec<Value> = unrouted.into_iter().map(|m| super::shown(m, &codes)).collect();
-                out.insert("unrouted".to_string(), json!(listed));
+                out.insert("unrouted".to_string(), json!(super::unrouted::lines(unrouted, &codes)));
             }
             SurveyStep::Record(_) => {
                 next.push(translate("survey.rerun_grill", lang).replace("{spec}", spec));
@@ -5104,8 +5105,18 @@ mod tests {
         closed
     }
 
-    fn unrouted_ids(report: &Value) -> Vec<u64> {
-        report["unrouted"].as_array().unwrap_or_else(|| panic!("no unrouted: {report}")).iter().map(|m| m["id"].as_u64().unwrap()).collect()
+    /// Os códigos das mensagens que o relatório lista em `unrouted`: cada linha
+    /// é o código, dois pontos e o começo do texto.
+    fn unrouted_codes(report: &Value) -> Vec<String> {
+        let lines = report["unrouted"].as_array().unwrap_or_else(|| panic!("no unrouted: {report}"));
+        lines.iter().map(|line| line.as_str().unwrap().split_once(": ").unwrap().0.to_string()).collect()
+    }
+
+    /// Os códigos que a spec dá aos itens de número `ids`.
+    fn codes_of(root: &std::path::Path, ids: &[u64]) -> Vec<String> {
+        let path = store::spec_file(root, "teste").unwrap();
+        let log = store::read(&path).unwrap().unwrap();
+        ids.iter().map(|id| log.codes()[id].clone()).collect()
     }
 
     /// A gravação da fase de plano pela porta do binário.
@@ -5291,7 +5302,9 @@ mod tests {
         }
         let decided = answer(root, routed)["id"].as_u64().unwrap();
         let end = close(root, &points[4], json!(points[4].id), decided, said);
-        assert_eq!(unrouted_ids(&end), loose, "{end}");
+        assert_eq!(unrouted_codes(&end), codes_of(root, &loose), "{end}");
+        let lines = end["unrouted"].as_array().unwrap();
+        assert!(lines[0].as_str().unwrap().ends_with(": E o painel?") && lines[1].as_str().unwrap().ends_with(": E o aviso por e-mail?"), "{end}");
     }
 
     /// A mensagem que só recebeu resposta continua sem destino.
@@ -5307,26 +5320,28 @@ mod tests {
         for point in &points {
             end = settle(root, point, said);
         }
-        assert_eq!(unrouted_ids(&end), [asked]);
+        assert_eq!(unrouted_codes(&end), codes_of(root, &[asked]));
     }
 
     /// Tirada a única decisão que apontava a mensagem, ela volta a ficar sem
-    /// destino, e a remoção devolve o fim com ela.
+    /// destino, e a remoção devolve o fim só com ela: a que o fim já mostrou
+    /// não se repete.
     #[test]
     fn a_message_whose_only_record_was_removed_is_without_destination_again() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let (said, points) = listed(root, &["fix"], false);
+        let shown = message(root, "user", "E o painel?");
         let asked = message(root, "user", "Trave também o envio.");
         let decision = answer(root, asked)["id"].as_u64().unwrap();
         let mut end = Value::Null;
         for point in &points {
             end = settle(root, point, said);
         }
-        assert!(unrouted_ids(&end).is_empty(), "{end}");
+        assert_eq!(unrouted_codes(&end), codes_of(root, &[shown]), "{end}");
         let removal = remove(root, decision);
         assert_eq!(removal["ok"], json!(true), "{removal}");
-        assert_eq!(unrouted_ids(&removal), [asked], "{removal}");
+        assert_eq!(unrouted_codes(&removal), codes_of(root, &[asked]), "the message the end already showed is not listed again: {removal}");
         let unrelated = write(root, "note", &json!({"text": "Uma nota.", "keys": ["n"], "origin": said}).to_string());
         assert!(unrelated.get("next").is_none(), "a write that changes nothing brings no step: {unrelated}");
     }
