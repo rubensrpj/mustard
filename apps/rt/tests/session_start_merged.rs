@@ -15,7 +15,7 @@
 //! - O pull request segue aberto: o provedor é perguntado uma vez só, pelo
 //!   pull request da spec, e nada muda.
 //! - O pull request entrou pelas mãos de outra pessoa, por merge normal ou por
-//!   squash: roda o mesmo caminho do merge do Mustard — a spec gravada como
+//!   squash: roda o mesmo caminho do merge do fluxo — a spec gravada como
 //!   entregue, a base atualizada, a branch local apagada, a do servidor só com
 //!   a opção ligada, e a pergunta das pendências nascidas na spec —, sem uma
 //!   pergunta por branch de colega. No squash o git não prova o merge, e é a
@@ -83,7 +83,7 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
-/// Um projeto com o Mustard, o checkout na branch da spec em "pull request
+/// Um projeto com o fluxo instalado, o checkout na branch da spec em "pull request
 /// aberto", trinta branches de colegas com trabalho próprio (aqui e no
 /// remoto) e uma pendência nascida na spec.
 struct Scene {
@@ -366,7 +366,7 @@ fn an_open_pull_request_costs_one_question_whatever_the_number_of_branches() {
 }
 
 /// Com o pull request da spec feito por outra pessoa, o início da sessão roda
-/// o mesmo caminho do merge do Mustard: a spec gravada como entregue, a base
+/// o mesmo caminho do merge do fluxo: a spec gravada como entregue, a base
 /// atualizada, a branch local apagada e a do servidor mantida, e a pergunta
 /// das pendências nascidas na spec armada e dita no texto. O provedor não é
 /// perguntado por nenhuma branch de colega.
@@ -506,7 +506,7 @@ fn test_copies_base() -> String {
     std::env::var("MUSTARD_COPIES_DIR").expect("the tests point the copies at their own folder")
 }
 
-/// Um projeto com o Mustard e o remoto, sem pull request nenhum: a obra das
+/// Um projeto com o fluxo instalado e o remoto, sem pull request nenhum: a obra das
 /// specs entra na base pelas mãos de um colega, sem passar pelo fechamento.
 struct Outside {
     dir: TempDir,
@@ -804,7 +804,7 @@ fn a_running_spec_merged_outside_frees_its_copies_then_is_delivered() {
     assert!(hint.contains("entregue") && !hint.contains("delivered"), "the phase is said by its name: {hint}");
 }
 
-/// A spec de antes desta versão do Mustard fica fora da conferência do
+/// A spec de antes desta versão fica fora da conferência do
 /// início da sessão: juntada na base por um colega, ela não é entregue nem
 /// citada.
 #[test]
@@ -1075,7 +1075,7 @@ fn a_start_notice_comes_once_per_count_and_the_clean_reaches_the_deleted_spec() 
     assert!(copy.join(".git").is_file(), "the round made the copy of the wave");
     assert!(has_branch(&root, &branch), "the opening cut the branch of the spec");
 
-    // O que o usuário e outros programas fazem fora do Mustard.
+    // O que o usuário e outros programas fazem por fora do fluxo.
     git(&root, &["checkout", "-q", &branch]);
     git(&root, &["add", "-f", &format!(".claude/spec/{DELETED}")]);
     git(&root, &["commit", "-q", "-m", "a spec na branch"]);
@@ -1157,4 +1157,46 @@ fn a_start_notice_comes_once_per_count_and_the_clean_reaches_the_deleted_spec() 
     git(&root, &["checkout", "-q", "dev"]);
     let after = project.session_start("s-depois");
     assert!(after.contains(&merged("1", PROTECTED)), "one merged branch less brings the notice back: {after}");
+}
+
+/// A obra aberta cuja branch um colega juntou na base.
+const OPEN_MERGED: &str = "aberta-juntada";
+
+/// A obra aberta cuja branch acabou de ser cortada da base.
+const OPEN_JUST_CUT: &str = "aberta-recem";
+
+/// Com duas obras ainda abertas, a limpeza tira, com `--apply`, a branch local
+/// da que um colega juntou na base e deixa a da que acabou de ser cortada: a
+/// base também contém a branch recém-cortada, mas não há trabalho nela.
+#[test]
+fn the_clean_removes_the_merged_branch_of_an_open_spec_and_keeps_the_one_just_cut() {
+    let project = one_wave_spec::Project::new(OPEN_MERGED, &json!({}), &[]);
+    let root = project.root.clone();
+    let merged = format!("feature/{OPEN_MERGED}");
+    let just_cut = format!("feature/{OPEN_JUST_CUT}");
+
+    // A primeira obra, aberta pelo comando de verdade; o trabalho dela entra
+    // na base por um merge de outra pessoa.
+    project.run(&["open", "--kind", "feature", "--name", OPEN_MERGED, "--base", "dev"]);
+    git(&root, &["checkout", "-q", &merged]);
+    std::fs::write(root.join("juntada.txt"), "o trabalho da obra\n").unwrap();
+    git(&root, &["add", "juntada.txt"]);
+    git(&root, &["commit", "-q", "-m", "o trabalho da obra"]);
+    git(&root, &["checkout", "-q", "dev"]);
+    git(&root, &["merge", "-q", "--no-ff", "-m", "a obra entra", &merged]);
+    // A segunda, aberta depois: cortada da base que já tem a primeira.
+    project.run(&["open", "--kind", "feature", "--name", OPEN_JUST_CUT, "--base", "dev"]);
+    git(&root, &["checkout", "-q", "dev"]);
+    assert!(has_branch(&root, &merged) && has_branch(&root, &just_cut), "both branches exist before the clean");
+
+    let listed = project.answer(&["clean"]);
+    assert_eq!(branches_of(&listed, "branches"), vec![merged.clone()], "{listed}");
+    assert!(has_branch(&root, &merged), "without --apply nothing leaves");
+
+    let applied = project.answer(&["clean", "--apply"]);
+    assert_eq!(applied["copies"]["errors"], json!([]), "{applied}");
+    assert_eq!(branches_of(&applied, "branches_removed"), vec![merged.clone()], "{applied}");
+    assert!(!has_branch(&root, &merged), "the merged branch of the open spec left: {applied}");
+    assert!(has_branch(&root, &just_cut), "the branch just cut stays: {applied}");
+    assert!(root.join(".claude/spec").join(OPEN_MERGED).join("spec.ndjson").is_file(), "the clean never touches the open spec");
 }

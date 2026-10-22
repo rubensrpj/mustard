@@ -17,8 +17,8 @@ use std::process::Stdio;
 use serde_json::Value;
 use tempfile::TempDir;
 
-/// Run `mustard-rt on PreToolUse` for one Bash command in `dir` and return
-/// what it printed.
+/// Roda o gancho de antes da ferramenta Bash para um comando, a partir de
+/// `dir`, e devolve o que ele imprimiu.
 fn run_guard(dir: &Path, command: &str) -> String {
     run_guard_in(dir, command, "command-guard-test")
 }
@@ -55,6 +55,12 @@ fn own_program() -> (TempDir, std::path::PathBuf) {
 /// Claude Code's config folder moved to `config`, or to an empty folder: the
 /// plugin installed on the machine never takes part.
 fn run_hook(dir: &Path, input: &Value, config: Option<&Path>) -> String {
+    run_hook_with_temp(dir, input, config, None)
+}
+
+/// O mesmo, com a pasta temporária do programa trocada por `temp`, quando ela
+/// vem: é onde a recusa manda gravar a resposta de um comando cortado.
+fn run_hook_with_temp(dir: &Path, input: &Value, config: Option<&Path>, temp: Option<&Path>) -> String {
     let (_folder, program) = own_program();
     let empty = TempDir::new().expect("empty config folder");
     let mut command = binary::isolated(&program);
@@ -67,6 +73,10 @@ fn run_hook(dir: &Path, input: &Value, config: Option<&Path>) -> String {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if let Some(temp) = temp {
+        // `TMPDIR` no Unix; `TMP` e `TEMP` no Windows.
+        command.env("TMPDIR", temp).env("TMP", temp).env("TEMP", temp);
+    }
     let mut child = command.spawn().expect("spawn mustard-rt");
     child
         .stdin
@@ -92,6 +102,64 @@ fn refusal(stdout: &str) -> Option<String> {
     }
     let reason = parsed.pointer("/hookSpecificOutput/permissionDecisionReason").and_then(Value::as_str);
     Some(reason.unwrap_or_default().to_string())
+}
+
+/// Separa `line` em palavras como o shell faz com aspas simples: o espaço
+/// separa fora das aspas, `'...'` guarda o texto como está e a barra
+/// invertida fora das aspas protege o caractere seguinte, como no `'\''` de um
+/// nome com aspa simples. Assim o caminho volta sem as aspas que o terminal
+/// pede.
+fn shell_words(line: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let (mut started, mut quoted) = (false, false);
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' => {
+                quoted = !quoted;
+                started = true;
+            }
+            '\\' if !quoted => {
+                if let Some(next) = chars.next() {
+                    word.push(next);
+                    started = true;
+                }
+            }
+            c if c.is_whitespace() && !quoted => {
+                if started {
+                    words.push(std::mem::take(&mut word));
+                    started = false;
+                }
+            }
+            c => {
+                word.push(c);
+                started = true;
+            }
+        }
+    }
+    if started {
+        words.push(word);
+    }
+    words
+}
+
+/// Os arquivos em que o comando pronto `line` grava, sem as aspas.
+fn redirect_targets(line: &str) -> Vec<String> {
+    let words = shell_words(line);
+    words.windows(2).filter(|pair| pair[0] == ">").map(|pair| pair[1].clone()).collect()
+}
+
+/// O arquivo em que o comando pronto, na última linha da recusa `reason`,
+/// grava a resposta; sem as aspas.
+fn written_file(reason: &str) -> String {
+    let ready = reason.lines().last().unwrap_or_default();
+    redirect_targets(ready).pop().unwrap_or_else(|| panic!("the ready command writes to a file: {ready}"))
+}
+
+/// O nome do arquivo em `path`, sem a pasta.
+fn file_name(path: &str) -> String {
+    Path::new(path).file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
 fn project_with(config: &str) -> TempDir {
@@ -265,19 +333,15 @@ fn the_ready_command_writes_each_answer_to_its_own_file_outside_the_project() {
         let reason = refusal(&run_guard(dir.path(), command)).unwrap_or_else(|| panic!("{command} must be refused"));
         reason.lines().last().unwrap_or_default().to_string()
     };
-    let targets = |line: &str| -> Vec<String> {
-        let words: Vec<&str> = line.split_whitespace().collect();
-        words.windows(2).filter(|pair| pair[0] == ">").map(|pair| pair[1].to_string()).collect()
-    };
 
     let mixed = ready("mustard-rt run answer --help | head && mustard-rt run resume | head");
     assert!(mixed.starts_with("mustard-rt run answer --help | head && mustard-rt run resume > "), "the help step stays as written: {mixed}");
-    let resume = targets(&mixed);
+    let resume = redirect_targets(&mixed);
     assert_eq!(resume.len(), 1, "{mixed}");
     assert!(resume[0].contains("resume"), "{mixed}");
 
     let two = ready("mustard-rt run read backlog --spec x 2>&1 | head; mustard-rt run read criteria --spec x");
-    let files = targets(&two);
+    let files = redirect_targets(&two);
     assert_eq!(files.len(), 2, "{two}");
     assert_ne!(files[0], files[1], "one file per step: {two}");
     assert!(files[0].contains("backlog") && files[1].contains("criteria"), "the name says the step: {two}");
@@ -288,17 +352,68 @@ fn the_ready_command_writes_each_answer_to_its_own_file_outside_the_project() {
     }
 }
 
-/// Two conversations that cut the same Mustard command at the same time do
-/// not share the file of the ready command: the id of the session the host
-/// sent goes into the name.
+/// Duas conversas que cortam o mesmo comando ao mesmo tempo não dividem o
+/// arquivo do comando pronto: o id da sessão que o host mandou entra no nome.
 #[test]
 fn the_ready_command_names_its_file_by_the_session_that_asked() {
     let dir = project_with(r#"{"language":{"text":"pt-BR"}}"#);
     let ready = |session: &str| {
         let reason = refusal(&run_guard_in(dir.path(), "mustard-rt run resume | head -80", session)).expect("the cut must be refused");
-        reason.lines().last().unwrap_or_default().to_string()
+        written_file(&reason)
     };
-    let (first, second) = (ready("conversa-a1"), ready("conversa-b2"));
-    assert!(first.ends_with("mustard-resume-conversa-a1.txt"), "{first}");
-    assert!(second.ends_with("mustard-resume-conversa-b2.txt"), "{second}");
+    assert_eq!(file_name(&ready("conversa-a1")), "mustard-resume-conversa-a1.txt");
+    assert_eq!(file_name(&ready("conversa-b2")), "mustard-resume-conversa-b2.txt");
+}
+
+/// Dois agentes da mesma conversa, que o host identifica pelo mesmo id de
+/// sessão, não dividem o arquivo do comando pronto: o id do agente entra no
+/// nome, ao lado do da sessão, e a conversa principal fica só com o da sessão.
+#[test]
+fn the_ready_command_names_its_file_by_the_agent_that_asked() {
+    let dir = project_with(r#"{"language":{"text":"pt-BR"}}"#);
+    let ready = |agent: Option<&str>| {
+        let mut input = serde_json::json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "cwd": dir.path().to_str().expect("utf-8 path"),
+            "session_id": "conversa-c3",
+            "tool_input": { "command": "mustard-rt run resume | head -80" }
+        });
+        if let Some(agent) = agent {
+            input["agent_id"] = Value::from(agent);
+        }
+        let reason = refusal(&run_hook(dir.path(), &input, None)).expect("the cut must be refused");
+        file_name(&written_file(&reason))
+    };
+    assert_eq!(ready(None), "mustard-resume-conversa-c3.txt");
+    assert_eq!(ready(Some("agente-a1")), "mustard-resume-conversa-c3.agente-a1.txt");
+    assert_eq!(ready(Some("agente-b2")), "mustard-resume-conversa-c3.agente-b2.txt");
+}
+
+/// Com um espaço na pasta temporária, o comando pronto traz o caminho do
+/// arquivo inteiro, entre aspas, mesmo quando o comando passa de 200
+/// caracteres: cortar o texto no meio do caminho tirava a aspa do fim e
+/// deixava um comando que o terminal não fecha.
+#[test]
+fn the_ready_command_keeps_its_quoted_path_whole_in_a_temporary_folder_with_a_space() {
+    let dir = project_with(r#"{"language":{"text":"pt-BR"}}"#);
+    let root = TempDir::new().expect("tempdir");
+    let temp = root.path().join("with space");
+    std::fs::create_dir(&temp).expect("temporary folder with a space");
+    // O caminho do arquivo começa perto do caractere 165 e acaba depois do 200.
+    let command = format!("echo {} && mustard-rt run resume | head -5", "x".repeat(132));
+    let input = serde_json::json!({
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "cwd": dir.path().to_str().expect("utf-8 path"),
+        "session_id": "conversa-d4",
+        "tool_input": { "command": command }
+    });
+    let reason = refusal(&run_hook_with_temp(dir.path(), &input, None, Some(&temp))).expect("the cut must be refused");
+
+    let ready = reason.lines().last().unwrap_or_default();
+    assert!(ready.len() > 200, "the ready command must go past the old cut: {ready}");
+    assert!(ready.ends_with(".txt'"), "the closing quote must stay: {ready}");
+    let file = written_file(&reason);
+    assert_eq!(Path::new(&file), temp.join("mustard-resume-conversa-d4.txt"), "{ready}");
 }

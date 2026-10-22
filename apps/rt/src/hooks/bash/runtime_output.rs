@@ -24,7 +24,7 @@
 //! cita o nome sem rodar o Mustard e passa.
 
 use mustard_core::SupportedLocale;
-use mustard_core::domain::model::contract::Verdict;
+use mustard_core::domain::model::contract::{HookInput, Verdict};
 
 use super::lex::{Segment, truncate};
 
@@ -114,7 +114,7 @@ fn summary_asked(segments: &[Segment]) -> Option<(&'static str, &'static str)> {
 /// de versão, que passa sozinha, fica como foi escrita, com o corte dela.
 /// `None` quando a reescrita não acha as duas etapas — a resposta chega ao
 /// script por substituição, e não por encadeamento.
-fn with_the_answer_in_a_file(segments: &[Segment], cmd: &str, session: Option<&str>) -> Option<String> {
+fn with_the_answer_in_a_file(segments: &[Segment], cmd: &str, owner: Option<&str>) -> Option<String> {
     if !segments.iter().any(runs_a_script) {
         return None;
     }
@@ -140,7 +140,7 @@ fn with_the_answer_in_a_file(segments: &[Segment], cmd: &str, session: Option<&s
             Some(body) => (body.trim_end(), " 2>&1"),
             None => (step, ""),
         };
-        let file = answer_file(first, &mut names.borrow_mut(), session);
+        let file = answer_file(first, &mut names.borrow_mut(), owner);
         Some(super::rewrite::Step::Put(format!("{body} > {file}{errors}")))
     })?;
     let out = out.trim().to_string();
@@ -149,12 +149,13 @@ fn with_the_answer_in_a_file(segments: &[Segment], cmd: &str, session: Option<&s
 
 /// O arquivo em que a etapa do Mustard `segment` grava a resposta: na pasta
 /// temporária, fora do repositório, com o nome da etapa — `read-backlog`,
-/// `resume` — e o id da sessão que pediu o comando. Um arquivo dentro do
-/// projeto entrava no commit de quem roda `git add -A`; duas etapas no mesmo
-/// arquivo perdiam a primeira resposta; e duas conversas com a mesma etapa na
-/// mesma pasta temporária gravavam uma por cima da outra. O nome que já saiu
-/// neste comando (`taken`) ganha um número.
-fn answer_file(segment: &Segment, taken: &mut Vec<String>, session: Option<&str>) -> String {
+/// `resume` — e quem pediu o comando (`owner`, de [`owner_tag`]). Um arquivo
+/// dentro do projeto entrava no commit de quem roda `git add -A`; duas etapas
+/// no mesmo arquivo perdiam a primeira resposta; e duas conversas, ou dois
+/// agentes da mesma conversa, com a mesma etapa na mesma pasta temporária
+/// gravavam uma por cima da outra. O nome que já saiu neste comando (`taken`)
+/// ganha um número.
+fn answer_file(segment: &Segment, taken: &mut Vec<String>, owner: Option<&str>) -> String {
     let words: Vec<String> = segment
         .args
         .iter()
@@ -173,26 +174,36 @@ fn answer_file(segment: &Segment, taken: &mut Vec<String>, session: Option<&str>
         name = format!("{stem}-{n}");
     }
     taken.push(name.clone());
-    if let Some(tag) = session_tag(session) {
-        name = format!("{name}-{tag}");
+    if let Some(owner) = owner {
+        name = format!("{name}-{owner}");
     }
     shell_path(&std::env::temp_dir(), &format!("{name}.txt"))
 }
 
-/// O id da sessão do host como cabe num nome de arquivo: letras, números, `-`
-/// e `_` ficam, o resto vira `-`, e o nome para em [`SESSION_TAG_MAX`]
-/// caracteres. `None` quando o host não mandou id.
-fn session_tag(session: Option<&str>) -> Option<String> {
-    let tag: String = session?
+/// Quem pediu o comando, como cabe num nome de arquivo: o id da sessão do host
+/// e, dentro de um agente, o id do agente depois dele, separados por `.`. O
+/// ponto não aparece em nenhum dos dois ids depois de [`id_tag`], e por isso a
+/// junção não confunde a sessão `a` com o agente `b-c` e a sessão `a-b` com o
+/// agente `c`. `None` quando o host não mandou nenhum dos dois.
+fn owner_tag(input: &HookInput) -> Option<String> {
+    let tags: Vec<String> = [input.session_id.as_deref(), input.subagent_id()].into_iter().filter_map(id_tag).collect();
+    (!tags.is_empty()).then(|| tags.join("."))
+}
+
+/// O id do host como cabe num nome de arquivo: letras, números, `-` e `_`
+/// ficam, o resto vira `-`, e o nome para em [`ID_TAG_MAX`] caracteres. `None`
+/// quando não há id.
+fn id_tag(id: Option<&str>) -> Option<String> {
+    let tag: String = id?
         .chars()
-        .take(SESSION_TAG_MAX)
+        .take(ID_TAG_MAX)
         .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '-' | '_') { c } else { '-' })
         .collect();
     (!tag.is_empty()).then_some(tag)
 }
 
-/// O tamanho máximo do id da sessão no nome do arquivo.
-const SESSION_TAG_MAX: usize = 64;
+/// O tamanho máximo de cada id no nome do arquivo.
+const ID_TAG_MAX: usize = 64;
 
 /// O caminho de `file` em `dir`, escrito como o terminal o lê: solto quando só
 /// tem letras, números, `/`, `.`, `_` e `-`; do contrário, entre aspas simples.
@@ -210,12 +221,14 @@ fn shell_path(dir: &std::path::Path, file: &str) -> String {
 /// A conferência: recusa o comando `cmd`, já lido em `segments`, quando a
 /// resposta do Mustard passa por script, filtro ou corte. A recusa, no
 /// idioma `lang`, mostra o comando, devolve o comando pronto com a resposta
-/// num arquivo e, quando o corte é de um bloco grande, diz o bloco de resumo
-/// que cabe inteiro.
+/// num arquivo — inteiro, porque um corte no meio do caminho tira a aspa do
+/// fim e deixa um comando que o terminal não fecha — e, quando o corte é de
+/// um bloco grande, diz o bloco de resumo que cabe inteiro. O arquivo leva o
+/// nome da sessão e do agente de `input`.
 ///
 /// A ajuda e a versão passam: a resposta delas é curta, fixa e não traz nada
 /// da obra. O gancho pegava até `mustard-rt run read --help | head`.
-pub(super) fn bash_runtime_output(segments: &[Segment], cmd: &str, session: Option<&str>, lang: SupportedLocale) -> Option<Verdict> {
+pub(super) fn bash_runtime_output(segments: &[Segment], cmd: &str, input: &HookInput, lang: SupportedLocale) -> Option<Verdict> {
     let scripted = (0..segments.len()).any(|at| {
         let runtime = runs_the_runtime(&segments[at]) && !asks_a_fixed_answer(&segments[at]);
         (runtime && feeds_a_script(segments, at))
@@ -225,9 +238,9 @@ pub(super) fn bash_runtime_output(segments: &[Segment], cmd: &str, session: Opti
         return None;
     }
     let mut reason = crate::shared::say::say("runtime_output.scripted", lang, &[("{command}", truncate(cmd, 120))]);
-    if let Some(ready) = with_the_answer_in_a_file(segments, cmd, session) {
+    if let Some(ready) = with_the_answer_in_a_file(segments, cmd, owner_tag(input).as_deref()) {
         reason.push('\n');
-        reason.push_str(&crate::shared::say::say("runtime_output.ready", lang, &[("{ready}", truncate(&ready, 200))]));
+        reason.push_str(&crate::shared::say::say("runtime_output.ready", lang, &[("{ready}", &ready)]));
     }
     if let Some((block, summary)) = summary_asked(segments) {
         reason.push('\n');
@@ -318,7 +331,7 @@ mod tests {
             other => panic!("{cmd} must be refused, got {other:?}"),
         };
 
-        let file = |name: &str| std::env::temp_dir().join(format!("{name}.txt")).display().to_string();
+        let file = |name: &str| shell_path(&std::env::temp_dir(), &format!("{name}.txt"));
         let said = ready("mustard-rt run resume | head -80");
         assert!(said.contains(&format!("mustard-rt run resume > {}", file("mustard-resume"))), "{said}");
         // A etapa sem relação com o motivo fica como foi escrita.
@@ -344,17 +357,23 @@ mod tests {
     fn the_answer_file_is_quoted_when_the_path_needs_it() {
         use std::path::Path;
 
+        // A junção usa o separador do sistema: o esperado se monta pelo mesmo
+        // `Path::join`, e não com uma barra fixa.
+        let joined = |dir: &str| Path::new(dir).join("mustard-resume.txt").display().to_string();
+        // Só o sistema cujo separador é a barra deixa o caminho solto.
+        #[cfg(unix)]
         assert_eq!(shell_path(Path::new("/tmp"), "mustard-resume.txt"), "/tmp/mustard-resume.txt");
-        assert_eq!(shell_path(Path::new("/tmp/with space"), "mustard-resume.txt"), "'/tmp/with space/mustard-resume.txt'");
-        assert_eq!(
-            shell_path(Path::new(r"C:\Users\Ana Maria\AppData\Local\Temp"), "mustard-resume.txt"),
-            r"'C:\Users\Ana Maria\AppData\Local\Temp/mustard-resume.txt'"
-        );
+        assert_eq!(shell_path(Path::new("/tmp/with space"), "mustard-resume.txt"), format!("'{}'", joined("/tmp/with space")));
+        let windows_spaced = r"C:\Users\Ana Maria\AppData\Local\Temp";
+        assert_eq!(shell_path(Path::new(windows_spaced), "mustard-resume.txt"), format!("'{}'", joined(windows_spaced)));
         // Sem espaço, o caminho do Windows também vai entre aspas: o terminal
         // comeria as barras invertidas de uma palavra solta.
         let windows = shell_path(Path::new(r"C:\Users\ana\AppData\Local\Temp"), "mustard-resume.txt");
         assert!(windows.starts_with('\'') && windows.ends_with('\''), "{windows}");
-        assert_eq!(shell_path(Path::new("/tmp/o'brien"), "a.txt"), r"'/tmp/o'\''brien/a.txt'");
+        assert_eq!(
+            shell_path(Path::new("/tmp/o'brien"), "a.txt"),
+            format!("'{}'", Path::new("/tmp/o'brien").join("a.txt").display().to_string().replace('\'', r"'\''"))
+        );
     }
 
     /// Duas conversas que cortam o mesmo comando do Mustard ao mesmo tempo
@@ -366,7 +385,7 @@ mod tests {
             Verdict::Deny { reason } => reason,
             other => panic!("{cmd} must be refused, got {other:?}"),
         };
-        let file = |name: &str| std::env::temp_dir().join(format!("{name}.txt")).display().to_string();
+        let file = |name: &str| shell_path(&std::env::temp_dir(), &format!("{name}.txt"));
 
         let cmd = "mustard-rt run resume | head -80";
         let first = ready(cmd, Some("sessao-a"));

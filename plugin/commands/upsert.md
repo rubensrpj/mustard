@@ -22,6 +22,6 @@ argument-hint: [--doctor]
 ## Upkeep
 
 - `mustard-rt run scan` updates the map; `--full` refreshes scan-map texts. No git writes.
-- `mustard-rt run clean` lists the throwaway copies agents left in the temp folder; deletes only when told.
+- `mustard-rt run clean` lists what is left over; deletes only with `--apply`. It covers the throwaway copies agents left in the temp folder, the work copies of specs that ended or no longer exist, and their local branches, plus the local branches already merged into the base (never a base, a protected or the current branch, or one with commits outside the base). `--path <path>` deletes one temp folder or file.
 
 The binary writes `.claude/settings.local.json`, `.claude/mustard/` and `.claude/agents/mustard/`. Never hand-edit them.
