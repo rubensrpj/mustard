@@ -411,7 +411,7 @@ fn ready_phrase(key: &str) -> String {
 /// quando os 600 bytes caem no meio dele. Cortar o texto no meio do caminho
 /// tirava a aspa do fim e deixava um comando que o terminal não fecha.
 #[test]
-fn the_ready_command_keeps_its_quoted_path_whole_in_a_temporary_folder_with_a_space() {
+fn the_ready_command_is_shortened_above_600_bytes_and_keeps_its_quoted_path_whole_in_a_folder_with_a_space() {
     let dir = project_with(r#"{"language":{"text":"pt-BR"}}"#);
     let root = TempDir::new().expect("tempdir");
     let temp = root.path().join("with space");

@@ -711,9 +711,15 @@ impl ScratchProbe {
             roots.current_session = session;
         }
         roots.shared_target = None;
-        let warn_bytes = std::env::var(SCRATCH_WARN_ENV).ok().and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(DEFAULT_SCRATCH_WARN_BYTES);
-        Self { roots, warn_bytes }
+        Self { roots, warn_bytes: scratch_warn_bytes(|key| std::env::var(key).ok()) }
     }
+}
+
+/// O limite do aviso de disco que `var` diz em [`SCRATCH_WARN_ENV`]: um número
+/// de bytes, com ou sem espaços em volta. Variável ausente ou que não é um
+/// número deixa o limite padrão.
+fn scratch_warn_bytes(var: impl Fn(&str) -> Option<String>) -> u64 {
+    var(SCRATCH_WARN_ENV).and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(DEFAULT_SCRATCH_WARN_BYTES)
 }
 
 /// O texto do início da sessão depois de `/clear` na sessão `session`, sem as
@@ -1283,6 +1289,27 @@ mod tests {
         let again = context_of(&root, &session_input("s-scratch-3", "startup"), NO_REGISTRY, Some(&probe(1024)));
         assert!(again.contains("mustard-rt run clean"), "after nothing to count, the residue is news again: {again}");
         assert!(old.exists(), "the notice only reads");
+    }
+
+    /// O limite do aviso de disco vem da variável `MUSTARD_SCRATCH_WARN_BYTES`,
+    /// e só dela: um número de bytes, com espaços em volta ou o zero que liga
+    /// o aviso para qualquer sobra. Sem a variável, ou com um valor que não é
+    /// número, vale o padrão de 5 GiB. O ambiente de teste serve só esta
+    /// variável, então a leitura de outro nome cai no padrão.
+    #[test]
+    fn the_disk_limit_comes_from_the_warn_bytes_variable() {
+        fn env(value: &'static str) -> impl Fn(&str) -> Option<String> {
+            move |key| (key == "MUSTARD_SCRATCH_WARN_BYTES").then(|| value.to_string())
+        }
+        let default = 5 * 1024 * 1024 * 1024;
+        assert_eq!(scratch_warn_bytes(env("2048")), 2048);
+        assert_eq!(scratch_warn_bytes(env("  4096\n")), 4096);
+        assert_eq!(scratch_warn_bytes(env("0")), 0);
+        for invalid in ["", "muito", "-1", "1.5", "5GiB"] {
+            assert_eq!(scratch_warn_bytes(env(invalid)), default, "{invalid:?} is not a byte count");
+        }
+        assert_eq!(scratch_warn_bytes(|_| None), default, "without the variable the default stays");
+        assert_eq!(scratch_warn_bytes(|key| (key == "MUSTARD_OTHER").then(|| "2048".to_string())), default, "only this variable counts");
     }
 
     /// A versão velha do Mustard fala por um dos três lados, e cala quando

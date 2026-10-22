@@ -164,13 +164,17 @@ const READY_EDGE: usize = 40;
 /// A marca do pedaço tirado do comando pronto.
 const ELLIPSIS: &str = "…";
 
-/// O comando pronto `ready` em até [`READY_MAX`] bytes, ou `None` quando ele
-/// já cabe. O que passa sai do meio dos trechos entre os arquivos `files`, o
-/// mais longo primeiro, cada trecho guardando [`READY_EDGE`] bytes de cada
-/// ponta, e cada pedaço tirado vira [`ELLIPSIS`]. Os arquivos voltam sempre
-/// inteiros, com as aspas: um corte no meio do caminho tirava a aspa do fim e
-/// deixava um comando que o terminal não fecha. `None` também quando os
-/// trechos entre os arquivos já são curtos demais para encurtar.
+/// O comando pronto `ready` sem o meio dos trechos longos, ou `None` quando ele
+/// já cabe em [`READY_MAX`] bytes. O que passa sai do meio dos trechos entre os
+/// arquivos `files`, o mais longo primeiro, cada trecho guardando
+/// [`READY_EDGE`] bytes de cada ponta, e cada pedaço tirado vira [`ELLIPSIS`].
+/// Os arquivos voltam sempre inteiros, com as aspas: um corte no meio do
+/// caminho tirava a aspa do fim e deixava um comando que o terminal não fecha.
+///
+/// O limite só se alcança quando os trechos entre os arquivos dão o que tirar.
+/// Se não bastam, o comando volta mais curto, mas ainda acima de
+/// [`READY_MAX`]; se nenhum trecho passa das duas pontas e da marca, volta
+/// `None` e o comando segue inteiro, como foi montado.
 fn shortened(ready: &str, files: &[String]) -> Option<String> {
     let mut over = ready.len().checked_sub(READY_MAX).filter(|over| *over > 0)?;
     let mut kept: Vec<std::ops::Range<usize>> =
@@ -298,10 +302,10 @@ fn shell_path(dir: &std::path::Path, file: &str) -> String {
 /// A conferência: recusa o comando `cmd`, já lido em `segments`, quando a
 /// resposta do Mustard passa por script, filtro ou corte. A recusa, no
 /// idioma `lang`, mostra o comando, devolve o comando pronto com a resposta
-/// num arquivo — inteiro até [`READY_MAX`] bytes, e acima deles encurtado
-/// sem nunca cortar o caminho de um arquivo ([`shortened`]) — e, quando o
-/// corte é de um bloco grande, diz o bloco de resumo que cabe inteiro. O
-/// arquivo leva o nome da sessão e do agente de `input`.
+/// num arquivo — inteiro até [`READY_MAX`] bytes, e acima deles sem o meio dos
+/// trechos longos, nunca cortando o caminho de um arquivo ([`shortened`]) — e,
+/// quando o corte é de um bloco grande, diz o bloco de resumo que cabe
+/// inteiro. O arquivo leva o nome da sessão e do agente de `input`.
 ///
 /// A ajuda e a versão passam: a resposta delas é curta, fixa e não traz nada
 /// da obra. O gancho pegava até `mustard-rt run read --help | head`.
@@ -559,5 +563,102 @@ mod tests {
             let verdict = guard(cmd, false);
             assert!(!matches!(verdict, Verdict::Deny { .. }), "{cmd} must pass, got {verdict:?}");
         }
+    }
+
+    /// O arquivo da resposta como o comando pronto o escreve.
+    fn answer(name: &str) -> String {
+        format!("/tmp/mustard-{name}.txt")
+    }
+
+    /// O comando pronto de exatamente `len` bytes: um `echo` com o enchimento e
+    /// a resposta do Mustard gravada em `file`.
+    fn ready_of_len(len: usize, file: &str) -> String {
+        let fixed = "echo  && mustard-rt run resume > ".len() + file.len();
+        format!("echo {} && mustard-rt run resume > {file}", "x".repeat(len - fixed))
+    }
+
+    /// O comando pronto que cabe em 600 bytes volta como está, e o que passa
+    /// um byte só do limite perde o necessário para chegar nele.
+    #[test]
+    fn a_ready_command_is_shortened_only_above_the_maximum() {
+        let files = [answer("resume")];
+        assert_eq!(shortened(&ready_of_len(READY_MAX - 1, &files[0]), &files), None);
+        assert_eq!(shortened(&ready_of_len(READY_MAX, &files[0]), &files), None);
+
+        let ready = ready_of_len(READY_MAX + 1, &files[0]);
+        let short = shortened(&ready, &files).expect("one byte above the maximum is shortened");
+        assert_eq!(short.len(), READY_MAX, "{short}");
+        assert_eq!(short.matches(ELLIPSIS).count(), 1, "{short}");
+        assert!(short.ends_with(&format!("> {}", files[0])), "the file stays whole: {short}");
+    }
+
+    /// O texto acentuado — letras de dois, três e quatro bytes — acima de 600
+    /// bytes é encurtado entre as letras, nunca no meio de uma, onde quer que o
+    /// corte caia no trecho: o começo e o fim do trecho ficam, o arquivo volta
+    /// inteiro e o resultado cabe no limite.
+    #[test]
+    fn an_accented_ready_command_is_shortened_between_letters() {
+        let files = [answer("resume")];
+        for lead in 0..10 {
+            for trail in 0..10 {
+                let note = format!("{}{}{}", "x".repeat(lead), "aç€😀".repeat(70), "y".repeat(trail));
+                let ready = format!("echo '{note}' && mustard-rt run resume > {} && echo ação", files[0]);
+                assert!(ready.len() > READY_MAX, "the command must need the cut: {} bytes", ready.len());
+
+                let short = shortened(&ready, &files).unwrap_or_else(|| panic!("lead {lead}, trail {trail}: {ready}"));
+                assert!(short.len() <= READY_MAX, "lead {lead}, trail {trail}: {} bytes: {short}", short.len());
+                let (head, tail) = short.split_once(ELLIPSIS).unwrap_or_else(|| panic!("the cut is marked: {short}"));
+                assert!(!tail.contains(ELLIPSIS), "one cut only: {short}");
+                assert!(ready.starts_with(head) && ready.ends_with(tail), "only the middle goes: {short}");
+                assert!(head.len() >= READY_EDGE - 3 && head.starts_with("echo '"), "the start stays: {short}");
+                assert!(tail.contains(&format!("> {} && echo ação", files[0])), "the file and the rest stay whole: {short}");
+            }
+        }
+    }
+
+    /// Com dois arquivos no comando, os dois voltam inteiros e na ordem em que
+    /// estavam; o corte sai do meio dos dois trechos longos, e o começo e o
+    /// fim do comando ficam.
+    #[test]
+    fn a_ready_command_with_two_files_keeps_both_whole() {
+        let files = [format!("/tmp/{}-resume.txt", "a".repeat(80)), format!("/tmp/{}-panel.txt", "b".repeat(80))];
+        let ready = format!(
+            "echo {} && mustard-rt run resume > {} && echo {} && mustard-rt run panel > {}",
+            "x".repeat(350),
+            files[0],
+            "y".repeat(350),
+            files[1]
+        );
+
+        let short = shortened(&ready, &files).expect("the command is over the maximum");
+        assert!(short.len() <= READY_MAX, "{} bytes: {short}", short.len());
+        assert_eq!(short.matches(ELLIPSIS).count(), 2, "one cut in each long stretch: {short}");
+        let (first, second) = (short.find(&files[0]).expect("first file whole"), short.find(&files[1]).expect("second file whole"));
+        assert!(first < second, "the files keep their order: {short}");
+        assert!(short.starts_with("echo xxx") && short.ends_with(&files[1]), "the ends stay: {short}");
+    }
+
+    /// Trechos curtos demais entre os arquivos não dão o que tirar: sem
+    /// nenhum trecho além das duas pontas e da marca, o comando fica como foi
+    /// montado; com um trecho que dá menos do que falta, ele volta mais curto,
+    /// mas ainda acima do limite, e os arquivos seguem inteiros.
+    #[test]
+    fn short_stretches_between_files_do_not_reach_the_maximum() {
+        // Quatro arquivos de 200 bytes, separados por quatro bytes cada.
+        let files: Vec<String> = ["a", "b", "c", "d"].iter().map(|c| c.repeat(200)).collect();
+        assert_eq!(shortened(&files.join(" && "), &files), None, "stretches of four bytes give nothing");
+
+        // O trecho de 83 bytes é as duas pontas e a marca: não tem meio.
+        let edges_only = ["f".repeat(520)];
+        let ready = format!("{}{}", "x".repeat(2 * READY_EDGE + ELLIPSIS.len()), edges_only[0]);
+        assert_eq!(shortened(&ready, &edges_only), None);
+
+        // O trecho de 120 bytes dá 40 do meio, que valem 37 depois da marca, e
+        // faltam 120 para o limite.
+        let long_file = ["f".repeat(600)];
+        let ready = format!("{}{}", "x".repeat(120), long_file[0]);
+        let short = shortened(&ready, &long_file).expect("the stretch gives something");
+        assert_eq!(short.len(), ready.len() - 37, "{short}");
+        assert!(short.len() > READY_MAX && short.ends_with(&long_file[0]), "above the maximum, with the file whole: {short}");
     }
 }
