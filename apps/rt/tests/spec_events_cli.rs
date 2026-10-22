@@ -727,11 +727,11 @@ fn the_index_command_rebuilds_the_same_bytes_after_the_file_is_deleted() {
     let root = dir.path();
     seed_state(root, &json!({"author": "binary", "phase": "survey", "branch": "feature/teste", "base": "dev"}));
     let msg = seed_binary(root, "message", &json!({"author": "user", "text": "Deixar o índice certo. Depois o resto."}));
-    write(root, "context", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": "Deixar o índice certo. Depois o resto.", "origin": msg}));
+    write(root, "context", &json!({"title": "Deixar o índice certo", "agent": "- conferir pelo teste", "text": "Deixar o índice certo. Depois o resto.", "origin": msg}));
     write(root, "rule", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": "**Uma linha por spec.** Com o objetivo.", "keys": ["índice"], "example": "e", "origin": msg}));
     let written = std::fs::read(index_file(root)).expect("the write left the index");
     let text = String::from_utf8_lossy(&written);
-    assert!(text.contains("\"name\":\"teste\"") && text.contains("\"goal\":\"Deixar o índice certo.\""), "{text}");
+    assert!(text.contains("\"name\":\"teste\"") && text.contains("\"goal\":\"Deixar o índice certo\""), "{text}");
 
     std::fs::remove_file(index_file(root)).expect("delete the index");
     let out = rt(root, &["index"]).output().expect("run index");
@@ -1608,4 +1608,84 @@ fn an_acronym_explained_in_the_spec_counts_for_the_whole_spec() {
     let call: Value = serde_json::from_str(calls.lines().last().expect("the refused call")).expect("a call");
     assert_eq!(call["refusal"], json!("item-unclear"), "{call}");
     assert!(call["refusal_detail"].as_str().is_some_and(|detail| detail.contains("MRP")), "the call keeps the reason: {call}");
+}
+
+/// O objetivo que o painel mostra da spec `teste`, nas três leituras dele: a
+/// visão geral, a tela da spec e a lista das specs.
+fn panel_goals(root: &Path) -> Vec<Value> {
+    let screen = |args: &[&str]| {
+        let out = rt(root, args).output().expect("run panel");
+        assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stdout));
+        stdout_json(&out)
+    };
+    let overview = screen(&["panel", "--spec", "teste", "--section", "overview"]);
+    let spec = screen(&["panel", "--spec", "teste", "--section", "spec"]);
+    let listed = screen(&["panel", "--spec", "teste"]);
+    let row = listed["specs"].as_array().and_then(|specs| specs.iter().find(|spec| spec["name"] == json!("teste")).cloned());
+    vec![overview["spec"]["goal"].clone(), spec["spec"]["goal"].clone(), row.map_or(Value::Null, |row| row["goal"].clone())]
+}
+
+/// O `title` do objetivo é o título dele em toda tela: com um título de 30
+/// caracteres e uma primeira frase de 80, a gravação passa e o painel mostra
+/// o título. O teto do título do pull request vale para o `title`: a versão
+/// com um título de 61 caracteres é recusada, a recusa traz o título medido e
+/// nada é gravado. A spec nasce do `run open` e a fala do usuário, do gancho
+/// da entrada.
+#[test]
+fn the_goal_title_is_measured_and_shown_instead_of_the_first_sentence() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = &dir.path().canonicalize().expect("the folder");
+    let msg = opened_by_a_session(root, "o pedido");
+    let title = "Título do objetivo vale sempre";
+    let sentence = "O título gravado no objetivo vira o nome do pull request, do painel e do resumo.";
+    assert_eq!((title.chars().count(), sentence.chars().count()), (30, 80));
+    let goal = |title: &str| {
+        json!({"title": title, "agent": "- conferir o título", "text": format!("{sentence} O resto fica no texto."), "origin": msg})
+    };
+
+    let (code, written) = write_out(root, "context", &goal(title));
+    assert_eq!(code, Some(0), "a short title passes with a long first sentence: {written}");
+    assert_eq!(panel_goals(root), vec![json!(title); 3], "every panel reading shows the title");
+
+    let long = "O título do objetivo passa do teto e a gravação o recusa logo";
+    assert_eq!(long.chars().count(), 61);
+    let mut revised = goal(long);
+    revised["replaces"] = written["id"].clone();
+    let before = event_lines(root);
+    let (code, refused) = write_out(root, "context", &revised);
+    assert_eq!((code, &refused["reason"]), (Some(1), &json!("goal-title-too-long")), "{refused}");
+    let hint = refused["hint"].as_str().unwrap_or_default();
+    assert!(hint.contains(long) && hint.contains("61") && hint.contains("60"), "the refusal names the measured title: {hint}");
+    assert_eq!(event_lines(root), before, "nothing was written");
+}
+
+/// O objetivo de antes do `title`, como as specs de antes da forma fixa o
+/// têm, segue medido e mostrado pela primeira frase: a versão nova dele, sem
+/// título, com a primeira frase acima de 60 caracteres é recusada com a frase
+/// na recusa; com a frase curta, passa e o painel mostra a frase. O objetivo
+/// antigo entra pela gravação do núcleo, que é como ele chegou ao arquivo.
+#[test]
+fn a_goal_without_a_title_is_still_measured_and_shown_by_its_first_sentence() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = &dir.path().canonicalize().expect("the folder");
+    let msg = opened_by_a_session(root, "o pedido");
+    let path = mustard_core::io::spec_events::spec_file(root, "teste").expect("spec file");
+    let untitled = json!({"author": "assistant", "text": "Medir o objetivo antigo pela frase.", "origin": msg});
+    let old = mustard_core::io::spec_events::write(&path, "context", untitled.as_object().cloned().expect("an object"), &[])
+        .expect("the old goal")
+        .id;
+
+    let sentence = "O objetivo de antes do título segue medido pela primeira frase dele como sempre.";
+    assert_eq!(sentence.chars().count(), 80);
+    let version = |text: &str| json!({"replaces": old, "text": format!("{text} O resto fica no texto."), "origin": msg});
+    let before = event_lines(root);
+    let (code, refused) = write_out(root, "context", &version(sentence));
+    assert_eq!((code, &refused["reason"]), (Some(1), &json!("goal-title-too-long")), "{refused}");
+    assert!(refused["hint"].as_str().is_some_and(|hint| hint.contains(sentence)), "the refusal names the sentence: {refused}");
+    assert_eq!(event_lines(root), before, "nothing was written");
+
+    let short = "Medir o objetivo revisto pela frase.";
+    let (code, written) = write_out(root, "context", &version(short));
+    assert_eq!(code, Some(0), "{written}");
+    assert_eq!(panel_goals(root), vec![json!(short); 3], "without a title the panel shows the first sentence");
 }

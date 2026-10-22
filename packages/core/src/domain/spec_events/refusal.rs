@@ -105,15 +105,16 @@ pub enum Refusal {
     /// O primeiro `context` de uma spec em levantamento, o objetivo, não
     /// aponta em `origin` uma mensagem do usuário.
     GoalOriginNotUser { spec: String, origin: String },
-    /// O objetivo gravado cuja primeira frase — a que vira o título do pull
-    /// request — passa do teto do título. Recusado na gravação, e não lá na
-    /// abertura do pull request, com a obra inteira já feita em cima dele.
+    /// O objetivo gravado cujo título — o `title` dele ou, sem `title`, a
+    /// primeira frase, o que vira o título do pull request — passa do teto do
+    /// título. Recusado na gravação, e não lá na abertura do pull request,
+    /// com a obra inteira já feita em cima dele.
     ///
-    /// `sentence` é a frase medida, e ela vai na recusa: sem ela, a recusa
-    /// nomeava um campo `title` que não tinha sido olhado, e quem escreveu um
-    /// título curto com uma primeira frase longa foi procurar o defeito no
-    /// lugar errado (campo, 21/10/2026).
-    GoalTitleTooLong { chars: usize, max: usize, sentence: String },
+    /// `measured` é o texto medido e `source`, a parte de onde ele saiu; os
+    /// dois vão na recusa: sem eles, a recusa nomeava uma parte que não tinha
+    /// sido olhada, e quem a leu foi encurtar a parte errada (campo,
+    /// 21/10/2026).
+    GoalTitleTooLong { chars: usize, max: usize, measured: String, source: crate::domain::spec_index::GoalSource },
     /// O `run write` com o tipo `work_type`, ou uma gravação dele que tiraria
     /// ou reveria o tipo de trabalho: quem o grava é o `grill`.
     WorkTypeByGrill,
@@ -600,18 +601,17 @@ impl Refusal {
                 &[("{spec}", spec.clone()), ("{origin}", origin.clone())],
             ),
             // O teto é o do título do pull request, e a recusa o explica com
-            // as mesmas palavras da abertura dele. O que ela não repete é o
-            // nome da parte: aqui o medido é a primeira frase do objetivo, e
-            // chamá-la de `title` mandava quem escreveu encurtar um campo que
-            // nunca foi olhado.
-            Self::GoalTitleTooLong { chars, max, sentence } => fill(
-                "spec_events.goal_title_too_long",
-                &[
-                    ("{chars}", chars.to_string()),
-                    ("{max}", max.to_string()),
-                    ("{sentence}", sentence.clone()),
-                ],
-            ),
+            // as mesmas palavras da abertura dele. O que ela não empresta é o
+            // nome da parte: a recusa nomeia a parte que foi medida, o `title`
+            // ou a primeira frase do objetivo sem `title`, para que quem
+            // escreveu encurte a parte certa.
+            Self::GoalTitleTooLong { chars, max, measured, source } => {
+                let (key, slot) = match source {
+                    crate::domain::spec_index::GoalSource::Title => ("spec_events.goal_title_field_too_long", "{title}"),
+                    crate::domain::spec_index::GoalSource::FirstSentence => ("spec_events.goal_title_too_long", "{sentence}"),
+                };
+                fill(key, &[("{chars}", chars.to_string()), ("{max}", max.to_string()), (slot, measured.clone())])
+            }
             Self::WorkTypeByGrill => fill("grill.work_type_by_grill", &[]),
             Self::SurveyOpen { spec, count, points } => fill(
                 "spec_events.survey_open",

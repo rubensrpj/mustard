@@ -418,16 +418,30 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              {origin} is not a user message. Nothing was written."
         }
         ("spec_events.goal_title_too_long", Locale::PtBr) => {
-            "A primeira frase do objetivo tem {chars} caracteres e o limite é {max}: ela é o título \
-             do pull request. A frase: \"{sentence}\". Escreva outra primeira frase, mais curta: o \
-             corte automático mentiria sobre o que a mensagem diz. O resto do objetivo e o `title` \
-             do item não foram medidos. Nada foi gravado."
+            "O objetivo não tem `title`, e a primeira frase dele é o título do pull request: ela tem \
+             {chars} caracteres e o limite é {max}. A frase: \"{sentence}\". Dê ao objetivo um \
+             `title` de até {max} caracteres ou escreva uma primeira frase mais curta: o corte \
+             automático mentiria sobre o que a mensagem diz. O resto do objetivo não foi medido. \
+             Nada foi gravado."
         }
         ("spec_events.goal_title_too_long", Locale::EnUs) => {
-            "The goal's first sentence has {chars} characters and the limit is {max}: that sentence \
-             is the pull request title. The sentence: \"{sentence}\". Write a shorter first \
-             sentence: truncating would misstate what the message says. The rest of the goal and \
-             the item's `title` were not measured. Nothing was written."
+            "The goal has no `title`, so its first sentence is the pull request title: it has \
+             {chars} characters and the limit is {max}. The sentence: \"{sentence}\". Give the goal \
+             a `title` of up to {max} characters or write a shorter first sentence: truncating would \
+             misstate what the message says. The rest of the goal was not measured. Nothing was \
+             written."
+        }
+        ("spec_events.goal_title_field_too_long", Locale::PtBr) => {
+            "O `title` do objetivo tem {chars} caracteres e o limite é {max}. Ele é o título do pull \
+             request e o nome da spec no painel e no resumo do projeto. O título: \"{title}\". \
+             Escreva um `title` mais curto: o corte automático mentiria sobre o que a mensagem diz. \
+             O texto do objetivo não foi medido. Nada foi gravado."
+        }
+        ("spec_events.goal_title_field_too_long", Locale::EnUs) => {
+            "The goal's `title` has {chars} characters and the limit is {max}. It is the pull request \
+             title and the spec's name in the panel and in the project summary. The title: \
+             \"{title}\". Write a shorter `title`: truncating would misstate what the message says. \
+             The goal's text was not measured. Nothing was written."
         }
         ("spec_events.survey_open", Locale::PtBr) => {
             "A spec {spec} ainda tem pontos abertos no levantamento ({count}): {points}. Feche cada um, \
@@ -1252,8 +1266,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            178,
-            0xbc89_c124_396d_e17c,
+            179,
+            0x6c18_b2f5_a348_494a,
         );
     }
 
@@ -1323,6 +1337,7 @@ mod tests {
             ("spec_events.names_unchecked", &[][..]),
             ("spec_events.goal_origin_not_user", &["{spec}", "{origin}"][..]),
             ("spec_events.goal_title_too_long", &["{chars}", "{max}", "{sentence}"][..]),
+            ("spec_events.goal_title_field_too_long", &["{chars}", "{max}", "{title}"][..]),
             ("spec_events.survey_open", &["{spec}", "{count}", "{points}"][..]),
             ("spec_events.survey_not_started", &["{spec}"][..]),
             ("spec_events.plan_without_task", &["{spec}"][..]),

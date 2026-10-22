@@ -1508,7 +1508,7 @@ mod tests {
             .filter_map(|line| serde_json::from_str::<Value>(line).ok())
             .find(|line| line["name"] == json!("x"))
             .expect("the spec has its index line");
-        assert_eq!(line["goal"], json!(goal));
+        assert_eq!(line["goal"], json!("O objetivo da obra"), "the index shows the title of the goal");
     }
 
     /// Sem o tipo, o `open` pergunta por ele, com as sugestões; o tipo que não
@@ -1548,7 +1548,7 @@ mod tests {
         };
         let answer = "Travar o merge enquanto houver pendência aberta.";
         let message = write("message", json!({ "text": answer, "author": "user" }));
-        let goal = write("context", json!({ "text": answer, "origin": message["id"] }));
+        let goal = write("context", json!({ "title": "Travar o merge com pendência", "text": answer, "origin": message["id"] }));
         assert_eq!(goal["ok"], json!(true), "{goal}");
         let index = std::fs::read_to_string(root.join(".claude").join("spec").join("index.ndjson")).unwrap();
         let line: Value = index
@@ -1556,7 +1556,7 @@ mod tests {
             .filter_map(|line| serde_json::from_str::<Value>(line).ok())
             .find(|line| line["name"] == json!("x"))
             .expect("the spec has its index line");
-        assert_eq!(line["goal"], json!(answer));
+        assert_eq!(line["goal"], json!("Travar o merge com pendência"));
     }
 
     /// Quando a spec não pode ser gravada depois de a branch nascer, o

@@ -210,12 +210,13 @@ fn says_in(root: &Path, spec: &str, text: &str) -> u64 {
 }
 
 /// Abre uma spec de conserto pelo `open` do binário e grava o objetivo dela:
-/// `text` para o usuário e `agent` para quem implementa.
+/// `text` para o usuário, com o título que é a frase sem o ponto, e `agent`
+/// para quem implementa.
 fn open_with_goal(root: &Path, name: &str, text: &str, agent: &str) {
     let opened = rt(root, &["open", "--kind", "fix", "--name", name, "--base", "dev"]);
     assert_eq!(opened.status.code(), Some(0), "{}", String::from_utf8_lossy(&opened.stdout));
     let said = says_in(root, name, text);
-    write_in(root, name, "context", &json!({"title": "O objetivo", "agent": agent, "text": text, "origin": said}));
+    write_in(root, name, "context", &json!({"title": text.trim_end_matches('.'), "agent": agent, "text": text, "origin": said}));
 }
 
 /// Uma spec anterior, escrita pelo binário: o objetivo, uma regra que cita

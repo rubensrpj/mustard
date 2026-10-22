@@ -360,7 +360,7 @@ mod tests {
         std::fs::write(root.join("mustard.json"), "{}").unwrap();
         let lines = [
             json!({"type":"state","phase":"approved","author":"binary"}),
-            json!({"type":"context","title":"Objetivo","text":format!("Entregar a obra {spec}.")}),
+            json!({"type":"context","title":format!("Entregar a obra {spec}"),"text":format!("Entregar a obra {spec} com a saída em JSON.")}),
             json!({"type":"decision","title":"Resposta em JSON","text":"Toda resposta do binário sai em JSON.","why":"Quem lê é programa.","keys":["json"]}),
             json!({"type":"decision","title":"Nome da tela","text":"A tela nova se chama Painel.","why":"Pedido do usuário.","keys":["tela"]}),
             json!({"type":"task","title":"Saída","text":"Muda a saída.","agent":"src/out.rs","covers":[3],"files":[{"path":"src/out.rs"}],"wave":1}),
@@ -400,7 +400,7 @@ mod tests {
         let entries = disk::read(root);
         assert_eq!(entries.len(), 1, "{entries:?}");
         assert_eq!(entries[0].spec, "saida");
-        assert_eq!(entries[0].title, "Entregar a obra saida.");
+        assert_eq!(entries[0].title, "Entregar a obra saida");
         assert_eq!(entries[0].delivered, "Grava a saída em JSON.");
         assert_eq!(entries[0].delivered_at, "2026-10-16T10:00:00Z");
         assert_eq!(entries[0].skills, Vec::<String>::new());

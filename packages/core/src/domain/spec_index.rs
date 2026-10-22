@@ -197,15 +197,37 @@ pub fn spec_page_url(log: &SpecLog) -> Option<&str> {
     log.visible().into_iter().filter_map(|e| published_to(e, SPEC_PAGE)).next_back()
 }
 
-/// O objetivo da spec numa frase: a primeira frase do primeiro `context`, na
-/// versão vigente dele, depois das linhas que são só título e sem o negrito.
-/// `None` sem `context` ou quando o texto é só título.
+/// De onde sai o objetivo da spec numa frase ([`goal_with_source`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GoalSource {
+    /// O `title` do objetivo.
+    Title,
+    /// A primeira frase do texto do objetivo, que não tem `title`.
+    FirstSentence,
+}
+
+/// O objetivo da spec numa frase, o título dele em toda tela: o pull request,
+/// o painel, o índice e o resumo do projeto. É o `title` do primeiro
+/// `context`, na versão vigente dele; sem `title`, como nos objetivos de
+/// antes da forma fixa, a primeira frase do texto, depois das linhas que são
+/// só título e sem o negrito. `None` sem `context`, ou sem `title` e com o
+/// texto só de título.
 #[must_use]
 pub fn goal_of(log: &SpecLog) -> Option<String> {
-    let text = crate::domain::survey::goal(log).and_then(|e| e.str_field("text"))?;
-    let plain = after_titles(text).replace("**", "");
-    let goal = first_sentence(&plain);
-    (!goal.is_empty()).then(|| goal.to_string())
+    goal_with_source(log).map(|(goal, _)| goal)
+}
+
+/// [`goal_of`], com a parte do objetivo de onde a frase saiu: quem mede a
+/// frase diz na recusa qual parte encurtar.
+#[must_use]
+pub fn goal_with_source(log: &SpecLog) -> Option<(String, GoalSource)> {
+    let goal = crate::domain::survey::goal(log)?;
+    if let Some(title) = goal.str_field("title").map(str::trim).filter(|title| !title.is_empty()) {
+        return Some((title.to_string(), GoalSource::Title));
+    }
+    let plain = after_titles(goal.str_field("text")?).replace("**", "");
+    let sentence = first_sentence(&plain);
+    (!sentence.is_empty()).then(|| (sentence.to_string(), GoalSource::FirstSentence))
 }
 
 /// O texto a partir da primeira linha que não é só título: pula as linhas em

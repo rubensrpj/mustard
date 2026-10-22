@@ -272,8 +272,9 @@ pub fn phase_write_allowed(before: &State, after: &State, carried: Option<&str>,
 /// passa, e fora do levantamento qualquer `context` passa.
 ///
 /// O tamanho é conferido aqui, e não só na abertura do pull request. O título
-/// do pull request é a primeira frase do objetivo, e ela tem teto
-/// ([`crate::domain::spec_events::MESSAGE_TITLE_MAX`]). Enquanto o teto só era
+/// do pull request é o `title` do objetivo ou, sem ele, a primeira frase, e o
+/// título tem teto ([`crate::domain::spec_events::MESSAGE_TITLE_MAX`]).
+/// Enquanto o teto só era
 /// lido na abertura, a pessoa escrevia um objetivo de duas linhas no primeiro
 /// minuto, tocava a obra inteira e descobria no último passo que precisava
 /// reescrever o objetivo de que tudo tinha saído. A recusa vem na gravação,
@@ -282,8 +283,8 @@ pub fn phase_write_allowed(before: &State, after: &State, carried: Option<&str>,
 /// # Errors
 ///
 /// [`Refusal::GoalOriginNotUser`] quando o objetivo novo não aponta em
-/// `origin` uma mensagem do usuário, e [`Refusal::GoalTitleTooLong`] quando a
-/// primeira frase dele passa do teto do título.
+/// `origin` uma mensagem do usuário, e [`Refusal::GoalTitleTooLong`] quando o
+/// título dele passa do teto.
 pub fn goal_rule(spec: &str, before: &SpecLog, after: &SpecLog) -> Result<(), Refusal> {
     use crate::domain::survey::goal;
     if State::from_log(before).phase != Some("survey") {
@@ -305,20 +306,20 @@ pub fn goal_rule(spec: &str, before: &SpecLog, after: &SpecLog) -> Result<(), Re
     goal_title_rule(after)
 }
 
-/// A primeira frase do objetivo gravado, medida contra o teto do título do
-/// pull request.
+/// O título do objetivo gravado — o `title` dele ou, sem `title`, a primeira
+/// frase —, medido contra o teto do título do pull request.
 ///
-/// A frase é lida por [`crate::domain::spec_index::goal_of`], a MESMA leitura
-/// que monta o título lá na abertura: uma segunda leitura escrita aqui poderia
-/// medir uma frase que o pull request nunca usaria.
+/// O título é lido por [`crate::domain::spec_index::goal_with_source`], a
+/// MESMA leitura que monta o título lá na abertura: uma segunda leitura
+/// escrita aqui poderia medir um texto que o pull request nunca usaria.
 fn goal_title_rule(after: &SpecLog) -> Result<(), Refusal> {
     let max = crate::domain::spec_events::MESSAGE_TITLE_MAX;
-    let Some(title) = crate::domain::spec_index::goal_of(after) else {
+    let Some((measured, source)) = crate::domain::spec_index::goal_with_source(after) else {
         return Ok(());
     };
-    let chars = title.chars().count();
+    let chars = measured.chars().count();
     if chars > max {
-        return Err(Refusal::GoalTitleTooLong { chars, max, sentence: title });
+        return Err(Refusal::GoalTitleTooLong { chars, max, measured, source });
     }
     Ok(())
 }
@@ -1157,10 +1158,11 @@ mod tests {
         }
     }
 
-    /// O objetivo cuja primeira frase passa do teto do título do pull request
-    /// é recusado na hora de gravar, e não lá na abertura do pull request.
+    /// O objetivo sem `title` cuja primeira frase passa do teto do título do
+    /// pull request é recusado na hora de gravar, e não lá na abertura do pull
+    /// request.
     ///
-    /// A primeira frase do objetivo VIRA o título, e o título tem teto de 60
+    /// Sem `title`, a primeira frase do objetivo VIRA o título, e o título tem teto de 60
     /// caracteres. Enquanto a conferência morava só na abertura, a pessoa
     /// escrevia o objetivo no primeiro minuto, tocava a obra inteira em cima
     /// dele e só no último passo descobria que precisava reescrevê-lo.
@@ -1174,6 +1176,7 @@ mod tests {
     #[test]
     fn a_goal_with_a_long_first_sentence_is_refused_on_write() {
         use crate::domain::spec_events::{MessageRefusal, MESSAGE_TITLE_MAX};
+        use crate::domain::spec_index::GoalSource;
         use crate::platform::i18n::Locale;
 
         let lines = surveyed_with(&[user("Trave o merge enquanto houver pendência aberta.")]);
@@ -1184,7 +1187,7 @@ mod tests {
         assert_eq!(MESSAGE_TITLE_MAX, 60, "o teto do título do pull request");
         assert_eq!(
             goal_with(&lines, too_long, said),
-            Err(Refusal::GoalTitleTooLong { chars: 64, max: 60, sentence: too_long.to_string() }),
+            Err(Refusal::GoalTitleTooLong { chars: 64, max: 60, measured: too_long.to_string(), source: GoalSource::FirstSentence }),
             "a gravação recusa a primeira frase acima do teto e devolve a frase medida",
         );
 
@@ -1194,7 +1197,7 @@ mod tests {
         // nem foi olhado — quem escreveu um título curto com uma primeira
         // frase longa foi encurtar o campo errado (campo, 21/10/2026).
         let goal_refusal =
-            Refusal::GoalTitleTooLong { chars: 64, max: 60, sentence: too_long.to_string() };
+            Refusal::GoalTitleTooLong { chars: 64, max: 60, measured: too_long.to_string(), source: GoalSource::FirstSentence };
         let message_refusal = MessageRefusal::TooLong { part: "title", chars: 64, max: 60 };
         for lang in [Locale::PtBr, Locale::EnUs] {
             let refused = goal_refusal.message(lang);

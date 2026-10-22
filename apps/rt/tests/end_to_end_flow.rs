@@ -583,8 +583,14 @@ fn user_says(project: &Project, text: &str) -> u64 {
 /// O levantamento inteiro: o objetivo, o `grill`, que grava os pontos, e
 /// cada ponto com os fatos somados, respondido e fechado.
 fn survey(project: &Project) {
-    let said = user_says(project, GOAL);
-    project.write("context", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": GOAL, "origin": said}));
+    survey_with(project, "Combinar o item", GOAL);
+}
+
+/// [`survey`] com o objetivo de título `title` e texto `goal`, que o usuário
+/// diz.
+fn survey_with(project: &Project, title: &str, goal: &str) {
+    let said = user_says(project, goal);
+    project.write("context", &json!({"title": title, "agent": "- conferir pelo teste", "text": goal, "origin": said}));
     let grilled = project.run(&["grill", "--spec", SPEC, "--kinds", "feature", "--full"]);
     let points = grilled["points"].as_array().cloned().expect("the point list");
     assert!(!points.is_empty(), "{grilled}");
@@ -802,8 +808,13 @@ fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
 /// A spec de uma onda, da abertura ao fechamento, com a mudança entregue: devolve
 /// os argumentos do `pr-open` que o fechamento apontou.
 fn closed_with_one_wave(project: &Project) -> Vec<String> {
+    closed_with_goal(project, "Combinar o item", GOAL)
+}
+
+/// [`closed_with_one_wave`] com o objetivo de título `title` e texto `goal`.
+fn closed_with_goal(project: &Project, title: &str, goal: &str) -> Vec<String> {
     project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
-    survey(project);
+    survey_with(project, title, goal);
     plan(project);
     approve(project);
     let first = first_round(project);
@@ -874,6 +885,41 @@ fn a_pr_open_sends_the_branch_first_and_a_refused_send_opens_nothing() {
         git_out(&project.root, &["rev-parse", "HEAD"]),
         "the new commit is on the server"
     );
+}
+
+/// O `title` do objetivo dá nome ao pull request e à linha da spec no resumo
+/// do projeto, mesmo com uma primeira frase acima do teto: a spec vai da
+/// abertura ao fechamento, o `pr-open` abre o pedido com o título, o servidor
+/// junta a branch na base, a entrega fora da porta do pull request grava a
+/// linha do resumo e a visão geral do painel a mostra com o título.
+#[test]
+fn the_goal_title_names_the_pull_request_and_the_project_summary() {
+    let title = "Saudação nova no programa";
+    let goal = "Trocar a saudação do programa por uma frase nova que diga olá a quem abre o terminal.";
+    assert!(goal.chars().count() > 60, "the first sentence alone would be refused");
+    let project = Project::new();
+    let line = closed_with_goal(&project, title, goal);
+    let argv: Vec<&str> = line.iter().map(String::as_str).collect();
+
+    let opened = project.run(&argv);
+    assert_eq!(opened["number"], json!(7), "{opened}");
+    let created = project.gh_calls().into_iter().find(|call| call.starts_with("pr create")).expect("the pull request was created");
+    assert!(created.starts_with(&format!("pr create --title {title} --body-file ")), "{created}");
+
+    // O servidor junta o pull request na base com um commit de merge, como o
+    // provedor faz: a base antes da spec é o primeiro pai, a branch o segundo.
+    let tree = git_out(&project.root, &["rev-parse", &format!("{BRANCH}^{{tree}}")]);
+    let merge = git_out(&project.root, &["commit-tree", &tree, "-p", "dev", "-p", BRANCH, "-m", "Merge do pull request #7"]);
+    git(&project.root, &["push", "-q", "origin", &format!("{merge}:refs/heads/dev")]);
+    git(&project.root, &["fetch", "-q", "origin"]);
+    let delivered = project.run(&["deliver-merged", "--spec", SPEC]);
+    assert_eq!(State::from_log(&project.log()).phase, Some("delivered"), "{delivered}");
+    let overview = project.run(&["panel", "--spec", SPEC, "--section", "overview"]);
+    let shown: Vec<(Value, Value)> = overview["deliveries"]["shown"]
+        .as_array()
+        .map(|rows| rows.iter().map(|row| (row["spec"].clone(), row["title"].clone())).collect())
+        .unwrap_or_default();
+    assert_eq!(shown, vec![(json!(SPEC), json!(title))], "the summary line carries the title: {overview}");
 }
 
 /// Um critério gravado sem declarar a forma dele é recusado, e a recusa lista

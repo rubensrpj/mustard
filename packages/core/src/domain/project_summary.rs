@@ -495,10 +495,10 @@ mod tests {
     /// cortado no teto sem partir palavra; sem resumo, o corpo numa linha.
     #[test]
     fn the_title_and_the_delivery_come_from_the_pull_request_text() {
-        let goal = json!({"type":"context","text":"Resumo do projeto na entrega.","title":"Objetivo"});
+        let goal = json!({"type":"context","text":"Gravar o resumo do projeto quando a spec é entregue.","title":"Resumo do projeto na entrega"});
         let summary = json!({"type":"pr_summary","text":format!("Grava o resumo. {}", "palavra ".repeat(120))});
         let (title, delivered) = title_and_delivered(&log(&[goal.clone(), summary]), "x", Locale::PtBr);
-        assert_eq!(title, "Resumo do projeto na entrega.");
+        assert_eq!(title, "Resumo do projeto na entrega");
         assert!(delivered.starts_with("Grava o resumo. palavra"), "{delivered}");
         assert!(delivered.chars().count() <= DELIVERED_CHARS && delivered.ends_with("palavra…"), "{delivered}");
 
