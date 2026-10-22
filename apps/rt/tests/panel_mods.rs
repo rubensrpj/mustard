@@ -66,6 +66,35 @@ fn a_legacy_spec_asked_by_name_is_refused_instead_of_replaced() {
     let listed:Vec<&Value>=whole["specs"].as_array().unwrap().iter().map(|spec|&spec["name"]).collect();
     assert_eq!(listed,[&json!("new")],"{whole}");
 }
+/// The waves screen, asked by the command line as the panel asks it, answers
+/// the page past the offset, cut at the limit, the highest wave number first,
+/// with the plan's total.
+#[test]
+fn the_waves_screen_answers_the_page_asked_by_offset_and_limit() {
+    let dir=tempfile::tempdir().unwrap();let root=dir.path();
+    std::fs::write(root.join("mustard.json"),"{\"rtk\":false,\"ai\":{\"fallback\":false,\"vectors\":false}}").unwrap();
+    let path=mustard_core::io::spec_events::spec_file(root,"plan").unwrap();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let seed=|kind:&str,fields:Value| mustard_core::io::spec_events::write(&path,kind,fields.as_object().cloned().unwrap(),&[]).unwrap().id;
+    seed("state",json!({"author":"binary","phase":"plan","branch":"feature/plan","base":"dev"}));
+    let said=seed("message",json!({"author":"user","text":"O plano em ondas."}));
+    let criterion=seed("criterion",json!({"when":"a","then":"b","proof":"git --version","form":"ubiquitous","origin":said}));
+    for n in 1..=17u64 {
+        seed("wave",json!({"author":"binary","n":n,"text":format!("Onda {n}."),"criteria":[criterion],"done_when":"x","origin":said}));
+        seed("task",json!({"wave":n,"title":format!("Tarefa da onda {n}"),"text":"Fazer.","files":[{"path":format!("src/w{n}.rs")}],"origin":said}));
+    }
+    let page=call(root,&["panel","--spec","plan","--section","waves","--offset","8","--limit","8"],None);
+    assert_eq!(page["ok"],true,"{page}");
+    assert_eq!((page["total"].clone(),page["offset"].clone(),page["limit"].clone()),(json!(17),json!(8),json!(8)),"{page}");
+    let rows=page["rows"].as_array().unwrap();
+    let numbers:Vec<u64>=rows.iter().map(|row|row["wave"].as_u64().unwrap()).collect();
+    assert_eq!(numbers,[9,8,7,6,5,4,3,2],"{page}");
+    for (row,n) in rows.iter().zip(numbers) {
+        assert_eq!((row["title"].clone(),row["state"].clone(),row["tasks"].clone(),row["files"].clone()),
+            (json!(format!("Tarefa da onda {n}")),json!("todo"),json!(1),json!(1)),"{row}");
+        assert!(row["commit"].is_null()&&row["tokens"].is_null(),"{row}");
+    }
+}
 #[test]
 fn a_diagnostic_record_keeps_only_known_fields_and_stays_local() {
     let dir=tempfile::tempdir().unwrap();let root=dir.path();std::fs::write(root.join("mustard.json"),"{}").unwrap();
