@@ -27,8 +27,9 @@
 //! soma os fatos que conferiu no próprio `answer --facts`, que grava a
 //! resposta e o fechamento numa transação. Cada item da resposta traz o número, o código e a situação do
 //! ponto que o registra. A resposta devolve em `next` o primeiro ponto aberto
-//! ou, no condensado, pede para mostrar todos de uma vez; sem ponto aberto,
-//! lista em `unrouted` o código e o começo de cada mensagem do usuário sem
+//! ou, no condensado, pede para mostrar todos de uma vez, e a dica diz onde
+//! salvar, logo depois do sim, a cópia do modelo visual que o usuário aprovar;
+//! sem ponto aberto, lista em `unrouted` o código e o começo de cada mensagem do usuário sem
 //! destino, uma por linha. Chamar de novo com os mesmos tipos não grava nada e
 //! devolve o mesmo passo. Com entregas no resumo do projeto, `project_summary`
 //! traz ao condutor as ligadas ao objetivo (ou, sem o Jev, as mais recentes):
@@ -294,18 +295,22 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
     spec_events::pages::note_withheld(&mut report, &spec, &withheld, lang);
     let open = survey::open_points(&log);
     if let Some(first) = open.first() {
-        if condensed {
-            report["hint"] = json!(translate("survey.present_all", lang));
+        let present = if condensed {
+            translate("survey.present_all", lang).to_string()
         } else {
             let code = codes.get(&first.id).cloned().unwrap_or_default();
             report["next"] = shown(first, &codes);
-            report["hint"] = json!(translate("survey.present_point", lang).replace("{code}", &code).replace("{id}", &first.id.to_string()));
-        }
+            translate("survey.present_point", lang).replace("{code}", &code).replace("{id}", &first.id.to_string())
+        };
+        // Onde salvar a cópia do modelo visual aprovado sai aqui, o único
+        // lugar que a pede: com os pontos que vão ao usuário, antes do sim, e
+        // de novo a cada volta ao levantamento pelo `grill`. Nenhum passo do
+        // fim a repete.
+        let design = translate("survey.save_design", lang).replace("{spec}", &spec);
+        report["hint"] = json!(format!("{present} {design}"));
     } else {
         report["unrouted"] = json!(spec_events::unrouted::lines(survey::unrouted_messages(&log), &codes));
-        let design = translate("survey.save_design", lang).replace("{spec}", &spec);
-        let done = translate("survey.done", lang).replace("{scale}", translate("plan.points_scale", lang));
-        report["hint"] = json!(format!("{design} {done}"));
+        report["hint"] = json!(translate("survey.done", lang).replace("{scale}", translate("plan.points_scale", lang)));
     }
     report
 }
@@ -1072,7 +1077,8 @@ mod tests {
     }
 
     /// No pedido que cabe numa frase, o `grill` grava todas as lacunas de uma
-    /// vez, num bloco só, e pede um sim só.
+    /// vez, num bloco só, e pede um sim só, dizendo onde salvar a cópia do
+    /// modelo visual que o usuário aprovar.
     #[test]
     fn a_condensed_survey_returns_every_gap_at_once_in_one_block() {
         let dir = tempdir().unwrap();
@@ -1086,7 +1092,8 @@ mod tests {
         let all = grill(root, "x", Some("feature,fix"), false);
         assert_eq!(all["condensed"], json!(true), "the recorded points keep the survey condensed");
         assert!(all.get("next").is_none(), "{all}");
-        assert_eq!(all["hint"], json!(translate("survey.present_all", Locale::PtBr)));
+        let design = translate("survey.save_design", Locale::PtBr).replace("{spec}", "x");
+        assert_eq!(all["hint"], json!(format!("{} {design}", translate("survey.present_all", Locale::PtBr))));
         assert!(items(&all).iter().all(|item| item["status"] == json!("open")));
     }
 
@@ -1292,8 +1299,7 @@ mod tests {
         let done = grill(root, "x", Some("fix"), false);
         assert!(done.get("next").is_none(), "{done}");
         let scale = translate("plan.points_scale", Locale::PtBr);
-        let design = translate("survey.save_design", Locale::PtBr).replace("{spec}", "x");
-        assert_eq!(done["hint"], json!(format!("{design} {}", translate("survey.done", Locale::PtBr).replace("{scale}", scale))));
+        assert_eq!(done["hint"], json!(translate("survey.done", Locale::PtBr).replace("{scale}", scale)), "the end does not ask for the design copy");
         let path = store::spec_file(&store::spec_root(root), "x").expect("spec file");
         let code = store::read(&path).unwrap().unwrap().codes()[&loose].clone();
         assert_eq!(done["unrouted"], json!([format!("{code}: E o painel?")]), "{done}");

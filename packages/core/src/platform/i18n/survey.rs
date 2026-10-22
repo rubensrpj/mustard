@@ -190,15 +190,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         // O nome do arquivo é o mesmo nos dois idiomas: é ele que o gancho do
         // despacho procura na pasta da spec para apontar o desenho ao revisor.
+        // Sai com os pontos que o `grill` abre, antes de qualquer sim: a cópia
+        // é salva enquanto o modelo aprovado ainda está à mão, e o fim do
+        // levantamento não a pede de novo.
         ("survey.save_design", Locale::PtBr) => {
-            "Se o usuário aprovou um modelo visual de tela neste levantamento, salve a cópia aprovada \
-             em `.claude/spec/{spec}/desenho.html` antes de despachar qualquer revisor: com o arquivo \
-             ali, o pedido do revisor aponta o desenho."
+            "Se o usuário aprovar um modelo visual de tela neste levantamento, salve a cópia aprovada \
+             em `.claude/spec/{spec}/desenho.html`. Salve logo depois de gravar o sim, antes do \
+             próximo ponto. Com o arquivo ali, o pedido do revisor aponta o desenho."
         }
         ("survey.save_design", Locale::EnUs) => {
-            "If the user approved a visual model of a screen in this survey, save the approved copy at \
-             `.claude/spec/{spec}/desenho.html` before dispatching any reviewer: with the file there, \
-             the reviewer's request points to the design."
+            "If the user approves a visual model of a screen in this survey, save the approved copy at \
+             `.claude/spec/{spec}/desenho.html`. Save it right after recording the yes, before the \
+             next point. With the file there, the reviewer's request points to the design."
         }
         ("survey.fact_declared", Locale::PtBr) => "`{name}` é declarado em {path}, linha {line}.",
         ("survey.fact_declared", Locale::EnUs) => "`{name}` is declared in {path}, line {line}.",
@@ -286,7 +289,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("survey.rs"), super::PREFIXES, 46, 0x8f0c_f47e_b46f_8550);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("survey.rs"), super::PREFIXES, 46, 0x96ed_453c_a464_8a78);
     }
 
     /// O ponto aberto sem fato só fecha com os fatos: a dica de fechar um

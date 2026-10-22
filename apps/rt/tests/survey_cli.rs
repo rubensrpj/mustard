@@ -658,61 +658,105 @@ fn the_end_of_the_survey_shows_each_unrouted_message_once_as_a_short_line() {
     assert!(String::from_utf8_lossy(&full.stdout).contains(TAIL), "the item's reading has the whole message");
 }
 
-/// A resposta que fecha o último ponto manda quem conduz salvar, na pasta da
-/// spec, a cópia do modelo visual que o usuário aprovou, uma vez e antes de
-/// mandar rodar o revisor de fora; com um ponto ainda aberto, nenhuma resposta
-/// fala da cópia. A escrita no caminho dito passa pelo gancho de escrita, e o
-/// despacho do revisor de fora, pelo gancho, passa a apontar esse arquivo.
+/// O levantamento diz onde salvar a cópia do modelo visual aprovado quando
+/// abre os pontos, no `grill`, para quem conduz salvá-la logo depois de gravar
+/// o sim, enquanto o modelo ainda está à mão. Nenhuma resposta depois repete o
+/// pedido: nem as que gravam os fatos e as respostas, a do sim inclusive, nem
+/// a que fecha o último ponto e manda rodar o revisor de fora, nem a que fecha
+/// o ponto achado por ele, nem o `grill` sem ponto aberto. A escrita da cópia
+/// no caminho dito sai do gancho de escrita sem decisão nenhuma, o mesmo
+/// gancho que, no mesmo projeto, barra o arquivo da spec; e o despacho do
+/// revisor de fora, pelo gancho, passa a apontar a cópia salva.
 #[test]
-fn the_end_of_the_survey_says_where_the_approved_design_goes_and_the_reviewer_is_pointed_to_it() {
+fn the_survey_asks_for_the_approved_design_copy_when_it_opens_the_points_and_never_again() {
+    const APPROVED_AT: usize = 2;
     let dir = repo();
     let home = tempfile::tempdir().expect("home");
     let root = dir.path();
+    let design = format!(".claude/spec/{SPEC}/desenho.html");
+    let mentions = |out: &Output| String::from_utf8_lossy(&out.stdout).matches("desenho.html").count();
     let opened = rt(root, &["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
     assert_eq!(opened.status.code(), Some(0), "{}", String::from_utf8_lossy(&opened.stdout));
-    let said = user_says(root, GOAL);
+    let said = hook_says(root, home.path(), GOAL);
     write(root, "context", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": GOAL, "origin": said}));
-    let items = report(&rt(root, &["grill", "--kinds", "feature", "--spec", SPEC, "--full"]))["points"]
-        .as_array()
-        .cloned()
-        .expect("the point list");
+
+    let grilled = rt(root, &["grill", "--kinds", "feature", "--spec", SPEC, "--full"]);
+    assert_eq!(grilled.status.code(), Some(0), "{}", String::from_utf8_lossy(&grilled.stdout));
+    let opening = report(&grilled);
+    let hint = opening["hint"].as_str().unwrap_or_else(|| panic!("no hint: {opening}"));
+    let present = hint.find("Apresente o ponto").unwrap_or_else(|| panic!("the grill presents the first point: {hint}"));
+    let save = hint.find(&format!("`{design}`")).unwrap_or_else(|| panic!("the grill says where the approved design goes: {hint}"));
+    assert!(present < save && hint.contains("logo depois de gravar o sim"), "the copy goes right after the yes is recorded: {hint}");
+    assert_eq!(mentions(&grilled), 1, "{hint}");
+    let items = opening["points"].as_array().cloned().expect("the point list");
+    assert_eq!(items.len(), 9, "{items:?}");
+
+    // Toda resposta depois do `grill` que abriu os pontos, contada.
+    let mut later: Vec<(String, usize)> = Vec::new();
     let mut current = Value::Null;
     for item in &items {
         let facts = json!([{"text": "O merge começa no arquivo de entrada.", "source": "src/main.rs:2"}]);
-        current = write(root, "point", &json!({"replaces": item["id"], "facts": facts}))["point"].clone();
+        let out = rt(root, &["write", "point", "--spec", SPEC, "--json", &json!({"replaces": item["id"], "facts": facts}).to_string()]);
+        assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stdout));
+        later.push(("facts".to_string(), mentions(&out)));
+        current = report(&out)["point"].clone();
     }
-    let decision = json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": "O usuário aprovou o modelo da tela.",
-        "keys": ["levantamento"], "why": "o usuário respondeu"})
-    .to_string();
-    let mut ended = String::new();
-    for (i, _) in items.iter().enumerate() {
-        let code = current["code"].as_str().expect("the point's code").to_string();
-        let out = rt(root, &["answer", "--spec", SPEC, "--point", &code, "--type", "decision", "--json", &decision]);
-        let answered = report(&out);
-        assert_eq!(out.status.code(), Some(0), "answer {i}: {answered}");
-        current = answered["point"].clone();
-        let next = answered["next"].as_str().unwrap_or_default().to_string();
-        if i + 1 < items.len() {
-            assert!(!next.contains("desenho.html"), "a point is still open: {next}");
-        } else {
-            ended = next;
-        }
-    }
-
-    let design = format!(".claude/spec/{SPEC}/desenho.html");
-    let save = ended.find(&format!("`{design}`")).unwrap_or_else(|| panic!("the end of the survey says where the approved design goes: {ended}"));
-    let reviewer = ended.find("rode o revisor de fora").unwrap_or_else(|| panic!("the end of the survey orders the outside reviewer: {ended}"));
-    assert!(save < reviewer, "the copy is saved before the outside reviewer goes: {ended}");
-    assert_eq!(ended.matches("desenho.html").count(), 1, "{ended}");
-
-    // Quem conduz segue o passo: a escrita no caminho dito não é barrada.
+    let decision = |text: &str| {
+        json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": text, "keys": ["levantamento"], "why": "o usuário respondeu"})
+            .to_string()
+    };
     let target = root.join(&design);
     let html = "<html><body><main>tela aprovada</main></body></html>\n";
-    let writing = json!({"hook_event_name": "PreToolUse", "tool_name": "Write", "session_id": "s-levantamento",
-        "cwd": root.to_string_lossy(), "tool_input": {"file_path": target.to_string_lossy(), "content": html}});
-    let gate = on(root, home.path(), "PreToolUse", &writing);
-    assert!(!gate.contains("\"deny\""), "the conductor may save the copy where it was told: {gate}");
-    std::fs::write(&target, html).expect("the conductor saves the copy");
+    let mut ended = Value::Null;
+    for i in 0..items.len() {
+        let code = current["code"].as_str().expect("the point's code").to_string();
+        let text = if i == APPROVED_AT { "O usuário aprovou o modelo da tela." } else { "O usuário respondeu ao ponto." };
+        let out = rt(root, &["answer", "--spec", SPEC, "--point", &code, "--type", "decision", "--json", &decision(text)]);
+        let answered = report(&out);
+        assert_eq!(out.status.code(), Some(0), "answer {i}: {answered}");
+        later.push((format!("answer {i}"), mentions(&out)));
+        current = answered["point"].clone();
+        ended = answered;
+        if i != APPROVED_AT {
+            continue;
+        }
+        // Gravado o sim, quem conduz salva a cópia onde o `grill` disse. O
+        // gancho de escrita, que barra o arquivo da spec, deixa a cópia
+        // passar sem decisão nenhuma.
+        let writing = |path: &Path| {
+            json!({"hook_event_name": "PreToolUse", "tool_name": "Write", "session_id": "s-levantamento",
+                "cwd": root.to_string_lossy(), "tool_input": {"file_path": path.to_string_lossy(), "content": html}})
+        };
+        let barred = on(root, home.path(), "PreToolUse", &writing(&target.with_file_name("spec.ndjson")));
+        let barred: Value = serde_json::from_str(&barred).unwrap_or_else(|e| panic!("the gate answers JSON for the spec file ({e}): {barred}"));
+        assert_eq!(barred["hookSpecificOutput"]["permissionDecision"], "deny", "the gate is live in this project: {barred}");
+        let gate = on(root, home.path(), "PreToolUse", &writing(&target));
+        assert!(gate.trim().is_empty(), "the copy is let through with no decision, warning or question: {gate}");
+        std::fs::write(&target, html).expect("the conductor saves the copy");
+    }
+    let next = ended["next"].as_str().unwrap_or_default();
+    assert!(next.contains("rode o revisor de fora") && ended["unrouted"].is_array(), "the last answer ends the survey: {ended}");
+
+    // O revisor de fora acha um ponto, e o fechamento dele é o fim de novo.
+    let found = json!({"block": "outside_review", "gap": "O merge pela interface web", "from": "outside_review", "status": "open",
+        "origin": said, "facts": [{"text": "O revisor achou.", "source": "src/main.rs:2"}]});
+    let out = rt(root, &["write", "point", "--spec", SPEC, "--json", &found.to_string()]);
+    let added = report(&out);
+    assert_eq!(out.status.code(), Some(0), "{added}");
+    later.push(("outside review point".to_string(), mentions(&out)));
+    let code = added["code"].as_str().unwrap_or_else(|| panic!("the reviewer's point: {added}")).to_string();
+    let out = rt(root, &["answer", "--spec", SPEC, "--point", &code, "--type", "decision", "--json", &decision("O usuário respondeu ao revisor.")]);
+    let closed = report(&out);
+    assert_eq!(out.status.code(), Some(0), "{closed}");
+    assert!(closed["unrouted"].is_array(), "closing the reviewer's point ends the survey: {closed}");
+    later.push(("outside review closed".to_string(), mentions(&out)));
+    let out = rt(root, &["grill", "--spec", SPEC, "--full"]);
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stdout));
+    assert!(report(&out)["unrouted"].is_array(), "the grill with no open point: {}", String::from_utf8_lossy(&out.stdout));
+    later.push(("grill at the end".to_string(), mentions(&out)));
+    assert_eq!(later.len(), 9 + 9 + 3, "{later:?}");
+    let repeated: Vec<&(String, usize)> = later.iter().filter(|(_, count)| *count > 0).collect();
+    assert!(repeated.is_empty(), "no response after the grill repeats the copy: {repeated:?}");
 
     let prompt = format!("Revise o levantamento da spec {SPEC}: os pontos, as regras e as decisões.");
     let dispatch = json!({"hook_event_name": "PreToolUse", "tool_name": "Agent", "session_id": "s-levantamento",
