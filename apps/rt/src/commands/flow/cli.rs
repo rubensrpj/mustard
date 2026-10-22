@@ -412,8 +412,20 @@ pub fn dispatch(cmd: FlowCmd) {
             flow::answer("triage", &opts.root, opts.spec.as_deref(), started, &flow::triage::triage_at(&opts), false);
         }
         FlowCmd::Answer { spec, point, event_type, json, facts, result, not_applicable, reason, root } => {
-            let opts = flow::answer::AnswerOpts { root, spec, point, event_type, json, facts, result, not_applicable, reason };
-            flow::answer("answer", &opts.root, opts.spec.as_deref(), started, &flow::answer::answer_at(&opts), false);
+            use crate::shared::json_arg::resolve_opt;
+            match resolve_opt(json).and_then(|json| Ok((json, resolve_opt(facts)?))) {
+                Ok((json, facts)) => {
+                    let opts = flow::answer::AnswerOpts { root, spec, point, event_type, json, facts, result, not_applicable, reason };
+                    flow::answer("answer", &opts.root, opts.spec.as_deref(), started, &flow::answer::answer_at(&opts), false);
+                }
+                // O arquivo do `--json` ou do `--facts` que não se lê recusa
+                // sem gravar nada.
+                Err(detail) => {
+                    let refusal = mustard_core::domain::spec_events::Refusal::Io { detail };
+                    let refused = crate::commands::spec_events::refused(&refusal, crate::commands::spec_events::project(&root).lang);
+                    flow::answer("answer", &root, spec.as_deref(), started, &refused, false);
+                }
+            }
         }
     }
 }

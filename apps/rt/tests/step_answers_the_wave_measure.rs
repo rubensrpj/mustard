@@ -232,3 +232,62 @@ fn the_last_task_end_step_says_every_task_finished() {
     let finished = last["tasks_finished"].as_str().unwrap_or_else(|| panic!("the last step says every task finished: {last}"));
     assert!(finished.contains("Grave a entrega"), "{finished}");
 }
+
+/// O que o gancho de depois da ferramenta, rodado em `root` com o JSON
+/// `payload` na entrada, injeta na conversa; vazio quando nada.
+fn after_tool(root: &Path, payload: &Value) -> String {
+    use std::io::Write;
+    let mut child = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
+        .args(["on", "PostToolUse"])
+        .current_dir(root)
+        .env_remove("MUSTARD_AGENT_ID")
+        .env_remove("MUSTARD_ACTIVE_SPEC")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("the hook runs");
+    child.stdin.take().expect("stdin").write_all(payload.to_string().as_bytes()).expect("the payload");
+    let out = child.wait_with_output().expect("the hook ends");
+    assert_eq!(out.status.code(), Some(0), "a hook always exits 0");
+    let text = String::from_utf8_lossy(&out.stdout);
+    let answer: Value = serde_json::from_str(text.trim()).unwrap_or(Value::Null);
+    answer["hookSpecificOutput"]["additionalContext"].as_str().unwrap_or_default().to_string()
+}
+
+/// O passo de término gravado sem a identidade do agente no ambiente não
+/// traz a medida, e quem mede é o gancho de depois da ferramenta. Com o
+/// `--json` lido de um arquivo da pasta temporária, relativo ao `cd` da
+/// chamada, o gancho relê o arquivo, acha a tarefa no `item` e mede a
+/// conversa do agente de onda.
+#[test]
+fn the_hook_measures_a_task_end_step_whose_json_came_from_a_file() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().join("projeto");
+    std::fs::create_dir_all(&root).expect("root");
+    let config = dir.path().join("claude-config");
+    let tasks = dispatched_wave(&root);
+    conversations(&config, &root, &[30_000, 60_000]);
+    let scratch = dir.path().join("temporario");
+    std::fs::create_dir_all(&scratch).expect("the temporary folder");
+    let body = json!({"wave": 1, "item": tasks[0], "text": "A tarefa ficou pronta: \"saudação\" (nova)."});
+    std::fs::write(scratch.join("passo.json"), body.to_string()).expect("the step file");
+
+    let args = ["write", "step", "--spec", SPEC, "--json", "@passo.json"];
+    let out = rt(&root, &args).current_dir(&scratch).output().expect("run write step");
+    let report = stdout_json(&out);
+    assert!(out.status.success() && report.get("size").is_none(), "the step itself does not measure: {report}");
+
+    let command = format!("cd {} && mustard-rt run {} --root {}", scratch.display(), args.join(" "), root.display());
+    let main = config.join("projects").join("projeto-de-teste").join(format!("{SESSION}.jsonl"));
+    let context = after_tool(&root, &json!({
+        "hook_event_name": "PostToolUse",
+        "tool_name": "Bash",
+        "tool_input": {"command": command},
+        "tool_response": {"stdout": String::from_utf8_lossy(&out.stdout), "stderr": ""},
+        "session_id": SESSION,
+        "agent_id": AGENT,
+        "transcript_path": main.to_string_lossy(),
+        "cwd": root.to_string_lossy(),
+    }));
+    assert!(context.contains("Siga para a próxima tarefa.") && context.contains("60 mil"), "the hook measures the task end: {context}");
+}

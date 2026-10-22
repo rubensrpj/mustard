@@ -2063,6 +2063,81 @@ fn each_formed_wave_leaves_in_the_round_it_is_born_with_one_number() {
     }
 }
 
+/// A rodada sem a linha de revisão de quem conduz, pelo binário: a volta que
+/// chegou fica esperando a revisão, fora do commit, e guarda a cópia dela.
+fn unreviewed_round(project: &Project) -> Value {
+    let out = project.command(&["run", "round", "--dispatch", "--spec", SPEC], "");
+    let report: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stdout)));
+    assert_eq!(report["ok"], json!(true), "{report}");
+    report
+}
+
+/// Duas vagas e três cópias, todas guardadas: as ondas 1 e 2 voltaram e
+/// esperam a revisão, e a 3 trabalha. Com uma sessão conduzindo, a rodada
+/// pede a formação das duas tarefas que sobram, e o recibo do agente de
+/// análise volta. A onda 3 volta também, e a vaga dela abre, mas as cópias
+/// seguem cheias. A rodada seguinte, com a mesma fila, reaproveita a
+/// formação aceita e a grava nas duas tarefas, sem pedir outra.
+#[test]
+fn with_full_copies_the_next_round_reuses_the_formation_of_the_same_tasks() {
+    let mut project = Project::new();
+    let path = project.root.join("mustard.json");
+    let mut config: Value = serde_json::from_str(&std::fs::read_to_string(&path).expect("config")).expect("json");
+    config["maxCompilingWaves"] = json!(2);
+    std::fs::write(&path, config.to_string()).expect("config");
+    project.open();
+    let said = survey(&project);
+    let criterion = project.write(
+        "criterion",
+        &json!({"title": "Combinar o item", "when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
+            "form": "ubiquitous", "origin": said}),
+    );
+    let crit = criterion["id"].as_u64().expect("the criterion id");
+    let files = ["src/a.txt", "src/b.txt", "src/c.txt", "src/d.txt", "src/e.txt"];
+    let tasks: Vec<u64> = files.iter().map(|file| backlog_task(&project, crit, said, &[file], &[])).collect();
+    project.run(&["plan", "--spec", SPEC]);
+    approve(&project);
+
+    let first = project.run(&["round", "--dispatch", "--spec", SPEC]);
+    assert_eq!(waves_in(&first, "dispatch"), vec![1, 2], "{first}");
+    keep_sent(&project, &[1, 2]);
+    deliver_file_in_copy(&project, 1, files[0], "pronto\n");
+    deliver_file_in_copy(&project, 2, files[1], "pronto\n");
+    let second = unreviewed_round(&project);
+    assert_eq!(waves_in(&second, "dispatch"), vec![3], "{second}");
+    keep_sent(&project, &[3]);
+    project.session = Some(SESSION);
+
+    let asked = unreviewed_round(&project);
+    let formation = asked.get("formation").unwrap_or_else(|| panic!("the round asks the forming of the tasks left: {asked}"));
+    let full = asked["warnings"].as_array().into_iter().flatten().find(|w| w["reason"] == json!("copies-full")).cloned();
+    assert_eq!(full.map(|w| w["waves"].clone()), Some(json!([1, 2])), "every copy is kept: {asked}");
+    let codes = project.log().codes();
+    let left: Vec<String> = tasks[3..].iter().map(|id| codes[id].clone()).collect();
+    let receipt = json!({"request_id": formation["request_id"], "model": "inherit", "input_tokens": null, "output_tokens": null,
+        "result": {"waves": [{"objective": "Trocar a saudação nos arquivos que sobram", "tasks": left, "merges": []}]}});
+    let receipt_path = project.home.join("recibo-formacao.json");
+    std::fs::write(&receipt_path, receipt.to_string()).expect("the receipt");
+    let done = project.command(&["run", "knowledge", "--complete-session", receipt_path.to_str().expect("a path")], "");
+    assert!(done.status.success(), "{}", String::from_utf8_lossy(&done.stdout));
+    deliver_file_in_copy(&project, 3, files[2], "pronto\n");
+
+    let next = unreviewed_round(&project);
+
+    assert!(next.get("formation").is_none(), "the same tasks, the formation already accepted: {next}");
+    let full = next["warnings"].as_array().into_iter().flatten().find(|w| w["reason"] == json!("copies-full")).cloned();
+    assert_eq!(full.map(|w| w["waves"].clone()), Some(json!([1, 2, 3])), "the copies are still full: {next}");
+    let log = project.log();
+    for task in &tasks[3..] {
+        let group = log.current(*task).and_then(|current| current.fields.get("group").cloned());
+        assert_eq!(
+            group.as_ref().map(|group| (group["name"].clone(), group["formed"].clone())),
+            Some((json!("Trocar a saudação nos arquivos que sobram"), json!(true))),
+            "the accepted formation is recorded: {next}"
+        );
+    }
+}
+
 /// A onda gravada sem tarefa nenhuma, como a que uma rodada antiga deixou,
 /// saiu do plano: a lista das ondas abertas não a traz.
 #[test]

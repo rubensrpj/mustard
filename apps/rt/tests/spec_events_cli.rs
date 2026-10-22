@@ -1755,3 +1755,70 @@ fn a_goal_without_a_title_is_still_measured_and_shown_by_its_first_sentence() {
     assert_eq!(code, Some(0), "{written}");
     assert_eq!(panel_goals(root), vec![json!(short); 3], "without a title the panel shows the first sentence");
 }
+
+/// Um JSON com acento, aspas, crase, parênteses e dois-pontos vai direto e
+/// por `@arquivo`, gravado pela ferramenta de escrita, ao `run write context`
+/// e ao `--json` e ao `--facts` do `run answer`: o arquivo grava o mesmo que
+/// o texto direto. O arquivo que falta recusa, com o motivo e o caminho, sem
+/// gravar nada, no `run write` e no `run answer`.
+#[test]
+fn a_json_argument_read_from_a_file_writes_the_same_as_the_direct_text() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    open_spec(root);
+    let said = write(root, "message", &json!({"text": "Trocar a saudação."}));
+    for gap in ["Onde a saudação nasce", "Onde a saudação aparece"] {
+        let seen = json!([{"text": "A saudação mora na página.", "source": "mensagem 1"}]);
+        seed_binary(root, "point", &json!({"block": "defect", "gap": gap, "from": "gap", "status": "open", "origin": said, "facts": seen}));
+    }
+    let text = "Ação “citada” (parênteses): dois-pontos; 'simples' e \"duplas\".";
+    let agent = "- conferir: pelo `teste`";
+    let fields = json!({"title": "Saudação nova", "text": text, "agent": agent, "origin": said});
+    let decision = json!({"title": "Saudação nova", "text": text, "agent": agent, "keys": ["saudação"], "why": "pedido: \"trocar\"", "origin": said});
+    let facts = json!([{"text": text, "source": "mensagem 1"}]);
+    let in_file = |name: &str, value: &Value| {
+        let file = dir.path().join(name);
+        std::fs::write(&file, value.to_string()).expect("the file");
+        format!("@{}", file.display())
+    };
+    let recorded = |args: &[&str]| {
+        let out = rt(root, args).output().expect("the command runs");
+        let report = stdout_json(&out);
+        assert!(out.status.success(), "{args:?}: {report}");
+        report
+    };
+    let context = |json: &str| recorded(&["write", "context", "--spec", "teste", "--json", json])["id"].clone();
+    let (direct, from_file) = (context(&fields.to_string()), context(&in_file("contexto.json", &fields)));
+    let answer = |json: &str, facts: &str| {
+        let report = recorded(&["answer", "--spec", "teste", "--type", "decision", "--json", json, "--facts", facts]);
+        (report["id"].clone(), report["closed"]["id"].clone())
+    };
+    let answered = answer(&decision.to_string(), &facts.to_string());
+    let answered_from_file = answer(&in_file("decisao.json", &decision), &in_file("fatos.json", &facts));
+
+    let path = mustard_core::io::spec_events::spec_file(root, "teste").expect("spec file");
+    let log = mustard_core::io::spec_events::read(&path).expect("readable").expect("the spec");
+    let said_in = |id: &Value| {
+        let event = id.as_u64().and_then(|id| log.get(id)).unwrap_or_else(|| panic!("no item {id}"));
+        ["title", "text", "agent", "why", "facts"].map(|field| event.fields.get(field).cloned())
+    };
+    assert_eq!(said_in(&from_file), said_in(&direct), "the file writes the same context as the direct text");
+    assert_eq!(said_in(&direct)[1], Some(json!(text)));
+    assert_eq!(said_in(&answered_from_file.0), said_in(&answered.0), "the file writes the same answer as the direct text");
+    assert_eq!(said_in(&answered.0)[3], Some(decision["why"].clone()));
+    assert_eq!(said_in(&answered_from_file.1)[4], Some(facts.clone()), "the facts read from the file close the point");
+    assert_eq!(said_in(&answered_from_file.1), said_in(&answered.1));
+
+    let missing = dir.path().join("falta.json");
+    let before = event_lines(root);
+    for args in [
+        vec!["write", "context", "--spec", "teste", "--json", &format!("@{}", missing.display())],
+        vec!["answer", "--spec", "teste", "--type", "decision", "--json", "{}", "--facts", &format!("@{}", missing.display())],
+    ] {
+        let out = rt(root, &args).output().expect("the command runs");
+        let refused = stdout_json(&out);
+        assert_eq!((out.status.code(), refused["reason"].clone()), (Some(1), json!("io-failed")), "{args:?}: {refused}");
+        assert!(refused.to_string().contains(&missing.display().to_string()), "the refusal names the file: {refused}");
+    }
+    assert_eq!(event_lines(root), before, "nothing is written");
+}

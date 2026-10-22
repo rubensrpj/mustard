@@ -182,3 +182,32 @@ fn the_token_patch_comes_on_standard_input_and_never_as_an_argument() {
     assert_eq!(saved["saved"],true,"{saved}");assert_eq!(saved["publication"]["token_saved"],true,"{saved}");
     assert!(std::fs::read_to_string(root.join("mustard.json")).unwrap().contains(token));
 }
+
+/// O `--json` do `run settings` lido de `@arquivo` grava a mudança como o
+/// texto direto; o arquivo que falta recusa com o caminho, sem mexer na
+/// configuração.
+#[test]
+fn the_settings_change_read_from_a_file_is_saved_like_the_direct_text() {
+    let dir=tempfile::tempdir().unwrap();let root=dir.path();
+    std::fs::create_dir_all(root.join(".claude/agents/mustard")).unwrap();
+    std::fs::write(root.join("mustard.json"),json!({"ai":{"fallback":false}}).to_string()).unwrap();
+    let run=|json:Option<&str>| {
+        let mut command=binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"));
+        command.args(["run","settings","--root"]).arg(root).current_dir(root).env("MUSTARD_RT_DELEGATED","1");
+        if let Some(json)=json {command.args(["--json",json]);}
+        serde_json::from_slice::<Value>(&command.output().unwrap().stdout).unwrap()
+    };
+    let missing=dir.path().join("falta.json");
+    let config=std::fs::read_to_string(root.join("mustard.json")).unwrap();
+    let refused=run(Some(&format!("@{}",missing.display())));
+    assert_eq!(refused["ok"],false,"{refused}");
+    assert!(refused.to_string().contains(&missing.display().to_string()),"the refusal names the file: {refused}");
+    assert_eq!(std::fs::read_to_string(root.join("mustard.json")).unwrap(),config,"nothing changes");
+
+    let patch=json!({"schema_version":1,"revision":run(None)["revision"],"changes":{"agent_model":"opus"}});
+    let file=dir.path().join("mudanca.json");
+    std::fs::write(&file,patch.to_string()).unwrap();
+    let saved=run(Some(&format!("@{}",file.display())));
+    assert_eq!((saved["ok"].clone(),saved["saved"].clone()),(json!(true),json!(true)),"{saved}");
+    assert_eq!(run(None)["values"]["agent_model"],"opus");
+}

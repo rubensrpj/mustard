@@ -281,3 +281,27 @@ fn the_masked_read_with_a_filter_is_not_refused_again() {
         assert!(!String::from_utf8(out.stdout).unwrap().contains(SECRET));
     }
 }
+
+/// Os argumentos do leitor do `config-read` lidos de `@arquivo` mostram o
+/// mesmo que o texto direto; o arquivo que falta recusa com o caminho, sem
+/// mostrar nada.
+#[test]
+fn reader_arguments_read_from_a_file_show_the_same_as_the_direct_text() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("mustard.json"), CONFIG).unwrap();
+    let args = json!(["-n", "flow"]);
+    let file = dir.path().join("args.json");
+    std::fs::write(&file, args.to_string()).unwrap();
+    let read = |args_json: &str| {
+        binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
+            .args(["run", "config-read", "--file", "mustard.json", "--reader", "grep", "--args-json", args_json])
+            .current_dir(dir.path()).output().unwrap()
+    };
+    let direct = read(&args.to_string());
+    assert!(direct.status.success() && String::from_utf8_lossy(&direct.stdout).contains("develop"), "{direct:?}");
+    assert_eq!(read(&format!("@{}", file.display())).stdout, direct.stdout, "the file shows the same as the direct text");
+    let missing = dir.path().join("missing.json");
+    let refused = read(&format!("@{}", missing.display()));
+    assert!(!refused.status.success() && refused.stdout.is_empty(), "{refused:?}");
+    assert!(String::from_utf8_lossy(&refused.stderr).contains(&missing.display().to_string()), "{refused:?}");
+}

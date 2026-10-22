@@ -299,9 +299,15 @@ pub fn dispatch(cmd: SpecEventsCmd) {
         SpecEventsCmd::Read { block, spec, term, full, all, session, root } => {
             spec_events::read::run(&spec_events::read::ReadOpts { root, spec, block, term, session }, full, all);
         }
-        SpecEventsCmd::Write { event_type, spec, json, copy, root } => {
-            spec_events::write::run(&spec_events::write::WriteOpts { root, spec, event_type, json }, copy);
-        }
+        SpecEventsCmd::Write { event_type, spec, json, copy, root } => match crate::shared::json_arg::resolve(json) {
+            Ok(json) => spec_events::write::run(&spec_events::write::WriteOpts { root, spec, event_type, json }, copy),
+            // O arquivo do `--json` que não se lê recusa sem gravar nada.
+            Err(detail) => {
+                let refused = spec_events::refused(&mustard_core::domain::spec_events::Refusal::Io { detail }, spec_events::project(&root).lang);
+                println!("{}", serde_json::to_string_pretty(&refused).unwrap_or_else(|_| "{}".into()));
+                std::process::exit(1);
+            }
+        },
         SpecEventsCmd::Find { term, types, spec, root } => {
             spec_events::find::run(&spec_events::find::FindOpts { root, spec, term, types });
         }

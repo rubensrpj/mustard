@@ -425,8 +425,8 @@ struct PreparedGrouping {
     /// The digest of each task the request shows, by code: together they key
     /// the whole input ([`FORMED`]).
     digests: Vec<(String, String)>,
-    /// The digest of the whole input, by which an accepted forming is found
-    /// again ([`FORMED`]).
+    /// O resumo da entrada inteira, menos as vagas livres, pelo qual uma
+    /// formação aceita é achada de novo ([`FORMED`]).
     input_key: String,
     /// How much of each task text the request shows.
     cut: usize,
@@ -504,11 +504,14 @@ pub fn prepare_grouping(
     }
     let folder = directory(root);
     let digests: Vec<(String, String)> = tasks.iter().map(|task| (task.code.clone(), task_digest(task))).collect();
-    // The exact input an accepted forming already read gives that forming
-    // back; the reserve questions are part of that input.
+    // A mesma entrada que uma formação aceita já leu devolve essa formação;
+    // as perguntas da reserva fazem parte da entrada. As vagas livres não:
+    // mudam a cada onda que volta enquanto a fila fica a mesma, e a formação
+    // das mesmas tarefas com outro número de ondas ainda sai, uma onda por
+    // vaga, à medida que cada uma abre.
     let input_key = {
         let mut hash = Sha256::new();
-        hash.update(&serde_json::to_vec(&(&digests, summaries, max_waves, host, model)).map_err(|e| e.to_string())?);
+        hash.update(&serde_json::to_vec(&(&digests, summaries, host, model)).map_err(|e| e.to_string())?);
         if let Some(extras) = extras {
             hash.update(&serde_json::to_vec(extras).map_err(|e| e.to_string())?);
         }
@@ -547,8 +550,8 @@ pub fn prepare_grouping(
     Err("knowledge-session-request-too-large".into())
 }
 
-/// The file, in the session folder, with the request that read each exact
-/// input of an accepted forming, by the digest of that input.
+/// O arquivo, na pasta da sessão, com o pedido que leu cada entrada de uma
+/// formação aceita, pelo resumo dessa entrada sem as vagas livres.
 const FORMED: &str = "grouping-index.json";
 
 /// The accepted formings, by the digest of the input each one read.

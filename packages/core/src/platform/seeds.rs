@@ -400,6 +400,27 @@ mod tests {
         }
     }
 
+    /// O JSON longo vai ao binário por arquivo: na mesma linha, os dois mapas
+    /// mandam gravar um arquivo temporário com a ferramenta de escrita e
+    /// passá-lo por `--json @arquivo`, que vale também no `--facts`, sem
+    /// script ao lado.
+    #[test]
+    fn the_session_map_sends_a_long_json_through_a_temporary_file() {
+        for (text, by_file, temporary, no_script) in [
+            (Locale::PtBr, "`--json @arquivo`", "temporário", "sem script"),
+            (Locale::EnUs, "`--json @file`", "temp file", "no script"),
+        ] {
+            let map = session_map(text);
+            let line = map
+                .lines()
+                .find(|line| line.contains(by_file))
+                .unwrap_or_else(|| panic!("the {text} map never passes a JSON by file: {map}"));
+            for said in ["Write", temporary, "`--facts`", no_script] {
+                assert!(line.contains(said), "the {text} map does not say `{said}` beside {by_file}: {line}");
+            }
+        }
+    }
+
     /// A troca mexe só nas linhas `model:` e `effort:` do cabeçalho de cada
     /// agente: o resto do cabeçalho e o corpo inteiro passam como estão, e o
     /// modelo e o esforço do molde são os padrões da configuração, então

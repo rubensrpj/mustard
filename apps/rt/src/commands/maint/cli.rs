@@ -137,6 +137,10 @@ pub fn dispatch(cmd: MaintCmd) {
             }
         }
         MaintCmd::ConfigRead { file, reader, args_json } => {
+            let args_json = crate::shared::json_arg::resolve(args_json).unwrap_or_else(|detail| {
+                eprintln!("[Mustard] config-read: {detail}");
+                std::process::exit(2)
+            });
             maint::config_read::run(&file, &reader, &args_json);
         }
         MaintCmd::ScratchGc { dry_run, apply, path } => {
