@@ -83,11 +83,11 @@ pub(crate) struct RoundForming {
 /// sessão conduzindo, porque a leitura é do modelo pequeno dela; sem sessão,
 /// sem nada a ler — menos de duas tarefas que podem sair agora, como na fila
 /// em que cada tarefa espera a anterior — ou sem vaga, nada muda, e a rodada
-/// monta as ondas como sempre. A pergunta ao Jev da ordem passa por `asker`: antes das travas da
-/// rodada, ela sai, pelo prazo de toda chamada, e a resposta fica gravada, sem
-/// gravar a formação; com as travas presas, a formação se grava e só lê a
-/// resposta gravada. Sem ela, a ordem sai da leitura do modelo pequeno, a
-/// reserva da formação.
+/// monta as ondas como sempre. A pergunta ao Jev da ordem passa por `asker`:
+/// antes das travas da rodada, ela sai, pelo prazo de toda chamada, e a
+/// resposta fica gravada, sem gravar a formação; com as travas presas, a
+/// formação se grava e só lê a resposta gravada. Sem ela, a ordem sai da
+/// leitura do modelo pequeno, a reserva da formação.
 pub(crate) fn form_for_round(root: &Path, spec: &str, session: Option<&str>, asker: &Asker<'_>) -> RoundForming {
     if session.is_none() {
         return RoundForming::default();

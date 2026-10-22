@@ -436,13 +436,19 @@ pub(crate) fn agent_known(root: &Path, spec: &str, log: &SpecLog, wave: u64, sen
 }
 
 /// Grava que o agente da onda `wave` da spec `spec`, de `root`, começou: o
-/// envio aberto dela que despachou a onda na posição `dispatch` ganha uma
-/// versão com [`launch_fields`]. Só a prova de que o agente existe chama isto
-/// — a primeira chamada dele ligada ao envio, ou o despacho nativo que
-/// terminou —, nunca o pedido de despacho, que a permissão ainda pode negar.
-/// Ler, conferir e gravar correm com a trava do arquivo de eventos presa. O
-/// envio que já marca o lançamento, que voltou ou que um reenvio substituiu
-/// não grava nada. `false` só quando a gravação falha.
+/// envio dela que despachou a onda na posição `dispatch` ganha uma versão com
+/// [`launch_fields`]. É o envio aberto ou, na onda que quem conduz a obra
+/// reprovou, que já voltou e não tem pedido aberto, o que guarda a reprovação
+/// ([`rejected_send`]), onde o despacho do agente novo gravou o Claude Code
+/// dele. Só a prova de que o agente existe chama isto — a primeira chamada
+/// dele ligada ao envio, ou o despacho nativo que terminou —, nunca o pedido
+/// de despacho, que a permissão ainda pode negar. Ler, conferir e gravar
+/// correm com a trava do arquivo de eventos presa, a mesma que a rodada pega
+/// para soltar a onda do agente que não começou
+/// ([`super::rejection::release_unstarted`]): o lançamento e a soltura não se
+/// perdem um ao outro. O envio que já marca o lançamento, o de outro despacho
+/// e o que um reenvio substituiu não gravam nada. `false` só quando a
+/// gravação falha.
 pub(crate) fn record_launch(root: &Path, spec: &str, wave: u64, dispatch: u64) -> bool {
     let Ok(path) = mustard_core::io::spec_events::spec_file(root, spec) else { return false };
     let written = mustard_core::io::spec_events::with_locked_writer(&path, |locked| {
@@ -499,9 +505,13 @@ pub(crate) fn orphaned_waves(log: &SpecLog) -> BTreeMap<u64, u64> {
 /// conduz a obra reprovou também espera um agente novo, com o Claude Code do
 /// envio aberto ou fechado, até o despacho dele ([`rejected_unclaimed`]). O
 /// despacho do agente novo grava uma versão do envio com o Claude Code dele,
-/// e a onda sai daqui enquanto esse Claude Code está aberto. A entrega nova
-/// muda o nome do trecho, e a onda sai daqui sozinha. O gancho do despacho e
-/// a recusa da rodada leem daqui, e só daqui.
+/// e a onda sai daqui enquanto esse Claude Code está aberto. O agente novo
+/// que nunca começou não a segura para sempre: a rodada tira o Claude Code
+/// dele do envio ([`super::rejection::release_unstarted`]) quando nenhuma
+/// chamada do agente gravou o lançamento ([`record_launch`]), e a onda volta
+/// a esperar um agente. A entrega nova muda o nome do trecho, e a onda sai
+/// daqui sozinha. O gancho do despacho e a recusa da rodada leem daqui, e só
+/// daqui.
 pub(crate) fn waves_awaiting_new_agent(root: &Path, spec: &str, log: &SpecLog) -> BTreeMap<u64, PathBuf> {
     let sends = log.last_by_wave("send");
     waves_returned(log)

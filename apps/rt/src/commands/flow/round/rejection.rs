@@ -26,7 +26,7 @@ use super::queue::{agent_launched, rejected_send, send_revision, waves_awaiting_
 use super::report::{line_object, tagged};
 use super::stops::HeldReturn;
 use super::usage::{measure_usage, usage_missing, Caller, Usage};
-use crate::commands::spec_events::write::record;
+use crate::commands::spec_events::write::{record, record_locked};
 
 /// A linha com que quem conduz a obra reprova a volta de uma onda, com o
 /// motivo: `<REJECTED>{"wave":1,"reason":"…"}</REJECTED>`. Ela também marca
@@ -115,15 +115,16 @@ pub(super) fn held_rejection(log: &SpecLog, wave: u64, last: u64) -> Option<Roun
 /// motivo), presa à volta que ela reprova: a versão nova do envio da onda,
 /// com a volta e o motivo em `rejected`, o consumo do agente medido nos
 /// arquivos de conversa de `caller`, como na linha `USAGE`, e sem o Claude
-/// Code do envio — a reprovação diz que o agente terminou, e a onda passa a
-/// esperar um agente novo, com o Claude Code que mandou a onda aberto ou
-/// fechado. A onda sem volta à espera da rodada e a onda cuja volta já entrou
-/// num commit são recusadas antes de qualquer gravação. A reprovação repetida
-/// da mesma volta com o mesmo motivo não grava nada; com outro motivo, troca
-/// só o motivo, e o agente novo que já saiu segue dono da cópia. Quem chama
-/// segura a trava do passo do git e leu `log`, do arquivo `path`, sob ela: com
-/// algo gravado, `log` é lido de novo. Devolve o que foi gravado e o aviso de
-/// cada onda cujo consumo não foi achado.
+/// Code nem o lançamento do envio ([`without_agent`]) — a reprovação diz que
+/// o agente terminou, e a onda passa a esperar um agente novo, com o Claude
+/// Code que mandou a onda aberto ou fechado. A onda sem volta à espera da
+/// rodada e a onda cuja volta já entrou num commit são recusadas antes de
+/// qualquer gravação. A reprovação repetida da mesma volta com o mesmo
+/// motivo não grava nada; com outro motivo, troca só o motivo, e o agente
+/// novo que já saiu segue dono da cópia. Quem chama segura a trava do passo
+/// do git e leu `log`, do arquivo `path`, sob ela: com algo gravado, `log` é
+/// lido de novo. Devolve o que foi gravado e o aviso de cada onda cujo
+/// consumo não foi achado.
 pub(super) fn record_rejections(
     start: &Path,
     spec: &str,
@@ -181,28 +182,39 @@ pub(super) fn record_rejections(
 /// antes de o agente existir, e o agente que nunca começou não segura a onda.
 /// A versão nova do envio sai sem o agente ([`without_agent`]), e o despacho
 /// seguinte a toma. O despacho gravado depois da entrada desta rodada é de
-/// agora e fica. Quem chama segura a trava do passo do git e leu `log`, do
-/// arquivo `path`, sob ela: com algo gravado, `log` é lido de novo.
+/// agora e fica. O envio que já marca o lançamento também fica, mesmo quando
+/// a marca veio herdada de uma reprovação gravada por uma versão antiga, que
+/// só tirava o Claude Code do agente: a marca não diz se o lançamento é do
+/// agente novo ou do antigo, e soltar a onda de um agente que trabalha poria
+/// dois na mesma cópia. A leitura do envio, a conferência de que ninguém
+/// lançou o agente e a gravação da versão nova correm com a trava do arquivo
+/// de eventos presa, como em [`super::queue::record_launch`], sobre o arquivo
+/// como está agora e não sobre `log`: o lançamento que chega depois de quem
+/// chamou ler `log` é visto, e a onda não perde o agente que começou. Quem
+/// chama segura a trava do passo do git; com algo gravado, `log` passa a ser
+/// o arquivo como a gravação o deixou.
 pub(super) fn release_unstarted(start: &Path, spec: &str, path: &Path, log: &mut SpecLog, entry: &SpecLog) -> Result<Vec<Value>, RoundRefusal> {
-    let mut recorded = Vec::new();
-    let waves: Vec<u64> = log.last_by_wave("send").into_keys().collect();
-    for wave in waves {
-        let Some(sent) = rejected_send(log, wave) else { continue };
-        let claimed = log.get(sent).is_some_and(|event| event.int("claude_pid").is_some());
-        if !claimed || agent_launched(log, sent) || entry.get(sent).is_none() {
-            continue;
+    let held = store::with_locked_writer(path, |locked| -> Result<Vec<Value>, RoundRefusal> {
+        let mut recorded = Vec::new();
+        let waves: Vec<u64> = locked.log().last_by_wave("send").into_keys().collect();
+        for wave in waves {
+            let Some(sent) = rejected_send(locked.log(), wave) else { continue };
+            let claimed = locked.log().get(sent).is_some_and(|event| event.int("claude_pid").is_some());
+            if !claimed || agent_launched(locked.log(), sent) || entry.get(sent).is_none() {
+                continue;
+            }
+            let Some(mut draft) = send_revision(locked.log(), wave, serde_json::Map::new()) else { continue };
+            without_agent(&mut draft);
+            let written = record_locked(locked, start, spec, "send", draft, PhaseWriter::Binary).map_err(RoundRefusal::Refused)?;
+            recorded.push(json!({ "wave": wave, "type": "send", "id": written.written.id }));
         }
-        let Some(mut draft) = send_revision(log, wave, serde_json::Map::new()) else { continue };
-        without_agent(&mut draft);
-        let written = record(start, spec, "send", draft, PhaseWriter::Binary).map_err(RoundRefusal::Refused)?;
-        recorded.push(json!({ "wave": wave, "type": "send", "id": written.written.id }));
-    }
-    if !recorded.is_empty()
-        && let Some(fresh) = store::read(path).map_err(RoundRefusal::Refused)?
-    {
-        *log = fresh;
-    }
-    Ok(recorded)
+        if !recorded.is_empty() {
+            *log = locked.log().clone();
+        }
+        Ok(recorded)
+    })
+    .map_err(RoundRefusal::Refused)?;
+    held.transpose().map(Option::unwrap_or_default)
 }
 
 /// Grava, para cada volta que quem conduz a obra reprovou (`held`), o motivo
@@ -240,4 +252,95 @@ pub(super) fn rejected_message(wave: u64, reason: &str, title: Option<&str>, lan
         .replace("{wave}", &wave.to_string())
         .replace("{title}", title.unwrap_or_default())
         .replace("{reason}", &without_final_period(reason))
+}
+
+#[cfg(test)]
+mod tests {
+    use mustard_core::domain::spec_events::SpecEvent;
+    use tempfile::tempdir;
+
+    use super::super::commit::copy_of;
+    use super::super::queue::{launch_fields, record_launch, sender_fields};
+    use super::super::tests::{approved, returned, round};
+    use super::*;
+
+    fn log_of(root: &Path) -> SpecLog {
+        store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap()
+    }
+
+    /// Os envios da onda 1 na spec de `root`, do mais antigo ao mais novo.
+    fn sends(root: &Path) -> Vec<SpecEvent> {
+        log_of(root).visible().into_iter().filter(|e| e.event_type == "send" && e.wave() == Some(1)).cloned().collect()
+    }
+
+    /// A onda 1 voltou, quem conduz a obra reprovou a volta, e o despacho do
+    /// agente novo gravou o hospedeiro dele no envio, junto de `extra`. Nenhuma
+    /// chamada do agente novo foi vista ainda.
+    fn rejected_and_dispatched(root: &Path, extra: serde_json::Map<String, Value>) {
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        round(root, "x", None);
+        let copy = copy_of(&log_of(root), 1).unwrap();
+        std::fs::write(copy.join("src/a.rs"), "fn changed() {}\n").unwrap();
+        let out = returned(root, json!({"wave":1,"text":"Concluída.","files":["src/a.rs"],"commit":"Altera comportamento"}));
+        assert_eq!(out["ok"], true, "{out}");
+        round(root, "x", Some(r#"<REJECTED>{"wave":1,"reason":"Falta o teste do caso vazio."}</REJECTED>"#));
+        let log = log_of(root);
+        assert!(rejection_of(&log, 1).is_some(), "the wave went back: {:?}", log.last_by_wave("send"));
+        let mut fields = sender_fields(Some((4242, 1)));
+        fields.extend(extra);
+        let draft = send_revision(&log, 1, fields).unwrap();
+        record(root, "x", "send", draft, PhaseWriter::Binary).unwrap();
+    }
+
+    /// O agente novo faz a primeira chamada depois de a rodada ler a spec e
+    /// antes de a soltura ser gravada: a chamada grava o lançamento no
+    /// arquivo, e uma soltura feita pela leitura antiga tiraria a onda de um
+    /// agente que já trabalha. A onda fica com o agente que tem, e nada é
+    /// gravado.
+    #[test]
+    fn a_launch_that_lands_after_the_reading_keeps_the_agent_of_the_rejected_wave() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        rejected_and_dispatched(root, serde_json::Map::new());
+        let path = store::spec_file(root, "x").unwrap();
+        let entry = log_of(root);
+        let mut read = entry.clone();
+        let sent = *read.last_by_wave("send").get(&1).unwrap();
+        assert!(!agent_launched(&read, sent), "no agent had started when the round read the spec");
+
+        assert!(record_launch(root, "x", 1, read.dispatch_position(sent)), "the first call of the new agent records the launch");
+        let written = sends(root);
+        let Ok(released) = release_unstarted(root, "x", &path, &mut read, &entry) else { panic!("the release was refused") };
+
+        assert_eq!(released, Vec::<Value>::new(), "the agent started: the wave is not released");
+        let now = sends(root);
+        assert_eq!(now.len(), written.len(), "nothing was written after the launch");
+        let newest = now.last().unwrap();
+        assert_eq!(newest.int("claude_pid"), Some(4242), "{:?}", newest.fields);
+        assert!(agent_launched(&log_of(root), newest.id), "{:?}", newest.fields);
+    }
+
+    /// A reprovação gravada por uma versão antiga tirava só o hospedeiro do
+    /// envio, e a marca de lançamento do agente reprovado seguia para as
+    /// versões depois dela. Com o hospedeiro do agente novo gravado por cima,
+    /// a marca não se distingue do lançamento do agente novo, e a onda não é
+    /// solta: um segundo agente numa cópia que já tem um é pior que uma onda
+    /// que espera o aviso de silêncio.
+    #[test]
+    fn a_launch_mark_inherited_from_an_older_rejection_keeps_the_wave_with_its_agent() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        rejected_and_dispatched(root, launch_fields());
+        let path = store::spec_file(root, "x").unwrap();
+        let entry = log_of(root);
+        let mut read = entry.clone();
+        let sent = *read.last_by_wave("send").get(&1).unwrap();
+        assert_eq!((read.get(sent).unwrap().int("claude_pid"), agent_launched(&read, sent)), (Some(4242), true));
+        let written = sends(root);
+
+        let Ok(released) = release_unstarted(root, "x", &path, &mut read, &entry) else { panic!("the release was refused") };
+
+        assert_eq!(released, Vec::<Value>::new(), "the wave is not released");
+        assert_eq!(sends(root).len(), written.len(), "nothing was written");
+    }
 }
