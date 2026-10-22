@@ -2152,13 +2152,6 @@ fn a_wave_without_tasks_is_not_listed_as_open() {
     assert!(!listed.contains("\"n\":9"), "{listed}");
 }
 
-/// A rodada sem a revisão do condutor: a volta que chegou segue esperando,
-/// com a cópia guardada, e a resposta vem inteira.
-fn unreviewed_round(project: &Project) -> Value {
-    let out = project.command(&["run", "round", "--dispatch", "--spec", SPEC], "");
-    serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stdout)))
-}
-
 /// O aviso `copies-full` da resposta da rodada, quando saiu.
 fn copies_full(out: &Value) -> Option<&Value> {
     out["warnings"].as_array().into_iter().flatten().find(|warning| warning["reason"] == json!("copies-full"))

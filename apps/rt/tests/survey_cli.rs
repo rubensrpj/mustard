@@ -672,9 +672,25 @@ fn the_end_of_the_survey_shows_each_unrouted_message_once_as_a_short_line() {
     assert!(String::from_utf8_lossy(&full.stdout).contains(TAIL), "the item's reading has the whole message");
 }
 
+/// O `grill` que abre os pontos diz onde salvar a cópia do modelo visual
+/// aprovado uma vez só no `hint`, depois de apresentar o ponto: diz que a
+/// cópia vai logo depois de gravar o sim, e diz o caminho dela na pasta da
+/// spec.
+fn asks_for_the_design_copy_once(out: &Output, present: &str, after_yes: &str) {
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stdout));
+    let opening = report(out);
+    let hint = opening["hint"].as_str().unwrap_or_else(|| panic!("no hint: {opening}"));
+    let design = format!("`.claude/spec/{SPEC}/desenho.html`");
+    let shown = hint.find(present).unwrap_or_else(|| panic!("the grill presents the first point: {hint}"));
+    let save = hint.find(&design).unwrap_or_else(|| panic!("the grill says where the approved design goes: {hint}"));
+    assert!(shown < save && hint.contains(after_yes), "the copy goes right after the yes is recorded: {hint}");
+    assert_eq!(String::from_utf8_lossy(&out.stdout).matches("desenho.html").count(), 1, "{hint}");
+}
+
 /// O levantamento diz onde salvar a cópia do modelo visual aprovado quando
-/// abre os pontos, no `grill`, para quem conduz salvá-la logo depois de gravar
-/// o sim, enquanto o modelo ainda está à mão. Nenhuma resposta depois repete o
+/// abre os pontos, no `grill` curto e no inteiro, para quem conduz salvá-la
+/// logo depois de gravar o sim, enquanto o modelo ainda está à mão. Nenhuma
+/// resposta depois repete o
 /// pedido: nem as que gravam os fatos e as respostas, a do sim inclusive, nem
 /// a que fecha o último ponto e manda rodar o revisor de fora, nem a que fecha
 /// o ponto achado por ele, nem o `grill` sem ponto aberto. A escrita da cópia
@@ -694,15 +710,11 @@ fn the_survey_asks_for_the_approved_design_copy_when_it_opens_the_points_and_nev
     let said = hook_says(root, home.path(), GOAL);
     write(root, "context", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": GOAL, "origin": said}));
 
+    let short = rt(root, &["grill", "--kinds", "feature", "--spec", SPEC]);
+    asks_for_the_design_copy_once(&short, "Apresente o ponto", "logo depois de gravar o sim");
     let grilled = rt(root, &["grill", "--kinds", "feature", "--spec", SPEC, "--full"]);
-    assert_eq!(grilled.status.code(), Some(0), "{}", String::from_utf8_lossy(&grilled.stdout));
-    let opening = report(&grilled);
-    let hint = opening["hint"].as_str().unwrap_or_else(|| panic!("no hint: {opening}"));
-    let present = hint.find("Apresente o ponto").unwrap_or_else(|| panic!("the grill presents the first point: {hint}"));
-    let save = hint.find(&format!("`{design}`")).unwrap_or_else(|| panic!("the grill says where the approved design goes: {hint}"));
-    assert!(present < save && hint.contains("logo depois de gravar o sim"), "the copy goes right after the yes is recorded: {hint}");
-    assert_eq!(mentions(&grilled), 1, "{hint}");
-    let items = opening["points"].as_array().cloned().expect("the point list");
+    asks_for_the_design_copy_once(&grilled, "Apresente o ponto", "logo depois de gravar o sim");
+    let items = report(&grilled)["points"].as_array().cloned().expect("the point list");
     assert_eq!(items.len(), 9, "{items:?}");
 
     // Toda resposta depois do `grill` que abriu os pontos, contada.
@@ -778,6 +790,25 @@ fn the_survey_asks_for_the_approved_design_copy_when_it_opens_the_points_and_nev
     let answer: Value = serde_json::from_str(&on(root, home.path(), "PreToolUse", &dispatch)).expect("the hook answers JSON");
     let sent = answer["hookSpecificOutput"]["updatedInput"]["prompt"].as_str().unwrap_or_else(|| panic!("no rewritten prompt: {answer}"));
     assert!(sent.contains(&format!("{design}`")), "the outside reviewer is pointed to the saved copy: {sent}");
+}
+
+/// Num projeto em inglês, o `grill` curto que abre os pontos diz o mesmo, na
+/// língua do projeto: onde salvar a cópia do modelo visual aprovado, uma vez
+/// só no `hint`, logo depois de gravar o sim.
+#[test]
+fn the_short_grill_asks_for_the_design_copy_once_in_english() {
+    let dir = repo();
+    let home = tempfile::tempdir().expect("home");
+    let root = dir.path();
+    std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"en-US"},"git":{"flow":{"*":"dev","dev":"main"}}}"#)
+        .expect("config");
+    let opened = open(root, "feature", SPEC);
+    assert_eq!(opened.status.code(), Some(0), "{}", String::from_utf8_lossy(&opened.stdout));
+    let said = hook_says(root, home.path(), GOAL);
+    write(root, "context", &json!({"title": "Agree on the item", "agent": "- check by the test", "text": GOAL, "origin": said}));
+
+    let short = rt(root, &["grill", "--kinds", "feature", "--spec", SPEC]);
+    asks_for_the_design_copy_once(&short, "Present point", "right after recording the yes");
 }
 
 /// Duas tarefas que passam a depender uma da outra, em círculo, são

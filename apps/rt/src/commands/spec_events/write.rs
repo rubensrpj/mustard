@@ -5008,7 +5008,9 @@ mod tests {
     /// O índice e a regra do objetivo leem o mesmo objetivo: em cada caminho
     /// que troca o objetivo, aceito ou recusado, o que a linha do índice
     /// mostra é o objetivo que a regra conferiu, e ele sempre aponta uma
-    /// mensagem do usuário.
+    /// mensagem do usuário. Os títulos vêm em negrito: o índice mostra a
+    /// leitura que a regra mede, sem o negrito, e o título que só cabe no teto
+    /// sem o negrito entra.
     #[test]
     fn the_index_and_the_goal_rule_see_the_same_goal() {
         let dir = tempdir().unwrap();
@@ -5017,12 +5019,11 @@ mod tests {
         let seen = |root: &std::path::Path| -> Option<String> {
             let log = DiskSpecState::new(root).log("teste").unwrap();
             let shown = index_goal(root);
-            assert_eq!(shown, spec_index::goal_of(&log), "the index file and its reading");
+            assert_eq!(shown, spec_index::goal_of(&log), "the index shows the reading the goal rule measures");
             match mustard_core::domain::survey::goal(&log) {
                 Some(goal) => {
                     let said = goal.int("origin").and_then(|id| log.get(id)).expect("the goal has its origin");
                     assert_eq!((said.event_type.as_str(), said.str_field("author")), ("message", Some("user")));
-                    assert_eq!(shown.as_deref(), goal.str_field("title"));
                 }
                 None => assert_eq!(shown, None),
             }
@@ -5032,17 +5033,24 @@ mod tests {
         let reply = response(root, "Anotado.", first);
         assert_eq!(context(root, "Outra coisa.", reply)["reason"], json!("goal-origin-not-user"));
         assert_eq!(seen(root), None);
-        let goal = context(root, "Travar o merge.", first)["id"].as_u64().unwrap();
+        let goal = context(root, "Travar o **merge**.", first)["id"].as_u64().unwrap();
         assert_eq!(seen(root).as_deref(), Some("Travar o merge."));
         assert_eq!(revise(root, goal, "Outra coisa.", reply)["reason"], json!("goal-origin-not-user"));
         let other = context(root, "Uma nota.", reply)["id"].as_u64().unwrap();
         assert_eq!(remove(root, goal)["reason"], json!("goal-origin-not-user"));
         assert_eq!(seen(root).as_deref(), Some("Travar o merge."));
         let second = message(root, "user", "Travar o envio.");
-        assert_eq!(revise(root, other, "Travar o envio.", second)["ok"], json!(true));
+        let sent = revise(root, other, "Travar o **envio**.", second);
+        assert_eq!(sent["ok"], json!(true), "{sent}");
         assert_eq!(seen(root).as_deref(), Some("Travar o merge."));
         assert_eq!(remove(root, goal)["ok"], json!(true));
         assert_eq!(seen(root).as_deref(), Some("Travar o envio."));
+        let at_the_cap = "Travar o envio com pendência aberta em toda spec do projeto.";
+        assert_eq!(at_the_cap.chars().count(), mustard_core::domain::spec_events::MESSAGE_TITLE_MAX);
+        let bold = at_the_cap.replace("envio", "**envio**");
+        let widened = revise(root, sent["id"].as_u64().unwrap(), &bold, second);
+        assert_eq!(widened["ok"], json!(true), "the rule measures the title without the bold: {widened}");
+        assert_eq!(seen(root).as_deref(), Some(at_the_cap));
     }
 
     /// Uma spec que nasce em plano, sem levantamento, não tem a vaga do

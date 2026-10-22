@@ -195,13 +195,13 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // levantamento não a pede de novo.
         ("survey.save_design", Locale::PtBr) => {
             "Se o usuário aprovar um modelo visual de tela neste levantamento, salve a cópia aprovada \
-             em `.claude/spec/{spec}/desenho.html`. Salve logo depois de gravar o sim, antes do \
-             próximo ponto. Com o arquivo ali, o pedido do revisor aponta o desenho."
+             em `.claude/spec/{spec}/desenho.html`. Salve logo depois de gravar o sim, enquanto o \
+             modelo ainda está à mão. Com o arquivo ali, o pedido do revisor aponta o desenho."
         }
         ("survey.save_design", Locale::EnUs) => {
             "If the user approves a visual model of a screen in this survey, save the approved copy at \
-             `.claude/spec/{spec}/desenho.html`. Save it right after recording the yes, before the \
-             next point. With the file there, the reviewer's request points to the design."
+             `.claude/spec/{spec}/desenho.html`. Save it right after recording the yes, while the \
+             model is still at hand. With the file there, the reviewer's request points to the design."
         }
         ("survey.fact_declared", Locale::PtBr) => "`{name}` é declarado em {path}, linha {line}.",
         ("survey.fact_declared", Locale::EnUs) => "`{name}` is declared in {path}, line {line}.",
