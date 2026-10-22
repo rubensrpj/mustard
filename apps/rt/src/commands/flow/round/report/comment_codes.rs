@@ -95,4 +95,37 @@ mod tests {
                     diff --git a/notes.md b/notes.md\n--- a/notes.md\n+++ b/notes.md\n@@ -0,0 +1 @@\n+# ABC-TASK-0003\n";
         assert_eq!(added_in_diff(diff, &codes), vec!["src/a.rs:12 (ABC-TASK-0003)".to_string()]);
     }
+
+    /// O arquivo novo da cópia, que o git ainda não conhece, também é lido: a
+    /// recusa nomeia o arquivo e a linha do comentário que cita o código da
+    /// tarefa da spec. O código que a spec não tem, o texto que não é
+    /// comentário e o arquivo que não é código passam.
+    #[test]
+    fn a_new_file_whose_comment_cites_a_spec_code_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("projeto");
+        crate::shared::test_fixture::seeded_repo(&root, &[("src/a.rs", "fn a() {}\n")]);
+        let copy = dir.path().join("copia");
+        assert!(git::run(&root, &["worktree", "add", "-q", &copy.to_string_lossy(), "-b", "onda-1"]).ok);
+        let sent = serde_json::json!({"id": 2, "type": "send", "wave": 1, "copy": copy.to_string_lossy()});
+        let task = serde_json::json!({"id": 1, "type": "task", "text": "Somar dois números.", "wave": 1});
+        let log = mustard_core::domain::spec_events::parse_log(&format!("{task}\n{sent}\n"));
+        let code = log.codes().get(&1).cloned().expect("the task code");
+        let unknown = format!("{}-9999", code.rsplit_once('-').expect("a numbered code").0);
+        for (path, text) in [
+            ("src/novo.rs", format!("fn novo() {{}}\n    // {code}: soma os dois números\n")),
+            ("src/outro.rs", format!("fn outro() {{}}\n// {unknown}: soma\n")),
+            ("src/texto.rs", format!("const NOME: &str = \"{code}\";\n")),
+            ("notas.md", format!("# {code}\n")),
+        ] {
+            std::fs::write(copy.join(path), text).unwrap();
+        }
+
+        let Err(RoundRefusal::Refused(Refusal::DeliveryItemCodeInComment { wave, found })) = refuse_item_codes_in_comments(&root, &log, 1) else {
+            panic!("a new file citing a spec code in a comment must be refused");
+        };
+
+        assert_eq!(wave, 1);
+        assert_eq!(found, vec![format!("src/novo.rs:2 ({code})")]);
+    }
 }

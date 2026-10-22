@@ -373,6 +373,22 @@ fn a_click_without_the_goal_in_sight_is_refused_on_the_spot() {
     assert_eq!(approval["reason"], json!("goal-text-differs"), "{approval}");
 }
 
+/// O objetivo já confirmado por um clique que valeu não leva aviso num
+/// segundo clique cuja fala anterior não traz o objetivo: o aviso de clique
+/// recusado é só de quem ainda não tem o objetivo confirmado.
+#[test]
+fn a_click_after_the_goal_is_confirmed_brings_no_refusal() {
+    let project = GoalProject::new();
+    let first = project.confirm_after(&format!("O objetivo é: {GOAL}"));
+    assert!(first.contains("Objetivo confirmado"), "the first click confirms:\n{first}");
+
+    let second = project.confirm_after("Vou confirmar com você.");
+
+    assert!(!second.contains("o clique não valeu"), "a confirmed goal is not refused again:\n{second}");
+    assert!(!second.contains("MustardGoal"), "and nothing asks again how to confirm:\n{second}");
+    assert_eq!(project.goal_approval()["confirmed"], json!(true));
+}
+
 /// A pergunta comum, sem testemunha, também separa os autores: a mensagem do
 /// usuário tem só a opção clicada, ou só o que ele digitou em "Outro", e a
 /// pergunta fica na própria mensagem, como do assistente. Nenhuma resposta

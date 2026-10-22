@@ -30,7 +30,8 @@
 //!   do assistente gravada antes do clique mostrou o objetivo inteiro. A
 //!   fala do mesmo turno da pergunta, que só viraria resposta no fim dele, é
 //!   lida da conversa e gravada como resposta antes do clique. O clique que
-//!   não confirmou é dito na hora, com o objetivo gravado.
+//!   não confirmou é dito na hora, com o objetivo gravado, e só enquanto o
+//!   objetivo ainda não está confirmado.
 //!
 //! ## A resposta de cada pergunta
 //!
@@ -235,15 +236,17 @@ fn is_yes(gesture: &Gesture, label: &str) -> bool {
 /// retomada lê, e a testemunha diz na hora se o objetivo ficou confirmado. O
 /// clique em "Confirmar objetivo" que não confirmou é dito no próprio clique,
 /// com o motivo e o objetivo gravado: calado, o aviso só chegava no comando
-/// seguinte.
+/// seguinte. Só quando o objetivo ainda não está confirmado: um clique a mais,
+/// com o objetivo já confirmado por um clique anterior, pelo texto do usuário
+/// ou pela aprovação da spec, não tem o que recusar.
 fn decide_goal(answer: &Answered<'_>) -> Option<String> {
-    let message = answer.recorded?;
+    answer.recorded?;
     if !matches!(answer.choice, Choice::Yes(_)) {
         return None;
     }
     let disk = DiskSpecState::new(Path::new(answer.root));
     let log = disk.log(&disk.active(answer.session)?)?;
-    if !log.get(message).is_some_and(|event| crate::commands::flow::goal::confirms(&log, event)) {
+    if crate::commands::flow::goal::status(&log, answer.lang)["confirmed"] != json!(true) {
         return crate::commands::flow::goal::refused_click(&log, answer.lang);
     }
     Some(match answer.lang {
