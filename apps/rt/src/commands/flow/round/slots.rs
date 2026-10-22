@@ -14,7 +14,8 @@ use mustard_core::io::fs::lock::LockedFile;
 
 use crate::commands::git_settle::CopiesLock;
 use mustard_core::io::wave_prompt::{
-    copies_dir, final_copy_path, is_slot_of, local_file_inside, recorded_copy, shown, slot_path, spec_copies_dir,
+    copies_dir, final_copy_path, inside_copies, is_slot_of, local_file_inside, recorded_copy, shown, slot_path, spec_copies_dir,
+    terminal_folder,
 };
 use mustard_core::platform::git;
 use mustard_core::platform::i18n::{Locale, translate};
@@ -433,28 +434,17 @@ fn changed_since(root: &Path, before: &str, head: &str) -> Option<Reuse> {
     Some(Reuse { since: before.to_string(), changed })
 }
 
-/// A pasta `path` mora dentro de um dos lugares de cópia do projeto `root`:
-/// a pasta das cópias dele, fora do projeto, ou o lugar antigo, dentro dele
-/// (`.claude/worktrees`). Só aí o Mustard apaga pasta; a pasta principal e a
-/// compilação dela nunca entram.
-pub(crate) fn inside_copies(root: &Path, path: &Path) -> bool {
-    let places = [copies_dir(root), root.join(".claude").join("worktrees")];
-    places.iter().any(|place| path.starts_with(place) && path != place.as_path())
-        && path.components().all(|part| !matches!(part, std::path::Component::ParentDir))
-}
-
 /// O aviso de quem chamou a rodada de dentro de uma cópia de onda: a pasta em
 /// que o terminal está pode ser apagada pela própria rodada
 /// ([`remove_spec_copies`]), e um shell que perde a pasta em que está não roda
 /// mais nada.
 ///
 /// `None` quando o terminal está na pasta principal, ou quando não se sabe
-/// onde ele está. Nenhuma chamada de `exit` ou `kill` existe nesse caminho: o
-/// terminal morria por isso, e não por alguém o encerrar (reproduzido em
-/// 22/10/2026).
+/// onde ele está ([`terminal_folder`]). Nenhuma chamada de `exit` ou `kill`
+/// existe nesse caminho: o terminal morria por isso, e não por alguém o
+/// encerrar (reproduzido em 22/10/2026).
 pub(crate) fn standing_in_a_copy(root: &Path, lang: mustard_core::platform::i18n::Locale) -> Option<serde_json::Value> {
-    let here = std::env::current_dir().ok()?;
-    let here = here.canonicalize().unwrap_or(here);
+    let here = terminal_folder()?;
     inside_copies(root, &here).then(|| {
         let hint = crate::shared::say::say("round.terminal_inside_a_copy", lang, &[("{folder}", &shown(&here))]);
         serde_json::json!({"reason": "terminal-inside-a-copy", "hint": hint})
@@ -1148,9 +1138,9 @@ mod standing_tests {
         let root = dir.path();
         let copies = mustard_core::io::wave_prompt::copies_dir(root);
         let slot = copies.join("obra").join("0");
-        assert!(crate::commands::flow::round::slots::inside_copies(root, &slot), "a vaga de uma onda está dentro das cópias");
-        assert!(!crate::commands::flow::round::slots::inside_copies(root, root), "a pasta principal não");
-        assert!(!crate::commands::flow::round::slots::inside_copies(root, &root.join("src")), "nem uma pasta do projeto");
+        assert!(inside_copies(root, &slot), "a vaga de uma onda está dentro das cópias");
+        assert!(!inside_copies(root, root), "a pasta principal não");
+        assert!(!inside_copies(root, &root.join("src")), "nem uma pasta do projeto");
 
         let said = crate::shared::say::say(
             "round.terminal_inside_a_copy",
@@ -1161,6 +1151,59 @@ mod standing_tests {
         assert!(said.contains("pasta principal"), "e diz para onde ir: {said}");
         // Da pasta principal não sai aviso nenhum.
         assert_eq!(standing_in_a_copy(root, mustard_core::platform::i18n::Locale::PtBr), None);
+    }
+
+    /// A pasta do processo filho de
+    /// [`the_round_warns_from_a_copy_reached_through_a_link`]: o projeto mora
+    /// em `projeto` e a resposta do aviso vai para `aviso.json`.
+    const STANDING_CHILD: &str = "MUSTARD_STANDING_TEST_CHILD";
+
+    /// O terminal parado numa vaga cuja pasta das cópias o sistema escreve de
+    /// outro jeito: no Linux e no macOS, a base das cópias atrás de um link —
+    /// a pasta pessoal num link —, e o sistema dá a pasta do terminal já
+    /// resolvida; no Windows, sem o link, a pasta resolvida traz o prefixo de
+    /// caminho literal. Nos dois, o aviso sai e nomeia a pasta da vaga. O
+    /// aviso roda num processo filho parado na vaga, com a base das cópias
+    /// dele: a pasta do processo da suíte não muda.
+    #[test]
+    fn the_round_warns_from_a_copy_reached_through_a_link() {
+        let dir = tempfile::tempdir().expect("temp");
+        let root = dir.path().join("projeto");
+        std::fs::create_dir_all(&root).unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        #[cfg(unix)]
+        let base = {
+            let link = dir.path().join("link");
+            std::os::unix::fs::symlink(&real, &link).unwrap();
+            link
+        };
+        #[cfg(not(unix))]
+        let base = real.clone();
+        let slot = real.join(copies_dir(&root).file_name().unwrap()).join("obra").join("a");
+        std::fs::create_dir_all(&slot).unwrap();
+
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "commands::flow::round::slots::standing_tests::warning_read_from_the_terminal_folder"])
+            .env(STANDING_CHILD, dir.path())
+            .env("MUSTARD_COPIES_DIR", &base)
+            .current_dir(&slot)
+            .output()
+            .unwrap();
+        assert!(child.status.success(), "{}", String::from_utf8_lossy(&child.stdout));
+        let warning: Value = serde_json::from_str(&std::fs::read_to_string(dir.path().join("aviso.json")).unwrap()).unwrap();
+        assert_eq!(warning["reason"], "terminal-inside-a-copy", "o aviso sai: {warning}");
+        assert!(warning["hint"].as_str().unwrap().contains("/obra/a"), "e nomeia a vaga: {warning}");
+    }
+
+    /// O lado do processo filho: sem a variável, não faz nada.
+    #[test]
+    fn warning_read_from_the_terminal_folder() {
+        let Some(dir) = std::env::var_os(STANDING_CHILD).map(PathBuf::from) else {
+            return;
+        };
+        let warning = standing_in_a_copy(&dir.join("projeto"), Locale::PtBr);
+        std::fs::write(dir.join("aviso.json"), serde_json::to_string(&warning).unwrap()).unwrap();
     }
 }
 

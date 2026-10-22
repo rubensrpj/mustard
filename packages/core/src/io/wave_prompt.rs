@@ -375,6 +375,75 @@ pub fn copies_dir(root: &Path) -> PathBuf {
     project_folder(root, "MUSTARD_COPIES_DIR", "copias")
 }
 
+/// A pasta `path` mora dentro de um dos lugares de cópia do projeto `root`:
+/// a pasta das cópias dele ([`copies_dir`]), fora do projeto, ou o lugar
+/// antigo, dentro dele (`.claude/worktrees`). Só aí o Mustard apaga pasta; a
+/// pasta principal e a compilação dela nunca entram, nem o caminho que traz
+/// `..`.
+///
+/// As duas pontas se comparam pela mesma grafia, a do lugar de verdade
+/// ([`real_place`]): a pasta do terminal, que o sistema dá já resolvida, e a
+/// pasta das cópias, montada da pasta pessoal ou da variável, se encontram
+/// mesmo com um link no caminho de uma delas ou com o prefixo de caminho
+/// literal do Windows.
+#[must_use]
+pub fn inside_copies(root: &Path, path: &Path) -> bool {
+    if path.components().any(|part| matches!(part, std::path::Component::ParentDir)) {
+        return false;
+    }
+    let here = real_place(path);
+    [copies_dir(root), root.join(".claude").join("worktrees")]
+        .iter()
+        .map(|place| real_place(place))
+        .any(|place| here.starts_with(&place) && here != place)
+}
+
+/// O lugar de verdade que `path` nomeia: a parte que existe resolvida pelo
+/// sistema — o link, a pasta pessoal atrás de um link, o nome curto do
+/// Windows —, a que ainda não existe como foi escrita, e sem o prefixo de
+/// caminho literal que o Windows põe no que resolve (`\\?\C:\x` é `C:\x`,
+/// `\\?\UNC\srv\x` é `\\srv\x`).
+#[must_use]
+pub fn real_place(path: &Path) -> PathBuf {
+    let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut tail = Vec::new();
+    let mut head = absolute.as_path();
+    loop {
+        if let Ok(real) = std::fs::canonicalize(head) {
+            return tail.iter().rev().fold(without_verbatim(real), |full, part| full.join(part));
+        }
+        match (head.file_name(), head.parent()) {
+            (Some(name), Some(parent)) => {
+                tail.push(name.to_os_string());
+                head = parent;
+            }
+            _ => return absolute,
+        }
+    }
+}
+
+/// `path` sem o prefixo de caminho literal do Windows (`\\?\`), que só o
+/// caminho resolvido pelo sistema traz.
+fn without_verbatim(path: PathBuf) -> PathBuf {
+    let plain = {
+        let text = path.to_string_lossy();
+        match text.strip_prefix(r"\\?\UNC\") {
+            Some(share) => Some(PathBuf::from(format!(r"\\{share}"))),
+            None => text.strip_prefix(r"\\?\").filter(|rest| rest.as_bytes().get(1) == Some(&b':')).map(PathBuf::from),
+        }
+    };
+    plain.unwrap_or(path)
+}
+
+/// A pasta em que o terminal está, como o sistema a dá: a leitura única de
+/// quem pergunta se a chamada veio de dentro de uma cópia — o aviso da rodada
+/// e a chamada de dentro da cópia da spec. `None` quando não se sabe. Quem a
+/// compara com as cópias é [`inside_copies`], pela mesma grafia.
+#[must_use]
+pub fn terminal_folder() -> Option<PathBuf> {
+    std::env::current_dir().ok()
+}
+
 /// A pasta onde nasce o programa compilado da versão em construção do
 /// projeto do checkout principal `root`: o `mustard-rt`, o `scan` e o
 /// `mustard` ficam em `<pasta>/release/`.

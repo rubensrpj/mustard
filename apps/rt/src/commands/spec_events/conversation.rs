@@ -30,10 +30,9 @@ use mustard_core::domain::spec_state::{SpecState, State, last_user_message};
 use mustard_core::domain::survey;
 use mustard_core::io::spec_events as store;
 use mustard_core::io::spend;
-use mustard_core::io::wave_prompt::spec_copies_dir;
+use mustard_core::io::wave_prompt::{inside_copies, real_place, spec_copies_dir, terminal_folder};
 use serde_json::{Map, Value, json};
 
-use crate::commands::flow::round::inside_copies;
 use crate::shared::secret::without_secrets;
 use crate::shared::spec_state::DiskSpecState;
 
@@ -544,7 +543,7 @@ fn record_in_call_spec(
         .filter(|spec| !spec.is_empty())
         .map(str::to_string)
         .or_else(|| conversation_spec(root, session));
-    let from_spec_copy = |spec: &str| std::env::current_dir().is_ok_and(|here| inside_spec_copy(root, spec, &here));
+    let from_spec_copy = |spec: &str| terminal_folder().is_some_and(|here| inside_spec_copy(root, spec, &here));
     if unbound && !spec.as_deref().is_some_and(from_spec_copy) {
         return None;
     }
@@ -561,16 +560,14 @@ fn record_in_call_spec(
 }
 
 /// `true` quando a pasta `here` mora numa cópia da spec `spec` do projeto de
-/// `root`: num lugar de cópia do projeto, pela conferência única da rodada
+/// `root`: num lugar de cópia do projeto, pela conferência única
 /// ([`inside_copies`]), e, nele, na pasta das cópias da spec
-/// ([`spec_copies_dir`]), onde moram as cópias das ondas e a do revisor.
-///
-/// Quem grava passa a pasta como o sistema a dá (`current_dir`), e não pelo
-/// disco (`canonicalize`): no Windows o disco põe o prefixo `\\?\`, que
-/// nenhuma pasta de cópia traz.
+/// ([`spec_copies_dir`]), onde moram as cópias das ondas e a do revisor. As
+/// duas pastas se comparam pela mesma grafia, a do lugar de verdade
+/// ([`real_place`]), como na conferência única.
 fn inside_spec_copy(root: &Path, spec: &str, here: &Path) -> bool {
     let root = store::spec_root(root);
-    inside_copies(&root, here) && here.starts_with(spec_copies_dir(&root, spec))
+    inside_copies(&root, here) && real_place(here).starts_with(real_place(&spec_copies_dir(&root, spec)))
 }
 
 /// O recibo da leitura de um pedido: uma chamada `read` com o pedido
@@ -980,6 +977,60 @@ mod tests {
         assert!(recorded_operations(root, "copias").events.is_empty());
         // A mesma chamada fora de uma conversa, que não tem ligação a pedir, fica.
         assert!(record_measured_call(root, "read", Some("copias"), None, Instant::now(), &report, Map::new()).is_some());
+    }
+
+    /// A pasta do processo filho de
+    /// [`a_call_from_a_spec_copy_reached_through_a_link_is_recorded`]: o
+    /// projeto mora em `projeto`.
+    const CALL_CHILD: &str = "MUSTARD_CALL_TEST_CHILD";
+
+    /// A conversa sem ligação chamando de dentro da cópia da própria spec,
+    /// com a pasta das cópias escrita de outro jeito pelo sistema: no Linux e
+    /// no macOS, a base das cópias atrás de um link, e o sistema dá a pasta do
+    /// terminal já resolvida; no Windows, sem o link. A chamada fica, uma vez
+    /// só. A chamada roda num processo filho parado na cópia, com a base das
+    /// cópias dele: a pasta do processo da suíte não muda.
+    #[test]
+    fn a_call_from_a_spec_copy_reached_through_a_link_is_recorded() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path().join("projeto");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("mustard.json"), "{}").expect("config");
+        record_open(&root, "copias", "feature/copias", "dev").expect("open");
+        let real = dir.path().join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        #[cfg(unix)]
+        let base = {
+            let link = dir.path().join("link");
+            std::os::unix::fs::symlink(&real, &link).unwrap();
+            link
+        };
+        #[cfg(not(unix))]
+        let base = real.clone();
+        let copy = real.join(spec_copies_dir(&root, "copias").parent().unwrap().file_name().unwrap()).join("copias").join("a");
+        std::fs::create_dir_all(&copy).unwrap();
+
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "commands::spec_events::conversation::tests::call_made_from_the_terminal_folder"])
+            .env(CALL_CHILD, dir.path())
+            .env("MUSTARD_COPIES_DIR", &base)
+            .current_dir(&copy)
+            .output()
+            .unwrap();
+        assert!(child.status.success(), "{}", String::from_utf8_lossy(&child.stdout));
+        let calls = recorded_operations(&root, "copias");
+        assert_eq!(calls.events.len(), 1, "the call from the spec copy is recorded once");
+        assert_eq!(calls.events[0].event_type, "call");
+    }
+
+    /// O lado do processo filho: sem a variável, não faz nada.
+    #[test]
+    fn call_made_from_the_terminal_folder() {
+        let Some(dir) = std::env::var_os(CALL_CHILD).map(std::path::PathBuf::from) else {
+            return;
+        };
+        let report = json!({"ok": true, "spec": "copias"});
+        record_measured_call(&dir.join("projeto"), "read", Some("copias"), Some("s-paralela"), Instant::now(), &report, Map::new());
     }
 
     /// Sem spec atual nada é gravado, nem a mensagem nem a resposta; e a

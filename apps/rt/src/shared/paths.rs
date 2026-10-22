@@ -107,29 +107,14 @@ pub(crate) fn below(folder: &str, path: &str) -> Option<String> {
     same.then(|| path[prefix.len()..].to_string())
 }
 
-/// The canonical text of the real place `path` names: the part that exists is
+/// The canonical text of the real place `path` names
+/// ([`mustard_core::io::wave_prompt::real_place`]): the part that exists is
 /// resolved by the system (a Windows short name such as `RUNNER~1`, a link, the
-/// case on disk), and the part that does not exist yet is kept as written.
-/// What the system gives back is spelled by [`canonical`], so the verbatim
-/// prefix Windows puts on it is gone.
+/// case on disk), and the part that does not exist yet is kept as written,
+/// spelled by [`canonical`].
 #[must_use]
 pub(crate) fn on_disk(path: &Path) -> String {
-    let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
-    let mut tail: Vec<std::ffi::OsString> = Vec::new();
-    let mut head = abs.as_path();
-    loop {
-        if let Ok(real) = std::fs::canonicalize(head) {
-            let full = tail.iter().rev().fold(real, |full, part| full.join(part));
-            return canonical(&full.to_string_lossy());
-        }
-        match (head.file_name(), head.parent()) {
-            (Some(name), Some(parent)) => {
-                tail.push(name.to_os_string());
-                head = parent;
-            }
-            _ => return canonical(&abs.to_string_lossy()),
-        }
-    }
+    canonical(&mustard_core::io::wave_prompt::real_place(path).to_string_lossy())
 }
 
 /// `path` with `.` and `..` resolved in the text only, without looking at the
