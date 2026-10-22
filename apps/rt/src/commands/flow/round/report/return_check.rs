@@ -18,7 +18,7 @@ use super::super::agreed::{Unmet, covered_codes, request_agreed, settle_agreed};
 use super::super::commit::{git_lock, unknown_file};
 use super::super::commit_title::message;
 use super::super::finish_check::{proof_older_than_files, unfinished_work};
-use super::super::queue::{open_review, open_sends};
+use super::super::queue::{open_review, open_sends, sends_without_return};
 use super::super::read_check::{request_name, unread_items, without_undone};
 use super::super::task_release::held_back;
 use super::{RoundRefusal, criterion_id, observations, proof_target, wave_report_of};
@@ -66,9 +66,19 @@ pub(crate) fn check_return(
     let wave = draft.get("wave").and_then(Value::as_u64).filter(|_| event_type == "delivered");
     let Some(wave) = wave else { return Ok((held, Vec::new())) };
     let (project, log) = spec_log(start, spec)?;
-    let Some(sent) = open_sends(&log).get(&wave).copied() else {
+    // O envio que o agente recebeu basta: um envio daquela onda sem volta.
+    //
+    // A leitura de antes tirava dois grupos — a onda replanejada e a que saiu
+    // do plano —, e as duas coisas acontecem ENQUANTO o agente trabalha, sem
+    // culpa dele. A entrega dele era recusada por uma mudança que ele não
+    // fez, e o trabalho ia embora: foram 93 das 406 recusas de um projeto de
+    // verdade, e a causa de duas ondas que nunca saíram. A recusa fica para o
+    // caso real: a onda que não tem envio nenhum. Quem avisa que o plano
+    // mudou é a rodada, mais abaixo.
+    let Some(sent) = sends_without_return(&log).get(&wave).copied() else {
         return Err(RoundRefusal::Refused(Refusal::NoOpenSend { wave }));
     };
+    let send_changed = !open_sends(&log).contains_key(&wave);
     observations::check(&project.root,spec,&log,sent,wave,draft)?;
     if let Some(knowledge) = draft.get("knowledge") {
         let copy = wave_prompt::recorded_copy(&log, wave);
@@ -99,6 +109,11 @@ pub(crate) fn check_return(
     // dele ([`proof_target`]), como a rodada a assumirá. A entrega guarda a
     // prova como veio. Só o item que a spec não tem recusa.
     let mut warnings = Vec::new();
+    // O plano da onda mudou depois de ela sair, ou ela saiu do plano: a
+    // entrega entra, e o aviso diz o que mudou.
+    if send_changed {
+        warnings.push(crate::shared::say::say("round.send_changed", lang, &[("{wave}", &wave.to_string())]));
+    }
     for (reference, proof) in &report.proofs {
         let target = proof_target(&log, reference).map_err(RoundRefusal::Refused)?;
         let named = target.named();
