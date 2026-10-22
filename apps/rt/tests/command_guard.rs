@@ -368,15 +368,17 @@ fn the_ready_command_names_its_file_by_the_session_that_asked() {
 /// Dois agentes da mesma conversa, que o host identifica pelo mesmo id de
 /// sessão, não dividem o arquivo do comando pronto: o id do agente entra no
 /// nome, ao lado do da sessão, e a conversa principal fica só com o da sessão.
+/// O ponto entre os dois não aparece em nenhum id, e a sessão `a` com o agente
+/// `b-c` não divide o arquivo com a sessão `a-b` e o agente `c`.
 #[test]
 fn the_ready_command_names_its_file_by_the_agent_that_asked() {
     let dir = project_with(r#"{"language":{"text":"pt-BR"}}"#);
-    let ready = |agent: Option<&str>| {
+    let ready = |session: &str, agent: Option<&str>| {
         let mut input = serde_json::json!({
             "hook_event_name": "PreToolUse",
             "tool_name": "Bash",
             "cwd": dir.path().to_str().expect("utf-8 path"),
-            "session_id": "conversa-c3",
+            "session_id": session,
             "tool_input": { "command": "mustard-rt run resume | head -80" }
         });
         if let Some(agent) = agent {
@@ -385,35 +387,62 @@ fn the_ready_command_names_its_file_by_the_agent_that_asked() {
         let reason = refusal(&run_hook(dir.path(), &input, None)).expect("the cut must be refused");
         file_name(&written_file(&reason))
     };
-    assert_eq!(ready(None), "mustard-resume-conversa-c3.txt");
-    assert_eq!(ready(Some("agente-a1")), "mustard-resume-conversa-c3.agente-a1.txt");
-    assert_eq!(ready(Some("agente-b2")), "mustard-resume-conversa-c3.agente-b2.txt");
+    assert_eq!(ready("conversa-c3", None), "mustard-resume-conversa-c3.txt");
+    assert_eq!(ready("conversa-c3", Some("agente-a1")), "mustard-resume-conversa-c3.agente-a1.txt");
+    assert_eq!(ready("conversa-c3", Some("agente-b2")), "mustard-resume-conversa-c3.agente-b2.txt");
+
+    let (first, second) = (ready("a", Some("b-c")), ready("a-b", Some("c")));
+    assert_ne!(first, second, "the session and the agent keep apart in the name");
+    assert_eq!(first, "mustard-resume-a.b-c.txt");
+    assert_eq!(second, "mustard-resume-a-b.c.txt");
 }
 
-/// Com um espaço na pasta temporária, o comando pronto traz o caminho do
-/// arquivo inteiro, entre aspas, mesmo quando o comando passa de 200
-/// caracteres: cortar o texto no meio do caminho tirava a aspa do fim e
-/// deixava um comando que o terminal não fecha.
+/// A frase do catálogo, em pt-BR, que vem logo antes do comando pronto na
+/// recusa, pela chave `key`.
+fn ready_phrase(key: &str) -> String {
+    let text = mustard_core::platform::i18n::translate(key, mustard_core::platform::i18n::Locale::PtBr);
+    text.split("{ready}").next().unwrap_or_default().trim_end().to_string()
+}
+
+/// O comando pronto vai na recusa inteiro até 600 bytes, e acima deles sai do
+/// meio do trecho mais longo, marcado por `…`, com a frase que diz que ele
+/// voltou encurtado. O caminho do arquivo nunca se corta: com um espaço na
+/// pasta temporária ele volta entre aspas, inteiro, com a aspa do fim, mesmo
+/// quando os 600 bytes caem no meio dele. Cortar o texto no meio do caminho
+/// tirava a aspa do fim e deixava um comando que o terminal não fecha.
 #[test]
 fn the_ready_command_keeps_its_quoted_path_whole_in_a_temporary_folder_with_a_space() {
     let dir = project_with(r#"{"language":{"text":"pt-BR"}}"#);
     let root = TempDir::new().expect("tempdir");
     let temp = root.path().join("with space");
     std::fs::create_dir(&temp).expect("temporary folder with a space");
-    // O caminho do arquivo começa perto do caractere 165 e acaba depois do 200.
-    let command = format!("echo {} && mustard-rt run resume | head -5", "x".repeat(132));
-    let input = serde_json::json!({
-        "hook_event_name": "PreToolUse",
-        "tool_name": "Bash",
-        "cwd": dir.path().to_str().expect("utf-8 path"),
-        "session_id": "conversa-d4",
-        "tool_input": { "command": command }
-    });
-    let reason = refusal(&run_hook_with_temp(dir.path(), &input, None, Some(&temp))).expect("the cut must be refused");
+    let refused = |command: &str| {
+        let input = serde_json::json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "cwd": dir.path().to_str().expect("utf-8 path"),
+            "session_id": "conversa-d4",
+            "tool_input": { "command": command }
+        });
+        refusal(&run_hook_with_temp(dir.path(), &input, None, Some(&temp))).expect("the cut must be refused")
+    };
+    let file = temp.join("mustard-resume-conversa-d4.txt");
 
+    // Abaixo do limite, o comando volta inteiro, pronto para rodar.
+    let reason = refused(&format!("echo {} && mustard-rt run resume | head -5", "x".repeat(132)));
     let ready = reason.lines().last().unwrap_or_default();
-    assert!(ready.len() > 200, "the ready command must go past the old cut: {ready}");
-    assert!(ready.ends_with(".txt'"), "the closing quote must stay: {ready}");
-    let file = written_file(&reason);
-    assert_eq!(Path::new(&file), temp.join("mustard-resume-conversa-d4.txt"), "{ready}");
+    assert_eq!(ready, format!("echo {} && mustard-rt run resume > '{}'", "x".repeat(132), file.display()));
+    assert!(reason.contains(&ready_phrase("runtime_output.ready")), "{reason}");
+    assert_eq!(Path::new(&written_file(&reason)), file, "{ready}");
+
+    // Acima dele, o caminho começa no byte 593 e passa do 600: o corte sai do
+    // meio do trecho de antes, o mais longo, e o resto fica como foi escrito.
+    let reason = refused(&format!("echo {} && mustard-rt run resume | head -5 && echo {}", "x".repeat(560), "y".repeat(300)));
+    let ready = reason.lines().last().unwrap_or_default();
+    assert!(ready.len() <= 600, "the ready command stays within 600 bytes: {} bytes", ready.len());
+    assert!(ready.starts_with("echo xxx") && ready.contains('…'), "{ready}");
+    assert!(ready.ends_with(&format!(".txt' && echo {}", "y".repeat(300))), "the closing quote and the rest stay: {ready}");
+    assert_eq!(Path::new(&written_file(&reason)), file, "{ready}");
+    assert!(reason.contains(&ready_phrase("runtime_output.ready_shortened")), "{reason}");
+    assert!(!reason.contains(&ready_phrase("runtime_output.ready")), "a shortened command is not offered as the same command: {reason}");
 }

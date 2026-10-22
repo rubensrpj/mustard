@@ -541,6 +541,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("runtime_output.ready", Locale::EnUs) => {
             "Run this instead, the same command with the whole answer in a file:\n{ready}"
         }
+        // O comando pronto longo, que volta sem o meio: `…` marca cada pedaço
+        // tirado, e o arquivo de cada etapa volta inteiro.
+        ("runtime_output.ready_shortened", Locale::PtBr) => {
+            "O comando pronto é longo e volta sem o meio, marcado com `…`. Rode o seu comando sem a \
+             etapa que filtra a resposta, com cada etapa do Mustard gravando no arquivo que ele \
+             mostra:\n{ready}"
+        }
+        ("runtime_output.ready_shortened", Locale::EnUs) => {
+            "The ready command is long and comes back without its middle, marked with `…`. Run your \
+             command without the step that filters the answer, with each Mustard step writing to \
+             the file it shows:\n{ready}"
+        }
         ("runtime_output.summary", Locale::PtBr) => {
             "O bloco `{block}` tem um resumo pronto, que cabe inteiro: `mustard-rt run read {summary}`."
         }
@@ -861,6 +873,7 @@ mod tests {
             ("runtime_output.scripted", &["{command}"][..]),
             ("command_guard.glued_argument", &["{argument}"][..]),
             ("runtime_output.ready", &["{ready}"][..]),
+            ("runtime_output.ready_shortened", &["{ready}"][..]),
             ("runtime_output.summary", &["{block}", "{summary}"][..]),
             ("tool_observations.summary_hidden", &["{command}"][..]),
         ] {

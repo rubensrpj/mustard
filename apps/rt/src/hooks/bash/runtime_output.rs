@@ -112,9 +112,10 @@ fn summary_asked(segments: &[Segment]) -> Option<(&'static str, &'static str)> {
 /// corta a resposta do Mustard sai, com o encadeamento dela, e cada etapa do
 /// Mustard grava num arquivo próprio ([`answer_file`]). A etapa de ajuda ou
 /// de versão, que passa sozinha, fica como foi escrita, com o corte dela.
-/// `None` quando a reescrita não acha as duas etapas — a resposta chega ao
-/// script por substituição, e não por encadeamento.
-fn with_the_answer_in_a_file(segments: &[Segment], cmd: &str, owner: Option<&str>) -> Option<String> {
+/// Volta com o comando os arquivos, escritos como estão nele. `None` quando a
+/// reescrita não acha as duas etapas — a resposta chega ao script por
+/// substituição, e não por encadeamento.
+fn with_the_answer_in_a_file(segments: &[Segment], cmd: &str, owner: Option<&str>) -> Option<(String, Vec<String>)> {
     if !segments.iter().any(runs_a_script) {
         return None;
     }
@@ -122,6 +123,7 @@ fn with_the_answer_in_a_file(segments: &[Segment], cmd: &str, owner: Option<&str
     // depois dela sai. O corte da ajuda, ou de outro programa, fica.
     let cutting = std::cell::Cell::new(false);
     let names = std::cell::RefCell::new(Vec::<String>::new());
+    let files = std::cell::RefCell::new(Vec::<String>::new());
     let out = super::rewrite::rewritten_steps(cmd, |step| {
         // A etapa se lê pelo mesmo analisador do comando inteiro: o programa
         // dela vem depois dos invólucros, como `rtk head -5`.
@@ -141,10 +143,85 @@ fn with_the_answer_in_a_file(segments: &[Segment], cmd: &str, owner: Option<&str
             None => (step, ""),
         };
         let file = answer_file(first, &mut names.borrow_mut(), owner);
-        Some(super::rewrite::Step::Put(format!("{body} > {file}{errors}")))
+        let put = format!("{body} > {file}{errors}");
+        files.borrow_mut().push(file);
+        Some(super::rewrite::Step::Put(put))
     })?;
     let out = out.trim().to_string();
-    (!out.is_empty()).then_some(out)
+    (!out.is_empty()).then(|| (out, files.into_inner()))
+}
+
+/// O tamanho máximo, em bytes, do comando pronto na recusa. Até ele, o
+/// comando volta inteiro e roda como está; acima, o comando de quem pediu já
+/// é longo — um JSON grande, o corpo de um heredoc — e repeti-lo inteiro na
+/// recusa só gasta a leitura.
+const READY_MAX: usize = 600;
+
+/// Os bytes que cada trecho encurtado do comando pronto guarda de cada ponta:
+/// o começo diz o comando, e o fim chega ao arquivo.
+const READY_EDGE: usize = 40;
+
+/// A marca do pedaço tirado do comando pronto.
+const ELLIPSIS: &str = "…";
+
+/// O comando pronto `ready` em até [`READY_MAX`] bytes, ou `None` quando ele
+/// já cabe. O que passa sai do meio dos trechos entre os arquivos `files`, o
+/// mais longo primeiro, cada trecho guardando [`READY_EDGE`] bytes de cada
+/// ponta, e cada pedaço tirado vira [`ELLIPSIS`]. Os arquivos voltam sempre
+/// inteiros, com as aspas: um corte no meio do caminho tirava a aspa do fim e
+/// deixava um comando que o terminal não fecha. `None` também quando os
+/// trechos entre os arquivos já são curtos demais para encurtar.
+fn shortened(ready: &str, files: &[String]) -> Option<String> {
+    let mut over = ready.len().checked_sub(READY_MAX).filter(|over| *over > 0)?;
+    let mut kept: Vec<std::ops::Range<usize>> =
+        files.iter().flat_map(|file| ready.match_indices(file.as_str()).map(|(at, found)| at..at + found.len())).collect();
+    kept.sort_by_key(|file| file.start);
+    let mut stretches = Vec::new();
+    let mut at = 0;
+    for file in kept {
+        if file.start > at {
+            stretches.push(at..file.start);
+        }
+        at = at.max(file.end);
+    }
+    if ready.len() > at {
+        stretches.push(at..ready.len());
+    }
+    stretches.sort_by_key(|stretch| std::cmp::Reverse(stretch.len()));
+    let mut cuts = Vec::new();
+    for stretch in stretches {
+        let take = (over + ELLIPSIS.len()).min(stretch.len().saturating_sub(2 * READY_EDGE));
+        // Os trechos vêm do mais longo: o seguinte tem ainda menos a dar.
+        if take <= ELLIPSIS.len() {
+            break;
+        }
+        let mut start = stretch.start + (stretch.len() - take) / 2;
+        while !ready.is_char_boundary(start) {
+            start -= 1;
+        }
+        let mut end = start + take;
+        while !ready.is_char_boundary(end) {
+            end += 1;
+        }
+        over = over.saturating_sub(end - start - ELLIPSIS.len());
+        cuts.push(start..end);
+        if over == 0 {
+            break;
+        }
+    }
+    if cuts.is_empty() {
+        return None;
+    }
+    cuts.sort_by_key(|cut| cut.start);
+    let mut out = String::with_capacity(READY_MAX + cuts.len() * ELLIPSIS.len());
+    let mut at = 0;
+    for cut in cuts {
+        out.push_str(&ready[at..cut.start]);
+        out.push_str(ELLIPSIS);
+        at = cut.end;
+    }
+    out.push_str(&ready[at..]);
+    Some(out)
 }
 
 /// O arquivo em que a etapa do Mustard `segment` grava a resposta: na pasta
@@ -221,10 +298,10 @@ fn shell_path(dir: &std::path::Path, file: &str) -> String {
 /// A conferência: recusa o comando `cmd`, já lido em `segments`, quando a
 /// resposta do Mustard passa por script, filtro ou corte. A recusa, no
 /// idioma `lang`, mostra o comando, devolve o comando pronto com a resposta
-/// num arquivo — inteiro, porque um corte no meio do caminho tira a aspa do
-/// fim e deixa um comando que o terminal não fecha — e, quando o corte é de
-/// um bloco grande, diz o bloco de resumo que cabe inteiro. O arquivo leva o
-/// nome da sessão e do agente de `input`.
+/// num arquivo — inteiro até [`READY_MAX`] bytes, e acima deles encurtado
+/// sem nunca cortar o caminho de um arquivo ([`shortened`]) — e, quando o
+/// corte é de um bloco grande, diz o bloco de resumo que cabe inteiro. O
+/// arquivo leva o nome da sessão e do agente de `input`.
 ///
 /// A ajuda e a versão passam: a resposta delas é curta, fixa e não traz nada
 /// da obra. O gancho pegava até `mustard-rt run read --help | head`.
@@ -238,9 +315,14 @@ pub(super) fn bash_runtime_output(segments: &[Segment], cmd: &str, input: &HookI
         return None;
     }
     let mut reason = crate::shared::say::say("runtime_output.scripted", lang, &[("{command}", truncate(cmd, 120))]);
-    if let Some(ready) = with_the_answer_in_a_file(segments, cmd, owner_tag(input).as_deref()) {
+    if let Some((ready, files)) = with_the_answer_in_a_file(segments, cmd, owner_tag(input).as_deref()) {
         reason.push('\n');
-        reason.push_str(&crate::shared::say::say("runtime_output.ready", lang, &[("{ready}", &ready)]));
+        // O comando encurtado não roda como está, e a frase diz isso.
+        let said = match shortened(&ready, &files) {
+            Some(short) => crate::shared::say::say("runtime_output.ready_shortened", lang, &[("{ready}", &short)]),
+            None => crate::shared::say::say("runtime_output.ready", lang, &[("{ready}", &ready)]),
+        };
+        reason.push_str(&said);
     }
     if let Some((block, summary)) = summary_asked(segments) {
         reason.push('\n');

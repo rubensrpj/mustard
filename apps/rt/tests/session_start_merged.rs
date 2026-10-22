@@ -22,8 +22,10 @@
 //!   lista do provedor que decide se a branch sai.
 //! - O provedor não responde: o aviso diz isso, e nada muda.
 //!
-//! E o que o início da sessão já contou não se repete na sessão seguinte, e a
-//! limpeza alcança a cópia e a branch da spec que o usuário apagou.
+//! E o que o início da sessão já contou não se repete na sessão seguinte, a
+//! limpeza alcança a cópia e a branch da spec que o usuário apagou, e uma
+//! cópia do projeto recém-feita na pasta temporária não entra no aviso de
+//! disco.
 
 #[path = "support/executable.rs"]
 mod executable;
@@ -1199,4 +1201,86 @@ fn the_clean_removes_the_merged_branch_of_an_open_spec_and_keeps_the_one_just_cu
     assert!(!has_branch(&root, &merged), "the merged branch of the open spec left: {applied}");
     assert!(has_branch(&root, &just_cut), "the branch just cut stays: {applied}");
     assert!(root.join(".claude/spec").join(OPEN_MERGED).join("spec.ndjson").is_file(), "the clean never touches the open spec");
+}
+
+/// O binário com `args`, de dentro de `root`, com a pasta pessoal `home`, a
+/// pasta temporária `temp` e o aviso de disco com o limite em zero, sem
+/// sessão nem spec forçada. Devolve o que ele imprimiu.
+fn with_a_zero_disk_limit(root: &Path, home: &Path, temp: &Path, args: &[&str], stdin: &str) -> String {
+    let mut child = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
+        .args(args)
+        .current_dir(root)
+        .env("HOME", home)
+        .env("TMPDIR", temp)
+        .env("TMP", temp)
+        .env("TEMP", temp)
+        .env("MUSTARD_SCRATCH_WARN_BYTES", "0")
+        .env("MUSTARD_COPIES_DIR", test_copies_base())
+        .env_remove("MUSTARD_WORKSPACE_ROOT")
+        .env_remove("MUSTARD_ACTIVE_SPEC")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn mustard-rt");
+    child.stdin.take().unwrap().write_all(stdin.as_bytes()).unwrap();
+    let out = child.wait_with_output().expect("wait mustard-rt");
+    assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// Uma cópia do projeto recém-feita na pasta temporária, com as datas de dois
+/// dias atrás que o `cp -a` traz da origem, não entra no aviso de disco do
+/// início da sessão, nem com o limite do aviso em zero: o binário lê a pasta
+/// temporária e o limite do ambiente, e a varredura data a cópia pela mudança
+/// do inode, que nenhuma cópia preserva. A limpeza, no mesmo ambiente, mostra
+/// que a varredura viu a cópia e a guardou pela idade, e não por não achá-la.
+#[test]
+fn a_copy_just_made_in_the_temporary_folder_brings_no_disk_notice_even_with_a_zero_limit() {
+    use mustard_core::platform::i18n::{Locale, translate};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().join("projeto");
+    let home = dir.path().join("casa");
+    let temp = dir.path().join("tmp");
+    for folder in [&root, &home, &temp] {
+        std::fs::create_dir_all(folder).unwrap();
+    }
+    git(&root, &["init", "-q", "-b", "dev"]);
+    std::fs::write(root.join(".git/info/exclude"), ".claude/\nmustard.json\n").unwrap();
+    std::fs::write(root.join("mustard.json"), json!({"language": {"text": "pt-BR"}}).to_string()).unwrap();
+    std::fs::write(root.join("README.md"), "loja\n").unwrap();
+    git(&root, &["add", "README.md"]);
+    git(&root, &["commit", "-q", "-m", "semente"]);
+    support::copies_leave_with_the_test(&root);
+
+    // A cópia, feita agora, com as datas da origem em cada arquivo e pasta.
+    let copy = temp.join("tmp.copia");
+    std::fs::create_dir_all(copy.join("apps/rt")).unwrap();
+    std::fs::write(copy.join("Cargo.toml"), "[workspace]\n").unwrap();
+    std::fs::write(copy.join("apps/rt/big.bin"), vec![0u8; 4096]).unwrap();
+    let two_days_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(48 * 3600);
+    for path in [copy.join("apps/rt/big.bin"), copy.join("Cargo.toml"), copy.join("apps/rt"), copy.join("apps"), copy.clone()] {
+        std::fs::File::open(&path).unwrap().set_modified(two_days_ago).unwrap();
+    }
+
+    let payload = json!({"hook_event_name": "SessionStart", "session_id": "s-disco", "source": "startup", "cwd": root.to_string_lossy()});
+    let said = with_a_zero_disk_limit(&root, &home, &temp, &["on", "SessionStart"], &payload.to_string());
+    let context = serde_json::from_str::<Value>(said.trim())
+        .ok()
+        .and_then(|v| v.pointer("/hookSpecificOutput/additionalContext").and_then(Value::as_str).map(str::to_string))
+        .unwrap_or_default();
+    let notice = translate("scratch.residue.notice", Locale::PtBr);
+    let opening = notice.split("{total}").next().unwrap_or_default();
+    assert!(!opening.is_empty(), "{notice}");
+    assert!(!context.contains(opening), "a copy just made is not residue: {context}");
+
+    let listed: Value = serde_json::from_str(&with_a_zero_disk_limit(&root, &home, &temp, &["run", "clean"], "")).expect("the clean answers JSON");
+    assert_eq!(listed["candidates"], json!([]), "{listed}");
+    let copy_path = copy.display().to_string();
+    assert!(
+        listed["kept"].as_array().into_iter().flatten().any(|kept| kept["path"] == json!(copy_path) && kept["reason"] == json!("younger than 12h")),
+        "the scan saw the copy and kept it for its age: {listed}"
+    );
+    assert!(copy.join("apps/rt/big.bin").is_file(), "the notice and the list only read");
 }
