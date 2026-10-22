@@ -245,6 +245,8 @@ const ALIASES: &[(&str, &str)] = &[
     ("estado", "state"),
     ("progresso", "progress"),
     ("conversa", "conversation"),
+    ("messages", "conversation"),
+    ("mensagens", "conversation"),
     ("combinados", "agreed"),
     ("combinado", "agreed"),
     ("medidas", "metrics"),

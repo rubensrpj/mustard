@@ -4064,7 +4064,7 @@ mod tests {
         let read: Value = serde_json::from_str(&read).expect("the reading is JSON");
         assert_eq!(read["warnings"], Value::Null, "{read}");
         let events = read["events"].as_array().expect("events");
-        let found = events.iter().find(|e| e["id"] == json!(old)).expect("the old rule is read");
+        let found = events.iter().find(|e| e["code"] == json!("MSTD-RULE-0001")).expect("the old rule is read");
         assert_eq!(found["text"], json!("A pasta de cache nunca é apagada."), "{read}");
     }
 

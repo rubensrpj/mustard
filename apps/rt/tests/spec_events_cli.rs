@@ -900,7 +900,7 @@ fn task_without_a_title_is_refused_and_with_a_title_is_written() {
     assert_eq!((code, &out["ok"]), (Some(0), &json!(true)), "70 caracteres passam: {out}");
     let first = out["id"].as_u64().expect("o número da tarefa");
     let written = read(root, "waves");
-    let saved = written["events"].as_array().expect("events").iter().find(|e| e["id"] == json!(first)).cloned();
+    let saved = written["events"].as_array().expect("events").iter().find(|e| e["code"] == out["code"]).cloned();
     assert_eq!(saved.map(|e| e["title"].clone()), Some(json!(exact)), "o título fica gravado: {written}");
 
     // A versão nova pelo modelo, sem título: recusada.
@@ -1059,9 +1059,8 @@ fn a_new_version_over_a_replaced_version_is_refused_and_names_the_current_one() 
     let (v3, _) = written(&decision("A conta, sobre a vigente.", Some(json!(v2))));
 
     let (v4, _) = written(&decision("A conta, pelo código.", Some(json!(item))));
-    let agreed = read(root, "agreed");
-    let saved = agreed["events"].as_array().expect("events").iter().find(|e| e["id"] == json!(v4)).cloned();
-    assert_eq!(saved.map(|e| e["replaces"].clone()), Some(json!(v3)), "pelo código vai à vigente: {agreed}");
+    let saved = read(root, &format!("item-{v4}"));
+    assert_eq!(saved["events"][0]["replaces"], json!(v3), "pelo código vai à vigente: {saved}");
 
     let (other, _) = written(&decision("Outra conta.", None));
     refused(&decision("As duas contas.", Some(json!([other, v2]))), &format!("{item} ({v4})"), "lista com a 2");
@@ -1085,14 +1084,14 @@ fn a_new_version_over_a_replaced_version_is_refused_and_names_the_current_one() 
     }
     std::fs::write(&path, content).expect("the old event file");
     let agreed = read(root, "agreed");
-    let tips: Vec<u64> = agreed["events"]
+    let tips: Vec<&Value> = agreed["events"]
         .as_array()
         .expect("events")
         .iter()
         .filter(|e| e["code"] == json!("MSTD-DEC-0099"))
-        .filter_map(|e| e["id"].as_u64())
+        .map(|e| &e["text"])
         .collect();
-    assert_eq!(tips, vec![base + 2, base + 1], "as duas pontas seguem na leitura, a mais nova primeiro: {agreed}");
+    assert_eq!(tips, [&json!("Ponta dois."), &json!("Ponta um.")], "as duas pontas seguem na leitura, a mais nova primeiro: {agreed}");
 }
 
 /// O comando de ler, rodado pelo binário de dentro de `from`, que é a pasta
@@ -1195,14 +1194,16 @@ fn the_every_wave_mark_is_accepted_on_write_and_shown_on_read() {
 fn a_conversation_read_brings_the_newest_up_to_the_cap_and_all_brings_every_one() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
-    let ids: Vec<u64> =
-        (1..=35).map(|n| seed_binary(root, "message", &json!({"author": "user", "text": format!("mensagem {n}")}))).collect();
-    let numbers = |report: &Value| -> Vec<u64> {
-        report["events"].as_array().expect("events").iter().map(|e| e["id"].as_u64().expect("id")).collect()
+    let ids: Vec<String> = (1..=35)
+        .map(|n| seed_binary(root, "message", &json!({"author": "user", "text": format!("mensagem {n}")})))
+        .map(|id| format!("MSTD-MSG-{id:04}"))
+        .collect();
+    let numbers = |report: &Value| -> Vec<String> {
+        report["events"].as_array().expect("events").iter().map(|e| e["code"].as_str().expect("code").to_string()).collect()
     };
 
     let capped = read(root, "conversation");
-    let newest: Vec<u64> = ids.iter().rev().take(30).copied().collect();
+    let newest: Vec<String> = ids.iter().rev().take(30).cloned().collect();
     assert_eq!(numbers(&capped), newest, "{capped}");
     assert_eq!(capped["count"], json!(30), "{capped}");
     let more = capped["more"].as_str().unwrap_or_default();
@@ -1211,7 +1212,7 @@ fn a_conversation_read_brings_the_newest_up_to_the_cap_and_all_brings_every_one(
     let out = rt(root, &["read", "conversation", "--spec", "teste", "--all"]).output().expect("run read");
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
     let all = stdout_json(&out);
-    assert_eq!(numbers(&all), ids.iter().rev().copied().collect::<Vec<_>>(), "{all}");
+    assert_eq!(numbers(&all), ids.iter().rev().cloned().collect::<Vec<_>>(), "{all}");
     assert!(all.get("more").is_none(), "{all}");
 }
 
@@ -1275,6 +1276,171 @@ fn a_metrics_search_comes_as_a_summary_and_all_brings_the_events() {
     let all = stdout_json(&out);
     let commands: Vec<&Value> = all["events"].as_array().expect("events").iter().map(|e| &e["command"]).collect();
     assert_eq!(commands, [&json!("map search"); 3], "{all}");
+}
+
+/// As marcas de conferência de um fato, que só a leitura do item traz.
+const FACT_MARKS: [&str; 5] = ["source_version", "current_source_version", "classification", "verification", "source_status"];
+
+/// As ligações entre itens, que a leitura de um bloco mostra pelo código.
+const LINKS: [&str; 6] = ["origin", "result", "replaces", "closes", "reply_to", "covered_by"];
+
+/// O número de um evento, ou a lista deles, trocado pelo código do item.
+fn by_code(codes: &std::collections::BTreeMap<u64, String>, value: &Value) -> Value {
+    match value {
+        Value::Array(list) => Value::Array(list.iter().map(|one| by_code(codes, one)).collect()),
+        one => one.as_u64().and_then(|id| codes.get(&id)).map_or_else(|| one.clone(), |code| json!(code)),
+    }
+}
+
+/// Uma spec com um item de cada tipo, cada linha com as marcas que o binário
+/// carimba (versão do formato, número, hora em nanossegundos, autor e
+/// sessão); dois pontos com os mesmos fatos; e as ligações: a origem, a
+/// resposta a uma mensagem, a versão nova de uma decisão e o ponto que fecha
+/// outro com o resultado. Devolve os códigos de cada número.
+fn spec_with_every_item_type(root: &Path) -> std::collections::BTreeMap<u64, String> {
+    open_spec(root);
+    let fact = |source: &str, text: &str| {
+        json!({"source": source, "text": text, "classification": "syntax-candidate", "verification": "requires-source-confirmation",
+            "source_version": "c21d75f84991d3ef1951c00770f9ad5939451299ec672ff0da55c364c45ddbba"})
+    };
+    let shared = vec![fact("src/soma.rs:1", "A soma mora em src/soma.rs."), fact("src/total.rs:2", "O total mora em src/total.rs.")];
+    let mut lines = vec![json!({"type": "message", "author": "user", "text": "Somar a fatura."})];
+    let mut first_of: std::collections::BTreeMap<&str, u64> = std::collections::BTreeMap::new();
+    for spec in mustard_core::domain::spec_events::TYPES.iter().filter(|spec| spec.name != "message") {
+        first_of.insert(spec.name, lines.len() as u64 + 1);
+        lines.push(json!({"type": spec.name, "author": "assistant", "title": format!("Título {}", spec.name),
+            "text": format!("Texto {}.", spec.name), "agent": "- a parte do agente", "keys": ["chave"], "example": "um exemplo",
+            "why": "um porquê", "expected": "o esperado", "value": "um valor", "effect": "new_waves", "origin": 1}));
+    }
+    let point = |facts: Vec<Value>| json!({"type": "point", "author": "binary", "block": "defect", "gap": "Onde a fatura soma",
+        "from": "gap", "status": "open", "origin": 1, "facts": facts});
+    lines.push(point(shared.clone()));
+    let mut more = shared;
+    more.push(fact("src/fatura.rs:3", "A fatura mora em src/fatura.rs."));
+    lines.push(point(more));
+    lines.push(json!({"type": "response", "author": "assistant", "text": "Feito.", "reply_to": 1}));
+    lines.push(json!({"type": "decision", "author": "assistant", "title": "Título decision", "text": "Texto decision, revisto.",
+        "agent": "- a parte do agente", "keys": ["chave"], "why": "um porquê", "origin": 1, "replaces": first_of["decision"]}));
+    lines.push(json!({"type": "point", "author": "assistant", "block": "defect", "gap": "Onde a fatura soma", "from": "gap",
+        "status": "closed", "origin": 1, "closes": first_of["point"], "result": [lines.len()]}));
+    let text: String = lines
+        .into_iter()
+        .enumerate()
+        .map(|(at, mut line)| {
+            line["v"] = json!(1);
+            line["id"] = json!(at + 1);
+            line["at"] = json!("2026-10-22T14:38:48.128232016-03:00");
+            line["session"] = json!("sessao-da-obra");
+            format!("{line}\n")
+        })
+        .collect();
+    let path = mustard_core::io::spec_events::spec_file(root, "teste").expect("spec file");
+    std::fs::write(&path, text).expect("the event file");
+    mustard_core::io::spec_events::read(&path).expect("read").expect("the spec file").codes()
+}
+
+/// A leitura de um bloco traz o conteúdo de cada item sem as marcas internas.
+/// Saem a versão do formato, a sessão e o número, porque o código fica. A
+/// hora sai fora da conversa e, nela, fica até o minuto. O autor fica só na
+/// conversa, e cada fato sai sem as marcas de conferência. As ligações saem
+/// pelo código do item, e todo o resto continua igual ao que a leitura do
+/// item traz. O fato repetido sai uma vez, e o ponto seguinte aponta para
+/// ele. A leitura do item pelo código segue com o evento inteiro.
+#[test]
+fn a_block_read_shows_each_item_without_the_internal_marks_and_links_by_code() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let codes = spec_with_every_item_type(root);
+    let conversation = |kind: &str| {
+        mustard_core::domain::spec_events::type_spec(kind)
+            .is_some_and(|spec| spec.block == mustard_core::domain::spec_events::Block::Conversation)
+    };
+    // Cada versão, lida pelo número como hoje: o ponto que fecha outro leva o
+    // código dele, e as duas linhas se separam pelo texto e pela situação.
+    let wholes: Vec<Value> = codes.keys().map(|id| read(root, &format!("item-{id}"))["events"][0].clone()).collect();
+    let mut seen_types = std::collections::BTreeSet::new();
+    for block in ["conversation", "state", "agreed", "specification", "criteria", "waves", "review", "progress", "notes"] {
+        let report = read(root, block);
+        let mut facts_seen: std::collections::BTreeMap<(String, String), (Value, usize)> = std::collections::BTreeMap::new();
+        for lean in report["events"].as_array().expect("events") {
+            let code = lean["code"].as_str().unwrap_or_else(|| panic!("each item comes with its code: {lean}"));
+            let same: Vec<&Value> = wholes.iter().filter(|whole| whole["code"] == json!(code)).collect();
+            let whole = match same[..] {
+                [one] => one.clone(),
+                _ => (*same.iter().find(|whole| whole.get("text") == lean.get("text") && whole.get("status") == lean.get("status")).expect("the version shown")).clone(),
+            };
+            let kind = whole["type"].as_str().expect("the type").to_string();
+            if whole.get("facts").is_some() && same.len() == 1 {
+                let by_code = read(root, &format!("item-{code}"))["events"][0].clone();
+                assert_eq!(by_code, whole, "the item read by code keeps the whole event");
+            }
+            seen_types.insert(kind.clone());
+            for mark in ["v", "id", "session", "search"] {
+                assert!(lean.get(mark).is_none(), "{block}: {kind} without {mark}: {lean}");
+                assert!(mark == "search" || whole.get(mark).is_some(), "the item read keeps {mark}: {whole}");
+            }
+            let at = whole["at"].as_str().expect("the item read keeps the whole time");
+            assert_eq!(at, "2026-10-22T14:38:48.128232016-03:00", "{whole}");
+            if conversation(&kind) {
+                assert_eq!(lean["at"], json!("2026-10-22T14:38"), "{block}: in the conversation, the time to the minute: {lean}");
+                assert_eq!(lean["author"], whole["author"], "{block}: in the conversation, who spoke: {lean}");
+            } else {
+                assert!(lean.get("at").is_none() && lean.get("author").is_none(), "{block}: {kind} without time or author: {lean}");
+            }
+            for (key, value) in whole.as_object().expect("an object") {
+                match key.as_str() {
+                    "v" | "id" | "session" | "at" | "author" | "changed" | "replaced_by" | "removed" => {}
+                    "text" | "tasks" if kind == "send" => {}
+                    link if LINKS.contains(&link) => {
+                        assert_eq!(lean[link], by_code(&codes, value), "{block}: {kind} links {link} by code: {lean}");
+                        assert!(lean[link].to_string().contains("MSTD-"), "{block}: {lean}");
+                    }
+                    "facts" => {
+                        let shown = lean["facts"].as_array().expect("the facts stay");
+                        for (n, (fact, kept)) in value.as_array().expect("facts").iter().zip(shown).enumerate() {
+                            for mark in FACT_MARKS {
+                                assert!(fact.get(mark).is_some(), "the item read keeps {mark}: {fact}");
+                            }
+                            let key = (fact["source"].to_string(), fact["text"].to_string());
+                            match facts_seen.get(&key) {
+                                Some((first, at)) => assert_eq!(kept, &json!({"same_as": first, "fact": at}), "{block}: {lean}"),
+                                None => {
+                                    let mut bare = fact.clone();
+                                    FACT_MARKS.iter().for_each(|mark| drop(bare.as_object_mut().expect("a fact").remove(*mark)));
+                                    assert_eq!(kept, &bare, "{block}: the fact without its marks: {lean}");
+                                    facts_seen.insert(key, (json!(code), n + 1));
+                                }
+                            }
+                        }
+                        assert_eq!(shown.len(), value.as_array().map_or(0, Vec::len), "{lean}");
+                    }
+                    other => assert_eq!(lean.get(other), Some(value), "{block}: {kind} keeps {other}: {lean}"),
+                }
+            }
+        }
+        if block == "agreed" {
+            let text = report.to_string();
+            for said in ["A soma mora em src/soma.rs.", "O total mora em src/total.rs.", "A fatura mora em src/fatura.rs."] {
+                assert_eq!(text.matches(said).count(), 1, "the repeated fact comes once: {report}");
+            }
+            assert!(!text.contains("c21d75f8"), "{report}");
+        }
+    }
+    for kind in ["message", "response", "point", "rule", "limit", "edge_case", "decision", "context", "criterion", "task", "wave", "request"] {
+        assert!(seen_types.contains(kind), "the {kind} was read: {seen_types:?}");
+    }
+}
+
+/// O nome parecido `messages` lê a conversa, e a resposta diz o nome certo.
+#[test]
+fn reading_messages_brings_the_conversation_and_says_its_name() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    seed_binary(root, "message", &json!({"author": "user", "text": "Somar a fatura."}));
+    let read = read(root, "messages");
+    assert_eq!((&read["block"], &read["count"]), (&json!("conversation"), &json!(1)), "{read}");
+    let warned = read["warnings"].to_string();
+    assert!(warned.contains("messages") && warned.contains("conversation"), "{read}");
 }
 
 /// A spec de antes desta versão do Mustard só se lê. A gravação, a rodada, a

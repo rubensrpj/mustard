@@ -10,10 +10,17 @@
 //!
 //! ```text
 //! {"ok":true,"spec":"teste","block":"wave-2","count":2,"events":[
-//! {"v":1,"id":19,…,"type":"wave",…},
-//! {"v":1,"id":20,…,"type":"task",…}
+//! {"code":"MSTD-WAVE-0002","type":"wave",…},
+//! {"code":"MSTD-TASK-0002","type":"task",…}
 //! ]}
 //! ```
+//!
+//! **O bloco sai na forma enxuta** ([`super::lean`]): cada item com o
+//! conteúdo e as ligações pelo código, sem a versão do formato, a sessão, o
+//! número, a hora e o autor fora da conversa, e sem as marcas de conferência
+//! dos fatos; o fato repetido sai uma vez. O mesmo vale para `delivered-<n>`
+//! e para `dispatch-<n>` lido de fora da cópia. `item-<código>` e
+//! `item-<número>` seguem com o evento inteiro.
 //!
 //! **Quem conduz lê com teto.** Um bloco sai do mais novo para o mais
 //! antigo — menos o `state`, que é o retrato de agora, e a `wave-<n>`, que é
@@ -233,6 +240,10 @@ fn read_reach(opts: &ReadOpts, session: Option<&str>, from: &Path, reach: Reach)
     let mut only_wave: Option<u64> = None;
     // A linha que diz o que a leitura de quem conduz deixou de fora.
     let mut more: Option<String> = None;
+    // Os eventos saem na forma enxuta ([`super::lean`]); o item lido pelo
+    // código ou pelo número, e as linhas curtas da lista das ondas, do
+    // backlog e das chamadas, saem como são.
+    let mut lean = false;
     let events: Vec<String> = match reading {
         ReadQuery::Request(wave) => return request_text(&log, wave).ok_or_else(|| no_request(Some(wave), lang)),
         ReadQuery::ReviewRequest => return review_request_text(&log).ok_or_else(|| no_request(None, lang)),
@@ -253,6 +264,7 @@ fn read_reach(opts: &ReadOpts, session: Option<&str>, from: &Path, reach: Reach)
                 note_reading(&project.root, &spec, review, None, &found, started);
                 return Ok(lines.join("\n\n"));
             }
+            lean = true;
             lines
         }
         ReadQuery::Dispatch(wave) => {
@@ -271,6 +283,7 @@ fn read_reach(opts: &ReadOpts, session: Option<&str>, from: &Path, reach: Reach)
             }
             read = listed;
             only_wave = Some(wave);
+            lean = true;
             lines
         }
         ReadQuery::Item(target) => {
@@ -295,7 +308,10 @@ fn read_reach(opts: &ReadOpts, session: Option<&str>, from: &Path, reach: Reach)
             }
             lines
         }
-        ReadQuery::Delivered(wave) => delivered_lines(&log, wave, &codes),
+        ReadQuery::Delivered(wave) => {
+            lean = true;
+            delivered_lines(&log, wave, &codes)
+        }
         ReadQuery::Backlog => {
             let (lines, total) = backlog_lines(&log, &codes);
             extra.push(("total", total));
@@ -307,6 +323,7 @@ fn read_reach(opts: &ReadOpts, session: Option<&str>, from: &Path, reach: Reach)
             calls_lines(&seen, term)
         }
         ReadQuery::Block(query) => {
+            lean = true;
             if query == BlockQuery::Block(Block::State)
                 && let Some(id) = last_user_message(&log)
             {
@@ -379,15 +396,22 @@ fn read_reach(opts: &ReadOpts, session: Option<&str>, from: &Path, reach: Reach)
             }
         }
     };
-    let events = events
-        .into_iter()
-        .map(|line| {
-            let Ok(mut value) = serde_json::from_str::<Value>(&line) else {
-                return line;
-            };
-            if crate::shared::evidence::revalidate(&project.root, &mut value) { value.to_string() } else { line }
-        })
-        .collect::<Vec<_>>();
+    // A forma enxuta tira dos fatos a situação da fonte: só a linha inteira
+    // a confere de novo.
+    let events = if lean {
+        let mut shown = super::lean::Lean::new(&codes);
+        events.iter().map(|line| shown.line(line)).collect::<Vec<_>>()
+    } else {
+        events
+            .into_iter()
+            .map(|line| {
+                let Ok(mut value) = serde_json::from_str::<Value>(&line) else {
+                    return line;
+                };
+                if crate::shared::evidence::revalidate(&project.root, &mut value) { value.to_string() } else { line }
+            })
+            .collect::<Vec<_>>()
+    };
     note_reading(&project.root, &spec, request.as_ref(), only_wave, &read, started);
     let mut warnings: Vec<String> = log.skipped.iter().map(|s| s.message(lang)).collect();
     // O apelido entregou o bloco, e a resposta diz o nome certo: a próxima
@@ -1236,6 +1260,13 @@ mod tests {
         parsed["events"].as_array().cloned().unwrap_or_default()
     }
 
+    /// O código do evento `id`, que a leitura de um bloco mostra no lugar do
+    /// número.
+    fn code_of(root: &std::path::Path, id: u64) -> Value {
+        let log = store::read(&store::spec_file(root, "teste").expect("spec file")).expect("read").expect("the spec file");
+        json!(log.codes()[&id])
+    }
+
     #[test]
     fn reading_one_wave_brings_only_that_wave_and_never_the_search_field() {
         let dir = tempdir().unwrap();
@@ -1424,8 +1455,8 @@ mod tests {
         let mut metrics = opts(root, "metrics", None);
         metrics.session = Some("sessao-a".to_string());
         let only = events(&read_at(&metrics).unwrap());
-        assert!(only.iter().all(|e| e["session"] == json!("sessao-a")), "{only:?}");
         assert_eq!(only.len(), 1, "{only:?}");
+        assert_eq!(only[0]["command"], json!("round"), "{only:?}");
     }
 
     #[test]
@@ -1689,7 +1720,7 @@ mod tests {
         );
 
         let (report, alone) = only_line(root, "delivered-1");
-        assert_eq!(alone["id"], json!(own), "without the assumed one, the agent's own: {report}");
+        assert_eq!(alone["text"], json!("Do agente."), "without the assumed one, the agent's own: {report}");
         assert_eq!(alone["returned"], json!(true), "{report}");
 
         let assumed = by_program(
@@ -1701,7 +1732,7 @@ mod tests {
             "leftovers": [{"title": "Sobra", "detail": "no `x.rs`"}], "undone": ["MSTD-TASK-0002"]}),
         );
         let (report, got) = only_line(root, "delivered-1");
-        assert_eq!(got["id"], json!(assumed), "{report}");
+        assert_eq!(got["code"], code_of(root, assumed), "{report}");
         assert_eq!(got["text"], json!("Assumida."), "{report}");
         assert_eq!(got["agreed"], json!([{"item": "MSTD-RULE-0002", "met": false, "text": "falta o teste"}]), "{report}");
         assert_eq!(got["files"], json!(["a.rs", "b.rs"]), "{report}");
@@ -1820,9 +1851,10 @@ mod tests {
         let second = call(root, "map search", json!({"ms": 900}));
 
         let ids =
-            |block: &str, term: &str| -> Vec<Value> { events(&read_at(&opts(root, block, Some(term))).unwrap()).iter().map(|e| e["id"].clone()).collect() };
-        assert_eq!(ids("metrics", "map search"), [json!(second), json!(first)]);
-        assert_eq!(ids("conversation", " Map  Search "), [json!(second), json!(first)]);
+            |block: &str, term: &str| -> Vec<Value> { events(&read_at(&opts(root, block, Some(term))).unwrap()).iter().map(|e| e["code"].clone()).collect() };
+        let (second, first) = (code_of(root, second), code_of(root, first));
+        assert_eq!(ids("metrics", "map search"), [second.clone(), first.clone()]);
+        assert_eq!(ids("conversation", " Map  Search "), [second, first]);
         assert_eq!(ids("metrics", "pronta").len(), 1, "a word that names no command still searches by score");
     }
 
@@ -1897,16 +1929,16 @@ mod tests {
 
         let report = read_at(&opts(root, "state", None)).unwrap();
         let got = events(&report);
-        let kinds: Vec<(&str, u64)> = got.iter().map(|e| (e["type"].as_str().unwrap(), e["id"].as_u64().unwrap())).collect();
+        let kinds: Vec<(&str, Value)> = got.iter().map(|e| (e["type"].as_str().unwrap(), e["code"].clone())).collect();
         let copies: Vec<&Value> = got.iter().filter(|e| e["type"] == json!("copy")).collect();
         assert_eq!(copies.len(), 2, "one copy per page: {report}");
         assert_eq!(
-            copies.iter().find(|e| e["page"] == json!("spec")).map(|e| e["id"].as_u64().unwrap()),
-            spec_copies.last().copied(),
+            copies.iter().find(|e| e["page"] == json!("spec")).map(|e| e["code"].clone()),
+            spec_copies.last().map(|id| code_of(root, *id)),
             "the spec page keeps its newest copy: {report}"
         );
         assert!(copies.iter().any(|e| e["page"] == json!("project")), "the project page keeps a copy: {report}");
-        assert!(kinds.contains(&("state", opened)) && kinds.contains(&("state", running)), "{report}");
+        assert!(kinds.contains(&("state", code_of(root, opened))) && kinds.contains(&("state", code_of(root, running))), "{report}");
         assert_eq!(got.len(), 4, "{report}");
     }
 
@@ -2328,7 +2360,7 @@ mod tests {
     /// De dentro da cópia de um pedido aberto, a leitura da onda sai em texto:
     /// um bloco por item, com o título e o código e, embaixo, só a parte do
     /// agente; a parte do usuário e o exemplo ficam para a leitura do item. De
-    /// fora da cópia, a linha vem inteira.
+    /// fora da cópia, a linha vem na forma enxuta, com as palavras de busca.
     #[test]
     fn the_dispatch_read_from_inside_the_copy_comes_as_text_with_the_title_and_the_agent_part() {
         let dir = tempdir().unwrap();
@@ -2343,7 +2375,7 @@ mod tests {
 
         let outside = events(&read_from(root, root, "dispatch-1", None));
         assert!(outside.iter().any(|e| e["type"] == json!("rule")), "the dispatch lists the global rule: {outside:?}");
-        assert!(outside.iter().all(|e| e.get("v").is_some() && e.get("at").is_some()), "{outside:?}");
+        assert!(outside.iter().all(|e| e.get("v").is_none() && e.get("code").is_some()), "{outside:?}");
         assert!(outside.iter().any(|e| e.get("keys").is_some()), "{outside:?}");
 
         let inside = read_from(root, &copy, "dispatch-1", None);
@@ -2419,9 +2451,9 @@ mod tests {
         let newest_spec = publish("spec", "close");
 
         let report = read_at(&opts(root, "state", None)).unwrap();
-        let mut published: Vec<u64> = events(&report).iter().filter(|e| e["type"] == json!("publish")).map(|e| e["id"].as_u64().unwrap()).collect();
-        published.sort_unstable();
-        assert_eq!(published, [newest_project, newest_spec], "one publication per page: {report}");
+        let published: Vec<Value> = events(&report).iter().filter(|e| e["type"] == json!("publish")).map(|e| e["code"].clone()).collect();
+        assert_eq!(published.len(), 2, "one publication per page: {report}");
+        assert!(published.contains(&code_of(root, newest_project)) && published.contains(&code_of(root, newest_spec)), "{report}");
     }
 
     /// A onda que nunca saiu não tem pedido: a leitura dele é recusada, nos
@@ -2454,8 +2486,8 @@ mod tests {
         let first = put(root, "message", json!({"author": "user", "text": "primeiro"}));
         let second = put(root, "message", json!({"author": "user", "text": "segundo"}));
         let third = put(root, "message", json!({"author": "user", "text": "terceiro"}));
-        let ids: Vec<Value> = events(&read_at(&opts(root, "conversation", None)).unwrap()).iter().map(|e| e["id"].clone()).collect();
-        assert_eq!(ids, [json!(third), json!(second), json!(first)]);
+        let ids: Vec<Value> = events(&read_at(&opts(root, "conversation", None)).unwrap()).iter().map(|e| e["code"].clone()).collect();
+        assert_eq!(ids, [code_of(root, third), code_of(root, second), code_of(root, first)]);
     }
 
     /// Na leitura de quem conduz, o código de um item no painel ainda traz o

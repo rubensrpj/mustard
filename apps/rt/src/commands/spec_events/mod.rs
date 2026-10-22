@@ -20,6 +20,7 @@ pub mod cli;
 pub(crate) mod conversation;
 pub mod find;
 pub mod index;
+mod lean;
 pub(crate) mod pages;
 pub(crate) mod proof_check;
 pub mod read;
