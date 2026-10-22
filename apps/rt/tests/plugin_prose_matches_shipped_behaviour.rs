@@ -1017,7 +1017,11 @@ fn the_pr_door_publishes_and_stops() {
 /// this table.
 const REWRITE_CONTRACT_SURFACES: &[(&str, &[&str])] = &[
     (
-        "MUSTARD-COMMANDS.md",
+        // The install section moved out of MUSTARD-COMMANDS.md, which now holds
+        // the path and the day-to-day commands, into the internals file beside
+        // it. The surface that describes the install is the one that owes the
+        // contract.
+        "docs/mustard-por-dentro.md",
         &["toda execução regrava o texto embarcado", "`updated`", "`preserved`"],
     ),
     (
