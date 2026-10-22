@@ -2068,6 +2068,55 @@ fn a_wave_without_tasks_is_not_listed_as_open() {
     assert!(!listed.contains("\"n\":9"), "{listed}");
 }
 
+/// A rodada sem a revisão do condutor: a volta que chegou segue esperando,
+/// com a cópia guardada, e a resposta vem inteira.
+fn unreviewed_round(project: &Project) -> Value {
+    let out = project.command(&["run", "round", "--dispatch", "--spec", SPEC], "");
+    serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stdout)))
+}
+
+/// O aviso `copies-full` da resposta da rodada, quando saiu.
+fn copies_full(out: &Value) -> Option<&Value> {
+    out["warnings"].as_array().into_iter().flatten().find(|warning| warning["reason"] == json!("copies-full"))
+}
+
+/// Uma vaga só, duas cópias e quatro tarefas prontas, cada uma no seu
+/// arquivo. As ondas 1 e 2 voltam e guardam as duas cópias; o aviso de
+/// cópias cheias cita as duas. A onda 1 perde a tarefa depois de voltar e
+/// sai do ar: a cópia dela vai para a onda 3, e quando as ondas 2 e 3
+/// voltam e a quarta tarefa espera, o aviso cita só as duas que guardam
+/// cópia, e não a que saiu do ar.
+#[test]
+fn a_wave_that_lost_its_last_task_after_returning_is_not_named_among_the_copies_kept() {
+    let (project, _, _, tasks) = backlog_project(&[&["a.rs"], &["b.rs"], &["c.rs"], &["d.rs"]]);
+    one_slot(&project);
+    let (_, first) = dispatch_ready(&project);
+    assert_eq!(first, vec![1]);
+    deliver_file_in_copy(&project, 1, "a.rs", "um\n");
+    let second = unreviewed_round(&project);
+    assert_eq!(waves_in(&second, "dispatch"), vec![2], "{second}");
+    keep_sent(&project, &[2]);
+    deliver_file_in_copy(&project, 2, "b.rs", "dois\n");
+
+    let full = unreviewed_round(&project);
+    assert!(waves_in(&full, "dispatch").is_empty(), "both copies are kept by returned waves: {full}");
+    assert_eq!(copies_full(&full).map(|warning| warning["waves"].clone()), Some(json!([1, 2])), "{full}");
+
+    let removal = project.write("remove", &json!({"targets": [tasks[0]], "reason": "A tarefa saiu da onda."}));
+    assert_eq!(removal["ok"], json!(true), "{removal}");
+    let third = unreviewed_round(&project);
+    assert_eq!(waves_in(&third, "dispatch"), vec![3], "the copy of the wave out of the air goes to the next wave: {third}");
+    keep_sent(&project, &[3]);
+    deliver_file_in_copy(&project, 3, "c.rs", "tres\n");
+
+    let held = unreviewed_round(&project);
+    assert!(waves_in(&held, "dispatch").is_empty(), "the copies of waves 2 and 3 hold the fourth task: {held}");
+    let warning = copies_full(&held).unwrap_or_else(|| panic!("the copies are full: {held}"));
+    assert_eq!(warning["waves"], json!([2, 3]), "the wave out of the air keeps no copy: {held}");
+    let hint = warning["hint"].as_str().unwrap_or_default();
+    assert!(hint.contains("2, 3") && !hint.contains('1'), "{hint}");
+}
+
 /// Os eventos da spec, fora as chamadas de comando que toda chamada grava:
 /// o que a rodada gravou de fato.
 fn recorded(project: &Project) -> Vec<u64> {

@@ -47,8 +47,9 @@ pub(crate) struct Vacancies {
     /// A onda replanejada com o envio aberto e sem volta: dona da vaga que o
     /// envio dela gravou, e sai de novo por ela.
     pub(crate) holding: BTreeSet<u64>,
-    /// As ondas que voltaram e esperam a revisão, a resposta ou o commit:
-    /// guardam a cópia, sem ocupar vaga.
+    /// As ondas do plano que voltaram e esperam a revisão, a resposta ou o
+    /// commit: guardam a cópia, sem ocupar vaga. A que saiu do plano por
+    /// ficar sem tarefa viva não conta.
     pub(crate) waiting: BTreeSet<u64>,
     /// Quantas cópias ainda cabem sob o teto: as pastas de vaga que nenhuma
     /// onda nem a revisão final segura.
@@ -83,7 +84,13 @@ pub(crate) fn vacancies(root: &Path, spec: &str, log: &SpecLog) -> Vacancies {
 
 /// [`vacancies`] com `capacity` vagas, no lugar das do projeto.
 pub(crate) fn vacancies_with(root: &Path, spec: &str, log: &SpecLog, capacity: usize) -> Vacancies {
-    let returned = waves_returned(log);
+    // A onda que perdeu a última tarefa depois de voltar saiu do plano: a volta
+    // dela segue pendente no arquivo, mas a cópia dela já não é sua
+    // ([`super::slots::held_slots`] só conta as do plano) e o código que ela
+    // tinha fica guardado quando a vaga passa a outra onda. Sem tarefa viva,
+    // ela não espera nada, não conserta nada e não segura o despacho.
+    let planned = log.planned_waves();
+    let returned: BTreeSet<u64> = waves_returned(log).into_iter().filter(|wave| planned.contains(wave)).collect();
     // A onda que voltou com o trecho de conserto gravado tem agente: o que a
     // fez ou o novo, na mesma cópia.
     let repairing: BTreeSet<u64> =
