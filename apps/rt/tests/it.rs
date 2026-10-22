@@ -52,6 +52,7 @@ mod run_command_surface;
 mod search_answer_layers;
 mod server_commands_cores;
 mod session_map_arrives;
+mod session_end_unbinds;
 mod session_start_merged;
 mod spec_events_cli;
 mod spec_flow_prose;

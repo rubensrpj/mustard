@@ -334,6 +334,133 @@ impl GoalProject {
     fn goal_approval(&self) -> Value {
         self.run(&["resume", "--spec", GOAL_SPEC])["goal_approval"].clone()
     }
+
+    /// O levantamento inteiro e o plano de uma tarefa só, passado, pelos
+    /// comandos do uso real: a spec fica esperando a aprovação. Cada item
+    /// nasce da fala do usuário que o gancho da entrada gravou na abertura.
+    fn plan_passed(&self) {
+        let said = self
+            .events()
+            .into_iter()
+            .find(|event| event["type"] == "message" && event["author"] == "user")
+            .expect("the entry hook recorded the message")["id"]
+            .clone();
+        let grilled = self.run(&["grill", "--spec", GOAL_SPEC, "--kinds", "feature", "--full"]);
+        let points = grilled["points"].as_array().cloned().expect("the point list");
+        let mut current = Value::Null;
+        for point in &points {
+            let facts = json!([{"text": "A leitura mora no README.", "source": "README.md:1"}]);
+            let written = self.run(&["write", "point", "--spec", GOAL_SPEC, "--json", &json!({"replaces": point["id"], "facts": facts}).to_string()]);
+            current = written["point"].clone();
+        }
+        for point in &points {
+            let code = current["code"].as_str().expect("the open point").to_string();
+            let decision = json!({"title": "Combinar o item", "agent": format!("- ponto {code}"), "text": "O usuário respondeu ao ponto.",
+                "keys": ["levantamento"], "why": "o usuário respondeu", "origin": said, "applies_to": {"files": ["**"]}});
+            let answer = self.run(&["write", "decision", "--spec", GOAL_SPEC, "--json", &decision.to_string()]);
+            let closed = json!({"block": point["block"], "gap": point["gap"], "from": "gap", "status": "closed",
+                "closes": code, "result": [answer["id"]], "origin": said});
+            current = self.run(&["write", "point", "--spec", GOAL_SPEC, "--json", &closed.to_string()])["point"].clone();
+        }
+        let criterion = json!({"title": "Combinar o item", "when": "a leitura roda", "then": "o custo cai", "proof": "git --version",
+            "form": "ubiquitous", "origin": said});
+        let criterion = self.run(&["write", "criterion", "--spec", GOAL_SPEC, "--json", &criterion.to_string()]);
+        let task = json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Baratear a leitura do mapa.",
+            "files": [{"path": "README.md"}], "depends_on": [], "covers": [criterion["id"]], "origin": said});
+        self.run(&["write", "task", "--spec", GOAL_SPEC, "--json", &task.to_string()]);
+        let planned = self.run(&["plan", "--spec", GOAL_SPEC]);
+        assert_eq!(planned["ok"], json!(true), "{planned}");
+    }
+
+    /// O clique em "Aprovar" na pergunta da aprovação, pela conversa da
+    /// sessão `session`. Devolve o que a testemunha disse ao assistente.
+    fn approve_as(&self, session: &str) -> String {
+        self.hook(
+            "PostToolUse",
+            &json!({
+                "hook_event_name": "PostToolUse",
+                "tool_name": "AskUserQuestion",
+                "tool_input": {"questions": [{"question": QUESTION, "options": [{"label": "Aprovar"}, {"label": "Ajustar"}]}]},
+                "tool_response": {"questions": [], "answers": {QUESTION: "Aprovar"}},
+                "session_id": session,
+                "cwd": self.root.to_string_lossy(),
+            }),
+        )
+    }
+
+    /// A fase do último `state` da spec.
+    fn phase(&self) -> Option<String> {
+        self.last("state").and_then(|state| state["phase"].as_str().map(str::to_string))
+    }
+
+    /// A spec [`OTHER_SPEC`], aberta pela conversa de outra sessão: o
+    /// checkout fica parado na branch dela, e a sessão [`GOAL_SESSION`] segue
+    /// ligada à spec [`GOAL_SPEC`]. Devolve os eventos da outra spec.
+    fn open_other(&self) -> Vec<Value> {
+        let out = self.command_as(Some("s-outra"), &["run", "open", "--kind", "feature", "--name", OTHER_SPEC, "--base", "dev"], "");
+        let opened: Value = serde_json::from_str(out.trim()).expect("the opening answers JSON");
+        assert_eq!(opened["ok"], json!(true), "{opened}");
+        self.other_events()
+    }
+
+    /// Os eventos da spec [`OTHER_SPEC`], como estão no arquivo.
+    fn other_events(&self) -> Vec<Value> {
+        let file = store::spec_file(&self.root, OTHER_SPEC).unwrap();
+        fs::read_to_string(file).unwrap().lines().filter_map(|line| serde_json::from_str(line).ok()).collect()
+    }
+}
+
+/// A spec aberta por outra conversa, em cuja branch o checkout fica.
+const OTHER_SPEC: &str = "outra";
+
+/// A conversa paralela, na mesma branch e sem abrir nem retomar a spec, clica
+/// em "Aprovar": a spec da branch, que esperava aprovação, fica em plano, a
+/// resposta dela não entra na spec, e a testemunha diz que nenhuma spec da
+/// sessão espera aprovação. O mesmo clique, da conversa que abriu a spec,
+/// aprova: era a ligação que faltava, e não o plano.
+#[test]
+fn a_click_from_an_unbound_session_records_nothing_in_the_branch_spec() {
+    let project = GoalProject::new();
+    project.plan_passed();
+    let before = project.events().len();
+
+    let said = project.approve_as("s-paralela");
+
+    assert_eq!(project.phase().as_deref(), Some("plan"), "the branch spec still awaits approval");
+    assert_eq!(project.events().len(), before, "nothing of the unbound session enters the spec");
+    assert!(said.contains("nada foi gravado"), "the witness says nothing was recorded:\n{said}");
+
+    let bound = project.approve_as(GOAL_SESSION);
+
+    assert_eq!(project.phase().as_deref(), Some("approved"), "the bound conversation approves:\n{bound}");
+}
+
+/// A conversa ligada a uma spec, com o checkout parado na branch de outra,
+/// aprova a spec dela: a spec da branch fica como estava.
+#[test]
+fn a_click_approves_the_bound_spec_and_never_the_branch_spec() {
+    let project = GoalProject::new();
+    project.plan_passed();
+    let other = project.open_other();
+
+    let said = project.approve_as(GOAL_SESSION);
+
+    assert_eq!(project.phase().as_deref(), Some("approved"), "the bound spec is approved:\n{said}");
+    assert_eq!(project.other_events(), other, "the branch spec is untouched");
+}
+
+/// A conversa ligada a uma spec, com o checkout parado na branch de outra,
+/// confirma o objetivo da spec dela: o clique é gravado ali, e é ali que a
+/// testemunha lê se ele confirmou — nunca na spec da branch.
+#[test]
+fn a_goal_click_is_judged_on_the_spec_bound_to_the_session() {
+    let project = GoalProject::new();
+    project.open_other();
+
+    let said = project.confirm_after(&format!("O objetivo é: {GOAL}"));
+
+    assert!(said.contains("Objetivo confirmado"), "the click is judged on the bound spec:\n{said}");
+    assert_eq!(project.goal_approval()["confirmed"], json!(true));
 }
 
 /// O objetivo mostrado numa fala e depois a pergunta curta: o clique confirma

@@ -36,7 +36,7 @@
 //! ## A resposta de cada pergunta
 //!
 //! Toda pergunta com opções respondida, de gesto ou qualquer outra, vai para
-//! o bloco da conversa da spec atual como mensagem do usuário. O texto dela é
+//! o bloco da conversa da spec ligada à sessão como mensagem do usuário. O texto dela é
 //! só o que ele disse — a resposta e a nota, quando ele escreveu uma —, e a
 //! pergunta, que é do assistente, fica na mesma mensagem, fora do texto. Numa
 //! pergunta de gesto, o clique numa das opções oferecidas grava a mensagem
@@ -59,8 +59,10 @@
 //!    "Aprovar" ou "Approve", "Aceitar" ou "Accept". "Não aprovar", "Don't
 //!    approve" e "Aprovar depois" não contam.
 //!
-//! A aprovação da spec pede ainda um terceiro: a spec atual, pela escada
-//! única, está na fase `plan`, ou ainda não nasceu. O modelo não grava essa
+//! A aprovação da spec pede ainda um terceiro: a spec ligada à conversa da
+//! sessão pela abertura ou pela retomada está na fase `plan`, ou ainda não
+//! nasceu. A branch não conta: a conversa sem ligação, na mesma branch, não
+//! aprova nada. O modelo não grava essa
 //! aprovação à mão: o `run write` recusa o tipo `state`, e também toda
 //! mensagem com a testemunha, de qualquer autor, para gravar, rever ou tirar.
 //!
@@ -97,6 +99,7 @@ use std::path::Path;
 use mustard_core::domain::model::contract::{AskAnswer, Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::domain::spec_events::Refusal;
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState};
+use mustard_core::io::spec_events::spec_root;
 use mustard_core::platform::error::Error;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Map, Value};
@@ -105,7 +108,7 @@ use crate::commands::flow::round::change_code_of;
 use crate::commands::spec_events::conversation::{record_answered_message, record_said_before_click, record_witnessed_message};
 use crate::hooks::write::write_gate::say;
 use crate::shared::agent_said::last_said;
-use crate::shared::spec_state::DiskSpecState;
+use crate::shared::spec_state::{conversation_bound_spec, DiskSpecState};
 
 /// A testemunha dos gestos de aprovação, no `PostToolUse` da pergunta com
 /// opções.
@@ -238,14 +241,14 @@ fn is_yes(gesture: &Gesture, label: &str) -> bool {
 /// com o motivo e o objetivo gravado: calado, o aviso só chegava no comando
 /// seguinte. Só quando o objetivo ainda não está confirmado: um clique a mais,
 /// com o objetivo já confirmado por um clique anterior, pelo texto do usuário
-/// ou pela aprovação da spec, não tem o que recusar.
+/// ou pela aprovação da spec, não tem o que recusar. O objetivo lido é o da
+/// spec ligada à conversa, onde o clique foi gravado, e nunca o da branch.
 fn decide_goal(answer: &Answered<'_>) -> Option<String> {
     answer.recorded?;
     if !matches!(answer.choice, Choice::Yes(_)) {
         return None;
     }
-    let disk = DiskSpecState::new(Path::new(answer.root));
-    let log = disk.log(&disk.active(answer.session)?)?;
+    let log = DiskSpecState::new(Path::new(answer.root)).log(&bound_spec(answer.root, answer.session)?)?;
     if crate::commands::flow::goal::status(&log, answer.lang)["confirmed"] != json!(true) {
         return crate::commands::flow::goal::refused_click(&log, answer.lang);
     }
@@ -330,11 +333,19 @@ enum Standing {
     NoPlan,
 }
 
-/// A spec que a pergunta de aprovação decide, e onde ela está: a spec atual,
-/// pela escada única. Outra spec ligada à sessão nunca é decidida por ali: a
-/// sessão se liga a toda spec que um evento nomeia.
+/// A spec ligada à conversa da sessão `session`, com a ligação lida no
+/// checkout principal, onde a abertura e a retomada a gravam: a pergunta
+/// respondida num worktree acha a mesma spec.
+fn bound_spec(root: &str, session: Option<&str>) -> Option<String> {
+    conversation_bound_spec(&spec_root(Path::new(root)).to_string_lossy(), session)
+}
+
+/// A spec que a pergunta de aprovação decide, e onde ela está: a spec ligada
+/// à conversa da sessão pela abertura ou pela retomada, a mesma que recebe a
+/// resposta. A branch não conta: a conversa paralela na mesma branch, sem
+/// ligação, não aprova a obra da outra.
 fn standing(root: &str, session: Option<&str>) -> Standing {
-    let Some(spec) = DiskSpecState::new(Path::new(root)).active(session) else {
+    let Some(spec) = bound_spec(root, session) else {
         return Standing::NoPlan;
     };
     // O estado que a trava lê, pela mesma função do portão: a spec sem nenhum
@@ -1336,59 +1347,10 @@ mod tests {
         assert!(!state(bare.path()).approved, "a plan without any task approves nothing");
     }
 
-    /// Um ajuste ligado à sessão, com o `meta.json` que nomeia como mãe a
-    /// spec da branch, não é aprovado por ali: a escada nomeia a spec da
-    /// branch, já aprovada, e é ela que responde. O ajuste fica em plano, e a
-    /// mãe fica como estava.
-    #[test]
-    fn a_fix_bound_to_the_session_is_not_approved_through_its_parents_branch() {
-        if ambient_override() {
-            return;
-        }
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        crate::shared::spec_state::stand_on_spec_branch(root, "epic-1");
-        record_for(root, "epic-1", "state", json!({ "phase": "running", "branch": "feature/epic-1" }));
-        record_for(root, "ajuste", "state", json!({ "phase": "plan", "branch": "feature/epic-1" }));
-        std::fs::write(
-            root.join(".claude").join("spec").join("ajuste").join("meta.json"),
-            // A mãe gravada como veio, com espaço, barra e maiúscula.
-            r#"{"scope":"light","stage":"Analyze","parent":" Epic-1/ "}"#,
-        )
-        .unwrap();
-        bind_session_spec(&root.to_string_lossy(), SESSION, "ajuste");
-
-        let said = witness(root, &approve_or_adjust("Aprovar"));
-        let expected = say("approval.witness.already", lang(root), &[("{spec}", "epic-1")]);
-        assert_eq!(said, Verdict::Inject { context: expected }, "the branch spec answers");
-        let disk = DiskSpecState::new(root);
-        assert!(!disk.state("ajuste").unwrap().approved, "the fix stays in plan");
-        assert_eq!(disk.state("epic-1").unwrap().phase, Some("running"), "the parent is untouched");
-    }
-
-    /// Uma spec ligada à sessão que não é ajuste da spec da branch nunca é
-    /// aprovada por ali: a sessão se liga a toda spec que um evento nomeia.
-    #[test]
-    fn a_bound_spec_that_is_not_a_fix_of_the_branch_spec_is_never_approved() {
-        if ambient_override() {
-            return;
-        }
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        crate::shared::spec_state::stand_on_spec_branch(root, "epic-1");
-        record_for(root, "epic-1", "state", json!({ "phase": "running", "branch": "feature/epic-1" }));
-        record_for(root, "outra", "state", json!({ "phase": "plan", "branch": "feature/outra" }));
-        bind_session_spec(&root.to_string_lossy(), SESSION, "outra");
-
-        let said = witness(root, &approve_or_adjust("Aprovar"));
-        let expected = say("approval.witness.already", lang(root), &[("{spec}", "epic-1")]);
-        assert_eq!(said, Verdict::Inject { context: expected }, "the branch spec answers");
-        assert!(!DiskSpecState::new(root).state("outra").unwrap().approved, "the other spec stays in plan");
-    }
-
-    /// Respondida num worktree, a pergunta lê os pontos abertos da spec no
-    /// checkout principal: com um ponto aberto lá, nada é aprovado, e a
-    /// testemunha diz qual.
+    /// Respondida num worktree, a pergunta lê a ligação da sessão e os
+    /// pontos abertos da spec no checkout principal, onde a abertura os
+    /// grava: com um ponto aberto lá, nada é aprovado, e a testemunha diz
+    /// qual.
     #[test]
     fn in_a_worktree_the_witness_reads_the_open_points_of_the_main_checkout() {
         if ambient_override() {
@@ -1425,6 +1387,7 @@ mod tests {
         );
         let wt = tmp.path().join("wt");
         git(&main, &["worktree", "add", "-q", &wt.to_string_lossy(), "-b", "feature/epic"]);
+        bind_session_spec(&main.to_string_lossy(), SESSION, "epic");
 
         match witness(&wt, &approve_or_adjust("Aprovar")) {
             Verdict::Inject { context } => assert!(context.contains("MSTD-POINT-0001"), "{context}"),
