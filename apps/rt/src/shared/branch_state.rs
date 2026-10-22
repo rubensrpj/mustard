@@ -915,6 +915,16 @@ fn verdict(
 /// um merge que o portal refez em outro commit não deixa rastro —, e nunca
 /// inventa uma branch.
 pub(crate) fn merged_by_another(root: &Path, flow: &BaseFlow) -> Vec<BranchState> {
+    local_states(root, flow).into_iter().filter(|state| state.state.is_awaiting_prune()).collect()
+}
+
+/// Toda unidade do repositório, com o veredito da conferência pelo git local
+/// de [`merged_by_another`], sem o filtro: a mesma enumeração, a mesma medida
+/// de ancestralidade (`ancestry`, contra as bases declaradas) e a mesma tabela
+/// de vereditos. A limpeza das branches lê esta lista, e por isso apaga pela
+/// regra com que o aviso do início da sessão conta. Nunca pergunta ao
+/// provedor.
+pub(crate) fn local_states(root: &Path, flow: &BaseFlow) -> Vec<BranchState> {
     let mut units = BranchEnumerator::sweep(root, flow);
     // Before any per-base measurement: a unit filed under the empty base is
     // skipped by every one of them, so resolving here is what makes a
@@ -923,9 +933,6 @@ pub(crate) fn merged_by_another(root: &Path, flow: &BaseFlow) -> Vec<BranchState
     let (merged, measured) = try_merged_refs(root, flow);
     let ahead = refs_ahead_of_base(root, units.units(), flow);
     classify(root, PrQuery::Skip, units.units(), &merged, &ahead, measured)
-        .into_iter()
-        .filter(|state| state.state.is_awaiting_prune())
-        .collect()
 }
 
 #[cfg(test)]

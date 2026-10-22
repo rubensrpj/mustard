@@ -1024,21 +1024,16 @@ fn count_line_of(ledger: &Ledger, today: &str, lang: Locale) -> Option<String> {
 }
 
 /// A linha que o início da sessão mostra: quantas pendências estão abertas e
-/// onde está a lista inteira. `None` quando nada está aberto, ou quando a
-/// lista não se lê: quem recusa e explica o conserto é `run pending`.
+/// onde está a lista inteira. `Some(None)` quando nada está aberto; `None`
+/// quando a lista não se lê, e quem recusa e explica o conserto é
+/// `run pending`.
 #[must_use]
-pub(crate) fn count_line(root: &Path, lang: Locale) -> Option<String> {
+pub(crate) fn count_line(root: &Path, lang: Locale) -> Option<Option<String>> {
     let project = ledger_root(root);
     let paths = mustard_core::ClaudePaths::for_project(&project).ok()?;
     let ledger = load(&paths.pending_ledger_path()).ok()?;
-    count_line_of(&ledger, &today(None), lang)
+    Some(count_line_of(&ledger, &today(None), lang))
 }
-
-/// Identity and content, rather than just the count, for session notices.
-pub(crate) fn notice_state(root: &Path) -> String {
-    serde_json::to_string(&open_items_of(root)).unwrap_or_default()
-}
-
 
 /// Uma pendência aberta, como a enxergam os leitores de fora do ledger — o
 /// início de sessão, a cobrança de fim de turno, a abertura e o merge da
@@ -1729,7 +1724,7 @@ mod tests {
         add(root, "dois", "b");
         let line = pending_at(&opts(root))["count_line"].as_str().unwrap_or_default().to_string();
         assert!(line.starts_with("[Mustard] 2 "), "{line}");
-        assert_eq!(count_line(root, Locale::default()).as_deref(), Some(line.as_str()));
+        assert_eq!(count_line(root, Locale::default()).flatten().as_deref(), Some(line.as_str()));
     }
 
     /// Hoje, nos testes da faxina e da remoção.

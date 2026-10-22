@@ -75,9 +75,15 @@ impl Project {
     /// nenhuma sessão nem spec forçada. O `nproc` também lê `OMP_NUM_THREADS`
     /// e `OMP_THREAD_LIMIT`; sem elas, o número que ele diz é o da afinidade.
     fn command_in(&self, dir: &Path, args: &[&str], stdin: &str) -> Output {
+        self.command_with(dir, args, stdin, &[])
+    }
+
+    /// [`Project::command_in`] com as variáveis `env` somadas ao ambiente.
+    fn command_with(&self, dir: &Path, args: &[&str], stdin: &str, env: &[(&str, &Path)]) -> Output {
         let mut child = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
             .args(args)
             .current_dir(dir)
+            .envs(env.iter().copied())
             .env("HOME", &self.home)
             .env("USERPROFILE", &self.home)
             .env("CLAUDE_PROJECT_DIR", &self.root)
@@ -121,6 +127,44 @@ impl Project {
             .unwrap_or_else(|e| panic!("{args:?} did not answer JSON ({e}): {text}{}", String::from_utf8_lossy(&out.stderr)));
         assert_eq!(report["ok"], json!(true), "{args:?}: {report}");
         report
+    }
+
+    /// Um comando `run` cuja resposta não leva `ok`, como a limpeza, com a
+    /// pasta temporária do teste no lugar da da máquina: a limpeza varre a
+    /// pasta temporária, e a da máquina nunca entra no alcance do teste. A
+    /// resposta, que precisa ser JSON.
+    pub fn answer(&self, args: &[&str]) -> Value {
+        let temp = self.temp();
+        let env = [("TMPDIR", temp.as_path()), ("TMP", temp.as_path()), ("TEMP", temp.as_path())];
+        let mut all = vec!["run"];
+        all.extend_from_slice(args);
+        let out = self.command_with(&self.root, &all, "", &env);
+        assert_eq!(out.status.code(), Some(0), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        let text = String::from_utf8_lossy(&out.stdout).to_string();
+        serde_json::from_str(&text).unwrap_or_else(|e| panic!("{args:?} did not answer JSON ({e}): {text}"))
+    }
+
+    /// A abertura de uma sessão nova `session` do Claude Code no projeto, pelo
+    /// gancho, com o JSON do `SessionStart` e a pasta temporária do teste.
+    /// Devolve o texto que o gancho pôs na sessão.
+    pub fn session_start(&self, session: &str) -> String {
+        let temp = self.temp();
+        let env = [("TMPDIR", temp.as_path()), ("TMP", temp.as_path()), ("TEMP", temp.as_path())];
+        let payload =
+            json!({"hook_event_name": "SessionStart", "session_id": session, "source": "startup", "cwd": self.root.to_string_lossy()});
+        let out = self.command_with(&self.root, &["on", "SessionStart"], &payload.to_string(), &env);
+        assert_eq!(out.status.code(), Some(0), "a hook always exits 0: {}", String::from_utf8_lossy(&out.stderr));
+        serde_json::from_slice::<Value>(&out.stdout)
+            .ok()
+            .and_then(|said| said.pointer("/hookSpecificOutput/additionalContext").and_then(Value::as_str).map(str::to_string))
+            .unwrap_or_default()
+    }
+
+    /// A pasta temporária do teste, criada na primeira vez.
+    fn temp(&self) -> PathBuf {
+        let temp = self.home.with_file_name("tmp");
+        std::fs::create_dir_all(&temp).expect("the test temp folder");
+        temp
     }
 
     fn write(&self, event_type: &str, fields: &Value) -> Value {
