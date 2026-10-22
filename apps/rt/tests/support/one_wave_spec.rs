@@ -75,15 +75,18 @@ impl Project {
     /// nenhuma sessão nem spec forçada. O `nproc` também lê `OMP_NUM_THREADS`
     /// e `OMP_THREAD_LIMIT`; sem elas, o número que ele diz é o da afinidade.
     fn command_in(&self, dir: &Path, args: &[&str], stdin: &str) -> Output {
-        self.command_with(dir, args, stdin, &[])
+        self.command_with(None, dir, args, stdin, &[])
     }
 
-    /// [`Project::command_in`] com as variáveis `env` somadas ao ambiente.
-    fn command_with(&self, dir: &Path, args: &[&str], stdin: &str, env: &[(&str, &Path)]) -> Output {
+    /// [`Project::command_in`] com as variáveis `env` somadas ao ambiente e,
+    /// quando há, na conversa da sessão `session`: o gancho do terminal a passa
+    /// ao comando no ambiente.
+    fn command_with(&self, session: Option<&str>, dir: &Path, args: &[&str], stdin: &str, env: &[(&str, &Path)]) -> Output {
         let mut child = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
             .args(args)
             .current_dir(dir)
             .envs(env.iter().copied())
+            .envs(session.map(|session| ("MUSTARD_SESSION_ID", session)))
             .env("HOME", &self.home)
             .env("USERPROFILE", &self.home)
             .env("CLAUDE_PROJECT_DIR", &self.root)
@@ -123,8 +126,22 @@ impl Project {
         all.extend(owned.iter().map(String::as_str));
         // A abertura sai da conversa da sessão e a liga à spec: só a fala
         // dessa sessão entra pelo gancho.
-        let session: &[(&str, &Path)] = if args.first() == Some(&"open") { &[("MUSTARD_SESSION_ID", Path::new(SESSION))] } else { &[] };
-        let out = self.command_with(&self.root, &all, "", session);
+        let session = (args.first() == Some(&"open")).then_some(SESSION);
+        let out = self.command_with(session, &self.root, &all, "", &[]);
+        Self::ok_report(args, &out)
+    }
+
+    /// A abertura da spec pela conversa da sessão [`SESSION`], como quem
+    /// conduz a roda: o gancho do terminal passa a sessão ao comando, e é a
+    /// conversa dela que fica ligada à spec, a mesma que fala depois pelo
+    /// gancho da entrada.
+    fn open(&self) -> Value {
+        let args = ["run", "open", "--kind", "feature", "--name", self.spec, "--base", "dev"];
+        Self::ok_report(&args, &self.command_with(Some(SESSION), &self.root, &args, "", &[]))
+    }
+
+    /// A resposta de `args`, que precisa ser JSON com `ok`.
+    fn ok_report(args: &[&str], out: &Output) -> Value {
         let text = String::from_utf8_lossy(&out.stdout).to_string();
         let report: Value = serde_json::from_str(&text)
             .unwrap_or_else(|e| panic!("{args:?} did not answer JSON ({e}): {text}{}", String::from_utf8_lossy(&out.stderr)));
@@ -141,7 +158,7 @@ impl Project {
         let env = [("TMPDIR", temp.as_path()), ("TMP", temp.as_path()), ("TEMP", temp.as_path())];
         let mut all = vec!["run"];
         all.extend_from_slice(args);
-        let out = self.command_with(&self.root, &all, "", &env);
+        let out = self.command_with(None, &self.root, &all, "", &env);
         assert_eq!(out.status.code(), Some(0), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
         let text = String::from_utf8_lossy(&out.stdout).to_string();
         serde_json::from_str(&text).unwrap_or_else(|e| panic!("{args:?} did not answer JSON ({e}): {text}"))
@@ -155,7 +172,7 @@ impl Project {
         let env = [("TMPDIR", temp.as_path()), ("TMP", temp.as_path()), ("TEMP", temp.as_path())];
         let payload =
             json!({"hook_event_name": "SessionStart", "session_id": session, "source": "startup", "cwd": self.root.to_string_lossy()});
-        let out = self.command_with(&self.root, &["on", "SessionStart"], &payload.to_string(), &env);
+        let out = self.command_with(None, &self.root, &["on", "SessionStart"], &payload.to_string(), &env);
         assert_eq!(out.status.code(), Some(0), "a hook always exits 0: {}", String::from_utf8_lossy(&out.stderr));
         serde_json::from_slice::<Value>(&out.stdout)
             .ok()
@@ -223,7 +240,7 @@ impl Project {
     /// muda `src/main.rs` e o clique em "Aprovar", pronta para a primeira
     /// rodada. Devolve a resposta da abertura.
     pub fn approved(&self) -> Value {
-        let opened = self.run(&["open", "--kind", "feature", "--name", self.spec, "--base", "dev"]);
+        let opened = self.open();
         let said = self.user_says(GOAL);
         self.write("context", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": GOAL, "origin": said}));
         let grilled = self.run(&["grill", "--spec", self.spec, "--kinds", "feature", "--full"]);

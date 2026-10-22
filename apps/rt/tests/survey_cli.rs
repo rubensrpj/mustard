@@ -25,6 +25,7 @@ use mustard_rt::commands::spec_events::write::record;
 use serde_json::{json, Map, Value};
 
 const SPEC: &str = "trava-de-pendencias";
+const SESSION: &str = "s-levantamento";
 const GOAL: &str = "Travar o merge enquanto houver pendência aberta.";
 
 fn git(root: &Path, args: &[&str]) {
@@ -72,6 +73,19 @@ fn report(out: &Output) -> Value {
         .unwrap_or_else(|e| panic!("not one JSON report ({e}): {}", String::from_utf8_lossy(&out.stdout)))
 }
 
+/// A abertura da spec `name` pela conversa da sessão [`SESSION`], como quem
+/// conduz a roda: o gancho do terminal passa a sessão ao comando, e é a conversa
+/// dela que fica ligada à spec, a mesma que fala depois pelo gancho.
+fn open(root: &Path, kind: &str, name: &str) -> Output {
+    binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
+        .args(["run", "open", "--kind", kind, "--name", name, "--base", "dev", "--root"])
+        .arg(root)
+        .current_dir(root)
+        .env("MUSTARD_SESSION_ID", SESSION)
+        .output()
+        .expect("run mustard-rt")
+}
+
 /// Grava pelo `run write` e devolve o relatório; a recusa reprova.
 fn write(root: &Path, event_type: &str, fields: &Value) -> Value {
     let out = rt(root, &["write", event_type, "--spec", SPEC, "--json", &fields.to_string()]);
@@ -93,8 +107,8 @@ fn user_says(root: &Path, text: &str) -> u64 {
 }
 
 /// Um gancho do Claude Code pelo binário, com o JSON do evento no `stdin`, na
-/// sessão do levantamento e com a spec atual. Devolve a saída do gancho, que
-/// sempre sai com 0.
+/// sessão do levantamento. A spec é a que a abertura ligou a essa sessão: nada
+/// a força pelo ambiente. Devolve a saída do gancho, que sempre sai com 0.
 fn on(root: &Path, home: &Path, event: &str, payload: &Value) -> String {
     use std::io::Write;
     use std::process::Stdio;
@@ -105,7 +119,7 @@ fn on(root: &Path, home: &Path, event: &str, payload: &Value) -> String {
         .env("HOME", home)
         .env("USERPROFILE", home)
         .env("CLAUDE_PROJECT_DIR", root)
-        .env("MUSTARD_ACTIVE_SPEC", SPEC)
+        .env_remove("MUSTARD_ACTIVE_SPEC")
         .env_remove("CLAUDE_CONFIG_DIR")
         .env_remove("CLAUDE_PLUGIN_ROOT")
         .stdin(Stdio::piped())
@@ -125,7 +139,7 @@ fn on(root: &Path, home: &Path, event: &str, payload: &Value) -> String {
 /// binário lê o evento no `stdin` e grava a fala na spec atual. Devolve o
 /// número da fala gravada.
 fn hook_says(root: &Path, home: &Path, text: &str) -> u64 {
-    let payload = json!({"hook_event_name": "UserPromptSubmit", "prompt": text, "session_id": "s-levantamento",
+    let payload = json!({"hook_event_name": "UserPromptSubmit", "prompt": text, "session_id": SESSION,
         "cwd": root.to_string_lossy()});
     on(root, home, "UserPromptSubmit", &payload);
     let path = store::spec_file(root, SPEC).expect("the spec's file");
@@ -213,7 +227,7 @@ fn says_in(root: &Path, spec: &str, text: &str) -> u64 {
 /// `text` para o usuário, com o título que é a frase sem o ponto, e `agent`
 /// para quem implementa.
 fn open_with_goal(root: &Path, name: &str, text: &str, agent: &str) {
-    let opened = rt(root, &["open", "--kind", "fix", "--name", name, "--base", "dev"]);
+    let opened = open(root, "fix", name);
     assert_eq!(opened.status.code(), Some(0), "{}", String::from_utf8_lossy(&opened.stdout));
     let said = says_in(root, name, text);
     write_in(root, name, "context", &json!({"title": text.trim_end_matches('.'), "agent": agent, "text": text, "origin": said}));
@@ -293,7 +307,7 @@ fn a_test_survey_goes_through_every_point_and_the_plan_is_refused_while_one_is_o
     let dir = repo();
     let root = dir.path();
 
-    let opened = rt(root, &["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    let opened = open(root, "feature", SPEC);
     assert_eq!(opened.status.code(), Some(0), "{}", String::from_utf8_lossy(&opened.stdout));
     assert_eq!(report(&opened)["step"], "ask_goal");
 
@@ -387,7 +401,7 @@ fn a_test_survey_goes_through_every_point_and_the_plan_is_refused_while_one_is_o
 fn a_survey_is_answered_with_one_answer_call_per_point() {
     let dir = repo();
     let root = dir.path();
-    let opened = rt(root, &["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    let opened = open(root, "feature", SPEC);
     assert_eq!(opened.status.code(), Some(0), "{}", String::from_utf8_lossy(&opened.stdout));
     let said = user_says(root, GOAL);
     write(root, "context", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": GOAL, "origin": said}));
@@ -476,7 +490,7 @@ fn a_task_missing_a_declaration_is_refused_naming_only_it_and_writes_nothing() {
 
     let dir = repo();
     let root = dir.path();
-    let opened = rt(root, &["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    let opened = open(root, "feature", SPEC);
     assert_eq!(opened.status.code(), Some(0), "{}", String::from_utf8_lossy(&opened.stdout));
     let said = user_says(root, GOAL);
     let crit = criterion(root, said);
@@ -535,7 +549,7 @@ fn a_question_said_during_an_open_point_is_not_left_loose_at_the_end() {
     let dir = repo();
     let home = tempfile::tempdir().expect("home");
     let root = dir.path();
-    let opened = rt(root, &["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    let opened = open(root, "feature", SPEC);
     assert_eq!(opened.status.code(), Some(0), "{}", String::from_utf8_lossy(&opened.stdout));
     let said = user_says(root, GOAL);
     write(root, "context", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": GOAL, "origin": said}));
@@ -594,7 +608,7 @@ fn the_end_of_the_survey_shows_each_unrouted_message_once_as_a_short_line() {
     let dir = repo();
     let home = tempfile::tempdir().expect("home");
     let root = dir.path();
-    let opened = rt(root, &["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    let opened = open(root, "feature", SPEC);
     assert_eq!(opened.status.code(), Some(0), "{}", String::from_utf8_lossy(&opened.stdout));
     let said = hook_says(root, home.path(), GOAL);
     write(root, "context", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": GOAL, "origin": said}));
@@ -675,7 +689,7 @@ fn the_survey_asks_for_the_approved_design_copy_when_it_opens_the_points_and_nev
     let root = dir.path();
     let design = format!(".claude/spec/{SPEC}/desenho.html");
     let mentions = |out: &Output| String::from_utf8_lossy(&out.stdout).matches("desenho.html").count();
-    let opened = rt(root, &["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    let opened = open(root, "feature", SPEC);
     assert_eq!(opened.status.code(), Some(0), "{}", String::from_utf8_lossy(&opened.stdout));
     let said = hook_says(root, home.path(), GOAL);
     write(root, "context", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": GOAL, "origin": said}));
@@ -724,7 +738,7 @@ fn the_survey_asks_for_the_approved_design_copy_when_it_opens_the_points_and_nev
         // gancho de escrita, que barra o arquivo da spec, deixa a cópia
         // passar sem decisão nenhuma.
         let writing = |path: &Path| {
-            json!({"hook_event_name": "PreToolUse", "tool_name": "Write", "session_id": "s-levantamento",
+            json!({"hook_event_name": "PreToolUse", "tool_name": "Write", "session_id": SESSION,
                 "cwd": root.to_string_lossy(), "tool_input": {"file_path": path.to_string_lossy(), "content": html}})
         };
         let barred = on(root, home.path(), "PreToolUse", &writing(&target.with_file_name("spec.ndjson")));
@@ -759,7 +773,7 @@ fn the_survey_asks_for_the_approved_design_copy_when_it_opens_the_points_and_nev
     assert!(repeated.is_empty(), "no response after the grill repeats the copy: {repeated:?}");
 
     let prompt = format!("Revise o levantamento da spec {SPEC}: os pontos, as regras e as decisões.");
-    let dispatch = json!({"hook_event_name": "PreToolUse", "tool_name": "Agent", "session_id": "s-levantamento",
+    let dispatch = json!({"hook_event_name": "PreToolUse", "tool_name": "Agent", "session_id": SESSION,
         "cwd": root.to_string_lossy(), "tool_input": {"subagent_type": "mustard-review", "description": "revisão", "prompt": prompt}});
     let answer: Value = serde_json::from_str(&on(root, home.path(), "PreToolUse", &dispatch)).expect("the hook answers JSON");
     let sent = answer["hookSpecificOutput"]["updatedInput"]["prompt"].as_str().unwrap_or_else(|| panic!("no rewritten prompt: {answer}"));
@@ -773,7 +787,7 @@ fn the_survey_asks_for_the_approved_design_copy_when_it_opens_the_points_and_nev
 fn cycle_between_tasks_is_refused_naming_the_cycle() {
     let dir = repo();
     let root = dir.path();
-    rt(root, &["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    open(root, "feature", SPEC);
     let said = user_says(root, GOAL);
     let crit = criterion(root, said);
 
@@ -838,7 +852,7 @@ fn cycle_between_tasks_is_refused_naming_the_cycle() {
 fn dependency_on_a_missing_task_is_refused() {
     let dir = repo();
     let root = dir.path();
-    rt(root, &["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    open(root, "feature", SPEC);
     let said = user_says(root, GOAL);
     let crit = criterion(root, said);
 
@@ -887,7 +901,7 @@ fn dependency_on_a_missing_task_is_refused() {
 fn a_task_without_the_items_it_covers_is_refused_naming_the_items_no_task_covers() {
     let dir = repo();
     let root = dir.path();
-    let opened = rt(root, &["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    let opened = open(root, "feature", SPEC);
     assert_eq!(opened.status.code(), Some(0), "{}", String::from_utf8_lossy(&opened.stdout));
     let said = user_says(root, GOAL);
     let criterion = |title: &str| {
