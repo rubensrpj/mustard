@@ -17,24 +17,31 @@
 //! sobra ([`super::triage_questions`]): a pergunta só sai depois de soltas a
 //! trava do passo do git e a das cópias. A resposta da triagem não se perde
 //! quando a fila de tarefas muda no meio-tempo: as tarefas abertas são só as
-//! opções do pedido, e a decisão é das atividades.
+//! opções do pedido, e a decisão é das atividades. O recibo da reserva também
+//! não: o pedido de reserva fica gravado sob a chave da decisão, com o número
+//! dele e a impressão do pedido de então, e o recibo se lê por eles com as
+//! perguntas do pedido de agora ([`decided_by`]).
 
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Instant;
 
-use mustard_core::domain::spec_events::SpecLog;
+use mustard_core::domain::spec_events::{SpecEvent, SpecLog};
 use mustard_core::domain::spec_state::PhaseWriter;
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Map, Value, json};
 
 use crate::commands::spec_events::write::record;
-use crate::shared::jev::reserve;
+use crate::shared::jev::reserve::{self, Reserved};
 use crate::shared::jev::yes_no::{self, Ask};
 
 /// A etapa da rodada com que a resposta do Jev fica gravada, seguida de `:`
 /// e do nome da chamada.
 const STAGE: &str = "jev-decision";
+
+/// A etapa da rodada com que o pedido de reserva da decisão fica gravado,
+/// seguida de `:` e do nome da chamada.
+const RESERVE_STAGE: &str = "jev-reserve";
 
 /// A pergunta que segura a volta de uma onda.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,6 +107,11 @@ impl Question {
     /// A etapa com que a resposta desta pergunta fica gravada.
     fn stage(self) -> String {
         format!("{STAGE}:{}", self.command())
+    }
+
+    /// A etapa com que o pedido de reserva desta pergunta fica gravado.
+    fn reserve_stage(self) -> String {
+        format!("{RESERVE_STAGE}:{}", self.command())
     }
 
     /// O nome da pergunta na chave da decisão: as da triagem dividem a
@@ -210,34 +222,52 @@ pub(crate) fn decided(root: &Path, log: &SpecLog, question: Question, payloads: 
     decided_by(root, log, question, &reserve::subject(payloads), payloads, on)
 }
 
+/// As etapas `stage` gravadas em `log` sob a chave `key`, da mais nova para a
+/// mais velha.
+fn recorded<'a>(log: &'a SpecLog, stage: &'a str, key: &'a str) -> impl Iterator<Item = &'a SpecEvent> {
+    log.events.iter().rev().filter(move |e| e.event_type == "stage_run" && e.str_field("stage") == Some(stage) && e.str_field("fingerprint") == Some(key))
+}
+
 /// A decisão da pergunta `question` feita pelos pedidos `payloads`, na spec
 /// de `root` lida em `log`: a resposta gravada sob a chave `key` ou o recibo
-/// da reserva; sem nenhum dos dois, a espera com o Jev ligado (`on`) e a
-/// regra com ele desligado. Só lê: nenhuma chamada sai daqui.
+/// de uma reserva pedida sob ela ([`reserve_receipt`]); sem nenhum dos dois,
+/// a espera com o Jev ligado (`on`) e a regra com ele desligado. Só lê:
+/// nenhuma chamada sai daqui.
 pub(crate) fn decided_by(root: &Path, log: &SpecLog, question: Question, key: &str, payloads: &[String], on: JevOn) -> Judged {
     let stage = question.stage();
-    let recorded = log
-        .events
-        .iter()
-        .rev()
-        .find(|e| e.event_type == "stage_run" && e.str_field("stage") == Some(stage.as_str()) && e.str_field("fingerprint") == Some(key));
-    if let Some(event) = recorded {
+    if let Some(event) = recorded(log, &stage, key).next() {
         let docs = event.str_field("output").and_then(|text| serde_json::from_str::<Vec<Value>>(text).ok());
         return docs.filter(|docs| docs.len() == payloads.len()).map_or(Judged::Rule, Judged::Answered);
     }
     if !on.asks(question) {
         return Judged::Rule;
     }
-    reserve::receipt_for(root, payloads).filter(|docs| docs.len() == payloads.len()).map_or(Judged::Waiting, Judged::Answered)
+    reserve_receipt(root, log, question, key, payloads).map_or(Judged::Waiting, Judged::Answered)
+}
+
+/// O recibo de uma reserva pedida para a decisão de chave `key` da pergunta
+/// `question`, gravada em `log` com o número do pedido e a impressão dele
+/// ([`record_reserve`]), lido com as perguntas dos pedidos de agora
+/// `payloads`: o da mais nova que já tem recibo. A tarefa gravada entre o
+/// pedido da reserva e o recibo muda o pedido de agora, e não o recibo.
+fn reserve_receipt(root: &Path, log: &SpecLog, question: Question, key: &str, payloads: &[String]) -> Option<Vec<Value>> {
+    let stage = question.reserve_stage();
+    recorded(log, &stage, key).filter_map(|event| serde_json::from_str::<Value>(event.str_field("output")?).ok()).find_map(|asked| {
+        match reserve::reserved_as(root, asked["request_id"].as_str()?, asked["subject"].as_str()?, payloads) {
+            Reserved::Ready(docs) => Some(docs).filter(|docs| docs.len() == payloads.len()),
+            Reserved::Pending | Reserved::Stale => None,
+        }
+    })
 }
 
 /// Depois de soltas a trava do passo do git e a das cópias: as perguntas das
 /// voltas de `waiting` vão ao Jev, as de cada chamada juntas, pelo prazo de
 /// toda chamada, e a resposta legível de cada volta fica gravada na spec
 /// `spec` de `start`, para a rodada seguinte. A que falha vai à reserva:
-/// volta o pedido pronto ao agente de análise. A reserva que não se prepara
-/// grava a regra de sempre, e a volta não espera mais. Com o Jev desligado
-/// nesse meio-tempo, nada sai, e a rodada seguinte segue a regra.
+/// volta o pedido pronto ao agente de análise, gravado sob a chave da
+/// decisão. A reserva que não se prepara grava a regra de sempre, e a volta
+/// não espera mais. Com o Jev desligado nesse meio-tempo, nada sai, e a
+/// rodada seguinte segue a regra.
 pub(crate) fn ask_outside(start: &Path, root: &Path, spec: &str, waiting: &[Waiting]) -> Vec<Value> {
     let mut reserves = Vec::new();
     let mut calls: Vec<Question> = Vec::new();
@@ -261,6 +291,7 @@ pub(crate) fn ask_outside(start: &Path, root: &Path, spec: &str, waiting: &[Wait
                 None => {
                     let request = reserve::reserve_request(root, spec, one.question.command(), &one.payloads);
                     if request.get("unavailable").is_none() {
+                        record_reserve(start, spec, one, &request, started);
                         reserves.push(request);
                     } else {
                         record_decision(start, spec, one, &[], started);
@@ -296,14 +327,32 @@ fn readable(payload: &str, doc: &Value) -> bool {
 /// deixa a volta esperando, e a rodada seguinte pergunta de novo.
 fn record_decision(start: &Path, spec: &str, one: &Waiting, docs: &[Value], started: Instant) {
     let kept: Vec<Value> = docs.iter().map(|doc| json!({ "answers": doc["answers"] })).collect();
+    let result = if docs.is_empty() { "skipped" } else { "pass" };
+    record_stage(start, spec, one, &one.question.stage(), result, &Value::Array(kept), started);
+}
+
+/// Grava, na spec `spec` de `start`, o pedido de reserva `request` da volta
+/// `one`, cujo Jev falhou: o número do pedido e a impressão dos pedidos dela
+/// de agora, achados de novo pela chave dela, por onde a rodada seguinte lê o
+/// recibo ([`reserve_receipt`]). Melhor esforço: a gravação que falha deixa a
+/// volta esperando, e a rodada seguinte pergunta de novo.
+fn record_reserve(start: &Path, spec: &str, one: &Waiting, request: &Value, started: Instant) {
+    let asked = json!({ "request_id": request["request_id"], "subject": reserve::subject(&one.payloads) });
+    record_stage(start, spec, one, &one.question.reserve_stage(), "fail", &asked, started);
+}
+
+/// Grava, na spec `spec` de `start`, a etapa `stage` da volta `one`, com o
+/// resultado `result` e a saída `output`, sob a chave dela e medida desde
+/// `started`.
+fn record_stage(start: &Path, spec: &str, one: &Waiting, stage: &str, result: &str, output: &Value, started: Instant) {
     let fields = Map::from_iter([
         ("author".into(), json!("binary")),
         ("phase".into(), json!("delivery")),
-        ("stage".into(), json!(one.question.stage())),
-        ("result".into(), json!(if docs.is_empty() { "skipped" } else { "pass" })),
+        ("stage".into(), json!(stage)),
+        ("result".into(), json!(result)),
         ("ms".into(), json!(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX))),
         ("fingerprint".into(), json!(one.key)),
-        ("output".into(), json!(Value::Array(kept).to_string())),
+        ("output".into(), json!(output.to_string())),
         ("waves".into(), json!(if one.wave == FINAL_REVIEW { Vec::new() } else { vec![one.wave] })),
     ]);
     let _ = record(start, spec, "stage_run", fields, PhaseWriter::Binary);

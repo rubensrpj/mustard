@@ -184,6 +184,17 @@ pub(crate) fn unanswered_sends(log: &SpecLog) -> BTreeMap<u64, u64> {
     sends_without_return(log).into_iter().filter(|(n, _)| planned.contains(n)).collect()
 }
 
+/// `true` quando o agente da onda `wave` ainda pode entregar: ela tem envio
+/// sem volta ([`unanswered_sends`]), mesmo com o plano mudado depois dele, e
+/// nenhuma entrega esperando a rodada ([`waves_returned`]). É a leitura da
+/// gravação de uma tarefa, que não pode tirar da onda o que o agente entrega.
+/// Ao contrário de [`waves_in_progress`], não olha se o Claude Code que mandou
+/// o pedido segue aberto: a onda cujo agente caiu sem voltar segue dona das
+/// tarefas dela até sair de novo ou voltar.
+pub(crate) fn agent_working(log: &SpecLog, wave: u64) -> bool {
+    unanswered_sends(log).contains_key(&wave) && !waves_returned(log).contains(&wave)
+}
+
 /// As ondas com pedido despachado e sem volta, cada uma com o número do
 /// pedido, estejam ou não no plano: a leitura que [`unanswered_sends`]
 /// restringe às do plano e que [`waves_left_without_tasks`] restringe às que

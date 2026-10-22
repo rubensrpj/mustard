@@ -10,12 +10,11 @@
 use mustard_core::domain::spec_events::{SpecEvent, SpecLog, resolve_codes};
 use serde_json::{Map, Value, json};
 
-use crate::commands::flow::round::queue::{unanswered_sends, waves_returned};
+use crate::commands::flow::round::queue::agent_working;
 
 /// A versão nova de uma tarefa que não traz `wave` herda a da versão que ela
 /// substitui, quando o agente dessa onda trabalha: a onda tem envio sem volta
-/// ([`unanswered_sends`]) e o agente ainda não gravou a entrega
-/// ([`waves_returned`]). Com um número de onda no rascunho, ele fica como
+/// ([`agent_working`]). Com um número de onda no rascunho, ele fica como
 /// veio: a conferência da gravação recusa o que muda a onda da tarefa. A
 /// versão que não substitui nada, ou que substitui uma tarefa do backlog, de
 /// lote que não saiu ou de onda que já voltou, segue sem onda.
@@ -40,11 +39,6 @@ fn replaced_id(log: &SpecLog, draft: &Map<String, Value>) -> Option<u64> {
     probe.insert("replaces".into(), replaces.clone());
     resolve_codes(log, &mut probe).ok()?;
     probe.get("replaces").and_then(Value::as_u64)
-}
-
-/// O agente da onda `wave` trabalha: ela saiu e ele não voltou.
-fn agent_working(log: &SpecLog, wave: u64) -> bool {
-    unanswered_sends(log).contains_key(&wave) && !waves_returned(log).contains(&wave)
 }
 
 #[cfg(test)]

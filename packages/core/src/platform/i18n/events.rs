@@ -807,14 +807,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              o programa que monta o lote na hora de despachar. Grave só a tarefa, sem `wave`, com o \
              que ela faz (`text`), os arquivos (`files`) e as tarefas de que depende \
              (`depends_on`). Na versão nova de uma tarefa que já está numa onda, repita o `wave` da \
-             versão que ela substitui."
+             versão que ela substitui; numa onda em andamento, omitir o `wave` também vale, e a \
+             versão nova fica na onda da que ela substitui."
         }
         ("spec_events.wave_by_backlog", Locale::EnUs) => {
             "A wave is not written by `run write`, and nothing was written. The wave is born from \
              the backlog, and the program puts the batch together when it dispatches. Write only \
              the task, without `wave`, with what it does (`text`), the files (`files`) and the \
              tasks it depends on (`depends_on`). In the new version of a task that is already in a \
-             wave, repeat the `wave` of the version it replaces."
+             wave, repeat the `wave` of the version it replaces; in a wave in progress, leaving out \
+             `wave` works too, and the new version stays in the wave of the one it replaces."
         }
         ("spec_events.request_on_closed_spec", Locale::PtBr) => {
             "A spec {spec} está na fase {phase}: ela já fechou, e o pedido novo só entra nela \
@@ -1277,7 +1279,7 @@ mod tests {
             include_str!("events.rs"),
             super::PREFIXES,
             180,
-            0x06b8_6d77_2bfd_8cc2,
+            0xe0e5_31a3_e3f3_5931,
         );
     }
 

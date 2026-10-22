@@ -273,17 +273,29 @@ pub(crate) fn as_jev(kind: &str, answer: &ReserveAnswer) -> Value {
     }
 }
 
-/// O que a reserva `request_id` deu para a decisão dos pedidos `payloads`:
-/// com o recibo, uma resposta na forma da do Jev por pedido, na ordem; sem
-/// ele, pendente; de outra decisão, velha.
+/// O que a reserva `request_id` deu para a decisão dos pedidos `payloads`,
+/// pedida com eles mesmos ([`reserved_as`]).
 pub(crate) fn reserved(root: &Path, request_id: &str, payloads: &[String]) -> Reserved {
+    reserved_as(root, request_id, &subject(payloads), payloads)
+}
+
+/// O que a reserva `request_id`, pedida para a decisão de impressão `asked`,
+/// deu para os pedidos `payloads` de agora, lidos com as perguntas deles: com
+/// o recibo e uma resposta por pergunta de agora, uma resposta na forma da do
+/// Jev por pedido, na ordem; sem o recibo, pendente; de outra decisão, ou com
+/// as perguntas mudadas em número desde o pedido, velha. A opção de cada
+/// resposta, quem a lê confere com as do pedido de agora.
+pub(crate) fn reserved_as(root: &Path, request_id: &str, asked: &str, payloads: &[String]) -> Reserved {
     let Some((decided, answers)) = completed_reserve(root, request_id.trim()) else {
         return Reserved::Pending;
     };
-    if decided != subject(payloads) {
+    if decided != asked {
         return Reserved::Stale;
     }
     let (_, questions, asking) = decision(payloads);
+    if answers.len() != questions.len() {
+        return Reserved::Stale;
+    }
     let mut docs: Vec<Map<String, Value>> = vec![Map::new(); payloads.len()];
     let mut unsure = vec![false; payloads.len()];
     for (question, asked) in questions.iter().zip(&asking) {
@@ -419,6 +431,33 @@ mod tests {
             assert_eq!(reserved(root, &id, &[payload("Outro objetivo.")]), Reserved::Stale);
             let _ = std::fs::remove_dir_all(root.join(".claude/.cache/knowledge-session"));
         }
+    }
+
+    /// O recibo lido pela impressão do pedido de quando a reserva saiu vale
+    /// para o pedido de agora, de outro material, quando as perguntas são as
+    /// mesmas em número: as respostas caem nas perguntas de agora. Com uma
+    /// pergunta a menos agora, ou lido pela impressão de outro pedido, ele é
+    /// velho.
+    #[test]
+    fn a_receipt_read_by_the_print_asked_needs_as_many_questions_now() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        opened(root);
+        let then = [payload("Somar dois números na calculadora.")];
+        let id = reserve_request(root, "x", TASK_TRIAGE_CALL, &then)["request_id"].as_str().unwrap().to_string();
+        let sure = |choice: &str| json!({ "choice": choice, "certainty": "sure" });
+        complete_session(root, root, &receipt(&id, json!({ "q1": sure("no"), "q2": sure("new_spec"), "q3": sure("2") }))).unwrap();
+        let asked = subject(&then);
+        let now = [payload("Somar dois números na calculadora, com a fila mudada.")];
+
+        let Reserved::Ready(docs) = reserved_as(root, &id, &asked, &now) else { panic!("the receipt answers the request of now") };
+        assert_eq!(choice_in(&docs[0], "route", &["new_spec", "project_pending", "same_spec"]).map(|(route, _)| route), Some("new_spec".to_string()));
+        assert_eq!(docs[0]["answers"]["complexity_t1"]["score"], json!(2), "{}", docs[0]);
+
+        let mut fewer: Value = serde_json::from_str(&now[0]).unwrap();
+        fewer["questions"].as_object_mut().unwrap().remove("complexity_t1");
+        assert_eq!(reserved_as(root, &id, &asked, &[fewer.to_string()]), Reserved::Stale, "one question less now");
+        assert_eq!(reserved_as(root, &id, &subject(&now), &now), Reserved::Stale, "the print of another request");
     }
 
     /// Com o Jev desligado pelo usuário, nada vai à reserva: vale o fluxo
