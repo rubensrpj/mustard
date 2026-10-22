@@ -1,46 +1,43 @@
-//! `prompt` — telling a person's prompt apart from the runtime's own notices.
+//! `prompt` — a fala de uma pessoa, separada dos avisos do próprio programa.
 //!
-//! ## Why this exists
+//! ## Por que existe
 //!
-//! `UserPromptSubmit` fires for everything that reaches the session through the
-//! user channel — and the runtime speaks through that same channel. A finished
-//! background command, a completed subagent and other lifecycle notices all
-//! arrive as a "user prompt", carrying a machine banner and, in the subagent
-//! case, an entire report.
+//! O `UserPromptSubmit` dispara para tudo o que chega à sessão pelo canal do
+//! usuário, e o Claude Code fala pelo mesmo canal. O fim de um comando em
+//! segundo plano, a volta de um subagente e outros avisos chegam como "fala
+//! do usuário", com a marca da máquina e, no caso do subagente, o relatório
+//! inteiro.
 //!
-//! The one hook on that trigger,
-//! [`crate::hooks::session::prompt_entry`], writes each message the user
-//! sends into the spec's conversation block. Without this predicate every
-//! notice would land there as something the user said, and the reader of that
-//! block would take a finished background command for a request.
+//! O único gancho desse evento, [`crate::hooks::session::prompt_entry`],
+//! grava cada mensagem do usuário no bloco da conversa da spec. Sem este
+//! filtro, cada aviso entraria ali como fala do usuário, e quem lê o bloco
+//! tomaria o fim de um comando em segundo plano por um pedido.
 //!
-//! One filter, one owner: o gancho e a abertura (`typed_messages`, que lê a
-//! conversa guardada) passam a fala pelo mesmo [`person_text`], que tira o
-//! aviso do programa e os blocos que o Claude Code põe na fala. Uma regra
+//! Um filtro só, com um dono só: o gancho e a abertura (`typed_messages`, que
+//! lê a conversa guardada) passam a fala pelo mesmo [`person_text`], que tira
+//! o aviso do programa e os blocos que o Claude Code põe na fala. Uma regra
 //! dessas, copiada em cada leitor, diverge na primeira marca nova.
 //!
-//! ## Contract
+//! ## Contrato
 //!
-//! Pure, total, never panics. The markers are runtime protocol
-//! strings, not user-facing prose, so they stay English regardless of the
-//! project's narrative locale — the same carve-out that keeps event names and
-//! log strings English.
+//! Puro, total, nunca entra em pânico. As marcas são texto do protocolo do
+//! Claude Code, e não frase para o usuário: ficam em inglês, qualquer que
+//! seja o idioma do projeto, como os nomes de evento.
 
-/// Prompt markers the RUNTIME authors, never a person.
+/// As marcas da fala que o PROGRAMA escreve, nunca uma pessoa.
 ///
-/// Matched anywhere in the text rather than at its start: the runtime may
-/// prepend its own framing before the banner, and a notice is sometimes wrapped
-/// in a wider envelope.
+/// Procuradas em qualquer ponto do texto, e não só no começo: o programa
+/// pode pôr um texto dele antes da marca, e o aviso às vezes vem dentro de um
+/// envelope maior.
 const HARNESS_NOTICE_MARKERS: &[&str] =
     &["[SYSTEM NOTIFICATION - NOT USER INPUT]", "<task-notification>", "<agent-message from="];
 
-/// `true` when `prompt` was authored by the runtime rather than by a person.
+/// `true` quando quem escreveu `prompt` foi o programa, e não uma pessoa.
 ///
-/// Deliberately narrow: it recognises the banners the runtime actually
-/// emits and nothing else. A heuristic ("looks machine-generated") would
-/// eventually swallow a real request, and losing what someone asked for is the
-/// worse error — an observer that records one notice too many is noisy, one
-/// that drops a request is silently wrong.
+/// Estreito de propósito: reconhece as marcas que o programa de fato manda e
+/// nada mais. Um palpite ("parece texto de máquina") um dia engoliria um
+/// pedido de verdade, e perder o que a pessoa pediu é o erro pior: gravar um
+/// aviso a mais faz barulho, perder um pedido erra calado.
 #[must_use]
 fn is_harness_notice(prompt: &str) -> bool {
     HARNESS_NOTICE_MARKERS.iter().any(|m| prompt.contains(m))
@@ -94,18 +91,18 @@ fn harness_block(text: &str) -> Option<(usize, usize)> {
 mod tests {
     use super::*;
 
-    /// Every banner is recognised, wherever it sits in the text.
+    /// Cada marca é reconhecida, em qualquer ponto do texto.
     #[test]
     fn recognises_every_runtime_banner() {
         assert!(is_harness_notice("[SYSTEM NOTIFICATION - NOT USER INPUT]\nbody"));
         assert!(is_harness_notice("<task-notification>\n<status>completed</status>"));
         assert!(is_harness_notice("<agent-message from=\"onda-39\">relatório</agent-message>"));
-        // Wrapped in a wider envelope — still a notice.
+        // Dentro de um envelope maior, segue aviso.
         assert!(is_harness_notice("prefix\n\n<task-notification>x</task-notification>\n"));
     }
 
-    /// A person's prompt is never a notice, including one that TALKS about
-    /// notifications. Substring matching is on the literal banner, not the word.
+    /// A fala de uma pessoa nunca é aviso, nem a que FALA de avisos: a
+    /// procura é pela marca escrita, e não pela palavra.
     #[test]
     fn a_real_request_is_never_mistaken_for_one() {
         for real in [
@@ -117,5 +114,39 @@ mod tests {
         ] {
             assert!(!is_harness_notice(real), "misread as a notice: {real:?}");
         }
+    }
+
+    /// O bloco que abre e não fecha fica na fala, inteiro: sem a marca de
+    /// fechar não se sabe onde ele acaba, e tirar dali até o fim perderia o
+    /// pedido.
+    #[test]
+    fn a_block_without_its_closing_mark_stays_in_the_text() {
+        let said = "<system-reminder>lembrete sem fim\narrume o login";
+        assert_eq!(person_text(said).as_deref(), Some(said));
+    }
+
+    /// Dois blocos na mesma fala saem os dois, e fica só o que a pessoa
+    /// escreveu.
+    #[test]
+    fn two_blocks_in_one_prompt_both_leave() {
+        let said = "<system-reminder>lembrete</system-reminder>arrume o login\
+                    <local-command-stdout>saída do comando</local-command-stdout>";
+        assert_eq!(person_text(said).as_deref(), Some("arrume o login"));
+    }
+
+    /// O bloco no meio da fala sai, e o que vinha antes e depois dele fica,
+    /// em dois parágrafos.
+    #[test]
+    fn a_block_in_the_middle_keeps_what_surrounds_it() {
+        let said = "primeiro isto <bash-input>ls -la</bash-input> depois aquilo";
+        assert_eq!(person_text(said).as_deref(), Some("primeiro isto\n\ndepois aquilo"));
+    }
+
+    /// A marca que abre o bloco com um atributo fecha pelo nome dela, sem o
+    /// atributo.
+    #[test]
+    fn a_mark_with_an_attribute_closes_by_its_name() {
+        let said = "<system-reminder origin=\"hook\">lembrete</system-reminder>arrume o login";
+        assert_eq!(person_text(said).as_deref(), Some("arrume o login"));
     }
 }

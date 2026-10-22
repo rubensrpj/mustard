@@ -30,8 +30,10 @@ use mustard_core::domain::spec_state::{SpecState, State, last_user_message};
 use mustard_core::domain::survey;
 use mustard_core::io::spec_events as store;
 use mustard_core::io::spend;
+use mustard_core::io::wave_prompt::spec_copies_dir;
 use serde_json::{Map, Value, json};
 
+use crate::commands::flow::round::inside_copies;
 use crate::shared::secret::without_secrets;
 use crate::shared::spec_state::DiskSpecState;
 
@@ -382,7 +384,7 @@ pub(crate) fn record_output_call(root: &Path, command: &str, named: Option<&str>
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut measured=transport_metrics(&args,output);
     measured.insert("invocation".into(),json!(true));
-    if let Some(block) = asked_block(&args) {
+    if let Some(block) = ASKED_BLOCK.get() {
         measured.insert("block".into(), json!(block));
     }
     if command=="search" {
@@ -427,25 +429,26 @@ fn search_decisions(report:&Value)->Map<String,Value> {
     fields
 }
 
-/// Os comandos `run` cuja primeira palavra é o bloco pedido: o bloco da
-/// leitura e o tipo da gravação. O termo do `find` é texto de quem procura,
-/// e não bloco.
-const BLOCK_COMMANDS: [&str; 2] = ["read", "write"];
+/// O bloco que a chamada deste processo pediu, anotado pela linha de comando
+/// ([`note_asked_block`]); vazio fora de `run read` e `run write`.
+static ASKED_BLOCK: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
-/// O bloco que a chamada `run <comando> <bloco> …` pediu, quando o comando é
-/// um de [`BLOCK_COMMANDS`] e a palavra logo depois dele não é opção. O valor
-/// de uma opção, como o texto de `--json`, nunca entra.
-fn asked_block(args: &[String]) -> Option<&str> {
-    match args {
-        [run, command, block, ..] if run == "run" && BLOCK_COMMANDS.contains(&command.as_str()) && !block.starts_with('-') => Some(block),
-        _ => None,
-    }
+/// Anota o bloco da leitura ou o tipo da gravação que a chamada pediu, como
+/// o clap o leu, em qualquer posição entre as opções: a chamada que este
+/// processo grava ([`record_output_call`]) o leva no campo `block`. Quem anota
+/// é a linha de comando da família da spec, que já tem a chamada lida; o
+/// valor de uma opção, como o texto de `--json`, nunca chega aqui. Um
+/// processo roda uma chamada: a segunda anotação não troca a primeira.
+pub(crate) fn note_asked_block(block: &str) {
+    let _ = ASKED_BLOCK.set(block.to_string());
 }
 
 fn transport_metrics(args:&[String],output:&str)->Map<String,Value> {
     let mut measured=Map::new();
-    // Count the transport, never persist arguments or response contents.
-    // Four characters per token is an explicitly labelled approximation.
+    // Da chamada e da resposta, só o tamanho; o conteúdo não é gravado. A
+    // única palavra da chamada que fica é o bloco pedido ([`note_asked_block`]),
+    // que quem chama grava à parte. Quatro caracteres por token é uma
+    // aproximação declarada.
     if args.first().is_some_and(|arg| arg == "run") {
         let input = args.join(" ");
         measured.insert("input_bytes".into(), json!(input.len()));
@@ -541,7 +544,8 @@ fn record_in_call_spec(
         .filter(|spec| !spec.is_empty())
         .map(str::to_string)
         .or_else(|| conversation_spec(root, session));
-    if unbound && !spec.as_deref().is_some_and(|spec| inside_spec_copy(root, spec)) {
+    let from_spec_copy = |spec: &str| std::env::current_dir().is_ok_and(|here| inside_spec_copy(root, spec, &here));
+    if unbound && !spec.as_deref().is_some_and(from_spec_copy) {
         return None;
     }
     if let Some(spec) = &spec {
@@ -556,16 +560,17 @@ fn record_in_call_spec(
     observe(root, &spec, "call", vec![fields])?.first().copied()
 }
 
-/// `true` quando o programa roda de dentro da pasta das cópias da spec `spec`
-/// do projeto de `root` ([`spec_copies_dir`](mustard_core::io::wave_prompt::spec_copies_dir)), onde moram as
-/// cópias das ondas e a do revisor. Os dois caminhos são comparados pelo
-/// disco.
-fn inside_spec_copy(root: &Path, spec: &str) -> bool {
-    let copies = mustard_core::io::wave_prompt::spec_copies_dir(&store::spec_root(root), spec);
-    match (std::env::current_dir().and_then(|cwd| cwd.canonicalize()), copies.canonicalize()) {
-        (Ok(cwd), Ok(copies)) => cwd.starts_with(copies),
-        _ => false,
-    }
+/// `true` quando a pasta `here` mora numa cópia da spec `spec` do projeto de
+/// `root`: num lugar de cópia do projeto, pela conferência única da rodada
+/// ([`inside_copies`]), e, nele, na pasta das cópias da spec
+/// ([`spec_copies_dir`]), onde moram as cópias das ondas e a do revisor.
+///
+/// Quem grava passa a pasta como o sistema a dá (`current_dir`), e não pelo
+/// disco (`canonicalize`): no Windows o disco põe o prefixo `\\?\`, que
+/// nenhuma pasta de cópia traz.
+fn inside_spec_copy(root: &Path, spec: &str, here: &Path) -> bool {
+    let root = store::spec_root(root);
+    inside_copies(&root, here) && here.starts_with(spec_copies_dir(&root, spec))
 }
 
 /// O recibo da leitura de um pedido: uma chamada `read` com o pedido
@@ -945,6 +950,33 @@ mod tests {
         assert_eq!(ids, (1..=1203).collect::<Vec<u64>>(), "every event once, in order");
         assert_eq!(log.get(next).and_then(|e| e.str_field("code")), Some("MSTD-INJ-1201"));
         assert_eq!(log.get(hook).and_then(|e| e.str_field("code")), Some("MSTD-HOOK-0002"));
+    }
+
+    /// A chamada de uma conversa sem ligação com a spec só conta de dentro de
+    /// uma cópia da própria spec. Da pasta do projeto, das cópias de outra
+    /// spec, de um caminho que sai das cópias por `..` ou da pasta em que o
+    /// teste roda, fora das cópias, nada é gravado.
+    #[test]
+    fn a_conversation_outside_the_spec_copies_records_no_call() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), "{}").expect("config");
+        record_open(root, "copias", "feature/copias", "dev").expect("open");
+        let copies = spec_copies_dir(root, "copias");
+
+        assert!(inside_spec_copy(root, "copias", &copies.join("a")), "the wave copy");
+        assert!(inside_spec_copy(root, "copias", &copies.join("a").join("apps")), "a folder inside the wave copy");
+        assert!(!inside_spec_copy(root, "copias", root), "the project folder");
+        let other = spec_copies_dir(root, "outra").join("a");
+        assert!(!inside_spec_copy(root, "copias", &other), "a copy of another spec");
+        assert!(!inside_spec_copy(root, "copias", &copies.join("..").join("outra").join("a")), "a path that leaves by `..`");
+
+        let report = json!({"ok": true, "spec": "copias"});
+        let call = record_measured_call(root, "read", Some("copias"), Some("s-paralela"), Instant::now(), &report, Map::new());
+        assert_eq!(call, None, "the unbound conversation, outside the copies, records nothing");
+        assert!(recorded_operations(root, "copias").events.is_empty());
+        // A mesma chamada fora de uma conversa, que não tem ligação a pedir, fica.
+        assert!(record_measured_call(root, "read", Some("copias"), None, Instant::now(), &report, Map::new()).is_some());
     }
 
     /// Sem spec atual nada é gravado, nem a mensagem nem a resposta; e a

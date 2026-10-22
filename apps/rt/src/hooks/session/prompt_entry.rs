@@ -10,14 +10,15 @@
 //!    idiomas, uma linha em cada. O `/mustard` sozinho, sem dois pontos, é a
 //!    ajuda e passa. Texto comum nunca é barrado: num projeto sem Mustard os
 //!    ganchos ficam calados.
-//! 2. **A mensagem, gravada.** Com uma spec atual, a mensagem do usuário vai
-//!    para o bloco da conversa, como ele a escreveu. O aviso que o próprio
-//!    Claude Code manda pelo mesmo canal (o fim de um comando em segundo
-//!    plano, a volta de um subagente) não é mensagem de ninguém e não é
-//!    gravado, e o lembrete do sistema que vem dentro da fala sai dela. A mensagem dita antes de a spec existir, a do turno da
-//!    abertura inclusive, quem grava é a abertura (`run open`), lida da
-//!    conversa da sessão com o mesmo filtro do aviso; daqui saem só as
-//!    seguintes, sem repetir nenhuma.
+//! 2. **A mensagem, gravada.** Na sessão que a abertura ou a retomada ligou
+//!    a uma spec, a mensagem do usuário vai para o bloco da conversa dela,
+//!    como ele a escreveu. O aviso que o próprio Claude Code manda pelo mesmo
+//!    canal (o fim de um comando em segundo plano, a volta de um subagente)
+//!    não é mensagem de ninguém e não é gravado, e o lembrete do sistema que
+//!    vem dentro da fala sai dela. A mensagem dita antes de a spec existir, a
+//!    do turno da abertura inclusive, quem grava é a abertura (`run open`),
+//!    lida da conversa da sessão com o mesmo filtro do aviso; daqui saem só
+//!    as seguintes, sem repetir nenhuma.
 //! 3. **A correção.** A regra de escrita mora no estilo de resposta, dita uma
 //!    vez, e uma mensagem comum não coloca texto nenhum na conversa: repetida
 //!    em toda mensagem, a lembrança empurrava a resposta a encolher. Só depois

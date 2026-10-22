@@ -280,8 +280,21 @@ pub fn write_help_for_type(args: &[String]) -> Option<String> {
     ))
 }
 
+/// O bloco que a chamada `cmd` pediu, como o clap o leu, em qualquer posição
+/// entre as opções: o bloco da leitura ou o tipo da gravação. O termo do
+/// `find` é texto de quem procura, e não bloco.
+fn asked_block(cmd: &SpecEventsCmd) -> Option<&str> {
+    match cmd {
+        SpecEventsCmd::Read { block, .. } | SpecEventsCmd::Write { event_type: block, .. } => Some(block),
+        SpecEventsCmd::Find { .. } | SpecEventsCmd::Index { .. } => None,
+    }
+}
+
 /// Dispatch one `spec_events`-family `run` subcommand.
 pub fn dispatch(cmd: SpecEventsCmd) {
+    if let Some(block) = asked_block(&cmd) {
+        spec_events::conversation::note_asked_block(block);
+    }
     match cmd {
         SpecEventsCmd::Read { block, spec, term, full, all, session, root } => {
             spec_events::read::run(&spec_events::read::ReadOpts { root, spec, block, term, session }, full, all);
@@ -311,6 +324,22 @@ mod tests {
     struct Harness {
         #[command(subcommand)]
         cmd: SpecEventsCmd,
+    }
+
+    /// O bloco da leitura e o tipo da gravação saem da chamada em qualquer
+    /// posição, com opções antes ou depois deles; o valor de uma opção nunca
+    /// passa por bloco, e o termo do `find` não é bloco.
+    #[test]
+    fn the_asked_block_is_read_wherever_it_sits_in_the_call() {
+        let asked = |call: &[&str]| {
+            let parsed = Harness::try_parse_from(std::iter::once("x").chain(call.iter().copied())).expect("the call parses");
+            asked_block(&parsed.cmd).map(str::to_string)
+        };
+        assert_eq!(asked(&["read", "--spec", "obra", "agreed"]).as_deref(), Some("agreed"));
+        assert_eq!(asked(&["read", "--root", "/projeto", "--all", "request-3"]).as_deref(), Some("request-3"));
+        assert_eq!(asked(&["read", "agreed", "--spec", "obra"]).as_deref(), Some("agreed"));
+        assert_eq!(asked(&["write", "--spec", "obra", "--json", "{\"text\":\"segredo\"}", "step"]).as_deref(), Some("step"));
+        assert_eq!(asked(&["find", "login", "--spec", "obra"]), None);
     }
 
     /// A ajuda do comando de ler diz que a mensagem do usuário sai com o

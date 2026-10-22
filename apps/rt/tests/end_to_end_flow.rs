@@ -1200,7 +1200,8 @@ fn only_the_conversation_bound_to_the_spec_records_in_it() {
 
 /// O agente da onda roda numa sessão sem ligação com a spec. De dentro da
 /// cópia da onda, a leitura do pedido e a gravação do passo deixam na spec o
-/// recibo da leitura e as duas chamadas.
+/// recibo da leitura e as duas chamadas, cada uma com o bloco pedido, mesmo
+/// com as opções antes dele.
 #[test]
 fn the_wave_agent_calls_from_its_copy_count_without_a_binding() {
     const AGENT: &str = "s-agente-da-onda";
@@ -1217,7 +1218,7 @@ fn the_wave_agent_calls_from_its_copy_count_without_a_binding() {
     let task = log.codes().get(&task).cloned().expect("the task code");
     let root = project.root.display().to_string();
 
-    let read = project.command_as(Some(AGENT), &copy, &["run", "read", "request-1", "--root", &root, "--spec", SPEC], "");
+    let read = project.command_as(Some(AGENT), &copy, &["run", "read", "--root", &root, "--spec", SPEC, "request-1"], "");
     assert!(read.status.success(), "{}", String::from_utf8_lossy(&read.stdout));
     let step = json!({"wave": 1, "item": task, "text": "A tarefa ficou pronta."}).to_string();
     let written = project.command_as(Some(AGENT), &copy, &["run", "write", "step", "--root", &root, "--spec", SPEC, "--json", &step], "");

@@ -238,8 +238,9 @@ pub(crate) use rejection::{replaced_by_rejection, replaced_in_file};
 #[cfg(test)]
 pub(crate) use slots::copies_leave_with_the_test;
 pub(crate) use slots::{
-    Removal, code_kept_hint, ensure_copy, held_slots, leaving_place, local_file_ignored, local_file_missing, remove_single_copy,
-    remove_spec_copies, reset_slot, slot_owner, remove_spec_copies_held, remove_spec_copies_under, spec_copies, standing_in_a_copy,
+    Removal, code_kept_hint, ensure_copy, held_slots, inside_copies, leaving_place, local_file_ignored, local_file_missing,
+    remove_single_copy, remove_spec_copies, reset_slot, slot_owner, remove_spec_copies_held, remove_spec_copies_under, spec_copies,
+    standing_in_a_copy,
 };
 #[cfg(test)]
 pub(crate) use tests::{deliver_after_refusals, finish_tasks, read_request, read_review, seed_read, shipped_agent};
