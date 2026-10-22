@@ -446,7 +446,9 @@ pub(crate) fn agent_known(root: &Path, spec: &str, log: &SpecLog, wave: u64, sen
 pub(crate) fn record_launch(root: &Path, spec: &str, wave: u64, dispatch: u64) -> bool {
     let Ok(path) = mustard_core::io::spec_events::spec_file(root, spec) else { return false };
     let written = mustard_core::io::spec_events::with_locked_writer(&path, |locked| {
-        let Some(sent) = open_sends(locked.log()).get(&wave).copied() else { return Some(()) };
+        // A onda reprovada já voltou e não tem pedido aberto: o agente novo
+        // dela marca o lançamento no envio que guarda a reprovação.
+        let Some(sent) = open_sends(locked.log()).get(&wave).copied().or_else(|| rejected_send(locked.log(), wave)) else { return Some(()) };
         if locked.log().dispatch_position(sent) != dispatch || agent_launched(locked.log(), sent) {
             return Some(());
         }
@@ -516,8 +518,24 @@ pub(crate) fn waves_awaiting_new_agent(root: &Path, spec: &str, log: &SpecLog) -
 /// que mandou a onda, aberto ou fechado, não segura nada aqui; o despacho do
 /// agente novo grava o Claude Code dele, e a regra de sempre volta a valer.
 fn rejected_unclaimed(log: &SpecLog, wave: u64, sent: u64) -> bool {
-    let unclaimed = log.get(sent).is_some_and(|event| event.int("claude_pid").is_none());
-    unclaimed && super::rejection::rejection_of(log, wave).is_some_and(|(back, _)| super::rejection::pending_return(log, wave) == Some(back))
+    let unclaimed = log.get(sent).is_some_and(|event| event.int("claude_pid").is_none()) && !agent_launched(log, sent);
+    unclaimed && rejected_send(log, wave) == Some(sent)
+}
+
+/// O envio mais novo da onda `wave` quando ele guarda a reprovação da volta
+/// pendente dela: a onda espera um agente novo, ou o agente novo que a tomou.
+pub(crate) fn rejected_send(log: &SpecLog, wave: u64) -> Option<u64> {
+    let sent = *log.last_by_wave("send").get(&wave)?;
+    super::rejection::rejection_of(log, wave).filter(|(back, _)| super::rejection::pending_return(log, wave) == Some(*back)).map(|_| sent)
+}
+
+/// Tira do rascunho de uma versão do envio o agente que ele tinha: o Claude
+/// Code que o mandou e o lançamento ([`AGENT_LAUNCHED`]). A onda volta a
+/// esperar um agente novo, que só a toma quando começa de fato.
+pub(crate) fn without_agent(draft: &mut Map<String, Value>) {
+    for field in ["claude_pid", "claude_started", AGENT_LAUNCHED] {
+        draft.remove(field);
+    }
 }
 
 /// As ondas que voltaram e esperam a rodada: a entrega que o agente gravou

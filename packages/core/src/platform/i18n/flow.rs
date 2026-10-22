@@ -1471,12 +1471,13 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // o lê, e é o agente quem o roda.
         ("round.next", Locale::PtBr) => {
             "Despache cada entrada de `dispatch` a um agente `mustard-wave`, com o modelo do campo \
-             `model` dela. O prompt tem duas linhas: o título `# <spec> — onda <wave>`, com o número do \
-             campo `wave`, e o comando do campo `read`. Esse comando traz o pedido e as regras."
+             `model` dela e a descrição do campo `description`. O prompt tem duas linhas: o título \
+             `# <spec> — onda <wave>`, com o número do campo `wave`, e o comando do campo `read`. Esse \
+             comando traz o pedido e as regras."
         }
         ("round.next", Locale::EnUs) => {
             "Dispatch each `dispatch` entry to a `mustard-wave` agent, on the model in its `model` \
-             field. The prompt has two lines: the title `# <spec> — wave <wave>`, with the number in \
+             field and with the description in its `description` field. The prompt has two lines: the title `# <spec> — wave <wave>`, with the number in \
              the `wave` field, and the command in the `read` field. That command brings the request and \
              the rules."
         }
@@ -2469,7 +2470,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 361, 0x558b_6a18_a83e_eac4);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 361, 0xa329_5790_bca2_57ff);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do

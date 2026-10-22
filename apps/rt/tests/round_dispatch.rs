@@ -60,6 +60,9 @@ struct Project {
     /// O endereço do Jev de mentira que o binário acha, com uma chave de
     /// mentira; sem ele o projeto não tem chave nenhuma.
     jev: Option<String>,
+    /// A sessão que conduz a obra, entregue a cada comando como o gancho a
+    /// entrega; sem ela o comando roda sem sessão nenhuma.
+    session: Option<&'static str>,
 }
 
 impl Project {
@@ -90,7 +93,7 @@ impl Project {
         git(&root, &["commit", "-q", "-m", "init"]);
         git(&root, &["checkout", "-q", "-b", "dev"]);
         support::copies_leave_with_the_test(&root);
-        Self { _dir: dir, root, home, jev: None }
+        Self { _dir: dir, root, home, jev: None, session: None }
     }
 
     fn command(&self, args: &[&str], stdin: &str) -> Output {
@@ -99,9 +102,26 @@ impl Project {
 
     /// Como [`Self::command`], rodando de dentro de `dir`.
     fn command_in(&self, dir: &Path, args: &[&str], stdin: &str) -> Output {
-        let mut child = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
+        let mut child = self
+            .program(env!("CARGO_BIN_EXE_mustard-rt"))
             .args(args)
             .current_dir(dir)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("the binary runs");
+        if let Some(mut pipe) = child.stdin.take() {
+            let _ = pipe.write_all(stdin.as_bytes());
+        }
+        child.wait_with_output().expect("the binary finishes")
+    }
+
+    /// O comando que roda `program` no ambiente do projeto: a pasta pessoal,
+    /// o projeto, a chave do Jev de mentira e a sessão que conduz, quando há.
+    fn program(&self, program: impl AsRef<std::ffi::OsStr>) -> Command {
+        let mut command = binary::isolated(program);
+        command
             .env("HOME", &self.home)
             .env("USERPROFILE", &self.home)
             .env("CLAUDE_PROJECT_DIR", &self.root)
@@ -117,16 +137,9 @@ impl Project {
             .env_remove("MUSTARD_SESSION_ID")
             .env_remove("CLAUDE_SESSION_ID")
             .env_remove("CLAUDE_CODE_SESSION_ID")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
             .envs(self.jev.iter().flat_map(|url| [("TYPESAFE_API_KEY", "fake-key"), ("MUSTARD_JEV_URL", url.as_str())]))
-            .spawn()
-            .expect("the binary runs");
-        if let Some(mut pipe) = child.stdin.take() {
-            let _ = pipe.write_all(stdin.as_bytes());
-        }
-        child.wait_with_output().expect("the binary finishes")
+            .envs(self.session.map(|session| ("MUSTARD_SESSION_ID", session)));
+        command
     }
 
     /// Um comando `run`, que precisa responder `ok`.
@@ -1539,17 +1552,58 @@ fn before_tool(project: &Project, payload: &Value) -> Value {
 /// O despacho de um agente de onda pelo título do pedido da onda 1, pelo
 /// gancho de verdade: a resposta dele, como o harness a lê.
 fn dispatch_new_agent(project: &Project) -> Value {
+    before_tool(project, &new_agent_payload(project))
+}
+
+/// O `Agent` que despacha um agente pelo título do pedido da onda 1, como o
+/// Claude Code o entrega ao gancho de antes da ferramenta.
+fn new_agent_payload(project: &Project) -> Value {
     let title = mustard_core::domain::wave_prompt::wave_title(SPEC, 1, Locale::PtBr);
-    before_tool(
-        project,
-        &json!({
-            "hook_event_name": "PreToolUse",
-            "tool_name": "Agent",
-            "tool_input": {"subagent_type": "mustard-wave", "description": "onda 1", "prompt": title},
-            "session_id": SESSION,
-            "cwd": project.root.to_string_lossy(),
-        }),
-    )
+    json!({
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Agent",
+        "tool_input": {"subagent_type": "mustard-wave", "description": title, "prompt": title},
+        "session_id": SESSION,
+        "cwd": project.root.to_string_lossy(),
+    })
+}
+
+/// O despacho do agente novo da onda 1 por quem conduz a obra, como o Claude
+/// Code de verdade: o gancho roda sob um processo chamado `claude`, que segue
+/// aberto até o teste fechar a entrada dele, e o despacho grava esse processo
+/// no envio. Devolve a resposta do gancho e o processo, ainda aberto.
+#[cfg(target_os = "linux")]
+fn dispatch_from_claude(project: &Project) -> (Value, std::process::Child) {
+    let claude = project.home.join("bin").join("claude");
+    if !claude.exists() {
+        std::fs::create_dir_all(claude.parent().expect("the folder")).expect("the folder");
+        std::os::unix::fs::symlink("/bin/sh", &claude).expect("the conductor");
+    }
+    let (input, output) = (project.home.join("agent.json"), project.home.join("hook.json"));
+    std::fs::write(&input, new_agent_payload(project).to_string()).expect("the payload");
+    let mut conductor = project
+        .program(&claude)
+        .args(["-c", "\"$1\" on PreToolUse < \"$2\" > \"$3\"; echo pronto; read _", "claude", env!("CARGO_BIN_EXE_mustard-rt")])
+        .arg(&input)
+        .arg(&output)
+        .current_dir(&project.root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("the conductor runs");
+    let mut ready = String::new();
+    BufReader::new(conductor.stdout.as_mut().expect("the conductor's output")).read_line(&mut ready).expect("the hook ends");
+    let raw = std::fs::read_to_string(&output).expect("the hook's answer");
+    let answer = if raw.trim().is_empty() { Value::Null } else { serde_json::from_str(&raw).unwrap_or_else(|e| panic!("{e}: {raw}")) };
+    (answer, conductor)
+}
+
+/// Fecha o processo de quem conduz a obra aberto por [`dispatch_from_claude`].
+#[cfg(target_os = "linux")]
+fn close_conductor(mut conductor: std::process::Child) {
+    drop(conductor.stdin.take());
+    conductor.wait().expect("the conductor ends");
 }
 
 /// O começo da conversa do agente que fez a volta reprovada nas provas: bem
@@ -1761,6 +1815,64 @@ fn the_new_agent_of_a_rejected_wave_gets_the_reason_and_keeps_the_copy_alone() {
     assert_eq!(second.pointer("/hookSpecificOutput/permissionDecision"), Some(&json!("deny")), "{second}");
 }
 
+/// O agente novo que quem conduz despacha para a onda reprovada e que nunca
+/// começa não segura a onda: com o Claude Code de quem conduz ainda aberto, a
+/// rodada seguinte devolve a onda à espera do agente novo, com o título que o
+/// despacha, e o despacho seguinte passa.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_new_agent_that_never_starts_does_not_hold_the_rejected_wave() {
+    let (project, _) = delivered_wave(true);
+    assert_eq!(reject(&project, 1, REJECTION)["ok"], json!(true));
+    let (first, conductor) = dispatch_from_claude(&project);
+    assert!(first.pointer("/hookSpecificOutput/updatedInput/prompt").is_some(), "{first}");
+    assert!(last_send(&project, 1).int("claude_pid").is_some(), "the dispatch records the conductor");
+
+    let out = project.run(&["round", "--dispatch", "--spec", SPEC]);
+    let again = dispatch_new_agent(&project);
+    close_conductor(conductor);
+
+    assert!(out["next"].as_str().unwrap_or_default().contains(&new_agent_line()), "{out}");
+    assert!(again.pointer("/hookSpecificOutput/updatedInput/prompt").is_some(), "{again}");
+}
+
+/// A chamada do agente que a reprovação tirou da onda, feita depois do
+/// despacho do agente novo, não conta como o começo do agente novo: a rodada
+/// seguinte devolve a onda à espera dele.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_call_of_the_rejected_agent_does_not_start_the_new_one() {
+    let (project, _) = delivered_wave(true);
+    wave_agent(&project, "antigo", OLD_AGENT_START);
+    assert_eq!(reject(&project, 1, REJECTION)["ok"], json!(true));
+    let (_, conductor) = dispatch_from_claude(&project);
+    agent_calls(&project, "antigo", "Bash", &json!({"command": "git status", "description": "estado da cópia"}));
+
+    let out = project.run(&["round", "--dispatch", "--spec", SPEC]);
+    close_conductor(conductor);
+
+    assert!(out["next"].as_str().unwrap_or_default().contains(&new_agent_line()), "{out}");
+}
+
+/// O agente novo da onda reprovada que começa de fato segura a onda: a
+/// rodada seguinte diz que ele trabalha, e outro despacho é barrado.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_new_agent_that_starts_keeps_the_rejected_wave() {
+    let (project, _) = delivered_wave(true);
+    assert_eq!(reject(&project, 1, REJECTION)["ok"], json!(true));
+    let (_, conductor) = dispatch_from_claude(&project);
+    wave_agent(&project, "novo", &now_stamp());
+    agent_calls(&project, "novo", "Bash", &json!({"command": "git status", "description": "estado da cópia"}));
+
+    let out = project.run(&["round", "--dispatch", "--spec", SPEC]);
+    let again = dispatch_new_agent(&project);
+    close_conductor(conductor);
+
+    assert!(!out["next"].as_str().unwrap_or_default().contains(&new_agent_line()), "{out}");
+    assert_eq!(again.pointer("/hookSpecificOutput/permissionDecision"), Some(&json!("deny")), "{again}");
+}
+
 /// A rodada seguinte, sem a linha no relatório, segue segurando a volta
 /// reprovada fora do commit, com o mesmo motivo.
 #[test]
@@ -1849,11 +1961,21 @@ fn an_orphaned_wave_is_resent_citing_the_ref_and_files_its_agent_left() {
     assert_eq!(kept_refs(&project), refs, "nothing new to keep, nothing dropped");
 }
 
-/// Três tarefas em fila (A → B → C), com o Jev escolhendo os itens do
-/// pedido: cada onda montada sai na mesma rodada em que nasce, e a seguinte
-/// sai na rodada que comita a anterior, com o número seguinte. Nenhuma onda
-/// fica gravada sem sair, a lista das ondas abertas só traz a que saiu, e o
-/// pedido e o `description` que o despacho devolve dão o mesmo número.
+/// Uma tela do painel da spec, pelo binário: a resposta inteira.
+fn panel(project: &Project, screen: &[&str]) -> Value {
+    let mut args = vec!["run", "panel", "--spec", SPEC, "--section"];
+    args.extend(screen);
+    let out = project.command(&args, "");
+    serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stdout)))
+}
+
+/// Três tarefas em fila (A → B → C), com uma sessão conduzindo e o Jev
+/// escolhendo os itens do pedido: cada onda montada sai na mesma rodada em
+/// que nasce, a primeira já na primeira rodada, sem esperar a leitura do
+/// classificador, e a seguinte sai na rodada que comita a anterior, com o
+/// número seguinte. Nenhuma onda fica gravada sem sair, a lista das ondas
+/// abertas só traz a que saiu, e o pedido, o painel e o `description` que o
+/// despacho devolve dão o mesmo número.
 #[test]
 fn each_formed_wave_leaves_in_the_round_it_is_born_with_one_number() {
     // O Jev escolhe só os itens; a montagem é a por arquivo, que põe cada
@@ -1879,6 +2001,7 @@ fn each_formed_wave_leaves_in_the_round_it_is_born_with_one_number() {
     project.run(&["plan", "--spec", SPEC]);
     approve(&project);
     project.jev = Some(jev.url.clone());
+    project.session = Some(SESSION);
     two_rules(&project, said);
 
     for n in 1..=3u64 {
@@ -1886,6 +2009,7 @@ fn each_formed_wave_leaves_in_the_round_it_is_born_with_one_number() {
         let args: Vec<&str> = if n == 1 { vec!["round", "--dispatch", "--spec", SPEC] } else { vec!["round", "--dispatch", "--spec", SPEC, "--report", &usage] };
         let out = project.run(&args);
         assert!(n == 1 || out.get("commit").is_some(), "round {n} commits the wave before: {out}");
+        assert!(out.get("formation").is_none(), "round {n}: only one task of the queue can leave, and nothing waits for a reading: {out}");
         assert_eq!(waves_in(&out, "dispatch"), vec![n], "round {n}: {out}");
         let title = mustard_core::domain::wave_prompt::wave_title(SPEC, n, Locale::PtBr);
         assert_eq!(out["dispatch"][0]["description"], json!(title), "round {n}: {out}");
@@ -1901,6 +2025,12 @@ fn each_formed_wave_leaves_in_the_round_it_is_born_with_one_number() {
             assert!(!listed.contains(&format!("\"n\":{other}")), "round {n}: wave {other} is not open: {listed}");
         }
         keep_sent(&project, &[n]);
+        let screen = panel(&project, &["spec"]);
+        let waves = &screen["spec"]["waves"];
+        assert_eq!((waves["planned"].as_u64(), waves["running"].as_u64(), waves["committed"].as_u64()), (Some(n), Some(1), Some(n - 1)), "round {n}: {screen}");
+        let screen = panel(&project, &["items", "--kind", "task"]);
+        let shown: BTreeSet<u64> = screen["rows"].as_array().into_iter().flatten().filter_map(|row| row["wave"].as_u64()).collect();
+        assert_eq!(shown, (1..=n).collect::<BTreeSet<u64>>(), "round {n}: {screen}");
         deliver_file_in_copy(&project, n, files[usize::try_from(n - 1).unwrap()], "pronto\n");
     }
 }

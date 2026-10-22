@@ -34,7 +34,7 @@ use super::copy_check::check_against_copies;
 use super::leftovers::{Leftover, LeftoverEvent, MeaningJoin, ask_rewrites, leftover_destinations, leftover_events, leftovers_of, meaning_joins};
 use super::queue::{backlog_wave, open_review, open_sends, waves_in_progress};
 use super::rehearsal::{Recording, Rehearsed, rehearse};
-use super::rejection::{held_rejection, keep_rejections, record_rejections, rejected_lines};
+use super::rejection::{held_rejection, keep_rejections, record_rejections, rejected_lines, release_unstarted};
 use super::lost_commit::already_committed;
 use super::stops::{HeldReturn, hold_refused, hold_waiting_changes, plan_refusals_point_at_changes, tasks_returned, undone_of, undone_returns};
 use super::usage::{Caller, Usage, measure_usage, usage_missing};
@@ -286,6 +286,7 @@ pub(crate) fn take_report_with_mine(
     report.rejected.extend(by_reviewer);
     let (mut rejections, unmeasured) = record_rejections(start, spec, &path, &mut fresh, &report.rejected, caller, lang)?;
     rejections.splice(0..0, reviewed);
+    rejections.extend(release_unstarted(start, spec, &path, &mut fresh, log)?);
     // O falso positivo de quem conduz também é gravado antes, preso à volta
     // pendente da onda: a conferência depois da onda o lê da spec.
     if super::stops::record_false_positives(start, spec, &fresh, &report.false_positive)? {

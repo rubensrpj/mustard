@@ -22,7 +22,7 @@ use serde_json::{json, Value};
 
 use super::answer::{without_final_period, RoundRefusal};
 use super::fixes::fix_file;
-use super::queue::{send_revision, waves_awaiting_new_agent};
+use super::queue::{agent_launched, rejected_send, send_revision, waves_awaiting_new_agent, without_agent};
 use super::report::{line_object, tagged};
 use super::stops::HeldReturn;
 use super::usage::{measure_usage, usage_missing, Caller, Usage};
@@ -160,10 +160,9 @@ pub(super) fn record_rejections(
         extra.insert(REJECTED_FIELD.into(), json!({ "delivered": back, "reason": reason }));
         let Some(mut draft) = send_revision(log, wave, extra) else { continue };
         // A primeira reprovação da volta tira a onda do agente que a fez: sem
-        // Claude Code no envio, ela espera um agente novo.
+        // Claude Code nem lançamento no envio, ela espera um agente novo.
         if before.is_none() {
-            draft.remove("claude_pid");
-            draft.remove("claude_started");
+            without_agent(&mut draft);
         }
         let written = record(start, spec, "send", draft, PhaseWriter::Binary).map_err(RoundRefusal::Refused)?;
         recorded.push(json!({ "wave": wave, "type": "send", "id": written.written.id }));
@@ -174,6 +173,36 @@ pub(super) fn record_rejections(
         *log = fresh;
     }
     Ok((recorded, warnings))
+}
+
+/// Devolve à espera de um agente novo cada onda reprovada cujo envio mais
+/// novo, já lido na entrada desta rodada (`entry`), traz o Claude Code do
+/// despacho do agente novo e nenhum lançamento: o gancho grava o despacho
+/// antes de o agente existir, e o agente que nunca começou não segura a onda.
+/// A versão nova do envio sai sem o agente ([`without_agent`]), e o despacho
+/// seguinte a toma. O despacho gravado depois da entrada desta rodada é de
+/// agora e fica. Quem chama segura a trava do passo do git e leu `log`, do
+/// arquivo `path`, sob ela: com algo gravado, `log` é lido de novo.
+pub(super) fn release_unstarted(start: &Path, spec: &str, path: &Path, log: &mut SpecLog, entry: &SpecLog) -> Result<Vec<Value>, RoundRefusal> {
+    let mut recorded = Vec::new();
+    let waves: Vec<u64> = log.last_by_wave("send").into_keys().collect();
+    for wave in waves {
+        let Some(sent) = rejected_send(log, wave) else { continue };
+        let claimed = log.get(sent).is_some_and(|event| event.int("claude_pid").is_some());
+        if !claimed || agent_launched(log, sent) || entry.get(sent).is_none() {
+            continue;
+        }
+        let Some(mut draft) = send_revision(log, wave, serde_json::Map::new()) else { continue };
+        without_agent(&mut draft);
+        let written = record(start, spec, "send", draft, PhaseWriter::Binary).map_err(RoundRefusal::Refused)?;
+        recorded.push(json!({ "wave": wave, "type": "send", "id": written.written.id }));
+    }
+    if !recorded.is_empty()
+        && let Some(fresh) = store::read(path).map_err(RoundRefusal::Refused)?
+    {
+        *log = fresh;
+    }
+    Ok(recorded)
 }
 
 /// Grava, para cada volta que quem conduz a obra reprovou (`held`), o motivo

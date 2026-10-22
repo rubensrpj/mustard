@@ -717,7 +717,9 @@ fn dispatch_round(
     // leitura do modelo pequeno da sessão pronta, as ondas se gravam e a
     // montagem as solta inteiras; sem ela, o pedido vai ao condutor, e nenhuma
     // onda nova sai da lista nesta rodada, para nenhuma tarefa sair sem passar
-    // por ele.
+    // por ele. Com menos de duas tarefas que podem sair agora — a fila em que
+    // cada uma espera a anterior —, não há leitura a pedir, e a que pode sair
+    // sai já nesta rodada.
     // Com as travas presas, as perguntas ao Jev do despacho só leem a decisão
     // que a passada de antes gravou ([`super::dispatch_jev`]).
     let asker = super::dispatch_jev::Asker::new(&opts.root, root, &spec, &locked, super::dispatch_jev::Phase::Read);
@@ -3109,14 +3111,16 @@ mod tests {
 
     /// The dispatch line says, in one reading, what goes to whom: every
     /// `dispatch` entry to a wave agent, with the request's title and the
-    /// entry's `read` command, the same two lines the dispatch hook keeps.
+    /// entry's `read` command, the same two lines the dispatch hook keeps,
+    /// and the entry's `description` as the agent's title, so the chat names
+    /// the wave by the request's number.
     /// No review goes out of a round, and nothing in it is left to choose.
     #[test]
     fn the_dispatch_line_names_the_agent_the_title_and_the_read_field() {
         for lang in [Locale::PtBr, Locale::EnUs] {
             let next = translate("round.next", lang);
             let title = mustard_core::domain::wave_prompt::wave_title("<spec>", 7, lang).replace('7', "<wave>");
-            for expected in ["`dispatch`", "`mustard-wave`", "`read`", "`wave`", title.as_str()] {
+            for expected in ["`dispatch`", "`mustard-wave`", "`read`", "`wave`", "`description`", title.as_str()] {
                 assert!(next.contains(expected), "{lang:?}: {expected} in {next}");
             }
             for gone in ["mustard-review", "revis", "review", "Acrescente", "Add only"] {

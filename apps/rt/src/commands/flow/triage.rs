@@ -39,7 +39,8 @@ use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Map, Value, json};
 
 use crate::commands::flow::round::queue::{
-    backlog_population, max_parallel, open_sends, task_files, tasks_not_delivered, waves_returned, waves_returned_without_replan, waves_with_live_agent,
+    backlog_population, max_parallel, open_sends, task_files, tasks_left, tasks_not_delivered, waves_returned, waves_returned_without_replan,
+    waves_with_live_agent,
 };
 use crate::commands::flow::round::{append_agent_line, backlog_return, is_cleanup, waves_left_without_tasks};
 use crate::commands::spec_events::{self, write::record_locked};
@@ -80,8 +81,9 @@ pub(crate) struct RoundForming {
 /// `session` ([`triage_with`]): na aprovação, com a lista inteira; depois,
 /// com as tarefas que voltaram e as que nenhuma onda levou. Só forma com uma
 /// sessão conduzindo, porque a leitura é do modelo pequeno dela; sem sessão,
-/// sem nada a ler ou sem vaga, nada muda, e a rodada monta as ondas como
-/// sempre. A pergunta ao Jev da ordem passa por `asker`: antes das travas da
+/// sem nada a ler — menos de duas tarefas que podem sair agora, como na fila
+/// em que cada tarefa espera a anterior — ou sem vaga, nada muda, e a rodada
+/// monta as ondas como sempre. A pergunta ao Jev da ordem passa por `asker`: antes das travas da
 /// rodada, ela sai, pelo prazo de toda chamada, e a resposta fica gravada, sem
 /// gravar a formação; com as travas presas, a formação se grava e só lê a
 /// resposta gravada. Sem ela, a ordem sai da leitura do modelo pequeno, a
@@ -219,8 +221,16 @@ fn triage_with(opts: &TriageOpts, session: Option<&str>, in_round: bool, jev_on:
     report["free_waves"] = json!(max_waves);
     report["summaries"] = json!(summaries.len());
     // Uma tarefa sozinha, sem resumo, já é a própria onda: não há o que ler
-    // junto nem o que juntar.
-    if open.len() + summaries.len() < 2 || max_waves == 0 {
+    // junto nem o que juntar. Na rodada, a tarefa que ainda espera outra por
+    // entregar não sai agora: a fila que solta uma tarefa por vez não pede
+    // leitura nenhuma, e a única que pode sair não espera agente nenhum.
+    let waiting_others: BTreeSet<u64> = if in_round {
+        tasks_left(&log).into_iter().filter(|task| !task.depends_on.is_empty()).map(|task| task.id).collect()
+    } else {
+        BTreeSet::new()
+    };
+    let leaving = open.iter().filter(|task| !waiting_others.contains(&task.id)).count();
+    if leaving + summaries.len() < 2 || max_waves == 0 {
         report["waves"] = json!([]);
         return finish(report, &warnings);
     }
