@@ -10,8 +10,9 @@
 //! `depends_on` da tarefa e os outros) e os que qualquer linha pode trazer
 //! (`origin`, `replaces`, `reply_to`, `covered_by`), e os números simples
 //! que apontam itens (as tarefas e a entrega da onda, os itens e a entrega do
-//! envio, o critério medido). O número sem código fica como está, e o número
-//! que não aponta item (as ondas em `depends_on` da onda) não vira código.
+//! envio, o critério medido, o ponto aberto em que a fala foi dita). O número
+//! sem código fica como está, e o número que não aponta item (as ondas em
+//! `depends_on` da onda, as contagens, as medidas) não vira código.
 //!
 //! Cada fato sai sem as marcas de conferência: as impressões da fonte, a
 //! classificação, a verificação e a situação da fonte. O mesmo fato (a mesma
@@ -39,11 +40,13 @@ const LINKS: &[&str] = &["origin", "replaces", "reply_to", "covered_by"];
 
 /// Os campos que o tipo declara como número simples, mas que apontam itens:
 /// as tarefas da onda em ordem e a entrega que ela continua, os itens e a
-/// entrega do envio, e o critério que a medida rodou. A gravação e a
-/// conferência seguem com o número, que a resolução dos códigos lê como
-/// ordinal; só a leitura os mostra pelo código. O `depends_on` da onda leva
-/// números de onda e fica fora.
+/// entrega do envio, o critério que a medida rodou e o ponto do levantamento
+/// que estava aberto quando o usuário falou. A gravação e a conferência
+/// seguem com o número, que a resolução dos códigos lê como ordinal; só a
+/// leitura os mostra pelo código. O `depends_on` da onda leva números de
+/// onda e fica fora.
 const ITEM_NUMBERS: &[(&str, &str)] = &[
+    ("message", "during"),
     ("wave", "order"),
     ("wave", "summary"),
     ("send", "items"),
@@ -225,12 +228,108 @@ mod tests {
         assert_eq!(task["depends_on"], json!(["MSTD-MSG-0001", "MSTD-CTX-0001"]));
     }
 
+    /// Os números simples que não apontam item, campo a campo: números de
+    /// onda, contagens, medidas, o processo do hospedeiro, a pendência do
+    /// projeto (`P-<n>`), as lições do banco de lições e a posição até onde a
+    /// cópia da página levou o registro. O campo numérico novo entra aqui ou
+    /// em [`ITEM_NUMBERS`]: o teste abaixo recusa o que não está em nenhum.
+    const PLAIN_NUMBERS: &[(&str, &[&str])] = &[
+        ("injection", &["chars"]),
+        (
+            "call",
+            &[
+                "ms",
+                "search_native_bytes",
+                "search_delivered_bytes",
+                "input_bytes",
+                "output_bytes",
+                "estimated_input_tokens",
+                "estimated_output_tokens",
+                "search_local_model_calls",
+                "search_remote_model_calls",
+                "search_accepted_choices",
+                "search_scan_wait_ms",
+                "search_lock_wait_ms",
+                "search_vectors_ms",
+                "search_investigate_ms",
+                "search_jev_ms",
+                "knowledge_session_model_calls",
+                "knowledge_local_model_calls",
+                "knowledge_remote_model_calls",
+                "knowledge_input_tokens",
+                "knowledge_output_tokens",
+                "filter_ms",
+                "tokens",
+                "cost_micro_usd",
+                "requests",
+                "candidates",
+                "returned",
+            ],
+        ),
+        ("copy", &["last"]),
+        ("rule", &["waves"]),
+        ("limit", &["waves"]),
+        ("contract", &["waves"]),
+        ("error", &["waves"]),
+        ("edge_case", &["waves"]),
+        ("out_of_scope", &["waves"]),
+        ("decision", &["waves"]),
+        ("criterion_run", &["exit", "ms"]),
+        ("stage_run", &["ms", "exit", "attempt", "waves"]),
+        ("validation_failure", &["wave"]),
+        ("wave", &["n", "depends_on"]),
+        ("task", &["wave"]),
+        (
+            "send",
+            &["wave", "lines", "chars", "lessons", "steps", "tokens", "caller_steps", "caller_tokens", "claude_pid", "claude_started", "reviews"],
+        ),
+        ("delivered", &["wave", "fixes"]),
+        ("step", &["wave"]),
+        ("verdict", &["wave"]),
+        ("commit", &["waves"]),
+        ("deferred", &["pending"]),
+    ];
+
+    fn is_plain_number(kind: &str, field: &str) -> bool {
+        PLAIN_NUMBERS.iter().any(|(listed, fields)| *listed == kind && fields.contains(&field))
+    }
+
+    /// Todo campo que um tipo declara como número ou lista de números tem
+    /// destino decidido: ou aponta um item e a leitura enxuta o mostra pelo
+    /// código, ou está na lista dos números simples. Nunca os dois, e a
+    /// lista dos números simples só cita campos numéricos que existem.
+    #[test]
+    fn every_number_a_type_declares_is_either_an_item_link_or_a_listed_plain_number() {
+        let mut undecided = Vec::new();
+        let mut both = Vec::new();
+        for spec in TYPES {
+            for field in spec.fields.iter().filter(|field| matches!(field.kind, Kind::Int | Kind::Ints)) {
+                match (points_at_item(Some(spec), field.name), is_plain_number(spec.name, field.name)) {
+                    (false, false) => undecided.push(format!("{}.{}", spec.name, field.name)),
+                    (true, true) => both.push(format!("{}.{}", spec.name, field.name)),
+                    _ => {}
+                }
+            }
+        }
+        assert!(undecided.is_empty(), "numbers neither linked by code nor listed as plain: {undecided:?}");
+        assert!(both.is_empty(), "numbers both linked by code and listed as plain: {both:?}");
+        for (kind, fields) in PLAIN_NUMBERS {
+            for name in *fields {
+                let declared = type_spec(kind)
+                    .is_some_and(|spec| spec.fields.iter().any(|field| field.name == *name && matches!(field.kind, Kind::Int | Kind::Ints)));
+                assert!(declared, "{kind}.{name} is listed as a plain number but the type does not declare it as one");
+            }
+        }
+    }
+
     /// Os números simples que apontam itens saem pelo código: as tarefas e a
-    /// entrega da onda, os itens e a entrega do envio, e o critério medido.
+    /// entrega da onda, os itens e a entrega do envio, o critério medido e o
+    /// ponto aberto em que a fala foi dita.
     #[test]
     fn the_plain_numbers_that_point_at_items_read_by_the_item_code() {
         let codes = BTreeMap::from([(1, "MSTD-TASK-0001".to_string()), (2, "MSTD-DELIV-0002".to_string())]);
         for (kind, field, given, shown) in [
+            ("message", "during", json!(1), json!("MSTD-TASK-0001")),
             ("wave", "order", json!([2, 1]), json!(["MSTD-DELIV-0002", "MSTD-TASK-0001"])),
             ("wave", "summary", json!(2), json!("MSTD-DELIV-0002")),
             ("send", "items", json!([1, 2]), json!(["MSTD-TASK-0001", "MSTD-DELIV-0002"])),

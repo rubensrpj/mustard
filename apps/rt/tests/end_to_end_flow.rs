@@ -400,10 +400,18 @@ impl Project {
     /// Como [`Self::command_in`], com a sessão `session` no ambiente: numa
     /// conversa, o gancho do terminal passa a sessão dela ao comando.
     fn command_as(&self, session: Option<&str>, dir: &Path, args: &[&str], stdin: &str) -> Output {
+        self.command_without(session, dir, args, stdin, &[])
+    }
+
+    /// Como [`Self::command_as`], sem as variáveis `unset` no ambiente.
+    fn command_without(&self, session: Option<&str>, dir: &Path, args: &[&str], stdin: &str, unset: &[&str]) -> Output {
         let mut binary = binary::isolated(self.rt.as_deref().unwrap_or_else(|| Path::new(env!("CARGO_BIN_EXE_mustard-rt"))));
         self.env(&mut binary);
         if let Some(session) = session {
             binary.env("MUSTARD_SESSION_ID", session);
+        }
+        for name in unset {
+            binary.env_remove(name);
         }
         let mut child = binary
             .args(args)
@@ -565,6 +573,15 @@ impl Project {
     /// o que o gancho disse.
     fn hook(&self, event: &str, payload: &Value) -> String {
         let out = self.command(&["on", event], &payload.to_string());
+        assert_eq!(out.status.code(), Some(0), "a hook always exits 0: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).to_string()
+    }
+
+    /// Como [`Self::hook`], com o gancho rodando de dentro de `dir` e sem a
+    /// pasta do projeto no ambiente: a raiz sai só de onde ele roda e do
+    /// `cwd` do evento.
+    fn hook_from(&self, dir: &Path, event: &str, payload: &Value) -> String {
+        let out = self.command_without(None, dir, &["on", event], &payload.to_string(), &["CLAUDE_PROJECT_DIR"]);
         assert_eq!(out.status.code(), Some(0), "a hook always exits 0: {}", String::from_utf8_lossy(&out.stderr));
         String::from_utf8_lossy(&out.stdout).to_string()
     }
@@ -1250,9 +1267,10 @@ fn the_wave_agent_calls_from_its_copy_count_without_a_binding() {
 }
 
 /// A conversa que abriu a spec na raiz do projeto segue gravando nela de uma
-/// subpasta: a fala e a resposta que o gancho recebe com o `cwd` ali, e a
-/// busca rodada dali. A sessão cujo nome sairia da pasta das sessões não
-/// liga nada: a retomada por ela não grava arquivo fora dali.
+/// subpasta: a fala e a resposta que o gancho recebe com o `cwd` ali, rodado
+/// dali e sem a pasta do projeto no ambiente, e a busca rodada dali. A
+/// sessão cujo nome sairia da pasta das sessões não liga nada: a retomada
+/// por ela não grava arquivo fora dali.
 #[test]
 fn the_conversation_opened_at_the_root_records_from_a_subfolder() {
     let project = Project::new();
@@ -1261,9 +1279,9 @@ fn the_conversation_opened_at_the_root_records_from_a_subfolder() {
     let cwd = sub.to_string_lossy().to_string();
 
     let said = "Da subpasta, a fala segue na obra.";
-    project.hook("UserPromptSubmit", &json!({"hook_event_name": "UserPromptSubmit", "prompt": said, "session_id": SESSION, "cwd": cwd}));
+    project.hook_from(&sub, "UserPromptSubmit", &json!({"hook_event_name": "UserPromptSubmit", "prompt": said, "session_id": SESSION, "cwd": cwd}));
     let replied = "A resposta dada na subpasta.";
-    project.hook("Stop", &json!({"hook_event_name": "Stop", "last_assistant_message": replied, "session_id": SESSION, "cwd": cwd}));
+    project.hook_from(&sub, "Stop", &json!({"hook_event_name": "Stop", "last_assistant_message": replied, "session_id": SESSION, "cwd": cwd}));
     let log = project.log();
     let recorded = |kind: &str, text: &str| log.visible().into_iter().any(|e| e.event_type == kind && e.str_field("text") == Some(text));
     assert!(recorded("message", said) && recorded("response", replied), "the message and the reply from the subfolder enter the spec");
@@ -1278,6 +1296,37 @@ fn the_conversation_opened_at_the_root_records_from_a_subfolder() {
     let resumed = project.command_as(Some(escaping), &project.root, &["run", "resume"], "");
     assert!(resumed.status.success(), "{}", String::from_utf8_lossy(&resumed.stdout));
     assert!(!project.root.join("fora").exists(), "a session named outside the sessions folder writes nothing out there");
+}
+
+/// A fala que o usuário diz com um ponto do levantamento aberto entra pelo
+/// gancho com o número do ponto, e a leitura da conversa pelo comando a
+/// mostra apontando o ponto pelo código dele.
+#[test]
+fn a_message_said_during_an_open_point_reads_with_the_point_code() {
+    let project = Project::new();
+    project.open();
+    let said = user_says(&project, GOAL);
+    project.write("context", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": GOAL, "origin": said}));
+    let grilled = project.run(&["grill", "--spec", SPEC, "--kinds", "feature", "--full"]);
+    let mut open = Value::Null;
+    for point in grilled["points"].as_array().expect("the point list") {
+        let facts = json!([{"text": "A saudação mora no programa.", "source": "src/main.rs:2"}]);
+        open = project.write("point", &json!({"replaces": point["id"], "facts": facts}))["point"].clone();
+    }
+    let code = open["code"].as_str().unwrap_or_else(|| panic!("an open point: {open}")).to_string();
+    let question = "A saudação muda em todo lugar?";
+    let asked = user_says(&project, question);
+    assert_eq!(project.log().get(asked).and_then(|message| message.int("during")), open["id"].as_u64(), "the file keeps the point number");
+
+    let read = project.run(&["read", "conversation", "--spec", SPEC]);
+
+    let shown = read["events"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|line| line["text"] == json!(question))
+        .unwrap_or_else(|| panic!("the message is read: {read}"));
+    assert_eq!(shown["during"], json!(code), "the open point is shown by its code: {shown}");
 }
 
 /// A marca da ligação da conversa `session` com a spec, onde a abertura a

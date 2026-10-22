@@ -338,7 +338,7 @@ pub(crate) fn wave_detail(start: &Path, name: &str, wave: u64) -> Value {
         (legacy || native) && attempt.is_none_or(|start| event.id > start)
             && event.int("criterion").and_then(|id| log.current(id)).is_some_and(|criterion| criterion_ids.contains(&criterion.id))
     })
-        .map(|event| {let mut item=display_item(event,&codes);if let Some(code)=event.int("criterion").and_then(|id|codes.get(&id)){item["criterion"]=json!(code);}item}).collect();
+        .map(|event| display_item(event,&codes)).collect();
     let user_input = planned.and_then(|event| event.int("origin")).and_then(|id| log.get(id)).and_then(|event| event.str_field("text"));
     let mut skills=sent.and_then(|event|log.send_field(event.id,"skills")).cloned().unwrap_or(Value::Null);
     for skill in skills.as_array_mut().into_iter().flatten() {
