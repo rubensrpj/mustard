@@ -87,7 +87,7 @@ impl CommandGuard {
             return Ok(verdict);
         }
         let lang = ctx.config.language().text_or_default();
-        if let Some(verdict) = runtime_output::bash_runtime_output(&segments, &cmd, lang) {
+        if let Some(verdict) = runtime_output::bash_runtime_output(&segments, &cmd, input.session_id.as_deref(), lang) {
             return Ok(verdict);
         }
         // A cópia do rtk só é procurada quando a troca vai acontecer: shell do

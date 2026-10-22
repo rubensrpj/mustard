@@ -114,7 +114,7 @@ fn summary_asked(segments: &[Segment]) -> Option<(&'static str, &'static str)> {
 /// de versão, que passa sozinha, fica como foi escrita, com o corte dela.
 /// `None` quando a reescrita não acha as duas etapas — a resposta chega ao
 /// script por substituição, e não por encadeamento.
-fn with_the_answer_in_a_file(segments: &[Segment], cmd: &str) -> Option<String> {
+fn with_the_answer_in_a_file(segments: &[Segment], cmd: &str, session: Option<&str>) -> Option<String> {
     if !segments.iter().any(runs_a_script) {
         return None;
     }
@@ -140,7 +140,7 @@ fn with_the_answer_in_a_file(segments: &[Segment], cmd: &str) -> Option<String> 
             Some(body) => (body.trim_end(), " 2>&1"),
             None => (step, ""),
         };
-        let file = answer_file(first, &mut names.borrow_mut());
+        let file = answer_file(first, &mut names.borrow_mut(), session);
         Some(super::rewrite::Step::Put(format!("{body} > {file}{errors}")))
     })?;
     let out = out.trim().to_string();
@@ -149,10 +149,12 @@ fn with_the_answer_in_a_file(segments: &[Segment], cmd: &str) -> Option<String> 
 
 /// O arquivo em que a etapa do Mustard `segment` grava a resposta: na pasta
 /// temporária, fora do repositório, com o nome da etapa — `read-backlog`,
-/// `resume`. Um arquivo dentro do projeto entrava no commit de quem roda
-/// `git add -A`, e duas etapas no mesmo arquivo perdiam a primeira resposta.
-/// O nome que já saiu neste comando (`taken`) ganha um número.
-fn answer_file(segment: &Segment, taken: &mut Vec<String>) -> String {
+/// `resume` — e o id da sessão que pediu o comando. Um arquivo dentro do
+/// projeto entrava no commit de quem roda `git add -A`; duas etapas no mesmo
+/// arquivo perdiam a primeira resposta; e duas conversas com a mesma etapa na
+/// mesma pasta temporária gravavam uma por cima da outra. O nome que já saiu
+/// neste comando (`taken`) ganha um número.
+fn answer_file(segment: &Segment, taken: &mut Vec<String>, session: Option<&str>) -> String {
     let words: Vec<String> = segment
         .args
         .iter()
@@ -171,8 +173,38 @@ fn answer_file(segment: &Segment, taken: &mut Vec<String>) -> String {
         name = format!("{stem}-{n}");
     }
     taken.push(name.clone());
-    let path = std::env::temp_dir().join(format!("{name}.txt")).display().to_string();
-    if path.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '\\' | '.' | '_' | '-' | ':')) { path } else { format!("'{path}'") }
+    if let Some(tag) = session_tag(session) {
+        name = format!("{name}-{tag}");
+    }
+    shell_path(&std::env::temp_dir(), &format!("{name}.txt"))
+}
+
+/// O id da sessão do host como cabe num nome de arquivo: letras, números, `-`
+/// e `_` ficam, o resto vira `-`, e o nome para em [`SESSION_TAG_MAX`]
+/// caracteres. `None` quando o host não mandou id.
+fn session_tag(session: Option<&str>) -> Option<String> {
+    let tag: String = session?
+        .chars()
+        .take(SESSION_TAG_MAX)
+        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '-' | '_') { c } else { '-' })
+        .collect();
+    (!tag.is_empty()).then_some(tag)
+}
+
+/// O tamanho máximo do id da sessão no nome do arquivo.
+const SESSION_TAG_MAX: usize = 64;
+
+/// O caminho de `file` em `dir`, escrito como o terminal o lê: solto quando só
+/// tem letras, números, `/`, `.`, `_` e `-`; do contrário, entre aspas simples.
+/// O espaço, a letra de unidade (`C:`) e a barra invertida do Windows quebram ou
+/// são comidos numa palavra solta, e a aspa simples do nome vira `'\''`.
+fn shell_path(dir: &std::path::Path, file: &str) -> String {
+    let path = dir.join(file).display().to_string();
+    if path.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-')) {
+        path
+    } else {
+        format!("'{}'", path.replace('\'', "'\\''"))
+    }
 }
 
 /// A conferência: recusa o comando `cmd`, já lido em `segments`, quando a
@@ -183,7 +215,7 @@ fn answer_file(segment: &Segment, taken: &mut Vec<String>) -> String {
 ///
 /// A ajuda e a versão passam: a resposta delas é curta, fixa e não traz nada
 /// da obra. O gancho pegava até `mustard-rt run read --help | head`.
-pub(super) fn bash_runtime_output(segments: &[Segment], cmd: &str, lang: SupportedLocale) -> Option<Verdict> {
+pub(super) fn bash_runtime_output(segments: &[Segment], cmd: &str, session: Option<&str>, lang: SupportedLocale) -> Option<Verdict> {
     let scripted = (0..segments.len()).any(|at| {
         let runtime = runs_the_runtime(&segments[at]) && !asks_a_fixed_answer(&segments[at]);
         (runtime && feeds_a_script(segments, at))
@@ -193,7 +225,7 @@ pub(super) fn bash_runtime_output(segments: &[Segment], cmd: &str, lang: Support
         return None;
     }
     let mut reason = crate::shared::say::say("runtime_output.scripted", lang, &[("{command}", truncate(cmd, 120))]);
-    if let Some(ready) = with_the_answer_in_a_file(segments, cmd) {
+    if let Some(ready) = with_the_answer_in_a_file(segments, cmd, session) {
         reason.push('\n');
         reason.push_str(&crate::shared::say::say("runtime_output.ready", lang, &[("{ready}", truncate(&ready, 200))]));
     }
@@ -215,12 +247,18 @@ mod tests {
     /// O veredito da trava de comandos inteira para `cmd`, na conversa
     /// principal ou num agente.
     fn guard(cmd: &str, agent: bool) -> Verdict {
+        guard_in(cmd, agent, None)
+    }
+
+    /// O mesmo veredito, com a sessão do host que pediu o comando.
+    fn guard_in(cmd: &str, agent: bool, session: Option<&str>) -> Verdict {
         let dir = tempfile::tempdir().unwrap();
         let input = HookInput {
             tool_name: Some("Bash".to_string()),
             tool_input: json!({ "command": cmd }),
             hook_event_name: Some("PreToolUse".to_string()),
             agent_id: agent.then(|| "wave-agent".to_string()),
+            session_id: session.map(str::to_string),
             ..HookInput::default()
         };
         let ctx = Ctx::for_test(dir.path().to_string_lossy().into_owned(), Some(Trigger::PreToolUse));
@@ -297,6 +335,57 @@ mod tests {
         // O bloco sem resumo não ganha sugestão nenhuma.
         let said = ready("mustard-rt run read conversation --spec x | head -40");
         assert!(!said.contains("run read calls") && !said.contains("run read wave-list"), "{said}");
+    }
+
+    /// O arquivo da resposta volta entre aspas quando o caminho pede: espaço
+    /// no nome da pasta, barra invertida e letra de unidade do Windows, aspa
+    /// simples dentro do nome. O caminho sem nada disso volta como está.
+    #[test]
+    fn the_answer_file_is_quoted_when_the_path_needs_it() {
+        use std::path::Path;
+
+        assert_eq!(shell_path(Path::new("/tmp"), "mustard-resume.txt"), "/tmp/mustard-resume.txt");
+        assert_eq!(shell_path(Path::new("/tmp/with space"), "mustard-resume.txt"), "'/tmp/with space/mustard-resume.txt'");
+        assert_eq!(
+            shell_path(Path::new(r"C:\Users\Ana Maria\AppData\Local\Temp"), "mustard-resume.txt"),
+            r"'C:\Users\Ana Maria\AppData\Local\Temp/mustard-resume.txt'"
+        );
+        // Sem espaço, o caminho do Windows também vai entre aspas: o terminal
+        // comeria as barras invertidas de uma palavra solta.
+        let windows = shell_path(Path::new(r"C:\Users\ana\AppData\Local\Temp"), "mustard-resume.txt");
+        assert!(windows.starts_with('\'') && windows.ends_with('\''), "{windows}");
+        assert_eq!(shell_path(Path::new("/tmp/o'brien"), "a.txt"), r"'/tmp/o'\''brien/a.txt'");
+    }
+
+    /// Duas conversas que cortam o mesmo comando do Mustard ao mesmo tempo
+    /// não gravam no mesmo arquivo: o id da sessão que pediu o comando entra
+    /// no nome, e a etapa repetida na mesma conversa segue com o número dela.
+    #[test]
+    fn the_answer_file_is_named_by_conversation() {
+        let ready = |cmd: &str, session: Option<&str>| match guard_in(cmd, false, session) {
+            Verdict::Deny { reason } => reason,
+            other => panic!("{cmd} must be refused, got {other:?}"),
+        };
+        let file = |name: &str| std::env::temp_dir().join(format!("{name}.txt")).display().to_string();
+
+        let cmd = "mustard-rt run resume | head -80";
+        let first = ready(cmd, Some("sessao-a"));
+        let second = ready(cmd, Some("sessao-b"));
+        assert!(first.contains(&format!("mustard-rt run resume > {}", file("mustard-resume-sessao-a"))), "{first}");
+        assert!(second.contains(&format!("mustard-rt run resume > {}", file("mustard-resume-sessao-b"))), "{second}");
+        assert!(!first.contains("sessao-b") && !second.contains("sessao-a"), "each refusal names only its own conversation");
+
+        // Duas etapas do mesmo comando na mesma conversa: cada uma no seu arquivo.
+        let said = ready("mustard-rt run resume | head -3 && mustard-rt run resume | tail -3", Some("sessao-a"));
+        assert!(said.contains(&format!("> {} &&", file("mustard-resume-sessao-a"))), "{said}");
+        assert!(said.contains(&format!("> {}", file("mustard-resume-2-sessao-a"))), "{said}");
+
+        // O id vira nome de arquivo: nada que o terminal leia como outra coisa.
+        let said = ready(cmd, Some("../x y;rm"));
+        assert!(said.contains(&format!("mustard-rt run resume > {}", file("mustard-resume----x-y-rm"))), "{said}");
+        // Sem id, o nome é o da etapa, como antes.
+        let said = ready(cmd, Some(""));
+        assert!(said.contains(&format!("mustard-rt run resume > {}", file("mustard-resume"))), "{said}");
     }
 
     /// A ajuda e a versão passam, com corte e tudo: a resposta delas é curta,

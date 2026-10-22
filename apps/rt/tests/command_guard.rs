@@ -20,11 +20,16 @@ use tempfile::TempDir;
 /// Run `mustard-rt on PreToolUse` for one Bash command in `dir` and return
 /// what it printed.
 fn run_guard(dir: &Path, command: &str) -> String {
+    run_guard_in(dir, command, "command-guard-test")
+}
+
+/// The same, for the conversation `session` of the host.
+fn run_guard_in(dir: &Path, command: &str, session: &str) -> String {
     let input = serde_json::json!({
         "hook_event_name": "PreToolUse",
         "tool_name": "Bash",
         "cwd": dir.to_str().expect("utf-8 path"),
-        "session_id": "command-guard-test",
+        "session_id": session,
         "tool_input": { "command": command }
     });
     run_hook(dir, &input, None)
@@ -281,4 +286,19 @@ fn the_ready_command_writes_each_answer_to_its_own_file_outside_the_project() {
         assert!(path.is_absolute() && !path.starts_with(dir.path()), "{file} must sit outside the project");
         assert!(path.starts_with(std::env::temp_dir()), "{file} must sit in the temporary folder");
     }
+}
+
+/// Two conversations that cut the same Mustard command at the same time do
+/// not share the file of the ready command: the id of the session the host
+/// sent goes into the name.
+#[test]
+fn the_ready_command_names_its_file_by_the_session_that_asked() {
+    let dir = project_with(r#"{"language":{"text":"pt-BR"}}"#);
+    let ready = |session: &str| {
+        let reason = refusal(&run_guard_in(dir.path(), "mustard-rt run resume | head -80", session)).expect("the cut must be refused");
+        reason.lines().last().unwrap_or_default().to_string()
+    };
+    let (first, second) = (ready("conversa-a1"), ready("conversa-b2"));
+    assert!(first.ends_with("mustard-resume-conversa-a1.txt"), "{first}");
+    assert!(second.ends_with("mustard-resume-conversa-b2.txt"), "{second}");
 }
