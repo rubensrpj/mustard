@@ -1281,6 +1281,16 @@ fn record_to(
     if event_type == "task" && by.is_some() {
         inherit_task_title(&Source::of(&path, locked.as_deref()), &mut draft)?;
     }
+    // A versão nova que o modelo grava sem `wave` fica na onda da vigente
+    // enquanto o agente dela trabalha: a onda é do programa, e a tarefa que
+    // sai dela deixaria o agente sem o que entregar.
+    if event_type == "task"
+        && by.is_none()
+        && draft.contains_key("replaces")
+        && let Some(log) = Source::of(&path, locked.as_deref()).log()?
+    {
+        super::task_wave::inherit_wave(&log, &mut draft);
+    }
     // A versão de um ponto aberto que traz só os fatos recebe o resto da
     // versão antiga, antes da conferência que pede o bloco e a lacuna.
     if event_type == "point"
@@ -1423,7 +1433,10 @@ fn closed_spec_work_rule(spec: &str, before: &SpecLog, after: &SpecLog) -> Resul
 /// `run write`, a gravação de uma onda é recusada, e a de uma tarefa com
 /// número de onda também, a não ser na versão nova de uma tarefa que repete a
 /// onda da versão que ela substitui — rever a tarefa de uma onda que já saiu
-/// não pode jogá-la de volta no backlog. Tirar uma onda continua valendo.
+/// não pode jogá-la de volta no backlog. A versão que o modelo grava sem
+/// `wave`, numa onda com o envio aberto, já chegou aqui com a onda da vigente
+/// (`task_wave`), e o número que muda a onda dela é recusado. Tirar uma onda
+/// continua valendo.
 fn wave_by_backlog_rule(before: &SpecLog, after: &SpecLog) -> Result<(), Refusal> {
     let had: BTreeSet<u64> = before.events.iter().map(|event| event.id).collect();
     for event in after.events.iter().filter(|event| !had.contains(&event.id)) {

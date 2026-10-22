@@ -2165,6 +2165,84 @@ fn rejecting_a_committed_wave_is_refused_in_both_languages() {
     assert_eq!(recorded(&project), before, "nada gravado");
 }
 
+/// Uma spec aprovada com uma tarefa que cria [`GREETING`], com a onda 1
+/// despachada e em andamento pelo processo do teste. Devolve o projeto e o
+/// número da tarefa.
+fn wave_in_progress() -> (Project, u64) {
+    let (project, _, _, tasks) = backlog_project(&[&[GREETING]]);
+    let first = project.run(&["round", "--dispatch", "--spec", SPEC]);
+    assert_eq!(waves_in(&first, "dispatch"), vec![1], "{first}");
+    keep_sent(&project, &[1]);
+    (project, tasks[0])
+}
+
+/// A versão nova da tarefa `task` como o modelo a grava pelo `run write`: os
+/// campos da versão vigente, o texto revisto, a tarefa substituída pelo
+/// código dela (`MSTD-TASK-NNNN`), como a recusa da mesma obra aberta e o
+/// mapa dos comandos mandam, e nenhuma onda, como a recusa da onda manda;
+/// `wave` põe um número de onda por cima. Devolve a resposta do comando,
+/// recusada ou não.
+fn revise_task(project: &Project, task: u64, wave: Option<u64>) -> Value {
+    let log = project.log();
+    let current = log.current(task).expect("the task").clone();
+    let code = log.codes().get(&current.id).cloned().expect("the task code");
+    assert!(code.starts_with("MSTD-TASK-"), "{code}");
+    let mut fields: serde_json::Map<String, Value> = current
+        .fields
+        .iter()
+        .filter(|(key, _)| !["v", "id", "code", "at", "type", "author", "search", "wave"].contains(&key.as_str()))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    fields.insert("text".into(), json!("Tarefa do backlog, com o texto revisto."));
+    fields.insert("replaces".into(), json!(code));
+    if let Some(wave) = wave {
+        fields.insert("wave".into(), json!(wave));
+    }
+    project.answer(&["write", "task", "--spec", SPEC, "--json", &Value::Object(fields).to_string()])
+}
+
+/// A versão nova da tarefa de uma onda em andamento, gravada sem `wave`
+/// enquanto o agente trabalha, não tira a tarefa da onda: ela herda a onda
+/// da versão vigente, e a entrega do agente segue aceita.
+#[test]
+fn a_new_task_version_without_the_wave_stays_in_the_wave_in_progress_and_its_delivery_is_accepted() {
+    let (project, task) = wave_in_progress();
+
+    let revised = revise_task(&project, task, None);
+    assert_eq!(revised["ok"], json!(true), "{revised}");
+    assert_eq!(wave_of(&project, task), Some(1), "a versão nova ficou na onda da vigente: {revised}");
+    assert_eq!(project.log().current(task).and_then(|t| t.str_field("text").map(str::to_string)).as_deref(), Some("Tarefa do backlog, com o texto revisto."));
+
+    // O plano da onda mudou depois do pedido: a rodada a manda de novo, e
+    // nenhuma onda nova leva a tarefa.
+    let again = project.run(&["round", "--dispatch", "--spec", SPEC]);
+    assert_eq!(waves_in(&again, "dispatch"), vec![1], "{again}");
+    keep_sent(&project, &[1]);
+    assert_eq!(wave_of(&project, task), Some(1), "{again}");
+    assert!(project.log().visible().into_iter().all(|e| e.event_type != "wave" || e.wave() == Some(1)), "nenhuma onda nova: {again}");
+
+    deliver_in_copy(&project, 1, "hello\n");
+    assert!(project.log().events.iter().any(|e| e.event_type == "delivered" && e.wave() == Some(1)), "a entrega do agente foi gravada");
+}
+
+/// Mudar a onda de uma tarefa cujo envio está aberto é recusado com o motivo
+/// da onda que nasce do backlog, sem gravar nada, e a entrega do agente
+/// segue aceita.
+#[test]
+fn moving_a_task_of_the_wave_in_progress_to_another_wave_is_refused_with_the_reason() {
+    let (project, task) = wave_in_progress();
+    let before = recorded(&project);
+
+    let moved = revise_task(&project, task, Some(2));
+    assert_eq!(moved["ok"], json!(false), "{moved}");
+    assert_eq!(moved["reason"], json!("wave-by-backlog"), "{moved}");
+    assert_eq!(moved["hint"], json!(translate("spec_events.wave_by_backlog", Locale::PtBr)), "{moved}");
+    assert_eq!(recorded(&project), before, "nada foi gravado");
+    assert_eq!(wave_of(&project, task), Some(1));
+
+    deliver_in_copy(&project, 1, "hello\n");
+}
+
 /// Existing credentials and provider selections never authorize inference alone.
 #[test]
 fn native_defaults_ignore_legacy_jev_in_search_wave_planning_and_context() {
