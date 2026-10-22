@@ -5,8 +5,9 @@
 //! (`id`) sai quando a linha tem código, que é o jeito de citar o item. Fora
 //! da conversa, saem a hora e o autor; na conversa, o autor fica, e a hora
 //! fica até o minuto, porque diz quem falou e quando. As ligações entre itens
-//! (`origin`, `result`, `replaces`, `closes`, `reply_to`, `covered_by`) saem
-//! pelo código do item apontado; o número sem código fica como está.
+//! (`origin`, `result`, `reused_results`, `replaces`, `closes`, `reply_to`,
+//! `covered_by`) saem pelo código do item apontado; o número sem código fica
+//! como está.
 //!
 //! Cada fato sai sem as marcas de conferência: as impressões da fonte, a
 //! classificação, a verificação e a situação da fonte. O mesmo fato (a mesma
@@ -28,7 +29,7 @@ use serde_json::{Map, Value, json};
 const STAMPS: &[&str] = &["v", "session"];
 
 /// As ligações entre itens, que a linha enxuta mostra pelo código.
-const LINKS: &[&str] = &["origin", "result", "replaces", "closes", "reply_to", "covered_by"];
+const LINKS: &[&str] = &["origin", "result", "reused_results", "replaces", "closes", "reply_to", "covered_by"];
 
 /// As marcas de conferência de um fato: as impressões da fonte e da medida,
 /// a classificação, a verificação e a situação da fonte.

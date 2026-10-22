@@ -57,13 +57,59 @@ pub fn file_citation(source: &str) -> Option<(String, u64)> {
 #[must_use]
 pub fn file_citations(text: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    for piece in text.split(|c: char| c.is_whitespace() || "`\"'()[]{}<>,;".contains(c)) {
-        let piece = piece.trim_end_matches(['.', ':']);
+    for piece in pieces(text) {
         if file_citation(piece).is_some() && !out.iter().any(|seen| seen == piece) {
             out.push(piece.to_string());
         }
     }
     out
+}
+
+/// Os arquivos que um texto cita, na ordem em que aparecem e sem repetir, com
+/// barras normais: o pedaço no formato de [`file_citation`] vale pelo
+/// caminho, sem a linha, e o caminho sem linha vale quando tem pasta e
+/// extensão (`apps/rt/src/a.rs`). O nome sem pasta e sem linha (`Cargo.toml`,
+/// `self.facts`) não vale, porque não se distingue de um nome de código.
+///
+/// Serve ao levantamento: dois textos que citam o mesmo arquivo falam do
+/// mesmo trecho do código.
+#[must_use]
+pub fn cited_files(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for piece in pieces(text) {
+        let path = match file_citation(piece) {
+            Some((path, _)) => path,
+            None if is_file_path(piece) => piece.replace('\\', "/"),
+            None => continue,
+        };
+        let path = clean_path(&path);
+        if !out.contains(&path) {
+            out.push(path);
+        }
+    }
+    out
+}
+
+/// Os pedaços de um texto que podem citar um arquivo: separados por espaço,
+/// crase, aspas e abertura ou fecho de grupo, sem a pontuação da frase no
+/// fim.
+fn pieces(text: &str) -> impl Iterator<Item = &str> {
+    text.split(|c: char| c.is_whitespace() || "`\"'()[]{}<>,;".contains(c)).map(|piece| piece.trim_end_matches(['.', ':']))
+}
+
+/// O pedaço que é um caminho de arquivo: tem pasta, e o último trecho tem
+/// nome e extensão com ao menos uma letra. O endereço (`://`) não é.
+fn is_file_path(piece: &str) -> bool {
+    if piece.contains("://") {
+        return false;
+    }
+    let piece = piece.replace('\\', "/");
+    let Some((folder, name)) = piece.rsplit_once('/') else { return false };
+    let Some((stem, extension)) = name.rsplit_once('.') else { return false };
+    !folder.is_empty()
+        && !stem.is_empty()
+        && extension.chars().all(|c| c.is_ascii_alphanumeric())
+        && extension.chars().any(|c| c.is_ascii_alphabetic())
 }
 
 /// Os nomes de código que um texto cita entre crases, na ordem em que
@@ -273,6 +319,17 @@ mod tests {
             decls: vec![("src/a.rs", "SpecLog", 12), ("src/b.rs", "check_citations", 3), ("src/b.rs", "run", 7)],
             map: true,
         }
+    }
+
+    /// O arquivo citado vale pelo caminho: sem a linha, com barras normais e
+    /// sem repetir. O caminho sem linha precisa de pasta e extensão; o nome
+    /// solto, a frase, o endereço e o número não valem.
+    #[test]
+    fn the_files_a_text_cites_are_told_apart_from_names_and_addresses() {
+        let text = "Veja `apps/rt/src/a.rs:10-20`, src\\b.rs e (docs/c.md). Depois ./src/d.rs: de novo apps/rt/src/a.rs.";
+        assert_eq!(cited_files(text), ["apps/rt/src/a.rs", "src/b.rs", "docs/c.md", "src/d.rs"]);
+        assert_eq!(cited_files("`Cargo.toml`, `self.facts`, https://example.com/a.html, e/ou, docs/v1.2, 3/4"), Vec::<String>::new());
+        assert_eq!(cited_files("Cargo.toml:3 e README.md:10"), ["Cargo.toml", "README.md"]);
     }
 
     #[test]

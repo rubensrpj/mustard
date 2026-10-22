@@ -9,7 +9,8 @@
 //!   `domain::search`, com o texto original, nunca o `search`; a regra do
 //!   projeto fica fora, porque vale sempre e não vira pergunta;
 //! - as specs anteriores que casam com o objetivo, pelo `search` do índice,
-//!   com as regras, as decisões e os erros delas que casam;
+//!   com as regras, as decisões e os erros delas que casam; quando a spec
+//!   cita arquivos, entram as que mexeram em algum deles ([`prior_spec_points`]);
 //! - dentro desses pontos, nunca num ponto novo, até 3 lembretes: mensagens do
 //!   usuário nas specs anteriores que nenhum registro aponta ([`reminders`]).
 //!
@@ -35,12 +36,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Map, Value};
 
-use crate::domain::citation::cited_names;
+use crate::domain::citation::{cited_files, cited_names, file_citation};
 use crate::domain::lessons;
 use crate::domain::normalize::{Languages, Normalizer};
-use crate::domain::project_map::importers;
+use crate::domain::project_map::{clean_path, importers};
 use crate::domain::search::{SearchIndex, TOP, shared_words};
-use crate::domain::spec_events::{Refusal, SpecEvent, SpecLog, WORK_KINDS, search_field};
+use crate::domain::spec_events::{Block, Refusal, SpecEvent, SpecLog, WORK_KINDS, search_field};
 use crate::domain::spec_index::{IndexLine, title_of};
 use crate::domain::spec_state::{State, birth_event, original_of};
 use crate::domain::text::fold_accents;
@@ -74,6 +75,8 @@ pub const MAX_REMINDERS: usize = 3;
 /// O casamento forte: quantas palavras do objetivo, no mínimo, uma mensagem
 /// antiga ou uma spec anterior precisa ter para entrar. Com uma palavra só,
 /// qualquer palavra comum ("pasta", "spec") traria lembrete e spec anterior.
+/// A spec anterior só entra por palavras quando a spec do levantamento não
+/// cita arquivo; citando, entra pelo arquivo em comum.
 pub const STRONG_ROOTS: usize = 2;
 
 /// Quantos fatos de uma spec anterior entram no ponto dela.
@@ -882,7 +885,8 @@ pub struct Sources<'a> {
     pub lessons_file: &'a str,
     /// As linhas de spec do índice.
     pub index: &'a [IndexLine],
-    /// O arquivo de eventos de cada spec do projeto.
+    /// O arquivo de eventos de cada spec do projeto, a do levantamento
+    /// inclusive: dela vêm os arquivos que a spec cita, além do objetivo.
     pub prior: &'a [(String, SpecLog)],
     /// Como o mapa do projeto se lê, quando há um: cada pergunta lê só as
     /// tabelas dela, e só a lacuna de quem depende pergunta.
@@ -1025,25 +1029,19 @@ fn lesson_points(sources: &Sources<'_>) -> Vec<Proposed> {
         .collect()
 }
 
-/// Um ponto por spec anterior que casa com o objetivo pelo `search` do
-/// índice, com casamento forte, as [`TOP`] mais fortes: o nome e o objetivo
-/// dela como lacuna, e as regras, as decisões e os erros dela que casam como
-/// fatos.
+/// Um ponto por spec anterior que entra no levantamento, as [`TOP`] mais
+/// fortes: o nome e o objetivo dela como lacuna, e as regras, as decisões e
+/// os erros dela que casam como fatos.
+///
+/// Quem entra: se a spec do levantamento cita arquivos, as specs que
+/// mexeram em algum deles ([`by_files`]); sem arquivo citado, as que casam
+/// com o objetivo pelo `search` do índice ([`by_words`]).
 fn prior_spec_points(sources: &Sources<'_>) -> Vec<Proposed> {
     let mut normalizer = Normalizer::new(sources.languages);
     let terms = normalizer.query(sources.goal);
-    let lines: Vec<(&IndexLine, Vec<Vec<String>>)> =
-        sources.index.iter().filter(|line| line.name != sources.current).map(|line| (line, normalizer.forms(&line.search))).collect();
-    let index = SearchIndex::build(lines.iter().enumerate().map(|(i, (_, words))| (doc_id(i), words.clone())));
-    let strong_lines: Vec<&IndexLine> = index
-        .top(&terms, lines.len())
-        .into_iter()
-        .filter_map(|hit| lines.get(doc_pos(hit.id)))
-        .filter(|(_, words)| strong(&terms, words))
-        .map(|(line, _)| *line)
-        .take(TOP)
-        .collect();
-    strong_lines
+    let cited = files_cited_by_the_survey(sources);
+    let entering = if cited.is_empty() { by_words(sources, &terms, &mut normalizer) } else { by_files(sources, &cited) };
+    entering
         .into_iter()
         .map(|line| {
             let goal = line.goal.as_deref().map(str::trim).filter(|g| !g.is_empty());
@@ -1058,6 +1056,83 @@ fn prior_spec_points(sources: &Sources<'_>) -> Vec<Proposed> {
             }
         })
         .collect()
+}
+
+/// As specs anteriores que casam com o objetivo pelo `search` do índice, com
+/// casamento forte, as mais fortes primeiro.
+fn by_words<'a>(sources: &Sources<'a>, terms: &[Vec<String>], normalizer: &mut Normalizer) -> Vec<&'a IndexLine> {
+    let lines: Vec<(&IndexLine, Vec<Vec<String>>)> =
+        sources.index.iter().filter(|line| line.name != sources.current).map(|line| (line, normalizer.forms(&line.search))).collect();
+    let index = SearchIndex::build(lines.iter().enumerate().map(|(i, (_, words))| (doc_id(i), words.clone())));
+    index
+        .top(terms, lines.len())
+        .into_iter()
+        .filter_map(|hit| lines.get(doc_pos(hit.id)))
+        .filter(|(_, words)| strong(terms, words))
+        .map(|(line, _)| *line)
+        .take(TOP)
+        .collect()
+}
+
+/// As specs anteriores que mexeram em algum dos arquivos `cited`, as que
+/// mexeram em mais arquivos primeiro e, no empate, pelo nome. A spec sem
+/// arquivo de eventos lido não entra: não se sabe em que ela mexeu.
+fn by_files<'a>(sources: &Sources<'a>, cited: &BTreeSet<String>) -> Vec<&'a IndexLine> {
+    let mut shared: Vec<(usize, &IndexLine)> = sources
+        .index
+        .iter()
+        .filter(|line| line.name != sources.current)
+        .filter_map(|line| {
+            let (_, log) = sources.prior.iter().find(|(name, _)| *name == line.name)?;
+            let common = files_touched_by(log).intersection(cited).count();
+            (common > 0).then_some((common, line))
+        })
+        .collect();
+    shared.sort_by(|(more, one), (fewer, other)| fewer.cmp(more).then_with(|| one.name.cmp(&other.name)));
+    shared.into_iter().map(|(_, line)| line).take(TOP).collect()
+}
+
+/// Os arquivos que a spec do levantamento cita: na parte do agente do
+/// objetivo (o texto do usuário não leva caminho) e, nos itens já gravados,
+/// na parte do agente e na fonte dos fatos. O ponto que o próprio `grill`
+/// gravou (autor `binary`) fica de fora: a lista não se alimenta do que ela
+/// mesma pôs na spec, e chamar o levantamento de novo dá a mesma lista.
+fn files_cited_by_the_survey(sources: &Sources<'_>) -> BTreeSet<String> {
+    let mut files: BTreeSet<String> = cited_files(sources.goal_agent).into_iter().collect();
+    if let Some((_, log)) = sources.prior.iter().find(|(name, _)| name == sources.current) {
+        let recorded = log.visible().into_iter().filter(|event| event.str_field("author") != Some("binary"));
+        files.extend(recorded.flat_map(|event| files_of_item(event, false)));
+    }
+    files
+}
+
+/// Os arquivos em que uma spec anterior mexeu: os das entregas (`files`) e
+/// os que os itens combinados e a especificação dela citam. A conversa e as
+/// ondas, com os pedidos que levam as regras do projeto inteiro, não contam.
+fn files_touched_by(log: &SpecLog) -> BTreeSet<String> {
+    let mut files = BTreeSet::new();
+    for event in log.visible() {
+        if event.event_type == "delivered" {
+            let delivered = event.fields.get("files").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str);
+            files.extend(delivered.map(clean_path));
+        } else if matches!(event.block(), Some(Block::Agreed | Block::Specification)) {
+            files.extend(files_of_item(event, true));
+        }
+    }
+    files
+}
+
+/// Os arquivos que um item cita: na parte do agente, no texto quando
+/// `with_text` (o item antigo não tem a parte do agente, e o caminho ficava no
+/// texto) e na fonte de cada fato.
+fn files_of_item(event: &SpecEvent, with_text: bool) -> Vec<String> {
+    let mut texts = vec![event.str_field("agent")];
+    if with_text {
+        texts.push(event.str_field("text"));
+    }
+    let facts = event.fields.get("facts").and_then(Value::as_array).into_iter().flatten();
+    let sources = facts.filter_map(|fact| fact.get("source").and_then(Value::as_str)).filter_map(file_citation).map(|(path, _)| clean_path(&path));
+    texts.into_iter().flatten().flat_map(cited_files).chain(sources).collect()
 }
 
 /// Os fatos de uma spec anterior: as regras, as decisões e os erros dela que
@@ -1505,6 +1580,91 @@ mod tests {
         assert!(facts.contains(&("Merge travado.", "mustard-rt run read agreed --spec antiga --term MSTD-RULE-0001")), "{facts:?}");
         assert!(facts.contains(&("A cobrança da pendência sai no merge.", "mustard-rt run read agreed --spec antiga --term MSTD-DEC-0001")), "{facts:?}");
         assert!(!facts.iter().any(|(text, _)| text.contains("título")), "{facts:?}");
+    }
+
+    /// A linha do índice de uma spec, com o objetivo no `search`.
+    fn index_line(name: &str, goal: &str) -> IndexLine {
+        IndexLine {
+            name: name.to_string(),
+            goal: Some(goal.to_string()),
+            phase: Some("closed".to_string()),
+            titles: Vec::new(),
+            search: search_field(Some(goal), &[name]),
+        }
+    }
+
+    /// Uma spec anterior que só traz a entrega de uma onda, com os arquivos.
+    fn delivering(files: &[&str]) -> SpecLog {
+        log_of(&[ev(1, "delivered", json!({"wave": 1, "text": "A onda saiu.", "files": files}))])
+    }
+
+    /// Com arquivo citado no objetivo, entram as specs anteriores que mexeram
+    /// neles, sem precisar de palavra em comum: as que mexeram em mais
+    /// arquivos primeiro e, no empate, pelo nome. O arquivo vem da entrega ou
+    /// do que o item dela cita, no texto do item antigo ou na fonte de um
+    /// fato. A spec que mexeu em outro arquivo, e a do índice sem arquivo de
+    /// eventos lido, ficam de fora.
+    #[test]
+    fn an_earlier_spec_that_touched_the_cited_files_enters_the_most_shared_first() {
+        let cites = log_of(&[ev(
+            1,
+            "point",
+            json!({"block": "code", "gap": "Onde soma", "from": "gap", "status": "closed", "origin": 1,
+                "facts": [{"text": "A soma.", "source": "src\\b.rs:4"}]}),
+        )]);
+        let old_rule = log_of(&[ev(1, "rule", json!({"text": "Vale em `src/a.rs`.", "keys": ["a"], "example": "e", "origin": 1}))]);
+        let index = vec![
+            index_line("um", "Reescrever a impressão."),
+            index_line("dois", "Redesenhar o rótulo."),
+            index_line("tres", "Trocar a cor."),
+            index_line("quatro", "Travar o merge com pendência aberta."),
+            index_line("cinco", "Mudar o menu."),
+            index_line("sem-arquivo", "Mexer em tudo."),
+            index_line("atual", GOAL),
+        ];
+        let prior = vec![
+            ("um".to_string(), delivering(&["./src/a.rs"])),
+            ("dois".to_string(), delivering(&["src/a.rs", "src/b.rs", "src/c.rs"])),
+            ("tres".to_string(), cites),
+            ("quatro".to_string(), delivering(&["src/c.rs"])),
+            ("cinco".to_string(), old_rule),
+        ];
+        let mut given = sources(&["fix"], None, &index, &prior);
+        given.goal_agent = "- o defeito está em `src/a.rs:3` e em `src/b.rs`.";
+        let entered: Vec<String> = build(&given).into_iter().filter(|p| p.from == "prior_spec").map(|p| p.gap).collect();
+        assert_eq!(entered, ["dois: Redesenhar o rótulo.", "cinco: Mudar o menu.", "tres: Trocar a cor.", "um: Reescrever a impressão."], "{entered:?}");
+    }
+
+    /// Os arquivos que a spec do levantamento cita, além dos do objetivo, vêm
+    /// dos itens que o assistente gravou nela (parte do agente e fonte dos
+    /// fatos). O ponto que o próprio `grill` gravou fica de fora: o que ele
+    /// trouxe do mapa não faz outra spec entrar numa segunda chamada.
+    #[test]
+    fn the_survey_cites_the_files_of_its_own_items_but_not_of_the_points_the_grill_wrote() {
+        let current = log_of(&[
+            ev(1, "context", json!({"text": "Somar.", "agent": "- ver `src/x.rs`", "origin": 1})),
+            ev(
+                2,
+                "point",
+                json!({"author": "binary", "block": "code", "gap": "Onde soma", "from": "gap", "status": "open", "origin": 1,
+                    "facts": [{"text": "Soma.", "source": "src/y.rs:1"}]}),
+            ),
+            ev(
+                3,
+                "point",
+                json!({"author": "assistant", "block": "code", "gap": "Onde soma", "from": "gap", "status": "closed", "origin": 1,
+                    "facts": [{"text": "Soma.", "source": "src/z.rs:1"}]}),
+            ),
+        ]);
+        let index = vec![index_line("x", "Um."), index_line("y", "Dois."), index_line("z", "Três.")];
+        let prior = vec![
+            ("atual".to_string(), current),
+            ("x".to_string(), delivering(&["src/x.rs"])),
+            ("y".to_string(), delivering(&["src/y.rs"])),
+            ("z".to_string(), delivering(&["src/z.rs"])),
+        ];
+        let entered: Vec<String> = build(&sources(&["fix"], None, &index, &prior)).into_iter().filter(|p| p.from == "prior_spec").map(|p| p.gap).collect();
+        assert_eq!(entered, ["x: Um.", "z: Três."], "{entered:?}");
     }
 
     /// No condensado, todos os pontos vão para um bloco só.

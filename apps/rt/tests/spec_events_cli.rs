@@ -1282,7 +1282,7 @@ fn a_metrics_search_comes_as_a_summary_and_all_brings_the_events() {
 const FACT_MARKS: [&str; 5] = ["source_version", "current_source_version", "classification", "verification", "source_status"];
 
 /// As ligações entre itens, que a leitura de um bloco mostra pelo código.
-const LINKS: [&str; 6] = ["origin", "result", "replaces", "closes", "reply_to", "covered_by"];
+const LINKS: [&str; 7] = ["origin", "result", "reused_results", "replaces", "closes", "reply_to", "covered_by"];
 
 /// O número de um evento, ou a lista deles, trocado pelo código do item.
 fn by_code(codes: &std::collections::BTreeMap<u64, String>, value: &Value) -> Value {
@@ -1295,8 +1295,9 @@ fn by_code(codes: &std::collections::BTreeMap<u64, String>, value: &Value) -> Va
 /// Uma spec com um item de cada tipo, cada linha com as marcas que o binário
 /// carimba (versão do formato, número, hora em nanossegundos, autor e
 /// sessão); dois pontos com os mesmos fatos; e as ligações: a origem, a
-/// resposta a uma mensagem, a versão nova de uma decisão e o ponto que fecha
-/// outro com o resultado. Devolve os códigos de cada número.
+/// resposta a uma mensagem, a versão nova de uma decisão, o ponto que fecha
+/// outro com o resultado e o ponto que reaproveita resultados de antes.
+/// Devolve os códigos de cada número.
 fn spec_with_every_item_type(root: &Path) -> std::collections::BTreeMap<u64, String> {
     open_spec(root);
     let fact = |source: &str, text: &str| {
@@ -1323,6 +1324,8 @@ fn spec_with_every_item_type(root: &Path) -> std::collections::BTreeMap<u64, Str
         "agent": "- a parte do agente", "keys": ["chave"], "why": "um porquê", "origin": 1, "replaces": first_of["decision"]}));
     lines.push(json!({"type": "point", "author": "assistant", "block": "defect", "gap": "Onde a fatura soma", "from": "gap",
         "status": "closed", "origin": 1, "closes": first_of["point"], "result": [lines.len()]}));
+    lines.push(json!({"type": "point", "author": "assistant", "block": "defect", "gap": "Onde o total soma", "from": "gap",
+        "status": "closed", "origin": 1, "result": [first_of["decision"]], "reused_results": [first_of["decision"], first_of["task"]]}));
     let text: String = lines
         .into_iter()
         .enumerate()

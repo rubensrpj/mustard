@@ -181,6 +181,104 @@ fn to_plan(root: &Path) -> Result<(), Refusal> {
     record(root, SPEC, "state", draft, PhaseWriter::Binary).map(|_| ())
 }
 
+/// Grava pelo `run write` numa spec qualquer; a recusa reprova.
+fn write_in(root: &Path, spec: &str, event_type: &str, fields: &Value) -> Value {
+    let out = rt(root, &["write", event_type, "--spec", spec, "--json", &fields.to_string()]);
+    let written = report(&out);
+    assert!(out.status.success(), "write {event_type} in {spec}: {written}");
+    written
+}
+
+/// A fala do usuário numa spec qualquer, gravada como o gancho da entrada a
+/// grava. Devolve o número dela.
+fn says_in(root: &Path, spec: &str, text: &str) -> u64 {
+    let mut draft = Map::new();
+    draft.insert("author".to_string(), json!("user"));
+    draft.insert("text".to_string(), json!(text));
+    record(root, spec, "message", draft, PhaseWriter::Binary).expect("the hook records the message");
+    let path = store::spec_file(root, spec).expect("the spec's file");
+    let log = store::read(&path).expect("a readable file").expect("the spec has its file");
+    log.events.last().expect("the message just written").id
+}
+
+/// Abre uma spec de conserto pelo `open` do binário e grava o objetivo dela:
+/// `text` para o usuário e `agent` para quem implementa.
+fn open_with_goal(root: &Path, name: &str, text: &str, agent: &str) {
+    let opened = rt(root, &["open", "--kind", "fix", "--name", name, "--base", "dev"]);
+    assert_eq!(opened.status.code(), Some(0), "{}", String::from_utf8_lossy(&opened.stdout));
+    let said = says_in(root, name, text);
+    write_in(root, name, "context", &json!({"title": "O objetivo", "agent": agent, "text": text, "origin": said}));
+}
+
+/// Uma spec anterior, escrita pelo binário: o objetivo, uma regra que cita
+/// `rule_agent` e, quando há arquivos, a entrega de uma onda que mexeu neles.
+fn earlier_spec(root: &Path, name: &str, goal: &str, rule_agent: &str, delivered: &[&str]) {
+    open_with_goal(root, name, goal, "- o que o objetivo pede");
+    let said = says_in(root, name, "A regra vale aqui.");
+    write_in(
+        root,
+        name,
+        "rule",
+        &json!({"title": "Regra do trecho", "text": "Vale no trecho.", "keys": ["trecho"], "example": "um exemplo", "agent": rule_agent, "origin": said}),
+    );
+    if !delivered.is_empty() {
+        // A entrega só nasce depois de uma onda enviada e de um agente que a
+        // devolve; a spec anterior chega com ela já escrita no arquivo.
+        let path = store::spec_file(root, name).expect("the spec's file");
+        let draft = json!({"wave": 1, "text": "A onda saiu.", "files": delivered});
+        store::write(&path, "delivered", draft.as_object().expect("an object").clone(), &[]).expect("the delivery lands in the file");
+    }
+}
+
+/// O levantamento da spec nova, e os nomes das specs anteriores que viraram
+/// ponto dele, na ordem da lista.
+fn earlier_specs_surveyed(root: &Path) -> Vec<String> {
+    let grilled = rt(root, &["grill", "--kinds", "fix", "--spec", "nova", "--full"]);
+    assert_eq!(grilled.status.code(), Some(0), "{}", String::from_utf8_lossy(&grilled.stdout));
+    let answer = report(&grilled);
+    answer["points"]
+        .as_array()
+        .expect("the point list")
+        .iter()
+        .filter(|point| point["from"] == json!("prior_spec"))
+        .map(|point| point["gap"].as_str().and_then(|gap| gap.split(':').next()).expect("the gap").to_string())
+        .collect()
+}
+
+/// A spec nova que cita um arquivo na parte do agente do objetivo (o texto
+/// do usuário não leva caminho) leva ao levantamento a spec
+/// anterior que mexeu nesse arquivo, seja pelo arquivo da entrega, seja pelo
+/// citado numa regra dela, ainda que nenhuma palavra do objetivo case. A
+/// spec anterior que só divide duas palavras com o objetivo fica de fora, por
+/// mexer em outro arquivo.
+#[test]
+fn an_earlier_spec_enters_the_survey_by_a_file_in_common_and_not_by_two_words() {
+    let dir = repo();
+    let root = dir.path();
+    earlier_spec(root, "impressao", "Reescrever a rotina de impressão.", "- a rotina mora em `src/other.rs`", &["src/main.rs"]);
+    earlier_spec(root, "etiqueta", "Redesenhar o rótulo.", "- a saída sai de `src/main.rs:2`", &[]);
+    earlier_spec(root, "pendencias", "Travar o merge com pendência aberta.", "- vive em `src/lib.rs`", &["src/lib.rs"]);
+    open_with_goal(root, "nova", "Travar o merge com pendência aberta.", "- o defeito está em `src/main.rs:2`");
+
+    let entered = earlier_specs_surveyed(root);
+    assert_eq!(entered, ["etiqueta", "impressao"], "{entered:?}");
+}
+
+/// Sem arquivo citado no objetivo, a escolha é a de sempre: entra a spec
+/// anterior que divide duas palavras com ele, e a que só mexeu num arquivo
+/// qualquer fica de fora.
+#[test]
+fn without_a_file_cited_an_earlier_spec_still_enters_by_two_words() {
+    let dir = repo();
+    let root = dir.path();
+    earlier_spec(root, "impressao", "Reescrever a rotina de impressão.", "- a rotina mora em `src/other.rs`", &["src/main.rs"]);
+    earlier_spec(root, "pendencias", "Travar o merge com pendência aberta.", "- vive em `src/lib.rs`", &["src/lib.rs"]);
+    open_with_goal(root, "nova", "Travar o merge com pendência aberta.", "- conferir pelo teste");
+
+    let entered = earlier_specs_surveyed(root);
+    assert_eq!(entered, ["pendencias"], "{entered:?}");
+}
+
 #[test]
 fn a_test_survey_goes_through_every_point_and_the_plan_is_refused_while_one_is_open() {
     let dir = repo();
