@@ -507,6 +507,11 @@ pub const TYPES: &[TypeSpec] = &[
             req("action", Kind::OneOf(HOOK_ACTIONS)),
             req("tool", Kind::Text),
             req("reason", Kind::Text),
+            // A forma do que a ferramenta barrada trazia: cada campo pelo
+            // nome e o tamanho dele em caracteres, nunca o conteúdo, que
+            // pode ter código do projeto. Sem isso não se sabia depois se a
+            // recusa foi justa.
+            opt("shape", Kind::Object),
         ],
     ),
     ty(

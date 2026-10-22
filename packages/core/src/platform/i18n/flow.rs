@@ -1673,6 +1673,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         // O aviso da rodada: uma chamada dela ao Jev falhou, e a rodada seguiu
         // sem ele. O remédio sai pelo motivo da falha.
+        ("round.terminal_inside_a_copy", Locale::PtBr) => {
+            "Este terminal está dentro de uma cópia de onda: `{folder}`. A rodada apaga as cópias dela, e o shell que perde a pasta em que está não roda mais nada. Saia para a pasta principal do projeto antes da próxima rodada."
+        }
+        ("round.terminal_inside_a_copy", Locale::EnUs) => {
+            "This terminal stands inside a wave copy: `{folder}`. The round deletes its copies, and a shell that loses the folder it stands in runs nothing more. Move to the project's main folder before the next round."
+        }
         ("round.assembly_by_files", Locale::PtBr) => {
             "A montagem perguntou ao Jev por {candidates} tarefas e nenhuma onda saiu da resposta dele. As ondas desta rodada saíram pela regra de arquivos."
         }
@@ -2440,7 +2446,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 357, 0x112f_791e_fc65_4d84);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 358, 0x006e_9fdb_6968_7418);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
@@ -2766,6 +2772,7 @@ mod tests {
             ("round.task_without_covers", &["{tasks}"][..]),
             ("round.jev_failed", &["{reason}", "{remedy}"][..]),
             ("round.assembly_by_files", &["{candidates}"][..]),
+            ("round.terminal_inside_a_copy", &["{folder}"][..]),
             ("round.jev_remedy_key", &[][..]),
             ("round.jev_remedy_missing_key", &[][..]),
             ("round.jev_remedy_key_in_git", &[][..]),

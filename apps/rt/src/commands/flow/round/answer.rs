@@ -1081,7 +1081,10 @@ fn dispatch_round(
     // spec.
     let jev_asked = jev.is_some() || super::item_choice::asks_jev(context_jev.filter.as_deref());
     warnings.extend(super::jev_failure::warning(root, &spec, &operations_on_entry, jev_asked, session, lang));
-    warnings.extend(super::jev_failure::by_files_warning(root, &spec, &operations_on_entry, jev_asked, session, lang));
+    // A montagem que chamou o Jev e não formou onda, e o terminal que está
+    // dentro de uma cópia de onda — uma pasta que a rodada pode apagar, e o
+    // shell que perde a pasta em que está não roda mais nada.
+    warnings.extend([super::jev_failure::by_files_warning(root, &spec, &operations_on_entry, jev_asked, session, lang), super::standing_in_a_copy(root, lang)].into_iter().flatten());
 
     // O sinal de vida: a onda em andamento, viva, sem nenhuma ação gravada
     // (pelo observador da cópia, ou, sem ela, a hora do próprio envio) há mais
@@ -3119,3 +3122,4 @@ mod tests {
         }
     }
 }
+
