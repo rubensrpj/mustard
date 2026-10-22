@@ -622,12 +622,21 @@ const PASTE_MAX: usize = 1024;
 /// O texto inteiro de um item, como quem implementa o lê: a parte do agente;
 /// sem ela, o texto; sem texto, os outros campos, um por linha. A mensagem do
 /// usuário sai com o texto dela, com o trecho colado grande trocado pelo aviso
-/// de onde lê-lo pelo código `code`. Sem título nem arquivos: quem mostra o
-/// item os põe em volta.
+/// de onde lê-lo pelo código `code`; a que responde a uma pergunta com opções
+/// leva a pergunta acima da resposta, lida de `witness.question` ou de
+/// `question`. Sem título nem arquivos: quem mostra o item os põe em volta.
 #[must_use]
 pub fn item_body(item: &SpecEvent, code: &str, lang: Locale) -> String {
     if item.event_type == "message" {
-        return without_long_paste(item.str_field("text").unwrap_or_default(), code, lang);
+        let answer = without_long_paste(item.str_field("text").unwrap_or_default(), code, lang);
+        return match asked_question(item) {
+            Some(question) => format!(
+                "{}\n\n{}",
+                translate("prompt.message.question", lang).replace("{question}", question),
+                translate("prompt.message.answer", lang).replace("{answer}", &answer)
+            ),
+            None => answer,
+        };
     }
     match item.str_field("agent").filter(|agent| !agent.trim().is_empty()).or_else(|| item.str_field("text")) {
         Some(body) => body.to_string(),
@@ -639,6 +648,15 @@ pub fn item_body(item: &SpecEvent, code: &str, lang: Locale) -> String {
             .collect::<Vec<_>>()
             .join("\n"),
     }
+}
+
+/// A pergunta que a mensagem do usuário respondeu: a da testemunha
+/// (`witness.question`), quando ele clicou numa das opções, ou a do campo
+/// `question`, na pergunta comum. A mensagem guarda só a resposta no texto, e a
+/// pergunta em branco não conta. `None` na mensagem que não responde pergunta.
+fn asked_question(message: &SpecEvent) -> Option<&str> {
+    let witnessed = message.fields.get("witness").and_then(|witness| witness.get("question")).and_then(Value::as_str);
+    witnessed.into_iter().chain(message.str_field("question")).map(str::trim).find(|question| !question.is_empty())
 }
 
 /// O texto com cada trecho colado maior que [`PASTE_MAX`] trocado pelo aviso
@@ -3540,6 +3558,40 @@ mod tests {
         assert!(!block.contains(huge.trim()), "the last skill was cut");
         let cut = translate("prompt.task.skill_cut", Locale::PtBr).replace("{name}", "grande").replace("{path}", "/repo/.claude/skills/grande/SKILL.md");
         assert!(block.contains(&cut), "{block}");
+    }
+
+    /// A mensagem que responde a uma pergunta com opções guarda só a resposta
+    /// no texto, com a pergunta em `witness.question` (o clique testemunhado)
+    /// ou em `question` (a pergunta comum). O bloco da tarefa que a atende
+    /// mostra a pergunta e, logo abaixo dela, a resposta, nos dois idiomas; a
+    /// mensagem sem pergunta, ou com a pergunta em branco, sai só pelo texto.
+    #[test]
+    fn a_message_that_answers_a_question_shows_the_question_above_the_answer() {
+        let goal_question = "O objetivo é: Somar dois números.\nConfirma este objetivo?";
+        let log = log(&[
+            (
+                "message",
+                json!({"text": "Confirmar objetivo", "author": "user",
+                       "witness": {"question": goal_question, "answer": "Confirmar objetivo"}}),
+            ),
+            ("message", json!({"text": "Inteiros, sem arredondar\nSó o total.", "author": "user", "question": "Qual tipo de número a soma usa?"})),
+            ("message", json!({"text": "Só isto, curto.", "author": "user", "question": "   "})),
+            ("wave", json!({"n": 1, "text": "Onda", "criteria": [], "done_when": "pronto"})),
+            ("task", json!({"wave": 1, "title": "Conferir", "text": "Conferir.", "covers": [1, 2, 3], "files": [{"path": "src/a.rs"}]})),
+        ]);
+        for (lang, ask, answer, speaker) in [
+            (Locale::PtBr, "Pergunta", "Resposta", "mensagem do usuário"),
+            (Locale::EnUs, "Question", "Answer", "user message"),
+        ] {
+            let block = task_blocks(&material(&log, 1), lang).remove(0).text;
+            let witnessed = format!("{speaker} MSTD-MSG-0001 — \"Confirmar objetivo\"\n\n{ask}: {goal_question}\n\n{answer}: Confirmar objetivo\n");
+            let plain = format!("{speaker} MSTD-MSG-0002 — \"Inteiros, sem arredondar Só o total.\"\n\n{ask}: Qual tipo de número a soma usa?\n\n{answer}: Inteiros, sem arredondar\nSó o total.\n");
+            let bare = format!("{speaker} MSTD-MSG-0003 — \"Só isto, curto.\"\n\nSó isto, curto.\n");
+            for part in [witnessed, plain, bare] {
+                assert!(block.contains(&part), "{part}: {block}");
+            }
+            assert_eq!(block.matches(&format!("{ask}:")).count(), 2, "only the two answers to a question show it: {block}");
+        }
     }
 
     /// No texto de um item, o trecho colado maior que 1 KB numa mensagem do

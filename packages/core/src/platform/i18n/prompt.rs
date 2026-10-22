@@ -279,6 +279,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.step.attends", Locale::EnUs) => "Addresses: {item}",
         ("prompt.step.user_message", Locale::PtBr) => "mensagem do usuário",
         ("prompt.step.user_message", Locale::EnUs) => "user message",
+        // A mensagem do usuário que responde a uma pergunta com opções: a
+        // pergunta do assistente, acima da resposta dele.
+        ("prompt.message.question", Locale::PtBr) => "Pergunta: {question}",
+        ("prompt.message.question", Locale::EnUs) => "Question: {question}",
+        ("prompt.message.answer", Locale::PtBr) => "Resposta: {answer}",
+        ("prompt.message.answer", Locale::EnUs) => "Answer: {answer}",
         // O bloco de uma tarefa: o título, com a posição dela na onda, e cada
         // skill dela inteira, pelo nome e pelo caminho. A skill que o teto do
         // bloco cortou fica numa linha, com o caminho para lê-la.
@@ -766,7 +772,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("prompt.rs"), super::PREFIXES, 113, 0x9409_7b16_8358_5c2d);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("prompt.rs"), super::PREFIXES, 115, 0x58db_ca18_0a8f_f3e2);
     }
 
     /// O bloco do padrão sob a tarefa passa na conferência de escrita nos
@@ -826,6 +832,8 @@ mod tests {
                 "prompt.step.first",
                 "prompt.step.attends",
                 "prompt.step.user_message",
+                "prompt.message.question",
+                "prompt.message.answer",
                 "prompt.task.heading",
                 "prompt.task.skill",
                 "prompt.task.skill_cut",
@@ -840,6 +848,8 @@ mod tests {
                 let text = translate(key, lang)
                     .replace("{part}", "part")
                     .replace("{item}", "item")
+                    .replace("{question}", "Which orders?")
+                    .replace("{answer}", "The paid ones")
                     .replace("{files}", "`src/order.service.ts`")
                     .replace("{hints}", "`create`")
                     .replace("{command}", "make check")

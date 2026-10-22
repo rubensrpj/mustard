@@ -14,6 +14,10 @@
 //! código, lido pelo scan, mostra que controller importa service, tem o
 //! pedido enviado pela rodada com a regra e os exemplos sob a tarefa, e o
 //! projeto sem padrão para aprender recebe o pedido sem o bloco.
+//!
+//! Uma tarefa que nasceu da resposta do usuário a uma pergunta com opções,
+//! gravada pelo gancho, tem o pedido enviado pela rodada com a pergunta
+//! acima da resposta.
 
 #![cfg(unix)]
 
@@ -24,7 +28,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
-use mustard_core::domain::spec_events::SpecLog;
+use mustard_core::domain::spec_events::{SpecEvent, SpecLog};
 use mustard_core::domain::spec_state::State;
 use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{Locale, translate};
@@ -322,4 +326,76 @@ fn a_round_sends_the_pattern_of_the_project_under_the_task_and_a_project_without
     let without = request_sent_for_a_new_controller(false);
     assert!(!without.contains("regra:") && !without.contains("exemplo:"), "{without}");
     assert!(with.chars().count() > without.chars().count(), "the request with the pattern is the longer one");
+}
+
+/// A resposta do usuário a uma pergunta com opções, pelo gancho da testemunha
+/// do `PostToolUse`, como o Claude Code a entrega; devolve a mensagem que o
+/// gancho gravou.
+fn user_answers(project: &Project, question: &str, options: &[&str], answer: &str) -> u64 {
+    let offered: Vec<Value> = options.iter().map(|label| json!({"label": label})).collect();
+    project.hook(
+        "PostToolUse",
+        &json!({
+            "hook_event_name": "PostToolUse",
+            "tool_name": "AskUserQuestion",
+            "tool_input": {"questions": [{"question": question, "options": offered}]},
+            "tool_response": {"answers": {question: answer}},
+            "session_id": SESSION,
+            "cwd": project.root.to_string_lossy(),
+        }),
+    );
+    let log = project.log();
+    let recorded = log.visible().into_iter().rfind(|e| e.event_type == "message" && e.str_field("text") == Some(answer));
+    recorded.expect("the witness recorded the answer").id
+}
+
+/// O pedido que a rodada envia para a tarefa que nasceu da resposta do
+/// usuário a uma pergunta (`answered` a faz pelo gancho): a mensagem que o
+/// gancho gravou, o código dela e o texto do pedido.
+fn request_sent_for_an_answer(answered: impl Fn(&Project) -> u64) -> (SpecEvent, String, String) {
+    let project = Project::new();
+    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    let said = survey(&project);
+    let answer = answered(&project);
+    let criterion = project.write(
+        "criterion",
+        &json!({"title": "Combinar o item", "when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
+            "form": "ubiquitous", "origin": said}),
+    );
+    project.write(
+        "task",
+        &json!({"agent": "- conferir pelo teste", "title": "Trocar a saudação", "text": "Trocar a saudação no programa.", "files": [{"path": "src/main.rs"}],
+            "depends_on": [], "covers": [criterion["id"]], "origin": answer}),
+    );
+    project.run(&["plan", "--spec", SPEC]);
+    approve(&project);
+
+    project.run(&["round", "--dispatch", "--spec", SPEC]);
+    let log = project.log();
+    let sent = log.visible().into_iter().find(|e| e.event_type == "send").expect("the round recorded the send");
+    let message = log.get(answer).expect("the answer message").clone();
+    (message, log.codes()[&answer].clone(), sent.str_field("text").expect("the request text").to_string())
+}
+
+/// A mensagem que responde a uma pergunta com opções guarda só a resposta no
+/// texto, com a pergunta fora dele. O pedido que a rodada envia para a tarefa
+/// dessa resposta mostra a pergunta acima dela, nas duas formas que o gancho
+/// grava: a pergunta comum, com a pergunta em `question`, e o clique de um
+/// gesto, com a pergunta na testemunha.
+#[test]
+fn a_round_sends_the_question_above_the_answer_the_user_gave() {
+    let asked = "Qual tipo de número a soma usa?";
+    let (message, code, sent) = request_sent_for_an_answer(|project| user_answers(project, asked, &["Inteiros", "Decimais"], "Inteiros"));
+    assert_eq!(message.str_field("text"), Some("Inteiros"), "the text keeps only the answer: {message:?}");
+    assert_eq!(message.str_field("question"), Some(asked), "{message:?}");
+    let shown = format!("#### Atende: mensagem do usuário {code} — \"Inteiros\"\n\nPergunta: {asked}\n\nResposta: Inteiros\n");
+    assert!(sent.contains(&shown), "{shown}\n{sent}");
+
+    let proposal = "A onda 2 precisa da 1 antes. Posso seguir assim?";
+    let (accept, decline) = (translate("change.accept", Locale::PtBr), translate("change.decline", Locale::PtBr));
+    let (message, code, sent) = request_sent_for_an_answer(|project| user_answers(project, proposal, &[accept, decline], accept));
+    assert_eq!(message.fields.get("witness").and_then(|witness| witness.get("question")), Some(&json!(proposal)), "{message:?}");
+    assert!(message.str_field("question").is_none(), "{message:?}");
+    let shown = format!("#### Atende: mensagem do usuário {code} — \"{accept}\"\n\nPergunta: {proposal}\n\nResposta: {accept}\n");
+    assert!(sent.contains(&shown), "{shown}\n{sent}");
 }
