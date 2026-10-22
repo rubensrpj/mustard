@@ -536,8 +536,8 @@ fn take_returns(
         write_joined(root, &joined, false)?;
         let now = head(root);
         refused.extend(held.into_iter().map(|one| HeldReturn { wave: one.wave(), refusal: one.refusal(now.clone()) }));
-        let detail_of = |wave: u64| git_refused.iter().find(|(n, _)| *n == wave).map_or_else(|| git_refused[0].1.clone(), |(_, detail)| detail.clone());
-        refused.extend(report.waves.iter().map(|wave| HeldReturn { wave: wave.wave, refusal: RoundRefusal::Git { detail: detail_of(wave.wave) } }));
+        let hold_of = |wave: u64| git_refused.iter().find(|(n, _)| *n == wave).map_or_else(|| git_refused[0].1.clone(), |(_, hold)| hold.clone());
+        refused.extend(report.waves.iter().map(|wave| HeldReturn { wave: wave.wave, refusal: hold_of(wave.wave).refusal() }));
         let recorded = return_cut_batches(start, spec, log, cut).map_err(RoundRefusal::Refused)?;
         drop(held_lock);
         return Ok(Taken { recorded, formatted, warnings, commit: None, paused: report.paused, waiting: refused, program_rebuilt: false, asking });
@@ -548,7 +548,7 @@ fn take_returns(
         // elas e com o código de cada commit.
         let out: BTreeSet<u64> = git_refused.iter().map(|(wave, _)| *wave).collect();
         report.waves.retain(|wave| !out.contains(&wave.wave));
-        refused.extend(git_refused.iter().map(|(wave, detail)| HeldReturn { wave: *wave, refusal: RoundRefusal::Git { detail: detail.clone() } }));
+        refused.extend(git_refused.iter().map(|(wave, hold)| HeldReturn { wave: *wave, refusal: hold.refusal() }));
         let drafts = made_drafts(root, &made).into_iter().chain(found_drafts(root, &report.waves, &found)).collect();
         checked = check_reports(start, root, spec, &report, drafts, lang, &triage).map_err(RoundRefusal::Refused)?;
     }
@@ -2260,7 +2260,7 @@ mod tests {
         let hook = refusing_hook(root);
         let refused = two_rounds_at_once(root, None);
         for out in &refused {
-            assert_eq!(warning_of(out, "git-refused")["reason"], json!("git-refused"), "{refused:?}");
+            assert_eq!(warning_of(out, "project-hook-refused")["reason"], json!("project-hook-refused"), "{refused:?}");
         }
         assert_eq!(main_file(), "fn one() {}\n", "each refused round put the file back: {refused:?}");
         assert_eq!(git_text(root, &["rev-parse", "HEAD"]), seed, "nothing was committed: {refused:?}");
@@ -2330,8 +2330,10 @@ mod tests {
         }
         assert_eq!(main_file(), "// onda 1\nfn one() {}\n// onda 2\n", "{outs:?}");
         assert_eq!((commit_count(root), commit_count(&sub)), (main_before + 2, sub_before + 2), "{outs:?}");
-        assert_eq!(commit_at(&sub, "HEAD~1"), ("feat: a entrega 1 sai".to_string(), vec!["+// onda 1".to_string()]), "{outs:?}");
-        assert_eq!(commit_at(&sub, "HEAD"), ("feat: a entrega 2 sai".to_string(), vec!["+// onda 2".to_string()]), "{outs:?}");
+        // O escopo sai da pasta do arquivo: `libs/sub/lib.txt`, sem a pasta de
+        // código da frente, é `sub`.
+        assert_eq!(commit_at(&sub, "HEAD~1"), ("feat(sub): a entrega 1 sai".to_string(), vec!["+// onda 1".to_string()]), "{outs:?}");
+        assert_eq!(commit_at(&sub, "HEAD"), ("feat(sub): a entrega 2 sai".to_string(), vec!["+// onda 2".to_string()]), "{outs:?}");
         assert_eq!(git_text(root, &["rev-parse", "HEAD:libs/sub"]), git_text(&sub, &["rev-parse", "HEAD"]));
         assert_eq!(git_text(root, &["show", "--name-only", "--format=", "HEAD"]), "libs/sub", "{outs:?}");
         assert!(copy(1).join(".git").is_file() && copy(2).join(".git").is_file(), "both copies stay: {outs:?}");
@@ -2489,8 +2491,8 @@ mod tests {
 
         let report = json!({"wave": 1, "text": "Saiu.", "files": ["src/a.rs"], "commit": "a entrega 1 sai"});
         assert_eq!(returned(root, report)["ok"], json!(true));
-        let refused = warning_of(&round(root, "x", None), "git-refused");
-        assert_eq!(refused["reason"], json!("git-refused"), "{refused}");
+        let refused = warning_of(&round(root, "x", None), "project-hook-refused");
+        assert_eq!(refused["reason"], json!("project-hook-refused"), "{refused}");
         assert_eq!(std::fs::read_to_string(root.join("src/a.rs")).unwrap(), "// principal\nfn one() {}\n");
         assert_eq!(delivered_count(root), 0);
 
@@ -2593,8 +2595,8 @@ mod tests {
         };
         report(1, &["src/a.rs", "src/novo.rs"]);
 
-        let refused = warning_of(&round(root, "x", None), "git-refused");
-        assert_eq!(refused["reason"], json!("git-refused"), "{refused}");
+        let refused = warning_of(&round(root, "x", None), "project-hook-refused");
+        assert_eq!(refused["reason"], json!("project-hook-refused"), "{refused}");
         assert!(refused["hint"].as_str().unwrap_or_default().contains("o gancho recusou"), "{refused}");
         assert_eq!(std::fs::read_to_string(root.join("src/a.rs")).unwrap(), "fn one() {}\n");
         assert!(!root.join("src/novo.rs").exists(), "the new file left the disk");
@@ -2901,7 +2903,7 @@ mod tests {
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let copy = log.get(open_sends(&log)[&1]).and_then(|e| e.str_field("copy").map(str::to_string)).expect("the copy");
         let read = |code: &str| {
-            let opts = ReadOpts { root: root.to_path_buf(), spec: Some("x".into()), block: format!("item-{code}"), term: None };
+            let opts = ReadOpts { root: root.to_path_buf(), spec: Some("x".into()), block: format!("item-{code}"), term: None , session: None };
             read_for(&opts, None, Path::new(&copy)).unwrap_or_else(|refused| panic!("{code}: {refused}"));
         };
 
@@ -3089,7 +3091,7 @@ mod tests {
         std::fs::create_dir_all(&copy).unwrap();
         seed_review_reading(root, &["MSTD-DEC-0001", "MSTD-TASK-0001"], &copy);
         let read = |code: &str| {
-            let opts = ReadOpts { root: root.to_path_buf(), spec: Some("x".into()), block: format!("item-{code}"), term: None };
+            let opts = ReadOpts { root: root.to_path_buf(), spec: Some("x".into()), block: format!("item-{code}"), term: None , session: None };
             read_for(&opts, None, &copy).unwrap_or_else(|refused| panic!("{code}: {refused}"));
         };
 

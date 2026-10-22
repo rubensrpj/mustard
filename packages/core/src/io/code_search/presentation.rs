@@ -12,7 +12,55 @@ pub struct Presentation {
     pub owner_ranges: usize,
 }
 
+/// A resposta ao agente, com a linha do modo barato na frente quando houver.
+///
+/// A linha vem DEPOIS de a representação ser escolhida, e nunca dentro dela:
+/// somada ao corpo antes da escolha, ela pesava na comparação que decide entre
+/// a forma agrupada e a nativa, e uma resposta agrupada perdia o agrupamento
+/// por causa de um aviso (21/10/2026).
 pub fn agent(answer: &Answer, request: &Request, cwd: &Path) -> Presentation {
+    let mut shown = chosen(answer, request, cwd);
+    let mut head = String::from(cheap_mode_note(answer.report["choice_gate"].as_str()));
+    head.push_str(&nothing_found_note(answer, request, &shown));
+    if !head.is_empty() {
+        let mut stdout = head.into_bytes();
+        stdout.extend_from_slice(&shown.stdout);
+        shown.stdout = stdout;
+    }
+    shown
+}
+
+/// A linha que diz o que foi procurado e onde, quando nada foi achado.
+///
+/// Uma resposta vazia não diz se a busca correu e não achou, se o caminho
+/// estava errado, ou se o filtro deixou tudo de fora. Em campo, quatro buscas
+/// seguidas voltaram com zero bytes, e quem buscou não tinha como saber qual
+/// dos três era (21/10/2026).
+fn nothing_found_note(answer: &Answer, request: &Request, shown: &Presentation) -> String {
+    // Vazio pela saída, quando ela é o texto do programa nativo, e pelo
+    // relatório, quando a resposta é o resultado de uma ferramenta: ali o
+    // conteúdo vem dentro de um objeto que nunca é vazio.
+    let result = &answer.report["result"];
+    let empty = shown.stdout.iter().all(u8::is_ascii_whitespace)
+        || result["numLines"].as_u64() == Some(0)
+        || result["numFiles"].as_u64() == Some(0)
+        || result["content"].as_str() == Some("");
+    if !empty {
+        return String::new();
+    }
+    let input = &request.input;
+    let pattern = ["pattern", "query", "symbol", "file_path"]
+        .into_iter()
+        .find_map(|key| input[key].as_str())
+        .unwrap_or_default();
+    let path = ["path", "file_path"].into_iter().find_map(|key| input[key].as_str()).unwrap_or(".");
+    if pattern.is_empty() {
+        return String::new();
+    }
+    format!("# nothing found for \"{pattern}\" under {path} with tool {}.\n", request.tool)
+}
+
+fn chosen(answer: &Answer, request: &Request, cwd: &Path) -> Presentation {
     if let Some(view)=super::task_view::agent(answer,request) {return view;}
     let native = matches!(request.tool.as_str(), "rg" | "grep" | "git");
     let original = if native {
@@ -120,6 +168,23 @@ pub fn agent(answer: &Answer, request: &Request, cwd: &Path) -> Presentation {
         };
     }
     fallback()
+}
+
+/// A linha que diz quando a busca correu no modo barato, e o que traria mais.
+///
+/// O propósito `locate` desliga os vetores e o filtro do modelo pago, de
+/// propósito: é o modo que só acha ocorrências. Mas nada dizia isso a quem
+/// buscou. Em campo, 47 buscas seguidas correram assim, e o condutor concluiu
+/// que os vetores estavam quebrados (21/10/2026). O motivo já ia no registro,
+/// em `choice_gate`; o que faltava era ele aparecer na resposta.
+fn cheap_mode_note(gate: Option<&str>) -> &'static str {
+    match gate {
+        Some("locate") => "# locate mode: no vectors, no paid filter. Use purpose=understand/spec/implement for current-source investigation.\n",
+        Some("ai-fallback-disabled") => "# enrichment off by ai.fallback in the project configuration.\n",
+        Some("purpose-not-configured") => "# paid filter not configured for search in judgement.search.filter.\n",
+        Some("provider-unavailable") => "# paid filter configured but unavailable now; native result only.\n",
+        _ => "",
+    }
 }
 
 fn selection_note(answer: &Answer, request: &Request) -> String {
@@ -232,4 +297,69 @@ fn grouped(
         result.pop();
     }
     (result, count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Uma resposta sem nada dentro, para o teste pôr só o que ele mede.
+    fn empty_answer() -> Answer {
+        Answer { report: json!({}), stdout: Vec::new(), stderr: Vec::new(), exit_code: 0 }
+    }
+
+    /// A resposta diz quando a busca correu no modo barato, e o que traria
+    /// mais. O motivo já ia no registro; o que faltava era aparecer para quem
+    /// buscou. Em campo, 47 buscas seguidas correram em `locate`, e o
+    /// condutor concluiu que os vetores estavam quebrados (21/10/2026).
+    #[test]
+    fn the_answer_says_when_the_cheap_mode_left_the_enrichment_out() {
+        let note = |gate: &str| cheap_mode_note(Some(gate));
+        assert!(note("locate").contains("locate mode"), "o modo barato é dito");
+        assert!(note("locate").contains("purpose=understand"), "e diz o que traria mais");
+        assert!(note("ai-fallback-disabled").contains("ai.fallback"), "a configuração que desligou é nomeada");
+        assert!(note("purpose-not-configured").contains("judgement.search.filter"));
+        assert!(note("provider-unavailable").contains("unavailable"));
+        assert!(note("eligible").is_empty(), "a busca enriquecida não ganha linha");
+        assert!(note("exact-read").is_empty(), "nem a leitura exata");
+        assert!(cheap_mode_note(None).is_empty(), "sem portão gravado, nenhuma linha");
+    }
+
+    /// A resposta vazia diz o que foi procurado, onde e com qual ferramenta.
+    ///
+    /// Sem isso, quem buscou não sabe se a busca correu e não achou, se o
+    /// caminho estava errado ou se o filtro deixou tudo de fora. Em campo,
+    /// quatro buscas seguidas voltaram com zero bytes (21/10/2026).
+    #[test]
+    fn an_empty_answer_says_what_was_looked_for_and_where() {
+        let shown = |stdout: &str| Presentation {
+            stdout: stdout.as_bytes().to_vec(),
+            representation: "native",
+            owner_ranges: 0,
+        };
+        let asked = |pattern: &str, path: Option<&str>| {
+            let mut input = json!({"pattern": pattern, "output_mode": "content"});
+            if let Some(path) = path {
+                input["path"] = json!(path);
+            }
+            let body = json!({"tool": "Grep", "input": input, "intent": "procurar", "purpose": "locate"});
+            Request::from_json(&body.to_string()).expect("um pedido de busca")
+        };
+        let mut answer = empty_answer();
+        answer.report["result"] = json!({"mode": "content", "content": "", "numLines": 0});
+        let note = nothing_found_note(&answer, &asked("frete", Some("src")), &shown(""));
+        assert!(note.contains("\"frete\""), "o que foi procurado: {note}");
+        assert!(note.contains("under src"), "e onde: {note}");
+        assert!(note.contains("tool Grep"), "e com qual ferramenta: {note}");
+
+        // Sem caminho pedido, a busca correu na pasta atual.
+        let here = nothing_found_note(&answer, &asked("frete", None), &shown(""));
+        assert!(here.contains("under ."), "{here}");
+
+        // Achou alguma coisa: nenhuma linha.
+        let mut found = empty_answer();
+        found.report["result"] = json!({"mode": "content", "content": "a.rs:1:frete", "numLines": 1});
+        assert!(nothing_found_note(&found, &asked("frete", None), &shown("a.rs:1:frete\n")).is_empty());
+    }
 }

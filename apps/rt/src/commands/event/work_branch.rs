@@ -46,6 +46,16 @@ pub(crate) fn remote_branch_exists(root: &Path, branch: &str) -> bool {
         .ok
 }
 
+/// `true` when the branch exists at all in this repository — locally or on
+/// `origin`. The ONE answer to "is this branch still there", shared by the
+/// explicit open (which must not cut over a name already taken) and by the
+/// copies sweep (which reads a work still marked as running without the branch
+/// it runs on as work nobody can resume). Without an answer from git, it does
+/// not exist: a branch nobody can name is a branch nobody can check out.
+pub(crate) fn branch_exists(root: &Path, branch: &str) -> bool {
+    local_branch_exists(root, branch) || remote_branch_exists(root, branch)
+}
+
 /// Run one git subcommand in `root`, mapping a non-zero exit (or a program that
 /// could not be spawned) to `Err(<stderr|io error>)`. Never panics.
 ///

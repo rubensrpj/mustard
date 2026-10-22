@@ -47,6 +47,12 @@ fn run_for_host(trigger: Option<Trigger>, input: &HookInput, codex: bool) -> Out
     let Some(trigger) = trigger else {
         return Outcome::allow();
     };
+    // Duas raízes de plugin do Mustard ligadas na mesma máquina recebem o
+    // mesmo evento duas vezes, uma por raiz: a primeira trata, a segunda sai
+    // calada. Fora do hospedeiro — terminal, teste — não há vez a disputar.
+    if !crate::shared::event_once::first_run(trigger.as_event_name(), input) {
+        return Outcome::allow();
+    }
     let ctx = build_ctx(trigger, input);
     // O projeto que desligou o Mustard no `mustard.json` não tem gancho que
     // aja: nem barra, nem avisa, nem coloca texto, nem grava.

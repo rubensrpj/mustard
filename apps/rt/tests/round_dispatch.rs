@@ -914,15 +914,18 @@ fn each_formed_wave_goes_out_on_the_model_of_its_hardest_task() {
 
 /// O defeito sai antes da limpeza, ainda que a limpeza tenha o número mais
 /// baixo: com uma vaga só, é o defeito que a ocupa.
+///
+/// Três tarefas, e não duas: a chamada que decide o tipo de cada uma só sai
+/// com mais de duas candidatas, e sem tipo não há defeito nem limpeza.
 #[test]
 fn a_defect_leaves_before_a_cleanup_even_with_the_lower_number() {
     let jev = FakeJev::judging(
         |at| {
-            if at == 0 { ("test_cleanup", 0.9) } else { ("defect", 0.9) }
+            if at == 1 { ("defect", 0.9) } else { ("test_cleanup", 0.9) }
         },
         |_, _| 0.0,
     );
-    let (project, _, _, tasks) = judged_project(&[&["a.rs"], &["c.rs"]], &jev);
+    let (project, _, _, tasks) = judged_project(&[&["a.rs"], &["c.rs"], &["e.rs"]], &jev);
     std::fs::write(
         project.root.join("mustard.json"),
         json!({
@@ -933,12 +936,13 @@ fn a_defect_leaves_before_a_cleanup_even_with_the_lower_number() {
         .to_string(),
     )
     .expect("config");
-    let (cleanup, defect) = (tasks[0].min(tasks[1]), tasks[0].max(tasks[1]));
+    let (cleanup, defect, other) = (tasks[0], tasks[1], tasks[2]);
 
     project.run(&["round", "--dispatch", "--spec", SPEC]);
 
     assert_eq!(batch_orders(&project), vec![vec![defect]], "o defeito ocupa a única vaga");
     assert_eq!(wave_of(&project, cleanup), None, "a limpeza, de número mais baixo, espera");
+    assert_eq!(wave_of(&project, other), None, "a outra limpeza também espera");
 }
 
 /// A tarefa de tipo incerto — confiança abaixo de 0,5 — sai sozinha, na onda
@@ -1125,6 +1129,10 @@ fn a_marked_task_with_an_open_dependency_waits() {
 /// dela: sem o Jev, as duas vão na mesma onda, com a marcada à frente; com o
 /// Jev, de tipos diferentes, a marcada sai na primeira onda e a outra na
 /// seguinte, na mesma rodada.
+///
+/// Com o Jev são três candidatas, e não duas: a chamada que decide o tipo de
+/// cada uma só sai com mais de duas, e sem tipo as duas iriam na mesma onda,
+/// que é justamente o caso sem Jev deste teste.
 #[test]
 fn an_unmarked_task_with_a_lower_number_sharing_a_file_leaves_after_the_marked_one() {
     let files: [&[&str]; 2] = [&["a.rs"], &["a.rs"]];
@@ -1138,13 +1146,18 @@ fn an_unmarked_task_with_a_lower_number_sharing_a_file_leaves_after_the_marked_o
         },
         |_, _| 0.0,
     );
+    let judged_files: [&[&str]; 3] = [&["a.rs"], &["a.rs"], &["c.rs"]];
     let (judged, _, _, tasks) = {
-        let (mut project, crit, said, tasks) = marked_backlog_project(&files, &[1]);
+        let (mut project, crit, said, tasks) = marked_backlog_project(&judged_files, &[1]);
         project.jev = Some(jev.url.clone());
         (project, crit, said, tasks)
     };
     judged.run(&["round", "--dispatch", "--spec", SPEC]);
-    assert_eq!(batch_orders(&judged), vec![vec![tasks[1]], vec![tasks[0]]], "a marcada sai na frente, e o defeito de número menor logo atrás");
+    assert_eq!(
+        batch_orders(&judged),
+        vec![vec![tasks[1], tasks[2]], vec![tasks[0]]],
+        "a marcada sai na frente, e o defeito de número menor logo atrás"
+    );
 }
 
 // ---------------------------------------------------------------------------

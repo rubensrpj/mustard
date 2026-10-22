@@ -166,6 +166,10 @@ fn checked_fields(event: &Map<String, Value>, spec: &TypeSpec) -> Vec<Field> {
         req("author", Kind::OneOf(AUTHORS)),
         Field { name: "origin", kind: Kind::Int, required: spec.needs_origin && by_assistant },
         opt("label", Kind::Text),
+        // De qual sessão do Claude Code veio este registro. Duas conversas no
+        // mesmo projeto gravavam na mesma spec sem jeito de separar quem fez o
+        // quê, e os números de consumo saíam somados.
+        opt("session", Kind::Text),
         // A versão nova aponta um item só; a entrega oficial de uma onda
         // aponta a lista de todas as voltas que ela assume.
         opt("replaces", if event.get("replaces").is_some_and(Value::is_array) { Kind::Refs } else { Kind::Ref }),
@@ -188,7 +192,7 @@ fn checked_fields(event: &Map<String, Value>, spec: &TypeSpec) -> Vec<Field> {
 /// de busca, a marca do expurgo, o rótulo, a versão nova de um item e a
 /// mensagem de onde ele veio.
 const COMMON_FIELDS: &[&str] =
-    &["v", "id", "code", "at", "type", "author", "search", "purged", "label", "replaces", "origin", "text", "keys"];
+    &["v", "id", "code", "at", "type", "author", "search", "purged", "label", "replaces", "origin", "text", "keys", "session"];
 
 /// O tipo aceita este campo? Aceita os comuns a toda linha, os que ele
 /// declara, na remoção a marca que o binário põe nela e, no passo, as duas

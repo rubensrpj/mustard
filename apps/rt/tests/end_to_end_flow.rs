@@ -777,7 +777,10 @@ fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
         .map(|e| e.file_name().to_string_lossy().to_string())
         .collect();
     names.sort();
-    assert_eq!(names, ["spec.ndjson", "validation-base-map.json"], "the spec keeps its native events and validation map without automatic publication");
+    // A pasta da spec guarda o estado, e mais nada: o retrato do mapa da base
+    // mora fora do projeto, e o fechamento o apaga.
+    assert_eq!(names, ["spec.ndjson"], "the spec keeps its native events without automatic publication");
+    assert!(!mustard_core::io::wave_prompt::validation_base_map(&project.root, SPEC).exists(), "o fechamento apagou o retrato do mapa da base");
 
     // O fluxo inteiro não grava onda pela linha de comando: toda linha de onda
     // do arquivo da spec — lida crua, com as versões antigas e as removidas —

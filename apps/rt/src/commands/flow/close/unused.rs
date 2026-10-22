@@ -54,8 +54,11 @@ mod tests {
         let declaration = json!({"kind": "function", "name": "lonely_total", "line": 3, "end_line": 3, "used_by": []});
         let base = json!({"modules": [{"path": &file, "language": "rust", "declarations": []}]});
         let after = json!({"modules": [{"path": &file, "language": "rust", "declarations": [declaration]}]});
-        let spec_dir = store::spec_file(root, "x").unwrap().parent().unwrap().to_path_buf();
-        std::fs::write(spec_dir.join("validation-base-map.json"), base.to_string()).unwrap();
+        // O retrato do mapa da base mora fora do projeto: ele é cache, e
+        // chegou a 89 MB dentro da pasta de uma spec numa máquina de verdade.
+        let kept = mustard_core::io::wave_prompt::validation_base_map(root, "x");
+        std::fs::create_dir_all(kept.parent().unwrap()).unwrap();
+        std::fs::write(&kept, base.to_string()).unwrap();
         mustard_core::io::project_map::write_text(root, &after.to_string()).unwrap();
 
         let refused = close_with_lint(root, "git --version", None);

@@ -821,6 +821,10 @@ mod tests {
         dir
     }
 
+    /// O comando do próximo passo é o do passo que o texto diz, e não o da
+    /// fase: a obra em execução sem onda nem tarefa a rodar fecha, e o painel
+    /// mostra o comando do fechamento. Antes o texto dizia "fechar" e o
+    /// comando ao lado dele era o da rodada, que sairia sem nada para enviar.
     #[test]
     fn the_next_step_says_in_the_project_language_what_the_round_would_do() {
         use mustard_core::platform::i18n::{Locale, translate};
@@ -828,7 +832,7 @@ mod tests {
             let dir = finished_and_reopened(language);
             let overview = screen(dir.path(), "overview", &Params::default());
             assert_eq!(overview["spec"]["phase"], "running", "{overview}");
-            assert_eq!(overview["spec"]["next"]["command"], "mustard-rt run round --dispatch --spec demo", "{overview}");
+            assert_eq!(overview["spec"]["next"]["command"], "mustard-rt run close --spec demo", "{overview}");
             assert_eq!(overview["spec"]["next"]["text"], translate("resume.step.close_again", lang), "{overview}");
         }
         // The wave sent with no agent goes out again on the next round.

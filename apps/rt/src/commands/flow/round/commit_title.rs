@@ -74,6 +74,44 @@ fn neutral(files: &[String], lang: Locale) -> String {
         .unwrap_or_else(|| translate("round.commit_neutral_many", lang).replace("{count}", &files.len().to_string()))
 }
 
+/// As pastas que só dizem onde o código mora, e não de que parte dele se
+/// trata: o escopo sai da pasta de dentro delas.
+const GENERIC_DIRS: &[&str] = &["src", "lib", "libs", "app", "apps", "packages", "crates", "modules", "pkg", "test", "tests", "spec"];
+
+/// O escopo do commit, tirado dos arquivos dele: a pasta que todos eles têm em
+/// comum, sem as pastas da frente que só dizem onde o código mora
+/// ([`GENERIC_DIRS`]). `None` quando os arquivos se espalham, quando a pasta
+/// comum é escondida — a configuração do editor não é parte do módulo — ou
+/// quando o nome dela traz o que um commit nunca leva.
+///
+/// O escopo saía do histórico dos arquivos: o primeiro título deles com
+/// `tipo(escopo):` servia de molde. Numa correção de verdade os três commits
+/// saíram com o mesmo escopo, e um deles só devolvia a configuração do editor,
+/// que não tem nada a ver com o módulo. O histórico diz onde aqueles arquivos
+/// já estiveram; os arquivos deste commit dizem onde ele mexe.
+fn scope_of(files: &[String]) -> Option<String> {
+    fn dirs(file: &str) -> Vec<&str> {
+        let mut parts: Vec<&str> = file.split('/').collect();
+        parts.pop();
+        parts
+    }
+    let mut common = dirs(files.first()?);
+    for file in &files[1..] {
+        let other = dirs(file);
+        let shared = common.iter().zip(&other).take_while(|(a, b)| a == b).count();
+        common.truncate(shared);
+    }
+    while common.first().is_some_and(|dir| GENERIC_DIRS.contains(dir)) {
+        common.remove(0);
+    }
+    if common.is_empty() || common.iter().any(|dir| dir.starts_with('.') || dir.is_empty()) {
+        return None;
+    }
+    let joined = common.join("/");
+    let scope = if joined.chars().count() <= 32 { joined } else { (*common.last()?).to_string() };
+    (scope.chars().count() <= 32 && without_forbidden(&scope).1.is_empty()).then_some(scope)
+}
+
 /// A mensagem do commit da entrega `wave`, já conferida; `None` quando ela
 /// não mudou arquivo ou não trouxe resumo. O título segue o molde do histórico dos arquivos
 /// (`tipo(escopo): frase`) com o resumo da entrega, cortado numa palavra
@@ -95,26 +133,7 @@ pub(super) fn message(root: &Path, wave: &WaveReport, lang: Locale) -> Result<Op
     check_summary(wave)?;
     let (kept, removed) = without_forbidden(said.trim());
     let summary = if kept.is_empty() { neutral(&wave.files, lang) } else { kept };
-    let mut args = vec!["log", "-40", "--format=%s", "--"];
-    args.extend(wave.files.iter().map(String::as_str));
-    let history = git(root, &args).unwrap_or_default();
-    let scope = history.lines().find_map(|title| {
-        let (prefix, _) = title.split_once(": ")?;
-        let (kind, scope) = prefix.split_once('(')?;
-        let scope = scope.strip_suffix(')')?;
-        if !["feat", "fix", "refactor", "docs", "test", "perf", "build", "ci", "chore", "style"].contains(&kind) {
-            return None;
-        }
-        // O escopo que nomeia ondas é dos commits antigos da rodada, e não do
-        // projeto: não serve de molde.
-        let internal = scope.split('/').any(|part| {
-            ["onda-", "ondas-", "wave-", "waves-"]
-                .iter()
-                .any(|prefix| part.strip_prefix(prefix).is_some_and(|rest| rest.chars().all(|ch| ch.is_ascii_digit() || ch == '-' || ch == '+')))
-        });
-        let clean = without_forbidden(scope).1.is_empty();
-        (!scope.is_empty() && scope.len() <= 32 && !internal && clean).then_some(scope)
-    });
+    let scope = scope_of(&wave.files);
     let branch = git(root, &["branch", "--show-current"]).unwrap_or_default();
     let category = branch.split('/').next().unwrap_or_default().trim();
     let kind = if !wave.fixes.is_empty() {
@@ -125,6 +144,7 @@ pub(super) fn message(root: &Path, wave: &WaveReport, lang: Locale) -> Result<Op
         "feat"
     };
     let scoped = scope.map(|scope| format!("{kind}({scope}): "));
+
     let title = scoped
         .into_iter()
         .chain([format!("{kind}: ")])
@@ -136,4 +156,39 @@ pub(super) fn message(root: &Path, wave: &WaveReport, lang: Locale) -> Result<Op
     let body = if title.ends_with(&summary) { String::new() } else { summary };
     check_commit_text(&title, &body)?;
     Ok(Some(Message { title, body, removed }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// O escopo do commit sai da pasta que os arquivos dele têm em comum, sem
+    /// as pastas da frente que só dizem onde o código mora. Os arquivos que se
+    /// espalham, a pasta escondida e o arquivo solto na raiz não dão escopo.
+    ///
+    /// Em campo (21/10/2026) os três commits de uma correção saíram com o
+    /// mesmo escopo, tirado do histórico dos arquivos, e um deles só devolvia
+    /// a configuração do editor.
+    #[test]
+    fn the_commit_scope_comes_from_the_folder_its_files_share() {
+        let files = |list: &[&str]| list.iter().map(|file| (*file).to_string()).collect::<Vec<_>>();
+
+        // Duas partes do mesmo módulo: o escopo é o módulo.
+        assert_eq!(scope_of(&files(&["src/order/order.service.ts", "src/order/order.controller.ts"])), Some("order".to_string()));
+        // A pasta de dentro vai junto, enquanto couber.
+        assert_eq!(scope_of(&files(&["src/order/dto/a.ts", "src/order/dto/b.ts"])), Some("order/dto".to_string()));
+        // Um arquivo só: a pasta dele.
+        assert_eq!(scope_of(&files(&["packages/core/src/io/fs/mod.rs"])), Some("core/src/io/fs".to_string()));
+
+        // Dois módulos diferentes: o que sobra é a pasta de código, e ela não
+        // é escopo nenhum.
+        assert_eq!(scope_of(&files(&["src/order/a.ts", "src/user/b.ts"])), None);
+        // A configuração do editor não é parte do módulo.
+        assert_eq!(scope_of(&files(&[".vscode/settings.json"])), None);
+        // O arquivo solto na raiz não tem pasta.
+        assert_eq!(scope_of(&files(&["README.md"])), None);
+        assert_eq!(scope_of(&files(&[])), None);
+        // A pasta de código sozinha também não.
+        assert_eq!(scope_of(&files(&["src/a.ts", "src/b.ts"])), None);
+    }
 }

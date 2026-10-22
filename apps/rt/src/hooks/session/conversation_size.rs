@@ -772,17 +772,9 @@ fn trims_the_output(segment: &Segment) -> bool {
         && segment.args.iter().all(|arg| arg.text.starts_with('-') || arg.text.chars().all(|c| c.is_ascii_digit()))
 }
 
-/// A ferramenta com que o agente devolve o relatório a quem conduz e termina
-/// o trabalho.
-const REPORT_BACK_TOOL: &str = "SubagentHandback";
-
-/// Se a chamada `input` devolve o relatório a quem conduz
-/// ([`REPORT_BACK_TOOL`]). Ela não grava na spec nem na cópia, e é o fim do
-/// agente: nenhuma trava do agente de onda a recusa, porque sem ela o
-/// relatório não chega a quem conduz.
-fn hands_back_the_report(input: &HookInput) -> bool {
-    input.tool_name.as_deref() == Some(REPORT_BACK_TOOL)
-}
+use crate::shared::handback::hands_back_the_report;
+#[cfg(test)]
+use crate::shared::handback::REPORT_BACK_TOOL;
 
 /// Finish-only commands may be composed; every executable is checked.
 /// Nested substitutions, unrelated commands and file redirections stay denied.

@@ -490,6 +490,13 @@ struct Measure {
     newest: Option<SystemTime>,
 }
 
+/// O tamanho de uma árvore em bytes, sem seguir link. A mesma passada de
+/// [`measure`]: quem só quer o tamanho não escolhe relógio, porque a idade
+/// que a medida também traz não lhe diz nada.
+pub(crate) fn tree_bytes(root: &Path) -> u64 {
+    measure(root, AgeClock::Changed).bytes
+}
+
 /// Mede uma árvore numa passada só, sem seguir links simbólicos
 /// (`DirEntry::metadata` e `symlink_metadata` não os seguem).
 ///

@@ -105,6 +105,9 @@ fn work(root: &Path, spec: &str, phase: &str) {
     const STEPS: &[&str] = &["survey", "plan", "approved", "running", "closed"];
     let path = mustard_core::io::spec_events::spec_file(root, spec).unwrap();
     fs::create_dir_all(path.parent().unwrap()).unwrap();
+    // A branch da obra, cortada como o fluxo a corta ao abrir: a obra em
+    // execução sem a branch dela já não segura a cópia, e esse é outro caso.
+    git(root, &["branch", &format!("feature/{spec}")]);
     for step in STEPS {
         let mut fields = serde_json::json!({"phase": step, "author": "binary"});
         if *step == "survey" {

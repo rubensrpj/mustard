@@ -155,6 +155,7 @@ mod tests {
         let fresh = Board {
             backlog: vec![task(1, "src/a.rs"), task(2, "src/b.rs")],
             running: vec![],
+            ..Board::default()
         };
         let mut board = fresh.clone();
         augment(root, &mut board);
@@ -177,6 +178,7 @@ mod tests {
         let mut board = Board {
             backlog: vec![a.clone(), b.clone()],
             running: vec![],
+            ..Board::default()
         };
         augment(root, &mut board);
         assert!(links(&board).is_empty());
@@ -226,6 +228,7 @@ mod tests {
                 n: 1,
                 tasks: vec![b],
             }],
+            ..Board::default()
         };
         assert!(
             !board.backlog[0]

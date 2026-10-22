@@ -201,7 +201,57 @@ impl ReadQuery {
         }
         BlockQuery::parse(name).map(Self::Block)
     }
+
+    /// O nome que esta leitura responde quando `name` é um apelido dela, e
+    /// `None` quando `name` já é um nome aceito ou não é apelido de nada.
+    ///
+    /// Os apelidos são os nomes que o agente chuta: ele pede `tarefas` em vez
+    /// de `backlog`, `contexto` em vez de `specification`. Foram cinquenta e
+    /// uma recusas assim num projeto de verdade, e cada uma é uma volta
+    /// inteira do agente. Entregar o bloco e dizer o nome certo custa nada.
+    ///
+    /// O apelido se lê sem acento e sem maiúscula, nos dois idiomas: quem
+    /// chuta em português chuta `tarefas` e `tarefa`.
+    #[must_use]
+    pub fn alias_of(name: &str) -> Option<&'static str> {
+        let asked = crate::domain::text::fold(name.trim());
+        if Self::parse(&asked).is_some() {
+            return None;
+        }
+        ALIASES.iter().find(|(alias, _)| *alias == asked).map(|(_, name)| *name)
+    }
 }
+
+/// Os nomes que o agente chuta, e o nome aceito de cada um
+/// ([`ReadQuery::alias_of`]). Já dobrados: sem acento e em minúsculas.
+const ALIASES: &[(&str, &str)] = &[
+    ("tarefas", "backlog"),
+    ("tarefa", "backlog"),
+    ("tasks", "backlog"),
+    ("task", "backlog"),
+    ("contexto", "specification"),
+    ("context", "specification"),
+    ("spec", "specification"),
+    ("especificacao", "specification"),
+    ("ondas", "waves"),
+    ("onda", "wave-list"),
+    ("wave", "wave-list"),
+    ("criterios", "criteria"),
+    ("criterio", "criteria"),
+    ("notas", "notes"),
+    ("nota", "notes"),
+    ("nota de obra", "notes"),
+    ("revisao", "review"),
+    ("estado", "state"),
+    ("progresso", "progress"),
+    ("conversa", "conversation"),
+    ("combinados", "agreed"),
+    ("combinado", "agreed"),
+    ("medidas", "metrics"),
+    ("metricas", "metrics"),
+    ("chamadas", "calls"),
+    ("itens", "backlog"),
+];
 
 /// A forma de um campo.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

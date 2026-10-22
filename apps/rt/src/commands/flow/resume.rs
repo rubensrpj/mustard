@@ -27,6 +27,7 @@ use mustard_core::io::spec_index::later;
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Value, json};
 
+use crate::commands::maint::work_copies;
 use crate::commands::spec_events;
 use crate::commands::spec_events::conversation::observed;
 use crate::shared::spec_state::{DiskSpecState, checkout, session_from_env};
@@ -84,17 +85,71 @@ pub(crate) fn resume_for(opts: &ResumeOpts, session: Option<&str>) -> Value {
         "next": translate(next_key(phase), lang)
             .replace("{question}", translate("approval.question", lang))
             .replace("{option}", translate("approval.option", lang)),
-        "command": next_command(phase, &spec, &state),
+        "command": next_command_now(&project.root, phase, &spec, &state, &log),
     });
-    if let Some(branch) = state.branch {
+    if let Some(branch) = state.branch.as_deref() {
         out["branch"] = json!(branch);
     }
-    if let Some(base) = state.base {
+    if let Some(base) = state.base.as_deref() {
         out["base"] = json!(base);
+    }
+    // A retomada é onde o usuário volta ao projeto, e é aqui que ele precisa
+    // saber de duas coisas que nenhum passo do fluxo diz: a obra que está em
+    // execução sobre uma branch que já não existe, e as cópias de obra que
+    // sobraram no disco. A primeira não tem como ser retomada; as segundas são
+    // peso parado, e a limpeza tem o que tirar.
+    // O fechamento que caiu, sem mais nada a rodar: a retomada diz o motivo e
+    // as saídas. Sem isto ela mandava rodar outra rodada, que sairia sem nada
+    // para enviar, e o motivo do fechamento não chegava a ninguém.
+    if let Some(said) = refused_close(&project.root, &spec, &log, lang) {
+        out["close_refused"] = json!(said);
+        out["next"] = json!(said);
+    }
+    if let Some(branch) = work_copies::lost_branch(&project.root, &state) {
+        out["branch_missing"] = json!(translate("copies.branch_missing", lang).replace("{branch}", &branch));
+    }
+    let orphans = work_copies::orphans(&project.root);
+    if let Some(hint) = work_copies::orphans_hint(&orphans, lang) {
+        out["copies_left"] = json!({"hint": hint, "copies": orphans});
     }
     out["goal_approval"] = super::goal::status(&log, lang);
     out["since_last_message"] = since_last_message(&project.root, &spec, &log);
     out
+}
+
+/// O motivo do último fechamento que caiu, e as saídas, quando o próximo
+/// passo desta spec já é fechar: a retomada o diz em vez de mandar rodar
+/// outra rodada. `None` quando o último fechamento não caiu, quando nenhum
+/// foi tentado, ou quando ainda há onda ou tarefa a rodar.
+///
+/// O motivo vem da marca que o próprio fechamento grava quando recusa
+/// ([`super::close::REFUSED_STAGE`]). A retomada não repete a mensagem
+/// inteira: ela manda rodar o fechamento de novo, que a diz com a saída do
+/// comando que caiu.
+fn refused_close(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Option<String> {
+    let state = State::from_log(log);
+    let phase = state.phase.unwrap_or("survey");
+    let (step, _) = step_of(root, phase, spec, log, lang);
+    if step != "close" {
+        return None;
+    }
+    let last = log
+        .events
+        .iter()
+        .rfind(|event| event.event_type == "stage_run" && event.str_field("stage") == Some(super::close::REFUSED_STAGE))?;
+    // A marca velha não vale: um fechamento depois dela, que pediu a revisão
+    // ou fechou, apaga o que a de antes dizia.
+    let newer = log.events.iter().any(|event| {
+        event.id > last.id
+            && event.event_type == "stage_run"
+            && event.str_field("phase") == Some("final")
+            && event.str_field("stage") == Some("final-validation")
+    });
+    if newer {
+        return None;
+    }
+    let reason = last.str_field("output")?.to_string();
+    Some(translate("resume.close_refused", lang).replace("{reason}", &reason))
 }
 
 /// Quantos caracteres do sha cada commit mostra na retomada: o tamanho curto
@@ -469,11 +524,27 @@ pub fn next_command(phase: &str, spec: &str, state: &State) -> Value {
 /// [`next_command`] e a frase, no idioma `lang`, que diz em palavras do dia a
 /// dia o que esse comando faz pela spec agora. `Null` na fase sem comando.
 pub(crate) fn next_step(root: &Path, phase: &str, spec: &str, state: &State, log: &SpecLog, lang: Locale) -> Value {
-    let command = next_command(phase, spec, state);
-    if command.is_null() {
+    if next_command(phase, spec, state).is_null() {
         return Value::Null;
     }
-    json!({ "command": command, "text": step_text(root, phase, spec, log, lang) })
+    let (step, text) = step_of(root, phase, spec, log, lang);
+    let command = step_command(step, spec, state).map_or(Value::Null, Value::from);
+    json!({ "command": command, "text": text })
+}
+
+/// O comando do próximo passo da spec, lido do que o passo é e não só da fase
+/// em que ela está. Na execução sem onda nem tarefa a rodar, o passo é
+/// fechar, e este comando é o do fechamento; a tabela por fase devolveria o
+/// da rodada, que sairia sem nada para enviar.
+///
+/// `Null` na fase que não tem próximo passo no binário, pela mesma tabela de
+/// [`next_command`]: fora do fluxo, o passo não é do programa.
+pub(crate) fn next_command_now(root: &Path, phase: &str, spec: &str, state: &State, log: &SpecLog) -> Value {
+    if next_command(phase, spec, state).is_null() {
+        return Value::Null;
+    }
+    let (step, _) = step_of(root, phase, spec, log, Locale::EnUs);
+    step_command(step, spec, state).map_or(Value::Null, Value::from)
 }
 
 /// A frase de [`next_step`]. Na execução, a rodada é lida na ordem em que ela
@@ -483,21 +554,28 @@ pub(crate) fn next_step(root: &Path, phase: &str, spec: &str, state: &State, log
 /// não tem como sair, o backlog preso, a revisão final aberta e, sem nada
 /// disso, o fechamento, que refaz a revisão final quando a reabertura anulou
 /// a aprovação.
-fn step_text(root: &Path, phase: &str, spec: &str, log: &SpecLog, lang: Locale) -> String {
+fn step_of(root: &Path, phase: &str, spec: &str, log: &SpecLog, lang: Locale) -> (&'static str, String) {
     use crate::commands::flow::round::queue::{backlog_ready, next_waves};
     use crate::commands::flow::round::{backlog_left, open_review, waves_stuck};
     use mustard_core::view::document::WaveState;
 
-    let said = |key: &str| translate(key, lang).to_string();
+    let said = |key: &str| ("close", translate(key, lang).to_string());
+    let round = |key: &str| ("round", translate(key, lang).to_string());
     let waves = |one: &str, many: &str, list: &[u64]| {
         let shown = list.iter().map(u64::to_string).collect::<Vec<_>>().join(", ");
-        translate(if list.len() == 1 { one } else { many }, lang).replace("{waves}", &shown)
+        ("round", translate(if list.len() == 1 { one } else { many }, lang).replace("{waves}", &shown))
     };
     match phase {
-        "survey" => return said("resume.step.survey"),
-        "plan" => return said("resume.step.plan"),
-        "closed" => return said("resume.step.closed"),
+        "survey" => return ("grill", translate("resume.step.survey", lang).to_string()),
+        "plan" => return ("plan", translate("resume.step.plan", lang).to_string()),
+        "closed" => return ("pr-open", translate("resume.step.closed", lang).to_string()),
         _ => {}
+    }
+    // A spec sem onda planejada não tem o que fechar: o passo dela é a
+    // rodada, que forma as ondas das tarefas prontas do backlog. Sem esta
+    // linha, a spec recém-aprovada caía nas voltas do fechamento, lá embaixo.
+    if log.planned_waves().is_empty() {
+        return round("resume.step.backlog");
     }
     let states = crate::commands::panel::progress::wave_states(log);
     let in_state = |wanted: WaveState| states.iter().filter(|(_, state)| **state == wanted).map(|(n, _)| *n).collect::<Vec<u64>>();
@@ -519,20 +597,20 @@ fn step_text(root: &Path, phase: &str, spec: &str, log: &SpecLog, lang: Locale) 
         return waves("resume.step.dispatch_one", "resume.step.dispatch_many", &going);
     }
     if !backlog_ready(log).is_empty() && vacancies.free() > 0 {
-        return said("resume.step.backlog");
+        return round("resume.step.backlog");
     }
     let running = in_state(WaveState::Running);
     if !running.is_empty() {
         return waves("resume.step.wait_one", "resume.step.wait_many", &running);
     }
     if let Some(wave) = states.iter().find(|(_, state)| !state.finished()).map(|(n, _)| *n) {
-        return translate("resume.step.missing", lang).replace("{wave}", &wave.to_string());
+        return ("round", translate("resume.step.missing", lang).replace("{wave}", &wave.to_string()));
     }
     if !backlog_left(log).is_empty() {
-        return said("resume.step.backlog_held");
+        return round("resume.step.backlog_held");
     }
     if open_review(log).is_some() {
-        return said("resume.step.review_open");
+        return ("close", translate("resume.step.review_open", lang).to_string());
     }
     let review = crate::commands::panel::progress::review(log);
     if review["valid"] == true {
@@ -607,6 +685,54 @@ mod tests {
         assert_eq!(current["reason"], json!("legacy-spec"), "{current}");
         assert!(current_line(root, None).is_none());
         assert!(current_block(root, None).is_none());
+    }
+
+    /// A obra em execução cuja branch saiu do repositório não tem mais como
+    /// ser retomada, e a retomada diz isso nomeando a branch que faltou.
+    /// Junto vai a lista das cópias de obra que a limpeza tiraria, cada uma
+    /// com o tamanho que ocupa — era esse estado que segurava gigabytes de
+    /// cópia no disco sem ninguém saber.
+    #[test]
+    fn resuming_a_work_without_its_branch_says_so_and_lists_the_leftover_copies() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
+                .args(args)
+                .current_dir(root)
+                .output()
+                .expect("git");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        git(&["init", "-q", "."]);
+        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "semente"]);
+        crate::commands::flow::round::copies_leave_with_the_test(root);
+        assert_eq!(record_open(root, "x", "feature/x", "dev"), Ok(true));
+        git(&["branch", "feature/x"]);
+        crate::shared::spec_state::seed_event(root, "x", "state", json!({"phase": "running", "author": "binary"}));
+        let slot = mustard_core::io::wave_prompt::copies_dir(root).join("x").join("0");
+        std::fs::create_dir_all(slot.join("target")).unwrap();
+        std::fs::write(slot.join("target").join("compilado"), "x".repeat(4096)).unwrap();
+
+        // Com a branch no lugar, a obra é uma obra em execução como qualquer
+        // outra: nada se diz dela, e a cópia dela é trabalho de alguém.
+        let working = resume(root, "x");
+        assert_eq!(working["phase"], json!("running"), "{working}");
+        assert!(working.get("branch_missing").is_none(), "{working}");
+        assert!(working.get("copies_left").is_none(), "{working}");
+
+        git(&["branch", "-D", "feature/x"]);
+        let out = resume(root, "x");
+        let missing = out["branch_missing"].as_str().unwrap_or_default();
+        assert!(missing.contains("feature/x"), "a retomada nomeia a branch que faltou: {out}");
+        let shown = mustard_core::io::wave_prompt::shown(&mustard_core::io::wave_prompt::copies_dir(root).join("x"));
+        let hint = out["copies_left"]["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains(&shown), "o aviso nomeia a cópia: {out}");
+        assert_eq!(out["copies_left"]["copies"][0]["path"], json!(shown), "{out}");
+        assert!(out["copies_left"]["copies"][0]["bytes"].as_u64().unwrap_or_default() >= 4096, "a cópia vai medida: {out}");
     }
 
     /// A retomada lê só o estado e devolve, por fase, o próximo passo em

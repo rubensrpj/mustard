@@ -151,6 +151,56 @@ fn listed_files(root: &Path) -> Option<Vec<String>> {
     Some(files.split('\0').filter(|s| !s.is_empty()).map(str::to_string).collect())
 }
 
+/// A fase em que a conferência da base fica gravada, na abertura da spec.
+pub(super) const BASE_PHASE: &str = "base";
+
+/// A etapa da conferência da base: o lint declarado do projeto.
+const BASE_STAGE: &str = "lintCommand";
+
+/// Roda o lint declarado do projeto na base e grava o que ele disse, na
+/// abertura da spec `spec`, antes de a obra ter commit nenhum. Devolve o
+/// aviso quando o projeto não declara lint, e `None` quando gravou ou quando
+/// não havia o que gravar.
+///
+/// Existe para o fechamento saber de quem é cada erro. Sem essa marca, o
+/// fechamento só sabe se a obra tocou o arquivo que a saída cita, e um erro
+/// que a obra criou noutro arquivo — a declaração que ficou sem uso porque a
+/// obra tirou o último que a usava — passaria como erro da base. Com ela, a
+/// pergunta é outra: a base já acusava este arquivo?
+///
+/// A base é o que o checkout tem agora: a branch acabou de ser cortada e não
+/// tem commit nenhum, então o disco é a base. É também por isso que a
+/// conferência roda aqui e não no fechamento: aqui o projeto está instalado,
+/// com as dependências no lugar, e uma cópia limpa da base não estaria.
+///
+/// Melhor esforço: o lint que não roda não grava nada, e o fechamento volta a
+/// cobrar tudo, como antes desta marca.
+pub(super) fn record_base_check(root: &Path, spec: &str) -> Option<String> {
+    let command = mustard_core::ProjectConfig::load(root).commands().lint?;
+    let command = crate::commands::review::qa_run::readonly_lint_command(root, &command);
+    let out = crate::commands::review::qa_run::run_server_command(&command, root);
+    record_run(root, spec, BASE_PHASE, BASE_STAGE, &command, &out).err().map(|refusal| refusal.reason().to_string())
+}
+
+/// Os arquivos que a conferência da base já acusava, lidos do que a abertura
+/// gravou: os que a saída dela cita e que a obra não mudou. Vazio quando a
+/// abertura não gravou nada, e vazio quando a base passou.
+///
+/// A obra que mudou um arquivo depois da abertura sai desta lista pela própria
+/// leitura: um arquivo da obra nunca é da base.
+pub(super) fn base_findings(root: &Path, log: &SpecLog, work: &Work) -> Vec<String> {
+    let Some(output) = log
+        .events
+        .iter()
+        .rev()
+        .find(|e| e.event_type == "stage_run" && e.str_field("phase") == Some(BASE_PHASE) && e.str_field("stage") == Some(BASE_STAGE))
+        .and_then(|e| e.str_field("output"))
+    else {
+        return Vec::new();
+    };
+    cited(root, output, work).outside
+}
+
 /// A obra contra a qual se lê a saída de um comando que caiu: os arquivos que
 /// ela mudou e, de cada onda, os que a onda declarou ou entregou. Um arquivo é
 /// da obra quando o git diz que a branch o mudou, e não porque uma onda o
@@ -226,6 +276,11 @@ pub(super) struct Cited {
     /// As ondas que declararam ou entregaram um arquivo que a obra mudou e que
     /// a saída cita, na ordem da obra.
     pub waves: Vec<u64>,
+    /// Os arquivos que a obra mudou e que a saída cita, na ordem em que
+    /// aparecem nela. Vazio quando nada do que a saída cita é da obra, e é
+    /// essa a pergunta que separa o erro da obra do que já estava na base:
+    /// nenhuma onda citada não quer dizer nenhum arquivo da obra citado.
+    pub mine: Vec<String>,
     /// Os arquivos do projeto que a saída cita e que a obra não mudou, na
     /// ordem em que aparecem na saída.
     pub outside: Vec<String>,
@@ -255,8 +310,9 @@ fn cited_among(output: &str, work: &Work, listed: &[String], packages: &Packages
         .filter(|(_, files)| files.iter().any(|file| changed.contains(file.as_str()) && found.contains(&file.as_str())))
         .map(|(wave, _)| *wave)
         .collect();
+    let mine = found.iter().filter(|file| changed.contains(*file)).map(|file| (*file).to_string()).collect();
     let outside = found.iter().filter(|file| !changed.contains(*file)).map(|file| (*file).to_string()).collect();
-    Cited { waves, outside, none: found.is_empty() }
+    Cited { waves, mine, outside, none: found.is_empty() }
 }
 
 /// Os arquivos de `known` que a saída `output` cita pelo caminho, na ordem em
@@ -960,9 +1016,10 @@ Exit status 1
     fn a_path_written_inside_a_workspace_package_cites_the_file_of_that_package() {
         let (web, api) = ("packages/web/src/a.ts".to_string(), "packages/api/src/a.ts".to_string());
         let work = Work { changed: BTreeSet::from([web.clone(), api.clone()]), waves: vec![(1, vec![api.clone()]), (2, vec![web.clone()])] };
-        let listed = ["src/a.ts".to_string(), web, api];
+        let listed = ["src/a.ts".to_string(), web.clone(), api];
         let output = PNPM_RECURSIVE_LINT.replace("{root}", "/repo");
-        assert_eq!(cited_among(&output, &work, &listed, &Packages::default()), Cited { waves: vec![2], outside: vec![], none: false });
+        let expected = Cited { waves: vec![2], mine: vec![web], outside: vec![], none: false };
+        assert_eq!(cited_among(&output, &work, &listed, &Packages::default()), expected);
     }
 
     /// A pasta de mais de 40 caracteres que o `pnpm -r` encurta leva ao único
@@ -1190,7 +1247,8 @@ src/a.ts(1,10): error TS6133: 'lonelyTotal' is declared but its value is never r
         std::os::unix::fs::symlink(root, &link).unwrap();
         for ((tool, output, _), waves) in [(PACKAGE_BLOCKS[0], vec![2]), (MONOREPO_LINT[3], vec![1, 2])] {
             let written = |place: &std::path::Path| output.replace("{root}", &place.to_string_lossy());
-            let expected = Cited { waves, outside: vec![], none: false };
+            let mine = cited(root, &written(root), &work).mine;
+            let expected = Cited { waves, mine, outside: vec![], none: false };
             assert_eq!(cited(root, &written(root), &work), expected, "{tool}");
             #[cfg(unix)]
             assert_eq!(cited(&link, &written(&root.canonicalize().unwrap()), &work), expected, "{tool}, pela pasta de verdade");
@@ -1215,7 +1273,9 @@ src/a.ts(1,10): error TS6133: 'lonelyTotal' is declared but its value is never r
         std::fs::write(streams.join("stderr"), &output[footer..]).unwrap();
         let run = crate::commands::review::qa_run::run_server_command("cat stdout; cat stderr >&2; exit 1", &streams);
         assert_eq!(run.result, "fail", "{}", run.output);
-        assert_eq!(cited(root, &run.output, &work), Cited { waves: vec![2], outside: vec![], none: false }, "{}", run.output);
+        let mine = cited(root, &run.output, &work).mine;
+        assert!(mine.iter().any(|file| file.ends_with("packages/web/src/a.ts")), "{mine:?}");
+        assert_eq!(cited(root, &run.output, &work), Cited { waves: vec![2], mine, outside: vec![], none: false }, "{}", run.output);
     }
 
     /// O monorepo do npm em `root`, sob git, com o mesmo `src/a.ts` na raiz e

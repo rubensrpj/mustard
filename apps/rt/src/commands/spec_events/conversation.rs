@@ -96,7 +96,18 @@ pub(crate) fn observe(root: &Path, spec: &str, event_type: &str, drafts: Vec<Map
         return None;
     }
     let path = store::operations_file(root, spec)?;
-    store::append_operations(&path, drafts.into_iter().map(|draft| (event_type, draft)).collect()).ok()
+    let session = crate::shared::spec_state::session_from_env();
+    let drafts = drafts.into_iter().map(|mut draft| {
+        // De qual sessão veio a chamada, o bloqueio ou a injeção: sem isso o
+        // consumo de duas conversas no mesmo projeto saía somado.
+        if !draft.contains_key("session")
+            && let Some(session) = &session
+        {
+            draft.insert("session".into(), Value::String(session.clone()));
+        }
+        (event_type, draft)
+    });
+    store::append_operations(&path, drafts.collect()).ok()
 }
 
 /// Acrescenta um evento ao fim da spec `spec`, com a trava dela e sem

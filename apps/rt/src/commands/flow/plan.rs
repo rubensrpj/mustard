@@ -103,6 +103,10 @@ enum PlanFinding {
     /// Um critério cuja prova não é um comando que se sustente: a rodada e o
     /// fechamento a rodariam e ela passaria ou falharia sem provar nada.
     Proof { criterion: String, refusal: Refusal },
+    /// Uma tarefa que espera outra, dividindo com ela poucos arquivos: mover
+    /// esses arquivos para uma das duas tira a dependência, e as ondas das
+    /// duas passam a sair juntas.
+    DependencyOnlyFiles { task: String, waits_for: String, files: Vec<String> },
 }
 
 impl PlanFinding {
@@ -114,7 +118,8 @@ impl PlanFinding {
             Self::FileOutsideGit { .. }
             | Self::ItemWithoutTask { .. }
             | Self::ContractWithoutCriterion { .. }
-            | Self::CommandNotDeclared { .. } => false,
+            | Self::CommandNotDeclared { .. }
+            | Self::DependencyOnlyFiles { .. } => false,
         }
     }
 
@@ -135,6 +140,7 @@ impl PlanFinding {
             Self::ContractWithoutCriterion { .. } => "contract-without-criterion".into(),
             Self::TaskWithoutFile { .. } => "task-without-file".into(),
             Self::CommandNotDeclared { .. } => "command-not-declared".into(),
+            Self::DependencyOnlyFiles { .. } => "dependency-only-files".into(),
         }
     }
 
@@ -159,6 +165,11 @@ impl PlanFinding {
             Self::ContractWithoutCriterion { code } => fill("plan.contract_without_criterion", &[("{code}", code.clone())]),
             Self::TaskWithoutFile { task } => fill("plan.task_without_file", &[("{task}", task.clone())]),
             Self::CommandNotDeclared { field } => fill("plan.command_not_declared", &[("{field}", (*field).to_string())]),
+            Self::DependencyOnlyFiles { task, waits_for, files } => {
+                let shown: Vec<String> = files.iter().map(|path| format!("`{path}`")).collect();
+                let key = if files.len() == 1 { "plan.dependency_only_files.one" } else { "plan.dependency_only_files.many" };
+                fill(key, &[("{task}", task.clone()), ("{waits_for}", waits_for.clone()), ("{files}", shown.join(", "))])
+            }
         }
     }
 
@@ -213,6 +224,7 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>) -> Value {
     let blocking: Vec<Value> = findings.iter().filter(|f| f.blocks()).map(|f| f.to_value(lang)).collect();
     let warnings: Vec<Value> = findings.iter().filter(|f| !f.blocks()).map(|f| f.to_value(lang)).collect();
     let waves: Vec<Value> = built.iter().map(|p| json!({ "wave": p.wave, "lines": p.lines, "skills": p.stale_skills })).collect();
+    let tasks = task_sizes(&log);
 
     if !blocking.is_empty() {
         // Com a spec já em plano, o plano recusado deixa a marca dele: um
@@ -228,7 +240,7 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>) -> Value {
         let mut report = json!({
             "ok": false, "spec": spec, "reason": "plan-not-ready",
             "hint": translate("plan.not_ready", lang).replace("{count}", &blocking.len().to_string()),
-            "waves": waves, "blocking": blocking, "warnings": warnings,
+            "waves": waves, "tasks": tasks, "blocking": blocking, "warnings": warnings,
         });
         let withheld = spec_events::pages::secrets::withheld(&log);
         spec_events::pages::note_withheld(&mut report, &spec, &withheld, lang);
@@ -265,7 +277,7 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>) -> Value {
     // para ser expurgado, sem segurar a pergunta.
     let mut report = json!({
         "ok": true, "spec": spec, "phase": "plan", "from": from,
-        "waves": waves, "warnings": warnings,
+        "waves": waves, "tasks": tasks, "warnings": warnings,
     });
     if let Some(id) = recorded {
         report["id"] = json!(id);
@@ -380,7 +392,7 @@ fn check(start: &Path, root: &Path, spec: &str, log: &SpecLog, built: &[WaveProm
     // os nomes citados existem no mapa.
     let roots = store::citation_roots(start, root);
     let world = DiskWorld::new(roots, Some(root));
-    let tasks: Vec<&SpecEvent> = log.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|e| e.event_type == "task").collect();
+    let tasks: Vec<&SpecEvent> = tasks_of(log);
     // A conferência olha só o que ainda vem: a tarefa de onda que já tem
     // registro de entrega está provada pelo código que entrou, pelo commit
     // que a carrega e pela revisão que a aprovou, e conferir de novo o texto
@@ -416,6 +428,21 @@ fn check(start: &Path, root: &Path, spec: &str, log: &SpecLog, built: &[WaveProm
         for (path, new) in declared_files(task) {
             if !new && !tracked.contains(&path) {
                 out.push(PlanFinding::FileOutsideGit { task: code.clone(), path });
+            }
+        }
+    }
+
+    // A tarefa que espera outra dividindo com ela poucos arquivos: mover esses
+    // arquivos para uma das duas tira a dependência, e as duas ondas passam a
+    // sair juntas. Na correção do usuário, a segunda tarefa esperou a primeira
+    // só porque as duas mexiam num mesmo arquivo de teste, e nada na resposta
+    // dizia que a espera tinha saída.
+    for task in &ahead {
+        let mine: BTreeSet<String> = declared_files(task).into_iter().map(|(path, _)| path).collect();
+        for waited in task.ints("depends_on").into_iter().filter_map(|id| log.current(id)).filter(|e| e.event_type == "task") {
+            let shared: Vec<String> = declared_files(waited).into_iter().map(|(path, _)| path).filter(|path| mine.contains(path)).collect();
+            if !shared.is_empty() && shared.len() <= MOVABLE_OVERLAP {
+                out.push(PlanFinding::DependencyOnlyFiles { task: code_of(task), waits_for: code_of(waited), files: shared });
             }
         }
     }
@@ -461,6 +488,42 @@ fn check(start: &Path, root: &Path, spec: &str, log: &SpecLog, built: &[WaveProm
         }
     }
     out
+}
+
+/// Quantos arquivos em comum ainda cabem numa mudança pequena: até dois,
+/// mover os arquivos de uma tarefa para a outra é um ajuste; acima disso, o
+/// que está em jogo é a divisão do plano, e sugerir mover arquivo nenhum
+/// ajudaria.
+const MOVABLE_OVERLAP: usize = 2;
+
+/// As tarefas do plano, na ordem do arquivo de eventos. O dono único da
+/// pergunta "quais são as tarefas desta spec": a conferência as olha para
+/// achar defeito, e a resposta do plano as conta.
+fn tasks_of(log: &SpecLog) -> Vec<&SpecEvent> {
+    log.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|event| event.event_type == "task").collect()
+}
+
+/// Cada tarefa do plano com a onda dela e a contagem de arquivos que ela
+/// declara.
+///
+/// A contagem vai sempre, sem aviso, sem teto e sem configuração. Uma tarefa
+/// de vinte e nove arquivos e uma de um saíam iguais na resposta, e quem
+/// aprovava não tinha como ver o tamanho do que ia aprovar. Um aviso com
+/// número fixo seria o teto que o usuário tirou: a contagem basta, e a
+/// decisão é de quem lê.
+fn task_sizes(log: &SpecLog) -> Vec<Value> {
+    let codes = log.codes();
+    tasks_of(log)
+        .into_iter()
+        .map(|task| {
+            let code = codes.get(&task.id).cloned().unwrap_or_else(|| task.id.to_string());
+            let mut row = json!({"task": code, "files": declared_files(task).len()});
+            if let Some(wave) = task.wave() {
+                row["wave"] = json!(wave);
+            }
+            row
+        })
+        .collect()
 }
 
 /// As frases com que uma tarefa declara, no texto, que não mexe em arquivo
@@ -705,6 +768,63 @@ mod tests {
         assert_eq!(crate::commands::panel::snapshot(root, Some("x"))["specs"][0]["waves"].as_array().unwrap().len(), 2);
         let returns = format!("## {}", translate("prompt.part.return", Locale::PtBr));
         assert!(built.iter().all(|prompt| prompt.text.contains(&returns)), "{built:?}");
+    }
+
+    /// A resposta do plano traz cada tarefa com a contagem de arquivos dela,
+    /// sempre, e a tarefa que espera outra dividindo com ela um arquivo ganha
+    /// a sugestão de mover o arquivo e tirar a dependência. É aviso, nunca
+    /// recusa: quem aprova decide. Acima de dois arquivos em comum, mover não
+    /// é ajuste pequeno, e o plano não sugere nada.
+    #[test]
+    fn the_plan_counts_each_task_files_and_offers_to_free_a_dependency_over_shared_files() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        let crit = criterion(root, "x", said);
+        write(root, Some("x"), "wave", json!({"n": 1, "text": "Escrever a soma.", "criteria": [crit], "done_when": "A suíte passa.", "origin": said}));
+        let first = id_of(&write(root, Some("x"), "task", json!({"wave": 1, "text": "Escrever a soma.", "files": [{"path": "src/a.rs"}], "origin": said})));
+        write(
+            root,
+            Some("x"),
+            "wave",
+            json!({"n": 2, "text": "Escrever a subtração.", "criteria": [crit], "done_when": "A suíte passa.", "depends_on": [1], "origin": said}),
+        );
+        let second = id_of(&write(
+            root,
+            Some("x"),
+            "task",
+            json!({"wave": 2, "text": "Escrever a subtração.", "files": [{"path": "src/a.rs"}, {"path": "src/b.rs"}],
+            "depends_on": [first], "origin": said}),
+        ));
+
+        let report = plan(root, "x");
+        assert_eq!(report["ok"], json!(true), "o plano segue: a sugestão é aviso: {report}");
+        assert_eq!(
+            report["tasks"],
+            json!([{"task": "MSTD-TASK-0001", "wave": 1, "files": 1}, {"task": "MSTD-TASK-0002", "wave": 2, "files": 2}]),
+            "{report}"
+        );
+        let suggested: Vec<&Value> =
+            report["warnings"].as_array().into_iter().flatten().filter(|w| w["reason"] == json!("dependency-only-files")).collect();
+        assert_eq!(suggested.len(), 1, "{report}");
+        let hint = suggested[0]["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("MSTD-TASK-0002") && hint.contains("MSTD-TASK-0001"), "a sugestão nomeia as duas tarefas: {hint}");
+        assert!(hint.contains("`src/a.rs`") && !hint.contains("src/b.rs"), "só o arquivo em comum: {hint}");
+
+        // Com três arquivos em comum, mover deixa de ser ajuste: nada se
+        // sugere, e a contagem segue saindo.
+        crate::shared::test_fixture::seeded_repo(root, &[("src/c.rs", "fn tres() {}\n")]);
+        let shared = json!([{"path": "src/a.rs"}, {"path": "src/b.rs"}, {"path": "src/c.rs"}]);
+        write(root, Some("x"), "task", json!({"wave": 1, "text": "Escrever a soma.", "files": shared, "replaces": first, "origin": said}));
+        write(
+            root,
+            Some("x"),
+            "task",
+            json!({"wave": 2, "text": "Escrever a subtração.", "files": shared, "depends_on": [first], "replaces": second, "origin": said}),
+        );
+        let again = plan(root, "x");
+        assert!(!reasons(&again, "warnings").contains(&"dependency-only-files".to_string()), "{again}");
+        assert!(again["tasks"].as_array().unwrap().iter().all(|row| row["files"] == json!(3)), "{again}");
     }
 
     /// Um ponto do levantamento ainda aberto trava a pergunta de aprovação, e

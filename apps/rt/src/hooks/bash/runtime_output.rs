@@ -83,17 +83,89 @@ fn feeds_a_script(segments: &[Segment], at: usize) -> bool {
     false
 }
 
+/// As opções cuja resposta é curta, fixa e sem nada da obra: cortá-la não
+/// perde o que o Mustard diz, porque o que ele diz ali não muda.
+const FIXED_ANSWER: &[&str] = &["--help", "-h", "--version", "-V"];
+
+/// `true` quando o comando do Mustard em `segment` pede uma resposta de
+/// tamanho fixo ([`FIXED_ANSWER`]): a ajuda e a versão. Qualquer outra pode
+/// trazer uma recusa, que se lê inteira.
+fn asks_a_fixed_answer(segment: &Segment) -> bool {
+    segment.args.iter().any(|arg| FIXED_ANSWER.contains(&arg.text.as_str()))
+}
+
+/// O bloco de resumo de cada bloco grande do `read`: quem corta um bloco
+/// grande quase sempre quer o resumo dele, e o Mustard já o monta inteiro.
+const SUMMARY_OF: &[(&str, &str)] = &[("metrics", "calls"), ("waves", "wave-list")];
+
+/// O bloco grande que algum comando do Mustard em `segments` lê e o resumo
+/// dele, quando é um `run read <bloco>` de [`SUMMARY_OF`].
+fn summary_asked(segments: &[Segment]) -> Option<(&'static str, &'static str)> {
+    segments.iter().filter(|segment| runs_the_runtime(segment)).find_map(|segment| {
+        let mut words = segment.args.iter().map(|arg| arg.text.as_str()).skip_while(|word| *word != "read").skip(1);
+        let asked = words.next()?;
+        SUMMARY_OF.iter().copied().find(|(block, _)| *block == asked)
+    })
+}
+
+/// O mesmo comando `cmd` com a resposta inteira num arquivo: a etapa que
+/// corta sai, com o encadeamento dela, e a do Mustard grava num arquivo.
+/// `None` quando a reescrita não acha as duas etapas — a resposta chega ao
+/// script por substituição, e não por encadeamento.
+fn with_the_answer_in_a_file(segments: &[Segment], cmd: &str) -> Option<String> {
+    if !segments.iter().any(runs_a_script) {
+        return None;
+    }
+    let out = super::rewrite::rewritten_steps(cmd, |step| {
+        // A etapa se lê pelo mesmo analisador do comando inteiro: o programa
+        // dela vem depois dos invólucros, como `rtk head -5`.
+        let read = super::lex::segments(step);
+        let first = read.first()?;
+        if runs_a_script(first) {
+            return Some(super::rewrite::Step::Out);
+        }
+        if !runs_the_runtime(first) {
+            return None;
+        }
+        // O `2>&1` no fim vai depois do arquivo: antes dele, o erro seguiria
+        // para a saída de antes, e não para o arquivo.
+        let (body, errors) = match step.strip_suffix("2>&1") {
+            Some(body) => (body.trim_end(), " 2>&1"),
+            None => (step, ""),
+        };
+        Some(super::rewrite::Step::Put(format!("{body} > arquivo{errors}")))
+    })?;
+    let out = out.trim().to_string();
+    (!out.is_empty()).then_some(out)
+}
+
 /// A conferência: recusa o comando `cmd`, já lido em `segments`, quando a
 /// resposta do Mustard passa por script, filtro ou corte. A recusa, no
-/// idioma `lang`, mostra o comando e diz como ler a resposta inteira.
+/// idioma `lang`, mostra o comando, devolve o comando pronto com a resposta
+/// num arquivo e, quando o corte é de um bloco grande, diz o bloco de resumo
+/// que cabe inteiro.
+///
+/// A ajuda e a versão passam: a resposta delas é curta, fixa e não traz nada
+/// da obra. O gancho pegava até `mustard-rt run read --help | head`.
 pub(super) fn bash_runtime_output(segments: &[Segment], cmd: &str, lang: SupportedLocale) -> Option<Verdict> {
     let scripted = (0..segments.len()).any(|at| {
-        (runs_the_runtime(&segments[at]) && feeds_a_script(segments, at))
-            || (runs_a_script(&segments[at]) && inside(segments, at).iter().any(runs_the_runtime))
+        let runtime = runs_the_runtime(&segments[at]) && !asks_a_fixed_answer(&segments[at]);
+        (runtime && feeds_a_script(segments, at))
+            || (runs_a_script(&segments[at]) && inside(segments, at).iter().any(|inner| runs_the_runtime(inner) && !asks_a_fixed_answer(inner)))
     });
-    scripted.then(|| Verdict::Deny {
-        reason: crate::shared::say::say("runtime_output.scripted", lang, &[("{command}", truncate(cmd, 120))]),
-    })
+    if !scripted {
+        return None;
+    }
+    let mut reason = crate::shared::say::say("runtime_output.scripted", lang, &[("{command}", truncate(cmd, 120))]);
+    if let Some(ready) = with_the_answer_in_a_file(segments, cmd) {
+        reason.push('\n');
+        reason.push_str(&crate::shared::say::say("runtime_output.ready", lang, &[("{ready}", truncate(&ready, 200))]));
+    }
+    if let Some((block, summary)) = summary_asked(segments) {
+        reason.push('\n');
+        reason.push_str(&crate::shared::say::say("runtime_output.summary", lang, &[("{block}", block), ("{summary}", summary)]));
+    }
+    Some(Verdict::Deny { reason })
 }
 
 #[cfg(test)]
@@ -153,6 +225,54 @@ mod tests {
                     other => panic!("{cmd} (agent: {agent}) must be refused, got {other:?}"),
                 }
             }
+        }
+    }
+
+    /// A recusa devolve o comando pronto: a etapa que corta sai, com o
+    /// encadeamento dela, a do Mustard grava num arquivo, e as etapas sem
+    /// relação ficam como foram escritas. O `2>&1` vai depois do arquivo.
+    /// Quando o corte é de um bloco grande, a recusa diz o bloco de resumo.
+    ///
+    /// Em campo (21/10/2026) o gancho barrava o comando todo e só dizia o que
+    /// fazer: eram 93 bloqueios, e o agente remontava à mão as etapas que não
+    /// tinham relação com o motivo.
+    #[test]
+    fn the_refusal_gives_the_command_back_with_the_answer_in_a_file() {
+        let ready = |cmd: &str| match guard(cmd, false) {
+            Verdict::Deny { reason } => reason,
+            other => panic!("{cmd} must be refused, got {other:?}"),
+        };
+
+        let said = ready("mustard-rt run resume | head -80");
+        assert!(said.contains("mustard-rt run resume > arquivo"), "{said}");
+        // A etapa sem relação com o motivo fica como foi escrita.
+        let said = ready("mustard-rt run read request-1 | head -5 && git log --oneline -3");
+        assert!(said.contains("mustard-rt run read request-1 > arquivo && git log --oneline -3"), "{said}");
+        // O `2>&1` vai depois do arquivo, senão o erro não entra nele.
+        let said = ready("mustard-rt run round --spec x 2>&1 | python3 -c 'x'");
+        assert!(said.contains("mustard-rt run round --spec x > arquivo 2>&1"), "{said}");
+        // O bloco grande tem resumo, e a recusa o diz.
+        let said = ready("mustard-rt run read metrics --spec x | head -40");
+        assert!(said.contains("run read calls"), "{said}");
+        let said = ready("mustard-rt run read waves --spec x | head -40");
+        assert!(said.contains("run read wave-list"), "{said}");
+        // O bloco sem resumo não ganha sugestão nenhuma.
+        let said = ready("mustard-rt run read conversation --spec x | head -40");
+        assert!(!said.contains("run read calls") && !said.contains("run read wave-list"), "{said}");
+    }
+
+    /// A ajuda e a versão passam, com corte e tudo: a resposta delas é curta,
+    /// fixa e não traz nada da obra. O gancho pegava até a ajuda dos comandos.
+    #[test]
+    fn the_cut_of_the_help_and_of_the_version_passes() {
+        for cmd in [
+            "mustard-rt run read --help | head -20",
+            "mustard-rt --help | grep -n write",
+            "mustard-rt --version | head -1",
+            "mustard-rt run write note -h | sed -n '1,5p'",
+        ] {
+            let verdict = guard(cmd, false);
+            assert!(!matches!(verdict, Verdict::Deny { .. }), "{cmd} must pass, got {verdict:?}");
         }
     }
 

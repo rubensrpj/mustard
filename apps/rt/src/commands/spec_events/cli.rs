@@ -90,6 +90,11 @@ pub enum SpecEventsCmd {
         /// not an item code shows a summary by type, with the newest codes.
         #[arg(long)]
         all: bool,
+        /// Only the records of this Claude Code session, in `calls` and
+        /// `metrics`: two conversations in the same project write to the same
+        /// spec, and their usage numbers added up as one.
+        #[arg(long)]
+        session: Option<String>,
         /// Any directory inside the repo. Defaults to the current dir.
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -275,8 +280,8 @@ pub fn write_help_for_type(args: &[String]) -> Option<String> {
 /// Dispatch one `spec_events`-family `run` subcommand.
 pub fn dispatch(cmd: SpecEventsCmd) {
     match cmd {
-        SpecEventsCmd::Read { block, spec, term, full, all, root } => {
-            spec_events::read::run(&spec_events::read::ReadOpts { root, spec, block, term }, full, all);
+        SpecEventsCmd::Read { block, spec, term, full, all, session, root } => {
+            spec_events::read::run(&spec_events::read::ReadOpts { root, spec, block, term, session }, full, all);
         }
         SpecEventsCmd::Write { event_type, spec, json, copy, root } => {
             spec_events::write::run(&spec_events::write::WriteOpts { root, spec, event_type, json }, copy);

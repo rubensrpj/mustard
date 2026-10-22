@@ -113,10 +113,26 @@ pub(crate) struct BoardWave {
     pub(crate) tasks: Vec<BoardTask>,
 }
 
-/// O quadro de uma montagem: as ondas em andamento e o backlog pronto, na
-/// ordem em que a rodada o lê.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A obra de uma montagem, como quem julga as tarefas a vê: o tipo que a
+/// branch dela declara e o objetivo que o usuário escreveu.
+///
+/// Sem isso, cada tarefa era julgada sozinha, contra nada. Numa obra de
+/// correção, duas tarefas voltaram classificadas como funcionalidade nova, e
+/// a montagem seguiu com essa classificação.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct BoardWork {
+    /// O tipo da obra, lido do prefixo da branch: `fix/travar-o-merge` é
+    /// `fix`. `None` quando a branch não tem essa forma.
+    pub(crate) kind: Option<String>,
+    /// O objetivo da spec, na frase que o usuário gravou.
+    pub(crate) goal: Option<String>,
+}
+
+/// O quadro de uma montagem: a obra de que ela é, as ondas em andamento e o
+/// backlog pronto, na ordem em que a rodada o lê.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct Board {
+    pub(crate) work: BoardWork,
     pub(crate) running: Vec<BoardWave>,
     pub(crate) backlog: Vec<BoardTask>,
 }

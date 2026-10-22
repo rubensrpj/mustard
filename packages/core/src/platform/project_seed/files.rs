@@ -58,7 +58,27 @@ fn agent_files<'a>(text: Locale, agents: AgentSettings<'a>, review: AgentSetting
         let settings = if name == crate::domain::config::REVIEW_AGENT { review } else { agents };
         (format!("{AGENTS_DIR}/{name}.md"), with_agent_settings(body, settings))
     })
-        .chain(std::iter::once((format!("{AGENTS_DIR}/analysis.md"), crate::platform::seeds::analysis_agent_text(text).into())))
+        .chain(std::iter::once((
+            format!("{AGENTS_DIR}/analysis.md"),
+            with_agent_settings(crate::platform::seeds::analysis_agent_text(text), analysis_settings()),
+        )))
+}
+
+/// O par modelo e esforço do agente de análise, pedido ao dono dele
+/// ([`crate::platform::session_models`]).
+///
+/// Ele não sai do `agents` do projeto, como os outros: o agente de análise é o
+/// modelo pequeno da própria sessão, e quem o escolhe é aquele módulo. O
+/// cabeçalho do molde traz um padrão que esta troca sobrescreve, para o valor
+/// gravado no projeto não poder discordar do que a trava confere — enquanto o
+/// molde era gravado cru, o esforço do Haiku era "máximo" no cabeçalho,
+/// "médio" na resolução e "medium" no corpo do próprio molde (campo,
+/// 21/10/2026).
+fn analysis_settings() -> AgentSettings<'static> {
+    AgentSettings {
+        model: crate::platform::session_models::CLAUDE_SESSION_MODEL,
+        effort: crate::platform::session_models::effort("claude"),
+    }
 }
 
 /// Regrava, em `.claude/agents/mustard/` do projeto em `root`, o agente cujo

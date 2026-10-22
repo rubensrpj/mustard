@@ -106,6 +106,12 @@ impl CommandGuard {
             let verdict = super::config_read::masked_command(&cmd, input, ctx).map_or(verdict, |command| Verdict::Deny {
                 reason: crate::shared::say::say("config_key.masked_command", lang, &[("{command}", &command)]),
             });
+            // A busca que varre o arquivo da chave também volta pronta: a
+            // mesma ideia da leitura acima, com a opção que tira o arquivo
+            // posta na etapa que varre (21/10/2026).
+            let verdict = reading::excluded_command(&cmd, input, ctx).map_or(verdict, |command| Verdict::Deny {
+                reason: crate::shared::say::say("config_key.swept_rewritten", lang, &[("{command}", &command)]),
+            });
             return Ok(isolate(verdict));
         }
         if let Some(verdict) = windows_redirect::bash_windows_redirect(&segments, &cmd, input, lang) {

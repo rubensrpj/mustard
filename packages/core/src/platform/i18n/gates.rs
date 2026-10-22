@@ -12,6 +12,7 @@ use super::Locale;
 /// Os começos de chave (o trecho antes do primeiro ponto) que esta parte
 /// responde. Nenhum deles é de outra parte.
 pub(super) const PREFIXES: &[&str] = &[
+    "analysis_guard",
     "write_gate",
     "code_route",
     "config_key",
@@ -187,6 +188,39 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "[Mustard] Only the binary writes {file}. Record the event with \
              `mustard-rt run write <type> --spec {spec}`."
         }
+        ("analysis_guard.codex_unavailable", Locale::PtBr) => {
+            "[Mustard] A delegação ao Codex não está pronta. Ou o catálogo nativo não oferece a \
+             Luna com esforço {effort}, ou a definição de análise instalada está velha. Use a \
+             prova que o scan já tem. Atualize o adaptador do Codex contra o catálogo nativo novo \
+             antes de delegar. Não herde outra família de modelo nem abra outro programa."
+        }
+        ("analysis_guard.codex_unavailable", Locale::EnUs) => {
+            "[Mustard] Delegation to Codex is not ready. Either the native catalogue does not \
+             offer Luna at {effort} effort, or the installed analysis definition is outdated. Use \
+             the evidence the scan already has. Refresh the Codex adapter against the fresh native \
+             catalogue before delegating. Do not inherit another model family or start another \
+             program."
+        }
+        ("analysis_guard.codex_family", Locale::PtBr) => {
+            "[Mustard] A análise no Codex pede a Luna com esforço {effort}. A telemetria nativa \
+             diz que o modelo ou o esforço são outros. Volte a quem conduz e use a prova nativa."
+        }
+        ("analysis_guard.codex_family", Locale::EnUs) => {
+            "[Mustard] Analysis on Codex requires Luna at {effort} effort. Native telemetry \
+             reports a different model or effort. Return to the conductor and use native evidence."
+        }
+        ("analysis_guard.read_only", Locale::PtBr) => {
+            "[Mustard] O agente de análise só lê, e {tool} não é leitura. Use a prova que veio \
+             no pedido. Devolva o recibo em JSON a quem conduz: a devolução nunca é barrada. \
+             Editar, rodar comando livre, escrever fora do projeto e delegar ficam fora deste \
+             papel."
+        }
+        ("analysis_guard.read_only", Locale::EnUs) => {
+            "[Mustard] The analysis agent only reads, and {tool} is not a read. Use the evidence \
+             supplied with the request. Hand the JSON receipt back to the conductor: that \
+             handback is never blocked. Editing, free shell commands, external writes and \
+             delegation are outside this role."
+        }
         ("write_gate.not_approved", Locale::PtBr) => {
             "[Mustard] A spec {spec} ainda não foi aprovada, e {file} é código do projeto. O código \
              só muda depois de o usuário escolher \"Aprovar\" na pergunta."
@@ -286,6 +320,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // A busca do terminal em pastas que passaria pelo arquivo com a
         // chave volta com a opção que o deixa de fora. `{fix}` vem do
         // chamador, no jeito do programa da busca.
+        ("config_key.swept_rewritten", Locale::PtBr) => {
+            "[Mustard] Essa busca passa pelo arquivo que guarda a chave secreta, e mostraria a \
+             chave. A chave nunca entra na conversa. Nenhuma etapa foi executada. Rode como está o \
+             comando abaixo. Ele faz a mesma busca com o arquivo de fora. As outras etapas ficam \
+             na mesma ordem.\n{command}"
+        }
+        ("config_key.swept_rewritten", Locale::EnUs) => {
+            "[Mustard] This search goes through the file that holds the secret key, and would show \
+             the key. The key never enters the conversation. No step was executed. Run the command \
+             below as it is. It does the same search with the file left out. The other steps stay \
+             in the same order.\n{command}"
+        }
         ("config_key.swept", Locale::PtBr) => {
             "[Mustard] Essa busca passa por {file}, que guarda uma chave secreta, e mostraria a chave. \
              A chave nunca entra na conversa. Rode a mesma busca com {fix} no fim: assim o arquivo \
@@ -483,6 +529,24 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // A recusa do comando que passa a resposta do Mustard por script,
         // filtro ou corte (`apps/rt/src/hooks/bash/runtime_output.rs`).
         // `{command}` vem do chamador: o comando recusado, encurtado.
+        ("command_guard.glued_argument", Locale::PtBr) => {
+            "Comando recusado: o terminal entregou a variável inteira, como um argumento só.\nRecebido: `{argument}`\nNão existe argumento parecido a procurar. O shell desta máquina não separa a variável nos espaços dela. Escreva cada opção na linha, uma por uma: `mustard-rt run read backlog --root /projeto --spec obra`. Com a variável, ponha cada parte dela no lugar da opção, e não a variável toda."
+        }
+        ("command_guard.glued_argument", Locale::EnUs) => {
+            "Command refused: the shell handed the variable over whole, as a single argument.\nReceived: `{argument}`\nThere is no similar argument to look for. This machine's shell does not split the variable on its spaces. Write each option on the line, one by one: `mustard-rt run read backlog --root /project --spec work`. With a variable, put each part of it where the option goes, not the whole variable."
+        }
+        ("runtime_output.ready", Locale::PtBr) => {
+            "Rode assim, que é o mesmo comando com a resposta inteira num arquivo:\n{ready}"
+        }
+        ("runtime_output.ready", Locale::EnUs) => {
+            "Run this instead, the same command with the whole answer in a file:\n{ready}"
+        }
+        ("runtime_output.summary", Locale::PtBr) => {
+            "O bloco `{block}` tem um resumo pronto, que cabe inteiro: `mustard-rt run read {summary}`."
+        }
+        ("runtime_output.summary", Locale::EnUs) => {
+            "Block `{block}` has a ready summary that fits whole: `mustard-rt run read {summary}`."
+        }
         ("runtime_output.scripted", Locale::PtBr) => {
             "Comando barrado: ele passa a resposta do Mustard por script, filtro ou corte.\nComando: \
              {command}\nA resposta do Mustard se lê inteira, e nada dela passa por script, filtro ou \
@@ -569,6 +633,13 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "hard to read: {score} on the Flesch reading-ease index, and the minimum is {min}; \
              write a short summary in plain words"
         }
+        // A mesma linha, com a frase que mais pesou na nota.
+        ("clarity.hard_to_read_at", Locale::PtBr) => {
+            "texto difícil de ler: nota {score} no índice de Flesch, e o mínimo é {min}. A frase que mais pesou começa em \"{opening}\". Refaça-a em palavras simples."
+        }
+        ("clarity.hard_to_read_at", Locale::EnUs) => {
+            "hard to read: {score} on the Flesch reading-ease index, and the minimum is {min}. The sentence that weighed most starts at \"{opening}\". Rewrite it in plain words."
+        }
         // A prosa saiu num idioma que não é o do projeto, que é o do usuário.
         // `{found}` e `{expected}` são códigos de idioma: pt-BR, en-US.
         ("clarity.wrong_language", Locale::PtBr) => {
@@ -619,8 +690,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("gates.rs"),
             super::PREFIXES,
-            77,
-            0xb29a_6178_2507_187a,
+            85,
+            0x2447_a92d_4f0b_eb20,
         );
     }
 
@@ -658,6 +729,9 @@ mod tests {
             ("write_gate.secret", &["{file}", "{pattern}"][..]),
             ("write_gate.spec_file", &["{file}", "{spec}"][..]),
             ("write_gate.not_approved", &["{spec}", "{file}"][..]),
+            ("analysis_guard.read_only", &["{tool}"][..]),
+            ("analysis_guard.codex_unavailable", &["{effort}"][..]),
+            ("analysis_guard.codex_family", &["{effort}"][..]),
             ("write_gate.on_base", &["{branch}"][..]),
             ("write_gate.unreadable_config", &["{file}"][..]),
             ("write_gate.other_branch", &["{spec}", "{branch}", "{current}"][..]),
@@ -665,6 +739,7 @@ mod tests {
             ("code_route.whole_read", &["{file}", "{lines}", "{parts}"][..]),
             ("config_key.hidden", &["{file}", "{text}"][..]),
             ("config_key.swept", &["{file}", "{fix}"][..]),
+            ("config_key.swept_rewritten", &["{command}"][..]),
             ("config_key.swept_tool", &["{file}"][..]),
             ("config_key.masked_command", &["{command}"][..]),
             ("approval.witness.clear", &["{spec}"][..]),
@@ -689,6 +764,7 @@ mod tests {
             ("subagent.rejected_agent_locked", &["{wave}"][..]),
             ("subagent.launch_settings", &["{agent}", "{asked_model}", "{asked_effort}", "{model}", "{effort}"][..]),
             ("subagent.launch_settings_forced", &["{agent}", "{asked_model}", "{asked_effort}", "{model}", "{effort}"][..]),
+            ("subagent.no_small_model_for_code", &["{agent}", "{asked_model}", "{model}"][..]),
             ("session.merged", &["{count}", "{branches}"][..]),
             ("session.landed", &["{pr}", "{spec}"][..]),
             ("session.landed.outside", &["{branch}", "{spec}"][..]),
@@ -783,6 +859,9 @@ mod tests {
             ("command_guard.windows_path_rewritten", &["{original}", "{posix}"][..]),
             ("command_guard.waiting_loop", &["{command}"][..]),
             ("runtime_output.scripted", &["{command}"][..]),
+            ("command_guard.glued_argument", &["{argument}"][..]),
+            ("runtime_output.ready", &["{ready}"][..]),
+            ("runtime_output.summary", &["{block}", "{summary}"][..]),
             ("tool_observations.summary_hidden", &["{command}"][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
@@ -825,6 +904,7 @@ mod tests {
             ("clarity.unexpanded_acronym", &["{acronym}"][..]),
             ("clarity.internal_code", &["{code}"][..]),
             ("clarity.hard_to_read", &["{score}", "{min}"][..]),
+            ("clarity.hard_to_read_at", &["{score}", "{min}", "{opening}"][..]),
             ("clarity.wrong_language", &["{found}", "{expected}"][..]),
             ("clarity.wrong_language_block", &["{found}", "{expected}"][..]),
             ("clarity.next.head", &["{errors}"][..]),

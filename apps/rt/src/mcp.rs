@@ -45,7 +45,8 @@ fn response(root: &Path, message: &Value, initialized: &mut bool) -> Option<Valu
                     // depois de ela caber no teto da conversa.
                     let mut text = String::from_utf8_lossy(&view.stdout).into_owned();
                     if !answer.stderr.is_empty() { text.push_str(&String::from_utf8_lossy(&answer.stderr)); }
-                    let text = String::from_utf8_lossy(&crate::commands::search::conversation_answer(root, &request, text.into_bytes(), None)).into_owned();
+                    let enriched = answer.report["crossing_status"] == "enriched";
+                    let text = String::from_utf8_lossy(&crate::commands::search::conversation_answer(root, &request, text.into_bytes(), None, enriched)).into_owned();
                     let _ = crate::commands::spec_events::conversation::record_output_call(root, "search", None, started, &answer.report, &text);
                     json!({"content":[{"type":"text","text":text}],"isError":answer.report["ok"] != true})
                 }
@@ -120,9 +121,16 @@ mod tests {
         assert_eq!(result["result"]["isError"], false, "{result}");
         let text = result["result"]["content"][0]["text"].as_str().unwrap();
         let start: String = text.chars().take(300).collect();
-        assert!(text.len() <= 25_000, "{} bytes: {start}", text.len());
-        assert!(text.contains(&format!("\n1:{} [line cut: 1199030 more bytes]\n", &line[..998])), "{text}");
-        assert!(text.contains("# Answer cut to fit the conversation cap of 25000 bytes;"), "{text}");
+        // Esta busca não enriquece, então vale o teto do modo reserva, lido
+        // do dono dele: um número escrito aqui envelheceria junto.
+        let cap = crate::commands::search::conversation_cap(false);
+        assert!(text.len() <= cap, "{} bytes: {start}", text.len());
+        // O começo da linha e a marca do corte, sem o número de bytes que
+        // sobraram: ele muda quando o cabeçalho da resposta ganha uma linha, e
+        // o que o teste precisa provar é o corte, que o teto acima já mede.
+        assert!(text.contains(&format!("\n1:{} [line cut: ", &line[..998])), "{text}");
+        assert!(text.contains(" more bytes]\n"), "{text}");
+        assert!(text.contains(&format!("# Answer cut to fit the conversation cap of {cap} bytes;")), "{text}");
         let target = root.display();
         let rest = format!(
             "# Whole native result: mustard-rt run search --root '{target}' --raw -- 'rg' '--color=never' '--no-heading' \

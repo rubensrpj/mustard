@@ -334,18 +334,33 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let (said, crit) = backlog_project(root);
+        // Três candidatas, que é o que faz a chamada paga sair sem nenhuma
+        // onda em andamento para perguntar por: com duas ou menos, a montagem
+        // não chama ninguém e sai pela regra de arquivos.
+        for name in ["c.rs", "d.rs"] {
+            std::fs::write(root.join("src").join(name), "fn one() {}\n").unwrap();
+        }
         let clashing = backlog_task_on(root, said, crit, "Change the parser.", &["src/a.rs"]);
+        let second = backlog_task_on(root, said, crit, "Change the menu.", &["src/b.rs"]);
+        let third = backlog_task_on(root, said, crit, "Change the footer.", &["src/c.rs"]);
         let on_entry = spec_now(root);
-        let late = backlog_task_on(root, said, crit, "Change the menu.", &["src/b.rs"]);
+        let late = backlog_task_on(root, said, crit, "Change the header.", &["src/d.rs"]);
         let locked = spec_now(root);
         let judge = |board: &Board| -> Result<Judged, mustard_core::domain::map_filter::FilterError> {
-            let clash = |id: u64| if id == clashing { 0.8 } else { 0.0 };
-            let tasks = board.backlog.iter().map(|task| (task.id, Judgement { kind: TaskKind::Feature, confidence: 0.9, clash: clash(task.id) }));
+            let tasks = board.backlog.iter().map(|task| (task.id, Judgement { kind: TaskKind::Feature, confidence: 0.9, clash: 0.8 }));
             Ok(Judged { tasks: tasks.collect(), usage: mustard_core::domain::map_filter::FilterUsage::default() })
         };
         let (formed, held) = dispatch_backlog(root, "x", &on_entry, &locked, 4, (Some(&judge), None)).unwrap();
         assert!(formed.is_empty(), "{formed:?}");
         let codes = locked.codes();
-        assert_eq!(held, BTreeMap::from([(codes[&clashing].clone(), Hold::Judged(80)), (codes[&late].clone(), Hold::Arrived)]));
+        assert_eq!(
+            held,
+            BTreeMap::from([
+                (codes[&clashing].clone(), Hold::Judged(80)),
+                (codes[&second].clone(), Hold::Judged(80)),
+                (codes[&third].clone(), Hold::Judged(80)),
+                (codes[&late].clone(), Hold::Arrived),
+            ])
+        );
     }
 }
