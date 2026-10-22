@@ -37,7 +37,7 @@ pub enum PanelCmd {
         #[arg(long, conflicts_with = "document")]
         include_consumption: bool,
     },
-    /// Read one panel screen: the overview, the spec, a page of items, one item or the usage.
+    /// Read one panel screen: the overview, the spec, a page of items, one item, the usage or a page of waves.
     #[command(display_order = 26)]
     Panel {
         #[arg(long, default_value = ".")]
