@@ -1812,6 +1812,25 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("round.resume.notice", Locale::PtBr) => "Comece vendo o que mudou na cópia.",
         ("round.resume.notice", Locale::EnUs) => "Start by seeing what changed in the copy.",
+        // O reenvio da onda órfã cujo agente deixou código na cópia que a
+        // rodada zerou: as refs que o guardam vêm logo depois desta frase,
+        // uma por linha.
+        ("round.resume.kept", Locale::PtBr) => {
+            "O agente anterior desta onda parou no meio. O que ele deixou na cópia ficou guardado nas \
+             refs abaixo, a mais nova primeiro, cada uma com os arquivos que traz. Confira cada ref com \
+             `git show --stat <ref>`. Traga de volta o que serve com `git cherry-pick --no-commit <ref>`, \
+             na cópia ou na pasta que a linha diz, e continue dali. O resto só se descarta com o motivo \
+             gravado num passo."
+        }
+        ("round.resume.kept", Locale::EnUs) => {
+            "The previous agent of this wave stopped midway. What it left in the copy is kept under the \
+             refs below, newest first, each with the files it carries. Check each ref with \
+             `git show --stat <ref>`. Bring back what still serves with `git cherry-pick --no-commit <ref>`, \
+             in the copy or in the folder the line names, and carry on from there. The rest is only \
+             discarded with the reason recorded in a step."
+        }
+        ("round.resume.kept_in", Locale::PtBr) => "- `{ref}`, na pasta `{folder}` da cópia: {files}",
+        ("round.resume.kept_in", Locale::EnUs) => "- `{ref}`, in the copy folder `{folder}`: {files}",
         ("round.copies_full", Locale::PtBr) => {
             "As {copies} cópias da obra estão ocupadas, e as ondas {waves} já voltaram e guardam a delas até o commit: \
              o despacho espera. Revise e reporte essas ondas para liberar a cópia."
@@ -2450,7 +2469,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 359, 0x3128_47fb_0fc2_67c2);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 361, 0x558b_6a18_a83e_eac4);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
@@ -2789,6 +2808,8 @@ mod tests {
             ("round.fix_limit.question", &["{wave}", "{max}"][..]),
             ("round.resume.steps", &[][..]),
             ("round.resume.notice", &[][..]),
+            ("round.resume.kept", &[][..]),
+            ("round.resume.kept_in", &["{ref}", "{folder}", "{files}"][..]),
             ("round.resume.task", &[][..]),
             ("round.resume.silent", &["{wave}"][..]),
             ("round.copies_full", &["{copies}", "{waves}"][..]),

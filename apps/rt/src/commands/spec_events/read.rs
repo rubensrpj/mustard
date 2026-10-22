@@ -687,15 +687,17 @@ fn delivered_lines(log: &SpecLog, wave: u64, codes: &BTreeMap<u64, String>) -> V
 /// número: a versão vigente, o código, o número, a primeira linha não vazia
 /// do texto e as ondas de que ela depende, vazia quando não depende de
 /// nenhuma. A onda removida ou substituída fica de fora, como no bloco. Com
-/// `open_only`, fica de fora também a onda que terminou. Devolve as linhas e
+/// `open_only`, fica de fora também a onda que terminou e a que saiu do plano. Devolve as linhas e
 /// quantas ondas a lista teria sem esse corte.
 fn wave_list_lines(log: &SpecLog, codes: &BTreeMap<u64, String>, open_only: bool) -> (Vec<String>, usize) {
     let mut waves: Vec<&SpecEvent> = log.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|e| e.event_type == "wave").collect();
     waves.sort_by_key(|wave| (wave.wave(), wave.id));
     let total = waves.len();
     if open_only {
+        // A onda sem estado saiu do plano — ficou sem tarefa ou foi
+        // removida — e não está aberta.
         let states = crate::commands::flow::round::wave_states(log);
-        waves.retain(|wave| !wave.wave().and_then(|n| states.get(&n)).is_some_and(|state| state.finished()));
+        waves.retain(|wave| wave.wave().and_then(|n| states.get(&n)).is_some_and(|state| !state.finished()));
     }
     let lines = waves
         .into_iter()

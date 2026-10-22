@@ -575,6 +575,9 @@ pub(super) fn run_entered_round(
     let raw = opts.report.as_deref().map(str::trim).filter(|r| !r.is_empty());
     let Taken { mut recorded, formatted, warnings, commit, paused, waiting: held, program_rebuilt, asking } =
         super::report::take_report_with_mine(&opts.root, root, &spec, raw, &log, lang, caller, mine)?;
+    // O commit desta rodada solta a tarefa que esperava a onda comitada: a
+    // passada de antes pergunta de novo, para a onda dela sair agora.
+    let early = super::dispatch_jev::ask_after_commit((&opts.root, root, &spec, &path), commit.is_some(), early, caller.session, lang);
     // A pergunta ao Jev de cada volta que espera a decisão só sai depois de
     // soltas a trava do passo do git e a das cópias; a que ele não respondeu
     // vai em `reserves`.
@@ -891,7 +894,7 @@ fn dispatch_round(
             continue;
         };
         let lines = log.send_field(*sent, "lines").cloned().unwrap_or(Value::Null);
-        dispatched.push(json!({ "wave": wave, "lines": lines, "read": request_command(root, &spec, *wave), "agent": send.str_field("agent").unwrap_or("wave"),
+        dispatched.push(json!({ "wave": wave, "description": wave_title(&spec, *wave, lang), "lines": lines, "read": request_command(root, &spec, *wave), "agent": send.str_field("agent").unwrap_or("wave"),
             "model": send.str_field("model") }));
     }
     // O código e o número do envio de cada onda em andamento — o número é o
@@ -960,7 +963,7 @@ fn dispatch_round(
         let written = record(&opts.root, &spec, "send", draft, PhaseWriter::Binary).map_err(RoundRefusal::Refused)?;
         task_release::record_first_block(&opts.root, &spec, *wave, &prompt.tasks);
         recorded.push(json!({ "wave": wave, "type": "send", "id": written.written.id }));
-        dispatched.push(json!({ "wave": wave, "lines": prompt.lines, "read": request_command(root, &spec, *wave), "agent": agent, "model": prompt.model }));
+        dispatched.push(json!({ "wave": wave, "description": wave_title(&spec, *wave, lang), "lines": prompt.lines, "read": request_command(root, &spec, *wave), "agent": agent, "model": prompt.model }));
         let code = written.written.code.clone().unwrap_or_else(|| written.written.id.to_string());
         in_flight.insert(*wave, (code, written.written.id));
     }
@@ -995,14 +998,17 @@ fn dispatch_round(
         } else {
             own
         };
-        let steps = wave_steps(log, wave, &codes);
+        // Os passos já gravados e o que o agente anterior deixou na cópia que
+        // a rodada zerou vão no pedido, para o agente novo conferir e
+        // continuar dali.
+        let (steps, kept) = (wave_steps(log, wave, &codes), super::resend::kept_rest_of(root, &spec, log, wave, previous));
         let mut draft = Map::new();
         draft.insert("wave".into(), json!(wave));
         draft.insert("role".into(), json!("wave"));
         // As ondas em andamento de agora, e não as do envio anterior: a
         // rodada que reenvia já sabe quem está em curso ([`flight`]).
         let running: Vec<(u64, Vec<String>)> = flight.running.iter().filter(|n| **n != wave).map(|n| (*n, wave_files(log, *n))).collect();
-        let mut text = super::resend::resend_text(log.send_text(previous).unwrap_or_default(), &running, &steps, lang);
+        let mut text = super::resend::resend_text(log.send_text(previous).unwrap_or_default(), &running, &steps, &kept, lang);
         text.extend(task_release::resend_block(&opts.root, &spec, log, previous, wave, lang));
         let migrated = prior.str_field("host").unwrap_or("claude") != host;
         let current = built.iter().find(|prompt| prompt.wave == wave);
@@ -1026,11 +1032,8 @@ fn dispatch_round(
         // de tarefa única, que foi juntado a ele e não existe mais no projeto.
         let agent = "wave";
         draft.insert("agent".into(), json!(agent));
-        if let Some(model) = prior.str_field("model") {
-            draft.insert("model".into(), json!(model));
-        }
-        if let Some(effort) = prior.str_field("effort") {
-            draft.insert("effort".into(), json!(effort));
+        for field in ["model", "effort"] {
+            draft.extend(prior.str_field(field).map(|value| (field.to_string(), json!(value))));
         }
         draft.insert("items".into(), log.send_field(previous, "items").cloned().unwrap_or_else(|| json!([])));
         // O pedido do reenvio é o do envio anterior: a lista de leitura dele
@@ -1056,7 +1059,7 @@ fn dispatch_round(
         let model = draft.get("model").cloned();
         let written = record(&opts.root, &spec, "send", draft, PhaseWriter::Binary).map_err(RoundRefusal::Refused)?;
         recorded.push(json!({ "wave": wave, "type": "send", "id": written.written.id }));
-        dispatched.push(json!({ "wave": wave, "lines": text.lines().count(), "read": request_command(root, &spec, wave), "agent": agent,
+        dispatched.push(json!({ "wave": wave, "description": wave_title(&spec, wave, lang), "lines": text.lines().count(), "read": request_command(root, &spec, wave), "agent": agent,
             "model": model }));
         let code = written.written.code.clone().unwrap_or_else(|| written.written.id.to_string());
         in_flight.insert(wave, (code, written.written.id));

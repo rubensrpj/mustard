@@ -691,7 +691,7 @@ mod tests {
             include_str!("gates.rs"),
             super::PREFIXES,
             85,
-            0x1819_4337_a96e_ec30,
+            0x18fb_637c_c8aa_88ec,
         );
     }
 

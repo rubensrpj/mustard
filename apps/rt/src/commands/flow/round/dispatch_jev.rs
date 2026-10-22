@@ -289,6 +289,32 @@ pub(crate) fn without(ready: Vec<u64>, waiting: &BTreeSet<u64>) -> Vec<u64> {
     ready.into_iter().filter(|wave| !waiting.contains(wave)).collect()
 }
 
+/// A passada de antes das travas ([`ask_before_locks`]) de novo, depois do
+/// commit que esta rodada acabou de fazer (`committed`), pela spec gravada
+/// em `path`: a tarefa que esperava a onda comitada só fica pronta agora, e a
+/// onda dela nasce na passada travada desta mesma rodada. Sem a pergunta
+/// feita aqui, a escolha dos itens dela esperaria a decisão do Jev, e a onda
+/// ficaria gravada sem sair. A trava das cópias segue presa: nenhuma outra
+/// rodada solta onda no meio, e a pergunta a segura no máximo pelo prazo do
+/// Jev; a do passo do git o commit já soltou. Devolve os pedidos de reserva
+/// de `early`, os da passada de antes, mais os novos desta; sem commit,
+/// `early` como veio.
+pub(super) fn ask_after_commit(
+    (start, root, spec, path): (&Path, &Path, &str, &Path),
+    committed: bool,
+    mut early: Vec<Value>,
+    session: Option<&str>,
+    lang: Locale,
+) -> Vec<Value> {
+    let Some(log) = mustard_core::io::spec_events::read(path).ok().flatten().filter(|_| committed) else { return early };
+    for asked in ask_before_locks(start, root, spec, &log, session, lang) {
+        if !early.contains(&asked) {
+            early.push(asked);
+        }
+    }
+    early
+}
+
 /// A passada antes das travas da rodada da spec `spec` de `start` (`root`,
 /// o repositório principal), lida em `log`, na sessão `session` e no idioma
 /// `lang`: refaz o despacho que a rodada vai fazer, sem gravar onda nenhuma —

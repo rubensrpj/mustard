@@ -1449,9 +1449,14 @@ fn last_send(project: &Project, wave: u64) -> mustard_core::domain::spec_events:
 /// grava o passo de término de cada tarefa e grava a entrega, que responde
 /// por todo o combinado. Devolve a cópia.
 fn deliver_in_copy(project: &Project, wave: u64, content: &str) -> PathBuf {
+    deliver_file_in_copy(project, wave, GREETING, content)
+}
+
+/// [`deliver_in_copy`] com o arquivo `file` no lugar de [`GREETING`].
+fn deliver_file_in_copy(project: &Project, wave: u64, file: &str, content: &str) -> PathBuf {
     let sent = last_send(project, wave);
     let copy = PathBuf::from(sent.str_field("copy").expect("the copy"));
-    std::fs::write(copy.join(GREETING), content).expect("the change");
+    std::fs::write(copy.join(file), content).expect("the change");
     let root = project.root.display().to_string();
     let listed = sent.fields.get("read_items").and_then(Value::as_array).cloned().unwrap_or_default();
     for item in listed.iter().filter_map(Value::as_str) {
@@ -1470,7 +1475,7 @@ fn deliver_in_copy(project: &Project, wave: u64, content: &str) -> PathBuf {
         project.write("step", &json!({"wave": wave, "item": item, "text": "A tarefa ficou pronta."}));
     }
     let agreed: Vec<Value> = mustard_core::domain::wave_prompt::all_agreed(&log).iter().map(|item| json!({"item": item.id, "met": true})).collect();
-    let delivered = json!({"wave": wave, "text": "A saudação saiu.", "files": [GREETING], "commit": "saudação nova",
+    let delivered = json!({"wave": wave, "text": "A saudação saiu.", "files": [file], "commit": "saudação nova",
         "agreed": agreed});
     project.write("delivered", &delivered);
     copy
@@ -1794,6 +1799,124 @@ fn the_new_return_of_a_rejected_wave_is_taken_and_committed() {
     let official = log.visible().into_iter().rfind(|e| e.event_type == "delivered" && e.wave() == Some(1)).expect("a entrega oficial");
     assert_eq!(official.fields.get("replaces"), Some(&json!([rejected, renewed])), "{:?}", official.fields);
     assert!(out["warnings"].as_array().into_iter().flatten().all(|w| w["reason"] != json!("round-wave-rejected")), "{out}");
+}
+
+/// As refs em que a limpeza das cópias guardou código, no repositório
+/// principal.
+fn kept_refs(project: &Project) -> Vec<String> {
+    let out = Command::new("git").args(["for-each-ref", "--format=%(refname)", "refs/mustard/kept/"]).current_dir(&project.root).output().expect("git");
+    String::from_utf8_lossy(&out.stdout).lines().map(str::to_string).collect()
+}
+
+/// O Claude Code que mandou a onda fechou com o agente no meio do trabalho:
+/// a rodada seguinte guarda o que ele deixou na cópia, volta a cópia ao
+/// commit e reenvia a onda com o pedido que cita a ref guardada e cada
+/// arquivo com mudança, mandando o agente novo conferir e continuar dali.
+#[test]
+fn an_orphaned_wave_is_resent_citing_the_ref_and_files_its_agent_left() {
+    let (project, _, _, _) = backlog_project(&[&[GREETING]]);
+    let first = project.run(&["round", "--dispatch", "--spec", SPEC]);
+    assert_eq!(waves_in(&first, "dispatch"), vec![1], "{first}");
+    let copy = PathBuf::from(last_send(&project, 1).str_field("copy").expect("the copy").to_string());
+    std::fs::write(copy.join(GREETING), "olá\n").expect("a new file");
+    std::fs::write(copy.join("src/main.rs"), "fn main() {\n    println!(\"olá\");\n}\n").expect("an edit");
+    sent_by(&project, &[1], closed_process::closed_process());
+
+    let out = project.run(&["round", "--dispatch", "--spec", SPEC]);
+
+    assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
+    let resent = last_send(&project, 1);
+    assert!(resent.int("resends").is_some(), "the wave went out again: {:?}", resent.fields);
+    assert!(!copy.join(GREETING).exists(), "the copy is back at the commit");
+    let refs = kept_refs(&project);
+    assert_eq!(refs.len(), 1, "{refs:?}");
+    let text = project.log().send_text(resent.id).expect("the request").to_string();
+    assert!(text.contains(translate("round.resume.kept", Locale::PtBr)), "{text}");
+    assert!(text.contains(&format!("`{}`", refs[0])), "{text}");
+    for file in [GREETING, "src/main.rs"] {
+        assert!(text.contains(&format!("`{file}`")), "{file}: {text}");
+    }
+
+    // O agente novo também fecha antes de trazer o resto de volta: o reenvio
+    // seguinte segue citando a mesma ref.
+    sent_by(&project, &[1], closed_process::closed_process());
+    let again = project.run(&["round", "--dispatch", "--spec", SPEC]);
+    assert_eq!(waves_in(&again, "dispatch"), vec![1], "{again}");
+    let third = last_send(&project, 1);
+    assert_ne!(third.id, resent.id, "the wave went out once more");
+    let text = project.log().send_text(third.id).expect("the request").to_string();
+    assert!(text.contains(&format!("`{}`", refs[0])), "{text}");
+    assert_eq!(kept_refs(&project), refs, "nothing new to keep, nothing dropped");
+}
+
+/// Três tarefas em fila (A → B → C), com o Jev escolhendo os itens do
+/// pedido: cada onda montada sai na mesma rodada em que nasce, e a seguinte
+/// sai na rodada que comita a anterior, com o número seguinte. Nenhuma onda
+/// fica gravada sem sair, a lista das ondas abertas só traz a que saiu, e o
+/// pedido e o `description` que o despacho devolve dão o mesmo número.
+#[test]
+fn each_formed_wave_leaves_in_the_round_it_is_born_with_one_number() {
+    // O Jev escolhe só os itens; a montagem é a por arquivo, que põe cada
+    // tarefa da fila numa onda dela.
+    let jev = judging_items(|_| 0.5);
+    let mut project = Project::new();
+    let path = project.root.join("mustard.json");
+    let mut config: Value = serde_json::from_str(&std::fs::read_to_string(&path).expect("config")).expect("json");
+    config["judgement"].as_object_mut().expect("the judgement").remove("wave-planning");
+    std::fs::write(&path, config.to_string()).expect("config");
+    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    let said = survey(&project);
+    let criterion = project.write(
+        "criterion",
+        &json!({"title": "Combinar o item", "when": "o programa roda", "then": "a saudação nova aparece", "proof": "git --version",
+            "form": "ubiquitous", "origin": said}),
+    );
+    let crit = criterion["id"].as_u64().expect("the criterion id");
+    let files = ["src/a.txt", "src/b.txt", "src/c.txt"];
+    let first = backlog_task(&project, crit, said, &[files[0]], &[]);
+    let second = backlog_task(&project, crit, said, &[files[1]], &[first]);
+    backlog_task(&project, crit, said, &[files[2]], &[second]);
+    project.run(&["plan", "--spec", SPEC]);
+    approve(&project);
+    project.jev = Some(jev.url.clone());
+    two_rules(&project, said);
+
+    for n in 1..=3u64 {
+        let usage = format!("<USAGE>{}</USAGE>", json!({"wave": n - 1}));
+        let args: Vec<&str> = if n == 1 { vec!["round", "--dispatch", "--spec", SPEC] } else { vec!["round", "--dispatch", "--spec", SPEC, "--report", &usage] };
+        let out = project.run(&args);
+        assert!(n == 1 || out.get("commit").is_some(), "round {n} commits the wave before: {out}");
+        assert_eq!(waves_in(&out, "dispatch"), vec![n], "round {n}: {out}");
+        let title = mustard_core::domain::wave_prompt::wave_title(SPEC, n, Locale::PtBr);
+        assert_eq!(out["dispatch"][0]["description"], json!(title), "round {n}: {out}");
+        let log = project.log();
+        assert!(log.send_text(last_send(&project, n).id).expect("the request").starts_with(&title), "round {n}");
+        let sent: BTreeSet<u64> = log.visible().into_iter().filter(|e| e.event_type == "send").filter_map(|e| e.wave()).collect();
+        let formed: BTreeSet<u64> = log.visible().into_iter().filter(|e| e.event_type == "wave").filter_map(|e| e.wave()).collect();
+        assert_eq!(formed, sent, "round {n}: every recorded wave went out");
+        let listed = project.command(&["run", "read", "wave-list", "--spec", SPEC], "");
+        let listed = String::from_utf8_lossy(&listed.stdout).to_string();
+        assert!(listed.contains(&format!("\"n\":{n}")), "round {n}: wave {n} is open: {listed}");
+        for other in (1..=n + 1).filter(|m| *m != n) {
+            assert!(!listed.contains(&format!("\"n\":{other}")), "round {n}: wave {other} is not open: {listed}");
+        }
+        keep_sent(&project, &[n]);
+        deliver_file_in_copy(&project, n, files[usize::try_from(n - 1).unwrap()], "pronto\n");
+    }
+}
+
+/// A onda gravada sem tarefa nenhuma, como a que uma rodada antiga deixou,
+/// saiu do plano: a lista das ondas abertas não a traz.
+#[test]
+fn a_wave_without_tasks_is_not_listed_as_open() {
+    let (project, crit, _, _) = backlog_project(&[&["a.rs"]]);
+    project.seed("wave", &json!({"n": 9, "text": "Onda vazia", "done_when": "Onda vazia", "author": "binary", "order": [], "criteria": [crit]}));
+
+    let listed = project.command(&["run", "read", "wave-list", "--spec", SPEC], "");
+
+    let listed = String::from_utf8_lossy(&listed.stdout).to_string();
+    assert!(listed.contains("\"ok\":true"), "{listed}");
+    assert!(!listed.contains("\"n\":9"), "{listed}");
 }
 
 /// Os eventos da spec, fora as chamadas de comando que toda chamada grava:
