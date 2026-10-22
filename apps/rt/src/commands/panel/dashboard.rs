@@ -58,8 +58,9 @@ pub(super) fn query_with(start:&Path,selected:Option<&str>,session:Option<&str>,
     if !SECTIONS.contains(&section) {return json!({"ok":false,"reason":"panel-invalid-section"});}
     let started=std::time::Instant::now();
     let root=mustard_core::io::spec_events::spec_root(start);
-    let selected=selected.map(str::to_string).or_else(||crate::shared::context::checkout::current_spec(&start.to_string_lossy()))
-        .filter(|name|!mustard_core::io::legacy_specs::is_legacy(&root,name));
+    if let Some(refused)=super::refused_legacy(&root,selected) {return refused;}
+    let selected=selected.map(str::to_string).or_else(||crate::shared::context::checkout::current_spec(&start.to_string_lossy())
+        .filter(|name|!mustard_core::io::legacy_specs::is_legacy(&root,name)));
     let token=revision(start,&root,section,selected.as_deref(),session,wave,params);
     if previous==Some(token.as_str()) {return json!({"ok":true,"schema_version":1,"unchanged":true,"revision":token,"section":section});}
     screen(start,&root,selected,session,section,params,token,started)

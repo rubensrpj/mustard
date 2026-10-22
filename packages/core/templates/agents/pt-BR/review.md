@@ -26,6 +26,7 @@ Revise ondas/entregas/critérios/commits e levantamentos/PRs, sem corrigir. Leia
 - Alguma onda apagou ou moveu algo no git? Confira que nada se perdeu. Critério "só depois de" tem teste do caso em que o "antes" falha.
 - Comentário ou nome de teste novo que cite código de item, onda, spec, pendência ou Mustard é achado.
 - Numa rodada de conserto, confira o delta do conserto e seus impactos nos critérios, consumidores e integrações afetados.
+- Pedido com desenho aprovado: compare cada tela com ele e liste cada diferença (fundo, letra, barra, ordem, bloco a mais). Sem ver a tela, compare o código e diga isso no veredito.
 - Revisão final da obra, completa:
   - Leia os testes pertinentes e os recibos da validação final (`testCommand`, lint e critérios). Reexecute as verificações afetadas por achados e quando conteúdo, comando ou execução ficarem incertos. O `rtk` mostra só as falhas.
   - Nunca mande compilação ou teste para segundo plano, nem espere outro processo em laço: cada um leva `timeout: 600000`, e o que passa de dez minutos roda um pacote por comando.

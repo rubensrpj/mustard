@@ -745,6 +745,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The rules files of the root and of the folders the work touched, each under its path. Follow them all \
              during this work."
         }
+        // A cópia do desenho que o usuário aprovou, no fim do despacho ao
+        // revisor quando a pasta da spec tem uma.
+        ("prompt.part.approved_design", Locale::PtBr) => "Desenho aprovado",
+        ("prompt.part.approved_design", Locale::EnUs) => "Approved design",
+        ("prompt.approved_design", Locale::PtBr) => {
+            "A cópia do desenho que o usuário aprovou para esta spec está em `{path}`. Compare cada tela com ela."
+        }
+        ("prompt.approved_design", Locale::EnUs) => {
+            "The copy of the design the user approved for this spec is at `{path}`. Compare each screen with it."
+        }
         _ => return None,
     })
 }
@@ -756,7 +766,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("prompt.rs"), super::PREFIXES, 111, 0xb3ba_e150_7f0e_0d54);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("prompt.rs"), super::PREFIXES, 113, 0x9409_7b16_8358_5c2d);
     }
 
     /// O bloco do padrão sob a tarefa passa na conferência de escrita nos

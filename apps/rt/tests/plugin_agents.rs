@@ -929,6 +929,52 @@ fn reviewer_template_states_the_two_paths() {
     assert!(pr.contains("`mustard-review` agent, from that brief: it returns its text to you and records nothing"), "{pr}");
 }
 
+/// O despacho ao revisor, pelo gancho com o JSON do Claude Code, leva o
+/// caminho da cópia do desenho aprovado quando a pasta da spec tem uma: no
+/// pedido gravado da revisão final, no da revisão de uma onda e no texto que
+/// quem conduz escreve para a revisão do levantamento, cuja spec é a da
+/// branch. Sem a cópia, nenhum deles fala de desenho.
+#[test]
+fn the_reviewer_dispatch_points_to_the_approved_design_only_when_the_spec_has_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("project");
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&home).unwrap();
+    git(&root, &["init", "-q", "-b", "feature/tela"]);
+    std::fs::write(root.join("mustard.json"), "{}").unwrap();
+    let events = store::spec_file(&root, "tela").unwrap();
+    std::fs::create_dir_all(events.parent().unwrap()).unwrap();
+    let state = json!({"author": "binary", "phase": "survey", "branch": "feature/tela", "base": "dev"});
+    store::write(&events, "state", state.as_object().cloned().unwrap(), &[]).unwrap();
+    let design = events.parent().unwrap().join("desenho.html");
+
+    let shown = mustard_core::io::wave_prompt::shown(&root);
+    let final_review = format!("mustard-rt run read request-review --root {shown} --spec tela");
+    let title = translate("round.wave_review.title", Locale::PtBr).replace("{spec}", "tela").replace("{wave}", "1");
+    let wave_review = format!("# {title}\n\nmustard-rt run read review-request-1 --root {shown} --spec tela");
+    let survey_review = "Revise o levantamento da spec tela: os pontos, as regras e as decisões.".to_string();
+    let dispatch = |prompt: &str| -> String {
+        let payload = json!({"hook_event_name": "PreToolUse", "tool_name": "Agent", "session_id": "sessao-revisor",
+            "cwd": root.to_string_lossy(), "tool_input": {"subagent_type": "mustard-review", "description": "revisão", "prompt": prompt}});
+        let out = rt(&root, &home, &["on", "PreToolUse"], Some(&payload.to_string()));
+        let sent = out["hookSpecificOutput"]["updatedInput"]["prompt"].as_str().unwrap_or_else(|| panic!("no rewritten prompt: {out}"));
+        assert!(sent.contains(prompt), "the dispatch lost its own text: {sent}");
+        sent.to_string()
+    };
+
+    for prompt in [&final_review, &wave_review, &survey_review] {
+        let sent = dispatch(prompt);
+        assert!(!sent.contains("desenho.html"), "a spec without the approved design got a design: {sent}");
+    }
+    std::fs::write(&design, "<html><body><main>tela aprovada</main></body></html>\n").unwrap();
+    for prompt in [&final_review, &wave_review, &survey_review] {
+        let sent = dispatch(prompt);
+        assert!(sent.contains(".claude/spec/tela/desenho.html`"), "the reviewer was not pointed to the approved design: {sent}");
+        assert_eq!(sent.matches("desenho.html").count(), 1, "{sent}");
+    }
+}
+
 /// O erro que pode se repetir não vira lição no molde do revisor, nos dois
 /// idiomas: o banco de lições fica só na máquina de quem programa e não vai
 /// ao git. O revisor escreve como achado do veredito o conserto no código,

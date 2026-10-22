@@ -37,7 +37,9 @@
 //! escreve — a revisão do levantamento e a do pull request — ganha no fim as
 //! regras do projeto, os arquivos de regras da raiz e das pastas onde a obra
 //! mexe, porque o revisor é instalado sem eles; o que manda ler o pedido da
-//! revisão final não ganha, porque esse pedido já as traz. Qualquer outro
+//! revisão final não ganha, porque esse pedido já as traz. Todo despacho ao
+//! `mustard-review` ganha no fim o caminho da cópia do desenho aprovado
+//! quando a pasta da spec revisada tem uma. Qualquer outro
 //! despacho é uma tarefa qualquer e também passa como veio: o gancho não
 //! escolhe skill, não injeta memória, não monta pedido de onda e não avalia
 //! a volta do agente. O pedido ao agente de exploração do Claude Code sobe
@@ -337,7 +339,8 @@ fn explore(input: &HookInput, ctx: &Ctx) -> Verdict {
 /// dela, sai com o texto que a rodada monta ([`wave_dispatch`]); qualquer
 /// outro ganha no topo a linha dos idiomas, salvo quando já a traz. O
 /// despacho ao revisor ganha também, no fim, as regras do projeto
-/// ([`review_rules`]). O resto passa como veio.
+/// ([`review_rules`]) e o caminho do desenho aprovado ([`approved_design`]).
+/// O resto passa como veio.
 fn dispatched(input: &HookInput, ctx: &Ctx) -> Verdict {
     let root = ctx.project_dir_or_cwd(input);
     if !to_mustard_agent(input) || !ProjectConfig::exists(Path::new(&root)) {
@@ -352,6 +355,9 @@ fn dispatched(input: &HookInput, ctx: &Ctx) -> Verdict {
     let mut text = if prompt.contains(&line) { prompt.to_string() } else { format!("{line}\n\n{prompt}") };
     if let Some(rules) = review_rules(input, Path::new(&root), prompt, language.text_or_default()) {
         text = format!("{}\n\n{rules}", text.trim_end());
+    }
+    if let Some(design) = approved_design(input, Path::new(&root), prompt, language.text_or_default()) {
+        text = format!("{}\n\n{design}", text.trim_end());
     }
     if text == prompt {
         return Verdict::Allow;
@@ -377,6 +383,41 @@ fn review_rules(input: &HookInput, root: &Path, prompt: &str, lang: Locale) -> O
     let disk = DiskSpecState::new(root);
     let log = disk.active(input.session_id.as_deref()).and_then(|spec| disk.log(&spec));
     project_rules_section(&project_rules(root, &touched_files(root, log.as_ref())), lang)
+}
+
+/// O nome da cópia do desenho que o usuário aprovou, na pasta da spec. Quem
+/// conduz a obra a salva ali depois do sim do usuário, e o arquivo existir é
+/// o sinal de que a spec tem referência visual: nenhum item nem trava a mais.
+const APPROVED_DESIGN: &str = "desenho.html";
+
+/// A seção que aponta ao revisor a cópia do desenho aprovado da spec que ele
+/// revisa, para o fim de todo despacho a ele — o pedido gravado da revisão
+/// de uma onda, o da revisão final e o texto de quem conduz —, quando a
+/// pasta da spec tem a cópia: o revisor não abre o link da página, só o
+/// arquivo. A spec é a do pedido gravado que o despacho manda ler
+/// ([`read_spec`]) ou, no texto de quem conduz, a spec atual. Nada ao texto
+/// que já traz o caminho.
+fn approved_design(input: &HookInput, root: &Path, prompt: &str, lang: Locale) -> Option<String> {
+    if input.tool_input.get("subagent_type").and_then(Value::as_str) != Some("mustard-review") {
+        return None;
+    }
+    let spec = read_spec(prompt).map(str::to_string).or_else(|| DiskSpecState::new(root).active(input.session_id.as_deref()))?;
+    let design = store::spec_file(&store::spec_root(root), &spec).ok()?.with_file_name(APPROVED_DESIGN);
+    let shown = mustard_core::io::wave_prompt::shown(&design);
+    if !design.is_file() || prompt.contains(&shown) {
+        return None;
+    }
+    let heading = say("prompt.part.approved_design", lang, &[]);
+    Some(format!("## {heading}\n\n{}", say("prompt.approved_design", lang, &[("{path}", &shown)])))
+}
+
+/// A spec do pedido gravado que o despacho manda ler: o `--spec` do
+/// `mustard-rt run read` do texto.
+fn read_spec(prompt: &str) -> Option<&str> {
+    prompt.lines().filter(|line| line.contains("mustard-rt run read ")).find_map(|line| {
+        let (_, rest) = line.split_once(" --spec ")?;
+        rest.split(|c: char| c.is_whitespace() || c == '`').next().filter(|spec| !spec.is_empty())
+    })
 }
 
 /// Os apelidos que a ferramenta Agent do Claude Code aceita no campo `model`.

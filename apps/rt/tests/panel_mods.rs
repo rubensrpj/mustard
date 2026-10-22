@@ -32,6 +32,40 @@ fn native_panel_screens_and_receipts_work_without_ai_or_publication() {
     assert!(!root.join(".claude/judgements").exists());assert!(!root.join(".claude/spec").exists());
     assert!(!root.join(".claude/mustard/publications").exists());
 }
+/// The spec asked by name is the one shown. An old spec, of before this
+/// version of Mustard, is refused with its reason, on one screen and on the
+/// whole panel, and no other spec takes its place; without a name, the panel
+/// keeps the choice it always made.
+#[test]
+fn a_legacy_spec_asked_by_name_is_refused_instead_of_replaced() {
+    let dir=tempfile::tempdir().unwrap();let root=dir.path();
+    std::fs::write(root.join("mustard.json"),"{\"rtk\":false,\"ai\":{\"fallback\":false,\"vectors\":false}}").unwrap();
+    let open=|name:&str| {
+        let path=mustard_core::io::spec_events::spec_file(root,name).unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let state=json!({"author":"binary","phase":"plan","branch":format!("feature/{name}"),"base":"dev"});
+        mustard_core::io::spec_events::write(&path,"state",state.as_object().cloned().unwrap(),&[]).unwrap();
+    };
+    open("old");
+    mustard_core::io::legacy_specs::mark_once(root,"0.2.24").unwrap();
+    open("new");
+    for args in [&["panel","--spec","old","--section","spec"][..],&["panel","--spec","old"]] {
+        let refused=call(root,args,None);
+        assert_eq!(refused["ok"],false,"{args:?}: {refused}");
+        assert_eq!(refused["reason"],"legacy-spec","{args:?}: {refused}");
+        assert!(refused["hint"].as_str().unwrap_or_default().contains("old"),"{args:?}: {refused}");
+        assert!(refused.get("selected_spec").is_none(),"{args:?}: {refused}");
+    }
+    let asked=call(root,&["panel","--spec","new","--section","spec"],None);
+    assert_eq!(asked["selected_spec"],"new","{asked}");assert_eq!(asked["spec"]["name"],"new","{asked}");
+    assert_eq!(call(root,&["panel","--spec","new"],None)["selected_spec"],"new");
+    let unnamed=call(root,&["panel","--section","spec"],None);
+    assert_eq!(unnamed["selected_spec"],"new","{unnamed}");
+    let whole=call(root,&["panel"],None);
+    assert_eq!(whole["ok"],true,"{whole}");
+    let listed:Vec<&Value>=whole["specs"].as_array().unwrap().iter().map(|spec|&spec["name"]).collect();
+    assert_eq!(listed,[&json!("new")],"{whole}");
+}
 #[test]
 fn a_diagnostic_record_keeps_only_known_fields_and_stays_local() {
     let dir=tempfile::tempdir().unwrap();let root=dir.path();std::fs::write(root.join("mustard.json"),"{}").unwrap();

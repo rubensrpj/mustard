@@ -46,11 +46,14 @@ pub(crate) fn snapshot_of(start: &Path, name: &str) -> Value {
 
 fn snapshot_with(start: &Path, selected: Option<&str>, session:Option<&str>, only:Option<&str>) -> Value {
     let root = mustard_core::io::spec_events::spec_root(start);
+    if let Some(refused) = refused_legacy(&root, selected) {
+        return refused;
+    }
     // A spec de antes desta versão do Mustard fica fora do painel e da
     // publicação, que sai daqui.
     let legacy = mustard_core::io::legacy_specs::LegacySpecs::read(&root);
-    let selected = selected.map(str::to_string).or_else(|| crate::shared::context::checkout::current_spec(&start.to_string_lossy()))
-        .filter(|name| !legacy.contains(name));
+    let selected = selected.map(str::to_string)
+        .or_else(|| crate::shared::context::checkout::current_spec(&start.to_string_lossy()).filter(|name| !legacy.contains(name)));
     let jev = jev_usage::Ledger::read(&root);
     let costs = consumption::costs(&root);
     let logs = match only {
@@ -84,6 +87,14 @@ fn snapshot_with(start: &Path, selected: Option<&str>, session:Option<&str>, onl
         "integration_health":integration_health,
         "installation":std::fs::read_to_string(root.join(".claude/mustard/installation.json")).ok().and_then(|text|serde_json::from_str::<Value>(&text).ok()),
         "statusline":consumption::statusline(&root,session)})
+}
+
+/// A recusa da spec pedida pelo nome quando ela é de antes desta versão do
+/// Mustard: o painel nunca mostra outra spec no lugar da pedida. A spec da
+/// cópia, que ninguém pediu pelo nome, só fica de fora.
+fn refused_legacy(root: &Path, asked: Option<&str>) -> Option<Value> {
+    let refusal = mustard_core::io::legacy_specs::refuse_legacy(root, asked?).err()?;
+    Some(crate::commands::spec_events::refused(&refusal, crate::commands::spec_events::project(root).lang))
 }
 
 /// One panel screen for `spec` under `root`, as the plugin asks for it.
