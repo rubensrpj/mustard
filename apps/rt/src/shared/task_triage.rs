@@ -29,7 +29,7 @@ use mustard_core::io::knowledge::enrichment::{
 };
 use serde_json::{Map, Value, json};
 
-use super::jev::reserve::as_jev;
+use super::jev::reserve::{self, as_jev};
 use super::jev::yes_no::{SURE, choice_in, noul_in};
 use super::jev::{JEV_MODEL, JevFilter, MAX_CHOICES, TASK_TRIAGE_CALL, validate_wire_size};
 use super::secret::without_secrets;
@@ -133,6 +133,10 @@ pub(crate) fn classify_with(
 /// do Jev ou da reserva dele.
 pub(crate) struct Classifying {
     pub payload: String,
+    /// A impressão das atividades que o pedido pergunta, como o Jev as vê e
+    /// sem as tarefas abertas: só muda quando elas mudam, e por ela a
+    /// decisão tomada se acha de novo mesmo que a fila tenha mudado.
+    pub items_key: String,
     options: Vec<String>,
     near: Vec<String>,
     items: usize,
@@ -155,7 +159,8 @@ pub(crate) fn classifying(candidates: &[Candidate], items: &[Item], summary: &[S
         ordered.pop();
         payload = payload_of(&ordered, items, summary);
     }
-    Some(Classifying { payload, options: options(&ordered), near: near_options(&ordered), items: items.len() })
+    let items_key = reserve::subject(&[Value::Object(shown_items(items)).to_string()]);
+    Some(Classifying { payload, items_key, options: options(&ordered), near: near_options(&ordered), items: items.len() })
 }
 
 impl Classifying {
@@ -758,10 +763,24 @@ fn near_options(candidates: &[&Candidate]) -> Vec<String> {
     candidates.iter().map(|c| format!("t{}", c.id)).chain(std::iter::once("none".to_string())).collect()
 }
 
+/// O texto `said` como vai ao Jev: sem segredo e só o começo.
+fn shown(said: &str) -> String {
+    without_secrets(&said.chars().take(SHOWN_CHARS).collect::<String>())
+}
+
+/// As atividades `items` como o estado do pedido as traz, cada uma pela
+/// chave `i<posição>`.
+fn shown_items(items: &[Item]) -> Map<String, Value> {
+    items
+        .iter()
+        .enumerate()
+        .map(|(at, item)| (format!("i{at}"), json!({ "title": shown(&item.title), "text": shown(&item.text), "files": item.files })))
+        .collect()
+}
+
 /// O pedido ao Jev: o estado, uma vez só e sem segredo, e as duas perguntas de
 /// cada atividade.
 fn payload_of(candidates: &[&Candidate], items: &[Item], summary: &[Summary]) -> String {
-    let shown = |said: &str| without_secrets(&said.chars().take(SHOWN_CHARS).collect::<String>());
     let tasks: Map<String, Value> = candidates
         .iter()
         .map(|c| (format!("t{}", c.id), json!({ "title": shown(c.title), "text": shown(c.text), "files": c.files })))
@@ -774,13 +793,12 @@ fn payload_of(candidates: &[&Candidate], items: &[Item], summary: &[Summary]) ->
             json!({ "text": shown(&s.text), "tasks": tasks })
         })
         .collect();
-    let (mut state_items, mut questions) = (Map::new(), Map::new());
+    let mut questions = Map::new();
     let criteria = |labels: Vec<String>, describe: &dyn Fn(&str) -> String| -> Map<String, Value> {
         labels.into_iter().map(|label| { let said = describe(&label); (label, json!(said)) }).collect()
     };
-    for (at, item) in items.iter().enumerate() {
+    for at in 0..items.len() {
         let key = format!("i{at}");
-        state_items.insert(key.clone(), json!({ "title": shown(&item.title), "text": shown(&item.text), "files": item.files }));
         let destination = criteria(options(candidates), &|label| match label.split_once(':') {
             Some(("covered", task)) => format!("tasks.{task} covers it"),
             Some((_, task)) => format!("join tasks.{task}"),
@@ -799,7 +817,7 @@ fn payload_of(candidates: &[&Candidate], items: &[Item], summary: &[Summary]) ->
     }
     json!({
         "model": JEV_MODEL,
-        "state": { "revision": "task-triage-v1", "tasks": tasks, "items": state_items, "summaries": summaries },
+        "state": { "revision": "task-triage-v1", "tasks": tasks, "items": shown_items(items), "summaries": summaries },
         "questions": questions,
     })
     .to_string()

@@ -1486,6 +1486,12 @@ fn deliver_in_copy(project: &Project, wave: u64, content: &str) -> PathBuf {
 
 /// [`deliver_in_copy`] com o arquivo `file` no lugar de [`GREETING`].
 fn deliver_file_in_copy(project: &Project, wave: u64, file: &str, content: &str) -> PathBuf {
+    deliver_file_with(project, wave, file, content, &json!({}))
+}
+
+/// [`deliver_file_in_copy`] com os campos de `extra` por cima da entrega,
+/// como as sobras que a volta relata.
+fn deliver_file_with(project: &Project, wave: u64, file: &str, content: &str, extra: &Value) -> PathBuf {
     let sent = last_send(project, wave);
     let copy = PathBuf::from(sent.str_field("copy").expect("the copy"));
     std::fs::write(copy.join(file), content).expect("the change");
@@ -1507,8 +1513,11 @@ fn deliver_file_in_copy(project: &Project, wave: u64, file: &str, content: &str)
         project.write("step", &json!({"wave": wave, "item": item, "text": "A tarefa ficou pronta."}));
     }
     let agreed: Vec<Value> = mustard_core::domain::wave_prompt::all_agreed(&log).iter().map(|item| json!({"item": item.id, "met": true})).collect();
-    let delivered = json!({"wave": wave, "text": "A saudação saiu.", "files": [file], "commit": "saudação nova",
+    let mut delivered = json!({"wave": wave, "text": "A saudação saiu.", "files": [file], "commit": "saudação nova",
         "agreed": agreed});
+    for (key, value) in extra.as_object().into_iter().flatten() {
+        delivered[key] = value.clone();
+    }
     project.write("delivered", &delivered);
     copy
 }
@@ -2258,4 +2267,131 @@ fn native_defaults_ignore_legacy_jev_in_search_wave_planning_and_context() {
     assert_eq!(batch_orders(&project), vec![vec![tasks[0], tasks[1]], vec![tasks[2]]]);
     assert!(jev.requests().is_empty(), "native defaults must make no HTTP requests");
     assert!(assembly_calls(&project).is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// A decisão do classificador das atividades, de ponta a ponta
+// ---------------------------------------------------------------------------
+
+/// O título da tarefa aberta que o classificador de mentira diz cobrir a sobra.
+const OPEN_TASK: &str = "A tarefa aberta que já cobre o trabalho.";
+/// O título da sobra que a volta da onda 1 relata.
+const LEFTOVER: &str = "O log não gira por dia";
+
+/// Um Jev de mentira do classificador das atividades: cada atividade do
+/// pedido é coberta, com certeza, pela tarefa aberta [`OPEN_TASK`]; nas outras
+/// perguntas, o tipo é recurso e o resto fica em dúvida.
+fn classifying() -> FakeJev {
+    FakeJev::start(|asked| {
+        let triage = asked["state"]["revision"] == json!("task-triage-v1");
+        let open = asked["state"]["tasks"].as_object().and_then(|tasks| tasks.iter().find(|(_, task)| task["title"] == json!(OPEN_TASK)).map(|(key, _)| key.clone()));
+        let mut answers = serde_json::Map::new();
+        for (key, question) in asked["questions"].as_object().expect("the questions") {
+            // A resposta de escolha traz a chance de cada opção, a escolhida com certeza.
+            let sure = |label: &str| {
+                let options = question["criteria"].as_object().expect("the options");
+                let others = (0.05 / (options.len() - 1) as f64).max(0.0);
+                let chances: serde_json::Map<_, _> = options.keys().map(|option| (option.clone(), json!(if option == label { 0.95 } else { others }))).collect();
+                json!({"type": "choice", "choice": label, "confidence": 0.95, "probabilities": chances})
+            };
+            let answer = match (triage, &open) {
+                (true, _) if key.ends_with("_near") => sure("none"),
+                (true, Some(task)) => sure(&format!("covered:{task}")),
+                (true, None) => sure("new"),
+                _ if key.starts_with("tipo_") => json!({"type":"choice","choice":"feature","confidence":0.9,"probabilities":{"feature":0.9,"defect":0.025,"text_fix":0.025,"remove_unused":0.025,"test_cleanup":0.025}}),
+                _ => json!({"type": "noul", "noul": 0.5}),
+            };
+            answers.insert(key.clone(), answer);
+        }
+        (200, json!({"model": "jev-1.13.0", "answers": answers, "usage": {"input_tokens": 1500, "output_tokens": 0}}))
+    })
+}
+
+/// Os pedidos do classificador das atividades que o Jev de mentira recebeu.
+fn triage_requests(jev: &FakeJev) -> usize {
+    jev.all_requests().iter().filter(|asked| asked["state"]["revision"] == json!("task-triage-v1")).count()
+}
+
+/// As ondas que a resposta `out` da rodada deixa esperando a decisão do Jev.
+fn waiting_for_the_jev(out: &Value) -> Vec<u64> {
+    out["warnings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|warning| warning["reason"] == json!("round-jev-decision-pending"))
+        .filter_map(|warning| warning["wave"].as_u64())
+        .collect()
+}
+
+/// A linha de uso da onda 1 que as rodadas desta seção mandam.
+const USAGE_OF_WAVE_ONE: &str = r#"<USAGE>{"wave":1}</USAGE>"#;
+
+/// A spec com a onda 1 devolvida com a sobra [`LEFTOVER`].
+struct WaitingLeftover {
+    project: Project,
+    jev: FakeJev,
+    criterion: u64,
+    said: u64,
+    /// A tarefa aberta [`OPEN_TASK`], à espera da onda 1.
+    open: u64,
+}
+
+/// A spec com a onda 1 devolvida com a sobra [`LEFTOVER`], a tarefa aberta
+/// [`OPEN_TASK`] à espera dela e o classificador de mentira ligado, com a
+/// rodada que deixa a volta esperando já feita: ele foi perguntado uma vez,
+/// fora das travas.
+fn leftover_waiting_for_the_classifier() -> WaitingLeftover {
+    let jev = classifying();
+    let (mut project, criterion, said, tasks) = backlog_project(&[&[GREETING]]);
+    let open = seed_task_with(&project, criterion, said, &["src/open.rs"], &json!({"title": OPEN_TASK, "depends_on": [tasks[0]]}));
+    let sent = project.run(&["round", "--dispatch", "--spec", SPEC]);
+    assert_eq!(waves_in(&sent, "dispatch"), vec![1], "{sent}");
+    sent_by(&project, &[1], closed_process::closed_process());
+    let leftovers = json!({"leftovers": [{"title": LEFTOVER, "detail": "O arquivo de log cresce sem limite."}]});
+    deliver_file_with(&project, 1, GREETING, "hello\n", &leftovers);
+    project.jev = Some(jev.url.clone());
+
+    let asked = project.run(&["round", "--dispatch", "--spec", SPEC, "--report", USAGE_OF_WAVE_ONE]);
+
+    assert_eq!(waiting_for_the_jev(&asked), vec![1], "the return waits for the decision: {asked}");
+    assert_eq!(asked.get("commit"), None, "{asked}");
+    assert_eq!(triage_requests(&jev), 1, "the classifier is asked once, outside the locks: {asked}");
+    WaitingLeftover { project, jev, criterion, said, open }
+}
+
+/// A sobra da volta da onda 1 vai ao classificador, que a manda para a tarefa
+/// aberta; a rodada deixa a volta esperando, e quem conduz grava, no
+/// meio-tempo, uma tarefa que nada tem a ver com a sobra. A rodada seguinte
+/// aplica a decisão já tomada, sem perguntar de novo: a tarefa nova muda as
+/// opções do pedido, e não as atividades que ele decide.
+#[test]
+fn a_classifier_decision_survives_a_task_written_while_the_return_waits() {
+    let WaitingLeftover { project, jev, criterion, said, open } = leftover_waiting_for_the_classifier();
+
+    seed_backlog_task(&project, criterion, said, &["src/unrelated.rs"]);
+    let applied = project.run(&["round", "--dispatch", "--spec", SPEC, "--report", USAGE_OF_WAVE_ONE]);
+
+    assert!(waiting_for_the_jev(&applied).is_empty(), "the recorded decision answers although the queue changed: {applied}");
+    assert!(applied.get("commit").is_some(), "{applied}");
+    assert_eq!(triage_requests(&jev), 1, "no new question for the same leftover: {applied}");
+    let log = project.log();
+    let code = log.codes().get(&open).cloned().expect("the open task code");
+    let notes = log.visible().into_iter().filter(|e| e.event_type == "note" && e.str_field("label") == Some(code.as_str())).count();
+    assert_eq!(notes, 1, "the leftover became a note on the task the classifier chose");
+    let own = log.visible().into_iter().filter(|e| e.event_type != "note" && e.str_field("title") == Some(LEFTOVER)).count();
+    assert_eq!(own, 0, "the rule that makes a task of its own did not apply");
+}
+
+/// A decisão é das atividades: a volta que muda a sobra enquanto espera não
+/// tem decisão nenhuma, e o classificador é perguntado de novo.
+#[test]
+fn a_classifier_decision_is_asked_again_when_the_leftover_changes() {
+    let WaitingLeftover { project, jev, .. } = leftover_waiting_for_the_classifier();
+
+    let leftovers = json!({"leftovers": [{"title": "A cache não expira", "detail": "A entrada fica para sempre."}]});
+    deliver_file_with(&project, 1, GREETING, "hello\n", &leftovers);
+    let again = project.run(&["round", "--dispatch", "--spec", SPEC, "--report", USAGE_OF_WAVE_ONE]);
+
+    assert_eq!(waiting_for_the_jev(&again), vec![1], "the new leftover has no decision yet: {again}");
+    assert_eq!(triage_requests(&jev), 2, "the classifier is asked about the new leftover: {again}");
 }

@@ -203,7 +203,7 @@ pub(super) fn findings(root: &Path, maps: &AfterWave, lang: Locale, decide: &dyn
     for wave in waves {
         let mut own: Vec<&mut Citation> = cites.iter_mut().filter(|cite| cite.finding.wave == wave).collect();
         if let Some(payloads) = judge_citations(root, &mut own, decide) {
-            waiting.push(Waiting { wave, question: Question::RemovedName, payloads });
+            waiting.push(Waiting::by_payloads(wave, Question::RemovedName, payloads));
         }
     }
     let mut out: Vec<Finding> = cites.into_iter().map(|cite| cite.finding).collect();

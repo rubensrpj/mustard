@@ -5,16 +5,19 @@
 //! ligado, a volta fica fora do commit nesta rodada, e só ela ([`Waiting`]):
 //! a pergunta sai depois de a trava soltar, pelo prazo de toda chamada
 //! ([`ask_outside`]). A resposta fica gravada como etapa da rodada, achada
-//! de novo pela própria pergunta, e a rodada seguinte segura ou comita por
-//! ela. O Jev que falha, passa do prazo ou volta ilegível manda a pergunta à
-//! reserva, e a volta espera o recibo; até ele, a passagem seguinte pergunta
-//! ao Jev de novo, com o mesmo pedido de reserva. Com o Jev desligado, nada
-//! espera: vale a regra de sempre.
+//! de novo pela chave da decisão — o pedido inteiro, ou, na triagem, a onda,
+//! a pergunta e as atividades que ela decide —, e a rodada seguinte segura ou
+//! comita por ela. O Jev que falha, passa do prazo ou volta ilegível manda a
+//! pergunta à reserva, e a volta espera o recibo; até ele, a passagem
+//! seguinte pergunta ao Jev de novo, com o mesmo pedido de reserva. Com o Jev
+//! desligado, nada espera: vale a regra de sempre.
 //!
 //! O mesmo vale para a triagem das atividades que a rodada grava — o alvo da
 //! mudança de plano, o item que a onda ou a revisão final não cumpriu e a
 //! sobra ([`super::triage_questions`]): a pergunta só sai depois de soltas a
-//! trava do passo do git e a das cópias.
+//! trava do passo do git e a das cópias. A resposta da triagem não se perde
+//! quando a fila de tarefas muda no meio-tempo: as tarefas abertas são só as
+//! opções do pedido, e a decisão é das atividades.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -98,15 +101,46 @@ impl Question {
     fn stage(self) -> String {
         format!("{STAGE}:{}", self.command())
     }
+
+    /// O nome da pergunta na chave da decisão: as da triagem dividem a
+    /// chamada ao Jev e a etapa, e é ele que as separa.
+    fn name(self) -> &'static str {
+        match self {
+            Self::RemovedName => "removed-name",
+            Self::NoChange => "no-change",
+            Self::ChangeTarget => "change-target",
+            Self::UnmetItems => "unmet-items",
+            Self::Leftovers => "leftovers",
+            Self::ReviewUnmet => "review-unmet",
+        }
+    }
+}
+
+/// A chave da decisão da pergunta de triagem `question` da volta `wave` sobre
+/// as atividades de impressão `items`: não leva as tarefas abertas, que são só
+/// as opções da resposta. A fila que muda não troca a chave, e a pergunta só
+/// se refaz quando as atividades mudam.
+pub(crate) fn triage_key(wave: u64, question: Question, items: &str) -> String {
+    reserve::subject(&[wave.to_string(), question.name().to_string(), items.to_string()])
 }
 
 /// A volta da onda `wave` que espera a decisão da pergunta `question`, feita
-/// pelos pedidos `payloads`.
+/// pelos pedidos `payloads` e achada de novo pela chave `key`.
 #[derive(Debug, Clone)]
 pub(crate) struct Waiting {
     pub(crate) wave: u64,
     pub(crate) question: Question,
     pub(crate) payloads: Vec<String>,
+    pub(crate) key: String,
+}
+
+impl Waiting {
+    /// A espera cuja decisão se acha pela impressão dos próprios pedidos
+    /// `payloads`.
+    pub(crate) fn by_payloads(wave: u64, question: Question, payloads: Vec<String>) -> Self {
+        let key = reserve::subject(&payloads);
+        Self { wave, question, payloads, key }
+    }
 }
 
 /// As perguntas com o Jev ligado, lidas antes de a trava do passo do git ser
@@ -139,8 +173,9 @@ impl JevOn {
 }
 
 /// As respostas já decididas das perguntas da triagem que uma rodada lê com a
-/// trava presa ([`decided`]), cada uma pela impressão do pedido: quem grava a
-/// atividade acha a dela refazendo o mesmo pedido.
+/// trava presa ([`decided`]), cada uma pela impressão do pedido de agora, e
+/// não do que a pergunta levou quando foi feita: quem grava a atividade acha a
+/// dela refazendo o mesmo pedido.
 #[derive(Debug, Default)]
 pub(crate) struct Decisions(BTreeMap<String, Value>);
 
@@ -169,17 +204,23 @@ pub(crate) enum Judged {
     Waiting,
 }
 
-/// A decisão da pergunta `question` feita pelos pedidos `payloads`, na spec
-/// de `root` lida em `log`: a resposta gravada ou o recibo da reserva; sem
-/// nenhum dos dois, a espera com o Jev ligado (`on`) e a regra com ele
-/// desligado. Só lê: nenhuma chamada sai daqui.
+/// A decisão da pergunta `question` feita pelos pedidos `payloads`, achada
+/// pela impressão deles ([`decided_by`]).
 pub(crate) fn decided(root: &Path, log: &SpecLog, question: Question, payloads: &[String], on: JevOn) -> Judged {
-    let (stage, print) = (question.stage(), reserve::subject(payloads));
+    decided_by(root, log, question, &reserve::subject(payloads), payloads, on)
+}
+
+/// A decisão da pergunta `question` feita pelos pedidos `payloads`, na spec
+/// de `root` lida em `log`: a resposta gravada sob a chave `key` ou o recibo
+/// da reserva; sem nenhum dos dois, a espera com o Jev ligado (`on`) e a
+/// regra com ele desligado. Só lê: nenhuma chamada sai daqui.
+pub(crate) fn decided_by(root: &Path, log: &SpecLog, question: Question, key: &str, payloads: &[String], on: JevOn) -> Judged {
+    let stage = question.stage();
     let recorded = log
         .events
         .iter()
         .rev()
-        .find(|e| e.event_type == "stage_run" && e.str_field("stage") == Some(stage.as_str()) && e.str_field("fingerprint") == Some(print.as_str()));
+        .find(|e| e.event_type == "stage_run" && e.str_field("stage") == Some(stage.as_str()) && e.str_field("fingerprint") == Some(key));
     if let Some(event) = recorded {
         let docs = event.str_field("output").and_then(|text| serde_json::from_str::<Vec<Value>>(text).ok());
         return docs.filter(|docs| docs.len() == payloads.len()).map_or(Judged::Rule, Judged::Answered);
@@ -250,7 +291,7 @@ fn readable(payload: &str, doc: &Value) -> bool {
 }
 
 /// Grava, na spec `spec` de `start`, a decisão da volta `one`: as respostas
-/// `docs`, só o que responde, achadas de novo pela impressão dos pedidos;
+/// `docs`, só o que responde, achadas de novo pela chave dela;
 /// sem respostas, a regra de sempre. Melhor esforço: a gravação que falha
 /// deixa a volta esperando, e a rodada seguinte pergunta de novo.
 fn record_decision(start: &Path, spec: &str, one: &Waiting, docs: &[Value], started: Instant) {
@@ -261,7 +302,7 @@ fn record_decision(start: &Path, spec: &str, one: &Waiting, docs: &[Value], star
         ("stage".into(), json!(one.question.stage())),
         ("result".into(), json!(if docs.is_empty() { "skipped" } else { "pass" })),
         ("ms".into(), json!(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX))),
-        ("fingerprint".into(), json!(reserve::subject(&one.payloads))),
+        ("fingerprint".into(), json!(one.key)),
         ("output".into(), json!(Value::Array(kept).to_string())),
         ("waves".into(), json!(if one.wave == FINAL_REVIEW { Vec::new() } else { vec![one.wave] })),
     ]);
