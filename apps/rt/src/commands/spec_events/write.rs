@@ -215,7 +215,7 @@ use mustard_core::io::{lessons, spec_events as store};
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Map, Value, json};
 
-use super::proof_check::{created_files, proof_defect, relative_path};
+use super::proof_check::{cites_a_missing_file, created_files, proof_defect, relative_path, spec_created_files};
 use super::request_route::Route;
 use crate::commands::flow::round::queue::{task_files, tasks_not_delivered};
 use crate::commands::flow::round::{backlog_left, backlog_return, waves_left_without_tasks};
@@ -759,8 +759,8 @@ pub(crate) fn draft_rules(start: &Path, spec: &str, event_type: &str, draft: &mu
     // A prova do critério é o comando que a rodada e o fechamento rodam: a que
     // não roda, liga comandos por `;`, é uma busca sem `!`, cita um alvo de
     // teste que o pacote não tem ou um caminho que o projeto não tem recusa
-    // antes de gravar. O que uma tarefa da spec declara criar conta como
-    // existente.
+    // antes de gravar. O que algum item da spec declara criar conta como
+    // existente, e o que a própria tarefa declara também.
     let named: Vec<String> = match event_type {
         "criterion" => draft.get("proof").and_then(Value::as_str).map(str::to_string).into_iter().collect(),
         // A tarefa nomeia a prova dela na linha `Prova:` do texto ou da parte
@@ -776,8 +776,22 @@ pub(crate) fn draft_rules(start: &Path, spec: &str, event_type: &str, draft: &mu
     };
     if !named.is_empty() {
         let root = checkout(start);
-        let created = if event_type == "task" { created_files(draft) } else { spec_created(start, spec.trim()) };
-        if let Some(refusal) = named.iter().find_map(|proof| proof_defect(&root, proof, &created)) {
+        let log = DiskSpecState::new(start).log(spec.trim());
+        let mut created = log.as_ref().map(spec_created_files).unwrap_or_default();
+        if event_type == "task" {
+            created.extend(created_files(draft));
+        }
+        // O critério vem antes das tarefas que o cobrem, e a que cria o teste
+        // que ele cita pode ser gravada depois dele. Antes da aprovação, a
+        // existência do que ele cita fica para o plano, que a confere de novo
+        // com todos os itens gravados e sem o qual a aprovação não passa;
+        // depois dela o plano não roda mais, e a gravação confere na hora.
+        let plan_ahead = event_type == "criterion" && !log.as_ref().is_some_and(|log| State::from_log(log).approved);
+        let defect = named
+            .iter()
+            .filter_map(|proof| proof_defect(&root, proof, &created))
+            .find(|refusal| !(plan_ahead && cites_a_missing_file(refusal)));
+        if let Some(refusal) = defect {
             return Err(refusal);
         }
     }
@@ -805,15 +819,6 @@ pub(crate) fn draft_rules(start: &Path, spec: &str, event_type: &str, draft: &mu
 /// seleção das provas de um relato reconhece a prova sem marca.
 fn project_test(start: &Path) -> Option<String> {
     mustard_core::ProjectConfig::load(&super::project(start).root).commands().test
-}
-
-/// Os arquivos que as tarefas vigentes da spec `spec`, lida no projeto de
-/// `start`, declaram criar: um critério ou um pedido pode citar o arquivo de
-/// teste que uma tarefa já declarou.
-fn spec_created(start: &Path, spec: &str) -> BTreeSet<String> {
-    let Ok(path) = store::spec_file(&super::project(start).root, spec) else { return BTreeSet::new() };
-    let Ok(Some(log)) = store::read(&path) else { return BTreeSet::new() };
-    log.visible().into_iter().filter(|event| event.event_type == "task").flat_map(|task| created_files(&task.fields)).collect()
 }
 
 /// A spec `spec` foi aberta: o arquivo de eventos dela existe, ou a pasta é
@@ -3173,18 +3178,21 @@ mod tests {
         assert_eq!(accepted["ok"], json!(true), "{accepted}");
 
         // A tarefa que declara criar o arquivo do alvo, marcado como novo,
-        // tem a prova dele aceita.
+        // tem a prova dele aceita; a que não o declara, só depois que outra
+        // tarefa da spec o declara.
         let declares = json!({"title": "Alvo novo", "text": "Cria o alvo novo.",
             "agent": "Prova: `cargo test -p calc --test novo`.", "files": [{"path": "calc/tests/novo.rs", "new": true}],
             "depends_on": [], "covers": [crit], "origin": said});
         std::fs::write(root.join("Cargo.toml"), "[workspace]\nmembers = [\"apps/rt\", \"calc\"]\n").unwrap();
         std::fs::create_dir_all(root.join("calc")).unwrap();
         std::fs::write(root.join("calc/Cargo.toml"), "[package]\nname = \"calc\"\n").unwrap();
-        let created = write(root, "task", &declares.to_string());
-        assert_eq!(created["ok"], json!(true), "{created}");
         let mut undeclared = declares.clone();
         undeclared["files"] = json!([{"path": "calc/src/lib.rs"}]);
         assert_eq!(write(root, "task", &undeclared.to_string())["reason"], json!("proof-test-target-missing"));
+        let created = write(root, "task", &declares.to_string());
+        assert_eq!(created["ok"], json!(true), "{created}");
+        let after = write(root, "task", &undeclared.to_string());
+        assert_eq!(after["ok"], json!(true), "the target another task declares counts: {after}");
     }
 
     /// O pronto-quando da onda sai das provas que o pedido coberto nomeia, e

@@ -212,6 +212,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              again and, once it is green, record the task's step with `run write step`. Then record the \
              delivery again. Nothing was written."
         }
+        ("spec_events.delivery_item_code_in_comment", Locale::PtBr) => {
+            "A entrega da onda {wave} foi recusada: comentário acrescentado cita código de item da spec, \
+             em {found}. O código do item fala da obra, e o comentário fica no código depois que ela \
+             acaba. Escreva no comentário o comportamento, sem o código, ou tire o comentário. Depois \
+             grave o passo da tarefa e a entrega de novo. Nada foi gravado."
+        }
+        ("spec_events.delivery_item_code_in_comment", Locale::EnUs) => {
+            "The delivery of wave {wave} was refused: an added comment cites a spec item code, at \
+             {found}. The item code speaks of the work, and the comment stays in the code after the \
+             work ends. Write the behavior in the comment, without the code, or remove the comment. \
+             Then record the task's step and the delivery again. Nothing was written."
+        }
         ("spec_events.verdict_read_missing", Locale::PtBr) => {
             "O veredito foi recusado: o pedido da revisão lista item que ainda não foi lido, e faltou \
              {missing}. Leia cada um de dentro da cópia do revisor. Use o comando de \"Como ler cada \
@@ -1240,8 +1252,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            177,
-            0xf8f0_c803_3d22_68e3,
+            178,
+            0xbc89_c124_396d_e17c,
         );
     }
 
@@ -1290,6 +1302,7 @@ mod tests {
             ("spec_events.delivery_read_missing", &["{wave}", "{missing}"][..]),
             ("spec_events.task_not_released", &["{task}"][..]),
             ("spec_events.delivery_proof_older_than_file", &["{wave}", "{files}"][..]),
+            ("spec_events.delivery_item_code_in_comment", &["{wave}", "{found}"][..]),
             ("spec_events.verdict_read_missing", &["{missing}"][..]),
             ("spec_events.criterion_form_missing", &[][..]),
             ("spec_events.proof_not_a_command", &["{criterion}", "{found}"][..]),

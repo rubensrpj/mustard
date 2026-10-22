@@ -463,7 +463,7 @@ fn member_read_remains(root: &Path, maps: &AfterWave, module: &MapModule, decl: 
 }
 
 /// A linha só tem comentário, de linha ou de bloco, pelo começo dela.
-fn is_comment_line(line: &str) -> bool {
+pub(super) fn is_comment_line(line: &str) -> bool {
     let line = line.trim_start();
     line.starts_with("//") || line.starts_with("/*") || line.starts_with('*') || line.starts_with('#')
 }

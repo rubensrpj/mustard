@@ -1489,17 +1489,63 @@ fn a_legacy_spec_is_read_only_and_move_records_is_gone() {
     assert_eq!(gone["kind"], json!("InvalidSubcommand"), "{gone}");
 }
 
+/// A spec `teste` aberta pelo `run open`, num repositório parado em `dev`, e
+/// a fala `said` do usuário gravada pelo gancho da entrada, como numa sessão
+/// de verdade. Devolve o número da fala.
+fn opened_by_a_session(root: &Path, said: &str) -> u64 {
+    let git = |args: &[&str]| {
+        let out = Command::new("git").args(args).current_dir(root).output().expect("git runs");
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "t@example.com"]);
+    git(&["config", "user.name", "t"]);
+    git(&["config", "commit.gpgsign", "false"]);
+    git(&["checkout", "-q", "-b", "main"]);
+    std::fs::write(root.join(".git/info/exclude"), ".claude/\nmustard.json\n").expect("exclude");
+    std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"pt-BR"},"git":{"flow":{"*":"dev","dev":"main"}}}"#).expect("config");
+    std::fs::write(root.join("README.md"), "oi\n").expect("code");
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "init"]);
+    git(&["checkout", "-q", "-b", "dev"]);
+    let opened = stdout_json(&rt(root, &["open", "--kind", "feature", "--name", "teste", "--base", "dev"]).output().expect("run open"));
+    assert_eq!(opened["ok"], json!(true), "{opened}");
+
+    let prompt = json!({"hook_event_name": "UserPromptSubmit", "prompt": said, "session_id": "s-teste", "cwd": root.to_string_lossy()});
+    let mut hook = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
+        .args(["on", "UserPromptSubmit"])
+        .current_dir(root)
+        .env("CLAUDE_PROJECT_DIR", root)
+        .env_remove("MUSTARD_ACTIVE_SPEC")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("the hook runs");
+    if let Some(mut pipe) = hook.stdin.take() {
+        std::io::Write::write_all(&mut pipe, prompt.to_string().as_bytes()).expect("the hook reads the prompt");
+    }
+    assert!(hook.wait().expect("the hook finishes").success(), "a hook always exits 0");
+    let path = mustard_core::io::spec_events::spec_file(root, "teste").expect("spec file");
+    std::fs::read_to_string(path)
+        .expect("the event file")
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .rfind(|event| event["type"] == json!("message") && event["author"] == json!("user") && event["text"] == json!(said))
+        .and_then(|event| event["id"].as_u64())
+        .expect("the entry hook recorded the message")
+}
+
 /// A sigla explicada num item da spec vale nas gravações seguintes: o
 /// objetivo diz "Planejamento Integrado (PI)", e a regra que cita só "PI"
 /// passa. A sigla nunca explicada é recusada, a recusa cita a chave
-/// `acronyms`, e a chamada recusada guarda o motivo.
+/// `acronyms`, e a chamada recusada guarda o motivo. A spec nasce do `run
+/// open` e a fala do usuário, do gancho da entrada.
 #[test]
 fn an_acronym_explained_in_the_spec_counts_for_the_whole_spec() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let root = dir.path();
-    std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"pt-BR"}}"#).expect("config");
-    seed_state(root, &json!({"author": "binary", "phase": "survey", "branch": "feature/teste", "base": "dev"}));
-    let msg = seed_binary(root, "message", &json!({"author": "user", "text": "o pedido"}));
+    let root = &dir.path().canonicalize().expect("the folder");
+    let msg = opened_by_a_session(root, "o pedido");
     write(root, "context", &json!({"title": "Planejamento da carga", "agent": "- conferir a carga",
         "text": "Ligar o Planejamento Integrado (PI) ao estoque.", "origin": msg}));
     let rule = |text: &str| json!({"title": "Carga do dia", "agent": "- conferir a carga", "text": text,

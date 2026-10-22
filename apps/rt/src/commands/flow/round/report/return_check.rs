@@ -131,6 +131,8 @@ pub(crate) fn check_return(
     unfinished_work(&log, sent, &report, draft)?;
     // E de não levar ao commit arquivo mudado depois da prova verde.
     proof_older_than_files(&log, sent, &report)?;
+    // E de não levar ao código comentário que cite código de item da spec.
+    super::comment_codes::refuse_item_codes_in_comments(&project.root, &log, wave)?;
     if draft.contains_key("files") {
         draft.insert("files".into(), json!(report.files));
     }

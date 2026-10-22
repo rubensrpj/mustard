@@ -826,6 +826,7 @@ fn match_usage(log: &SpecLog, report: &mut Report, held: &[HeldReturn]) -> Resul
 }
 
 /// Os trechos entre `<tag>` e `</tag>` de `raw`, na ordem.
+mod comment_codes;
 mod input;
 mod knowledge;
 mod observations;

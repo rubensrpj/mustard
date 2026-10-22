@@ -20,7 +20,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use mustard_core::domain::spec_events::Refusal;
+use mustard_core::domain::spec_events::{Refusal, SpecLog};
 
 use crate::shared::proc::resolves;
 
@@ -548,6 +548,21 @@ pub(crate) fn created_files(fields: &serde_json::Map<String, serde_json::Value>)
         .map(relative_path)
         .filter(|path| !path.is_empty())
         .collect()
+}
+
+/// Os arquivos que algum item visível da spec `log` declara criar: a tarefa,
+/// e qualquer item que traga a lista de arquivos com a marca de novo, conta,
+/// gravado antes ou depois de quem o cita.
+pub(crate) fn spec_created_files(log: &SpecLog) -> BTreeSet<String> {
+    log.visible().into_iter().flat_map(|event| created_files(&event.fields)).collect()
+}
+
+/// A recusa diz só que um arquivo citado ainda não existe — o caminho ou o
+/// alvo de teste. É a parte da conferência que depende do que os outros itens
+/// da spec declaram criar, e a única que o plano pode conferir de novo, com
+/// todos eles gravados.
+pub(crate) fn cites_a_missing_file(refusal: &Refusal) -> bool {
+    matches!(refusal, Refusal::ProofPathMissing { .. } | Refusal::ProofTestTargetMissing { .. })
 }
 
 /// O defeito da prova `proof`, com o projeto em `root` e os arquivos que o

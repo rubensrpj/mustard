@@ -347,6 +347,46 @@ fn ready(project: &Project) -> Vec<Value> {
     decisions
 }
 
+/// A entrega cujo comentário acrescentado na cópia cita o código de um item
+/// da spec é recusada, nomeando o arquivo e a linha, e nada é gravado; o
+/// comentário com um código que a spec não tem passa.
+#[test]
+fn a_delivery_whose_added_comment_cites_a_spec_item_code_is_refused() {
+    let project = Project::new();
+    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    survey(&project);
+    plan(&project);
+    approve(&project);
+    dispatch_wave(&project, 1);
+
+    let log = project.log();
+    let task = log.visible().into_iter().find(|e| e.event_type == "task").expect("the task");
+    let code = log.codes().get(&task.id).cloned().expect("the task code");
+    let unknown = format!("{}-9999", code.rsplit_once('-').expect("a numbered code").0);
+    let sent = log.visible().into_iter().rfind(|e| e.event_type == "send" && e.wave() == Some(1)).expect("the send of wave 1");
+    let copy = PathBuf::from(sent.str_field("copy").expect("the copy"));
+    let agreed: Vec<Value> = mustard_core::domain::wave_prompt::all_agreed(&log).iter().map(|item| json!({"item": item.id, "met": true})).collect();
+    let deliveries = |project: &Project| project.log().events.iter().filter(|e| e.event_type == "delivered").count();
+    let deliver = |comment: &str| -> Value {
+        let body = format!("fn main() {{\n    {comment}\n    println!(\"{{}}\", 3);\n}}\n");
+        std::fs::write(copy.join("src/main.rs"), body).expect("the change");
+        project.read_request(1);
+        project.finish_tasks(1);
+        let delivered = json!({"wave": 1, "text": "A soma apareceu.", "files": ["src/main.rs"], "commit": "ajuste da soma", "agreed": agreed});
+        project.answer(&["write", "delivered", "--spec", SPEC, "--json", &delivered.to_string()])
+    };
+
+    let before = deliveries(&project);
+    let refused = deliver(&format!("// {code}: soma os dois números"));
+    assert_eq!(refused["reason"], json!("delivery-item-code-in-comment"), "{refused}");
+    let hint = refused["hint"].as_str().unwrap_or_default();
+    assert!(hint.contains("src/main.rs:2") && hint.contains(&code), "the refusal names the file, the line and the code: {hint}");
+    assert_eq!(deliveries(&project), before, "nothing was written");
+
+    let accepted = deliver(&format!("// {unknown}: soma os dois números"));
+    assert_eq!(accepted["ok"], json!(true), "a code the spec does not have passes: {accepted}");
+}
+
 /// A revisão final, no pedido do fechamento, responde por todo o combinado
 /// vigente pelo código, inclusive o item que nenhuma onda carregou: antes
 /// desta obra o pedido só levava o combinado de cada onda; ele nunca via o
