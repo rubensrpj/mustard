@@ -662,6 +662,9 @@ mod tests {
         // vezes no mesmo botão (campo, 21/10/2026).
         assert_eq!(status["reason"], "goal-text-differs", "{status}");
         assert!(status["clicked"].is_u64(), "{status}");
+        // E o objetivo como está gravado vai junto: foi mostrando outro texto
+        // que o clique se perdeu, e sem ele quem lê não sabe o que mostrar.
+        assert_eq!(status["goal_text"], json!(GOAL), "{status}");
         for hint in [&status["hint"], &english["hint"]] {
             let hint = hint.as_str().expect("the hint is text");
             assert!(hint.contains("MustardGoal"), "a dica do motivo não apaga a de como perguntar: {hint}");

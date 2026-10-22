@@ -167,6 +167,12 @@ pub(crate) fn status(log: &SpecLog, lang: Locale) -> Value {
             status["reason"] = json!("goal-text-differs");
             status["clicked"] = json!(clicked.id);
             status["hint"] = json!(differs_hint(lang));
+            // O objetivo como está gravado vai junto: sem ele, quem lê a
+            // resposta tem de ir buscar o texto para saber o que mostrar, e
+            // foi mostrando outro texto que o clique se perdeu.
+            if let Some(text) = goal.str_field("text") {
+                status["goal_text"] = json!(text);
+            }
         }
     }
     status
