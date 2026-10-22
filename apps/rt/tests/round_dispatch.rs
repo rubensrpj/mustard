@@ -2122,8 +2122,11 @@ fn a_wave_that_lost_its_last_task_after_returning_is_not_named_among_the_copies_
     assert!(waves_in(&held, "dispatch").is_empty(), "the copies of waves 2 and 3 hold the fourth task: {held}");
     let warning = copies_full(&held).unwrap_or_else(|| panic!("the copies are full: {held}"));
     assert_eq!(warning["waves"], json!([2, 3]), "the wave out of the air keeps no copy: {held}");
-    let hint = warning["hint"].as_str().unwrap_or_default();
-    assert!(hint.contains("2, 3") && !hint.contains('1'), "{hint}");
+    // O texto do aviso traz o total de cópias e exatamente as ondas da lista
+    // `waves`: comparar a frase inteira não depende de um dígito solto, que
+    // também apareceria no total de cópias ou em outra contagem.
+    let expected = translate("round.copies_full", Locale::PtBr).replace("{copies}", "2").replace("{waves}", "2, 3");
+    assert_eq!(warning["hint"], json!(expected), "{held}");
 }
 
 /// Os eventos da spec, fora as chamadas de comando que toda chamada grava:
