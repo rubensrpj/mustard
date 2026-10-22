@@ -54,9 +54,10 @@ impl HookAction {
     }
 }
 
-/// A spec que recebe a conversa de `session` no projeto em `root`: a spec
-/// atual, pela escada única, quando ela tem arquivo de eventos e não
-/// terminou.
+/// A spec que recebe a conversa de `session` no projeto em `root`: a que a
+/// abertura ou a retomada ligou à sessão, quando ela tem arquivo de eventos e
+/// não terminou. A sessão sem ligação não tem spec: a conversa paralela na
+/// mesma branch não grava na obra da outra.
 ///
 /// A fase sai da linha da spec no índice, que toda gravação refaz com a trava
 /// da spec presa: ler o arquivo de eventos inteiro só para saber se a spec
@@ -64,7 +65,7 @@ impl HookAction {
 /// busca. Sem a linha no índice, vale o arquivo de eventos.
 pub(crate) fn conversation_spec(root: &Path, session: Option<&str>) -> Option<String> {
     use mustard_core::io::spec_events as store;
-    let spec = DiskSpecState::new(root).active(session)?;
+    let spec = crate::shared::spec_state::conversation_bound_spec(&root.to_string_lossy(), session)?;
     let base = store::spec_root(root);
     let events = store::spec_file(&base, &spec).ok().filter(|path| path.is_file())?;
     let phase = match mustard_core::io::spec_index::read(&base).into_iter().find(|line| line.name == spec) {
@@ -116,11 +117,22 @@ pub(crate) fn observe(root: &Path, spec: &str, event_type: &str, drafts: Vec<Map
 /// levantamento que as regras da gravação do `run write` conferem. `guard`
 /// recebe o arquivo, lido pelos envelopes, com a trava presa. Numa pasta do
 /// formato antigo, numa spec de antes desta versão do Mustard, ou sem o
-/// arquivo de eventos, nada é gravado.
-fn record_in_spec(root: &Path, spec: &str, event_type: &str, draft: Map<String, Value>, guard: impl FnOnce(&SpecLog) -> Result<(), Refusal>) -> Option<u64> {
+/// arquivo de eventos, nada é gravado. O evento leva a sessão `session` que o
+/// gravou, quando se sabe.
+fn record_in_spec(
+    root: &Path,
+    spec: &str,
+    session: Option<&str>,
+    event_type: &str,
+    mut draft: Map<String, Value>,
+    guard: impl FnOnce(&SpecLog) -> Result<(), Refusal>,
+) -> Option<u64> {
     let base = store::spec_root(root);
     if super::pages::old_format_spec(&base, spec) || mustard_core::io::legacy_specs::is_legacy(&base, spec) {
         return None;
+    }
+    if let Some(session) = session.filter(|session| !session.trim().is_empty()) {
+        draft.entry("session").or_insert_with(|| Value::String(session.to_string()));
     }
     let path = store::spec_file(&base, spec).ok().filter(|path| path.is_file())?;
     store::append(&path, vec![(event_type, draft)], guard).ok()?.first().copied()
@@ -174,7 +186,7 @@ fn record_user_message(root: &Path, session: Option<&str>, mut fields: Value) ->
     if let Some(point) = open {
         fields["during"] = json!(point);
     }
-    record_in_spec(root, &spec, "message", draft(fields), |_| Ok(()))
+    record_in_spec(root, &spec, session, "message", draft(fields), |_| Ok(()))
 }
 
 /// A mensagem do usuário, como ele a escreveu, sem os segredos.
@@ -190,13 +202,15 @@ pub(crate) fn record_message(root: &Path, session: Option<&str>, text: &str) -> 
 /// nela em ordem, como o gancho grava a mensagem do turno: autor usuário,
 /// gravadas pelo programa e sem os segredos. Quem chama é a abertura, logo
 /// depois do nascimento, quando a spec ainda não tem mensagem nenhuma; as
-/// mensagens seguintes ficam com o gancho. Devolve os números gravados.
-pub(crate) fn record_earlier_messages(root: &Path, spec: &str, texts: &[String]) -> Vec<u64> {
+/// mensagens seguintes ficam com o gancho. Cada uma leva a sessão
+/// `session` da conversa. Devolve os números gravados.
+pub(crate) fn record_earlier_messages(root: &Path, spec: &str, session: Option<&str>, texts: &[String]) -> Vec<u64> {
     texts
         .iter()
         .filter(|text| !text.trim().is_empty())
         .filter_map(|text| {
-            record_in_spec(root, spec, "message", draft(json!({ "author": "user", "text": without_secrets(text) })), |_| Ok(()))
+            let fields = draft(json!({ "author": "user", "text": without_secrets(text) }));
+            record_in_spec(root, spec, session, "message", fields, |_| Ok(()))
         })
         .collect()
 }
@@ -281,7 +295,7 @@ fn reply(root: &Path, session: Option<&str>, text: &str, repeated: impl FnOnce(&
     let asked_since = |now: &SpecLog| {
         now.events.iter().any(|e| e.id > seen && e.event_type == "message" && e.str_field("author").map(str::trim) == Some("user"))
     };
-    record_in_spec(root, &spec, "response", draft(fields), |now| match asked {
+    record_in_spec(root, &spec, session, "response", draft(fields), |now| match asked {
         None if asked_since(now) => Err(Refusal::MissingField { event_type: "response".to_string(), field: "reply_to".to_string() }),
         _ => Ok(()),
     })
@@ -484,6 +498,10 @@ fn project_operations_path(root:&Path)->std::path::PathBuf {
 /// recusada e nunca se passa pelo recibo de leitura ([`record_receipt`]). A
 /// spec só precisa ter arquivo de eventos, e basta conferir o caminho: ler o
 /// arquivo inteiro para isso custava uma leitura completa por chamada.
+///
+/// A chamada de uma sessão sem ligação neste projeto não fica em spec
+/// nenhuma: nem a da conversa paralela na mesma branch, nem a leitura que uma
+/// conversa faz com `--root` de outro projeto.
 fn record_in_call_spec(
     root: &Path,
     command: &str,
@@ -493,6 +511,11 @@ fn record_in_call_spec(
     report: &Value,
     measured: Map<String, Value>,
 ) -> Option<u64> {
+    if session.is_some()
+        && crate::shared::spec_state::conversation_bound_spec(&store::spec_root(root).to_string_lossy(), session).is_none()
+    {
+        return None;
+    }
     let spec = report
         .get("spec")
         .and_then(Value::as_str)
@@ -521,7 +544,8 @@ fn record_in_call_spec(
 /// spec inteira a cada um.
 pub(crate) fn record_receipt(root: &Path, spec: &str, request: &str, items: &[String], started: Instant) -> Option<u64> {
     let measured = draft(json!({ "invocation": false, "request": request, "items": items }));
-    record_in_spec(root, spec, "call", call_fields("read", started, &json!({ "ok": true }), measured), |_| Ok(()))
+    let session = crate::shared::spec_state::session_from_env();
+    record_in_spec(root, spec, session.as_deref(), "call", call_fields("read", started, &json!({ "ok": true }), measured), |_| Ok(()))
 }
 
 /// O recibo de [`record_receipt`] da tarefa `task` que a resposta do passo
@@ -529,7 +553,8 @@ pub(crate) fn record_receipt(root: &Path, spec: &str, request: &str, items: &[St
 /// diz que ela foi liberada.
 pub(crate) fn record_release(root: &Path, spec: &str, request: &str, task: &str, items: &[String], started: Instant) -> Option<u64> {
     let measured = draft(json!({ "invocation": false, "request": request, "items": items, "released": task }));
-    record_in_spec(root, spec, "call", call_fields("read", started, &json!({ "ok": true }), measured), |_| Ok(()))
+    let session = crate::shared::spec_state::session_from_env();
+    record_in_spec(root, spec, session.as_deref(), "call", call_fields("read", started, &json!({ "ok": true }), measured), |_| Ok(()))
 }
 
 /// Os campos de toda chamada `command`, feita em `started`: o autor, o tempo,
@@ -700,6 +725,8 @@ mod tests {
         std::fs::write(root.join("mustard.json"), "{}").expect("config");
         stand_on_spec_branch(root, spec);
         record_open(root, spec, &format!("feature/{spec}"), "dev").expect("open");
+        // A conversa dos ganchos destes testes abriu a spec.
+        crate::shared::context::session::bind_session_spec(&root.to_string_lossy(), "s1", spec);
         dir
     }
 

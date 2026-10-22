@@ -3331,6 +3331,8 @@ mod tests {
     #[test]
     fn a_pinned_search_answers_without_the_filter_the_key_warning_or_a_measured_call() {
         let dir = search_project_on("cravada");
+        // A conversa que busca abriu a spec: as chamadas dela ficam lá.
+        crate::shared::context::session::bind_session_spec(&dir.path().to_string_lossy(), "sessao-cravada", "cravada");
         let fake = FakeFilter::scoring(&[0.9, 0.8, 0.7]);
         let opts = search_opts(dir.path(), "cancelar_pedido", Some("onde se cancela o pedido"), Some("sessao-cravada"));
         let report = searched(&opts, &fake.assemble_from_the_project(None));
@@ -3423,6 +3425,8 @@ mod tests {
     #[test]
     fn the_key_in_the_project_file_turns_the_filter_on_and_never_shows() {
         let dir = search_project_on("chave");
+        // A conversa que busca abriu a spec: as chamadas dela ficam lá.
+        crate::shared::context::session::bind_session_spec(&dir.path().to_string_lossy(), "sessao-chave", "chave");
         with_the_key(dir.path());
         let fake = FakeFilter::scoring(&[0.7, 0.9, 0.8]);
         let opts = search_opts(dir.path(), "pedido", Some("onde o pedido é gravado"), Some("sessao-chave"));

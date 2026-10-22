@@ -953,6 +953,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The spec is missing: a {type} event is written to a spec's event file. Pass \
              `--spec <name>`. Nothing was written."
         }
+        ("spec_events.session_unbound", Locale::PtBr) => {
+            "Sem `--spec`, o tipo {type} vai para a spec ligada a esta conversa, e esta \
+             conversa não está ligada a nenhuma. Rode `mustard-rt run resume --spec <nome>` \
+             (o `/mustard:continue` faz isso) ou passe `--spec <nome>`. Nada foi gravado."
+        }
+        ("spec_events.session_unbound", Locale::EnUs) => {
+            "Without `--spec`, a {type} event goes to the spec bound to this conversation, and \
+             this conversation is bound to none. Run `mustard-rt run resume --spec <name>` \
+             (`/mustard:continue` does it) or pass `--spec <name>`. Nothing was written."
+        }
         ("spec_events.no_current_spec", Locale::PtBr) => {
             "Nenhuma spec atual: nem `MUSTARD_ACTIVE_SPEC`, nem a branch, nem a sessão apontam \
              uma spec. Passe `--spec <nome>`."
@@ -1266,8 +1276,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            179,
-            0x6c18_b2f5_a348_494a,
+            180,
+            0x06b8_6d77_2bfd_8cc2,
         );
     }
 
@@ -1431,6 +1441,7 @@ mod tests {
             ("spec_index.stale_search", &["{count}"][..]),
             ("spec_index.no_specs", &[][..]),
             ("spec_events.spec_required", &["{type}"][..]),
+            ("spec_events.session_unbound", &["{type}"][..]),
             ("lessons.unknown_lesson", &["{id}"][..]),
             ("lessons.origin_missing", &[][..]),
             ("lessons.repeated", &["{id}", "{text}"][..]),

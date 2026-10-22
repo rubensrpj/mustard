@@ -215,7 +215,7 @@ impl GoalProject {
         git(&["commit", "-q", "-m", "init"]);
         git(&["checkout", "-q", "-b", "dev"]);
         let project = Self { _dir: dir, root, home };
-        let opened = project.run(&["open", "--kind", "feature", "--name", GOAL_SPEC, "--base", "dev"]);
+        let opened = project.open();
         assert_eq!(opened["ok"], json!(true), "{opened}");
         project.hook(
             "UserPromptSubmit",
@@ -232,6 +232,22 @@ impl GoalProject {
     /// O binário com `args`, no projeto, com a pasta pessoal falsa e nenhuma
     /// sessão nem spec forçada.
     fn command(&self, args: &[&str], stdin: &str) -> String {
+        self.command_as(None, args, stdin)
+    }
+
+    /// A abertura da spec pela conversa da sessão [`GOAL_SESSION`], como quem
+    /// conduz a roda: o gancho do terminal passa a sessão ao comando, e é a
+    /// conversa dela que fica ligada à spec.
+    fn open(&self) -> Value {
+        let out = self.command_as(Some(GOAL_SESSION), &["run", "open", "--kind", "feature", "--name", GOAL_SPEC, "--base", "dev"], "");
+        let report: Value = serde_json::from_str(out.trim()).expect("the opening answers JSON");
+        assert_eq!(report["ok"], json!(true), "{report}");
+        report
+    }
+
+    /// Como [`Self::command`], com a sessão `session` no ambiente, como o
+    /// gancho do terminal a passa ao comando numa conversa.
+    fn command_as(&self, session: Option<&str>, args: &[&str], stdin: &str) -> String {
         let mut child = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
             .args(args)
             .current_dir(&self.root)
@@ -240,6 +256,7 @@ impl GoalProject {
             .env("CLAUDE_PROJECT_DIR", &self.root)
             .env("MUSTARD_CLAUDE_BIN", self.home.join("sem-claude"))
             .env_remove("MUSTARD_ACTIVE_SPEC")
+            .envs(session.map(|session| ("MUSTARD_SESSION_ID", session)))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

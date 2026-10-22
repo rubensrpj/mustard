@@ -60,6 +60,9 @@ pub enum Refusal {
     NoCurrentSpec,
     /// Um tipo de evento da spec gravado sem dizer a spec.
     SpecRequired { event_type: String },
+    /// Uma gravação sem `--spec` de uma conversa que nem a abertura nem a
+    /// retomada ligou a uma spec.
+    SessionUnbound { event_type: String },
     /// A lição que `replaces` aponta não existe no banco de lições.
     UnknownLesson { id: u64 },
     /// A lição não diz onde nasceu.
@@ -374,6 +377,7 @@ impl Refusal {
             Self::SpecNotOpen { .. } => "spec-not-open",
             Self::NoCurrentSpec => "no-current-spec",
             Self::SpecRequired { .. } => "spec-required",
+            Self::SessionUnbound { .. } => "session-unbound",
             Self::UnknownLesson { .. } => "unknown-lesson",
             Self::LessonOriginMissing => "lesson-origin-missing",
             Self::LessonRepeated { .. } => "lesson-repeated",
@@ -560,6 +564,9 @@ impl Refusal {
             Self::NoCurrentSpec => fill("spec_events.no_current_spec", &[]),
             Self::SpecRequired { event_type } => {
                 fill("spec_events.spec_required", &[("{type}", event_type.clone())])
+            }
+            Self::SessionUnbound { event_type } => {
+                fill("spec_events.session_unbound", &[("{type}", event_type.clone())])
             }
             Self::UnknownLesson { id } => fill("lessons.unknown_lesson", &[("{id}", id.to_string())]),
             Self::LessonOriginMissing => fill("lessons.origin_missing", &[]),

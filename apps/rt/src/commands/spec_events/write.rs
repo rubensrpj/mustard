@@ -354,18 +354,27 @@ fn write_triaged(opts: &WriteOpts, copy: bool, ask: &AskJev<'_>) -> Value {
     if event_type == LESSON {
         return write_lesson(&project, opts.spec.as_deref(), draft);
     }
-    let Some(spec) = opts.spec.as_deref() else {
-        // A página do projeto nasce antes de qualquer spec.
-        let page = draft.get("page").and_then(Value::as_str).map(str::trim);
-        if event_type == "publish" && page == Some(spec_index::PROJECT_PAGE) {
-            return record_project_page(&project, &draft);
+    let bound;
+    let spec = match opts.spec.as_deref() {
+        Some(spec) => spec,
+        None => {
+            // A página do projeto nasce antes de qualquer spec.
+            let page = draft.get("page").and_then(Value::as_str).map(str::trim);
+            if event_type == "publish" && page == Some(spec_index::PROJECT_PAGE) {
+                return record_project_page(&project, &draft);
+            }
+            // Sem spec, um tipo que não existe continua recusado pelo nome; o
+            // que existe vai para a spec ligada à conversa que grava.
+            if type_spec(event_type).is_none() {
+                return refuse(Refusal::UnknownType { found: event_type.to_string() });
+            }
+            let session = crate::shared::spec_state::session_from_env();
+            match super::session_spec::of_conversation(&project.root, session.as_deref(), event_type) {
+                Ok(spec) => bound = spec,
+                Err(refusal) => return refuse(refusal),
+            }
+            bound.as_str()
         }
-        // Sem spec, um tipo que não existe continua recusado pelo nome.
-        return refuse(if type_spec(event_type).is_some() {
-            Refusal::SpecRequired { event_type: event_type.to_string() }
-        } else {
-            Refusal::UnknownType { found: event_type.to_string() }
-        });
     };
     // A spec de antes desta versão do Mustard só se lê: a recusa vem antes de
     // qualquer conferência do item.
@@ -1577,19 +1586,32 @@ impl RecordCheck {
 /// spec da conversa principal, e pelo registro não se sabia quem fez o quê. O
 /// aviso é só aviso: duas sessões na mesma spec podem ser o que o usuário
 /// quer, e travar a gravação travaria o condutor pelo motivo errado.
+///
+/// Só conta a conversa ligada a esta spec, a minha e a outra: a sessão que o
+/// `/clear` encerrou, ou a que nunca abriu nem retomou a spec, não é outra
+/// conversa na obra.
 fn another_session_wrote(root: &Path, spec: Option<&str>, lang: Locale) -> Option<String> {
     let mine = crate::shared::spec_state::session_from_env()?;
     let spec = spec.map(str::trim).filter(|spec| !spec.is_empty())?;
+    let bound = |session: &str| crate::shared::context::session::spec_for_session(&root.to_string_lossy(), session).as_deref() == Some(spec);
+    if !bound(&mine) {
+        return None;
+    }
     let path = store::spec_file(root, spec).ok()?;
     let log = store::read(&path).ok().flatten()?;
-    let theirs = another_session_in(&log, &mine)?;
+    let theirs = another_session_in(&log, &mine, bound)?;
     Some(crate::shared::say::say("spec_events.another_session", lang, &[("{session}", &theirs), ("{mine}", &mine)]))
 }
 
-/// A sessão mais recente da spec lida em `log` que não é `mine`; `None`
-/// quando toda sessão registrada é a minha, ou quando não há nenhuma.
-fn another_session_in(log: &SpecLog, mine: &str) -> Option<String> {
-    log.events.iter().rev().filter_map(|event| event.str_field("session")).find(|session| *session != mine).map(str::to_string)
+/// A sessão mais recente da spec lida em `log` que não é `mine` e que
+/// `bound` diz ligada a ela; `None` quando não há outra assim.
+fn another_session_in(log: &SpecLog, mine: &str, bound: impl Fn(&str) -> bool) -> Option<String> {
+    log.events
+        .iter()
+        .rev()
+        .filter_map(|event| event.str_field("session"))
+        .find(|session| *session != mine && bound(session))
+        .map(str::to_string)
 }
 
 #[cfg(test)]
@@ -1597,20 +1619,22 @@ mod session_tests {
     use super::*;
     use mustard_core::domain::spec_events::parse_log;
 
-    /// A spec com registro de outra sessão acusa qual é ela, e a sessão mais
-    /// recente que não é a minha é a que o aviso nomeia. Com só a minha, ou
-    /// sem sessão nenhuma, nada se diz.
+    /// A spec com registro de outra sessão ligada a ela acusa qual é ela, e
+    /// a sessão mais recente que não é a minha é a que o aviso nomeia. Com só
+    /// a minha, sem sessão nenhuma, ou com a outra já sem ligação, nada se diz.
     #[test]
     fn the_write_sees_the_other_session_in_the_spec() {
         let line = |id: u64, session: &str| {
             format!("{{\"v\":1,\"id\":{id},\"at\":\"2026-10-22T10:0{id}:00Z\",\"type\":\"call\",\"author\":\"binary\",\"command\":\"read\",\"ms\":1,\"result\":\"ok\",\"session\":\"{session}\"}}")
         };
+        let all = |_: &str| true;
         let log = parse_log(&format!("{}\n{}\n{}\n", line(1, "a"), line(2, "b"), line(3, "a")));
-        assert_eq!(another_session_in(&log, "a").as_deref(), Some("b"), "a mais recente que não é a minha");
-        assert_eq!(another_session_in(&log, "b").as_deref(), Some("a"));
+        assert_eq!(another_session_in(&log, "a", all).as_deref(), Some("b"), "a mais recente que não é a minha");
+        assert_eq!(another_session_in(&log, "b", all).as_deref(), Some("a"));
+        assert_eq!(another_session_in(&log, "a", |session| session != "b"), None, "a outra sem ligação não conta");
         let only_mine = parse_log(&format!("{}\n", line(1, "a")));
-        assert_eq!(another_session_in(&only_mine, "a"), None, "só a minha não é outra");
-        assert_eq!(another_session_in(&parse_log(""), "a"), None, "sem registro, nada a dizer");
+        assert_eq!(another_session_in(&only_mine, "a", all), None, "só a minha não é outra");
+        assert_eq!(another_session_in(&parse_log(""), "a", all), None, "sem registro, nada a dizer");
     }
 }
 
@@ -2071,7 +2095,8 @@ pub fn run(opts: &WriteOpts, copy: bool) {
     // outra. O aviso não segura nada — a decisão é de quem lê.
     if report["ok"] == json!(true) {
         let project = super::project(&opts.root);
-        if let Some(hint) = another_session_wrote(&project.root, opts.spec.as_deref(), project.lang) {
+        let spec = opts.spec.as_deref().or_else(|| report["spec"].as_str()).map(str::to_string);
+        if let Some(hint) = another_session_wrote(&project.root, spec.as_deref(), project.lang) {
             super::pages::push_warning(&mut report, "another-session", &hint);
         }
     }
@@ -4852,6 +4877,8 @@ mod tests {
         std::fs::write(root.join("mustard.json"), "{}").unwrap();
         crate::shared::spec_state::stand_on_spec_branch(root, "teste");
         surveyed(root);
+        // A conversa dos ganchos abriu a spec.
+        crate::shared::context::session::bind_session_spec(&root.to_string_lossy(), "s1", "teste");
         let suggestion = "Um sim aprova o objetivo sugerido.";
         let stop = |text: &str| hook_call(root, "Stop", json!({ "last_assistant_message": text }));
         let opening = run_event(Some(Trigger::Stop), &stop(&format!("A spec nasceu. Sugiro: \"{suggestion}\" Serve?")));

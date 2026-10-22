@@ -394,9 +394,18 @@ impl Project {
 
     /// Como [`Self::command`], rodando de dentro de `dir`.
     fn command_in(&self, dir: &Path, args: &[&str], stdin: &str) -> Output {
+        self.command_as(None, dir, args, stdin)
+    }
+
+    /// Como [`Self::command_in`], com a sessão `session` no ambiente: numa
+    /// conversa, o gancho do terminal passa a sessão dela ao comando.
+    fn command_as(&self, session: Option<&str>, dir: &Path, args: &[&str], stdin: &str) -> Output {
         let mut binary = binary::isolated(self.rt.as_deref().unwrap_or_else(|| Path::new(env!("CARGO_BIN_EXE_mustard-rt"))));
-        let mut child = self
-            .env(&mut binary)
+        self.env(&mut binary);
+        if let Some(session) = session {
+            binary.env("MUSTARD_SESSION_ID", session);
+        }
+        let mut child = binary
             .args(args)
             .current_dir(dir)
             .stdin(Stdio::piped())
@@ -514,6 +523,31 @@ impl Project {
         let text = String::from_utf8_lossy(&out.stdout).to_string();
         serde_json::from_str(&text)
             .unwrap_or_else(|e| panic!("{args:?} did not answer JSON ({e}): {text}{}", String::from_utf8_lossy(&out.stderr)))
+    }
+
+    /// Um comando `run` da conversa da sessão `session`, que pode recusar: a
+    /// resposta vem como veio.
+    fn answer_as(&self, session: &str, args: &[&str]) -> Value {
+        let mut all = vec!["run"];
+        all.extend_from_slice(args);
+        let out = self.command_as(Some(session), &self.root, &all, "");
+        let text = String::from_utf8_lossy(&out.stdout).to_string();
+        serde_json::from_str(&text)
+            .unwrap_or_else(|e| panic!("{args:?} did not answer JSON ({e}): {text}{}", String::from_utf8_lossy(&out.stderr)))
+    }
+
+    /// Um comando `run` da conversa da sessão `session`, que precisa
+    /// responder `ok`.
+    fn run_as(&self, session: &str, args: &[&str]) -> Value {
+        let report = self.answer_as(session, args);
+        assert_eq!(report["ok"], json!(true), "{args:?}: {report}");
+        report
+    }
+
+    /// A abertura da spec pela conversa da sessão [`SESSION`], como quem
+    /// conduz a roda: é ela que fica ligada à spec, e a fala dela entra.
+    fn open(&self) -> Value {
+        self.run_as(SESSION, &["open", "--kind", "feature", "--name", SPEC, "--base", "dev"])
     }
 
     /// Uma gravação pelo `run write`.
@@ -699,7 +733,7 @@ fn calls(project: &Project) -> BTreeMap<String, usize> {
 fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
     let project = Project::new();
 
-    let opened = project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    let opened = project.open();
     assert_eq!(opened["step"], json!("ask_goal"), "{opened}");
     survey(&project);
     plan(&project);
@@ -813,7 +847,7 @@ fn closed_with_one_wave(project: &Project) -> Vec<String> {
 
 /// [`closed_with_one_wave`] com o objetivo de título `title` e texto `goal`.
 fn closed_with_goal(project: &Project, title: &str, goal: &str) -> Vec<String> {
-    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    project.open();
     survey_with(project, title, goal);
     plan(project);
     approve(project);
@@ -927,7 +961,7 @@ fn the_goal_title_names_the_pull_request_and_the_project_summary() {
 #[test]
 fn criterion_without_a_declared_form_is_refused() {
     let project = Project::new();
-    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    project.open();
     survey(&project);
     let said = user_says(&project, "O plano é uma onda só, que muda a saudação.");
 
@@ -970,7 +1004,7 @@ fn criterion_without_a_declared_form_is_refused() {
 #[test]
 fn amending_an_old_criterion_does_not_require_a_form() {
     let project = Project::new();
-    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    project.open();
     survey(&project);
     let said = user_says(&project, "O plano é uma onda só, que muda a saudação.");
 
@@ -1035,7 +1069,7 @@ fn three_terms_use_the_market_name() {
 /// fechamento devolve a linha do `pr-open`, que roda. Confere o que a rodada
 /// deixou nos dois repositórios e devolve a resposta do `pr-open`.
 fn open_pull_requests_with_a_submodule(project: &Project) -> Value {
-    let opened = project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    let opened = project.open();
     assert_eq!(opened["step"], json!("ask_goal"), "{opened}");
     survey(project);
     plan_files(project, &["src/main.rs", SUB_FILE]);
@@ -1098,6 +1132,70 @@ fn open_pull_requests_with_a_submodule(project: &Project) -> Value {
 fn session_start(project: &Project) -> Value {
     json!({"hook_event_name": "SessionStart", "source": "startup", "session_id": SESSION,
         "cwd": project.root.to_string_lossy()})
+}
+
+/// Duas conversas no mesmo projeto e na mesma branch: só a que abriu ou
+/// retomou a spec grava nela. A que abriu grava sem `--spec` logo depois da
+/// abertura. A outra não grava fala, resposta nem chamada, e a gravação dela
+/// sem `--spec` é recusada com o comando de retomar. Depois do `/clear`, a
+/// sessão nova retoma, e a fala e a gravação dela entram sem o aviso de outra
+/// sessão. A leitura com `--root` de outro projeto não deixa chamada lá.
+#[test]
+fn only_the_conversation_bound_to_the_spec_records_in_it() {
+    const PARALLEL: &str = "s-paralela";
+    const CLEARED: &str = "s-ponta-depois-do-clear";
+    let project = Project::new();
+    let cwd = project.root.to_string_lossy().to_string();
+    let says = |session: &str, text: &str| {
+        project.hook("UserPromptSubmit", &json!({"hook_event_name": "UserPromptSubmit", "prompt": text, "session_id": session, "cwd": cwd}));
+    };
+    let message = |text: &str| {
+        project.log().visible().into_iter().rfind(|e| e.event_type == "message" && e.str_field("text") == Some(text)).cloned()
+    };
+    let context = |text: &str, origin: u64| {
+        json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": text, "origin": origin}).to_string()
+    };
+
+    // A conversa que abre grava a fala e, sem `--spec`, o item.
+    project.open();
+    says(SESSION, GOAL);
+    let goal = message(GOAL).expect("the conversation that opened records its message");
+    assert_eq!(goal.str_field("session"), Some(SESSION), "the message says its conversation");
+    let written = project.answer_as(SESSION, &["write", "context", "--json", &context(GOAL, goal.id)]);
+    assert_eq!((&written["ok"], &written["spec"]), (&json!(true), &json!(SPEC)), "{written}");
+
+    // A conversa paralela, sem ligação: nada dela entra.
+    let before = (project.log().events.len(), project.operations().events.len());
+    says(PARALLEL, "Na outra conversa, quero outra coisa.");
+    project.hook(
+        "Stop",
+        &json!({"hook_event_name": "Stop", "last_assistant_message": "A resposta da outra conversa.", "session_id": PARALLEL, "cwd": cwd}),
+    );
+    let refused = project.answer_as(PARALLEL, &["write", "context", "--json", &context("O objetivo da outra conversa.", goal.id)]);
+    assert_eq!(refused["reason"], json!("session-unbound"), "{refused}");
+    assert!(refused["hint"].as_str().unwrap_or_default().contains("mustard-rt run resume"), "{refused}");
+    project.run_as(PARALLEL, &["read", "conversation", "--spec", SPEC]);
+    let after = (project.log().events.len(), project.operations().events.len());
+    assert_eq!(after, before, "the parallel conversation left nothing in the spec");
+
+    // O `/clear` troca a sessão; a nova retoma e grava sem o aviso.
+    project.hook("SessionEnd", &json!({"hook_event_name": "SessionEnd", "reason": "clear", "session_id": SESSION, "cwd": cwd}));
+    project.hook("SessionStart", &json!({"hook_event_name": "SessionStart", "source": "clear", "session_id": CLEARED, "cwd": cwd}));
+    assert_eq!(project.run_as(CLEARED, &["resume"])["spec"], json!(SPEC));
+    let later = "Depois de limpar, sigo na mesma obra.";
+    says(CLEARED, later);
+    let said = message(later).expect("the conversation that resumed records its message");
+    assert_eq!(said.str_field("session"), Some(CLEARED));
+    let again = project.run_as(CLEARED, &["write", "context", "--json", &context(later, said.id)]);
+    assert!(!again.to_string().contains("another-session"), "{again}");
+
+    // A leitura de outro projeto não grava chamada lá.
+    let elsewhere = Project::new();
+    elsewhere.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    let there = elsewhere.root.to_string_lossy().to_string();
+    project.run_as(CLEARED, &["read", "conversation", "--root", &there, "--spec", SPEC]);
+    let reads = elsewhere.operations().visible().into_iter().filter(|e| e.str_field("command") == Some("read")).count();
+    assert_eq!(reads, 0, "a reading from another conversation's project leaves no call there");
 }
 
 /// Outra pessoa mergeia o pull request do submódulo, pelo `gh` de fora do
@@ -1366,7 +1464,7 @@ fn two_sessions_checking_the_submodule_at_the_same_time_move_the_pointer_once() 
 #[test]
 fn opening_a_spec_starts_the_reading_of_the_history_of_the_map_it_refreshes() {
     let project = Project::with_scan();
-    let opened = project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    let opened = project.open();
     assert_eq!(opened["step"], json!("ask_goal"), "{opened}");
 
     let model = map_store::model_path(&project.root);
@@ -1399,7 +1497,7 @@ fn a_project_in_a_temp_folder_with_two_names_is_asked_about_by_its_real_path() {
         "the project is named by the real path, not through the shortcut: {}",
         project.root.display()
     );
-    let opened = project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    let opened = project.open();
     assert_eq!(opened["step"], json!("ask_goal"), "{opened}");
     let model = map_store::model_path(&project.root);
     assert_eq!(
@@ -1417,7 +1515,7 @@ fn deliver_the_first_wave(project: &Project) {
 
 /// [`deliver_the_first_wave`] com a onda mudando o arquivo `file`.
 fn deliver_the_first_wave_changing(project: &Project, file: &str) {
-    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    project.open();
     survey(project);
     plan_files(project, &[file]);
     approve(project);

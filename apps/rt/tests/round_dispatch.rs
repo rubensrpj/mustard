@@ -102,8 +102,27 @@ impl Project {
 
     /// Como [`Self::command`], rodando de dentro de `dir`.
     fn command_in(&self, dir: &Path, args: &[&str], stdin: &str) -> Output {
+        self.command_from(dir, None, args, stdin)
+    }
+
+    /// A abertura da spec pela conversa da sessão [`SESSION`], como quem
+    /// conduz a roda: o gancho do terminal passa a sessão ao comando, e é a
+    /// conversa dela que fica ligada à spec.
+    fn open(&self) -> Value {
+        let args = ["run", "open", "--kind", "feature", "--name", SPEC, "--base", "dev"];
+        let out = self.command_from(&self.root, Some(SESSION), &args, "");
+        let report: Value = serde_json::from_slice(&out.stdout).expect("the opening answers JSON");
+        assert_eq!(report["ok"], json!(true), "{report}");
+        report
+    }
+
+    /// Como [`Self::command_in`], com a sessão `session` no ambiente, como o
+    /// gancho do terminal a passa ao comando numa conversa; ela vale no lugar
+    /// da sessão do projeto.
+    fn command_from(&self, dir: &Path, session: Option<&str>, args: &[&str], stdin: &str) -> Output {
         let mut child = self
             .program(env!("CARGO_BIN_EXE_mustard-rt"))
+            .envs(session.map(|session| ("MUSTARD_SESSION_ID", session)))
             .args(args)
             .current_dir(dir)
             .stdin(Stdio::piped())
@@ -297,7 +316,7 @@ fn backlog_task_with(project: &Project, criterion: u64, said: u64, files: &[&str
 #[test]
 fn backlog_always_becomes_the_same_batches() {
     let project = Project::new();
-    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    project.open();
     let said = survey(&project);
     let criterion = project.write(
         "criterion",
@@ -353,7 +372,7 @@ fn backlog_always_becomes_the_same_batches() {
 #[test]
 fn binary_writes_the_wave_event_of_the_batch() {
     let project = Project::new();
-    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    project.open();
     let said = survey(&project);
     let criterion = project.write(
         "criterion",
@@ -489,7 +508,7 @@ fn a_short_lived_round_uses_its_exact_session_owner_and_the_dispatch_hook_accept
 /// `marked` de `files`.
 fn marked_backlog_project(files: &[&[&str]], marked: &[usize]) -> (Project, u64, u64, Vec<u64>) {
     let project = Project::new();
-    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    project.open();
     let said = survey(&project);
     let criterion = project.write(
         "criterion",
@@ -892,7 +911,7 @@ fn without_a_key_the_wave_goes_out_on_the_project_model() {
 #[test]
 fn each_formed_wave_goes_out_on_the_model_of_its_hardest_task() {
     let project = Project::new();
-    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    project.open();
     let said = survey(&project);
     let criterion = project.write(
         "criterion",
@@ -1986,7 +2005,7 @@ fn each_formed_wave_leaves_in_the_round_it_is_born_with_one_number() {
     let mut config: Value = serde_json::from_str(&std::fs::read_to_string(&path).expect("config")).expect("json");
     config["judgement"].as_object_mut().expect("the judgement").remove("wave-planning");
     std::fs::write(&path, config.to_string()).expect("config");
-    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    project.open();
     let said = survey(&project);
     let criterion = project.write(
         "criterion",

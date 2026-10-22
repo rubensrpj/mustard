@@ -8,7 +8,9 @@
 //!
 //! Every door that asks "which spec is this" goes through [`active_spec`], so
 //! two doors can never name different specs for the same session. A leftover
-//! `.pipeline-states/` file names nothing.
+//! `.pipeline-states/` file names nothing. A conversa é a exceção: a fala, a
+//! resposta, as chamadas e a gravação sem `--spec` vão para a spec ligada à
+//! sessão ([`conversation_bound_spec`]), e a branch não conta.
 //!
 //! [`DiskSpecState`] is the disk side of the core's `SpecState` port: that
 //! ladder, and each spec's state folded from its `spec.ndjson`.
@@ -46,8 +48,14 @@ pub(crate) fn hand_session(command: &mut std::process::Command, session: &str) {
 /// which could name another session's spec. Só as entradas `run` perguntam
 /// aqui e passam a sessão para baixo; o que elas chamam recebe a sessão como
 /// argumento, e os testes passam a deles.
+///
+/// Nos testes da biblioteca, nenhuma: a sessão de quem roda a suíte de
+/// dentro de uma conversa não muda o que um teste grava.
 #[must_use]
 pub(crate) fn session_from_env() -> Option<String> {
+    if cfg!(test) {
+        return None;
+    }
     session_from(|key| std::env::var(key).ok())
 }
 
@@ -72,6 +80,20 @@ pub(crate) fn active_spec(root: &str, session: Option<&str>) -> Option<String> {
     let branch = spec_of_checkout_branch(root);
     let bound = session.and_then(|sid| spec_for_session(root, sid));
     resolve(env.as_deref(), branch, bound)
+}
+
+/// A spec da conversa da sessão `session` no projeto em `root`: a variável
+/// `MUSTARD_ACTIVE_SPEC`, quando dita, e depois a spec que a abertura ou a
+/// retomada ligou à sessão. A branch não conta: uma conversa paralela na mesma
+/// branch não tem ligação e fica sem spec. Sem sessão nenhuma, fora de uma
+/// conversa, vale a escada de [`active_spec`].
+#[must_use]
+pub(crate) fn conversation_bound_spec(root: &str, session: Option<&str>) -> Option<String> {
+    let Some(session) = session else {
+        return active_spec(root, None);
+    };
+    let env = std::env::var("MUSTARD_ACTIVE_SPEC").ok();
+    resolve(env.as_deref(), None, spec_for_session(root, session))
 }
 
 /// O checkout em que o comando roda, cuja branch diz qual é a spec atual: a

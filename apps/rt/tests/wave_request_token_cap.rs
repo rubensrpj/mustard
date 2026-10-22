@@ -79,6 +79,22 @@ impl Project {
     }
 
     fn command(&self, args: &[&str], stdin: &str) -> Output {
+        self.command_as(None, args, stdin)
+    }
+
+    /// A abertura da spec pela conversa da sessão [`SESSION`], como quem
+    /// conduz a roda: o gancho do terminal passa a sessão ao comando, e é a
+    /// conversa dela que fica ligada à spec.
+    fn open(&self) -> Value {
+        let out = self.command_as(Some(SESSION), &["run", "open", "--kind", "feature", "--name", SPEC, "--base", "dev"], "");
+        let report: Value = serde_json::from_slice(&out.stdout).expect("the opening answers JSON");
+        assert_eq!(report["ok"], json!(true), "{report}");
+        report
+    }
+
+    /// Como [`Self::command`], com a sessão `session` no ambiente, como o
+    /// gancho do terminal a passa ao comando numa conversa.
+    fn command_as(&self, session: Option<&str>, args: &[&str], stdin: &str) -> Output {
         let mut child = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
             .args(args)
             .current_dir(&self.root)
@@ -95,6 +111,7 @@ impl Project {
             .env_remove("MUSTARD_SESSION_ID")
             .env_remove("CLAUDE_SESSION_ID")
             .env_remove("CLAUDE_CODE_SESSION_ID")
+            .envs(session.map(|session| ("MUSTARD_SESSION_ID", session)))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -209,7 +226,7 @@ fn approve(project: &Project) {
 #[test]
 fn a_round_refuses_a_wave_whose_request_passes_the_token_cap() {
     let project = Project::new();
-    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    project.open();
     let said = survey(&project);
     // O pronto-quando da onda abre o pedido de verdade, e a onda que o backlog
     // forma o tira da prova do critério que a tarefa cobre: é a prova que
@@ -271,7 +288,7 @@ fn request_sent_for_a_new_controller(with_pattern: bool) -> String {
     if with_pattern {
         write_a_project_with_a_pattern(&project);
     }
-    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    project.open();
     let said = survey(&project);
     let criterion = project.write(
         "criterion",

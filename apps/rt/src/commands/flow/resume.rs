@@ -40,10 +40,17 @@ pub struct ResumeOpts {
     pub spec: Option<String>,
 }
 
-/// O núcleo testável de [`run_cmd`]. A sessão vem do ambiente. Nunca entra em
-/// pânico.
+/// O núcleo testável de [`run_cmd`]. A sessão vem do ambiente, e a conversa
+/// dela fica ligada à spec retomada: depois do `/clear`, a sessão nova volta
+/// a gravar na spec por aqui. Nunca entra em pânico.
 pub(crate) fn resume_at(opts: &ResumeOpts) -> Value {
-    resume_for(opts, session_from_env().as_deref())
+    let session = session_from_env();
+    let report = resume_for(opts, session.as_deref());
+    if let (Some(session), Some(spec)) = (session.as_deref(), report["spec"].as_str().filter(|_| report["ok"] == json!(true))) {
+        let root = spec_events::project(&opts.root).root;
+        crate::shared::context::session::bind_session_spec(&root.to_string_lossy(), session, spec);
+    }
+    report
 }
 
 /// [`resume_at`] com a sessão recebida, que é como um teste a escolhe.

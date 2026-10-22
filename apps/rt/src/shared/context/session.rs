@@ -159,17 +159,15 @@ fn spec_for_session_uncached(project_dir_path: &str, session_id: &str) -> Option
     }
 }
 
-/// Persist the session→spec binding as the `active-spec` marker, best-effort.
+/// Grava a ligação da sessão com a spec, a marca `active-spec`, sem falhar.
 ///
-/// Sem chamador na produção desde a refatoração que enxugou o runtime: quem
-/// escreve a ligação hoje são os testes dos portões que a LEEM por
-/// [`spec_for_session`], e por isso ela mora sob `cfg(test)` em vez de sair.
-/// Fail-open: qualquer erro de IO é engolido.
+/// Quem liga é a abertura e a retomada da spec, com a sessão da conversa que
+/// as rodou: é por esta ligação que a fala, a resposta e as chamadas dela vão
+/// para a spec, e não para a da branch. Qualquer erro de disco é engolido.
 ///
 /// A placeholder session id ([`is_placeholder_session`]) is REFUSED: a binding
 /// written under a bucket no hook is ever handed is unreachable, and the gates
 /// keyed on it would silently fall back to whichever spec is newest.
-#[cfg(test)]
 pub fn bind_session_spec(project_dir_path: &str, session_id: &str, spec: &str) {
     if is_placeholder_session(session_id) || spec.is_empty() {
         return;

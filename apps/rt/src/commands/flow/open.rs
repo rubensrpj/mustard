@@ -524,6 +524,7 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
             note_pending(&project.root, pending.as_deref(), &name, lang).into_iter().collect();
         let base = state.base.unwrap_or_default();
         let pending_project = pending_project_notice(&project.root, lang);
+        bind_conversation(&project.root, opts.session.as_deref(), &name);
         let mut report = opened(&name, &target, &base, &kind, None, &warnings, pending_project, lang);
         report["already_open"] = json!(true);
         if let Some(id) = pending {
@@ -598,6 +599,7 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
             return refuse(OpenRefusal::Spec(refusal));
         }
     };
+    bind_conversation(&project.root, opts.session.as_deref(), &name);
     // O pedido que o usuário fez antes da abertura entra na spec que acabou
     // de nascer, nas palavras dele.
     let earlier = born.then(|| bring_earlier_messages(&root, &name, opts.session.as_deref(), lang));
@@ -636,6 +638,15 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
     report
 }
 
+/// Liga a conversa da sessão `session` à spec `spec` do projeto em `root`: a
+/// fala, a resposta e as chamadas dela passam a ir para essa spec. Sem
+/// sessão, fora de uma conversa, nada é ligado.
+fn bind_conversation(root: &Path, session: Option<&str>, spec: &str) {
+    if let Some(session) = session {
+        crate::shared::context::session::bind_session_spec(&root.to_string_lossy(), session, spec);
+    }
+}
+
 /// As mensagens que o usuário digitou na conversa da sessão `session` antes
 /// da abertura, gravadas na spec `spec`, que acabou de nascer; os números
 /// delas. Sem a conversa deste projeto (a sessão que não se sabe, a conversa
@@ -645,7 +656,7 @@ fn bring_earlier_messages(root: &Path, spec: &str, session: Option<&str>, lang: 
     let Some(transcript) = session.and_then(|session| session_transcript(root, session)) else {
         return Err(translate("open.earlier_messages_missing", lang).to_string());
     };
-    Ok(record_earlier_messages(root, spec, &typed_messages(&transcript)))
+    Ok(record_earlier_messages(root, spec, session, &typed_messages(&transcript)))
 }
 
 
@@ -1458,7 +1469,9 @@ mod tests {
         use crate::commands::spec_events::write::write_at;
         let dir = repo(DEV_MAIN);
         let root = dir.path();
-        assert_eq!(open(root, Some("feature"), Some("x"), Some("dev"))["step"], json!("ask_goal"));
+        // A conversa que abre é a mesma que responde pelo gancho.
+        let opening = OpenOpts { session: Some("s1".to_string()), ..opts(root, Some("feature"), Some("x"), Some("dev")) };
+        assert_eq!(open_with(&opening, mapped)["step"], json!("ask_goal"));
         let goal = "Travar o merge enquanto houver pendência aberta.";
         let card = "Card MUS-12: o merge espera a revisão.\nCritérios de aceite: o merge barrado mostra a \
                     pendência.\nDocumentos antigos: docs/merge.md.";

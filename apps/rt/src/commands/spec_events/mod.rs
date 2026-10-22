@@ -26,6 +26,7 @@ pub(crate) mod proof_check;
 pub mod read;
 mod read_record;
 mod request_route;
+mod session_spec;
 pub(crate) mod unrouted;
 pub mod write;
 

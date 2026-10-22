@@ -372,7 +372,10 @@ pub fn dispatch(cmd: FlowCmd) {
         }
         FlowCmd::Round { spec, report, root, dispatch, full } => {
             if !dispatch && report.is_none() {
-                let mut out = flow::resume::resume_at(&flow::resume::ResumeOpts { root, spec });
+                // O estado da rodada não liga a conversa à spec: só a abertura e
+                // a retomada ligam.
+                let session = crate::shared::spec_state::session_from_env();
+                let mut out = flow::resume::resume_for(&flow::resume::ResumeOpts { root, spec }, session.as_deref());
                 out["mode"] = serde_json::json!("status");
                 out["mutated"] = serde_json::json!(false);
                 println!("{out}");
