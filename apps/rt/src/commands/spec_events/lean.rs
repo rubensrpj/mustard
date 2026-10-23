@@ -287,7 +287,7 @@ mod tests {
         ("delivered", &["wave", "fixes"]),
         ("step", &["wave"]),
         ("verdict", &["wave"]),
-        ("commit", &["waves"]),
+        ("commit", &["waves", "unchanged"]),
         ("deferred", &["pending"]),
     ];
 

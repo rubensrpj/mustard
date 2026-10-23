@@ -329,6 +329,14 @@ fn dispatch_wave(project: &Project, wave: u64) -> Value {
 /// rodada abriu para ela e grava a entrega na spec, que a rodada assume e
 /// fecha com o commit.
 fn deliver_wave(project: &Project, wave: u64, text: &str, changes: &[(&str, &str)]) -> Value {
+    record_delivery(project, wave, text, changes);
+    project.run(&["round", "--dispatch", "--spec", SPEC])
+}
+
+/// A entrega da onda `wave` já despachada, sem a rodada que a assume: muda
+/// `changes` na cópia que a rodada abriu para ela, lê o pedido, termina as
+/// tarefas e grava a entrega na spec.
+fn record_delivery(project: &Project, wave: u64, text: &str, changes: &[(&str, &str)]) {
     let log = project.log();
     let sent = log
         .visible()
@@ -352,7 +360,6 @@ fn deliver_wave(project: &Project, wave: u64, text: &str, changes: &[(&str, &str
     project.read_request(wave);
     project.finish_tasks(wave);
     project.run(&["write", "delivered", "--spec", SPEC, "--json", &delivered.to_string()]);
-    project.run(&["round", "--dispatch", "--spec", SPEC])
 }
 
 /// A spec pronta para a revisão final: aberta, levantada, planejada,
@@ -700,25 +707,45 @@ fn sha_of(project: &Project, wave: u64) -> String {
     log.get(commit_of(project, wave)).and_then(|e| e.str_field("sha")).expect("the commit sha").to_string()
 }
 
+/// O `src/main.rs` com a soma de um e dois na terceira linha, depois da
+/// segunda, que a onda 1 escreveu: a linha que o lint do fechamento acusa.
+const SUM_OF_ONE_AND_TWO: &str = "fn main() {\n    println!(\"{}\", 3);\n    println!(\"{}\", 1 + 2);\n}\n";
+
+/// O lint do fechamento caindo, com arquivo e linha, na linha da soma de um e
+/// dois em `src/main.rs`.
+fn lint_the_sum_of_one_and_two(project: &Project) {
+    let config = json!({"language": {"text": "pt-BR"}, "git": {"flow": {"*": "dev", "dev": "main"}},
+        "lintCommand": "git grep -n \"1 + 2\" -- src/main.rs && exit 1"});
+    std::fs::write(project.root.join("mustard.json"), config.to_string()).expect("config");
+}
+
+/// A tarefa `title` do backlog, que muda `file`, pedida na fala `said` e
+/// cobrindo o critério do plano.
+fn backlog_task(project: &Project, said: u64, title: &str, file: &str) {
+    let criterion = project.log().visible().into_iter().find(|e| e.event_type == "criterion").expect("the criterion").id;
+    project.write(
+        "task",
+        &json!({"agent": "- conferir pelo teste", "title": title, "text": format!("{title}."),
+            "files": [{"path": file}], "depends_on": [], "covers": [criterion], "origin": said}),
+    );
+}
+
+/// As ondas que a falha do fechamento reabriu, na ordem.
+fn reopened(project: &Project) -> Vec<u64> {
+    project.log().visible().into_iter().filter(|e| e.event_type == "validation_failure").filter_map(SpecEvent::wave).collect()
+}
+
 /// A obra com as ondas 1 e 2 no mesmo arquivo — a 1 escreve a segunda linha,
 /// a 2 acrescenta a terceira — e o lint do fechamento caindo, com arquivo e
 /// linha, só na linha que a onda 2 escreveu. Devolve a resposta do
 /// fechamento.
 fn close_with_lint_on_a_line_of_wave_2(project: &Project) -> Value {
-    let config = json!({"language": {"text": "pt-BR"}, "git": {"flow": {"*": "dev", "dev": "main"}},
-        "lintCommand": "git grep -n \"1 + 2\" -- src/main.rs && exit 1"});
-    std::fs::write(project.root.join("mustard.json"), config.to_string()).expect("config");
+    lint_the_sum_of_one_and_two(project);
     ready(project);
     let said = user_says(project, "Imprima também a soma de um e dois.");
-    let criterion = project.log().visible().into_iter().find(|e| e.event_type == "criterion").expect("the criterion").id;
-    project.write(
-        "task",
-        &json!({"agent": "- conferir pelo teste", "title": "Somar um e dois", "text": "Imprimir a soma de um e dois.",
-            "files": [{"path": "src/main.rs"}], "depends_on": [], "covers": [criterion], "origin": said}),
-    );
+    backlog_task(project, said, "Somar um e dois", "src/main.rs");
     dispatch_wave(project, 2);
-    let both = "fn main() {\n    println!(\"{}\", 3);\n    println!(\"{}\", 1 + 2);\n}\n";
-    deliver_wave(project, 2, "A soma de um e dois apareceu.", &[("src/main.rs", both)]);
+    deliver_wave(project, 2, "A soma de um e dois apareceu.", &[("src/main.rs", SUM_OF_ONE_AND_TWO)]);
     project.answer(&["close", "--spec", SPEC])
 }
 
@@ -730,9 +757,7 @@ fn a_closing_lint_failure_reopens_only_the_wave_that_wrote_the_line() {
     let project = Project::new();
     let refused = close_with_lint_on_a_line_of_wave_2(&project);
     assert_eq!(refused["ok"], json!(false), "{refused}");
-    let reopened: Vec<u64> =
-        project.log().visible().into_iter().filter(|e| e.event_type == "validation_failure").filter_map(SpecEvent::wave).collect();
-    assert_eq!(reopened, [2], "só a onda que escreveu a linha reabre: {refused}");
+    assert_eq!(reopened(&project), [2], "só a onda que escreveu a linha reabre: {refused}");
 }
 
 /// Depois do conserto da onda 2, comitado, a tela das ondas mostra para ela o
@@ -787,4 +812,53 @@ fn the_round_past_an_open_request_older_than_a_committed_wave_says_to_close() {
     let next = waiting["next"].as_str().unwrap_or_default();
     assert!(next.ends_with(translate("round.review_open", Locale::PtBr)), "a rodada espera o veredito do pedido novo: {waiting}");
     assert_eq!(panel_step(&project), translate("resume.step.review_open", Locale::PtBr));
+}
+
+/// A onda da tarefa `title`, depois de a rodada formar o lote dela.
+fn wave_of_task(project: &Project, title: &str) -> u64 {
+    project
+        .log()
+        .visible()
+        .into_iter()
+        .rfind(|e| e.event_type == "task" && e.str_field("title") == Some(title))
+        .and_then(SpecEvent::wave)
+        .unwrap_or_else(|| panic!("a tarefa {title} sem onda"))
+}
+
+/// O lint do fechamento que cai numa linha escrita só por uma onda, num commit
+/// em que outra onda entrou sem mudança nenhuma — as duas voltaram na mesma
+/// rodada, e o commit da segunda não teria o que levar —, reabre só a que
+/// escreveu a linha: a que veio sem mudança divide o commit, mas não escreveu
+/// linha nenhuma dele.
+#[test]
+fn a_closing_lint_failure_spares_a_wave_that_joined_the_commit_without_change() {
+    let project = Project::new();
+    // O arquivo que a segunda onda só confere já está na base, em `main` e em
+    // `dev`, antes da obra.
+    let readme = "# Soma\n";
+    git(&project.root, &["checkout", "-q", "main"]);
+    std::fs::write(project.root.join("README.md"), readme).expect("readme");
+    git(&project.root, &["add", "README.md"]);
+    git(&project.root, &["commit", "-q", "-m", "readme"]);
+    git(&project.root, &["checkout", "-q", "dev"]);
+    git(&project.root, &["merge", "-q", "--ff-only", "main"]);
+    lint_the_sum_of_one_and_two(&project);
+    ready(&project);
+    let said = user_says(&project, "Imprima também a soma de um e dois, e confira o README.");
+    backlog_task(&project, said, "Somar um e dois", "src/main.rs");
+    backlog_task(&project, said, "Conferir o README", "README.md");
+    let dispatched = project.run(&["round", "--dispatch", "--spec", SPEC]);
+    let sum = wave_of_task(&project, "Somar um e dois");
+    let check = wave_of_task(&project, "Conferir o README");
+    let out: Vec<u64> = dispatched["dispatch"].as_array().into_iter().flatten().filter_map(|entry| entry["wave"].as_u64()).collect();
+    assert_eq!(out, [sum, check], "as duas ondas saem juntas: {dispatched}");
+
+    record_delivery(&project, sum, "A soma de um e dois apareceu.", &[("src/main.rs", SUM_OF_ONE_AND_TWO)]);
+    record_delivery(&project, check, "O README já dizia o que precisa.", &[("README.md", readme)]);
+    project.run(&["round", "--dispatch", "--spec", SPEC]);
+    assert_eq!(sha_of(&project, check), sha_of(&project, sum), "a onda sem mudança entra no commit da que mudou");
+
+    let refused = project.answer(&["close", "--spec", SPEC]);
+    assert_eq!(refused["ok"], json!(false), "{refused}");
+    assert_eq!(reopened(&project), [sum], "só a onda que escreveu a linha reabre: {refused}");
 }

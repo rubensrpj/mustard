@@ -229,7 +229,8 @@ pub(super) struct Work {
     /// Cada onda, na ordem pedida, com os arquivos que declarou ou entregou.
     waves: Vec<(u64, Vec<String>)>,
     /// As ondas de cada commit da obra, pelo código dele: o evento `commit`
-    /// liga o commit às ondas que ele levou.
+    /// liga o commit às ondas que escreveram nele, sem as que entraram nele
+    /// sem mudança nenhuma.
     commits: BTreeMap<String, Vec<u64>>,
 }
 
@@ -238,8 +239,10 @@ impl Work {
     /// desde a base gravada no `state` da spec (`git diff --name-only
     /// <base>...HEAD`, com a base local e, sem ela, a do `origin`) e, de cada
     /// onda de `waves`, os que as tarefas dela declaram mais os que as
-    /// entregas dela listam, e as ondas de cada commit gravado. Sem base, ou
-    /// sem git que responda, nenhum arquivo conta como mudado pela obra.
+    /// entregas dela listam, e as ondas de cada commit gravado que mudaram
+    /// arquivo nele — a onda que o commit fecha sem ter mudado nada não
+    /// escreveu linha dele. Sem base, ou sem git que responda, nenhum arquivo
+    /// conta como mudado pela obra.
     pub(super) fn of(root: &Path, log: &SpecLog, waves: &[u64]) -> Self {
         let waves = waves
             .iter()
@@ -262,7 +265,11 @@ impl Work {
             .visible()
             .into_iter()
             .filter(|e| e.event_type == "commit")
-            .filter_map(|e| e.str_field("sha").map(|sha| (sha.to_string(), e.ints("waves"))))
+            .filter_map(|e| {
+                let unchanged = e.ints("unchanged");
+                let wrote = e.ints("waves").into_iter().filter(|wave| !unchanged.contains(wave)).collect();
+                e.str_field("sha").map(|sha| (sha.to_string(), wrote))
+            })
             .collect();
         Self { changed: branch_files(root, log), waves, commits }
     }

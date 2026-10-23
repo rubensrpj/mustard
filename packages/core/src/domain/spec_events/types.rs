@@ -1133,6 +1133,11 @@ pub const TYPES: &[TypeSpec] = &[
             req("waves", Kind::Ints),
             req("files", Kind::Texts),
             req("repo", Kind::Text),
+            // As ondas de `waves` que entraram no commit sem mudança nenhuma:
+            // o commit delas não teria o que levar, e a rodada as juntou ao
+            // anterior. O commit fecha a entrega delas, mas nenhuma linha dele
+            // é delas, e a falha numa linha dele não as implica.
+            opt("unchanged", Kind::Ints),
         ],
     ),
     ty("pr_summary", "PRSUM", Block::Progress, false, &[TEXT]),
