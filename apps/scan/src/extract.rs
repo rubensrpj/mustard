@@ -33,6 +33,7 @@ use crate::model::{CallSite, Decl, RECEIVER, Route, RouteCall, RouteLinks, TEXT_
 use crate::routes::{self, RouteRule};
 use mustard_core::domain::ast::is_test_path;
 use mustard_core::domain::project_map::outer_declarations;
+use mustard_core::domain::text::{one_line, whole_words};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::sync::OnceLock;
@@ -1039,11 +1040,11 @@ impl Analyzer {
                 let whole = match h.doc_inside {
                     Some((_, line, inside)) => {
                         annotations.extend(mustard_core::domain::knowledge::annotation::parse(&inside,line));
-                        if above.whole.is_empty() { one_line(&inside, usize::MAX) } else { above.whole }
+                        if above.whole.is_empty() { one_line(&inside) } else { above.whole }
                     },
                     _ => above.whole,
                 };
-                let doc = one_line(&whole, DOC_MAX_CHARS);
+                let doc = cut_at_word(&whole, DOC_MAX_CHARS);
                 // A documentação inteira fica só quando o teto cortou, e só
                 // quando o arquivo guarda o texto de dentro das peças.
                 let whole_doc = if whole == doc || !keep.written_text { String::new() } else { whole };
@@ -1476,7 +1477,7 @@ fn doc_above(node: Node, bytes: &[u8], decorations: &Spans, tags: &[&str]) -> Ab
         },
         _=>Vec::new(),
     };
-    Above { whole: one_line(&parts.join(" "), usize::MAX), first_row, doc_row, annotations }
+    Above { whole: one_line(&parts.join(" ")), first_row, doc_row, annotations }
 }
 
 /// What is read above a declaration: its whole documentation comment, in one
@@ -1789,18 +1790,19 @@ fn signature_of(node: Node, bytes: &[u8], decorations: &Spans, value_start: Opti
         let trimmed = head.trim_end();
         head = trimmed.strip_suffix('=').unwrap_or(trimmed);
     }
-    one_line(head, SIGNATURE_MAX_CHARS)
+    cut_at_word(&one_line(head), SIGNATURE_MAX_CHARS)
 }
 
-/// One line of text, whitespace collapsed, cut at `max` characters — on a word
-/// boundary when there is one, so what is kept still reads.
-fn one_line(text: &str, max: usize) -> String {
-    let joined = mustard_core::domain::text::one_line(text);
-    let Some((cut, _)) = joined.char_indices().nth(max) else {
-        return joined;
-    };
-    let cut = joined[..cut].rfind(' ').unwrap_or(cut);
-    joined[..cut].trim_end().to_string()
+/// O começo de `text` que cabe em `max` caracteres, sem reticências: as
+/// palavras inteiras que cabem, sem a pontuação solta do fim
+/// ([`whole_words`]). Quando nem a primeira palavra cabe, o corte cai no
+/// caractere, para o texto longo sem branco (um endereço, um base64) não
+/// ficar vazio.
+fn cut_at_word(text: &str, max: usize) -> String {
+    match whole_words(text, max) {
+        "" => text.chars().take(max).collect(),
+        words => words.to_string(),
+    }
 }
 
 /// The compact first-read value. The full value remains separately searchable.
@@ -1834,8 +1836,8 @@ fn fixed_texts(literals: &[(Node, bool)], bytes: &[u8], skip: &[&Spans], declara
         .filter(|(node, _)| !overlaps(node))
         .filter_map(|(node, plain)| {
             let written = node.utf8_text(bytes).ok()?;
-            let complete = mustard_core::domain::text::one_line(if *plain { written } else { literal_value(written) });
-            let value = one_line(&complete, TEXT_MAX_CHARS);
+            let complete = one_line(if *plain { written } else { literal_value(written) });
+            let value = cut_at_word(&complete, TEXT_MAX_CHARS);
             if !reads_as_text(&complete) {
                 return None;
             }
