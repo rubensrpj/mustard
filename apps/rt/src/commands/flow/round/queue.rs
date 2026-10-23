@@ -1080,6 +1080,8 @@ mod tests {
     use crate::commands::flow::round::tests::*;
     use crate::commands::spec_events::write::record;
 
+    mod removal_after_delivery;
+
     /// A cópia gravada no envio da onda `wave`.
     fn sent_copy(root: &Path, wave: u64) -> String {
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();

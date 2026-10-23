@@ -89,11 +89,11 @@ pub(crate) fn same_place(a: &str, b: &str) -> bool {
     place_key(a) == place_key(b)
 }
 
-/// What is left of `path` below `folder`, in the spelling of `path` (empty for
-/// the folder itself); `None` when `path` is not inside it. A folder that only
-/// shares the start of a name (`/pp` for `/p`) is not the folder, and a share
-/// (`//srv/share`) is not below the root `/`. The letter case counts only for a
-/// path that is not a Windows one.
+/// O que sobra de `path` abaixo de `folder`, na grafia de `path` (vazio para a
+/// própria pasta); `None` quando `path` não está dentro dela. A pasta que só
+/// divide o começo do nome (`/pp` para `/p`) não é a pasta, e um
+/// compartilhamento (`//srv/share`) não fica abaixo da raiz `/`. A diferença
+/// de maiúsculas só conta no caminho que não é do Windows.
 #[must_use]
 pub(crate) fn below(folder: &str, path: &str) -> Option<String> {
     let (folder, path) = (canonical(folder), canonical(path));
@@ -104,8 +104,8 @@ pub(crate) fn below(folder: &str, path: &str) -> Option<String> {
     let head = path.get(..prefix.len())?;
     let same = if has_drive(&prefix) { head.eq_ignore_ascii_case(&prefix) } else { head == prefix };
     let rest = &path[prefix.len()..];
-    // Below a folder that is not empty, the canonical text only starts again
-    // with a slash when the path opens a share and the folder is the root.
+    // Abaixo de uma pasta que não é vazia, o texto canônico só volta a começar
+    // com barra quando o caminho abre um compartilhamento e a pasta é a raiz.
     (same && (prefix.is_empty() || !rest.starts_with('/'))).then(|| rest.to_string())
 }
 
@@ -118,10 +118,10 @@ pub(crate) fn on_disk(path: &Path) -> String {
     canonical(&real_place(path).to_string_lossy())
 }
 
-/// `path` with `.` and `..` resolved in the text only, without looking at the
-/// disk. A `..` that would go past the root of an absolute path stops at it;
-/// one at the start of a relative path stays. Exactly two slashes at the start
-/// are a root of their own, the one of a share; three or more are `/`.
+/// `path` com `.` e `..` resolvidos só no texto, sem olhar o disco. O `..` que
+/// passaria da raiz de um caminho absoluto para nela; o do começo de um
+/// caminho relativo fica. Exatamente duas barras no começo são uma raiz
+/// própria, a do compartilhamento; três ou mais são `/`.
 fn lexical(path: &str) -> String {
     let (root, rest) = if let Some(rest) = path.strip_prefix("//").filter(|rest| !rest.starts_with('/')) {
         ("//".to_string(), rest)
@@ -418,10 +418,10 @@ mod tests {
         }
     }
 
-    /// The same place written the ways Windows writes it has one canonical
-    /// text, and the letter case of a drive path does not tell places apart.
-    /// A network share keeps the two slashes that open it, so it is never the
-    /// folder of the same name under the root.
+    /// O mesmo lugar, escrito dos jeitos que o Windows escreve, tem um texto
+    /// canônico só, e as maiúsculas de um caminho com letra de disco não
+    /// separam lugares. O compartilhamento da rede guarda as duas barras que
+    /// o abrem, então nunca é a pasta de mesmo nome sob a raiz.
     #[test]
     fn a_windows_place_has_one_canonical_text_however_it_is_written() {
         for written in [
@@ -464,8 +464,8 @@ mod tests {
         assert_eq!(below("/", r"\\srv\share\x"), None, "a share is not below the root");
     }
 
-    /// Outside Windows two slashes at the start are the root on disk, so the
-    /// path spelled that way still reaches the project's files.
+    /// Fora do Windows, duas barras no começo são a raiz no disco, então o
+    /// caminho escrito assim ainda alcança os arquivos do projeto.
     #[cfg(unix)]
     #[test]
     fn on_unix_two_leading_slashes_still_reach_the_project_on_disk() {
