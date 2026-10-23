@@ -2602,15 +2602,55 @@ fn formed_by_the_analysis(project: &Project, formation: &Value, waves: Value) {
     assert!(done.status.success(), "{}", String::from_utf8_lossy(&done.stdout));
 }
 
+/// A rodada que despacha a spec das provas da espera pela onda semelhante.
+const ROUND: [&str; 4] = ["round", "--dispatch", "--spec", SPEC];
+
+/// O código da tarefa `id`, como o agente a lê.
+fn code_of(project: &Project, id: u64) -> String {
+    project.log().codes()[&id].clone()
+}
+
+/// A volta de `wave` entregue à rodada, que a comita; devolve a resposta.
+fn round_taking_back(project: &Project, wave: u64) -> Value {
+    let usage = format!("<USAGE>{}</USAGE>", json!({"wave": wave}));
+    project.run(&["round", "--dispatch", "--spec", SPEC, "--report", &usage])
+}
+
+/// A cópia da onda 1 e os itens que o pedido dela manda ler.
+fn copy_and_items_of_wave_one(project: &Project) -> (PathBuf, Vec<String>) {
+    let sent = last_send(project, 1);
+    let copy = PathBuf::from(sent.str_field("copy").expect("the copy"));
+    let listed = sent.fields.get("read_items").and_then(Value::as_array).cloned().unwrap_or_default();
+    (copy, listed.iter().filter_map(Value::as_str).map(str::to_string).collect())
+}
+
+/// O agente lê, de dentro da cópia, o item `item` do pedido.
+fn read_item_in(project: &Project, copy: &Path, item: &str) {
+    let root = project.root.display().to_string();
+    let block = format!("item-{item}");
+    let out = project.command_in(copy, &["run", "read", &block, "--root", &root, "--spec", SPEC], "");
+    assert!(out.status.success(), "{item}: {}", String::from_utf8_lossy(&out.stdout));
+}
+
+/// O agente da onda 1 grava o passo que termina a tarefa `task`, que libera a
+/// seguinte.
+fn finish_task_of_wave_one(project: &Project, task: u64) {
+    project.write("step", &json!({"wave": 1, "item": code_of(project, task), "text": "A tarefa ficou pronta."}));
+}
+
+/// A entrega da onda 1, que responde por todo o combinado, com as tarefas
+/// `undone` por fazer.
+fn deliver_wave_one(project: &Project, text: &str, files: &[&str], undone: &[String]) {
+    let agreed: Vec<Value> = mustard_core::domain::wave_prompt::all_agreed(&project.log()).iter().map(|item| json!({"item": item.id, "met": true})).collect();
+    project.write("delivered", &json!({"wave": 1, "text": text, "files": files, "commit": "saudação nova", "agreed": agreed, "undone": undone}));
+}
+
 /// Duas vagas e uma sessão conduzindo. A formação põe as duas tarefas da
 /// saudação numa onda, que sai. Chegam duas tarefas novas do mesmo sentido: a
 /// formação recebe o objetivo da onda em andamento, e a onda delas a segue.
-/// Com a onda rodando, nenhuma das duas sai, e a rodada diz por quê. A onda
-/// volta com um resumo e deixa uma tarefa por fazer: na rodada que a comita,
-/// a tarefa deixada chega ao backlog, e as que seguem a onda esperam por ela;
-/// na seguinte, as três saem juntas numa onda, que leva o resumo.
-#[test]
-fn a_task_in_the_direction_of_a_running_wave_waits_for_its_return_and_leaves_with_its_summary() {
+/// Com a onda rodando, nenhuma das duas sai, e a rodada diz por quê. Devolve o
+/// projeto e as quatro tarefas: as duas da onda 1 e as duas que a seguem.
+fn running_wave_with_followers() -> (Project, [u64; 4]) {
     let mut project = Project::new();
     let path = project.root.join("mustard.json");
     let mut config: Value = serde_json::from_str(&std::fs::read_to_string(&path).expect("config")).expect("json");
@@ -2629,20 +2669,19 @@ fn a_task_in_the_direction_of_a_running_wave_waits_for_its_return_and_leaves_wit
     project.run(&["plan", "--spec", SPEC]);
     approve(&project);
     project.session = Some(SESSION);
-    let round = ["round", "--dispatch", "--spec", SPEC];
     let objective = "Trocar a saudação do programa em cada arquivo";
-    let code = |id: u64| project.log().codes()[&id].clone();
+    let code = |id: u64| code_of(&project, id);
 
-    let asked = project.run(&round);
+    let asked = project.run(&ROUND);
     let formation = asked.get("formation").unwrap_or_else(|| panic!("the round asks the forming: {asked}"));
     formed_by_the_analysis(&project, formation, json!([{"objective": objective, "tasks": [code(first), code(second)], "merges": []}]));
-    let out = project.run(&round);
+    let out = project.run(&ROUND);
     assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
     keep_sent(&project, &[1]);
 
     let third = backlog_task(&project, crit, said, &["src/c.txt"], &[]);
     let fourth = backlog_task(&project, crit, said, &["src/d.txt"], &[]);
-    let asked = project.run(&round);
+    let asked = project.run(&ROUND);
     let formation = asked.get("formation").unwrap_or_else(|| panic!("the round asks the forming of the new tasks: {asked}"));
     let prompt = formation["delegation"]["request"]["prompt"].as_str().expect("the prompt");
     let running = format!("Running waves: {}", json!([{"key": "w1", "objective": objective}]));
@@ -2653,33 +2692,37 @@ fn a_task_in_the_direction_of_a_running_wave_waits_for_its_return_and_leaves_wit
         json!([{"objective": "Trocar a saudação dos arquivos novos", "tasks": [code(third), code(fourth)], "merges": [], "follows": "w1"}]),
     );
 
-    let waiting = project.run(&round);
+    let waiting = project.run(&ROUND);
     assert!(waves_in(&waiting, "dispatch").is_empty(), "with the wave running, no task of its direction leaves: {waiting}");
     let followers = json!([code(third), code(fourth)]);
     let held = waiting["held"].as_array().into_iter().flatten().find(|group| group["reason"] == json!("following-running-wave")).cloned();
-    assert_eq!(held.map(|group| group["tasks"].clone()), Some(followers.clone()), "the round says why they wait: {waiting}");
+    assert_eq!(held.map(|group| group["tasks"].clone()), Some(followers), "the round says why they wait: {waiting}");
+    (project, [first, second, third, fourth])
+}
+
+/// A onda em andamento volta com um resumo e deixa uma tarefa por fazer: na
+/// rodada que a comita, a tarefa deixada chega ao backlog, e as que seguem a
+/// onda esperam por ela; na seguinte, as três saem juntas numa onda, que leva
+/// o resumo.
+#[test]
+fn a_task_in_the_direction_of_a_running_wave_waits_for_its_return_and_leaves_with_its_summary() {
+    let (project, [first, second, third, fourth]) = running_wave_with_followers();
+    let code = |id: u64| code_of(&project, id);
 
     // O agente faz só a primeira tarefa e para no limite: a segunda nem
     // chega a ser liberada, e a entrega a deixa por fazer, como resumo.
-    let copy = PathBuf::from(last_send(&project, 1).str_field("copy").expect("the copy"));
+    let (copy, listed) = copy_and_items_of_wave_one(&project);
     std::fs::write(copy.join("src/a.txt"), "pronto\n").expect("the change");
-    let listed = last_send(&project, 1).fields.get("read_items").and_then(Value::as_array).cloned().unwrap_or_default();
-    let root = project.root.display().to_string();
-    for item in listed.iter().filter_map(Value::as_str).filter(|item| *item != code(second)) {
-        let block = format!("item-{item}");
-        let out = project.command_in(&copy, &["run", "read", &block, "--root", &root, "--spec", SPEC], "");
-        assert!(out.status.success(), "{item}: {}", String::from_utf8_lossy(&out.stdout));
+    for item in listed.iter().filter(|item| **item != code(second)) {
+        read_item_in(&project, &copy, item);
     }
-    project.write("step", &json!({"wave": 1, "item": code(first), "text": "A tarefa ficou pronta."}));
-    let agreed: Vec<Value> = mustard_core::domain::wave_prompt::all_agreed(&project.log()).iter().map(|item| json!({"item": item.id, "met": true})).collect();
-    project.write("delivered", &json!({"wave": 1, "text": "Parei no limite depois da primeira tarefa.", "files": ["src/a.txt"], "commit": "saudação nova",
-        "agreed": agreed, "undone": [code(second)]}));
-    let usage = format!("<USAGE>{}</USAGE>", json!({"wave": 1}));
-    let back = project.run(&["round", "--dispatch", "--spec", SPEC, "--report", &usage]);
+    finish_task_of_wave_one(&project, first);
+    deliver_wave_one(&project, "Parei no limite depois da primeira tarefa.", &["src/a.txt"], &[code(second)]);
+    let back = round_taking_back(&project, 1);
     assert!(back.get("commit").is_some(), "the round commits the wave: {back}");
     assert!(waves_in(&back, "dispatch").is_empty(), "the task the wave left arrives now, and the followers wait for it: {back}");
 
-    let next = project.run(&round);
+    let next = project.run(&ROUND);
     assert_eq!(waves_in(&next, "dispatch"), vec![2], "{next}");
     let log = project.log();
     let codes = log.codes();
@@ -2688,6 +2731,45 @@ fn a_task_in_the_direction_of_a_running_wave_waits_for_its_return_and_leaves_wit
     let summary = log.visible().into_iter().find(|e| e.event_type == "delivered" && e.wave() == Some(1)).expect("the summary of wave 1").id;
     let wave = log.visible().into_iter().rfind(|e| e.event_type == "wave" && e.wave() == Some(2)).expect("wave 2");
     assert_eq!(wave.int("summary"), Some(summary), "the next wave carries the summary: {next}");
+    let out = project.command(&["run", "read", "request-2", "--spec", SPEC], "");
+    let request = String::from_utf8_lossy(&out.stdout);
+    assert!(request.contains(&translate("wave_prompt.summary.title", Locale::PtBr)), "the request tells of the started work: {request}");
+}
+
+/// A onda em andamento volta com tudo feito, sem tarefa por fazer e portanto
+/// sem resumo: as tarefas que a seguem esperaram a volta dela e saem juntas
+/// numa onda nova, que não leva base nenhuma.
+#[test]
+fn a_task_in_the_direction_of_a_wave_that_returns_with_everything_done_leaves_in_a_new_wave_without_a_base() {
+    let (project, [first, second, third, fourth]) = running_wave_with_followers();
+    let code = |id: u64| code_of(&project, id);
+
+    // O agente faz as duas tarefas, uma depois da outra, e a entrega não deixa
+    // nenhuma por fazer.
+    let (copy, listed) = copy_and_items_of_wave_one(&project);
+    std::fs::write(copy.join("src/a.txt"), "pronto\n").expect("the change");
+    std::fs::write(copy.join("src/b.txt"), "pronto\n").expect("the change");
+    for item in listed.iter().filter(|item| **item != code(second)) {
+        read_item_in(&project, &copy, item);
+    }
+    finish_task_of_wave_one(&project, first);
+    read_item_in(&project, &copy, &code(second));
+    finish_task_of_wave_one(&project, second);
+    deliver_wave_one(&project, "Fiz as duas tarefas.", &["src/a.txt", "src/b.txt"], &[]);
+    let back = round_taking_back(&project, 1);
+    assert!(back.get("commit").is_some(), "the round commits the wave: {back}");
+    assert_eq!(waves_in(&back, "dispatch"), vec![2], "the followers leave in the round that takes the return, with nothing left to wait for: {back}");
+
+    let log = project.log();
+    let codes = log.codes();
+    let together: BTreeSet<String> = log.visible().into_iter().filter(|e| e.event_type == "task" && e.wave() == Some(2)).map(|e| codes[&e.id].clone()).collect();
+    assert_eq!(together, [code(third), code(fourth)].into_iter().collect::<BTreeSet<_>>(), "the new wave takes only the followers: {back}");
+    assert!(log.live_summaries().is_empty(), "a wave that did everything leaves no summary: {:?}", log.live_summaries());
+    let wave = log.visible().into_iter().rfind(|e| e.event_type == "wave" && e.wave() == Some(2)).expect("wave 2");
+    assert_eq!(wave.int("summary"), None, "the new wave has no base: {:?}", wave.fields);
+    let out = project.command(&["run", "read", "request-2", "--spec", SPEC], "");
+    let request = String::from_utf8_lossy(&out.stdout);
+    assert!(!request.contains(&translate("wave_prompt.summary.title", Locale::PtBr)), "the request tells of no started work: {request}");
 }
 
 /// A onda gravada sem tarefa nenhuma, como a que uma rodada antiga deixou,
