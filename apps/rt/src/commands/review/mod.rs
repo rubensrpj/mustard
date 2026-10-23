@@ -3,6 +3,7 @@
 pub mod cli;
 
 pub mod pr_body;
+pub mod pr_checks;
 pub mod pr_door;
 pub mod pr_publish;
 pub mod qa_run;

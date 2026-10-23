@@ -56,6 +56,14 @@
 //! do primeiro envio chegam ao mesmo pull request. O envio recusado (o
 //! servidor, um gancho, a falta do remoto) para a abertura com a mensagem do
 //! git inteira no `error`, e o provedor nem é chamado.
+//!
+//! ## A esteira depois de abrir
+//!
+//! Com o pull request do principal aberto ou reescrito, a resposta traz em
+//! `checks` o que as verificações do provedor dizem dele naquela hora, pela
+//! mesma leitura do merge ([`crate::commands::review::pr_checks`]): rodando,
+//! vermelha (com a porta de conserto da spec), verde, nenhuma ainda ou
+//! ilegível.
 
 use std::path::Path;
 
@@ -67,6 +75,7 @@ use mustard_core::platform::i18n::translate;
 
 use crate::commands::git_settle::{bump_pointers, submodule_base, submodule_tip_landed, unit_submodules};
 use crate::commands::review::pr_body::{kept_reason, marked};
+use crate::commands::review::pr_checks::{self, ChecksSaid};
 use crate::commands::review::pr_door::project_root;
 use crate::shared::branch_state::PrStatus;
 use crate::shared::pr_provider::{provider_for, provider_in, PrProvider, PrRef, PrToOpen, PrView};
@@ -381,7 +390,8 @@ pub(crate) struct SubmodulePr {
 }
 
 /// A resposta do `pr-open`: a do principal, os pull requests dos submódulos,
-/// abertos antes dele, e o aviso de que ele segue como rascunho.
+/// abertos antes dele, o aviso de que ele segue como rascunho e a esteira do
+/// principal, lida logo depois de abri-lo ou reescrevê-lo.
 #[derive(Debug, Serialize)]
 struct OpenAnswer {
     #[serde(flatten)]
@@ -390,6 +400,8 @@ struct OpenAnswer {
     submodules: Vec<SubmodulePr>,
     #[serde(skip_serializing_if = "Option::is_none")]
     hint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    checks: Option<ChecksSaid>,
 }
 
 /// Envia a branch `head` do submódulo `sub` do principal `repo` e abre, ou
@@ -608,7 +620,7 @@ pub fn run_open(root: &Path, base: &str, head: &str, spec: Option<&str>, fill: b
         let lang = mustard_core::ProjectConfig::load(&repo).language().text_or_default();
         let error = format!("{}: {}", refusal.reason(), refusal.message(lang));
         let report = PrPublishReport::failed(ACTION_OPEN, provider.provider().to_string(), None, error);
-        emit(&OpenAnswer { principal: report, submodules: Vec::new(), hint: None });
+        emit(&OpenAnswer { principal: report, submodules: Vec::new(), hint: None, checks: None });
         return;
     }
     let sourced = if fill {
@@ -669,7 +681,10 @@ pub fn run_open(root: &Path, base: &str, head: &str, spec: Option<&str>, fill: b
     if let (true, Some(slug), Some(number)) = (report.ok, slug, report.number) {
         crate::commands::spec_events::write::record_pr_open(&repo, slug, number, report.url.as_deref());
     }
-    let answer = OpenAnswer { principal: report, submodules, hint };
+    // A esteira que o envio acabou de disparar, pela leitura do merge: o
+    // pull request não sai da porta sem dizer o que o provedor respondeu.
+    let checks = report.number.filter(|_| report.ok).map(|number| pr_checks::read(&repo, number, slug, lang));
+    let answer = OpenAnswer { principal: report, submodules, hint, checks };
     let shown = serde_json::to_value(&answer).unwrap_or_default();
     let _ = crate::commands::spec_events::conversation::record_call(&repo, "pr-open", spec, started, &shown);
     emit(&shown);

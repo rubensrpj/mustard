@@ -2154,14 +2154,61 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // O corpo do pull request aberto que ficou como estava, porque alguém
         // o editou depois do último corpo gerado ou o provedor não deixou lê-lo.
         ("pr.body_kept", Locale::PtBr) => {
-            "O corpo do pull request #{pr} ficou como estava ({reason}): só o corpo que segue igual \
-             ao último que o Mustard gerou é refeito, e a edição de quem mexeu nele fica. Para o \
+            "O corpo do pull request #{pr} ficou como estava ({reason}). O Mustard só refaz o corpo \
+             que segue igual ao último que ele gerou, e a edição de quem mexeu nele fica. Para o \
              Mustard voltar a refazê-lo, apague a descrição no provedor."
         }
         ("pr.body_kept", Locale::EnUs) => {
-            "The body of pull request #{pr} stayed as it was ({reason}): only a body still equal to \
-             the last one Mustard generated is rewritten, and the edit of whoever changed it stays. \
-             For Mustard to rewrite it again, clear the description on the provider."
+            "The body of pull request #{pr} stayed as it was ({reason}). Mustard only rewrites a body \
+             still equal to the last one it generated, and the edit of whoever changed it stays. For \
+             Mustard to rewrite it again, clear the description on the provider."
+        }
+        // A esteira do pull request lida depois de abri-lo e na retomada da
+        // spec com ele aberto, uma frase por resposta do provedor.
+        ("pr.checks.passed", Locale::PtBr) => {
+            "A esteira do pull request #{pr} passou: as verificações do provedor terminaram sem falha."
+        }
+        ("pr.checks.passed", Locale::EnUs) => {
+            "The pipeline of pull request #{pr} passed: the provider's checks finished without a failure."
+        }
+        ("pr.checks.running", Locale::PtBr) => {
+            "A esteira do pull request #{pr} ainda está rodando. A retomada da spec lê de novo, e o \
+             merge espera o resultado."
+        }
+        ("pr.checks.running", Locale::EnUs) => {
+            "The pipeline of pull request #{pr} is still running. Resuming the spec reads it again, \
+             and the merge waits for the result."
+        }
+        ("pr.checks.failed", Locale::PtBr) => {
+            "A esteira do pull request #{pr} reprovou: uma verificação do provedor terminou em falha."
+        }
+        ("pr.checks.failed", Locale::EnUs) => {
+            "The pipeline of pull request #{pr} failed: a check of the provider finished in failure."
+        }
+        ("pr.checks.fix", Locale::PtBr) => {
+            "Leia no provedor o que falhou e rode `mustard-rt run reopen --spec {spec} --fix --reason \
+             <o que o servidor informou>`: a porta de conserto abre a onda de correção na mesma branch."
+        }
+        ("pr.checks.fix", Locale::EnUs) => {
+            "Read on the provider what failed and run `mustard-rt run reopen --spec {spec} --fix \
+             --reason <what the server reported>`: the repair door opens the fix wave on the same \
+             branch."
+        }
+        ("pr.checks.absent", Locale::PtBr) => {
+            "O pull request #{pr} ainda não tem verificação nenhuma do provedor: a esteira não \
+             começou, ou o projeto não tem uma."
+        }
+        ("pr.checks.absent", Locale::EnUs) => {
+            "Pull request #{pr} has no check from the provider yet: the pipeline has not started, or \
+             the project has none."
+        }
+        ("pr.checks.unreadable", Locale::PtBr) => {
+            "A esteira do pull request #{pr} não pôde ser lida ({reason}). O merge pergunta antes de \
+             juntar sem ela."
+        }
+        ("pr.checks.unreadable", Locale::EnUs) => {
+            "The pipeline of pull request #{pr} could not be read ({reason}). The merge asks before \
+             merging without it."
         }
         // A recusa do merge de uma spec que voltou à execução depois do
         // fechamento: o pull request dela leva a versão sem o ajuste até a
@@ -2537,7 +2584,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 369, 0x4e97_53fb_994b_c51f);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 376, 0x0d82_0b46_9521_dc87);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
@@ -2712,6 +2759,12 @@ mod tests {
             ("pr.merge_provider_refused", &[][..]),
             ("pr.promotion_merged", &["{head}"][..]),
             ("pr.body_kept", &["{pr}", "{reason}"][..]),
+            ("pr.checks.passed", &["{pr}"][..]),
+            ("pr.checks.running", &["{pr}"][..]),
+            ("pr.checks.failed", &["{pr}"][..]),
+            ("pr.checks.fix", &["{spec}"][..]),
+            ("pr.checks.absent", &["{pr}"][..]),
+            ("pr.checks.unreadable", &["{pr}", "{reason}"][..]),
             ("reopen.same_pr", &[][..]),
             ("reopen.pr_closed", &["{pr}"][..]),
             ("stuck.found", &["{list}"][..]),

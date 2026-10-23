@@ -177,6 +177,12 @@ impl AzureRemote {
         format!("{}/{}/_apis/git/policy/configurations", self.base, self.project)
     }
 
+    /// A coleção das avaliações de política deste projeto: o que cada
+    /// política respondeu sobre um pull request.
+    pub(crate) fn api_policy_evaluations(&self) -> String {
+        format!("{}/{}/_apis/policy/evaluations", self.base, self.project)
+    }
+
     /// The canonical https remote — what `git credential fill` is asked for,
     /// so a `useHttpPath=true` vault keys on the same path the push uses.
     pub(crate) fn https_remote(&self) -> String {
@@ -380,7 +386,8 @@ fn do_view_branch(remote: &AzureRemote, transport: &dyn AzureTransport, auth: &s
 // The checks read — what the merge door asks before it merges
 // ---------------------------------------------------------------------------
 
-/// Reduce Azure's pull-request STATUSES into the port's [`PrChecks`].
+/// Reduce Azure's pull-request STATUSES, one row each, into the port's
+/// [`PrChecks`].
 ///
 /// A status is what a pipeline posts back onto a pull request, and its `state`
 /// is the `GitStatusState` contract: `notSet`, `pending`, `succeeded`,
@@ -389,27 +396,79 @@ fn do_view_branch(remote: &AzureRemote, transport: &dyn AzureTransport, auth: &s
 /// the target — a thing that cannot block, not a thing that failed. `notSet`
 /// ("state not set, default") is NOT green and NOT a decided failure, so it
 /// takes the unreadable answer rather than a guess in either direction.
-fn checks_from_azure(rows: &[Value]) -> PrChecks {
-    let reduced: Vec<PrChecks> = rows
-        .iter()
+fn statuses_from_azure(rows: &[Value]) -> Vec<PrChecks> {
+    rows.iter()
         .map(|row| match row.get("state").and_then(Value::as_str).unwrap_or_default() {
             "succeeded" | "notApplicable" => PrChecks::Passed,
             "failed" | "error" => PrChecks::Failed,
             "pending" => PrChecks::Running,
             _ => PrChecks::Unknown(PR_UNREADABLE),
         })
-        .collect();
-    checks_from_rows(&reduced)
+        .collect()
 }
 
-/// GET the statuses of PR `number` and reduce them. A document without a
-/// `value` array could not be read — `parse-error`, never an empty answer,
-/// which is exactly the answer that authorises a merge.
+/// O tipo de política que o Azure DevOps dá à validação de build de uma
+/// branch: a esteira que a política dispara a cada pull request.
+const BUILD_POLICY: &str = "0609b952-1397-4640-95ec-e00a01b2c241";
+
+/// A versão da API das avaliações de política, que o Azure DevOps só publica
+/// como prévia.
+const EVALUATIONS_API_VERSION: &str = "7.1-preview.1";
+
+/// Reduz as avaliações de política do pull request, uma linha cada, ao
+/// vocabulário de [`PrChecks`]. Só a validação de build conta: as outras
+/// políticas (revisores, item de trabalho, comentários) não são esteira.
+///
+/// O `status` é o `PolicyEvaluationStatus`: `queued` e `running` ainda não
+/// decidiram; `approved` e `notApplicable` não barram; `rejected` é a build
+/// reprovada e `broken` a política que deu erro, as duas um vermelho, como o
+/// `error` de um status. Palavra fora do contrato é ilegível, nunca verde.
+fn evaluations_from_azure(rows: &[Value]) -> Vec<PrChecks> {
+    rows.iter()
+        .filter(|row| row.pointer("/configuration/type/id").and_then(Value::as_str) == Some(BUILD_POLICY))
+        .map(|row| match row.get("status").and_then(Value::as_str).unwrap_or_default() {
+            "approved" | "notApplicable" => PrChecks::Passed,
+            "rejected" | "broken" => PrChecks::Failed,
+            "queued" | "running" => PrChecks::Running,
+            _ => PrChecks::Unknown(PR_UNREADABLE),
+        })
+        .collect()
+}
+
+/// O `value` de um documento de lista do Azure: sem ele, a resposta não pôde
+/// ser lida — `parse-error`, nunca uma lista vazia, que é justamente a
+/// resposta que autoriza um merge.
+fn value_rows(doc: &Value) -> Result<&[Value], String> {
+    doc.get("value").and_then(Value::as_array).map(Vec::as_slice).ok_or_else(|| "parse-error".to_string())
+}
+
+/// GET das avaliações de política do pull request `number`, reduzidas.
+///
+/// O artefato que o Azure avalia é `vstfs:///CodeReview/CodeReviewId/{id do
+/// projeto}/{pull request}`, com o id do projeto — e o remoto só diz o nome
+/// dele. O id vem do próprio pull request (`repository.project.id`).
+fn do_build_policies(remote: &AzureRemote, transport: &dyn AzureTransport, auth: &str, number: u64) -> Result<Vec<PrChecks>, String> {
+    let pr = transport.call("GET", &format!("{}/{number}?api-version={API_VERSION}", remote.api_pulls()), auth, None)?;
+    let project = pr.pointer("/repository/project/id").and_then(Value::as_str).ok_or_else(|| "parse-error".to_string())?;
+    let artifact = query_encode(&format!("vstfs:///CodeReview/CodeReviewId/{project}/{number}"));
+    let url = format!("{}?artifactId={artifact}&api-version={EVALUATIONS_API_VERSION}", remote.api_policy_evaluations());
+    let doc = transport.call("GET", &url, auth, None)?;
+    Ok(evaluations_from_azure(value_rows(&doc)?))
+}
+
+/// GET the statuses AND the build-validation policies of PR `number`, and
+/// reduce them together.
+///
+/// A pipeline reaches an Azure pull request two ways: posting a status onto
+/// it, or running as the branch's build-validation policy — and the second
+/// never posts a status. Reading only the statuses reported a rejected build
+/// as no check at all, which is the answer that merges.
 pub(crate) fn do_checks(remote: &AzureRemote, transport: &dyn AzureTransport, auth: &str, number: u64) -> Result<PrChecks, String> {
     let url = format!("{}/{number}/statuses?api-version={API_VERSION}", remote.api_pulls());
     let doc = transport.call("GET", &url, auth, None)?;
-    let rows = doc.get("value").and_then(Value::as_array).cloned().ok_or_else(|| "parse-error".to_string())?;
-    Ok(checks_from_azure(&rows))
+    let mut rows = statuses_from_azure(value_rows(&doc)?);
+    rows.extend(do_build_policies(remote, transport, auth, number)?);
+    Ok(checks_from_rows(&rows))
 }
 
 /// GET the branch policies in force on `branch`, and answer whether any of
@@ -910,11 +969,7 @@ mod tests {
     #[test]
     fn the_azure_statuses_reduce_to_the_ports_checks_vocabulary() {
         let remote = remote();
-        let statuses_url = format!("{}/7/statuses?api-version=7.1", remote.api_pulls());
-        let answer = |value: Value| {
-            let fake = FakeTransport::of(&[("GET", &statuses_url, json!({ "value": value }))]);
-            do_checks(&remote, &fake, "a", 7)
-        };
+        let answer = |value: Value| do_checks(&remote, &checks_fake(json!({ "value": value }), json!({ "value": [] })), "a", 7);
 
         assert_eq!(answer(json!([])), Ok(PrChecks::Absent), "no pipeline is a measurement");
         assert_eq!(answer(json!([{ "state": "succeeded" }, { "state": "notApplicable" }])), Ok(PrChecks::Passed),);
@@ -926,8 +981,45 @@ mod tests {
         );
         assert_eq!(answer(json!([{ "state": "notSet" }])), Ok(PrChecks::Unknown(PR_UNREADABLE)), "'state not set' is not evidence of a green run");
 
-        let broken = FakeTransport::of(&[("GET", &statuses_url, json!({ "count": 0 }))]);
+        let broken = checks_fake(json!({ "count": 0 }), json!({ "value": [] }));
         assert_eq!(do_checks(&remote, &broken, "a", 7), Err("parse-error".to_string()), "a document without `value` could not be read — never an empty answer");
+    }
+
+    /// O transporte falso das verificações do pull request 7: os status com
+    /// `statuses`, o pull request com o id do projeto dele e as avaliações de
+    /// política dele com `evaluations`.
+    fn checks_fake(statuses: Value, evaluations: Value) -> FakeTransport {
+        let remote = remote();
+        let artifact = "vstfs%3A///CodeReview/CodeReviewId/p-1/7";
+        FakeTransport::of(&[
+            ("GET", &format!("{}/7/statuses?api-version=7.1", remote.api_pulls()), statuses),
+            ("GET", &format!("{}/7?api-version=7.1", remote.api_pulls()), json!({ "pullRequestId": 7, "repository": { "project": { "id": "p-1" } } })),
+            ("GET", &format!("{}?artifactId={artifact}&api-version=7.1-preview.1", remote.api_policy_evaluations()), evaluations),
+        ])
+    }
+
+    /// A validação de build do Azure não posta status no pull request: ela é
+    /// uma avaliação de política dele. A build reprovada, ou a política que deu
+    /// erro, sai vermelha mesmo com os status verdes e mesmo sem status
+    /// nenhum; a que roda ou espera na fila sai rodando; a aprovada, verde. A
+    /// política que não é de build, como a de revisores, não é esteira.
+    #[test]
+    fn a_rejected_build_policy_turns_the_azure_checks_red() {
+        let policy = |kind: &str, status: &str| json!({ "status": status, "configuration": { "type": { "id": kind } } });
+        let build = |status: &str| policy(BUILD_POLICY, status);
+        let reviewers = |status: &str| policy("fa4e907d-c16b-4a4c-9dfa-4906e5d171dd", status);
+        let answer = |statuses: Value, evaluations: Vec<Value>| {
+            do_checks(&remote(), &checks_fake(json!({ "value": statuses }), json!({ "value": evaluations })), "a", 7)
+        };
+        let green = || json!([{ "state": "succeeded" }]);
+
+        assert_eq!(answer(green(), vec![build("rejected")]), Ok(PrChecks::Failed), "a rejected build is red over green statuses");
+        assert_eq!(answer(json!([]), vec![build("rejected")]), Ok(PrChecks::Failed), "a build that posts no status is still read");
+        assert_eq!(answer(green(), vec![build("broken")]), Ok(PrChecks::Failed));
+        assert_eq!(answer(green(), vec![build("queued")]), Ok(PrChecks::Running));
+        assert_eq!(answer(green(), vec![build("running")]), Ok(PrChecks::Running));
+        assert_eq!(answer(json!([]), vec![build("approved"), reviewers("rejected")]), Ok(PrChecks::Passed), "only the build is the pipeline");
+        assert_eq!(answer(json!([]), vec![reviewers("rejected")]), Ok(PrChecks::Absent), "a reviewer policy is no check at all");
     }
 
     /// A transport failure travels to the caller untouched — the operations

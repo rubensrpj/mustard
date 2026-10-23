@@ -5,7 +5,7 @@ argument-hint: [spec-name]
 # /mustard:continue — pick the spec back up
 
 1. Run `mustard-rt run resume --spec {spec}`. Without a name, drop the flag: the command takes the spec of the checkout's branch.
-2. Relay `next` and run `command`, when present. Never decide the next step yourself: follow the phase.
+2. Relay `next` and `checks.text`, and run `command`, when present. Never decide the next step yourself: follow the phase.
 3. The names it can hand you: `mustard-rt run grill`, `mustard-rt run plan`, `mustard-rt run round --dispatch` or `mustard-rt run pr-open`. Bare `run round` only reads state.
 4. A spec in the plan phase still waits for the exact approval question; typing this command approves nothing.
 

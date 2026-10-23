@@ -18,6 +18,11 @@
 //! seguinte refaz o corpo que segue igual ao gerado e deixa o que alguém
 //! editou no provedor.
 //!
+//! O `pr-open` e a retomada da spec com o pull request aberto leem a esteira
+//! do provedor e dizem o que ela respondeu; e o corpo do pull request que
+//! alguém editou fica como está, enquanto o que segue igual ao gerado é
+//! refeito.
+//!
 //! A mesma spec, num projeto com um submódulo e servidores locais, prova o
 //! fluxo de submódulo: a branch de mesmo nome nos dois repositórios, o pull
 //! request do submódulo aberto antes e o do principal como rascunho até o do
@@ -1128,6 +1133,33 @@ esac
 exit 1
 "#;
 
+/// O `gh` falso de um pull request que nasce no `pr create`, o 7: anota cada
+/// chamada e guarda em `created-body` o corpo com que ele foi criado. Depois
+/// de criado, responde a consulta dele aberto, as verificações com o que o
+/// teste deixa em `checks` e a leitura `api -i` com a resposta que o teste
+/// deixa em `pr-7.http`; e aceita a troca de um campo.
+const OPENED_PR_GH: &str = r#"#!/bin/sh
+echo "$*" >> "$GH_LOG"
+case "$1 $2" in
+"pr create")
+  touch "$GH_STATE/open"
+  while [ $# -gt 0 ]; do
+    [ "$1" = "--body-file" ] && cp "$2" "$GH_STATE/created-body"
+    shift
+  done
+  echo 'https://github.com/exemplo/projeto/pull/7'
+  exit 0 ;;
+"pr view")
+  [ -f "$GH_STATE/open" ] || { echo 'no pull requests found' >&2; exit 1; }
+  case "$*" in *statusCheckRollup*) cat "$GH_STATE/checks"; exit $? ;; esac
+  echo '{"number":7,"title":"t","state":"OPEN","headRefName":"feature/ponta","baseRefName":"dev","isDraft":false,"url":"https://github.com/exemplo/projeto/pull/7"}'
+  exit 0 ;;
+"api -i") cat "$GH_STATE/pr-7.http"; exit $? ;;
+"api --method") exit 0 ;;
+esac
+exit 1
+"#;
+
 /// O corpo do pull request que alguém editou no provedor fica. A obra fechada
 /// abre o pull request com o corpo gerado; o `pr-open` seguinte lê o corpo
 /// pelo `gh api -i`, vê que ele segue igual ao gerado e o refaz. Depois que
@@ -1179,6 +1211,78 @@ fn a_pull_request_body_edited_on_the_provider_is_kept_by_the_next_pr_open() {
     assert!(asked.iter().any(|call| call.starts_with(title_edit)), "the title still follows the spec: {asked:?}");
     assert_eq!(std::fs::read_to_string(&stored).unwrap(), edited, "the edit stays on the provider");
     assert_eq!(State::from_log(&project.log()).phase, Some("pr_open"), "{kept}");
+}
+
+/// A esteira do pull request aparece na resposta do `pr-open` e na retomada
+/// da spec com o pull request aberto, cada vez com o que o provedor responde
+/// naquela hora: rodando logo depois de abrir, vermelha numa retomada — com a
+/// porta de conserto da spec na frase — e verde na seguinte.
+#[test]
+fn the_pipeline_of_the_pull_request_is_read_after_the_open_and_on_resume() {
+    let project = Project::new();
+    executable::write_executable(&project.bin.join("gh"), OPENED_PR_GH);
+    let line = closed_with_one_wave(&project);
+    let argv: Vec<&str> = line.iter().map(String::as_str).collect();
+    let pipeline = |status: &str, conclusion: &str| {
+        let rows = json!({"statusCheckRollup": [{"__typename": "CheckRun", "name": "ci", "status": status, "conclusion": conclusion}]});
+        std::fs::write(project.remotes.join("checks"), rows.to_string()).expect("the checks");
+    };
+    let said = |key: &str| translate(key, Locale::PtBr).replace("{pr}", "7").replace("{spec}", SPEC);
+
+    pipeline("IN_PROGRESS", "");
+    let opened = project.run(&argv);
+    assert_eq!(opened["number"], json!(7), "{opened}");
+    assert_eq!(opened["checks"], json!({"state": "running", "text": said("pr.checks.running")}), "{opened}");
+    assert!(project.gh_calls().iter().any(|call| call == "pr view 7 --json statusCheckRollup"), "{:?}", project.gh_calls());
+
+    pipeline("COMPLETED", "FAILURE");
+    let red = project.run(&["resume", "--spec", SPEC]);
+    assert_eq!(red["phase"], json!("pr_open"), "{red}");
+    let fix = format!("{} {}", said("pr.checks.failed"), said("pr.checks.fix"));
+    assert_eq!(red["checks"], json!({"state": "failed", "text": fix}), "{red}");
+    assert!(fix.contains(&format!("mustard-rt run reopen --spec {SPEC} --fix")), "{fix}");
+
+    pipeline("COMPLETED", "SUCCESS");
+    let green = project.run(&["resume", "--spec", SPEC]);
+    assert_eq!(green["checks"], json!({"state": "passed", "text": said("pr.checks.passed")}), "{green}");
+}
+
+/// O corpo do pull request aberto, pelo binário e pelo `gh api -i` que o
+/// provedor responde: o que segue igual ao que o Mustard gerou na criação é
+/// refeito no `pr-open` seguinte; o que alguém editou fica, a resposta traz
+/// `bodyKept` e o aviso, e só o título é trocado.
+#[test]
+fn a_pull_request_body_someone_edited_stays_and_an_untouched_one_is_rewritten() {
+    let project = Project::new();
+    executable::write_executable(&project.bin.join("gh"), OPENED_PR_GH);
+    std::fs::write(project.remotes.join("checks"), r#"{"statusCheckRollup":[]}"#).expect("the checks");
+    let line = closed_with_one_wave(&project);
+    let argv: Vec<&str> = line.iter().map(String::as_str).collect();
+    let opened = project.run(&argv);
+    assert_eq!(opened["action"], json!("open"), "{opened}");
+    let generated = std::fs::read_to_string(project.remotes.join("created-body")).expect("the body of the creation");
+    let serve = |body: &str| {
+        let answer = format!("HTTP/2.0 200 OK\r\nEtag: \"e1\"\r\n\r\n{}", json!({"title": "t", "body": body}));
+        std::fs::write(project.remotes.join("pr-7.http"), answer).expect("the answer of the provider");
+    };
+    let patches = |field: &str| {
+        project.gh_calls().iter().filter(|call| call.starts_with("api --method PATCH repos/{owner}/{repo}/pulls/7 ") && call.contains(field)).count()
+    };
+
+    serve(&generated);
+    let rewritten = project.run(&argv);
+    assert_eq!(rewritten["action"], json!("edit"), "{rewritten}");
+    assert!(rewritten.get("bodyKept").is_none(), "{rewritten}");
+    assert_eq!((patches("-F body=@"), patches("-f title=")), (1, 1), "{:?}", project.gh_calls());
+
+    serve(&format!("Nota de quem revisou.\n\n{generated}"));
+    let kept = project.run(&argv);
+    assert_eq!(kept["action"], json!("edit"), "{kept}");
+    assert_eq!(kept["bodyKept"], json!("body-edited"), "{kept}");
+    let warning = kept["warning"].as_str().unwrap_or_default();
+    let body_kept = translate("pr.body_kept", Locale::PtBr).replace("{pr}", "7").replace("{reason}", "body-edited");
+    assert!(warning.contains(&body_kept), "{warning}");
+    assert_eq!((patches("-F body=@"), patches("-f title=")), (1, 2), "the edited body stays and the title follows: {:?}", project.gh_calls());
 }
 
 /// O `title` do objetivo dá nome ao pull request e à linha da spec no resumo

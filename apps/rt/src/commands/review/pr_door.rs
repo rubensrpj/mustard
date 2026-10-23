@@ -109,6 +109,7 @@ use crate::commands::agent::render::skills::build_skills_list;
 use crate::commands::event::pending::{OpenPending, carried_by, close_pending, open_pending_born_in};
 use crate::commands::event::work_branch::on_integration_base;
 use crate::commands::git_settle::{git_out, main_checkout_root, settle_at, settle_unit_at, superproject_of};
+use crate::commands::review::pr_checks::checks_word;
 use crate::commands::review::pr_publish::{SpecPr, SubmodulePrs, spec_pr, submodules_landed};
 use crate::shared::branch_state::PrStatus;
 use crate::shared::pr_provider::{PrChecks, PrProvider, provider_for, provider_in};
@@ -624,7 +625,8 @@ fn is_base_promotion(head: &str, flow: &BaseFlow) -> bool {
 /// É por aqui que a porta de conserto
 /// ([`crate::commands::flow::reopen`]) pergunta o mesmo que o merge pergunta:
 /// uma leitura só do vermelho do servidor, para as duas portas nunca
-/// discordarem sobre o que o provedor respondeu.
+/// discordarem sobre o que o provedor respondeu. O `pr-open` e a retomada
+/// relatam esta mesma leitura ([`crate::commands::review::pr_checks`]).
 pub(crate) fn provider_checks(root: &Path, number: u64) -> Result<PrChecks, String> {
     provider_for(root).checks(number)
 }
@@ -839,10 +841,7 @@ fn merge_or_ask(
     }
     let verdict = spec.as_deref().and_then(|slug| recorded_verdict(root, slug));
     let checks = checks(root, facts.number);
-    let checks_word = match &checks {
-        Ok(state) => state.word().to_string(),
-        Err(reason) => reason.clone(),
-    };
+    let checks_word = checks_word(&checks);
 
     let promotion = is_base_promotion(&facts.head, flow);
     let lang = mustard_core::ProjectConfig::load(root).language().text_or_default();

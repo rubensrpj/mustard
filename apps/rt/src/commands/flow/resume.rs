@@ -3,7 +3,8 @@
 //! Lê o arquivo de eventos da spec e responde a fase em que ela está, a
 //! branch e a base, o próximo passo em palavras e como comando, a aprovação
 //! do objetivo e o que aconteceu desde a última mensagem do usuário: as ondas
-//! aceitas, os commits, os despachos e o que está à espera. É essa resposta
+//! aceitas, os commits, os despachos e o que está à espera. Com o pull request
+//! aberto, ela traz também a esteira dele, lida na hora. É essa resposta
 //! que conduz a conversa de volta ao ponto em que ela parou. Nenhum endereço
 //! de página entra na resposta: o link mora na barra de status.
 //!
@@ -113,6 +114,13 @@ pub(crate) fn resume_for(opts: &ResumeOpts, session: Option<&str>) -> Value {
     if let Some(said) = refused_close(&project.root, &spec, &log, lang) {
         out["close_refused"] = json!(said);
         out["next"] = json!(said);
+    }
+    // Com o pull request aberto, o passo que falta depende da esteira dele: a
+    // retomada a lê agora, pela mesma leitura do merge, e diz o que ela pede.
+    if phase == "pr_open"
+        && let Some(checks) = crate::commands::review::pr_checks::of_spec(&project.root, &spec, lang)
+    {
+        out["checks"] = json!(checks);
     }
     if let Some(branch) = work_copies::lost_branch(&project.root, &state) {
         out["branch_missing"] = json!(translate("copies.branch_missing", lang).replace("{branch}", &branch));
