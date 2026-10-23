@@ -164,6 +164,7 @@ mod keep;
 mod leftovers;
 mod lost_commit;
 mod map_pass;
+mod next_step;
 #[cfg(test)]
 mod off_path_tests;
 #[cfg(test)]

@@ -22,8 +22,8 @@ use super::commit::git_lock;
 use super::fixes::sweep_fixes;
 use super::item_choice::choose_items;
 use super::queue::{
-    agent_known, backlog_left, backlog_ready, backlog_uncovered, first_unfinished, max_parallel, next_waves, open_review, open_sends, orphaned_waves,
-    sender_fields, sent_items, silent_minutes, waves_in_progress, waves_returned,
+    agent_known, backlog_uncovered, max_parallel, next_waves, open_sends, orphaned_waves, sender_fields, sent_items, silent_minutes, waves_in_progress,
+    waves_returned,
 };
 use super::rejection::rejected_message;
 use super::report::Taken;
@@ -31,7 +31,7 @@ use super::slots::{open_copies, sharing_copy, without_live_copy};
 use super::stops::{HeldReturn, stopped_waves, waves_stuck};
 use super::task_release;
 use super::usage::Caller;
-use super::{DONE_STEP, RoundOpts, can_run};
+use super::{RoundOpts, can_run};
 use crate::commands::git_settle::CopiesLock;
 use crate::commands::spec_events::write::record;
 use crate::shared::judgement::Board;
@@ -1125,67 +1125,12 @@ fn dispatch_round(
         }
     }
 
-    // O próximo passo: despachar o que saiu agora; esperar as que estão em
-    // andamento; dizer qual onda falta, quando nada se move; rodar de novo,
-    // ou nomear as tarefas presas, quando o backlog ainda tem tarefa;
-    // esperar o veredito, quando a revisão final segue aberta; ou fechar,
-    // com tudo entregue e aprovado e o backlog vazio. A revisão do diff da
-    // onda antecede o commit; a revisão final permanece no fechamento.
+    // O próximo passo ([`super::next_step`]), com a spec já em execução na
+    // primeira rodada.
     if entering {crate::commands::spec_events::write::record_phase(&opts.root, &spec, "running", session);}
-    let report_back = super::checks::report_back(root, lang);
-    let mut command: Option<String> = None;
-    let then = if !dispatched.is_empty() {
-        format!("{} {report_back}", translate("round.next", lang))
-    } else if !running.is_empty() {
-        let waves: Vec<String> = running.keys().map(u64::to_string).collect();
-        format!("{} {report_back}", translate("round.waiting", lang).replace("{waves}", &waves.join(", ")))
-    } else if !stuck.is_empty() || !held.is_empty() || !picks_lines.is_empty() {
-        String::new()
-    } else if let Some(wave) = first_unfinished(log, &in_progress) {
-        translate("round.missing", lang).replace("{wave}", &wave.to_string())
-    } else if !backlog_left(log).is_empty() {
-        // Toda onda planejada terminou, mas o backlog ainda tem tarefa: a obra
-        // não fecha. A tarefa que ficou pronta pela entrega desta mesma
-        // rodada só vira lote na rodada seguinte, porque o backlog foi formado
-        // pela leitura de entrada; sem tarefa pronta e sem nada em andamento,
-        // as que sobraram estão presas, e a resposta as nomeia, com a que
-        // espera plano à parte, dizendo o que falta a ela.
-        let shown = |ids: &mut dyn Iterator<Item = u64>| -> String {
-            ids.map(|id| codes.get(&id).cloned().unwrap_or_else(|| id.to_string())).collect::<Vec<_>>().join(", ")
-        };
-        let ready = backlog_ready(log);
-        if ready.is_empty() {
-            super::planning::stuck_backlog_line(log, &codes, lang)
-        } else {
-            let state = State::from_log(log);
-            let step = crate::commands::flow::resume::step_command("round", &spec, &state);
-            let text = translate("round.backlog_left", lang)
-                .replace("{tasks}", &shown(&mut ready.into_iter()))
-                .replace("{command}", step.as_deref().unwrap_or_default());
-            command = step;
-            text
-        }
-    } else if open_review(log).is_some() {
-        // Toda onda está entregue, mas a revisão final segue aberta, sem o
-        // veredito do revisor: a obra ainda não está aprovada, e o fechamento
-        // recusaria. A resposta manda esperar o veredito, sem o comando de
-        // fechar.
-        translate("round.review_open", lang).to_string()
-    } else {
-        let state = State::from_log(log);
-        // A obra já fechada não fecha de novo: a rodada acabou de receber o
-        // conserto do pull request reprovado, e o passo é empurrá-lo pela
-        // mesma porta que o abriu.
-        let (step, key) = if state.phase == Some("pr_open") {
-            let reason = translate("round.fix_reason", lang);
-            (Some(format!("mustard-rt run reopen --fix --spec {spec} --reason \"{reason}\"")), "round.fix_push")
-        } else {
-            (crate::commands::flow::resume::step_command(DONE_STEP, &spec, &state), "round.close")
-        };
-        let text = translate(key, lang).replace("{command}", step.as_deref().unwrap_or_default());
-        command = step;
-        text
-    };
+    let explained = !stuck.is_empty() || !held.is_empty() || !picks_lines.is_empty();
+    let standing = super::next_step::Standing { dispatched: !dispatched.is_empty(), running: &running, in_progress: &in_progress, explained };
+    let (then, command) = super::next_step::next_step(root, &spec, (log, &codes), &standing, lang);
     // A pergunta da onda parada vem antes do resto, que segue sem ela; a da
     // mudança de plano de cada onda que espera o clique vem em seguida.
     let (stopped, question) = stopped_waves(&stuck, &codes, lang);
