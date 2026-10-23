@@ -1247,19 +1247,24 @@ pub(super) fn end_answer(root: &Path, spec: &str, out: &mut Value, then: &str, l
             let withheld = crate::commands::spec_events::pages::secrets::withheld(&log);
             crate::commands::spec_events::pages::note_withheld(out, spec, &withheld, lang);
         }
-    if let Some(number) = rewrite_open_pr(root, spec) {
-        out["pr"] = json!({ "number": number, "body": "rewritten" });
+    use crate::commands::review::pr_publish::{BodyRewrite, body_kept_warning};
+    match rewrite_open_pr(root, spec) {
+        Some(BodyRewrite::Rewritten(number)) => out["pr"] = json!({ "number": number, "body": "rewritten" }),
+        Some(BodyRewrite::Kept { number, reason }) => {
+            out["pr"] = json!({ "number": number, "body": "kept", "warning": body_kept_warning(number, &reason, lang) });
+        }
+        None => {}
     }
 }
 
-/// Refaz o corpo do pull request desta spec, quando há um aberto. Devolve o
-/// número do pull request reescrito, `None` quando não há nenhum ou quando o
+/// Refaz o corpo do pull request desta spec, quando há um aberto e o corpo
+/// dele segue igual ao último gerado. `None` quando não há nenhum ou quando o
 /// provedor não respondeu — a rodada nunca para por causa disso.
 ///
 /// O pull request é o da branch DESTA spec, não o da branch em que o checkout
 /// está. Fora da branch da spec não há o que refazer aqui, e perguntar pelo
 /// checkout reescreveria o corpo do pull request de outra unidade.
-fn rewrite_open_pr(root: &Path, spec: &str) -> Option<u64> {
+fn rewrite_open_pr(root: &Path, spec: &str) -> Option<crate::commands::review::pr_publish::BodyRewrite> {
     let branch = crate::commands::spec_events::write::branch_of_spec(root, spec)?;
     let (_, body) = crate::commands::review::pr_publish::message_of(root, spec).ok()?;
     let provider = crate::shared::pr_provider::provider_for(root);

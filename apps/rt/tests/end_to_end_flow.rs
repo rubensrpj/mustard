@@ -13,6 +13,9 @@
 //! No fim, cada passo do fluxo gravou uma chamada só — a aprovação nenhuma — e
 //! a pasta da spec tem os três arquivos dela.
 //!
+//! Com o pull request aberto, a reabertura pedida pelo usuário o deixa fora de
+//! rascunho, e o merge pelo Mustard espera a spec fechar de novo.
+//!
 //! A mesma spec, num projeto com um submódulo e servidores locais, prova o
 //! fluxo de submódulo: a branch de mesmo nome nos dois repositórios, o pull
 //! request do submódulo aberto antes e o do principal como rascunho até o do
@@ -958,6 +961,57 @@ fn a_pr_open_sends_the_branch_first_and_a_refused_send_opens_nothing() {
         git_out(&project.root, &["rev-parse", "HEAD"]),
         "the new commit is on the server"
     );
+}
+
+/// O `gh` falso do pull request 7 aberto e fora de rascunho: anota cada
+/// chamada e responde a consulta dele. Qualquer outro pedido falha, e fica
+/// anotado do mesmo jeito.
+const OPEN_PR_GH: &str = r#"#!/bin/sh
+echo "$*" >> "$GH_LOG"
+case "$1 $2" in
+"pr view")
+  echo '{"number":7,"title":"t","state":"OPEN","headRefName":"feature/ponta","baseRefName":"dev","isDraft":false,"url":"https://github.com/exemplo/projeto/pull/7"}'
+  exit 0 ;;
+esac
+exit 1
+"#;
+
+/// A obra fechada abre o pull request, e o usuário pede um ajuste: a
+/// reabertura volta a spec à execução e só pergunta ao provedor se o pull
+/// request já entrou na base. Nada o põe em rascunho, e a resposta não fala em
+/// rascunho. O merge pelo Mustard é recusado enquanto a spec não fecha de novo,
+/// sem perguntar as verificações ao provedor nem juntar nada.
+#[test]
+fn reopening_leaves_the_open_pull_request_out_of_draft_and_the_merge_waits_for_the_close() {
+    let project = Project::new();
+    let line = closed_with_one_wave(&project);
+    let argv: Vec<&str> = line.iter().map(String::as_str).collect();
+    let opened = project.run(&argv);
+    assert_eq!(opened["number"], json!(7), "{opened}");
+    executable::write_executable(&project.bin.join("gh"), OPEN_PR_GH);
+
+    let asked_before = project.gh_calls().len();
+    let reopened = project.run(&["reopen", "--spec", SPEC, "--reason", "Trocar a saudação de novo."]);
+    assert_eq!((reopened["from"].clone(), reopened["phase"].clone()), (json!("pr_open"), json!("running")), "{reopened}");
+    assert!(reopened.get("draft").is_none() && reopened.get("warnings").is_none(), "{reopened}");
+    let next = reopened["next"].as_str().unwrap_or_default();
+    assert!(next.contains(translate("reopen.same_pr", Locale::PtBr)), "{next}");
+    let asked = project.gh_calls()[asked_before..].to_vec();
+    assert_eq!(asked.len(), 1, "only whether the pull request is already merged: {asked:?}");
+    assert!(asked[0].starts_with("pr view 7 "), "{asked:?}");
+    assert_eq!(State::from_log(&project.log()).phase, Some("running"));
+
+    let asked_before = project.gh_calls().len();
+    let merge = project.answer(&["pr-merge", "--pr", "7"]);
+    assert_eq!(merge["ok"], json!(false), "{merge}");
+    assert_eq!((merge["action"].clone(), merge["reason"].clone()), (json!("refused"), json!("spec-not-closed")), "{merge}");
+    assert_eq!(merge["checks"], json!("not-asked"), "{merge}");
+    let hint = merge["hint"].as_str().unwrap_or_default();
+    assert!(hint.contains("foi reaberta e ainda não fechou de novo") && hint.contains("#7"), "{hint}");
+    let asked = project.gh_calls()[asked_before..].to_vec();
+    assert_eq!(asked.len(), 1, "only which pull request it is: {asked:?}");
+    assert!(asked[0].starts_with("pr view 7 "), "{asked:?}");
+    assert_eq!(State::from_log(&project.log()).phase, Some("running"), "nothing was merged");
 }
 
 /// O `title` do objetivo dá nome ao pull request e à linha da spec no resumo

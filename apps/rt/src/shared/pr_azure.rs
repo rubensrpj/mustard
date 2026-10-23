@@ -331,9 +331,9 @@ pub(crate) fn do_open(remote: &AzureRemote, transport: &dyn AzureTransport, auth
     Ok(PrOpened { number, url: remote.pr_url(number) })
 }
 
-/// PATCH one field of PR `number`. `edit_body`, `edit_title`, `ready` and
-/// `mark_draft` are all this — the REST contract updates a PR by PATCHing the
-/// fields that change.
+/// PATCH one field of PR `number`. `edit_body`, `edit_title` and `ready` are
+/// all this — the REST contract updates a PR by PATCHing the fields that
+/// change.
 fn do_patch(remote: &AzureRemote, transport: &dyn AzureTransport, auth: &str, number: u64, body: &Value) -> Result<(), String> {
     let url = format!("{}/{number}?api-version={API_VERSION}", remote.api_pulls());
     transport.call("PATCH", &url, auth, Some(body)).map(|_| ())
@@ -581,11 +581,6 @@ impl PrProvider for AzurePrRest {
     fn edit_title(&self, number: u64, title: &str) -> Result<(), String> {
         let (remote, auth) = self.context()?;
         do_patch(&remote, self.transport.as_ref(), &auth, number, &json!({ "title": title }))
-    }
-
-    fn mark_draft(&self, number: u64) -> Result<(), String> {
-        let (remote, auth) = self.context()?;
-        do_patch(&remote, self.transport.as_ref(), &auth, number, &json!({ "isDraft": true }))
     }
 
     fn view(&self, which: PrRef<'_>) -> Result<PrView, String> {

@@ -325,7 +325,6 @@ mod tests {
             ("reopen.reopened".into(), &["{spec}"][..]),
             ("reopen.fix_not_red".into(), &["{spec}", "{phase}"][..]),
             ("reopen.merge_unchecked".into(), &["{spec}", "{reason}"][..]),
-            ("reopen.draft_failed".into(), &["{spec}", "{reason}"][..]),
             ("survey.answer_options".into(), &[][..]),
             ("survey.answer_not_applicable_mixed".into(), &[][..]),
             ("survey.answer_no_open_point".into(), &["{spec}"][..]),

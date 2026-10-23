@@ -2119,6 +2119,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("pr.submodules.stuck", Locale::EnUs) => "The main pull request #{pr} stays a draft: {reason}. The next check tries again.",
         ("pr.pointer_commit", Locale::PtBr) => "chore(submódulo): atualiza o ponteiro",
         ("pr.pointer_commit", Locale::EnUs) => "chore(submodule): update the pointer",
+        // O corpo do pull request aberto que ficou como estava, porque alguém
+        // o editou depois do último corpo gerado ou o provedor não deixou lê-lo.
+        ("pr.body_kept", Locale::PtBr) => {
+            "O corpo do pull request #{pr} ficou como estava ({reason}): só o corpo que segue igual \
+             ao último que o Mustard gerou é refeito, e a edição de quem mexeu nele fica. Para o \
+             Mustard voltar a refazê-lo, apague a descrição no provedor."
+        }
+        ("pr.body_kept", Locale::EnUs) => {
+            "The body of pull request #{pr} stayed as it was ({reason}): only a body still equal to \
+             the last one Mustard generated is rewritten, and the edit of whoever changed it stays. \
+             For Mustard to rewrite it again, clear the description on the provider."
+        }
         // A recusa do merge de uma spec que voltou à execução depois do
         // fechamento: o pull request dela leva a versão sem o ajuste até a
         // spec fechar de novo.
@@ -2314,18 +2326,26 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              with `mustard-rt run write request --spec {spec}` and, from it, the new tasks. Their \
              waves go out through the round after the user approves the change."
         }
-        // O fim do passo da reabertura, pelo pull request da spec: o mesmo, ou
-        // o fechado sem merge, que não vai para rascunho e dá lugar a outro.
-        ("reopen.same_pr", Locale::PtBr) => "Depois vem o fechamento de novo, e o pull request continua o mesmo.",
-        ("reopen.same_pr", Locale::EnUs) => "Then comes the close again, and the pull request stays the same.",
+        // O fim do passo da reabertura, pelo pull request da spec: o mesmo,
+        // como está no provedor, que só o merge do Mustard segura até o
+        // fechamento, ou o fechado sem merge, que dá lugar a outro.
+        ("reopen.same_pr", Locale::PtBr) => {
+            "Depois vem o fechamento de novo, e o pull request continua o mesmo, como está no \
+             provedor. Até lá, o merge pelo Mustard recusa; pelo botão do provedor, ele juntaria na \
+             base a versão sem o ajuste."
+        }
+        ("reopen.same_pr", Locale::EnUs) => {
+            "Then comes the close again, and the pull request stays the same, as it is on the \
+             provider. Until then, Mustard's merge refuses; through the provider's button, it would \
+             take the version without the change into the base."
+        }
         ("reopen.pr_closed", Locale::PtBr) => {
-            "O pull request #{pr} dela está fechado, sem merge, e por isso não foi posto em rascunho. \
-             Depois vem o fechamento de novo, e o `pr-open` que ele aponta abre outro pull request, na \
-             mesma branch."
+            "O pull request #{pr} dela está fechado, sem merge. Depois vem o fechamento de novo, e o \
+             `pr-open` que ele aponta abre outro pull request, na mesma branch."
         }
         ("reopen.pr_closed", Locale::EnUs) => {
-            "Its pull request #{pr} is closed, not merged, so it was not put in draft. Then comes the \
-             close again, and the `pr-open` it points to opens another pull request, on the same branch."
+            "Its pull request #{pr} is closed, not merged. Then comes the close again, and the \
+             `pr-open` it points to opens another pull request, on the same branch."
         }
         ("reopen.fix_not_red", Locale::PtBr) => {
             "A porta de conserto da spec {spec} não abriu. Ela pede a spec com o pull request \
@@ -2339,8 +2359,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              the phase {phase} without that. For a new request, run `mustard-rt run reopen` \
              without `--fix`. Nothing was written."
         }
-        // Os avisos da reabertura de uma spec com o pull request aberto: o
-        // merge que não deu para conferir e o rascunho que o provedor recusou.
+        // O aviso da reabertura de uma spec com o pull request aberto: o merge
+        // que não deu para conferir.
         ("reopen.merge_unchecked", Locale::PtBr) => {
             "Não deu para conferir no provedor se o pull request da spec {spec} já entrou na base \
              ({reason}). A spec voltou à execução mesmo assim. Se alguém já fez o merge, o ajuste \
@@ -2351,17 +2371,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              merged ({reason}). The spec went back to running anyway. If someone already merged it, \
              the new change would go to a branch already merged: check on the provider before \
              going on."
-        }
-        ("reopen.draft_failed", Locale::PtBr) => {
-            "O pull request da spec {spec} não foi posto em rascunho ({reason}) e ficou liberado. Um \
-             merge pelo botão do provedor agora juntaria na base a versão sem o ajuste. Ponha-o em \
-             rascunho pelo provedor, se puder; o merge do Mustard recusa até a spec fechar de novo."
-        }
-        ("reopen.draft_failed", Locale::EnUs) => {
-            "The pull request of the spec {spec} was not put in draft ({reason}) and stays open to \
-             merging. A merge through the provider's button now would take the version without the \
-             change into the base. Put it in draft on the provider if you can; Mustard's merge \
-             refuses until the spec closes again."
         }
         // O levantamento lembra o tipo de trabalho gravado: o comando sai sem
         // o tipo e roda como veio.
@@ -2668,6 +2677,7 @@ mod tests {
             ("pr.merge_no_verdict", &[][..]),
             ("pr.merge_provider_refused", &[][..]),
             ("pr.promotion_merged", &["{head}"][..]),
+            ("pr.body_kept", &["{pr}", "{reason}"][..]),
             ("reopen.same_pr", &[][..]),
             ("reopen.pr_closed", &["{pr}"][..]),
             ("stuck.found", &["{list}"][..]),

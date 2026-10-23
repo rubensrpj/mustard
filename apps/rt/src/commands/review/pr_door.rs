@@ -1107,8 +1107,7 @@ pub(crate) enum MergedElsewhere {
     /// O provedor não respondeu, com o motivo que ele deu; nada foi mudado.
     Unanswered { reason: String },
     /// O pull request foi fechado sem merge; nada foi mudado. A reabertura
-    /// segue sem pedir rascunho, que o provedor recusa num pull request
-    /// fechado, e o fechamento seguinte abre outro.
+    /// segue, e o fechamento seguinte abre outro.
     Closed {
         /// O número do pull request fechado.
         pr: u64,
