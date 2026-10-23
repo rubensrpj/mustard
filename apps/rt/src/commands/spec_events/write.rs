@@ -221,7 +221,7 @@ use serde_json::{Map, Value, json};
 
 use super::proof_check::{cites_a_missing_file, created_files, proof_defect, relative_path, spec_created_files};
 use super::request_route::Route;
-use crate::commands::flow::round::queue::{task_files, tasks_not_delivered};
+use crate::commands::flow::round::queue::task_files;
 use crate::commands::flow::round::{backlog_left, backlog_return, waves_left_without_tasks};
 use crate::shared::jev::TASK_TRIAGE_CALL;
 use crate::shared::jev::reserve::{self, Asked, RESERVE_FIELD, Reserved};
@@ -615,17 +615,18 @@ struct SameWork {
 }
 
 /// A pergunta do classificador das atividades ([`task_triage::classifying`])
-/// sobre a tarefa ou o pedido novo `draft`, com as tarefas ainda por entregar
-/// da spec `spec` de `root`. A versão nova (`replaces`), a gravação com o
-/// motivo em `distinct` e a spec sem tarefa por entregar não perguntam:
-/// `None`.
+/// sobre a tarefa ou o pedido novo `draft`, com as tarefas do backlog sem onda
+/// da spec `spec` de `root` ([`backlog_left`]). A tarefa de uma onda — a
+/// reprovada, a em conserto, a que voltou — não entra: a que roda é assunto da
+/// espera pela onda semelhante, e o conserto das outras é trabalho novo. A
+/// versão nova (`replaces`), a gravação com o motivo em `distinct` e a spec
+/// sem tarefa no backlog não perguntam: `None`.
 fn same_work_question(root: &Path, spec: &str, event_type: &str, draft: &Map<String, Value>) -> Option<SameWork> {
     if !matches!(event_type, "task" | "request") || draft.contains_key("replaces") || draft.contains_key("distinct") {
         return None;
     }
     let log = store::read(&store::spec_file(root, spec).ok()?).ok()??;
-    let joinable = backlog_left(&log);
-    let open: Vec<&SpecEvent> = tasks_not_delivered(&log, &BTreeSet::new()).into_iter().filter_map(|id| log.get(id)).collect();
+    let open: Vec<&SpecEvent> = backlog_left(&log).into_iter().filter_map(|id| log.get(id)).collect();
     if open.is_empty() {
         return None;
     }
@@ -636,7 +637,7 @@ fn same_work_question(root: &Path, spec: &str, event_type: &str, draft: &Map<Str
             title: task.str_field("title").unwrap_or_default(),
             text: task.str_field("text").unwrap_or_default(),
             files: task_files(task),
-            joinable: joinable.contains(&task.id),
+            joinable: true,
         })
         .collect();
     let said = |name: &str| draft.get(name).and_then(Value::as_str).unwrap_or_default().to_string();
@@ -655,7 +656,7 @@ fn same_work_question(root: &Path, spec: &str, event_type: &str, draft: &Map<Str
 
 /// A recusa da tarefa ou do pedido novo, do assistente ou do plano, que a
 /// resposta `doc` do Jev à pergunta `same` ([`same_work_question`]) — ou da
-/// reserva dele — dá como o mesmo trabalho de uma tarefa ainda por entregar:
+/// reserva dele — dá como o mesmo trabalho de uma tarefa do backlog sem onda:
 /// a coberta (terminar a tarefa termina a atividade) ou a de mesmo sentido,
 /// que entra nela. A recusa (`same-work-open`) nomeia a tarefa, no idioma
 /// `lang`, e manda gravar a versão nova dela; na junção, traz em `rewrite` o
@@ -2189,6 +2190,63 @@ mod tests {
 
         let plain = write_triaged(&opts(&again), false, None, &|_, _, _| Asked::Off);
         assert_eq!(plain["ok"], json!(true), "without Jev the task is recorded: {plain}");
+    }
+
+    /// A tarefa nova só é comparada com as do backlog sem onda: a de uma onda
+    /// reprovada, que a onda de conserto refaz, nem chega à pergunta ao Jev e
+    /// a tarefa parecida com ela grava; a parecida com a do backlog segue
+    /// recusada, nomeando a do backlog.
+    #[test]
+    fn a_task_like_one_of_a_rejected_wave_is_recorded_and_one_like_the_backlog_is_refused() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        born(root);
+        let (asked, request, backlog_task) = subtraction_backlog(root);
+        let criterion = json!({"when": "w", "then": "t", "proof": "cargo test", "form": "ubiquitous", "origin": asked});
+        let criterion = write(root, "criterion", &criterion.to_string())["id"].as_u64().unwrap();
+        witness_approves(root);
+        let wave = json!({"n": 1, "text": "Onda 1.", "criteria": [criterion], "done_when": "d", "origin": asked});
+        assert_eq!(write(root, "wave", &wave.to_string())["ok"], json!(true));
+        let in_wave = json!({"wave": 1, "title": "Somar", "text": "Somar dois números.", "files": [{"path": "src/calc.ts"}], "depends_on": [],
+            "covers": [request], "origin": asked});
+        let wave_task = write(root, "task", &in_wave.to_string());
+        assert_eq!(wave_task["ok"], json!(true), "{wave_task}");
+        let wave_task = wave_task["id"].as_u64().unwrap();
+        assert_eq!(write(root, "delivered", r#"{"wave":1,"text":"A onda 1 saiu.","files":["src/calc.ts"]}"#)["ok"], json!(true));
+        let verdict = json!({"final": true, "wave": 1, "result": "rejected", "author": "review", "text": "Falta o caso do zero."});
+        record(root, "teste", "verdict", verdict.as_object().cloned().unwrap(), PhaseWriter::Binary).unwrap();
+        let log = store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap();
+        assert!(crate::commands::flow::round::waves_pending_fix(&log).contains_key(&1), "the wave is rejected and waits for its fix");
+        assert!(!backlog_left(&log).contains(&wave_task) && backlog_left(&log).contains(&backlog_task));
+        assert!(crate::commands::flow::round::queue::tasks_not_delivered(&log, &BTreeSet::new()).contains(&wave_task), "the rejected wave's task is still not delivered");
+
+        let opts = |title: &str, text: &str| {
+            let draft = json!({"title": title, "text": text, "agent": "- fazer", "files": [{"path": "src/calc.ts"}], "depends_on": [], "covers": [request],
+                "origin": asked});
+            WriteOpts { root: root.to_path_buf(), spec: Some("teste".into()), event_type: "task".into(), json: draft.to_string() }
+        };
+        let lists = |payload: &str, task: u64| payload.contains(&format!("\"t{task}\":{{"));
+        let tasks = || store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap().visible().iter().filter(|e| e.event_type == "task").count();
+        let before = tasks();
+
+        // O Jev dá a tarefa de onda como o mesmo trabalho, se a pergunta a oferece.
+        let like_the_wave = |_: &Path, _: &str, payload: &str| {
+            assert!(lists(payload, backlog_task), "the backlog task is compared: {payload}");
+            let choice = if lists(payload, wave_task) { format!("covered:t{wave_task}") } else { "new".to_string() };
+            Asked::Answered(json!({"answers": {"i0": {"choice": choice, "confidence": 0.95, "probabilities": {choice.as_str(): 0.96}}}}))
+        };
+        let fix = write_triaged(&opts("Somar de novo", "Somar dois números, agora com o zero."), false, None, &like_the_wave);
+        assert_eq!(fix["ok"], json!(true), "the fix of a rejected wave's task is recorded: {fix}");
+        assert_eq!(tasks(), before + 1);
+
+        let like_the_backlog = |_: &Path, _: &str, payload: &str| {
+            assert!(!lists(payload, wave_task), "the rejected wave's task is not compared: {payload}");
+            Asked::Answered(triaged(&format!("join:t{backlog_task}")))
+        };
+        let refused = write_triaged(&opts("Tirar um número do outro", "Tirar um número do outro."), false, None, &like_the_backlog);
+        assert_eq!(refused["reason"], json!("same-work-open"), "{refused}");
+        assert_eq!(refused["id"], json!(backlog_task), "{refused}");
+        assert_eq!(tasks(), before + 1, "the refused task is not recorded");
     }
 
     /// Na junção, a recusa traz o pedido ao agente de análise da sessão, no

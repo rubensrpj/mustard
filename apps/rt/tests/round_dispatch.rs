@@ -3084,6 +3084,15 @@ fn open_task_key(state: &Value) -> Option<String> {
     state["tasks"].as_object().and_then(|tasks| tasks.iter().find(|(_, task)| task["title"] == json!(OPEN_TASK)).map(|(key, _)| key.clone()))
 }
 
+/// A resposta de escolha à pergunta `question`: traz a chance de cada opção,
+/// a de `label` com certeza.
+fn sure_choice(question: &Value, label: &str) -> Value {
+    let options = question["criteria"].as_object().expect("the options");
+    let others = (0.05 / (options.len() - 1) as f64).max(0.0);
+    let chances: serde_json::Map<_, _> = options.keys().map(|option| (option.clone(), json!(if option == label { 0.95 } else { others }))).collect();
+    json!({"type": "choice", "choice": label, "confidence": 0.95, "probabilities": chances})
+}
+
 /// A resposta do classificador de mentira ao pedido `asked`: cada atividade
 /// do pedido é coberta, com certeza, pela tarefa aberta [`OPEN_TASK`]; nas
 /// outras perguntas, o tipo é recurso e o resto fica em dúvida.
@@ -3092,13 +3101,7 @@ fn classifier_answer(asked: &Value) -> (u16, Value) {
     let open = open_task_key(&asked["state"]);
     let mut answers = serde_json::Map::new();
     for (key, question) in asked["questions"].as_object().expect("the questions") {
-        // A resposta de escolha traz a chance de cada opção, a escolhida com certeza.
-        let sure = |label: &str| {
-            let options = question["criteria"].as_object().expect("the options");
-            let others = (0.05 / (options.len() - 1) as f64).max(0.0);
-            let chances: serde_json::Map<_, _> = options.keys().map(|option| (option.clone(), json!(if option == label { 0.95 } else { others }))).collect();
-            json!({"type": "choice", "choice": label, "confidence": 0.95, "probabilities": chances})
-        };
+        let sure = |label: &str| sure_choice(question, label);
         let answer = match (triage, &open) {
             (true, _) if key.ends_with("_near") => sure("none"),
             (true, Some(task)) => sure(&format!("covered:{task}")),
@@ -3155,6 +3158,79 @@ fn answer_triage_reserve(project: &Project, request: &Value) {
 /// Os pedidos do classificador das atividades que o Jev de mentira recebeu.
 fn triage_requests(jev: &FakeJev) -> usize {
     jev.all_requests().iter().filter(|asked| asked["state"]["revision"] == json!("task-triage-v1")).count()
+}
+
+/// O título da tarefa do backlog sem onda, que o classificador de mentira dos
+/// testes de mesmo trabalho acha parecida com a atividade de mesmo título.
+const BACKLOG_TASK: &str = "A tarefa do backlog que ainda não saiu em onda.";
+
+/// O classificador de mentira do mesmo trabalho: a atividade nova é coberta,
+/// com certeza, pela tarefa aberta de mesmo título, se o pedido a oferece;
+/// sem tarefa de mesmo título entre as opções, é trabalho novo.
+fn same_title_classifier() -> FakeJev {
+    FakeJev::start(|asked| {
+        let title = &asked["state"]["items"]["i0"]["title"];
+        let same = asked["state"]["tasks"].as_object().and_then(|tasks| tasks.iter().find(|(_, task)| &task["title"] == title)).map(|(key, _)| key.clone());
+        let answers: serde_json::Map<String, Value> = asked["questions"]
+            .as_object()
+            .expect("the questions")
+            .iter()
+            .map(|(key, question)| {
+                let label = match (&same, key.ends_with("_near")) {
+                    (_, true) => "none".to_string(),
+                    (Some(task), false) => format!("covered:{task}"),
+                    (None, false) => "new".to_string(),
+                };
+                (key.clone(), sure_choice(question, &label))
+            })
+            .collect();
+        (200, json!({"model": "jev-1.13.0", "answers": answers, "usage": {"input_tokens": 1500, "output_tokens": 0}}))
+    })
+}
+
+/// A tarefa nova de título `title` para a spec dos testes, que cobre o
+/// critério `criterion`, na gravação do `run write` com a resposta como veio.
+fn write_task_answer(project: &Project, criterion: u64, said: u64, title: &str) -> Value {
+    let task = json!({"title": title, "agent": "- conferir pelo teste", "text": "Tarefa nova.", "files": [{"path": "src/outro.rs", "new": true}],
+        "depends_on": [], "covers": [criterion], "origin": said});
+    project.answer(&["write", "task", "--spec", SPEC, "--json", &task.to_string()])
+}
+
+/// A tarefa nova parecida com uma de onda reprovada — o conserto dela — é
+/// gravada: a comparação com as tarefas abertas só olha o backlog sem onda,
+/// e a de onda é assunto da espera pela onda semelhante. A parecida com a do
+/// backlog sem onda segue recusada, nomeando a tarefa do backlog, e nada se
+/// grava.
+#[test]
+fn a_task_like_one_of_a_rejected_wave_is_recorded_and_one_like_the_backlog_is_refused() {
+    let (mut project, criterion, said, tasks) = backlog_project(&[&[GREETING]]);
+    let wave_title = project.log().current(tasks[0]).and_then(|task| task.str_field("title").map(str::to_string)).expect("the title of the wave's task");
+    let sent = project.run(&["round", "--dispatch", "--spec", SPEC]);
+    assert_eq!(waves_in(&sent, "dispatch"), vec![1], "{sent}");
+    sent_by(&project, &[1], closed_process::closed_process());
+    deliver_in_copy(&project, 1, "hello\n");
+    assert_eq!(reject(&project, 1, REJECTION)["ok"], json!(true));
+    let backlog = backlog_task_with(&project, criterion, said, &["src/backlog.rs"], &[], &json!({"title": BACKLOG_TASK}));
+    assert_eq!(wave_of(&project, backlog), None, "the backlog task has no wave");
+    let jev = same_title_classifier();
+    project.jev = Some(jev.url.clone());
+    let tasks_written = |project: &Project| project.log().visible().iter().filter(|e| e.event_type == "task").count();
+    let before = tasks_written(&project);
+
+    let fix = write_task_answer(&project, criterion, said, &wave_title);
+
+    assert_eq!(fix["ok"], json!(true), "the fix of the rejected wave's task is recorded: {fix}");
+    assert_eq!(tasks_written(&project), before + 1, "{fix}");
+    let asked: Vec<Value> = jev.all_requests().into_iter().filter(|asked| asked["state"]["revision"] == json!("task-triage-v1")).collect();
+    assert_eq!(asked.len(), 1, "the classifier is asked once: {fix}");
+    let compared: Vec<&str> = asked[0]["state"]["tasks"].as_object().expect("the open tasks").values().filter_map(|task| task["title"].as_str()).collect();
+    assert_eq!(compared, vec![BACKLOG_TASK], "only the backlog task without a wave is compared: {fix}");
+
+    let repeated = write_task_answer(&project, criterion, said, BACKLOG_TASK);
+
+    assert_eq!(repeated["reason"], json!("same-work-open"), "{repeated}");
+    assert_eq!(repeated["id"], json!(backlog), "{repeated}");
+    assert_eq!(tasks_written(&project), before + 1, "the refused task is not recorded: {repeated}");
 }
 
 /// As ondas que a resposta `out` da rodada deixa esperando a decisão do Jev.
