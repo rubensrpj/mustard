@@ -454,11 +454,6 @@ fn comparable(said: &str) -> String {
     text::words(&text::fold(said)).collect::<Vec<_>>().join(" ")
 }
 
-/// O texto em uma linha só, com um espaço entre as palavras.
-fn one_line(said: &str) -> String {
-    said.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
 /// A nota que a sobra `leftover`, apontada pela onda `wave`, deixa na tarefa
 /// `task` que ela repete, no idioma `lang`: o título da sobra e um texto com a
 /// onda, o código da tarefa, lido em `log`, e o detalhe numa linha só. O
@@ -469,7 +464,7 @@ fn repeated_note(log: &SpecLog, wave: u64, leftover: &Leftover, task: &SpecEvent
     let text = translate("round.leftover_repeated", lang)
         .replace("{wave}", &wave.to_string())
         .replace("{task}", &code)
-        .replace("{detail}", &one_line(&leftover.detail));
+        .replace("{detail}", &text::one_line(&leftover.detail));
     let note = json!({ "title": leftover.title, "text": text, "keys": [code], "label": code, "author": "wave" });
     note.as_object().cloned().unwrap_or_default()
 }
@@ -516,7 +511,7 @@ fn join(draft: &mut Map<String, Value>, wave: u64, leftover: &Leftover, files: &
     let line = translate(section, lang)
         .replace("{wave}", &wave.to_string())
         .replace("{title}", &leftover.title)
-        .replace("{detail}", &one_line(&leftover.detail));
+        .replace("{detail}", &text::one_line(&leftover.detail));
     append_agent_line(draft, &line);
     let mut paths: Vec<Value> = draft.get(FILES).and_then(Value::as_array).cloned().unwrap_or_default();
     for path in files {

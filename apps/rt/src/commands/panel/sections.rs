@@ -8,7 +8,7 @@ use std::path::Path;
 
 use mustard_core::domain::spec_events::{SpecEvent, SpecLog};
 use mustard_core::domain::spec_state::State;
-use mustard_core::domain::text::{CutAt, cut, one_line};
+use mustard_core::domain::text::cut_line;
 use mustard_core::view::document::{WaveState, WaveStates};
 use serde_json::{Value, json};
 
@@ -208,7 +208,7 @@ fn deliveries(root: &Path) -> Value {
         .take(DELIVERIES_SHOWN)
         .map(|entry| {
             let mut row = shown(entry);
-            row["delivered"] = json!(cut(&one_line(&entry.delivered), DELIVERY_CHARS, CutAt::Word));
+            row["delivered"] = json!(cut_line(&entry.delivered, DELIVERY_CHARS));
             row["rules"] = json!(entry.rules.iter().map(|file| file.rules.len()).sum::<usize>());
             row
         })
@@ -513,7 +513,7 @@ pub(super) fn item(log: &SpecLog, code: &str) -> Value {
     // The newest verdict of the wave's reviewer, from any attempt: a rejection
     // explains why the wave runs again until the next verdict replaces it.
     let review = event.wave().and_then(|n| visible.iter().rev().find(|e| crate::commands::flow::round::is_wave_verdict(e) && e.wave() == Some(n)))
-        .map(|verdict| json!({"result":verdict.str_field("result"),"reason":verdict.str_field("text").map(|text| cut(&one_line(text), REVIEW_REASON_CHARS, CutAt::Word)),
+        .map(|verdict| json!({"result":verdict.str_field("result"),"reason":verdict.str_field("text").map(|text| cut_line(text, REVIEW_REASON_CHARS)),
             "files":verdict.fields.get("files").and_then(Value::as_array).cloned().unwrap_or_default(),"at":verdict.at()}));
     let item_code = codes.get(&event.id);
     let mut versions: Vec<&SpecEvent> = log.events.iter().filter(|e| codes.get(&e.id) == item_code).collect();
@@ -616,7 +616,7 @@ fn mustard_skills(root: &Path) -> Value {
         .skills
         .iter()
         .map(|(name, skill)| {
-            let gain = skill.gain.as_deref().map(|gain| cut(&one_line(gain), GAIN_CHARS, CutAt::Word));
+            let gain = skill.gain.as_deref().map(|gain| cut_line(gain, GAIN_CHARS));
             json!({"name":name,"state":skill.state,"tasks":skill.deliveries,"gain":gain,"wave_tokens":creating_tokens(root, skill)})
         })
         .collect();

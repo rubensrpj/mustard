@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 use mustard_core::domain::project_summary::SURE;
 use mustard_core::domain::spec_events::{SpecEvent, SpecLog, TASK_TITLE_MAX};
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState as _};
-use mustard_core::domain::text::{CutAt, cut, one_line};
+use mustard_core::domain::text::cut_line;
 use mustard_core::io::failures::{self as disk, Failure, SkillTask};
 use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{Locale, translate};
@@ -149,7 +149,7 @@ pub(crate) fn from_log(spec: &str, log: &SpecLog) -> Vec<Failure> {
 
 /// O que o Jev vê de uma falha: o motivo, cortado, e os arquivos.
 fn shown(failure: &Failure) -> Value {
-    json!({ "reason": without_secrets(&cut(&one_line(&failure.reason), REASON_CHARS, CutAt::Word)), "files": failure.files })
+    json!({ "reason": without_secrets(&cut_line(&failure.reason, REASON_CHARS)), "files": failure.files })
 }
 
 /// A pergunta da mesma falha: a nova no estado, cada candidata uma entrada.
@@ -251,7 +251,7 @@ fn skill_task_draft(members: &[&Failure], lang: Locale) -> Map<String, Value> {
     let count = members.len().to_string();
     let title = translate("failures.skill_task_title", lang);
     let room = TASK_TITLE_MAX.saturating_sub(title.replace("{reason}", "").chars().count()).min(TITLE_REASON_CHARS);
-    let title = title.replace("{reason}", &cut(&one_line(&members[0].reason), room, CutAt::Word));
+    let title = title.replace("{reason}", &cut_line(&members[0].reason, room));
     let recent = &members[members.len().saturating_sub(OCCURRENCES_MAX)..];
     let occurrences: Vec<String> = recent
         .iter()
@@ -260,7 +260,7 @@ fn skill_task_draft(members: &[&Failure], lang: Locale) -> Map<String, Value> {
                 .replace("{spec}", &row.spec)
                 .replace("{wave}", &row.wave.to_string())
                 .replace("{source}", &source_name(&row.source, lang))
-                .replace("{reason}", &cut(&one_line(&row.reason), OCCURRENCE_CHARS, CutAt::Word));
+                .replace("{reason}", &cut_line(&row.reason, OCCURRENCE_CHARS));
             if !row.files.is_empty() {
                 let files: Vec<String> = row.files.iter().map(|file| format!("`{file}`")).collect();
                 line.push(' ');

@@ -54,4 +54,14 @@ mod tests {
         let uncoded = message(9, "sem código");
         assert_eq!(line(&uncoded, &codes), "9: sem código");
     }
+
+    /// O texto de 101 caracteres cabe inteiro na linha, no lugar das
+    /// reticências; o de 102 fica com os 100 primeiros e termina nelas.
+    #[test]
+    fn a_line_keeps_a_hundred_characters_before_the_ellipsis() {
+        let codes = BTreeMap::new();
+        let whole = "x".repeat(101);
+        assert_eq!(line(&message(1, &whole), &codes), format!("1: {whole}"));
+        assert_eq!(line(&message(1, &"x".repeat(102)), &codes), format!("1: {}…", "x".repeat(100)));
+    }
 }

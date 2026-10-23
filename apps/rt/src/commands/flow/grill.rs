@@ -54,6 +54,7 @@ use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::spec_events::{Block, BlockQuery, Kind, Refusal, SpecEvent, SpecLog, WORK_KINDS, found_by};
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State};
 use mustard_core::domain::survey::{self, Sources};
+use mustard_core::domain::text::{CutAt, cut, one_line};
 use mustard_core::io::citation::DiskWorld;
 use mustard_core::io::{lessons, project_map, spec_events as store, spec_index};
 use mustard_core::platform::i18n::{Locale, translate};
@@ -405,7 +406,8 @@ fn touched_by(log: &SpecLog, reason: &str, codes: &BTreeMap<u64, String>, langua
         .collect()
 }
 
-/// Quantos caracteres do texto de um item entram na lista dos tocados.
+/// Quantos caracteres do texto de um item entram na lista dos tocados, antes
+/// das reticências.
 const TITLE_CHARS: usize = 120;
 
 /// A primeira linha do texto de um item, cortada: é o bastante para o usuário
@@ -414,11 +416,7 @@ fn title_of(event: &SpecEvent) -> String {
     let text = event.str_field("text").unwrap_or_default();
     let first = text.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default();
     let first = first.strip_prefix("**").map_or(first, |rest| rest.split("**").next().unwrap_or(rest));
-    let title: String = first.split_whitespace().collect::<Vec<_>>().join(" ");
-    if title.chars().count() <= TITLE_CHARS {
-        return title;
-    }
-    format!("{}…", title.chars().take(TITLE_CHARS).collect::<String>().trim_end())
+    cut(&one_line(first), TITLE_CHARS + 1, CutAt::Char)
 }
 
 /// Grava o tipo de trabalho, com a mensagem do objetivo como origem, pela
@@ -1577,6 +1575,20 @@ mod tests {
         assert_eq!(compact["points"][0]["fact_count"],1);
         let mut condensed=full.clone();condensed["condensed"]=json!(true);
         assert_eq!(projection(&condensed)["points"],full["points"],"presenting all points together keeps their facts");
+    }
+
+    /// A primeira linha de 121 letras sai inteira na lista dos tocados, no
+    /// lugar das reticências; a de 122 fica com as 120 primeiras e termina
+    /// nelas.
+    #[test]
+    fn a_touched_item_title_keeps_120_letters_before_the_ellipsis() {
+        let item = |text: String| {
+            let fields = json!({"type": "rule", "text": text}).as_object().cloned().unwrap_or_default();
+            SpecEvent { id: 1, event_type: "rule".to_string(), line: 1, fields }
+        };
+        let whole = "x".repeat(121);
+        assert_eq!(title_of(&item(format!("{whole}\nresto"))), whole);
+        assert_eq!(title_of(&item("x".repeat(122))), format!("{}…", "x".repeat(120)));
     }
 
 }

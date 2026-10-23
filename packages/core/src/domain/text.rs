@@ -125,7 +125,9 @@ pub enum CutAt {
 ///
 /// É o único corte com reticências do projeto: o título, a frase do item, a
 /// linha do painel e o trecho citado ao usuário cortam todos por aqui. Quem
-/// quer o texto numa linha passa antes por [`one_line`].
+/// quer o texto numa linha passa antes por [`one_line`], ou usa
+/// [`cut_line`], que junta as duas coisas e corta na palavra. Quem conta o
+/// teto antes das reticências passa um caractere a mais.
 #[must_use]
 pub fn cut(text: &str, max: usize, at: CutAt) -> String {
     if text.chars().count() <= max {
@@ -138,6 +140,14 @@ pub fn cut(text: &str, max: usize, at: CutAt) -> String {
     }
     .unwrap_or_else(|| without_loose_end(first_chars(text, room)));
     format!("{head}…")
+}
+
+/// `text` numa linha só ([`one_line`]) e com no máximo `max` caracteres,
+/// contadas as reticências, cortado no fim de uma palavra inteira: o texto
+/// livre que um painel, um resumo ou um motivo mostram numa linha.
+#[must_use]
+pub fn cut_line(text: &str, max: usize) -> String {
+    cut(&one_line(text), max, CutAt::Word)
 }
 
 /// O começo de `text` que cabe em `room` caracteres, cortado no fim de uma
@@ -353,6 +363,15 @@ mod tests {
         assert_eq!(whole_words(text, 6), "");
         assert_eq!(whole_words("curto.", 6), "curto.");
         assert_eq!(whole_words("Fim — e mais", 6), "Fim");
+    }
+
+    /// O corte de linha junta as quebras e os brancos repetidos num espaço
+    /// antes de cortar, e corta na palavra: o texto que cabe numa linha volta
+    /// nela inteiro.
+    #[test]
+    fn the_line_cut_joins_the_lines_before_cutting_on_a_word() {
+        assert_eq!(cut_line("Linha um\nlinha  dois\tcom tab", 15), "Linha um linha…");
+        assert_eq!(cut_line("Linha um\nlinha  dois", 19), "Linha um linha dois");
     }
 
     /// Textos para a prova lado a lado dos cortes: vazio, curto, prosa com

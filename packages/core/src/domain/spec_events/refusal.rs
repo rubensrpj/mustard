@@ -3,6 +3,7 @@
 
 use crate::domain::clarity::ClarityReport;
 use crate::domain::survey::GapKey;
+use crate::domain::text::{cut, CutAt};
 use crate::platform::i18n::{translate, Locale};
 
 use super::{type_names, BlockQuery, EventRef, Kind};
@@ -577,7 +578,7 @@ impl Refusal {
             Self::LessonOriginMissing => fill("lessons.origin_missing", &[]),
             Self::LessonRepeated { id, text } => fill(
                 "lessons.repeated",
-                &[("{id}", id.to_string()), ("{text}", opening(text, REPEATED_TEXT_CHARS))],
+                &[("{id}", id.to_string()), ("{text}", cut(text.trim(), REPEATED_TEXT_CHARS + 1, CutAt::Char))],
             ),
             Self::LessonUnclear { report } => {
                 fill("lessons.unclear", &[("{defects}", report.defects(lang).join("; "))])
@@ -769,19 +770,9 @@ impl Refusal {
 }
 
 /// Quantos caracteres do texto da lição que já existe a recusa de repetição
-/// mostra: o bastante para achar a lição, pouco para não copiá-la inteira.
+/// mostra antes das reticências: o bastante para achar a lição, pouco para
+/// não copiá-la inteira.
 const REPEATED_TEXT_CHARS: usize = 160;
-
-/// O começo de `text`, com no máximo `max` caracteres; o corte ganha "…".
-fn opening(text: &str, max: usize) -> String {
-    let text = text.trim();
-    if text.chars().count() <= max {
-        return text.to_string();
-    }
-    let mut cut: String = text.chars().take(max).collect();
-    cut.push('…');
-    cut
-}
 
 #[cfg(test)]
 mod tests {
@@ -808,5 +799,18 @@ mod tests {
         let refusal = Refusal::TaskDeclarationMissing { missing: vec![TaskDeclaration::Covers], uncovered: Vec::new() };
         let pt = refusal.message(Locale::PtBr);
         assert!(pt.contains("`covers`") && !pt.contains("Itens que nenhuma tarefa cobre"), "{pt}");
+    }
+
+    /// A recusa da lição repetida cita a lição guardada inteira até 161
+    /// caracteres, no lugar das reticências; a de 162 fica com os 160
+    /// primeiros e termina nelas.
+    #[test]
+    fn the_repeated_lesson_refusal_quotes_160_characters_before_the_ellipsis() {
+        let quoted = |text: String| Refusal::LessonRepeated { id: 3, text }.message(Locale::PtBr);
+        let whole = "x".repeat(161);
+        let got = quoted(format!("  {whole}\n"));
+        assert!(got.contains(&format!("\"{whole}\"")), "{got}");
+        let got = quoted("x".repeat(162));
+        assert!(got.contains(&format!("\"{}…\"", "x".repeat(160))), "{got}");
     }
 }

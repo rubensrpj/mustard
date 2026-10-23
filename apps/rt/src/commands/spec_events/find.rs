@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use mustard_core::domain::normalize::{Languages, plain_words};
 use mustard_core::domain::spec_events::{NOT_SEARCHED, Ranked, Refusal, SpecEvent, SpecLog, TYPES, ranked_by};
 use mustard_core::domain::spec_state::SpecState;
+use mustard_core::domain::text::{CutAt, cut};
 use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Map, Value, json};
@@ -35,7 +36,7 @@ const TO_JEV: usize = 30;
 const JEV_CUT: f64 = 0.5;
 /// Quantas letras do texto de cada candidato vão ao Jev.
 const JEV_TEXT: usize = 600;
-/// O título mais longo que a linha mostra, em letras.
+/// Quantas letras do título a linha mostra antes das reticências.
 const TITLE_MAX: usize = 100;
 
 /// Options for `mustard-rt run find`.
@@ -256,7 +257,8 @@ pub(crate) fn day_of(at: &str) -> Option<String> {
 }
 
 /// O título que a linha mostra: o do item; na entrega, o da onda dela; sem
-/// título, a primeira linha do texto. Cortado em [`TITLE_MAX`] letras.
+/// título, a primeira linha do texto. Cortado em [`TITLE_MAX`] letras e as
+/// reticências.
 fn title_of(log: &SpecLog, event: &SpecEvent) -> String {
     let own = event.str_field("title").filter(|title| !title.trim().is_empty());
     let of_wave = || {
@@ -267,7 +269,7 @@ fn title_of(log: &SpecLog, event: &SpecEvent) -> String {
     // A marca de um trecho colado não é título: vale a primeira linha de texto.
     let tag = |line: &str| line.starts_with("<pasted_content") || line.starts_with("</pasted_content");
     let first = text.lines().map(str::trim).find(|line| !line.is_empty() && !tag(line)).unwrap_or_default();
-    if first.chars().count() <= TITLE_MAX { first.to_string() } else { format!("{}…", first.chars().take(TITLE_MAX).collect::<String>()) }
+    cut(first, TITLE_MAX + 1, CutAt::Char)
 }
 
 /// Run `find` and print the answer; exit 1 on a refusal.
@@ -416,5 +418,19 @@ mod tests {
         assert_eq!(lines.len(), 6, "{newest}");
         assert!(lines[0].ends_with("Regra 6") && !lines[0].contains("regra |"), "newest first, no type word: {newest}");
         assert_eq!(lines[5], "5 de 7. Use mais uma palavra ou o filtro por tipo.");
+    }
+
+    /// O título de 101 letras sai inteiro na linha, no lugar das reticências;
+    /// o de 102 fica com as 100 primeiras e termina nelas.
+    #[test]
+    fn the_title_keeps_a_hundred_letters_before_the_ellipsis() {
+        let log = SpecLog::default();
+        let titled = |title: String| {
+            let fields = json!({"type": "task", "title": title}).as_object().cloned().unwrap_or_default();
+            SpecEvent { id: 1, event_type: "task".to_string(), line: 1, fields }
+        };
+        let whole = "x".repeat(101);
+        assert_eq!(title_of(&log, &titled(whole.clone())), whole);
+        assert_eq!(title_of(&log, &titled("x".repeat(102))), format!("{}…", "x".repeat(100)));
     }
 }

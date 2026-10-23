@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use crate::domain::knowledge::{self, Card, Source};
 use crate::domain::normalize::Languages;
 use crate::domain::project_map::{MapRefusal, ProjectMap};
+use crate::domain::text::{CutAt, cut};
 use crate::io::project_map::{self as store, open_existing, unreadable};
 use crate::io::sha256::Sha256;
 
@@ -383,6 +384,11 @@ fn consistent_scoped_query(root: &Path, tree: &Path, options: &Query<'_>, includ
     }
     Err(invalid("knowledge-concurrent-scan; retry after the current scan commits"))
 }
+
+/// Quantos caracteres do texto de uma interpretação o resumo mostra antes
+/// das reticências; o texto que passa por um caractere só cabe no lugar delas
+/// e sai inteiro, e `--detail` traz sempre o texto inteiro.
+const NOTE_CHARS: usize = 600;
 
 #[allow(clippy::too_many_arguments)]
 fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpretations: bool, selector:Option<&dyn knowledge::selection::SymbolSelector>, responsibility:bool, task:Option<knowledge::investigation::Task<'_>>, scope:Option<&EvidenceScope<'_>>) -> Result<(Value, ProjectMap), MapRefusal> {
@@ -772,8 +778,8 @@ fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpr
         .into_iter()
         .map(|i| {
             let mut note = json!(fresh[i]);
-            if !detail && fresh[i].text.chars().count() > 600 {
-                note["text"] = json!(format!("{}…", fresh[i].text.chars().take(600).collect::<String>()));
+            if !detail && fresh[i].text.chars().count() > NOTE_CHARS + 1 {
+                note["text"] = json!(cut(&fresh[i].text, NOTE_CHARS + 1, CutAt::Char));
                 note["text_compacted"] = json!(true);
             }
             note
@@ -1176,6 +1182,31 @@ use super::*;
         for question in ["how does the API retry the upload after a timeout", "API retries the upload after a timeout?"] {
             let cards = implement_answer(dir.path(), question, 3, None);
             assert_eq!(cards.first().map(String::as_str), Some("src/client.ts:API"), "{question}: {cards:?}");
+        }
+    }
+
+    /// O resumo mostra 600 caracteres do texto de uma interpretação antes das
+    /// reticências: o de 601 sai inteiro e não se diz compactado; o de 602
+    /// fica com os 600 primeiros e se diz compactado.
+    #[test]
+    fn the_summary_keeps_600_characters_of_a_note_before_the_ellipsis() {
+        for (chars, shown, flagged) in [(601, "x".repeat(601), Value::Null), (602, format!("{}…", "x".repeat(600)), json!(true))] {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("a.rs"), "fn run() {}\n").unwrap();
+            store::write_text(dir.path(), r#"{"modules":[]}"#).unwrap();
+            let note = Interpretation {
+                id: "backup".into(),
+                title: "Backup".into(),
+                text: "x".repeat(chars),
+                status: "reviewed".into(),
+                origin: "fixture-review".into(),
+                rule_context: None,
+                sources: vec![source(dir.path(), "a.rs")],
+            };
+            record(dir.path(), &note).unwrap();
+            let answer = query(dir.path(), "backup", None, 5, 1, false).unwrap().0;
+            assert_eq!(answer["interpretations"][0]["text"], json!(shown), "{chars}");
+            assert_eq!(answer["interpretations"][0]["text_compacted"], flagged, "{chars}");
         }
     }
 }

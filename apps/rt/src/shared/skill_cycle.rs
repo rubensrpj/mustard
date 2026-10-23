@@ -33,7 +33,7 @@ use std::path::{Path, PathBuf};
 
 use mustard_core::domain::spec_events::{SpecLog, TASK_TITLE_MAX};
 use mustard_core::domain::spec_state::PhaseWriter;
-use mustard_core::domain::text::{CutAt, cut, one_line};
+use mustard_core::domain::text::cut_line;
 use mustard_core::domain::wave_prompt::{SkillOption, SkillTie};
 use mustard_core::io::failures::{self, Failure, SkillTask};
 use mustard_core::io::mustard_skills::{self as registry, IDLE_CANDIDACIES, MustardSkill, RETIRED};
@@ -372,7 +372,7 @@ impl Why {
             Self::Failure { spec, wave, reason, .. } => translate("skills.update_why_failure", lang)
                 .replace("{spec}", spec)
                 .replace("{wave}", &wave.to_string())
-                .replace("{reason}", &cut(&one_line(reason), REASON_CHARS, CutAt::Word)),
+                .replace("{reason}", &cut_line(reason, REASON_CHARS)),
         }
     }
 }

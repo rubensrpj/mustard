@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 
 use crate::domain::spec_events::{SpecEvent, SpecLog, pr_message};
 use crate::domain::spec_state::State;
-use crate::domain::text::{CutAt, cut, one_line};
+use crate::domain::text::{cut_line, one_line};
 use crate::platform::i18n::{Locale, translate};
 
 /// O teto do que saiu, em caracteres.
@@ -167,7 +167,7 @@ pub fn title_and_delivered(log: &SpecLog, spec: &str, lang: Locale) -> (String, 
         .or_else(|| message.map(|(_, body)| body_line(&body)).filter(|body| !body.is_empty()))
         .or(goal)
         .unwrap_or_default();
-    (cut(&one_line(&title), TITLE_CHARS, CutAt::Word), cut(&one_line(&body), DELIVERED_CHARS, CutAt::Word))
+    (cut_line(&title, TITLE_CHARS), cut_line(&body, DELIVERED_CHARS))
 }
 
 /// Os caminhos de uma lista `files`, como objetos com o caminho ou como texto.
@@ -266,12 +266,12 @@ pub fn agreed_items(log: &SpecLog) -> Vec<Agreed> {
 /// exemplo em meia linha, tudo em [`RULE_CHARS`].
 #[must_use]
 pub fn rule_line(item: &Agreed) -> String {
-    let text = cut(&one_line(&item.text), RULE_CHARS, CutAt::Word);
+    let text = cut_line(&item.text, RULE_CHARS);
     let room = RULE_CHARS.saturating_sub(text.chars().count() + 3).min(NOTE_CHARS);
     if item.note.is_empty() || room < NOTE_MIN_CHARS {
         return text;
     }
-    format!("{text} — {}", cut(&one_line(&item.note), room, CutAt::Word))
+    format!("{text} — {}", cut_line(&item.note, room))
 }
 
 /// As regras de um mesmo conjunto de caminhos, que vão num arquivo só.

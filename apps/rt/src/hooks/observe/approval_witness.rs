@@ -1498,4 +1498,13 @@ mod tests {
         witness(bare.path(), &ask_on("Qual o objetivo?", &["Enxugar"], json!("Enxugar")));
         assert!(!bare.path().join(".claude").exists(), "no spec, nothing recorded");
     }
+
+    /// O rótulo de 81 caracteres sai inteiro entre aspas, no lugar das
+    /// reticências; o de 82 fica com os 80 primeiros e termina nelas.
+    #[test]
+    fn a_quoted_label_keeps_eighty_characters_before_the_ellipsis() {
+        let whole = "x".repeat(81);
+        assert_eq!(quote(std::slice::from_ref(&whole)), format!("\"{whole}\""));
+        assert_eq!(quote(&["x".repeat(82)]), format!("\"{}…\"", "x".repeat(80)));
+    }
 }
