@@ -221,8 +221,8 @@ use serde_json::{Map, Value, json};
 
 use super::proof_check::{cites_a_missing_file, created_files, proof_defect, relative_path, spec_created_files};
 use super::request_route::Route;
-use crate::commands::flow::round::queue::task_files;
-use crate::commands::flow::round::{backlog_left, backlog_return, waves_left_without_tasks};
+use crate::commands::flow::round::queue::{files_in, task_files};
+use crate::commands::flow::round::{all_ignored, backlog_left, backlog_return, waves_left_without_tasks};
 use crate::shared::jev::TASK_TRIAGE_CALL;
 use crate::shared::jev::reserve::{self, Asked, RESERVE_FIELD, Reserved};
 use crate::shared::task_triage::{self, Candidate, Classifying, Destination, Item};
@@ -770,6 +770,14 @@ pub(crate) fn draft_rules(start: &Path, spec: &str, event_type: &str, draft: &mu
     // uma onda sem pronto-quando não pode mandar completar o que nunca passa.
     if event_type == "wave" {
         return Err(Refusal::WaveByBacklog);
+    }
+    // A tarefa só em arquivo que o git ignora é mudança local: nenhuma onda a
+    // entrega, e o git recusaria o commit dela na volta.
+    if event_type == "task" {
+        let files = files_in(draft);
+        if all_ignored(&checkout(start), &files) {
+            return Err(Refusal::FilesIgnoredByGit { files: files.into_iter().map(|file| format!("`{file}`")).collect::<Vec<_>>().join(", ") });
+        }
     }
     if event_type == "message" && hook_only_message(draft) {
         return Err(Refusal::UserMessageByHook { spec });

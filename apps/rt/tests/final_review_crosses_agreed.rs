@@ -618,6 +618,32 @@ fn an_approved_final_verdict_with_leftovers_becomes_backlog_tasks_instead_of_the
     assert_eq!(backlog(&project.log()).len(), 2, "o fechamento seguinte não grava os achados de novo");
 }
 
+/// O achado do veredito final aprovado que só mexe em arquivo que o git
+/// ignora é mudança local: o fechamento o grava como nota ao usuário, sem
+/// tarefa, e a obra fecha em vez de voltar à rodada.
+#[test]
+fn an_approved_final_verdict_with_a_leftover_only_in_a_git_ignored_file_closes_with_a_note() {
+    let project = Project::new();
+    let exclude = project.root.join(".git/info/exclude");
+    let kept = std::fs::read_to_string(&exclude).expect("the exclude file");
+    std::fs::write(&exclude, format!("{kept}.env\n")).expect("the local file is ignored");
+    let decisions = ready(&project);
+    let asked = project.run(&["close", "--spec", SPEC]);
+    assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+
+    let title = "A chave da API falta no ambiente local";
+    let mut verdict = all_met_verdict(&decisions);
+    verdict["leftovers"] = json!([{"title": title, "detail": "Falta a chave da API no .env desta máquina.", "files": [".env"]}]);
+    project.read_review();
+    project.write("verdict", &verdict);
+    let after = project.run(&["close", "--spec", SPEC]);
+
+    assert_eq!(after["phase"], json!("closed"), "a mudança local não segura a obra: {after}");
+    let log = project.log();
+    let titled = |kind: &str| log.visible().into_iter().filter(|e| e.event_type == kind && e.str_field("title") == Some(title)).count();
+    assert_eq!((titled("task"), titled("request"), titled("note")), (0, 0, 1), "só a nota fica: {after}");
+}
+
 /// Os números dos pedidos de revisão final gravados, do mais velho ao mais
 /// novo.
 fn review_requests(project: &Project) -> Vec<u64> {

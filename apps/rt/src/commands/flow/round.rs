@@ -158,6 +158,8 @@ pub(crate) use dependencies::prepare as prepare_copy_dependencies;
 mod environment;
 mod finish_check;
 mod fixes;
+mod git_ignored;
+pub(crate) use git_ignored::all_ignored;
 mod handoff;
 mod imports_check;
 pub(crate) mod dispatch_jev;

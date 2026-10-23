@@ -1361,6 +1361,26 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.leftover_marked", Locale::EnUs) => "Leftover from wave {wave}: {title}",
         ("round.leftover_review_marked", Locale::PtBr) => "Achado da revisão final: {title}",
         ("round.leftover_review_marked", Locale::EnUs) => "Finding from the final review: {title}",
+        // A sobra só em arquivo que o git ignora: mudança local, que não vira
+        // tarefa e fica como nota para o usuário.
+        ("round.leftover_local", Locale::PtBr) => {
+            "Sobra da onda {wave} só em arquivo que o git ignora ({files}). É mudança local: nenhuma onda a entrega e \
+             nenhum commit a leva, por isso não virou tarefa. Cabe ao usuário fazer, nesta máquina — {title}: {detail}"
+        }
+        ("round.leftover_local", Locale::EnUs) => {
+            "Leftover from wave {wave} only in files git ignores ({files}). It is a local change: no wave delivers it \
+             and no commit carries it, so it did not become a task. It is up to the user to make it, on this machine \
+             — {title}: {detail}"
+        }
+        ("round.leftover_review_local", Locale::PtBr) => {
+            "Achado da revisão final só em arquivo que o git ignora ({files}). É mudança local: nenhuma onda a entrega \
+             e nenhum commit a leva, por isso não virou tarefa. Cabe ao usuário fazer, nesta máquina — {title}: {detail}"
+        }
+        ("round.leftover_review_local", Locale::EnUs) => {
+            "Finding from the final review only in files git ignores ({files}). It is a local change: no wave delivers \
+             it and no commit carries it, so it did not become a task. It is up to the user to make it, on this \
+             machine — {title}: {detail}"
+        }
         ("round.wave_left_after_return", Locale::PtBr) => {
             "A onda {wave} saiu do ar por ficar sem tarefa. O agente dela já tinha gravado a volta ao pedido {send}, \
              mas a última tarefa foi removida antes de a rodada assumi-la. A volta fica só na história. A fila, a \
@@ -2584,7 +2604,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 376, 0x0d82_0b46_9521_dc87);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 378, 0x8053_954f_6034_6ad0);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
@@ -2880,6 +2900,8 @@ mod tests {
             ("round.leftover_judged", &["{chance}"][..]),
             ("round.leftover_marked", &["{wave}", "{title}"][..]),
             ("round.leftover_review_marked", &["{title}"][..]),
+            ("round.leftover_local", &["{wave}", "{files}", "{title}", "{detail}"][..]),
+            ("round.leftover_review_local", &["{files}", "{title}", "{detail}"][..]),
             ("round.wave_left_without_tasks", &["{wave}", "{send}"][..]),
             ("round.wave_left_after_return", &["{wave}", "{send}"][..]),
             ("round.queued.broken_dependency", &["{dependencies}"][..]),

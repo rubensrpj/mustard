@@ -50,6 +50,7 @@ use serde_json::{json, Map, Value};
 
 use mustard_core::domain::spec_state::PhaseWriter;
 
+use super::git_ignored::all_ignored;
 use super::jev_decision::FINAL_REVIEW;
 use super::queue::{backlog_left, task_files, tasks_not_delivered};
 use super::rehearsal::{Recording, Rehearsed, rehearse};
@@ -88,6 +89,9 @@ const PRIORITY_SAID: SaidBy = ("round.leftover_priority", "round.leftover_review
 
 /// A marca da sobra no título do pedido dela ([`marked_title`]).
 const MARKED: SaidBy = ("round.leftover_marked", "round.leftover_review_marked");
+
+/// A nota da sobra só em arquivo que o git ignora ([`local_note`]).
+const LOCAL: SaidBy = ("round.leftover_local", "round.leftover_review_local");
 
 /// O tipo do evento que a sobra vira quando é trabalho: a tarefa nova ou a
 /// versão nova de uma tarefa aberta.
@@ -296,6 +300,12 @@ pub(super) fn leftover_events(
     let mut born: Vec<(BTreeSet<String>, usize)> = Vec::new();
     let mut asked: Vec<(BTreeSet<String>, &Leftover, usize)> = Vec::new();
     for (position, (&(wave, leftover), files)) in found.iter().zip(files_of).enumerate() {
+        // Só em arquivo que o git ignora é mudança local: nenhuma onda a
+        // entrega, e o usuário a recebe como nota, sem pedido nem tarefa.
+        if all_ignored(root, &files) {
+            work.push(event(wave, NOTE, local_note(wave, leftover, &files, lang)));
+            continue;
+        }
         if let Some(task) = exact[position] {
             work.push(event(wave, NOTE, repeated_note(log, wave, leftover, task, lang)));
             continue;
@@ -387,6 +397,10 @@ pub(super) fn leftover_question(root: &Path, log: &SpecLog, returning: &BTreeSet
     let mut items = Vec::new();
     for (at, leftover) in wave.leftovers.iter().enumerate() {
         let files: BTreeSet<String> = leftover_files(root, log, wave.wave, leftover).into_iter().collect();
+        // A sobra só em arquivo ignorado vira nota, sem classificador.
+        if all_ignored(root, &files) {
+            continue;
+        }
         if unfinished.iter().any(|task| repeats(&task_files(task), task.str_field("title"), task.str_field("text"), &files, leftover)) {
             continue;
         }
@@ -551,6 +565,21 @@ fn judged_note(log: &SpecLog, wave: u64, leftover: &Leftover, task: &SpecEvent, 
     let reason = translate("round.leftover_judged", lang).replace("{chance}", &format!("{chance:.2}"));
     note.insert("agent".into(), json!(reason));
     note
+}
+
+/// A nota ao usuário da sobra `leftover`, apontada pela onda `wave`, cujos
+/// arquivos `files` o git ignora todos: é mudança local, que nenhuma onda
+/// entrega, e por isso não vira pedido nem tarefa. O título é o da sobra, o
+/// texto diz a onda, os arquivos e o detalhe numa linha só, no idioma `lang`, e
+/// os arquivos são as chaves de busca.
+fn local_note(wave: u64, leftover: &Leftover, files: &BTreeSet<String>, lang: Locale) -> Map<String, Value> {
+    let listed = files.iter().map(|file| format!("`{file}`")).collect::<Vec<_>>().join(", ");
+    let text = said_by(wave, LOCAL, lang)
+        .replace("{files}", &listed)
+        .replace("{title}", &leftover.title)
+        .replace("{detail}", &text::one_line(&leftover.detail));
+    let note = json!({ "title": leftover.title, "text": text, "keys": files, "author": "wave" });
+    note.as_object().cloned().unwrap_or_default()
 }
 
 /// O título do pedido da sobra de título `title`, apontada pela onda `wave`,

@@ -786,7 +786,13 @@ fn task_transitive_deps(n: u64, deps: &BTreeMap<u64, BTreeSet<u64>>) -> BTreeSet
 /// Os arquivos que uma tarefa declara: cada item de `files` é o caminho, seja
 /// como texto solto ou como `{"path": ...}`.
 pub(crate) fn task_files(task: &SpecEvent) -> BTreeSet<String> {
-    task.fields
+    files_in(&task.fields)
+}
+
+/// Os arquivos que os campos `fields` de uma tarefa — a gravada ou a que ainda
+/// vai ser — declaram em `files`, como [`task_files`] os lê.
+pub(crate) fn files_in(fields: &Map<String, Value>) -> BTreeSet<String> {
+    fields
         .get("files")
         .and_then(Value::as_array)
         .into_iter()

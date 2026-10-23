@@ -93,6 +93,10 @@ pub enum Refusal {
     /// onda que a versão revista dela não tinha: a onda nasce do backlog, e só
     /// o programa monta o lote.
     WaveByBacklog,
+    /// A tarefa cujos arquivos o git ignora todos: é mudança local, que nenhuma
+    /// onda entrega, e ela vai ao usuário como nota. `files` são os arquivos,
+    /// numa linha só.
+    FilesIgnoredByGit { files: String },
     /// O `run write` com uma mensagem do usuário, ou uma gravação dele que
     /// tiraria ou reveria uma: a fala do usuário chega pelos ganchos.
     UserMessageByHook { spec: String },
@@ -397,6 +401,7 @@ impl Refusal {
             Self::BinaryOnlyType { .. } => "binary-only-type",
             Self::BinaryAuthor => "binary-author",
             Self::WaveByBacklog => "wave-by-backlog",
+            Self::FilesIgnoredByGit { .. } => "files-ignored-by-git",
             Self::UserMessageByHook { .. } => "user-message-by-hook",
             Self::OldFormatSpec { .. } => "old-format-spec",
             Self::LegacySpec { .. } => "legacy-spec",
@@ -606,6 +611,7 @@ impl Refusal {
             ),
             Self::BinaryAuthor => fill("spec_events.binary_author", &[]),
             Self::WaveByBacklog => fill("spec_events.wave_by_backlog", &[]),
+            Self::FilesIgnoredByGit { files } => fill("spec_events.files_ignored_by_git", &[("{files}", files.clone())]),
             Self::UserMessageByHook { spec } => {
                 fill("spec_events.user_message_by_hook", &[("{spec}", spec.clone())])
             }

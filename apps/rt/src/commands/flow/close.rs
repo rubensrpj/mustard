@@ -579,7 +579,9 @@ fn run_close(
     if let Some(verdict) = final_approval(&log) {
         let found = crate::commands::flow::round::record_final_leftovers(&opts.root, root, &spec, (&log, verdict), lang)
             .map_err(CloseRefusal::Refused)?;
-        if !found.is_empty() {
+        // O achado só em arquivo que o git ignora vira nota ao usuário, sem
+        // tarefa: sem tarefa nenhuma, a obra fecha como sempre.
+        if found.iter().any(|entry| entry["type"] == json!("task")) {
             let mut out = final_leftovers_answer(&spec, recorded, found, &read(&path)?, lang);
             out["criteria"] = json!(runs);
             out["validation"] = json!({"status":"pass","reused":reused});

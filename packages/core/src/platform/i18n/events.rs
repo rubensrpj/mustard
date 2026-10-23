@@ -854,6 +854,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              wave, repeat the `wave` of the version it replaces; in a wave in progress, leaving out \
              `wave` works too, and the new version stays in the wave of the one it replaces."
         }
+        ("spec_events.files_ignored_by_git", Locale::PtBr) => {
+            "A tarefa só mexe em arquivo que o git ignora ({files}), e nada foi gravado. É mudança \
+             local: nenhuma onda a entrega e nenhum commit a leva. Grave uma nota com o que o \
+             usuário deve fazer nesta máquina, com `mustard-rt run write note`; se a tarefa também \
+             mexe em arquivo versionado, declare esse arquivo em `files`."
+        }
+        ("spec_events.files_ignored_by_git", Locale::EnUs) => {
+            "The task only touches files that git ignores ({files}), and nothing was written. It is \
+             a local change: no wave delivers it and no commit carries it. Write a note with what \
+             the user must do on this machine, with `mustard-rt run write note`; if the task also \
+             touches a versioned file, declare that file in `files`."
+        }
         ("spec_events.request_on_closed_spec", Locale::PtBr) => {
             "A spec {spec} está na fase {phase}: ela já fechou, e o pedido novo só entra nela \
              depois de reaberta. Rode `mustard-rt run reopen --spec {spec} --reason \"<motivo>\"`: \
@@ -1314,8 +1326,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            185,
-            0x540d_1d90_3c2c_0643,
+            186,
+            0x8c16_23fb_544f_199c,
         );
     }
 
@@ -1438,6 +1450,7 @@ mod tests {
             ("spec_events.binary_only_type", &["{type}", "{spec}"][..]),
             ("spec_events.binary_author", &[][..]),
             ("spec_events.wave_by_backlog", &[][..]),
+            ("spec_events.files_ignored_by_git", &["{files}"][..]),
             ("spec_events.request_on_closed_spec", &["{spec}", "{phase}"][..]),
             ("spec_events.work_on_finished_spec", &["{spec}", "{phase}", "{type}"][..]),
             ("spec_events.user_message_by_hook", &["{spec}"][..]),

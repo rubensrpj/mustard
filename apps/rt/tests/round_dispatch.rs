@@ -3415,6 +3415,69 @@ fn a_cleanup_leftover_leaves_with_the_task_of_its_direction() {
     assert_eq!(together, [normal, tidy].into_iter().collect::<BTreeSet<_>>(), "the cleanup leaves with the task of its direction: {out}");
 }
 
+/// Faz o git do projeto ignorar `.env`, como um `.gitignore` faria.
+fn ignore_the_env_file(project: &Project) {
+    let exclude = project.root.join(".git/info/exclude");
+    let kept = std::fs::read_to_string(&exclude).expect("the exclude file");
+    std::fs::write(&exclude, format!("{kept}.env\n")).expect("the local file is ignored");
+}
+
+/// A sobra que só mexe em arquivo que o git ignora é mudança local: a volta da
+/// onda 1 deixa uma nota ao usuário, sem pedido nem tarefa, e a sobra de
+/// arquivo versionado da mesma volta segue virando tarefa.
+#[test]
+fn a_leftover_only_in_a_git_ignored_file_leaves_a_note_and_no_task() {
+    let (project, _, _, _) = backlog_project(&[&[GREETING]]);
+    ignore_the_env_file(&project);
+    let first = project.run(&ROUND);
+    assert_eq!(waves_in(&first, "dispatch"), vec![1], "{first}");
+    let local = "A chave da API falta no ambiente local";
+    let versioned = "O README não cita a saudação";
+    let leftovers = json!({"leftovers": [
+        {"title": local, "detail": "Falta a chave da API no .env desta máquina.", "files": [".env"]},
+        {"title": versioned, "detail": "O README não explica a saudação.", "files": ["README.md"]}]});
+    deliver_file_with(&project, 1, GREETING, "hello\n", &leftovers);
+
+    let back = round_taking_back(&project, 1);
+
+    assert!(back.get("commit").is_some(), "a volta não é recusada pela sobra: {back}");
+    let log = project.log();
+    let titled = |kind: &str, title: &str| log.visible().into_iter().filter(|e| e.event_type == kind && e.str_field("title") == Some(title)).count();
+    assert_eq!(titled("task", local), 0, "a mudança local não vira tarefa: {back}");
+    assert_eq!(titled("request", local), 0, "nem pedido: {back}");
+    assert_eq!(titled("note", local), 1, "ela fica como nota: {back}");
+    let note = log.visible().into_iter().find(|e| e.event_type == "note" && e.str_field("title") == Some(local)).expect("the note");
+    let text = note.str_field("text").unwrap_or_default();
+    assert!(text.contains("`.env`") && text.contains("mudança local"), "a nota diz o arquivo e que é local: {text}");
+    assert_eq!(titled("task", versioned), 1, "a sobra de arquivo versionado segue virando tarefa: {back}");
+}
+
+/// A tarefa que só mexe em arquivo que o git ignora é recusada com motivo
+/// próprio, sem gravar nada; a que também mexe em arquivo versionado passa.
+#[test]
+fn a_task_whose_files_are_all_git_ignored_is_refused_with_its_own_reason() {
+    let (project, criterion, said, _) = backlog_project(&[&[GREETING]]);
+    ignore_the_env_file(&project);
+    let tasks = |project: &Project| project.log().visible().iter().filter(|e| e.event_type == "task").count();
+    let before = tasks(&project);
+    let task = |files: Value| {
+        json!({"title": "Pôr a chave da API no ambiente", "agent": "- conferir pelo teste", "text": "Mudança no .env.", "files": files,
+            "depends_on": [], "covers": [criterion], "origin": said})
+    };
+
+    let refused = project.answer(&["write", "task", "--spec", SPEC, "--json", &task(json!([{"path": ".env", "new": true}])).to_string()]);
+
+    assert_eq!(refused["ok"], json!(false), "{refused}");
+    assert_eq!(refused["reason"], json!("files-ignored-by-git"), "{refused}");
+    assert!(refused["hint"].as_str().unwrap_or_default().contains("`.env`"), "a recusa diz o arquivo: {refused}");
+    assert_eq!(tasks(&project), before, "nada foi gravado: {refused}");
+
+    let mixed = project.answer(&["write", "task", "--spec", SPEC, "--json", &task(json!([{"path": ".env", "new": true}, {"path": "src/outro.rs", "new": true}])).to_string()]);
+
+    assert_eq!(mixed["ok"], json!(true), "com um arquivo versionado a tarefa passa: {mixed}");
+    assert_eq!(tasks(&project), before + 1, "{mixed}");
+}
+
 /// A obra do próprio Mustard: a rodada que comita código do programa o
 /// recompila e passa o despacho ao programa novo, que responde numa segunda
 /// passada, e as duas respostas saem juntas. A onda 1 volta com duas sobras de
