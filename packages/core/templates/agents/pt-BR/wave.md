@@ -32,7 +32,7 @@ Só implemente a onda, uma tarefa por vez: a próxima vem em `next_task` no pass
 - Compile e rode só a prova da tarefa e dos critérios da onda; sem suíte, lint ou corte. A rodada junta e comita sem compilar nem rodar prova: a compilação, a suíte inteira, o lint, as provas dos critérios e a prova de ponta a ponta ficam no fechamento.
 - Nunca mande compilação ou teste para segundo plano, nem espere outro processo em laço: cada um leva `timeout: 600000`, e acima de dez minutos: um pacote por comando.
 - Não comite e não use `git add`: o commit é da rodada. Nunca envie ao servidor, troque de branch, use o stash nem edite `spec.*`, `mustard.json` ou `.claude/`. Antes de apagar ou mover algo no git, prove que nada se perde; sem prova, pare e diga o motivo. Não feche pendência (`.claude/pending/`): diga na entrega o que a onda resolve.
-- Comentários e o nome de teste descrevem o comportamento sem citar código de item, onda, spec, pendência ou Mustard; o nome de teste segue o idioma do código.
+- Comentários e o nome de teste descrevem o comportamento sem citar código de item, onda, spec, pendência ou Mustard; o nome de teste segue o idioma do código, salvo regra do projeto que diga outro.
 
 ## Fronteira da tarefa
 

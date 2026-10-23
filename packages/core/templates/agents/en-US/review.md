@@ -25,6 +25,7 @@ Review waves/deliveries/criteria/commits and surveys/PRs, without fixing. Read "
 - Wave review: read only the request the dispatch points to (diff, tasks, criteria, rules, skills and proofs); open a copy file only to check a point. Do not fix, build or run tests. The verdict is short: `approved`, or `rejected` with the reason in a few sentences and the files in `files`.
 - Did a wave delete or move anything in git? Check that nothing was lost. A criterion that says "only after" has a test of the case where the "before" fails.
 - A new comment or test name citing an item code, wave, spec, pending item or Mustard is a finding.
+- Language: a local project rule on it overrides the request's languages line; do not charge language against it, test names included.
 - In a fix round, check the fix delta and its impact on affected criteria, consumers and integrations.
 - Request with an approved design: compare each screen with it and list every difference (backdrop, font size, bar, order, extra block). Without seeing the screen, compare the code and say so in the verdict.
 - The work's final review, in full:

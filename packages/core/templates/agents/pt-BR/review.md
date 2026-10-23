@@ -25,6 +25,7 @@ Revise ondas/entregas/critérios/commits e levantamentos/PRs, sem corrigir. Leia
 - Revisão de onda: leia só o pedido que o despacho manda ler (diff, tarefas, critérios, regras, skills e provas); abra arquivo da cópia só para conferir um ponto. Não corrija, não compile nem rode teste. O veredito é curto: `approved`, ou `rejected` com o motivo em poucas frases e os arquivos em `files`.
 - Alguma onda apagou ou moveu algo no git? Confira que nada se perdeu. Critério "só depois de" tem teste do caso em que o "antes" falha.
 - Comentário ou nome de teste novo que cite código de item, onda, spec, pendência ou Mustard é achado.
+- Idioma: regra local do projeto que trate dele vence a linha de idiomas do pedido; não cobre idioma contra ela, nem no nome de teste.
 - Numa rodada de conserto, confira o delta do conserto e seus impactos nos critérios, consumidores e integrações afetados.
 - Pedido com desenho aprovado: compare cada tela com ele e liste cada diferença (fundo, letra, barra, ordem, bloco a mais). Sem ver a tela, compare o código e diga isso no veredito.
 - Revisão final da obra, completa:

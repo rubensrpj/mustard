@@ -202,13 +202,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.languages", Locale::PtBr) => {
             "Idiomas deste projeto. O texto sai em {text}: comentários, entregas e commits. O código \
              sai em {code}: nomes de variáveis, funções, testes, arquivos, comandos e tabelas do \
-             banco. Isso vale mesmo quando o arquivo já traz nomes em outro idioma."
+             banco. Isso vale mesmo quando o arquivo já traz nomes em outro idioma. Regra do projeto que \
+             trate de idioma vence esta linha."
         }
         ("prompt.languages", Locale::EnUs) => {
             "This project's languages. Text is written in {text}: comments, deliveries and commits. \
              Code is written in {code}: names of variables, functions, tests, files, commands and \
              database tables. This holds even when the file already has names in another \
-             language."
+             language. A project rule that deals with language overrides this line."
         }
         // As seções do pedido da onda, sempre nesta ordem: o que ela entrega,
         // como ler cada item, o que fazer, o que obedecer, o que devolver e
@@ -762,15 +763,15 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // As regras do projeto, no fim de todo pedido ao revisor.
         ("prompt.part.project_rules", Locale::PtBr) => "Regras do projeto",
         ("prompt.part.project_rules", Locale::EnUs) => "Project rules",
-        ("prompt.project_rules.source", Locale::PtBr) => "O texto do `CLAUDE.md` da raiz do projeto. Siga-o nesta execução.",
-        ("prompt.project_rules.source", Locale::EnUs) => "The text of the `CLAUDE.md` at the project root. Follow it during this work.",
+        ("prompt.project_rules.source", Locale::PtBr) => "O texto do `CLAUDE.md` da raiz do projeto. Siga-o nesta execução; onde ele trata de idioma, vence a linha de idiomas do pedido.",
+        ("prompt.project_rules.source", Locale::EnUs) => "The text of the `CLAUDE.md` at the project root. Follow it during this work; where it deals with language, it overrides the request's languages line.",
         ("prompt.project_rules.sources", Locale::PtBr) => {
             "Os arquivos de regras da raiz e das pastas onde a obra mexeu, cada um sob o caminho dele. Siga todos \
-             nesta execução."
+             nesta execução; onde tratam de idioma, vencem a linha de idiomas do pedido."
         }
         ("prompt.project_rules.sources", Locale::EnUs) => {
             "The rules files of the root and of the folders the work touched, each under its path. Follow them all \
-             during this work."
+             during this work; where they deal with language, they override the request's languages line."
         }
         // A cópia do desenho que o usuário aprovou, no fim do despacho ao
         // revisor quando a pasta da spec tem uma.
@@ -793,7 +794,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("prompt.rs"), super::PREFIXES, 115, 0xc36f_877a_b7f6_ac36);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("prompt.rs"), super::PREFIXES, 116, 0x8b42_fe0c_6e0f_dbea);
     }
 
     /// O bloco do padrão sob a tarefa passa na conferência de escrita nos

@@ -32,7 +32,7 @@ Implement only this wave, task by task: its end step gives the next in `next_tas
 - Build and run only the proof of the task and of the wave's criteria; no suite, lint or cut. The round joins and commits without building or running a proof: the build, the full suite, lint, the criterion proofs and the end-to-end proof run at the close.
 - Never send a build or test to the background or wait on another process in a loop: each takes `timeout: 600000`, and what can pass ten minutes runs one package per command.
 - Do not commit and do not use `git add`: the commit belongs to the round. Never push, switch branches or stash, or edit `spec.*`, `mustard.json` or `.claude/`. Before deleting or moving anything in git, prove nothing is lost, or stop and say why. Do not close pending items (`.claude/pending/`): say in the delivery what the wave settles.
-- Comments and test names describe behavior, citing no item code, wave, spec, pending item or Mustard; test names follow the code language.
+- Comments and test names describe behavior, citing no item code, wave, spec, pending item or Mustard; test names follow the code language, unless a project rule says otherwise.
 
 ## Task boundary
 

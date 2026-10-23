@@ -886,6 +886,39 @@ fn templates_forbid_spec_codes_in_comments() {
     }
 }
 
+/// Os dois agentes instalados sabem que a regra do projeto sobre idioma vence a
+/// linha de idiomas do pedido: o revisor não cobra idioma contra ela, nem no
+/// nome de teste, e o agente de onda só segue o idioma do código no nome de
+/// teste quando nenhuma regra do projeto diz outro. Nos dois idiomas.
+#[test]
+fn the_installed_agents_let_a_project_language_rule_win_over_the_languages_line() {
+    for (lang, check, reviewer, wave) in [
+        (
+            "pt-BR",
+            "## Como conferir",
+            ["vence a linha de idiomas do pedido", "não cobre idioma contra ela, nem no nome de teste"],
+            "o nome de teste segue o idioma do código, salvo regra do projeto que diga outro",
+        ),
+        (
+            "en-US",
+            "## How to check",
+            ["overrides the request's languages line", "do not charge language against it, test names included"],
+            "test names follow the code language, unless a project rule says otherwise",
+        ),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, _home) = installed(dir.path(), &format!(r#"{{"version":"1.0.0","language":{{"text":"{lang}"}}}}"#));
+        let review = std::fs::read_to_string(root.join(".claude/agents/mustard/review.md")).unwrap();
+        let line = section(&review, check)
+            .lines()
+            .find(|line| line.contains(reviewer[0]))
+            .unwrap_or_else(|| panic!("the {lang} reviewer's checks never say a project language rule wins:\n{review}"));
+        assert!(line.contains(reviewer[1]), "the {lang} reviewer still charges language against the rule: {line}");
+        let agent = std::fs::read_to_string(root.join(".claude/agents/mustard/wave.md")).unwrap();
+        assert!(agent.contains(wave), "the {lang} wave agent fixes the test name's language against a project rule");
+    }
+}
+
 /// O revisor diz os dois caminhos da volta: na revisão final da obra, grava o
 /// veredito pela ferramenta, com a linha de exemplo que a gravação aceita; na
 /// revisão de um levantamento e no pull request de um colega, devolve o texto

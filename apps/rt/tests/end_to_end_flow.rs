@@ -962,6 +962,43 @@ fn the_final_reviewer_keeps_the_model_the_call_asks_and_the_send_records_it() {
     assert_eq!(closed["phase"], json!("closed"), "{closed}");
 }
 
+/// O pedido da onda e o do revisor final, lidos pelo comando que o agente
+/// roda, dizem nos dois idiomas que a regra do projeto sobre idioma vence a
+/// linha de idiomas do pedido: uma vez na própria linha e outra na seção
+/// das regras do projeto, que leva o `CLAUDE.md` da raiz. Sem isso o agente
+/// segue o idioma do código contra a regra local, e o revisor cobra o que a
+/// regra manda.
+#[test]
+fn the_wave_and_final_review_requests_say_a_project_rule_on_language_wins_over_the_languages_line() {
+    for (text, on_the_line, on_the_rules) in [
+        ("pt-BR", "Regra do projeto que trate de idioma vence esta linha.", "onde ele trata de idioma, vence a linha de idiomas do pedido"),
+        ("en-US", "A project rule that deals with language overrides this line.", "where it deals with language, it overrides the request's languages line"),
+    ] {
+        let project = Project::new();
+        let config = std::fs::read_to_string(project.root.join("mustard.json")).expect("the config");
+        let mut config: Value = serde_json::from_str(&config).expect("the config is JSON");
+        config["language"]["text"] = json!(text);
+        std::fs::write(project.root.join("mustard.json"), config.to_string()).expect("the config");
+        std::fs::write(project.root.join("CLAUDE.md"), "# Regras\n\n- Títulos de describe e it em português.\n").expect("the rules");
+        git(&project.root, &["add", "CLAUDE.md"]);
+        git(&project.root, &["commit", "-q", "-m", "regras"]);
+
+        deliver_the_first_wave(&project);
+        project.run(&["round", "--dispatch", "--spec", SPEC]);
+        let asked = project.run(&["close", "--spec", SPEC]);
+        assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+
+        for block in ["request-1", "request-review"] {
+            let out = project.command(&["run", "read", block, "--spec", SPEC], "");
+            assert!(out.status.success(), "{text} {block}: {}", String::from_utf8_lossy(&out.stdout));
+            let request = String::from_utf8_lossy(&out.stdout);
+            assert!(request.contains("Títulos de describe e it em português."), "{text} {block} carries the rules file: {request}");
+            assert_eq!(request.matches(on_the_line).count(), 1, "{text} {block}: the languages line says the rule wins: {request}");
+            assert_eq!(request.matches(on_the_rules).count(), 1, "{text} {block}: the rules section says it wins: {request}");
+        }
+    }
+}
+
 /// O `pr-open` envia a branch da spec ao servidor antes de abrir o pull
 /// request: com o servidor recusando o recebimento, o pedido não nasce (o
 /// provedor nem é chamado), a resposta traz o `push:` com a mensagem do git e a
