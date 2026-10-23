@@ -320,6 +320,7 @@ pub fn dispatch(cmd: SpecEventsCmd) {
 #[cfg(test)]
 mod tests {
     use clap::{CommandFactory, Parser};
+    use mustard_core::domain::text::one_line;
     use serde_json::{json, Value};
 
     use super::*;
@@ -356,7 +357,7 @@ mod tests {
         let mut tree = Harness::command();
         let read = tree.find_subcommand_mut("read").expect("the read command is registered");
         let help = read.render_long_help().to_string();
-        let flat = help.split_whitespace().collect::<Vec<_>>().join(" ");
+        let flat = one_line(&help);
         assert!(flat.contains("a user message shows its whole text like any other item"), "{help}");
         assert!(flat.contains("is recorded as read"), "{help}");
         assert!(!flat.contains("shows only its number and type"), "{help}");

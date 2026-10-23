@@ -81,6 +81,7 @@ use std::path::Path;
 
 use mustard_core::domain::spec_events::SpecLog;
 use mustard_core::domain::spec_state::{SpecState, State};
+use mustard_core::domain::text::one_line;
 use mustard_core::platform::i18n::Locale;
 
 use crate::commands::event::pending::{armed_charges, format_pending_items, open_born_in, update_charges, OpenPending};
@@ -163,7 +164,7 @@ fn cites(message: &str, item: &OpenPending) -> bool {
 
 /// Minúsculas, espaços colapsados — a forma em que texto e título se comparam.
 fn normalize(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+    one_line(text).to_lowercase()
 }
 
 /// `id` aparece em `text` como um id inteiro: `p-1` não conta dentro de `p-10`

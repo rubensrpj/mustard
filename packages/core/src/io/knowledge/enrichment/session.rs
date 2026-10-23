@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::{Evidence, GenerationRequest, evidence, interpretation, request};
+use crate::domain::text::one_line;
 use crate::io::fs::{self, lock::LockedFile};
 use crate::io::knowledge::{Interpretation, current, interpretations, record_at};
 use crate::io::sha256::Sha256;
@@ -90,7 +91,7 @@ fn cached(root: &Path, tree: &Path, prepared: &Prepared) -> Result<Option<Interp
 pub fn prepare_session(root: &Path, tree: &Path, query: &str, file: Option<&str>, limit: usize, host: &str, model: Option<&str>) -> Result<Value, String> {
     if !["claude", "codex"].contains(&host) { return Err("knowledge-session-unknown-host".into()); }
     if query.trim().is_empty() || query.len() > 2000 { return Err("knowledge-enrichment-needs-short-query".into()); }
-    let query=query.split_whitespace().collect::<Vec<_>>().join(" ");
+    let query=one_line(query);
     let model = model.unwrap_or(if host == "claude" { "haiku" } else { "gpt-6-luna" });
     if !token(model) || !family_matches(host,model) { return Err("knowledge-session-model-family-mismatch".into()); }
     let resolution=crate::platform::session_models::resolve(host,Some(model));

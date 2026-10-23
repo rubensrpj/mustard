@@ -31,6 +31,7 @@ use std::path::{Path, PathBuf};
 
 use mustard_core::domain::spec_events::{Refusal, SpecEvent, SpecLog};
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState};
+use mustard_core::domain::text::one_line;
 use mustard_core::io::knowledge::enrichment::{
     GroupingAnswers, GroupingSummary, GroupingTask, ReserveAnswer, WaveGroup, completed_grouping, completed_grouping_answers,
 };
@@ -585,7 +586,7 @@ fn joined_version(log: &SpecLog, group: &[u64], lang: Locale) -> Result<Map<Stri
         let line = translate("triage.joined_line", lang)
             .replace("{code}", &codes.get(&other.id).cloned().unwrap_or_else(|| other.id.to_string()))
             .replace("{title}", other.str_field("title").unwrap_or_default())
-            .replace("{text}", &other.str_field("text").unwrap_or_default().split_whitespace().collect::<Vec<_>>().join(" "));
+            .replace("{text}", &one_line(other.str_field("text").unwrap_or_default()));
         append_agent_line(&mut draft, &line);
         for field in ["files", "covers", "depends_on"] {
             let mut list: Vec<Value> = draft.get(field).and_then(Value::as_array).cloned().unwrap_or_default();

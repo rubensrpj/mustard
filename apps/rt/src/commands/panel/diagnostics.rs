@@ -1,9 +1,10 @@
 //! Bounded, sanitized diagnostic events. Never stores tool results, prompts,
 //! command bodies or credentials, and never leaves the machine.
+use mustard_core::domain::text::one_line;
 use serde_json::{Value,json};
 use std::path::Path;
 /// The cause of a failure on one line, without control characters, bounded.
-fn short(text:&str)->String {text.split_whitespace().collect::<Vec<_>>().join(" ").chars().filter(|c|!c.is_control()).take(300).collect()}
+fn short(text:&str)->String {one_line(text).chars().filter(|c|!c.is_control()).take(300).collect()}
 /// Records one event: component, operation, reason and, when given, the detail
 /// of the cause (the disk or parse error). A file that no longer parses (a
 /// rewrite cut in the middle) does not stop recording: its text is kept next

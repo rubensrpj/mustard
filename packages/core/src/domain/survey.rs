@@ -44,7 +44,7 @@ use crate::domain::search::{SearchIndex, TOP, shared_words};
 use crate::domain::spec_events::{Block, Refusal, SpecEvent, SpecLog, WORK_KINDS, search_field};
 use crate::domain::spec_index::{IndexLine, title_of};
 use crate::domain::spec_state::{State, birth_event, original_of};
-use crate::domain::text::fold_accents;
+use crate::domain::text::{fold_accents, one_line};
 use crate::io::project_map::{MapReader, Need};
 use crate::platform::i18n::{Locale, translate};
 
@@ -1196,7 +1196,7 @@ fn strong(terms: &[Vec<String>], doc: &[Vec<String>]) -> bool {
 /// O texto como se compara: minúsculo, sem acento e com um espaço só entre
 /// as palavras.
 fn plain(text: &str) -> String {
-    fold_accents(&text.to_lowercase()).split_whitespace().collect::<Vec<_>>().join(" ")
+    one_line(&fold_accents(&text.to_lowercase()))
 }
 
 /// A posição de um documento como número, para a busca.
