@@ -113,6 +113,35 @@ fn scope_of(files: &[String]) -> Option<String> {
     (scope.chars().count() <= 32 && without_forbidden(&scope).1.is_empty()).then_some(scope)
 }
 
+/// Os tipos de commit que o título leva: os do ramo e o `feat` da rodada, mais
+/// o `revert`, que um resumo também pode trazer.
+const COMMIT_TYPES: &[&str] = &["feat", "fix", "refactor", "docs", "test", "perf", "build", "ci", "chore", "style", "revert"];
+
+/// O resumo `summary` sem o prefixo `tipo(escopo): ` ou `tipo: ` — e sem o
+/// `!` de quebra —, repetido ou não: o tipo e o escopo do título são da
+/// rodada, e o que o agente grava na frente do resumo dobraria os dois. Só sai
+/// o prefixo de um tipo de commit ([`COMMIT_TYPES`]): os dois pontos de uma
+/// frase comum (`Cache: limpa chaves`) ficam.
+fn without_type_prefix(summary: &str) -> &str {
+    fn strip(text: &str) -> Option<&str> {
+        let end = text.find(|c: char| !c.is_ascii_alphabetic()).unwrap_or(text.len());
+        if !COMMIT_TYPES.iter().any(|kind| kind.eq_ignore_ascii_case(&text[..end])) {
+            return None;
+        }
+        let mut rest = &text[end..];
+        if let Some(scoped) = rest.strip_prefix('(') {
+            rest = &scoped[scoped.find(')')? + 1..];
+        }
+        let rest = rest.strip_prefix('!').unwrap_or(rest).strip_prefix(':')?;
+        (rest.is_empty() || rest.starts_with(char::is_whitespace)).then_some(rest)
+    }
+    let mut rest = summary.trim();
+    while let Some(after) = strip(rest) {
+        rest = after.trim_start();
+    }
+    rest
+}
+
 /// A mensagem do commit da entrega `wave`, já conferida; `None` quando ela
 /// não mudou arquivo ou não trouxe resumo. O título segue o molde do histórico dos arquivos
 /// (`tipo(escopo): frase`) com o resumo da entrega, cortado numa palavra
@@ -126,13 +155,15 @@ fn scope_of(files: &[String]) -> Option<String> {
 /// ([`without_forbidden`]), e as palavras que saíram vão em
 /// [`Message::removed`]: o commit segue, e a resposta da rodada diz o que
 /// saiu. O resumo que fica vazio vira um resumo neutro pelos arquivos, no
-/// idioma `lang`.
+/// idioma `lang`. O prefixo `tipo(escopo): ` que o agente deixa na frente do
+/// resumo sai antes ([`without_type_prefix`]): o tipo e o escopo são da
+/// rodada, e o título leva um prefixo só.
 pub(super) fn message(root: &Path, wave: &WaveReport, lang: Locale) -> Result<Option<Message>, RoundRefusal> {
     let Some(said) = wave.commit.as_deref().filter(|_| needs_commit(&wave.files)) else {
         return Ok(None);
     };
     check_summary(wave)?;
-    let (kept, removed) = without_forbidden(said.trim());
+    let (kept, removed) = without_forbidden(without_type_prefix(said));
     let summary = if kept.is_empty() { neutral(&wave.files, lang) } else { kept };
     let scope = scope_of(&wave.files);
     let branch = git(root, &["branch", "--show-current"]).unwrap_or_default();
@@ -191,5 +222,60 @@ mod tests {
         assert_eq!(scope_of(&files(&[])), None);
         // A pasta de código sozinha também não.
         assert_eq!(scope_of(&files(&["src/a.ts", "src/b.ts"])), None);
+    }
+
+    /// A entrega de uma onda com os arquivos `files` e o resumo `summary`.
+    fn delivery(files: &[&str], summary: &str) -> WaveReport {
+        WaveReport {
+            wave: 1,
+            delivered: "A onda saiu.".into(),
+            files: files.iter().map(|file| (*file).to_string()).collect(),
+            commit: Some(summary.into()),
+            proofs: Vec::new(),
+            fixes: Vec::new(),
+            replan: None,
+            undone: Vec::new(),
+            taken_elsewhere: false,
+            leftovers: Vec::new(),
+            agreed: Vec::new(),
+            returns: Vec::new(),
+            usage: Default::default(),
+        }
+    }
+
+    /// O tipo e o escopo do título são da rodada: o resumo que o agente grava
+    /// já com `tipo(escopo): ` ou `tipo: ` na frente perde esse prefixo, e o
+    /// título sai com um só. O que parece prefixo mas não é tipo de commit
+    /// fica, e o resumo que era só o prefixo cai no resumo neutro.
+    ///
+    /// Em campo (23/10/2026) o título saiu `fix: fix(rt): Remoção de tarefa
+    /// com dependentes`.
+    #[test]
+    fn the_title_carries_one_type_prefix_even_when_the_summary_brings_its_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        crate::shared::test_fixture::seeded_repo(root, &[("src/rt/a.rs", "fn one() {}\n"), ("src/b.rs", "fn one() {}\n")]);
+        let title = |files: &[&str], summary: &str| {
+            let made = message(root, &delivery(files, summary), Locale::PtBr).unwrap_or_else(|_| panic!("{summary}")).expect("a message");
+            assert_eq!(made.body, "", "{summary}: the whole summary is in the title");
+            made.title
+        };
+
+        // Com escopo comum aos arquivos: o escopo é o da rodada.
+        assert_eq!(title(&["src/rt/a.rs"], "fix(rt): Frase"), "feat(rt): Frase");
+        assert_eq!(title(&["src/rt/a.rs"], "feat: Frase"), "feat(rt): Frase");
+        // Sem escopo comum: o tipo sozinho, também um só.
+        assert_eq!(title(&["src/b.rs"], "fix(rt): Frase"), "feat: Frase");
+        assert_eq!(title(&["src/b.rs"], "feat: Frase"), "feat: Frase");
+        // O marcador de quebra e o prefixo repetido saem junto.
+        assert_eq!(title(&["src/b.rs"], "feat!: Frase"), "feat: Frase");
+        assert_eq!(title(&["src/b.rs"], "fix: fix(rt): Frase"), "feat: Frase");
+        // Sem prefixo, o resumo segue como veio.
+        assert_eq!(title(&["src/b.rs"], "Frase"), "feat: Frase");
+        // Dois pontos de uma frase comum não são prefixo de tipo.
+        assert_eq!(title(&["src/b.rs"], "Cache: limpa chaves"), "feat: Cache: limpa chaves");
+        assert_eq!(title(&["src/b.rs"], "Fixes: limpa chaves"), "feat: Fixes: limpa chaves");
+        // O resumo que era só o prefixo vira o resumo neutro dos arquivos.
+        assert_eq!(title(&["src/b.rs"], "fix(rt):"), format!("feat: {}", neutral(&["src/b.rs".to_string()], Locale::PtBr)));
     }
 }
