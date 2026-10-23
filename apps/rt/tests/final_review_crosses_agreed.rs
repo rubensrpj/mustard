@@ -644,6 +644,34 @@ fn an_approved_final_verdict_with_a_leftover_only_in_a_git_ignored_file_closes_w
     assert_eq!((titled("task"), titled("request"), titled("note")), (0, 0, 1), "só a nota fica: {after}");
 }
 
+/// O veredito final que traz um achado sem título é recusado na gravação
+/// pelo revisor, e a recusa não fala em entrega: o texto vale para a volta de
+/// qualquer um dos dois, onda ou revisão. Nada é gravado, e o pedido da
+/// revisão final segue aberto, esperando o veredito.
+#[test]
+fn a_final_verdict_with_an_untitled_finding_is_refused_without_naming_the_delivery() {
+    let project = Project::new();
+    let decisions = ready(&project);
+    let asked = project.run(&["close", "--spec", SPEC]);
+    assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+    project.read_review();
+    let recorded_kinds = |project: &Project| -> usize {
+        project.log().events.iter().filter(|e| e.event_type == "verdict" || e.event_type == "task").count()
+    };
+    let before = recorded_kinds(&project);
+
+    let mut verdict = all_met_verdict(&decisions);
+    verdict["leftovers"] = json!([{"detail": "O README não explica a soma."}]);
+    let refused = project.answer(&["write", "verdict", "--spec", SPEC, "--json", &verdict.to_string()]);
+
+    assert_eq!(refused["ok"], json!(false), "{refused}");
+    assert_eq!(refused["reason"], json!("leftover-field-missing"), "{refused}");
+    assert_eq!(refused["hint"], json!("Falta o campo title numa sobra (leftovers) da volta. Nada foi gravado."), "{refused}");
+    assert_eq!(recorded_kinds(&project), before, "nada foi gravado: {refused}");
+    let still_open = project.answer(&["close", "--spec", SPEC]);
+    assert_eq!(still_open["reason"], json!("review-verdict-missing"), "{still_open}");
+}
+
 /// Os números dos pedidos de revisão final gravados, do mais velho ao mais
 /// novo.
 fn review_requests(project: &Project) -> Vec<u64> {

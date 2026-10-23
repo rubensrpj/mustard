@@ -4370,7 +4370,7 @@ fn main() { sum_comes_out_right(); double_comes_out_right(); }
             "commit": "a soma sai", "leftovers": [{"detail": "Sem título."}]}),
         );
         assert_eq!(untitled["reason"], json!("leftover-field-missing"), "{untitled}");
-        assert_eq!(untitled["hint"], json!("Falta o campo title numa sobra (leftovers) da entrega. Nada foi gravado."), "{untitled}");
+        assert_eq!(untitled["hint"], json!("Falta o campo title numa sobra (leftovers) da volta. Nada foi gravado."), "{untitled}");
         assert_eq!(spec_lines(root), before, "nada foi gravado: {untitled}");
 
         let cites = "Sem o índice, `src/commit.rs` para de ler o arquivo; `src/nao_existe.rs` também.";

@@ -629,10 +629,10 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              new review request was opened."
         }
         ("spec_events.leftover_field_missing", Locale::PtBr) => {
-            "Falta o campo {field} numa sobra (leftovers) da entrega. Nada foi gravado."
+            "Falta o campo {field} numa sobra (leftovers) da volta. Nada foi gravado."
         }
         ("spec_events.leftover_field_missing", Locale::EnUs) => {
-            "A leftover (leftovers) of the delivery lacks the field {field}. Nothing was written."
+            "A leftover (leftovers) of the return lacks the field {field}. Nothing was written."
         }
         ("spec_events.report_carries_return_line", Locale::PtBr) => {
             "A entrega e o veredito moram na spec: o agente os grava com mustard-rt run write. O \
@@ -1327,7 +1327,7 @@ mod tests {
             include_str!("events.rs"),
             super::PREFIXES,
             186,
-            0x8c16_23fb_544f_199c,
+            0x22bf_8e2a_6acb_0324,
         );
     }
 
