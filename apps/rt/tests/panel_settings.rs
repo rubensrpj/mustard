@@ -157,6 +157,40 @@ fn the_receipt_page_skips_the_identity_a_hook_puts_ahead_of_the_command() {
     assert_eq!(shown(&written),"export NODE_ENV=test…");
 }
 
+/// A linha de cada recibo tem no máximo 81 caracteres, contadas as
+/// reticências: o comando de 81 sai inteiro, o de 82 fica com os 80 primeiros
+/// e o `…`, e a linha seguinte deixada de fora termina a primeira em `…` sem
+/// passar dos 81.
+#[test]
+fn the_receipt_line_holds_eighty_one_characters_counting_the_ellipsis() {
+    use mustard_core::io::{observations::{self,Receipt},spec_events};
+    let dir=tempfile::tempdir().unwrap();let root=dir.path();
+    std::fs::write(root.join("mustard.json"),r#"{"ai":{"fallback":false}}"#).unwrap();
+    let path=spec_events::spec_file(root,"demo").unwrap();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path,json!({"id":7,"type":"send","at":"2026-01-01T00:00:00Z","wave":2,"text":"Dispatch"}).to_string()+"\n").unwrap();
+    // `npx vitest run web/src/` tem 23 caracteres; o nome do arquivo completa o resto.
+    let line=|chars:usize| format!("npx vitest run web/src/{}","a".repeat(chars-23));
+    let next="npx tsc --noEmit -p web/tsconfig.json";
+    let cases=[(line(81),line(81)),(line(82),format!("{}…",line(80))),
+        (format!("{}\n{next}",line(80)),format!("{}…",line(80))),(format!("{}\n{next}",line(81)),format!("{}…",line(80)))];
+    let record=|call:String,source:&str| observations::record(root,&Receipt{version:1,spec:"demo".into(),dispatch:7,wave:2,
+        host:"claude".into(),actor:"fixture".into(),call,tool:"Bash".into(),source:source.into(),
+        input_sha256:observations::digest(source.as_bytes()),output_sha256:observations::digest(b"output"),
+        exit_code:Some(0),result_status:"returned".into(),observed_at:"2026-01-02T00:00:00Z".into()}).unwrap().0;
+    let ids:Vec<String>=cases.iter().enumerate().map(|(n,(source,_))|record(format!("call-{n}"),source)).collect();
+    let output=binary::isolated(env!("CARGO_BIN_EXE_mustard-rt")).args(["run","panel","--root"]).arg(root)
+        .args(["--spec","demo","--wave","2","--observations"]).current_dir(root).env("MUSTARD_RT_DELEGATED","1").output().unwrap();
+    let page:Value=serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(page["ok"],true,"{page}");
+    let rows=page["receipts"].as_array().unwrap();
+    for ((source,expected),id) in cases.iter().zip(&ids) {
+        let shown=rows.iter().find(|row|row["receipt"]==json!(id)).unwrap()["source"].as_str().unwrap();
+        assert_eq!(shown,expected,"{source}");
+        assert_eq!(shown.chars().count(),81,"{shown}");
+    }
+}
+
 /// The publication token reaches the binary only on standard input: the
 /// same patch as an argument, where another process could read it, is
 /// refused without touching the file.

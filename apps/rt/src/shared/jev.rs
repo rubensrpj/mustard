@@ -32,6 +32,7 @@ use mustard_core::ProjectConfig;
 use mustard_core::domain::map_filter::{
     FilterCandidate, FilterError, FilterRequest, FilterUsage, Filtered, MapFilter, Partial, Scored, Verdict, joined, judged,
 };
+use mustard_core::domain::text::one_line;
 use mustard_core::io::jev_gate;
 use serde_json::{Map, Value, json};
 
@@ -566,7 +567,7 @@ struct Context {
 impl Context {
     fn of(request: &FilterRequest) -> Self {
         let asked = if request.phrase.trim().is_empty() { request.words.join(" ") } else { request.phrase.clone() };
-        let said = squash(&without_secrets(&request.said));
+        let said = one_line(&without_secrets(&request.said));
         let kept = said.chars().count().saturating_sub(SAID_CHARS);
         Self {
             request: without_secrets(&asked),
@@ -804,7 +805,7 @@ fn candidate_id(at: usize) -> String {
 /// segredos antes de qualquer divisão: a divisão não parte um segredo num
 /// trecho que a procura já não reconhece.
 fn block_lines(candidate: &FilterCandidate, sources: &mut Sources<'_>) -> Vec<String> {
-    let clean = |text: &str| squash(&without_secrets(text));
+    let clean = |text: &str| one_line(&without_secrets(text));
     let mut lines = Vec::new();
     let documentation = clean(&candidate.documentation);
     if !documentation.is_empty() {
@@ -867,12 +868,6 @@ fn read_source(root: &Path, path: &str) -> Option<String> {
         return None;
     }
     std::fs::read(&file).ok().map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-}
-
-/// Os espaços juntados: toda sequência de brancos vira um espaço, e as
-/// pontas somem.
-fn squash(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 // ---------------------------------------------------------------------------
