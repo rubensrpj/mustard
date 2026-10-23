@@ -1262,13 +1262,18 @@ fn without_a_key_or_with_a_refused_call_the_assembly_is_the_one_by_file() {
 
 /// Deixa o projeto com uma vaga só: uma onda por vez.
 fn one_slot(project: &Project) {
+    slots(project, 1);
+}
+
+/// Deixa o projeto com `count` vagas: até `count` ondas ao mesmo tempo.
+fn slots(project: &Project, count: usize) {
     std::fs::write(
         project.root.join("mustard.json"),
         json!({
         "language": {"text": "pt-BR"}, "git": {"flow": {"*": "dev", "dev": "main"}, "provider": "github"},
         "ai": {"fallback": true}, "search": {"filter": "jev"},
         "judgement": {"wave-planning": {"filter": "jev"}, "context": {"filter": "jev"}},
-        "lintCommand": "git --version", "maxCompilingWaves": 1})
+        "lintCommand": "git --version", "maxCompilingWaves": count})
         .to_string(),
     )
     .expect("config");
@@ -2530,6 +2535,31 @@ fn a_wave_that_lost_its_last_task_after_returning_is_not_named_among_the_copies_
     // também apareceria no total de cópias ou em outra contagem.
     let expected = translate("round.copies_full", Locale::PtBr).replace("{copies}", "2").replace("{waves}", "2, 3");
     assert_eq!(warning["hint"], json!(expected), "{held}");
+}
+
+/// Três vagas e quatro cópias. As ondas 1 e 2 voltam e esperam a revisão,
+/// guardando duas cópias. Do backlog, a tarefa de um arquivo sai numa das
+/// duas cópias livres, e a que cruza a árvore inteira segue pronta,
+/// esperando a vez de sair sozinha, e não uma cópia: sobra cópia livre, e a
+/// rodada não diz que as cópias estão cheias.
+#[test]
+fn a_round_that_leaves_a_copy_free_does_not_say_the_copies_are_full() {
+    let (project, crit, said, _) = backlog_project(&[&["a.rs"], &["b.rs"]]);
+    slots(&project, 3);
+    let first = project.run(&["round", "--dispatch", "--spec", SPEC]);
+    assert_eq!(waves_in(&first, "dispatch"), vec![1, 2], "{first}");
+    deliver_file_in_copy(&project, 1, "a.rs", "um\n");
+    deliver_file_in_copy(&project, 2, "b.rs", "dois\n");
+    let narrow = backlog_task(&project, crit, said, &["c.rs"], &[]);
+    let wide = backlog_task(&project, crit, said, &["**"], &[]);
+
+    let out = unreviewed_round(&project);
+
+    assert_eq!(waves_in(&out, "dispatch").len(), 1, "one of the two tasks leaves: {out}");
+    let log = project.log();
+    let waiting = [narrow, wide].into_iter().filter(|task| log.current(*task).is_some_and(|now| now.wave().is_none())).count();
+    assert_eq!(waiting, 1, "the other one stays in the backlog: {out}");
+    assert!(copies_full(&out).is_none(), "a copy is still free: {out}");
 }
 
 /// A rodada pelo binário, rodada de dentro de `from` com a raiz do projeto

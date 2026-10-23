@@ -795,7 +795,7 @@ fn dispatch_round(
         }
     };
     // O teto de cópias que segura o despacho vai no aviso e no próximo passo.
-    let copies_full = super::vacancy::copies_full_warning(&log, &vacancies, ready.len(), &stuck, lang);
+    let copies_full = super::vacancy::copies_full_warning(&log, &vacancies, &ready, &stuck, lang);
     let copies_line = copies_full.as_ref().and_then(|warning| warning["hint"].as_str().map(str::to_string));
     warnings.extend(copies_full);
     // A escolha dos itens do pedido, antes da cópia: a decisão do Jev, uma

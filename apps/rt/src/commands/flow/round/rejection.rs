@@ -93,14 +93,10 @@ pub(crate) fn replaced_in_file(path: &Path, wave: u64, started: DateTime<Utc>) -
 }
 
 /// A volta da onda `wave` que espera a rodada: a última entrega que o agente
-/// gravou depois do envio que despachou a onda e que nenhuma rodada assumiu.
+/// gravou depois do envio que despachou a onda e que nenhuma rodada assumiu
+/// ([`SpecLog::returns_after_dispatch`]).
 pub(super) fn pending_return(log: &SpecLog, wave: u64) -> Option<u64> {
-    let since = log.last_dispatch_by_wave().get(&wave).copied().unwrap_or_default();
-    log.unassumed_returns()
-        .into_iter()
-        .filter(|e| e.event_type == "delivered" && e.wave() == Some(wave) && e.id > since)
-        .map(|e| e.id)
-        .max()
+    log.returns_after_dispatch().into_iter().filter(|e| e.wave() == Some(wave)).map(|e| e.id).max()
 }
 
 /// A recusa que segura a volta `last` da onda `wave`, quando é ela a que quem

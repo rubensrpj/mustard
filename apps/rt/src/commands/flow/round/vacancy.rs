@@ -15,7 +15,7 @@ use mustard_core::io::wave_prompt::{shown, slot_path};
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Value, json};
 
-use super::queue::{backlog_ready, max_parallel, next_waves, open_sends, orphaned_waves, unanswered_sends, waves_in_progress};
+use super::queue::{backlog_ready, max_parallel, open_sends, orphaned_waves, outgoing, unanswered_sends, waves_in_progress};
 use super::stops::waves_replanned;
 use crate::shared::paths::same_place;
 
@@ -108,19 +108,27 @@ pub(crate) fn vacancies_with(root: &Path, spec: &str, log: &SpecLog, capacity: u
 }
 
 /// O aviso da resposta da rodada quando o teto de cópias segura o despacho
-/// ([`Vacancies::held_by_copies`]) e ficou onda pronta sem sair — sem o teto
-/// sairiam mais que as `sent` — ou tarefa pronta no backlog: quais ondas
-/// seguram e o que as libera.
-pub(super) fn copies_full_warning(log: &SpecLog, vacancies: &Vacancies, sent: usize, stuck: &BTreeMap<u64, Vec<&SpecEvent>>, lang: Locale) -> Option<Value> {
+/// ([`Vacancies::held_by_copies`]): as ondas `sent` que saem agora tomam as
+/// últimas cópias livres e ficou o que sairia sem o teto — mais ondas do
+/// plano, ou a tarefa pronta do backlog, com vaga de agente sobrando. A cópia
+/// que sobra depois do despacho diz que o que ficou espera outra coisa, como
+/// o Jev ou a vez de sair sozinha, e não há aviso. Diz quais ondas seguram e
+/// o que as libera.
+pub(super) fn copies_full_warning(log: &SpecLog, vacancies: &Vacancies, sent: &[u64], stuck: &BTreeMap<u64, Vec<&SpecEvent>>, lang: Locale) -> Option<Value> {
     let held = vacancies.held_by_copies();
-    if held.is_empty() {
+    // A onda replanejada que sai de novo volta à vaga que o envio dela gravou,
+    // sem tomar cópia.
+    let taken = sent.iter().filter(|wave| !vacancies.holding.contains(wave)).count();
+    if held.is_empty() || vacancies.copies_free > taken {
         return None;
     }
-    let uncapped = Vacancies { copies_free: usize::MAX, ..vacancies.clone() };
-    let left = next_waves(log, &uncapped, stuck).is_ok_and(|all| all.len() > sent) || !backlog_ready(log).is_empty();
+    let uncapped = outgoing(log, &Vacancies { copies_free: usize::MAX, ..vacancies.clone() }, stuck, &BTreeSet::new()).ok()?;
+    let left = uncapped.go.len() > sent.len() || (uncapped.free > 0 && !backlog_ready(log).is_empty());
     if !left {
         return None;
     }
+    // Com o despacho, nenhuma cópia sob o teto fica livre: as presas são
+    // todas as do teto, a da onda que sai agora inclusive.
     let waves: Vec<String> = held.iter().map(u64::to_string).collect();
     let hint = translate("round.copies_full", lang).replace("{copies}", &vacancies.copies.to_string()).replace("{waves}", &waves.join(", "));
     Some(json!({ "reason": "copies-full", "waves": held, "hint": hint }))
@@ -180,26 +188,32 @@ mod tests {
         assert_eq!(std::fs::read_to_string(Path::new(&copy).join("src/a.rs")).unwrap(), "fn changed_1() {}\n");
     }
 
-    /// Com uma vaga só, o teto é de duas cópias. As ondas 1 e 2 voltam e
-    /// esperam a revisão: nenhum agente trabalha, mas as duas cópias estão
-    /// guardadas, e a onda 3 espera. A resposta diz quais ondas seguram.
+    /// O aviso de cópias cheias da resposta `out`, quando saiu.
+    fn copies_full(out: &Value) -> Option<&Value> {
+        out["warnings"].as_array().into_iter().flatten().find(|warning| warning["reason"] == json!("copies-full"))
+    }
+
+    /// Com duas vagas, o teto é de três cópias. As ondas 1 e 2 voltam e
+    /// esperam a revisão, guardando duas; a onda 3 sai na última, e a 4 fica
+    /// sem cópia. O aviso conta as três cópias presas, a da onda que saiu
+    /// agora inclusive, e diz quais ondas seguram.
     #[test]
     fn the_copy_cap_holds_dispatch_and_the_answer_names_the_waves_keeping_copies() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[]), (3, &["src/c.rs"], &[])]);
-        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":1}"#).unwrap();
-        assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1]);
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[]), (3, &["src/c.rs"], &[]), (4, &["src/d.rs"], &[])]);
+        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":2}"#).unwrap();
+        assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1, 2]);
         back_for_review(root, 1, "src/a.rs");
-        assert_eq!(waves_in(&unreviewed_round(root), "dispatch"), vec![2]);
         back_for_review(root, 2, "src/b.rs");
 
         let out = unreviewed_round(root);
-        assert!(waves_in(&out, "dispatch").is_empty(), "the copy cap holds wave 3: {out}");
-        let full = warning_of(&out, "copies-full");
+        assert_eq!(waves_in(&out, "dispatch"), vec![3], "the last free copy goes to wave 3, and the cap holds wave 4: {out}");
+        let full = copies_full(&out).unwrap_or_else(|| panic!("no copies-full warning: {out}"));
         assert_eq!(full["waves"], json!([1, 2]), "{out}");
-        let hint = full["hint"].as_str().unwrap_or_default();
-        assert!(hint.contains('2') && out["next"].as_str().is_some_and(|next| next.contains(hint)), "{out}");
+        let expected = translate("round.copies_full", Locale::PtBr).replace("{copies}", "3").replace("{waves}", "1, 2");
+        assert_eq!(full["hint"], json!(expected), "{out}");
+        assert!(out["next"].as_str().is_some_and(|next| next.contains(&expected)), "{out}");
     }
 
     /// O despacho, a retomada, a fila declarada e o painel dizem a mesma vaga
