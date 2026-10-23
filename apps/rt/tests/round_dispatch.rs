@@ -35,6 +35,8 @@ use serde_json::{Value, json};
 
 #[path = "support/closed_process.rs"]
 mod closed_process;
+#[path = "support/executable.rs"]
+mod executable;
 #[path = "support/mod.rs"]
 mod support;
 #[path = "support/review.rs"]
@@ -63,6 +65,21 @@ struct Project {
     /// A sessão que conduz a obra, entregue a cada comando como o gancho a
     /// entrega; sem ela o comando roda sem sessão nenhuma.
     session: Option<&'static str>,
+    /// O programa compilado da branch, quando o projeto é o código-fonte do
+    /// Mustard: é ele que roda cada comando.
+    compiled: Option<Compiled>,
+}
+
+/// O programa compilado da branch do Mustard que roda a obra do próprio
+/// Mustard: uma cópia do programa deste pacote na pasta de compilação do
+/// projeto, com um `cargo` de mentira que compila sem compilar.
+struct Compiled {
+    /// A pasta de compilação (`MUSTARD_BUILD_DIR`) do projeto.
+    build: PathBuf,
+    /// O programa compilado, dentro dela.
+    program: PathBuf,
+    /// A pasta do `cargo` de mentira, à frente do `PATH`.
+    tools: PathBuf,
 }
 
 impl Project {
@@ -93,7 +110,34 @@ impl Project {
         git(&root, &["commit", "-q", "-m", "init"]);
         git(&root, &["checkout", "-q", "-b", "dev"]);
         support::copies_leave_with_the_test(&root);
-        Self { _dir: dir, root, home, jev: None, session: None }
+        Self { _dir: dir, root, home, jev: None, session: None, compiled: None }
+    }
+
+    /// O projeto como o código-fonte do Mustard: o pacote `mustard-rt`
+    /// declarado em `apps/rt`, um `cargo` de mentira que sempre compila e o
+    /// programa compilado da branch — uma cópia do programa deste pacote — na
+    /// pasta de compilação do projeto. Cada comando passa a rodar por esse
+    /// compilado, como na obra do próprio Mustard.
+    fn as_mustard_source() -> Self {
+        let mut project = Self::new();
+        std::fs::create_dir_all(project.root.join("apps/rt")).expect("apps/rt");
+        std::fs::write(project.root.join("apps/rt/Cargo.toml"), "[package]\nname = \"mustard-rt\"\nversion = \"0.1.0\"\n").expect("the manifest");
+        git(&project.root, &["add", "-A"]);
+        git(&project.root, &["commit", "-q", "-m", "o programa"]);
+        let tools = project.home.join("ferramentas");
+        std::fs::create_dir_all(&tools).expect("tools");
+        let log = project.home.join("cargo.log");
+        executable::write_executable(&tools.join("cargo"), &format!("#!/bin/sh\necho \"$*\" >> '{}'\nexit 0\n", log.display()));
+        let build = project.home.join("build");
+        let key = mustard_core::io::wave_prompt::development_build_dir(&project.root);
+        let program = build.join(key.file_name().expect("the project key")).join("mustard-dev").join("mustard-rt");
+        std::fs::create_dir_all(program.parent().expect("the profile folder")).expect("the build folder");
+        // Copiado por outro processo, para que o arquivo nunca fique aberto
+        // para escrita aqui enquanto um vizinho o roda.
+        let copied = Command::new("cp").arg(env!("CARGO_BIN_EXE_mustard-rt")).arg(&program).status().expect("cp runs");
+        assert!(copied.success(), "{} was not copied", program.display());
+        project.compiled = Some(Compiled { build, program, tools });
+        project
     }
 
     fn command(&self, args: &[&str], stdin: &str) -> Output {
@@ -121,7 +165,7 @@ impl Project {
     /// da sessão do projeto.
     fn command_from(&self, dir: &Path, session: Option<&str>, args: &[&str], stdin: &str) -> Output {
         let mut child = self
-            .program(env!("CARGO_BIN_EXE_mustard-rt"))
+            .program(self.compiled.as_ref().map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_mustard-rt")), |compiled| compiled.program.clone()))
             .envs(session.map(|session| ("MUSTARD_SESSION_ID", session)))
             .args(args)
             .current_dir(dir)
@@ -158,6 +202,10 @@ impl Project {
             .env_remove("CLAUDE_CODE_SESSION_ID")
             .envs(self.jev.iter().flat_map(|url| [("TYPESAFE_API_KEY", "fake-key"), ("MUSTARD_JEV_URL", url.as_str())]))
             .envs(self.session.map(|session| ("MUSTARD_SESSION_ID", session)));
+        if let Some(compiled) = &self.compiled {
+            let path = std::env::join_paths(std::iter::once(compiled.tools.clone()).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())));
+            command.env("MUSTARD_BUILD_DIR", &compiled.build).env("PATH", path.expect("the tools folder joins the PATH"));
+        }
         command
     }
 
@@ -507,7 +555,11 @@ fn a_short_lived_round_uses_its_exact_session_owner_and_the_dispatch_hook_accept
 /// [`backlog_project`] com a marca de prioridade nas tarefas das posições
 /// `marked` de `files`.
 fn marked_backlog_project(files: &[&[&str]], marked: &[usize]) -> (Project, u64, u64, Vec<u64>) {
-    let project = Project::new();
+    backlog_in(Project::new(), files, marked)
+}
+
+/// [`marked_backlog_project`] no projeto `project`, que o teste monta antes.
+fn backlog_in(project: Project, files: &[&[&str]], marked: &[usize]) -> (Project, u64, u64, Vec<u64>) {
     project.open();
     let said = survey(&project);
     let criterion = project.write(
@@ -2692,4 +2744,59 @@ fn a_classifier_decision_is_asked_again_when_the_leftover_changes() {
 
     assert_eq!(waiting_for_the_jev(&again), vec![1], "the new leftover has no decision yet: {again}");
     assert_eq!(triage_requests(&jev), 2, "the classifier is asked about the new leftover: {again}");
+}
+
+/// A obra do próprio Mustard: a rodada que comita código do programa o
+/// recompila e passa o despacho ao programa novo, que responde numa segunda
+/// passada, e as duas respostas saem juntas. A onda 1 volta com duas sobras de
+/// limpeza e entra no commit; a onda 2 volta fora do escopo e espera a
+/// revisão. A resposta traz as duas limpezas seguradas num grupo só, com o
+/// código de cada uma, e cada aviso da onda 2 uma vez.
+#[test]
+fn a_round_that_commits_the_program_hands_the_dispatch_over_and_answers_once() {
+    let (project, crit, said, _) = backlog_in(Project::as_mustard_source(), &[&["apps/rt/a.txt"]], &[]);
+    let first = project.run(&["round", "--dispatch", "--spec", SPEC]);
+    assert_eq!(waves_in(&first, "dispatch"), vec![1], "{first}");
+    keep_sent(&project, &[1]);
+    backlog_task(&project, crit, said, &["apps/rt/b.txt"], &[]);
+    let second = project.run(&["round", "--dispatch", "--spec", SPEC]);
+    assert_eq!(waves_in(&second, "dispatch"), vec![2], "{second}");
+    keep_sent(&project, &[2]);
+    let leftovers = json!({"leftovers": [
+        {"title": "Limpar o primeiro", "detail": "Sobrou um arquivo.", "files": ["apps/rt/c.txt"], "cleanup": true},
+        {"title": "Limpar o segundo", "detail": "Sobrou outro.", "files": ["apps/rt/d.txt"], "cleanup": true}]});
+    deliver_file_with(&project, 1, "apps/rt/a.txt", "um\n", &leftovers);
+    let copy = deliver_file_in_copy(&project, 2, "apps/rt/b.txt", "dois\n");
+    std::fs::write(copy.join("apps/rt/fora.txt"), "fora do escopo\n").expect("a file outside the scope");
+    // Só a onda 1 é revista: a 2 fica esperando.
+    let view = project.run(&["review-wave", "--wave", "1", "--spec", SPEC]);
+    assert!(view["fingerprint"].is_string(), "{view}");
+    let reviewed = json!({"wave": 1, "note": "O conferente leu o diff e as regras."});
+    let report = format!("{USAGE_OF_WAVE_ONE}\n<REVIEWED>{reviewed}</REVIEWED>");
+
+    let out = project.command(&["run", "round", "--dispatch", "--spec", SPEC, "--report", &report], "");
+    let out: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stdout)));
+
+    assert_eq!(out["ok"], json!(true), "{out}");
+    assert!(out.get("commit").is_some(), "the round committed the wave 1: {out}");
+    assert!(std::fs::read_to_string(project.home.join("cargo.log")).is_ok_and(|calls| calls.contains("build")), "the commit rebuilt the program: {out}");
+    let log = project.log();
+    let codes = log.codes();
+    let cleanups: Vec<&String> = log
+        .visible()
+        .into_iter()
+        .filter(|e| e.event_type == "task" && e.fields.get("cleanup") == Some(&json!(true)))
+        .filter_map(|e| codes.get(&e.id))
+        .collect();
+    assert_eq!(cleanups.len(), 2, "the two leftovers became cleanup tasks: {out}");
+    assert_eq!(out["held"].as_array().map(Vec::len), Some(1), "one group for the one reason: {out}");
+    assert_eq!(out["held"][0]["reason"], json!("cleanup-last"), "{out}");
+    assert_eq!(out["held"][0]["tasks"], json!(cleanups), "the group names each held task: {out}");
+    let warnings = out["warnings"].as_array().cloned().unwrap_or_default();
+    for reason in ["wave-review-required", "files-diverged", "scope-expanded"] {
+        let of_wave_two = warnings.iter().filter(|warning| warning["reason"] == json!(reason) && warning["wave"] == json!(2)).count();
+        assert_eq!(of_wave_two, 1, "{reason} of the wave waiting for review comes once: {out}");
+    }
+    let distinct: BTreeSet<String> = warnings.iter().map(Value::to_string).collect();
+    assert_eq!(distinct.len(), warnings.len(), "no warning comes twice: {out}");
 }
