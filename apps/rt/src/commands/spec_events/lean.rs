@@ -7,8 +7,9 @@
 //! fica até o minuto, porque diz quem falou e quando. Toda ligação entre itens
 //! sai pelo código do item apontado: os campos que o tipo declara como
 //! referência (`result`, `closes`, `covers`, `contracts`, `criteria`,
-//! `depends_on` da tarefa e os outros) e os que qualquer linha pode trazer
-//! (`origin`, `replaces`, `reply_to`, `covered_by`), e os números simples
+//! `depends_on` da tarefa, `reply_to` da resposta e os outros) e os que
+//! qualquer linha pode trazer (`origin`, `replaces`, `covered_by`), e os
+//! números simples
 //! que apontam itens (as tarefas e a entrega da onda, os itens e a entrega do
 //! envio, o critério medido, o ponto aberto em que a fala foi dita). O número
 //! sem código fica como está, e o número que não aponta item (as ondas em
@@ -36,7 +37,7 @@ const STAMPS: &[&str] = &["v", "session"];
 /// As ligações que qualquer linha pode trazer sem o tipo declará-las, e que
 /// a linha enxuta mostra pelo código. As que o tipo declara como referência
 /// vêm da declaração dele ([`points_at_item`]).
-const LINKS: &[&str] = &["origin", "replaces", "reply_to", "covered_by"];
+const LINKS: &[&str] = &["origin", "replaces", "covered_by"];
 
 /// Os campos que o tipo declara como número simples, mas que apontam itens:
 /// as tarefas da onda em ordem e a entrega que ela continua, os itens e a

@@ -1875,3 +1875,60 @@ fn a_json_argument_read_from_a_file_writes_the_same_as_the_direct_text() {
     }
     assert_eq!(event_lines(root), before, "nothing is written");
 }
+
+/// O código de um item gravado na spec, como o pedido da onda e a leitura
+/// o mostram.
+fn code_of(root: &Path, id: u64) -> String {
+    let path = mustard_core::io::spec_events::spec_file(root, "teste").expect("spec file");
+    let log = mustard_core::io::spec_events::read(&path).expect("read").expect("the spec file");
+    log.codes().get(&id).cloned().unwrap_or_else(|| panic!("no code for {id}"))
+}
+
+/// A resposta aponta a mensagem do usuário pelo código que a leitura mostra,
+/// e a linha gravada guarda o número da mensagem, como faz com a origem. A
+/// resposta é do binário, que a grava pela gravação do núcleo: o `run write`
+/// a recusa.
+#[test]
+fn a_response_replying_by_the_message_code_keeps_the_message_number() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    open_spec(root);
+    let said = seed_binary(root, "message", &json!({"author": "user", "text": "Trocar o tema do site."}));
+    let answered =
+        seed_binary(root, "response", &json!({"author": "assistant", "text": "Troquei o tema.", "reply_to": code_of(root, said)}));
+    let path = mustard_core::io::spec_events::spec_file(root, "teste").expect("spec file");
+    let log = mustard_core::io::spec_events::read(&path).expect("read").expect("the spec file");
+    assert_eq!(log.get(answered).and_then(|answer| answer.int("reply_to")), Some(said));
+}
+
+/// O pedido que aponta pelo código a mensagem do usuário de onde veio leva a
+/// fala dela à pergunta sobre o lugar do pedido. Com o Jev ligado e fora do
+/// ar, a decisão vai à reserva, cujo material é o mesmo pedido ao Jev.
+#[test]
+fn a_request_from_the_message_code_takes_what_the_user_said_to_the_jev() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    open_spec(root);
+    let config = json!({"ai": {"fallback": true}, "judgement": {"wave-planning": {"filter": "jev"}}});
+    std::fs::write(root.join("mustard.json"), config.to_string()).expect("config");
+    let goal = seed_binary(root, "message", &json!({"author": "user", "text": "Somar dois números na calculadora."}));
+    write(root, "context", &json!({"title": "Somar na calculadora", "text": "Somar dois números na calculadora.",
+        "agent": "- conferir pelo teste", "origin": goal}));
+    let user_said = "Quero a tela inteira no modo escuro, por favor.";
+    let said = seed_binary(root, "message", &json!({"author": "user", "text": user_said}));
+    let request = json!({"title": "Tema escuro", "text": "Trocar o tema do site.", "keys": ["tema"], "effect": "new_waves",
+        "agent": "- conferir pelo teste", "origin": code_of(root, said)});
+    // Um endereço que ninguém atende: a pergunta ao Jev falha na hora.
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+    let url = format!("http://{}/v1/systemone", closed.local_addr().expect("address"));
+    drop(closed);
+    let out = rt(root, &["write", "request", "--spec", "teste", "--json", &request.to_string()])
+        .env("TYPESAFE_API_KEY", "fake-key")
+        .env("MUSTARD_JEV_URL", &url)
+        .output()
+        .expect("run write");
+    let reserved = stdout_json(&out);
+    assert_eq!(reserved["reason"], json!("jev-reserve"), "{reserved}");
+    let prompt = reserved["reserve"]["delegation"]["request"]["prompt"].as_str().expect("the reserve prompt");
+    assert!(prompt.contains(user_said), "the user's words go to the Jev: {prompt}");
+}

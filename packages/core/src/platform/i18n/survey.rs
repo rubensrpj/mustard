@@ -154,7 +154,7 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("survey.done", Locale::EnUs) => {
             "The survey has no open point. Show the user the messages in `unrouted`, which no record \
              points to (each line has the code and the start of the message; the whole text comes \
-             from `mustard-rt run read item-<code>`), and ask what to do with each one. Then record \
+             from `mustard-rt run read item-<item-code>`), and ask what to do with each one. Then record \
              the specification and the tasks."
         }
         ("survey.review_step", Locale::PtBr) => {
@@ -289,7 +289,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("survey.rs"), super::PREFIXES, 46, 0x96ed_453c_a464_8a78);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("survey.rs"), super::PREFIXES, 46, 0x35c2_d3b8_d12d_ccf1);
     }
 
     /// O ponto aberto sem fato só fecha com os fatos: a dica de fechar um

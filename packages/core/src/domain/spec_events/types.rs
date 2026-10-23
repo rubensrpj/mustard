@@ -487,8 +487,9 @@ pub const TYPES: &[TypeSpec] = &[
     // testemunha: a pergunta e a opção que o usuário clicou. A que responde a
     // outra pergunta com opções leva a pergunta do assistente em `question`:
     // o texto das duas é só o que o usuário disse. A resposta do
-    // assistente aponta a mensagem que respondeu; só a do turno em que a spec
-    // nasce, antes de qualquer mensagem do usuário, vai sem ela
+    // assistente aponta a mensagem que respondeu, pelo número ou pelo código
+    // dela, e a linha guarda o número; só a do turno em que a spec nasce,
+    // antes de qualquer mensagem do usuário, vai sem ela
     // (`spec_state::reply_rule`). A fala do usuário que chega com um ponto do
     // levantamento aberto leva o número dele em `during`: a mensagem já tem
     // lugar no levantamento e não é dita solta.
@@ -499,7 +500,7 @@ pub const TYPES: &[TypeSpec] = &[
         false,
         &[TEXT, opt("witness", Kind::Object), opt("during", Kind::Int), opt("question", Kind::Text)],
     ),
-    ty("response", "RESP", Block::Conversation, false, &[TEXT, opt("reply_to", Kind::Int)]),
+    ty("response", "RESP", Block::Conversation, false, &[TEXT, opt("reply_to", Kind::Ref)]),
     ty(
         "injection",
         "INJ",

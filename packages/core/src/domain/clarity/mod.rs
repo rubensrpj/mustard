@@ -853,8 +853,9 @@ fn is_url_or_path(core: &str) -> bool {
 }
 
 /// O detector único de caminho de arquivo: a conferência de escrita tira da
-/// medição o que ele aponta, e a gravação de um item recusa o mesmo trecho na
-/// parte do usuário. Caminho é o nome de arquivo com extensão, solto ou no fim
+/// medição o que ele aponta, a gravação de um item recusa o mesmo trecho na
+/// parte do usuário, e o levantamento acha por ele os arquivos que um texto
+/// cita sem linha. Caminho é o nome de arquivo com extensão, solto ou no fim
 /// de um caminho (`apps/rt/x.rs`, `mod.rs`, `CLAUDE.md`), e o caminho que
 /// parte de uma raiz ou de uma pasta oculta (`/home/x`, `~/projetos`,
 /// `./target`, `.claude/spec`). A linha que vem

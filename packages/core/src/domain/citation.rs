@@ -17,6 +17,7 @@
 //! só avisam: o mapa pode estar atrás do código, e um aviso não prende o
 //! assistente num laço de repetição.
 
+use crate::domain::clarity::is_file_path;
 use crate::domain::project_map::clean_path;
 use crate::domain::spec_events::Refusal;
 use crate::platform::i18n::{translate, Locale};
@@ -67,8 +68,9 @@ pub fn file_citations(text: &str) -> Vec<String> {
 
 /// Os arquivos que um texto cita, na ordem em que aparecem e sem repetir, com
 /// barras normais: o pedaço no formato de [`file_citation`] vale pelo
-/// caminho, sem a linha, e o caminho sem linha vale quando tem pasta e
-/// extensão (`apps/rt/src/a.rs`). O nome sem pasta e sem linha (`Cargo.toml`,
+/// caminho, sem a linha, e o caminho sem linha vale quando o detector único
+/// ([`is_file_path`]) o reconhece e ele tem pasta (`apps/rt/src/a.rs`,
+/// `.claude/spec`). O nome sem pasta e sem linha (`Cargo.toml`,
 /// `self.facts`) não vale, porque não se distingue de um nome de código.
 ///
 /// Serve ao levantamento: dois textos que citam o mesmo arquivo falam do
@@ -79,7 +81,7 @@ pub fn cited_files(text: &str) -> Vec<String> {
     for piece in pieces(text) {
         let path = match file_citation(piece) {
             Some((path, _)) => path,
-            None if is_file_path(piece) => piece.replace('\\', "/"),
+            None if is_file_path(piece) && piece.contains(['/', '\\']) => piece.replace('\\', "/"),
             None => continue,
         };
         let path = clean_path(&path);
@@ -95,21 +97,6 @@ pub fn cited_files(text: &str) -> Vec<String> {
 /// fim.
 fn pieces(text: &str) -> impl Iterator<Item = &str> {
     text.split(|c: char| c.is_whitespace() || "`\"'()[]{}<>,;".contains(c)).map(|piece| piece.trim_end_matches(['.', ':']))
-}
-
-/// O pedaço que é um caminho de arquivo: tem pasta, e o último trecho tem
-/// nome e extensão com ao menos uma letra. O endereço (`://`) não é.
-fn is_file_path(piece: &str) -> bool {
-    if piece.contains("://") {
-        return false;
-    }
-    let piece = piece.replace('\\', "/");
-    let Some((folder, name)) = piece.rsplit_once('/') else { return false };
-    let Some((stem, extension)) = name.rsplit_once('.') else { return false };
-    !folder.is_empty()
-        && !stem.is_empty()
-        && extension.chars().all(|c| c.is_ascii_alphanumeric())
-        && extension.chars().any(|c| c.is_ascii_alphabetic())
 }
 
 /// Os nomes de código que um texto cita entre crases, na ordem em que
@@ -330,6 +317,15 @@ mod tests {
         assert_eq!(cited_files(text), ["apps/rt/src/a.rs", "src/b.rs", "docs/c.md", "src/d.rs"]);
         assert_eq!(cited_files("`Cargo.toml`, `self.facts`, https://example.com/a.html, e/ou, docs/v1.2, 3/4"), Vec::<String>::new());
         assert_eq!(cited_files("Cargo.toml:3 e README.md:10"), ["Cargo.toml", "README.md"]);
+    }
+
+    /// O caminho sem linha segue o detector de caminho da conferência de
+    /// escrita: a pasta oculta e a que parte da casa contam, mesmo sem
+    /// extensão; a extensão longa ou só de maiúsculas não conta.
+    #[test]
+    fn a_path_without_a_line_is_cited_as_the_writing_check_detects_it() {
+        assert_eq!(cited_files("Grava em .claude/spec e lê ~/projetos/notas."), [".claude/spec", "~/projetos/notas"]);
+        assert_eq!(cited_files("Veja docs/guia.markdown e docs/LEIA.MD."), Vec::<String>::new());
     }
 
     #[test]

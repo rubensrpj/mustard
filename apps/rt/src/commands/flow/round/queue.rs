@@ -186,8 +186,11 @@ pub(crate) fn unanswered_sends(log: &SpecLog) -> BTreeMap<u64, u64> {
 
 /// `true` quando o agente da onda `wave` ainda pode entregar: ela tem envio
 /// sem volta ([`unanswered_sends`]), mesmo com o plano mudado depois dele, e
-/// nenhuma entrega esperando a rodada ([`waves_returned`]). É a leitura da
-/// gravação de uma tarefa, que não pode tirar da onda o que o agente entrega.
+/// nenhuma entrega esperando a rodada ([`waves_returned`]). As duas leituras
+/// ficam: a volta que o agente grava sai da leitura até a rodada assumi-la, e
+/// até lá o envio segue sem volta, guardando a vaga e a cópia da onda (a
+/// volta que a junção segurou por conflito ainda precisa dela). É a leitura
+/// da gravação de uma tarefa, que não pode tirar da onda o que o agente entrega.
 /// Ao contrário de [`waves_in_progress`], não olha se o Claude Code que mandou
 /// o pedido segue aberto: a onda cujo agente caiu sem voltar segue dona das
 /// tarefas dela até sair de novo ou voltar.
