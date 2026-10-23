@@ -139,7 +139,7 @@ mod tests {
         let config = json!({"lintCommand": "echo lint >> rodou", "testCommand": "echo suite >> rodou; echo error: lib/fora.rs:1:4; exit 1"});
         let refused = close_with(root, &config);
         assert_eq!(refused["reason"], json!("suite-failed"), "{refused}");
-        assert_eq!(std::fs::read_to_string(root.join("rodou")).unwrap_or_default(), "lint\nsuite\n", "{refused}");
+        assert_eq!(std::fs::read_to_string(mustard_core::io::wave_prompt::spec_copies_dir(root, "x").join("check").join("rodou")).unwrap_or_default(), "lint\nsuite\n", "{refused}");
 
         let log = log_of(root);
         assert_eq!(
@@ -168,7 +168,7 @@ mod tests {
         old_mark(root, 1, "build-failed", "web/fora.ts(1,8): error TS2304: Cannot find name 'x'.");
 
         let refused = close_with(root, &json!({"buildCommand": "echo build >> rodou"}));
-        assert_eq!(std::fs::read_to_string(root.join("rodou")).unwrap_or_default(), "build\n", "{refused}");
+        assert_eq!(std::fs::read_to_string(mustard_core::io::wave_prompt::spec_copies_dir(root, "x").join("check").join("rodou")).unwrap_or_default(), "build\n", "{refused}");
         assert_eq!(released(&log_of(root)), vec![(1, Some("build-failed"), Some(BEFORE), Some("binary"))], "{refused}");
     }
 
@@ -187,7 +187,7 @@ mod tests {
 
         let refused = close_with(root, &json!({"lintCommand": "echo lint >> rodou"}));
         assert_eq!(refused["reason"], json!("wave-rejected"), "{refused}");
-        assert!(!root.join("rodou").exists(), "{refused}");
+        assert!(!mustard_core::io::wave_prompt::spec_copies_dir(root, "x").join("check").join("rodou").exists(), "{refused}");
         let log = log_of(root);
         assert!(released(&log).is_empty(), "{refused}");
         assert_eq!(log.last_rejected().into_keys().collect::<Vec<_>>(), vec![1, 2], "{refused}");
@@ -212,7 +212,7 @@ mod tests {
 
         let refused = close_with(root, &json!({"lintCommand": "echo lint >> rodou"}));
         assert_eq!(refused["reason"], json!("wave-rejected"), "{refused}");
-        assert!(!root.join("rodou").exists(), "{refused}");
+        assert!(!mustard_core::io::wave_prompt::spec_copies_dir(root, "x").join("check").join("rodou").exists(), "{refused}");
         let log = log_of(root);
         assert_eq!(released(&log), vec![(1, Some("final-new-unused"), Some(BEFORE), Some("binary"))], "{refused}");
         assert_eq!(log.last_rejected().into_keys().collect::<Vec<_>>(), vec![2], "{refused}");

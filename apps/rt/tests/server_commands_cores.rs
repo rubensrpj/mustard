@@ -22,7 +22,7 @@ use crate::one_wave_spec;
 
 use serde_json::json;
 
-/// Onde a suíte do projeto anota quantos núcleos enxergou.
+/// O nome do arquivo em que a suíte do projeto anota quantos núcleos enxergou.
 const CORES_FILE: &str = "cores.txt";
 
 /// O limite que a máquina aguenta: o menor entre os núcleos que este
@@ -44,11 +44,13 @@ fn affordable_cores() -> usize {
 /// máquina de 12 núcleos e 15 GB o `nproc` da suíte dizia 12.
 #[test]
 fn the_closing_suite_sees_no_more_cores_than_the_memory_affords() {
-    let project = one_wave_spec::Project::new("nucleos", &json!({"testCommand": format!("nproc > {CORES_FILE}")}), &[CORES_FILE]);
+    // A suíte roda na cópia limpa da obra, e o que ela anota fica fora do projeto.
+    let notes = tempfile::tempdir().unwrap();
+    let cores_file = notes.path().join(CORES_FILE);
+    let project = one_wave_spec::Project::new("nucleos", &json!({"testCommand": format!("nproc > {}", cores_file.display())}), &[]);
     project.approved();
     project.run(&["round", "--dispatch", "--spec", "nucleos"]);
     project.deliver_the_first_wave();
-    let cores_file = project.root.join(CORES_FILE);
     let _ = std::fs::remove_file(&cores_file);
 
     let asked = project.run(&["close", "--spec", "nucleos"]);

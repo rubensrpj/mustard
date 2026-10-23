@@ -402,6 +402,27 @@ pub(super) fn live_copy(path: &Path) -> bool {
 /// git, de uma pasta que sumiu, sai pelo `worktree prune` antes do `add`. A
 /// pasta mãe nasce antes da cópia.
 fn new_copy(root: &Path, path: &Path, head: &str, owner: &Keeping) -> Result<Prepared, String> {
+    let kept = new_bare_copy(root, path, head, owner)?;
+    Ok(Prepared { missing: copy_local_files(root, path), reused: None, kept })
+}
+
+/// A cópia de checagem em `path`, no commit `head` do checkout `root`, sem os
+/// arquivos locais do projeto: o que o git ignora (`.env`) não existe nela, e
+/// o que um comando lê dali falha como falharia num checkout limpo. A vaga que
+/// já é cópia viva volta ao commit sem apagar o que o git ignora, a compilação
+/// e as dependências, e a pasta que não é cópia viva nasce de novo
+/// ([`new_bare_copy`]). Devolve o código que a limpeza guardou antes.
+pub(crate) fn clean_copy(root: &Path, path: &Path, head: &str, owner: &Keeping) -> Result<Vec<Kept>, String> {
+    if live_copy(path) {
+        super::keep::reset_with_submodules(root, path, head, owner)
+    } else {
+        new_bare_copy(root, path, head, owner)
+    }
+}
+
+/// [`new_copy`] sem levar os arquivos locais do projeto: devolve só o código
+/// que a pasta velha tinha e ficou guardado.
+fn new_bare_copy(root: &Path, path: &Path, head: &str, owner: &Keeping) -> Result<Vec<Kept>, String> {
     let mut kept = Vec::new();
     if path.exists() {
         if !inside_copies(root, path) {
@@ -416,7 +437,7 @@ fn new_copy(root: &Path, path: &Path, head: &str, owner: &Keeping) -> Result<Pre
     git::run(root, &["worktree", "prune"]).result()?;
     let target = path.to_string_lossy();
     git::run(root, &["worktree", "add", "--detach", &target, head]).result()?;
-    Ok(Prepared { missing: copy_local_files(root, path), reused: None, kept })
+    Ok(kept)
 }
 
 /// Os arquivos que mudaram do commit `before` ao commit `head`, que o git do

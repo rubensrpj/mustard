@@ -131,6 +131,19 @@ impl Project {
         Self::ok_report(args, &out)
     }
 
+    /// A recusa de um comando `run` que não passa: a resposta em JSON, com
+    /// `ok` falso, e o código de saída que o fechamento usa para recusar.
+    pub fn refused(&self, args: &[&str]) -> Value {
+        let mut all = vec!["run"];
+        all.extend_from_slice(args);
+        let out = self.command_with(None, &self.root, &all, "", &[]);
+        let text = String::from_utf8_lossy(&out.stdout).to_string();
+        let report: Value = serde_json::from_str(&text).unwrap_or_else(|e| panic!("{args:?} did not answer JSON ({e}): {text}"));
+        assert_eq!(report["ok"], json!(false), "{args:?}: {report}");
+        assert_eq!(out.status.code(), Some(1), "{args:?}: {report}");
+        report
+    }
+
     /// A abertura da spec pela conversa da sessão [`SESSION`], como quem
     /// conduz a roda: o gancho do terminal passa a sessão ao comando, e é a
     /// conversa dela que fica ligada à spec, a mesma que fala depois pelo

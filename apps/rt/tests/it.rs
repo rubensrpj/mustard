@@ -22,6 +22,7 @@ mod one_wave_spec;
 mod agents_find_code_through_the_map;
 mod approval_refusal_explains;
 mod clean_exit;
+mod closing_clean_copy;
 mod command_frontmatter;
 mod command_guard;
 mod config_read;

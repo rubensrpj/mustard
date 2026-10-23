@@ -76,6 +76,7 @@ use crate::commands::review::qa_run::ProofFault;
 use crate::commands::spec_events::{self, write::record};
 use crate::shared::spec_state::{DiskSpecState, checkout, session_from_env};
 
+mod clean_copy;
 pub(crate) mod stale_marks;
 mod unused;
 
@@ -150,6 +151,12 @@ enum CloseRefusal {
         copy: String,
         detail: String,
     },
+    /// A cópia limpa em que a máquina roda não pôde ser criada, com o que o
+    /// git disse.
+    CleanCopyFailed {
+        copy: String,
+        detail: String,
+    },
     /// Um critério cuja prova não passou.
     CriterionFailed {
         code: String,
@@ -206,6 +213,7 @@ impl CloseRefusal {
             Self::SuiteFailed { .. } => "suite-failed".into(),
             Self::ReviewCopyDirty { .. } => "review-copy-dirty".into(),
             Self::ReviewCopyFailed { .. } => "review-copy-failed".into(),
+            Self::CleanCopyFailed { .. } => "clean-copy-failed".into(),
             Self::CriterionFailed { .. } => "criterion-failed".into(),
             Self::NewUnused { .. } => "final-new-unused".into(),
             Self::ValidationInputsChanged => "validation-inputs-changed".into(),
@@ -240,6 +248,7 @@ impl CloseRefusal {
             }
             Self::ReviewCopyDirty { copy, files } => fill("close.review_copy_dirty", &[("{copy}", copy.clone()), ("{files}", files.clone())]),
             Self::ReviewCopyFailed { copy, detail } => fill("close.review_copy_failed", &[("{copy}", copy.clone()), ("{detail}", detail.clone())]),
+            Self::CleanCopyFailed { copy, detail } => fill("close.clean_copy_failed", &[("{copy}", copy.clone()), ("{detail}", detail.clone())]),
             Self::CriterionFailed { code, output } => fill("close.criterion_failed", &[("{code}", code.clone()), ("{output}", output.clone())]),
             Self::CriterionRanNoTest { code, command, tests } => {
                 fill("close.criterion_ran_no_test", &[("{code}", code.clone()), ("{command}", command.clone()), ("{count}", tests.to_string())])
@@ -467,7 +476,8 @@ fn run_close(
         if super::validation::reusable(root, &log) {
             (Machine::default(), true)
         } else {
-            match machine(opts, root, &spec, &log, lang) {
+            let clean = clean_copy::prepare(root, &spec, &log, &copies)?;
+            match machine(opts, root, &clean, &spec, &log, lang) {
                 Ok(ran) => (ran, false),
                 Err(failure) => return Err(authorize_final_repair(root, &spec, &log, failure, lang)),
             }
@@ -757,7 +767,7 @@ fn hand_pending_to_project(root: &Path, spec: &str, log: &SpecLog, answers: &[St
 /// sem nada que ele pudesse consertar no código da obra. A compilação que
 /// falta nem aviso dá: há linguagem sem passo de compilar, e o plano já avisa
 /// o projeto que não a declara.
-fn machine(opts: &CloseOpts, root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Result<Machine, CloseRefusal> {
+fn machine(opts: &CloseOpts, root: &Path, clean: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Result<Machine, CloseRefusal> {
     let mut timing = super::validation::Stage::new(root, spec, "final", "machine", true);
     let before = super::validation::fingerprint(root, log);
     let declared = mustard_core::ProjectConfig::load(root).commands();
@@ -774,13 +784,13 @@ fn machine(opts: &CloseOpts, root: &Path, spec: &str, log: &SpecLog, lang: Local
             }
             continue;
         };
-        let command = if key == "lintCommand" { crate::commands::review::qa_run::readonly_lint_command(root, &command) } else { command };
+        let command = if key == "lintCommand" { crate::commands::review::qa_run::readonly_lint_command(clean, &command) } else { command };
         // Nenhum deles é prova de critério: eles não prometem rodar um
         // teste pelo nome, e a leitura de quantos testes a saída diz fica
         // fora do caminho deles. O teto também é o deles, de uma hora, e não
         // o de um critério: a compilação e a suíte inteira levam o tempo que o
         // projeto pede.
-        let out = crate::commands::review::qa_run::run_server_command(&clean_env(&command), root);
+        let out = crate::commands::review::qa_run::run_server_command(&clean_env(&command), clean);
         super::validation::record_run(root, spec, "final", key, &command, &out).map_err(CloseRefusal::Refused)?;
         if out.result != "pass" {
             if key == "buildCommand" {
@@ -813,7 +823,7 @@ fn machine(opts: &CloseOpts, root: &Path, spec: &str, log: &SpecLog, lang: Local
 
     // Cada critério roda uma vez, e cada execução é gravada.
     let criteria = criteria_list(log);
-    let outcomes = crate::commands::review::qa_run::run_criteria_proofs(root, &criteria);
+    let outcomes = crate::commands::review::qa_run::run_criteria_proofs(clean, &criteria);
     let mut runs: Vec<Value> = Vec::new();
     for (id, code, out) in &outcomes {
         native_outputs.push(out.evidence.clone());
@@ -1584,6 +1594,20 @@ mod tests {
         report["id"].as_u64().unwrap_or_else(|| panic!("não gravou: {report}"))
     }
 
+    /// A pasta da cópia limpa em que a máquina do fechamento da obra `x` roda:
+    /// é nela que os comandos do servidor escrevem o que deixam para trás.
+    pub(super) fn check_copy(root: &Path) -> PathBuf {
+        mustard_core::io::wave_prompt::spec_copies_dir(root, "x").join("check")
+    }
+
+    /// Comita o arquivo `file`, ainda que o git o ignore: a cópia limpa é um
+    /// checkout do commit, e o script que o comando do servidor roda tem de
+    /// estar nele.
+    pub(super) fn commit_file(root: &Path, file: &str) {
+        git_at(root, &["add", "-f", file]);
+        git_at(root, &["commit", "-q", "-m", "script do servidor"]);
+    }
+
     pub(super) fn git_at(root: &Path, args: &[&str]) {
         let out = Command::new("git")
             .args(["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
@@ -2295,8 +2319,12 @@ mod tests {
         std::fs::create_dir_all(root.join("apps/rt")).unwrap();
         std::fs::write(root.join("apps/rt/Cargo.toml"), b"[package]\nname=\"mustard-rt\"\n").unwrap();
         std::fs::write(root.join(".gitignore"), "suites-rodadas\n").unwrap();
-        std::fs::write(root.join("mustard.json"), br#"{"testCommand":"echo rodou >> suites-rodadas"}"#).unwrap();
-        let runs = || std::fs::read_to_string(root.join("suites-rodadas")).unwrap_or_default().lines().count();
+        // A suíte roda na cópia limpa, que sai com a obra: o registro das
+        // rodadas mora na pasta do projeto, por caminho absoluto.
+        let ledger = root.join("suites-rodadas");
+        let suite = format!("echo rodou >> {}", ledger.display());
+        std::fs::write(root.join("mustard.json"), json!({ "testCommand": suite }).to_string()).unwrap();
+        let runs = || std::fs::read_to_string(&ledger).unwrap_or_default().lines().count();
 
         let asked = close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None, ..Default::default() }, None);
         assert_eq!(asked["ok"], json!(true), "{asked}");
@@ -2973,6 +3001,7 @@ exit "${2:-0}"
             let script = root.join("lint");
             std::fs::write(&script, format!("#!/bin/sh\necho '{named}:1:1 erro de formatação'\nexit 1\n")).unwrap();
             std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+            commit_file(root, "lint");
             std::fs::write(root.join("mustard.json"), json!({"lintCommand":"./lint", "testCommand":"git --version"}).to_string()).unwrap();
             "./lint"
         };
@@ -3022,6 +3051,7 @@ exit "${2:-0}"
         let script = root.join("lint");
         std::fs::write(&script, format!("#!/bin/sh\necho '{}:1:1 erro'\nexit 1\n", wave_file(1))).unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        commit_file(root, "lint");
         std::fs::write(root.join("mustard.json"), json!({"lintCommand":"./lint", "testCommand":"git --version"}).to_string()).unwrap();
 
         let refused = close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), ..Default::default() }, None);
@@ -3049,7 +3079,7 @@ exit "${2:-0}"
 
     /// O que o roteiro gravou para o papel `role`, uma chave por linha.
     fn probed(root: &Path, role: &str) -> std::collections::BTreeMap<String, String> {
-        let text = std::fs::read_to_string(root.join(format!("ran-{role}"))).unwrap_or_default();
+        let text = std::fs::read_to_string(check_copy(root).join(format!("ran-{role}"))).unwrap_or_default();
         text.lines().filter_map(|l| l.split_once('=')).map(|(k, v)| (k.to_string(), v.to_string())).collect()
     }
 
@@ -3066,6 +3096,7 @@ exit "${2:-0}"
         let root = dir.path();
         ready_to_close(root, "x", &["git --version"]);
         std::fs::write(root.join("probe.sh"), PROBE).unwrap();
+        commit_file(root, "probe.sh");
         let exclude = root.join(".git/info/exclude");
         let mut ignores = std::fs::read_to_string(&exclude).unwrap_or_default();
         ignores.push_str("\nran-lint\nran-test\n");
@@ -3073,7 +3104,7 @@ exit "${2:-0}"
         let close_with = |lint: &str, test: &str| {
             repair_machine_failure(root, "x");
             for role in ["lint", "test"] {
-                let _ = std::fs::remove_file(root.join(format!("ran-{role}")));
+                let _ = std::fs::remove_file(check_copy(root).join(format!("ran-{role}")));
             }
             std::fs::write(root.join("mustard.json"), json!({ "lintCommand": lint, "testCommand": test }).to_string()).unwrap();
             close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), ..Default::default() }, None)
@@ -3081,7 +3112,7 @@ exit "${2:-0}"
 
         let refused = close_with("sh probe.sh lint 1", "sh probe.sh test");
         assert_eq!(refused["reason"], json!("lint-failed"), "{refused}");
-        assert!(root.join("ran-test").exists(), "com o lint vermelho, a suíte roda assim mesmo");
+        assert!(check_copy(root).join("ran-test").exists(), "com o lint vermelho, a suíte roda assim mesmo");
 
         let refused = close_with("sh probe.sh lint", "sh probe.sh test 1");
         assert_eq!(refused["reason"], json!("suite-failed"), "a suíte vermelha trava o fechamento: {refused}");
@@ -3119,6 +3150,7 @@ exit "${2:-0}"
         let root = dir.path();
         ready_to_close(root, "x", &["git --version"]);
         std::fs::write(root.join("probe.sh"), PROBE).unwrap();
+        commit_file(root, "probe.sh");
         let exclude = root.join(".git/info/exclude");
         let mut ignores = std::fs::read_to_string(&exclude).unwrap_or_default();
         ignores.push_str("\nran-lint\nran-test\n");
@@ -3126,7 +3158,7 @@ exit "${2:-0}"
         std::fs::write(root.join("mustard.json"), json!({ "lintCommand": "sh probe.sh lint" }).to_string()).unwrap();
         let asked = close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), ..Default::default() }, None);
         assert_eq!(asked["review"]["final"], json!(true), "{asked}");
-        assert!(root.join("ran-lint").is_file(), "o que está declarado roda");
+        assert!(check_copy(root).join("ran-lint").is_file(), "o que está declarado roda");
         let hints: Vec<String> = asked["warnings"]
             .as_array()
             .cloned()
@@ -3527,7 +3559,7 @@ exit "${2:-0}"
     #[test]
     fn closing_runs_the_project_lint_and_opens_the_pull_request_only_after_the_dedicated_test_agent() {
         let lint = "git init -q lint-rodou";
-        let ran = |root: &Path| root.join("lint-rodou").is_dir();
+        let ran = |root: &Path| check_copy(root).join("lint-rodou").is_dir();
 
         // O lint que falha recusa com a saída dele, e os critérios rodam
         // assim mesmo: a recusa lista tudo o que caiu de uma vez.
@@ -3583,7 +3615,7 @@ exit "${2:-0}"
 
         // Depois do conserto, a máquina roda de novo, e o pedido volta —
         // agora só com o conserto, não a obra inteira de novo.
-        std::fs::remove_dir_all(root.join("lint-rodou")).unwrap();
+        std::fs::remove_dir_all(check_copy(root).join("lint-rodou")).unwrap();
         let again = close_with_lint(root, lint, None);
         assert_eq!(again["review"]["final"], json!(true), "{again}");
         assert!(ran(root), "{again}");
@@ -3592,7 +3624,7 @@ exit "${2:-0}"
         assert!(!fix_prompt.contains("MSTD-WAVE-0001") && !fix_prompt.contains("MSTD-TASK-0001"), "só o conserto: {fix_prompt}");
 
         // Aprovado, a spec fecha sem rodar a máquina outra vez.
-        std::fs::remove_dir_all(root.join("lint-rodou")).unwrap();
+        std::fs::remove_dir_all(check_copy(root).join("lint-rodou")).unwrap();
         let before = criterion_runs(root);
         let approved = json!({"final": true, "result": "approved", "text": "O conserto ficou certo."});
         let closed = close_with_lint(root, lint, verdict_written(root, "x", approved));
@@ -4542,7 +4574,7 @@ exit "${2:-0}"
         assert_eq!(refused["reason"], json!("build-failed"), "{refused}");
         let hint = refused["hint"].as_str().unwrap_or_default();
         assert!(hint.contains(&format!("`{build}`")) && hint.contains("error TS2304"), "{refused}");
-        assert!(!root.join("rodou").exists(), "com a compilação vermelha, o lint e a suíte nem rodam: {refused}");
+        assert!(!check_copy(root).join("rodou").exists(), "com a compilação vermelha, o lint e a suíte nem rodam: {refused}");
         assert_eq!(criterion_runs(root), 0, "{refused}");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         assert_eq!(log.last_rejected().keys().copied().collect::<Vec<_>>(), vec![2], "{refused}");

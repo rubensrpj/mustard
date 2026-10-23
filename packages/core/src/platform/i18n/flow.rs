@@ -391,6 +391,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("close.review_copy_failed", Locale::PtBr) => "A cópia do revisor `{copy}` não pôde ser criada, e a spec não fechou: {detail}",
         ("close.review_copy_failed", Locale::EnUs) => "The reviewer's copy `{copy}` could not be created, and the spec did not close: {detail}",
+        ("close.clean_copy_failed", Locale::PtBr) => "A cópia limpa `{copy}`, em que a compilação, o lint, a suíte e os critérios rodam, não pôde ser criada, e a spec não fechou: {detail}",
+        ("close.clean_copy_failed", Locale::EnUs) => "The clean copy `{copy}`, where the build, the lint, the suite and the criteria run, could not be created, and the spec did not close: {detail}",
         // As cópias da obra que o fechamento ou o descarte não conseguiram
         // tirar. A obra segue: o aviso só diz o que ficou e como tirar.
         ("close.review_copy_kept", Locale::PtBr) => {
@@ -2505,7 +2507,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 364, 0x6f71_dda0_741c_07f3);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 365, 0x033a_d818_3c4a_b677);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
@@ -2641,6 +2643,7 @@ mod tests {
             ("close.server_command_not_declared", &["{key}"][..]),
             ("close.review_copy_dirty", &["{copy}", "{files}"][..]),
             ("close.review_copy_failed", &["{copy}", "{detail}"][..]),
+            ("close.clean_copy_failed", &["{copy}", "{detail}"][..]),
             ("close.review_copy_kept", &["{copies}", "{detail}"][..]),
             ("close.code_not_kept", &["{copies}", "{detail}"][..]),
             ("close.build_output_unsafe", &["{folder}"][..]),
