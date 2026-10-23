@@ -15,7 +15,7 @@ use mustard_core::io::wave_prompt::{shown, slot_path};
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Value, json};
 
-use super::queue::{backlog_ready, max_parallel, next_waves, open_sends, orphaned_waves, unanswered_sends, waves_in_progress, waves_returned};
+use super::queue::{backlog_ready, max_parallel, next_waves, open_sends, orphaned_waves, unanswered_sends, waves_in_progress};
 use super::stops::waves_replanned;
 use crate::shared::paths::same_place;
 
@@ -88,9 +88,9 @@ pub(crate) fn vacancies_with(root: &Path, spec: &str, log: &SpecLog, capacity: u
     // dela segue pendente no arquivo, mas a cópia dela já não é sua
     // ([`super::slots::held_slots`] só conta as do plano) e o código que ela
     // tinha fica guardado quando a vaga passa a outra onda. Sem tarefa viva,
-    // ela não espera nada, não conserta nada e não segura o despacho.
-    let planned = log.planned_waves();
-    let returned: BTreeSet<u64> = waves_returned(log).into_iter().filter(|wave| planned.contains(wave)).collect();
+    // ela não espera nada, não conserta nada e não segura o despacho: a vaga
+    // conta só as voltas que esperam a rodada.
+    let returned: BTreeSet<u64> = log.returns_awaiting_round().into_iter().filter_map(SpecEvent::wave).collect();
     // A onda que voltou com o trecho de conserto gravado tem agente: o que a
     // fez ou o novo, na mesma cópia.
     let repairing: BTreeSet<u64> =
