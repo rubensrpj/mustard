@@ -21,9 +21,9 @@ const HELD: [&str; 3] = ["capacity", "cleanup-last", "ready"];
 const BROKEN: &str = "broken-dependency";
 
 /// Os motivos exatos da pronta com vaga que a montagem deixou de fora: o
-/// julgamento do Jev, a chegada ao backlog nesta rodada e a decisão do Jev
-/// que ela ainda espera.
-const EXACT: [&str; 3] = ["judged-clash", "arrived-this-round", "jev-pending"];
+/// julgamento do Jev, a chegada ao backlog nesta rodada, a decisão do Jev
+/// que ela ainda espera e a onda do mesmo sentido em andamento.
+const EXACT: [&str; 4] = ["judged-clash", "arrived-this-round", "jev-pending", "following-running-wave"];
 
 /// A fila declarada: as vagas do projeto, se o número vem do `mustard.json`
 /// (`declared`), as ondas com pedido aberto que ocupam as vagas e cada
@@ -153,6 +153,7 @@ pub(super) fn held(root: &Path, spec: &str, log: &SpecLog, lang: Locale, assembl
                 Hold::Judged(_) => 0,
                 Hold::Arrived => 1,
                 Hold::JevPending => 2,
+                Hold::Following(_) => 3,
             }];
         }
     }
@@ -215,6 +216,7 @@ fn exact(hold: &Hold, lang: Locale) -> String {
         Hold::Judged(chance) => translate("round.queued.judged", lang).replace("{chance}", &chance.to_string()),
         Hold::Arrived => translate("round.queued.arrived", lang).to_string(),
         Hold::JevPending => translate("round.queued.jev_pending", lang).to_string(),
+        Hold::Following(wave) => translate("round.queued.following", lang).replace("{wave}", &wave.to_string()),
     }
 }
 

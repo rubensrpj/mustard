@@ -5,7 +5,8 @@
 //! O assunto combina tipo de trabalho, arquivos e relações atuais do scan.
 //! Nenhuma tarefa espera por arquivo: cada onda trabalha na própria cópia, e
 //! a rodada junta no commit. Seguram a tarefa só a dependência declarada, a
-//! limpeza por último e as vagas.
+//! limpeza por último, as vagas e a onda em andamento do mesmo sentido, que a
+//! formação apontou ([`super::following`]).
 //! O Jev responde decisões tipadas não atendidas pelo cache, antes das
 //! travas da rodada ([`super::dispatch_jev`]): com elas presas, a montagem só
 //! lê a decisão gravada, e a tarefa sem decisão espera a rodada seguinte, só
@@ -69,6 +70,9 @@ pub(crate) enum Hold {
     /// Espera a decisão do Jev, ou o recibo da reserva dele, que a passada
     /// antes das travas da rodada seguinte lê.
     JevPending,
+    /// Vai no mesmo sentido da onda em andamento deste número e espera a
+    /// volta dela ([`super::following`]).
+    Following(u64),
 }
 
 /// Monta as ondas que saem nesta rodada, olhando o backlog inteiro
@@ -377,6 +381,12 @@ fn assemble(
         .filter(|id| (left_on_entry.contains(id) || in_undone(id)) && !order.contains(id) && !cleanup(id) && !bare(id))
         .filter(|id| !population.iter().any(|task| task.id == *id && task.blocked))
         .collect();
+    // A tarefa que a formação pôs no mesmo sentido de uma onda em andamento
+    // não sai por caminho nenhum até a volta dela, nem de carona.
+    let candidates: Vec<u64> = order.iter().chain(&waiting).chain(&arrived).copied().collect();
+    let following = super::following::waiting_for_wave(log, &candidates, &arrived);
+    let free_of = |ids: Vec<u64>| -> Vec<u64> { ids.into_iter().filter(|id| !following.contains_key(id)).collect() };
+    let (order, waiting, arrived) = (free_of(order), free_of(waiting), free_of(arrived));
     // As ondas do plano que ainda não terminaram: em andamento, por sair,
     // mantidas ou com conserto pendente. Elas vão ao Jev e seguram a limpeza
     // que pegaria carona, nunca uma tarefa pelo arquivo.
@@ -402,7 +412,7 @@ fn assemble(
     let claimed: BTreeSet<u64> = by_summary.iter().flat_map(|wave| wave.batch.tasks.iter().copied()).collect();
     let order: Vec<u64> = order.into_iter().filter(|id| !claimed.contains(id)).collect();
     let tidy: Vec<_> = crate::shared::dag::ready_tasks(&population).into_iter()
-        .filter(|id| left_on_entry.contains(id) && cleanup(id) && !bare(id)).collect();
+        .filter(|id| left_on_entry.contains(id) && cleanup(id) && !bare(id) && !following.contains_key(id)).collect();
     let candidates: Vec<_> = order.iter().chain(&waiting).chain(&claimed).chain(&tidy).copied().collect();
     let mut affinity_board = board_of(log, &by_id, &population, &candidates, &open_waves);
     if free > 0 && (!order.is_empty() || !claimed.is_empty()) {super::evidence::augment(start, &mut affinity_board);}
@@ -519,6 +529,9 @@ fn assemble(
     let mut held = why_held(&assembled, judged, arrived);
     for id in &undecided {
         held.insert(codes.get(id).cloned().unwrap_or_else(|| id.to_string()), Hold::JevPending);
+    }
+    for (id, wave) in &following {
+        held.insert(codes.get(id).cloned().unwrap_or_else(|| id.to_string()), Hold::Following(*wave));
     }
 
     let mut writes: Vec<(&str, Map<String, Value>)> = Vec::new();

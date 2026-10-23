@@ -1639,6 +1639,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.queued.behind", Locale::EnUs) => "held behind {task}, which also stayed and shares {files} with it",
         ("round.queued.behind_lot", Locale::PtBr) => "no mesmo assunto de {task}, que também ficou",
         ("round.queued.behind_lot", Locale::EnUs) => "in the same subject as {task}, which also stayed",
+        ("round.queued.following", Locale::PtBr) => {
+            "vai no mesmo sentido da onda {wave} e espera a volta dela. Sai na próxima onda, com o resumo dela quando houver"
+        }
+        ("round.queued.following", Locale::EnUs) => {
+            "goes in the same direction as wave {wave} and waits for it to return. It leaves in the next wave, with that wave's summary when there is one"
+        }
         ("round.queued.arrived", Locale::PtBr) => "chegou ao backlog nesta rodada e entra na montagem da próxima",
         ("round.queued.arrived", Locale::EnUs) => "reached the backlog this round and joins the next round's assembly",
         ("round.queued.jev_pending", Locale::PtBr) => {
@@ -2492,7 +2498,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 364, 0xf90f_5648_df15_5003);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 365, 0x24b4_1f28_86ba_a341);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
@@ -2778,6 +2784,7 @@ mod tests {
             ("round.wave_left_without_tasks", &["{wave}", "{send}"][..]),
             ("round.wave_left_after_return", &["{wave}", "{send}"][..]),
             ("round.queued.broken_dependency", &["{dependencies}"][..]),
+            ("round.queued.following", &["{wave}"][..]),
             ("round.leftover_without_files", &[][..]),
             ("round.tasks_returned", &["{wave}", "{tasks}"][..]),
             ("round.proof_rerouted", &["{item}", "{criterion}"][..]),

@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use mustard_core::domain::agent_model::Difficulty;
 use mustard_core::io::knowledge::enrichment::{
-    GroupingAnswers, GroupingExtras, GroupingSubject, GroupingSummary, GroupingTask, ReserveAnswer, RewriteSource, prepare_grouping, prepare_rewrite,
+    GroupingAnswers, GroupingExtras, GroupingSubject, GroupingSummary, GroupingTask, ReserveAnswer, RewriteSource, RunningWave, prepare_grouping, prepare_rewrite,
 };
 use serde_json::{Map, Value, json};
 
@@ -306,20 +306,27 @@ fn read_order(doc: &Value, request: &OrderRequest, subjects: &[OrderedSubject]) 
 
 /// O pedido ao modelo pequeno da própria sessão (o Haiku no Claude, a Luna no
 /// Codex, ou o modelo da família que o projeto escolhe em
-/// `ai.session_models`) que lê de uma vez as tarefas `tasks` ainda sem onda e
-/// os resumos `summaries` das ondas que voltaram, e forma até `max_waves`
-/// ondas, cada uma com um objetivo ([`prepare_grouping`]). Com `extras`, a
+/// `ai.session_models`) que lê de uma vez as tarefas `tasks` ainda sem onda,
+/// os resumos `summaries` das ondas que voltaram e o objetivo das ondas
+/// `running` em andamento, e forma as ondas, cada uma com as tarefas do mesmo
+/// sentido, sem deixar tarefa de fora ([`prepare_grouping`]). Com `extras`, a
 /// mesma leitura responde as perguntas de reserva da ordem do Jev
 /// ([`grouping_extras`]). Todo texto vai sem segredo. A preparação que falha
 /// dá só o motivo, em `unavailable`.
-pub(crate) fn grouping_request(root: &Path, tasks: &[GroupingTask], summaries: &[GroupingSummary], max_waves: usize, extras: Option<&GroupingExtras>) -> Value {
+pub(crate) fn grouping_request(
+    root: &Path,
+    tasks: &[GroupingTask],
+    (summaries, running): (&[GroupingSummary], &[RunningWave]),
+    extras: Option<&GroupingExtras>,
+) -> Value {
     let host = if is_codex_session(session_from_env().as_deref()) { "codex" } else { "claude" };
     let config = mustard_core::domain::config::ProjectConfig::load(root);
     let model = config.ai.session_models.get(host).map(String::as_str);
     let tasks: Vec<GroupingTask> =
         tasks.iter().map(|task| GroupingTask { title: without_secrets(&task.title), text: without_secrets(&task.text), ..task.clone() }).collect();
     let summaries: Vec<GroupingSummary> = summaries.iter().map(|summary| GroupingSummary { text: without_secrets(&summary.text), ..summary.clone() }).collect();
-    prepare_grouping(root, host, model, &tasks, &summaries, max_waves, extras).unwrap_or_else(|reason| json!({ "unavailable": reason }))
+    let running: Vec<RunningWave> = running.iter().map(|wave| RunningWave { objective: without_secrets(&wave.objective), ..wave.clone() }).collect();
+    prepare_grouping(root, host, model, &tasks, (&summaries, &running), extras).unwrap_or_else(|reason| json!({ "unavailable": reason }))
 }
 
 /// As perguntas de reserva que a leitura do modelo pequeno leva para a ordem

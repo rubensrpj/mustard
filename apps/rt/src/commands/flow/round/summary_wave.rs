@@ -11,6 +11,7 @@ use std::collections::BTreeSet;
 
 use mustard_core::domain::spec_events::SpecLog;
 
+use super::following::followed;
 use super::leftovers::{GROUP, group_name};
 use crate::shared::dag::{BacklogTask, Batch, sets_cross, touches_whole_tree};
 
@@ -74,8 +75,11 @@ pub(super) fn summary_waves(log: &SpecLog, ready: &[u64], population: &[BacklogT
 /// na posição que ele deu a cada uma, com os arquivos de `population`; os
 /// grupos, na ordem da primeira tarefa pronta de cada um. Cada onda leva como
 /// base o resumo que ainda vale e que deixou alguma tarefa dela: um resumo
-/// que deixou tarefas de vários objetivos vai com cada uma dessas ondas. A
-/// tarefa com o curinga da árvore inteira não entra: ela sai sozinha.
+/// que deixou tarefas de vários objetivos vai com cada uma dessas ondas. O
+/// grupo que seguiu uma onda que voltou ([`followed`]) leva o resumo dela,
+/// quando ela deixou um, e, na frente, as tarefas sem grupo que ele
+/// acompanha. A tarefa com o curinga da árvore inteira não entra: ela sai
+/// sozinha.
 pub(super) fn group_waves(log: &SpecLog, ready: &[u64], population: &[BacklogTask<u64>]) -> Vec<(Batch<u64>, Option<u64>)> {
     let live = log.live_summaries();
     let files_of = |id: u64| population.iter().find(|task| task.id == id).map(|task| &task.files);
@@ -102,13 +106,29 @@ pub(super) fn group_waves(log: &SpecLog, ready: &[u64], population: &[BacklogTas
             tasks.push((0, id));
         }
     }
+    // O resumo da onda que o grupo seguiu traz, na frente, as tarefas sem
+    // grupo que ele acompanha: elas e o grupo vão no mesmo sentido.
+    let grouped: BTreeSet<u64> = groups.iter().flat_map(|(_, tasks)| tasks.iter().map(|(_, id)| *id)).collect();
+    let after = |tasks: &[(u64, u64)]| tasks.iter().find_map(|(_, id)| log.get(*id).and_then(followed));
+    let summary_of = |wave: u64| live.iter().find(|(summary, _)| summary.wave() == Some(wave));
+    let mut taken: BTreeSet<u64> = BTreeSet::new();
+    for (_, tasks) in &mut groups {
+        let Some((_, left)) = after(tasks).and_then(summary_of) else { continue };
+        for &id in ready {
+            let loose = log.get(id).is_some_and(|task| !task.fields.contains_key(GROUP)) && !files_of(id).is_some_and(touches_whole_tree);
+            if left.contains(&id) && loose && !grouped.contains(&id) && taken.insert(id) {
+                tasks.push((0, id));
+            }
+        }
+    }
     groups
         .into_iter()
         .map(|(_, mut tasks)| {
+            let followed_summary = after(&tasks).and_then(summary_of).map(|(summary, _)| summary.id);
             tasks.sort_unstable();
             let tasks: Vec<u64> = tasks.into_iter().map(|(_, id)| id).collect();
             let files = tasks.iter().flat_map(|id| files_of(*id).into_iter().flatten().cloned()).collect();
-            let base = live.iter().find(|(_, left)| tasks.iter().any(|id| left.contains(id))).map(|(summary, _)| summary.id);
+            let base = live.iter().find(|(_, left)| tasks.iter().any(|id| left.contains(id))).map(|(summary, _)| summary.id).or(followed_summary);
             (Batch { tasks, files }, base)
         })
         .collect()
