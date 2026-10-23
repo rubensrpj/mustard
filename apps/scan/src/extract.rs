@@ -1795,7 +1795,7 @@ fn signature_of(node: Node, bytes: &[u8], decorations: &Spans, value_start: Opti
 /// One line of text, whitespace collapsed, cut at `max` characters — on a word
 /// boundary when there is one, so what is kept still reads.
 fn one_line(text: &str, max: usize) -> String {
-    let joined = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let joined = mustard_core::domain::text::one_line(text);
     let Some((cut, _)) = joined.char_indices().nth(max) else {
         return joined;
     };
@@ -1834,7 +1834,7 @@ fn fixed_texts(literals: &[(Node, bool)], bytes: &[u8], skip: &[&Spans], declara
         .filter(|(node, _)| !overlaps(node))
         .filter_map(|(node, plain)| {
             let written = node.utf8_text(bytes).ok()?;
-            let complete = if *plain { written } else { literal_value(written) }.split_whitespace().collect::<Vec<_>>().join(" ");
+            let complete = mustard_core::domain::text::one_line(if *plain { written } else { literal_value(written) });
             let value = one_line(&complete, TEXT_MAX_CHARS);
             if !reads_as_text(&complete) {
                 return None;
