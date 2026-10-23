@@ -493,7 +493,7 @@ impl Project {
             .unwrap_or_else(|| panic!("nenhum envio gravado para a leitura"));
         let copy = PathBuf::from(sent.str_field("copy").expect("the copy"));
         let root = self.root.display().to_string();
-        let listed = sent.fields.get("read_items").and_then(Value::as_array).cloned().unwrap_or_default();
+        let listed = log.send_field(sent.id, "read_items").and_then(Value::as_array).cloned().unwrap_or_default();
         for item in listed.iter().filter_map(Value::as_str) {
             let block = format!("item-{item}");
             let lesson = item.strip_prefix("lesson-");
@@ -913,6 +913,51 @@ fn closed_by(project: &Project, title: &str, goal: &str, closing: &dyn Fn(&[&str
     let closed = closing(&["close", "--spec", SPEC]);
     let line = closed["command"].as_str().expect("the pr-open line").to_string();
     line.split_whitespace().skip(2).map(str::to_string).collect()
+}
+
+/// O revisor final, lançado pelo gancho com o JSON do Claude Code, sai no
+/// modelo que a chamada pede e no esforço de sempre, e o envio da revisão
+/// grava o modelo que valeu; sem modelo na chamada, sai o do `mustard.json`,
+/// e o envio grava esse. O veredito aprovado da versão nova do envio ainda
+/// fecha a spec.
+#[test]
+fn the_final_reviewer_keeps_the_model_the_call_asks_and_the_send_records_it() {
+    let project = Project::new();
+    deliver_the_first_wave(&project);
+    project.run(&["round", "--dispatch", "--spec", SPEC]);
+    let asked = project.run(&["close", "--spec", SPEC]);
+    assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+    let read = asked["review"]["read"].as_str().expect("the command that reads the request").to_string();
+    let launch = |model: Option<&str>| -> Value {
+        let mut input = json!({"subagent_type": "mustard-review", "description": "revisão final", "prompt": read});
+        if let Some(model) = model {
+            input["model"] = json!(model);
+        }
+        let payload = json!({"hook_event_name": "PreToolUse", "tool_name": "Agent", "session_id": SESSION,
+            "cwd": project.root.to_string_lossy(), "tool_input": input});
+        let out = project.hook("PreToolUse", &payload);
+        let said: Value = serde_json::from_str(&out).unwrap_or_else(|_| panic!("the hook answers JSON: {out}"));
+        said["hookSpecificOutput"]["updatedInput"].clone()
+    };
+    let recorded = || {
+        let log = project.log();
+        let sent = log.visible().into_iter().rfind(|e| e.event_type == "send" && e.str_field("role") == Some("review")).expect("the review send");
+        (log.send_field(sent.id, "model_used").and_then(Value::as_str).map(str::to_string), log.send_field(sent.id, "model").and_then(Value::as_str).map(str::to_string))
+    };
+
+    let asked_opus = launch(Some("opus"));
+    assert_eq!((asked_opus["model"].as_str(), asked_opus["effort"].as_str()), (Some("opus"), Some("xhigh")), "{asked_opus}");
+    assert_eq!(recorded(), (Some("opus".into()), Some("sonnet".into())), "the send keeps what was configured and records what held");
+
+    let unasked = launch(None);
+    assert_eq!((unasked["model"].as_str(), unasked["effort"].as_str()), (Some("sonnet"), Some("xhigh")), "{unasked}");
+    assert_eq!(recorded(), (Some("sonnet".into()), Some("sonnet".into())), "a call without a model goes on the configured one");
+
+    let verdict = json!({"final": true, "result": "approved", "text": "A saudação mudou.", "agreed": agreed_all_met(&project)});
+    project.read_review();
+    project.run(&["write", "verdict", "--spec", SPEC, "--json", &verdict.to_string()]);
+    let closed = project.run(&["close", "--spec", SPEC]);
+    assert_eq!(closed["phase"], json!("closed"), "{closed}");
 }
 
 /// O `pr-open` envia a branch da spec ao servidor antes de abrir o pull

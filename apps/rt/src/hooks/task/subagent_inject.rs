@@ -48,7 +48,9 @@
 //! envio dela, e o do revisor com o que o `mustard.json` declara para ele,
 //! sempre no esforço `xhigh`, no lugar do que a chamada pede; o recado diz
 //! quando a chamada pedia outro, e o envio da onda grava o esforço que valeu.
-//! O agente novo de uma volta recusada ou reprovada sai um modelo acima.
+//! O revisor final, que lê o pedido gravado da revisão, sai no modelo que a
+//! chamada pede, e o envio dessa revisão grava o modelo que valeu. O agente
+//! novo de uma volta recusada ou reprovada sai um modelo acima.
 
 use std::path::Path;
 
@@ -376,13 +378,21 @@ fn dispatched(input: &HookInput, ctx: &Ctx) -> Verdict {
 /// nada também sem arquivo de regras com texto.
 fn review_rules(input: &HookInput, root: &Path, prompt: &str, lang: Locale) -> Option<String> {
     let to_reviewer = input.tool_input.get("subagent_type").and_then(Value::as_str) == Some("mustard-review");
-    let recorded = prompt.contains("run read request-review") || crate::commands::flow::round::is_wave_review_dispatch(prompt);
+    let recorded = reads_final_request(prompt) || crate::commands::flow::round::is_wave_review_dispatch(prompt);
     if !to_reviewer || recorded || carries_project_rules(prompt, lang) {
         return None;
     }
     let disk = DiskSpecState::new(root);
     let log = disk.active(input.session_id.as_deref()).and_then(|spec| disk.log(&spec));
     project_rules_section(&project_rules(root, &touched_files(root, log.as_ref())), lang)
+}
+
+/// Se o despacho manda ler o pedido gravado da revisão final
+/// (`mustard-rt run read request-review`): é o que distingue o revisor final
+/// do texto que o orquestrador escreve para a revisão do levantamento ou do
+/// pull request.
+fn reads_final_request(prompt: &str) -> bool {
+    prompt.contains("run read request-review")
 }
 
 /// O nome da cópia do desenho que o usuário aprovou, na pasta da spec. Quem
@@ -459,20 +469,23 @@ fn launch_settings(verdict: Verdict, input: &HookInput, ctx: &Ctx) -> Verdict {
 
 /// O lançamento do agente de onda ou do revisor com o modelo que o Mustard
 /// escolheu para ele — o da onda, o do último envio dela, que sai da
-/// dificuldade das tarefas e sobe na reprovação; o do revisor final, o de
-/// `agents.review`; o do revisor de uma onda, o de `agents.wave_review`; o da
-/// onda sem envio legível, o de `agents` — e sempre com
-/// o esforço `xhigh`, no lugar do que a chamada pede: o `model` da chamada
-/// vence o cabeçalho do agente, então o escolhido vai nela. O nome inteiro do
-/// modelo vai pelo apelido que contém ([`model_alias`]); sem apelido, o
-/// modelo fica como veio e, se a chamada pediu outro, sai o aviso. O campo
-/// que a chamada não traz vale o escolhido; o modelo bate quando um nome
-/// contém o outro. O recado diz o que a chamada pedia quando era outro. O
-/// lançamento de uma onda grava no envio dela o esforço que vale
-/// (`effort_used`): `effort_env`, o valor de [`EFFORT_VARIABLE`], quando
-/// definido, ou o imposto. Nada para outro agente, para outro hospedeiro que
-/// não o Claude Code, fora de um projeto com `mustard.json`, nem para o
-/// despacho recusado.
+/// dificuldade das tarefas e sobe na reprovação; o do revisor final, o que a
+/// chamada pede e, sem pedido, o de `agents.review`; o do revisor de uma
+/// onda, o de `agents.wave_review`; o do texto que o orquestrador escreve
+/// para o revisor, o de `agents.review`; o da onda sem envio legível, o de
+/// `agents` — e sempre com o esforço `xhigh`, no lugar do que a chamada
+/// pede: o `model` da chamada vence o cabeçalho do agente, então o escolhido
+/// vai nela. O modelo que o usuário pediu para o revisor final fica: só a
+/// onda segue o da rodada. O nome inteiro do modelo vai pelo apelido que
+/// contém ([`model_alias`]); sem apelido, o modelo fica como veio e, se a
+/// chamada pediu outro, sai o aviso. O campo que a chamada não traz vale o
+/// escolhido; o modelo bate quando um nome contém o outro. O recado diz o
+/// que a chamada pedia quando era outro. O lançamento de uma onda grava no
+/// envio dela o esforço que vale (`effort_used`): `effort_env`, o valor de
+/// [`EFFORT_VARIABLE`], quando definido, ou o imposto; o do revisor final
+/// grava no envio do pedido da revisão o modelo que vale (`model_used`).
+/// Nada para outro agente, para outro hospedeiro que não o Claude Code, fora
+/// de um projeto com `mustard.json`, nem para o despacho recusado.
 fn launch_settings_with(verdict: Verdict, input: &HookInput, ctx: &Ctx, effort_env: Option<String>) -> Verdict {
     if input.raw["mustard_host"].as_str().is_some_and(|host| host != "claude") {
         return verdict;
@@ -498,8 +511,14 @@ fn launch_settings_with(verdict: Verdict, input: &HookInput, ctx: &Ctx, effort_e
         let sent = *log.last_by_wave("send").get(&read.wave)?;
         log.send_field(sent, "model").and_then(Value::as_str).filter(|model| *model != "inherit").map(str::to_string)
     });
-    let declared = AgentSettings { model: sent_model.as_deref().unwrap_or(configured), effort: DEFAULT_AGENT_EFFORT };
     let asked = |field: &str| input.tool_input.get(field).and_then(Value::as_str).map(str::trim).filter(|value| !value.is_empty());
+    // O revisor final do pedido gravado vale o modelo que a chamada pediu: a
+    // escolha é de quem a fez, e o Mustard não a troca pelo do `mustard.json`.
+    // A onda segue o modelo da rodada, e o texto do orquestrador, o da
+    // configuração.
+    let final_review = agent == "mustard-review" && reads_final_request(dispatch_prompt(input)) && !crate::commands::flow::round::is_wave_review_dispatch(dispatch_prompt(input));
+    let kept = asked("model").filter(|_| final_review);
+    let declared = AgentSettings { model: kept.or(sent_model.as_deref()).unwrap_or(configured), effort: DEFAULT_AGENT_EFFORT };
     let lower = |text: &str| text.to_ascii_lowercase();
     let model = asked("model").unwrap_or(declared.model);
     let effort = asked("effort").unwrap_or(declared.effort);
@@ -547,7 +566,10 @@ fn launch_settings_with(verdict: Verdict, input: &HookInput, ctx: &Ctx, effort_e
     };
     if let Some(read) = &wave {
         let held = effort_env.as_deref().map(str::trim).filter(|effort| !effort.is_empty()).unwrap_or(declared.effort);
-        record_effort_used(&project.root, &read.spec, read.wave, held);
+        record_on_send(&project.root, &read.spec, EFFORT_USED, held, |log| log.last_by_wave("send").get(&read.wave).copied());
+    }
+    if final_review && let Some(spec) = read_spec(dispatch_prompt(input)) {
+        record_on_send(&project.root, spec, MODEL_USED, effective, crate::commands::flow::round::awaited_review);
     }
     let Some(fields) = tool_input.as_object_mut() else { return with_warning(Verdict::Allow, warning) };
     if raised {
@@ -565,18 +587,25 @@ fn launch_settings_with(verdict: Verdict, input: &HookInput, ctx: &Ctx, effort_e
 /// O campo do envio com o esforço que valeu no lançamento do agente.
 const EFFORT_USED: &str = "effort_used";
 
-/// Grava no envio mais novo da onda `wave` da spec `spec`, de `root`, o
-/// esforço `effort` que valeu no lançamento do agente dela, numa versão nova
-/// do envio, com a trava do arquivo de eventos presa. O envio que já o traz
-/// não grava nada, e a falha não segura o lançamento.
-fn record_effort_used(root: &Path, spec: &str, wave: u64, effort: &str) {
+/// O campo do envio da revisão final com o modelo que valeu no lançamento do
+/// revisor.
+const MODEL_USED: &str = "model_used";
+
+/// Grava `field` com `value` no envio que `newest` acha no arquivo de eventos
+/// da spec `spec`, de `root`, numa versão nova do envio, com a trava do
+/// arquivo presa: o esforço que valeu no lançamento do agente da onda e o
+/// modelo que valeu no do revisor final. O envio que já traz o valor, o
+/// pedido que `newest` não acha — a revisão final que a última mudança da
+/// obra deixou velha, que não pode voltar a valer só por ganhar uma versão —
+/// e a falha de gravação não gravam nada, e nenhum segura o lançamento.
+fn record_on_send(root: &Path, spec: &str, field: &str, value: &str, newest: impl Fn(&SpecLog) -> Option<u64>) {
     let Ok(path) = store::spec_file(root, spec) else { return };
     let _ = store::with_locked_writer(&path, |locked| {
-        let sent = *locked.log().last_by_wave("send").get(&wave)?;
-        if locked.log().get(sent)?.str_field(EFFORT_USED) == Some(effort) {
+        let sent = newest(locked.log())?;
+        if locked.log().send_field(sent, field).and_then(Value::as_str) == Some(value) {
             return Some(());
         }
-        let draft = crate::commands::flow::round::send_revision(locked.log(), wave, serde_json::Map::from_iter([(EFFORT_USED.to_string(), json!(effort))]))?;
+        let draft = crate::commands::flow::round::queue::revise_send(locked.log(), sent, serde_json::Map::from_iter([(field.to_string(), json!(value))]))?;
         record_locked(locked, root, spec, "send", draft, PhaseWriter::Binary).ok().map(|_| ())
     });
 }
@@ -822,17 +851,20 @@ mod tests {
 
     /// The wave reviewer, dispatched with the title and the command that
     /// reads its request, goes out on `agents.wave_review` (Sonnet by
-    /// default) at effort xhigh, while the final reviewer keeps
-    /// `agents.review`; the wave review request already carries the project
-    /// rules, so the dispatch gains none.
+    /// default) at effort xhigh, while the final reviewer goes on the model
+    /// its call asked for, and on `agents.review` when the call asks for
+    /// none; the wave review request already carries the project rules, so
+    /// the dispatch gains none.
     #[test]
-    fn the_wave_reviewer_launches_on_its_own_settings_and_the_final_one_on_the_review_settings() {
+    fn the_wave_reviewer_launches_on_its_own_settings_and_the_final_one_on_the_model_it_was_asked() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         std::fs::write(root.join("CLAUDE.md"), "Never duplicate types.\n").unwrap();
-        let launch = |prompt: &str| {
+        let launch = |prompt: &str, model: Option<&str>| {
             let mut input = task_input("mustard-review", prompt);
-            input.tool_input["model"] = json!("haiku");
+            if let Some(model) = model {
+                input.tool_input["model"] = json!(model);
+            }
             input.tool_input["effort"] = json!("low");
             match SubagentInject.evaluate(&input, &ctx(root)).expect("never errors") {
                 Verdict::Rewrite { tool_input, .. } => tool_input,
@@ -846,12 +878,58 @@ mod tests {
             (json!({"review": {"model": "opus"}, "wave_review": {"model": "haiku"}}), "haiku", "opus"),
         ] {
             std::fs::write(root.join("mustard.json"), json!({ "agents": agents }).to_string()).unwrap();
-            let sent = launch(wave);
+            let sent = launch(wave, Some("haiku"));
             assert_eq!((sent["model"].as_str(), sent["effort"].as_str()), (Some(wave_model), Some("xhigh")), "{agents}: {sent}");
             assert!(!sent["prompt"].as_str().unwrap().contains("Never duplicate types."), "{sent}");
-            let sent = launch(last);
+            let sent = launch(last, Some("haiku"));
+            assert_eq!((sent["model"].as_str(), sent["effort"].as_str()), (Some("haiku"), Some("xhigh")), "{agents}: the call's model stays: {sent}");
+            let sent = launch(last, None);
             assert_eq!((sent["model"].as_str(), sent["effort"].as_str()), (Some(final_model), Some("xhigh")), "{agents}: {sent}");
         }
+    }
+
+    /// The model the user asked for the final reviewer stays, at the usual
+    /// effort and without the warning of a swapped model, while the wave
+    /// asked on another model goes on the one its send recorded, and the text
+    /// the conductor writes for the reviewer goes on the configured one.
+    #[test]
+    fn a_model_asked_for_the_final_reviewer_stays_while_the_wave_follows_the_round() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        planned(root);
+        std::fs::write(root.join("mustard.json"), json!({"agents": {"model": "opus", "review": {"model": "sonnet"}}}).to_string()).unwrap();
+        approve(root);
+        let (pid, started) = crate::commands::flow::stuck::this_process();
+        crate::shared::spec_state::seed_event(root, "x", "send", json!({"wave":1,"role":"wave","text":assembled(root),"lines":1,"chars":8,"mustard":"0",
+            "author":"binary","model":"sonnet","effort":"xhigh","claude_pid":pid,"claude_started":started}));
+        let canonical = crate::commands::flow::round::wave_dispatch(root, "x", 1, Locale::PtBr);
+        let launch = |agent: &str, prompt: &str, asked: Value| {
+            let mut input = task_input(agent, prompt);
+            for (key, value) in asked.as_object().unwrap() {
+                input.tool_input[key] = value.clone();
+            }
+            let ctx = ctx(root);
+            match launch_settings_with(dispatched(&input, &ctx), &input, &ctx, None) {
+                Verdict::Rewrite { tool_input, note } => (tool_input, note.unwrap_or_default()),
+                other => panic!("the launch is rewritten, got {other:?}"),
+            }
+        };
+        let final_review = "mustard-rt run read request-review --root /r --spec x";
+
+        let (wave, note) = launch("mustard-wave", &canonical, json!({"model": "opus"}));
+        assert_eq!((wave["model"].as_str(), wave["effort"].as_str()), (Some("sonnet"), Some("xhigh")), "{wave}");
+        assert!(note.contains("opus") && note.contains("sonnet"), "the wave is forced and the warning says so: {note}");
+
+        let (review, note) = launch("mustard-review", final_review, json!({"model": "opus"}));
+        assert_eq!((review["model"].as_str(), review["effort"].as_str()), (Some("opus"), Some("xhigh")), "{review}");
+        assert_eq!(note, "", "no model was swapped, so there is nothing to warn about");
+
+        let (review, note) = launch("mustard-review", final_review, json!({"model": "opus", "effort": "low"}));
+        assert_eq!((review["model"].as_str(), review["effort"].as_str()), (Some("opus"), Some("xhigh")), "{review}");
+        assert!(note.contains("low") && note.contains("xhigh") && !note.contains("sonnet"), "only the effort is said to be swapped: {note}");
+
+        let (survey, _) = launch("mustard-review", "Confira a obra.", json!({"model": "opus"}));
+        assert_eq!(survey["model"].as_str(), Some("sonnet"), "the conductor's own text keeps the configured model: {survey}");
     }
 
     /// The wave agent goes out on the model its last send recorded, not the

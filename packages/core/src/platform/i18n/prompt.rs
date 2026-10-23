@@ -124,28 +124,32 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("subagent.launch_settings", Locale::PtBr) => {
             "[Mustard] O agente {agent} saiu com modelo {asked_model} e esforço {asked_effort}. O \
              Mustard escolheu modelo {model} e esforço {effort} para ele. O modelo da onda é o do envio \
-             dela, e o do revisor vem do `mustard.json`. O esforço é sempre xhigh. Nos próximos \
-             lançamentos, não passe `effort`. Em `model`, passe só o da entrada de `dispatch`."
+             dela. O do revisor vem do `mustard.json`, salvo o do revisor final: esse fica o que a \
+             chamada pediu. O esforço é sempre xhigh. Nos próximos lançamentos, não passe `effort`. \
+             Em `model`, passe só o da entrada de `dispatch`."
         }
         ("subagent.launch_settings", Locale::EnUs) => {
             "[Mustard] The agent {agent} went out with model {asked_model} and effort {asked_effort}. \
              Mustard chose model {model} and effort {effort} for it. A wave's model is the one its send \
-             recorded, and the reviewer's comes from `mustard.json`. The effort is always xhigh. In the \
-             next launches, do not pass `effort`. In `model`, pass only the one in the `dispatch` entry."
+             recorded. The reviewer's comes from `mustard.json`, except the final reviewer's: that one \
+             stays what the call asked. The effort is always xhigh. In the next launches, do not pass \
+             `effort`. In `model`, pass only the one in the `dispatch` entry."
         }
         // O lançamento que pedia modelo ou esforço diferente do escolhido sai
         // com o escolhido: o gancho troca os dois na chamada.
         ("subagent.launch_settings_forced", Locale::PtBr) => {
             "[Mustard] O agente {agent} foi pedido com modelo {asked_model} e esforço {asked_effort}. \
-             Saiu com modelo {model} e esforço {effort}. O modelo da onda é o do envio dela, e o do \
-             revisor vem do `mustard.json`. O esforço é sempre xhigh. Nos próximos lançamentos, não \
-             passe `effort`. Em `model`, passe só o da entrada de `dispatch`."
+             Saiu com modelo {model} e esforço {effort}. O modelo da onda é o do envio dela. O do \
+             revisor vem do `mustard.json`, salvo o do revisor final: esse fica o que a chamada \
+             pediu. O esforço é sempre xhigh. Nos próximos lançamentos, não passe `effort`. Em \
+             `model`, passe só o da entrada de `dispatch`."
         }
         ("subagent.launch_settings_forced", Locale::EnUs) => {
             "[Mustard] The agent {agent} was asked with model {asked_model} and effort {asked_effort}. \
              It went out with model {model} and effort {effort}. A wave's model is the one its send \
-             recorded, and the reviewer's comes from `mustard.json`. The effort is always xhigh. In the \
-             next launches, do not pass `effort`. In `model`, pass only the one in the `dispatch` entry."
+             recorded. The reviewer's comes from `mustard.json`, except the final reviewer's: that one \
+             stays what the call asked. The effort is always xhigh. In the next launches, do not pass \
+             `effort`. In `model`, pass only the one in the `dispatch` entry."
         }
 
         // O agente que escreve código nunca sai no modelo pequeno da sessão.
@@ -789,7 +793,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("prompt.rs"), super::PREFIXES, 115, 0x58db_ca18_0a8f_f3e2);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("prompt.rs"), super::PREFIXES, 115, 0xc36f_877a_b7f6_ac36);
     }
 
     /// O bloco do padrão sob a tarefa passa na conferência de escrita nos

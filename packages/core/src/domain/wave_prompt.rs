@@ -945,7 +945,7 @@ pub fn all_agreed(log: &SpecLog) -> Vec<&SpecEvent> {
 pub fn review_agreed(log: &SpecLog) -> Vec<&SpecEvent> {
     let visible = log.visible();
     let sent = visible.iter().filter(|e| e.event_type == "send" && e.str_field("role") == Some("review")).max_by_key(|e| e.id);
-    let Some(listed) = sent.and_then(|e| e.fields.get("read_items")).and_then(Value::as_array) else {
+    let Some(listed) = sent.and_then(|e| log.send_field(e.id, "read_items")).and_then(Value::as_array) else {
         return all_agreed(log);
     };
     let listed: BTreeSet<&str> = listed.iter().filter_map(Value::as_str).collect();
@@ -3638,5 +3638,24 @@ mod tests {
         assert_eq!(without_long_paste(small, "MSTD-MSG-0001", lang), small);
         let long = format!("antes <pasted_content id=\"b\">{}</pasted_content id=\"b\"> depois", "x".repeat(3000));
         assert_eq!(without_long_paste(&long, "MSTD-MSG-0002", lang), "antes [texto colado, 3 kB: leia por item-MSTD-MSG-0002] depois");
+    }
+
+    /// O combinado que o veredito final responde sai da lista do pedido da
+    /// revisão mesmo quando o envio mais novo é uma versão que só acrescenta
+    /// o modelo usado: a versão nova não repete a lista, e o combinado que
+    /// uma tarefa terminada já cobre e o pedido não listou segue de fora.
+    #[test]
+    fn the_final_verdict_answers_the_listed_agreed_through_a_newer_version_of_the_request() {
+        let mut events = vec![
+            ("rule", json!({"text": "Listada no pedido", "keys": ["a"], "example": "e", "applies_to": {"files": ["**"]}})),
+            ("rule", json!({"text": "Coberta e fora da lista", "keys": ["b"], "example": "e", "applies_to": {"files": ["**"]}})),
+            ("wave", json!({"n": 1, "text": "Onda", "criteria": [], "done_when": "pronto"})),
+            ("task", json!({"wave": 1, "title": "Cobrir", "text": "Cobrir.", "covers": [2], "files": [{"path": "src/a.rs"}]})),
+            ("step", json!({"wave": 1, "item": "MSTD-TASK-0001", "text": "Pronta."})),
+            ("send", json!({"role": "review", "text": "Revise.", "lines": 1, "chars": 7, "mustard": "0", "read_items": ["MSTD-RULE-0001"]})),
+        ];
+        assert_eq!(ids(&review_agreed(&log(&events))), [1], "o pedido gravado lista só o primeiro");
+        events.push(("send", json!({"role": "review", "replaces": 6, "model_used": "opus", "mustard": "0"})));
+        assert_eq!(ids(&review_agreed(&log(&events))), [1], "a versão nova do envio não perde a lista do pedido");
     }
 }

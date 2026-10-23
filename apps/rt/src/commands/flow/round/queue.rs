@@ -320,8 +320,14 @@ pub(crate) fn awaited_review(log: &SpecLog) -> Option<u64> {
 /// o modelo usado de verdade, os passos e os tokens —, que só se sabe depois
 /// do envio já gravado. `None` sem envio para a onda.
 pub(crate) fn send_revision(log: &SpecLog, wave: u64, extra: Map<String, Value>) -> Option<Map<String, Value>> {
-    let id = *log.last_by_wave("send").get(&wave)?;
-    let event = log.get(id)?;
+    revise_send(log, *log.last_by_wave("send").get(&wave)?, extra)
+}
+
+/// A versão nova do envio `id`, na forma de [`send_revision`]: o caminho do
+/// envio que não é de onda nenhuma, como o da revisão final. `None` sem esse
+/// envio.
+pub(crate) fn revise_send(log: &SpecLog, id: u64, extra: Map<String, Value>) -> Option<Map<String, Value>> {
+    let event = log.get(id).filter(|event| event.event_type == "send")?;
     let mut draft: Map<String, Value> = event
         .fields
         .iter()
