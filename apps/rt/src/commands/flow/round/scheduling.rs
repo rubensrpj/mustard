@@ -16,6 +16,10 @@ const SHOWN: usize = 40;
 /// cada onda trabalha na própria cópia.
 const HELD: [&str; 3] = ["capacity", "cleanup-last", "ready"];
 
+/// O motivo da tarefa presa por uma dependência que não aponta tarefa nenhuma
+/// da spec: segura só ela, com o nome da dependência no detalhe.
+const BROKEN: &str = "broken-dependency";
+
 /// Os motivos exatos da pronta com vaga que a montagem deixou de fora: o
 /// julgamento do Jev, a chegada ao backlog nesta rodada e a decisão do Jev
 /// que ela ainda espera.
@@ -56,6 +60,7 @@ fn queue(root: &Path, spec: &str, log: &SpecLog) -> Queue {
     let declared = mustard_core::ProjectConfig::load(root).max_compiling_waves().is_some();
     let active = State::from_log(log).phase.is_some_and(super::can_run);
     let code = |id: u64| codes.get(&id).cloned().unwrap_or_else(|| id.to_string());
+    let broken = crate::commands::spec_events::task_dependents::broken_dependencies(log);
     let mut rows = Vec::new();
     for id in &left {
         let Some(task) = log.get(*id) else {
@@ -69,6 +74,7 @@ fn queue(root: &Path, spec: &str, log: &SpecLog) -> Queue {
             .iter()
             .filter(|id| !population.iter().any(|t| t.id == **id && t.done))
             .map(|id| code(*id))
+            .chain(broken.get(id).into_iter().flatten().cloned())
             .collect();
         let cleanup_wait = is_cleanup(task)
             && population
@@ -80,6 +86,8 @@ fn queue(root: &Path, spec: &str, log: &SpecLog) -> Queue {
             // A tarefa presa sem arquivo nenhum, como a que nasce da sobra
             // que não cita arquivo: espera quem conduz a obra planejá-la.
             "needs-planning"
+        } else if broken.contains_key(id) {
+            BROKEN
         } else if entry.blocked {
             "task-blocked"
         } else if uncovered.contains(id) {
@@ -143,7 +151,7 @@ pub(super) fn held(root: &Path, spec: &str, log: &SpecLog, lang: Locale, assembl
             }];
         }
     }
-    let rows: Vec<&Row> = queue.rows.iter().filter(|row| HELD.contains(&row.reason) || EXACT.contains(&row.reason)).collect();
+    let rows: Vec<&Row> = queue.rows.iter().filter(|row| HELD.contains(&row.reason) || EXACT.contains(&row.reason) || row.reason == BROKEN).collect();
     if rows.is_empty() {
         return None;
     }
@@ -159,6 +167,7 @@ pub(super) fn held(root: &Path, spec: &str, log: &SpecLog, lang: Locale, assembl
         match row.reason {
             "capacity" => slots.clone(),
             "cleanup-last" => translate("round.queued.cleanup", lang).to_string(),
+            BROKEN => translate("round.queued.broken_dependency", lang).replace("{dependencies}", &row.dependencies.join(", ")),
             _ => assembled.get(&row.code).map_or_else(|| translate("round.queued.assembly", lang).to_string(), |hold| exact(hold, lang)),
         }
     };
@@ -169,7 +178,7 @@ pub(super) fn held(root: &Path, spec: &str, log: &SpecLog, lang: Locale, assembl
     if !waiting.is_empty() {
         line.push(translate("round.queued.line_capacity", lang).replace("{tasks}", &waiting).replace("{detail}", &slots));
     }
-    for row in rows.iter().filter(|row| EXACT.contains(&row.reason)) {
+    for row in rows.iter().filter(|row| EXACT.contains(&row.reason) || row.reason == BROKEN) {
         line.push(translate("round.queued.line_held", lang).replace("{task}", &row.code).replace("{detail}", &detail(row)));
     }
     let other = named(&|reason| ["cleanup-last", "ready"].contains(&reason));

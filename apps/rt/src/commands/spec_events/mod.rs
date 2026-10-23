@@ -27,6 +27,7 @@ pub mod read;
 mod read_record;
 mod request_route;
 pub(crate) mod session_spec;
+pub(crate) mod task_dependents;
 mod task_wave;
 pub(crate) mod unrouted;
 pub mod write;

@@ -7,8 +7,9 @@ use super::*;
 /// onda 1 entrega, e a única tarefa dela é removida pelo `run write` antes de
 /// a rodada assumir a volta, com o pedido ainda aberto: a remoção passa e diz
 /// que a onda 1 saiu do ar. A rodada seguinte não a despacha de novo nem a
-/// lista em andamento, e grava a nota que diz por quê; a outra rodada também
-/// não a despacha e não grava outra nota.
+/// lista em andamento, e grava a nota que diz por quê — que o agente já
+/// voltou, e não que o pedido segue sem volta; a outra rodada também não a
+/// despacha e não grava outra nota.
 #[test]
 fn a_wave_emptied_by_a_write_after_its_delivery_leaves_the_air_and_is_not_sent_again() {
     let dir = tempdir().unwrap();
@@ -37,7 +38,7 @@ fn a_wave_emptied_by_a_write_after_its_delivery_leaves_the_air_and_is_not_sent_a
             .filter_map(|e| e.str_field("text").map(str::to_string))
             .collect()
     };
-    let said = translate("round.wave_left_without_tasks", Locale::PtBr).replace("{wave}", "1").replace("{send}", &send);
+    let said = translate("round.wave_left_after_return", Locale::PtBr).replace("{wave}", "1").replace("{send}", &send);
 
     let next = round(root, "x", None);
     assert_eq!(next["ok"], json!(true), "{next}");

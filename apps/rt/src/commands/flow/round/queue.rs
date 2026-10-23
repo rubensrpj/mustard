@@ -264,6 +264,7 @@ pub(super) fn record_waves_left_without_tasks(start: &Path, spec: &str, log: &Sp
         .flatten()
         .collect();
     let waves = log.block(BlockQuery::Block(Block::Waves));
+    let returned = waves_returned(log);
     let mut recorded = Vec::new();
     for (wave, sent) in left {
         let Some(event) = waves.iter().rfind(|e| e.event_type == "wave" && e.wave() == Some(wave)) else {
@@ -274,7 +275,9 @@ pub(super) fn record_waves_left_without_tasks(start: &Path, spec: &str, log: &Sp
             continue;
         }
         let send = codes.get(&sent).cloned().unwrap_or_else(|| sent.to_string());
-        let text = translate("round.wave_left_without_tasks", lang).replace("{wave}", &wave.to_string()).replace("{send}", &send);
+        // O agente que já gravou a volta antes da remoção não ficou sem volta.
+        let key = if returned.contains(&wave) { "round.wave_left_after_return" } else { "round.wave_left_without_tasks" };
+        let text = translate(key, lang).replace("{wave}", &wave.to_string()).replace("{send}", &send);
         let mut draft = Map::new();
         draft.insert("text".into(), json!(text));
         draft.insert("keys".into(), json!([code, WAVE_LEFT_KEY]));
@@ -832,13 +835,17 @@ pub(super) fn task_revision(log: &SpecLog, id: u64, extra: Map<String, Value>) -
 /// As tarefas vigentes da spec como o motor do backlog as lê: cada uma com as
 /// dependências resolvidas para a versão vigente, os arquivos que declara,
 /// se já está feita — a onda dela está entre as entregues e aprovadas
-/// (`done_waves`) — e se traz a marca de prioridade.
+/// (`done_waves`) —, se está presa (`blocked_by` ou dependência quebrada) e se
+/// traz a marca de prioridade.
 pub(crate) fn backlog_population(log: &SpecLog, done_waves: &BTreeSet<u64>) -> Vec<crate::shared::dag::BacklogTask<u64>> {
     let codes = log.codes();
     let visible=log.visible();
     let current=log.current_versions();
     let by_code:BTreeMap<_,_>=visible.iter().filter(|event|event.event_type=="task")
         .filter_map(|event|codes.get(&event.id).map(|code|(code,event.id))).collect();
+    // A tarefa com dependência que não aponta tarefa nenhuma da spec não sai:
+    // a rodada a segura com o motivo, e as que dependem dela esperam junto.
+    let broken = crate::commands::spec_events::task_dependents::broken_dependencies(log);
     visible
         .into_iter()
         .filter(|e| e.event_type == "task")
@@ -860,7 +867,7 @@ pub(crate) fn backlog_population(log: &SpecLog, done_waves: &BTreeSet<u64>) -> V
             // A marca de prioridade é lida do evento, como o usuário a deu: o
             // Jev não a julga.
             let priority = task.str_field("priority").is_some_and(|reason| !reason.trim().is_empty());
-            let blocked = task.str_field("blocked_by").is_some();
+            let blocked = task.str_field("blocked_by").is_some() || broken.contains_key(&task.id);
             crate::shared::dag::BacklogTask { id: task.id, depends_on, files: task_files(task), done, blocked, priority }
         })
         .collect()

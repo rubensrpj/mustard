@@ -1329,6 +1329,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("round.leftover_marked", Locale::PtBr) => "Sobra da onda {wave}: {title}",
         ("round.leftover_marked", Locale::EnUs) => "Leftover from wave {wave}: {title}",
+        ("round.wave_left_after_return", Locale::PtBr) => {
+            "A onda {wave} saiu do ar por ficar sem tarefa. O agente dela já tinha gravado a volta ao pedido {send}, \
+             mas a última tarefa foi removida antes de a rodada assumi-la. A volta fica só na história. A fila, a \
+             retomada e a rodada deixam de listar a onda."
+        }
+        ("round.wave_left_after_return", Locale::EnUs) => {
+            "Wave {wave} left the air for having no task. Its agent had already recorded the return to request \
+             {send}, but the last task was removed before the round took it over. The return stays in the history \
+             only. The queue, the resume and the round no longer list the wave."
+        }
         ("round.wave_left_without_tasks", Locale::PtBr) => {
             "A onda {wave} saiu do ar por ficar sem tarefa: o pedido {send} segue sem volta, e nenhuma tarefa viva \
              aponta a onda. A fila, a retomada e a rodada deixam de listá-la."
@@ -1636,6 +1646,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("round.queued.jev_pending", Locale::EnUs) => {
             "waits for Jev's decision on it; with `reserves` in the answer, send the reserve's receipt first"
+        }
+        ("round.queued.broken_dependency", Locale::PtBr) => {
+            "depende de {dependencies}, que não existe mais nesta spec; grave uma versão dela com `replaces` e sem essa dependência"
+        }
+        ("round.queued.broken_dependency", Locale::EnUs) => {
+            "depends on {dependencies}, which no longer exists in this spec; write a version of it with `replaces` and without that dependency"
         }
         ("round.queued.line_held", Locale::PtBr) => "{task} ficou: {detail}.",
         ("round.queued.line_held", Locale::EnUs) => "{task} stayed: {detail}.",
@@ -2476,7 +2492,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 362, 0x81c7_a863_c52c_7189);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 364, 0xf90f_5648_df15_5003);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
@@ -2760,6 +2776,8 @@ mod tests {
             ("round.leftover_judged", &["{chance}"][..]),
             ("round.leftover_marked", &["{wave}", "{title}"][..]),
             ("round.wave_left_without_tasks", &["{wave}", "{send}"][..]),
+            ("round.wave_left_after_return", &["{wave}", "{send}"][..]),
+            ("round.queued.broken_dependency", &["{dependencies}"][..]),
             ("round.leftover_without_files", &[][..]),
             ("round.tasks_returned", &["{wave}", "{tasks}"][..]),
             ("round.proof_rerouted", &["{item}", "{criterion}"][..]),

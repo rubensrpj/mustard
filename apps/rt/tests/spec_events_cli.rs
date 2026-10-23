@@ -909,6 +909,34 @@ fn task_without_a_title_is_refused_and_with_a_title_is_written() {
     assert_eq!((code, &out["ok"]), (Some(0), &json!(true)), "a versão nova com título passa: {out}");
 }
 
+/// Duas tarefas, a segunda depende da primeira: o `remove` da primeira é
+/// recusado nomeando a dependente, e nada é gravado. Remover as duas no mesmo
+/// `targets` passa, porque nenhuma dependente fica viva.
+#[test]
+fn removing_a_task_with_a_live_dependent_is_refused_naming_the_dependent() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    seed_state(root, &json!({"author": "binary", "phase": "plan", "branch": "feature/teste", "base": "dev"}));
+    let msg = seed_binary(root, "message", &json!({"author": "user", "text": "o plano"}));
+    let crit = write(root, "criterion",
+        &json!({"title": "Combinar o item", "when": "a", "then": "b", "proof": "git --version", "form": "ubiquitous", "origin": msg}));
+    let task = |title: &str, depends_on: Value| json!({"agent": "- conferir pelo teste", "title": title, "text": "Tarefa.", "files": [{"path": "a.rs"}],
+        "depends_on": depends_on, "covers": [crit], "origin": msg});
+    let (_, first) = write_out(root, "task", &task("Entregar a primeira", json!([])));
+    let (_, second) = write_out(root, "task", &task("Entregar a segunda", json!([first["id"]])));
+
+    let before = event_lines(root);
+    let (code, refused) = write_out(root, "remove", &json!({"targets": [first["id"]], "reason": "Já foi feito fora."}));
+    assert_eq!((code, &refused["reason"]), (Some(1), &json!("task-has-dependents")), "{refused}");
+    let hint = refused["hint"].as_str().unwrap_or_default();
+    let (first_code, second_code) = (first["code"].as_str().unwrap_or_default(), second["code"].as_str().unwrap_or_default());
+    assert!(hint.contains(second_code) && hint.contains(first_code), "a recusa nomeia a dependente e a tarefa que sairia: {hint}");
+    assert_eq!(event_lines(root), before, "nada foi gravado");
+
+    let (code, removed) = write_out(root, "remove", &json!({"targets": [first["id"], second["id"]], "reason": "As duas saem."}));
+    assert_eq!((code, &removed["ok"]), (Some(0), &json!(true)), "{removed}");
+}
+
 /// O item combinado com dono pelos arquivos, em `applies_to`, vai no pedido
 /// da onda cuja tarefa toca um desses arquivos, sem passar pela análise antes
 /// do envio, e fica fora do pedido da onda que não toca.

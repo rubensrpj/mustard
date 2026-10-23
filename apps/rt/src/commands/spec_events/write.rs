@@ -1421,6 +1421,7 @@ fn record_rules(
         closed_spec_work_rule(spec, before, after)?;
         wave_by_backlog_rule(before, after)?;
         super::task_wave::working_wave_rule(event_type, before, after)?;
+        super::task_dependents::removal_rule(event_type, before, after)?;
     }
     reply_rule(before, after)?;
     goal_rule(spec, before, after)?;
@@ -1492,7 +1493,7 @@ fn new_task<'a>(before: &SpecLog, after: &'a SpecLog) -> Option<&'a SpecEvent> {
 /// nenhuma com esse número ou código. Um número ou código que aponta uma
 /// versão já substituída resolve para a versão nova, do mesmo jeito que o
 /// resto do arquivo trata a identidade de um item.
-fn task_ref(after: &SpecLog, codes: &BTreeMap<u64, String>, value: &Value) -> Option<u64> {
+pub(super) fn task_ref(after: &SpecLog, codes: &BTreeMap<u64, String>, value: &Value) -> Option<u64> {
     let raw = match EventRef::from_value(value)? {
         EventRef::Id(id) => id,
         EventRef::Code(code) => {
@@ -1504,7 +1505,7 @@ fn task_ref(after: &SpecLog, codes: &BTreeMap<u64, String>, value: &Value) -> Op
 
 /// O texto que nomeia, na recusa, uma dependência que não bateu com tarefa
 /// nenhuma: exatamente o que `value` trazia, código ou número.
-fn dependency_label(value: &Value) -> String {
+pub(super) fn dependency_label(value: &Value) -> String {
     value.as_str().map(str::to_string).unwrap_or_else(|| value.to_string())
 }
 

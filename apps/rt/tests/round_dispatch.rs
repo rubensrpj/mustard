@@ -751,6 +751,30 @@ fn removing_the_last_task_of_a_wave_whose_agent_works_is_refused_until_the_deliv
     assert!(!waves_in(&next, "running").contains(&1), "a onda 1 não fica em andamento: {next}");
 }
 
+/// A tarefa cuja dependência foi removida (a remoção que o programa de
+/// antes aceitava, semeada no arquivo) fica no backlog com o motivo e o nome
+/// da dependência, e só ela: a rodada despacha a outra tarefa pronta em vez
+/// de parar inteira na gravação da versão da dependente.
+#[test]
+fn a_task_whose_dependency_is_gone_waits_with_its_reason_and_the_rest_leaves() {
+    let (project, crit, said, tasks) = backlog_project(&[&["a.rs"], &["b.rs"]]);
+    let dependent = seed_task_with(&project, crit, said, &["c.rs"], &json!({"depends_on": [tasks[0]]}));
+    project.seed("remove", &json!({"targets": [tasks[0]], "reason": "Já foi feito fora."}));
+    let gone = project.log().codes()[&tasks[0]].clone();
+
+    let out = project.run(&["round", "--dispatch", "--spec", SPEC]);
+    let dispatched = waves_in(&out, "dispatch");
+    assert_eq!(dispatched.len(), 1, "a tarefa pronta sai: {out}");
+    assert_eq!(wave_of(&project, tasks[1]), Some(dispatched[0]), "{out}");
+    assert_eq!(wave_of(&project, dependent), None, "a dependente fica no backlog");
+    let held = out["held"].as_array().unwrap_or_else(|| panic!("a rodada diz o que ficou: {out}"));
+    let code = project.log().codes()[&dependent].clone();
+    assert_eq!(held.len(), 1, "{out}");
+    assert_eq!(held[0]["reason"], json!("broken-dependency"), "{out}");
+    assert_eq!(held[0]["tasks"], json!([code]), "{out}");
+    assert!(held[0]["detail"].as_str().unwrap_or_default().contains(&gone), "o motivo nomeia a dependência: {out}");
+}
+
 /// O bloco de retomada que o aviso antes de compactar traz, pelo gancho
 /// `PreCompact` da sessão que conduz a obra, como o Claude Code o chama.
 fn precompact_block(project: &Project) -> String {

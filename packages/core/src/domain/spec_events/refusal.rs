@@ -196,6 +196,11 @@ pub enum Refusal {
     /// Uma tarefa cujo `depends_on` aponta uma tarefa que não existe nesta
     /// spec. Nada é gravado, e a mensagem nomeia as duas.
     TaskDependsOnUnknown { task: String, depends_on: String },
+    /// Um `remove` que tiraria tarefas de que outras tarefas vivas dependem:
+    /// elas ficariam apontando uma tarefa que não existe mais. Nada é
+    /// gravado, e a mensagem nomeia as tarefas que sairiam e as que dependem
+    /// delas.
+    TaskHasDependents { removed: Vec<String>, dependents: Vec<String> },
     /// Um `depends_on` que fecha um círculo entre tarefas desta spec. Nada é
     /// gravado, e a mensagem nomeia o círculo inteiro, na ordem, voltando ao
     /// começo.
@@ -422,6 +427,7 @@ impl Refusal {
             Self::ItemFormMissing { .. } => "item-form-missing",
             Self::ItemUnclear { .. } => "item-unclear",
             Self::TaskDependsOnUnknown { .. } => "task-depends-on-unknown",
+            Self::TaskHasDependents { .. } => "task-has-dependents",
             Self::TaskDependencyCycle { .. } => "task-dependency-cycle",
             Self::AgreedItemsMissing { .. } => "agreed-items-missing",
             Self::DeliveryAgreedMissing { .. } => "delivery-agreed-missing",
@@ -704,6 +710,10 @@ impl Refusal {
             Self::TaskDependsOnUnknown { task, depends_on } => fill(
                 "spec_events.task_depends_on_unknown",
                 &[("{task}", task.clone()), ("{depends_on}", depends_on.clone())],
+            ),
+            Self::TaskHasDependents { removed, dependents } => fill(
+                "spec_events.task_has_dependents",
+                &[("{removed}", removed.join(", ")), ("{dependents}", dependents.join(", "))],
             ),
             Self::TaskDependencyCycle { cycle } => fill(
                 "spec_events.task_dependency_cycle",

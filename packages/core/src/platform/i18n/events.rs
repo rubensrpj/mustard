@@ -170,6 +170,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Task {task} depends on {depends_on}, which does not exist in this spec. Nothing was \
              written."
         }
+        ("spec_events.task_has_dependents", Locale::PtBr) => {
+            "Remover {removed} deixaria {dependents} dependendo de tarefa que não existe mais nesta spec. \
+             Remova as dependentes no mesmo `targets`, ou grave antes uma versão delas sem essa dependência. \
+             Nada foi gravado."
+        }
+        ("spec_events.task_has_dependents", Locale::EnUs) => {
+            "Removing {removed} would leave {dependents} depending on a task that no longer exists in this \
+             spec. Remove the dependents in the same `targets`, or first write a version of them without that \
+             dependency. Nothing was written."
+        }
         ("spec_events.task_dependency_cycle", Locale::PtBr) => {
             "As tarefas dependem umas das outras em círculo: {cycle}. Nada foi gravado."
         }
@@ -1304,8 +1314,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            184,
-            0xf963_807d_1992_0671,
+            185,
+            0x540d_1d90_3c2c_0643,
         );
     }
 
@@ -1351,6 +1361,7 @@ mod tests {
             ("spec_events.item_part_user_cites", &["{found}"][..]),
             ("spec_events.item_unclear", &["{defects}"][..]),
             ("spec_events.task_depends_on_unknown", &["{task}", "{depends_on}"][..]),
+            ("spec_events.task_has_dependents", &["{removed}", "{dependents}"][..]),
             ("spec_events.task_dependency_cycle", &["{cycle}"][..]),
             ("spec_events.agreed_items_missing", &["{missing}"][..]),
             ("spec_events.delivery_agreed_missing", &["{wave}", "{missing}"][..]),
