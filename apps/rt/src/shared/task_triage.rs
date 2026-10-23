@@ -560,12 +560,10 @@ fn difficulty_in(answer: &Value) -> Option<Difficulty> {
 
 /// O que o programa já sabe de uma tarefa aberta para ordená-la, sem
 /// perguntar a ninguém, lido da mesma fonte da fila da rodada: a marca de
-/// prioridade que o usuário deu, se é limpeza e as tarefas de que ela
-/// depende.
+/// prioridade que o usuário deu e as tarefas de que ela depende.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct OrderFacts {
     pub priority: bool,
-    pub cleanup: bool,
     pub depends_on: BTreeSet<u64>,
 }
 
@@ -587,9 +585,9 @@ fn after_dependencies<T>(items: &mut Vec<T>, ids: &dyn Fn(&T) -> BTreeSet<u64>, 
 
 /// Ordena `subjects`, que o modelo pequeno da sessão montou com as tarefas
 /// abertas `open`. A ordem parte do que o programa já sabe (`facts`): o que o
-/// usuário marcou como prioridade vai primeiro, a limpeza vai por último, e
-/// cada tarefa sai depois daquelas de que depende. O Jev só desempata, pelos
-/// pedidos que `invoke` manda juntos ([`backlog_jev_ask`]), e só onde há o
+/// usuário marcou como prioridade vai primeiro, e cada tarefa sai depois
+/// daquelas de que depende. O Jev só desempata, pelos pedidos que `invoke`
+/// manda juntos ([`backlog_jev_ask`]), e só onde há o
 /// que ordenar: cada assunto com mais de uma tarefa vai num pedido, com elas
 /// no estado e duas notas por tarefa, o valor da entrega e a complexidade,
 /// porque a documentação dele pede um julgamento rápido por pergunta e o peso
@@ -711,7 +709,6 @@ pub(crate) fn order_backlog_with(
     let members = |(keep, absorbed): &(u64, Vec<u64>)| -> BTreeSet<u64> { std::iter::once(*keep).chain(absorbed.iter().copied()).collect() };
     let fact = |id: &u64| facts.get(id).cloned().unwrap_or_default();
     let marked = |entry: &(u64, Vec<u64>)| members(entry).iter().any(|id| fact(id).priority);
-    let cleanup = |entry: &(u64, Vec<u64>)| members(entry).iter().all(|id| fact(id).cleanup);
     let needs = |entry: &(u64, Vec<u64>)| -> BTreeSet<u64> {
         let own = members(entry);
         own.iter().flat_map(|id| fact(id).depends_on).filter(|id| !own.contains(id)).collect()
@@ -722,25 +719,24 @@ pub(crate) fn order_backlog_with(
             .drain(..)
             .enumerate()
             .map(|(position, entry)| {
-                (!marked(&entry), cleanup(&entry), task_scores.get(&entry.0).copied().unwrap_or(0.0), files(&entry).len(), position, entry)
+                (!marked(&entry), task_scores.get(&entry.0).copied().unwrap_or(0.0), files(&entry).len(), position, entry)
             })
             .collect();
-        ranked.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(b.2.total_cmp(&a.2)).then(a.3.cmp(&b.3)).then(a.4.cmp(&b.4)));
+        ranked.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.total_cmp(&a.1)).then(a.2.cmp(&b.2)).then(a.3.cmp(&b.3)));
         subject.tasks = ranked.into_iter().map(|(.., entry)| entry).collect();
         after_dependencies(&mut subject.tasks, &members, &needs);
     }
     let values = subject_values.unwrap_or_else(|| vec![0.0; subjects.len()]);
-    let mut ranked: Vec<(bool, bool, f64, usize, usize, OrderedSubject)> = subjects
+    let mut ranked: Vec<(bool, f64, usize, usize, OrderedSubject)> = subjects
         .into_iter()
         .zip(values)
         .enumerate()
         .map(|(position, (subject, value))| {
             let any_marked = subject.tasks.iter().any(&marked);
-            let all_cleanup = subject.tasks.iter().all(&cleanup);
-            (!any_marked, all_cleanup, value, subject.tasks.iter().map(|entry| files(entry).len()).sum(), position, subject)
+            (!any_marked, value, subject.tasks.iter().map(|entry| files(entry).len()).sum(), position, subject)
         })
         .collect();
-    ranked.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(b.2.total_cmp(&a.2)).then(a.3.cmp(&b.3)).then(a.4.cmp(&b.4)));
+    ranked.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.total_cmp(&a.1)).then(a.2.cmp(&b.2)).then(a.3.cmp(&b.3)));
     let mut subjects: Vec<OrderedSubject> = ranked.into_iter().map(|(.., subject)| subject).collect();
     let subject_ids = |subject: &OrderedSubject| -> BTreeSet<u64> { subject.tasks.iter().flat_map(&members).collect() };
     let subject_needs = |subject: &OrderedSubject| -> BTreeSet<u64> {
@@ -1064,12 +1060,12 @@ mod tests {
     }
 
     /// O que o programa já sabe manda na ordem antes do Jev. O Jev dá a maior
-    /// nota à tarefa de limpeza e ao assunto da exportação. O assunto com a
-    /// tarefa que o usuário marcou sai primeiro mesmo assim; no carrinho, a
-    /// limpeza fica por último, e a tarefa que depende de outra sai depois
-    /// dela.
+    /// nota à tarefa do comentário da soma e ao assunto da exportação. O
+    /// assunto com a tarefa que o usuário marcou sai primeiro mesmo assim; no
+    /// carrinho, a tarefa de maior nota sai primeiro, e a tarefa que depende
+    /// de outra sai depois dela.
     #[test]
-    fn backlog_triage_puts_the_marked_first_the_cleanup_last_and_each_task_after_its_dependencies() {
+    fn backlog_triage_puts_the_marked_first_then_the_value_and_each_task_after_its_dependencies() {
         let open = [
             candidate(1, "O comentário da soma diz dois", "web/cart/total.ts", true),
             candidate(2, "O total arredonda o desconto", "web/cart/total.ts", true),
@@ -1078,7 +1074,6 @@ mod tests {
             candidate(5, "A exportação mantém a ordem das colunas", "web/report/export.ts", true),
         ];
         let facts = BTreeMap::from([
-            (1, OrderFacts { cleanup: true, ..OrderFacts::default() }),
             (2, OrderFacts { depends_on: BTreeSet::from([3]), ..OrderFacts::default() }),
             (4, OrderFacts { priority: true, ..OrderFacts::default() }),
         ]);
@@ -1107,7 +1102,7 @@ mod tests {
         let names: Vec<&str> = ordered.subjects.iter().map(|subject| subject.name.as_str()).collect();
         assert_eq!(names, ["Login", "Exportação", "Carrinho"], "the marked subject first, then the value");
         let cart: Vec<u64> = ordered.subjects[2].tasks.iter().map(|(id, _)| *id).collect();
-        assert_eq!(cart, [3, 2, 1], "the dependency before its dependent, the cleanup last");
+        assert_eq!(cart, [1, 3, 2], "the highest value first, the dependency before its dependent");
     }
 
     /// O agente lê de cada arquivo da tarefa só a declaração que ela cita

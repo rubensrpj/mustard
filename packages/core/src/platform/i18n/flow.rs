@@ -1625,8 +1625,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.queued.origin_default", Locale::EnUs) => "Mustard default, with no `maxCompilingWaves` in `mustard.json`",
         ("round.queued.file", Locale::PtBr) => "arquivo {files}, reservado pela onda {wave}",
         ("round.queued.file", Locale::EnUs) => "file {files}, held by wave {wave}",
-        ("round.queued.cleanup", Locale::PtBr) => "limpeza: sai depois das outras tarefas do backlog",
-        ("round.queued.cleanup", Locale::EnUs) => "cleanup: goes out after the other backlog tasks",
         ("round.queued.assembly", Locale::PtBr) => "pronta e com vaga, mas fora desta montagem. A próxima rodada confere de novo",
         ("round.queued.assembly", Locale::EnUs) => "ready with a free slot, but left out of this assembly. The next round checks again",
         ("round.queued.reads", Locale::PtBr) => "lê {files}, que a onda {wave} muda, pelo mapa do scan",
@@ -2498,7 +2496,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 365, 0x24b4_1f28_86ba_a341);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 364, 0x6f71_dda0_741c_07f3);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do

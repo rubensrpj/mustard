@@ -13,7 +13,6 @@ use mustard_core::domain::wave_prompt::{Choice, dispatch_items};
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Map, Value, json};
 
-use super::leftovers::is_cleanup;
 use super::stops::waves_replanned;
 use super::vacancy::Vacancies;
 use crate::commands::wave::wave_overlap_check::{WaveGraph, wave_graph};
@@ -925,17 +924,6 @@ pub(crate) fn tasks_left(log: &SpecLog) -> Vec<LeftTask> {
         .collect()
 }
 
-/// `true` quando a limpeza ainda espera ([`is_cleanup`]): há onda do plano
-/// por terminar — em andamento, por sair ou com conserto pendente
-/// ([`first_unfinished`]) — ou tarefa do backlog (`left`) que não é
-/// limpeza. A limpeza sai numa onda só, no fim da obra, quando nada mais
-/// resta a fazer.
-fn cleanup_waits(log: &SpecLog, running: &BTreeMap<u64, u64>, left: &BTreeSet<u64>, undone: &BTreeSet<u64>) -> bool {
-    let done = waves_done(log, running);
-    log.planned_waves().into_iter().any(|n| !done.contains(&n) && !undone.contains(&n))
-        || left.iter().filter_map(|id| log.get(*id)).any(|task| !is_cleanup(task))
-}
-
 /// `true` quando a tarefa `task` não cobre item nenhum: `covers` ausente ou
 /// vazio. A onda leva como critérios os itens que as tarefas dela cobrem, e a
 /// gravação da onda recusa a que ficaria sem nenhum; por isso a tarefa que
@@ -954,11 +942,10 @@ pub(crate) fn backlog_uncovered(log: &SpecLog) -> BTreeSet<u64> {
 /// As tarefas do backlog ([`backlog_left`]) que já estão prontas — todas as
 /// dependências entregues ou aprovadas —, na ordem em que o motor do backlog
 /// as empacota. Vazia quando o backlog está vazio ou quando toda tarefa dele
-/// ainda espera uma dependência. A limpeza só entra quando nada mais resta
-/// ([`cleanup_waits`]): até lá ela não forma lote, e o próximo passo da
-/// rodada não a oferece. A tarefa que não cobre nada ([`covers_nothing`])
-/// nunca está pronta: ela segura as que dependem dela, e a rodada que só tem
-/// ela no backlog a nomeia entre as presas, em vez de mandar rodar de novo.
+/// ainda espera uma dependência. A tarefa que não cobre nada
+/// ([`covers_nothing`]) nunca está pronta: ela segura as que dependem dela, e
+/// a rodada que só tem ela no backlog a nomeia entre as presas, em vez de
+/// mandar rodar de novo.
 pub(crate) fn backlog_ready(log: &SpecLog) -> Vec<u64> {
     backlog_ready_without(log, &BTreeSet::new())
 }
@@ -969,11 +956,9 @@ pub(super) fn backlog_ready_without(log: &SpecLog, undone: &BTreeSet<u64>) -> Ve
     let running = waves_in_progress(log);
     let done_waves = waves_done(log, &running);
     let left = backlog_left_without(log, undone);
-    let held = cleanup_waits(log, &running, &left, undone);
     crate::shared::dag::ready_tasks(&backlog_population(log, &done_waves))
         .into_iter()
         .filter(|id| left.contains(id))
-        .filter(|id| !held || !log.get(*id).is_some_and(is_cleanup))
         .filter(|id| !log.get(*id).is_some_and(covers_nothing))
         .collect()
 }
@@ -3370,13 +3355,10 @@ mod tests {
         wave.map(|w| w.ints("order")).unwrap_or_default()
     }
 
-    /// A limpeza espera a onda da tarefa comum terminar. A primeira rodada
-    /// solta só a tarefa comum, e a limpeza segue sem onda. Com a onda 1 no ar,
-    /// a rodada não forma onda; a que assume a entrega da 1 não solta nada e
-    /// manda rodar de novo; a seguinte solta a limpeza sozinha na onda 2, e
-    /// entregue a 2 a rodada manda fechar.
+    /// A limpeza que divide o arquivo com uma tarefa comum sai na mesma onda
+    /// dela, já na primeira rodada.
     #[test]
-    fn related_ready_cleanup_joins_the_last_small_batch_without_an_extra_wave() {
+    fn a_cleanup_sharing_a_file_with_a_task_leaves_in_its_wave() {
         let dir = tempdir().unwrap(); let root = dir.path();
         let (said, crit) = backlog_project(root);
         let normal = backlog_task(root, said, crit, "Mexer no código de um.", "src/a.rs");
@@ -3386,33 +3368,18 @@ mod tests {
         assert_eq!(wave_order(root, 1), vec![normal, tidy], "{out}");
     }
 
+    /// A limpeza de outro arquivo não espera a tarefa comum terminar: a
+    /// primeira rodada solta as duas, cada uma na sua onda.
     #[test]
-    fn once_the_normal_task_is_delivered_the_cleanup_goes_out_in_the_next_round() {
+    fn a_cleanup_on_another_file_leaves_in_the_same_round_as_the_task() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let (said, crit) = backlog_project(root);
         let normal = backlog_task(root, said, crit, "Mexer no código de um.", "src/a.rs");
         let tidy = cleanup_task(root, said, crit, "Acertar o comentário de dois.", "src/b.rs");
-        let first = round(root, "x", None);
-        assert_eq!(waves_in(&first, "dispatch"), vec![1], "{first}");
-        assert_eq!(wave_order(root, 1), vec![normal], "{first}");
-        assert_eq!(spec_now(root).current(tidy).and_then(SpecEvent::wave), None, "a limpeza segue sem onda");
-
-        let idle = round(root, "x", None);
-        assert_eq!(idle["ok"], json!(true), "{idle}");
-        let formed: Vec<Value> = every_line_of(root, "wave").iter().map(|w| w["n"].clone()).collect();
-        assert_eq!(formed, vec![json!(1)], "com a onda 1 no ar, nenhuma onda nova: {idle}");
-
-        let assumed = round(root, "x", Some(&delivered(root, 1, "Saiu.", &["src/a.rs"])));
-        assert_eq!(assumed["ok"], json!(true), "{assumed}");
-        assert_eq!(waves_in(&assumed, "dispatch"), vec![2], "the existing cleanup is released in the same round: {assumed}");
-
-        let again = round(root, "x", None);
-        assert!(waves_in(&again, "dispatch").is_empty(), "the cleanup was already dispatched: {again}");
-        assert_eq!(wave_order(root, 2), vec![tidy], "a onda 2 leva só a limpeza");
-
-        let done = round(root, "x", Some(&delivered(root, 2, "Saiu.", &["src/b.rs"])));
-        assert_eq!(done["command"], json!("mustard-rt run close --spec x"), "{done}");
+        let out = round(root, "x", None);
+        assert_eq!(waves_in(&out, "dispatch"), vec![1, 2], "{out}");
+        assert_eq!((wave_order(root, 1), wave_order(root, 2)), (vec![normal], vec![tidy]), "{out}");
     }
 
     /// As limpezas se agrupam por arquivo como as outras tarefas: as que
@@ -3771,13 +3738,15 @@ mod tests {
         assert_eq!(versions, 1, "nenhuma versão sem onda no meio: só a original");
     }
 
-    /// Com a onda da tarefa comum entregue e a limpeza ainda no backlog, o
-    /// fechamento recusa pelo backlog que não esvaziou.
+    /// Com uma vaga só, a limpeza fica no backlog enquanto a onda da tarefa
+    /// comum roda. Entregue essa onda, a limpeza sai na seguinte, e o
+    /// fechamento recusa pela onda dela, ainda sem commit.
     #[test]
     fn closing_refuses_with_a_cleanup_to_do() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let (said, crit) = backlog_project(root);
+        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":1}"#).unwrap();
         backlog_task(root, said, crit, "Mexer no código de um.", "src/a.rs");
         cleanup_task(root, said, crit, "Acertar o comentário de dois.", "src/b.rs");
         let first = round(root, "x", None);

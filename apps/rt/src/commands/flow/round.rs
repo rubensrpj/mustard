@@ -179,7 +179,6 @@ mod dispatch_jev_tests;
 mod triage_jev_tests;
 mod planning;
 pub(crate) use planning::needs_planning;
-pub(crate) use leftovers::is_cleanup;
 pub(crate) mod queue;
 mod read_check;
 mod rehearsal;

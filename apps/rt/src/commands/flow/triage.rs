@@ -44,7 +44,7 @@ use crate::commands::flow::round::queue::{
     waves_with_live_agent,
 };
 use crate::commands::flow::round::following::{self, AFTER};
-use crate::commands::flow::round::{append_agent_line, backlog_return, is_cleanup, waves_left_without_tasks};
+use crate::commands::flow::round::{append_agent_line, backlog_return, waves_left_without_tasks};
 use crate::commands::spec_events::{self, write::record_locked};
 use crate::hooks::session::conversation_size::WAVE_LIMIT;
 use crate::commands::flow::round::dispatch_jev::{Asker, Outcome};
@@ -400,10 +400,7 @@ fn triage_with(opts: &TriageOpts, session: Option<&str>, in_round: bool, jev_on:
     let facts: BTreeMap<u64, OrderFacts> = backlog_population(&log, &BTreeSet::new())
         .into_iter()
         .filter(|task| classified.contains(&task.id))
-        .map(|task| {
-            let cleanup = log.get(task.id).is_some_and(is_cleanup);
-            (task.id, OrderFacts { priority: task.priority, cleanup, depends_on: task.depends_on })
-        })
+        .map(|task| (task.id, OrderFacts { priority: task.priority, depends_on: task.depends_on }))
         .collect();
     // A reserva da ordem, da mesma leitura: o valor de cada onda formada e
     // de cada assunto que já existia, pelo nome, e a nota de cada tarefa lida.

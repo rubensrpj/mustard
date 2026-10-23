@@ -27,9 +27,9 @@
 //! arquivo nenhum vira tarefa presa, a planejar: ela não sai numa onda até
 //! quem conduz a obra gravar uma versão nova com os arquivos e as
 //! dependências. A sobra que o agente marca como limpeza (`cleanup: true`)
-//! vira tarefa com a mesma marca, sem prioridade, e a rodada a segura até o
-//! fim da obra, para sair junto das outras limpezas numa onda só. O campo
-//! `kind` que uma volta antiga ainda traga é aceito e ignorado.
+//! vira tarefa com a mesma marca, sem prioridade, e sai na onda do mesmo
+//! sentido, como as outras tarefas do backlog. O campo `kind` que uma volta
+//! antiga ainda traga é aceito e ignorado.
 //!
 //! [`task_triage`]: crate::shared::task_triage
 
@@ -130,12 +130,6 @@ pub(super) fn leftovers_of(items: &[Value]) -> Result<Vec<Leftover>, Refusal> {
         }
     }
     Ok(leftovers)
-}
-
-/// `true` quando a tarefa é limpeza: nasceu de uma sobra que o agente marcou
-/// assim. É a leitura única de "é limpeza", e a fila da rodada lê só daqui.
-pub(crate) fn is_cleanup(task: &SpecEvent) -> bool {
-    task.fields.get(CLEANUP) == Some(&Value::Bool(true))
 }
 
 /// Um evento que as sobras da volta viram, com a onda que a apontou e o tipo
@@ -505,8 +499,8 @@ fn leftover_request(leftover: &Leftover, files: &BTreeSet<String>, origin: Optio
 /// `files` da sobra entram nos da tarefa; a tarefa sem prioridade ganha a da
 /// sobra ([`leftover_priority`]), salvo quando a sobra é limpeza; e a marca
 /// de limpeza fica só quando a sobra também a traz — a tarefa que passa a
-/// mudar comportamento não espera o fim da obra. Os critérios da tarefa
-/// ficam como estão.
+/// mudar comportamento deixa de ser limpeza. Os critérios da tarefa ficam
+/// como estão.
 fn join(draft: &mut Map<String, Value>, wave: u64, leftover: &Leftover, files: &BTreeSet<String>, section: &str, lang: Locale) {
     let line = translate(section, lang)
         .replace("{wave}", &wave.to_string())

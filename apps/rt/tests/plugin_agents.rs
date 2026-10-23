@@ -718,7 +718,7 @@ fn wave_template_puts_in_the_task_the_file_the_change_requires() {
 /// grava, com o título, o detalhe e os arquivos a mudar: toda sobra vai ao backlog, e o
 /// molde não pede mais que o agente diga se ela quebra algo ou é cosmética. A
 /// sobra que só de comentário/documentação/ajuda leva a marca
-/// de limpeza, que a rodada segura para o fim da obra.
+/// de limpeza, e sai na onda do mesmo sentido, como as outras tarefas.
 #[test]
 fn boundary_says_to_remove_what_the_change_left_unused() {
     for (lang, said) in [

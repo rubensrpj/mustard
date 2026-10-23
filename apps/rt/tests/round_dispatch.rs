@@ -3302,12 +3302,49 @@ fn a_classifier_decision_is_asked_again_when_the_leftover_changes() {
     assert_eq!(triage_requests(&jev), 2, "the classifier is asked about the new leftover: {again}");
 }
 
+/// A volta da onda 1 deixa uma sobra de limpeza, que vira tarefa, e quem
+/// conduz grava depois uma tarefa comum. A formação põe as duas no mesmo
+/// sentido, e a rodada seguinte as despacha juntas na onda 2: a limpeza não
+/// espera a tarefa comum terminar.
+#[test]
+fn a_cleanup_leftover_leaves_with_the_task_of_its_direction() {
+    let (mut project, crit, said, _) = backlog_project(&[&[GREETING]]);
+    let first = project.run(&ROUND);
+    assert_eq!(waves_in(&first, "dispatch"), vec![1], "{first}");
+    let leftovers = json!({"leftovers": [{"title": "O comentário da saudação ainda diz olá", "detail": "A saudação mudou.",
+        "files": ["src/greeting-notes.txt"], "cleanup": true}]});
+    deliver_file_with(&project, 1, GREETING, "hello\n", &leftovers);
+    let back = round_taking_back(&project, 1);
+    assert!(back.get("commit").is_some(), "the round commits the wave 1: {back}");
+    let log = project.log();
+    let codes = log.codes();
+    let tidy = log
+        .visible()
+        .into_iter()
+        .find(|e| e.event_type == "task" && e.fields.get("cleanup") == Some(&json!(true)))
+        .and_then(|e| codes.get(&e.id).cloned())
+        .unwrap_or_else(|| panic!("the leftover became a cleanup task: {back}"));
+    let normal = code_of(&project, backlog_task(&project, crit, said, &["src/greeting-tone.txt"], &[]));
+    project.session = Some(SESSION);
+
+    let asked = project.run(&ROUND);
+    let formation = asked.get("formation").unwrap_or_else(|| panic!("the round asks the forming of the two tasks: {asked}"));
+    formed_by_the_analysis(&project, formation, json!([{"objective": "Acertar a saudação e o que se diz dela", "tasks": [normal, tidy], "merges": []}]));
+    let out = project.run(&ROUND);
+
+    assert_eq!(waves_in(&out, "dispatch"), vec![2], "{out}");
+    let log = project.log();
+    let codes = log.codes();
+    let together: BTreeSet<String> = log.visible().into_iter().filter(|e| e.event_type == "task" && e.wave() == Some(2)).map(|e| codes[&e.id].clone()).collect();
+    assert_eq!(together, [normal, tidy].into_iter().collect::<BTreeSet<_>>(), "the cleanup leaves with the task of its direction: {out}");
+}
+
 /// A obra do próprio Mustard: a rodada que comita código do programa o
 /// recompila e passa o despacho ao programa novo, que responde numa segunda
 /// passada, e as duas respostas saem juntas. A onda 1 volta com duas sobras de
 /// limpeza e entra no commit; a onda 2 volta fora do escopo e espera a
-/// revisão. A resposta traz as duas limpezas seguradas num grupo só, com o
-/// código de cada uma, e cada aviso da onda 2 uma vez.
+/// revisão. A resposta traz as duas limpezas despachadas pela segunda
+/// passada, sem esperar o resto da obra, e cada aviso da onda 2 uma vez.
 #[test]
 fn a_round_that_commits_the_program_hands_the_dispatch_over_and_answers_once() {
     let (project, crit, said, _) = backlog_in(Project::as_mustard_source(), &[&["apps/rt/a.txt"]], &[]);
@@ -3345,9 +3382,11 @@ fn a_round_that_commits_the_program_hands_the_dispatch_over_and_answers_once() {
         .filter_map(|e| codes.get(&e.id))
         .collect();
     assert_eq!(cleanups.len(), 2, "the two leftovers became cleanup tasks: {out}");
-    assert_eq!(out["held"].as_array().map(Vec::len), Some(1), "one group for the one reason: {out}");
-    assert_eq!(out["held"][0]["reason"], json!("cleanup-last"), "{out}");
-    assert_eq!(out["held"][0]["tasks"], json!(cleanups), "the group names each held task: {out}");
+    assert_eq!(waves_in(&out, "dispatch"), vec![3, 4], "the second pass sends the two cleanups: {out}");
+    let sent: BTreeSet<&String> =
+        log.visible().into_iter().filter(|e| e.event_type == "task" && e.wave() >= Some(3)).filter_map(|e| codes.get(&e.id)).collect();
+    assert_eq!(sent, cleanups.into_iter().collect::<BTreeSet<_>>(), "the waves sent take the cleanups: {out}");
+    assert!(out.get("held").is_none(), "no cleanup is held: {out}");
     let warnings = out["warnings"].as_array().cloned().unwrap_or_default();
     for reason in ["wave-review-required", "files-diverged", "scope-expanded"] {
         let of_wave_two = warnings.iter().filter(|warning| warning["reason"] == json!(reason) && warning["wave"] == json!(2)).count();

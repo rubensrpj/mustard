@@ -4,9 +4,9 @@
 //! que está rodando; o resto das tarefas fica no backlog, sem número de onda.
 //! O assunto combina tipo de trabalho, arquivos e relações atuais do scan.
 //! Nenhuma tarefa espera por arquivo: cada onda trabalha na própria cópia, e
-//! a rodada junta no commit. Seguram a tarefa só a dependência declarada, a
-//! limpeza por último, as vagas e a onda em andamento do mesmo sentido, que a
-//! formação apontou ([`super::following`]).
+//! a rodada junta no commit. Seguram a tarefa só a dependência declarada, as
+//! vagas e a onda em andamento do mesmo sentido, que a formação apontou
+//! ([`super::following`]); a limpeza forma lote como as outras tarefas.
 //! O Jev responde decisões tipadas não atendidas pelo cache, antes das
 //! travas da rodada ([`super::dispatch_jev`]): com elas presas, a montagem só
 //! lê a decisão gravada, e a tarefa sem decisão espera a rodada seguinte, só
@@ -23,7 +23,6 @@ use mustard_core::domain::spec_events::{Block, BlockQuery, SpecEvent, SpecLog};
 use mustard_core::domain::spec_state::PhaseWriter;
 use serde_json::{Map, Value, json};
 
-use super::leftovers::is_cleanup;
 use super::queue::{
     backlog_left, backlog_left_without, backlog_population, backlog_ready_without, covers_nothing, outgoing, task_revision,
     tasks_not_delivered, waves_done, waves_in_progress,
@@ -32,7 +31,7 @@ use super::report::backlog_return;
 use super::stops::waves_stuck;
 use super::summary_wave::{group_waves, summary_waves};
 use crate::commands::spec_events::write::{RecordCheck, record};
-use crate::shared::dag::{BacklogTask, CLASH_FROM, pack_by_kind, sets_cross, touches_whole_tree};
+use crate::shared::dag::{BacklogTask, CLASH_FROM, pack_by_kind, touches_whole_tree};
 use super::dispatch_jev::{Asker, unsure};
 use crate::shared::jev::{ASSEMBLY_CALL, backlog_payloads, read_judgements, record_jev_call};
 use crate::shared::judgement::{Board, BoardTask, BoardWave, Judged, WaveJudge};
@@ -80,8 +79,8 @@ pub(crate) enum Hold {
 /// `limit` (as vagas do projeto, `max_parallel`), cada uma com um assunto só,
 /// sem corte em número de tarefas e sem juntar assuntos sem relação. O que não
 /// cabe nas vagas fica no backlog, sem onda, e entra na montagem da rodada em
-/// que uma vaga abrir. A limpeza ([`is_cleanup`]) só entra quando nada mais
-/// resta ([`backlog_ready`]).
+/// que uma vaga abrir. A limpeza entra na montagem como qualquer tarefa
+/// pronta ([`backlog_ready`]).
 ///
 /// O assunto pode vir do Jev (`judge`), avaliando apenas decisões tipadas
 /// ainda não atendidas pelo cache, quando há vaga livre e tarefa elegível.
@@ -107,9 +106,8 @@ pub(crate) enum Hold {
 /// A tarefa com a marca de prioridade (`priority`), que o usuário deu, sai
 /// antes da ordem fixa dos tipos e do número, com o Jev e sem ele: o lote
 /// dela vai na frente, e a tarefa que divide arquivo com ela vai atrás dela.
-/// A marca não passa por cima da dependência nem das vagas, e a limpeza
-/// segue saindo por último, marcada ou não; o arquivo de uma onda em
-/// andamento não a segura, como não segura tarefa nenhuma. O Jev não a
+/// A marca não passa por cima da dependência nem das vagas; o arquivo de uma
+/// onda em andamento não a segura, como não segura tarefa nenhuma. O Jev não a
 /// julga: ela é lida do evento, e o quadro mandado a ele não muda.
 ///
 /// Uma onda pequena independente pode usar uma vaga livre. Relações de
@@ -355,7 +353,6 @@ fn assemble(
         None => undone,
     };
     let in_undone = |id: &u64| by_id.get(id).and_then(|task| task.wave()).is_some_and(|wave| undone.contains(&wave));
-    let cleanup = |id: &u64| by_id.get(id).is_some_and(|task| is_cleanup(task));
     // A tarefa que não cobre item nenhum não forma onda, sozinha ou de carona:
     // a onda leva os itens que as tarefas dela cobrem como critérios, e a
     // gravação recusa a que ficaria sem nenhum.
@@ -378,7 +375,7 @@ fn assemble(
         backlog_ready_without(log, &undone).into_iter().partition(|id| left_on_entry.contains(id) || in_undone(id));
     let waiting: Vec<u64> = backlog_left_without(log, &undone)
         .into_iter()
-        .filter(|id| (left_on_entry.contains(id) || in_undone(id)) && !order.contains(id) && !cleanup(id) && !bare(id))
+        .filter(|id| (left_on_entry.contains(id) || in_undone(id)) && !order.contains(id) && !bare(id))
         .filter(|id| !population.iter().any(|task| task.id == *id && task.blocked))
         .collect();
     // A tarefa que a formação pôs no mesmo sentido de uma onda em andamento
@@ -388,8 +385,8 @@ fn assemble(
     let free_of = |ids: Vec<u64>| -> Vec<u64> { ids.into_iter().filter(|id| !following.contains_key(id)).collect() };
     let (order, waiting, arrived) = (free_of(order), free_of(waiting), free_of(arrived));
     // As ondas do plano que ainda não terminaram: em andamento, por sair,
-    // mantidas ou com conserto pendente. Elas vão ao Jev e seguram a limpeza
-    // que pegaria carona, nunca uma tarefa pelo arquivo.
+    // mantidas ou com conserto pendente. Elas vão ao Jev, e nunca seguram uma
+    // tarefa pelo arquivo.
     let open_waves = open_plan_waves(log, &undone);
     // As vagas que as ondas já montadas deixam livres. O ciclo entre ondas é
     // recusado pela escolha das ondas prontas, logo depois: aqui só não sobra
@@ -411,9 +408,7 @@ fn assemble(
     let by_summary = summary_waves(log, &order, &population);
     let claimed: BTreeSet<u64> = by_summary.iter().flat_map(|wave| wave.batch.tasks.iter().copied()).collect();
     let order: Vec<u64> = order.into_iter().filter(|id| !claimed.contains(id)).collect();
-    let tidy: Vec<_> = crate::shared::dag::ready_tasks(&population).into_iter()
-        .filter(|id| left_on_entry.contains(id) && cleanup(id) && !bare(id) && !following.contains_key(id)).collect();
-    let candidates: Vec<_> = order.iter().chain(&waiting).chain(&claimed).chain(&tidy).copied().collect();
+    let candidates: Vec<_> = order.iter().chain(&waiting).chain(&claimed).copied().collect();
     let mut affinity_board = board_of(log, &by_id, &population, &candidates, &open_waves);
     if free > 0 && (!order.is_empty() || !claimed.is_empty()) {super::evidence::augment(start, &mut affinity_board);}
     // Only uncached typed decisions are delegated when a slot is available.
@@ -504,23 +499,6 @@ fn assemble(
         record_jev_call(start, spec, ASSEMBLY_CALL, *called, Some((*asked, returned)), answer.as_ref());
     }
 
-    // Attach a ready, small cleanup to the last functional batch when local
-    // source evidence links it. Never add unrelated work or reopen active waves.
-    let complete = !formed_only && open_waves.is_empty() && left_on_entry.iter().filter(|id| !cleanup(id))
-        .all(|id| chosen.iter().any(|(batch, _)| batch.tasks.contains(id)));
-    if complete {
-        let links = super::evidence::links(&affinity_board);
-        for id in tidy {
-            let Some(task) = population.iter().find(|task| task.id == id && task.files.len() == 1) else { continue; };
-            if chosen.iter().any(|(batch, _)| batch.tasks.contains(&id)) { continue; }
-            let target = chosen.iter().position(|(batch, _)| !touches_whole_tree(&batch.files)
-                && (sets_cross(&task.files, &batch.files) || batch.tasks.iter().any(|other| links.contains(&(id,*other)) || links.contains(&(*other,id)))));
-            let Some(at) = target else { continue; };
-            if chosen.iter().enumerate().any(|(other,(batch,_))| other != at && sets_cross(&task.files, &batch.files)) { continue; }
-            chosen[at].0.tasks.push(id);
-            chosen[at].0.files.extend(task.files.iter().cloned());
-        }
-    }
     let judged = match &judging {
         Some(Judging { judged: Some(judged), .. }) => Some(&judged.tasks),
         _ => None,
@@ -676,8 +654,8 @@ fn board_of(log: &SpecLog, by_id: &BTreeMap<u64, &SpecEvent>, population: &[Back
 
 /// As ondas do plano que ainda não terminaram — em andamento, por sair,
 /// mantidas ou com conserto pendente —, fora as ondas de lote `undone`, que
-/// a montagem desfaz. O Jev as vê como as ondas em andamento, e a limpeza só
-/// pega carona sem nenhuma delas; o arquivo delas não segura tarefa nenhuma.
+/// a montagem desfaz. O Jev as vê como as ondas em andamento; o arquivo delas
+/// não segura tarefa nenhuma.
 fn open_plan_waves(log: &SpecLog, undone: &BTreeSet<u64>) -> Vec<u64> {
     let done = waves_done(log, &waves_in_progress(log));
     log.planned_waves().into_iter().filter(|n| !done.contains(n) && !undone.contains(n)).collect()

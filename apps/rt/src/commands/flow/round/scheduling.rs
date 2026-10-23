@@ -1,6 +1,6 @@
 //! Cheap, read-only explanation of the declared queue. Source relationships
 //! are checked at dispatch; observing the queue never scans or calls a model.
-use super::{backlog::Hold, leftovers::is_cleanup, planning::needs_planning, queue};
+use super::{backlog::Hold, planning::needs_planning, queue};
 use mustard_core::domain::{spec_events::SpecLog, spec_state::State};
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Value, json};
@@ -10,11 +10,11 @@ use std::{collections::BTreeMap, path::Path};
 const SHOWN: usize = 40;
 
 /// Os motivos da tarefa pronta — sem dependência aberta, sem trava e com
-/// item coberto — que ficou na fila: sem vaga, limpeza à espera das outras,
-/// ou pronta e fora da montagem — esta com o motivo exato que a montagem
-/// devolveu, quando ela o deu. Nenhuma fica pelo arquivo de uma onda aberta:
-/// cada onda trabalha na própria cópia.
-const HELD: [&str; 3] = ["capacity", "cleanup-last", "ready"];
+/// item coberto — que ficou na fila: sem vaga, ou pronta e fora da montagem
+/// — esta com o motivo exato que a montagem devolveu, quando ela o deu.
+/// Nenhuma fica pelo arquivo de uma onda aberta — cada onda trabalha na
+/// própria cópia — nem por ser limpeza.
+const HELD: [&str; 2] = ["capacity", "ready"];
 
 /// O motivo da tarefa presa por uma dependência que não aponta tarefa nenhuma
 /// da spec: segura só ela, com o nome da dependência no detalhe.
@@ -79,10 +79,6 @@ fn queue(root: &Path, spec: &str, log: &SpecLog) -> Queue {
             .map(|id| code(*id))
             .chain(broken.get(id).into_iter().flatten().cloned())
             .collect();
-        let cleanup_wait = is_cleanup(task)
-            && population
-                .iter()
-                .any(|other| !other.done && log.get(other.id).is_some_and(|e| !is_cleanup(e)));
         let reason = if !active {
             "spec-not-running"
         } else if needs_planning(task) {
@@ -97,8 +93,6 @@ fn queue(root: &Path, spec: &str, log: &SpecLog) -> Queue {
             "missing-criteria"
         } else if !dependencies.is_empty() {
             "dependencies"
-        } else if cleanup_wait {
-            "cleanup-last"
         } else if free == 0 {
             "capacity"
         } else {
@@ -172,7 +166,6 @@ pub(super) fn held(root: &Path, spec: &str, log: &SpecLog, lang: Locale, assembl
     let detail = |row: &Row| -> String {
         match row.reason {
             "capacity" => slots.clone(),
-            "cleanup-last" => translate("round.queued.cleanup", lang).to_string(),
             BROKEN => translate("round.queued.broken_dependency", lang).replace("{dependencies}", &row.broken.join(", ")),
             _ => assembled.get(&row.code).map_or_else(|| translate("round.queued.assembly", lang).to_string(), |hold| exact(hold, lang)),
         }
@@ -187,7 +180,7 @@ pub(super) fn held(root: &Path, spec: &str, log: &SpecLog, lang: Locale, assembl
     for row in rows.iter().filter(|row| EXACT.contains(&row.reason) || row.reason == BROKEN) {
         line.push(translate("round.queued.line_held", lang).replace("{task}", &row.code).replace("{detail}", &detail(row)));
     }
-    let other = named(&|reason| ["cleanup-last", "ready"].contains(&reason));
+    let other = named(&|reason| reason == "ready");
     if !other.is_empty() {
         line.push(translate("round.queued.line_other", lang).replace("{tasks}", &other));
     }
