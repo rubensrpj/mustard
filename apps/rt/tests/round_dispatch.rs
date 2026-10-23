@@ -957,6 +957,12 @@ fn batch_orders(project: &Project) -> Vec<Vec<u64>> {
 /// --complete-session`: o tipo `feature` na pergunta do tipo, e não nas
 /// outras. Devolve quantos recibos mandou.
 fn answer_reserves(project: &Project, out: &Value, certainty: &str) -> usize {
+    answer_reserves_with(project, out, certainty, &|text| if text.contains("What kind of work") { "feature" } else { "no" })
+}
+
+/// [`answer_reserves`] com a escolha de cada pergunta dada por `choice`, a
+/// partir do texto dela.
+fn answer_reserves_with(project: &Project, out: &Value, certainty: &str, choice: &dyn Fn(&str) -> &'static str) -> usize {
     let requests = out["reserves"].as_array().cloned().unwrap_or_default();
     for (at, request) in requests.iter().enumerate() {
         let prompt = request["delegation"]["request"]["prompt"].as_str().unwrap_or_default();
@@ -964,8 +970,7 @@ fn answer_reserves(project: &Project, out: &Value, certainty: &str) -> usize {
             .map(|number| {
                 let id = format!("q{number}");
                 let text = prompt.lines().find_map(|line| line.strip_prefix(&format!("{id}: "))).unwrap_or_default();
-                let choice = if text.contains("What kind of work") { "feature" } else { "no" };
-                (id, json!({"choice": choice, "certainty": certainty}))
+                (id, json!({"choice": choice(text), "certainty": certainty}))
             })
             .collect();
         let receipt = json!({"request_id": request["request_id"], "model": "inherit", "input_tokens": null, "output_tokens": null,
@@ -1368,19 +1373,29 @@ fn an_unmarked_task_with_a_lower_number_sharing_a_file_leaves_after_the_marked_o
 /// Um Jev de mentira que responde ao tipo de cada tarefa (um recurso certo) e
 /// à pergunta de cada item pela chance que `chance_of` dá ao título dele.
 fn judging_items(chance_of: impl Fn(&str) -> f64 + Send + Sync + 'static) -> FakeJev {
-    FakeJev::start(move |asked| {
-        let questions = asked["questions"].as_object().expect("the questions");
-        let mut answers = serde_json::Map::new();
-        for key in questions.keys() {
-            if key.starts_with("tipo_") {
-                answers.insert(key.clone(), json!({"type":"choice","choice":"feature","confidence":0.9,"probabilities":{"feature":0.9,"defect":0.025,"text_fix":0.025,"remove_unused":0.025,"test_cleanup":0.025}}));
-            } else {
-                let title = asked["state"]["items"][key]["title"].as_str().unwrap_or_default();
-                answers.insert(key.clone(), json!({"type": "noul", "noul": chance_of(title)}));
-            }
+    FakeJev::start(move |asked| items_answer(asked, &chance_of))
+}
+
+/// A resposta de [`judging_items`] ao pedido `asked`: o tipo de cada tarefa é
+/// um recurso certo, e cada item ganha a chance que `chance_of` dá ao título.
+fn items_answer(asked: &Value, chance_of: &dyn Fn(&str) -> f64) -> (u16, Value) {
+    let questions = asked["questions"].as_object().expect("the questions");
+    let mut answers = serde_json::Map::new();
+    for key in questions.keys() {
+        if key.starts_with("tipo_") {
+            answers.insert(key.clone(), json!({"type":"choice","choice":"feature","confidence":0.9,"probabilities":{"feature":0.9,"defect":0.025,"text_fix":0.025,"remove_unused":0.025,"test_cleanup":0.025}}));
+        } else {
+            let title = asked["state"]["items"][key]["title"].as_str().unwrap_or_default();
+            answers.insert(key.clone(), json!({"type": "noul", "noul": chance_of(title)}));
         }
-        (200, json!({"model": "jev-1.13.0", "answers": answers, "usage": {"input_tokens": 1500, "output_tokens": 0}}))
-    })
+    }
+    (200, json!({"model": "jev-1.13.0", "answers": answers, "usage": {"input_tokens": 1500, "output_tokens": 0}}))
+}
+
+/// `true` quando o pedido `asked` ao Jev é o da escolha dos itens de uma
+/// onda: cada pergunta dele é a de um item.
+fn asks_items(asked: &Value) -> bool {
+    asked["questions"].as_object().is_some_and(|questions| questions.keys().all(|key| key.starts_with('i')))
 }
 
 /// As chamadas `wave items` que o programa observou.
@@ -1424,8 +1439,7 @@ fn the_jev_judges_the_items_of_the_request_and_the_wave_leaves_in_the_same_round
 
     assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
     assert!(out.get("analysis").is_none(), "{out}");
-    let items: Vec<Value> =
-        jev.all_requests().into_iter().filter(|asked| asked["questions"].as_object().is_some_and(|q| q.keys().all(|key| key.starts_with('i')))).collect();
+    let items: Vec<Value> = jev.all_requests().into_iter().filter(asks_items).collect();
     assert_eq!(items.len(), 1, "one call about the items of the wave: {items:?}");
     assert!(items[0]["state"]["task"].as_object().is_some_and(|task| !task.is_empty()), "{}", items[0]);
     let log = project.log();
@@ -1465,6 +1479,159 @@ fn without_a_key_the_wave_leaves_in_the_same_round_with_the_default_items() {
     assert!(prompt.contains(&project_code) && !prompt.contains(&other_code), "{prompt}");
     assert!(sent.fields.get("analysis").is_none(), "{:?}", sent.fields);
     assert!(item_calls(&project).is_empty(), "no key, no call");
+}
+
+/// O Jev monta a onda do backlog e recusa só a escolha dos itens dela: a
+/// rodada grava a onda e a segura, avisando que ela espera a escolha, e manda
+/// a pergunta à reserva. O recibo, pela porta do `run knowledge
+/// --complete-session`, decide no lugar do Jev, e a rodada seguinte despacha a
+/// mesma onda, com o número que ela ganhou, sem perguntar de novo e sem deixar
+/// onda gravada sem tarefa.
+#[test]
+fn a_wave_waiting_for_the_item_choice_leaves_with_its_number_after_the_receipt() {
+    let jev = FakeJev::start(|asked| if asks_items(asked) { (400, json!({"error": "refused"})) } else { items_answer(asked, &|_| 0.5) });
+    let (mut project, _, _, tasks) = backlog_project(&[&["a.rs"]]);
+    project.jev = Some(jev.url.clone());
+    let asked_items = || jev.all_requests().iter().filter(|asked| asks_items(asked)).count();
+
+    let first = project.run(&["round", "--dispatch", "--spec", SPEC]);
+
+    assert!(waves_in(&first, "dispatch").is_empty(), "the assembled wave waits for the receipt: {first}");
+    let waiting = warned_waves(&first, "items-jev-pending");
+    assert_eq!(waiting.len(), 1, "{first}");
+    assert_eq!(batch_orders(&project), vec![tasks], "the waiting wave stays recorded with its task: {first}");
+    assert_eq!(asked_items(), 1, "the item choice reaches the Jev once: {first}");
+    assert_eq!(answer_reserves(&project, &first, "sure"), 1, "only the item choice goes to the reserve: {first}");
+
+    let sent = project.run(&["round", "--dispatch", "--spec", SPEC]);
+
+    assert_eq!(waves_in(&sent, "dispatch"), waiting, "the wave that waited leaves with its number: {sent}");
+    assert!(sent.get("reserves").is_none(), "{sent}");
+    assert_eq!(asked_items(), 1, "the receipt answers in place of the Jev: {sent}");
+    let log = project.log();
+    let recorded: BTreeSet<u64> = log.events.iter().filter(|e| e.event_type == "wave").filter_map(|e| e.wave()).collect();
+    assert_eq!(recorded, log.planned_waves(), "no wave stays recorded without tasks: {sent}");
+    let send = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(waiting[0])).expect("the send");
+    let removed = send.fields["analysis"]["removed"].as_array().map_or(0, Vec::len);
+    assert!(removed > 0, "the receipt decides like the Jev: {:?}", send.fields);
+}
+
+/// `true` quando o pedido `asked` ao Jev é o da escolha das skills de uma
+/// tarefa: o estado traz as skills candidatas.
+fn asks_skills(asked: &Value) -> bool {
+    asked["state"].get("skills").is_some()
+}
+
+/// Um Jev de mentira que recusa só a escolha das skills e responde ao resto
+/// como [`judging_items`], com a mesma chance para cada item.
+fn refusing_the_skill_pick() -> FakeJev {
+    FakeJev::start(|asked| if asks_skills(asked) { (400, json!({"error": "refused"})) } else { items_answer(asked, &|_| 0.5) })
+}
+
+/// Cinco skills no `.claude/skills` do projeto, cada uma com `paths` em
+/// `src/**`: a tarefa que mexe em `src` tem mais candidatas do que cabem no
+/// bloco dela, e a escolha das skills vai ao Jev.
+fn tied_skills(project: &Project) {
+    for name in ["a1", "a2", "a3", "a4", "a5"] {
+        let dir = project.root.join(".claude/skills").join(name);
+        std::fs::create_dir_all(&dir).expect("the skill folder");
+        let text = format!("---\nname: {name}\ndescription: Does {name}.\npaths:\n  - src/**\n---\n\nAlways sum in whole cents in {name}.\n");
+        std::fs::write(dir.join("SKILL.md"), text).expect("the skill");
+    }
+}
+
+/// A escolha do recibo da escolha das skills: só a quarta e a quinta
+/// candidatas fazem o que a tarefa pede.
+fn the_fourth_and_fifth_skills(text: &str) -> &'static str {
+    if text.contains("skills.s4") || text.contains("skills.s5") { "yes" } else { "no" }
+}
+
+/// As ondas que a resposta `out` da rodada avisa esperar pelo motivo
+/// `reason`.
+fn warned_waves(out: &Value, reason: &str) -> Vec<u64> {
+    out["warnings"].as_array().into_iter().flatten().filter(|w| w["reason"] == json!(reason)).filter_map(|w| w["wave"].as_u64()).collect()
+}
+
+/// As skills do primeiro bloco do último envio da onda `wave`.
+fn sent_skills(project: &Project, wave: u64) -> Value {
+    let log = project.log();
+    let sent = log.last_by_wave("send")[&wave];
+    log.send_field(sent, "tasks").cloned().unwrap_or_default()[0]["skills"].clone()
+}
+
+/// A rodada que despachou a onda segurada pela escolha das skills, depois do
+/// recibo: a onda que esperou sai com o número dela e as skills do recibo,
+/// sem nova pergunta ao Jev nem pedido à reserva, e nenhuma onda fica gravada
+/// sem tarefa.
+fn the_held_wave_left(project: &Project, sent: &Value, waiting: &[u64], asked_skills: usize) {
+    assert_eq!(waves_in(sent, "dispatch"), waiting, "the wave that waited leaves with its number: {sent}");
+    assert!(sent.get("reserves").is_none(), "{sent}");
+    assert_eq!(asked_skills, 1, "the receipt answers in place of the Jev: {sent}");
+    assert_eq!(sent_skills(project, waiting[0]), json!(["a4", "a5"]), "the skills the receipt chose: {sent}");
+    let log = project.log();
+    let recorded: BTreeSet<u64> = log.events.iter().filter(|e| e.event_type == "wave").filter_map(|e| e.wave()).collect();
+    assert_eq!(recorded, log.planned_waves(), "no wave stays recorded without tasks: {sent}");
+}
+
+/// O Jev monta a onda do backlog, cuja tarefa tem mais skills candidatas do
+/// que cabem no bloco, e recusa só a escolha das skills: a rodada grava a
+/// onda e a segura, avisando que ela espera a escolha, e manda a pergunta à
+/// reserva. O recibo, pela porta do `run knowledge --complete-session`,
+/// escolhe no lugar do Jev, e a rodada seguinte despacha a mesma onda, com o
+/// número que ela ganhou e as skills do recibo.
+#[test]
+fn a_wave_waiting_for_the_skill_pick_leaves_with_its_number_after_the_receipt() {
+    let jev = refusing_the_skill_pick();
+    let (mut project, _, _, tasks) = backlog_project(&[&["src/a.rs"]]);
+    tied_skills(&project);
+    project.jev = Some(jev.url.clone());
+    let asked_skills = || jev.all_requests().iter().filter(|asked| asks_skills(asked)).count();
+
+    let first = project.run(&["round", "--dispatch", "--spec", SPEC]);
+
+    assert!(waves_in(&first, "dispatch").is_empty(), "the assembled wave waits for the receipt: {first}");
+    let waiting = warned_waves(&first, "skill-pick-reserve");
+    assert_eq!(waiting.len(), 1, "{first}");
+    assert_eq!(batch_orders(&project), vec![tasks], "the waiting wave stays recorded with its task: {first}");
+    assert_eq!(asked_skills(), 1, "the skill pick reaches the Jev once: {first}");
+    assert_eq!(answer_reserves_with(&project, &first, "sure", &the_fourth_and_fifth_skills), 1, "only the skill pick goes to the reserve: {first}");
+
+    let sent = project.run(&["round", "--dispatch", "--spec", SPEC]);
+
+    the_held_wave_left(&project, &sent, &waiting, asked_skills());
+}
+
+/// Com a leitura do classificador pendente, a passada com as travas presas
+/// só solta as ondas já gravadas, e a que a escolha das skills segurou é uma
+/// delas: o recibo chega, duas tarefas novas esperam a leitura da sessão, e a
+/// rodada despacha a onda segurada com o número que ela ganhou e as skills do
+/// recibo, sem desfazê-la.
+#[test]
+fn a_wave_waiting_for_the_skill_pick_leaves_with_its_number_while_the_forming_waits() {
+    let jev = refusing_the_skill_pick();
+    // A montagem é a por arquivo, sem Jev na ordem: a formação das tarefas
+    // novas espera a leitura da sessão.
+    let project = Project::new();
+    let path = project.root.join("mustard.json");
+    let mut config: Value = serde_json::from_str(&std::fs::read_to_string(&path).expect("config")).expect("json");
+    config["judgement"].as_object_mut().expect("the judgement").remove("wave-planning");
+    std::fs::write(&path, config.to_string()).expect("config");
+    let (mut project, crit, said, _) = backlog_in(project, &[&["src/a.rs"]], &[]);
+    tied_skills(&project);
+    project.jev = Some(jev.url.clone());
+    let asked_skills = || jev.all_requests().iter().filter(|asked| asks_skills(asked)).count();
+    let first = project.run(&["round", "--dispatch", "--spec", SPEC]);
+    let waiting = warned_waves(&first, "skill-pick-reserve");
+    assert_eq!(waiting.len(), 1, "{first}");
+    assert_eq!(answer_reserves_with(&project, &first, "sure", &the_fourth_and_fifth_skills), 1, "{first}");
+    let loose = [backlog_task(&project, crit, said, &["lib/b.rs"], &[]), backlog_task(&project, crit, said, &["lib/c.rs"], &[])];
+    project.session = Some(SESSION);
+
+    let sent = project.run(&["round", "--dispatch", "--spec", SPEC]);
+
+    assert!(sent.get("formation").is_some(), "the new tasks wait for the reading of the session: {sent}");
+    the_held_wave_left(&project, &sent, &waiting, asked_skills());
+    assert_eq!(loose.map(|task| wave_of(&project, task)), [None, None], "the new tasks wait for the forming: {sent}");
 }
 
 // ---------------------------------------------------------------------------
@@ -1605,11 +1772,10 @@ fn a_credit_refusal_keeps_round_planning_and_context_native_and_records_the_fail
     let items = project.run(&["round", "--dispatch", "--spec", SPEC]);
     assert!(answer_reserves(&project, &items, "unsure") >= 1, "the choice of the items waits too: {items}");
     let sent = project.run(&["round", "--dispatch", "--spec", SPEC]);
-    // As ondas que esperaram a escolha dos itens voltaram a ser montadas,
-    // pelo arquivo, com as tarefas em versão nova.
+    // As ondas que esperaram a escolha dos itens saem como foram montadas,
+    // pelo arquivo, sem voltar a ser montadas.
     let orders = batch_orders(&project);
-    assert_eq!(orders[0], vec![tasks[0], tasks[1]], "{orders:?}");
-    assert_eq!(orders[orders.len() - 2..].iter().map(Vec::len).collect::<Vec<_>>(), vec![2, 1], "by file: {orders:?}");
+    assert_eq!(orders, vec![vec![tasks[0], tasks[1]], vec![tasks[2]]], "by file: {orders:?}");
     assert!(sent.get("reserves").is_none(), "{sent}");
     let log = project.log();
     let sent = log.visible().into_iter().find(|e| e.event_type == "send").unwrap();

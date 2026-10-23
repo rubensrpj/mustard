@@ -144,7 +144,7 @@ fn the_item_choice_asks_outside_the_locks_and_only_the_failed_wave_waits_for_the
 
 /// A task loose in the backlog of spec `x` of `root`, on `file`, covering the
 /// criterion of the plan.
-fn loose_task(root: &Path, text: &str, file: &str) -> u64 {
+pub(super) fn loose_task(root: &Path, text: &str, file: &str) -> u64 {
     let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
     let first = |kind: &str| log.visible().into_iter().find(|e| e.event_type == kind).map(|e| e.id).unwrap();
     let (said, crit) = (first("message"), first("criterion"));

@@ -117,10 +117,12 @@ pub(crate) enum Hold {
 /// desfeita: cada tarefa dela volta ao backlog ([`backlog_return`]) e entra na
 /// montagem junto das outras, e a que cai num assunto montado agora ganha uma
 /// versão só, com o número da onda nova. A que a rodada segurou à espera da
-/// escolha dos itens pelo Jev não se desfaz
-/// ([`held_for_the_jev`](super::item_choice::held_for_the_jev)): segue
-/// gravada, com as tarefas dela, e sai com o número que ganhou na rodada em
-/// que a decisão chega, sem deixar onda vazia para trás.
+/// escolha dos itens pelo Jev
+/// ([`held_for_the_jev`](super::item_choice::held_for_the_jev)), ou da
+/// escolha das skills
+/// ([`held_for_picks`](crate::shared::skill_cycle::held_for_picks)), não se
+/// desfaz: segue gravada, com as tarefas dela, e sai com o número que ganhou
+/// na rodada em que a decisão chega, sem deixar onda vazia para trás.
 ///
 /// Cada onda grava o evento de onda, com autor binário: os critérios são a
 /// união do que as tarefas dela cobrem (`covers`), o pronta-quando é a prova
@@ -211,9 +213,19 @@ pub(crate) fn planned_backlog(
 
 /// [`dispatch_backlog`] com a formação do classificador pendente: só as
 /// ondas que ele já formou saem, inteiras; as tarefas que ele ainda vai ler
-/// esperam a leitura, sem Jev e sem a montagem de sempre.
-pub(crate) fn dispatch_formed(start: &Path, spec: &str, on_entry: &SpecLog, locked: &SpecLog, limit: usize) -> Result<Assembly, mustard_core::domain::spec_events::Refusal> {
-    assemble(start, spec, (on_entry, locked), limit, (None, None), (true, false)).map(|(assembly, _)| assembly)
+/// esperam a leitura, sem Jev e sem a montagem de sempre. Por `asker`, só se
+/// leem as decisões gravadas: a onda que a rodada segurou à espera da escolha
+/// dos itens ou da das skills segue gravada, como na passada antes das
+/// travas, e sai com o número que ganhou.
+pub(crate) fn dispatch_formed(
+    start: &Path,
+    spec: &str,
+    on_entry: &SpecLog,
+    locked: &SpecLog,
+    limit: usize,
+    asker: &Asker<'_>,
+) -> Result<Assembly, mustard_core::domain::spec_events::Refusal> {
+    assemble(start, spec, (on_entry, locked), limit, (None, Some(asker)), (true, false)).map(|(assembly, _)| assembly)
 }
 
 /// O julgamento do quadro de uma montagem: as tarefas que foram ao Jev, o
@@ -318,11 +330,14 @@ fn assemble(
     // A recusa da rodada que a segura é das chamadas que o programa observou.
     let observed = crate::commands::spec_events::conversation::observed(start, spec, log);
     let undone = unsent_batch_waves(log, &observed);
-    // A que a rodada segurou à espera da escolha dos itens pelo Jev fica:
-    // sai com o número que ganhou quando a decisão chega.
-    let project_root = crate::commands::spec_events::project(start).root;
+    // A que a rodada segurou à espera da escolha dos itens ou da das skills
+    // pelo Jev fica: sai com o número que ganhou quando a decisão chega.
+    let project = crate::commands::spec_events::project(start);
     let undone = match asker {
-        Some(asker) => &undone - &super::item_choice::held_for_the_jev(&project_root, spec, log, &undone, asker),
+        Some(asker) => {
+            let undone = &undone - &super::item_choice::held_for_the_jev(&project.root, spec, log, &undone, asker);
+            &undone - &crate::shared::skill_cycle::held_for_picks(&project.root, spec, (log, project.lang), &undone, asker)
+        }
         None => undone,
     };
     let in_undone = |id: &u64| by_id.get(id).and_then(|task| task.wave()).is_some_and(|wave| undone.contains(&wave));
@@ -359,7 +374,7 @@ fn assemble(
     // As vagas que as ondas já montadas deixam livres. O ciclo entre ondas é
     // recusado pela escolha das ondas prontas, logo depois: aqui só não sobra
     // vaga para onda nova.
-    let vacancies = super::vacancy::vacancies_with(&project_root, spec, log, limit);
+    let vacancies = super::vacancy::vacancies_with(&project.root, spec, log, limit);
     let (free, alone) = outgoing(log, &vacancies, &waves_stuck(log), &undone).map_or((0, false), |out| (out.free, out.alone));
 
     let code_of = |id: &u64| -> u64 { codes.get(id).and_then(|code| code.rsplit('-').next()).and_then(|number| number.parse().ok()).unwrap_or(*id) };

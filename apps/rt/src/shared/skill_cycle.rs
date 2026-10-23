@@ -11,7 +11,9 @@
 //! ([`crate::commands::flow::round::dispatch_jev`]); com as travas presas, a
 //! rodada só a lê, e a onda nova sem decisão não sai nesta rodada, só ela.
 //! Com o Jev ligado falhando, a escolha vai à reserva, e o recibo a manda na
-//! rodada seguinte, com a dúvida abaixo do corte.
+//! rodada seguinte, com a dúvida abaixo do corte. A onda que a montagem do
+//! backlog formou e a escolha segurou não volta a ser montada
+//! ([`held_for_picks`]): sai com o número que ganhou.
 //!
 //! A conta: cada envio soma, a cada skill do Mustard, uma candidatura quando
 //! ela foi candidata a alguma tarefa e uma entrega por bloco que a levou.
@@ -122,7 +124,17 @@ struct WaveTies<'a> {
     payloads: Vec<String>,
 }
 
-impl WaveTies<'_> {
+impl<'a> WaveTies<'a> {
+    /// As perguntas da escolha das skills das tarefas com empate do pedido
+    /// `prompt`.
+    fn of(prompt: &'a WavePrompt) -> Self {
+        let ties: Vec<&SkillTie> = prompt.skill_ties.iter().collect();
+        let (questions, entries) = pick_groups(&ties);
+        let parts: Vec<Vec<(String, Vec<String>)>> = questions.iter().zip(&entries).map(|(question, entries)| question.payloads(entries)).collect();
+        let payloads: Vec<String> = parts.iter().flatten().map(|(payload, _)| payload.clone()).collect();
+        Self { wave: prompt.wave, ties, parts, payloads }
+    }
+
     /// As skills de cada tarefa pelas respostas `docs`, uma por pedido, com
     /// a chance mínima `cut`; `None` quando alguma não se lê.
     fn picked(&self, docs: &[Value], cut: f64) -> Option<BTreeMap<u64, Vec<String>>> {
@@ -164,17 +176,7 @@ impl WaveTies<'_> {
 pub(crate) fn picks_decided(built: &[WavePrompt], holdable: &BTreeSet<u64>, jev: Option<&yes_no::AskFn<'_>>, asker: &Asker<'_>) -> Picked {
     let mut out = Picked::default();
     let Some(invoke) = jev else { return out };
-    let ones: Vec<WaveTies<'_>> = built
-        .iter()
-        .filter(|prompt| !prompt.skill_ties.is_empty())
-        .map(|prompt| {
-            let ties: Vec<&SkillTie> = prompt.skill_ties.iter().collect();
-            let (questions, entries) = pick_groups(&ties);
-            let parts: Vec<Vec<(String, Vec<String>)>> = questions.iter().zip(&entries).map(|(question, entries)| question.payloads(entries)).collect();
-            let payloads: Vec<String> = parts.iter().flatten().map(|(payload, _)| payload.clone()).collect();
-            WaveTies { wave: prompt.wave, ties, parts, payloads }
-        })
-        .collect();
+    let ones: Vec<WaveTies<'_>> = built.iter().filter(|prompt| !prompt.skill_ties.is_empty()).map(WaveTies::of).collect();
     if asker.asks() {
         let asking: Vec<(&WaveTies<'_>, Vec<String>)> = ones
             .iter()
@@ -258,6 +260,30 @@ pub(crate) fn picks(root: &Path, spec: &str, built: &[WavePrompt], holdable: &BT
     }
     let jev = yes_no::project_jev(root, spec, PICK_CALL);
     picks_decided(built, holdable, jev.as_deref(), asker)
+}
+
+/// As ondas de `waves`, montadas pelo backlog e não enviadas, da spec `spec`
+/// do projeto `root`, lida em `log`, que a rodada que as montou segurou à
+/// espera da escolha das skills pelo Jev: alguma tarefa delas tem mais skills
+/// candidatas do que cabem, e algum pedido dessa escolha não tinha decisão
+/// gravada, por `asker`, quando a onda foi gravada. A montagem não as desfaz:
+/// cada uma sai com o número que ganhou, na rodada em que a decisão chega. A
+/// onda que já tinha a decisão e não saiu por outro motivo fica de fora, e,
+/// sem o Jev da escolha das skills, nenhuma onda é segurada. O empate das
+/// skills de uma tarefa não depende do idioma `lang` nem das ondas que estão
+/// fora: o pedido se monta sem elas.
+pub(crate) fn held_for_picks(root: &Path, spec: &str, (log, lang): (&SpecLog, Locale), waves: &BTreeSet<u64>, asker: &Asker<'_>) -> BTreeSet<u64> {
+    if waves.is_empty() || yes_no::project_jev(root, spec, PICK_CALL).is_none() {
+        return BTreeSet::new();
+    }
+    let formed = log.last_by_wave("wave");
+    let built = mustard_core::io::wave_prompt::prompts(root, spec, log, lang, &Flight::default(), waves);
+    built
+        .iter()
+        .filter(|prompt| !prompt.skill_ties.is_empty())
+        .filter(|prompt| formed.get(&prompt.wave).is_some_and(|at| asker.undecided_at(PICK_CALL, &WaveTies::of(prompt).payloads, *at)))
+        .map(|prompt| prompt.wave)
+        .collect()
 }
 
 /// Conta os envios dos pedidos `sent` no registro do projeto `root`: as

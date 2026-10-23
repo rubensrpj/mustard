@@ -734,7 +734,7 @@ fn dispatch_round(
     // pendente, só as ondas que ele já formou saem: as tarefas que ele ainda
     // vai ler esperam, e nenhuma vai ao Jev.
     let assembled = if forming.pending.is_some() {
-        dispatch_formed(&opts.root, &spec, &log_on_entry, &locked, max_parallel(root)).map_err(RoundRefusal::Refused)?.1
+        dispatch_formed(&opts.root, &spec, &log_on_entry, &locked, max_parallel(root), &asker).map_err(RoundRefusal::Refused)?.1
     } else {
         dispatch_backlog(&opts.root, &spec, &log_on_entry, &locked, max_parallel(root), (judge.as_ref().map(|judge| judge as &Judge<'_>), Some(&asker)))
             .map_err(RoundRefusal::Refused)?
