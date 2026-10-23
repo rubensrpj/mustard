@@ -377,9 +377,9 @@ pub fn copies_dir(root: &Path) -> PathBuf {
 
 /// A pasta `path` mora dentro de um dos lugares de cópia do projeto `root`:
 /// a pasta das cópias dele ([`copies_dir`]), fora do projeto, ou o lugar
-/// antigo, dentro dele (`.claude/worktrees`). Só aí o Mustard apaga pasta; a
-/// pasta principal e a compilação dela nunca entram, nem o caminho que traz
-/// `..`.
+/// antigo, dentro dele (`.claude/worktrees`). Só aí uma pasta pode ser
+/// apagada; a pasta principal e a compilação dela nunca entram, nem o caminho
+/// que traz `..`.
 ///
 /// As duas pontas se comparam pela mesma grafia, a do lugar de verdade
 /// ([`real_place`]): a pasta do terminal, que o sistema dá já resolvida, e a
@@ -401,8 +401,7 @@ pub fn inside_copies(root: &Path, path: &Path) -> bool {
 /// O lugar de verdade que `path` nomeia: a parte que existe resolvida pelo
 /// sistema — o link, a pasta pessoal atrás de um link, o nome curto do
 /// Windows —, a que ainda não existe como foi escrita, e sem o prefixo de
-/// caminho literal que o Windows põe no que resolve (`\\?\C:\x` é `C:\x`,
-/// `\\?\UNC\srv\x` é `\\srv\x`).
+/// caminho literal que o Windows põe no que resolve ([`without_verbatim`]).
 #[must_use]
 pub fn real_place(path: &Path) -> PathBuf {
     let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
@@ -410,7 +409,9 @@ pub fn real_place(path: &Path) -> PathBuf {
     let mut head = absolute.as_path();
     loop {
         if let Ok(real) = std::fs::canonicalize(head) {
-            return tail.iter().rev().fold(without_verbatim(real), |full, part| full.join(part));
+            let plain = without_verbatim(&real.to_string_lossy());
+            let real = plain.map_or(real, PathBuf::from);
+            return tail.iter().rev().fold(real, |full, part| full.join(part));
         }
         match (head.file_name(), head.parent()) {
             (Some(name), Some(parent)) => {
@@ -422,17 +423,31 @@ pub fn real_place(path: &Path) -> PathBuf {
     }
 }
 
-/// `path` sem o prefixo de caminho literal do Windows (`\\?\`), que só o
-/// caminho resolvido pelo sistema traz.
-fn without_verbatim(path: PathBuf) -> PathBuf {
-    let plain = {
-        let text = path.to_string_lossy();
-        match text.strip_prefix(r"\\?\UNC\") {
-            Some(share) => Some(PathBuf::from(format!(r"\\{share}"))),
-            None => text.strip_prefix(r"\\?\").filter(|rest| rest.as_bytes().get(1) == Some(&b':')).map(PathBuf::from),
-        }
-    };
-    plain.unwrap_or(path)
+/// O texto do caminho `text` sem o prefixo de caminho literal do Windows, que
+/// o caminho resolvido pelo sistema traz: `\\?\C:\x` é `C:\x` e
+/// `\\?\UNC\srv\x` é `\\srv\x`; o prefixo de aparelho (`\\.\`) sai do mesmo
+/// jeito. É a regra única do prefixo, de quem resolve o lugar de verdade
+/// ([`real_place`]) e de quem compara caminhos pelo texto.
+///
+/// As barras podem ser as do Windows ou as normais (`//?/C:/x` é `C:/x`), e o
+/// compartilhamento recebe as barras do próprio texto. O prefixo seguido de
+/// outra coisa que um disco ou um compartilhamento — o volume,
+/// `\\?\Volume{…}\x` — fica: sem ele o caminho não diz lugar nenhum. `None`
+/// quando não há prefixo a tirar.
+#[must_use]
+pub fn without_verbatim(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let slash = |at: usize| matches!(bytes.get(at), Some(b'\\' | b'/'));
+    if !(slash(0) && slash(1) && matches!(bytes.get(2), Some(b'?' | b'.')) && slash(3)) {
+        return None;
+    }
+    let rest = &text[4..];
+    if rest.get(..3) == Some("UNC") && slash(7) {
+        let separator = &text[..1];
+        return Some(format!("{separator}{separator}{}", &text[8..]));
+    }
+    let drive = rest.as_bytes();
+    (drive.len() >= 2 && drive[0].is_ascii_alphabetic() && drive[1] == b':').then(|| rest.to_string())
 }
 
 /// A pasta em que o terminal está, como o sistema a dá: a leitura única de
@@ -3583,6 +3598,22 @@ mod tests {
         assert_ne!(development_build_dir(&one), copies_dir(&one));
         assert!(!development_build_dir(&one).starts_with(&one), "o fechamento só apaga o que está dentro do projeto");
         assert_eq!(development_build_dir(&one), development_build_dir(&one.join(".")), "o caminho é lido já resolvido");
+    }
+
+    /// O prefixo de caminho literal sai do caminho de disco e do de
+    /// compartilhamento, com as barras de cada texto; o do volume e o caminho
+    /// comum ficam como vieram. Texto puro: a mesma resposta em todo sistema.
+    #[test]
+    fn the_literal_prefix_leaves_a_drive_and_a_share_and_keeps_a_volume() {
+        assert_eq!(without_verbatim(r"\\?\C:\Users\runner\proj").as_deref(), Some(r"C:\Users\runner\proj"));
+        assert_eq!(without_verbatim("//?/C:/Users/runner/proj").as_deref(), Some("C:/Users/runner/proj"));
+        assert_eq!(without_verbatim(r"\\.\D:\x").as_deref(), Some(r"D:\x"), "o prefixo de aparelho sai igual");
+        assert_eq!(without_verbatim(r"\\?\UNC\srv\share\x").as_deref(), Some(r"\\srv\share\x"));
+        assert_eq!(without_verbatim("//?/UNC/srv/share/x").as_deref(), Some("//srv/share/x"));
+        assert_eq!(without_verbatim(r"\\?\Volume{0b1c2d3e-0000-0000-0000-100000000000}\x"), None, "o volume não tem outra grafia");
+        assert_eq!(without_verbatim(r"C:\Users\runner\proj"), None);
+        assert_eq!(without_verbatim("/home/runner/proj"), None);
+        assert_eq!(without_verbatim(r"\\srv\share\x"), None, "o compartilhamento sem prefixo fica");
     }
 
     /// A obra da revisão de volta: três requisitos acordados, um critério, a

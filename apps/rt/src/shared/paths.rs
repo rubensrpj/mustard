@@ -10,6 +10,7 @@ use std::path::Path;
 use mustard_core::domain::model::contract::HookInput;
 use mustard_core::io::claude_paths::{LESSONS_FILE, SPEC_INDEX_FILE};
 use mustard_core::io::spec_events::spec_root;
+use mustard_core::io::wave_prompt::{real_place, without_verbatim};
 
 /// The files of a spec folder only the binary writes. The spec root's
 /// `meta.json` counts too: it is what says whether an old draft, with no event
@@ -52,22 +53,16 @@ pub(crate) fn relative_to_cwd(cwd: &str, file_path: &str) -> Option<String> {
     below(&cwd, &abs)
 }
 
-/// The one spelling of a path text, which every comparison of two paths goes
-/// through: forward slashes; no verbatim prefix (`\\?\C:\x` is `C:/x`,
-/// `\\?\UNC\srv\share\x` is `//srv/share/x`); `.`, `..` and doubled slashes
-/// resolved in the text only, without looking at the disk; the drive letter in
-/// capitals. A relative path stays relative. Pure: the same text gives the
-/// same answer on every system.
+/// A grafia única do texto de um caminho, por onde passa toda comparação de
+/// dois caminhos: barras normais; sem o prefixo de caminho literal, pela regra
+/// única do núcleo ([`without_verbatim`]: `\\?\C:\x` é `C:/x`); `.`, `..` e
+/// barras dobradas resolvidos só no texto, sem olhar o disco; a letra do disco
+/// em maiúscula. O caminho relativo fica relativo. Pura: o mesmo texto dá a
+/// mesma resposta em todo sistema.
 #[must_use]
 pub(crate) fn canonical(path: &str) -> String {
     let text = path.replace('\\', "/");
-    let text = if let Some(rest) = text.strip_prefix("//?/UNC/").or_else(|| text.strip_prefix("//./UNC/")) {
-        format!("/{rest}")
-    } else if let Some(rest) = text.strip_prefix("//?/").or_else(|| text.strip_prefix("//./")) {
-        if has_drive(rest) { rest.to_string() } else { text }
-    } else {
-        text
-    };
+    let text = without_verbatim(&text).unwrap_or(text);
     lexical(&text)
 }
 
@@ -107,14 +102,13 @@ pub(crate) fn below(folder: &str, path: &str) -> Option<String> {
     same.then(|| path[prefix.len()..].to_string())
 }
 
-/// The canonical text of the real place `path` names
-/// ([`mustard_core::io::wave_prompt::real_place`]): the part that exists is
-/// resolved by the system (a Windows short name such as `RUNNER~1`, a link, the
-/// case on disk), and the part that does not exist yet is kept as written,
-/// spelled by [`canonical`].
+/// O texto canônico do lugar de verdade que `path` nomeia ([`real_place`]): a
+/// parte que existe resolvida pelo sistema (o nome curto do Windows, como
+/// `RUNNER~1`, o link, as letras como estão no disco), e a que ainda não
+/// existe como foi escrita, na grafia de [`canonical`].
 #[must_use]
 pub(crate) fn on_disk(path: &Path) -> String {
-    canonical(&mustard_core::io::wave_prompt::real_place(path).to_string_lossy())
+    canonical(&real_place(path).to_string_lossy())
 }
 
 /// `path` with `.` and `..` resolved in the text only, without looking at the

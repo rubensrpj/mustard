@@ -1152,58 +1152,5 @@ mod standing_tests {
         // Da pasta principal não sai aviso nenhum.
         assert_eq!(standing_in_a_copy(root, mustard_core::platform::i18n::Locale::PtBr), None);
     }
-
-    /// A pasta do processo filho de
-    /// [`the_round_warns_from_a_copy_reached_through_a_link`]: o projeto mora
-    /// em `projeto` e a resposta do aviso vai para `aviso.json`.
-    const STANDING_CHILD: &str = "MUSTARD_STANDING_TEST_CHILD";
-
-    /// O terminal parado numa vaga cuja pasta das cópias o sistema escreve de
-    /// outro jeito: no Linux e no macOS, a base das cópias atrás de um link —
-    /// a pasta pessoal num link —, e o sistema dá a pasta do terminal já
-    /// resolvida; no Windows, sem o link, a pasta resolvida traz o prefixo de
-    /// caminho literal. Nos dois, o aviso sai e nomeia a pasta da vaga. O
-    /// aviso roda num processo filho parado na vaga, com a base das cópias
-    /// dele: a pasta do processo da suíte não muda.
-    #[test]
-    fn the_round_warns_from_a_copy_reached_through_a_link() {
-        let dir = tempfile::tempdir().expect("temp");
-        let root = dir.path().join("projeto");
-        std::fs::create_dir_all(&root).unwrap();
-        let real = dir.path().join("real");
-        std::fs::create_dir_all(&real).unwrap();
-        #[cfg(unix)]
-        let base = {
-            let link = dir.path().join("link");
-            std::os::unix::fs::symlink(&real, &link).unwrap();
-            link
-        };
-        #[cfg(not(unix))]
-        let base = real.clone();
-        let slot = real.join(copies_dir(&root).file_name().unwrap()).join("obra").join("a");
-        std::fs::create_dir_all(&slot).unwrap();
-
-        let child = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "commands::flow::round::slots::standing_tests::warning_read_from_the_terminal_folder"])
-            .env(STANDING_CHILD, dir.path())
-            .env("MUSTARD_COPIES_DIR", &base)
-            .current_dir(&slot)
-            .output()
-            .unwrap();
-        assert!(child.status.success(), "{}", String::from_utf8_lossy(&child.stdout));
-        let warning: Value = serde_json::from_str(&std::fs::read_to_string(dir.path().join("aviso.json")).unwrap()).unwrap();
-        assert_eq!(warning["reason"], "terminal-inside-a-copy", "o aviso sai: {warning}");
-        assert!(warning["hint"].as_str().unwrap().contains("/obra/a"), "e nomeia a vaga: {warning}");
-    }
-
-    /// O lado do processo filho: sem a variável, não faz nada.
-    #[test]
-    fn warning_read_from_the_terminal_folder() {
-        let Some(dir) = std::env::var_os(STANDING_CHILD).map(PathBuf::from) else {
-            return;
-        };
-        let warning = standing_in_a_copy(&dir.join("projeto"), Locale::PtBr);
-        std::fs::write(dir.join("aviso.json"), serde_json::to_string(&warning).unwrap()).unwrap();
-    }
 }
 

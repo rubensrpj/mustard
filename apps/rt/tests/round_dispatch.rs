@@ -2235,6 +2235,53 @@ fn a_wave_that_lost_its_last_task_after_returning_is_not_named_among_the_copies_
     assert_eq!(warning["hint"], json!(expected), "{held}");
 }
 
+/// A rodada pelo binário, rodada de dentro de `from` com a raiz do projeto
+/// dada, como quem conduz a obra a roda de qualquer pasta, e com a base das
+/// cópias em `copies`.
+fn round_from(project: &Project, from: &Path, copies: &Path) -> Value {
+    let root = project.root.display().to_string();
+    let out = project
+        .program(env!("CARGO_BIN_EXE_mustard-rt"))
+        .args(["run", "round", "--dispatch", "--spec", SPEC, "--root", &root])
+        .env("MUSTARD_COPIES_DIR", copies)
+        .current_dir(from)
+        .output()
+        .expect("the round runs");
+    serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("the round answers JSON ({e}): {}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
+}
+
+/// O aviso do terminal parado numa cópia, na resposta `out`, quando saiu.
+fn terminal_in_a_copy(out: &Value) -> Option<&Value> {
+    out["warnings"].as_array().into_iter().flatten().find(|warning| warning["reason"] == json!("terminal-inside-a-copy"))
+}
+
+/// A base das cópias atrás de um link — a pasta pessoal num link —: a rodada
+/// cria a cópia da onda pelo link, e o sistema dá a pasta do terminal parado
+/// nela já resolvida. A rodada chamada de dentro da cópia avisa o terminal e
+/// nomeia a pasta dele; chamada da pasta principal, não avisa.
+#[test]
+fn the_round_warns_the_terminal_standing_in_a_copy_behind_a_link() {
+    let (project, _, _, _) = backlog_project(&[&["a.rs"]]);
+    let place = project.root.parent().expect("the test folder").to_path_buf();
+    let real = place.join("real");
+    std::fs::create_dir_all(&real).expect("the real base");
+    let link = place.join("link");
+    std::os::unix::fs::symlink(&real, &link).expect("the link");
+
+    let first = round_from(&project, &project.root, &link);
+    assert_eq!(waves_in(&first, "dispatch"), vec![1], "{first}");
+    assert_eq!(terminal_in_a_copy(&first), None, "from the main folder there is no warning: {first}");
+    keep_sent(&project, &[1]);
+    let copy = PathBuf::from(last_send(&project, 1).str_field("copy").expect("the copy"));
+    assert!(copy.starts_with(&link), "the round made the copy through the link: {}", copy.display());
+
+    let inside = round_from(&project, &copy, &link);
+    let warning = terminal_in_a_copy(&inside).unwrap_or_else(|| panic!("the round warns the terminal in the copy: {inside}"));
+    let resolved = mustard_core::io::wave_prompt::shown(&std::fs::canonicalize(&copy).expect("the copy exists"));
+    assert!(warning["hint"].as_str().is_some_and(|hint| hint.contains(&resolved)), "the warning names the folder {resolved}: {warning}");
+}
+
 /// Os eventos da spec, fora as chamadas de comando que toda chamada grava:
 /// o que a rodada gravou de fato.
 fn recorded(project: &Project) -> Vec<u64> {

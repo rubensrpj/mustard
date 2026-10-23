@@ -1157,6 +1157,58 @@ fn reading_from_inside_the_copy_of_an_open_request_shows_the_message_and_records
     assert_eq!(reads_recorded(root).len(), 2, "a leitura de fora da cópia não é do pedido");
 }
 
+/// Quantas chamadas `read` o binário observou na spec `teste`: as do arquivo
+/// de operações dela, onde a chamada mora.
+fn read_calls(root: &Path) -> usize {
+    let path = mustard_core::io::spec_events::operations_file(root, "teste").expect("the operations file");
+    let log = mustard_core::io::spec_events::read(&path).ok().flatten().unwrap_or_default();
+    log.visible().into_iter().filter(|e| e.event_type == "call" && e.str_field("command") == Some("read")).count()
+}
+
+/// O agente de uma conversa sem ligação parado na cópia da própria spec, com a
+/// pasta das cópias escrita de outro jeito pelo sistema: no Linux e no macOS,
+/// a base das cópias atrás de um link — a pasta pessoal num link —, e o
+/// sistema dá a pasta do terminal já resolvida; no Windows, sem o link, o
+/// lugar resolvido traz o prefixo de caminho literal. O `run read` dele fica
+/// gravado, uma vez só; o mesmo comando da mesma conversa, rodado da pasta
+/// principal, não fica.
+#[test]
+fn a_read_from_a_spec_copy_behind_a_link_is_recorded_for_an_unbound_conversation() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().join("projeto");
+    std::fs::create_dir_all(&root).expect("the project");
+    seed_state(&root, &json!({"author": "binary", "phase": "plan", "branch": "feature/teste", "base": "dev"}));
+    seed_binary(&root, "message", &json!({"author": "user", "text": "O agente lê de dentro da cópia."}));
+    let real = dir.path().join("real");
+    std::fs::create_dir_all(&real).expect("the real base");
+    #[cfg(unix)]
+    let base = {
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).expect("the link");
+        link
+    };
+    #[cfg(not(unix))]
+    let base = real.clone();
+    let project_folder = mustard_core::io::wave_prompt::copies_dir(&root).file_name().expect("the project folder").to_os_string();
+    let copy = real.join(project_folder).join("teste").join("a");
+    std::fs::create_dir_all(&copy).expect("the copy");
+    let read_unbound_from = |from: &Path| {
+        let out = rt(&root, &["read", "conversation", "--spec", "teste"])
+            .current_dir(from)
+            .env("MUSTARD_COPIES_DIR", &base)
+            .env("MUSTARD_SESSION_ID", "s-paralela")
+            .env_remove("MUSTARD_ACTIVE_SPEC")
+            .output()
+            .expect("run read");
+        assert!(out.status.success(), "read from {}: {}", from.display(), String::from_utf8_lossy(&out.stdout));
+    };
+
+    read_unbound_from(&root);
+    assert_eq!(read_calls(&root), 0, "a conversa sem ligação lendo da pasta principal não grava a chamada");
+    read_unbound_from(&copy);
+    assert_eq!(read_calls(&root), 1, "lendo de dentro da cópia da spec, a chamada fica uma vez");
+}
+
 /// O campo `every_wave` é aceito na gravação de uma regra e aparece na leitura
 /// do item, pelo código; o valor que não é verdadeiro ou falso é recusado sem
 /// gravar nada, e o item com a marca tem dono sem onda nem arquivo, mesmo numa
