@@ -10,7 +10,7 @@ argument-hint: [--doctor]
 2. Relay `created`, `updated`, `preserved`, `migrated`. Settings and config preserve personal choices. For session-map and agents, every run lays the shipped text down again in `language.text`; equal copies are `preserved`.
 3. Relay `installation.complete` (false is incomplete), failures, `pluginRefresh` version/restart or skip and `codeToolWarnings` with commands.
 4. Relay `cleanup`/`cleaned` by file: obsolete `CLAUDE.md`/team settings entries removed, `cleaned.swapped` deny rules to commit, `cleaned.pending` Guards to test or drop. `unmarked` files were untouched; the person decides.
-5. `localFilesFound`, while `mustard.json` lacks `localFiles`: ignored files outside ignored folders, like `.env`, that a wave copy lacks. Show it once, with the prepare command its lockfile or manifest suggests (`npm ci`, `dotnet restore`; none if nothing installs), and record what the person confirms: `mustard-rt run upsert --local-files <a,b> --prepare "<command>"`; an empty value records none.
+5. `localFilesFound`, while `mustard.json` lacks `localFiles`: ignored files outside ignored folders (`.env`) a wave copy lacks. Show it once with the prepare command its lockfile or manifest suggests (`npm ci`, `dotnet restore`, none if nothing installs; Prisma adds `&& npx prisma generate`) and record the reply: `mustard-rt run upsert --local-files <a,b> --prepare "<command>"`; empty records none.
 6. After a first install, say `mustard.json` takes `git.flow`, `git.protected`, `language.text`, `language.code` (names in code; English without it), `enabled` (off turns Mustard's hooks off here) and `rtk` (off drops its local hook on the next upsert).
 
 ## Doctor
