@@ -28,6 +28,7 @@ use std::time::Instant;
 
 use mustard_core::domain::spec_events::{SpecEvent, SpecLog};
 use mustard_core::domain::spec_state::PhaseWriter;
+use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Map, Value, json};
 
@@ -291,7 +292,7 @@ pub(crate) fn ask_outside(start: &Path, root: &Path, spec: &str, waiting: &[Wait
                 None => {
                     let request = reserve::reserve_request(root, spec, one.question.command(), &one.payloads);
                     if request.get("unavailable").is_none() {
-                        record_reserve(start, spec, one, &request, started);
+                        record_reserve(start, root, spec, one, &request, started);
                         reserves.push(request);
                     } else {
                         record_decision(start, spec, one, &[], started);
@@ -334,11 +335,23 @@ fn record_decision(start: &Path, spec: &str, one: &Waiting, docs: &[Value], star
 /// Grava, na spec `spec` de `start`, o pedido de reserva `request` da volta
 /// `one`, cujo Jev falhou: o número do pedido e a impressão dos pedidos dela
 /// de agora, achados de novo pela chave dela, por onde a rodada seguinte lê o
-/// recibo ([`reserve_receipt`]). Melhor esforço: a gravação que falha deixa a
-/// volta esperando, e a rodada seguinte pergunta de novo.
-fn record_reserve(start: &Path, spec: &str, one: &Waiting, request: &Value, started: Instant) {
+/// recibo ([`reserve_receipt`]). A reserva ainda sem recibo volta igual a
+/// cada rodada, e o pedido já gravado sob a chave, lido na spec de `root`,
+/// não se grava de novo. A etapa sai como pulada, e não como falha: a falha
+/// do Jev já fica contada na chamada dele, e a decisão só passou à reserva.
+/// Melhor esforço: a gravação que falha deixa a volta esperando, e a rodada
+/// seguinte pergunta de novo.
+fn record_reserve(start: &Path, root: &Path, spec: &str, one: &Waiting, request: &Value, started: Instant) {
+    let stage = one.question.reserve_stage();
+    let log = store::spec_file(root, spec).ok().and_then(|path| store::read(&path).ok().flatten()).unwrap_or_default();
+    let already = recorded(&log, &stage, &one.key)
+        .filter_map(|event| serde_json::from_str::<Value>(event.str_field("output")?).ok())
+        .any(|asked| asked["request_id"] == request["request_id"]);
+    if already {
+        return;
+    }
     let asked = json!({ "request_id": request["request_id"], "subject": reserve::subject(&one.payloads) });
-    record_stage(start, spec, one, &one.question.reserve_stage(), "fail", &asked, started);
+    record_stage(start, spec, one, &stage, "skipped", &asked, started);
 }
 
 /// Grava, na spec `spec` de `start`, a etapa `stage` da volta `one`, com o

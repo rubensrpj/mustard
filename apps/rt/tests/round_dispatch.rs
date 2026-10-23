@@ -2649,6 +2649,32 @@ fn a_reserve_receipt_survives_a_task_written_between_the_request_and_the_receipt
     assert_leftover_noted_on(&project, open);
 }
 
+/// O classificador volta ilegível duas rodadas seguidas e a reserva da sobra
+/// segue sem recibo: a segunda rodada pergunta de novo e devolve o mesmo
+/// pedido de reserva a quem conduz, mas a spec guarda uma etapa só dele, e
+/// essa etapa não tem o resultado de uma falha.
+#[test]
+fn a_pending_reserve_asked_again_is_recorded_once_and_not_as_a_failure() {
+    let WaitingLeftover { project, jev, asked, .. } = leftover_waiting_for(failing_classifier());
+    let first = asked["reserves"].as_array().cloned().unwrap_or_default();
+    assert_eq!(first.len(), 1, "the unreadable classifier hands the leftover to the reserve: {asked}");
+
+    let again = project.run(&["round", "--dispatch", "--spec", SPEC, "--report", USAGE_OF_WAVE_ONE]);
+
+    assert_eq!(waiting_for_the_jev(&again), vec![1], "the return still waits for the receipt: {again}");
+    assert_eq!(triage_requests(&jev), 2, "the classifier is asked again while the reserve has no receipt: {again}");
+    let handed: Vec<Value> = again["reserves"].as_array().into_iter().flatten().map(|request| request["request_id"].clone()).collect();
+    assert_eq!(handed, vec![first[0]["request_id"].clone()], "the same reserve goes back to the conductor: {again}");
+    let log = project.log();
+    let recorded: Vec<Option<&str>> = log
+        .visible()
+        .into_iter()
+        .filter(|e| e.event_type == "stage_run" && e.str_field("stage").is_some_and(|stage| stage.starts_with("jev-reserve:")))
+        .map(|e| e.str_field("result"))
+        .collect();
+    assert_eq!(recorded, vec![Some("skipped")], "one stage for the pending reserve, and not a failing one");
+}
+
 /// A decisão é das atividades: a volta que muda a sobra enquanto espera não
 /// tem decisão nenhuma, e o classificador é perguntado de novo.
 #[test]
