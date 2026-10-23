@@ -61,6 +61,30 @@ pub(super) fn asks_jev(jev: Option<&dyn WaveJudge>) -> bool {
     jev.is_some()
 }
 
+/// As ondas de `waves`, montadas pelo backlog e não enviadas, na spec lida em
+/// `log`, que a rodada que as montou segurou à espera da escolha dos itens
+/// pelo Jev do projeto em `root`: algum pedido da escolha dela não tinha
+/// decisão gravada, por `asker`, quando a onda foi gravada. A montagem não as
+/// desfaz: cada uma sai com o número que ganhou, na rodada em que a decisão
+/// chega. A onda que já tinha a decisão e não saiu por outro motivo fica de
+/// fora, e todas ficam com o Jev desligado.
+pub(super) fn held_for_the_jev(root: &Path, spec: &str, log: &SpecLog, waves: &BTreeSet<u64>, asker: &Asker<'_>) -> BTreeSet<u64> {
+    if waves.is_empty() || !asks_jev(crate::shared::jev::for_context(root, spec).filter.as_deref()) {
+        return BTreeSet::new();
+    }
+    let held = |wave: u64| -> Option<bool> {
+        let formed = log.block(BlockQuery::Wave(wave)).into_iter().filter(|e| e.event_type == "wave").map(|e| e.id).max()?;
+        let found = candidates(log, wave);
+        if found.is_empty() {
+            return None;
+        }
+        let parts = items_payloads(&board_of(log, wave, &found)).ok()?;
+        let payloads: Vec<String> = parts.into_iter().map(|(payload, _)| payload).collect();
+        Some(asker.undecided_at(ITEMS_CALL, &payloads, formed))
+    };
+    waves.iter().copied().filter(|wave| held(*wave) == Some(true)).collect()
+}
+
 /// A pergunta de uma onda: o número, os candidatos, o quadro e os pedidos ao
 /// Jev, cada um com os itens que pergunta.
 type Asked<'l> = (u64, Candidates<'l>, ItemsBoard, Vec<(String, Vec<u64>)>);

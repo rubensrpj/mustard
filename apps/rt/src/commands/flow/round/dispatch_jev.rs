@@ -21,7 +21,10 @@
 //! mesmas tarefas, acha a mesma decisão, e a espera não se repete. Cada pedido
 //! fica gravado por si: a decisão de uma tarefa vale em qualquer montagem que
 //! a leve, e a rodada em que a spec mudou entre a pergunta e a trava só espera
-//! pelo pedido que mudou.
+//! pelo pedido que mudou. A onda montada que a escolha dos itens segurou não
+//! volta a ser montada: a montagem a mantém enquanto a decisão dela falta ou
+//! veio depois dela ([`Asker::undecided_at`]), e ela sai com o número que
+//! ganhou.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -75,6 +78,8 @@ pub(crate) struct Asker<'a> {
     spec: &'a str,
     phase: Phase,
     known: RefCell<BTreeMap<String, Value>>,
+    /// O número do evento que gravou primeiro a decisão de cada impressão.
+    since: BTreeMap<String, u64>,
     reserves: RefCell<Vec<Value>>,
 }
 
@@ -82,13 +87,24 @@ impl<'a> Asker<'a> {
     /// As decisões gravadas na spec lida em `log`, na fase `phase`.
     pub(crate) fn new(start: &'a Path, root: &'a Path, spec: &'a str, log: &SpecLog, phase: Phase) -> Self {
         let mut known = BTreeMap::new();
+        let mut since = BTreeMap::new();
         let prefix = format!("{STAGE}:");
         for event in log.events.iter().filter(|e| e.event_type == "stage_run" && e.str_field("stage").is_some_and(|stage| stage.starts_with(&prefix))) {
             if let Some(kept) = event.str_field("output").and_then(|text| serde_json::from_str::<Map<String, Value>>(text).ok()) {
-                known.extend(kept);
+                for (print, doc) in kept {
+                    since.entry(print.clone()).or_insert(event.id);
+                    known.insert(print, doc);
+                }
             }
         }
-        Self { start, root, spec, phase, known: RefCell::new(known), reserves: RefCell::new(Vec::new()) }
+        Self { start, root, spec, phase, known: RefCell::new(known), since, reserves: RefCell::new(Vec::new()) }
+    }
+
+    /// `true` quando algum pedido de `payloads` da chamada `command` ainda não
+    /// tinha decisão gravada no evento `formed`: a decisão falta, ou foi
+    /// gravada depois dele.
+    pub(crate) fn undecided_at(&self, command: &str, payloads: &[String], formed: u64) -> bool {
+        payloads.iter().any(|payload| self.since.get(&print(command, payload).0).is_none_or(|at| *at > formed))
     }
 
     /// `true` antes das travas, quando a pergunta pode sair.

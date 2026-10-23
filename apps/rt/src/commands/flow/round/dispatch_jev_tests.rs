@@ -6,6 +6,7 @@
 //! dela espera o recibo; as outras saem. Com o Jev desligado, vale a regra de
 //! sempre, sem espera.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -197,6 +198,41 @@ fn the_assembly_asks_outside_the_locks_and_only_the_backlog_waits_for_the_receip
         assert_eq!(asked_with_locks_free(&seen), 0, "the receipt answers in place of the Jev: {sent}");
         assert_eq!(waves_in(&sent, "dispatch"), vec![2], "{sent}");
     }
+}
+
+/// The wave that the assembly of the backlog formed and whose item choice
+/// waits for the receipt, because the Jev failed, leaves in the round after
+/// the receipt with the number it was given: the same wave is sent, and no
+/// wave stays recorded without tasks.
+#[test]
+fn an_assembled_wave_waiting_for_the_item_choice_leaves_with_its_number() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    approved_with(root, "x", &[], |said| {
+        let rule = json!({"title": "A tabela tem chave.", "text": "A tabela tem chave.", "example": "e", "keys": ["k"],
+            "applies_to": {"files": ["**"]}, "origin": said});
+        write(root, "x", "rule", rule);
+    });
+    loose_task(root, "Somar o total.", "src/b.rs");
+    let seen = judge_for(root, Mode::Fails, false, Some("Somar o total"));
+    let first = round(root, "x", None);
+    assert_eq!(asked_with_locks_free(&seen), 1, "the item choice goes to the Jev once: {first}");
+    assert!(waves_in(&first, "dispatch").is_empty(), "the assembled wave waits for the receipt: {first}");
+    let waiting: Vec<u64> =
+        first["warnings"].as_array().into_iter().flatten().filter(|w| w["reason"] == json!("items-jev-pending")).filter_map(|w| w["wave"].as_u64()).collect();
+    assert_eq!(waiting.len(), 1, "{first}");
+    let request = first["reserves"][0].clone();
+    assert!(request["delegation"]["request"]["prompt"].as_str().is_some(), "the reserve request: {first}");
+
+    crate::shared::jev::reserve::answer_in_test(root, &request, |_| "no".into(), "sure");
+    let sent = round(root, "x", None);
+    crate::shared::jev::judge_in_test(None);
+    assert_eq!(asked_with_locks_free(&seen), 0, "the receipt answers in place of the Jev: {sent}");
+    assert_eq!(waves_in(&sent, "dispatch"), waiting, "the wave that waited leaves with its number: {sent}");
+    assert_eq!(removed_by_the_jev(root, waiting[0]).len(), 1, "the receipt decides like the Jev: {sent}");
+    let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+    let recorded: BTreeSet<u64> = log.events.iter().filter(|e| e.event_type == "wave").filter_map(|e| e.wave()).collect();
+    assert_eq!(recorded, log.planned_waves(), "no wave stays recorded without tasks: {sent}");
 }
 
 /// A doc answering every question of the request `payload`: a sure yes, the

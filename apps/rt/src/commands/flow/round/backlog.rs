@@ -116,7 +116,11 @@ pub(crate) enum Hold {
 /// uma rodada anterior — a que não ganhou cópia para sair, por exemplo — é
 /// desfeita: cada tarefa dela volta ao backlog ([`backlog_return`]) e entra na
 /// montagem junto das outras, e a que cai num assunto montado agora ganha uma
-/// versão só, com o número da onda nova.
+/// versão só, com o número da onda nova. A que a rodada segurou à espera da
+/// escolha dos itens pelo Jev não se desfaz
+/// ([`held_for_the_jev`](super::item_choice::held_for_the_jev)): segue
+/// gravada, com as tarefas dela, e sai com o número que ganhou na rodada em
+/// que a decisão chega, sem deixar onda vazia para trás.
 ///
 /// Cada onda grava o evento de onda, com autor binário: os critérios são a
 /// união do que as tarefas dela cobrem (`covers`), o pronta-quando é a prova
@@ -314,6 +318,13 @@ fn assemble(
     // A recusa da rodada que a segura é das chamadas que o programa observou.
     let observed = crate::commands::spec_events::conversation::observed(start, spec, log);
     let undone = unsent_batch_waves(log, &observed);
+    // A que a rodada segurou à espera da escolha dos itens pelo Jev fica:
+    // sai com o número que ganhou quando a decisão chega.
+    let project_root = crate::commands::spec_events::project(start).root;
+    let undone = match asker {
+        Some(asker) => &undone - &super::item_choice::held_for_the_jev(&project_root, spec, log, &undone, asker),
+        None => undone,
+    };
     let in_undone = |id: &u64| by_id.get(id).and_then(|task| task.wave()).is_some_and(|wave| undone.contains(&wave));
     let cleanup = |id: &u64| by_id.get(id).is_some_and(|task| is_cleanup(task));
     // A tarefa que não cobre item nenhum não forma onda, sozinha ou de carona:
@@ -344,11 +355,11 @@ fn assemble(
     // As ondas do plano que ainda não terminaram: em andamento, por sair,
     // mantidas ou com conserto pendente. Elas vão ao Jev e seguram a limpeza
     // que pegaria carona, nunca uma tarefa pelo arquivo.
-    let open_waves = open_plan_waves(log, &observed);
+    let open_waves = open_plan_waves(log, &undone);
     // As vagas que as ondas já montadas deixam livres. O ciclo entre ondas é
     // recusado pela escolha das ondas prontas, logo depois: aqui só não sobra
     // vaga para onda nova.
-    let vacancies = super::vacancy::vacancies_with(&crate::commands::spec_events::project(start).root, spec, log, limit);
+    let vacancies = super::vacancy::vacancies_with(&project_root, spec, log, limit);
     let (free, alone) = outgoing(log, &vacancies, &waves_stuck(log), &undone).map_or((0, false), |out| (out.free, out.alone));
 
     let code_of = |id: &u64| -> u64 { codes.get(id).and_then(|code| code.rsplit('-').next()).and_then(|number| number.parse().ok()).unwrap_or(*id) };
@@ -624,13 +635,11 @@ fn board_of(log: &SpecLog, by_id: &BTreeMap<u64, &SpecEvent>, population: &[Back
 }
 
 /// As ondas do plano que ainda não terminaram — em andamento, por sair,
-/// mantidas ou com conserto pendente —, fora a onda de lote montada e não
-/// enviada, que a montagem desfaz. O Jev as vê como as ondas em andamento, e
-/// a limpeza só pega carona sem nenhuma delas; o arquivo delas não segura
-/// tarefa nenhuma.
-fn open_plan_waves(log: &SpecLog, observed: &[SpecEvent]) -> Vec<u64> {
+/// mantidas ou com conserto pendente —, fora as ondas de lote `undone`, que
+/// a montagem desfaz. O Jev as vê como as ondas em andamento, e a limpeza só
+/// pega carona sem nenhuma delas; o arquivo delas não segura tarefa nenhuma.
+fn open_plan_waves(log: &SpecLog, undone: &BTreeSet<u64>) -> Vec<u64> {
     let done = waves_done(log, &waves_in_progress(log));
-    let undone = unsent_batch_waves(log, observed);
     log.planned_waves().into_iter().filter(|n| !done.contains(n) && !undone.contains(n)).collect()
 }
 
