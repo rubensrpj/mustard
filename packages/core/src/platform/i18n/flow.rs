@@ -2196,16 +2196,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              Mustard to rewrite it again, clear the description on the provider."
         }
         // O corpo do pull request aberto que ficou como estava porque não traz
-        // a marca do corpo gerado: é de um pull request aberto antes dela.
+        // a marca do corpo gerado: é de antes dela ou foi escrito à mão.
         ("pr.body_unmarked", Locale::PtBr) => {
-            "O corpo do pull request #{pr} ficou como estava ({reason}). Ele é de antes da marca que o \
-             Mustard põe no fim do corpo que gera. Sem essa marca, não há como saber se alguém o \
-             editou. Para o Mustard voltar a refazê-lo, apague a descrição no provedor."
+            "O corpo do pull request #{pr} ficou como estava ({reason}). Ele não traz a marca que o \
+             Mustard põe no fim do corpo que gera. É de antes dela ou foi escrito à mão. Sem essa \
+             marca, não há como saber se alguém o editou. Para o Mustard voltar a refazê-lo, apague \
+             a descrição no provedor."
         }
         ("pr.body_unmarked", Locale::EnUs) => {
-            "The body of pull request #{pr} stayed as it was ({reason}). It predates the mark Mustard \
-             puts at the end of the body it generates. Without that mark, there is no telling whether \
-             someone edited it. For Mustard to rewrite it again, clear the description on the provider."
+            "The body of pull request #{pr} stayed as it was ({reason}). It lacks the mark Mustard \
+             puts at the end of the body it generates. It predates that mark or was written by hand. \
+             Without the mark, there is no telling whether someone edited it. For Mustard to rewrite \
+             it again, clear the description on the provider."
         }
         // A esteira do pull request lida depois de abri-lo e na retomada da
         // spec com ele aberto, uma frase por resposta do provedor.
@@ -2628,7 +2630,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 380, 0xab12_c17e_9434_6e51);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 380, 0xd31b_bbf6_6256_0523);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
