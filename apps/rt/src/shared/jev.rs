@@ -225,20 +225,19 @@ impl JevFilter {
     }
 
     /// O filtro da finalidade `purpose`, ou o primeiro ajuste que falta, na
-    /// ordem em que o `mustard.json` os pede: o Jev, a finalidade e a chave.
+    /// ordem de [`jev_gate::purpose_key`]: o Jev, a finalidade e a chave.
     fn orchestrating(root: &Path, spec: &str, purpose: Purpose) -> Result<Self, JevOff> {
         if cfg!(test) {
             return Err(JevOff::InTest);
         }
         let config = ProjectConfig::load(root);
-        if !config.ai_fallback_enabled() {
-            return Err(JevOff::Fallback);
-        }
-        if !jev_gate::setting_allows(config.judgement_filter(purpose.key())) {
-            return Err(JevOff::Purpose(purpose.key()));
-        }
-        let loaded = key_in(root, &config, std::env::var(jev_gate::KEY_ENV).ok())
-            .map_err(|error| if error == FilterError::KeyInGit { JevOff::KeyInGit } else { JevOff::NoKey })?;
+        let loaded = jev_gate::purpose_key(&config, purpose.key(), || key_in(root, &config, std::env::var(jev_gate::KEY_ENV).ok()))
+            .map_err(|missing| match missing {
+                jev_gate::Missing::Fallback => JevOff::Fallback,
+                jev_gate::Missing::Purpose => JevOff::Purpose(purpose.key()),
+                jev_gate::Missing::Key(FilterError::KeyInGit) => JevOff::KeyInGit,
+                jev_gate::Missing::Key(_) => JevOff::NoKey,
+            })?;
         let mut filter = Self::new(root, loaded.key);
         filter.spec = Some(spec.into());
         filter.purpose = purpose;
@@ -271,9 +270,9 @@ impl JevFilter {
     /// Knowledge uses the same authorization, cache and attempt ledger
     /// as other search decisions, without enabling context or wave judgement.
     pub(crate) fn for_knowledge(root:&Path)->Option<Self> {
+        if cfg!(test) {return None;}
         let config=ProjectConfig::load(root);
-        if cfg!(test) || !config.ai_fallback_enabled() || !jev_gate::setting_allows(config.judgement_filter("search")) {return None;}
-        let loaded=key_in(root,&config,std::env::var(jev_gate::KEY_ENV).ok()).ok()?;
+        let loaded=jev_gate::purpose_key(&config,"search",||key_in(root,&config,std::env::var(jev_gate::KEY_ENV).ok())).ok()?;
         let mut filter=Self::new(root,loaded.key);
         let session=crate::shared::spec_state::session_from_env();
         filter.spec=crate::shared::spec_state::active_spec(&root.to_string_lossy(),session.as_deref());
@@ -1004,16 +1003,13 @@ fn waves_filter(root: &Path, config: &ProjectConfig, env: Option<String>) -> Wav
     purpose_filter(root, config, env, "wave-planning", None)
 }
 fn purpose_filter(root: &Path, config: &ProjectConfig, env: Option<String>, purpose: &str, spec: Option<&str>) -> WavesJev {
-    if !config.ai_fallback_enabled() || !jev_gate::setting_allows(config.judgement_filter(purpose)) {
-        return WavesJev::default();
-    }
-    match key_in(root, config, env) {
+    match jev_gate::purpose_key(config, purpose, || key_in(root, config, env)) {
         Ok(loaded) => {
             let mut filter = JevFilter::new(root, loaded.key);
             filter.spec = spec.map(str::to_string);
             WavesJev { filter: Some(std::sync::Arc::new(filter)), ..WavesJev::default() }
         }
-        Err(error) => WavesJev { key_in_git: error == FilterError::KeyInGit, ..WavesJev::default() },
+        Err(missing) => WavesJev { key_in_git: missing == jev_gate::Missing::Key(FilterError::KeyInGit), ..WavesJev::default() },
     }
 }
 impl JevFilter {
