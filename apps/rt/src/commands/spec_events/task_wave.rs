@@ -52,10 +52,19 @@ fn replaced_id(log: &SpecLog, draft: &Map<String, Value>) -> Option<u64> {
 /// propósito, que devolve as tarefas ao backlog), a de onda que o agente já
 /// entregou e a de lote que ainda não saiu passam.
 ///
+/// Só a gravação que pode tirar tarefa de onda é julgada: a remoção, que a
+/// esconde, e a versão de tarefa, que a troca por outra sem a onda. As outras
+/// (nota, passo, entrega, mensagem) não mexem em tarefa nenhuma e passam sem a
+/// leitura do andamento; a onda que já estava fora do ar antes delas não as
+/// trava.
+///
 /// # Errors
 ///
 /// [`Refusal::WaveAgentWorking`], com o número da onda.
-pub(super) fn working_wave_rule(before: &SpecLog, after: &SpecLog) -> Result<(), Refusal> {
+pub(super) fn working_wave_rule(event_type: &str, before: &SpecLog, after: &SpecLog) -> Result<(), Refusal> {
+    if !matches!(event_type, "remove" | "task") {
+        return Ok(());
+    }
     match waves_left_without_tasks(after).into_keys().find(|wave| agent_working(before, *wave)) {
         Some(wave) => Err(Refusal::WaveAgentWorking { wave }),
         None => Ok(()),
@@ -72,6 +81,16 @@ mod tests {
     /// tem envio sem volta (id 6), e uma da onda 7 (id 8), que ainda não saiu.
     /// Com `returned`, o agente da onda 3 gravou a entrega dele.
     fn log_with_tasks(returned: bool) -> SpecLog {
+        spec_log(returned, false)
+    }
+
+    /// [`log_with_tasks`] depois da remoção da única tarefa da onda 3 (id 4):
+    /// a onda, de envio sem volta, fica sem tarefa e sai do ar.
+    fn log_with_the_wave_emptied() -> SpecLog {
+        spec_log(false, true)
+    }
+
+    fn spec_log(returned: bool, emptied: bool) -> SpecLog {
         let dir = tempdir().unwrap();
         let path = store::spec_file(dir.path(), "x").unwrap();
         let fields = |value: Value| value.as_object().cloned().unwrap();
@@ -94,6 +113,9 @@ mod tests {
         write("task", task(Some(7)));
         if returned {
             write("delivered", json!({"wave": 3, "text": "Pronta.", "files": [], "returned": true}));
+        }
+        if emptied {
+            write("remove", json!({"targets": [4], "reason": "Já foi feito fora da onda."}));
         }
         store::read(&path).unwrap().unwrap()
     }
@@ -141,6 +163,20 @@ mod tests {
         inherit_wave(&log, &mut unknown);
         for stays in [backlog, unsent, returned, fresh, unknown] {
             assert!(!stays.contains_key("wave"), "{stays:?}");
+        }
+    }
+
+    #[test]
+    fn only_a_removal_or_a_task_version_is_judged_for_the_wave_it_leaves_without_tasks() {
+        let before = log_with_tasks(false);
+        let after = log_with_the_wave_emptied();
+        for judged in ["remove", "task"] {
+            assert_eq!(working_wave_rule(judged, &before, &after), Err(Refusal::WaveAgentWorking { wave: 3 }), "{judged}");
+        }
+        // Gravação que não mexe em tarefa não é julgada, mesmo que o arquivo
+        // depois dela mostre a onda sem tarefa.
+        for unrelated in ["note", "step", "delivered", "message"] {
+            assert_eq!(working_wave_rule(unrelated, &before, &after), Ok(()), "{unrelated}");
         }
     }
 }

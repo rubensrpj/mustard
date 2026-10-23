@@ -4255,13 +4255,15 @@ mod tests {
     }
 
 
-    /// Duas ondas saem, uma num arquivo TypeScript e outra num C#, e a única
-    /// tarefa da onda 1 é removida depois da entrega do agente dela, com o
-    /// pedido ainda aberto. A rodada com relatório já não lista a onda 1 em
-    /// andamento e grava a nota do binário que diz por quê; a rodada de
-    /// despacho seguinte também não a lista e não grava outra nota; a leitura
-    /// do andamento e a das vagas ocupadas, que a retomada e a fila usam,
-    /// também a deixam de fora.
+    /// Duas ondas saem, uma num arquivo TypeScript e outra num C#, e as duas
+    /// estão em andamento. A única tarefa da onda 1 é removida pelo programa
+    /// (a triagem tira assim as tarefas de uma onda parada; a remoção do `run
+    /// write` seria recusada enquanto o agente trabalha), sem entrega e com o
+    /// pedido ainda aberto: só a remoção tira a onda 1 do andamento. A rodada
+    /// com relatório já não a lista em andamento e grava a nota do binário
+    /// que diz por quê; a rodada de despacho seguinte também não a lista e
+    /// não grava outra nota; a leitura do andamento e a das vagas ocupadas,
+    /// que a retomada e a fila usam, também a deixam de fora.
     #[test]
     fn a_wave_whose_tasks_were_all_removed_leaves_the_air_in_every_round() {
         let dir = tempdir().unwrap();
@@ -4273,9 +4275,14 @@ mod tests {
         let task = log.visible().into_iter().find(|e| e.event_type == "task" && e.wave() == Some(1)).unwrap().id;
         let code = log.codes().get(&task).cloned().unwrap();
         let send = log.codes().get(&log.last_by_wave("send")[&1]).cloned().unwrap();
-        delivered(root, 1, "Saiu.", &["web/app.ts"]);
-        let removed = write(root, "x", "remove", json!({"targets": [code], "reason": "Já foi feito fora da onda."}));
-        assert_eq!(removed["ok"], json!(true), "{removed}");
+        assert_eq!(waves_in_progress(&log).into_keys().collect::<Vec<_>>(), vec![1, 2], "antes da remoção as duas ondas estão em andamento");
+        let removal = json!({"targets": [code], "reason": "Já foi feito fora da onda."});
+        let refused = write(root, "x", "remove", removal.clone());
+        assert_eq!(refused["reason"], json!("wave-agent-working"), "o run write recusa enquanto o agente trabalha: {refused}");
+        record(root, "x", "remove", removal.as_object().cloned().unwrap(), PhaseWriter::Binary).unwrap();
+        let log = spec_now(root);
+        assert!(!waves_returned(&log).contains(&1), "o agente da onda 1 não voltou");
+        assert_eq!(waves_left_without_tasks(&log).into_keys().collect::<Vec<_>>(), vec![1], "a remoção tirou a onda 1 do ar");
 
         let notes = || -> Vec<String> {
             spec_now(root)
@@ -4305,9 +4312,10 @@ mod tests {
     }
     /// A remoção da única tarefa de uma onda enviada, depois da entrega do
     /// agente, responde com o número dessa onda, que sai do ar com ela, e
-    /// nunca com a onda que segue com tarefa. A remoção seguinte, de uma tarefa do backlog, fora de qualquer
-    /// onda, responde sem onda nenhuma: a onda que já tinha saído do ar não
-    /// volta à lista. O projeto é em TypeScript e C#.
+    /// nunca com a onda que segue com tarefa. A remoção seguinte, de uma
+    /// tarefa do backlog, fora de qualquer onda, responde sem onda nenhuma: a
+    /// onda que já tinha saído do ar não volta à lista. O projeto é em
+    /// TypeScript e C#.
     #[test]
     fn removing_the_only_task_of_a_sent_wave_answers_with_that_wave() {
         let dir = tempdir().unwrap();

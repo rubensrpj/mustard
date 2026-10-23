@@ -1330,7 +1330,7 @@ fn record_to(
     let mut survey = None;
     let lang = project.lang;
     let guard = |before: &SpecLog, after: &SpecLog| {
-        record_rules(&name, before, after, carried.as_deref(), replaces, by)?;
+        record_rules(&name, event_type, before, after, carried.as_deref(), replaces, by)?;
         // O passo do levantamento só vai ao relatório do modelo.
         if by.is_none() {
             survey = survey_report(&name, before, after, lang, false);
@@ -1396,12 +1396,20 @@ fn phase_carried(event_type: &str, draft: &Map<String, Value>) -> (Option<String
 /// onda que o modelo deixaria sem tarefa com o agente trabalhando, a mensagem
 /// que a resposta responde, o objetivo, o levantamento, o dono do item
 /// combinado e a dependência entre tarefas.
-fn record_rules(spec: &str, before: &SpecLog, after: &SpecLog, carried: Option<&str>, replaces: Option<u64>, by: Option<PhaseWriter>) -> Result<(), Refusal> {
+fn record_rules(
+    spec: &str,
+    event_type: &str,
+    before: &SpecLog,
+    after: &SpecLog,
+    carried: Option<&str>,
+    replaces: Option<u64>,
+    by: Option<PhaseWriter>,
+) -> Result<(), Refusal> {
     phase_rule(spec, before, after, carried, replaces, by)?;
     if by.is_none() {
         closed_spec_work_rule(spec, before, after)?;
         wave_by_backlog_rule(before, after)?;
-        super::task_wave::working_wave_rule(before, after)?;
+        super::task_wave::working_wave_rule(event_type, before, after)?;
     }
     reply_rule(before, after)?;
     goal_rule(spec, before, after)?;
@@ -1592,7 +1600,7 @@ impl RecordCheck {
         task_declared(event_type, &draft, false)?;
         let (carried, replaces) = phase_carried(event_type, &draft);
         let (name, by) = (&self.name, self.by);
-        self.dry.write(event_type, draft, |before, after| record_rules(name, before, after, carried.as_deref(), replaces, Some(by)))
+        self.dry.write(event_type, draft, |before, after| record_rules(name, event_type, before, after, carried.as_deref(), replaces, Some(by)))
     }
 }
 

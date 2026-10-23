@@ -707,6 +707,38 @@ fn removing_one_of_two_tasks_of_a_wave_whose_agent_works_goes_through() {
     assert_eq!(wave_of(&project, tasks[1]), Some(1), "a outra tarefa segue na onda");
 }
 
+/// A onda que já saiu do ar sem a volta do agente — a remoção que tirou a
+/// última tarefa dela vem de uma versão sem a recusa, semeada no arquivo —
+/// não trava a gravação que não tem relação com ela: a nota passa. A remoção
+/// da última tarefa da outra onda, cujo agente trabalha, segue recusada, e a
+/// recusa nomeia essa onda, e não a que já tinha saído.
+#[test]
+fn a_write_unrelated_to_a_wave_already_out_of_the_air_goes_through() {
+    let (project, _, _, tasks) = backlog_project(&[&["web/app.ts"], &["src/Program.cs"]]);
+    let (_, out) = dispatch_ready(&project);
+    assert_eq!(out, vec![1, 2], "cada tarefa sai na sua onda");
+    project.seed("remove", &json!({"targets": [tasks[0]], "reason": "Já foi feito fora da onda."}));
+    let log = project.log();
+    let planned = log.planned_waves();
+    assert!(!planned.contains(&1) && planned.contains(&2), "a onda 1 saiu do ar e a 2 segue no plano: {planned:?}");
+    assert!(
+        log.visible().into_iter().all(|e| e.event_type != "delivered" || e.wave() != Some(1)),
+        "o agente da onda 1 não voltou"
+    );
+
+    let written = log.events.len();
+    let noted = project.write("note", &json!({"title": "Observação", "text": "A onda 1 saiu do ar antes da entrega.", "keys": ["onda"]}));
+    assert_eq!(noted["type"], json!("note"), "{noted}");
+    assert_eq!(project.log().events.len(), written + 1, "a nota foi gravada");
+
+    let removal = json!({"targets": [tasks[1]], "reason": "Já foi feito fora da onda."});
+    let refused = project.answer(&["write", "remove", "--spec", SPEC, "--json", &removal.to_string()]);
+    assert_eq!(refused["reason"], json!("wave-agent-working"), "{refused}");
+    let hint = refused["hint"].as_str().expect("the refusal teaches");
+    assert!(hint.contains("onda 2") && !hint.contains("onda 1"), "a recusa nomeia a onda que o agente ainda trabalha: {hint}");
+    assert_eq!(wave_of(&project, tasks[1]), Some(2), "a tarefa segue na onda 2");
+}
+
 // ---------------------------------------------------------------------------
 // A montagem da onda pelo Jev, com um Jev de mentira
 // ---------------------------------------------------------------------------
