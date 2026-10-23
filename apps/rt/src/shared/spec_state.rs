@@ -48,14 +48,8 @@ pub(crate) fn hand_session(command: &mut std::process::Command, session: &str) {
 /// which could name another session's spec. Só as entradas `run` perguntam
 /// aqui e passam a sessão para baixo; o que elas chamam recebe a sessão como
 /// argumento, e os testes passam a deles.
-///
-/// Nos testes da biblioteca, nenhuma: a sessão de quem roda a suíte de
-/// dentro de uma conversa não muda o que um teste grava.
 #[must_use]
 pub(crate) fn session_from_env() -> Option<String> {
-    if cfg!(test) {
-        return None;
-    }
     session_from(|key| std::env::var(key).ok())
 }
 

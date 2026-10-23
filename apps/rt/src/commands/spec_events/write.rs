@@ -316,7 +316,13 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
 /// ao mesmo tempo, pela pergunta do lugar dele ([`super::request_route`]).
 /// Nunca entra em pânico.
 pub(crate) fn write_at_with(opts: &WriteOpts, copy: bool) -> Value {
-    write_triaged(opts, copy, &|root, spec, payload| reserve::ask_orchestration(root, spec, TASK_TRIAGE_CALL, payload))
+    write_for(opts, copy, session_from_env().as_deref())
+}
+
+/// [`write_at_with`] da sessão `session`, a que decide a spec da gravação sem
+/// `--spec`; é como um teste a escolhe.
+pub(crate) fn write_for(opts: &WriteOpts, copy: bool, session: Option<&str>) -> Value {
+    write_triaged(opts, copy, session, &|root, spec, payload| reserve::ask_orchestration(root, spec, TASK_TRIAGE_CALL, payload))
 }
 
 /// A pergunta ao Jev que [`write_triaged`] faz: recebe a raiz do projeto, a
@@ -333,9 +339,9 @@ fn ask_together(root: &Path, spec: &str, payloads: &[String], ask: &AskJev<'_>) 
     })
 }
 
-/// [`write_at_with`] com a pergunta ao classificador e ao lugar do pedido
-/// feita por `ask` ([`AskJev`]).
-fn write_triaged(opts: &WriteOpts, copy: bool, ask: &AskJev<'_>) -> Value {
+/// [`write_for`] com a pergunta ao classificador e ao lugar do pedido feita
+/// por `ask` ([`AskJev`]).
+fn write_triaged(opts: &WriteOpts, copy: bool, session: Option<&str>, ask: &AskJev<'_>) -> Value {
     let project = super::project(&opts.root);
     let lang = project.lang;
     let refuse = move |refusal: Refusal| super::refused(&refusal, lang);
@@ -372,8 +378,7 @@ fn write_triaged(opts: &WriteOpts, copy: bool, ask: &AskJev<'_>) -> Value {
             if type_spec(event_type).is_none() {
                 return refuse(Refusal::UnknownType { found: event_type.to_string() });
             }
-            let session = crate::shared::spec_state::session_from_env();
-            match super::session_spec::of_conversation(&project.root, session.as_deref(), event_type) {
+            match super::session_spec::of_conversation(&project.root, session, event_type) {
                 Ok(spec) => bound = spec,
                 Err(refusal) => return refuse(refusal),
             }
@@ -2216,7 +2221,7 @@ mod tests {
         let events = || store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap().events.len();
         let before = events();
 
-        let refused = write_triaged(&opts(&again), false, &|_, _, _| Asked::Answered(triaged(&format!("join:t{open}"))));
+        let refused = write_triaged(&opts(&again), false, None, &|_, _, _| Asked::Answered(triaged(&format!("join:t{open}"))));
         assert_eq!(refused["reason"], json!("same-work-open"), "{refused}");
         assert_eq!(refused["task"], json!("MSTD-TASK-0001"), "{refused}");
         assert!(refused["hint"].as_str().unwrap().contains("MSTD-TASK-0001 — Subtrair"), "{refused}");
@@ -2224,13 +2229,13 @@ mod tests {
 
         let mut distinct = again.clone();
         distinct["distinct"] = json!("Outra conta: tira um número do outro.");
-        let recorded = write_triaged(&opts(&distinct), false, &|_, _, _| panic!("a distinct write asks nothing"));
+        let recorded = write_triaged(&opts(&distinct), false, None, &|_, _, _| panic!("a distinct write asks nothing"));
         assert_eq!(recorded["ok"], json!(true), "{recorded}");
         let log = store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap();
         let id = recorded["id"].as_u64().unwrap();
         assert_eq!(log.get(id).and_then(|event| event.str_field("distinct")), Some("Outra conta: tira um número do outro."));
 
-        let plain = write_triaged(&opts(&again), false, &|_, _, _| Asked::Off);
+        let plain = write_triaged(&opts(&again), false, None, &|_, _, _| Asked::Off);
         assert_eq!(plain["ok"], json!(true), "without Jev the task is recorded: {plain}");
     }
 
@@ -2247,7 +2252,7 @@ mod tests {
         let again = json!({"title": "Tirar um número do outro", "text": "Tirar um número do outro.", "agent": "- tirar",
             "files": [{"path": "src/calc.ts"}], "depends_on": [], "covers": [request], "origin": asked});
         let opts = WriteOpts { root: root.to_path_buf(), spec: Some("teste".into()), event_type: "task".into(), json: again.to_string() };
-        let refused = write_triaged(&opts, false, &|_, _, _| Asked::Answered(triaged(&format!("join:t{open}"))));
+        let refused = write_triaged(&opts, false, None, &|_, _, _| Asked::Answered(triaged(&format!("join:t{open}"))));
         let delegation = &refused["rewrite"]["delegation"];
         let family = if delegation["host"] == json!("claude") { "haiku" } else { "luna" };
         assert_eq!(delegation["model_family"], json!(family), "{refused}");
@@ -2295,13 +2300,13 @@ mod tests {
             };
             let tasks = || store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap().visible().iter().filter(|e| e.event_type == "task").count();
             let before = tasks();
-            let out = write_triaged(&opts(&json!({})), false, &|_, _, _| Asked::Failed);
+            let out = write_triaged(&opts(&json!({})), false, None, &|_, _, _| Asked::Failed);
             assert_eq!(out["reason"], json!("jev-reserve"), "{out}");
             assert_eq!(tasks(), before, "nothing is recorded yet");
             let prompt = out["reserve"]["delegation"]["request"]["prompt"].as_str().unwrap();
             assert!(prompt.contains("Where does `items.i0` belong?"), "{prompt}");
             let id = out["reserve"]["request_id"].as_str().unwrap().to_string();
-            let pending = write_triaged(&opts(&json!({ "reserve": id })), false, &|_, _, _| panic!("a pending reserve asks no Jev"));
+            let pending = write_triaged(&opts(&json!({ "reserve": id })), false, None, &|_, _, _| panic!("a pending reserve asks no Jev"));
             assert_eq!(pending["reason"], json!("jev-reserve"), "{pending}");
 
             let said = |choice: &str| json!({ "choice": choice, "certainty": certainty });
@@ -2314,7 +2319,7 @@ mod tests {
                 output_tokens: None,
             };
             mustard_core::io::knowledge::enrichment::complete_session(root, root, &receipt).unwrap();
-            let applied = write_triaged(&opts(&json!({ "reserve": id })), false, &|_, _, _| panic!("the receipt answers in place of the Jev"));
+            let applied = write_triaged(&opts(&json!({ "reserve": id })), false, None, &|_, _, _| panic!("the receipt answers in place of the Jev"));
             if certainty == "sure" {
                 assert_eq!(applied["reason"], json!("same-work-open"), "{applied}");
                 assert_eq!(tasks(), before);
@@ -2381,7 +2386,7 @@ mod tests {
         let asked_text = format!("Trocar o tema do site para escuro; o token {key} está no painel.");
         let opts = routed_request(root, &asked_text);
         let asked = std::sync::Mutex::new(Vec::new());
-        let refused = write_triaged(&opts(&json!({})), false, &route_jev(route_answer("new_spec", 0.93, 0.04), &asked));
+        let refused = write_triaged(&opts(&json!({})), false, None, &route_jev(route_answer("new_spec", 0.93, 0.04), &asked));
         assert_eq!(refused["ok"], json!(false), "{refused}");
         assert_eq!(refused["reason"], json!("request-new-spec"), "{refused}");
         assert!(refused["hint"].as_str().unwrap().contains("spec nova"), "{refused}");
@@ -2393,7 +2398,7 @@ mod tests {
         assert!(!payloads[0].contains(&key), "no secret leaves: {}", payloads[0]);
         drop(payloads);
 
-        let confirmed = write_triaged(&opts(&json!({"same_spec": "O usuário disse que o tema é desta obra."})), false, &|_, _, payload| {
+        let confirmed = write_triaged(&opts(&json!({"same_spec": "O usuário disse que o tema é desta obra."})), false, None, &|_, _, payload| {
             assert!(!payload.contains("request-route"), "a confirmed request asks nothing");
             Asked::Off
         });
@@ -2409,7 +2414,7 @@ mod tests {
         let root = dir.path();
         let opts = routed_request(root, "Mais para frente, revisar a política de backup do servidor.");
         let asked = std::sync::Mutex::new(Vec::new());
-        let out = write_triaged(&opts(&json!({})), false, &route_jev(route_answer("project_pending", 0.9, 0.1), &asked));
+        let out = write_triaged(&opts(&json!({})), false, None, &route_jev(route_answer("project_pending", 0.9, 0.1), &asked));
         assert_eq!(out["ok"], json!(true), "{out}");
         assert_eq!(out["pending"], json!("P-1"), "{out}");
         assert!(out["hint"].as_str().unwrap().contains("P-1"), "{out}");
@@ -2426,7 +2431,7 @@ mod tests {
         let root = dir.path();
         let opts = routed_request(root, "Somar também números negativos.");
         let asked = std::sync::Mutex::new(Vec::new());
-        let out = write_triaged(&opts(&json!({})), false, &route_jev(route_answer("same_spec", 0.95, 0.97), &asked));
+        let out = write_triaged(&opts(&json!({})), false, None, &route_jev(route_answer("same_spec", 0.95, 0.97), &asked));
         assert_eq!(out["ok"], json!(true), "{out}");
         assert!(out.get("warnings").is_none(), "{out}");
         assert_eq!(requests(root), 1);
@@ -2443,7 +2448,7 @@ mod tests {
             let root = dir.path();
             let opts = routed_request(root, "Trocar o tema do site para escuro.");
             let asked = std::sync::Mutex::new(Vec::new());
-            let out = write_triaged(&opts(&json!({})), false, &route_jev(answer.clone(), &asked));
+            let out = write_triaged(&opts(&json!({})), false, None, &route_jev(answer.clone(), &asked));
             assert_eq!(out["ok"], json!(true), "{answer}: {out}");
             assert_eq!(requests(root), 1);
             let warnings = out["warnings"].to_string();
@@ -2463,7 +2468,7 @@ mod tests {
         let before = requests(root);
         let asked = std::sync::Mutex::new(Vec::new());
         let started = std::time::Instant::now();
-        let out = write_triaged(&opts(&json!({})), false, &|_, _, payload| {
+        let out = write_triaged(&opts(&json!({})), false, None, &|_, _, payload| {
             std::thread::sleep(std::time::Duration::from_secs(5));
             asked.lock().unwrap().push(payload.to_string());
             Asked::Answered(if payload.contains("request-route") { route_answer("same_spec", 0.95, 0.97) } else { triaged("new") })
@@ -2489,7 +2494,7 @@ mod tests {
             let opts = routed_request(root, "Mais para frente, revisar a política de backup do servidor.");
             subtraction_backlog(root);
             let before = requests(root);
-            let out = write_triaged(&opts(&json!({})), false, &|_, _, _| Asked::Failed);
+            let out = write_triaged(&opts(&json!({})), false, None, &|_, _, _| Asked::Failed);
             assert_eq!(out["ok"], json!(false), "{out}");
             assert_eq!(out["reason"], json!("jev-reserve"), "{out}");
             assert!(out["hint"].as_str().unwrap().contains("`reserve`"), "{out}");
@@ -2498,7 +2503,7 @@ mod tests {
             assert!(prompt.contains("Where does the request in `request` belong?") && prompt.contains("Where does `items.i0` belong?"), "both questions: {prompt}");
             let id = out["reserve"]["request_id"].as_str().unwrap().to_string();
 
-            let again = write_triaged(&opts(&json!({ "reserve": id })), false, &|_, _, _| panic!("a pending reserve asks no Jev"));
+            let again = write_triaged(&opts(&json!({ "reserve": id })), false, None, &|_, _, _| panic!("a pending reserve asks no Jev"));
             assert_eq!((again["reason"].clone(), again["reserve"]["request_id"].clone()), (json!("jev-reserve"), json!(id)), "{again}");
             assert_eq!(requests(root), before, "still pending");
             let log = store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap();
@@ -2516,7 +2521,7 @@ mod tests {
                 output_tokens: None,
             };
             mustard_core::io::knowledge::enrichment::complete_session(root, root, &receipt).unwrap();
-            let applied = write_triaged(&opts(&json!({ "reserve": id })), false, &|_, _, _| panic!("the receipt answers in place of the Jev"));
+            let applied = write_triaged(&opts(&json!({ "reserve": id })), false, None, &|_, _, _| panic!("the receipt answers in place of the Jev"));
             assert_eq!(applied["ok"], json!(true), "{applied}");
             if place == "pending" {
                 assert_eq!(applied["pending"], json!("P-1"), "{applied}");
@@ -2536,7 +2541,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let opts = routed_request(root, "Trocar o tema do site para escuro.");
-        let out = write_triaged(&opts(&json!({})), false, &|_, _, _| Asked::Off);
+        let out = write_triaged(&opts(&json!({})), false, None, &|_, _, _| Asked::Off);
         assert_eq!(out["ok"], json!(true), "{out}");
         assert!(out.get("warnings").is_none(), "{out}");
         assert_eq!(requests(root), 1);
@@ -3490,10 +3495,14 @@ mod tests {
         let missing = write(dir.path(), "rule", r#"{"text":"t","keys":["k"],"origin":1}"#);
         assert_eq!(missing["reason"], json!("missing-field"));
         assert!(missing["hint"].as_str().unwrap().contains("example"));
-        let no_spec = write_to(dir.path(), None, "rule", r#"{"text":"t","keys":["k"],"example":"e","origin":1}"#);
+        let outside_a_conversation = |event_type: &str, json: &str| {
+            let opts = WriteOpts { root: dir.path().to_path_buf(), spec: None, event_type: event_type.into(), json: json.into() };
+            write_for(&opts, false, None)
+        };
+        let no_spec = outside_a_conversation("rule", r#"{"text":"t","keys":["k"],"example":"e","origin":1}"#);
         assert_eq!(no_spec["reason"], json!("spec-required"), "{no_spec}");
         assert!(no_spec["hint"].as_str().unwrap().contains("--spec"), "{no_spec}");
-        let unknown_no_spec = write_to(dir.path(), None, "licao", "{}");
+        let unknown_no_spec = outside_a_conversation("licao", "{}");
         assert_eq!(unknown_no_spec["reason"], json!("unknown-type"), "{unknown_no_spec}");
         assert_eq!(std::fs::read(store::spec_file(dir.path(), "teste").unwrap()).unwrap(), b"", "a refusal writes nothing");
     }

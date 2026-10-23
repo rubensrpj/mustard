@@ -372,8 +372,14 @@ pub(crate) fn record_injection(root: &Path, session: Option<&str>, hook: &str, t
 /// certo, e a razão da recusa (`reason`, ou o `error` das portas do pull
 /// request). A spec é a do relatório, a que a chamada nomeou, ou a atual.
 pub(crate) fn record_call(root: &Path, command: &str, named: Option<&str>, started: Instant, report: &Value) -> Option<u64> {
+    let session = crate::shared::spec_state::session_from_env();
+    record_call_as(root, session.as_deref(), command, named, started, report)
+}
+
+/// [`record_call`] da sessão `session`, que é como um teste a escolhe.
+pub(crate) fn record_call_as(root: &Path, session: Option<&str>, command: &str, named: Option<&str>, started: Instant, report: &Value) -> Option<u64> {
     let output=serde_json::to_string_pretty(report).unwrap_or_default()+"\n";
-    record_output_call(root,command,named,started,report,&output)
+    record_output_call_as(root,session,command,named,started,report,&output)
 }
 
 /// Record the actual output when a command returns plain text or compact
@@ -689,7 +695,7 @@ mod tests {
         let dir = project_on("medicao");
         let report = json!({"ok":true,"private_result":"private-code",
             "delivery_measurement":{"basis":"same-request-stdout-bytes","native_bytes":100,"delivered_bytes":150}});
-        assert!(record_output_call(dir.path(), "search", Some("medicao"), Instant::now(), &report, "private-code").is_some());
+        assert!(record_output_call_as(dir.path(), Some(SESSION), "search", Some("medicao"), Instant::now(), &report, "private-code").is_some());
         let log = recorded_operations(dir.path(), "medicao");
         assert_eq!(log.events.last().unwrap().int("search_native_bytes"), Some(100));
         assert_eq!(log.events.last().unwrap().int("search_delivered_bytes"), Some(150));
@@ -700,7 +706,7 @@ mod tests {
     fn the_time_of_each_search_stage_reaches_the_operations_log() {
         let dir = project_on("medicao");
         let report = json!({"ok":true,"timings":{"scan_wait_ms":3000,"lock_wait_ms":200,"vectors_ms":40,"investigate_ms":900,"jev_ms":0}});
-        assert!(record_output_call(dir.path(), "search", Some("medicao"), Instant::now(), &report, "result").is_some());
+        assert!(record_output_call_as(dir.path(), Some(SESSION), "search", Some("medicao"), Instant::now(), &report, "result").is_some());
         let log = recorded_operations(dir.path(), "medicao");
         let call = log.events.last().unwrap();
         for (field, ms) in [("scan_wait_ms", 3000), ("lock_wait_ms", 200), ("vectors_ms", 40), ("investigate_ms", 900), ("jev_ms", 0)] {
@@ -717,7 +723,7 @@ mod tests {
         let refused=json!({"ok":false,"spec":"medicao","reason":"invalid-value"});
         std::thread::scope(|scope| {
             for _ in 0..8 {
-                scope.spawn(|| assert!(record_output_call(root,"write",Some("medicao"),Instant::now(),&refused,"refused\n").is_some()));
+                scope.spawn(|| assert!(record_output_call_as(root,Some(SESSION),"write",Some("medicao"),Instant::now(),&refused,"refused\n").is_some()));
             }
         });
         assert_eq!(std::fs::read(&path).unwrap(),original,"observations cannot change spec items or consume IDs");
@@ -729,7 +735,7 @@ mod tests {
         assert_eq!(receipts.len(),1);
         assert_eq!((&receipts[0]["request"],&receipts[0]["items"]),(&json!("request-1"),&json!(["MSTD-RULE-0001"])));
         assert_eq!(recorded_operations(root,"medicao").events.len(),8);
-        assert!(record_call(root,"open",Some("medicao"),Instant::now(),&json!({"ok":true,"kind":"feature"})).is_some());
+        assert!(record_call_as(root,Some(SESSION),"open",Some("medicao"),Instant::now(),&json!({"ok":true,"kind":"feature"})).is_some());
         assert_eq!(events_of(root,"medicao","call").len(),1,"a flow step is an observation too");
         assert_eq!(recorded_operations(root,"medicao").events.len(),9);
     }
@@ -756,7 +762,7 @@ mod tests {
             "input_tokens":100_001,"output_tokens":null,"remote_model_calls":0,"cached":false,
             "context":{"target_observed":false,"api_reference":{"tier":"standard"}},
             "interpretation":{"text":"private code sentinel"},"request":{"prompt":"private prompt sentinel"}});
-        assert!(record_output_call(dir.path(),"knowledge",Some("interpretacao"),Instant::now(),&report,&report.to_string()).is_some());
+        assert!(record_output_call_as(dir.path(),Some(SESSION),"knowledge",Some("interpretacao"),Instant::now(),&report,&report.to_string()).is_some());
         assert!(events_of(dir.path(),"interpretacao","call").is_empty(),"observations do not consume spec IDs");
         let log=recorded_operations(dir.path(),"interpretacao");
         let fields=&log.events[0].fields;
@@ -853,9 +859,9 @@ mod tests {
         let before = std::fs::read_to_string(&path).unwrap();
         let ok = json!({"ok": true, "spec": "chamadas"});
         for command in ["open", "resume", "round", "pr-open"] {
-            assert!(record_call(root, command, Some("chamadas"), Instant::now(), &ok).is_some(), "{command}");
+            assert!(record_call_as(root, Some(SESSION), command, Some("chamadas"), Instant::now(), &ok).is_some(), "{command}");
         }
-        assert!(record_output_call(root, "find", Some("chamadas"), Instant::now(), &ok, "achado\n").is_some());
+        assert!(record_output_call_as(root, Some(SESSION), "find", Some("chamadas"), Instant::now(), &ok, "achado\n").is_some());
         let billed = draft(json!({"filter": "jev", "tokens": 10, "cost_micro_usd": 3}));
         assert!(record_measured_call(root, "map search", Some("chamadas"), None, Instant::now(), &ok, billed).is_some());
 
@@ -1240,8 +1246,8 @@ mod tests {
         let dir = project_on("chamada");
         let root = dir.path();
         let started = Instant::now();
-        record_call(root, "plan", None, started, &json!({"ok": true, "spec": "chamada"})).expect("ok call");
-        record_call(root, "round", Some("chamada"), started, &json!({"ok": false, "reason": "not-approved"})).expect("refused call");
+        record_call_as(root, Some(SESSION), "plan", None, started, &json!({"ok": true, "spec": "chamada"})).expect("ok call");
+        record_call_as(root, Some(SESSION), "round", Some("chamada"), started, &json!({"ok": false, "reason": "not-approved"})).expect("refused call");
         let calls: Vec<Map<String, Value>> = recorded_operations(root, "chamada").events.into_iter().map(|e| e.fields).collect();
         assert_eq!(calls.len(), 2);
         assert_eq!((calls[0]["command"].as_str(), calls[0]["result"].as_str()), (Some("plan"), Some("ok")));
@@ -1250,7 +1256,7 @@ mod tests {
         assert_eq!(calls[1]["refusal"], json!("not-approved"));
 
         // Uma spec que não existe não ganha arquivo.
-        assert_eq!(record_call(root, "plan", Some("outra"), started, &json!({"ok": true})), None);
+        assert_eq!(record_call_as(root, Some(SESSION), "plan", Some("outra"), started, &json!({"ok": true})), None);
         assert!(mustard_core::io::spec_events::operations_file(root, "outra").is_some_and(|path| !path.exists()));
     }
 }

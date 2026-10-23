@@ -2264,7 +2264,7 @@ mod tests {
         let root = dir.path();
         call(root, "round", json!({"ms": 3}));
         let ok = json!({"ok": true, "spec": "teste"});
-        assert!(crate::commands::spec_events::conversation::record_output_call(root, "search", Some("teste"), Instant::now(), &ok, "x\n").is_some());
+        assert!(crate::commands::spec_events::conversation::record_output_call_as(root, None, "search", Some("teste"), Instant::now(), &ok, "x\n").is_some());
 
         let commands: Vec<Value> = events(&read_at(&opts(root, "calls", None)).unwrap()).iter().map(|e| e["command"].clone()).collect();
         assert_eq!(commands, [json!("round"), json!("search")]);

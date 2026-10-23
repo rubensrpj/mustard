@@ -830,7 +830,7 @@ mod tests {
     /// não são passo.
     #[test]
     fn the_last_step_is_the_newest_flow_step() {
-        use crate::commands::spec_events::conversation::record_call;
+        use crate::commands::spec_events::conversation::record_call_as;
         let dir = tempdir().unwrap();
         let root = dir.path();
         std::fs::write(root.join("mustard.json"), b"{}").unwrap();
@@ -838,7 +838,7 @@ mod tests {
         crate::shared::spec_state::seed_event(root, "x", "call", json!({"command": "round", "ms": 3, "result": "ok", "author": "binary"}));
         let ok = json!({"ok": true, "spec": "x"});
         for command in ["close", "pr-open", "find", "read", "search", "map search", "resume"] {
-            record_call(root, command, Some("x"), std::time::Instant::now(), &ok);
+            record_call_as(root, None, command, Some("x"), std::time::Instant::now(), &ok);
         }
 
         let template = translate("resume.line", Locale::PtBr);
@@ -864,7 +864,7 @@ mod tests {
         let said = seed("message", json!({"author": "user", "text": "o plano"}));
         let criterion = |when: &str| seed("criterion", json!({"when": when, "then": "b", "proof": "p", "form": "ubiquitous", "origin": said}));
         let early = criterion("antes");
-        crate::commands::spec_events::conversation::record_call(root, "round", Some("x"), std::time::Instant::now(), &json!({"ok": true, "spec": "x"}));
+        crate::commands::spec_events::conversation::record_call_as(root, None, "round", Some("x"), std::time::Instant::now(), &json!({"ok": true, "spec": "x"}));
         let late = criterion("depois");
 
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
