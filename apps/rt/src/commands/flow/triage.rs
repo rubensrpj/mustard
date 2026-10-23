@@ -1171,4 +1171,34 @@ mod tests {
         assert_eq!(refused["reason"], json!("task-dependency-cycle"), "{refused}");
         assert_eq!(log_of(root).events.len(), events, "a refusal in the middle records nothing");
     }
+
+    /// Duas vagas, a onda 1 em andamento e duas tarefas novas no backlog. O
+    /// assunto já formado que segue a onda 1 espera a volta dela, e não uma
+    /// vaga: a conta das vagas livres desconta só a onda 1, e as duas
+    /// tarefas novas ainda cabem na formação, que a rodada pede ao modelo
+    /// pequeno.
+    #[test]
+    fn a_subject_following_a_running_wave_does_not_take_a_free_wave() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        backlog(root, &[("A retomada lista as ondas no ar", "web/flow/resume.ts", &[]), ("A busca não espera a trava do mapa", "web/search/index.ts", &[])]);
+        std::fs::write(root.join("mustard.json"), r#"{"maxCompilingWaves":2}"#).unwrap();
+        let seed = |event_type: &str, body: Value| crate::shared::spec_state::seed_event(root, "x", event_type, body);
+        let crit = seed("criterion", json!({ "when": "a onda roda", "then": "a suíte passa", "proof": "git --version", "form": "ubiquitous" }));
+        let said = seed("message", json!({ "author": "user", "text": "o plano" }));
+        seed("wave", json!({ "n": 1, "text": "Onda 1.", "criteria": [crit], "done_when": "A suíte passa.", "author": "binary" }));
+        seed("task", json!({ "wave": 1, "title": "O painel mostra o custo", "text": "Mostrar o custo.", "files": [{ "path": "web/panel/cost.ts" }],
+            "depends_on": [], "origin": said }));
+        seed("send", json!({ "wave": 1, "role": "wave", "text": "pedido", "lines": 1, "chars": 6, "items": [], "mustard": "0", "author": "binary" }));
+        seed("task", json!({ "title": "O painel mostra o custo por onda", "text": "Mostrar o custo de cada onda.", "agent": "- conferir pelo teste",
+            "files": [{ "path": "web/panel/waves.ts" }], "depends_on": [], "origin": said,
+            "group": { "name": "O painel mostra o custo", "position": 1, "formed": true, "after": 1 } }));
+        let opts = TriageOpts { root: root.to_path_buf(), spec: Some("x".into()), apply: false };
+
+        let asked = triage_with(&opts, None, true, false, &|_, _, _| None);
+
+        assert_eq!(asked["free_waves"], json!(1), "only the running wave takes a slot: {asked}");
+        let prompt = asked["grouping"]["delegation"]["request"]["prompt"].as_str().unwrap_or_else(|| panic!("the formation is asked: {asked}"));
+        assert!(prompt.contains("A retomada lista as ondas no ar") && prompt.contains("A busca não espera a trava do mapa"), "{prompt}");
+    }
 }

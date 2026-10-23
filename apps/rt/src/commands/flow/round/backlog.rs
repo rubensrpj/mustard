@@ -826,4 +826,39 @@ mod tests {
         assert_eq!(wave_of(dependent), None, "a que depende da tarefa da onda 1 espera");
         assert!(held.is_empty(), "nenhuma pronta ficou com motivo: {held:?}");
     }
+
+    /// A onda 7 voltou com um resumo que deixou a limpeza dois, que chega ao
+    /// backlog nesta rodada. A limpeza do mesmo arquivo da limpeza um, que o
+    /// classificador pôs a seguir a onda 7, espera por ela: a limpeza um sai
+    /// sozinha na onda 1, e a que segue não pega carona nela.
+    #[test]
+    fn a_cleanup_following_a_returned_wave_does_not_ride_along_with_another_batch() {
+        use super::super::queue::{backlog_project, max_parallel, wave_order};
+        use super::super::tests::{id_of, write};
+        use super::Hold;
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, crit) = backlog_project(root);
+        let cleanup = |text: &str, file: &str, group: Option<serde_json::Value>| {
+            let mut task = json!({"text": text, "files": [{"path": file}], "depends_on": [], "covers": [crit], "origin": said, "cleanup": true});
+            if let Some(group) = group {
+                task["group"] = group;
+            }
+            id_of(&write(root, "x", "task", task))
+        };
+        let alone = cleanup("Acertar o comentário de um.", "src/a.rs", None);
+        let follower = cleanup("Acertar o comentário do mesmo arquivo.", "src/a.rs", Some(json!({"name": "Os comentários", "position": 1, "formed": true, "after": 7})));
+        let on_entry = spec_x(root);
+        let arrived = cleanup("Acertar o comentário de dois.", "src/b.rs", None);
+        let codes = spec_x(root).codes();
+        crate::shared::spec_state::seed_event(root, "x", "delivered", json!({"wave": 7, "text": "Parei no limite.", "files": [], "undone": [codes[&arrived]]}));
+        let locked = spec_x(root);
+
+        let (formed, held) = super::dispatch_backlog(root, "x", &on_entry, &locked, max_parallel(root), (None, None)).unwrap();
+
+        assert_eq!(formed, vec![1], "{held:?}");
+        assert_eq!(wave_order(root, 1), vec![alone], "the cleanup that follows the returned wave stays out of the batch");
+        assert_eq!(held.get(&codes[&follower]), Some(&Hold::Following(7)), "{held:?}");
+    }
 }
