@@ -6,7 +6,8 @@
 //! ([`ranked_by`]): de 1 a 5 itens com todas as palavras, a resposta sai
 //! direto; mais que isso, ou nenhum com todas, os 30 melhores vão ao Jev numa
 //! pergunta só, e ele diz quais respondem. Sem Jev, vem a ordem da nota, com
-//! os itens parciais marcados e o aviso; com o Jev que falhou ou passou do
+//! os itens parciais marcados e o aviso do motivo — o desligado diz o ajuste
+//! do `mustard.json` que o liga —; com o Jev que falhou ou passou do
 //! prazo, a mesma ordem e a linha que deixa a escolha entre os candidatos a
 //! quem procurou, sem reserva. Um código traz o item inteiro, pela
 //! leitura do item. A resposta é uma linha por item, com o código, o tipo, a
@@ -24,7 +25,7 @@ use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Map, Value, json};
 
 use super::read::{ReadOpts, read_for};
-use crate::shared::jev::{FIND_CALL, JEV_MODEL, JevFilter};
+use crate::shared::jev::{FIND_CALL, JEV_MODEL, JevFilter, JevOff};
 use crate::shared::secret::without_secrets;
 use crate::shared::spec_state::{DiskSpecState, checkout, session_from_env};
 
@@ -53,8 +54,8 @@ pub struct FindOpts {
 
 /// O que o Jev respondeu à pergunta da procura.
 pub(crate) enum JevAnswer {
-    /// O projeto não tem a chave do Jev, ou ele está desligado.
-    NoKey,
+    /// O Jev não entrou, pelo motivo dito.
+    Off(JevOff),
     /// A chamada falhou, passou do prazo ou do tamanho.
     NoAnswer,
     /// A resposta do serviço.
@@ -63,8 +64,22 @@ pub(crate) enum JevAnswer {
 
 /// A pergunta `payload` ao Jev, gravada na spec `spec` de `root`.
 pub(crate) fn ask_jev(root: &Path, spec: &str, payload: &str) -> JevAnswer {
-    let Some(filter) = JevFilter::for_spec_search(root, spec) else { return JevAnswer::NoKey };
-    filter.choose_recorded(root, spec, FIND_CALL, payload).map_or(JevAnswer::NoAnswer, JevAnswer::Doc)
+    match JevFilter::for_spec_search(root, spec) {
+        Ok(filter) => filter.choose_recorded(root, spec, FIND_CALL, payload).map_or(JevAnswer::NoAnswer, JevAnswer::Doc),
+        Err(off) => JevAnswer::Off(off),
+    }
+}
+
+/// O motivo de o Jev ficar fora da procura, em `lang`: o desligado diz o
+/// ajuste do `mustard.json` que o liga.
+fn off_reason(off: JevOff, lang: Locale) -> String {
+    match off {
+        JevOff::InTest => translate("spec_events.find_off_test", lang).to_string(),
+        JevOff::Fallback => translate("spec_events.find_off_fallback", lang).to_string(),
+        JevOff::Purpose(purpose) => translate("spec_events.find_off_purpose", lang).replace("{purpose}", purpose),
+        JevOff::NoKey => translate("spec_events.find_no_key", lang).to_string(),
+        JevOff::KeyInGit => translate("spec_events.find_key_in_git", lang).to_string(),
+    }
 }
 
 /// O núcleo testável de [`run`]: o texto da resposta, ou a recusa. A sessão
@@ -192,7 +207,7 @@ pub(crate) fn found_text(log: &SpecLog, codes: &BTreeMap<u64, String>, pool: Vec
             // os candidatos a quem procurou, como a busca do mapa: a procura é
             // pergunta do próprio agente, e não vai à reserva.
             match other {
-                JevAnswer::NoKey => out.push(translate("spec_events.find_jev_off", lang).replace("{reason}", translate("spec_events.find_no_key", lang))),
+                JevAnswer::Off(off) => out.push(translate("spec_events.find_jev_off", lang).replace("{reason}", &off_reason(off, lang))),
                 _ => out.push(translate("spec_events.find_choice_left", lang).to_string()),
             }
         }
@@ -387,19 +402,35 @@ mod tests {
         assert!(lines[2].contains("escolha é sua"), "{got}");
     }
 
+    /// Sem o Jev, vem a ordem da nota com a marca de parcial e o motivo: cada
+    /// motivo tem a sua linha nos dois idiomas, e o desligado nomeia o ajuste
+    /// que o liga.
     #[test]
-    fn without_jev_the_score_order_comes_with_the_partial_mark_and_the_notice() {
+    fn without_jev_the_score_order_comes_with_the_partial_mark_and_the_reason() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = put(root, "message", json!({"author": "user", "text": "nada"}));
         put(root, "note", json!({"title": "Commit da onda", "text": "A página mostra o commit.", "keys": ["x"], "origin": said}));
         put(root, "note", json!({"title": "Rodada formata", "text": "A rodada formata os arquivos antes do commit.", "keys": ["x"], "origin": said}));
 
-        let got = find(root, "rodada formata arquivos commit onda", &["note"], &|_, _| JevAnswer::NoKey);
+        let got = find(root, "rodada formata arquivos commit onda", &["note"], &|_, _| JevAnswer::Off(JevOff::NoKey));
         let lines: Vec<&str> = got.lines().collect();
         assert_eq!(lines.len(), 3, "{got}");
         assert!(lines[0].contains("Rodada formata") && lines[0].ends_with("parcial"), "the strongest first: {got}");
         assert_eq!(lines[2], "Jev fora: sem chave.");
+
+        let off = find(root, "rodada formata arquivos commit onda", &["note"], &|_, _| JevAnswer::Off(JevOff::Purpose("spec-search")));
+        assert_eq!(
+            off.lines().last(),
+            Some("Jev fora: a busca na spec está desligada; para ligar, ponha jev em judgement.spec-search.filter no mustard.json."),
+            "{off}"
+        );
+        let reasons = [JevOff::InTest, JevOff::Fallback, JevOff::Purpose("spec-search"), JevOff::NoKey, JevOff::KeyInGit];
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let said: std::collections::BTreeSet<String> = reasons.iter().map(|reason| off_reason(*reason, lang)).collect();
+            assert_eq!(said.len(), reasons.len(), "{said:?}");
+            assert!(off_reason(JevOff::Fallback, lang).contains("ai.fallback"), "{said:?}");
+        }
     }
 
     #[test]

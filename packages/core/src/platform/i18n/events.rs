@@ -38,10 +38,24 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("spec_events.find_none", Locale::EnUs) => "Nothing found.",
         ("spec_events.find_jev_off", Locale::PtBr) => "Jev fora: {reason}.",
         ("spec_events.find_jev_off", Locale::EnUs) => "Jev off: {reason}.",
+        // Por que o Jev ficou fora da procura: o desligado diz o ajuste do
+        // mustard.json que o liga.
+        ("spec_events.find_off_test", Locale::PtBr) => "o programa de teste não chama o serviço",
+        ("spec_events.find_off_test", Locale::EnUs) => "the test program does not call the service",
+        ("spec_events.find_off_fallback", Locale::PtBr) => {
+            "o Jev está desligado no projeto; para ligar, ponha true em ai.fallback no mustard.json"
+        }
+        ("spec_events.find_off_fallback", Locale::EnUs) => "Jev is off in the project; to turn it on, set ai.fallback to true in mustard.json",
+        ("spec_events.find_off_purpose", Locale::PtBr) => {
+            "a busca na spec está desligada; para ligar, ponha jev em judgement.{purpose}.filter no mustard.json"
+        }
+        ("spec_events.find_off_purpose", Locale::EnUs) => {
+            "the spec search is off; to turn it on, set judgement.{purpose}.filter to jev in mustard.json"
+        }
         ("spec_events.find_no_key", Locale::PtBr) => "sem chave",
         ("spec_events.find_no_key", Locale::EnUs) => "no key",
-        ("spec_events.find_no_answer", Locale::PtBr) => "sem resposta",
-        ("spec_events.find_no_answer", Locale::EnUs) => "no answer",
+        ("spec_events.find_key_in_git", Locale::PtBr) => "a chave em jev.key não vale, porque o git guarda o mustard.json ou não o ignora",
+        ("spec_events.find_key_in_git", Locale::EnUs) => "the key in jev.key does not count, because git tracks mustard.json or does not ignore it",
         // A procura que pediu a escolha ao Jev e ficou sem ela: ele falhou ou
         // passou do prazo. A escolha fica com quem procurou.
         ("spec_events.find_choice_left", Locale::PtBr) => "O Jev não escolheu a tempo: a escolha é sua, entre os itens acima.",
@@ -1290,8 +1304,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            181,
-            0x2531_3d20_a5af_8c06,
+            184,
+            0xf963_807d_1992_0671,
         );
     }
 
@@ -1305,8 +1319,11 @@ mod tests {
             ("spec_events.find_more", &["{shown}", "{total}"][..]),
             ("spec_events.find_none", &[][..]),
             ("spec_events.find_jev_off", &["{reason}"][..]),
+            ("spec_events.find_off_test", &[][..]),
+            ("spec_events.find_off_fallback", &[][..]),
+            ("spec_events.find_off_purpose", &["{purpose}"][..]),
             ("spec_events.find_no_key", &[][..]),
-            ("spec_events.find_no_answer", &[][..]),
+            ("spec_events.find_key_in_git", &[][..]),
             ("spec_events.find_choice_left", &[][..]),
             ("spec_events.find_partial", &[][..]),
             ("spec_events.find_user_message", &[][..]),

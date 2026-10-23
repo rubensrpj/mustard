@@ -1932,3 +1932,48 @@ fn a_request_from_the_message_code_takes_what_the_user_said_to_the_jev() {
     let prompt = reserved["reserve"]["delegation"]["request"]["prompt"].as_str().expect("the reserve prompt");
     assert!(prompt.contains(user_said), "the user's words go to the Jev: {prompt}");
 }
+
+/// A busca na spec que precisa do Jev e fica sem ele diz por quê, pelo
+/// `mustard.json` de verdade: o Jev desligado no projeto, a busca na spec sem
+/// a escolha própria — mesmo com a chave e as outras finalidades ligadas —, a
+/// chave que falta e a do `mustard.json` que o git guarda. O desligado nomeia
+/// o ajuste que o liga.
+#[test]
+fn a_spec_search_without_the_jev_says_why_and_which_setting_turns_it_on() {
+    let others = json!({"context": {"filter": "jev"}, "search": {"filter": "jev"}, "wave-planning": {"filter": "jev"}});
+    let own = json!({"context": {"filter": "jev"}, "spec-search": {"filter": "jev"}});
+    // (mustard.json, chave no ambiente, git guarda o mustard.json, a última linha)
+    let cases = [
+        (json!({"ai": {"fallback": false}, "judgement": own}), Some("fake-key"), false, "ai.fallback"),
+        (json!({"ai": {"fallback": true}, "judgement": others, "jev": {"key": "from-file"}}), None, false, "judgement.spec-search.filter"),
+        (json!({"ai": {"fallback": true}, "judgement": own}), None, false, "Jev fora: sem chave."),
+        (json!({"ai": {"fallback": true}, "judgement": own, "jev": {"key": "from-file"}}), None, true, "git"),
+    ];
+    let mut lines = std::collections::BTreeSet::new();
+    for (mut config, env, tracked, says) in cases {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        config["language"] = json!({"text": "pt-BR"});
+        std::fs::write(root.join("mustard.json"), config.to_string()).expect("config");
+        if tracked {
+            assert!(mustard_core::platform::git::run(root, &["init", "-q"]).ok);
+            assert!(mustard_core::platform::git::run(root, &["add", "mustard.json"]).ok);
+        }
+        open_spec(root);
+        let said = seed_binary(root, "message", &json!({"author": "user", "text": "nada"}));
+        for (title, text) in [("Commit da onda", "A página mostra o commit."), ("Rodada formata", "A rodada formata os arquivos antes do commit.")] {
+            write(root, "context", &json!({"title": title, "text": text, "agent": "- conferir pelo teste", "origin": said}));
+        }
+        let mut find = rt(root, &["find", "rodada formata arquivos commit onda", "--spec", "teste"]);
+        if let Some(key) = env {
+            find.env("TYPESAFE_API_KEY", key);
+        }
+        let out = find.output().expect("run find");
+        let shown = String::from_utf8_lossy(&out.stdout).to_string();
+        assert!(out.status.success(), "{config}: {shown}");
+        let last = shown.lines().last().unwrap_or_default().to_string();
+        assert!(last.starts_with("Jev fora: ") && last.contains(says), "{config}: {shown}");
+        lines.insert(last);
+    }
+    assert_eq!(lines.len(), 4, "each case has its own reason: {lines:?}");
+}

@@ -195,23 +195,54 @@ pub struct JevFilter {
     purpose: Purpose,
 }
 
+/// Por que o filtro de uma finalidade não sai montado, para quem avisa dizer
+/// o motivo certo e, no desligado, o ajuste do `mustard.json` que o liga.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum JevOff {
+    /// O programa de teste nunca chama o serviço.
+    InTest,
+    /// `ai.fallback` não é `true` no `mustard.json`.
+    Fallback,
+    /// A finalidade, pelo nome dela, sem `jev` em
+    /// `judgement.<finalidade>.filter`.
+    Purpose(&'static str),
+    /// Nem o ambiente nem o projeto trazem a chave.
+    NoKey,
+    /// A única chave está no `mustard.json` que o git guarda ou não ignora.
+    KeyInGit,
+}
+
 impl JevFilter {
     pub(crate) fn for_orchestration(root: &Path, spec: &str) -> Option<Self> {
-        Self::orchestrating(root, spec, Purpose::WavePlanning)
+        Self::orchestrating(root, spec, Purpose::WavePlanning).ok()
     }
 
     /// O filtro da busca na spec: a finalidade própria, que o
     /// `mustard.json` liga ou desliga à parte; sem ela escrita, fica
-    /// desligada até ser ligada.
-    pub(crate) fn for_spec_search(root: &Path, spec: &str) -> Option<Self> {
+    /// desligada até ser ligada. Sem o filtro, o motivo.
+    pub(crate) fn for_spec_search(root: &Path, spec: &str) -> Result<Self, JevOff> {
         Self::orchestrating(root, spec, Purpose::SpecSearch)
     }
 
-    fn orchestrating(root: &Path, spec: &str, purpose: Purpose) -> Option<Self> {
-        let config=ProjectConfig::load(root);
-        if cfg!(test) || !config.ai_fallback_enabled() || !jev_gate::setting_allows(config.judgement_filter(purpose.key())) { return None; }
-        let loaded=key_in(root,&config,std::env::var(jev_gate::KEY_ENV).ok()).ok()?;
-        let mut filter=Self::new(root,loaded.key); filter.spec=Some(spec.into()); filter.purpose=purpose; Some(filter)
+    /// O filtro da finalidade `purpose`, ou o primeiro ajuste que falta, na
+    /// ordem em que o `mustard.json` os pede: o Jev, a finalidade e a chave.
+    fn orchestrating(root: &Path, spec: &str, purpose: Purpose) -> Result<Self, JevOff> {
+        if cfg!(test) {
+            return Err(JevOff::InTest);
+        }
+        let config = ProjectConfig::load(root);
+        if !config.ai_fallback_enabled() {
+            return Err(JevOff::Fallback);
+        }
+        if !jev_gate::setting_allows(config.judgement_filter(purpose.key())) {
+            return Err(JevOff::Purpose(purpose.key()));
+        }
+        let loaded = key_in(root, &config, std::env::var(jev_gate::KEY_ENV).ok())
+            .map_err(|error| if error == FilterError::KeyInGit { JevOff::KeyInGit } else { JevOff::NoKey })?;
+        let mut filter = Self::new(root, loaded.key);
+        filter.spec = Some(spec.into());
+        filter.purpose = purpose;
+        Ok(filter)
     }
 
     /// O filtro das perguntas do resumo do projeto: só o interruptor geral do
