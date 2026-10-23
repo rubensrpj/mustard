@@ -4456,7 +4456,7 @@ fn main() { sum_comes_out_right(); double_comes_out_right(); }
             .collect();
         assert_eq!(tasks.len(), 2, "{out}");
         assert_eq!(tasks[0].fields.get("cleanup"), Some(&json!(true)), "{:?}", tasks[0].fields);
-        assert!(!tasks[0].fields.contains_key("priority"), "a limpeza sai por último: {:?}", tasks[0].fields);
+        assert!(!tasks[0].fields.contains_key("priority"), "a limpeza não passa à frente das tarefas antigas; sai na onda do mesmo sentido: {:?}", tasks[0].fields);
         assert!(!tasks[1].fields.contains_key("cleanup"), "{:?}", tasks[1].fields);
         assert!(tasks[1].fields.get("priority").and_then(Value::as_str).is_some_and(|said| !said.is_empty()), "{:?}", tasks[1].fields);
     }
