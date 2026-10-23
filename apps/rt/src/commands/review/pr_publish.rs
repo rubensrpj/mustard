@@ -978,7 +978,7 @@ mod tests {
         let fake = FakePub::with_open_pr("github", "feature/my-unit", 278);
         assert_eq!(rewrite_body(&fake, "feature/my-unit", "outro corpo"), Some(BodyRewrite::Rewritten(278)));
         let edited = format!("edit 278 body={}", marked("outro corpo"));
-        assert!(fake.seen.borrow().iter().any(|call| *call == edited), "{:?}", fake.seen.borrow());
+        assert!(fake.seen.borrow().contains(&edited), "{:?}", fake.seen.borrow());
     }
 
     /// O corpo que alguém editou no provedor não é refeito, nas duas portas:
