@@ -775,6 +775,64 @@ fn a_task_whose_dependency_is_gone_waits_with_its_reason_and_the_rest_leaves() {
     assert!(held[0]["detail"].as_str().unwrap_or_default().contains(&gone), "o motivo nomeia a dependência: {out}");
 }
 
+/// A rodada recusada pelo teto do pedido deixa a onda de lote montada e sem
+/// envio. Antes de a rodada seguinte desfazer essa onda, a remoção que o
+/// programa de antes aceitava (semeada no arquivo) tira da spec a tarefa de
+/// que outra dessa onda depende. A dependente volta solta ao backlog com a
+/// dependência que já trazia, sem recusa, e a rodada segue: as outras tarefas
+/// saem em onda, e o motivo que segura a dependente nomeia só a dependência
+/// quebrada, não a tarefa aberta de que ela também espera.
+#[test]
+fn a_task_of_an_unsent_wave_that_lost_a_dependency_returns_to_the_backlog_and_the_round_goes_on() {
+    let project = Project::new();
+    project.open();
+    let said = survey(&project);
+    let criterion = |proof: String| {
+        let written = project.write(
+            "criterion",
+            &json!({"title": "Combinar o item", "when": "o programa roda", "then": "a saudação nova aparece", "proof": proof,
+                "form": "ubiquitous", "origin": said}),
+        );
+        written["id"].as_u64().expect("the criterion has an id")
+    };
+    // A prova do critério abre o pedido da onda: a do primeiro passa do teto de tokens.
+    let big = criterion(format!("git --version {}", "a".repeat(120_000)));
+    let small = criterion("git --version".to_string());
+    let gone = backlog_task(&project, big, said, &["a.rs"], &[]);
+    let open = backlog_task(&project, small, said, &["a.rs"], &[]);
+    let dependent = backlog_task(&project, small, said, &["a.rs"], &[gone, open]);
+    project.run(&["plan", "--spec", SPEC]);
+    approve(&project);
+
+    let refused = project.answer(&["round", "--dispatch", "--spec", SPEC]);
+    assert_eq!(refused["reason"], json!("wave-token-cap"), "{refused}");
+    let log = project.log();
+    assert!(log.visible().into_iter().all(|e| e.event_type != "send"), "a onda montada não foi enviada");
+    assert_eq!(log.current(dependent).and_then(|task| task.wave()), Some(1), "a dependente está na onda montada");
+
+    project.seed("remove", &json!({"targets": [gone], "reason": "Já foi feito fora."}));
+    let codes = project.log().codes();
+    let (gone_code, open_code, dependent_code) = (codes[&gone].clone(), codes[&open].clone(), codes[&dependent].clone());
+    let other = backlog_task(&project, small, said, &["b.rs"], &[]);
+
+    let out = project.run(&["round", "--dispatch", "--spec", SPEC]);
+
+    let dispatched = waves_in(&out, "dispatch");
+    assert_eq!(dispatched.len(), 2, "as duas tarefas prontas saem, cada uma na sua onda: {out}");
+    assert!(dispatched.contains(&wave_of(&project, open).expect("a tarefa aberta ganha onda")), "{out}");
+    assert!(dispatched.contains(&wave_of(&project, other).expect("a tarefa nova ganha onda")), "{out}");
+    assert_eq!(wave_of(&project, dependent), None, "a dependente volta ao backlog: {out}");
+    let log = project.log();
+    let kept = log.current(dependent).map(|task| task.fields["depends_on"].clone());
+    assert_eq!(kept, Some(json!([gone, open])), "a volta guarda as dependências que a versão anterior trazia");
+    let held = out["held"].as_array().unwrap_or_else(|| panic!("a rodada diz o que ficou: {out}"));
+    assert_eq!(held.len(), 1, "{out}");
+    assert_eq!((held[0]["reason"].clone(), held[0]["tasks"].clone()), (json!("broken-dependency"), json!([dependent_code])), "{out}");
+    let detail = held[0]["detail"].as_str().unwrap_or_default();
+    assert!(detail.contains(&gone_code), "o motivo nomeia a dependência quebrada: {out}");
+    assert!(!detail.contains(&open_code), "o motivo não nomeia a tarefa aberta e válida: {out}");
+}
+
 /// O bloco de retomada que o aviso antes de compactar traz, pelo gancho
 /// `PreCompact` da sessão que conduz a obra, como o Claude Code o chama.
 fn precompact_block(project: &Project) -> String {

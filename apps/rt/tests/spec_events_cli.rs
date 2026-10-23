@@ -937,6 +937,46 @@ fn removing_a_task_with_a_live_dependent_is_refused_naming_the_dependent() {
     assert_eq!((code, &removed["ok"]), (Some(0), &json!(true)), "{removed}");
 }
 
+/// A tarefa cuja dependência foi removida (a remoção que o programa de antes
+/// aceitava, semeada no arquivo) recebe a versão nova com a dependência que
+/// já trazia: a gravação julga só a que acrescenta. A versão que acrescenta
+/// uma dependência que não existe é recusada, nomeando só essa, e nada é
+/// gravado.
+#[test]
+fn a_revision_keeps_the_dependency_already_broken_and_is_refused_only_for_the_one_it_adds() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    seed_state(root, &json!({"author": "binary", "phase": "plan", "branch": "feature/teste", "base": "dev"}));
+    let msg = seed_binary(root, "message", &json!({"author": "user", "text": "o plano"}));
+    let crit = write(root, "criterion",
+        &json!({"title": "Combinar o item", "when": "a", "then": "b", "proof": "git --version", "form": "ubiquitous", "origin": msg}));
+    let task = |title: &str, depends_on: Value, extra: Value| {
+        let mut body = json!({"agent": "- conferir pelo teste", "title": title, "text": "Tarefa.", "files": [{"path": "a.rs"}],
+            "depends_on": depends_on, "covers": [crit], "origin": msg});
+        for (key, value) in extra.as_object().into_iter().flatten() {
+            body[key] = value.clone();
+        }
+        body
+    };
+    let (_, first) = write_out(root, "task", &task("Entregar a primeira", json!([]), json!({})));
+    let (_, second) = write_out(root, "task", &task("Entregar a segunda", json!([first["id"]]), json!({})));
+    seed_binary(root, "remove", &json!({"targets": [first["id"]], "reason": "Já foi feito fora."}));
+
+    let before = event_lines(root);
+    let added = task("Entregar a segunda", json!([first["id"], "MSTD-TASK-0099"]), json!({"replaces": second["id"]}));
+    let (code, refused) = write_out(root, "task", &added);
+    assert_eq!((code, &refused["reason"]), (Some(1), &json!("task-depends-on-unknown")), "{refused}");
+    let hint = refused["hint"].as_str().unwrap_or_default();
+    assert!(hint.contains("MSTD-TASK-0099"), "a recusa nomeia a dependência que a versão acrescenta: {hint}");
+    assert!(!hint.contains(first["code"].as_str().unwrap_or_default()), "a que a versão anterior já trazia fica fora da recusa: {hint}");
+    assert_eq!(event_lines(root), before, "nada foi gravado");
+
+    let kept = task("Entregar a segunda", json!([first["id"]]), json!({"replaces": second["id"]}));
+    let (code, revised) = write_out(root, "task", &kept);
+    assert_eq!((code, &revised["ok"]), (Some(0), &json!(true)), "a versão com só a dependência herdada grava: {revised}");
+    assert_eq!(event_lines(root), before + 1);
+}
+
 /// O item combinado com dono pelos arquivos, em `applies_to`, vai no pedido
 /// da onda cuja tarefa toca um desses arquivos, sem passar pela análise antes
 /// do envio, e fica fora do pedido da onda que não toca.

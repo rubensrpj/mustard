@@ -560,7 +560,9 @@ fn assemble(
         formed.push(next_n);
     }
     // A tarefa da onda desfeita que não caiu em nenhum assunto montado agora
-    // volta solta ao backlog.
+    // volta solta ao backlog, com as dependências que já trazia: a que perdeu
+    // uma delas volta do mesmo jeito, e é a rodada, não a gravação, que a
+    // segura com o motivo.
     for task in by_id.values().filter(|task| in_undone(&task.id) && !numbered.contains(&task.id)) {
         writes.push(("task", backlog_return(task)));
     }
