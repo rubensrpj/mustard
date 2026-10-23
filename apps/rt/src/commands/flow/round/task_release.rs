@@ -51,10 +51,13 @@ pub(crate) fn blocks_field(tasks: &[TaskBlock]) -> Option<(String, Value)> {
 }
 
 /// Grava como lido o bloco da primeira tarefa da onda `wave`, que o pedido
-/// entrega inteiro: pelo mesmo recibo da leitura de dentro da cópia.
+/// entrega inteiro: pelo mesmo recibo da leitura de dentro da cópia. A rodada
+/// não recebe a sessão da entrada: o recibo leva a do processo, a mesma que a
+/// entrada `run` leu.
 pub(crate) fn record_first_block(root: &Path, spec: &str, wave: u64, tasks: &[TaskBlock]) {
     if let Some(first) = tasks.first() {
-        let _ = crate::commands::spec_events::conversation::record_receipt(root, spec, &request_name(Some(wave)), &first.items, Instant::now());
+        let session = crate::shared::spec_state::session_from_env();
+        let _ = crate::commands::spec_events::conversation::record_receipt(root, spec, session.as_deref(), &request_name(Some(wave)), &first.items, Instant::now());
     }
 }
 
@@ -126,8 +129,9 @@ pub(crate) enum Next {
 /// primeira tarefa da ordem que ainda não tem passo de término, e devolve o
 /// bloco dela; sem nenhuma, avisa que todas terminaram. O passo de um
 /// critério, o de uma tarefa que o pedido não leva e o pedido de antes dos
-/// blocos não liberam nada.
-pub(crate) fn after_step(root: &Path, spec: &str, json: &str, started: Instant) -> Option<Next> {
+/// blocos não liberam nada. A liberação leva a sessão `session` da entrada
+/// que gravou o passo.
+pub(crate) fn after_step(root: &Path, spec: &str, session: Option<&str>, json: &str, started: Instant) -> Option<Next> {
     let step: Value = serde_json::from_str(json).ok()?;
     let wave = step.get("wave").and_then(Value::as_u64)?;
     let log = store::read(&store::spec_file(root, spec).ok()?).ok()??;
@@ -141,7 +145,7 @@ pub(crate) fn after_step(root: &Path, spec: &str, json: &str, started: Instant) 
     let Some(next) = blocks.into_iter().find(|block| !finished.contains(&block.task)) else {
         return Some(Next::Finished);
     };
-    let _ = crate::commands::spec_events::conversation::record_release(root, spec, &request_name(Some(wave)), &next.task, &next.items, started);
+    let _ = crate::commands::spec_events::conversation::record_release(root, spec, session, &request_name(Some(wave)), &next.task, &next.items, started);
     Some(Next::Task(next.text))
 }
 
@@ -170,7 +174,10 @@ pub(crate) fn resend_block(root: &Path, spec: &str, log: &SpecLog, previous: u64
         return None;
     }
     if !released(log, previous, wave).contains(&current.task) {
-        let _ = crate::commands::spec_events::conversation::record_release(root, spec, &request_name(Some(wave)), &current.task, &current.items, Instant::now());
+        // O reenvio é da rodada, que não recebe a sessão da entrada: vale a
+        // do processo, como no recibo do primeiro bloco.
+        let session = crate::shared::spec_state::session_from_env();
+        let _ = crate::commands::spec_events::conversation::record_release(root, spec, session.as_deref(), &request_name(Some(wave)), &current.task, &current.items, Instant::now());
     }
     Some(format!("\n\n{}\n\n{}", translate("round.resume.task", lang), current.text))
 }

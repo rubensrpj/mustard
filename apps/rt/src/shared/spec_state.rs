@@ -43,11 +43,18 @@ pub(crate) fn hand_session(command: &mut std::process::Command, session: &str) {
     command.env(SESSION_VARS[0], session);
 }
 
-/// The session id the `run` face was handed through the environment, by the
-/// order of [`SESSION_VARS`]. Never a guess from the newest session folder,
-/// which could name another session's spec. Só as entradas `run` perguntam
-/// aqui e passam a sessão para baixo; o que elas chamam recebe a sessão como
-/// argumento, e os testes passam a deles.
+/// A sessão que o processo recebeu pelo ambiente, pela ordem de
+/// [`SESSION_VARS`]. Nunca é chutada pela pasta de sessão mais nova, que
+/// podia ser a de outra conversa.
+///
+/// Quem pergunta aqui é a entrada: o `run` de cada comando lê a sessão uma
+/// vez e a passa adiante; o gancho usa a do JSON que recebeu, e o servidor
+/// `mcp`, a do `_meta` de cada chamada. Os pontos que gravam a sessão num
+/// registro — a observação, a fala, o item gravado, o recibo de leitura e a
+/// liberação de uma tarefa — recebem a sessão por argumento e nunca leem o
+/// ambiente; os testes passam a deles. Os passos do fluxo que ainda não
+/// recebem a sessão da entrada (a gravação do programa, a etapa da rodada e a
+/// chamada ao Jev) leem a do processo aqui, ao chamar esses pontos.
 #[must_use]
 pub(crate) fn session_from_env() -> Option<String> {
     session_from(|key| std::env::var(key).ok())

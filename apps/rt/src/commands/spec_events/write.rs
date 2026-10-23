@@ -309,18 +309,20 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
     write_at_with(opts, false)
 }
 
+/// Para os testes: [`write_for`] com a sessão do ambiente, como o `run write`
+/// a lê.
+#[cfg(test)]
+pub(crate) fn write_at_with(opts: &WriteOpts, copy: bool) -> Value {
+    write_for(opts, copy, session_from_env().as_deref())
+}
+
 /// O núcleo testável de [`run`]: o relatório da gravação ou a recusa. Com
 /// `copy`, a resposta só avisa que a cópia virou publicação explícita.
 /// A tarefa e o pedido novos passam antes pelo classificador das atividades,
 /// com a pergunta ao Jev da orquestração ([`same_work_open`]); o pedido novo,
 /// ao mesmo tempo, pela pergunta do lugar dele ([`super::request_route`]).
-/// Nunca entra em pânico.
-pub(crate) fn write_at_with(opts: &WriteOpts, copy: bool) -> Value {
-    write_for(opts, copy, session_from_env().as_deref())
-}
-
-/// [`write_at_with`] da sessão `session`, a que decide a spec da gravação sem
-/// `--spec`; é como um teste a escolhe.
+/// A sessão `session` é a que a entrada passou: ela decide a spec da gravação
+/// sem `--spec` e vai no evento gravado. Nunca entra em pânico.
 pub(crate) fn write_for(opts: &WriteOpts, copy: bool, session: Option<&str>) -> Value {
     write_triaged(opts, copy, session, &|root, spec, payload| reserve::ask_orchestration(root, spec, TASK_TRIAGE_CALL, payload))
 }
@@ -530,7 +532,7 @@ fn write_triaged(opts: &WriteOpts, copy: bool, session: Option<&str>, ask: &AskJ
     // recusa um efeito que não existe antes de o relatório sair.
     let next = (event_type == "request").then(|| draft.get("effect").and_then(Value::as_str).map(|effect| format!("request.{}", effect.trim()))).flatten();
     let recorded =
-        if event_type == "remove" { record_removal(&project, &opts.root, spec, draft) } else { record_in(&project, &opts.root, spec, event_type, draft, None) };
+        if event_type == "remove" { record_removal(&project, &opts.root, spec, draft, session) } else { record_in(&project, &opts.root, spec, event_type, draft, None, session) };
     drop(held);
     match recorded {
         Ok(Recorded { written, survey, returned, emptied_waves }) => {
@@ -907,11 +909,15 @@ pub struct Recorded {
 /// `run write`: a linha no arquivo de eventos e a linha da spec no índice.
 /// `by` diz quem grava, para a regra da mudança de fase.
 ///
+/// É a porta dos passos do fluxo que ainda não recebem a sessão da entrada:
+/// o evento leva a sessão do processo ([`session_from_env`]), a mesma que a
+/// entrada `run` que os chamou leu.
+///
 /// # Errors
 ///
 /// A recusa da gravação, das conferências do evento às da mudança de fase.
 pub fn record(start: &Path, spec: &str, event_type: &str, draft: Map<String, Value>, by: PhaseWriter) -> Result<Recorded, Refusal> {
-    record_in(&super::project(start), start, spec, event_type, draft, Some(by))
+    record_in(&super::project(start), start, spec, event_type, draft, Some(by), session_from_env().as_deref())
 }
 
 /// As declarações que faltam num rascunho de tarefa: o que ela faz, os
@@ -1193,8 +1199,9 @@ fn record_in(
     event_type: &str,
     draft: Map<String, Value>,
     by: Option<PhaseWriter>,
+    session: Option<&str>,
 ) -> Result<Recorded, Refusal> {
-    record_to(project, start, spec, event_type, draft, by, None)
+    record_to(project, start, spec, event_type, draft, by, None, session)
 }
 
 /// Grava um evento da spec `spec`, vista de `start`, dentro do trecho que já
@@ -1215,12 +1222,13 @@ pub(crate) fn record_locked(
     draft: Map<String, Value>,
     by: PhaseWriter,
 ) -> Result<Recorded, Refusal> {
-    record_to(&super::project(start), start, spec, event_type, draft, Some(by), Some(locked))
+    record_to(&super::project(start), start, spec, event_type, draft, Some(by), Some(locked), session_from_env().as_deref())
 }
 
 /// [`record_locked`] pela porta do modelo: as conferências do `run write`, a
 /// forma do item e a conferência de escrita inclusive, e o passo do
-/// levantamento no que a gravação deixou.
+/// levantamento no que a gravação deixou. O item leva a sessão `session` que
+/// a entrada passou.
 ///
 /// # Errors
 ///
@@ -1231,12 +1239,16 @@ pub(crate) fn record_locked_by_model(
     spec: &str,
     event_type: &str,
     draft: Map<String, Value>,
+    session: Option<&str>,
 ) -> Result<Recorded, Refusal> {
-    record_to(&super::project(start), start, spec, event_type, draft, None, Some(locked))
+    record_to(&super::project(start), start, spec, event_type, draft, None, Some(locked), session)
 }
 
 /// O corpo de [`record_in`] e de [`record_locked`]: com `locked`, lê e grava
-/// pelo trecho travado; sem ele, pelo caminho do arquivo.
+/// pelo trecho travado; sem ele, pelo caminho do arquivo. O evento leva a
+/// sessão `session` que quem chama recebeu da entrada; sem ela, vai sem
+/// sessão, e o ambiente não é lido aqui.
+#[allow(clippy::too_many_arguments)]
 fn record_to(
     project: &super::Project,
     start: &Path,
@@ -1245,6 +1257,7 @@ fn record_to(
     draft: Map<String, Value>,
     by: Option<PhaseWriter>,
     locked: Option<&mut store::LockedLog>,
+    session: Option<&str>,
 ) -> Result<Recorded, Refusal> {
     if super::pages::old_format_spec(&project.root, spec) {
         return Err(Refusal::OldFormatSpec { spec: spec.trim().to_string() });
@@ -1259,10 +1272,8 @@ fn record_to(
     // De qual sessão veio: o registro diz quem gravou, e o consumo de duas
     // conversas no mesmo projeto deixa de sair somado. Quem já disse a sessão
     // no rascunho manda nela.
-    if !draft.contains_key("session")
-        && let Some(session) = crate::shared::spec_state::session_from_env()
-    {
-        draft.insert("session".into(), Value::String(session));
+    if let Some(session) = session.map(str::trim).filter(|session| !session.is_empty()) {
+        draft.entry("session").or_insert_with(|| Value::String(session.to_string()));
     }
     let path = file?;
     // O item que descreve o trabalho, gravado pelo modelo, entra com as
@@ -1358,21 +1369,21 @@ fn record_to(
 /// # Errors
 ///
 /// A recusa da remoção, sem nada gravado, ou a da volta de uma tarefa.
-fn record_removal(project: &super::Project, start: &Path, spec: &str, draft: Map<String, Value>) -> Result<Recorded, Refusal> {
+fn record_removal(project: &super::Project, start: &Path, spec: &str, draft: Map<String, Value>, session: Option<&str>) -> Result<Recorded, Refusal> {
     let path = store::spec_file(&project.root, spec)?;
     let held = store::with_locked_writer(&path, |locked| -> Result<Recorded, Refusal> {
         let before = waves_left_without_tasks(locked.log());
-        let mut removal = record_to(project, start, spec, "remove", draft.clone(), None, Some(&mut *locked))?;
+        let mut removal = record_to(project, start, spec, "remove", draft.clone(), None, Some(&mut *locked), session)?;
         let freed: Vec<Map<String, Value>> = locked.log().tasks_of_removed_waves(&removal.written.removed).into_iter().map(backlog_return).collect();
         for task in freed {
-            let back = record_to(project, start, spec, "task", task, Some(PhaseWriter::Binary), Some(&mut *locked))?;
+            let back = record_to(project, start, spec, "task", task, Some(PhaseWriter::Binary), Some(&mut *locked), session)?;
             removal.returned.push(back.written.id);
         }
         removal.emptied_waves = waves_left_without_tasks(locked.log()).into_keys().filter(|wave| !before.contains_key(wave)).collect();
         Ok(removal)
     })?;
     // Sem o arquivo de eventos, a gravação comum dá a recusa de sempre.
-    held.unwrap_or_else(|| record_in(project, start, spec, "remove", draft, None))
+    held.unwrap_or_else(|| record_in(project, start, spec, "remove", draft, None, session))
 }
 
 /// O rascunho do assistente de um tipo que exige `origin` veio sem ele.
@@ -1607,7 +1618,7 @@ impl RecordCheck {
 /// O aviso de que esta gravação veio de outra sessão: a spec já tinha
 /// registro de uma sessão, e esta é outra. `None` quando a sessão é a mesma,
 /// quando a spec não tem registro de sessão nenhuma, ou quando esta chamada
-/// não sabe de que sessão veio.
+/// não sabe de que sessão veio: a sessão `mine` é a que a entrada passou.
 ///
 /// Uma conversa paralela no mesmo projeto gravou as leituras dela dentro da
 /// spec da conversa principal, e pelo registro não se sabia quem fez o quê. O
@@ -1617,17 +1628,17 @@ impl RecordCheck {
 /// Só conta a conversa ligada a esta spec, a minha e a outra: a sessão que o
 /// `/clear` encerrou, ou a que nunca abriu nem retomou a spec, não é outra
 /// conversa na obra.
-fn another_session_wrote(root: &Path, spec: Option<&str>, lang: Locale) -> Option<String> {
-    let mine = crate::shared::spec_state::session_from_env()?;
+fn another_session_wrote(root: &Path, spec: Option<&str>, mine: Option<&str>, lang: Locale) -> Option<String> {
+    let mine = mine.map(str::trim).filter(|mine| !mine.is_empty())?;
     let spec = spec.map(str::trim).filter(|spec| !spec.is_empty())?;
     let bound = |session: &str| crate::shared::context::session::spec_for_session(&root.to_string_lossy(), session).as_deref() == Some(spec);
-    if !bound(&mine) {
+    if !bound(mine) {
         return None;
     }
     let path = store::spec_file(root, spec).ok()?;
     let log = store::read(&path).ok().flatten()?;
-    let theirs = another_session_in(&log, &mine, bound)?;
-    Some(crate::shared::say::say("spec_events.another_session", lang, &[("{session}", &theirs), ("{mine}", &mine)]))
+    let theirs = another_session_in(&log, mine, bound)?;
+    Some(crate::shared::say::say("spec_events.another_session", lang, &[("{session}", &theirs), ("{mine}", mine)]))
 }
 
 /// A sessão mais recente da spec lida em `log` que não é `mine` e que
@@ -1662,6 +1673,29 @@ mod session_tests {
         let only_mine = parse_log(&format!("{}\n", line(1, "a")));
         assert_eq!(another_session_in(&only_mine, "a", all), None, "só a minha não é outra");
         assert_eq!(another_session_in(&parse_log(""), "a", all), None, "sem registro, nada a dizer");
+    }
+
+    /// O item gravado pela porta do `run write` leva a sessão que a entrada
+    /// passou, e nenhuma quando ela não passou: a do ambiente de quem roda
+    /// não entra.
+    #[test]
+    fn the_written_item_carries_the_session_the_entry_gave() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), "{}").unwrap();
+        record_open(root, "marca", "feature/marca", "dev").unwrap();
+        super::super::session_spec::bind(root, Some("s-recebida"), "marca");
+        let asked = super::super::conversation::record_message(root, Some("s-recebida"), "Anote o pedido.").unwrap();
+        let said = |text: &str, session: Option<&str>| {
+            let json = json!({ "title": "Anotar o pedido", "text": text, "keys": ["pedido"], "origin": asked }).to_string();
+            let opts = WriteOpts { root: root.to_path_buf(), spec: Some("marca".into()), event_type: "note".into(), json };
+            let out = write_for(&opts, false, session);
+            assert_eq!(out["ok"], json!(true), "{out}");
+            let log = store::read(&store::spec_file(root, "marca").unwrap()).unwrap().unwrap();
+            log.get(out["id"].as_u64().unwrap()).and_then(|event| event.str_field("session")).map(str::to_string)
+        };
+        assert_eq!(said("com a sessão da entrada", Some("s-recebida")).as_deref(), Some("s-recebida"));
+        assert_eq!(said("sem sessão nenhuma", None), None);
     }
 }
 
@@ -2086,8 +2120,9 @@ pub(crate) const TASKS_FINISHED_FIELD: &str = "tasks_finished";
 /// Põe na resposta do passo aceito `report` o que vem depois dele
 /// ([`after_step`](crate::commands::flow::round::task_release::after_step)):
 /// o bloco da próxima tarefa, já liberada, ou o aviso de que todas terminaram.
-/// A spec é a do relatório, a do `--spec` ou a ativa.
-fn answer_next_task(report: &mut Value, project: &super::Project, named: Option<&str>, json: &str, started: std::time::Instant) {
+/// A spec é a do relatório, a do `--spec` ou a ativa da sessão `session` da
+/// entrada, que a liberação também leva.
+fn answer_next_task(report: &mut Value, project: &super::Project, named: Option<&str>, session: Option<&str>, json: &str, started: std::time::Instant) {
     use crate::commands::flow::round::task_release::{Next, after_step};
     let spec = report
         .get("spec")
@@ -2096,9 +2131,9 @@ fn answer_next_task(report: &mut Value, project: &super::Project, named: Option<
         .map(str::trim)
         .filter(|spec| !spec.is_empty())
         .map(str::to_string)
-        .or_else(|| DiskSpecState::new(&checkout(&project.root)).active(session_from_env().as_deref()));
+        .or_else(|| DiskSpecState::new(&checkout(&project.root)).active(session));
     let Some(spec) = spec else { return };
-    match after_step(&project.root, &spec, json, started) {
+    match after_step(&project.root, &spec, session, json, started) {
         Some(Next::Task(text)) => report[NEXT_TASK_FIELD] = Value::String(text),
         Some(Next::Finished) => report[TASKS_FINISHED_FIELD] = Value::String(translate("conversation_size.tasks_finished", project.lang).to_string()),
         None => {}
@@ -2109,14 +2144,16 @@ fn answer_next_task(report: &mut Value, project: &super::Project, named: Option<
 /// prepares the copy of the spec page. Exit 1 on a refusal.
 pub fn run(opts: &WriteOpts, copy: bool) {
     let started = std::time::Instant::now();
-    let mut report = write_at_with(opts, copy);
+    // A entrada lê a sessão uma vez e a passa a tudo o que grava.
+    let session = session_from_env();
+    let mut report = write_for(opts, copy, session.as_deref());
     // A gravação que veio de outra sessão avisa: duas conversas no mesmo
     // projeto gravam na mesma spec, e quem conduz não via a gravação da
     // outra. O aviso não segura nada — a decisão é de quem lê.
     if report["ok"] == json!(true) {
         let project = super::project(&opts.root);
         let spec = opts.spec.as_deref().or_else(|| report["spec"].as_str()).map(str::to_string);
-        if let Some(hint) = another_session_wrote(&project.root, spec.as_deref(), project.lang) {
+        if let Some(hint) = another_session_wrote(&project.root, spec.as_deref(), session.as_deref(), project.lang) {
             super::pages::push_warning(&mut report, "another-session", &hint);
         }
     }
@@ -2125,7 +2162,6 @@ pub fn run(opts: &WriteOpts, copy: bool) {
     // do terminal exporta ao comando.
     if opts.event_type.trim() == "step" && report["ok"] == json!(true) {
         let project = super::project(&opts.root);
-        let session = crate::shared::spec_state::session_from_env();
         let transcript = session.as_deref().and_then(|session| crate::shared::typed_messages::session_transcript(&project.root, session));
         let deliver = crate::hooks::session::conversation_size::answer_step(
             &mut report,
@@ -2140,10 +2176,10 @@ pub fn run(opts: &WriteOpts, copy: bool) {
         // Abaixo do limite, ou sem medida, a resposta traz a próxima tarefa
         // da onda, que fica liberada; acima, só a ordem de entregar.
         if deliver != Some(true) {
-            answer_next_task(&mut report, &project, opts.spec.as_deref(), &opts.json, started);
+            answer_next_task(&mut report, &project, opts.spec.as_deref(), session.as_deref(), &opts.json, started);
         }
     }
-    let _ = super::conversation::record_call(&opts.root, "write", opts.spec.as_deref(), started, &report);
+    let _ = super::conversation::record_call_as(&opts.root, session.as_deref(), "write", opts.spec.as_deref(), started, &report);
     println!("{}", serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".into()));
     if report["ok"] != json!(true) {
         std::process::exit(1);

@@ -209,7 +209,7 @@ fn read_reach(opts: &ReadOpts, session: Option<&str>, from: &Path, reach: Reach)
         {
             let read: Vec<String> = found.iter().map(|id| format!("lesson-{id}")).collect();
             let request = read_record::request_of(&log, from);
-            note_reading(&project.root, &spec, request.as_ref(), None, &read, started);
+            note_reading(&project.root, &spec, session, request.as_ref(), None, &read, started);
         }
         return Ok(report);
     }
@@ -261,7 +261,7 @@ fn read_reach(opts: &ReadOpts, session: Option<&str>, from: &Path, reach: Reach)
             // um recibo só; a cópia de uma onda não lê o pedido do revisor.
             if item_view == Shown::Agent {
                 let review = request.as_ref().filter(|request| request.wave.is_none());
-                note_reading(&project.root, &spec, review, None, &found, started);
+                note_reading(&project.root, &spec, session, review, None, &found, started);
                 return Ok(lines.join("\n\n"));
             }
             lean = true;
@@ -278,7 +278,7 @@ fn read_reach(opts: &ReadOpts, session: Option<&str>, from: &Path, reach: Reach)
             // De dentro da cópia, a leitura da onda sai em texto, um bloco por
             // item.
             if item_view == Shown::Agent {
-                note_reading(&project.root, &spec, request.as_ref(), Some(wave), &listed, started);
+                note_reading(&project.root, &spec, session, request.as_ref(), Some(wave), &listed, started);
                 return Ok(lines.join("\n\n"));
             }
             read = listed;
@@ -412,7 +412,7 @@ fn read_reach(opts: &ReadOpts, session: Option<&str>, from: &Path, reach: Reach)
             })
             .collect::<Vec<_>>()
     };
-    note_reading(&project.root, &spec, request.as_ref(), only_wave, &read, started);
+    note_reading(&project.root, &spec, session, request.as_ref(), only_wave, &read, started);
     let mut warnings: Vec<String> = log.skipped.iter().map(|s| s.message(lang)).collect();
     // O apelido entregou o bloco, e a resposta diz o nome certo: a próxima
     // leitura sai direto, sem a volta que a recusa custava.
@@ -520,9 +520,10 @@ fn quiet_spec(opts: &ReadOpts, session: Option<&str>, root: &Path) -> Option<(St
 
 /// Registra o que a leitura achou como lido, quando ela veio da cópia de um
 /// pedido aberto da spec (`request`, de `read_record::request_of`): um recibo
-/// com todos os itens. Com `only_wave`, só vale na cópia dessa onda. Sem item
-/// achado, ou fora de uma cópia de pedido, nada é gravado.
-fn note_reading(root: &Path, spec: &str, request: Option<&Request>, only_wave: Option<u64>, read: &[String], started: Instant) {
+/// com todos os itens e a sessão `session` da entrada. Com `only_wave`, só
+/// vale na cópia dessa onda. Sem item achado, ou fora de uma cópia de pedido,
+/// nada é gravado.
+fn note_reading(root: &Path, spec: &str, session: Option<&str>, request: Option<&Request>, only_wave: Option<u64>, read: &[String], started: Instant) {
     if read.is_empty() {
         return;
     }
@@ -530,7 +531,7 @@ fn note_reading(root: &Path, spec: &str, request: Option<&Request>, only_wave: O
     if only_wave.is_some_and(|wanted| request.wave != Some(wanted)) {
         return;
     }
-    read_record::record(root, spec, request, read, started);
+    read_record::record(root, spec, session, request, read, started);
 }
 
 /// O pedido gravado no último envio da onda `wave`, igual byte a byte, em

@@ -51,7 +51,10 @@ impl Drop for Stage<'_> {
         let draft = draft.as_object().cloned().unwrap_or_default();
         if self.phase == ROUND_PHASE {
             // Como toda observação, a que não fica não falha para quem mede.
-            let _ = crate::commands::spec_events::conversation::observe(self.root, self.spec, "stage_run", vec![draft]);
+            // A etapa não recebe a sessão da entrada: vale a do processo, a
+            // mesma que a entrada `run` da rodada leu.
+            let session = crate::shared::spec_state::session_from_env();
+            let _ = crate::commands::spec_events::conversation::observe(self.root, self.spec, session.as_deref(), "stage_run", vec![draft]);
             return;
         }
         if let Err(error) = record(self.root, self.spec, "stage_run", draft, PhaseWriter::Binary) {

@@ -429,7 +429,7 @@ mod tests {
         let folder=root.join(".claude/spec/demo");std::fs::create_dir_all(&folder).unwrap();
         std::fs::write(folder.join("spec.ndjson"),format!("{}\n",json!({"v":1,"id":1,"at":"2026-10-19T10:00:00Z","type":"stage_run","phase":"final","stage":"machine","result":"pass","ms":5,"author":"binary"}))).unwrap();
         let draft=json!({"phase":"delivery","stage":"integration","result":"pass","ms":7,"scope":"leaf","author":"binary"});
-        assert!(super::super::spec_events::conversation::observe(root,"demo","stage_run",vec![draft.as_object().unwrap().clone()]).is_some());
+        assert!(super::super::spec_events::conversation::observe(root,"demo",None,"stage_run",vec![draft.as_object().unwrap().clone()]).is_some());
         let view=snapshot(root,Some("demo"));
         let spec=view["specs"].as_array().unwrap().iter().find(|spec|spec["name"]=="demo").unwrap();
         let stages:Vec<_>=spec["stages"].as_array().unwrap().iter().map(|stage|stage["stage"].clone()).collect();
