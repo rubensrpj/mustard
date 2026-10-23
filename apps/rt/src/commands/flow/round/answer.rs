@@ -794,10 +794,9 @@ fn dispatch_round(
             return Err(RoundRefusal::WaveLoop { cycle, answered });
         }
     };
-    // O teto de cópias que segura o despacho vai no aviso e no próximo passo.
-    let copies_full = super::vacancy::copies_full_warning(&log, &vacancies, &ready, &stuck, lang);
-    let copies_line = copies_full.as_ref().and_then(|warning| warning["hint"].as_str().map(str::to_string));
-    warnings.extend(copies_full);
+    // Quantas ondas o teto de cópias deixa sair. O aviso de cópias cheias só
+    // sai mais abaixo, contado com as que saem de fato.
+    let allowed = ready.len();
     // A escolha dos itens do pedido, antes da cópia: a decisão do Jev, uma
     // por onda, gravada antes das travas, sobre o item do projeto todo, o dos
     // arquivos dela e o sem ligação com ela. Sem Jev, ou com o recibo incerto
@@ -876,6 +875,14 @@ fn dispatch_round(
     let (built, picks_held) = crate::shared::skill_cycle::prompts_with_picks(root, &spec, (&log, lang), &mut flight, (&mut next, &mut outgoing), &asker);
     let mut picks_lines = crate::shared::skill_cycle::held_notes(picks_held, warnings, lang);
     picks_lines.extend(items_lines);
+    // O teto de cópias que segura o despacho vai no aviso e no próximo passo,
+    // contado com as ondas que saem de fato: a que a escolha dos itens, a
+    // cópia que não saiu ou a escolha das skills seguram não toma cópia, e a
+    // reenviada em cópia nova toma.
+    let leaving: Vec<&str> = next.iter().filter_map(|wave| flight.copies.get(wave)).chain(renewed_copies.values()).map(|copy| copy.path.as_str()).collect();
+    let copies_full = super::vacancy::copies_full_warning(&log, &vacancies, (allowed, &leaving), &stuck, lang);
+    let copies_line = copies_full.as_ref().and_then(|warning| warning["hint"].as_str().map(str::to_string));
+    warnings.extend(copies_full);
     // A onda cujo pedido passa do teto de tokens sai com as tarefas que
     // cabem, e o resto volta ao backlog; a spec relida dá o pedido novo.
     // A leitura de antes segue viva: as ondas paradas (`stuck`) apontam para

@@ -54,6 +54,9 @@ pub(crate) struct Vacancies {
     /// Quantas cópias ainda cabem sob o teto: as pastas de vaga que nenhuma
     /// onda nem a revisão final segura.
     pub(crate) copies_free: usize,
+    /// As pastas de vaga presas ([`super::slots::held_slots`]), cada uma pelo
+    /// caminho como o envio a grava.
+    held: BTreeSet<String>,
 }
 
 impl Vacancies {
@@ -74,6 +77,14 @@ impl Vacancies {
     /// espera. Fora disso, nenhuma.
     pub(crate) fn held_by_copies(&self) -> BTreeSet<u64> {
         if self.copies_free < self.agents_free() { self.waiting.clone() } else { BTreeSet::new() }
+    }
+
+    /// `true` quando a pasta `copy` estava livre antes da rodada: a onda que a
+    /// recebe toma uma das cópias que ainda cabiam sob o teto. A onda que volta
+    /// à vaga que o envio dela gravou, a replanejada ou a de cópia apagada,
+    /// reaproveita uma pasta presa e não toma cópia nenhuma.
+    pub(crate) fn takes_free_copy(&self, copy: &str) -> bool {
+        !self.held.iter().any(|place| same_place(place, copy))
     }
 }
 
@@ -104,26 +115,34 @@ pub(crate) fn vacancies_with(root: &Path, spec: &str, log: &SpecLog, capacity: u
     let copies = copy_cap(capacity);
     let held = super::slots::held_slots(root, spec, log);
     let copies_free = (0..copies).filter(|slot| !held.iter().any(|place| same_place(place, &shown(&slot_path(root, spec, *slot))))).count();
-    Vacancies { capacity, copies, open: open_sends(log), working, holding, waiting, copies_free }
+    Vacancies { capacity, copies, open: open_sends(log), working, holding, waiting, copies_free, held }
 }
 
 /// O aviso da resposta da rodada quando o teto de cópias segura o despacho
-/// ([`Vacancies::held_by_copies`]): as ondas `sent` que saem agora tomam as
+/// ([`Vacancies::held_by_copies`]): as ondas que saem de fato tomam as
 /// últimas cópias livres e ficou o que sairia sem o teto — mais ondas do
-/// plano, ou a tarefa pronta do backlog, com vaga de agente sobrando. A cópia
-/// que sobra depois do despacho diz que o que ficou espera outra coisa, como
-/// o Jev ou a vez de sair sozinha, e não há aviso. Diz quais ondas seguram e
-/// o que as libera.
-pub(super) fn copies_full_warning(log: &SpecLog, vacancies: &Vacancies, sent: &[u64], stuck: &BTreeMap<u64, Vec<&SpecEvent>>, lang: Locale) -> Option<Value> {
+/// plano, ou a tarefa pronta do backlog, com vaga de agente sobrando. A conta
+/// é a do que sai depois dos outros filtros do despacho: `allowed` é quantas
+/// ondas o teto deixou sair, e `leaving` são as pastas das cópias que as
+/// ondas que saem de fato recebem, a da reenviada em cópia nova inclusive. A
+/// onda que a escolha dos itens, a criação da cópia ou a escolha das skills
+/// seguram não toma cópia, e a que sobra depois do despacho diz que o que
+/// ficou espera outra coisa, como o Jev ou a vez de sair sozinha, e não há
+/// aviso. Diz quais ondas seguram e o que as libera.
+pub(super) fn copies_full_warning(
+    log: &SpecLog,
+    vacancies: &Vacancies,
+    (allowed, leaving): (usize, &[&str]),
+    stuck: &BTreeMap<u64, Vec<&SpecEvent>>,
+    lang: Locale,
+) -> Option<Value> {
     let held = vacancies.held_by_copies();
-    // A onda replanejada que sai de novo volta à vaga que o envio dela gravou,
-    // sem tomar cópia.
-    let taken = sent.iter().filter(|wave| !vacancies.holding.contains(wave)).count();
+    let taken = leaving.iter().filter(|copy| vacancies.takes_free_copy(copy)).count();
     if held.is_empty() || vacancies.copies_free > taken {
         return None;
     }
     let uncapped = outgoing(log, &Vacancies { copies_free: usize::MAX, ..vacancies.clone() }, stuck, &BTreeSet::new()).ok()?;
-    let left = uncapped.go.len() > sent.len() || (uncapped.free > 0 && !backlog_ready(log).is_empty());
+    let left = uncapped.go.len() > allowed || (uncapped.free > 0 && !backlog_ready(log).is_empty());
     if !left {
         return None;
     }
@@ -214,6 +233,29 @@ mod tests {
         let expected = translate("round.copies_full", Locale::PtBr).replace("{copies}", "3").replace("{waves}", "1, 2");
         assert_eq!(full["hint"], json!(expected), "{out}");
         assert!(out["next"].as_str().is_some_and(|next| next.contains(&expected)), "{out}");
+    }
+
+    /// Três ondas prontas, três vagas de agente e quatro cópias, duas presas:
+    /// o teto deixou uma onda sair, e o aviso de cópias cheias conta só as
+    /// cópias livres que as ondas que saem de fato tomam. A onda nova e a
+    /// reenviada em cópia nova tomam uma cada, e as duas esgotam as livres; a
+    /// onda que volta à pasta presa dela não toma nenhuma, e a que não saiu
+    /// também não.
+    #[test]
+    fn the_copies_full_warning_counts_the_free_copies_the_leaving_waves_take() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[]), (3, &["src/c.rs"], &[])]);
+        let log = spec_x(root);
+        let held: BTreeSet<String> = ["/copies/0", "/copies/1"].map(String::from).into();
+        let vacancies = Vacancies { capacity: 3, copies: 4, waiting: BTreeSet::from([9]), copies_free: 2, held, ..Vacancies::default() };
+        let warn = |leaving: &[&str]| copies_full_warning(&log, &vacancies, (1, leaving), &BTreeMap::new(), Locale::PtBr);
+
+        let both = warn(&["/copies/2", "/copies/3"]).expect("the new wave and the resent one take the two free copies");
+        assert_eq!(both["waves"], json!([9]), "{both}");
+        assert_eq!(warn(&["/copies/2"]), None, "only the new wave takes a copy, and one is still free");
+        assert_eq!(warn(&["/copies/2", "/copies/0"]), None, "the wave back to its own held folder takes no copy");
+        assert_eq!(warn(&[]), None, "no wave leaves, so no copy is taken");
     }
 
     /// O despacho, a retomada, a fila declarada e o painel dizem a mesma vaga

@@ -1688,6 +1688,37 @@ fn a_wave_waiting_for_the_skill_pick_leaves_with_its_number_after_the_receipt() 
     the_held_wave_left(&project, &sent, &waiting, asked_skills());
 }
 
+/// O Jev decide os itens e as skills da onda antes de ela ser montada, e um
+/// arquivo ocupa o lugar da pasta da vaga: a onda fica montada e não sai, por
+/// falta de cópia, sem esperar decisão nenhuma. A rodada seguinte, com a vaga
+/// livre, desfaz a onda, devolve a tarefa ao backlog e a monta de novo com o
+/// número seguinte — o da desfeita não volta a nascer —, sem deixar onda vazia
+/// para trás.
+#[test]
+fn an_assembled_wave_with_its_decisions_recorded_and_no_copy_is_undone_and_leaves_with_a_new_number() {
+    let jev = FakeJev::start(|asked| items_answer(asked, &|_| 0.5));
+    let (mut project, _, _, tasks) = backlog_project(&[&["src/a.rs"]]);
+    tied_skills(&project);
+    project.jev = Some(jev.url.clone());
+    let slot = mustard_core::io::wave_prompt::slot_path(&project.root, SPEC, 0);
+    std::fs::create_dir_all(slot.parent().expect("the copies folder")).expect("the copies folder");
+    std::fs::write(&slot, b"no caminho da copia").expect("the file in the place of the slot");
+
+    let first = project.run(&["round", "--dispatch", "--spec", SPEC]);
+
+    assert!(waves_in(&first, "dispatch").is_empty(), "no copy, no dispatch: {first}");
+    let failed = first["warnings"].as_array().into_iter().flatten().find(|w| w["reason"] == json!("copy-not-created"));
+    assert_eq!(failed.map(|w| w["wave"].clone()), Some(json!(1)), "{first}");
+    assert!(warned_waves(&first, "items-jev-pending").is_empty() && warned_waves(&first, "skill-pick-reserve").is_empty(), "the decisions came first: {first}");
+    assert_eq!(batch_orders(&project), vec![tasks], "the wave stays assembled: {first}");
+    std::fs::remove_file(&slot).expect("the slot is free again");
+
+    let second = project.run(&["round", "--dispatch", "--spec", SPEC]);
+
+    assert_eq!(waves_in(&second, "dispatch"), vec![2], "the undone wave comes back with the next number: {second}");
+    assert_eq!(project.log().planned_waves(), BTreeSet::from([2]), "no empty wave stays behind: {second}");
+}
+
 /// Com a leitura do classificador pendente, a passada com as travas presas
 /// só solta as ondas já gravadas, e a que a escolha das skills segurou é uma
 /// delas: o recibo chega, duas tarefas novas esperam a leitura da sessão, e a
@@ -2642,6 +2673,35 @@ fn a_round_that_leaves_a_copy_free_does_not_say_the_copies_are_full() {
     let waiting = [narrow, wide].into_iter().filter(|task| log.current(*task).is_some_and(|now| now.wave().is_none())).count();
     assert_eq!(waiting, 1, "the other one stays in the backlog: {out}");
     assert!(copies_full(&out).is_none(), "a copy is still free: {out}");
+}
+
+/// Duas vagas e três cópias, com quatro tarefas prontas. As ondas 1 e 2
+/// voltam e esperam a revisão, guardando duas cópias, e sobra uma. O Jev
+/// recusa só a escolha dos itens: a onda montada do backlog espera o recibo e
+/// não sai, então não toma a cópia livre. A rodada diz que a onda espera a
+/// escolha, e não que as cópias estão cheias; com o recibo, a onda sai na
+/// cópia que sobrou.
+#[test]
+fn a_wave_held_for_the_item_choice_takes_no_copy_and_the_round_does_not_say_the_copies_are_full() {
+    let (mut project, _, _, _) = backlog_project(&[&["a.rs"], &["b.rs"], &["c.rs"], &["d.rs"]]);
+    slots(&project, 2);
+    let first = project.run(&["round", "--dispatch", "--spec", SPEC]);
+    assert_eq!(waves_in(&first, "dispatch"), vec![1, 2], "{first}");
+    deliver_file_in_copy(&project, 1, "a.rs", "um\n");
+    deliver_file_in_copy(&project, 2, "b.rs", "dois\n");
+    let jev = FakeJev::start(|asked| if asks_items(asked) { (400, json!({"error": "refused"})) } else { items_answer(asked, &|_| 0.5) });
+    project.jev = Some(jev.url.clone());
+
+    let held = unreviewed_round(&project);
+
+    assert!(waves_in(&held, "dispatch").is_empty(), "the wave waits for the item choice: {held}");
+    assert_eq!(warned_waves(&held, "items-jev-pending").len(), 1, "{held}");
+    assert!(copies_full(&held).is_none(), "the held wave takes no copy, and one is still free: {held}");
+    assert_eq!(answer_reserves(&project, &held, "sure"), 1, "{held}");
+
+    let sent = unreviewed_round(&project);
+
+    assert_eq!(waves_in(&sent, "dispatch").len(), 1, "with the receipt the wave takes the free copy: {sent}");
 }
 
 /// A rodada pelo binário, rodada de dentro de `from` com a raiz do projeto

@@ -200,10 +200,10 @@ fn the_assembly_asks_outside_the_locks_and_only_the_backlog_waits_for_the_receip
     }
 }
 
-/// The wave that the assembly of the backlog formed and whose item choice
-/// waits for the receipt, because the Jev failed, leaves in the round after
-/// the receipt with the number it was given: the same wave is sent, and no
-/// wave stays recorded without tasks.
+/// A onda que a montagem do backlog formou e cuja escolha dos itens espera o
+/// recibo, porque o Jev falhou, sai na rodada seguinte ao recibo com o número
+/// que ganhou: a mesma onda é enviada, e nenhuma onda fica gravada sem
+/// tarefa.
 #[test]
 fn an_assembled_wave_waiting_for_the_item_choice_leaves_with_its_number() {
     let dir = tempdir().unwrap();

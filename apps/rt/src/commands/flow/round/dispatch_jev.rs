@@ -21,10 +21,12 @@
 //! mesmas tarefas, acha a mesma decisão, e a espera não se repete. Cada pedido
 //! fica gravado por si: a decisão de uma tarefa vale em qualquer montagem que
 //! a leve, e a rodada em que a spec mudou entre a pergunta e a trava só espera
-//! pelo pedido que mudou. A onda montada que a escolha dos itens segurou não
-//! volta a ser montada: a montagem a mantém enquanto a decisão dela falta ou
-//! veio depois dela ([`Asker::undecided_at`]), e ela sai com o número que
-//! ganhou.
+//! pelo pedido que mudou. A onda montada que a escolha dos itens ou a das
+//! skills segurou não volta a ser montada: a montagem a mantém enquanto a
+//! decisão de uma das duas falta ou veio depois dela ([`Asker::undecided_at`]),
+//! e ela sai com o número que ganhou. A onda cujas decisões já estavam
+//! gravadas antes dela e que não saiu por outro motivo, como a falta de cópia,
+//! se desfaz e volta ao backlog.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -78,7 +80,10 @@ pub(crate) struct Asker<'a> {
     spec: &'a str,
     phase: Phase,
     known: RefCell<BTreeMap<String, Value>>,
-    /// O número do evento que gravou primeiro a decisão de cada impressão.
+    /// O número do evento que gravou primeiro a decisão de cada impressão,
+    /// lido da spec na entrada. A decisão que a passada grava depois
+    /// ([`Self::record`]) não entra: o evento dela é mais novo que toda onda
+    /// já gravada, e [`Self::undecided_at`] já a conta como gravada depois.
     since: BTreeMap<String, u64>,
     reserves: RefCell<Vec<Value>>,
 }
@@ -102,7 +107,7 @@ impl<'a> Asker<'a> {
 
     /// `true` quando algum pedido de `payloads` da chamada `command` ainda não
     /// tinha decisão gravada no evento `formed`: a decisão falta, ou foi
-    /// gravada depois dele.
+    /// gravada depois dele, inclusive a que esta passada gravou.
     pub(crate) fn undecided_at(&self, command: &str, payloads: &[String], formed: u64) -> bool {
         payloads.iter().any(|payload| self.since.get(&print(command, payload).0).is_none_or(|at| *at > formed))
     }

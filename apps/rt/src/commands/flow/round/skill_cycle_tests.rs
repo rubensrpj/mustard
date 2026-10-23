@@ -3,7 +3,6 @@
 //! não serve ([`crate::shared::skill_cycle`]).
 
 use std::cell::RefCell;
-use std::collections::BTreeSet;
 use std::path::Path;
 use std::rc::Rc;
 
@@ -14,7 +13,6 @@ use mustard_core::io::spec_events as store;
 use serde_json::{Map, Value, json};
 use tempfile::tempdir;
 
-use super::dispatch_jev_tests::loose_task;
 use super::tests::{approved, delivered, git_at, round, waves_in};
 
 fn log_of(root: &Path) -> mustard_core::domain::spec_events::SpecLog {
@@ -316,37 +314,4 @@ fn a_failed_skill_pick_holds_only_its_wave_and_the_receipt_sends_it_with_the_cho
         let chosen = if mode == "sure" { json!(["a4", "a5"]) } else { Value::Null };
         assert_eq!(sent_skills(root, 1), chosen, "{mode}: an unsure answer stays below the cut");
     }
-}
-
-/// A onda que a montagem do backlog formou, segurada só pela escolha das
-/// skills em que o Jev falha, não volta a ser montada: o recibo manda essa
-/// mesma onda, com o número que ela ganhou e as skills que o recibo escolheu,
-/// e nenhuma onda fica gravada sem tarefa.
-#[test]
-fn an_assembled_wave_held_by_the_skill_pick_leaves_with_its_number() {
-    let dir = tempdir().unwrap();
-    let root = dir.path();
-    approved(root, "x", &[]);
-    for name in ["a1", "a2", "a3", "a4", "a5"] {
-        write_skill(root, name, true);
-    }
-    loose_task(root, "Somar o total.", "src/b.rs");
-    crate::shared::jev::yes_no::ask_in_test(Some(Rc::new(|_: &[String]| None)));
-    let first = round(root, "x", None);
-    assert!(waves_in(&first, "dispatch").is_empty(), "the assembled wave waits for the receipt: {first}");
-    let waiting: Vec<u64> =
-        first["warnings"].as_array().into_iter().flatten().filter(|w| w["reason"] == json!("skill-pick-reserve")).filter_map(|w| w["wave"].as_u64()).collect();
-    assert_eq!(waiting.len(), 1, "{first}");
-    let request = first["reserves"][0].clone();
-
-    let wanted = |text: &str| if text.contains("skills.s4") || text.contains("skills.s5") { "yes".to_string() } else { "no".to_string() };
-    crate::shared::jev::reserve::answer_in_test(root, &request, wanted, "sure");
-    crate::shared::jev::yes_no::ask_in_test(Some(Rc::new(|_: &[String]| panic!("the receipt answers in place of the Jev"))));
-    let sent = round(root, "x", None);
-    crate::shared::jev::yes_no::ask_in_test(None);
-    assert_eq!(waves_in(&sent, "dispatch"), waiting, "the wave that waited leaves with its number: {sent}");
-    assert_eq!(sent_skills(root, waiting[0]), json!(["a4", "a5"]), "{sent}");
-    let log = log_of(root);
-    let recorded: BTreeSet<u64> = log.events.iter().filter(|e| e.event_type == "wave").filter_map(|e| e.wave()).collect();
-    assert_eq!(recorded, log.planned_waves(), "no wave stays recorded without tasks: {sent}");
 }
