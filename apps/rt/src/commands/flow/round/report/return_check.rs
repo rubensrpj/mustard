@@ -18,6 +18,7 @@ use super::super::agreed::{Unmet, covered_codes, request_agreed, settle_agreed};
 use super::super::commit::{git_lock, unknown_file};
 use super::super::commit_title::message;
 use super::super::finish_check::{proof_older_than_files, unfinished_work};
+use super::super::leftovers::leftovers_of;
 use super::super::queue::{open_review, open_sends};
 use super::super::read_check::{request_name, unread_items, without_undone};
 use super::super::task_release::held_back;
@@ -145,7 +146,9 @@ pub(crate) fn check_return(
 /// feitas antes de gravar, como as da entrega, com a trava do passo do git
 /// que [`check_return`] prendeu: há pedido de revisão aberto;
 /// cada critério e cada item do combinado citado existe; o veredito final
-/// responde pelo combinado que lhe cabe ([`agreed_prompt::review_agreed`]); e o revisor leu, de dentro da cópia
+/// responde pelo combinado que lhe cabe ([`agreed_prompt::review_agreed`]); os achados dele em `leftovers`, que o
+/// fechamento grava como tarefas, têm a marca de limpeza e os arquivos legíveis
+/// ([`leftovers_of`]); e o revisor leu, de dentro da cópia
 /// dele, cada item que o pedido da revisão lista. Passando, o veredito ganha
 /// `returned` e o autor da revisão, e fica como o revisor o escreveu: a
 /// rodada o resolve de novo ao assumi-lo.
@@ -166,6 +169,9 @@ pub(crate) fn check_verdict_return(start: &Path, spec: &str, draft: &mut Map<Str
         return Err(RoundRefusal::NoOpenReview);
     };
     settle_verdict(&log, &mut draft.clone()).map_err(RoundRefusal::Refused)?;
+    if let Some(Value::Array(listed)) = draft.get("leftovers") {
+        leftovers_of("verdict", listed).map_err(RoundRefusal::Refused)?;
+    }
     // E de ter lido cada item que o pedido da revisão lista: o pedido de antes
     // desta conferência não grava a lista, e o veredito dele não é cobrado.
     let unread = unread_items(&log, asked, &request_name(None));

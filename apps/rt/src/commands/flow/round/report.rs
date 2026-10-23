@@ -31,7 +31,7 @@ use super::commit::{
 use super::wave_commit::{commit_waves, made_drafts, record_made, removed_warnings};
 use super::commit_title::{check_summary, wave_commits};
 use super::copy_check::check_against_copies;
-use super::leftovers::{Leftover, LeftoverEvent, MeaningJoin, ask_rewrites, leftover_destinations, leftover_events, leftovers_of, meaning_joins};
+use super::leftovers::{Leftover, LeftoverEvent, MeaningJoin, ask_rewrites, cover_asks, leftover_destinations, leftover_events, leftovers_of, meaning_joins};
 use super::queue::{backlog_wave, open_review, open_sends, waves_in_progress};
 use super::rehearsal::{Recording, Rehearsed, rehearse};
 use super::rejection::{held_rejection, keep_rejections, record_rejections, rejected_lines, release_unstarted};
@@ -751,7 +751,7 @@ fn wave_report_of(log: &SpecLog, fields: &Map<String, Value>) -> Result<WaveRepo
     let proofs = listed("proofs").iter().filter_map(|p| Some((p.get("criterion").filter(|c| !c.is_null())?.clone(), field(p, "proof")?))).collect();
     let fixes = listed("fixes").iter().filter_map(Value::as_u64).filter(|n| *n != wave).collect();
     let (undone, taken_elsewhere) = undone_of(log, wave, fields, replan.is_some() || text("blocked_by").is_some())?;
-    let leftovers = leftovers_of(&listed("leftovers")).map_err(RoundRefusal::Refused)?;
+    let leftovers = leftovers_of("delivered", &listed("leftovers")).map_err(RoundRefusal::Refused)?;
     Ok(WaveReport {
         wave,
         delivered,
@@ -1076,15 +1076,7 @@ fn check_reports(
     meaning.extend(meaning_joins(&leftovers, work_from + wave_tasks.len()));
     let mut rehearsed: Vec<u64> = Vec::new();
     for LeftoverEvent { wave, kind, mut draft, asks, .. } in leftovers {
-        if !asks.is_empty() {
-            let mut covers: Vec<u64> = draft.get("covers").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_u64).collect();
-            for id in asks.iter().filter_map(|at| rehearsed.get(*at).copied()) {
-                if !covers.contains(&id) {
-                    covers.push(id);
-                }
-            }
-            draft.insert("covers".into(), json!(covers));
-        }
+        cover_asks(&mut draft, &asks, &rehearsed);
         let event = rehearse(&mut check, kind, draft)?;
         rehearsed.push(event.id);
         wave_tasks.push((wave, kind, event));

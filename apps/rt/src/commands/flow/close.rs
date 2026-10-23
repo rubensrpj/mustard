@@ -25,7 +25,9 @@
 //! como conserto pela rodada; entregue o conserto, o fechamento pede o mesmo
 //! agente de novo, mas só para conferir o conserto, não a obra inteira. Em
 //! até duas voltas de conserto sem aprovar, a onda para e a decisão passa a
-//! ser do usuário — o mesmo limite de qualquer conserto.
+//! ser do usuário — o mesmo limite de qualquer conserto. Os achados que o
+//! veredito aprovado traz em `leftovers` viram tarefas no backlog, e a
+//! resposta manda rodar a rodada no lugar do pull request.
 //!
 //! **A cópia do revisor.** É o binário que cria a cópia onde o agente de
 //! teste dedicado confere a obra, pela mesma porta das cópias de onda, antes
@@ -570,7 +572,25 @@ fn run_close(
     // próprio veredito já trouxe por item, e a situação. Sem essa tabela,
     // ninguém consultava depois qual item tem qual verificação, nem onde o
     // comportamento mora — o resultado morria no veredito.
+    // Antes dela, os achados que o veredito aprovado traz em `leftovers` viram
+    // tarefas no backlog, e a obra não fecha: a resposta manda rodar a rodada
+    // no lugar do pull request. O fechamento seguinte recusa pelo backlog, e
+    // a entrega das tarefas pede revisão final nova.
     if let Some(verdict) = final_approval(&log) {
+        let found = crate::commands::flow::round::record_final_leftovers(&opts.root, root, &spec, (&log, verdict), lang)
+            .map_err(CloseRefusal::Refused)?;
+        if !found.is_empty() {
+            let mut out = final_leftovers_answer(&spec, recorded, found, &read(&path)?, lang);
+            out["criteria"] = json!(runs);
+            out["validation"] = json!({"status":"pass","reused":reused});
+            if let Some(hint) = &stuck_hint {
+                spec_events::pages::push_warning(&mut out, "stuck-found", hint);
+            }
+            if let Some((reason, hint)) = &agents_hint {
+                spec_events::pages::push_warning(&mut out, reason, hint);
+            }
+            return Ok(out);
+        }
         record_tracking_table(&opts.root, &spec, verdict).map_err(CloseRefusal::Refused)?;
     }
 
@@ -691,6 +711,25 @@ fn run_close(
         out["command"] = command;
     }
     Ok(out)
+}
+
+/// A resposta do fechamento que gravou como tarefas os achados do veredito
+/// final aprovado — `found`, cada evento com o tipo e o número —, lidos em
+/// `log`: a obra segue em execução, o que o fechamento gravou (`recorded`)
+/// ganha esses eventos, e o passo seguinte é a rodada, com o código de cada
+/// tarefa, no idioma `lang` — nunca o pull request.
+fn final_leftovers_answer(spec: &str, mut recorded: Vec<Value>, found: Vec<Value>, log: &SpecLog, lang: Locale) -> Value {
+    let codes = log.codes();
+    let tasks: Vec<String> = found
+        .iter()
+        .filter(|entry| entry["type"] == json!("task"))
+        .filter_map(|entry| entry["id"].as_u64())
+        .map(|id| codes.get(&id).cloned().unwrap_or_else(|| id.to_string()))
+        .collect();
+    let command = crate::commands::flow::resume::step_command("round", spec, &State::from_log(log)).unwrap_or_default();
+    let next = translate("close.final_leftovers", lang).replace("{tasks}", &tasks.join(", ")).replace("{command}", &command);
+    recorded.extend(found);
+    json!({ "ok": true, "spec": spec, "phase": "running", "recorded": recorded, "next": next, "command": command })
 }
 
 /// A linha que grava a resposta "fica para depois" da pendência `id`, pronta

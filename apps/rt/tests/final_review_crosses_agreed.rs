@@ -564,6 +564,60 @@ fn all_met_verdict(decisions: &[Value]) -> Value {
     json!({"final": true, "result": "approved", "text": "Tudo atendido.", "agreed": all_met})
 }
 
+/// O veredito final aprovado que traz achados em `leftovers`, no formato da
+/// entrega de onda, não leva a obra ao pull request: o fechamento grava cada
+/// achado como uma tarefa no backlog, que cobre o pedido dele, e manda rodar
+/// a rodada em vez de abrir o pull request. O fechamento seguinte recusa pelo
+/// backlog e não grava os achados de novo.
+#[test]
+fn an_approved_final_verdict_with_leftovers_becomes_backlog_tasks_instead_of_the_pull_request() {
+    let project = Project::new();
+    let decisions = ready(&project);
+    let asked = project.run(&["close", "--spec", SPEC]);
+    assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+
+    let mut verdict = all_met_verdict(&decisions);
+    verdict["leftovers"] = json!([
+        {"title": "A soma não trata estouro", "detail": "A soma de números grandes estoura em src/main.rs.", "files": ["src/main.rs"]},
+        {"title": "O README não cita a soma", "detail": "O README não explica a soma.", "files": ["README.md"], "cleanup": true},
+    ]);
+    project.read_review();
+    project.write("verdict", &verdict);
+    let after = project.run(&["close", "--spec", SPEC]);
+
+    assert_eq!(after["phase"], json!("running"), "a obra não fecha com achados: {after}");
+    let round = format!("mustard-rt run round --dispatch --spec {SPEC}");
+    assert_eq!(after["command"], json!(round), "o fechamento manda rodar a rodada: {after}");
+    assert!(!after.to_string().contains("pr-open"), "o fechamento não manda abrir o pull request: {after}");
+
+    let log = project.log();
+    let backlog = |log: &SpecLog| -> Vec<SpecEvent> {
+        log.visible().into_iter().filter(|e| e.event_type == "task" && e.wave().is_none()).cloned().collect()
+    };
+    let tasks = backlog(&log);
+    let titles: Vec<&str> = tasks.iter().filter_map(|task| task.str_field("title")).collect();
+    assert_eq!(titles, vec!["A soma não trata estouro", "O README não cita a soma"], "{tasks:?}");
+    for task in &tasks {
+        let title = task.str_field("title").unwrap_or_default();
+        let request = log
+            .visible()
+            .into_iter()
+            .find(|e| e.event_type == "request" && task.ints("covers").contains(&e.id))
+            .unwrap_or_else(|| panic!("a tarefa {title} não cobre o pedido do achado: {task:?}"));
+        assert_eq!(request.str_field("title"), Some(title), "{request:?}");
+    }
+    let files = |task: &SpecEvent| -> Vec<String> {
+        task.fields.get("files").and_then(Value::as_array).into_iter().flatten().filter_map(|f| f["path"].as_str().map(str::to_string)).collect()
+    };
+    assert_eq!(files(&tasks[0]), vec!["src/main.rs".to_string()], "{:?}", tasks[0]);
+    assert_eq!(files(&tasks[1]), vec!["README.md".to_string()], "{:?}", tasks[1]);
+    assert_eq!(tasks[1].fields.get("cleanup"), Some(&json!(true)), "a limpeza segue marcada: {:?}", tasks[1]);
+
+    let again = project.answer(&["close", "--spec", SPEC]);
+    assert_eq!(again["reason"], json!("backlog-not-empty"), "{again}");
+    assert_eq!(backlog(&project.log()).len(), 2, "o fechamento seguinte não grava os achados de novo");
+}
+
 /// Os números dos pedidos de revisão final gravados, do mais velho ao mais
 /// novo.
 fn review_requests(project: &Project) -> Vec<u64> {

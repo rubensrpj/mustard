@@ -43,6 +43,8 @@ Revise ondas/entregas/critérios/commits e levantamentos/PRs, sem corrigir. Leia
 
 Só o crítico reprova.
 
+Na revisão final, cada achado maior ou menor vai também em `leftovers` do veredito, no formato da entrega de onda: `"leftovers":[{"title":"…","detail":"…","files":["…"]}]`; o que só muda comentário/documentação/ajuda leva `"cleanup":true`. Com o veredito aprovado, o fechamento os grava como tarefas antes do pull request.
+
 ## Propostas
 
 Erro que pode se repetir? Escreva como achado do veredito o conserto no código, com o teste que falha se o erro voltar. Veio de skill com passo errado ou faltando? Proponha a mudança nela; ela só entra com o "sim" do usuário.

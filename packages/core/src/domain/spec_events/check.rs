@@ -252,9 +252,11 @@ const NESTED: &[(&str, &str, &[&str])] = &[
     ("task", "files", &["path"]),
     ("send", "skills", &["name", "sha"]),
     ("send", "rejected", &["delivered", "reason"]),
-    // A sobra que a onda relata vira tarefa da spec: sem título ou sem
-    // detalhe, não há o que abrir.
+    // A sobra que a onda relata, e o achado que a revisão final traz no
+    // mesmo formato, vira tarefa da spec: sem título ou sem detalhe, não há o
+    // que abrir.
     ("delivered", "leftovers", &["title", "detail"]),
+    ("verdict", "leftovers", &["title", "detail"]),
     ("delivered", "proofs", &["criterion", "proof"]),
     ("delivered", "agreed", &["item", "met"]),
     ("verdict", "criteria", &["criterion", "tests_rule"]),

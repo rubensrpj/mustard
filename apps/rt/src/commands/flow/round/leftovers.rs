@@ -31,6 +31,11 @@
 //! sentido, como as outras tarefas do backlog. O campo `kind` que uma volta
 //! antiga ainda traga é aceito e ignorado.
 //!
+//! Os achados que a revisão final aprovada traz em `leftovers`, no mesmo
+//! formato, passam pela mesma montagem quando o fechamento os grava
+//! ([`record_final_leftovers`]): sem onda, pela regra nativa dos arquivos, e
+//! com os textos que nomeiam a revisão final no lugar da onda.
+//!
 //! [`task_triage`]: crate::shared::task_triage
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -43,9 +48,14 @@ use mustard_core::io::wave_prompt;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Map, Value};
 
+use mustard_core::domain::spec_state::PhaseWriter;
+
+use super::jev_decision::FINAL_REVIEW;
 use super::queue::{backlog_left, task_files, tasks_not_delivered};
+use super::rehearsal::{Recording, Rehearsed, rehearse};
 use super::report::{WaveReport, backlog_return, own_copy_relative};
 use super::stops::append_agent_line;
+use crate::commands::spec_events::write::RecordCheck;
 use crate::shared::task_triage::{self, Candidate, Destination, Item, Summary};
 
 /// O campo que marca a limpeza, na sobra da volta e na tarefa que ela vira:
@@ -62,11 +72,22 @@ const PRIORITY: &str = "priority";
 /// nele. A montagem lê o grupo pelo mesmo nome ([`group_name`]).
 pub(super) const GROUP: &str = "group";
 
+/// Um texto que nomeia quem apontou a sobra: a chave do texto da onda, que
+/// leva o número dela em `{wave}`, e a do texto da revisão final, que não tem
+/// onda ([`said_by`]).
+type SaidBy = (&'static str, &'static str);
+
 /// A seção da sobra que entra na tarefa pela regra dos mesmos arquivos.
-const JOINED_ON_FILES: &str = "round.leftover_joined";
+const JOINED_ON_FILES: SaidBy = ("round.leftover_joined", "round.leftover_review_joined");
 
 /// A seção da sobra que o classificador pôs na tarefa pelo sentido.
-const JOINED_BY_MEANING: &str = "round.leftover_classified";
+const JOINED_BY_MEANING: SaidBy = ("round.leftover_classified", "round.leftover_review_classified");
+
+/// A prioridade da tarefa que a sobra grava ([`leftover_priority`]).
+const PRIORITY_SAID: SaidBy = ("round.leftover_priority", "round.leftover_review_priority");
+
+/// A marca da sobra no título do pedido dela ([`marked_title`]).
+const MARKED: SaidBy = ("round.leftover_marked", "round.leftover_review_marked");
 
 /// O tipo do evento que a sobra vira quando é trabalho: a tarefa nova ou a
 /// versão nova de uma tarefa aberta.
@@ -90,7 +111,8 @@ pub(crate) struct Leftover {
     pub cleanup: bool,
 }
 
-/// As sobras da lista `leftovers` da volta, na ordem. A sobra sem título ou
+/// As sobras da lista `leftovers` da volta, um evento `event_type` — a
+/// entrega da onda ou o veredito final —, na ordem. A sobra sem título ou
 /// sem detalhe fica de fora — a gravação já a recusa —, e o `kind` que ela
 /// ainda traga não é lido. A marca de limpeza ausente vale "não"; a que não é
 /// sim nem não é recusada, como a lista de arquivos que não é uma lista de
@@ -100,10 +122,10 @@ pub(crate) struct Leftover {
 ///
 /// [`Refusal::InvalidValue`] quando a marca de limpeza de uma sobra não é um
 /// booleano, ou os arquivos dela não são uma lista de textos.
-pub(super) fn leftovers_of(items: &[Value]) -> Result<Vec<Leftover>, Refusal> {
+pub(super) fn leftovers_of(event_type: &str, items: &[Value]) -> Result<Vec<Leftover>, Refusal> {
     let field = |item: &Value, key: &str| item.get(key).and_then(Value::as_str).map(|t| t.trim().to_string());
     let invalid = |at: usize, name: &str, expected: Kind| Refusal::InvalidValue {
-        event_type: "delivered".into(),
+        event_type: event_type.into(),
         field: format!("leftovers[{}].{name}", at + 1),
         expected,
     };
@@ -420,6 +442,64 @@ pub(super) fn leftover_destinations(
     out
 }
 
+/// Grava no backlog da spec `spec`, vista de `start`, os achados que o
+/// veredito final aprovado `verdict`, lido em `log`, traz em `leftovers`: cada
+/// um vira o pedido com o relato dele, que aponta o veredito em `origin`, e a
+/// tarefa que o cobre, pela mesma montagem das sobras de uma onda
+/// ([`leftover_events`]), com a revisão final no lugar da onda
+/// ([`FINAL_REVIEW`]) e a regra nativa dos arquivos — o fechamento não
+/// pergunta ao classificador. Tudo passa antes pelo ensaio: a recusa de um
+/// não deixa gravado nenhum. Devolve, de cada evento gravado, o tipo e o
+/// número; nada sem achado. Os textos saem no idioma `lang`.
+///
+/// # Errors
+///
+/// A recusa da leitura dos achados ([`leftovers_of`]), do ensaio ou da
+/// gravação.
+pub(crate) fn record_final_leftovers(start: &Path, root: &Path, spec: &str, (log, verdict): (&SpecLog, &SpecEvent), lang: Locale) -> Result<Vec<Value>, Refusal> {
+    let listed = verdict.fields.get("leftovers").and_then(Value::as_array).cloned().unwrap_or_default();
+    let found = leftovers_of("verdict", &listed)?;
+    if found.is_empty() {
+        return Ok(Vec::new());
+    }
+    let pointed: Vec<(u64, &Leftover)> = found.iter().map(|leftover| (FINAL_REVIEW, leftover)).collect();
+    let origin = BTreeMap::from([(FINAL_REVIEW, verdict.id)]);
+    let events = leftover_events(root, log, &pointed, &BTreeSet::new(), &origin, &[], lang);
+    let mut check = RecordCheck::open(start, spec, PhaseWriter::Binary)?;
+    let mut ids = Vec::new();
+    let mut rehearsed: Vec<(&str, Rehearsed)> = Vec::new();
+    for LeftoverEvent { kind, mut draft, asks, .. } in events {
+        draft.insert("author".into(), json!("review"));
+        cover_asks(&mut draft, &asks, &ids);
+        let event = rehearse(&mut check, kind, draft)?;
+        ids.push(event.id);
+        rehearsed.push((kind, event));
+    }
+    let mut recording = Recording::new(start, spec);
+    let mut recorded = Vec::new();
+    for (kind, event) in rehearsed {
+        let (id, _) = recording.record(kind, event)?;
+        recorded.push(json!({ "type": kind, "id": id }));
+    }
+    Ok(recorded)
+}
+
+/// Liga a tarefa `draft` aos pedidos das sobras que ela passa a cobrir: cada
+/// posição de `asks` aponta, em `ids`, o número que o ensaio deu ao pedido, e
+/// ele entra em `covers`, sem repetir o que a tarefa já cobria.
+pub(super) fn cover_asks(draft: &mut Map<String, Value>, asks: &[usize], ids: &[u64]) {
+    if asks.is_empty() {
+        return;
+    }
+    let mut covers: Vec<u64> = draft.get("covers").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_u64).collect();
+    for id in asks.iter().filter_map(|at| ids.get(*at).copied()) {
+        if !covers.contains(&id) {
+            covers.push(id);
+        }
+    }
+    draft.insert("covers".into(), json!(covers));
+}
+
 /// O evento `kind` da sobra apontada pela onda `wave`, com o rascunho
 /// `draft`, que ainda não cobre pedido nenhum.
 fn event(wave: u64, kind: &'static str, draft: Map<String, Value>) -> LeftoverEvent {
@@ -478,7 +558,18 @@ fn judged_note(log: &SpecLog, wave: u64, leftover: &Leftover, task: &SpecEvent, 
 /// idioma `lang`. É ele que o pedido da onda da tarefa mostra no que ela
 /// atende, e o agente vê que a tarefa ganhou esse trabalho.
 fn marked_title(wave: u64, title: &str, lang: Locale) -> String {
-    translate("round.leftover_marked", lang).replace("{wave}", &wave.to_string()).replace("{title}", title)
+    said_by(wave, MARKED, lang).replace("{title}", title)
+}
+
+/// O texto `said` da sobra apontada por `wave`, no idioma `lang`: o da onda,
+/// com o número dela, ou, na sobra da revisão final ([`FINAL_REVIEW`]), o da
+/// revisão — ela não tem onda, e o número zero não diria nada a quem lê.
+fn said_by(wave: u64, (by_wave, by_review): SaidBy, lang: Locale) -> String {
+    if wave == FINAL_REVIEW {
+        translate(by_review, lang).to_string()
+    } else {
+        translate(by_wave, lang).replace("{wave}", &wave.to_string())
+    }
 }
 
 /// O pedido que a sobra `leftover` vira: o título e o relato dela, para
@@ -501,9 +592,8 @@ fn leftover_request(leftover: &Leftover, files: &BTreeSet<String>, origin: Optio
 /// de limpeza fica só quando a sobra também a traz — a tarefa que passa a
 /// mudar comportamento deixa de ser limpeza. Os critérios da tarefa ficam
 /// como estão.
-fn join(draft: &mut Map<String, Value>, wave: u64, leftover: &Leftover, files: &BTreeSet<String>, section: &str, lang: Locale) {
-    let line = translate(section, lang)
-        .replace("{wave}", &wave.to_string())
+fn join(draft: &mut Map<String, Value>, wave: u64, leftover: &Leftover, files: &BTreeSet<String>, section: SaidBy, lang: Locale) {
+    let line = said_by(wave, section, lang)
         .replace("{title}", &leftover.title)
         .replace("{detail}", &text::one_line(&leftover.detail));
     append_agent_line(draft, &line);
@@ -526,7 +616,7 @@ fn join(draft: &mut Map<String, Value>, wave: u64, leftover: &Leftover, files: &
 /// A prioridade da tarefa que a sobra da onda `wave` grava, no idioma
 /// `lang`: o erro achado na obra vai à frente das tarefas antigas.
 fn leftover_priority(wave: u64, lang: Locale) -> String {
-    translate("round.leftover_priority", lang).replace("{wave}", &wave.to_string())
+    said_by(wave, PRIORITY_SAID, lang)
 }
 
 /// O nome do grupo de assunto da tarefa `task`: o que ela grava em

@@ -819,8 +819,9 @@ pub(crate) fn draft_rules(start: &Path, spec: &str, event_type: &str, draft: &mu
     // A sobra que a volta da onda traz vira, na rodada, um pedido com o
     // detalhe dela como relato, e a rodada não confere o que grava: as provas
     // que esse pedido vai nomear passam aqui, com os arquivos que a sobra
-    // declara mudar como os que ela cria.
-    if event_type == "delivered" {
+    // declara mudar como os que ela cria. O achado do veredito final vira o
+    // mesmo pedido no fechamento, e passa pela mesma conferência.
+    if matches!(event_type, "delivered" | "verdict") {
         let root = checkout(start);
         let test = project_test(start);
         for leftover in draft.get("leftovers").and_then(Value::as_array).into_iter().flatten() {
@@ -3268,7 +3269,8 @@ mod tests {
     /// projeto não tem, é recusado sem gravar; com o alvo e o arquivo que
     /// existem, é gravado. A sobra da volta de uma onda, que a rodada converte
     /// em pedido, passa pela mesma conferência na gravação da volta, com os
-    /// arquivos que ela declara como os que ela cria.
+    /// arquivos que ela declara como os que ela cria; o achado do veredito
+    /// final, que o fechamento converte no mesmo pedido, também.
     #[test]
     fn a_request_whose_proof_names_a_missing_target_or_file_is_refused() {
         let dir = tempdir().unwrap();
@@ -3300,16 +3302,19 @@ mod tests {
             assert_eq!(accepted["ok"], json!(true), "{proof}: {accepted}");
         }
 
-        let delivered = |files: Value| {
-            let mut draft = json!({"wave": 1, "text": "feito", "leftovers": [{"title": "Teste novo", "files": files,
-                "detail": "Falta o teste da soma. Prova: `npx vitest run web/src/novo.test.ts`"}]})
-            .as_object()
-            .cloned()
-            .unwrap();
-            draft_rules(root, "teste", "delivered", &mut draft, true)
-        };
-        assert_eq!(delivered(json!(["web/src/sum.ts"])), Err(Refusal::ProofPathMissing { path: "web/src/novo.test.ts".into() }));
-        assert_eq!(delivered(json!(["web/src/novo.test.ts"])), Ok(()));
+        for event_type in ["delivered", "verdict"] {
+            let returned = |files: Value| {
+                let mut draft = json!({"wave": 1, "text": "feito", "leftovers": [{"title": "Teste novo", "files": files,
+                    "detail": "Falta o teste da soma. Prova: `npx vitest run web/src/novo.test.ts`"}]})
+                .as_object()
+                .cloned()
+                .unwrap();
+                draft_rules(root, "teste", event_type, &mut draft, true)
+            };
+            let missing = Err(Refusal::ProofPathMissing { path: "web/src/novo.test.ts".into() });
+            assert_eq!(returned(json!(["web/src/sum.ts"])), missing, "{event_type}");
+            assert_eq!(returned(json!(["web/src/novo.test.ts"])), Ok(()), "{event_type}");
+        }
     }
 
     /// A onda não nasce mais pequena por contagem: a quarta tarefa é gravada

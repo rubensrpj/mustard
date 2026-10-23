@@ -43,6 +43,8 @@ Review waves/deliveries/criteria/commits and surveys/PRs, without fixing. Read "
 
 Only a critical finding rejects.
 
+In the final review, each major or minor finding also goes in the verdict's `leftovers`, in the wave delivery format: `"leftovers":[{"title":"…","detail":"…","files":["…"]}]`; one that only changes a comment/documentation/help carries `"cleanup":true`. With the verdict approved, the close records them as tasks before the pull request.
+
 ## Proposals
 
 A mistake that can happen again? Write, as a finding of the verdict, the fix in the code with the test that fails if the mistake comes back. Came from a skill with a wrong or missing step? Propose the change to it; it only goes in with the user's "yes".

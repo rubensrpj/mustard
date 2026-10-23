@@ -461,6 +461,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("close.next", Locale::PtBr) => "Depois, abra o pull request: `{command}`.",
         ("close.next", Locale::EnUs) => "Then open the pull request: `{command}`.",
+        // A revisão final aprovou com achados: eles viraram tarefas, e o
+        // pull request espera a entrega delas e uma revisão final nova.
+        ("close.final_leftovers", Locale::PtBr) => {
+            "A revisão final aprovou a obra com achados, que viraram as tarefas {tasks} no backlog. \
+             A spec não fechou: antes do pull request, rode a rodada, que as despacha: `{command}`. \
+             Depois da entrega, o fechamento pede uma revisão final nova."
+        }
+        ("close.final_leftovers", Locale::EnUs) => {
+            "The final review approved the work with findings, which became tasks {tasks} in the \
+             backlog. The spec did not close: before the pull request, run the round, which dispatches \
+             them: `{command}`. After the delivery, the close asks for a new final review."
+        }
         // A pergunta de destino de uma pendência ligada à spec `{spec}`: a
         // mesma linha que a gravação de uma pendência devolve na hora, e que
         // o fechamento repete para cada uma que a spec ainda deixa aberta.
@@ -1179,8 +1191,24 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.leftover_classified", Locale::EnUs) => {
             concat!("Error from wave {wave}'s return — {title}: {detail} (By the map: ", map_commands_en!(), ".)")
         }
+        // Os mesmos textos da sobra, quando quem a apontou é a revisão final,
+        // que não tem onda.
+        ("round.leftover_review_joined", Locale::PtBr) => {
+            concat!("Achado da revisão final, nos mesmos arquivos — {title}: {detail} (Pelo mapa: ", map_commands_pt!(), ".)")
+        }
+        ("round.leftover_review_joined", Locale::EnUs) => {
+            concat!("Finding from the final review, on the same files — {title}: {detail} (By the map: ", map_commands_en!(), ".)")
+        }
+        ("round.leftover_review_classified", Locale::PtBr) => {
+            concat!("Achado da revisão final — {title}: {detail} (Pelo mapa: ", map_commands_pt!(), ".)")
+        }
+        ("round.leftover_review_classified", Locale::EnUs) => {
+            concat!("Finding from the final review — {title}: {detail} (By the map: ", map_commands_en!(), ".)")
+        }
         ("round.leftover_priority", Locale::PtBr) => "Sobra da onda {wave}: erro achado na obra sai antes das tarefas antigas.",
         ("round.leftover_priority", Locale::EnUs) => "Leftover from wave {wave}: an error found in the work goes before the old tasks.",
+        ("round.leftover_review_priority", Locale::PtBr) => "Achado da revisão final: erro achado na obra sai antes das tarefas antigas.",
+        ("round.leftover_review_priority", Locale::EnUs) => "Finding from the final review: an error found in the work goes before the old tasks.",
         ("triage.same_work_open", Locale::PtBr) => {
             "A tarefa aberta {task} — {title} tem o mesmo sentido: nada foi gravado. Grave a versão nova dela, com `replaces` {task}, juntando esta atividade; o pedido em `rewrite` dá o texto. Se for outro trabalho, grave de novo com `distinct` e o motivo."
         }
@@ -1331,6 +1359,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("round.leftover_marked", Locale::PtBr) => "Sobra da onda {wave}: {title}",
         ("round.leftover_marked", Locale::EnUs) => "Leftover from wave {wave}: {title}",
+        ("round.leftover_review_marked", Locale::PtBr) => "Achado da revisão final: {title}",
+        ("round.leftover_review_marked", Locale::EnUs) => "Finding from the final review: {title}",
         ("round.wave_left_after_return", Locale::PtBr) => {
             "A onda {wave} saiu do ar por ficar sem tarefa. O agente dela já tinha gravado a volta ao pedido {send}, \
              mas a última tarefa foi removida antes de a rodada assumi-la. A volta fica só na história. A fila, a \
@@ -2507,7 +2537,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 365, 0x033a_d818_3c4a_b677);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 369, 0x4e97_53fb_994b_c51f);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
@@ -2651,6 +2681,7 @@ mod tests {
             ("close.build_output_failed", &["{folder}", "{detail}"][..]),
             ("close.final_review", &["{spec}"][..]),
             ("close.next", &["{command}"][..]),
+            ("close.final_leftovers", &["{tasks}", "{command}"][..]),
             ("close.pending_destination", &["{id}", "{title}", "{spec}"][..]),
             ("close.unowned_item", &["{code}", "{title}"][..]),
             ("close.unowned_test", &["{name}", "{file}"][..]),
@@ -2768,6 +2799,9 @@ mod tests {
             ("round.leftover_joined", &["{wave}", "{title}", "{detail}"][..]),
             ("round.leftover_classified", &["{wave}", "{title}", "{detail}"][..]),
             ("round.leftover_priority", &["{wave}"][..]),
+            ("round.leftover_review_joined", &["{title}", "{detail}"][..]),
+            ("round.leftover_review_classified", &["{title}", "{detail}"][..]),
+            ("round.leftover_review_priority", &[][..]),
             ("triage.same_work_open", &["{task}", "{title}"][..]),
             ("triage.same_work_covered", &["{task}", "{title}"][..]),
             ("round.jev_pending.removed_name", &["{wave}"][..]),
@@ -2792,6 +2826,7 @@ mod tests {
             ("round.leftover_repeated", &["{wave}", "{task}", "{detail}"][..]),
             ("round.leftover_judged", &["{chance}"][..]),
             ("round.leftover_marked", &["{wave}", "{title}"][..]),
+            ("round.leftover_review_marked", &["{title}"][..]),
             ("round.wave_left_without_tasks", &["{wave}", "{send}"][..]),
             ("round.wave_left_after_return", &["{wave}", "{send}"][..]),
             ("round.queued.broken_dependency", &["{dependencies}"][..]),
