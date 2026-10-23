@@ -51,13 +51,11 @@ pub(crate) fn blocks_field(tasks: &[TaskBlock]) -> Option<(String, Value)> {
 }
 
 /// Grava como lido o bloco da primeira tarefa da onda `wave`, que o pedido
-/// entrega inteiro: pelo mesmo recibo da leitura de dentro da cópia. A rodada
-/// não recebe a sessão da entrada: o recibo leva a do processo, a mesma que a
-/// entrada `run` leu.
-pub(crate) fn record_first_block(root: &Path, spec: &str, wave: u64, tasks: &[TaskBlock]) {
+/// entrega inteiro: pelo mesmo recibo da leitura de dentro da cópia. O recibo
+/// leva a sessão `session` da conversa que chamou a rodada.
+pub(crate) fn record_first_block(root: &Path, spec: &str, session: Option<&str>, wave: u64, tasks: &[TaskBlock]) {
     if let Some(first) = tasks.first() {
-        let session = crate::shared::spec_state::session_from_env();
-        let _ = crate::commands::spec_events::conversation::record_receipt(root, spec, session.as_deref(), &request_name(Some(wave)), &first.items, Instant::now());
+        let _ = crate::commands::spec_events::conversation::record_receipt(root, spec, session, &request_name(Some(wave)), &first.items, Instant::now());
     }
 }
 
@@ -165,8 +163,9 @@ fn finished_tasks(log: &SpecLog, sent: u64, wave: u64) -> BTreeSet<String> {
 /// a ele: o bloco da tarefa em curso — a primeira da ordem sem passo de
 /// término —, que fica liberada, com a frase que diz que o trabalho continua
 /// dela. A primeira tarefa o pedido já traz, e com todas terminadas não há o
-/// que acrescentar.
-pub(crate) fn resend_block(root: &Path, spec: &str, log: &SpecLog, previous: u64, wave: u64, lang: Locale) -> Option<String> {
+/// que acrescentar. A liberação leva a sessão `session` da conversa que
+/// chamou a rodada.
+pub(crate) fn resend_block(root: &Path, spec: &str, session: Option<&str>, log: &SpecLog, previous: u64, wave: u64, lang: Locale) -> Option<String> {
     let blocks = sent_blocks(log, previous)?;
     let finished = finished_tasks(log, previous, wave);
     let (at, current) = blocks.iter().enumerate().find(|(_, block)| !finished.contains(&block.task))?;
@@ -174,10 +173,7 @@ pub(crate) fn resend_block(root: &Path, spec: &str, log: &SpecLog, previous: u64
         return None;
     }
     if !released(log, previous, wave).contains(&current.task) {
-        // O reenvio é da rodada, que não recebe a sessão da entrada: vale a
-        // do processo, como no recibo do primeiro bloco.
-        let session = crate::shared::spec_state::session_from_env();
-        let _ = crate::commands::spec_events::conversation::record_release(root, spec, session.as_deref(), &request_name(Some(wave)), &current.task, &current.items, Instant::now());
+        let _ = crate::commands::spec_events::conversation::record_release(root, spec, session, &request_name(Some(wave)), &current.task, &current.items, Instant::now());
     }
     Some(format!("\n\n{}\n\n{}", translate("round.resume.task", lang), current.text))
 }
@@ -186,20 +182,18 @@ pub(crate) fn resend_block(root: &Path, spec: &str, log: &SpecLog, previous: u64
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use mustard_core::io::spec_events as store;
-    use serde_json::json;
+    use serde_json::{Value, json};
     use tempfile::tempdir;
 
-    use super::super::tests::{approved_with, orphan_the_send, request_at, round, waves_in, write};
+    use super::super::review::test_conductor_review;
+    use super::super::tests::{approved_with, launched, orphan_the_send, request_at, round, waves_in, write};
+    use super::super::{RoundOpts, round_for};
     use super::*;
     use crate::commands::spec_events::write::{WriteOpts, write_at};
 
-    /// O reenvio da onda cujo agente parou no meio traz, além do pedido, o
-    /// bloco inteiro da tarefa em curso — a primeira sem passo de término —,
-    /// e a deixa liberada: o agente novo continua dela sem ler adiante.
-    #[test]
-    fn the_resend_of_an_orphan_wave_brings_the_task_in_progress_whole_and_releases_it() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
+    /// A spec `x` aprovada com uma onda de duas tarefas, a primeira já
+    /// terminada e o envio órfão: o próximo envio da onda é o reenvio.
+    fn orphan_wave_with_the_first_task_done(root: &Path) {
         approved_with(root, "x", &[(1, &["src/a.rs"], &[])], |said| {
             let task = json!({"wave": 1, "title": "Escrever o total", "text": "Segunda tarefa.", "agent": "- somar em centavos inteiros",
                 "files": [{"path": "src/a.rs"}], "depends_on": [], "origin": said});
@@ -210,6 +204,60 @@ mod tests {
         let wrote = write_at(&WriteOpts { root: root.to_path_buf(), spec: Some("x".into()), event_type: "step".into(), json: step.to_string() });
         assert_eq!(wrote["ok"], json!(true), "{wrote}");
         orphan_the_send(root, 1);
+    }
+
+    /// Uma rodada da spec `x` chamada pela conversa `session`, que o ambiente
+    /// do processo não conhece.
+    fn round_as(root: &Path, session: &str) -> Value {
+        test_conductor_review(root, "x");
+        let opts = RoundOpts { root: root.to_path_buf(), spec: Some("x".to_string()), report: None };
+        launched(root, "x", round_for(&opts, Some(session)))
+    }
+
+    /// O recibo do primeiro bloco, que a rodada grava ao soltar a onda, leva a
+    /// sessão da conversa que a chamou, e não a que o ambiente do processo
+    /// diz.
+    #[test]
+    fn the_receipt_of_the_first_block_carries_the_session_of_the_caller() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved_with(root, "x", &[(1, &["src/a.rs"], &[])], |_| {});
+
+        let out = round_as(root, "s-do-chamador");
+        assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let receipts: Vec<_> = log.visible().into_iter().filter(|e| e.event_type == "call" && e.str_field("request") == Some("request-1")).collect();
+        assert_eq!(receipts.len(), 1, "the round leaves one receipt for the first block");
+        assert_eq!(receipts[0].str_field("session"), Some("s-do-chamador"));
+    }
+
+    /// A liberação que o reenvio grava para a tarefa em curso leva a sessão da
+    /// conversa que chamou a rodada.
+    #[test]
+    fn the_release_of_a_resend_carries_the_session_of_the_caller() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        orphan_wave_with_the_first_task_done(root);
+
+        let out = round_as(root, "s-do-chamador");
+        assert_eq!(waves_in(&out, "dispatch"), vec![1], "the orphan goes out again: {out}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let release = log
+            .visible()
+            .into_iter()
+            .find(|e| e.event_type == "call" && e.str_field("released") == Some("MSTD-TASK-0002"))
+            .expect("the release of the task in progress");
+        assert_eq!(release.str_field("session"), Some("s-do-chamador"));
+    }
+
+    /// O reenvio da onda cujo agente parou no meio traz, além do pedido, o
+    /// bloco inteiro da tarefa em curso — a primeira sem passo de término —,
+    /// e a deixa liberada: o agente novo continua dela sem ler adiante.
+    #[test]
+    fn the_resend_of_an_orphan_wave_brings_the_task_in_progress_whole_and_releases_it() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        orphan_wave_with_the_first_task_done(root);
 
         let out = round(root, "x", None);
         assert_eq!(waves_in(&out, "dispatch"), vec![1], "the orphan goes out again: {out}");

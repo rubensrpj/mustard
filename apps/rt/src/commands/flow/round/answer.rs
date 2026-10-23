@@ -963,7 +963,7 @@ fn dispatch_round(
         draft.extend(sender_fields(sender));
         draft.insert("author".into(), json!("binary"));
         let written = record(&opts.root, &spec, "send", draft, PhaseWriter::Binary).map_err(RoundRefusal::Refused)?;
-        task_release::record_first_block(&opts.root, &spec, *wave, &prompt.tasks);
+        task_release::record_first_block(&opts.root, &spec, session, *wave, &prompt.tasks);
         recorded.push(json!({ "wave": wave, "type": "send", "id": written.written.id }));
         dispatched.push(json!({ "wave": wave, "description": wave_title(&spec, *wave, lang), "lines": prompt.lines, "read": request_command(root, &spec, *wave), "agent": agent, "model": prompt.model }));
         let code = written.written.code.clone().unwrap_or_else(|| written.written.id.to_string());
@@ -1011,7 +1011,7 @@ fn dispatch_round(
         // rodada que reenvia já sabe quem está em curso ([`flight`]).
         let running: Vec<(u64, Vec<String>)> = flight.running.iter().filter(|n| **n != wave).map(|n| (*n, wave_files(log, *n))).collect();
         let mut text = super::resend::resend_text(log.send_text(previous).unwrap_or_default(), &running, &steps, &kept, lang);
-        text.extend(task_release::resend_block(&opts.root, &spec, log, previous, wave, lang));
+        text.extend(task_release::resend_block(&opts.root, &spec, session, log, previous, wave, lang));
         let migrated = prior.str_field("host").unwrap_or("claude") != host;
         let current = built.iter().find(|prompt| prompt.wave == wave);
         if migrated && current.is_none() {

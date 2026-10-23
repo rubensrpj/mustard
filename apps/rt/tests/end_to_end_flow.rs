@@ -1202,6 +1202,8 @@ fn only_the_conversation_bound_to_the_spec_records_in_it() {
     assert_eq!(goal.str_field("session"), Some(SESSION), "the message says its conversation");
     let written = project.answer_as(SESSION, &["write", "context", "--json", &context(GOAL, goal.id)]);
     assert_eq!((&written["ok"], &written["spec"]), (&json!(true), &json!(SPEC)), "{written}");
+    let item = project.log().visible().into_iter().rfind(|e| e.event_type == "context" && e.str_field("text") == Some(GOAL)).cloned();
+    assert_eq!(item.expect("the item the conversation wrote").str_field("session"), Some(SESSION), "the item says its conversation");
 
     // A conversa paralela, sem ligação: nada dela entra.
     let before = (project.log().events.len(), project.operations().events.len());
