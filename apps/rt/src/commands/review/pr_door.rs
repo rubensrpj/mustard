@@ -2163,6 +2163,12 @@ mod tests {
         }
     }
 
+    /// O pedido da revisão final, como o fechamento o grava: a aprovação final
+    /// vale só respondendo a um pedido gravado depois da última entrega.
+    fn review_request() -> Value {
+        json!({ "role": "review", "text": "revise", "lines": 1, "chars": 6, "mustard": "0", "author": "binary" })
+    }
+
     /// O merge lê o veredito do `spec.ndjson` com a mesma regra do
     /// fechamento. A reprovação de uma onda faz o merge perguntar antes de
     /// juntar; a aprovação final da obra, gravada pelo agente de teste
@@ -2212,9 +2218,11 @@ mod tests {
         assert_eq!((asked.action, asked.reason), ("confirm", Some("review-not-approved")), "{asked:?}");
         assert_eq!(merges.get(), 0, "a onda reprovada nunca é juntada sem perguntar");
 
-        // O conserto sai pela rodada e o agente de teste dedicado aprova a
-        // obra: a aprovação fica na última onda, como o fechamento a grava.
+        // O conserto sai pela rodada, o fechamento pede a revisão final e o
+        // agente de teste dedicado aprova a obra: a aprovação fica na última
+        // onda, como o fechamento a grava.
         delivery(1);
+        seed_event(root, "unit-a", "send", review_request());
         let quittance = seed_verdict(root, "unit-a", 2, "approved", criteria[0]);
         assert_eq!(closing(), Some(quittance), "o fechamento lê a aprovação final");
         assert_eq!(recorded_verdict(root, "unit-a").as_deref(), Some("approved"), "e o portão lê a mesma");
@@ -2255,6 +2263,9 @@ mod tests {
         assert_eq!((asked.action, asked.reason), ("confirm", Some("no-review-verdict")), "{asked:?}");
         assert_eq!(merges.get(), 0);
 
+        // O fechamento pede a revisão final, e o agente de teste dedicado
+        // aprova a obra.
+        seed_event(root, "unit-b", "send", review_request());
         seed_event(
             root,
             "unit-b",

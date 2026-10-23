@@ -1887,18 +1887,20 @@ mod tests {
     /// a aprovação final da obra —, e o leitor de voltas o devolve ao lado da
     /// volta de uma onda, só o último. Depois que o fechamento grava o
     /// veredito oficial com `replaces` para ele, ele não espera mais, e a
-    /// aprovação final é a oficial.
+    /// aprovação final é a oficial. A volta da onda 1 chega antes do pedido
+    /// da revisão final: a que chegasse depois dele seria mudança que o
+    /// revisor não recebeu, e a aprovação não valeria.
     #[test]
     fn the_final_verdict_without_a_wave_is_read_as_a_return() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("spec.ndjson");
         seed_message(&path);
         put_send(&path, Some(1), "10:00");
-        put_send(&path, None, "10:01");
+        let delivery = put(&path, &[], "delivered", &at("10:01"), wave_return(1, "A onda 1 voltou.")).id;
+        put_send(&path, None, "10:02");
         let verdict =
             |text: &str| json!({"author": "review", "final": true, "result": "approved", "text": text, "agreed": [{"item": 1, "met": true}], "returned": true});
-        let first = put(&path, &[], "verdict", &at("10:02"), verdict("Primeira leitura.")).id;
-        let delivery = put(&path, &[], "delivered", &at("10:03"), wave_return(1, "A onda 1 voltou.")).id;
+        let first = put(&path, &[], "verdict", &at("10:03"), verdict("Primeira leitura.")).id;
         let last = put(&path, &[], "verdict", &at("10:04"), verdict("Sem achados.")).id;
 
         let log = read(&path).unwrap().unwrap();

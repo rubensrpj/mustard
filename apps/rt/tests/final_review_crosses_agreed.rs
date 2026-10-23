@@ -8,8 +8,9 @@
 //! é recusado nomeando quem faltou, e o item que ela marca sem atender vira
 //! tarefa no backlog — a rodada seguinte forma o lote, despacha, e o
 //! fechamento só fecha depois de uma revisão final nova com tudo atendido.
-//! Prova de ponta a ponta, pelo binário de verdade, num repositório
-//! temporário.
+//! A aprovação final vale só para o que o revisor recebeu: a onda comitada
+//! depois do pedido de revisão faz o fechamento pedir revisão nova. Prova de
+//! ponta a ponta, pelo binário de verdade, num repositório temporário.
 
 #[path = "support/binary.rs"]
 mod binary;
@@ -544,4 +545,84 @@ fn unmet_item_becomes_a_backlog_task_and_the_final_review_runs_again() {
     project.write("verdict", &approved);
     let closed = project.run(&["close", "--spec", SPEC]);
     assert_eq!(closed["phase"], json!("closed"), "{closed}");
+}
+
+/// O veredito final aprovado, com todo o combinado atendido.
+fn all_met_verdict(decisions: &[Value]) -> Value {
+    let all_met: Vec<Value> = decisions.iter().map(|decision| json!({"item": decision["code"], "met": true})).collect();
+    json!({"final": true, "result": "approved", "text": "Tudo atendido.", "agreed": all_met})
+}
+
+/// Os números dos pedidos de revisão final gravados, do mais velho ao mais
+/// novo.
+fn review_requests(project: &Project) -> Vec<u64> {
+    project.log().visible().into_iter().filter(|e| e.event_type == "send" && e.str_field("role") == Some("review")).map(|e| e.id).collect()
+}
+
+/// A onda 2 comitada com a revisão final aberta: o usuário pede mais uma
+/// tarefa depois do pedido de revisão, e a rodada a despacha e comita.
+/// Devolve o número do commit dela na spec.
+fn commit_a_wave_past_the_request(project: &Project) -> u64 {
+    let said = user_says(project, "Imprima também a soma de três números.");
+    let criterion = project.log().visible().into_iter().find(|e| e.event_type == "criterion").expect("the criterion").id;
+    project.write(
+        "task",
+        &json!({"agent": "- conferir pelo teste", "title": "Somar três números", "text": "Imprimir a soma de três números.",
+            "files": [{"path": "src/main.rs"}], "depends_on": [], "covers": [criterion], "origin": said}),
+    );
+    dispatch_wave(project, 2);
+    deliver_wave(project, 2, "A soma de três apareceu.", &[("src/main.rs", "fn main() {\n    println!(\"{}\", 1 + 1 + 1);\n}\n")]);
+    let log = project.log();
+    log.visible()
+        .into_iter()
+        .rfind(|e| e.event_type == "commit" && e.fields.get("waves").and_then(Value::as_array).is_some_and(|waves| waves.contains(&json!(2))))
+        .unwrap_or_else(|| panic!("a onda 2 não comitou"))
+        .id
+}
+
+/// O veredito final aprovado que chega depois de uma onda comitada entre o
+/// pedido de revisão e ele não fecha a obra: o revisor não recebeu o que a
+/// onda mudou, e o fechamento seguinte pede uma revisão nova, gravada depois
+/// do commit. Só o veredito que responde a esse pedido novo fecha.
+#[test]
+fn a_final_approval_answering_a_request_older_than_a_committed_wave_asks_for_a_new_review() {
+    let project = Project::new();
+    let decisions = ready(&project);
+    let asked = project.run(&["close", "--spec", SPEC]);
+    assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+    project.read_review();
+    let committed = commit_a_wave_past_the_request(&project);
+
+    project.write("verdict", &all_met_verdict(&decisions));
+    let again = project.run(&["close", "--spec", SPEC]);
+    assert_eq!(again["phase"], json!("running"), "o veredito de antes do commit não fecha a obra: {again}");
+    assert_eq!(again["review"]["final"], json!(true), "o fechamento pede revisão nova: {again}");
+    let requests = review_requests(&project);
+    assert_eq!(requests.len(), 2, "{requests:?}");
+    assert!(requests[1] > committed, "o pedido novo vem depois do commit da onda 2: {requests:?}, commit {committed}");
+
+    project.read_review();
+    project.write("verdict", &all_met_verdict(&decisions));
+    let closed = project.run(&["close", "--spec", SPEC]);
+    assert_eq!(closed["phase"], json!("closed"), "o veredito do pedido novo fecha: {closed}");
+}
+
+/// O pedido de revisão final aberto, mais velho que uma onda comitada depois
+/// dele, não deixa o fechamento esperando um veredito que não aprovaria a
+/// obra: o fechamento abre um pedido novo, depois do commit, em vez de
+/// recusar dizendo que falta o veredito.
+#[test]
+fn closing_with_an_open_request_older_than_a_committed_wave_opens_a_new_request() {
+    let project = Project::new();
+    ready(&project);
+    let asked = project.run(&["close", "--spec", SPEC]);
+    assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+    let committed = commit_a_wave_past_the_request(&project);
+
+    let again = project.answer(&["close", "--spec", SPEC]);
+    assert_eq!(again["ok"], json!(true), "o fechamento não espera o veredito do pedido velho: {again}");
+    assert_eq!(again["review"]["final"], json!(true), "{again}");
+    let requests = review_requests(&project);
+    assert_eq!(requests.len(), 2, "{requests:?}");
+    assert!(requests[1] > committed, "o pedido novo vem depois do commit da onda 2: {requests:?}, commit {committed}");
 }

@@ -639,10 +639,16 @@ pub fn last_change(log: &SpecLog) -> u64 {
 }
 
 /// A aprovação final da obra: o veredito do agente de teste dedicado
-/// (`final`) que aprovou depois da última mudança ([`last_change`]). Ela
+/// (`final`) que aprovou depois da última mudança ([`last_change`]),
+/// respondendo a um pedido de revisão final gravado também depois dela. Ela
 /// confere o encaixe do que a obra inteira entregou — por isso não aponta
 /// onda nenhuma, e uma obra sem onda também a tem. `None` enquanto ela não
 /// veio, ou quando uma entrega nova chegou depois dela.
+///
+/// O pedido que o veredito responde é o envio de revisão final mais novo
+/// antes dele ([`answered_request`]). A onda comitada entre o pedido e o
+/// veredito ficou fora do que o revisor recebeu: o veredito aprovado que
+/// chega depois dela não aprova a obra, e o fechamento pede revisão nova.
 ///
 /// O fechamento e o portão do merge leem daqui, com a mesma regra: o
 /// fechamento não fecha sem ela, e o merge não pode pedir confirmação por uma
@@ -656,6 +662,18 @@ pub fn final_approval(log: &SpecLog) -> Option<&SpecEvent> {
         .filter(|e| e.fields.get("final") == Some(&Value::Bool(true)))
         .filter(|e| e.str_field("result").map(str::trim) == Some("approved"))
         .max_by_key(|e| e.id)
+        .filter(|verdict| answered_request(log, verdict.id).is_some_and(|asked| asked > since))
+}
+
+/// O pedido de revisão final que o veredito de número `verdict` responde: o
+/// envio de revisão final (papel `review`) mais novo antes dele. `None` sem
+/// envio assim — o veredito sem pedido gravado não responde a pedido nenhum.
+fn answered_request(log: &SpecLog, verdict: u64) -> Option<u64> {
+    log.visible()
+        .into_iter()
+        .filter(|e| e.event_type == "send" && e.str_field("role") == Some("review") && e.id < verdict)
+        .map(|e| e.id)
+        .max()
 }
 
 /// O veredito de uma spec, pelos eventos `verdict` que a leitura mostra: o
@@ -853,45 +871,89 @@ mod tests {
     /// fechada que volta à execução vai receber pedido novo, e o fechamento
     /// seguinte chama o revisor final de novo, mesmo sem entrega nova. A que
     /// vem depois da reabertura vale.
+    /// O veredito final aprovado `id`, como o fechamento o grava.
+    fn final_verdict(id: u64) -> Value {
+        json!({"v":1,"id":id,"type":"verdict","author":"review","final":true,"result":"approved",
+               "text":"Sem achados.","agreed":[{"item":1,"met":true}]})
+    }
+
+    /// O envio `id` com o papel `role`, como o fechamento grava o pedido da
+    /// revisão final (`review`) e a rodada o do revisor de uma onda.
+    fn send(id: u64, role: &str) -> Value {
+        json!({"v":1,"id":id,"type":"send","role":role,"text":"O pedido."})
+    }
+
     #[test]
     fn a_final_approval_before_the_last_reopen_does_not_count() {
-        let final_verdict = |id: u64| {
-            json!({"v":1,"id":id,"type":"verdict","author":"review","final":true,"result":"approved",
-                   "text":"Sem achados.","agreed":[{"item":1,"met":true}]})
-        };
         let mut lines = vec![
             json!({"v":1,"id":1,"type":"state","phase":"survey","branch":"feature/x","base":"dev"}),
             json!({"v":1,"id":2,"type":"state","phase":"approved","witness":{"question":"q","answer":"a"}}),
             json!({"v":1,"id":3,"type":"state","phase":"running"}),
             json!({"v":1,"id":4,"type":"delivered","wave":1,"text":"A onda 1 entregou.","files":["src/a.rs"]}),
-            final_verdict(5),
-            json!({"v":1,"id":6,"type":"state","phase":"closed"}),
+            send(5, "review"),
+            final_verdict(6),
+            json!({"v":1,"id":7,"type":"state","phase":"closed"}),
         ];
         // Fechada, a aprovação final vale.
-        assert_eq!(final_approval(&log(&lines)).map(|e| e.id), Some(5));
+        assert_eq!(final_approval(&log(&lines)).map(|e| e.id), Some(6));
         assert_eq!(last_change(&log(&lines)), 4);
 
         // Reaberta, sem entrega nova: a aprovação de antes já não vale.
-        lines.push(json!({"v":1,"id":7,"type":"state","phase":"running","reason":"Pedido novo."}));
+        lines.push(json!({"v":1,"id":8,"type":"state","phase":"running","reason":"Pedido novo."}));
         let reopened = log(&lines);
-        assert_eq!(last_change(&reopened), 7, "the reopening is the last change");
+        assert_eq!(last_change(&reopened), 8, "the reopening is the last change");
         assert_eq!(final_approval(&reopened), None, "the approval before the reopening does not count");
 
-        // A aprovação final dada depois da reabertura vale.
-        lines.push(final_verdict(8));
-        assert_eq!(final_approval(&log(&lines)).map(|e| e.id), Some(8));
+        // A aprovação final dada depois da reabertura, ao pedido novo, vale.
+        lines.extend([send(9, "review"), final_verdict(10)]);
+        assert_eq!(final_approval(&log(&lines)).map(|e| e.id), Some(10));
 
         // Pelo pull request aberto, a mesma coisa.
-        let mut from_pr = lines[..6].to_vec();
-        from_pr.push(json!({"v":1,"id":7,"type":"state","phase":"pr_open"}));
-        assert_eq!(final_approval(&log(&from_pr)).map(|e| e.id), Some(5));
-        from_pr.push(json!({"v":1,"id":8,"type":"state","phase":"running","reason":"Pedido novo."}));
+        let mut from_pr = lines[..7].to_vec();
+        from_pr.push(json!({"v":1,"id":8,"type":"state","phase":"pr_open"}));
+        assert_eq!(final_approval(&log(&from_pr)).map(|e| e.id), Some(6));
+        from_pr.push(json!({"v":1,"id":9,"type":"state","phase":"running","reason":"Pedido novo."}));
         assert_eq!(final_approval(&log(&from_pr)), None, "reopened from the pull request");
 
         // A entrada na execução pela primeira vez não é reabertura.
-        let first_run = log(&lines[..5]);
+        let first_run = log(&lines[..6]);
         assert_eq!(last_change(&first_run), 4, "the first run is not a reopening");
-        assert_eq!(final_approval(&first_run).map(|e| e.id), Some(5));
+        assert_eq!(final_approval(&first_run).map(|e| e.id), Some(6));
+    }
+
+    /// O veredito final aprovado vale só para o que o revisor recebeu: o
+    /// pedido que ele responde — o envio de revisão final mais novo antes
+    /// dele — precisa ser mais novo que a última mudança da obra. A onda
+    /// comitada entre o pedido e o veredito deixa o veredito sem valer, mesmo
+    /// gravado depois dela; o pedido do revisor de uma onda não conta como
+    /// pedido da revisão final, e o veredito sem pedido gravado não aprova.
+    #[test]
+    fn a_final_approval_counts_only_for_a_request_newer_than_the_last_change() {
+        let mut lines = vec![
+            json!({"v":1,"id":1,"type":"state","phase":"survey","branch":"feature/x","base":"dev"}),
+            json!({"v":1,"id":2,"type":"state","phase":"approved","witness":{"question":"q","answer":"a"}}),
+            json!({"v":1,"id":3,"type":"state","phase":"running"}),
+            json!({"v":1,"id":4,"type":"delivered","wave":1,"text":"A onda 1 entregou.","files":["src/a.rs"]}),
+            send(5, "review"),
+            json!({"v":1,"id":6,"type":"commit","sha":"abc","waves":[2],"author":"binary"}),
+            final_verdict(7),
+        ];
+        assert_eq!(last_change(&log(&lines)), 6, "the commit of wave 2 is the last change");
+        assert_eq!(final_approval(&log(&lines)), None, "the request went out before the commit of wave 2");
+
+        // O pedido do revisor de uma onda, depois do commit, não é o da
+        // revisão final.
+        lines.extend([send(8, "wave-review"), final_verdict(9)]);
+        assert_eq!(final_approval(&log(&lines)), None, "a wave review request does not answer for the whole");
+
+        // O pedido novo de revisão final, depois do commit, e o veredito que
+        // o responde: a aprovação vale.
+        lines.extend([send(10, "review"), final_verdict(11)]);
+        assert_eq!(final_approval(&log(&lines)).map(|e| e.id), Some(11));
+
+        // Sem pedido gravado, o veredito não responde a pedido nenhum.
+        let without_request = [&lines[..4], &[final_verdict(5)]].concat();
+        assert_eq!(final_approval(&log(&without_request)), None, "a verdict with no recorded request");
     }
 
     #[test]
