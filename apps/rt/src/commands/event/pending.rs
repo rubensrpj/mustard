@@ -1023,16 +1023,30 @@ fn count_line_of(ledger: &Ledger, today: &str, lang: Locale) -> Option<String> {
     Some(line)
 }
 
+/// O que o início da sessão sabe das pendências abertas.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PendingCount {
+    /// A lista não se lê, ou o projeto não tem `mustard.json`: quem recusa e
+    /// explica o conserto é `run pending`.
+    Unread,
+    /// Nada está aberto.
+    NoneOpen,
+    /// A linha com a contagem e o comando que mostra a lista.
+    Line(String),
+}
+
 /// A linha que o início da sessão mostra: quantas pendências estão abertas e
-/// onde está a lista inteira. `Some(None)` quando nada está aberto; `None`
-/// quando a lista não se lê, e quem recusa e explica o conserto é
-/// `run pending`.
+/// onde está a lista inteira, ou nada aberto, ou a lista que não se lê.
 #[must_use]
-pub(crate) fn count_line(root: &Path, lang: Locale) -> Option<Option<String>> {
+pub(crate) fn count_line(root: &Path, lang: Locale) -> PendingCount {
     let project = ledger_root(root);
-    let paths = mustard_core::ClaudePaths::for_project(&project).ok()?;
-    let ledger = load(&paths.pending_ledger_path()).ok()?;
-    Some(count_line_of(&ledger, &today(None), lang))
+    let Ok(paths) = mustard_core::ClaudePaths::for_project(&project) else {
+        return PendingCount::Unread;
+    };
+    let Ok(ledger) = load(&paths.pending_ledger_path()) else {
+        return PendingCount::Unread;
+    };
+    count_line_of(&ledger, &today(None), lang).map_or(PendingCount::NoneOpen, PendingCount::Line)
 }
 
 /// Uma pendência aberta, como a enxergam os leitores de fora do ledger — o
@@ -1724,7 +1738,7 @@ mod tests {
         add(root, "dois", "b");
         let line = pending_at(&opts(root))["count_line"].as_str().unwrap_or_default().to_string();
         assert!(line.starts_with("[Mustard] 2 "), "{line}");
-        assert_eq!(count_line(root, Locale::default()).flatten().as_deref(), Some(line.as_str()));
+        assert_eq!(count_line(root, Locale::default()), PendingCount::Line(line));
     }
 
     /// Hoje, nos testes da faxina e da remoção.

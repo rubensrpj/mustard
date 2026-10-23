@@ -35,8 +35,7 @@ mod support;
 #[path = "support/binary.rs"]
 mod binary;
 
-#[path = "support/one_wave_spec.rs"]
-mod one_wave_spec;
+use crate::one_wave_spec;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};

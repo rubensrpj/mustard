@@ -18,8 +18,7 @@
 
 #![cfg(target_os = "linux")]
 
-#[path = "support/one_wave_spec.rs"]
-mod one_wave_spec;
+use crate::one_wave_spec;
 
 use serde_json::json;
 

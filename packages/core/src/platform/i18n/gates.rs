@@ -702,8 +702,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("gates.rs"),
             super::PREFIXES,
-            85,
-            0x18fb_637c_c8aa_88ec,
+            86,
+            0x6080_c0cb_de33_5e7d,
         );
     }
 

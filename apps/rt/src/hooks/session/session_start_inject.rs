@@ -87,6 +87,7 @@ use mustard_core::platform::error::Error;
 use mustard_core::platform::i18n::{Locale, translate};
 use std::path::Path;
 
+use crate::commands::event::pending::PendingCount;
 use crate::commands::maint::scratch_gc::{ScratchRoots, human_bytes, survey};
 use crate::commands::review::pr_door::{MergedElsewhere, NOT_DELIVERED, merged_elsewhere, merged_outside};
 use crate::hooks::session::injectables;
@@ -132,10 +133,8 @@ struct Probe<'a> {
     /// vez: o aviso as nomeia e a contagem dele é o tamanho da lista. `None`
     /// fora de uma base declarada e num projeto sem `mustard.json`.
     merged: Option<&'a [String]>,
-    /// A linha das pendências, lida uma vez: `Some(None)` quando nada está
-    /// aberto, `None` quando a lista não se lê ou o projeto não tem
-    /// `mustard.json`.
-    pending: Option<Option<&'a str>>,
+    /// A linha das pendências, lida uma vez.
+    pending: &'a PendingCount,
     /// As cópias descartáveis antigas do disco, medidas uma vez: o total em
     /// bytes e quantas pastas. `None` sem a leitura da máquina e num projeto
     /// sem `mustard.json`.
@@ -256,7 +255,7 @@ fn session_start_core(
         landing: &landing,
         declared: declared.as_deref(),
         merged: merged.as_deref(),
-        pending: pending.as_ref().map(Option::as_deref),
+        pending: &pending,
         disk: disk_residue(root, scratch),
         build,
     };
@@ -301,7 +300,7 @@ fn count_of(probe: &Probe<'_>, name: &str, text: &str) -> Option<String> {
 /// do limite. A leitura que falhou não diz isso, e a contagem lembrada fica.
 fn nothing_to_count(probe: &Probe<'_>, name: &str) -> bool {
     match name {
-        "pending" => probe.pending == Some(None),
+        "pending" => *probe.pending == PendingCount::NoneOpen,
         "merged" => probe.merged.is_some_and(<[String]>::is_empty),
         "disk" => probe.disk.zip(probe.scratch).is_some_and(|((total, _), scratch)| total <= scratch.warn_bytes),
         _ => false,
@@ -400,17 +399,19 @@ fn panel_notice(probe: &Probe<'_>) -> Option<String> {
 
 /// A contagem das pendências abertas ([`Probe::pending`]).
 fn pending_notice_of(probe: &Probe<'_>) -> Option<String> {
-    probe.pending.flatten().map(str::to_string)
+    match probe.pending {
+        PendingCount::Line(line) => Some(line.clone()),
+        PendingCount::Unread | PendingCount::NoneOpen => None,
+    }
 }
 
 /// Uma linha com a contagem de pendências abertas e o comando que mostra a
 /// lista ([`count_line`](crate::commands::event::pending::count_line)), como
-/// [`Probe::pending`] a guarda: `Some(None)` quando nada está aberto, `None`
-/// num projeto sem `mustard.json` e quando a lista não se lê — quem explica o
-/// conserto é o `run pending`.
-pub(crate) fn pending_notice(root: &Path, lang: Locale) -> Option<Option<String>> {
+/// [`Probe::pending`] a guarda. Num projeto sem `mustard.json`, a lista não se
+/// lê.
+pub(crate) fn pending_notice(root: &Path, lang: Locale) -> PendingCount {
     if !mustard_core::ProjectConfig::exists(root) {
-        return None;
+        return PendingCount::Unread;
     }
     crate::commands::event::pending::count_line(root, lang)
 }
@@ -1085,7 +1086,7 @@ mod tests {
                 landing: &[],
                 declared: declared.as_deref(),
                 merged: merged.as_deref(),
-                pending: pending.as_ref().map(Option::as_deref),
+                pending: &pending,
                 disk: disk_residue(root, Some(&scratch)),
                 build: NO_BUILD,
             };
@@ -1128,12 +1129,12 @@ mod tests {
     fn the_pending_notice_is_one_line_with_the_count() {
         let lang = Locale::PtBr;
         let bare = tempdir().unwrap();
-        assert_eq!(pending_notice(bare.path(), lang), None, "not installed");
+        assert_eq!(pending_notice(bare.path(), lang), PendingCount::Unread, "not installed");
 
         let dir = tempdir().unwrap();
         let root = dir.path();
         installed_project(root);
-        assert_eq!(pending_notice(root, lang), Some(None), "nothing open");
+        assert_eq!(pending_notice(root, lang), PendingCount::NoneOpen, "nothing open");
         for title in ["HTML padrao da spec", "Humanize"] {
             let out = crate::commands::event::pending::pending_at(&crate::commands::event::pending::PendingOpts {
                 root: root.to_path_buf(),
@@ -1345,7 +1346,7 @@ mod tests {
             landing: &[],
             declared: None,
             merged: None,
-            pending: None,
+            pending: &PendingCount::Unread,
             disk: None,
             build: NO_BUILD,
         };

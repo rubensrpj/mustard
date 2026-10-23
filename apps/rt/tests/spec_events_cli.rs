@@ -1346,14 +1346,13 @@ fn spec_with_every_item_type(root: &Path) -> std::collections::BTreeMap<u64, Str
     let text: String = lines
         .into_iter()
         .enumerate()
-        .map(|(at, mut line)| {
+        .fold(String::new(), |text, (at, mut line)| {
             line["v"] = json!(1);
             line["id"] = json!(at + 1);
             line["at"] = json!("2026-10-22T14:38:48.128232016-03:00");
             line["session"] = json!("sessao-da-obra");
-            format!("{line}\n")
-        })
-        .collect();
+            text + &line.to_string() + "\n"
+        });
     let path = mustard_core::io::spec_events::spec_file(root, "teste").expect("spec file");
     std::fs::write(&path, text).expect("the event file");
     mustard_core::io::spec_events::read(&path).expect("read").expect("the spec file").codes()
@@ -1426,7 +1425,9 @@ fn a_block_read_shows_each_item_without_the_internal_marks_and_links_by_code() {
                                 Some((first, at)) => assert_eq!(kept, &json!({"same_as": first, "fact": at}), "{block}: {lean}"),
                                 None => {
                                     let mut bare = fact.clone();
-                                    FACT_MARKS.iter().for_each(|mark| drop(bare.as_object_mut().expect("a fact").remove(*mark)));
+                                    for mark in FACT_MARKS {
+                                        bare.as_object_mut().expect("a fact").remove(mark);
+                                    }
                                     assert_eq!(kept, &bare, "{block}: the fact without its marks: {lean}");
                                     facts_seen.insert(key, (json!(code), n + 1));
                                 }

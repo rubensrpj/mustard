@@ -464,7 +464,7 @@ mod tests {
 
     /// Duas conversas que cortam o mesmo comando do Mustard ao mesmo tempo
     /// não gravam no mesmo arquivo: o id da sessão que pediu o comando entra
-    /// no nome, e a etapa repetida na mesma conversa segue com o número dela.
+    /// no nome.
     #[test]
     fn the_answer_file_is_named_by_conversation() {
         let ready = |cmd: &str, session: Option<&str>| match guard_in(cmd, false, session) {
@@ -479,11 +479,6 @@ mod tests {
         assert!(first.contains(&format!("mustard-rt run resume > {}", file("mustard-resume-sessao-a"))), "{first}");
         assert!(second.contains(&format!("mustard-rt run resume > {}", file("mustard-resume-sessao-b"))), "{second}");
         assert!(!first.contains("sessao-b") && !second.contains("sessao-a"), "each refusal names only its own conversation");
-
-        // Duas etapas do mesmo comando na mesma conversa: cada uma no seu arquivo.
-        let said = ready("mustard-rt run resume | head -3 && mustard-rt run resume | tail -3", Some("sessao-a"));
-        assert!(said.contains(&format!("> {} &&", file("mustard-resume-sessao-a"))), "{said}");
-        assert!(said.contains(&format!("> {}", file("mustard-resume-2-sessao-a"))), "{said}");
 
         // O id vira nome de arquivo: nada que o terminal leia como outra coisa.
         let said = ready(cmd, Some("../x y;rm"));

@@ -12,6 +12,13 @@
 // parte.
 #![allow(clippy::duplicate_mod)]
 
+// A spec de uma onda pelo fluxo de verdade entra uma vez só, aqui: cada
+// arquivo que a usa só usa parte dela, e trazida por arquivo a parte que um
+// deles não usa sobrava sem uso. A parte que só um arquivo de um sistema usa
+// leva o `cfg` dele.
+#[path = "support/one_wave_spec.rs"]
+mod one_wave_spec;
+
 mod agents_find_code_through_the_map;
 mod approval_refusal_explains;
 mod clean_exit;

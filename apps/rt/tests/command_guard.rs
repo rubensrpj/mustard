@@ -365,6 +365,18 @@ fn the_ready_command_names_its_file_by_the_session_that_asked() {
     assert_eq!(file_name(&ready("conversa-b2")), "mustard-resume-conversa-b2.txt");
 }
 
+/// A mesma etapa do Mustard duas vezes no mesmo comando não divide o arquivo
+/// do comando pronto: a segunda ganha um número depois do nome da etapa, antes
+/// do id da sessão, e a resposta da primeira não se perde.
+#[test]
+fn the_ready_command_numbers_a_repeated_step() {
+    let dir = project_with(r#"{"language":{"text":"pt-BR"}}"#);
+    let command = "mustard-rt run resume | head -3 && mustard-rt run resume | tail -3";
+    let reason = refusal(&run_guard_in(dir.path(), command, "conversa-e5")).expect("the cut must be refused");
+    let files: Vec<String> = redirect_targets(reason.lines().last().unwrap_or_default()).iter().map(|file| file_name(file)).collect();
+    assert_eq!(files, ["mustard-resume-conversa-e5.txt", "mustard-resume-2-conversa-e5.txt"], "{reason}");
+}
+
 /// Dois agentes da mesma conversa, que o host identifica pelo mesmo id de
 /// sessão, não dividem o arquivo do comando pronto: o id do agente entra no
 /// nome, ao lado do da sessão, e a conversa principal fica só com o da sessão.

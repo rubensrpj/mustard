@@ -2565,7 +2565,10 @@ mod tests {
         let lang = mustard_core::ProjectConfig::load(root).language().text_or_default();
 
         // The session start: one line with the count, and the idle ones counted.
-        let notice = crate::hooks::session::session_start_inject::pending_notice(root, lang).flatten().expect("twelve open");
+        let crate::commands::event::pending::PendingCount::Line(notice) = crate::hooks::session::session_start_inject::pending_notice(root, lang)
+        else {
+            panic!("twelve open");
+        };
         assert!(notice.starts_with("[Mustard] 12 ") && !notice.contains('\n'), "{notice}");
         assert!(notice.contains(" 3 ") && !notice.contains("parada 1"), "{notice}");
 

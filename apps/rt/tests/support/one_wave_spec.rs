@@ -55,7 +55,7 @@ impl Project {
         git(&root, &["config", "user.name", "t"]);
         git(&root, &["config", "commit.gpgsign", "false"]);
         git(&root, &["checkout", "-q", "-b", "main"]);
-        let excluded: String = [".claude/", "mustard.json", "target/"].iter().chain(ignored).map(|line| format!("{line}\n")).collect();
+        let excluded: String = [".claude/", "mustard.json", "target/"].iter().chain(ignored).fold(String::new(), |text, line| text + line + "\n");
         std::fs::write(root.join(".git/info/exclude"), excluded).expect("exclude");
         let mut config = json!({"language": {"text": "pt-BR"}, "git": {"flow": {"*": "dev", "dev": "main"}}});
         for (key, value) in commands.as_object().into_iter().flatten() {
@@ -153,6 +153,7 @@ impl Project {
     /// pasta temporária do teste no lugar da da máquina: a limpeza varre a
     /// pasta temporária, e a da máquina nunca entra no alcance do teste. A
     /// resposta, que precisa ser JSON.
+    #[cfg(unix)]
     pub fn answer(&self, args: &[&str]) -> Value {
         let temp = self.temp();
         let env = [("TMPDIR", temp.as_path()), ("TMP", temp.as_path()), ("TEMP", temp.as_path())];
@@ -167,6 +168,7 @@ impl Project {
     /// A abertura de uma sessão nova `session` do Claude Code no projeto, pelo
     /// gancho, com o JSON do `SessionStart` e a pasta temporária do teste.
     /// Devolve o texto que o gancho pôs na sessão.
+    #[cfg(unix)]
     pub fn session_start(&self, session: &str) -> String {
         let temp = self.temp();
         let env = [("TMPDIR", temp.as_path()), ("TMP", temp.as_path()), ("TEMP", temp.as_path())];
@@ -181,6 +183,7 @@ impl Project {
     }
 
     /// A pasta temporária do teste, criada na primeira vez.
+    #[cfg(unix)]
     fn temp(&self) -> PathBuf {
         let temp = self.home.with_file_name("tmp");
         std::fs::create_dir_all(&temp).expect("the test temp folder");

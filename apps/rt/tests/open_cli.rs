@@ -4,8 +4,7 @@
 
 #[path = "support/binary.rs"]
 mod binary;
-#[path = "support/one_wave_spec.rs"]
-mod one_wave_spec;
+use crate::one_wave_spec;
 
 use std::path::Path;
 use std::process::{Command, Output};
@@ -104,6 +103,21 @@ fn the_base_lint_runs_once_at_the_first_wave_dispatch_and_never_at_the_opening()
 
     let second = project.deliver_the_first_wave();
     assert_eq!((runs(), base_marks()), (1, 1), "the next round does not run it again: {second}");
+}
+
+/// A rodada pedida sem `--spec` acha a spec atual, como a rodada a acha, e o
+/// primeiro despacho dela roda o lint na base e grava a marca do mesmo jeito
+/// que a rodada com `--spec`. A rodada só despacha na branch da spec.
+#[test]
+fn the_round_without_spec_runs_the_base_lint_for_the_current_spec() {
+    let project = one_wave_spec::Project::new("sem-spec", &json!({"lintCommand": "echo ran >> lint-runs.log"}), &["lint-runs.log"]);
+    let runs = || std::fs::read_to_string(project.root.join("lint-runs.log")).unwrap_or_default().lines().count();
+    let base_marks = || project.log().events.iter().filter(|e| e.event_type == "stage_run" && e.str_field("phase") == Some("base")).count();
+
+    project.approved();
+    let first = project.run(&["round", "--dispatch"]);
+    assert_eq!(first["dispatch"][0]["wave"], json!(1), "{first}");
+    assert_eq!((runs(), base_marks()), (1, 1), "the dispatch without --spec runs the lint and records the base: {first}");
 }
 
 /// A conversa da sessão `session`, aberta na pasta `project`, como o Claude

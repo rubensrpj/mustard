@@ -4111,7 +4111,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = message(root, "user", "combine a trava");
-        let old = old_rule(root, said, "MSTD-RULE-0001");
+        old_rule(root, said, "MSTD-RULE-0001");
         let read = super::super::read::read_at(&super::super::read::ReadOpts {
             root: root.to_path_buf(),
             spec: Some("teste".into()),
