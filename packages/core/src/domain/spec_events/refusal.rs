@@ -164,6 +164,10 @@ pub enum Refusal {
     /// A volta de uma onda gravada sem envio aberto para ela: a rodada já a
     /// assumiu, ou a onda nunca foi despachada. Nada é gravado.
     NoOpenSend { wave: u64 },
+    /// Um `remove` que tiraria a última tarefa da onda `wave`, cujo agente
+    /// ainda trabalha (envio aberto, sem entrega): a onda sairia do ar e a
+    /// entrega dele seria recusada. Nada é gravado.
+    WaveAgentWorking { wave: u64 },
     /// Uma sobra da entrega sem título ou sem detalhe: `field` é o campo que
     /// falta na primeira sobra incompleta. Nada é gravado.
     LeftoverFieldMissing { field: String },
@@ -410,6 +414,7 @@ impl Refusal {
             Self::ClosingPointLastRecord { .. } => "closing-point-last-record",
             Self::DeliveredTooLong { .. } => "delivered-too-long",
             Self::NoOpenSend { .. } => "no-open-send",
+            Self::WaveAgentWorking { .. } => "wave-agent-working",
             Self::LeftoverFieldMissing { .. } => "leftover-field-missing",
             Self::OwnerMissing { .. } => "owner-missing",
             Self::TaskDeclarationMissing { .. } => "task-declaration-missing",
@@ -657,6 +662,7 @@ impl Refusal {
                 &[("{chars}", chars.to_string()), ("{max}", max.to_string())],
             ),
             Self::NoOpenSend { wave } => fill("spec_events.no_open_send", &[("{wave}", wave.to_string())]),
+            Self::WaveAgentWorking { wave } => fill("spec_events.wave_agent_working", &[("{wave}", wave.to_string())]),
             Self::LeftoverFieldMissing { field } => {
                 fill("spec_events.leftover_field_missing", &[("{field}", field.clone())])
             }

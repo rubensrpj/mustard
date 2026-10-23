@@ -6,11 +6,14 @@
 //! tarefa que o agente entrega, e a entrega dele seria recusada. A tarefa de
 //! um lote que ainda não saiu, ou de uma onda que já voltou, regravada sem
 //! `wave` volta ao backlog, como sempre voltou.
+//!
+//! A remoção que o modelo grava tem o mesmo cuidado: a que tiraria a última
+//! tarefa dessa onda é recusada ([`working_wave_rule`]), pelo mesmo motivo.
 
-use mustard_core::domain::spec_events::{SpecEvent, SpecLog, resolve_codes};
+use mustard_core::domain::spec_events::{Refusal, SpecEvent, SpecLog, resolve_codes};
 use serde_json::{Map, Value, json};
 
-use crate::commands::flow::round::queue::agent_working;
+use crate::commands::flow::round::queue::{agent_working, waves_left_without_tasks};
 
 /// A versão nova de uma tarefa que não traz `wave` herda a da versão que ela
 /// substitui, quando o agente dessa onda trabalha: a onda tem envio sem volta
@@ -39,6 +42,24 @@ fn replaced_id(log: &SpecLog, draft: &Map<String, Value>) -> Option<u64> {
     probe.insert("replaces".into(), replaces.clone());
     resolve_codes(log, &mut probe).ok()?;
     probe.get("replaces").and_then(Value::as_u64)
+}
+
+/// A gravação do modelo que deixaria sem tarefa a onda cujo agente trabalha,
+/// lida no arquivo antes dela (`before`) e depois (`after`): a onda sairia do
+/// ar ([`waves_left_without_tasks`]) e a entrega do agente seria recusada,
+/// sem onda aberta para recebê-la. É recusada, com a onda na recusa. A que
+/// tira só uma das tarefas, a que tira a própria onda (o cancelamento de
+/// propósito, que devolve as tarefas ao backlog), a de onda que o agente já
+/// entregou e a de lote que ainda não saiu passam.
+///
+/// # Errors
+///
+/// [`Refusal::WaveAgentWorking`], com o número da onda.
+pub(super) fn working_wave_rule(before: &SpecLog, after: &SpecLog) -> Result<(), Refusal> {
+    match waves_left_without_tasks(after).into_keys().find(|wave| agent_working(before, *wave)) {
+        Some(wave) => Err(Refusal::WaveAgentWorking { wave }),
+        None => Ok(()),
+    }
 }
 
 #[cfg(test)]

@@ -576,6 +576,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("spec_events.no_open_send", Locale::EnUs) => {
             "There is no open send for wave {wave}. Nothing was written."
         }
+        ("spec_events.wave_agent_working", Locale::PtBr) => {
+            "A onda {wave} está em andamento: o agente dela ainda trabalha, e esta remoção tiraria a \
+             última tarefa dela. A onda sairia do ar e a entrega dele seria recusada. Espere a entrega \
+             do agente para remover a tarefa. Para cancelar a onda de propósito, remova a própria onda: \
+             as tarefas dela voltam ao backlog. Nada foi gravado."
+        }
+        ("spec_events.wave_agent_working", Locale::EnUs) => {
+            "Wave {wave} is in progress: its agent is still working, and this removal would take out \
+             its last task. The wave would leave the air and the agent's delivery would be refused. \
+             Wait for the agent's delivery before removing the task. To cancel the wave on purpose, \
+             remove the wave itself: its tasks go back to the backlog. Nothing was written."
+        }
         ("spec_events.no_open_review", Locale::PtBr) => {
             "Não há pedido de revisão aberto nesta spec. Nada foi gravado."
         }
@@ -1278,8 +1290,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            180,
-            0xe0e5_31a3_e3f3_5931,
+            181,
+            0x2531_3d20_a5af_8c06,
         );
     }
 
@@ -1365,6 +1377,7 @@ mod tests {
             ("spec_events.closing_point_last_record", &["{code}"][..]),
             ("spec_events.delivered_too_long", &["{chars}", "{max}"][..]),
             ("spec_events.no_open_send", &["{wave}"][..]),
+            ("spec_events.wave_agent_working", &["{wave}"][..]),
             ("spec_events.no_open_review", &[][..]),
             ("spec_events.verdict_missing", &[][..]),
             ("spec_events.leftover_field_missing", &["{field}"][..]),

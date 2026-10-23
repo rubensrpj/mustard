@@ -669,6 +669,44 @@ fn after_a_wave_is_removed_the_next_one_takes_a_new_number_and_its_request_lists
     assert_eq!(listed, order, "o pedido lista só as tarefas da ordem: {request}");
 }
 
+/// A remoção que tiraria a última tarefa de uma onda cujo agente ainda
+/// trabalha é recusada, nomeando a onda, e não grava nada: o agente não fica
+/// sem a tarefa que entrega. Depois da entrega dele a mesma remoção passa, e
+/// a resposta diz que a onda saiu do ar.
+#[test]
+fn removing_the_last_task_of_a_wave_whose_agent_works_is_refused_until_the_delivery() {
+    let (project, _, _, tasks) = backlog_project(&[&[GREETING]]);
+    let (_, out) = dispatch_ready(&project);
+    assert_eq!(out, vec![1], "a tarefa sai na onda 1");
+    let removal = json!({"targets": [tasks[0]], "reason": "Já foi feito fora da onda."});
+    let written = project.log().events.len();
+
+    let refused = project.answer(&["write", "remove", "--spec", SPEC, "--json", &removal.to_string()]);
+    assert_eq!(refused["ok"], json!(false), "{refused}");
+    assert_eq!(refused["reason"], json!("wave-agent-working"), "{refused}");
+    let hint = refused["hint"].as_str().expect("the refusal teaches");
+    assert!(hint.contains("onda 1") && hint.contains("ainda trabalha"), "a recusa diz a onda e que o agente trabalha: {hint}");
+    assert_eq!(project.log().events.len(), written, "a recusa não grava nada");
+    assert_eq!(wave_of(&project, tasks[0]), Some(1), "a tarefa segue na onda");
+
+    deliver_in_copy(&project, 1, "hello\n");
+    let removed = project.write("remove", &removal);
+    assert_eq!(removed["waves_left_without_tasks"], json!([1]), "depois da entrega a remoção passa e a onda sai do ar: {removed}");
+}
+
+/// A onda cujo agente trabalha segue com tarefa quando a remoção tira só uma
+/// das duas: a remoção passa, e a onda não sai do ar.
+#[test]
+fn removing_one_of_two_tasks_of_a_wave_whose_agent_works_goes_through() {
+    let (project, _, _, tasks) = backlog_project(&[&["a.rs"], &["a.rs"]]);
+    let (_, out) = dispatch_ready(&project);
+    assert_eq!(out, vec![1], "as duas tarefas saem na onda 1");
+
+    let removed = project.write("remove", &json!({"targets": [tasks[0]], "reason": "Já foi feito fora da onda."}));
+    assert!(removed.get("waves_left_without_tasks").is_none(), "a onda segue com a outra tarefa: {removed}");
+    assert_eq!(wave_of(&project, tasks[1]), Some(1), "a outra tarefa segue na onda");
+}
+
 // ---------------------------------------------------------------------------
 // A montagem da onda pelo Jev, com um Jev de mentira
 // ---------------------------------------------------------------------------

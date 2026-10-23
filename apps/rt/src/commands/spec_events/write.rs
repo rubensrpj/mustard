@@ -72,7 +72,11 @@
 //! onda entregue ficam como estão, e o número da removida não volta a nascer.
 //! A remoção que deixa sem tarefa nenhuma uma onda com envio aberto lista em
 //! `waves_left_without_tasks` os números dessas ondas, que saem do ar com
-//! ela; a remoção que não tira onda nenhuma do ar não traz a lista.
+//! ela; a remoção que não tira onda nenhuma do ar não traz a lista. A que
+//! tiraria a última tarefa de uma onda cujo agente ainda trabalha (envio
+//! aberto, sem entrega) é recusada com `wave-agent-working`, dizendo a onda,
+//! e não grava nada: a entrega do agente seria recusada sem a onda. Passa
+//! depois da entrega dele, e remover a própria onda cancela-a de propósito.
 //! Um pedido (`request`) devolve em `next` o
 //! passo seguinte, pelo `effect`: gravar as tarefas novas, que entram no
 //! backlog, ou as versões novas das que mudam, na mesma spec e na mesma branch.
@@ -1389,13 +1393,15 @@ fn phase_carried(event_type: &str, draft: &Map<String, Value>) -> (Option<String
 
 /// As regras que toda gravação na spec `spec` cumpre, sobre o arquivo antes e
 /// depois dela: a mudança de fase, o trabalho novo numa spec que já fechou, a
-/// mensagem que a resposta responde, o objetivo, o levantamento, o dono do
-/// item combinado e a dependência entre tarefas.
+/// onda que o modelo deixaria sem tarefa com o agente trabalhando, a mensagem
+/// que a resposta responde, o objetivo, o levantamento, o dono do item
+/// combinado e a dependência entre tarefas.
 fn record_rules(spec: &str, before: &SpecLog, after: &SpecLog, carried: Option<&str>, replaces: Option<u64>, by: Option<PhaseWriter>) -> Result<(), Refusal> {
     phase_rule(spec, before, after, carried, replaces, by)?;
     if by.is_none() {
         closed_spec_work_rule(spec, before, after)?;
         wave_by_backlog_rule(before, after)?;
+        super::task_wave::working_wave_rule(before, after)?;
     }
     reply_rule(before, after)?;
     goal_rule(spec, before, after)?;

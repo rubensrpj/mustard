@@ -4253,11 +4253,12 @@ mod tests {
 
 
     /// Duas ondas saem, uma num arquivo TypeScript e outra num C#, e a única
-    /// tarefa da onda 1 é removida com o pedido dela ainda aberto. A rodada
-    /// com relatório já não lista a onda 1 em andamento e grava a nota do
-    /// binário que diz por quê; a rodada de despacho seguinte também não a
-    /// lista e não grava outra nota; a leitura do andamento e a das vagas
-    /// ocupadas, que a retomada e a fila usam, também a deixam de fora.
+    /// tarefa da onda 1 é removida depois da entrega do agente dela, com o
+    /// pedido ainda aberto. A rodada com relatório já não lista a onda 1 em
+    /// andamento e grava a nota do binário que diz por quê; a rodada de
+    /// despacho seguinte também não a lista e não grava outra nota; a leitura
+    /// do andamento e a das vagas ocupadas, que a retomada e a fila usam,
+    /// também a deixam de fora.
     #[test]
     fn a_wave_whose_tasks_were_all_removed_leaves_the_air_in_every_round() {
         let dir = tempdir().unwrap();
@@ -4269,6 +4270,7 @@ mod tests {
         let task = log.visible().into_iter().find(|e| e.event_type == "task" && e.wave() == Some(1)).unwrap().id;
         let code = log.codes().get(&task).cloned().unwrap();
         let send = log.codes().get(&log.last_by_wave("send")[&1]).cloned().unwrap();
+        delivered(root, 1, "Saiu.", &["web/app.ts"]);
         let removed = write(root, "x", "remove", json!({"targets": [code], "reason": "Já foi feito fora da onda."}));
         assert_eq!(removed["ok"], json!(true), "{removed}");
 
@@ -4298,9 +4300,9 @@ mod tests {
         assert_eq!(waves_in_progress(&log).into_keys().collect::<Vec<_>>(), vec![2]);
         assert_eq!(open_sends(&log).into_keys().collect::<Vec<_>>(), vec![2]);
     }
-    /// A remoção da única tarefa de uma onda enviada responde com o número
-    /// dessa onda, que sai do ar com ela, e nunca com a onda que segue com
-    /// tarefa. A remoção seguinte, de uma tarefa do backlog, fora de qualquer
+    /// A remoção da única tarefa de uma onda enviada, depois da entrega do
+    /// agente, responde com o número dessa onda, que sai do ar com ela, e
+    /// nunca com a onda que segue com tarefa. A remoção seguinte, de uma tarefa do backlog, fora de qualquer
     /// onda, responde sem onda nenhuma: a onda que já tinha saído do ar não
     /// volta à lista. O projeto é em TypeScript e C#.
     #[test]
@@ -4315,6 +4317,7 @@ mod tests {
         let loose = backlog_task_on(root, first_of("message"), first_of("criterion"), "Mexer na tela de fora.", &["web/other.ts"]);
         let task = log.visible().into_iter().find(|e| e.event_type == "task" && e.wave() == Some(1)).unwrap().id;
 
+        delivered(root, 1, "Saiu.", &["web/app.ts"]);
         let removed = write(root, "x", "remove", json!({"targets": [task], "reason": "Já foi feito fora da onda."}));
         assert_eq!(removed["ok"], json!(true), "{removed}");
         assert_eq!(removed["waves_left_without_tasks"], json!([1]), "a remoção diz que a entrega 1 saiu do ar: {removed}");
