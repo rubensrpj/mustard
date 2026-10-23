@@ -870,13 +870,13 @@ struct Machine {
 
 /// Os arquivos que a saída `output` acusa e que já eram da base: a saída não
 /// cita arquivo nenhum da obra, cita ao menos um de fora, e todos os de fora
-/// já apareciam na conferência que a abertura gravou. `None` quando a falha é
-/// da obra, e é ela que trava o fechamento.
+/// já apareciam na conferência que o primeiro despacho de onda gravou. `None`
+/// quando a falha é da obra, e é ela que trava o fechamento.
 ///
-/// Sem a marca da abertura, nada é da base: o fechamento cobra tudo, como
-/// antes dela. Na correção do usuário o fechamento caiu num arquivo de outro
-/// time, mudado na base seis dias antes, que a obra não toca; o projeto dele
-/// já tinha cinco exceções para contornar isso.
+/// Sem a marca do primeiro despacho, nada é da base: o fechamento cobra tudo,
+/// como antes dela. Na correção do usuário o fechamento caiu num arquivo de
+/// outro time, mudado na base seis dias antes, que a obra não toca; o projeto
+/// dele já tinha cinco exceções para contornar isso.
 fn already_in_the_base(root: &Path, log: &SpecLog, output: &str) -> Option<Vec<String>> {
     let planned: Vec<u64> = log.planned_waves().into_iter().collect();
     let work = super::validation::Work::of(root, log, &planned);
@@ -2948,10 +2948,10 @@ exit "${2:-0}"
     }
 
     /// O lint que só acusa arquivo que a obra não tocou e que a base já
-    /// acusava na abertura não trava o fechamento: ele vira aviso, com os
-    /// arquivos e com o que o comando disse. O mesmo lint acusando um arquivo
-    /// da obra segue recusando. Sem a marca da abertura, o fechamento cobra
-    /// tudo, como antes dela.
+    /// acusava no primeiro despacho de onda não trava o fechamento: ele vira
+    /// aviso, com os arquivos e com o que o comando disse. O mesmo lint
+    /// acusando um arquivo da obra segue recusando. Sem a marca do primeiro
+    /// despacho, o fechamento cobra tudo, como antes dela.
     ///
     /// Em campo (21/10/2026) o fechamento caiu num arquivo de outro time,
     /// mudado na base seis dias antes, que a obra não toca; o projeto do
@@ -2975,7 +2975,7 @@ exit "${2:-0}"
         let closing = || close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), ..Default::default() }, None);
         let hints = |out: &Value, reason: &str| hints_of(out, reason).into_iter().map(str::to_string).collect::<Vec<_>>();
 
-        // Sem a marca da abertura, o lint que cai trava o fechamento.
+        // Sem a marca do primeiro despacho, o lint que cai trava o fechamento.
         lint("src/outro.rs");
         let strict = closing();
         assert_eq!(strict["reason"], json!("lint-failed"), "sem a marca da base, cobra tudo: {strict}");
