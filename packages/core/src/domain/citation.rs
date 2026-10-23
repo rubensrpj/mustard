@@ -321,11 +321,15 @@ mod tests {
 
     /// O caminho sem linha segue o detector de caminho da conferência de
     /// escrita: a pasta oculta e a que parte da casa contam, mesmo sem
-    /// extensão; a extensão longa ou só de maiúsculas não conta.
+    /// extensão; a extensão longa conta, porque o caminho tem pasta, e a só de
+    /// maiúsculas não conta.
     #[test]
     fn a_path_without_a_line_is_cited_as_the_writing_check_detects_it() {
         assert_eq!(cited_files("Grava em .claude/spec e lê ~/projetos/notas."), [".claude/spec", "~/projetos/notas"]);
-        assert_eq!(cited_files("Veja docs/guia.markdown e docs/LEIA.MD."), Vec::<String>::new());
+        assert_eq!(
+            cited_files("Veja src/App.svelte, prisma/schema.prisma, docs/guia.markdown e docs/LEIA.MD."),
+            ["src/App.svelte", "prisma/schema.prisma", "docs/guia.markdown"]
+        );
     }
 
     #[test]

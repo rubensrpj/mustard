@@ -150,6 +150,22 @@ pub fn resolve_codes(log: &SpecLog, event: &mut Map<String, Value>) -> Result<()
     Ok(())
 }
 
+/// O número que o campo de referência `field` de um rascunho do tipo
+/// `event_type` aponta no arquivo como está: o código do item vira o número
+/// que a gravação gravaria ([`resolve_codes`]), e o número fica como veio. A
+/// troca é feita numa cópia, e o rascunho segue com o que trouxe, para quem o
+/// lê antes da gravação. `None` quando o campo falta, é uma lista ou nomeia um
+/// código que a spec não tem: a conferência da gravação recusa esse código
+/// depois.
+#[must_use]
+pub fn referenced_id(log: &SpecLog, event_type: &str, draft: &Map<String, Value>, field: &str) -> Option<u64> {
+    let mut probe = Map::new();
+    probe.insert("type".into(), Value::from(event_type));
+    probe.insert(field.into(), draft.get(field)?.clone());
+    resolve_codes(log, &mut probe).ok()?;
+    probe.get(field).and_then(Value::as_u64)
+}
+
 /// O que uma gravação muda no resto do arquivo.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Effects {
@@ -614,6 +630,35 @@ mod tests {
             checked("note", note(json!("a mensagem"))).unwrap_err(),
             Refusal::InvalidValue { ref field, expected: Kind::Ref, .. } if field == "origin"
         ));
+    }
+
+    /// O campo de referência de um rascunho se lê como o número que ele aponta,
+    /// numa cópia: o código vira a versão mais nova do item, o número fica
+    /// como veio, e o código que a spec não tem, como o campo que falta, não
+    /// aponta nada. O rascunho segue com o código que trouxe.
+    #[test]
+    fn a_reference_field_of_a_draft_reads_as_the_number_it_points_at() {
+        let log = parse_log(
+            &[
+                line(1, "message", ",\"code\":\"MSTD-MSG-0001\",\"author\":\"user\""),
+                line(2, "task", ",\"code\":\"MSTD-TASK-0001\""),
+                line(3, "task", ",\"code\":\"MSTD-TASK-0001\",\"replaces\":2"),
+            ]
+            .concat(),
+        );
+        let by_code = obj(json!({"replaces": "MSTD-TASK-0001", "origin": "MSTD-MSG-0001"}));
+        assert_eq!(referenced_id(&log, "task", &by_code, "replaces"), Some(3));
+        assert_eq!(referenced_id(&log, "request", &by_code, "origin"), Some(1));
+        assert_eq!(by_code["replaces"], json!("MSTD-TASK-0001"), "the draft keeps the code");
+
+        let by_number = obj(json!({"replaces": 2, "origin": 1}));
+        assert_eq!(referenced_id(&log, "task", &by_number, "replaces"), Some(2));
+        assert_eq!(referenced_id(&log, "request", &by_number, "origin"), Some(1));
+
+        let unknown = obj(json!({"replaces": "MSTD-TASK-0009", "origin": "MSTD-MSG-0009"}));
+        assert_eq!(referenced_id(&log, "task", &unknown, "replaces"), None);
+        assert_eq!(referenced_id(&log, "request", &unknown, "origin"), None);
+        assert_eq!(referenced_id(&log, "task", &obj(json!({})), "replaces"), None, "a missing field points at nothing");
     }
 
     /// Na remoção, o número de qualquer versão de uma tarefa vira todas as

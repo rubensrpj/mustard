@@ -861,10 +861,15 @@ fn is_url_or_path(core: &str) -> bool {
 /// `./target`, `.claude/spec`). A linha que vem
 /// depois de dois-pontos não conta (`write.rs:635`, `mod.rs:10-20`).
 ///
-/// A extensão é curta e tem ao menos uma minúscula, então "3.5" e "v0.2.0"
-/// continuam números. Sem raiz e sem extensão, o trecho com barras continua
-/// texto: "e/ou", "CI/CD", "Windows/Linux/macOS" e a data "24/09/2026". URL
-/// não é caminho de arquivo.
+/// A extensão tem ao menos uma minúscula, então "3.5" e "v0.2.0" continuam
+/// números. O nome solto só vale com extensão de até
+/// [`BARE_EXTENSION_MAX`] letras, porque ele não se distingue de um nome de
+/// código (`self.facts`) nem da frase sem espaço depois do ponto. Na pasta,
+/// a extensão não tem teto: o levantamento só toma o caminho com pasta, e
+/// ele cita `src/App.svelte` e `prisma/schema.prisma`. Sem raiz e sem
+/// extensão, o trecho com barras continua texto: "e/ou", "CI/CD",
+/// "Windows/Linux/macOS" e a data "24/09/2026". URL não é caminho de
+/// arquivo.
 #[must_use]
 pub fn is_file_path(core: &str) -> bool {
     let mut name = core;
@@ -881,7 +886,8 @@ pub fn is_file_path(core: &str) -> bool {
         || ["~/", "~\\", "./", ".\\", "../", "..\\"].iter().any(|root| name.starts_with(root))
         || name.strip_prefix('.').is_some_and(|hidden| hidden.starts_with(char::is_alphabetic));
     let rooted = root && name.contains(['/', '\\']) && name.chars().any(char::is_alphanumeric);
-    rooted || has_file_extension(name.rsplit(['/', '\\']).next().unwrap_or_default())
+    let file = name.rsplit(['/', '\\']).next().unwrap_or_default();
+    rooted || has_file_extension(file, file.len() < name.len())
 }
 
 /// Os caminhos de arquivo de um texto ([`is_file_path`]), na ordem, cada um
@@ -890,12 +896,17 @@ pub fn file_paths_in(text: &str) -> impl Iterator<Item = &str> {
     text.split_whitespace().map(|token| token_core(token).1).filter(|core| is_file_path(core))
 }
 
-/// `nome.ext`, com extensão curta e ao menos uma minúscula ("mod.rs",
-/// "CLAUDE.md"); "3.5" continua número.
-fn has_file_extension(core: &str) -> bool {
-    core.rsplit_once('.').is_some_and(|(name, ext)| {
+/// As letras da extensão do nome de arquivo solto, sem pasta ([`is_file_path`]).
+const BARE_EXTENSION_MAX: usize = 5;
+
+/// `nome.ext`, com ao menos uma minúscula na extensão ("mod.rs",
+/// "CLAUDE.md", "App.svelte"); "3.5" continua número. Fora de uma pasta
+/// (`in_folder` falso), a extensão tem até [`BARE_EXTENSION_MAX`] letras.
+fn has_file_extension(file: &str, in_folder: bool) -> bool {
+    file.rsplit_once('.').is_some_and(|(name, ext)| {
         name.chars().any(char::is_alphanumeric)
-            && (1..=5).contains(&ext.len())
+            && !ext.is_empty()
+            && (in_folder || ext.len() <= BARE_EXTENSION_MAX)
             && ext.chars().all(|c| c.is_ascii_alphanumeric())
             && ext.chars().any(|c| c.is_ascii_lowercase())
     })
@@ -1172,6 +1183,13 @@ Detalhes em [a página](https://example.com/CI/slug?x=1) e em https://docs.rs/XY
             ("24/09/2026", false),
             ("10/2026", false),
             ("apps/rt/src", false),
+            ("src/App.svelte", true),
+            ("prisma/schema.prisma", true),
+            ("docs/guia.markdown", true),
+            ("docs/LEIA.MD", false),
+            ("docs/v1.2", false),
+            ("mod.svelte", false),
+            ("fim.Depois", false),
             ("/", false),
             ("~/", false),
             ("https://docs.rs/x.rs", false),

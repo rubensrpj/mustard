@@ -88,7 +88,7 @@ use mustard_core::platform::i18n::{Locale, translate};
 use std::path::Path;
 
 use crate::commands::event::pending::PendingCount;
-use crate::commands::maint::scratch_gc::{ScratchRoots, human_bytes, survey};
+use crate::commands::maint::scratch_gc::{ScratchRoots, human_bytes, process_var, survey};
 use crate::commands::review::pr_door::{MergedElsewhere, NOT_DELIVERED, merged_elsewhere, merged_outside};
 use crate::hooks::session::injectables;
 use crate::shared::branch_state::merged_by_another;
@@ -185,7 +185,7 @@ impl Check for SessionStartInject {
     /// programa compilado da branch — e entrega a leitura
     /// a [`session_start_core`], que decide.
     fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error> {
-        let scratch = scratch_roots(input);
+        let scratch = scratch_roots(input, process_var);
         let build = (ctx.trigger == Some(Trigger::SessionStart)).then(|| development_build(Path::new(&ctx.project_dir_or_cwd(input)))).flatten();
         session_start_core(
             input,
@@ -688,12 +688,12 @@ fn plugin_behind(running: &str, plugin: Option<&str>, lang: Locale) -> Option<St
     Some(translate("session.version.behind", lang).replace("{running}", running).replace("{plugin}", plugin))
 }
 
-/// As raízes desta máquina para o aviso de disco, e o limite dele. A pasta da
-/// sessão que está abrindo nunca conta como sobra, e a compilação
-/// compartilhada fica fora: medi-la seria mais uma passada pela árvore inteira
-/// em todo início de sessão.
-fn scratch_roots(input: &HookInput) -> ScratchRoots {
-    let mut roots = ScratchRoots::from_env();
+/// As raízes desta máquina para o aviso de disco, e o limite dele, que `var`
+/// lê do ambiente, como o `clean` lê. A pasta da sessão que está abrindo
+/// nunca conta como sobra, e a compilação compartilhada fica fora: medi-la
+/// seria mais uma passada pela árvore inteira em todo início de sessão.
+fn scratch_roots(input: &HookInput, var: impl Fn(&str) -> Option<String>) -> ScratchRoots {
+    let mut roots = ScratchRoots::from_vars(var);
     if let Some(session) = session_of(input) {
         roots.current_session = session;
     }
@@ -1267,15 +1267,18 @@ mod tests {
     }
 
     /// O limite com que o gancho de início compara o total das pastas antigas é
-    /// o do ambiente desta máquina (`ScratchRoots::from_env`), com ou sem
-    /// sessão na entrada: o gancho troca a sessão e a compilação compartilhada,
-    /// nunca o limite que o `clean` mostra e o usuário ajusta.
+    /// o que o ambiente diz em `MUSTARD_SCRATCH_WARN_BYTES`, com ou sem sessão
+    /// na entrada: o gancho troca a sessão e a compilação compartilhada, nunca
+    /// o limite que o `clean` mostra e o usuário ajusta. O ambiente simulado
+    /// diz 2048 bytes, longe do padrão de 5 GiB; sem a variável, vale o padrão.
     #[test]
-    fn the_hook_disk_limit_is_the_one_of_the_environment() {
-        let environment = ScratchRoots::from_env().warn_bytes;
+    fn the_hook_disk_limit_is_the_one_the_environment_says() {
+        use crate::commands::maint::scratch_gc::DEFAULT_WARN_BYTES;
+        let simulated = |key: &str| (key == "MUSTARD_SCRATCH_WARN_BYTES").then(|| "2048".to_string());
         let without_session = HookInput { hook_event_name: Some("SessionStart".to_string()), ..HookInput::default() };
         for input in [session_input("s-limit", "startup"), session_input("s-limit", "clear"), without_session] {
-            assert_eq!(scratch_roots(&input).warn_bytes, environment, "{:?}", input.session_id);
+            assert_eq!(scratch_roots(&input, simulated).warn_bytes, 2048, "{:?}", input.session_id);
+            assert_eq!(scratch_roots(&input, |_| None).warn_bytes, DEFAULT_WARN_BYTES, "{:?}", input.session_id);
         }
     }
 

@@ -10,7 +10,7 @@
 //! A remoção que o modelo grava tem o mesmo cuidado: a que tiraria a última
 //! tarefa dessa onda é recusada ([`working_wave_rule`]), pelo mesmo motivo.
 
-use mustard_core::domain::spec_events::{Refusal, SpecEvent, SpecLog, resolve_codes};
+use mustard_core::domain::spec_events::{Refusal, SpecEvent, SpecLog, referenced_id};
 use serde_json::{Map, Value, json};
 
 use crate::commands::flow::round::queue::{agent_working, waves_left_without_tasks};
@@ -25,23 +25,12 @@ pub(super) fn inherit_wave(log: &SpecLog, draft: &mut Map<String, Value>) {
     if draft.get("wave").is_some_and(|wave| !wave.is_null()) {
         return;
     }
-    let replaced_wave = replaced_id(log, draft).and_then(|old| log.get(old)).and_then(SpecEvent::wave);
+    // O `replaces` chega pelo código do item, e a gravação só o troca pelo
+    // número da versão mais nova depois desta leitura.
+    let replaced_wave = referenced_id(log, "task", draft, "replaces").and_then(|old| log.get(old)).and_then(SpecEvent::wave);
     if let Some(wave) = replaced_wave.filter(|wave| agent_working(log, *wave)) {
         draft.insert("wave".into(), json!(wave));
     }
-}
-
-/// O número da versão que o rascunho substitui. O `run write` recebe o
-/// `replaces` pelo código do item (`MSTD-TASK-NNNN`), e a gravação só o troca
-/// pelo número depois desta leitura: o código vira aqui o número da versão
-/// mais nova dele, numa cópia, sem mexer no rascunho. O código que não se
-/// acha fica para a conferência da gravação, que o recusa.
-fn replaced_id(log: &SpecLog, draft: &Map<String, Value>) -> Option<u64> {
-    let replaces = draft.get("replaces").filter(|value| !value.is_array())?;
-    let mut probe = Map::new();
-    probe.insert("replaces".into(), replaces.clone());
-    resolve_codes(log, &mut probe).ok()?;
-    probe.get("replaces").and_then(Value::as_u64)
 }
 
 /// A gravação do modelo que deixaria sem tarefa a onda cujo agente trabalha,

@@ -64,9 +64,16 @@ pub(crate) fn relative_to_cwd(cwd: &str, file_path: &str) -> Option<String> {
 /// Windows, quem lê o lugar no disco ([`on_disk`]) ainda acha `//p` em `/p`.
 #[must_use]
 pub(crate) fn canonical(path: &str) -> String {
+    lexical(&unprefixed(path))
+}
+
+/// O texto de `path` com barras normais e sem o prefixo de caminho literal
+/// ([`without_verbatim`]), antes de [`lexical`]: nele a pasta compartilhada da
+/// rede abre com exatamente duas barras (`//srv/share/x`), escrita simples ou
+/// literal, seja qual for o número de barras que [`canonical`] guarda.
+fn unprefixed(path: &str) -> String {
     let text = path.replace('\\', "/");
-    let text = without_verbatim(&text).unwrap_or(text);
-    lexical(&text)
+    without_verbatim(&text).unwrap_or(text)
 }
 
 /// `true` when `path` opens with a drive letter (`C:`): a Windows path, the
@@ -75,12 +82,33 @@ fn has_drive(path: &str) -> bool {
     path.len() >= 2 && path.as_bytes()[0].is_ascii_alphabetic() && path.as_bytes()[1] == b':'
 }
 
-/// The key two spellings of one place share: [`canonical`], and lower case
-/// when it is a Windows path. Use it as the key of a map or a set of paths.
+/// A chave que as grafias de um mesmo lugar dividem: [`canonical`], toda em
+/// minúsculas no caminho com letra de disco, e com o servidor e a pasta
+/// compartilhada em minúsculas no caminho da rede (`\\srv\share\x`), o resto
+/// como veio. O caminho da rede se reconhece pelas exatamente duas barras com
+/// que é escrito ([`unprefixed`]; três ou mais são a raiz), e a chave guarda as
+/// barras do começo do jeito que [`canonical`] as deixa. Serve de chave de
+/// mapa ou conjunto de caminhos.
 #[must_use]
 pub(crate) fn place_key(path: &str) -> String {
-    let canonical = canonical(path);
-    if has_drive(&canonical) { canonical.to_lowercase() } else { canonical }
+    let unprefixed = unprefixed(path);
+    let canonical = lexical(&unprefixed);
+    if has_drive(&canonical) {
+        return canonical.to_lowercase();
+    }
+    let share = unprefixed.strip_prefix("//").is_some_and(|rest| !rest.starts_with('/'));
+    if !share {
+        return canonical;
+    }
+    // O servidor e a pasta compartilhada são os dois primeiros pedaços depois
+    // das barras do começo, quantas forem.
+    let rest = canonical.trim_start_matches('/');
+    let slashes = &canonical[..canonical.len() - rest.len()];
+    let mut parts: Vec<String> = rest.splitn(3, '/').map(str::to_string).collect();
+    for part in parts.iter_mut().take(2) {
+        *part = part.to_lowercase();
+    }
+    format!("{slashes}{}", parts.join("/"))
 }
 
 /// `true` when `a` and `b` name the same place ([`place_key`]).
@@ -444,6 +472,21 @@ mod tests {
         assert!(same_place(r"c:\USERS\Runner\proj", r"\\?\C:\Users\runner\proj\"));
         assert!(!same_place("/Users/x", "/users/x"), "outside Windows the letter case counts");
         assert!(!same_place(r"C:\Users\runner", r"D:\Users\runner"));
+    }
+
+    /// O caminho da rede é o mesmo lugar com o servidor e a pasta
+    /// compartilhada em maiúsculas ou minúsculas, escrito simples ou literal;
+    /// abaixo da pasta compartilhada a diferença de maiúscula segue contando,
+    /// como em todo caminho sem letra de disco. A chave guarda as barras do
+    /// começo do jeito que o texto canônico as deixa.
+    #[test]
+    fn the_server_and_the_share_of_a_network_path_ignore_the_letter_case() {
+        assert_eq!(place_key(r"\\SRV\Share\x"), place_key(r"\\srv\share\x"));
+        assert_eq!(place_key(r"\\?\UNC\SRV\Share\x"), place_key(r"\\srv\share\x"));
+        assert_eq!(place_key(r"\\SRV\Share\Dir\x"), canonical(r"\\srv\share\Dir\x"));
+        assert_ne!(place_key(r"\\srv\share\X"), place_key(r"\\srv\share\x"));
+        assert!(!same_place("/SRV/Share/x", "/srv/share/x"), "a path opened by one slash is not a share");
+        assert!(!same_place("///SRV/Share/x", "///srv/share/x"), "three slashes or more are the root");
     }
 
     /// What is below a folder is read in the spelling of the path, whatever the

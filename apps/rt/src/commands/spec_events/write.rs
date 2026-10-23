@@ -1058,18 +1058,13 @@ fn revises_an_item_without_the_form(source: &Source, draft: &Map<String, Value>,
     let Some((user, agent)) = item_form(event_type) else {
         return Ok(false);
     };
-    let Some(replaces) = draft.get("replaces").filter(|value| !value.is_array()) else {
+    if draft.get("replaces").is_none_or(Value::is_array) {
         return Ok(false);
-    };
+    }
     let Some(log) = source.log()? else {
         return Ok(false);
     };
-    let mut probe = Map::new();
-    probe.insert("replaces".into(), replaces.clone());
-    if mustard_core::domain::spec_events::resolve_codes(&log, &mut probe).is_err() {
-        return Ok(false);
-    }
-    let Some(old) = probe.get("replaces").and_then(Value::as_u64).and_then(|id| log.get(id)) else {
+    let Some(old) = mustard_core::domain::spec_events::referenced_id(&log, event_type, draft, "replaces").and_then(|id| log.get(id)) else {
         return Ok(false);
     };
     let had = filled(&old.fields, "title").is_some() && (!user || filled(&old.fields, "text").is_some()) && (!agent || filled(&old.fields, "agent").is_some());

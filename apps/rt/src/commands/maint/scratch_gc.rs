@@ -236,11 +236,18 @@ pub(crate) struct ScratchRoots {
 impl ScratchRoots {
     /// As raízes reais desta máquina e desta sessão.
     pub(crate) fn from_env() -> Self {
+        Self::from_vars(process_var)
+    }
+
+    /// As raízes reais desta máquina e desta sessão, com o teto e o limite do
+    /// aviso que `var` lê do ambiente: o processo dá o ambiente dele, e o
+    /// teste dá um ambiente simulado.
+    pub(crate) fn from_vars(var: impl Fn(&str) -> Option<String>) -> Self {
         Self {
             temp_root: std::env::temp_dir(),
             shared_target: shared_target_dir(),
-            cap_bytes: cap_bytes_from_env(),
-            warn_bytes: warn_bytes_from(|key| std::env::var(key).ok()),
+            cap_bytes: cap_bytes_from(&var),
+            warn_bytes: warn_bytes_from(&var),
             current_session: session_id(),
             current_dir: std::env::current_dir().ok(),
             home: mustard_core::platform::harness::home_dir(),
@@ -357,18 +364,21 @@ fn is_real_dir(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_dir())
 }
 
+/// O valor de `key` no ambiente deste processo: o leitor único que a limpeza
+/// e o gancho de início dão a [`ScratchRoots::from_vars`].
+pub(crate) fn process_var(key: &str) -> Option<String> {
+    std::env::var(key).ok()
+}
+
 /// `~/.cache/mustard/scratch-target` — onde as cópias descartáveis compilam.
 pub fn shared_target_dir() -> Option<PathBuf> {
     mustard_core::platform::harness::home_dir().map(|h| h.join(".cache").join("mustard").join("scratch-target"))
 }
 
-/// O teto em bytes: `MUSTARD_SCRATCH_TARGET_CAP_BYTES` quando é um número,
-/// senão [`DEFAULT_SHARED_TARGET_CAP_BYTES`].
-fn cap_bytes_from_env() -> u64 {
-    std::env::var(CAP_ENV)
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .unwrap_or(DEFAULT_SHARED_TARGET_CAP_BYTES)
+/// O teto em bytes que `var` diz em [`CAP_ENV`] quando é um número, senão
+/// [`DEFAULT_SHARED_TARGET_CAP_BYTES`].
+fn cap_bytes_from(var: impl Fn(&str) -> Option<String>) -> u64 {
+    var(CAP_ENV).and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(DEFAULT_SHARED_TARGET_CAP_BYTES)
 }
 
 /// O limite do aviso de disco que `var` diz em [`WARN_ENV`]: um número de
