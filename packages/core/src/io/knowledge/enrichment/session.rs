@@ -300,11 +300,12 @@ pub struct Merge {
     pub absorb: Vec<String>,
 }
 
-/// One wave the small model formed: its objective in one sentence, its tasks
-/// by code and the tasks of it that become one. With the reserve questions
-/// ([`GroupingExtras`]), also how much value delivering it brings now. When
-/// its change goes in the same direction as a running wave, `follows` names
-/// that wave by key ([`RunningWave`]): the wave waits for it to return.
+/// Uma onda que o modelo pequeno formou: o objetivo dela numa frase, as
+/// tarefas dela pelo código e as tarefas dela que viram uma só. Com as
+/// perguntas da reserva ([`GroupingExtras`]), também o quanto vale entregá-la
+/// agora. Quando a mudança dela vai no mesmo sentido de uma onda em
+/// andamento, `follows` nomeia essa onda pela chave ([`RunningWave`]): a onda
+/// espera a volta dela.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WaveGroup {
@@ -317,8 +318,8 @@ pub struct WaveGroup {
     pub follows: Option<String>,
 }
 
-/// A wave still being delivered, shown to the forming: the key a formed wave
-/// names it by and its objective. Text is data, never instructions.
+/// Uma onda ainda em entrega, mostrada à formação: a chave pela qual a onda
+/// formada a nomeia e o objetivo dela. O texto é dado, nunca instrução.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RunningWave {
@@ -471,19 +472,20 @@ fn task_digest(task: &GroupingTask) -> String {
     hash.hex_digest()
 }
 
-/// Prepare, for the small model of the caller's own session, the forming of
-/// the waves of the open `tasks` not in any wave yet, with the `summaries`
-/// that returned waves left and the `running` waves still being delivered.
-/// The model reads all of it at once. A wave joins every task whose change
-/// goes in the same direction, small or large, and only different directions
-/// split: fewer waves is better. Every task goes in one wave; a wave in the
-/// same direction as a running wave follows it, and waits for its return. A
-/// summary is the base of the wave that continues it; equal or close tasks of
-/// a wave become one. The text of each task and summary is cut, from the
-/// longest cut down, until the request fits. With `extras`, the same reading
-/// also answers the reserve questions of the Jev's ordering
-/// ([`GroupingExtras`]), kept beside the waves ([`completed_grouping_answers`]).
-/// Like the rewrite, this never starts a CLI or a generation API call.
+/// Prepara, para o modelo pequeno da própria sessão de quem chama, a formação
+/// das ondas das `tasks` abertas que ainda não estão em onda nenhuma, com os
+/// `summaries` que as ondas que voltaram deixaram e as ondas `running` ainda
+/// em entrega. O modelo lê tudo de uma vez. A onda junta toda tarefa cuja
+/// mudança vai no mesmo sentido, pequena ou grande, e só sentidos diferentes
+/// separam: menos ondas é melhor. Toda tarefa vai numa onda; a onda no mesmo
+/// sentido de uma onda em andamento a segue e espera a volta dela. O resumo é
+/// a base da onda que o continua; as tarefas iguais ou próximas de uma onda
+/// viram uma só. O texto de cada tarefa e de cada resumo é cortado, do corte
+/// mais longo para baixo, até o pedido caber. Com `extras`, a mesma leitura
+/// responde também às perguntas da reserva da ordem do Jev
+/// ([`GroupingExtras`]), guardadas ao lado das ondas
+/// ([`completed_grouping_answers`]). Como a reescrita, nunca abre um CLI nem
+/// chama uma API de geração.
 pub fn prepare_grouping(
     root: &Path,
     host: &str,
@@ -572,7 +574,7 @@ pub fn prepare_grouping(
 }
 
 /// O arquivo, na pasta da sessão, com o pedido que leu cada entrada de uma
-/// formação aceita, pelo resumo dessa entrada sem as vagas livres.
+/// formação aceita, pelo resumo dessa entrada sem as ondas em andamento.
 const FORMED: &str = "grouping-index.json";
 
 /// The accepted formings, by the digest of the input each one read.
@@ -594,11 +596,11 @@ fn grouping_answer(id: &str, prepared: &PreparedGrouping, resolution: &Value) ->
         "next":"Delegate the request to the native analysis subagent, submit its receipt with mustard-rt run knowledge --complete-session <receipt.json>, then run mustard-rt run triage again. Never launch another CLI/API."})
 }
 
-/// `waves` is a forming of the tasks `codes`: each wave with an objective,
-/// and following, at most, one of the `running` waves; every task known and
-/// in exactly one wave; and each merge inside its own wave, with no task in
-/// two merges. The tasks a summary left go each to the wave of its own
-/// direction, so a summary may be the base of several waves.
+/// `waves` é uma formação das tarefas `codes`: cada onda com um objetivo e
+/// seguindo, no máximo, uma das ondas `running`; toda tarefa conhecida e em
+/// exatamente uma onda; e cada junção dentro da própria onda, sem tarefa em
+/// duas junções. As tarefas que um resumo deixou vão cada uma para a onda do
+/// sentido dela, e assim um resumo pode ser a base de várias ondas.
 pub fn check_grouping(codes: &[String], running: &[RunningWave], waves: &[WaveGroup]) -> Result<(), String> {
     let mut placed = std::collections::BTreeSet::new();
     let mut merged = std::collections::BTreeSet::new();

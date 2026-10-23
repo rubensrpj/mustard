@@ -2567,12 +2567,7 @@ fn with_full_copies_the_next_round_reuses_the_formation_of_the_same_tasks() {
     assert_eq!(full.map(|w| w["waves"].clone()), Some(json!([1, 2])), "every copy is kept: {asked}");
     let codes = project.log().codes();
     let left: Vec<String> = tasks[3..].iter().map(|id| codes[id].clone()).collect();
-    let receipt = json!({"request_id": formation["request_id"], "model": "inherit", "input_tokens": null, "output_tokens": null,
-        "result": {"waves": [{"objective": "Trocar a saudação nos arquivos que sobram", "tasks": left, "merges": []}]}});
-    let receipt_path = project.home.join("recibo-formacao.json");
-    std::fs::write(&receipt_path, receipt.to_string()).expect("the receipt");
-    let done = project.command(&["run", "knowledge", "--complete-session", receipt_path.to_str().expect("a path")], "");
-    assert!(done.status.success(), "{}", String::from_utf8_lossy(&done.stdout));
+    formed_by_the_analysis(&project, formation, json!([{"objective": "Trocar a saudação nos arquivos que sobram", "tasks": left, "merges": []}]));
     deliver_file_in_copy(&project, 3, files[2], "pronto\n");
 
     let next = unreviewed_round(&project);
