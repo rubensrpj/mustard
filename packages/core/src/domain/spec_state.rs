@@ -668,7 +668,7 @@ pub fn final_approval(log: &SpecLog) -> Option<&SpecEvent> {
 /// O pedido de revisão final que o veredito de número `verdict` responde: o
 /// envio de revisão final (papel `review`) mais novo antes dele. `None` sem
 /// envio assim — o veredito sem pedido gravado não responde a pedido nenhum.
-fn answered_request(log: &SpecLog, verdict: u64) -> Option<u64> {
+pub(crate) fn answered_request(log: &SpecLog, verdict: u64) -> Option<u64> {
     log.visible()
         .into_iter()
         .filter(|e| e.event_type == "send" && e.str_field("role") == Some("review") && e.id < verdict)

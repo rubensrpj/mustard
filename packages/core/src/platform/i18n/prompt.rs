@@ -480,6 +480,23 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              agreed requirements, repeat the previous verdict's conclusion. Point it out only; do not \
              fix it."
         }
+        // A revisão que volta depois de uma aprovação, para o ajuste feito
+        // com a obra reaberta, confere só esse ajuste: o que a aprovação
+        // conferiu e não mudou fica fora do pedido e do veredito.
+        ("prompt.final.look_since_approval", Locale::PtBr) => {
+            "**O que olhar.** Esta revisão volta depois de um veredito que aprovou a obra, para um \
+             ajuste feito depois dele. A parte do que mudou lista esse veredito e os commits e os \
+             itens gravados ou regravados depois do pedido que ele respondeu. Confira essa parte e \
+             como ela se encaixa no resto da obra. O que ele aprovou e não mudou fica fora do pedido \
+             e do veredito. Aponte só; não conserte."
+        }
+        ("prompt.final.look_since_approval", Locale::EnUs) => {
+            "**What to look at.** This review comes back after a verdict that approved the work, for \
+             an adjustment made after it. The part on what changed lists that verdict and the commits \
+             and items recorded or re-recorded after the request it answered. Check that part and how \
+             it fits the rest of the work. What it approved and did not change stays out of the \
+             request and of the verdict. Point it out only; do not fix it."
+        }
         ("prompt.part.since_verdict", Locale::PtBr) => "O que mudou desde o veredito anterior",
         ("prompt.part.since_verdict", Locale::EnUs) => "What changed since the previous verdict",
         // Como ler os itens do pedido da onda. `{root}` é `--root <caminho> `

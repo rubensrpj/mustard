@@ -9,8 +9,11 @@
 //! tarefa no backlog — a rodada seguinte forma o lote, despacha, e o
 //! fechamento só fecha depois de uma revisão final nova com tudo atendido.
 //! A aprovação final vale só para o que o revisor recebeu: a onda comitada
-//! depois do pedido de revisão faz o fechamento pedir revisão nova. Prova de
-//! ponta a ponta, pelo binário de verdade, num repositório temporário.
+//! depois do pedido de revisão faz o fechamento pedir revisão nova, e o
+//! ajuste depois da obra fechada e reaberta é revisado sozinho. A falha do
+//! fechamento numa linha reabre só a onda que a escreveu, e o conserto dela
+//! não toma, no painel, o lugar do commit da onda. Prova de ponta a ponta,
+//! pelo binário de verdade, num repositório temporário.
 
 #[path = "support/binary.rs"]
 mod binary;
@@ -574,14 +577,7 @@ fn commit_a_wave_past_the_request(project: &Project) -> (u64, Value) {
     );
     dispatch_wave(project, 2);
     let round = deliver_wave(project, 2, "A soma de três apareceu.", &[("src/main.rs", "fn main() {\n    println!(\"{}\", 1 + 1 + 1);\n}\n")]);
-    let log = project.log();
-    let committed = log
-        .visible()
-        .into_iter()
-        .rfind(|e| e.event_type == "commit" && e.fields.get("waves").and_then(Value::as_array).is_some_and(|waves| waves.contains(&json!(2))))
-        .unwrap_or_else(|| panic!("a onda 2 não comitou"))
-        .id;
-    (committed, round)
+    (commit_of(project, 2), round)
 }
 
 /// O veredito final aprovado que chega depois de uma onda comitada entre o
@@ -629,6 +625,133 @@ fn closing_with_an_open_request_older_than_a_committed_wave_opens_a_new_request(
     let requests = review_requests(&project);
     assert_eq!(requests.len(), 2, "{requests:?}");
     assert!(requests[1] > committed, "o pedido novo vem depois do commit da onda 2: {requests:?}, commit {committed}");
+}
+
+/// O número do commit gravado para a onda `wave`.
+fn commit_of(project: &Project, wave: u64) -> u64 {
+    project
+        .log()
+        .visible()
+        .into_iter()
+        .rfind(|e| e.event_type == "commit" && e.fields.get("waves").and_then(Value::as_array).is_some_and(|waves| waves.contains(&json!(wave))))
+        .unwrap_or_else(|| panic!("a onda {wave} não comitou"))
+        .id
+}
+
+/// A obra fechada com a aprovação final e reaberta para um ajuste pequeno —
+/// uma decisão nova e a tarefa dela, numa onda comitada — pede uma revisão
+/// final só do que mudou desde a aprovação: o pedido novo cita o commit novo e
+/// a decisão nova, e não cita o commit nem as decisões que a aprovação já
+/// conferiu. O veredito que responde só pela decisão nova fecha a obra de
+/// novo.
+#[test]
+fn a_small_change_after_a_final_approval_is_reviewed_alone() {
+    let project = Project::new();
+    let decisions = ready(&project);
+    let asked = project.run(&["close", "--spec", SPEC]);
+    assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+    project.read_review();
+    project.write("verdict", &all_met_verdict(&decisions));
+    let closed = project.run(&["close", "--spec", SPEC]);
+    assert_eq!(closed["phase"], json!("closed"), "{closed}");
+    let old_commit = commit_of(&project, 1);
+
+    let reopened = project.run(&["reopen", "--spec", SPEC, "--reason", "Imprimir também a soma de três números."]);
+    assert_eq!(reopened["phase"], json!("running"), "{reopened}");
+    let said = user_says(&project, "Imprima também a soma de três números.");
+    let decision = project.write(
+        "decision",
+        &json!({"title": "Somar três números", "agent": "- conferir pelo teste", "text": "A soma de três números aparece junto.",
+            "keys": ["ajuste"], "why": "o usuário pediu", "origin": said, "applies_to": {"files": ["**"]}}),
+    );
+    let new_decision = decision["code"].as_str().expect("the new decision code").to_string();
+    let criterion = project.log().visible().into_iter().find(|e| e.event_type == "criterion").expect("the criterion").id;
+    project.write(
+        "task",
+        &json!({"agent": "- conferir pelo teste", "title": "Somar três números", "text": "Imprimir a soma de três números.",
+            "files": [{"path": "src/main.rs"}], "depends_on": [], "covers": [criterion], "origin": said}),
+    );
+    dispatch_wave(&project, 2);
+    deliver_wave(&project, 2, "A soma de três apareceu.", &[("src/main.rs", "fn main() {\n    println!(\"{}\", 1 + 1 + 1);\n}\n")]);
+    let new_commit = commit_of(&project, 2);
+
+    let again = project.run(&["close", "--spec", SPEC]);
+    assert_eq!(again["review"]["final"], json!(true), "{again}");
+    let prompt = project.read_command(again["review"]["read"].as_str().unwrap_or_default());
+    let codes = project.log().codes();
+    assert!(prompt.contains(&codes[&new_commit]), "o pedido cita o commit novo: {prompt}");
+    assert!(prompt.contains(&new_decision), "o pedido cita a decisão nova: {prompt}");
+    assert!(!prompt.contains(&codes[&old_commit]), "o commit que a aprovação conferiu fica fora: {prompt}");
+    for old in &decisions {
+        let code = old["code"].as_str().expect("the decision code");
+        assert!(!prompt.contains(code), "a decisão {code}, que a aprovação conferiu, fica fora: {prompt}");
+    }
+
+    project.read_review();
+    let only_new = json!({"final": true, "result": "approved", "text": "O ajuste ficou certo.", "agreed": [{"item": new_decision, "met": true}]});
+    project.write("verdict", &only_new);
+    let closed_again = project.run(&["close", "--spec", SPEC]);
+    assert_eq!(closed_again["phase"], json!("closed"), "o veredito do que mudou fecha a obra: {closed_again}");
+}
+
+/// O código git do commit gravado para a onda `wave`.
+fn sha_of(project: &Project, wave: u64) -> String {
+    let log = project.log();
+    log.get(commit_of(project, wave)).and_then(|e| e.str_field("sha")).expect("the commit sha").to_string()
+}
+
+/// A obra com as ondas 1 e 2 no mesmo arquivo — a 1 escreve a segunda linha,
+/// a 2 acrescenta a terceira — e o lint do fechamento caindo, com arquivo e
+/// linha, só na linha que a onda 2 escreveu. Devolve a resposta do
+/// fechamento.
+fn close_with_lint_on_a_line_of_wave_2(project: &Project) -> Value {
+    let config = json!({"language": {"text": "pt-BR"}, "git": {"flow": {"*": "dev", "dev": "main"}},
+        "lintCommand": "git grep -n \"1 + 2\" -- src/main.rs && exit 1"});
+    std::fs::write(project.root.join("mustard.json"), config.to_string()).expect("config");
+    ready(project);
+    let said = user_says(project, "Imprima também a soma de um e dois.");
+    let criterion = project.log().visible().into_iter().find(|e| e.event_type == "criterion").expect("the criterion").id;
+    project.write(
+        "task",
+        &json!({"agent": "- conferir pelo teste", "title": "Somar um e dois", "text": "Imprimir a soma de um e dois.",
+            "files": [{"path": "src/main.rs"}], "depends_on": [], "covers": [criterion], "origin": said}),
+    );
+    dispatch_wave(project, 2);
+    let both = "fn main() {\n    println!(\"{}\", 3);\n    println!(\"{}\", 1 + 2);\n}\n";
+    deliver_wave(project, 2, "A soma de um e dois apareceu.", &[("src/main.rs", both)]);
+    project.answer(&["close", "--spec", SPEC])
+}
+
+/// O lint do fechamento que cai numa linha de um arquivo das ondas 1 e 2,
+/// escrita só pela onda 2, reabre só a onda 2: o `git blame` da linha acha o
+/// commit dela entre os commits da obra.
+#[test]
+fn a_closing_lint_failure_reopens_only_the_wave_that_wrote_the_line() {
+    let project = Project::new();
+    let refused = close_with_lint_on_a_line_of_wave_2(&project);
+    assert_eq!(refused["ok"], json!(false), "{refused}");
+    let reopened: Vec<u64> =
+        project.log().visible().into_iter().filter(|e| e.event_type == "validation_failure").filter_map(SpecEvent::wave).collect();
+    assert_eq!(reopened, [2], "só a onda que escreveu a linha reabre: {refused}");
+}
+
+/// Depois do conserto da onda 2, comitado, a tela das ondas mostra para ela o
+/// commit dela, e não o do conserto.
+#[test]
+fn the_repair_commit_does_not_take_the_place_of_the_wave_commit_in_the_panel() {
+    let project = Project::new();
+    close_with_lint_on_a_line_of_wave_2(&project);
+    let own = sha_of(&project, 2);
+    dispatch_wave(&project, 2);
+    let fixed = "fn main() {\n    println!(\"{}\", 3);\n    println!(\"{}\", 2 + 1);\n}\n";
+    deliver_wave(&project, 2, "A soma não repete a linha que o lint acusou.", &[("src/main.rs", fixed)]);
+    let repair = sha_of(&project, 2);
+    assert_ne!(repair, own, "o conserto ganhou commit próprio");
+
+    let screen = project.answer(&["panel", "--spec", SPEC, "--section", "waves"]);
+    let rows = screen["rows"].as_array().cloned().unwrap_or_default();
+    let row = rows.iter().find(|row| row["wave"] == json!(2)).unwrap_or_else(|| panic!("a onda 2 fora da tela: {screen}"));
+    assert_eq!(row["commit"], json!(own), "a onda mostra o commit dela, não o do conserto: {screen}");
 }
 
 /// O texto do próximo passo da spec que o painel mostra.

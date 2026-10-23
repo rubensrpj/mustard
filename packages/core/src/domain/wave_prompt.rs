@@ -328,7 +328,7 @@ pub struct Material<'a> {
     pub changes: Vec<&'a SpecEvent>,
     /// Native final-validation receipts, listed for independent verification.
     pub validation: Vec<&'a SpecEvent>,
-    /// O que mudou desde o veredito final que reprovou
+    /// O que mudou desde o veredito final mais novo, aprovado ou reprovado
     /// ([`since_last_verdict`]): com ele, o pedido da revisão final é o da
     /// revisão de volta. Vazio na primeira revisão.
     pub since_verdict: Vec<&'a SpecEvent>,
@@ -587,11 +587,12 @@ pub fn write(material: &Material, lang: Locale) -> String {
 /// toda obra, mesmo a de uma onda só: as ondas e as tarefas delas (`block`),
 /// as emendas gravadas para elas (`agreed`), o que cada onda entregou por
 /// último (`own_delivered`), os critérios, os commits da branch (`changes`) e
-/// como revisar numa cópia separada. Depois de um veredito final que reprovou
+/// como revisar numa cópia separada. Depois de um veredito final
 /// (`since_verdict`), o pedido lista o que mudou desde ele e manda conferir
-/// isso e o encaixe no resto, repetindo a conclusão anterior para os outros
-/// itens acordados — é o único jeito de a revisão de volta dizer o que
-/// conferir, reprove o veredito uma onda ou a obra. As linhas do conserto
+/// isso e o encaixe no resto: depois de uma reprovação, repetindo a conclusão
+/// anterior para os outros itens acordados — é o único jeito de a revisão de
+/// volta dizer o que conferir, reprove o veredito uma onda ou a obra —; depois
+/// de uma aprovação, sem os itens que ela conferiu. As linhas do conserto
 /// (`fix`) são do pedido da onda e não entram aqui. Nenhum pedido manda rodar
 /// a suíte inteira: ela passou no fechamento, no commit da cópia. O número da
 /// onda do material não conta aqui. Cada item ocupa uma linha, com o tipo por
@@ -935,10 +936,11 @@ pub fn all_agreed(log: &SpecLog) -> Vec<&SpecEvent> {
 }
 
 /// O combinado que o veredito final responde: o que o pedido mais novo da
-/// revisão listou (`read_items`) e o que nenhuma tarefa terminada cobre agora
-/// ([`Proven`]) — o item gravado depois do pedido também. O combinado que uma
-/// tarefa terminada cobre e o pedido não listou já tem prova. O pedido sem a
-/// lista, de antes dela, responde por todo o combinado ([`all_agreed`]).
+/// revisão listou (`read_items`) e o que nem uma tarefa terminada nem a última
+/// aprovação final cobrem agora ([`Proven`]) — o item gravado depois do pedido
+/// também. O combinado que uma delas cobre e o pedido não listou já tem
+/// prova. O pedido sem a lista, de antes dela, responde por todo o combinado
+/// ([`all_agreed`]).
 #[must_use]
 pub fn review_agreed(log: &SpecLog) -> Vec<&SpecEvent> {
     let visible = log.visible();
@@ -1517,29 +1519,61 @@ pub fn fix_lines(log: &SpecLog, wave: u64) -> Vec<&SpecEvent> {
 // A revisão de volta
 // ---------------------------------------------------------------------------
 
-/// O veredito final mais novo da spec, quando ele reprovou: a revisão pedida
-/// depois dele é a de volta. `None` sem veredito final, ou quando o mais novo
-/// aprovou — aí a revisão confere a obra inteira, como a primeira.
+/// O veredito final mais novo da spec, aprovado ou reprovado: a revisão
+/// pedida depois dele é a de volta. `None` sem veredito final — aí a revisão
+/// confere a obra inteira.
 #[must_use]
-pub fn last_final_rejection(log: &SpecLog) -> Option<&SpecEvent> {
+pub fn last_final_verdict(log: &SpecLog) -> Option<&SpecEvent> {
     log.block(BlockQuery::Block(Block::Review))
         .into_iter()
         .filter(|e| e.event_type == "verdict" && e.fields.get("final") == Some(&Value::Bool(true)))
         .max_by_key(|e| e.id)
-        .filter(|e| e.str_field("result").map(str::trim) == Some("rejected"))
 }
 
-/// O que mudou desde o veredito final que reprovou ([`last_final_rejection`]),
-/// na ordem em que o pedido da revisão de volta o lista: o próprio veredito,
-/// os commits gravados depois dele, os requisitos acordados gravados ou
+/// Se o veredito aprovou.
+fn approved(verdict: &SpecEvent) -> bool {
+    verdict.str_field("result").map(str::trim) == Some("approved")
+}
+
+/// O veredito final mais novo da spec, quando ele reprovou: é ele que
+/// recorta a revisão de volta à onda que apontou. `None` sem veredito final,
+/// ou quando o mais novo aprovou.
+#[must_use]
+pub fn last_final_rejection(log: &SpecLog) -> Option<&SpecEvent> {
+    last_final_verdict(log).filter(|e| e.str_field("result").map(str::trim) == Some("rejected"))
+}
+
+/// A aprovação final mais nova da spec, mesmo com uma reprovação depois dela,
+/// e o número a partir do qual o que foi gravado escapa dela: o do pedido que
+/// ela respondeu — a onda comitada entre o pedido e a aprovação não chegou ao
+/// revisor —, ou o dela própria, sem pedido gravado. O item vigente gravado
+/// antes desse número já foi conferido por ela.
+#[must_use]
+pub fn last_final_approval(log: &SpecLog) -> Option<(&SpecEvent, u64)> {
+    log.block(BlockQuery::Block(Block::Review))
+        .into_iter()
+        .filter(|e| e.event_type == "verdict" && e.fields.get("final") == Some(&Value::Bool(true)) && approved(e))
+        .max_by_key(|e| e.id)
+        .map(|verdict| (verdict, crate::domain::spec_state::answered_request(log, verdict.id).unwrap_or(verdict.id)))
+}
+
+/// O que mudou desde o veredito final mais novo ([`last_final_verdict`]), na
+/// ordem em que o pedido da revisão de volta o lista: o próprio veredito, os
+/// commits gravados depois dele, os requisitos acordados gravados ou
 /// regravados depois dele, junto com os que ele deu como não atendidos — na
 /// versão vigente de cada um —, e os critérios gravados ou regravados depois
-/// dele. O que veio antes do veredito fica de fora: a conclusão dele vale
-/// para o que não mudou. Vazio sem veredito final reprovado.
+/// dele. Depois de uma aprovação, o ponto de partida é o pedido que ela
+/// respondeu ([`last_final_approval`]): o ajuste pequeno feito com a obra
+/// fechada e reaberta é revisado sozinho. O que veio antes fica de fora: a
+/// conclusão do veredito vale para o que não mudou. Vazio sem veredito final.
 #[must_use]
 pub fn since_last_verdict(log: &SpecLog) -> Vec<&SpecEvent> {
-    let Some(verdict) = last_final_rejection(log) else {
+    let Some(verdict) = last_final_verdict(log) else {
         return Vec::new();
+    };
+    let since = match last_final_approval(log) {
+        Some((approval, asked)) if approval.id == verdict.id => asked,
+        _ => verdict.id,
     };
     let codes = log.codes();
     // O item da resposta vem pelo número, como a rodada o grava, ou pelo
@@ -1563,11 +1597,11 @@ pub fn since_last_verdict(log: &SpecLog) -> Vec<&SpecEvent> {
         .filter_map(|id| log.current(id).map(|e| e.id))
         .collect();
     let mut out = vec![verdict];
-    out.extend(log.block(BlockQuery::Block(Block::Progress)).into_iter().filter(|e| e.event_type == "commit" && e.id > verdict.id));
-    let mut agreed: Vec<&SpecEvent> = all_agreed(log).into_iter().filter(|e| e.id > verdict.id || unmet.contains(&e.id)).collect();
+    out.extend(log.block(BlockQuery::Block(Block::Progress)).into_iter().filter(|e| e.event_type == "commit" && e.id > since));
+    let mut agreed: Vec<&SpecEvent> = all_agreed(log).into_iter().filter(|e| e.id > since || unmet.contains(&e.id)).collect();
     agreed.sort_by_key(|e| e.id);
     out.extend(agreed);
-    out.extend(log.block(BlockQuery::Block(Block::Criteria)).into_iter().filter(|e| e.event_type == "criterion" && e.id > verdict.id));
+    out.extend(log.block(BlockQuery::Block(Block::Criteria)).into_iter().filter(|e| e.event_type == "criterion" && e.id > since));
     out
 }
 

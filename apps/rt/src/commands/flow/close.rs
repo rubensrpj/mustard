@@ -893,7 +893,8 @@ fn already_in_the_base(root: &Path, log: &SpecLog, output: &str) -> Option<Vec<S
 
 /// A compilação, o lint e a suíte reabrem só as ondas que declararam ou
 /// entregaram um arquivo da obra que a saída cita, pela mesma leitura da
-/// rodada ([`super::validation::cited`]). Sem onda citada, nenhuma reabre:
+/// rodada ([`super::validation::cited`]); com a linha citada, só a onda cujo
+/// commit mudou a linha por último. Sem onda citada, nenhuma reabre:
 /// eles rodam pela primeira vez aqui, sobre a obra inteira, e não há base para
 /// culpar ninguém; a recusa diz o que a saída citou, e a decisão é do
 /// usuário. A análise de declarações sem uso passa pela mesma leitura, com o

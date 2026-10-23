@@ -248,7 +248,8 @@ struct WaveRow {
     unmet: usize,
     resends: usize,
     tokens: Option<u64>,
-    /// The commit recorded for the wave's last dispatch.
+    /// The wave's own commit: the first one recorded for it. A repair commit
+    /// recorded later for the wave does not take its place.
     commit: Option<String>,
     /// When the wave first went out, and when its accepted delivery came.
     first_sent: Option<String>,
@@ -281,9 +282,11 @@ fn wave_rows(log: &SpecLog, states: &WaveStates) -> BTreeMap<u64, WaveRow> {
                 if matches!(row.state, Some(WaveState::Approved | WaveState::Rejected)) { row.at = Some(event.at().to_string()); }
             },
             "commit" => for n in event.ints("waves") {
-                if belongs(n, event.id) && let Some(row) = rows.get_mut(&n) {
+                if let Some(row) = rows.get_mut(&n) && row.commit.is_none() {
                     row.commit = event.str_field("sha").map(str::to_string);
-                    if row.state == Some(WaveState::Committed) { row.at = Some(event.at().to_string()); }
+                }
+                if belongs(n, event.id) && let Some(row) = rows.get_mut(&n) && row.state == Some(WaveState::Committed) {
+                    row.at = Some(event.at().to_string());
                 }
             },
             "send" => if let Some(n) = event.wave() && let Some(row) = rows.get_mut(&n) {

@@ -1,7 +1,7 @@
 //! Execution measurements use the spec's existing event log. Presentation
 //! reads these records; it never reruns validation to obtain a duration.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 
 use mustard_core::domain::spec_events::{Refusal, SpecLog};
@@ -218,15 +218,19 @@ pub(super) fn base_findings(root: &Path, log: &SpecLog, work: &Work) -> Vec<Stri
 }
 
 /// A obra contra a qual se lê a saída de um comando que caiu: os arquivos que
-/// ela mudou e, de cada onda, os que a onda declarou ou entregou. Um arquivo é
-/// da obra quando o git diz que a branch o mudou, e não porque uma onda o
-/// listou: a lista da onda pode vir incompleta.
+/// ela mudou, de cada onda, os que a onda declarou ou entregou, e as ondas de
+/// cada commit que a rodada gravou. Um arquivo é da obra quando o git diz que
+/// a branch o mudou, e não porque uma onda o listou: a lista da onda pode vir
+/// incompleta.
 #[derive(Debug)]
 pub(super) struct Work {
     /// Os arquivos que a obra mudou.
     changed: BTreeSet<String>,
     /// Cada onda, na ordem pedida, com os arquivos que declarou ou entregou.
     waves: Vec<(u64, Vec<String>)>,
+    /// As ondas de cada commit da obra, pelo código dele: o evento `commit`
+    /// liga o commit às ondas que ele levou.
+    commits: BTreeMap<String, Vec<u64>>,
 }
 
 impl Work {
@@ -234,8 +238,8 @@ impl Work {
     /// desde a base gravada no `state` da spec (`git diff --name-only
     /// <base>...HEAD`, com a base local e, sem ela, a do `origin`) e, de cada
     /// onda de `waves`, os que as tarefas dela declaram mais os que as
-    /// entregas dela listam. Sem base, ou sem git que responda, nenhum arquivo
-    /// conta como mudado pela obra.
+    /// entregas dela listam, e as ondas de cada commit gravado. Sem base, ou
+    /// sem git que responda, nenhum arquivo conta como mudado pela obra.
     pub(super) fn of(root: &Path, log: &SpecLog, waves: &[u64]) -> Self {
         let waves = waves
             .iter()
@@ -254,7 +258,13 @@ impl Work {
                 (*wave, files)
             })
             .collect();
-        Self { changed: branch_files(root, log), waves }
+        let commits = log
+            .visible()
+            .into_iter()
+            .filter(|e| e.event_type == "commit")
+            .filter_map(|e| e.str_field("sha").map(|sha| (sha.to_string(), e.ints("waves"))))
+            .collect();
+        Self { changed: branch_files(root, log), waves, commits }
     }
 }
 
@@ -290,7 +300,8 @@ fn branch_files(root: &Path, log: &SpecLog) -> BTreeSet<String> {
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(super) struct Cited {
     /// As ondas que declararam ou entregaram um arquivo que a obra mudou e que
-    /// a saída cita, na ordem da obra.
+    /// a saída cita, na ordem da obra. Com a linha citada, só as do commit
+    /// que mudou a linha por último, quando ele é da obra.
     pub waves: Vec<u64>,
     /// Os arquivos que a obra mudou e que a saída cita, na ordem em que
     /// aparecem nela. Vazio quando nada do que a saída cita é da obra, e é
@@ -307,32 +318,51 @@ pub(super) struct Cited {
 /// A leitura única da saída `output` de um comando que caiu, para a rodada e
 /// para o fechamento: as ondas da obra `work` cujo arquivo mudado a saída
 /// cita, os arquivos que o git lista no projeto e que a saída cita sem a obra
-/// os ter mudado, e se ela não cita arquivo nenhum.
+/// os ter mudado, e se ela não cita arquivo nenhum. A linha citada vai ao
+/// `git blame` ([`line_commits`]): o arquivo de várias ondas implica só a que
+/// escreveu a linha.
 pub(super) fn cited(root: &Path, output: &str, work: &Work) -> Cited {
     let listed = listed_files(root).unwrap_or_default();
     let packages = Packages::read(root, listed.iter().chain(&work.changed).map(String::as_str));
-    cited_among(output, work, &listed, &packages)
+    cited_among(output, work, &listed, &packages, &|file, lines| line_commits(root, file, lines))
 }
 
-/// [`cited`] com a lista de arquivos do projeto já lida em `listed` e os
-/// pacotes dele em `packages`.
-fn cited_among(output: &str, work: &Work, listed: &[String], packages: &Packages) -> Cited {
+/// [`cited`] com a lista de arquivos do projeto já lida em `listed`, os
+/// pacotes dele em `packages` e o `blame` que diz os commits que mudaram por
+/// último as linhas citadas de um arquivo. Para cada arquivo da obra citado,
+/// as ondas implicadas são as dos commits da obra que o `blame` dá às linhas
+/// citadas dele; sem linha citada, ou sem commit da obra nas linhas, as que
+/// declararam ou entregaram o arquivo.
+fn cited_among(output: &str, work: &Work, listed: &[String], packages: &Packages, blame: &dyn Fn(&str, &[u32]) -> Vec<String>) -> Cited {
     let changed: HashSet<&str> = work.changed.iter().map(String::as_str).collect();
     let known: HashSet<&str> = changed.iter().copied().chain(listed.iter().map(String::as_str)).collect();
-    let found = paths_in(output, &known, packages);
-    let waves = work
-        .waves
-        .iter()
-        .filter(|(_, files)| files.iter().any(|file| changed.contains(file.as_str()) && found.contains(&file.as_str())))
-        .map(|(wave, _)| *wave)
-        .collect();
+    let citations = citations(output, &known, packages);
+    let found = distinct(&citations);
+    let mut implicated: BTreeSet<u64> = BTreeSet::new();
+    for file in found.iter().copied().filter(|file| changed.contains(file)) {
+        let mut lines: Vec<u32> = citations.iter().filter(|(cited, _)| *cited == file).filter_map(|(_, line)| *line).collect();
+        lines.sort_unstable();
+        lines.dedup();
+        let owners: BTreeSet<u64> = if lines.is_empty() {
+            BTreeSet::new()
+        } else {
+            blame(file, &lines).iter().filter_map(|sha| work.commits.get(sha)).flatten().copied().collect()
+        };
+        if owners.is_empty() {
+            implicated.extend(work.waves.iter().filter(|(_, files)| files.iter().any(|own| own == file)).map(|(wave, _)| *wave));
+        } else {
+            implicated.extend(owners);
+        }
+    }
+    let waves = work.waves.iter().map(|(wave, _)| *wave).filter(|wave| implicated.contains(wave)).collect();
     let mine = found.iter().filter(|file| changed.contains(*file)).map(|file| (*file).to_string()).collect();
     let outside = found.iter().filter(|file| !changed.contains(*file)).map(|file| (*file).to_string()).collect();
     Cited { waves, mine, outside, none: found.is_empty() }
 }
 
-/// Os arquivos de `known` que a saída `output` cita pelo caminho, na ordem em
-/// que aparecem, sem repetir. Cada trecho da saída feito de caracteres de
+/// Cada citação de um arquivo de `known` na saída `output`, na ordem em que
+/// aparece, com a linha colada logo depois do caminho ([`line_after`]),
+/// quando vem. Cada trecho da saída feito de caracteres de
 /// caminho (letras, números e `_-./\@+~`) cita o arquivo mais longo de
 /// `known` que é o trecho inteiro ou o fim dele depois de uma `/`: o caminho
 /// absoluto, o `./` na frente e o caminho dentro da cópia de uma onda citam o
@@ -343,11 +373,13 @@ fn cited_among(output: &str, work: &Work, listed: &[String], packages: &Packages
 /// cita o `src/a.ts` da raiz nem o de outro pacote. O caminho relativo escrito
 /// num pacote que não se sabe qual é não cita arquivo nenhum; o absoluto, o
 /// do Windows inclusive (o `C:` fica de fora do trecho), cita.
-fn paths_in<'a>(output: &str, known: &HashSet<&'a str>, packages: &Packages) -> Vec<&'a str> {
-    let mut found: Vec<&'a str> = Vec::new();
+fn citations<'a>(output: &str, known: &HashSet<&'a str>, packages: &Packages) -> Vec<(&'a str, Option<u32>)> {
+    let mut found: Vec<(&'a str, Option<u32>)> = Vec::new();
     for (dir, text) in tool_lines(output, packages) {
-        for word in text.split(|c: char| !(c.is_alphanumeric() || "_-./\\@+~".contains(c))) {
-            let word = word.replace('\\', "/");
+        for raw in text.split(|c: char| !(c.is_alphanumeric() || "_-./\\@+~".contains(c))) {
+            // O fim do trecho no texto, para ler o que vem colado depois dele.
+            let end = raw.as_ptr() as usize - text.as_ptr() as usize + raw.len();
+            let word = raw.replace('\\', "/");
             let word = word.trim_end_matches('.');
             let file = match dir {
                 Some("") => longest_known_tail(word, known),
@@ -355,12 +387,51 @@ fn paths_in<'a>(output: &str, known: &HashSet<&'a str>, packages: &Packages) -> 
                 Some(dir) => from_dir(dir, word).and_then(|path| known.get(path.as_str()).copied()),
                 None => None,
             };
-            if let Some(file) = file.filter(|file| !found.contains(file)) {
-                found.push(file);
+            if let Some(file) = file {
+                found.push((file, line_after(&text[end..])));
             }
         }
     }
     found
+}
+
+/// Os arquivos de `citations`, na ordem, sem repetir.
+fn distinct<'a>(citations: &[(&'a str, Option<u32>)]) -> Vec<&'a str> {
+    let mut found: Vec<&'a str> = Vec::new();
+    for (file, _) in citations {
+        if !found.contains(file) {
+            found.push(file);
+        }
+    }
+    found
+}
+
+/// A linha que a ferramenta cola logo depois do caminho: `:12` em
+/// `src/a.rs:12:5` e `(12` em `src/a.ts(12,5)`. `None` sem número ali.
+fn line_after(rest: &str) -> Option<u32> {
+    let digits = rest.strip_prefix(':').or_else(|| rest.strip_prefix('('))?;
+    let end = digits.find(|c: char| !c.is_ascii_digit()).unwrap_or(digits.len());
+    digits[..end].parse().ok().filter(|line| *line > 0)
+}
+
+/// Os commits que mudaram por último as linhas `lines` do arquivo `file`, na
+/// cópia de trabalho de `root`, pelo `git blame`. A linha ainda não comitada
+/// vem com o código de zeros, que não é commit da obra. Vazio quando o git
+/// não responde, como para a linha que o arquivo não tem.
+fn line_commits(root: &Path, file: &str, lines: &[u32]) -> Vec<String> {
+    let ranges: Vec<String> = lines.iter().map(|line| format!("{line},{line}")).collect();
+    let mut args: Vec<&str> = vec!["blame", "--porcelain"];
+    for range in &ranges {
+        args.extend(["-L", range.as_str()]);
+    }
+    args.extend(["--", file]);
+    let out = git::run(root, &args).out().unwrap_or_default();
+    out.lines()
+        .filter_map(|line| {
+            let (sha, rest) = line.split_once(' ')?;
+            (sha.len() >= 40 && sha.chars().all(|c| c.is_ascii_hexdigit()) && rest.starts_with(|c: char| c.is_ascii_digit())).then(|| sha.to_string())
+        })
+        .collect()
 }
 
 /// O arquivo mais longo de `known` que é o caminho `word` inteiro ou o fim
@@ -961,7 +1032,22 @@ mod tests {
 
     use serde_json::{Value, json};
 
-    use super::{Cited, MONOREPO_LINT, PACKAGE_BLOCKS, PNPM_RECURSIVE_LINT, Package, Packages, Work, cited, cited_among, paths_in};
+    use super::{Cited, MONOREPO_LINT, PACKAGE_BLOCKS, PNPM_RECURSIVE_LINT, Package, Packages, Work, citations, cited, cited_among, distinct};
+
+    /// Os arquivos que a saída cita, na ordem, sem repetir.
+    fn paths_in<'a>(output: &str, known: &HashSet<&'a str>, packages: &Packages) -> Vec<&'a str> {
+        distinct(&citations(output, known, packages))
+    }
+
+    /// A linha colada ao caminho vem com a citação, no jeito do compilador
+    /// (`arquivo:linha:coluna`) e no do `tsc` (`arquivo(linha,coluna)`); o
+    /// caminho sem número colado vem sem linha.
+    #[test]
+    fn a_cited_line_comes_with_the_path_in_both_tool_formats() {
+        let known: HashSet<&str> = ["src/a.rs", "src/b.ts", "src/c.rs"].into_iter().collect();
+        let output = "error: x\n  --> src/a.rs:12:5\nsrc/b.ts(3,10): error TS6133\nwarning in src/c.rs: 7 problems\n";
+        assert_eq!(citations(output, &known, &Packages::default()), [("src/a.rs", Some(12)), ("src/b.ts", Some(3)), ("src/c.rs", None)]);
+    }
 
     /// A saída real de `pnpm -r --no-bail lint` (pnpm 10.18, tsc 7.0 com
     /// `noUnusedLocals`) num monorepo de quatro pacotes com o mesmo
@@ -1031,11 +1117,12 @@ Exit status 1
     #[test]
     fn a_path_written_inside_a_workspace_package_cites_the_file_of_that_package() {
         let (web, api) = ("packages/web/src/a.ts".to_string(), "packages/api/src/a.ts".to_string());
-        let work = Work { changed: BTreeSet::from([web.clone(), api.clone()]), waves: vec![(1, vec![api.clone()]), (2, vec![web.clone()])] };
+        let work =
+            Work { changed: BTreeSet::from([web.clone(), api.clone()]), waves: vec![(1, vec![api.clone()]), (2, vec![web.clone()])], commits: Default::default() };
         let listed = ["src/a.ts".to_string(), web.clone(), api];
         let output = PNPM_RECURSIVE_LINT.replace("{root}", "/repo");
         let expected = Cited { waves: vec![2], mine: vec![web], outside: vec![], none: false };
-        assert_eq!(cited_among(&output, &work, &listed, &Packages::default()), expected);
+        assert_eq!(cited_among(&output, &work, &listed, &Packages::default(), &|_, _| Vec::new()), expected);
     }
 
     /// A pasta de mais de 40 caracteres que o `pnpm -r` encurta leva ao único
@@ -1311,7 +1398,11 @@ src/a.ts(1,10): error TS6133: 'lonelyTotal' is declared but its value is never r
         }
         assert!(std::process::Command::new("git").args(["init", "-q"]).current_dir(root).status().unwrap().success());
         let (web, api, manifest) = ("packages/web/src/a.ts".to_string(), "packages/api/src/a.ts".to_string(), "packages/web/package.json".to_string());
-        Work { changed: BTreeSet::from([web.clone(), api.clone(), manifest.clone()]), waves: vec![(1, vec![api]), (2, vec![web, manifest])] }
+        Work {
+            changed: BTreeSet::from([web.clone(), api.clone(), manifest.clone()]),
+            waves: vec![(1, vec![api]), (2, vec![web, manifest])],
+            commits: Default::default(),
+        }
     }
 
     /// O tempo de cada etapa da rodada vai para o arquivo de operações da

@@ -598,20 +598,23 @@ pub fn final_review_commit(root: &Path, log: &SpecLog) -> Option<String> {
 /// arquivos de regras da raiz e das pastas dos arquivos que a obra mexe
 /// ([`project_rules`], [`touched_files`]), quando algum existe com texto.
 ///
-/// Depois de um veredito final que reprovou, o pedido é o da revisão de
-/// volta: ele lista o que mudou desde esse veredito
-/// ([`wave_prompt::since_last_verdict`]), e o revisor confere isso e o
-/// encaixe no resto, sem repetir o que o veredito já concluiu. É o mesmo
-/// pedido quando o veredito aponta uma onda: ele aparece uma vez só, na parte
-/// do que mudou, sem parte de conserto à parte. Nesse caso, as ondas e as
-/// entregas do pedido ficam restritas à onda reprovada, que já entregou o
-/// conserto (o fechamento só chega aqui depois disso: veja
-/// [`crate::domain::spec_events::SpecLog::last_rejected`]), e o parágrafo do
-/// que olhar da revisão de volta diz esse recorte. O recorte sai do mesmo
-/// veredito que abre a revisão de volta ([`wave_prompt::last_final_rejection`]):
-/// ele nunca acontece sem ela. Uma onda reprovada antes de um veredito final
-/// mais novo não recorta o pedido. Os requisitos acordados continuam todos no
-/// pedido, porque o veredito responde por cada um.
+/// Depois de um veredito final, o pedido é o da revisão de volta: ele lista
+/// o que mudou desde esse veredito ([`wave_prompt::since_last_verdict`]), e o
+/// revisor confere isso e o encaixe no resto, sem repetir o que o veredito já
+/// concluiu. Depois de uma aprovação — a obra fechada e reaberta para um
+/// ajuste —, o que ela conferiu e não mudou sai também das outras partes
+/// ([`wave_prompt::Proven`]), e o pedido traz só o ajuste. Depois de uma
+/// reprovação, é o mesmo pedido quando o veredito aponta uma onda: ele
+/// aparece uma vez só, na parte do que mudou, sem parte de conserto à parte.
+/// Nesse caso, as ondas e as entregas do pedido ficam restritas à onda
+/// reprovada, que já entregou o conserto (o fechamento só chega aqui depois
+/// disso: veja [`crate::domain::spec_events::SpecLog::last_rejected`]), e o
+/// parágrafo do que olhar da revisão de volta diz esse recorte. O recorte sai
+/// do veredito reprovado mais novo ([`wave_prompt::last_final_rejection`]):
+/// ele nunca acontece sem a revisão de volta. Uma onda reprovada antes de um
+/// veredito final mais novo não recorta o pedido. Os requisitos acordados
+/// continuam no pedido, menos os que a última aprovação já conferiu, porque o
+/// veredito responde por cada um.
 ///
 /// Junto do texto vem a lista dos itens que ele lista ([`FinalReview::listed`]),
 /// para o fechamento gravá-la no envio e o veredito conferir a leitura.
@@ -3621,7 +3624,7 @@ mod tests {
     /// Depois dele, um commit novo, a versão nova de outro requisito, um
     /// requisito novo e um critério novo. `verdict` troca o veredito: `None`
     /// tira ele e tudo o que veio depois; `Some("approved")` o grava
-    /// aprovando.
+    /// aprovando, com todo requisito atendido.
     fn reviewed_again(root: &Path, verdict: Option<&str>) -> SpecLog {
         let repo = root.file_name().unwrap().to_string_lossy().to_string();
         let commit = |sha: &str| ("commit", json!({"sha": sha, "title": "t", "waves": [1], "files": ["src/a.rs"], "repo": repo}));
@@ -3637,7 +3640,8 @@ mod tests {
         let Some(result) = verdict else {
             return log_of(&events);
         };
-        let agreed = json!([{"item": 1, "met": true}, {"item": 2, "met": false, "text": "falta"}, {"item": 3, "met": true}]);
+        let second = if result == "approved" { json!({"item": 2, "met": true}) } else { json!({"item": 2, "met": false, "text": "falta"}) };
+        let agreed = json!([{"item": 1, "met": true}, second, {"item": 3, "met": true}]);
         events.push(("verdict", json!({"final": true, "result": result, "text": "v", "agreed": agreed})));
         events.push(commit("bbb2222"));
         events.push(("decision", json!({"text": "Regravada de novo", "keys": ["c"], "why": "w", "replaces": 3})));
@@ -3667,11 +3671,12 @@ mod tests {
     /// depois dele, o requisito que ele deu como não atendido, o regravado e
     /// o novo depois dele e o critério novo. O resto não entra nessa parte,
     /// mas todos os requisitos acordados continuam no pedido, porque o
-    /// veredito responde por cada um. A primeira revisão, e a que vem depois
-    /// de uma aprovação, conferem a obra inteira, sem essa parte. Nenhuma
-    /// manda rodar a suíte: dizem que ela passou no fechamento, no commit da
-    /// cópia, e mandam rodar só os testes em volta de cada corte. Nos dois
-    /// idiomas.
+    /// veredito responde por cada um. A que vem depois de uma aprovação traz
+    /// a mesma parte, sem o que a aprovação conferiu e não mudou em parte
+    /// nenhuma. A primeira revisão confere a obra inteira, sem essa parte.
+    /// Nenhuma manda rodar a suíte: dizem que ela passou no fechamento, no
+    /// commit da cópia, e mandam rodar só os testes em volta de cada corte.
+    /// Nos dois idiomas.
     #[test]
     fn a_review_after_a_rejection_lists_only_what_changed_since_the_verdict() {
         let dir = tempdir().unwrap();
@@ -3702,15 +3707,22 @@ mod tests {
             assert!(last.contains(&format!("- {suite}")) && last.contains(&build), "{lang:?}: {last}");
             assert!(whole_suite_once(&last), "a revisão não roda a suíte inteira: {last}");
 
-            for (what, log) in [("primeira", reviewed_again(root, None)), ("aprovada", reviewed_again(root, Some("approved")))] {
-                let first = final_review(root, "teste", &log, lang).text;
-                assert!(part_lines(&first, since).is_empty() && !first.contains(&format!("## {since}")), "{what}: {first}");
-                assert!(first.contains(t("prompt.final.look")) && !first.contains(t("prompt.final.look_again")), "{what}: {first}");
-                assert!(whole_suite_once(&first), "{what}: a revisão não roda a suíte inteira: {first}");
-                let sha = if log.max_id() > 7 { "bbb2222" } else { "aaa1111" };
-                let suite = t("prompt.review.suite").replace("{command}", "make test").replace("{commit}", sha);
-                assert!(first.contains(&format!("- {suite}")) && first.contains(&build), "{what}: {first}");
+            let approved = reviewed_again(root, Some("approved"));
+            let after = final_review(root, "teste", &approved, lang).text;
+            assert_eq!(line_codes(part_lines(&after, since)), [code(8), code(9), code(10), code(11), code(12)], "{lang:?}: {after}");
+            assert_eq!(line_codes(part_lines(&after, t("prompt.part.agreed"))), [code(10), code(11)], "{after}");
+            for old in [1, 2, 7] {
+                assert!(!after.contains(&code(old)), "o que a aprovação conferiu fica fora: {after}");
             }
+            assert!(after.contains(t("prompt.final.look_since_approval")) && !after.contains(t("prompt.final.look_again")), "{after}");
+            assert!(whole_suite_once(&after), "a revisão não roda a suíte inteira: {after}");
+
+            let first = final_review(root, "teste", &reviewed_again(root, None), lang).text;
+            assert!(part_lines(&first, since).is_empty() && !first.contains(&format!("## {since}")), "{first}");
+            assert!(first.contains(t("prompt.final.look")) && !first.contains(t("prompt.final.look_again")), "{first}");
+            assert!(whole_suite_once(&first), "a revisão não roda a suíte inteira: {first}");
+            let suite = t("prompt.review.suite").replace("{command}", "make test").replace("{commit}", "aaa1111");
+            assert!(first.contains(&format!("- {suite}")) && first.contains(&build), "{first}");
         }
     }
 
@@ -3791,9 +3803,9 @@ mod tests {
     /// parte traz só elas. A primeira
     /// revisão não diz o recorte e traz as duas ondas. O veredito que reprovou a obra sem
     /// apontar onda traz as duas ondas na revisão de volta. Um veredito final
-    /// que aprovou depois da reprovação de uma onda faz a revisão seguinte
-    /// conferir a obra inteira, sem recorte e sem a frase dele. Nos dois
-    /// idiomas.
+    /// que aprovou depois da reprovação de uma onda tira o recorte e a frase
+    /// dele: a revisão seguinte confere o que mudou desde a aprovação, e as
+    /// tarefas que ela conferiu ficam fora. Nos dois idiomas.
     #[test]
     fn a_review_after_a_rejected_wave_says_it_carries_only_that_wave() {
         let dir = tempdir().unwrap();
@@ -3854,8 +3866,8 @@ mod tests {
 
             let log = two_waves_reviewed(&Reviewed::ApprovedAfter);
             let after = final_review(root, "teste", &log, lang).text;
-            assert!(after.contains(t("prompt.final.look")) && !after.contains(scope_phrase), "{lang:?}: {after}");
-            assert_eq!(wave_codes(&log, &after), [true, true], "depois da aprovação, a obra inteira: {after}");
+            assert!(after.contains(t("prompt.final.look_since_approval")) && !after.contains(scope_phrase), "{lang:?}: {after}");
+            assert_eq!(wave_codes(&log, &after), [false, false], "a aprovação já conferiu as duas ondas: {after}");
         }
     }
 
