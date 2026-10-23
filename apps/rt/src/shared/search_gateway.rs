@@ -248,10 +248,14 @@ fn choice_gate(root:&Path,request:&Request,provider:bool)->&'static str {
     if !request.choose {return "not-requested";}
     if request.intent.trim().is_empty() {return "missing-intent";}
     if provider {return "eligible";}
+    // O ajuste que falta sai da mesma leitura que liga o Jev. A chave não é
+    // lida aqui: com o Jev e a finalidade ligados, o filtro que não montou
+    // fica indisponível.
     let config=mustard_core::ProjectConfig::load(root);
-    if !config.ai_fallback_enabled() {return "ai-fallback-disabled";}
-    if !mustard_core::io::jev_gate::setting_allows(config.judgement_filter("search")) {return "purpose-not-configured";}
-    "provider-unavailable"
+    match mustard_core::io::jev_gate::purpose_key(&config,"search",||Ok(())) {
+        Ok(())=>"provider-unavailable",
+        Err(missing)=>missing.reason(),
+    }
 }
 
 /// Os vetores de código do que mudou no mapa de `root`, calculados até o fim
