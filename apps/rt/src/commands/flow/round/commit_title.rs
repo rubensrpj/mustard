@@ -81,26 +81,26 @@ fn neutral(files: &[String], lang: Locale) -> String {
 /// trata: o escopo as deixa de fora, em qualquer posição do caminho.
 const GENERIC_DIRS: &[&str] = &["src", "lib", "libs", "app", "apps", "packages", "crates", "modules", "pkg", "test", "tests", "spec"];
 
-/// Os escopos que o commit pode levar, tirados dos arquivos dele, do mais
-/// largo ao mais curto: a pasta que todos eles têm em comum, sem as pastas que
-/// só dizem onde o código mora ([`GENERIC_DIRS`]) em qualquer posição dela, e
-/// a última pasta que fica. Vazio quando os arquivos se espalham ou quando a
-/// pasta comum é escondida — a configuração do editor não é parte do módulo;
-/// fica de fora o escopo longo demais ou cujo nome traz o que um commit nunca
-/// leva.
+/// O escopo que o commit pode levar, tirado dos arquivos dele: a última pasta
+/// que todos eles têm em comum, sem as pastas que só dizem onde o código mora
+/// ([`GENERIC_DIRS`]) em qualquer posição do caminho. Nenhum quando os
+/// arquivos se espalham ou quando a pasta comum é escondida — a configuração
+/// do editor não é parte do módulo; fica de fora o escopo longo demais ou cujo
+/// nome traz o que um commit nunca leva.
 ///
 /// O escopo saía do histórico dos arquivos: o primeiro título deles com
 /// `tipo(escopo):` servia de molde. Numa correção de verdade os três commits
 /// saíram com o mesmo escopo, e um deles só devolvia a configuração do editor,
 /// que não tem nada a ver com o módulo. O histórico diz onde aqueles arquivos
-/// já estiveram; os arquivos deste commit dizem onde ele mexe.
-fn scopes_of(files: &[String]) -> Vec<String> {
+/// já estiveram; os arquivos deste commit dizem onde ele mexe. O caminho todo
+/// até a pasta só alongava o título e cortava o resumo: fica a última pasta.
+fn scope_of(files: &[String]) -> Option<String> {
     fn dirs(file: &str) -> Vec<&str> {
         let mut parts: Vec<&str> = file.split('/').collect();
         parts.pop();
         parts
     }
-    let Some(first) = files.first() else { return Vec::new() };
+    let first = files.first()?;
     let mut common = dirs(first);
     for file in &files[1..] {
         let other = dirs(file);
@@ -108,14 +108,10 @@ fn scopes_of(files: &[String]) -> Vec<String> {
         common.truncate(shared);
     }
     if common.iter().any(|dir| dir.starts_with('.') || dir.is_empty()) {
-        return Vec::new();
+        return None;
     }
-    common.retain(|dir| !GENERIC_DIRS.contains(dir));
-    let Some(last) = common.last() else { return Vec::new() };
-    let mut scopes = vec![common.join("/"), (*last).to_string()];
-    scopes.dedup();
-    scopes.retain(|scope| scope.chars().count() <= 32 && without_forbidden(scope).1.is_empty());
-    scopes
+    let last = common.iter().rev().find(|dir| !GENERIC_DIRS.contains(dir))?;
+    Some((*last).to_string()).filter(|scope| scope.chars().count() <= 32 && without_forbidden(scope).1.is_empty())
 }
 
 /// Os tipos de commit: os que o ramo dá ao título — `feat` é também o da
@@ -149,9 +145,9 @@ fn without_type_prefix(summary: &str) -> &str {
 
 /// A mensagem do commit da entrega `wave`, já conferida; `None` quando ela
 /// não mudou arquivo ou não trouxe resumo. O título é `tipo(escopo): frase`
-/// com o resumo inteiro da entrega: o escopo é o primeiro dos arquivos
-/// ([`scopes_of`]) que cabe ao lado do resumo todo, e o título sai sem escopo
-/// quando nenhum cabe — o resumo inteiro vale mais que o escopo. O corte numa
+/// com o resumo inteiro da entrega: o escopo é o dos arquivos
+/// ([`scope_of`]) quando cabe ao lado do resumo todo, e o título sai sem escopo
+/// quando ele não cabe — o resumo inteiro vale mais que o escopo. O corte numa
 /// palavra inteira, com o resumo inteiro no corpo, só serve ao resumo que não
 /// cabe nem ao lado do tipo sozinho. O tipo é `fix` quando a entrega conserta
 /// outra onda, o do ramo quando ele diz um ([`COMMIT_TYPES`]), e `feat` nos
@@ -181,10 +177,9 @@ pub(super) fn message(root: &Path, wave: &WaveReport, lang: Locale) -> Result<Op
         "feat"
     };
     let whole = summary.chars().count();
-    let prefix = scopes_of(&wave.files)
-        .into_iter()
+    let prefix = scope_of(&wave.files)
         .map(|scope| format!("{kind}({scope}): "))
-        .find(|prefix| prefix.chars().count() + whole <= MESSAGE_TITLE_MAX)
+        .filter(|prefix| prefix.chars().count() + whole <= MESSAGE_TITLE_MAX)
         .unwrap_or_else(|| format!("{kind}: "));
     let cut = whole_words(&summary, MESSAGE_TITLE_MAX.saturating_sub(prefix.chars().count()));
     let title = format!("{prefix}{}", if cut.is_empty() { summary.as_str() } else { cut });
@@ -197,37 +192,39 @@ pub(super) fn message(root: &Path, wave: &WaveReport, lang: Locale) -> Result<Op
 mod tests {
     use super::*;
 
-    /// O escopo do commit sai da pasta que os arquivos dele têm em comum, sem
-    /// as pastas que só dizem onde o código mora, em qualquer posição, com a
-    /// última pasta dela como escopo mais curto. Os arquivos que se espalham,
-    /// a pasta escondida e o arquivo solto na raiz não dão escopo.
+    /// O escopo do commit é a última pasta que os arquivos dele têm em comum,
+    /// sem as pastas que só dizem onde o código mora, em qualquer posição. Os
+    /// arquivos que se espalham, a pasta escondida e o arquivo solto na raiz
+    /// não dão escopo.
     ///
     /// Em campo (21/10/2026) os três commits de uma correção saíram com o
     /// mesmo escopo, tirado do histórico dos arquivos, e um deles só devolvia
     /// a configuração do editor.
     #[test]
-    fn the_commit_scope_comes_from_the_folder_its_files_share() {
+    fn the_commit_scope_is_the_last_folder_its_files_share() {
         let files = |list: &[&str]| list.iter().map(|file| (*file).to_string()).collect::<Vec<_>>();
-        let none: Vec<String> = Vec::new();
 
         // Duas partes do mesmo módulo: o escopo é o módulo.
-        assert_eq!(scopes_of(&files(&["src/order/order.service.ts", "src/order/order.controller.ts"])), ["order"]);
-        // A pasta de dentro vai junto, e a última pasta é o escopo mais curto.
-        assert_eq!(scopes_of(&files(&["src/order/dto/a.ts", "src/order/dto/b.ts"])), ["order/dto", "dto"]);
-        // A pasta de código no meio do caminho também sai.
-        assert_eq!(scopes_of(&files(&["packages/core/src/io/fs/mod.rs"])), ["core/io/fs", "fs"]);
-        assert_eq!(scopes_of(&files(&["apps/rt/src/commands/flow/round/commit.rs"])), ["rt/commands/flow/round", "round"]);
+        assert_eq!(scope_of(&files(&["src/order/order.service.ts", "src/order/order.controller.ts"])).as_deref(), Some("order"));
+        // A pasta de dentro é o escopo, sem o caminho que leva a ela.
+        assert_eq!(scope_of(&files(&["src/order/dto/a.ts", "src/order/dto/b.ts"])).as_deref(), Some("dto"));
+        assert_eq!(scope_of(&files(&["packages/core/src/io/fs/mod.rs"])).as_deref(), Some("fs"));
+        assert_eq!(scope_of(&files(&["apps/rt/src/commands/flow/round/commit.rs"])).as_deref(), Some("round"));
+        // A pasta de código no fim do caminho sai: o escopo é a de antes dela.
+        assert_eq!(scope_of(&files(&["packages/core/src/a.rs"])).as_deref(), Some("core"));
 
         // Dois módulos diferentes: o que sobra é a pasta de código, e ela não
         // é escopo nenhum.
-        assert_eq!(scopes_of(&files(&["src/order/a.ts", "src/user/b.ts"])), none);
+        assert_eq!(scope_of(&files(&["src/order/a.ts", "src/user/b.ts"])), None);
         // A configuração do editor não é parte do módulo.
-        assert_eq!(scopes_of(&files(&[".vscode/settings.json"])), none);
+        assert_eq!(scope_of(&files(&[".vscode/settings.json"])), None);
         // O arquivo solto na raiz não tem pasta.
-        assert_eq!(scopes_of(&files(&["README.md"])), none);
-        assert_eq!(scopes_of(&files(&[])), none);
+        assert_eq!(scope_of(&files(&["README.md"])), None);
+        assert_eq!(scope_of(&files(&[])), None);
         // A pasta de código sozinha também não.
-        assert_eq!(scopes_of(&files(&["src/a.ts", "src/b.ts"])), none);
+        assert_eq!(scope_of(&files(&["src/a.ts", "src/b.ts"])), None);
+        // O nome longo demais não é escopo.
+        assert_eq!(scope_of(&files(&["src/uma_camada_de_armazenamento_longa_demais/a.rs"])), None);
     }
 
     /// A entrega de uma onda com os arquivos `files` e o resumo `summary`.
@@ -288,10 +285,10 @@ mod tests {
         assert_eq!(title(&["src/b.rs"], "fix(rt):"), format!("feat: {}", neutral(&["src/b.rs".to_string()], Locale::PtBr)));
     }
 
-    /// O título leva o resumo inteiro: o escopo só entra quando cabe ao lado
-    /// dele, primeiro a pasta comum inteira, depois a última pasta dela, e
-    /// nenhum quando nem esta cabe. As pastas que só dizem onde o código mora
-    /// saem do escopo em qualquer posição.
+    /// O título leva o resumo inteiro: o escopo, a última pasta comum dos
+    /// arquivos, só entra quando cabe ao lado dele, e o título sai sem escopo
+    /// quando não cabe. As pastas que só dizem onde o código mora saem do
+    /// escopo em qualquer posição.
     ///
     /// Em campo (23/10/2026) o título saiu `fix(rt/src/commands/flow/round):
     /// Título do commit sem o`: o `src` do meio ficou no escopo, e o escopo
@@ -310,11 +307,11 @@ mod tests {
         let summary = "Resumo medido sem o tipo e o escopo da frente";
         assert_eq!(summary.chars().count(), SUMMARY_MAX);
 
-        // A pasta comum inteira, sem o `src` do meio, enquanto o resumo cabe.
-        assert_eq!(made(&round, "Frase curta"), "feat(rt/commands/flow/round): Frase curta");
-        // O resumo do teto não cabe ao lado dela: vai a última pasta.
+        // O escopo é só a última pasta, não o caminho todo até ela.
+        assert_eq!(made(&round, "Frase curta"), "feat(round): Frase curta");
+        // O resumo do teto ainda cabe ao lado dele.
         assert_eq!(made(&round, summary), format!("feat(round): {summary}"));
-        // Nem a última pasta cabe: o título sai sem escopo, com o resumo inteiro.
+        // O escopo não cabe: o título sai sem escopo, com o resumo inteiro.
         let wide = ["src/camada_de_armazenamento/a.rs"];
         assert_eq!(made(&wide, summary), format!("feat: {summary}"));
     }
