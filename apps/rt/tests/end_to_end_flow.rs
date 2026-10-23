@@ -16,7 +16,7 @@
 //! Com o pull request aberto, a reabertura pedida pelo usuário o deixa fora de
 //! rascunho, e o merge pelo Mustard espera a spec fechar de novo. O `pr-open`
 //! seguinte refaz o corpo que segue igual ao gerado e deixa o que alguém
-//! editou no provedor.
+//! editou no provedor, e a rodada depois da reabertura também o deixa.
 //!
 //! O `pr-open` e a retomada da spec com o pull request aberto leem a esteira
 //! do provedor e dizem o que ela respondeu; e o corpo do pull request que
@@ -1283,6 +1283,42 @@ fn a_pull_request_body_someone_edited_stays_and_an_untouched_one_is_rewritten() 
     let body_kept = translate("pr.body_kept", Locale::PtBr).replace("{pr}", "7").replace("{reason}", "body-edited");
     assert!(warning.contains(&body_kept), "{warning}");
     assert_eq!((patches("-F body=@"), patches("-f title=")), (1, 2), "the edited body stays and the title follows: {:?}", project.gh_calls());
+}
+
+/// A rodada que refaz o corpo do pull request aberto deixa o que alguém
+/// editou no provedor. A obra fechada abre o pull request pelo `pr-open`,
+/// alguém acrescenta uma nota à descrição e o usuário reabre a spec; a rodada
+/// seguinte lê o corpo pelo `gh api -i`, não pede a edição dele, e a resposta
+/// traz o pull request com o corpo mantido e o aviso. A nota segue no
+/// provedor.
+#[test]
+fn an_edited_pull_request_body_is_kept_by_the_round_after_a_reopen() {
+    let project = Project::new();
+    let line = closed_with_one_wave(&project);
+    let argv: Vec<&str> = line.iter().map(String::as_str).collect();
+    executable::write_executable(&project.bin.join("gh"), STORED_BODY_GH);
+    let stored = project.remotes.join("pr7-body.md");
+    let opened = project.run(&argv);
+    assert_eq!((opened["action"].clone(), opened["number"].clone()), (json!("open"), json!(7)), "{opened}");
+
+    let generated = std::fs::read_to_string(&stored).expect("the provider keeps the body it got");
+    let (text, mark) = generated.rsplit_once("<!-- mustard-body:").expect("the generated body carries its mark");
+    let edited = format!("{text}Nota de quem revisa: conferir a saudação no terminal.\n\n<!-- mustard-body:{mark}");
+    std::fs::write(&stored, &edited).expect("the edit on the provider");
+    let reopened = project.run(&["reopen", "--spec", SPEC, "--reason", "Trocar a saudação de novo."]);
+    assert_eq!(reopened["phase"], json!("running"), "{reopened}");
+
+    let asked_before = project.gh_calls().len();
+    let round = project.run(&["round", "--dispatch", "--spec", SPEC]);
+    let body_kept = translate("pr.body_kept", Locale::PtBr).replace("{pr}", "7").replace("{reason}", "body-edited");
+    assert_eq!(round["pr"], json!({"number": 7, "body": "kept", "warning": body_kept}), "{round}");
+    let asked = project.gh_calls()[asked_before..].to_vec();
+    assert!(asked.iter().any(|call| call == "api -i repos/{owner}/{repo}/pulls/7"), "the round reads the body on the provider: {asked:?}");
+    assert!(
+        !asked.iter().any(|call| call.starts_with("api --method PATCH repos/{owner}/{repo}/pulls/7 -F body=@")),
+        "the round does not rewrite the edited body: {asked:?}"
+    );
+    assert_eq!(std::fs::read_to_string(&stored).unwrap(), edited, "the edit stays on the provider");
 }
 
 /// O `title` do objetivo dá nome ao pull request e à linha da spec no resumo
