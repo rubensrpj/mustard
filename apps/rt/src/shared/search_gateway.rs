@@ -697,6 +697,22 @@ mod tests {
         (Scan::located_from(Some(&tools.join("mustard-rt"))), log, release)
     }
 
+    /// O registro do scan de mentira de [`held_scan`] depois que a passada
+    /// pedida anotou o começo, ou em 10 s. A busca que responde no prazo pode
+    /// voltar antes de o processo do scan escrever a primeira linha: na
+    /// máquina carregada, ele demora a começar.
+    #[cfg(unix)]
+    fn log_once_started(log: &Path) -> String {
+        let started = std::time::Instant::now();
+        loop {
+            let calls = std::fs::read_to_string(log).unwrap_or_default();
+            if calls.starts_with("scan\n") || started.elapsed() > Duration::from_secs(10) {
+                return calls;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     /// A primeira busca numa pasta sem mapa não espera a leitura do projeto
     /// inteiro: responde no prazo, com o resultado da busca, e diz na saída de
     /// erro que o mapa segue em atualização; a passada continua depois dela.
@@ -716,7 +732,7 @@ mod tests {
         let started = std::time::Instant::now();
         let answer = answer_with(&project, &request, &scan, Duration::from_millis(300)).expect("the search answers");
         let waited = started.elapsed();
-        let calls = std::fs::read_to_string(&log).unwrap_or_default();
+        let calls = log_once_started(&log);
         std::fs::write(&release, "").unwrap();
 
         assert!(!calls.contains("finished"), "the answer came while the refresh was still running ({waited:?}): {calls}");
@@ -986,7 +1002,7 @@ mod tests {
         };
 
         let answer = answer_with(&project, &request, &scan, Duration::from_millis(300)).expect("the search answers");
-        let calls = std::fs::read_to_string(&log).unwrap_or_default();
+        let calls = log_once_started(&log);
         std::fs::write(&release, "").unwrap();
 
         assert_eq!(passes(&log), 1, "{calls}");

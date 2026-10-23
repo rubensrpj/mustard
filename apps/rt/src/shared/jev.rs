@@ -1793,12 +1793,14 @@ mod tests {
             })
         };
 
-        let started = Instant::now();
         let got = service.filter().filter(&asked).unwrap();
 
+        // Todos no ar ao mesmo tempo é a prova de que saíram juntos: um depois
+        // do outro, nunca haveria mais de um pedido no serviço. O relógio não
+        // entra: na máquina carregada, os pedidos juntos passam do tempo de
+        // dois em fila sem que nenhum espere o outro.
         assert!(got.usage.requests >= 2);
         assert_eq!(peak.load(Ordering::SeqCst) as u64, got.usage.requests, "every request was in flight together");
-        assert!(started.elapsed() < Duration::from_millis(500 * got.usage.requests), "one wait, not one after the other");
     }
 
     /// A resposta de cada pedido da lista grande: o que tem o candidato 3 diz

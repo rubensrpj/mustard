@@ -1779,8 +1779,11 @@ fn deliver_the_first_wave_changing(project: &Project, file: &str) {
 
 /// As passadas e as leituras da história que uma chamada trouxe, contadas
 /// desde o ponto `(passes, reads)` anterior a ela; a lista de leituras só
-/// vale depois de o processo em segundo plano parar de anotar.
+/// vale depois de o processo em segundo plano parar de anotar. A primeira
+/// leitura nova é esperada antes, por um tempo: na máquina carregada, o
+/// processo em segundo plano demora mais que a pausa da conferência a começar.
 fn since(project: &Project, before: &(usize, usize)) -> (Vec<String>, Vec<String>) {
+    project.history_reads_after_waiting(before.1 + 1);
     let reads = project.settled_history_reads();
     (project.scan_passes()[before.0..].to_vec(), reads[before.1..].to_vec())
 }

@@ -4,7 +4,8 @@
 //! ou com o serviço fora do ar, a chave fica sem conferência, e quem chama
 //! diz isso.
 
-use std::time::Duration;
+use std::io::ErrorKind;
+use std::time::{Duration, Instant};
 
 use mustard_core::domain::map_filter::FilterError;
 
@@ -46,13 +47,15 @@ fn models_url(endpoint: &str) -> String {
 /// Confere a chave `key` na lista de modelos do serviço em `endpoint`,
 /// esperando no máximo `limit`.
 pub(crate) fn check_key(key: &JevKey, endpoint: &str, limit: Duration) -> KeyCheck {
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_connect(Some(CONNECT_TIMEOUT.min(limit)))
-        .timeout_global(Some(limit))
-        .http_status_as_error(false)
-        .build()
-        .new_agent();
-    let sent = agent.get(models_url(endpoint)).header("Authorization", &format!("Bearer {}", key.0)).call();
+    let sent = past_interruptions(Instant::now() + limit, |left| {
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_connect(Some(CONNECT_TIMEOUT.min(left)))
+            .timeout_global(Some(left))
+            .http_status_as_error(false)
+            .build()
+            .new_agent();
+        agent.get(models_url(endpoint)).header("Authorization", &format!("Bearer {}", key.0)).call()
+    });
     match sent {
         Ok(response) if response.status().is_success() => KeyCheck::Verified,
         Ok(response) => match response.status().as_u16() {
@@ -64,9 +67,49 @@ pub(crate) fn check_key(key: &JevKey, endpoint: &str, limit: Duration) -> KeyChe
     }
 }
 
+/// `call` com o tempo que falta até `deadline`, de novo enquanto a leitura
+/// volta interrompida por um sinal do processo e o prazo não acabou. A
+/// interrupção não é falha da rede: no Linux, a leitura de um socket com
+/// prazo volta interrompida a cada sinal tratado ou a cada processo parado e
+/// retomado, mesmo com o pedido de recomeçar sozinho.
+fn past_interruptions<T>(deadline: Instant, mut call: impl FnMut(Duration) -> Result<T, ureq::Error>) -> Result<T, ureq::Error> {
+    let mut left = deadline.saturating_duration_since(Instant::now());
+    loop {
+        let result = call(left);
+        left = deadline.saturating_duration_since(Instant::now());
+        let interrupted = matches!(&result, Err(ureq::Error::Io(io)) if io.kind() == ErrorKind::Interrupted);
+        if !interrupted || left.is_zero() {
+            return result;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A leitura interrompida por um sinal sai de novo dentro do prazo, e a
+    /// resposta da segunda vez é a que vale; depois do prazo, a interrupção
+    /// volta como está, sem outra tentativa.
+    #[test]
+    fn an_interrupted_read_is_asked_again_only_within_the_wait() {
+        let interrupted = || ureq::Error::Io(std::io::Error::from(ErrorKind::Interrupted));
+        let mut calls = 0;
+        let answered = past_interruptions(Instant::now() + Duration::from_secs(5), |_| {
+            calls += 1;
+            if calls == 1 { Err(interrupted()) } else { Ok("models") }
+        });
+        assert_eq!(answered.ok(), Some("models"));
+        assert_eq!(calls, 2, "one interruption, one more call");
+
+        let mut late = 0;
+        let gave_up = past_interruptions(Instant::now(), |_| {
+            late += 1;
+            Err::<(), _>(interrupted())
+        });
+        assert!(matches!(gave_up, Err(ureq::Error::Io(io)) if io.kind() == ErrorKind::Interrupted));
+        assert_eq!(late, 1, "past the wait, the interruption is the answer");
+    }
 
     #[test]
     fn the_models_list_sits_beside_the_question_endpoint() {
