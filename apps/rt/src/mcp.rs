@@ -8,17 +8,17 @@ fn error(id: Value, code: i32, message: &str) -> Value {
     json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}})
 }
 
-/// A sessão da conversa que fez a chamada `params`, dita no `_meta` dela: o
-/// turno que o Codex manda (`x-codex-turn-metadata`, objeto ou texto JSON, com
-/// `thread_id`, que é a `CODEX_THREAD_ID` dos comandos dele, ou `session_id`)
-/// ou um `session_id` solto. O `_meta` vale mais que o ambiente do servidor,
-/// que é o de quem o subiu e fica velho depois do `/clear`; sem ele, vale o
-/// ambiente, e sem os dois a chamada não tem sessão.
+/// A sessão da conversa que fez a chamada `params`, dita no `_meta` dela. O
+/// Codex 0.160.1 manda em toda `tools/call` o turno em `x-codex-turn-metadata`
+/// (um objeto, com `thread_id`, que é a `CODEX_THREAD_ID` dos comandos dele, e
+/// `session_id`) e os mesmos ids soltos em `threadId` e `sessionId`; o
+/// servidor que ele sobe não recebe a `CODEX_THREAD_ID`. O `_meta` vale mais
+/// que o ambiente do servidor, que é o de quem o subiu e fica velho depois do
+/// `/clear`; sem ele, vale o ambiente, e sem os dois a chamada não tem sessão.
 fn call_session(params: &Value) -> Option<String> {
     let meta = &params["_meta"];
     let turn = &meta["x-codex-turn-metadata"];
-    let turn = turn.as_str().and_then(|text| serde_json::from_str::<Value>(text).ok()).unwrap_or_else(|| turn.clone());
-    [&turn["thread_id"], &turn["session_id"], &meta["session_id"]]
+    [&turn["thread_id"], &turn["session_id"], &meta["threadId"], &meta["sessionId"]]
         .into_iter()
         .filter_map(Value::as_str)
         .map(str::trim)
@@ -100,19 +100,34 @@ pub(crate) fn run(root: &Path) {
 mod tests {
     use super::*;
 
-    /// A sessão da chamada sai do `_meta`: o turno do Codex, em objeto ou em
-    /// texto JSON, vale pelo `thread_id` e, sem ele, pelo `session_id`; o
-    /// `session_id` solto vale por último; vazio, ausente ou de outro tipo não
-    /// é sessão (e, nos testes, o ambiente não responde por ninguém).
+    /// A chamada que o `codex` 0.160.1 desta máquina mandou a um servidor MCP
+    /// de teste (`codex exec`, ferramenta `ping`), como chegou ao servidor.
+    const CODEX_CALL: &str = include_str!("../tests/fixtures/codex-tools-call.json");
+    const CODEX_THREAD: &str = "01a16614-52a7-73e3-a596-56c652948934";
+
+    /// A sessão da chamada sai do `_meta` que o Codex manda: o turno vale pelo
+    /// `thread_id` e, sem ele, pelo `session_id`; sem o turno, valem os ids
+    /// soltos, `threadId` e depois `sessionId`. Vazio, ausente ou de outro tipo
+    /// não é sessão (e, nos testes, o ambiente não responde por ninguém).
     #[test]
-    fn the_session_of_a_call_comes_from_its_meta() {
-        let turn = json!({"session_id": "raiz", "thread_id": "conversa", "turn_id": "t"});
+    fn the_session_of_a_call_comes_from_the_meta_codex_sends() {
+        let call: Value = serde_json::from_str(CODEX_CALL).unwrap();
+        let meta = call["params"]["_meta"].clone();
+        assert_eq!(call_session(&call["params"]).as_deref(), Some(CODEX_THREAD), "a chamada como o Codex a mandou");
+
+        let mut loose = meta.clone();
+        loose.as_object_mut().unwrap().remove("x-codex-turn-metadata");
+        assert_eq!(call_session(&json!({"_meta": loose})).as_deref(), Some(CODEX_THREAD), "sem o turno, os ids soltos");
+
+        // Nas chamadas vistas a conversa e a sessão têm o mesmo id; a ordem
+        // abaixo é a da regra, não a de uma chamada vista.
         let call = |meta: Value| call_session(&json!({"name": "search", "_meta": meta}));
-        assert_eq!(call(json!({"x-codex-turn-metadata": turn, "session_id": "solta"})).as_deref(), Some("conversa"));
-        assert_eq!(call(json!({"x-codex-turn-metadata": turn.to_string()})).as_deref(), Some("conversa"));
+        let turn = json!({"session_id": "raiz", "thread_id": "conversa"});
+        assert_eq!(call(json!({"x-codex-turn-metadata": turn, "threadId": "solta"})).as_deref(), Some("conversa"));
         assert_eq!(call(json!({"x-codex-turn-metadata": {"session_id": " raiz ", "thread_id": " "}})).as_deref(), Some("raiz"));
-        assert_eq!(call(json!({"session_id": "solta"})).as_deref(), Some("solta"));
-        for none in [json!({}), json!({"session_id": ""}), json!({"session_id": 7}), json!({"x-codex-turn-metadata": "não é json"})] {
+        assert_eq!(call(json!({"threadId": "solta", "sessionId": "outra"})).as_deref(), Some("solta"));
+        assert_eq!(call(json!({"sessionId": "outra"})).as_deref(), Some("outra"));
+        for none in [json!({}), json!({"threadId": ""}), json!({"sessionId": 7}), json!({"x-codex-turn-metadata": "não é objeto"})] {
             assert_eq!(call(none.clone()), None, "{none}");
         }
         assert_eq!(call_session(&json!({"name": "search"})), None);

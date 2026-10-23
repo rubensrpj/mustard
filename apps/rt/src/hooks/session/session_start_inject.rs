@@ -1266,6 +1266,19 @@ mod tests {
         assert!(old.exists(), "the notice only reads");
     }
 
+    /// O limite com que o gancho de início compara o total das pastas antigas é
+    /// o do ambiente desta máquina (`ScratchRoots::from_env`), com ou sem
+    /// sessão na entrada: o gancho troca a sessão e a compilação compartilhada,
+    /// nunca o limite que o `clean` mostra e o usuário ajusta.
+    #[test]
+    fn the_hook_disk_limit_is_the_one_of_the_environment() {
+        let environment = ScratchRoots::from_env().warn_bytes;
+        let without_session = HookInput { hook_event_name: Some("SessionStart".to_string()), ..HookInput::default() };
+        for input in [session_input("s-limit", "startup"), session_input("s-limit", "clear"), without_session] {
+            assert_eq!(scratch_roots(&input).warn_bytes, environment, "{:?}", input.session_id);
+        }
+    }
+
     /// A versão velha do Mustard fala por um dos três lados, e cala quando
     /// nada se prova: a gravada no projeto, o plugin carregado atrás do
     /// instalado e o plugin instalado atrás do binário.

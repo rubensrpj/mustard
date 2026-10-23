@@ -1307,6 +1307,14 @@ fn the_conversation_opened_at_the_root_records_from_a_subfolder() {
     assert!(!project.root.join("fora").exists(), "a session named outside the sessions folder writes nothing out there");
 }
 
+/// O `_meta` da chamada que o Codex manda a um servidor MCP: a captura do
+/// `codex` 0.160.1 (`fixtures/codex-tools-call.json`), com os ids da conversa
+/// trocados por `session`.
+fn codex_meta(session: &str) -> Value {
+    let call: Value = serde_json::from_str(&include_str!("fixtures/codex-tools-call.json").replace("01a16614-52a7-73e3-a596-56c652948934", session)).unwrap();
+    call["params"]["_meta"].clone()
+}
+
 /// Uma busca pelo servidor `mustard-rt mcp` do projeto, rodado sem pasta de
 /// sessão no ambiente a menos que `env_session` a dê: `initialize` e depois o
 /// `tools/call`, com `meta` no `_meta` da chamada quando há. Devolve a
@@ -1336,8 +1344,8 @@ fn mcp_search(project: &Project, env_session: Option<&str>, meta: Option<Value>)
 
 /// A busca que a conversa faz pelo servidor `mustard-rt mcp` conta nas
 /// operações da spec a que a sessão dela está ligada, venha a sessão pelo
-/// `_meta` da chamada, pelo turno que o Codex manda ou pelo ambiente de quem
-/// subiu o servidor. O `_meta` vale mais que o ambiente, que fica velho
+/// `_meta` que o Codex manda, só pelo turno dele ou pelo ambiente de quem subiu
+/// o servidor. O `_meta` vale mais que o ambiente, que fica velho
 /// depois do `/clear`; a chamada sem sessão, ou de sessão sem ligação, não
 /// entra na spec de ninguém.
 #[test]
@@ -1349,9 +1357,9 @@ fn the_mcp_search_server_counts_its_calls_in_the_spec_of_the_conversation() {
     };
     assert!(searches().is_empty(), "a spec recém-aberta não tem busca");
 
-    mcp_search(&project, None, Some(json!({"session_id": SESSION})));
+    mcp_search(&project, None, Some(codex_meta(SESSION)));
     let counted = searches();
-    assert_eq!(counted.len(), 1, "a sessão dita no _meta da chamada conta na spec");
+    assert_eq!(counted.len(), 1, "a sessão dita no _meta que o Codex manda conta na spec");
     assert_eq!(counted[0].str_field("session"), Some(SESSION), "a chamada leva a sessão que a gravou");
 
     mcp_search(&project, None, Some(json!({"x-codex-turn-metadata": {"session_id": "s-raiz", "thread_id": SESSION, "turn_id": "t1"}})));
@@ -1363,7 +1371,7 @@ fn the_mcp_search_server_counts_its_calls_in_the_spec_of_the_conversation() {
     mcp_search(&project, Some(SESSION), None);
     assert_eq!(searches().len(), 3, "a sessão do ambiente do servidor segue valendo");
 
-    mcp_search(&project, Some(SESSION), Some(json!({"session_id": "s-outra"})));
+    mcp_search(&project, Some(SESSION), Some(codex_meta("s-outra")));
     assert_eq!(searches().len(), 3, "o _meta vale mais que o ambiente: a sessão sem ligação não grava na spec da outra");
 }
 
