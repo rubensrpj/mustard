@@ -296,11 +296,10 @@ impl JevFilter {
             let started = Instant::now();
             let mut status = None;
             let mut wait = Duration::ZERO;
-            // A leitura que um sinal do processo interrompeu não é falha do
-            // serviço: o pedido sai de novo na hora, dentro do mesmo prazo.
+            // A leitura interrompida dentro do prazo sai de novo na hora.
             let interrupted = std::cell::Cell::new(false);
             let failed = |error: ureq::Error| {
-                interrupted.set(interrupted.get() || matches!(&error, ureq::Error::Io(io) if io.kind() == ErrorKind::Interrupted));
+                interrupted.set(interrupted.get() || interrupted_in_time(&error, deadline));
                 transport_error(error)
             };
             let result = (|| {
@@ -524,6 +523,15 @@ fn transport_error(error: ureq::Error) -> FilterError {
         ureq::Error::Io(io) if io.kind() == ErrorKind::TimedOut => FilterError::Timeout,
         other => FilterError::Network(other.to_string()),
     }
+}
+
+/// Se a tentativa que falhou com `error` sai de novo na hora: a leitura que um
+/// sinal do processo interrompeu não é falha da rede nem do serviço, e o pedido
+/// se refaz enquanto `deadline` não passou. No Linux, a leitura de um socket
+/// com prazo volta interrompida a cada sinal tratado ou a cada processo parado
+/// e retomado, mesmo com o pedido de recomeçar sozinho.
+fn interrupted_in_time(error: &ureq::Error, deadline: Instant) -> bool {
+    matches!(error, ureq::Error::Io(io) if io.kind() == ErrorKind::Interrupted) && Instant::now() < deadline
 }
 
 /// O excesso de pedidos (429), a sobrecarga (529) e a falha do serviço (5xx)

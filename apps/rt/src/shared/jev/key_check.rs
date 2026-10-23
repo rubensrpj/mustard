@@ -4,12 +4,11 @@
 //! ou com o serviço fora do ar, a chave fica sem conferência, e quem chama
 //! diz isso.
 
-use std::io::ErrorKind;
 use std::time::{Duration, Instant};
 
 use mustard_core::domain::map_filter::FilterError;
 
-use super::{CONNECT_TIMEOUT, JEV_URL, JevKey, URL_ENV, transport_error};
+use super::{CONNECT_TIMEOUT, JEV_URL, JevKey, URL_ENV, interrupted_in_time, transport_error};
 
 /// O que o serviço disse da chave.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,14 +46,19 @@ fn models_url(endpoint: &str) -> String {
 /// Confere a chave `key` na lista de modelos do serviço em `endpoint`,
 /// esperando no máximo `limit`.
 pub(crate) fn check_key(key: &JevKey, endpoint: &str, limit: Duration) -> KeyCheck {
+    check_key_through(key, endpoint, limit, ureq::Agent::new_with_config)
+}
+
+/// [`check_key`] com o agente que `agent` monta da configuração de cada
+/// tentativa.
+fn check_key_through(key: &JevKey, endpoint: &str, limit: Duration, agent: impl Fn(ureq::config::Config) -> ureq::Agent) -> KeyCheck {
     let sent = past_interruptions(Instant::now() + limit, |left| {
-        let agent: ureq::Agent = ureq::Agent::config_builder()
+        let config = ureq::Agent::config_builder()
             .timeout_connect(Some(CONNECT_TIMEOUT.min(left)))
             .timeout_global(Some(left))
             .http_status_as_error(false)
-            .build()
-            .new_agent();
-        agent.get(models_url(endpoint)).header("Authorization", &format!("Bearer {}", key.0)).call()
+            .build();
+        agent(config).get(models_url(endpoint)).header("Authorization", &format!("Bearer {}", key.0)).call()
     });
     match sent {
         Ok(response) if response.status().is_success() => KeyCheck::Verified,
@@ -68,17 +72,11 @@ pub(crate) fn check_key(key: &JevKey, endpoint: &str, limit: Duration) -> KeyChe
 }
 
 /// `call` com o tempo que falta até `deadline`, de novo enquanto a leitura
-/// volta interrompida por um sinal do processo e o prazo não acabou. A
-/// interrupção não é falha da rede: no Linux, a leitura de um socket com
-/// prazo volta interrompida a cada sinal tratado ou a cada processo parado e
-/// retomado, mesmo com o pedido de recomeçar sozinho.
+/// volta interrompida dentro do prazo ([`interrupted_in_time`]).
 fn past_interruptions<T>(deadline: Instant, mut call: impl FnMut(Duration) -> Result<T, ureq::Error>) -> Result<T, ureq::Error> {
-    let mut left = deadline.saturating_duration_since(Instant::now());
     loop {
-        let result = call(left);
-        left = deadline.saturating_duration_since(Instant::now());
-        let interrupted = matches!(&result, Err(ureq::Error::Io(io)) if io.kind() == ErrorKind::Interrupted);
-        if !interrupted || left.is_zero() {
+        let result = call(deadline.saturating_duration_since(Instant::now()));
+        if !matches!(&result, Err(error) if interrupted_in_time(error, deadline)) {
             return result;
         }
     }
@@ -87,6 +85,90 @@ fn past_interruptions<T>(deadline: Instant, mut call: impl FnMut(Duration) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{BufRead, BufReader, ErrorKind, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use ureq::unversioned::resolver::DefaultResolver;
+    use ureq::unversioned::transport::{Buffers, ConnectionDetails, Connector, DefaultConnector, NextTimeout, Transport};
+
+    /// A conexão de verdade cuja leitura da resposta volta interrompida
+    /// enquanto `left` não chegou a zero, com o mesmo erro que a conexão TCP
+    /// do `ureq` devolve quando um sinal interrompe a leitura do socket.
+    #[derive(Debug)]
+    struct InterruptedRead {
+        inner: Box<dyn Transport>,
+        left: Arc<AtomicUsize>,
+    }
+
+    impl Transport for InterruptedRead {
+        fn buffers(&mut self) -> &mut dyn Buffers {
+            self.inner.buffers()
+        }
+
+        fn transmit_output(&mut self, amount: usize, timeout: NextTimeout) -> Result<(), ureq::Error> {
+            self.inner.transmit_output(amount, timeout)
+        }
+
+        fn await_input(&mut self, timeout: NextTimeout) -> Result<bool, ureq::Error> {
+            if self.left.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| left.checked_sub(1)).is_ok() {
+                return Err(std::io::Error::from(ErrorKind::Interrupted).into());
+            }
+            self.inner.await_input(timeout)
+        }
+
+        fn is_open(&mut self) -> bool {
+            self.inner.is_open()
+        }
+    }
+
+    /// Põe [`InterruptedRead`] sobre a conexão que o conector padrão abriu.
+    #[derive(Debug)]
+    struct Interrupting(Arc<AtomicUsize>);
+
+    impl Connector<Box<dyn Transport>> for Interrupting {
+        type Out = InterruptedRead;
+
+        fn connect(&self, _: &ConnectionDetails, chained: Option<Box<dyn Transport>>) -> Result<Option<InterruptedRead>, ureq::Error> {
+            Ok(chained.map(|inner| InterruptedRead { inner, left: Arc::clone(&self.0) }))
+        }
+    }
+
+    /// Um serviço em 127.0.0.1 que lista os modelos a todo pedido e conta as
+    /// linhas de pedido que chegaram.
+    fn models_service() -> (String, Arc<Mutex<Vec<String>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/v1/systemone", listener.local_addr().unwrap());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = Arc::clone(&seen);
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let mut lines = BufReader::new(&stream).lines().map_while(Result::ok);
+                let Some(request) = lines.next() else { continue };
+                lines.take_while(|line| !line.is_empty()).for_each(drop);
+                log.lock().unwrap().push(request);
+                let body = r#"{"data":[]}"#;
+                let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+            }
+        });
+        (url, seen)
+    }
+
+    /// A conferência da chave cuja leitura da lista de modelos volta
+    /// interrompida pede a lista de novo, e a chave fica conferida pela
+    /// segunda resposta; sem o pedido de novo, a interrupção virava falha da
+    /// rede e a chave ficava sem conferência.
+    #[test]
+    fn the_key_check_asks_again_when_the_models_read_is_interrupted() {
+        let (url, seen) = models_service();
+        let left = Arc::new(AtomicUsize::new(1));
+        let checked = check_key_through(&JevKey("sk-test".into()), &url, Duration::from_secs(5), |config| {
+            ureq::Agent::with_parts(config, DefaultConnector::default().chain(Interrupting(Arc::clone(&left))), DefaultResolver::default())
+        });
+        assert_eq!(checked, KeyCheck::Verified);
+        assert_eq!(left.load(Ordering::SeqCst), 0, "the first read was interrupted");
+        assert_eq!(*seen.lock().unwrap(), ["GET /v1/models HTTP/1.1"; 2], "the list was asked twice");
+    }
 
     /// A leitura interrompida por um sinal sai de novo dentro do prazo, e a
     /// resposta da segunda vez é a que vale; depois do prazo, a interrupção
