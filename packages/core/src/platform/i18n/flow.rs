@@ -2183,6 +2183,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              still equal to the last one it generated, and the edit of whoever changed it stays. For \
              Mustard to rewrite it again, clear the description on the provider."
         }
+        // O corpo do pull request aberto que ficou como estava porque não traz
+        // a marca do corpo gerado: é de um pull request aberto antes dela.
+        ("pr.body_unmarked", Locale::PtBr) => {
+            "O corpo do pull request #{pr} ficou como estava ({reason}). Ele é de antes da marca que o \
+             Mustard põe no fim do corpo que gera. Sem essa marca, não há como saber se alguém o \
+             editou. Para o Mustard voltar a refazê-lo, apague a descrição no provedor."
+        }
+        ("pr.body_unmarked", Locale::EnUs) => {
+            "The body of pull request #{pr} stayed as it was ({reason}). It predates the mark Mustard \
+             puts at the end of the body it generates. Without that mark, there is no telling whether \
+             someone edited it. For Mustard to rewrite it again, clear the description on the provider."
+        }
         // A esteira do pull request lida depois de abri-lo e na retomada da
         // spec com ele aberto, uma frase por resposta do provedor.
         ("pr.checks.passed", Locale::PtBr) => {
@@ -2604,7 +2616,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 378, 0x8053_954f_6034_6ad0);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 379, 0x9115_43e2_68e6_f67d);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
@@ -2779,6 +2791,7 @@ mod tests {
             ("pr.merge_provider_refused", &[][..]),
             ("pr.promotion_merged", &["{head}"][..]),
             ("pr.body_kept", &["{pr}", "{reason}"][..]),
+            ("pr.body_unmarked", &["{pr}", "{reason}"][..]),
             ("pr.checks.passed", &["{pr}"][..]),
             ("pr.checks.running", &["{pr}"][..]),
             ("pr.checks.failed", &["{pr}"][..]),

@@ -74,7 +74,7 @@ use mustard_core::domain::spec_events::pr_message;
 use mustard_core::platform::i18n::translate;
 
 use crate::commands::git_settle::{bump_pointers, submodule_base, submodule_tip_landed, unit_submodules};
-use crate::commands::review::pr_body::{kept_reason, marked};
+use crate::commands::review::pr_body::{BODY_UNMARKED, kept_reason, marked};
 use crate::commands::review::pr_checks::{self, ChecksSaid};
 use crate::commands::review::pr_door::project_root;
 use crate::shared::branch_state::PrStatus;
@@ -306,9 +306,12 @@ pub(crate) fn rewrite_body(provider: &dyn PrProvider, head: &str, body: &str) ->
     provider.edit_body(view.number, &marked(body)).ok().map(|()| BodyRewrite::Rewritten(view.number))
 }
 
-/// O aviso do corpo que ficou como estava, no idioma `lang`.
+/// O aviso do corpo que ficou como estava, no idioma `lang`: o do corpo sem a
+/// marca diz que ele é de antes dela; o de qualquer outro motivo, que alguém o
+/// editou ou que o provedor não deixou lê-lo.
 pub(crate) fn body_kept_warning(number: u64, reason: &str, lang: mustard_core::platform::i18n::Locale) -> String {
-    translate("pr.body_kept", lang).replace("{pr}", &number.to_string()).replace("{reason}", reason)
+    let key = if reason == BODY_UNMARKED { "pr.body_unmarked" } else { "pr.body_kept" };
+    translate(key, lang).replace("{pr}", &number.to_string()).replace("{reason}", reason)
 }
 
 // ---------------------------------------------------------------------------

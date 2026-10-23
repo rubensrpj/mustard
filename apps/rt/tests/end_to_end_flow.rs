@@ -1134,19 +1134,14 @@ exit 1
 "#;
 
 /// O `gh` falso de um pull request que nasce no `pr create`, o 7: anota cada
-/// chamada e guarda em `created-body` o corpo com que ele foi criado. Depois
-/// de criado, responde a consulta dele aberto, as verificações com o que o
-/// teste deixa em `checks` e a leitura `api -i` com a resposta que o teste
-/// deixa em `pr-7.http`; e aceita a troca de um campo.
+/// chamada e, depois de criado, responde a consulta dele aberto e as
+/// verificações com o que o teste deixa em `checks`. Qualquer outro pedido
+/// falha, e fica anotado do mesmo jeito.
 const OPENED_PR_GH: &str = r#"#!/bin/sh
 echo "$*" >> "$GH_LOG"
 case "$1 $2" in
 "pr create")
   touch "$GH_STATE/open"
-  while [ $# -gt 0 ]; do
-    [ "$1" = "--body-file" ] && cp "$2" "$GH_STATE/created-body"
-    shift
-  done
   echo 'https://github.com/exemplo/projeto/pull/7'
   exit 0 ;;
 "pr view")
@@ -1154,8 +1149,6 @@ case "$1 $2" in
   case "$*" in *statusCheckRollup*) cat "$GH_STATE/checks"; exit $? ;; esac
   echo '{"number":7,"title":"t","state":"OPEN","headRefName":"feature/ponta","baseRefName":"dev","isDraft":false,"url":"https://github.com/exemplo/projeto/pull/7"}'
   exit 0 ;;
-"api -i") cat "$GH_STATE/pr-7.http"; exit $? ;;
-"api --method") exit 0 ;;
 esac
 exit 1
 "#;
@@ -1204,13 +1197,52 @@ fn a_pull_request_body_edited_on_the_provider_is_kept_by_the_next_pr_open() {
         "{kept}"
     );
     let warning = kept["warning"].as_str().unwrap_or_default();
-    assert!(warning.contains("#7") && warning.contains("body-edited"), "{warning}");
+    let body_kept = translate("pr.body_kept", Locale::PtBr).replace("{pr}", "7").replace("{reason}", "body-edited");
+    assert!(warning.contains(&body_kept), "{warning}");
     let asked = project.gh_calls()[asked_before..].to_vec();
     assert!(asked.iter().any(|call| call == body_read), "the body is read before anything is written: {asked:?}");
     assert!(!asked.iter().any(|call| call.starts_with(body_edit)), "the edited body is not rewritten: {asked:?}");
     assert!(asked.iter().any(|call| call.starts_with(title_edit)), "the title still follows the spec: {asked:?}");
     assert_eq!(std::fs::read_to_string(&stored).unwrap(), edited, "the edit stays on the provider");
     assert_eq!(State::from_log(&project.log()).phase, Some("pr_open"), "{kept}");
+}
+
+/// O corpo sem a marca, de um pull request aberto antes de o Mustard marcar o
+/// corpo que gera, fica com um motivo próprio. A obra fechada abre o pull
+/// request; a descrição no provedor passa a ser uma sem a marca, e o
+/// `pr-open` seguinte lê o corpo, não pede a edição dele — só a do título —,
+/// responde `bodyKept` com `body-unmarked` e o aviso desse motivo, e a
+/// descrição segue no provedor.
+#[test]
+fn a_pull_request_body_without_the_mark_is_kept_with_its_own_reason() {
+    let project = Project::new();
+    let line = closed_with_one_wave(&project);
+    let argv: Vec<&str> = line.iter().map(String::as_str).collect();
+    executable::write_executable(&project.bin.join("gh"), STORED_BODY_GH);
+    let stored = project.remotes.join("pr7-body.md");
+    let opened = project.run(&argv);
+    assert_eq!((opened["action"].clone(), opened["number"].clone()), (json!("open"), json!(7)), "{opened}");
+    let unmarked = "## Objetivo\n\nTrocar a saudação do programa.\n";
+    std::fs::write(&stored, unmarked).expect("a description without the mark on the provider");
+
+    let asked_before = project.gh_calls().len();
+    let kept = project.run(&argv);
+    assert_eq!(
+        (kept["action"].clone(), kept["number"].clone(), kept["bodyKept"].clone()),
+        (json!("edit"), json!(7), json!("body-unmarked")),
+        "{kept}"
+    );
+    let warning = kept["warning"].as_str().unwrap_or_default();
+    let said = translate("pr.body_unmarked", Locale::PtBr).replace("{pr}", "7").replace("{reason}", "body-unmarked");
+    assert!(warning.contains(&said), "{warning}");
+    let asked = project.gh_calls()[asked_before..].to_vec();
+    assert!(asked.iter().any(|call| call == "api -i repos/{owner}/{repo}/pulls/7"), "the body is read: {asked:?}");
+    assert!(
+        !asked.iter().any(|call| call.starts_with("api --method PATCH repos/{owner}/{repo}/pulls/7 -F body=@")),
+        "the unmarked body is not rewritten: {asked:?}"
+    );
+    assert!(asked.iter().any(|call| call.starts_with("api --method PATCH repos/{owner}/{repo}/pulls/7 -f title=")), "{asked:?}");
+    assert_eq!(std::fs::read_to_string(&stored).unwrap(), unmarked, "the description stays on the provider");
 }
 
 /// A esteira do pull request aparece na resposta do `pr-open` e na retomada
@@ -1245,44 +1277,6 @@ fn the_pipeline_of_the_pull_request_is_read_after_the_open_and_on_resume() {
     pipeline("COMPLETED", "SUCCESS");
     let green = project.run(&["resume", "--spec", SPEC]);
     assert_eq!(green["checks"], json!({"state": "passed", "text": said("pr.checks.passed")}), "{green}");
-}
-
-/// O corpo do pull request aberto, pelo binário e pelo `gh api -i` que o
-/// provedor responde: o que segue igual ao que o Mustard gerou na criação é
-/// refeito no `pr-open` seguinte; o que alguém editou fica, a resposta traz
-/// `bodyKept` e o aviso, e só o título é trocado.
-#[test]
-fn a_pull_request_body_someone_edited_stays_and_an_untouched_one_is_rewritten() {
-    let project = Project::new();
-    executable::write_executable(&project.bin.join("gh"), OPENED_PR_GH);
-    std::fs::write(project.remotes.join("checks"), r#"{"statusCheckRollup":[]}"#).expect("the checks");
-    let line = closed_with_one_wave(&project);
-    let argv: Vec<&str> = line.iter().map(String::as_str).collect();
-    let opened = project.run(&argv);
-    assert_eq!(opened["action"], json!("open"), "{opened}");
-    let generated = std::fs::read_to_string(project.remotes.join("created-body")).expect("the body of the creation");
-    let serve = |body: &str| {
-        let answer = format!("HTTP/2.0 200 OK\r\nEtag: \"e1\"\r\n\r\n{}", json!({"title": "t", "body": body}));
-        std::fs::write(project.remotes.join("pr-7.http"), answer).expect("the answer of the provider");
-    };
-    let patches = |field: &str| {
-        project.gh_calls().iter().filter(|call| call.starts_with("api --method PATCH repos/{owner}/{repo}/pulls/7 ") && call.contains(field)).count()
-    };
-
-    serve(&generated);
-    let rewritten = project.run(&argv);
-    assert_eq!(rewritten["action"], json!("edit"), "{rewritten}");
-    assert!(rewritten.get("bodyKept").is_none(), "{rewritten}");
-    assert_eq!((patches("-F body=@"), patches("-f title=")), (1, 1), "{:?}", project.gh_calls());
-
-    serve(&format!("Nota de quem revisou.\n\n{generated}"));
-    let kept = project.run(&argv);
-    assert_eq!(kept["action"], json!("edit"), "{kept}");
-    assert_eq!(kept["bodyKept"], json!("body-edited"), "{kept}");
-    let warning = kept["warning"].as_str().unwrap_or_default();
-    let body_kept = translate("pr.body_kept", Locale::PtBr).replace("{pr}", "7").replace("{reason}", "body-edited");
-    assert!(warning.contains(&body_kept), "{warning}");
-    assert_eq!((patches("-F body=@"), patches("-f title=")), (1, 2), "the edited body stays and the title follows: {:?}", project.gh_calls());
 }
 
 /// A rodada que refaz o corpo do pull request aberto deixa o que alguém
