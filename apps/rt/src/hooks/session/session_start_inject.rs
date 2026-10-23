@@ -88,7 +88,7 @@ use mustard_core::platform::i18n::{Locale, translate};
 use std::path::Path;
 
 use crate::commands::event::pending::PendingCount;
-use crate::commands::maint::scratch_gc::{ScratchRoots, human_bytes, process_var, survey};
+use crate::commands::maint::scratch_gc::{ScratchRoots, human_bytes, survey};
 use crate::commands::review::pr_door::{MergedElsewhere, NOT_DELIVERED, merged_elsewhere, merged_outside};
 use crate::hooks::session::injectables;
 use crate::shared::branch_state::merged_by_another;
@@ -185,7 +185,7 @@ impl Check for SessionStartInject {
     /// programa compilado da branch — e entrega a leitura
     /// a [`session_start_core`], que decide.
     fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error> {
-        let scratch = scratch_roots(input, process_var);
+        let scratch = scratch_roots(input, ScratchRoots::from_env());
         let build = (ctx.trigger == Some(Trigger::SessionStart)).then(|| development_build(Path::new(&ctx.project_dir_or_cwd(input)))).flatten();
         session_start_core(
             input,
@@ -688,12 +688,12 @@ fn plugin_behind(running: &str, plugin: Option<&str>, lang: Locale) -> Option<St
     Some(translate("session.version.behind", lang).replace("{running}", running).replace("{plugin}", plugin))
 }
 
-/// As raízes desta máquina para o aviso de disco, e o limite dele, que `var`
-/// lê do ambiente, como o `clean` lê. A pasta da sessão que está abrindo
-/// nunca conta como sobra, e a compilação compartilhada fica fora: medi-la
-/// seria mais uma passada pela árvore inteira em todo início de sessão.
-fn scratch_roots(input: &HookInput, var: impl Fn(&str) -> Option<String>) -> ScratchRoots {
-    let mut roots = ScratchRoots::from_vars(var);
+/// As raízes do aviso de disco: as `roots` que o `clean` monta, com o limite
+/// que ele lê do ambiente e mostra, ajustadas ao início da sessão. A pasta da
+/// sessão que está abrindo nunca conta como sobra, e a compilação
+/// compartilhada fica fora: medi-la seria mais uma passada pela árvore inteira
+/// em todo início de sessão. O limite fica o que veio.
+fn scratch_roots(input: &HookInput, mut roots: ScratchRoots) -> ScratchRoots {
     if let Some(session) = session_of(input) {
         roots.current_session = session;
     }
@@ -1277,8 +1277,8 @@ mod tests {
         let simulated = |key: &str| (key == "MUSTARD_SCRATCH_WARN_BYTES").then(|| "2048".to_string());
         let without_session = HookInput { hook_event_name: Some("SessionStart".to_string()), ..HookInput::default() };
         for input in [session_input("s-limit", "startup"), session_input("s-limit", "clear"), without_session] {
-            assert_eq!(scratch_roots(&input, simulated).warn_bytes, 2048, "{:?}", input.session_id);
-            assert_eq!(scratch_roots(&input, |_| None).warn_bytes, DEFAULT_WARN_BYTES, "{:?}", input.session_id);
+            assert_eq!(scratch_roots(&input, ScratchRoots::from_vars(simulated)).warn_bytes, 2048, "{:?}", input.session_id);
+            assert_eq!(scratch_roots(&input, ScratchRoots::from_vars(|_| None)).warn_bytes, DEFAULT_WARN_BYTES, "{:?}", input.session_id);
         }
     }
 

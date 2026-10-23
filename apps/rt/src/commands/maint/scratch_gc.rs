@@ -364,9 +364,11 @@ fn is_real_dir(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_dir())
 }
 
-/// O valor de `key` no ambiente deste processo: o leitor único que a limpeza
-/// e o gancho de início dão a [`ScratchRoots::from_vars`].
-pub(crate) fn process_var(key: &str) -> Option<String> {
+/// O valor de `key` no ambiente deste processo: o leitor único, que só
+/// [`ScratchRoots::from_env`] dá a [`ScratchRoots::from_vars`]. A limpeza, o
+/// diagnóstico e o gancho de início montam as raízes por ele, e o limite que a
+/// limpeza mostra é o mesmo com que o gancho compara as sobras.
+fn process_var(key: &str) -> Option<String> {
     std::env::var(key).ok()
 }
 
