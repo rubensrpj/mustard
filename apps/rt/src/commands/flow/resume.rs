@@ -215,7 +215,8 @@ fn since_last_message(root: &Path, spec: &str, log: &SpecLog) -> Value {
         })
         .collect();
 
-    let returns: Vec<&SpecEvent> = log.unassumed_returns().into_iter().filter(|e| e.event_type == "delivered").collect();
+    // As voltas à espera são as que a rodada assume, pela mesma leitura.
+    let returns = log.returns_awaiting_round();
     let returned: BTreeSet<u64> = returns.iter().filter_map(|e| e.wave()).collect();
     let awaiting: Vec<Value> = returns
         .iter()
@@ -350,8 +351,7 @@ pub(crate) fn resume_block(spec: &str, log: &SpecLog, observed: &[SpecEvent], la
     // As mesmas contas da barra de status e do painel.
     let states = crate::commands::panel::progress::wave_states(log);
     let delivered = states.values().filter(|state| state.finished()).count();
-    let returns: Vec<_> =
-        log.unassumed_returns().into_iter().filter(|e| e.event_type == "delivered").collect();
+    let returns = log.returns_awaiting_round();
     let returned: BTreeSet<u64> = returns.iter().filter_map(|e| e.wave()).collect();
     let running: BTreeSet<u64> =
         waves_in_progress(log).into_keys().filter(|n| !returned.contains(n)).collect();

@@ -36,6 +36,7 @@
 //! caminhos públicos continuam os mesmos.
 
 mod against;
+mod awaiting;
 mod check;
 mod codes;
 mod line;

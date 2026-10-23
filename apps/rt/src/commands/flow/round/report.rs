@@ -653,8 +653,10 @@ pub(super) fn dispatched_at(log: &SpecLog, wave: u64) -> Option<u64> {
 
 /// As voltas que a rodada assume agora, uma por onda: a última entrega que a
 /// onda gravou depois do envio que a despachou e que ninguém assumiu ainda,
-/// com todas as voltas dela desde esse envio. A volta de antes do envio —
-/// de um envio já superado por um reenvio — não conta. A volta que não se lê
+/// com todas as voltas dela desde esse envio, pela mesma leitura que a
+/// retomada conta como voltas à espera ([`SpecLog::returns_awaiting_round`]).
+/// A volta de antes do envio — de um envio já superado por um reenvio — e a
+/// da onda que saiu do plano não contam. A volta que não se lê
 /// como a rodada a assume ([`wave_report_of`]) vem à parte, com a recusa
 /// dela: segura só a própria onda. A volta que quem conduz a obra reprovou
 /// ([`held_rejection`]) também vem à parte, a cada rodada, enquanto for a última
@@ -663,14 +665,11 @@ pub(super) fn returned_waves(log: &SpecLog) -> (Vec<WaveReport>, Vec<HeldReturn>
     let hidden = log.hidden();
     let mut waves = Vec::new();
     let mut refused = Vec::new();
-    for last in log.unassumed_returns().into_iter().filter(|e| e.event_type == "delivered") {
-        let Some(wave) = last.wave().filter(|w| log.planned_waves().contains(w)) else {
+    for last in log.returns_awaiting_round() {
+        let Some(wave) = last.wave() else {
             continue;
         };
         let since = dispatched_at(log, wave).unwrap_or_default();
-        if last.id <= since {
-            continue;
-        }
         let mut report = match held_rejection(log, wave, last.id).map_or_else(|| wave_report_of(log, &last.fields), Err) {
             Ok(report) => report,
             Err(refusal) => {
