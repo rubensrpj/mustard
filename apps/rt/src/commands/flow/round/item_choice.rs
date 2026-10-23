@@ -63,13 +63,13 @@ pub(super) fn asks_jev(jev: Option<&dyn WaveJudge>) -> bool {
 
 /// As ondas de `waves`, montadas pelo backlog e não enviadas, na spec lida em
 /// `log`, que a rodada que as montou segurou à espera da escolha dos itens
-/// pelo Jev do projeto em `root`: algum pedido da escolha dela não tinha
-/// decisão gravada, por `asker`, quando a onda foi gravada. A montagem não as
-/// desfaz: cada uma sai com o número que ganhou, na rodada em que a decisão
-/// chega. A onda que já tinha a decisão e não saiu por outro motivo fica de
-/// fora, e todas ficam com o Jev desligado.
-pub(super) fn held_for_the_jev(root: &Path, spec: &str, log: &SpecLog, waves: &BTreeSet<u64>, asker: &Asker<'_>) -> BTreeSet<u64> {
-    if waves.is_empty() || !asks_jev(crate::shared::jev::for_context(root, spec).filter.as_deref()) {
+/// pelo Jev de contexto `jev`, o que a rodada já carregou: algum pedido da
+/// escolha dela não tinha decisão gravada, por `asker`, quando a onda foi
+/// gravada. A montagem não as desfaz: cada uma sai com o número que ganhou,
+/// na rodada em que a decisão chega. A onda que já tinha a decisão e não saiu
+/// por outro motivo fica de fora, e todas ficam com o Jev desligado.
+pub(super) fn held_for_the_jev(log: &SpecLog, waves: &BTreeSet<u64>, jev: Option<&dyn WaveJudge>, asker: &Asker<'_>) -> BTreeSet<u64> {
+    if waves.is_empty() || !asks_jev(jev) {
         return BTreeSet::new();
     }
     let held = |wave: u64| -> Option<bool> {

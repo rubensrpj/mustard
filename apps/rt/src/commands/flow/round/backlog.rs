@@ -34,7 +34,7 @@ use crate::commands::spec_events::write::{RecordCheck, record};
 use crate::shared::dag::{BacklogTask, CLASH_FROM, pack_by_kind, sets_cross, touches_whole_tree};
 use super::dispatch_jev::{Asker, unsure};
 use crate::shared::jev::{ASSEMBLY_CALL, backlog_payloads, read_judgements, record_jev_call};
-use crate::shared::judgement::{Board, BoardTask, BoardWave, Judged};
+use crate::shared::judgement::{Board, BoardTask, BoardWave, Judged, WaveJudge};
 
 /// Quem julga o backlog para a montagem: uma avaliação do quadro inteiro
 /// ([`Board`]), que volta com o tipo de trabalho de cada tarefa, o tamanho
@@ -42,6 +42,13 @@ use crate::shared::judgement::{Board, BoardTask, BoardWave, Judged};
 /// ([`Judged`]). A chamada que falha deixa a montagem pelo arquivo, como sem o
 /// julgamento.
 pub(crate) type Judge<'a> = dyn Fn(&Board) -> Result<Judged, FilterError> + 'a;
+
+/// Quem decide as perguntas ao Jev da montagem ([`Asker`]) e o Jev de
+/// contexto da rodada, que diz se a onda montada e não enviada espera a
+/// escolha dos itens
+/// ([`held_for_the_jev`](super::item_choice::held_for_the_jev)). A rodada
+/// carrega o Jev de contexto uma vez e o passa a cada montagem.
+pub(crate) type Asking<'a, 'b> = (&'a Asker<'b>, Option<&'a dyn WaveJudge>);
 
 /// O que a montagem fez numa rodada: as ondas que formou e, pelo código de
 /// cada tarefa pronta que ela deixou de fora, o motivo exato — o que o quadro
@@ -186,14 +193,14 @@ pub(crate) fn dispatch_backlog(
     on_entry: &SpecLog,
     locked: &SpecLog,
     limit: usize,
-    (judge, asker): (Option<&Judge<'_>>, Option<&Asker<'_>>),
+    (judge, asking): (Option<&Judge<'_>>, Option<Asking<'_, '_>>),
 ) -> Result<Assembly, mustard_core::domain::spec_events::Refusal> {
-    assemble(start, spec, (on_entry, locked), limit, (judge, asker), (false, false)).map(|(assembly, _)| assembly)
+    assemble(start, spec, (on_entry, locked), limit, (judge, asking), (false, false)).map(|(assembly, _)| assembly)
 }
 
 /// A montagem que a rodada faria agora na spec lida em `log`, sem gravar
 /// nada: a spec como as gravações dela a deixariam. É a passada antes das
-/// travas, com as perguntas ao Jev feitas e gravadas por `asker`; com
+/// travas, com as perguntas ao Jev feitas e gravadas por `asking`; com
 /// `formed_only`, só as ondas do classificador.
 ///
 /// # Errors
@@ -204,17 +211,17 @@ pub(crate) fn planned_backlog(
     spec: &str,
     log: &SpecLog,
     limit: usize,
-    (judge, asker): (Option<&Judge<'_>>, &Asker<'_>),
+    (judge, asking): (Option<&Judge<'_>>, Asking<'_, '_>),
     formed_only: bool,
 ) -> Result<SpecLog, mustard_core::domain::spec_events::Refusal> {
-    let (_, planned) = assemble(start, spec, (log, log), limit, (judge, Some(asker)), (formed_only, true))?;
+    let (_, planned) = assemble(start, spec, (log, log), limit, (judge, Some(asking)), (formed_only, true))?;
     Ok(planned.unwrap_or_else(|| log.clone()))
 }
 
 /// [`dispatch_backlog`] com a formação do classificador pendente: só as
 /// ondas que ele já formou saem, inteiras; as tarefas que ele ainda vai ler
-/// esperam a leitura, sem Jev e sem a montagem de sempre. Por `asker`, só se
-/// leem as decisões gravadas: a onda que a rodada segurou à espera da escolha
+/// esperam a leitura, sem Jev e sem a montagem de sempre. Por `asking`, só
+/// se leem as decisões gravadas: a onda que a rodada segurou à espera da escolha
 /// dos itens ou da das skills segue gravada, como na passada antes das
 /// travas, e sai com o número que ganhou.
 pub(crate) fn dispatch_formed(
@@ -223,9 +230,9 @@ pub(crate) fn dispatch_formed(
     on_entry: &SpecLog,
     locked: &SpecLog,
     limit: usize,
-    asker: &Asker<'_>,
+    asking: Asking<'_, '_>,
 ) -> Result<Assembly, mustard_core::domain::spec_events::Refusal> {
-    assemble(start, spec, (on_entry, locked), limit, (None, Some(asker)), (true, false)).map(|(assembly, _)| assembly)
+    assemble(start, spec, (on_entry, locked), limit, (None, Some(asking)), (true, false)).map(|(assembly, _)| assembly)
 }
 
 /// O julgamento do quadro de uma montagem: as tarefas que foram ao Jev, o
@@ -316,10 +323,12 @@ fn assemble(
     spec: &str,
     (on_entry, locked): (&SpecLog, &SpecLog),
     limit: usize,
-    (judge, asker): (Option<&Judge<'_>>, Option<&Asker<'_>>),
+    (judge, asking): (Option<&Judge<'_>>, Option<Asking<'_, '_>>),
     (formed_only, dry): (bool, bool),
 ) -> Result<(Assembly, Option<SpecLog>), mustard_core::domain::spec_events::Refusal> {
     use crate::shared::dag::{Batch, pack_by_local_evidence};
+
+    let asker = asking.map(|(asker, _)| asker);
 
     let log = locked;
     let running = waves_in_progress(log);
@@ -333,9 +342,9 @@ fn assemble(
     // A que a rodada segurou à espera da escolha dos itens ou da das skills
     // pelo Jev fica: sai com o número que ganhou quando a decisão chega.
     let project = crate::commands::spec_events::project(start);
-    let undone = match asker {
-        Some(asker) => {
-            let undone = &undone - &super::item_choice::held_for_the_jev(&project.root, spec, log, &undone, asker);
+    let undone = match asking {
+        Some((asker, context)) => {
+            let undone = &undone - &super::item_choice::held_for_the_jev(log, &undone, context, asker);
             &undone - &crate::shared::skill_cycle::held_for_picks(&project.root, spec, (log, project.lang), &undone, asker)
         }
         None => undone,

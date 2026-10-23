@@ -358,7 +358,7 @@ pub(super) fn ask_before_locks(start: &Path, root: &Path, spec: &str, log: &Spec
     let judge = waves_jev.filter.as_deref().map(|jev| move |board: &crate::shared::judgement::Board| jev.judge_backlog(board));
     let judging = judge.as_ref().map(|judge| judge as &super::backlog::Judge<'_>);
     let limit = super::queue::max_parallel(root);
-    let Ok(planned) = super::backlog::planned_backlog(start, spec, log, limit, (judging, &asker), forming.pending.is_some()) else {
+    let Ok(planned) = super::backlog::planned_backlog(start, spec, log, limit, (judging, (&asker, context_jev.filter.as_deref())), forming.pending.is_some()) else {
         return asker.into_reserves();
     };
     let vacancies = super::vacancy::vacancies(root, spec, &planned);

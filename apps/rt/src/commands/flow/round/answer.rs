@@ -723,6 +723,11 @@ fn dispatch_round(
     // Com as travas presas, as perguntas ao Jev do despacho só leem a decisão
     // que a passada de antes gravou ([`super::dispatch_jev`]).
     let asker = super::dispatch_jev::Asker::new(&opts.root, root, &spec, &locked, super::dispatch_jev::Phase::Read);
+    // O Jev de contexto se carrega uma vez: a montagem o usa para saber se a
+    // onda montada e não enviada espera a escolha dos itens, e a escolha, mais
+    // abaixo, para perguntar.
+    let context_jev = crate::shared::jev::for_context(root, &spec);
+    let asking = (&asker, context_jev.filter.as_deref());
     let forming = crate::commands::flow::triage::form_for_round(&opts.root, &spec, session, &asker);
     let locked = if forming.applied {
         store::read(path).map_err(RoundRefusal::Refused)?.ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.clone() }))?
@@ -734,9 +739,9 @@ fn dispatch_round(
     // pendente, só as ondas que ele já formou saem: as tarefas que ele ainda
     // vai ler esperam, e nenhuma vai ao Jev.
     let assembled = if forming.pending.is_some() {
-        dispatch_formed(&opts.root, &spec, &log_on_entry, &locked, max_parallel(root), &asker).map_err(RoundRefusal::Refused)?.1
+        dispatch_formed(&opts.root, &spec, &log_on_entry, &locked, max_parallel(root), asking).map_err(RoundRefusal::Refused)?.1
     } else {
-        dispatch_backlog(&opts.root, &spec, &log_on_entry, &locked, max_parallel(root), (judge.as_ref().map(|judge| judge as &Judge<'_>), Some(&asker)))
+        dispatch_backlog(&opts.root, &spec, &log_on_entry, &locked, max_parallel(root), (judge.as_ref().map(|judge| judge as &Judge<'_>), Some(asking)))
             .map_err(RoundRefusal::Refused)?
             .1
     };
@@ -801,7 +806,6 @@ fn dispatch_round(
     // por onda, gravada antes das travas, sobre o item do projeto todo, o dos
     // arquivos dela e o sem ligação com ela. Sem Jev, ou com o recibo incerto
     // da reserva, o pedido leva o padrão.
-    let context_jev = crate::shared::jev::for_context(root, &spec);
     let (choices, items_waiting) = choose_items(&opts.root, &spec, &log, &ready, context_jev.filter.as_deref(), &asker);
     // A onda cuja escolha dos itens ainda espera a decisão do Jev não sai
     // nesta rodada, só ela, e nem ganha cópia.
