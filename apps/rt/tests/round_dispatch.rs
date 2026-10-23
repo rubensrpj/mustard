@@ -672,7 +672,8 @@ fn after_a_wave_is_removed_the_next_one_takes_a_new_number_and_its_request_lists
 /// A remoção que tiraria a última tarefa de uma onda cujo agente ainda
 /// trabalha é recusada, nomeando a onda, e não grava nada: o agente não fica
 /// sem a tarefa que entrega. Depois da entrega dele a mesma remoção passa, e
-/// a resposta diz que a onda saiu do ar.
+/// a resposta diz que a onda saiu do ar. A rodada seguinte, com o pedido
+/// ainda aberto, não despacha a onda de novo nem a lista em andamento.
 #[test]
 fn removing_the_last_task_of_a_wave_whose_agent_works_is_refused_until_the_delivery() {
     let (project, _, _, tasks) = backlog_project(&[&[GREETING]]);
@@ -692,6 +693,10 @@ fn removing_the_last_task_of_a_wave_whose_agent_works_is_refused_until_the_deliv
     deliver_in_copy(&project, 1, "hello\n");
     let removed = project.write("remove", &removal);
     assert_eq!(removed["waves_left_without_tasks"], json!([1]), "depois da entrega a remoção passa e a onda sai do ar: {removed}");
+
+    let next = project.run(&["round", "--dispatch", "--spec", SPEC]);
+    assert!(!waves_in(&next, "dispatch").contains(&1), "a onda 1 não sai de novo: {next}");
+    assert!(!waves_in(&next, "running").contains(&1), "a onda 1 não fica em andamento: {next}");
 }
 
 /// A onda cujo agente trabalha segue com tarefa quando a remoção tira só uma
