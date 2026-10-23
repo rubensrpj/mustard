@@ -65,7 +65,7 @@ use std::path::{Path, PathBuf};
 
 use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog};
 use mustard_core::domain::spec_index::title_of;
-use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State, final_approval, last_change};
+use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State, final_approval};
 use mustard_core::domain::wave_prompt::{count_lines, recorded_choice, unowned};
 use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{Locale, translate};
@@ -434,8 +434,7 @@ fn run_close(
     // que a última mudança da obra não espera: o revisor não recebeu o que
     // mudou depois dele, o veredito dele não aprovaria a obra, e o fechamento
     // abre um pedido novo, mais abaixo.
-    let waiting_review = crate::commands::flow::round::open_review(&log).is_some_and(|asked| asked > last_change(&log));
-    if waiting_review && !held.contains(&crate::commands::flow::round::FINAL_REVIEW) {
+    if crate::commands::flow::round::awaited_review(&log).is_some() && !held.contains(&crate::commands::flow::round::FINAL_REVIEW) {
         missing.push(CloseRefusal::Report(crate::commands::flow::round::RoundRefusal::VerdictMissing));
     }
     if let Some(refusal) = CloseRefusal::all(missing) {

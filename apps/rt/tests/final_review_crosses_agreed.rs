@@ -21,6 +21,7 @@ use std::process::{Command, Stdio};
 
 use mustard_core::domain::spec_events::{SpecEvent, SpecLog};
 use mustard_core::io::spec_events as store;
+use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Value, json};
 
 #[path = "support/mod.rs"]
@@ -561,8 +562,9 @@ fn review_requests(project: &Project) -> Vec<u64> {
 
 /// A onda 2 comitada com a revisão final aberta: o usuário pede mais uma
 /// tarefa depois do pedido de revisão, e a rodada a despacha e comita.
-/// Devolve o número do commit dela na spec.
-fn commit_a_wave_past_the_request(project: &Project) -> u64 {
+/// Devolve o número do commit dela na spec e a resposta da rodada que a
+/// comitou.
+fn commit_a_wave_past_the_request(project: &Project) -> (u64, Value) {
     let said = user_says(project, "Imprima também a soma de três números.");
     let criterion = project.log().visible().into_iter().find(|e| e.event_type == "criterion").expect("the criterion").id;
     project.write(
@@ -571,13 +573,15 @@ fn commit_a_wave_past_the_request(project: &Project) -> u64 {
             "files": [{"path": "src/main.rs"}], "depends_on": [], "covers": [criterion], "origin": said}),
     );
     dispatch_wave(project, 2);
-    deliver_wave(project, 2, "A soma de três apareceu.", &[("src/main.rs", "fn main() {\n    println!(\"{}\", 1 + 1 + 1);\n}\n")]);
+    let round = deliver_wave(project, 2, "A soma de três apareceu.", &[("src/main.rs", "fn main() {\n    println!(\"{}\", 1 + 1 + 1);\n}\n")]);
     let log = project.log();
-    log.visible()
+    let committed = log
+        .visible()
         .into_iter()
         .rfind(|e| e.event_type == "commit" && e.fields.get("waves").and_then(Value::as_array).is_some_and(|waves| waves.contains(&json!(2))))
         .unwrap_or_else(|| panic!("a onda 2 não comitou"))
-        .id
+        .id;
+    (committed, round)
 }
 
 /// O veredito final aprovado que chega depois de uma onda comitada entre o
@@ -591,7 +595,7 @@ fn a_final_approval_answering_a_request_older_than_a_committed_wave_asks_for_a_n
     let asked = project.run(&["close", "--spec", SPEC]);
     assert_eq!(asked["review"]["final"], json!(true), "{asked}");
     project.read_review();
-    let committed = commit_a_wave_past_the_request(&project);
+    let (committed, _) = commit_a_wave_past_the_request(&project);
 
     project.write("verdict", &all_met_verdict(&decisions));
     let again = project.run(&["close", "--spec", SPEC]);
@@ -617,7 +621,7 @@ fn closing_with_an_open_request_older_than_a_committed_wave_opens_a_new_request(
     ready(&project);
     let asked = project.run(&["close", "--spec", SPEC]);
     assert_eq!(asked["review"]["final"], json!(true), "{asked}");
-    let committed = commit_a_wave_past_the_request(&project);
+    let (committed, _) = commit_a_wave_past_the_request(&project);
 
     let again = project.answer(&["close", "--spec", SPEC]);
     assert_eq!(again["ok"], json!(true), "o fechamento não espera o veredito do pedido velho: {again}");
@@ -625,4 +629,39 @@ fn closing_with_an_open_request_older_than_a_committed_wave_opens_a_new_request(
     let requests = review_requests(&project);
     assert_eq!(requests.len(), 2, "{requests:?}");
     assert!(requests[1] > committed, "o pedido novo vem depois do commit da onda 2: {requests:?}, commit {committed}");
+}
+
+/// O texto do próximo passo da spec que o painel mostra.
+fn panel_step(project: &Project) -> String {
+    let overview = project.answer(&["panel", "--spec", SPEC, "--section", "overview"]);
+    overview["spec"]["next"]["text"].as_str().unwrap_or_else(|| panic!("o painel sem o próximo passo: {overview}")).to_string()
+}
+
+/// A rodada que comita uma onda depois do pedido de revisão final aberto
+/// manda fechar, com o comando do fechamento, e o painel diz o mesmo passo:
+/// o veredito do pedido velho já não aprovaria a obra, e é o fechamento que
+/// abre o pedido novo. Com o pedido novo aberto, mais novo que a última
+/// mudança, a rodada e o painel voltam a mandar esperar o veredito.
+#[test]
+fn the_round_past_an_open_request_older_than_a_committed_wave_says_to_close() {
+    let project = Project::new();
+    ready(&project);
+    let asked = project.run(&["close", "--spec", SPEC]);
+    assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+    let (_, round) = commit_a_wave_past_the_request(&project);
+
+    let close = format!("mustard-rt run close --spec {SPEC}");
+    assert_eq!(round["command"], json!(close), "a rodada manda fechar: {round}");
+    let next = round["next"].as_str().unwrap_or_default();
+    assert!(next.ends_with(&translate("round.close", Locale::PtBr).replace("{command}", &close)), "{round}");
+    assert!(!next.contains(translate("round.review_open", Locale::PtBr)), "a rodada não espera o veredito do pedido velho: {round}");
+    assert_eq!(panel_step(&project), translate("resume.step.close", Locale::PtBr));
+
+    let again = project.run(&["close", "--spec", SPEC]);
+    assert_eq!(again["review"]["final"], json!(true), "o fechamento abre o pedido novo: {again}");
+    let waiting = project.run(&["round", "--dispatch", "--spec", SPEC]);
+    assert!(waiting.get("command").is_none(), "sem o comando de fechar: {waiting}");
+    let next = waiting["next"].as_str().unwrap_or_default();
+    assert!(next.ends_with(translate("round.review_open", Locale::PtBr)), "a rodada espera o veredito do pedido novo: {waiting}");
+    assert_eq!(panel_step(&project), translate("resume.step.review_open", Locale::PtBr));
 }

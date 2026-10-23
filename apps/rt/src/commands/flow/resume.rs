@@ -565,7 +565,7 @@ pub(crate) fn next_command_now(root: &Path, phase: &str, spec: &str, state: &Sta
 /// a aprovação.
 fn step_of(root: &Path, phase: &str, spec: &str, log: &SpecLog, lang: Locale) -> (&'static str, String) {
     use crate::commands::flow::round::queue::{backlog_ready, next_waves};
-    use crate::commands::flow::round::{backlog_left, open_review, waves_stuck};
+    use crate::commands::flow::round::{awaited_review, backlog_left, waves_stuck};
     use mustard_core::view::document::WaveState;
 
     let said = |key: &str| ("close", translate(key, lang).to_string());
@@ -618,7 +618,9 @@ fn step_of(root: &Path, phase: &str, spec: &str, log: &SpecLog, lang: Locale) ->
     if !backlog_left(log).is_empty() {
         return round("resume.step.backlog_held");
     }
-    if open_review(log).is_some() {
+    // O pedido aberto mais velho que a última mudança não espera veredito:
+    // o passo é o fechamento, que abre o pedido novo.
+    if awaited_review(log).is_some() {
         return ("close", translate("resume.step.review_open", lang).to_string());
     }
     let review = crate::commands::panel::progress::review(log);

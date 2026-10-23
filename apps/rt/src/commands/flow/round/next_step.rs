@@ -2,7 +2,8 @@
 //! que saiu agora; esperar as que estão em andamento; dizer qual onda falta,
 //! quando nada se move; rodar de novo, ou nomear as tarefas presas, quando o
 //! backlog ainda tem tarefa; esperar o veredito, quando a revisão final segue
-//! aberta; ou fechar, com tudo entregue e aprovado e o backlog vazio. A
+//! aberta para o que a obra entregou; ou fechar, com tudo entregue e o backlog
+//! vazio, inclusive quando o pedido aberto é mais velho que a última mudança. A
 //! revisão do diff da onda antecede o commit; a revisão final permanece no
 //! fechamento.
 
@@ -14,7 +15,7 @@ use mustard_core::domain::spec_state::State;
 use mustard_core::platform::i18n::{Locale, translate};
 
 use super::DONE_STEP;
-use super::queue::{backlog_left, backlog_ready, first_unfinished, open_review};
+use super::queue::{awaited_review, backlog_left, backlog_ready, first_unfinished};
 
 /// Onde as ondas estão depois dos envios da rodada.
 pub(super) struct Standing<'a> {
@@ -67,11 +68,13 @@ pub(super) fn next_step(root: &Path, spec: &str, (log, codes): (&SpecLog, &BTree
             command = step;
             text
         }
-    } else if open_review(log).is_some() {
+    } else if awaited_review(log).is_some() {
         // Toda onda está entregue, mas a revisão final segue aberta, sem o
         // veredito do revisor: a obra ainda não está aprovada, e o fechamento
         // recusaria. A resposta manda esperar o veredito, sem o comando de
-        // fechar.
+        // fechar. O pedido aberto mais velho que a última mudança não entra
+        // aqui: o veredito dele já não aprovaria a obra, e a resposta manda
+        // fechar, que abre o pedido novo.
         translate("round.review_open", lang).to_string()
     } else {
         let state = State::from_log(log);

@@ -234,7 +234,7 @@ pub(crate) use triage_questions::ask_after_locks;
 pub(crate) use fixes::{fix_file, sweep_fixes};
 pub(crate) use keep::{Kept, landed_kept};
 pub(crate) use queue::{
-    backlog_left, new_agent_escalation, open_review, send_revision, sender_fields, tasks_left, waves_awaiting_new_agent, waves_in_progress,
+    awaited_review, backlog_left, new_agent_escalation, open_review, send_revision, sender_fields, tasks_left, waves_awaiting_new_agent, waves_in_progress,
     waves_left_without_tasks, waves_pending_fix,
 };
 pub(crate) use read_check::request_name;

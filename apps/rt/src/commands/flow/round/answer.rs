@@ -2684,8 +2684,8 @@ mod tests {
         assert!(done["next"].as_str().unwrap_or_default().ends_with(&close), "{done}");
     }
 
-    /// Com a revisão final aberta e ainda sem o veredito do revisor, a
-    /// rodada que comita a última onda não manda fechar: a resposta manda
+    /// Com a revisão final pedida depois da última onda comitada e ainda sem
+    /// o veredito do revisor, a rodada não manda fechar: a resposta manda
     /// esperar o veredito, sem o comando de fechar. Só depois de o veredito
     /// aprovado ser gravado e assumido a rodada manda fechar.
     #[test]
@@ -2694,11 +2694,12 @@ mod tests {
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
         assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1]);
+        let committed = round(root, "x", Some(&delivered(root, 1, "Saiu.", &["src/a.rs"])));
+        assert!(committed["commit"]["sha"].is_string(), "a última onda foi comitada: {committed}");
         seed_review(root);
 
-        let done = round(root, "x", Some(&delivered(root, 1, "Saiu.", &["src/a.rs"])));
+        let done = round(root, "x", None);
         assert_eq!(done["ok"], json!(true), "{done}");
-        assert!(done["commit"]["sha"].is_string(), "a última onda foi comitada: {done}");
         assert!(done.get("command").is_none(), "sem o comando de fechar: {done}");
         let next = done["next"].as_str().unwrap_or_default();
         assert!(next.ends_with(translate("round.review_open", Locale::PtBr)), "{done}");

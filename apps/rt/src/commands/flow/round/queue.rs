@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SEND_REQUEST_FIELDS, SpecEvent, SpecLog};
-use mustard_core::domain::spec_state::PhaseWriter;
+use mustard_core::domain::spec_state::{PhaseWriter, last_change};
 use mustard_core::domain::wave_prompt::{Choice, dispatch_items};
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Map, Value, json};
@@ -301,6 +301,15 @@ pub(crate) fn open_review(log: &SpecLog) -> Option<u64> {
     let visible = log.visible();
     let asked = visible.iter().filter(|e| e.event_type == "send" && e.str_field("role") == Some("review")).map(|e| e.id).max()?;
     (!visible.iter().any(|e| e.event_type == "verdict" && !super::wave_review::is_wave_verdict(e) && e.id > asked)).then_some(asked)
+}
+
+/// O pedido de revisão final aberto ([`open_review`]) cujo veredito ainda
+/// pode aprovar a obra: o mais novo que a última mudança dela
+/// ([`last_change`]). O pedido aberto mais velho que ela não espera veredito:
+/// o revisor não recebeu o que mudou depois dele, e o fechamento abre um
+/// pedido novo.
+pub(crate) fn awaited_review(log: &SpecLog) -> Option<u64> {
+    open_review(log).filter(|asked| *asked > last_change(log))
 }
 
 /// A versão nova do envio mais recente da onda `wave`: os campos dele, tirando
