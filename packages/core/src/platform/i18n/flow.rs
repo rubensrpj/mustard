@@ -368,6 +368,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The project suite (`{command}`), run in a clean environment the way the server runs it, \
              did not pass, and the spec did not close: {output}"
         }
+        // A compilação, o lint ou a suíte do fechamento que caiu num projeto
+        // que declara arquivos locais: a cópia limpa nunca os recebe.
+        ("close.ran_without_local_files", Locale::PtBr) => {
+            "O comando rodou na cópia limpa, sem os arquivos locais que o `mustard.json` lista em \
+             `localFiles`: {files}. O git os ignora, e a esteira do servidor também não os tem. O \
+             comando que depende de um deles cai lá como caiu aqui."
+        }
+        ("close.ran_without_local_files", Locale::EnUs) => {
+            "The command ran in the clean copy, without the local files `mustard.json` lists in \
+             `localFiles`: {files}. Git ignores them, and the server pipeline does not have them \
+             either. A command that depends on one of them fails there as it failed here."
+        }
         // O comando do servidor que o `mustard.json` não declara: o
         // fechamento não o roda, e avisa que não promete o que o servidor
         // vai dizer.
@@ -2616,7 +2628,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 379, 0x9115_43e2_68e6_f67d);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 380, 0xab12_c17e_9434_6e51);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
@@ -2746,6 +2758,7 @@ mod tests {
             ("close.lint_failed", &["{command}", "{output}"][..]),
             ("close.lint_from_the_base", &["{command}", "{files}", "{output}"][..]),
             ("close.suite_failed", &["{command}", "{output}"][..]),
+            ("close.ran_without_local_files", &["{files}"][..]),
             ("close.cited_outside", &["{files}"][..]),
             ("close.cited_nothing", &[][..]),
             ("close.cited_unowned", &[][..]),

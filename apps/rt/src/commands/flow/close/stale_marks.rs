@@ -91,9 +91,9 @@ mod tests {
     fn old_mark(root: &Path, wave: u64, reason: &str, output: &str) {
         let (command, output) = ("cargo clippy".to_string(), output.to_string());
         let failure = match reason {
-            "build-failed" => CloseRefusal::BuildFailed { command, output, no_wave: None },
-            "suite-failed" => CloseRefusal::SuiteFailed { command, output, no_wave: None },
-            "lint-failed" => CloseRefusal::LintFailed { command, output, no_wave: None },
+            "build-failed" => CloseRefusal::BuildFailed { command, output, local_files: Vec::new(), no_wave: None },
+            "suite-failed" => CloseRefusal::SuiteFailed { command, output, local_files: Vec::new(), no_wave: None },
+            "lint-failed" => CloseRefusal::LintFailed { command, output, local_files: Vec::new(), no_wave: None },
             "final-new-unused" => CloseRefusal::NewUnused { text: output, no_wave: None },
             _ => CloseRefusal::CriterionFailed { code: "MSTD-CRIT-0001".into(), output },
         };

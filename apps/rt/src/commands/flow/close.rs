@@ -43,7 +43,8 @@
 //! **O que trava.** Onda sem commit; onda cuja última revisão reprovou e
 //! ainda não recebeu o conserto; pedido do usuário que nenhuma onda entregou;
 //! a cópia do revisor com mudança, ou que não pôde ser criada; a
-//! compilação, o lint ou a suíte que falham, com a saída; critério cuja prova
+//! compilação, o lint ou a suíte que falham, com a saída e, quando o projeto
+//! declara arquivos locais, o nome de cada um, que a cópia limpa não tem; critério cuja prova
 //! não passou; e
 //! critério cuja prova saiu verde sem rodar teste nenhum — a saída do
 //! executor diz zero teste, que é o que um nome de teste errado dá, e a
@@ -123,24 +124,30 @@ enum CloseRefusal {
     BacklogNotEmpty {
         tasks: String,
     },
-    /// A compilação declarada do projeto falhou. `no_wave` diz por que
-    /// nenhuma onda reabriu, quando a saída não cita arquivo que uma onda da
-    /// obra mudou.
+    /// A compilação declarada do projeto falhou. `local_files` são os
+    /// arquivos locais que o `mustard.json` declara e que a cópia limpa não
+    /// tem. `no_wave` diz por que nenhuma onda reabriu, quando a saída não
+    /// cita arquivo que uma onda da obra mudou.
     BuildFailed {
         command: String,
         output: String,
+        local_files: Vec<String>,
         no_wave: Option<String>,
     },
-    /// O lint do projeto falhou, com o mesmo `no_wave` da compilação.
+    /// O lint do projeto falhou, com os mesmos `local_files` e `no_wave` da
+    /// compilação.
     LintFailed {
         command: String,
         output: String,
+        local_files: Vec<String>,
         no_wave: Option<String>,
     },
-    /// A suíte inteira do projeto falhou, com o mesmo `no_wave` do lint.
+    /// A suíte inteira do projeto falhou, com os mesmos `local_files` e
+    /// `no_wave` do lint.
     SuiteFailed {
         command: String,
         output: String,
+        local_files: Vec<String>,
         no_wave: Option<String>,
     },
     /// A cópia do revisor final chegou com mudança, com os arquivos dela.
@@ -228,6 +235,13 @@ impl CloseRefusal {
         let fill = |key: &str, slots: &[(&str, String)]| {
             slots.iter().fold(translate(key, lang).to_string(), |text, (slot, value)| text.replace(slot, value))
         };
+        // A compilação, o lint ou a suíte que caiu: a recusa da chave `key`,
+        // os arquivos locais que a cópia limpa não tem e por que nenhuma onda
+        // reabriu, cada um numa linha.
+        let command_failed = |key: &str, command: &str, output: &str, local_files: &[String], no_wave: Option<&str>| {
+            let refusal = fill(key, &[("{command}", command.to_string()), ("{output}", output.to_string())]);
+            with_no_wave(without_local_files(refusal, local_files, lang), no_wave)
+        };
         match self {
             Self::Many(all) => all.iter().map(|refusal| refusal.message(lang)).collect::<Vec<_>>().join("\n\n"),
             Self::Refused(refusal) => refusal.message(lang),
@@ -239,15 +253,9 @@ impl CloseRefusal {
             Self::WaveRejected { wave } => fill("close.wave_rejected", &[("{wave}", wave.to_string())]),
             Self::RequestNotDelivered { code } => fill("close.request_not_delivered", &[("{code}", code.clone())]),
             Self::BacklogNotEmpty { tasks } => fill("close.backlog_not_empty", &[("{tasks}", tasks.clone())]),
-            Self::BuildFailed { command, output, no_wave } => {
-                with_no_wave(fill("close.build_failed", &[("{command}", command.clone()), ("{output}", output.clone())]), no_wave.as_deref())
-            }
-            Self::LintFailed { command, output, no_wave } => {
-                with_no_wave(fill("close.lint_failed", &[("{command}", command.clone()), ("{output}", output.clone())]), no_wave.as_deref())
-            }
-            Self::SuiteFailed { command, output, no_wave } => {
-                with_no_wave(fill("close.suite_failed", &[("{command}", command.clone()), ("{output}", output.clone())]), no_wave.as_deref())
-            }
+            Self::BuildFailed { command, output, local_files, no_wave } => command_failed("close.build_failed", command, output, local_files, no_wave.as_deref()),
+            Self::LintFailed { command, output, local_files, no_wave } => command_failed("close.lint_failed", command, output, local_files, no_wave.as_deref()),
+            Self::SuiteFailed { command, output, local_files, no_wave } => command_failed("close.suite_failed", command, output, local_files, no_wave.as_deref()),
             Self::ReviewCopyDirty { copy, files } => fill("close.review_copy_dirty", &[("{copy}", copy.clone()), ("{files}", files.clone())]),
             Self::ReviewCopyFailed { copy, detail } => fill("close.review_copy_failed", &[("{copy}", copy.clone()), ("{detail}", detail.clone())]),
             Self::CleanCopyFailed { copy, detail } => fill("close.clean_copy_failed", &[("{copy}", copy.clone()), ("{detail}", detail.clone())]),
@@ -284,6 +292,19 @@ fn with_no_wave(refusal: String, no_wave: Option<&str>) -> String {
         Some(why) => format!("{refusal}\n{why}"),
         None => refusal,
     }
+}
+
+/// A recusa `refusal` da compilação, do lint ou da suíte, seguida, numa linha
+/// própria, de que o comando rodou na cópia limpa sem os arquivos locais que o
+/// projeto declara (`local_files`), cada um nomeado. Quem só tem o `.env` na
+/// máquina entende por que o comando caiu. Sem arquivo local declarado, a
+/// recusa fica como está.
+fn without_local_files(refusal: String, local_files: &[String], lang: Locale) -> String {
+    if local_files.is_empty() {
+        return refusal;
+    }
+    let files = local_files.iter().map(|file| format!("`{file}`")).collect::<Vec<_>>().join(", ");
+    format!("{refusal}\n{}", translate("close.ran_without_local_files", lang).replace("{files}", &files))
 }
 
 /// O núcleo testável de [`run_cmd`]. A sessão e a pasta de configuração da
@@ -811,7 +832,11 @@ fn hand_pending_to_project(root: &Path, spec: &str, log: &SpecLog, answers: &[St
 fn machine(opts: &CloseOpts, root: &Path, clean: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Result<Machine, CloseRefusal> {
     let mut timing = super::validation::Stage::new(root, spec, "final", "machine", true);
     let before = super::validation::fingerprint(root, log);
-    let declared = mustard_core::ProjectConfig::load(root).commands();
+    let config = mustard_core::ProjectConfig::load(root);
+    let declared = config.commands();
+    // A cópia limpa nunca recebe os arquivos locais do projeto: a recusa dos
+    // comandos os nomeia.
+    let local_files = mustard_core::io::wave_prompt::local_files(&config);
     let mut undeclared: Vec<String> = Vec::new();
     let mut from_base: Vec<String> = Vec::new();
     let mut native_outputs = Vec::new();
@@ -835,7 +860,7 @@ fn machine(opts: &CloseOpts, root: &Path, clean: &Path, spec: &str, log: &SpecLo
         super::validation::record_run(root, spec, "final", key, &command, &out).map_err(CloseRefusal::Refused)?;
         if out.result != "pass" {
             if key == "buildCommand" {
-                return Err(CloseRefusal::BuildFailed { command, output: out.output, no_wave: None });
+                return Err(CloseRefusal::BuildFailed { command, output: out.output, local_files, no_wave: None });
             }
             // O lint que só acusa arquivo que a obra não tocou e que a base
             // já acusava não é erro da obra: ele vira aviso, e o fechamento
@@ -854,8 +879,8 @@ fn machine(opts: &CloseOpts, root: &Path, clean: &Path, spec: &str, log: &SpecLo
                 continue;
             }
             failures.push(match key {
-                "lintCommand" => CloseRefusal::LintFailed { command, output: out.output, no_wave: None },
-                _ => CloseRefusal::SuiteFailed { command, output: out.output, no_wave: None },
+                "lintCommand" => CloseRefusal::LintFailed { command, output: out.output, local_files: local_files.clone(), no_wave: None },
+                _ => CloseRefusal::SuiteFailed { command, output: out.output, local_files: local_files.clone(), no_wave: None },
             });
             continue;
         }
@@ -1029,9 +1054,9 @@ fn no_wave_reopened(failure: CloseRefusal, cited: &super::validation::Cited, lan
         translate("close.cited_outside", lang).replace("{files}", &files)
     };
     match failure {
-        CloseRefusal::BuildFailed { command, output, .. } => CloseRefusal::BuildFailed { command, output, no_wave: Some(why) },
-        CloseRefusal::LintFailed { command, output, .. } => CloseRefusal::LintFailed { command, output, no_wave: Some(why) },
-        CloseRefusal::SuiteFailed { command, output, .. } => CloseRefusal::SuiteFailed { command, output, no_wave: Some(why) },
+        CloseRefusal::BuildFailed { command, output, local_files, .. } => CloseRefusal::BuildFailed { command, output, local_files, no_wave: Some(why) },
+        CloseRefusal::LintFailed { command, output, local_files, .. } => CloseRefusal::LintFailed { command, output, local_files, no_wave: Some(why) },
+        CloseRefusal::SuiteFailed { command, output, local_files, .. } => CloseRefusal::SuiteFailed { command, output, local_files, no_wave: Some(why) },
         CloseRefusal::NewUnused { text, .. } => CloseRefusal::NewUnused { text, no_wave: Some(why) },
         other => other,
     }
