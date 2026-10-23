@@ -164,15 +164,16 @@ impl<'a> WaveTies<'a> {
     }
 }
 
-/// [`picks`] com o Jev `jev` (desligado, sem ele), decidida por `asker`, com
-/// as chamadas gravadas na spec `spec` de `root`. Antes das travas, o recibo
-/// da reserva já entregue da escolha de uma onda vale primeiro, e as ondas
-/// ainda sem decisão vão ao Jev numa chamada; a resposta de cada uma fica
-/// gravada, ou vai à reserva. Com as travas presas, só se lê a decisão
-/// gravada. A do recibo põe a dúvida abaixo do corte: só o sim certo entra. A
-/// onda de `holdable` sem decisão fica fora da rodada; a outra, e a cuja
-/// reserva não se prepara, leva a escolha que se lê e, no resto, as
-/// primeiras.
+/// As skills escolhidas para as tarefas dos pedidos `built` que têm mais
+/// candidatas do que cabem, com o Jev `jev` do projeto, o que a rodada já
+/// carregou (desligado, sem ele), decididas por `asker`. Sem tarefa assim, ou
+/// sem Jev, nenhuma. Antes das travas, o recibo da reserva já entregue da
+/// escolha de uma onda vale primeiro, e as ondas ainda sem decisão vão ao Jev
+/// numa chamada; a resposta de cada uma fica gravada, ou vai à reserva. Com as
+/// travas presas, só se lê a decisão gravada. A do recibo põe a dúvida abaixo
+/// do corte: só o sim certo entra. A onda de `holdable` sem decisão fica fora
+/// da rodada; a outra, e a cuja reserva não se prepara, leva a escolha que se
+/// lê e, no resto, as primeiras.
 pub(crate) fn picks_decided(built: &[WavePrompt], holdable: &BTreeSet<u64>, jev: Option<&yes_no::AskFn<'_>>, asker: &Asker<'_>) -> Picked {
     let mut out = Picked::default();
     let Some(invoke) = jev else { return out };
@@ -218,7 +219,8 @@ pub(crate) fn picks_decided(built: &[WavePrompt], holdable: &BTreeSet<u64>, jev:
 /// Os pedidos das ondas `outgoing` da spec `spec` do projeto `root`, lida em
 /// `log`, no idioma `lang`, com as ondas fora em `flight`: montados uma vez e,
 /// quando alguma tarefa tem mais skills candidatas do que cabem, montados de
-/// novo com a escolha do Jev, decidida por `asker`, que fica em `flight`. A
+/// novo com a escolha do Jev `jev`, o que a rodada já carregou, decidida por
+/// `asker`, que fica em `flight`. A
 /// onda nova (de `next`) cuja escolha espera a decisão sai de `next`, de
 /// `outgoing` e das ondas fora, sem pedido montado, e volta à parte.
 pub(crate) fn prompts_with_picks(
@@ -227,10 +229,11 @@ pub(crate) fn prompts_with_picks(
     (log, lang): (&SpecLog, Locale),
     flight: &mut Flight,
     (next, outgoing): (&mut Vec<u64>, &mut BTreeSet<u64>),
+    jev: Option<&yes_no::AskFn<'_>>,
     asker: &Asker<'_>,
 ) -> (Vec<WavePrompt>, BTreeSet<u64>) {
     let built = mustard_core::io::wave_prompt::prompts(root, spec, log, lang, flight, outgoing);
-    let Picked { picks, held } = picks(root, spec, &built, &next.iter().copied().collect(), asker);
+    let Picked { picks, held } = picks_decided(&built, &next.iter().copied().collect(), jev, asker);
     if picks.is_empty() && held.is_empty() {
         return (built, held);
     }
@@ -248,18 +251,6 @@ pub(crate) fn held_notes(held: BTreeSet<u64>, warnings: &mut Vec<Value>, lang: L
     let lines: Vec<String> = held.iter().map(|wave| translate("round.skill_pick_reserve", lang).replace("{wave}", &wave.to_string())).collect();
     warnings.extend(held.iter().zip(&lines).map(|(wave, hint)| json!({ "reason": "skill-pick-reserve", "wave": wave, "hint": hint })));
     lines
-}
-
-/// As skills escolhidas para as tarefas dos pedidos `built` da spec `spec`
-/// do projeto `root` que têm mais candidatas do que cabem, com o Jev do
-/// projeto, decididas por `asker` ([`picks_decided`]). Sem tarefa assim, ou
-/// sem Jev, nenhuma.
-pub(crate) fn picks(root: &Path, spec: &str, built: &[WavePrompt], holdable: &BTreeSet<u64>, asker: &Asker<'_>) -> Picked {
-    if built.iter().all(|prompt| prompt.skill_ties.is_empty()) {
-        return Picked::default();
-    }
-    let jev = yes_no::project_jev(root, spec, PICK_CALL);
-    picks_decided(built, holdable, jev.as_deref(), asker)
 }
 
 /// As ondas de `waves`, montadas pelo backlog e não enviadas, da spec `spec`
@@ -837,7 +828,7 @@ mod tests {
         let root = dir.path();
         let log = project(root, false);
         let built = prompts(root, "x", &log, Locale::PtBr, &Flight::default(), &BTreeSet::from([1]));
-        let picked = picks(root, "x", &built, &BTreeSet::from([1]), &Asker::new(root, root, "x", &log, Phase::Ask));
+        let picked = picks_decided(&built, &BTreeSet::from([1]), None, &Asker::new(root, root, "x", &log, Phase::Ask));
         assert!(picked.picks.is_empty() && picked.held.is_empty(), "no Jev in the tests, no choice and no wait");
         assert_eq!(built[0].tasks[0].skills, ["a1", "a2", "a3"]);
         assert_eq!(built[0].skill_candidates, ["a1", "a2", "a3", "a4", "a5"]);

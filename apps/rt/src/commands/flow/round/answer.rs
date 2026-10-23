@@ -882,7 +882,7 @@ fn dispatch_round(
     // dela. A onda nova sem essa escolha fica fora desta rodada, e só ela: a
     // pergunta, ou o recibo da reserva, a manda na rodada seguinte.
     let mut flight = Flight { host: Some(host.into()), running: away, copies, choices, skill_picks: BTreeMap::new() };
-    let (built, picks_held) = crate::shared::skill_cycle::prompts_with_picks(root, &spec, (&log, lang), &mut flight, (&mut next, &mut outgoing), &asker);
+    let (built, picks_held) = crate::shared::skill_cycle::prompts_with_picks(root, &spec, (&log, lang), &mut flight, (&mut next, &mut outgoing), picks_jev, &asker);
     let mut picks_lines = crate::shared::skill_cycle::held_notes(picks_held, warnings, lang);
     picks_lines.extend(items_lines);
     // O teto de cópias que segura o despacho vai no aviso e no próximo passo,
