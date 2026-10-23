@@ -178,7 +178,9 @@ pub(crate) fn resend_block(root: &Path, spec: &str, session: Option<&str>, log: 
     Some(format!("\n\n{}\n\n{}", translate("round.resume.task", lang), current.text))
 }
 
-// The one test reads processes the Linux way.
+// Os testes do reenvio pedem o Claude Code fechado, que a rodada só reconhece
+// no Linux, pelo `/proc`; o módulo inteiro fica no Linux para que o ajudante
+// deles não sobre sem uso nos outros sistemas.
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use mustard_core::io::spec_events as store;

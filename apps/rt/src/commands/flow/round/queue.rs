@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use mustard_core::domain::spec_events::{Block, BlockQuery, EventRef, Refusal, SEND_REQUEST_FIELDS, SpecEvent, SpecLog};
+use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SEND_REQUEST_FIELDS, SpecEvent, SpecLog};
 use mustard_core::domain::spec_state::PhaseWriter;
 use mustard_core::domain::wave_prompt::{Choice, dispatch_items};
 use mustard_core::platform::i18n::{Locale, translate};
@@ -17,6 +17,7 @@ use super::leftovers::is_cleanup;
 use super::stops::waves_replanned;
 use super::vacancy::Vacancies;
 use crate::commands::wave::wave_overlap_check::{WaveGraph, wave_graph};
+use crate::commands::spec_events::task_dependents::TaskRefs;
 use crate::commands::spec_events::write::record;
 use crate::shared::dag::touches_whole_tree;
 
@@ -782,18 +783,6 @@ pub(crate) fn task_files(task: &SpecEvent) -> BTreeSet<String> {
         .collect()
 }
 
-/// A tarefa que `value` aponta, pelo número do evento ou pelo código, na
-/// versão vigente dela — a mesma resolução que a gravação de uma tarefa nova
-/// já faz para conferir o `depends_on` dela, só que lida aqui, não repetida à
-/// parte por acaso: uma referência que não bate com tarefa nenhuma some.
-pub(super) fn backlog_task_ref(log: &SpecLog, codes: &BTreeMap<u64, String>, value: &Value) -> Option<u64> {
-    let raw = match EventRef::from_value(value)? {
-        EventRef::Id(id) => id,
-        EventRef::Code(code) => log.visible().into_iter().filter(|event| event.event_type == "task" && codes.get(&event.id) == Some(&code)).map(|event| event.id).next_back()?,
-    };
-    log.current(raw).filter(|event| event.event_type == "task").map(|event| event.id)
-}
-
 /// A versão nova da tarefa `id`: os campos dela, tirando `v`, `id`, `code`,
 /// `at`, `type` e `search`, com `replaces` apontando para ela, o autor
 /// `binary` (a versão é da rodada, seja quem for que escreveu a anterior) e os
@@ -839,30 +828,15 @@ pub(super) fn task_revision(log: &SpecLog, id: u64, extra: Map<String, Value>) -
 /// traz a marca de prioridade.
 pub(crate) fn backlog_population(log: &SpecLog, done_waves: &BTreeSet<u64>) -> Vec<crate::shared::dag::BacklogTask<u64>> {
     let codes = log.codes();
-    let visible=log.visible();
-    let current=log.current_versions();
-    let by_code:BTreeMap<_,_>=visible.iter().filter(|event|event.event_type=="task")
-        .filter_map(|event|codes.get(&event.id).map(|code|(code,event.id))).collect();
+    let refs = TaskRefs::new(log, &codes);
     // A tarefa com dependência que não aponta tarefa nenhuma da spec não sai:
     // a rodada a segura com o motivo, e as que dependem dela esperam junto.
     let broken = crate::commands::spec_events::task_dependents::broken_dependencies(log);
-    visible
+    log.visible()
         .into_iter()
         .filter(|e| e.event_type == "task")
         .map(|task| {
-            let depends_on: BTreeSet<u64> = task
-                .fields
-                .get("depends_on")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(|value| {
-                    let raw=match EventRef::from_value(value)? {
-                        EventRef::Id(id)=>id,EventRef::Code(code)=>*by_code.get(&code)?,
-                    };
-                    current.get(&raw).filter(|event|event.event_type=="task").map(|event|event.id)
-                })
-                .collect();
+            let depends_on: BTreeSet<u64> = refs.depends_on(task).collect();
             let done = task.wave().is_some_and(|w| done_waves.contains(&w));
             // A marca de prioridade é lida do evento, como o usuário a deu: o
             // Jev não a julga.
@@ -940,20 +914,13 @@ pub(crate) struct LeftTask {
 pub(crate) fn tasks_left(log: &SpecLog) -> Vec<LeftTask> {
     let left = tasks_not_delivered(log, &BTreeSet::new());
     let codes = log.codes();
+    let refs = TaskRefs::new(log, &codes);
     left.iter()
         .filter_map(|id| log.get(*id))
         .map(|task| LeftTask {
             id: task.id,
             files: task_files(task),
-            depends_on: task
-                .fields
-                .get("depends_on")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(|value| backlog_task_ref(log, &codes, value))
-                .filter(|dependency| left.contains(dependency))
-                .collect(),
+            depends_on: refs.depends_on(task).filter(|dependency| left.contains(dependency)).collect(),
         })
         .collect()
 }

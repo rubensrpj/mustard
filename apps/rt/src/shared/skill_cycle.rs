@@ -220,9 +220,9 @@ pub(crate) fn picks_decided(built: &[WavePrompt], holdable: &BTreeSet<u64>, jev:
 /// `log`, no idioma `lang`, com as ondas fora em `flight`: montados uma vez e,
 /// quando alguma tarefa tem mais skills candidatas do que cabem, montados de
 /// novo com a escolha do Jev `jev`, o que a rodada já carregou, decidida por
-/// `asker`, que fica em `flight`. A
-/// onda nova (de `next`) cuja escolha espera a decisão sai de `next`, de
-/// `outgoing` e das ondas fora, sem pedido montado, e volta à parte.
+/// `asker`, que fica em `flight`. A onda nova (de `next`) cuja escolha espera
+/// a decisão sai de `next`, de `outgoing` e das ondas fora, sem pedido
+/// montado, e volta à parte.
 pub(crate) fn prompts_with_picks(
     root: &Path,
     spec: &str,

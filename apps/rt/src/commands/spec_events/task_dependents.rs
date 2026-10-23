@@ -32,19 +32,47 @@ fn dependency_name(codes: &BTreeMap<u64, String>, value: &Value) -> String {
     }
 }
 
-/// O número da versão vigente da tarefa desta spec que `value` aponta (pelo
-/// número do evento ou pelo código), ou `None` quando não existe tarefa
-/// nenhuma com esse número ou código. Um número ou código que aponta uma
-/// versão já substituída resolve para a versão nova, do mesmo jeito que o
-/// resto do arquivo trata a identidade de um item.
-fn task_ref(after: &SpecLog, codes: &BTreeMap<u64, String>, value: &Value) -> Option<u64> {
-    let raw = match EventRef::from_value(value)? {
-        EventRef::Id(id) => id,
-        EventRef::Code(code) => {
-            after.events.iter().filter(|event| event.event_type == "task" && codes.get(&event.id) == Some(&code)).map(|event| event.id).next_back()?
-        }
-    };
-    after.current(raw).filter(|event| event.event_type == "task").map(|event| event.id)
+/// A leitura única das referências a tarefas de uma spec, a mesma para a
+/// gravação e para a rodada: cada valor de `depends_on`, número do evento ou
+/// código, vira o número da versão vigente da tarefa que ele aponta. O código
+/// aponta a versão mais nova que a leitura mostra; o número segue as
+/// substituições até a versão vigente. O que não aponta tarefa nenhuma da
+/// leitura some. As tabelas saem uma vez por leitura do log, e cada
+/// referência resolve sem varrer os eventos de novo.
+pub(crate) struct TaskRefs<'a> {
+    /// A versão mais nova que a leitura mostra de cada código de tarefa.
+    by_code: BTreeMap<&'a str, u64>,
+    /// A versão vigente de cada número de evento.
+    current: BTreeMap<u64, &'a SpecEvent>,
+}
+
+impl<'a> TaskRefs<'a> {
+    /// As referências a tarefas de `log`, com os códigos `codes` dele.
+    pub(crate) fn new(log: &'a SpecLog, codes: &'a BTreeMap<u64, String>) -> Self {
+        let by_code = log
+            .visible()
+            .into_iter()
+            .filter(|event| event.event_type == "task")
+            .filter_map(|event| codes.get(&event.id).map(|code| (code.as_str(), event.id)))
+            .collect();
+        Self { by_code, current: log.current_versions() }
+    }
+
+    /// O número da versão vigente da tarefa que `value` aponta, ou `None`
+    /// quando o número ou o código não aponta tarefa nenhuma da leitura.
+    pub(crate) fn resolve(&self, value: &Value) -> Option<u64> {
+        let raw = match EventRef::from_value(value)? {
+            EventRef::Id(id) => id,
+            EventRef::Code(code) => *self.by_code.get(code.as_str())?,
+        };
+        self.current.get(&raw).filter(|event| event.event_type == "task").map(|event| event.id)
+    }
+
+    /// As tarefas que `task` aponta em `depends_on`, já resolvidas
+    /// ([`Self::resolve`]); a referência que não aponta tarefa nenhuma some.
+    pub(crate) fn depends_on<'b>(&'b self, task: &'b SpecEvent) -> impl Iterator<Item = u64> + 'b {
+        task.fields.get("depends_on").and_then(Value::as_array).into_iter().flatten().filter_map(|value| self.resolve(value))
+    }
 }
 
 /// As dependências de cada tarefa vigente que não apontam tarefa nenhuma
@@ -53,6 +81,7 @@ fn task_ref(after: &SpecLog, codes: &BTreeMap<u64, String>, value: &Value) -> Op
 /// tarefas com alguma dependência quebrada.
 pub(crate) fn broken_dependencies(log: &SpecLog) -> BTreeMap<u64, Vec<String>> {
     let codes = log.codes();
+    let refs = TaskRefs::new(log, &codes);
     log.visible()
         .into_iter()
         .filter(|event| event.event_type == "task")
@@ -63,7 +92,7 @@ pub(crate) fn broken_dependencies(log: &SpecLog) -> BTreeMap<u64, Vec<String>> {
                 .and_then(Value::as_array)
                 .into_iter()
                 .flatten()
-                .filter(|value| task_ref(log, &codes, value).is_none())
+                .filter(|value| refs.resolve(value).is_none())
                 .map(|value| dependency_name(&codes, value))
                 .collect();
             (!broken.is_empty()).then_some((task.id, broken))
@@ -85,11 +114,12 @@ pub(super) fn removal_rule(event_type: &str, before: &SpecLog, after: &SpecLog) 
         return Ok(());
     }
     let (codes_before, codes_after) = (before.codes(), after.codes());
+    let (refs_before, refs_after) = (TaskRefs::new(before, &codes_before), TaskRefs::new(after, &codes_after));
     let mut removed = BTreeSet::new();
     let mut dependents = BTreeSet::new();
     for task in after.visible().into_iter().filter(|event| event.event_type == "task") {
         let values = task.fields.get("depends_on").and_then(Value::as_array).into_iter().flatten();
-        for value in values.filter(|value| task_ref(before, &codes_before, value).is_some() && task_ref(after, &codes_after, value).is_none()) {
+        for value in values.filter(|value| refs_before.resolve(value).is_some() && refs_after.resolve(value).is_none()) {
             removed.insert(dependency_name(&codes_after, value));
             dependents.insert(codes_after.get(&task.id).cloned().unwrap_or_else(|| task.id.to_string()));
         }
@@ -105,13 +135,6 @@ pub(super) fn removal_rule(event_type: &str, before: &SpecLog, after: &SpecLog) 
 fn new_task<'a>(before: &SpecLog, after: &'a SpecLog) -> Option<&'a SpecEvent> {
     let had: BTreeSet<u64> = before.events.iter().map(|event| event.id).collect();
     after.events.iter().find(|event| event.event_type == "task" && !had.contains(&event.id))
-}
-
-/// As tarefas de que `task` depende, já resolvidas a números; uma referência
-/// que não aponta tarefa nenhuma desta spec some da lista — quem confere a
-/// existência da dependência é [`task_dependency_rule`], não este helper.
-fn task_depends_on(task: &SpecEvent, after: &SpecLog, codes: &BTreeMap<u64, String>) -> Vec<u64> {
-    task.fields.get("depends_on").and_then(Value::as_array).into_iter().flatten().filter_map(|value| task_ref(after, codes, value)).collect()
 }
 
 /// Os nomes das dependências que `task` herda da versão anterior dela, a que
@@ -172,16 +195,19 @@ pub(super) fn task_dependency_rule(before: &SpecLog, after: &SpecLog) -> Result<
         return Ok(());
     };
     let codes = after.codes();
+    let refs = TaskRefs::new(after, &codes);
     let task_label = codes.get(&task.id).cloned().unwrap_or_else(|| task.id.to_string());
     let inherited = inherited_dependencies(task, before, &codes);
     let raw: Vec<Value> = task.fields.get("depends_on").and_then(Value::as_array).cloned().unwrap_or_default();
     for value in &raw {
-        if task_ref(after, &codes, value).is_none() && !inherited.contains(&dependency_name(&codes, value)) {
+        if refs.resolve(value).is_none() && !inherited.contains(&dependency_name(&codes, value)) {
             return Err(Refusal::TaskDependsOnUnknown { task: task_label, depends_on: dependency_label(value) });
         }
     }
+    // A referência que não aponta tarefa nenhuma some do grafo: quem confere
+    // a existência da dependência é o laço acima.
     let graph: BTreeMap<u64, Vec<u64>> =
-        after.visible().into_iter().filter(|event| event.event_type == "task").map(|event| (event.id, task_depends_on(event, after, &codes))).collect();
+        after.visible().into_iter().filter(|event| event.event_type == "task").map(|event| (event.id, refs.depends_on(event).collect())).collect();
     if let Some(cycle) = find_cycle(task.id, &graph) {
         let names = cycle.into_iter().map(|id| codes.get(&id).cloned().unwrap_or_else(|| id.to_string())).collect();
         return Err(Refusal::TaskDependencyCycle { cycle: names });

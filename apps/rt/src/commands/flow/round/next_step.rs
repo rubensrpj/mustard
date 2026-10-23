@@ -22,7 +22,8 @@ pub(super) struct Standing<'a> {
     pub(super) dispatched: bool,
     /// As ondas com agente trabalhando, cada uma com o número do envio dela.
     pub(super) running: &'a BTreeMap<u64, u64>,
-    /// As ondas em andamento, contando a cujo agente nunca começou.
+    /// As ondas em andamento, cada uma com o número do envio dela, contando
+    /// também a onda cujo agente nunca começou.
     pub(super) in_progress: &'a BTreeMap<u64, u64>,
     /// Outra linha da resposta já diz o que falta: a onda parada, a volta
     /// que espera o clique ou a escolha que segura uma onda.

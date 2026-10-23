@@ -15,8 +15,11 @@
 //! (`backlog`) forma no máximo uma onda por vaga livre, cada uma com as
 //! tarefas do mesmo tipo de trabalho, com decisões tipadas do Jev em cache,
 //! ou por arquivos e relações atuais do scan quando não há Jev. A onda montada
-//! que não saiu se desfaz, e as tarefas dela voltam ao backlog e entram na
-//! conta.
+//! que não saiu por outro motivo, como a falta de cópia, se desfaz, e as
+//! tarefas dela voltam ao backlog e entram na conta. A que a rodada segurou à
+//! espera da escolha dos itens ou da escolha das skills pelo Jev não se
+//! desfaz: segue gravada, com as tarefas dela, e sai com o número que ganhou
+//! na rodada em que a decisão chega.
 //!
 //! **A escolha dos itens do pedido.** Antes de criar a cópia de uma onda
 //! pronta, a rodada olha os itens combinados que o pedido dela não leva nem
