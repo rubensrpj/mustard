@@ -548,7 +548,10 @@ pub(super) fn run_entered_round(
     // antes de qualquer trava, pela spec gravada, e a resposta fica gravada:
     // com as travas presas, o despacho só a lê. A que o Jev não respondeu
     // vai em `reserves`.
-    let early = super::dispatch_jev::ask_before_locks(&opts.root, root, &spec, &log, caller.session, lang);
+    // O Jev da escolha das skills se carrega uma vez na rodada: as duas
+    // passadas antes das travas e o despacho o usam.
+    let picks_jev = crate::shared::jev::yes_no::project_jev(root, &spec, crate::shared::skill_cycle::PICK_CALL);
+    let early = super::dispatch_jev::ask_before_locks(&opts.root, root, &spec, &log, caller.session, lang, picks_jev.as_deref());
     // A trava das cópias vale da volta ao despacho, inteira: duas rodadas do
     // mesmo checkout nunca soltam a mesma onda nem pegam a mesma vaga, e
     // nenhuma limpeza tira uma cópia no meio do preparo. A spec que fechou ou
@@ -577,7 +580,7 @@ pub(super) fn run_entered_round(
         super::report::take_report_with_mine(&opts.root, root, &spec, raw, &log, lang, caller, mine)?;
     // O commit desta rodada solta a tarefa que esperava a onda comitada: a
     // passada de antes pergunta de novo, para a onda dela sair agora.
-    let early = super::dispatch_jev::ask_after_commit((&opts.root, root, &spec, &path), commit.is_some(), early, caller.session, lang);
+    let early = super::dispatch_jev::ask_after_commit((&opts.root, root, &spec, &path), commit.is_some(), early, caller.session, lang, picks_jev.as_deref());
     // A pergunta ao Jev de cada volta que espera a decisão só sai depois de
     // soltas a trava do passo do git e a das cópias; a que ele não respondeu
     // vai em `reserves`.
@@ -608,7 +611,7 @@ pub(super) fn run_entered_round(
     // A recusa que vem depois deste ponto chega depois do commit e das
     // gravações da volta, e às vezes depois de envios já gravados: ela sai
     // junto do que a rodada já fez ([`Done::after_work`]), e nunca no lugar disso.
-    let entered = Entered { spec: &spec, path: &path, phase: &phase, log_on_entry, operations_on_entry, paused, held };
+    let entered = Entered { spec: &spec, path: &path, phase: &phase, log_on_entry, operations_on_entry, paused, held, picks_jev: picks_jev.as_deref() };
     let mut done = Done { recorded, formatted, warnings, commit, dispatched: Vec::new() };
     let dispatched = dispatch_round(opts, root, lang, caller, mine, entered, &copies, &mut done);
     drop(copies);
@@ -626,6 +629,8 @@ struct Entered<'a> {
     operations_on_entry: SpecLog,
     paused: Vec<u64>,
     held: Vec<HeldReturn>,
+    /// O Jev da escolha das skills, o que a rodada carregou ao entrar.
+    picks_jev: Option<&'a crate::shared::jev::yes_no::AskFn<'a>>,
 }
 
 /// O despacho da rodada, depois de assumidas as voltas, com a trava das
@@ -643,7 +648,7 @@ fn dispatch_round(
     done: &mut Done,
 ) -> Result<Value, RoundRefusal> {
     let session = caller.session;
-    let Entered { spec, path, phase, log_on_entry, operations_on_entry, paused, held } = entered;
+    let Entered { spec, path, phase, log_on_entry, operations_on_entry, paused, held, picks_jev } = entered;
     let spec = spec.to_string();
     let Done { recorded, formatted, warnings, commit, dispatched } = done;
 
@@ -725,9 +730,10 @@ fn dispatch_round(
     let asker = super::dispatch_jev::Asker::new(&opts.root, root, &spec, &locked, super::dispatch_jev::Phase::Read);
     // O Jev de contexto se carrega uma vez: a montagem o usa para saber se a
     // onda montada e não enviada espera a escolha dos itens, e a escolha, mais
-    // abaixo, para perguntar.
+    // abaixo, para perguntar. O da escolha das skills, que a rodada carregou ao
+    // entrar, a montagem o usa para saber se a onda espera a escolha delas.
     let context_jev = crate::shared::jev::for_context(root, &spec);
-    let asking = (&asker, context_jev.filter.as_deref());
+    let asking = (&asker, context_jev.filter.as_deref(), picks_jev);
     let forming = crate::commands::flow::triage::form_for_round(&opts.root, &spec, session, &asker);
     let locked = if forming.applied {
         store::read(path).map_err(RoundRefusal::Refused)?.ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.clone() }))?

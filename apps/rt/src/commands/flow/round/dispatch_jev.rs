@@ -319,16 +319,18 @@ pub(crate) fn without(ready: Vec<u64>, waiting: &BTreeSet<u64>) -> Vec<u64> {
 /// rodada solta onda no meio, e a pergunta a segura no máximo pelo prazo do
 /// Jev; a do passo do git o commit já soltou. Devolve os pedidos de reserva
 /// de `early`, os da passada de antes, mais os novos desta; sem commit,
-/// `early` como veio.
+/// `early` como veio. O Jev da escolha das skills (`picks_jev`) é o que a
+/// rodada já carregou.
 pub(super) fn ask_after_commit(
     (start, root, spec, path): (&Path, &Path, &str, &Path),
     committed: bool,
     mut early: Vec<Value>,
     session: Option<&str>,
     lang: Locale,
+    picks_jev: Option<&crate::shared::jev::yes_no::AskFn<'_>>,
 ) -> Vec<Value> {
     let Some(log) = mustard_core::io::spec_events::read(path).ok().flatten().filter(|_| committed) else { return early };
-    for asked in ask_before_locks(start, root, spec, &log, session, lang) {
+    for asked in ask_before_locks(start, root, spec, &log, session, lang, picks_jev) {
         if !early.contains(&asked) {
             early.push(asked);
         }
@@ -342,13 +344,23 @@ pub(super) fn ask_after_commit(
 /// a formação da lista, a montagem das ondas, a escolha dos itens de cada
 /// onda pronta e a das skills das tarefas dela —, e cada pergunta ao Jev sem
 /// decisão sai agora, com a resposta gravada. Volta os pedidos de reserva da
-/// pergunta que o Jev não respondeu.
-pub(super) fn ask_before_locks(start: &Path, root: &Path, spec: &str, log: &SpecLog, session: Option<&str>, lang: Locale) -> Vec<Value> {
+/// pergunta que o Jev não respondeu. O Jev da escolha das skills
+/// (`picks_jev`) é o que a rodada já carregou: a passada o usa na escolha das
+/// skills e o passa à montagem, que o usa para saber se a onda montada espera
+/// por ela.
+pub(super) fn ask_before_locks(
+    start: &Path,
+    root: &Path,
+    spec: &str,
+    log: &SpecLog,
+    session: Option<&str>,
+    lang: Locale,
+    picks_jev: Option<&crate::shared::jev::yes_no::AskFn<'_>>,
+) -> Vec<Value> {
     // Com o Jev desligado em todos os pontos, não há o que perguntar: o
     // despacho segue a regra de sempre, sem a passada.
     let waves_jev = crate::shared::jev::for_waves(root, spec);
     let context_jev = crate::shared::jev::for_context(root, spec);
-    let picks_jev = crate::shared::jev::yes_no::project_jev(root, spec, crate::shared::skill_cycle::PICK_CALL);
     let order_jev = crate::shared::jev::yes_no::orchestration_jev(root, spec, crate::shared::jev::TASK_TRIAGE_CALL).is_some();
     if waves_jev.filter.is_none() && !super::item_choice::asks_jev(context_jev.filter.as_deref()) && picks_jev.is_none() && !order_jev {
         return Vec::new();
@@ -358,7 +370,7 @@ pub(super) fn ask_before_locks(start: &Path, root: &Path, spec: &str, log: &Spec
     let judge = waves_jev.filter.as_deref().map(|jev| move |board: &crate::shared::judgement::Board| jev.judge_backlog(board));
     let judging = judge.as_ref().map(|judge| judge as &super::backlog::Judge<'_>);
     let limit = super::queue::max_parallel(root);
-    let Ok(planned) = super::backlog::planned_backlog(start, spec, log, limit, (judging, (&asker, context_jev.filter.as_deref())), forming.pending.is_some()) else {
+    let Ok(planned) = super::backlog::planned_backlog(start, spec, log, limit, (judging, (&asker, context_jev.filter.as_deref(), picks_jev)), forming.pending.is_some()) else {
         return asker.into_reserves();
     };
     let vacancies = super::vacancy::vacancies(root, spec, &planned);
@@ -371,7 +383,7 @@ pub(super) fn ask_before_locks(start: &Path, root: &Path, spec: &str, log: &Spec
     if let Some(jev) = picks_jev.filter(|_| !ready.is_empty()) {
         let flight = mustard_core::io::wave_prompt::Flight { running: ready.clone(), choices, ..Default::default() };
         let built = mustard_core::io::wave_prompt::prompts(root, spec, &planned, lang, &flight, &ready);
-        crate::shared::skill_cycle::picks_decided(&built, &ready, Some(&*jev), &asker);
+        crate::shared::skill_cycle::picks_decided(&built, &ready, Some(jev), &asker);
     }
     asker.into_reserves()
 }

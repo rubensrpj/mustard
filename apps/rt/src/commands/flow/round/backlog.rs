@@ -43,12 +43,13 @@ use crate::shared::judgement::{Board, BoardTask, BoardWave, Judged, WaveJudge};
 /// julgamento.
 pub(crate) type Judge<'a> = dyn Fn(&Board) -> Result<Judged, FilterError> + 'a;
 
-/// Quem decide as perguntas ao Jev da montagem ([`Asker`]) e o Jev de
-/// contexto da rodada, que diz se a onda montada e não enviada espera a
-/// escolha dos itens
-/// ([`held_for_the_jev`](super::item_choice::held_for_the_jev)). A rodada
-/// carrega o Jev de contexto uma vez e o passa a cada montagem.
-pub(crate) type Asking<'a, 'b> = (&'a Asker<'b>, Option<&'a dyn WaveJudge>);
+/// Quem decide as perguntas ao Jev da montagem ([`Asker`]), o Jev de contexto
+/// da rodada, que diz se a onda montada e não enviada espera a escolha dos
+/// itens ([`held_for_the_jev`](super::item_choice::held_for_the_jev)), e o
+/// Jev da escolha das skills, que diz o mesmo da escolha delas
+/// ([`held_for_picks`](crate::shared::skill_cycle::held_for_picks)). A rodada
+/// carrega os dois Jevs uma vez e os passa a cada montagem.
+pub(crate) type Asking<'a, 'b> = (&'a Asker<'b>, Option<&'a dyn WaveJudge>, Option<&'a crate::shared::jev::yes_no::AskFn<'a>>);
 
 /// O que a montagem fez numa rodada: as ondas que formou e, pelo código de
 /// cada tarefa pronta que ela deixou de fora, o motivo exato — o que o quadro
@@ -328,7 +329,7 @@ fn assemble(
 ) -> Result<(Assembly, Option<SpecLog>), mustard_core::domain::spec_events::Refusal> {
     use crate::shared::dag::{Batch, pack_by_local_evidence};
 
-    let asker = asking.map(|(asker, _)| asker);
+    let asker = asking.map(|(asker, ..)| asker);
 
     let log = locked;
     let running = waves_in_progress(log);
@@ -343,9 +344,9 @@ fn assemble(
     // pelo Jev fica: sai com o número que ganhou quando a decisão chega.
     let project = crate::commands::spec_events::project(start);
     let undone = match asking {
-        Some((asker, context)) => {
+        Some((asker, context, picks)) => {
             let undone = &undone - &super::item_choice::held_for_the_jev(log, &undone, context, asker);
-            &undone - &crate::shared::skill_cycle::held_for_picks(&project.root, spec, (log, project.lang), &undone, asker)
+            &undone - &crate::shared::skill_cycle::held_for_picks(&project.root, spec, (log, project.lang), &undone, picks, asker)
         }
         None => undone,
     };

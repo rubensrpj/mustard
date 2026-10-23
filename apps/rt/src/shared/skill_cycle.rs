@@ -264,16 +264,24 @@ pub(crate) fn picks(root: &Path, spec: &str, built: &[WavePrompt], holdable: &BT
 
 /// As ondas de `waves`, montadas pelo backlog e não enviadas, da spec `spec`
 /// do projeto `root`, lida em `log`, que a rodada que as montou segurou à
-/// espera da escolha das skills pelo Jev: alguma tarefa delas tem mais skills
-/// candidatas do que cabem, e algum pedido dessa escolha não tinha decisão
-/// gravada, por `asker`, quando a onda foi gravada. A montagem não as desfaz:
-/// cada uma sai com o número que ganhou, na rodada em que a decisão chega. A
-/// onda que já tinha a decisão e não saiu por outro motivo fica de fora, e,
-/// sem o Jev da escolha das skills, nenhuma onda é segurada. O empate das
-/// skills de uma tarefa não depende do idioma `lang` nem das ondas que estão
-/// fora: o pedido se monta sem elas.
-pub(crate) fn held_for_picks(root: &Path, spec: &str, (log, lang): (&SpecLog, Locale), waves: &BTreeSet<u64>, asker: &Asker<'_>) -> BTreeSet<u64> {
-    if waves.is_empty() || yes_no::project_jev(root, spec, PICK_CALL).is_none() {
+/// espera da escolha das skills pelo Jev `jev`, o que a rodada já carregou:
+/// alguma tarefa delas tem mais skills candidatas do que cabem, e algum
+/// pedido dessa escolha não tinha decisão gravada, por `asker`, quando a onda
+/// foi gravada. A montagem não as desfaz: cada uma sai com o número que
+/// ganhou, na rodada em que a decisão chega. A onda que já tinha a decisão e
+/// não saiu por outro motivo fica de fora, e, sem o Jev da escolha das
+/// skills, nenhuma onda é segurada. O empate das skills de uma tarefa não
+/// depende do idioma `lang` nem das ondas que estão fora: o pedido se monta
+/// sem elas.
+pub(crate) fn held_for_picks(
+    root: &Path,
+    spec: &str,
+    (log, lang): (&SpecLog, Locale),
+    waves: &BTreeSet<u64>,
+    jev: Option<&yes_no::AskFn<'_>>,
+    asker: &Asker<'_>,
+) -> BTreeSet<u64> {
+    if waves.is_empty() || jev.is_none() {
         return BTreeSet::new();
     }
     let formed = log.last_by_wave("wave");
