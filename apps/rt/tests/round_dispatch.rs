@@ -2394,6 +2394,59 @@ fn the_new_return_of_a_rejected_wave_is_taken_and_committed() {
     assert!(out["warnings"].as_array().into_iter().flatten().all(|w| w["reason"] != json!("round-wave-rejected")), "{out}");
 }
 
+/// Um Jev de mentira que diz sim à pergunta da mesma falha e deixa as outras
+/// sem resposta.
+fn same_failure_jev() -> FakeJev {
+    FakeJev::start(|asked| {
+        let answers: serde_json::Map<String, Value> = asked["questions"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter(|(_, question)| question.to_string().contains("the same problem"))
+            .map(|(key, _)| (key.clone(), json!({"type": "noul", "noul": 0.95})))
+            .collect();
+        (200, json!({"model": "jev-1.13.0", "answers": answers, "usage": {"input_tokens": 10, "output_tokens": 0}}))
+    })
+}
+
+/// As tarefas de criar uma skill gravadas na spec.
+fn skill_creator_tasks(project: &Project) -> Vec<mustard_core::domain::spec_events::SpecEvent> {
+    project.log().visible().into_iter().filter(|e| e.event_type == "task" && e.str_field("skill") == Some("skill-creator")).cloned().collect()
+}
+
+/// A mesma falha reprovada duas vezes na onda cuja tarefa cobre um critério:
+/// a tarefa de criar a skill nasce cobrindo esse critério, e, com a onda
+/// reprovada enfim aprovada, a rodada a manda numa onda, sem o aviso da
+/// tarefa que não cobre nada.
+#[test]
+fn the_skill_task_of_a_repeated_failure_covers_the_items_of_the_rejected_wave_and_leaves_in_a_wave() {
+    let jev = same_failure_jev();
+    let (mut project, criterion, _, _) = backlog_project(&[&[GREETING]]);
+    let first = project.run(&["round", "--dispatch", "--spec", SPEC]);
+    assert_eq!(waves_in(&first, "dispatch"), vec![1], "{first}");
+    sent_by(&project, &[1], closed_process::closed_process());
+    deliver_in_copy(&project, 1, "hello\n");
+    assert_eq!(reject(&project, 1, REJECTION)["ok"], json!(true));
+    assert!(dispatch_new_agent(&project).pointer("/hookSpecificOutput/updatedInput/prompt").is_some());
+    deliver_in_copy(&project, 1, "hi\n");
+    project.jev = Some(jev.url.clone());
+
+    assert_eq!(reject(&project, 1, "A saudação saiu em inglês de novo.")["ok"], json!(true));
+
+    let tasks = skill_creator_tasks(&project);
+    assert_eq!(tasks.len(), 1, "one skill task for the repeated failure: {tasks:?}");
+    assert_eq!(tasks[0].ints("covers"), vec![criterion], "{:?}", tasks[0].fields);
+    project.jev = None;
+    assert!(dispatch_new_agent(&project).pointer("/hookSpecificOutput/updatedInput/prompt").is_some());
+    deliver_in_copy(&project, 1, "olá\n");
+    let committed = project.run(&["round", "--dispatch", "--spec", SPEC, "--report", r#"<USAGE>{"wave":1}</USAGE>"#]);
+    assert!(committed.get("commit").is_some(), "{committed}");
+    let out = if wave_of(&project, tasks[0].id).is_some() { committed } else { project.run(&["round", "--dispatch", "--spec", SPEC]) };
+    let warned = out["warnings"].as_array().into_iter().flatten().any(|warning| warning["reason"] == json!("task-without-covers"));
+    assert!(!warned, "{out}");
+    assert_eq!(wave_of(&project, tasks[0].id), Some(2), "{out}");
+}
+
 /// As refs em que a limpeza das cópias guardou código, no repositório
 /// principal.
 fn kept_refs(project: &Project) -> Vec<String> {

@@ -45,7 +45,7 @@ use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Map, Value, json};
 
 use crate::commands::flow::round::dispatch_jev::{Asker, Outcome, reserved};
-use crate::shared::failure_skills::{copy_folder, runs, skill_dir, target_spec};
+use crate::shared::failure_skills::{copy_folder, runs, skill_dir, skill_task_covers, target_spec, with_covers};
 use crate::shared::jev::yes_no::{self, YesNo};
 use crate::shared::secret::without_secrets;
 
@@ -452,7 +452,11 @@ fn update_task(start: &Path, spec: &str, name: &str, why: &Why, lang: Locale) ->
         return Ok(None);
     }
     let Some(target) = target_spec(start, spec) else { return Ok(None) };
-    let draft = update_draft(&root, name, &skill, why, lang);
+    let waves: Vec<(&str, u64)> = match why {
+        Why::Failure { spec, wave, .. } => vec![(spec.as_str(), *wave)],
+        Why::Change { .. } | Why::Gone { .. } => Vec::new(),
+    };
+    let draft = with_covers(update_draft(&root, name, &skill, why, lang), skill_task_covers(start, &target, &waves));
     let written = crate::commands::spec_events::write::record(start, &target, "task", draft, PhaseWriter::Binary).map_err(|refusal| refusal.message(lang))?;
     let id = written.written.id;
     let mark = SkillTask { spec: target.clone(), task: Some(id) };
