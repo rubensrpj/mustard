@@ -5,10 +5,11 @@
 //! ([`super::lost_commit`]), e nunca pela mensagem.
 use super::{
     answer::RoundRefusal,
-    commit::{check_commit_text, covered, git, needs_commit, shorten_to},
+    commit::{check_commit_text, covered, git, needs_commit},
     report::WaveReport,
 };
 use mustard_core::domain::spec_events::{MESSAGE_TITLE_MAX, without_forbidden};
+use mustard_core::domain::text::whole_words;
 use mustard_core::platform::i18n::{Locale, translate};
 use std::path::Path;
 
@@ -149,7 +150,7 @@ pub(super) fn message(root: &Path, wave: &WaveReport, lang: Locale) -> Result<Op
         .into_iter()
         .chain([format!("{kind}: ")])
         .find_map(|prefix| {
-            let cut = shorten_to(&summary, MESSAGE_TITLE_MAX.saturating_sub(prefix.chars().count()));
+            let cut = whole_words(&summary, MESSAGE_TITLE_MAX.saturating_sub(prefix.chars().count()));
             (!cut.is_empty()).then(|| format!("{prefix}{cut}"))
         })
         .unwrap_or_else(|| format!("{kind}: {summary}"));

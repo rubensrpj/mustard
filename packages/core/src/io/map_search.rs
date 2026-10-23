@@ -89,6 +89,7 @@ use crate::domain::map_filter::FilterCandidate;
 use crate::domain::map_select::{Linked, Links};
 use crate::domain::project_map::DeclAt;
 use crate::domain::search::folded_name;
+use crate::domain::text::{cut, CutAt};
 use crate::io::map_db::MapDb;
 use crate::io::map_fill;
 use crate::io::map_index::{Level, DECL_LEVEL, FILE_LEVEL, SPEC_LEVEL};
@@ -859,7 +860,7 @@ fn best_line(body: &str, words: &[Vec<String>], normalizer: &mut Normalizer) -> 
             best = Some((hits, line));
         }
     }
-    best.map(|(_, line)| crate::domain::spec_index::cut(line, SPEC_SENTENCE_CHARS))
+    best.map(|(_, line)| cut(line, SPEC_SENTENCE_CHARS, CutAt::Char))
 }
 
 // ---------------------------------------------------------------------------

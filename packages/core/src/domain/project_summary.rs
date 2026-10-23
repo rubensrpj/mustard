@@ -14,6 +14,7 @@ use serde_json::{Value, json};
 
 use crate::domain::spec_events::{SpecEvent, SpecLog, pr_message};
 use crate::domain::spec_state::State;
+use crate::domain::text::{CutAt, cut, one_line};
 use crate::platform::i18n::{Locale, translate};
 
 /// O teto do que saiu, em caracteres.
@@ -95,26 +96,6 @@ pub struct Agreed {
     pub paths: Vec<String>,
 }
 
-/// O texto numa linha só, com um branco entre as palavras.
-#[must_use]
-pub fn one_line(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-/// O texto numa linha, com no máximo `max` caracteres, cortado no fim da
-/// última palavra que cabe; o cortado termina em reticências.
-#[must_use]
-pub fn cut_at_word(text: &str, max: usize) -> String {
-    let text = one_line(text);
-    if text.chars().count() <= max {
-        return text;
-    }
-    let kept: String = text.chars().take(max.saturating_sub(1)).collect();
-    let end = kept.rfind(' ').filter(|at| *at > 0).unwrap_or(kept.len());
-    let head = kept[..end].trim_end_matches(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | ':' | '-' | '—'));
-    format!("{head}…")
-}
-
 /// O corpo do pull request numa linha: cada linha sem o marcador de lista,
 /// separada da seguinte por ponto e vírgula quando não termina em pontuação.
 fn body_line(body: &str) -> String {
@@ -186,7 +167,7 @@ pub fn title_and_delivered(log: &SpecLog, spec: &str, lang: Locale) -> (String, 
         .or_else(|| message.map(|(_, body)| body_line(&body)).filter(|body| !body.is_empty()))
         .or(goal)
         .unwrap_or_default();
-    (cut_at_word(&title, TITLE_CHARS), cut_at_word(&body, DELIVERED_CHARS))
+    (cut(&one_line(&title), TITLE_CHARS, CutAt::Word), cut(&one_line(&body), DELIVERED_CHARS, CutAt::Word))
 }
 
 /// Os caminhos de uma lista `files`, como objetos com o caminho ou como texto.
@@ -285,12 +266,12 @@ pub fn agreed_items(log: &SpecLog) -> Vec<Agreed> {
 /// exemplo em meia linha, tudo em [`RULE_CHARS`].
 #[must_use]
 pub fn rule_line(item: &Agreed) -> String {
-    let text = cut_at_word(&item.text, RULE_CHARS);
+    let text = cut(&one_line(&item.text), RULE_CHARS, CutAt::Word);
     let room = RULE_CHARS.saturating_sub(text.chars().count() + 3).min(NOTE_CHARS);
     if item.note.is_empty() || room < NOTE_MIN_CHARS {
         return text;
     }
-    format!("{text} — {}", cut_at_word(&item.note, room))
+    format!("{text} — {}", cut(&one_line(&item.note), room, CutAt::Word))
 }
 
 /// As regras de um mesmo conjunto de caminhos, que vão num arquivo só.

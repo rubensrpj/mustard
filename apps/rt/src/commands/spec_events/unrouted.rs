@@ -7,8 +7,10 @@
 use std::collections::BTreeMap;
 
 use mustard_core::domain::spec_events::SpecEvent;
+use mustard_core::domain::text::{CutAt, cut, one_line};
 
-/// Quantos caracteres do texto de uma mensagem entram na linha dela.
+/// Quantos caracteres do texto de uma mensagem entram na linha dela, antes
+/// das reticências.
 const START_CHARS: usize = 100;
 
 /// A linha de cada mensagem de `messages`, na ordem recebida.
@@ -17,16 +19,13 @@ pub(crate) fn lines<'a>(messages: impl IntoIterator<Item = &'a SpecEvent>, codes
 }
 
 /// O código da mensagem, dois pontos e o começo do texto dela numa linha só:
-/// as quebras e os espaços repetidos viram um espaço, e o texto que passa de
-/// [`START_CHARS`] termina em reticências.
+/// as quebras e os espaços repetidos viram um espaço, e o texto que não cabe
+/// em [`START_CHARS`] caracteres e as reticências fica com o começo e termina
+/// nelas.
 fn line(message: &SpecEvent, codes: &BTreeMap<u64, String>) -> String {
     let code = codes.get(&message.id).cloned().unwrap_or_else(|| message.id.to_string());
-    let text = message.str_field("text").unwrap_or_default().split_whitespace().collect::<Vec<_>>().join(" ");
-    if text.chars().count() <= START_CHARS {
-        return format!("{code}: {text}");
-    }
-    let start: String = text.chars().take(START_CHARS).collect();
-    format!("{code}: {}…", start.trim_end())
+    let text = one_line(message.str_field("text").unwrap_or_default());
+    format!("{code}: {}", cut(&text, START_CHARS + 1, CutAt::Char))
 }
 
 #[cfg(test)]

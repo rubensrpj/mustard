@@ -99,6 +99,7 @@ use std::path::Path;
 use mustard_core::domain::model::contract::{AskAnswer, Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::domain::spec_events::Refusal;
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState};
+use mustard_core::domain::text::{cut, CutAt};
 use mustard_core::io::spec_events::spec_root;
 use mustard_core::platform::error::Error;
 use mustard_core::platform::i18n::{translate, Locale};
@@ -459,12 +460,15 @@ fn decide_change(answer: &Answered<'_>) -> Option<String> {
 // A resposta gravada
 // ---------------------------------------------------------------------------
 
+/// Quantos caracteres de cada rótulo citado ficam antes das reticências.
+const QUOTED_CHARS: usize = 80;
+
 /// Os rótulos entre aspas, separados por vírgula, cada um cortado: uma
 /// resposta digitada pode ser uma mensagem inteira.
 fn quote(values: &[String]) -> String {
     values
         .iter()
-        .map(|v| format!("\"{}\"", truncate(v.trim())))
+        .map(|v| format!("\"{}\"", cut(v.trim(), QUOTED_CHARS + 1, CutAt::Char)))
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -472,15 +476,6 @@ fn quote(values: &[String]) -> String {
 /// As opções oferecidas entre aspas, ou um traço quando nada se leu.
 fn menu(offered: &[String]) -> String {
     if offered.is_empty() { "—".to_string() } else { quote(offered) }
-}
-
-fn truncate(s: &str) -> String {
-    const MAX: usize = 80;
-    if s.chars().count() <= MAX {
-        return s.to_string();
-    }
-    let head: String = s.chars().take(MAX).collect();
-    format!("{head}…")
 }
 
 /// Grava a pergunta respondida como mensagem do usuário, na spec atual. O

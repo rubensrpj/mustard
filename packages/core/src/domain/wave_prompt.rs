@@ -43,8 +43,9 @@ use crate::domain::lessons::{Scope, applies_to, text_only};
 use crate::domain::pattern::{Direction, Pattern};
 use crate::domain::project_map::{QUALITY_TOP_PERCENT, Recipe, RecipeOf};
 use crate::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog, Step, TASK_TITLE_MAX};
-use crate::domain::spec_index::{cut, title_of};
+use crate::domain::spec_index::title_of;
 use crate::domain::spec_state::State;
+use crate::domain::text::{CutAt, cut};
 use crate::platform::i18n::{Locale, translate};
 
 mod changed;
@@ -693,7 +694,7 @@ fn without_long_paste(text: &str, code: &str, lang: Locale) -> String {
 pub fn item_title(item: &SpecEvent) -> Option<String> {
     let own = item.str_field("title").map(str::trim).filter(|title| !title.is_empty());
     let title = own.map(str::to_string).or_else(|| title_of(item))?;
-    Some(cut(title.trim(), TASK_TITLE_MAX))
+    Some(cut(title.trim(), TASK_TITLE_MAX, CutAt::Char))
 }
 
 /// Quantas palavras do começo do texto a mensagem do usuário leva no pedido:

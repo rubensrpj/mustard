@@ -29,6 +29,7 @@ use serde_json::{Map, Value};
 
 use crate::domain::spec_events::{render_line, search_field, Refusal, SpecEvent, SpecLog, FORMAT_VERSION};
 use crate::domain::spec_state::State;
+use crate::domain::text::{cut, CutAt};
 use crate::platform::i18n::{translate, Locale};
 
 /// O tipo da primeira linha, a do projeto.
@@ -271,7 +272,7 @@ pub fn title_of(event: &SpecEvent) -> Option<String> {
         return Some(bold.to_string());
     }
     let sentence = first_sentence(text);
-    (!sentence.is_empty()).then(|| cut(sentence, TITLE_CHARS))
+    (!sentence.is_empty()).then(|| cut(sentence, TITLE_CHARS, CutAt::Char))
 }
 
 /// A primeira frase de um texto: até o primeiro ponto final, de exclamação ou
@@ -292,15 +293,6 @@ pub fn first_sentence(text: &str) -> &str {
         }
     }
     text
-}
-
-/// O texto com no máximo `max` caracteres; o cortado termina em reticências.
-pub(crate) fn cut(text: &str, max: usize) -> String {
-    if text.chars().count() <= max {
-        return text.to_string();
-    }
-    let kept: String = text.chars().take(max.saturating_sub(1)).collect();
-    format!("{}…", kept.trim_end())
 }
 
 /// O índice lido linha a linha.

@@ -55,19 +55,6 @@ pub(crate) fn waves_checked_only(log: &SpecLog) -> BTreeSet<u64> {
         .collect()
 }
 
-/// O começo de `text` que cabe em `room` caracteres, cortado sempre numa
-/// palavra inteira, sem sobra de espaço nem de pontuação no fim: vazio quando
-/// nem a primeira palavra cabe. O texto que já cabe volta como está.
-pub(super) fn shorten_to(text: &str, room: usize) -> String {
-    if text.chars().count() <= room {
-        return text.to_string();
-    }
-    let kept: String = text.chars().take(room).collect();
-    let whole_word = text.chars().nth(room).is_some_and(char::is_whitespace);
-    let cut = if whole_word { kept.as_str() } else { kept.rsplit_once(char::is_whitespace).map_or("", |(head, _)| head) };
-    cut.trim_end_matches(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | ':' | '-' | '.')).to_string()
-}
-
 /// A mensagem de commit cabe no modelo, pela MESMA conferência que o pull
 /// request usa.
 ///

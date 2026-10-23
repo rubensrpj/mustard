@@ -25,6 +25,7 @@ use std::path::Path;
 use mustard_core::domain::project_summary::{self as summary, Agreed, Entry, GOAL_CHARS, SURE};
 use mustard_core::domain::spec_events::SpecLog;
 use mustard_core::domain::spec_state::SpecState as _;
+use mustard_core::domain::text::{CutAt, cut, one_line};
 use mustard_core::io::project_summary as disk;
 use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{Locale, translate};
@@ -66,13 +67,13 @@ fn item_entries(items: &[Agreed]) -> Vec<(String, Value)> {
             let note = if item.kind == "decision" { "why" } else { "example" };
             let mut shown = json!({
                 "kind": item.kind,
-                "text": without_secrets(&summary::cut_at_word(&item.text, ITEM_CHARS)),
+                "text": without_secrets(&cut(&one_line(&item.text), ITEM_CHARS, CutAt::Word)),
             });
             if !item.title.is_empty() {
                 shown["title"] = json!(without_secrets(&item.title));
             }
             if !item.note.is_empty() {
-                shown[note] = json!(without_secrets(&summary::cut_at_word(&item.note, ITEM_CHARS)));
+                shown[note] = json!(without_secrets(&cut(&one_line(&item.note), ITEM_CHARS, CutAt::Word)));
             }
             (item_key(item.id), shown)
         })
