@@ -2728,7 +2728,7 @@ fn a_task_in_the_direction_of_a_running_wave_waits_for_its_return_and_leaves_wit
     assert_eq!(wave.int("summary"), Some(summary), "the next wave carries the summary: {next}");
     let out = project.command(&["run", "read", "request-2", "--spec", SPEC], "");
     let request = String::from_utf8_lossy(&out.stdout);
-    assert!(request.contains(&translate("wave_prompt.summary.title", Locale::PtBr)), "the request tells of the started work: {request}");
+    assert!(request.contains(translate("wave_prompt.summary.title", Locale::PtBr)), "the request tells of the started work: {request}");
 }
 
 /// A onda em andamento volta com tudo feito, sem tarefa por fazer e portanto
@@ -2764,7 +2764,7 @@ fn a_task_in_the_direction_of_a_wave_that_returns_with_everything_done_leaves_in
     assert_eq!(wave.int("summary"), None, "the new wave has no base: {:?}", wave.fields);
     let out = project.command(&["run", "read", "request-2", "--spec", SPEC], "");
     let request = String::from_utf8_lossy(&out.stdout);
-    assert!(!request.contains(&translate("wave_prompt.summary.title", Locale::PtBr)), "the request tells of no started work: {request}");
+    assert!(!request.contains(translate("wave_prompt.summary.title", Locale::PtBr)), "the request tells of no started work: {request}");
 }
 
 /// A onda gravada sem tarefa nenhuma, como a que uma rodada antiga deixou,
