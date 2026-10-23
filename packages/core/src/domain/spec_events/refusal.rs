@@ -242,6 +242,11 @@ pub enum Refusal {
     /// mensagem nomeia cada item não lido e manda lê-lo de dentro da cópia do
     /// revisor.
     VerdictReadMissing { missing: Vec<String> },
+    /// Um veredito que traz achados em `leftovers` sem ser o veredito final
+    /// aprovado: só ele os grava como tarefas, e em qualquer outro nada lê o
+    /// campo, e os achados se perderiam em silêncio. Nada é gravado, e a
+    /// mensagem diz onde o achado vai em cada caso.
+    VerdictLeftoversNotApproved,
     /// Um critério gravado sem declarar a forma: nenhuma das cinco do padrão
     /// de critério de aceitação. Nada é gravado, e a mensagem lista as cinco
     /// pelo nome, nos dois idiomas.
@@ -441,6 +446,7 @@ impl Refusal {
             Self::DeliveryProofOlderThanFile { .. } => "delivery-proof-older-than-file",
             Self::DeliveryItemCodeInComment { .. } => "delivery-item-code-in-comment",
             Self::VerdictReadMissing { .. } => "verdict-read-missing",
+            Self::VerdictLeftoversNotApproved => "verdict-leftovers-not-approved",
             Self::CriterionFormMissing => "criterion-form-missing",
             Self::ProofNotACommand { .. } => "proof-not-a-command",
             Self::ProofProgramUnknown { .. } => "proof-program-unknown",
@@ -749,6 +755,7 @@ impl Refusal {
             Self::VerdictReadMissing { missing } => {
                 fill("spec_events.verdict_read_missing", &[("{missing}", missing.join(", "))])
             }
+            Self::VerdictLeftoversNotApproved => fill("spec_events.verdict_leftovers_not_approved", &[]),
             Self::CriterionFormMissing => fill("spec_events.criterion_form_missing", &[]),
             Self::ProofNotACommand { criterion, found } => fill(
                 "spec_events.proof_not_a_command",

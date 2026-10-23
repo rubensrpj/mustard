@@ -259,6 +259,23 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              \"How to read each item\" in the request. Then record the verdict again. Nothing was \
              written."
         }
+        ("spec_events.verdict_leftovers_not_approved", Locale::PtBr) => {
+            "O veredito foi recusado: os achados em `leftovers` só viram tarefas no veredito final \
+             aprovado, e neste nada os leria, então se perderiam em silêncio. Tire o campo. Na \
+             revisão de uma onda, reprove com o motivo em `text` e os arquivos em `files`. Na \
+             revisão final, para reprovar, marque o item combinado afetado em `agreed` com \
+             `met:false`, `text` e `files`, e ele vira tarefa no backlog; para aprovar, os \
+             achados ficam em `leftovers`. Depois grave o veredito de novo. Nada foi gravado."
+        }
+        ("spec_events.verdict_leftovers_not_approved", Locale::EnUs) => {
+            "The verdict was refused: findings in `leftovers` become tasks only in the approved \
+             final verdict, and in this one nothing would read them, so they would be lost \
+             silently. Remove the field. In a wave review, reject with the reason in `text` and \
+             the files in `files`. In the final review, to reject, mark the affected agreed item \
+             in `agreed` with `met:false`, `text` and `files`, and it becomes a backlog task; to \
+             approve, the findings stay in `leftovers`. Then record the verdict again. Nothing \
+             was written."
+        }
         ("spec_events.criterion_form_missing", Locale::PtBr) => {
             "O critério precisa declarar a forma dele, uma das cinco do padrão. São elas: a que vale \
              sempre, a disparada por um acontecimento e a que só vale enquanto um estado durar. As \
@@ -1326,8 +1343,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            186,
-            0x22bf_8e2a_6acb_0324,
+            187,
+            0x6300_12cd_2d8a_f420,
         );
     }
 

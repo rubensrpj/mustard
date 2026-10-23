@@ -672,6 +672,87 @@ fn a_final_verdict_with_an_untitled_finding_is_refused_without_naming_the_delive
     assert_eq!(still_open["reason"], json!("review-verdict-missing"), "{still_open}");
 }
 
+/// Os eventos de veredito e de tarefa gravados: a recusa de uma gravação não
+/// muda esse total, que não conta a telemetria de cada chamada.
+fn verdicts_and_tasks(project: &Project) -> usize {
+    project.log().events.iter().filter(|e| e.event_type == "verdict" || e.event_type == "task").count()
+}
+
+/// Os achados que um veredito que não é o final aprovado traria em
+/// `leftovers`: nada lê o campo nesse veredito, e eles se perderiam em
+/// silêncio.
+fn findings() -> Value {
+    json!([{"title": "A soma não trata estouro", "detail": "A soma de números grandes estoura em src/main.rs.", "files": ["src/main.rs"]}])
+}
+
+/// A recusa que manda o achado para onde alguém o lê.
+fn assert_leftovers_refused(refused: &Value) {
+    assert_eq!(refused["ok"], json!(false), "{refused}");
+    assert_eq!(refused["reason"], json!("verdict-leftovers-not-approved"), "{refused}");
+    let hint = refused["hint"].as_str().unwrap_or_default();
+    assert!(hint.contains("leftovers") && hint.contains("agreed"), "a recusa diz onde o achado vai: {hint}");
+}
+
+/// O veredito do revisor de uma onda não é lido por quem grava tarefas dos
+/// achados: a gravação recusa o campo `leftovers` nele, sem gravar nada, e o
+/// mesmo veredito sem o campo é gravado — a recusa é pelo campo.
+#[test]
+fn a_wave_review_verdict_refuses_leftovers_instead_of_losing_them() {
+    let project = Project::new();
+    project.open();
+    survey(&project);
+    plan(&project);
+    approve(&project);
+    dispatch_wave(&project, 1);
+    record_delivery(&project, 1, "A soma apareceu.", &[("src/main.rs", "fn main() {\n    println!(\"{}\", 3);\n}\n")]);
+    let out = project.command(&["run", "round", "--dispatch", "--spec", SPEC], "");
+    let held: Value = serde_json::from_slice(&out.stdout).expect("the round answers JSON");
+    assert_eq!(held["warnings"][0]["reason"], json!("wave-review-required"), "a rodada pede o revisor da onda: {held}");
+    let before = verdicts_and_tasks(&project);
+
+    let with_findings = json!({"wave": 1, "result": "approved", "text": "Conferi o diff.", "leftovers": findings()});
+    assert_leftovers_refused(&project.answer(&["write", "verdict", "--spec", SPEC, "--json", &with_findings.to_string()]));
+    assert_eq!(verdicts_and_tasks(&project), before, "nada foi gravado com os achados no veredito da onda");
+
+    project.write("verdict", &json!({"wave": 1, "result": "approved", "text": "Conferi o diff."}));
+    assert_eq!(verdicts_and_tasks(&project), before + 1, "o veredito da onda sem o campo é gravado");
+}
+
+/// Só o veredito final aprovado transforma `leftovers` em tarefas: o final
+/// reprovado, também o aprovado que um item combinado sem atender força a
+/// reprovado, recusa o campo sem gravar nada, e o pedido da revisão segue
+/// aberto. O mesmo veredito sem o campo é gravado.
+#[test]
+fn a_rejected_final_verdict_refuses_leftovers_instead_of_losing_them() {
+    let project = Project::new();
+    let decisions = ready(&project);
+    let asked = project.run(&["close", "--spec", SPEC]);
+    assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+    project.read_review();
+    let before = verdicts_and_tasks(&project);
+
+    let mut rejected = all_met_verdict(&decisions);
+    rejected["result"] = json!("rejected");
+    rejected["leftovers"] = findings();
+    assert_leftovers_refused(&project.answer(&["write", "verdict", "--spec", SPEC, "--json", &rejected.to_string()]));
+
+    let mut agreed: Vec<Value> = decisions.iter().map(|decision| json!({"item": decision["code"], "met": true})).collect();
+    agreed[0] = json!({"item": decisions[0]["code"], "met": false, "text": "Falta tratar o estouro da soma.", "files": ["src/main.rs"]});
+    let forced = json!({"final": true, "result": "approved", "text": "Quase tudo certo.", "agreed": agreed, "leftovers": findings()});
+    assert_leftovers_refused(&project.answer(&["write", "verdict", "--spec", SPEC, "--json", &forced.to_string()]));
+    assert_eq!(verdicts_and_tasks(&project), before, "nada foi gravado com os achados no veredito reprovado");
+    let still_open = project.answer(&["close", "--spec", SPEC]);
+    assert_eq!(still_open["reason"], json!("review-verdict-missing"), "o pedido da revisão final segue aberto: {still_open}");
+
+    let mut without = forced.clone();
+    without.as_object_mut().expect("the verdict is an object").remove("leftovers");
+    project.write("verdict", &without);
+    // O fechamento assume o veredito: o item sem atender o força a reprovado.
+    project.answer(&["close", "--spec", SPEC]);
+    let recorded = project.log().visible().into_iter().rfind(|e| e.event_type == "verdict").expect("the recorded verdict").clone();
+    assert_eq!(recorded.str_field("result"), Some("rejected"), "o veredito reprovado sem o campo é gravado: {recorded:?}");
+}
+
 /// Os números dos pedidos de revisão final gravados, do mais velho ao mais
 /// novo.
 fn review_requests(project: &Project) -> Vec<u64> {

@@ -1112,7 +1112,8 @@ pub const TYPES: &[TypeSpec] = &[
             // sobras da entrega de onda (`title`, `detail`, `files`,
             // `cleanup`): com o veredito aprovado, o fechamento os grava
             // como tarefas no backlog e manda rodar a rodada antes do pull
-            // request.
+            // request. Em outro veredito nada lê o campo, e a gravação o
+            // recusa.
             opt("leftovers", Kind::Objects),
             // O veredito curto do revisor de uma onda, que a gravação marca:
             // aponta a onda e os arquivos do motivo, sem critério obrigatório.
