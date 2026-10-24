@@ -2449,6 +2449,7 @@ fn the_skill_task_of_a_repeated_failure_covers_the_items_of_the_rejected_wave_an
 
 /// As refs em que a limpeza das cópias guardou código, no repositório
 /// principal.
+#[cfg(target_os = "linux")]
 fn kept_refs(project: &Project) -> Vec<String> {
     let out = Command::new("git").args(["for-each-ref", "--format=%(refname)", "refs/mustard/kept/"]).current_dir(&project.root).output().expect("git");
     String::from_utf8_lossy(&out.stdout).lines().map(str::to_string).collect()
@@ -2458,6 +2459,14 @@ fn kept_refs(project: &Project) -> Vec<String> {
 /// a rodada seguinte guarda o que ele deixou na cópia, volta a cópia ao
 /// commit e reenvia a onda com o pedido que cita a ref guardada e cada
 /// arquivo com mudança, mandando o agente novo conferir e continuar dali.
+///
+/// Só o Linux lê o processo do Claude Code em `/proc` e o vê fechado; fora
+/// dele nenhum processo conta como fechado, a rodada nunca dá uma onda por
+/// órfã, e a onda só sai de novo quando quem conduz a pausa — reenvio que
+/// mantém a cópia como está, sem guardar nada numa ref. O envio com o
+/// processo fechado, que este teste grava, nunca existe lá, e rodá-lo no
+/// macOS só dá a onda como em andamento.
+#[cfg(target_os = "linux")]
 #[test]
 fn an_orphaned_wave_is_resent_citing_the_ref_and_files_its_agent_left() {
     let (project, _, _, _) = backlog_project(&[&[GREETING]]);
