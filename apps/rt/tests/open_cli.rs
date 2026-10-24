@@ -4,11 +4,12 @@
 
 #[path = "support/binary.rs"]
 mod binary;
+use crate::one_wave_spec;
 
 use std::path::Path;
 use std::process::{Command, Output};
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 fn git(root: &Path, args: &[&str]) {
     let ok = Command::new("git")
@@ -80,6 +81,43 @@ fn open_answers_a_step_with_exit_0_a_refusal_with_exit_1_and_opens_the_spec() {
     assert_eq!(opened["branch"], "feature/trava-de-pendencias");
     assert_eq!(opened["step"], "ask_goal");
     assert!(root.join(".claude").join("spec").join("trava-de-pendencias").join("spec.ndjson").is_file());
+}
+
+/// A conferência do lint na base sai da abertura e roda uma vez, no primeiro
+/// despacho de onda da spec: a abertura não roda o lint, a primeira rodada que
+/// solta a onda roda e grava a base, e a rodada seguinte, que assume a volta,
+/// não roda de novo. Em campo, a abertura gastava 27 segundos no lint, que só
+/// o fechamento lê.
+#[test]
+fn the_base_lint_runs_once_at_the_first_wave_dispatch_and_never_at_the_opening() {
+    let project = one_wave_spec::Project::new("conferencia", &json!({"lintCommand": "echo ran >> lint-runs.log"}), &["lint-runs.log"]);
+    let runs = || std::fs::read_to_string(project.root.join("lint-runs.log")).unwrap_or_default().lines().count();
+    let base_marks = || project.log().events.iter().filter(|e| e.event_type == "stage_run" && e.str_field("phase") == Some("base")).count();
+
+    project.approved();
+    assert_eq!((runs(), base_marks()), (0, 0), "the opening does not run the lint");
+
+    let first = project.run(&["round", "--dispatch", "--spec", "conferencia"]);
+    assert_eq!(first["dispatch"][0]["wave"], json!(1), "{first}");
+    assert_eq!((runs(), base_marks()), (1, 1), "the first wave dispatch runs the lint and records the base: {first}");
+
+    let second = project.deliver_the_first_wave();
+    assert_eq!((runs(), base_marks()), (1, 1), "the next round does not run it again: {second}");
+}
+
+/// A rodada pedida sem `--spec` acha a spec atual, como a rodada a acha, e o
+/// primeiro despacho dela roda o lint na base e grava a marca do mesmo jeito
+/// que a rodada com `--spec`. A rodada só despacha na branch da spec.
+#[test]
+fn the_round_without_spec_runs_the_base_lint_for_the_current_spec() {
+    let project = one_wave_spec::Project::new("sem-spec", &json!({"lintCommand": "echo ran >> lint-runs.log"}), &["lint-runs.log"]);
+    let runs = || std::fs::read_to_string(project.root.join("lint-runs.log")).unwrap_or_default().lines().count();
+    let base_marks = || project.log().events.iter().filter(|e| e.event_type == "stage_run" && e.str_field("phase") == Some("base")).count();
+
+    project.approved();
+    let first = project.run(&["round", "--dispatch"]);
+    assert_eq!(first["dispatch"][0]["wave"], json!(1), "{first}");
+    assert_eq!((runs(), base_marks()), (1, 1), "the dispatch without --spec runs the lint and records the base: {first}");
 }
 
 /// A conversa da sessão `session`, aberta na pasta `project`, como o Claude
@@ -253,4 +291,63 @@ fn opening_never_brings_the_messages_of_a_conversation_from_another_project() {
     assert_eq!(users, Vec::<Value>::new(), "no message of the other project's conversation: {opened}");
     assert!(opened.get("earlier_messages").is_none(), "{opened}");
     assert!(opened["earlier_messages_missing"].as_str().is_some_and(|note| !note.is_empty()), "{opened}");
+}
+
+/// As falas do usuário que a spec guarda, em ordem.
+fn user_texts(root: &Path, spec: &str) -> Vec<String> {
+    let log = std::fs::read_to_string(root.join(".claude").join("spec").join(spec).join("spec.ndjson")).expect("the spec was born");
+    log.lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|event| event["type"] == "message" && event["author"] == "user")
+        .filter_map(|event| event["text"].as_str().map(str::to_string))
+        .collect()
+}
+
+/// O Claude Code repete a fala digitada numa linha `api-request-blob`, e põe
+/// o lembrete do sistema dentro da fala. A abertura grava a fala uma vez, sem
+/// o lembrete; e a fala seguinte, que chega pelo gancho com o JSON do Claude
+/// Code, também entra sem ele, pelo mesmo filtro.
+#[test]
+fn the_typed_message_enters_once_and_without_the_system_text() {
+    let dir = repo();
+    let root = dir.path();
+    let config = tempfile::tempdir().expect("config dir");
+    let session = "3c9d1e7f-5a2b-4c6d-9e8f-1a2b3c4d5e6f";
+    let asked = "Quero que a leitura da spec fique menor.";
+    let human = json!({ "origin": { "kind": "human" } });
+    conversation(
+        config.path(),
+        root,
+        session,
+        &[
+            user_line(json!(asked), human.clone()),
+            json!({ "type": "api-request-blob", "sessionId": session, "hash": "0".repeat(64),
+                "message": { "role": "user", "content": [{ "type": "text", "text": asked }] } }),
+            user_line(json!("Pode abrir a spec.\n\n<system-reminder>texto do sistema na abertura</system-reminder>"), human),
+        ],
+    );
+    let out = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
+        .args(["run", "open", "--name", "feature/leitura-menor", "--base", "dev", "--root"])
+        .arg(root)
+        .current_dir(root)
+        .env("CLAUDE_CONFIG_DIR", config.path())
+        .env("MUSTARD_SESSION_ID", session)
+        .output()
+        .expect("run open");
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stdout));
+    assert_eq!(user_texts(root, "leitura-menor"), vec![asked, "Pode abrir a spec."], "{}", String::from_utf8_lossy(&out.stdout));
+
+    let mut hook = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
+        .args(["on", "UserPromptSubmit"])
+        .current_dir(root)
+        .env("CLAUDE_CONFIG_DIR", config.path())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("the hook runs");
+    let payload = json!({ "hook_event_name": "UserPromptSubmit", "session_id": session, "cwd": root.to_string_lossy(),
+        "prompt": "E o painel também.\n\n<system-reminder>texto do sistema no gancho</system-reminder>" });
+    std::io::Write::write_all(&mut hook.stdin.take().expect("stdin"), payload.to_string().as_bytes()).expect("payload");
+    assert_eq!(hook.wait_with_output().expect("the hook finishes").status.code(), Some(0));
+    assert_eq!(user_texts(root, "leitura-menor"), vec![asked, "Pode abrir a spec.", "E o painel também."]);
 }

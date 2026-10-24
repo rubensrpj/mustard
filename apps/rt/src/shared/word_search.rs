@@ -5,6 +5,7 @@ use crate::shared::config_key::NameFilter;
 use crate::shared::say::say;
 use mustard_core::domain::model::contract::{Ctx, HookInput};
 use mustard_core::domain::normalize::Languages;
+use mustard_core::domain::text::one_line;
 use mustard_core::domain::triage::Mark;
 use mustard_core::io::map_triage::Triaged;
 use mustard_core::io::project_map::{self as store, Need};
@@ -225,13 +226,7 @@ fn ask_reply(scene: &Scene<'_>, request: &str) -> Option<String> {
     }
     store::read_for_at(scene.model, Need::Paths).ok()?;
     let question = words.join(" ");
-    let intent: String = request
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .chars()
-        .take(ASKED_PHRASE)
-        .collect();
+    let intent: String = one_line(request).chars().take(ASKED_PHRASE).collect();
     let triaged = map_triage::triage_at(
         scene.model,
         (&question, &intent),

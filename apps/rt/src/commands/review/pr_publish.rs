@@ -56,6 +56,14 @@
 //! do primeiro envio chegam ao mesmo pull request. O envio recusado (o
 //! servidor, um gancho, a falta do remoto) para a abertura com a mensagem do
 //! git inteira no `error`, e o provedor nem é chamado.
+//!
+//! ## A esteira depois de abrir
+//!
+//! Com o pull request do principal aberto ou reescrito, a resposta traz em
+//! `checks` o que as verificações do provedor dizem dele naquela hora, pela
+//! mesma leitura do merge ([`crate::commands::review::pr_checks`]): rodando,
+//! vermelha (com a porta de conserto da spec), verde, nenhuma ainda ou
+//! ilegível.
 
 use std::path::Path;
 
@@ -66,6 +74,8 @@ use mustard_core::domain::spec_events::pr_message;
 use mustard_core::platform::i18n::translate;
 
 use crate::commands::git_settle::{bump_pointers, submodule_base, submodule_tip_landed, unit_submodules};
+use crate::commands::review::pr_body::{BODY_UNMARKED, kept_reason, marked};
+use crate::commands::review::pr_checks::{self, ChecksSaid};
 use crate::commands::review::pr_door::project_root;
 use crate::shared::branch_state::PrStatus;
 use crate::shared::pr_provider::{provider_for, provider_in, PrProvider, PrRef, PrToOpen, PrView};
@@ -118,6 +128,11 @@ pub(crate) struct PrPublishReport {
     /// request said nothing. The warning belongs where the action is.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warning: Option<String>,
+    /// Por que o corpo do pull request aberto ficou como estava: alguém o
+    /// editou depois do último corpo gerado, ou o provedor não deixou lê-lo.
+    /// Ausente quando o corpo foi refeito ou o pull request é novo.
+    #[serde(rename = "bodyKept", skip_serializing_if = "Option::is_none")]
+    pub body_kept: Option<String>,
 }
 
 impl PrPublishReport {
@@ -133,6 +148,7 @@ impl PrPublishReport {
             url: None,
             error: Some(error),
             warning: None,
+            body_kept: None,
         }
     }
 }
@@ -149,7 +165,7 @@ impl PrPublishReport {
 #[must_use]
 pub(crate) fn open_report(provider: &dyn PrProvider, pr: &PrToOpen) -> PrPublishReport {
     let name = provider.provider().to_string();
-    match provider.open(pr) {
+    match provider.open(&PrToOpen { body: marked(&pr.body), ..pr.clone() }) {
         Ok(opened) => PrPublishReport {
             ok: true,
             action: ACTION_OPEN,
@@ -158,6 +174,7 @@ pub(crate) fn open_report(provider: &dyn PrProvider, pr: &PrToOpen) -> PrPublish
             url: Some(opened.url),
             error: None,
             warning: None,
+            body_kept: None,
         },
         Err(error) => PrPublishReport::failed(ACTION_OPEN, name, None, error),
     }
@@ -179,6 +196,7 @@ pub(crate) fn edit_report(provider: &dyn PrProvider, number: u64, body: &str) ->
             url: None,
             error: None,
             warning: None,
+            body_kept: None,
         },
         Err(error) => PrPublishReport::failed(ACTION_EDIT, name, Some(number), error),
     }
@@ -199,10 +217,10 @@ pub(crate) fn edit_report(provider: &dyn PrProvider, number: u64, body: &str) ->
 /// antigo.
 ///
 /// O pull request aberto recebe o título e o corpo novos, e sai do rascunho
-/// quando o pedido não é de rascunho: é o que a spec reaberta pede ao fechar
-/// de novo, porque a reabertura o pôs em rascunho para ninguém juntar a versão
-/// sem o ajuste. Com `--draft`, ou com submódulo esperando, o pedido já chega
-/// como rascunho, e o rascunho fica.
+/// quando o pedido não é de rascunho: o rascunho de antes, como o do submódulo
+/// que esperava ou o que alguém pôs pelo provedor, não segura o pull request
+/// que a spec fechada pede pronto. Com `--draft`, ou com submódulo esperando, o
+/// pedido já chega como rascunho, e o rascunho fica.
 #[must_use]
 pub(crate) fn open_or_edit(provider: &dyn PrProvider, pr: &PrToOpen) -> PrPublishReport {
     match provider.view(PrRef::Head(&pr.head)) {
@@ -218,13 +236,27 @@ pub(crate) fn open_or_edit(provider: &dyn PrProvider, pr: &PrToOpen) -> PrPublis
 /// Reescreve o pull request aberto `view` com o que `pr` pede: o corpo, o
 /// título e, fora do rascunho pedido, a saída do rascunho.
 ///
+/// O corpo só é refeito quando segue igual ao último gerado
+/// ([`kept_reason`]); o editado fica, com o motivo em `body_kept`, e o
+/// título e o rascunho seguem como sempre.
+///
 /// Qualquer passo recusado deixa o relatório com `ok: false` e o passo no
 /// erro: a porta não grava o pull request aberto, e rodar de novo refaz tudo,
 /// porque cada passo só escreve o que já devia estar lá.
 fn rewrite_open(provider: &dyn PrProvider, view: &PrView, pr: &PrToOpen) -> PrPublishReport {
-    let report = PrPublishReport {
-        url: Some(view.url.clone()).filter(|url| !url.trim().is_empty()),
-        ..edit_report(provider, view.number, &pr.body)
+    let url = Some(view.url.clone()).filter(|url| !url.trim().is_empty());
+    let report = match kept_reason(provider, view.number) {
+        None => PrPublishReport { url, ..edit_report(provider, view.number, &marked(&pr.body)) },
+        Some(reason) => PrPublishReport {
+            ok: true,
+            action: ACTION_EDIT,
+            provider: provider.provider().to_string(),
+            number: Some(view.number),
+            url,
+            error: None,
+            warning: None,
+            body_kept: Some(reason),
+        },
     };
     if !report.ok {
         return report;
@@ -246,9 +278,19 @@ fn rewrite_open(provider: &dyn PrProvider, view: &PrView, pr: &PrToOpen) -> PrPu
     report
 }
 
-/// Refaz o corpo do pull request que a branch `head` carrega. Devolve o número
-/// reescrito, `None` quando não há pull request aberto para ela ou quando o
-/// provedor não respondeu.
+/// O que a rodada fez com o corpo do pull request aberto da spec.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum BodyRewrite {
+    /// O corpo seguia igual ao último gerado e foi refeito.
+    Rewritten(u64),
+    /// O corpo ficou como estava, pelo motivo de [`kept_reason`].
+    Kept { number: u64, reason: String },
+}
+
+/// Refaz o corpo do pull request que a branch `head` carrega, quando ele segue
+/// igual ao último gerado; o editado fica ([`BodyRewrite::Kept`]). `None`
+/// quando não há pull request aberto para ela ou quando o provedor não
+/// respondeu.
 ///
 /// A mesma pergunta de [`open_or_edit`], feita de uma vez só para as duas
 /// portas: a branch em jogo é quem aponta o pull request, e só o estado ABERTO
@@ -256,9 +298,20 @@ fn rewrite_open(provider: &dyn PrProvider, view: &PrView, pr: &PrToOpen) -> PrPu
 /// ou fechado — o provedor não esquece o histórico dela —, e reescrever o
 /// corpo dele mexia num pedido que já saiu. Aqui não há o que abrir no lugar:
 /// a rodada só refaz o que está aberto, e sem isso ela não para.
-pub(crate) fn rewrite_body(provider: &dyn PrProvider, head: &str, body: &str) -> Option<u64> {
+pub(crate) fn rewrite_body(provider: &dyn PrProvider, head: &str, body: &str) -> Option<BodyRewrite> {
     let view = provider.view(PrRef::Head(head)).ok().filter(|view| view.status == PrStatus::Open)?;
-    provider.edit_body(view.number, body).ok().map(|()| view.number)
+    if let Some(reason) = kept_reason(provider, view.number) {
+        return Some(BodyRewrite::Kept { number: view.number, reason });
+    }
+    provider.edit_body(view.number, &marked(body)).ok().map(|()| BodyRewrite::Rewritten(view.number))
+}
+
+/// O aviso do corpo que ficou como estava, no idioma `lang`: o do corpo sem a
+/// marca diz que ele é de antes dela; o de qualquer outro motivo, que alguém o
+/// editou ou que o provedor não deixou lê-lo.
+pub(crate) fn body_kept_warning(number: u64, reason: &str, lang: mustard_core::platform::i18n::Locale) -> String {
+    let key = if reason == BODY_UNMARKED { "pr.body_unmarked" } else { "pr.body_kept" };
+    translate(key, lang).replace("{pr}", &number.to_string()).replace("{reason}", reason)
 }
 
 // ---------------------------------------------------------------------------
@@ -340,7 +393,8 @@ pub(crate) struct SubmodulePr {
 }
 
 /// A resposta do `pr-open`: a do principal, os pull requests dos submódulos,
-/// abertos antes dele, e o aviso de que ele segue como rascunho.
+/// abertos antes dele, o aviso de que ele segue como rascunho e a esteira do
+/// principal, lida logo depois de abri-lo ou reescrevê-lo.
 #[derive(Debug, Serialize)]
 struct OpenAnswer {
     #[serde(flatten)]
@@ -349,6 +403,8 @@ struct OpenAnswer {
     submodules: Vec<SubmodulePr>,
     #[serde(skip_serializing_if = "Option::is_none")]
     hint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    checks: Option<ChecksSaid>,
 }
 
 /// Envia a branch `head` do submódulo `sub` do principal `repo` e abre, ou
@@ -380,6 +436,7 @@ fn open_submodule(repo: &Path, sub: &str, head: &str, (title, body): (&str, &str
             url: Some(view.url).filter(|url| !url.trim().is_empty()),
             error: None,
             warning: None,
+            body_kept: None,
         };
         return (entry(report), true);
     }
@@ -566,7 +623,7 @@ pub fn run_open(root: &Path, base: &str, head: &str, spec: Option<&str>, fill: b
         let lang = mustard_core::ProjectConfig::load(&repo).language().text_or_default();
         let error = format!("{}: {}", refusal.reason(), refusal.message(lang));
         let report = PrPublishReport::failed(ACTION_OPEN, provider.provider().to_string(), None, error);
-        emit(&OpenAnswer { principal: report, submodules: Vec::new(), hint: None });
+        emit(&OpenAnswer { principal: report, submodules: Vec::new(), hint: None, checks: None });
         return;
     }
     let sourced = if fill {
@@ -613,8 +670,9 @@ pub fn run_open(root: &Path, base: &str, head: &str, spec: Option<&str>, fill: b
         }
         (Ok(_), Some(error)) | (Err(error), _) => PrPublishReport::failed(ACTION_OPEN, name, None, error),
     };
-    report.warning = warning;
     let lang = mustard_core::ProjectConfig::load(&repo).language().text_or_default();
+    let kept = report.body_kept.as_deref().zip(report.number).map(|(reason, number)| body_kept_warning(number, reason, lang));
+    report.warning = [warning, kept].into_iter().flatten().reduce(|said, more| format!("{said} {more}"));
     let hint = (report.ok && !waiting.is_empty()).then(|| {
         translate("pr.submodules.waiting", lang)
             .replace("{pr}", &report.number.map(|n| n.to_string()).unwrap_or_default())
@@ -626,7 +684,10 @@ pub fn run_open(root: &Path, base: &str, head: &str, spec: Option<&str>, fill: b
     if let (true, Some(slug), Some(number)) = (report.ok, slug, report.number) {
         crate::commands::spec_events::write::record_pr_open(&repo, slug, number, report.url.as_deref());
     }
-    let answer = OpenAnswer { principal: report, submodules, hint };
+    // A esteira que o envio acabou de disparar, pela leitura do merge: o
+    // pull request não sai da porta sem dizer o que o provedor respondeu.
+    let checks = report.number.filter(|_| report.ok).map(|number| pr_checks::read(&repo, number, slug, lang));
+    let answer = OpenAnswer { principal: report, submodules, hint, checks };
     let shown = serde_json::to_value(&answer).unwrap_or_default();
     let _ = crate::commands::spec_events::conversation::record_call(&repo, "pr-open", spec, started, &shown);
     emit(&shown);
@@ -637,7 +698,8 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
 
-    use crate::shared::pr_provider::{PrChecks, PrOpened, PrView};
+    use crate::commands::review::pr_body::BODY_EDITED;
+    use crate::shared::pr_provider::{PrChecks, PrOpened, PrText, PrTextRead, PrView};
 
     /// A [`PrProvider`] answering from a table, like `branch_state`'s
     /// `FakePr`: each operation's answer is set up front, and every call is
@@ -655,6 +717,9 @@ mod tests {
         /// padrão. `with_landed_pr` o troca para provar que um pull request
         /// juntado ou fechado nunca é reescrito.
         status: PrStatus,
+        /// O corpo que o provedor guarda: a edição aceita o troca, e a
+        /// leitura do texto o devolve. Começa vazio.
+        body: RefCell<String>,
         seen: RefCell<Vec<String>>,
     }
 
@@ -669,6 +734,7 @@ mod tests {
                 ready: Ok(()),
                 opened_for: None,
                 status: PrStatus::Open,
+                body: RefCell::new(String::new()),
                 seen: RefCell::new(Vec::new()),
             }
         }
@@ -697,6 +763,7 @@ mod tests {
                 ready: Err(token.to_string()),
                 opened_for: None,
                 status: PrStatus::Open,
+                body: RefCell::new(String::new()),
                 seen: RefCell::new(Vec::new()),
             }
         }
@@ -717,7 +784,14 @@ mod tests {
 
         fn edit_body(&self, number: u64, body: &str) -> Result<(), String> {
             self.seen.borrow_mut().push(format!("edit {number} body={body}"));
+            if self.edit.is_ok() {
+                *self.body.borrow_mut() = body.to_string();
+            }
             self.edit.clone()
+        }
+
+        fn text(&self, _number: u64, _known: &str) -> Result<PrTextRead, String> {
+            Ok(PrTextRead::Read(PrText { title: "the unit".into(), body: self.body.borrow().clone(), etag: String::new() }))
         }
 
         fn ready(&self, number: u64) -> Result<(), String> {
@@ -795,6 +869,7 @@ mod tests {
                 url: Some("https://example.test/pr/7".into()),
                 error: None,
                 warning: None,
+                body_kept: None,
             }
         );
         assert_eq!(
@@ -850,7 +925,7 @@ mod tests {
 
         // A reescrita da rodada faz a mesma pergunta.
         let fake = FakePub::with_open_pr("github", "feature/my-unit", 42);
-        assert_eq!(rewrite_body(&fake, "feature/my-unit", "outro corpo"), Some(42));
+        assert_eq!(rewrite_body(&fake, "feature/my-unit", "outro corpo"), Some(BodyRewrite::Rewritten(42)));
         assert_eq!(
             rewrite_body(&fake, "dev_outra-unidade", "outro corpo"),
             None,
@@ -904,8 +979,35 @@ mod tests {
         // Aberto, a rodada reescreve: é a divisa entre o que ela toca e o que
         // não toca.
         let fake = FakePub::with_open_pr("github", "feature/my-unit", 278);
-        assert_eq!(rewrite_body(&fake, "feature/my-unit", "outro corpo"), Some(278));
-        assert!(fake.seen.borrow().iter().any(|call| call == "edit 278 body=outro corpo"), "{:?}", fake.seen.borrow());
+        assert_eq!(rewrite_body(&fake, "feature/my-unit", "outro corpo"), Some(BodyRewrite::Rewritten(278)));
+        let edited = format!("edit 278 body={}", marked("outro corpo"));
+        assert!(fake.seen.borrow().contains(&edited), "{:?}", fake.seen.borrow());
+    }
+
+    /// O corpo que alguém editou no provedor não é refeito, nas duas portas:
+    /// a rodada responde que ele ficou, com o motivo, sem pedir a edição; o
+    /// pr-open deixa o corpo, troca o título e traz o motivo em `body_kept`.
+    /// O corpo vazio e o que segue igual ao último gerado são refeitos.
+    #[test]
+    fn an_edited_body_is_kept_and_an_unedited_one_is_rewritten() {
+        let fake = FakePub::with_open_pr("github", "feature/my-unit", 42);
+        let edits = || fake.seen.borrow().iter().filter(|call| call.starts_with("edit ")).count();
+        assert_eq!(rewrite_body(&fake, "feature/my-unit", "primeiro"), Some(BodyRewrite::Rewritten(42)), "an empty body");
+        assert_eq!(rewrite_body(&fake, "feature/my-unit", "segundo"), Some(BodyRewrite::Rewritten(42)), "the last generated body");
+        assert_eq!(*fake.body.borrow(), marked("segundo"));
+        assert_eq!(edits(), 2);
+
+        let edited = format!("{}\n\nNota de quem revisa.", fake.body.borrow());
+        *fake.body.borrow_mut() = edited.clone();
+        assert_eq!(
+            rewrite_body(&fake, "feature/my-unit", "terceiro"),
+            Some(BodyRewrite::Kept { number: 42, reason: BODY_EDITED.to_string() }),
+        );
+        let report = open_or_edit(&fake, &PrToOpen { head: "feature/my-unit".into(), ..to_open() });
+        assert!(report.ok && report.body_kept.as_deref() == Some(BODY_EDITED), "{report:?}");
+        assert_eq!(edits(), 2, "the edited body was not rewritten: {:?}", fake.seen.borrow());
+        assert_eq!(*fake.body.borrow(), edited);
+        assert!(fake.seen.borrow().iter().any(|call| call.starts_with("title 42 ")), "{:?}", fake.seen.borrow());
     }
 
     /// O pr-open numa branch que já tem pull request aberto em rascunho manda
@@ -924,6 +1026,7 @@ mod tests {
             draft: false,
         };
 
+        let edited = format!("edit 57 body={}", marked("o corpo novo"));
         let fake = FakePub::with_open_pr("github", "feature/pi-kpis", 57);
         let report = open_or_edit(&fake, &new_pr);
         assert!(report.ok, "{report:?}");
@@ -932,7 +1035,7 @@ mod tests {
             fake.seen.borrow().as_slice(),
             [
                 "view head=feature/pi-kpis",
-                "edit 57 body=o corpo novo",
+                edited.as_str(),
                 "title 57 title=Ajusta o pedido ao otimizador",
                 "ready 57",
             ],
@@ -947,7 +1050,7 @@ mod tests {
             fake.seen.borrow().as_slice(),
             [
                 "view head=feature/pi-kpis",
-                "edit 57 body=o corpo novo",
+                edited.as_str(),
                 "title 57 title=Ajusta o pedido ao otimizador",
             ],
             "a draft asked for keeps the draft, and nothing is opened",
@@ -981,6 +1084,7 @@ mod tests {
                     url: None,
                     error: Some("provider-unsupported".into()),
                     warning: None,
+                    body_kept: None,
                 },
                 "{action} must fail honestly",
             );

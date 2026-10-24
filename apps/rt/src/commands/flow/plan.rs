@@ -12,7 +12,7 @@
 //!
 //! **O que trava** e segura a pergunta até ser corrigido: ponto do
 //! levantamento aberto; skill que a conferência recusa; arquivo citado que
-//! não existe e não está marcado como novo; critério cuja prova não é um
+//! não existe e que nenhum item da spec marca como novo; critério cuja prova não é um
 //! comando de verdade (programa que não roda, comandos ligados por `;`, busca
 //! sozinha que devia sair vazia); e tarefa que mexe em código sem dizer em
 //! que arquivo, que volta pedindo para nomeá-lo: o plano nunca adivinha o
@@ -398,6 +398,12 @@ fn check(start: &Path, root: &Path, spec: &str, log: &SpecLog, built: &[WaveProm
     // que a carrega e pela revisão que a aprovou, e conferir de novo o texto
     // que a descreveu só acumula trava que ninguém vai consertar.
     let ahead: Vec<&SpecEvent> = tasks.iter().copied().filter(|task| !task.wave().is_some_and(|n| delivered.contains(&n))).collect();
+    // O arquivo que algum item da spec declara criar conta como existente,
+    // gravado antes ou depois de quem o cita: a tarefa que espera outra cita
+    // o arquivo que a outra cria, e o critério, gravado antes das tarefas que
+    // o cobrem, cita o teste que uma delas vai escrever.
+    let created = spec_events::proof_check::spec_created_files(log);
+    let by_another = |path: &str| created.contains(&spec_events::proof_check::relative_path(path));
 
     let mut cited: Vec<String> = Vec::new();
     for task in &ahead {
@@ -408,7 +414,7 @@ fn check(start: &Path, root: &Path, spec: &str, log: &SpecLog, built: &[WaveProm
             out.push(PlanFinding::TaskWithoutFile { task: code.clone() });
         }
         for (path, new) in &files {
-            if !new && world.file_lines(path).is_none() {
+            if !new && !by_another(path) && world.file_lines(path).is_none() {
                 out.push(PlanFinding::Cited { task: code.clone(), finding: Finding::MissingFile { path: path.clone() } });
             }
             if !cited.contains(path) {
@@ -426,7 +432,7 @@ fn check(start: &Path, root: &Path, spec: &str, log: &SpecLog, built: &[WaveProm
     for task in &ahead {
         let code = code_of(task);
         for (path, new) in declared_files(task) {
-            if !new && !tracked.contains(&path) {
+            if !new && !by_another(&path) && !tracked.contains(&path) {
                 out.push(PlanFinding::FileOutsideGit { task: code.clone(), path });
             }
         }
@@ -470,9 +476,10 @@ fn check(start: &Path, root: &Path, spec: &str, log: &SpecLog, built: &[WaveProm
     }
     // A prova de cada critério é o comando que a rodada e o fechamento
     // rodam: a que não roda, liga comandos por `;`, é uma busca sem `!` ou
-    // cita um alvo de teste ou um caminho que o projeto não tem, nem uma
-    // tarefa do plano declara criar, segura a pergunta de aprovação.
-    let created: BTreeSet<String> = tasks.iter().flat_map(|task| spec_events::proof_check::created_files(&task.fields)).collect();
+    // cita um alvo de teste ou um caminho que o projeto não tem, nem um item
+    // da spec declara criar, segura a pergunta de aprovação. É aqui que a
+    // existência do que o critério cita é conferida com todos os itens
+    // gravados: antes da aprovação, a gravação do critério a deixa para cá.
     for criterion in log.block(BlockQuery::Block(Block::Criteria)).into_iter().filter(|e| e.event_type == "criterion") {
         let refusal = criterion.str_field("proof").and_then(|proof| spec_events::proof_check::proof_defect(root, proof, &created));
         if let Some(refusal) = refusal {

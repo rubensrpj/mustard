@@ -43,8 +43,9 @@ use crate::domain::lessons::{Scope, applies_to, text_only};
 use crate::domain::pattern::{Direction, Pattern};
 use crate::domain::project_map::{QUALITY_TOP_PERCENT, Recipe, RecipeOf};
 use crate::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog, Step, TASK_TITLE_MAX};
-use crate::domain::spec_index::{cut, title_of};
+use crate::domain::spec_index::title_of;
 use crate::domain::spec_state::State;
+use crate::domain::text::{CutAt, cut};
 use crate::platform::i18n::{Locale, translate};
 
 mod changed;
@@ -327,7 +328,7 @@ pub struct Material<'a> {
     pub changes: Vec<&'a SpecEvent>,
     /// Native final-validation receipts, listed for independent verification.
     pub validation: Vec<&'a SpecEvent>,
-    /// O que mudou desde o veredito final que reprovou
+    /// O que mudou desde o veredito final mais novo, aprovado ou reprovado
     /// ([`since_last_verdict`]): com ele, o pedido da revisão final é o da
     /// revisão de volta. Vazio na primeira revisão.
     pub since_verdict: Vec<&'a SpecEvent>,
@@ -586,11 +587,12 @@ pub fn write(material: &Material, lang: Locale) -> String {
 /// toda obra, mesmo a de uma onda só: as ondas e as tarefas delas (`block`),
 /// as emendas gravadas para elas (`agreed`), o que cada onda entregou por
 /// último (`own_delivered`), os critérios, os commits da branch (`changes`) e
-/// como revisar numa cópia separada. Depois de um veredito final que reprovou
+/// como revisar numa cópia separada. Depois de um veredito final
 /// (`since_verdict`), o pedido lista o que mudou desde ele e manda conferir
-/// isso e o encaixe no resto, repetindo a conclusão anterior para os outros
-/// itens acordados — é o único jeito de a revisão de volta dizer o que
-/// conferir, reprove o veredito uma onda ou a obra. As linhas do conserto
+/// isso e o encaixe no resto: depois de uma reprovação, repetindo a conclusão
+/// anterior para os outros itens acordados — é o único jeito de a revisão de
+/// volta dizer o que conferir, reprove o veredito uma onda ou a obra —; depois
+/// de uma aprovação, sem os itens que ela conferiu. As linhas do conserto
 /// (`fix`) são do pedido da onda e não entram aqui. Nenhum pedido manda rodar
 /// a suíte inteira: ela passou no fechamento, no commit da cópia. O número da
 /// onda do material não conta aqui. Cada item ocupa uma linha, com o tipo por
@@ -622,12 +624,21 @@ const PASTE_MAX: usize = 1024;
 /// O texto inteiro de um item, como quem implementa o lê: a parte do agente;
 /// sem ela, o texto; sem texto, os outros campos, um por linha. A mensagem do
 /// usuário sai com o texto dela, com o trecho colado grande trocado pelo aviso
-/// de onde lê-lo pelo código `code`. Sem título nem arquivos: quem mostra o
-/// item os põe em volta.
+/// de onde lê-lo pelo código `code`; a que responde a uma pergunta com opções
+/// leva a pergunta acima da resposta, lida de `witness.question` ou de
+/// `question`. Sem título nem arquivos: quem mostra o item os põe em volta.
 #[must_use]
 pub fn item_body(item: &SpecEvent, code: &str, lang: Locale) -> String {
     if item.event_type == "message" {
-        return without_long_paste(item.str_field("text").unwrap_or_default(), code, lang);
+        let answer = without_long_paste(item.str_field("text").unwrap_or_default(), code, lang);
+        return match asked_question(item) {
+            Some(question) => format!(
+                "{}\n\n{}",
+                translate("prompt.message.question", lang).replace("{question}", question),
+                translate("prompt.message.answer", lang).replace("{answer}", &answer)
+            ),
+            None => answer,
+        };
     }
     match item.str_field("agent").filter(|agent| !agent.trim().is_empty()).or_else(|| item.str_field("text")) {
         Some(body) => body.to_string(),
@@ -639,6 +650,15 @@ pub fn item_body(item: &SpecEvent, code: &str, lang: Locale) -> String {
             .collect::<Vec<_>>()
             .join("\n"),
     }
+}
+
+/// A pergunta que a mensagem do usuário respondeu: a da testemunha
+/// (`witness.question`), quando ele clicou numa das opções, ou a do campo
+/// `question`, na pergunta comum. A mensagem guarda só a resposta no texto, e a
+/// pergunta em branco não conta. `None` na mensagem que não responde pergunta.
+fn asked_question(message: &SpecEvent) -> Option<&str> {
+    let witnessed = message.fields.get("witness").and_then(|witness| witness.get("question")).and_then(Value::as_str);
+    witnessed.into_iter().chain(message.str_field("question")).map(str::trim).find(|question| !question.is_empty())
 }
 
 /// O texto com cada trecho colado maior que [`PASTE_MAX`] trocado pelo aviso
@@ -675,7 +695,7 @@ fn without_long_paste(text: &str, code: &str, lang: Locale) -> String {
 pub fn item_title(item: &SpecEvent) -> Option<String> {
     let own = item.str_field("title").map(str::trim).filter(|title| !title.is_empty());
     let title = own.map(str::to_string).or_else(|| title_of(item))?;
-    Some(cut(title.trim(), TASK_TITLE_MAX))
+    Some(cut(title.trim(), TASK_TITLE_MAX, CutAt::Char))
 }
 
 /// Quantas palavras do começo do texto a mensagem do usuário leva no pedido:
@@ -916,15 +936,16 @@ pub fn all_agreed(log: &SpecLog) -> Vec<&SpecEvent> {
 }
 
 /// O combinado que o veredito final responde: o que o pedido mais novo da
-/// revisão listou (`read_items`) e o que nenhuma tarefa terminada cobre agora
-/// ([`Proven`]) — o item gravado depois do pedido também. O combinado que uma
-/// tarefa terminada cobre e o pedido não listou já tem prova. O pedido sem a
-/// lista, de antes dela, responde por todo o combinado ([`all_agreed`]).
+/// revisão listou (`read_items`) e o que nem uma tarefa terminada nem a última
+/// aprovação final cobrem agora ([`Proven`]) — o item gravado depois do pedido
+/// também. O combinado que uma delas cobre e o pedido não listou já tem
+/// prova. O pedido sem a lista, de antes dela, responde por todo o combinado
+/// ([`all_agreed`]).
 #[must_use]
 pub fn review_agreed(log: &SpecLog) -> Vec<&SpecEvent> {
     let visible = log.visible();
     let sent = visible.iter().filter(|e| e.event_type == "send" && e.str_field("role") == Some("review")).max_by_key(|e| e.id);
-    let Some(listed) = sent.and_then(|e| e.fields.get("read_items")).and_then(Value::as_array) else {
+    let Some(listed) = sent.and_then(|e| log.send_field(e.id, "read_items")).and_then(Value::as_array) else {
         return all_agreed(log);
     };
     let listed: BTreeSet<&str> = listed.iter().filter_map(Value::as_str).collect();
@@ -1498,29 +1519,61 @@ pub fn fix_lines(log: &SpecLog, wave: u64) -> Vec<&SpecEvent> {
 // A revisão de volta
 // ---------------------------------------------------------------------------
 
-/// O veredito final mais novo da spec, quando ele reprovou: a revisão pedida
-/// depois dele é a de volta. `None` sem veredito final, ou quando o mais novo
-/// aprovou — aí a revisão confere a obra inteira, como a primeira.
+/// O veredito final mais novo da spec, aprovado ou reprovado: a revisão
+/// pedida depois dele é a de volta. `None` sem veredito final — aí a revisão
+/// confere a obra inteira.
 #[must_use]
-pub fn last_final_rejection(log: &SpecLog) -> Option<&SpecEvent> {
+pub fn last_final_verdict(log: &SpecLog) -> Option<&SpecEvent> {
     log.block(BlockQuery::Block(Block::Review))
         .into_iter()
         .filter(|e| e.event_type == "verdict" && e.fields.get("final") == Some(&Value::Bool(true)))
         .max_by_key(|e| e.id)
-        .filter(|e| e.str_field("result").map(str::trim) == Some("rejected"))
 }
 
-/// O que mudou desde o veredito final que reprovou ([`last_final_rejection`]),
-/// na ordem em que o pedido da revisão de volta o lista: o próprio veredito,
-/// os commits gravados depois dele, os requisitos acordados gravados ou
+/// Se o veredito aprovou.
+fn approved(verdict: &SpecEvent) -> bool {
+    verdict.str_field("result").map(str::trim) == Some("approved")
+}
+
+/// O veredito final mais novo da spec, quando ele reprovou: é ele que
+/// recorta a revisão de volta à onda que apontou. `None` sem veredito final,
+/// ou quando o mais novo aprovou.
+#[must_use]
+pub fn last_final_rejection(log: &SpecLog) -> Option<&SpecEvent> {
+    last_final_verdict(log).filter(|e| e.str_field("result").map(str::trim) == Some("rejected"))
+}
+
+/// A aprovação final mais nova da spec, mesmo com uma reprovação depois dela,
+/// e o número a partir do qual o que foi gravado escapa dela: o do pedido que
+/// ela respondeu — a onda comitada entre o pedido e a aprovação não chegou ao
+/// revisor —, ou o dela própria, sem pedido gravado. O item vigente gravado
+/// antes desse número já foi conferido por ela.
+#[must_use]
+pub fn last_final_approval(log: &SpecLog) -> Option<(&SpecEvent, u64)> {
+    log.block(BlockQuery::Block(Block::Review))
+        .into_iter()
+        .filter(|e| e.event_type == "verdict" && e.fields.get("final") == Some(&Value::Bool(true)) && approved(e))
+        .max_by_key(|e| e.id)
+        .map(|verdict| (verdict, crate::domain::spec_state::answered_request(log, verdict.id).unwrap_or(verdict.id)))
+}
+
+/// O que mudou desde o veredito final mais novo ([`last_final_verdict`]), na
+/// ordem em que o pedido da revisão de volta o lista: o próprio veredito, os
+/// commits gravados depois dele, os requisitos acordados gravados ou
 /// regravados depois dele, junto com os que ele deu como não atendidos — na
 /// versão vigente de cada um —, e os critérios gravados ou regravados depois
-/// dele. O que veio antes do veredito fica de fora: a conclusão dele vale
-/// para o que não mudou. Vazio sem veredito final reprovado.
+/// dele. Depois de uma aprovação, o ponto de partida é o pedido que ela
+/// respondeu ([`last_final_approval`]): o ajuste pequeno feito com a obra
+/// fechada e reaberta é revisado sozinho. O que veio antes fica de fora: a
+/// conclusão do veredito vale para o que não mudou. Vazio sem veredito final.
 #[must_use]
 pub fn since_last_verdict(log: &SpecLog) -> Vec<&SpecEvent> {
-    let Some(verdict) = last_final_rejection(log) else {
+    let Some(verdict) = last_final_verdict(log) else {
         return Vec::new();
+    };
+    let since = match last_final_approval(log) {
+        Some((approval, asked)) if approval.id == verdict.id => asked,
+        _ => verdict.id,
     };
     let codes = log.codes();
     // O item da resposta vem pelo número, como a rodada o grava, ou pelo
@@ -1544,11 +1597,11 @@ pub fn since_last_verdict(log: &SpecLog) -> Vec<&SpecEvent> {
         .filter_map(|id| log.current(id).map(|e| e.id))
         .collect();
     let mut out = vec![verdict];
-    out.extend(log.block(BlockQuery::Block(Block::Progress)).into_iter().filter(|e| e.event_type == "commit" && e.id > verdict.id));
-    let mut agreed: Vec<&SpecEvent> = all_agreed(log).into_iter().filter(|e| e.id > verdict.id || unmet.contains(&e.id)).collect();
+    out.extend(log.block(BlockQuery::Block(Block::Progress)).into_iter().filter(|e| e.event_type == "commit" && e.id > since));
+    let mut agreed: Vec<&SpecEvent> = all_agreed(log).into_iter().filter(|e| e.id > since || unmet.contains(&e.id)).collect();
     agreed.sort_by_key(|e| e.id);
     out.extend(agreed);
-    out.extend(log.block(BlockQuery::Block(Block::Criteria)).into_iter().filter(|e| e.event_type == "criterion" && e.id > verdict.id));
+    out.extend(log.block(BlockQuery::Block(Block::Criteria)).into_iter().filter(|e| e.event_type == "criterion" && e.id > since));
     out
 }
 
@@ -3542,6 +3595,40 @@ mod tests {
         assert!(block.contains(&cut), "{block}");
     }
 
+    /// A mensagem que responde a uma pergunta com opções guarda só a resposta
+    /// no texto, com a pergunta em `witness.question` (o clique testemunhado)
+    /// ou em `question` (a pergunta comum). O bloco da tarefa que a atende
+    /// mostra a pergunta e, logo abaixo dela, a resposta, nos dois idiomas; a
+    /// mensagem sem pergunta, ou com a pergunta em branco, sai só pelo texto.
+    #[test]
+    fn a_message_that_answers_a_question_shows_the_question_above_the_answer() {
+        let goal_question = "O objetivo é: Somar dois números.\nConfirma este objetivo?";
+        let log = log(&[
+            (
+                "message",
+                json!({"text": "Confirmar objetivo", "author": "user",
+                       "witness": {"question": goal_question, "answer": "Confirmar objetivo"}}),
+            ),
+            ("message", json!({"text": "Inteiros, sem arredondar\nSó o total.", "author": "user", "question": "Qual tipo de número a soma usa?"})),
+            ("message", json!({"text": "Só isto, curto.", "author": "user", "question": "   "})),
+            ("wave", json!({"n": 1, "text": "Onda", "criteria": [], "done_when": "pronto"})),
+            ("task", json!({"wave": 1, "title": "Conferir", "text": "Conferir.", "covers": [1, 2, 3], "files": [{"path": "src/a.rs"}]})),
+        ]);
+        for (lang, ask, answer, speaker) in [
+            (Locale::PtBr, "Pergunta", "Resposta", "mensagem do usuário"),
+            (Locale::EnUs, "Question", "Answer", "user message"),
+        ] {
+            let block = task_blocks(&material(&log, 1), lang).remove(0).text;
+            let witnessed = format!("{speaker} MSTD-MSG-0001 — \"Confirmar objetivo\"\n\n{ask}: {goal_question}\n\n{answer}: Confirmar objetivo\n");
+            let plain = format!("{speaker} MSTD-MSG-0002 — \"Inteiros, sem arredondar Só o total.\"\n\n{ask}: Qual tipo de número a soma usa?\n\n{answer}: Inteiros, sem arredondar\nSó o total.\n");
+            let bare = format!("{speaker} MSTD-MSG-0003 — \"Só isto, curto.\"\n\nSó isto, curto.\n");
+            for part in [witnessed, plain, bare] {
+                assert!(block.contains(&part), "{part}: {block}");
+            }
+            assert_eq!(block.matches(&format!("{ask}:")).count(), 2, "only the two answers to a question show it: {block}");
+        }
+    }
+
     /// No texto de um item, o trecho colado maior que 1 KB numa mensagem do
     /// usuário vira o aviso de onde lê-lo; o pequeno fica.
     #[test]
@@ -3551,5 +3638,24 @@ mod tests {
         assert_eq!(without_long_paste(small, "MSTD-MSG-0001", lang), small);
         let long = format!("antes <pasted_content id=\"b\">{}</pasted_content id=\"b\"> depois", "x".repeat(3000));
         assert_eq!(without_long_paste(&long, "MSTD-MSG-0002", lang), "antes [texto colado, 3 kB: leia por item-MSTD-MSG-0002] depois");
+    }
+
+    /// O combinado que o veredito final responde sai da lista do pedido da
+    /// revisão mesmo quando o envio mais novo é uma versão que só acrescenta
+    /// o modelo usado: a versão nova não repete a lista, e o combinado que
+    /// uma tarefa terminada já cobre e o pedido não listou segue de fora.
+    #[test]
+    fn the_final_verdict_answers_the_listed_agreed_through_a_newer_version_of_the_request() {
+        let mut events = vec![
+            ("rule", json!({"text": "Listada no pedido", "keys": ["a"], "example": "e", "applies_to": {"files": ["**"]}})),
+            ("rule", json!({"text": "Coberta e fora da lista", "keys": ["b"], "example": "e", "applies_to": {"files": ["**"]}})),
+            ("wave", json!({"n": 1, "text": "Onda", "criteria": [], "done_when": "pronto"})),
+            ("task", json!({"wave": 1, "title": "Cobrir", "text": "Cobrir.", "covers": [2], "files": [{"path": "src/a.rs"}]})),
+            ("step", json!({"wave": 1, "item": "MSTD-TASK-0001", "text": "Pronta."})),
+            ("send", json!({"role": "review", "text": "Revise.", "lines": 1, "chars": 7, "mustard": "0", "read_items": ["MSTD-RULE-0001"]})),
+        ];
+        assert_eq!(ids(&review_agreed(&log(&events))), [1], "o pedido gravado lista só o primeiro");
+        events.push(("send", json!({"role": "review", "replaces": 6, "model_used": "opus", "mustard": "0"})));
+        assert_eq!(ids(&review_agreed(&log(&events))), [1], "a versão nova do envio não perde a lista do pedido");
     }
 }

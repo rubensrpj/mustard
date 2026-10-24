@@ -31,17 +31,20 @@ use std::path::{Path, PathBuf};
 
 use mustard_core::domain::spec_events::{Refusal, SpecEvent, SpecLog};
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState};
+use mustard_core::domain::text::one_line;
 use mustard_core::io::knowledge::enrichment::{
-    GroupingAnswers, GroupingSummary, GroupingTask, ReserveAnswer, WaveGroup, completed_grouping, completed_grouping_answers,
+    GroupingAnswers, GroupingSummary, GroupingTask, ReserveAnswer, RunningWave, WaveGroup, completed_grouping, completed_grouping_answers,
 };
 use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Map, Value, json};
 
 use crate::commands::flow::round::queue::{
-    backlog_population, max_parallel, open_sends, task_files, tasks_not_delivered, waves_returned, waves_returned_without_replan, waves_with_live_agent,
+    backlog_population, max_parallel, task_files, tasks_left, tasks_not_delivered, waves_returned_without_replan,
+    waves_with_live_agent,
 };
-use crate::commands::flow::round::{append_agent_line, backlog_return, is_cleanup, waves_left_without_tasks};
+use crate::commands::flow::round::following::{self, AFTER};
+use crate::commands::flow::round::{append_agent_line, backlog_return, waves_left_without_tasks};
 use crate::commands::spec_events::{self, write::record_locked};
 use crate::hooks::session::conversation_size::WAVE_LIMIT;
 use crate::commands::flow::round::dispatch_jev::{Asker, Outcome};
@@ -80,12 +83,13 @@ pub(crate) struct RoundForming {
 /// `session` ([`triage_with`]): na aprovação, com a lista inteira; depois,
 /// com as tarefas que voltaram e as que nenhuma onda levou. Só forma com uma
 /// sessão conduzindo, porque a leitura é do modelo pequeno dela; sem sessão,
-/// sem nada a ler ou sem vaga, nada muda, e a rodada monta as ondas como
-/// sempre. A pergunta ao Jev da ordem passa por `asker`: antes das travas da
-/// rodada, ela sai, pelo prazo de toda chamada, e a resposta fica gravada, sem
-/// gravar a formação; com as travas presas, a formação se grava e só lê a
-/// resposta gravada. Sem ela, a ordem sai da leitura do modelo pequeno, a
-/// reserva da formação.
+/// sem nada a ler — menos de duas tarefas que podem sair agora, como na fila
+/// em que cada tarefa espera a anterior — ou sem vaga, nada muda, e a rodada
+/// monta as ondas como sempre. A pergunta ao Jev da ordem passa por `asker`:
+/// antes das travas da rodada, ela sai, pelo prazo de toda chamada, e a
+/// resposta fica gravada, sem gravar a formação; com as travas presas, a
+/// formação se grava e só lê a resposta gravada. Sem ela, a ordem sai da
+/// leitura do modelo pequeno, a reserva da formação.
 pub(crate) fn form_for_round(root: &Path, spec: &str, session: Option<&str>, asker: &Asker<'_>) -> RoundForming {
     if session.is_none() {
         return RoundForming::default();
@@ -151,8 +155,7 @@ fn triage_with(opts: &TriageOpts, session: Option<&str>, in_round: bool, jev_on:
     // gravação; a solta sem agente lançado não segura nada.
     let delivered = waves_returned_without_replan(&log);
     let live: BTreeSet<u64> = if in_round {
-        let returned = waves_returned(&log);
-        open_sends(&log).into_keys().filter(|wave| !returned.contains(wave)).collect()
+        following::running_waves(&log)
     } else {
         waves_with_live_agent(&project.root, &spec, &log).into_keys().collect()
     };
@@ -187,9 +190,12 @@ fn triage_with(opts: &TriageOpts, session: Option<&str>, in_round: bool, jev_on:
     }
     let waiting = |id: &u64| log.get(*id).is_some_and(|task| formed(task) && carried.get(id).is_none_or(|summary| *summary < task.id));
     let open: Vec<Candidate> = classified.iter().filter(|id| !held.contains(id) && !waiting(id)).filter_map(|id| log.get(*id)).map(candidate).collect();
+    // A tarefa que segue uma onda em andamento espera a vaga dela, que já
+    // conta como ocupada.
     let formed_waiting: BTreeSet<String> = classified
         .iter()
         .filter(|id| !held.contains(id) && waiting(id))
+        .filter(|id| log.get(**id).and_then(following::followed).is_none_or(|wave| !live.contains(&wave)))
         .filter_map(|id| log.get(*id)?.fields.get("group")?.get("name")?.as_str().map(str::to_string))
         .collect();
     let mut warnings: Vec<String> = Vec::new();
@@ -219,8 +225,16 @@ fn triage_with(opts: &TriageOpts, session: Option<&str>, in_round: bool, jev_on:
     report["free_waves"] = json!(max_waves);
     report["summaries"] = json!(summaries.len());
     // Uma tarefa sozinha, sem resumo, já é a própria onda: não há o que ler
-    // junto nem o que juntar.
-    if open.len() + summaries.len() < 2 || max_waves == 0 {
+    // junto nem o que juntar. Na rodada, a tarefa que ainda espera outra por
+    // entregar não sai agora: a fila que solta uma tarefa por vez não pede
+    // leitura nenhuma, e a única que pode sair não espera agente nenhum.
+    let waiting_others: BTreeSet<u64> = if in_round {
+        tasks_left(&log).into_iter().filter(|task| !task.depends_on.is_empty()).map(|task| task.id).collect()
+    } else {
+        BTreeSet::new()
+    };
+    let leaving = open.iter().filter(|task| !waiting_others.contains(&task.id)).count();
+    if leaving + summaries.len() < 2 || max_waves == 0 {
         report["waves"] = json!([]);
         return finish(report, &warnings);
     }
@@ -249,12 +263,16 @@ fn triage_with(opts: &TriageOpts, session: Option<&str>, in_round: bool, jev_on:
         let fitted_names: BTreeSet<&String> = fitted.values().collect();
         max_waves.saturating_sub(fitted_names.iter().filter(|name| !formed_waiting.contains(**name)).count())
     };
-    // 2. O modelo pequeno da sessão lê o resto de uma vez e forma até as
-    // vagas que sobram, cada onda com um objetivo, juntando as tarefas iguais
-    // ou próximas; a leitura dele, quando já voltou para esta mesma lista, dá
-    // as ondas. A tarefa que sobra sozinha, sem resumo, já é a própria onda.
-    // Com o Jev ligado, a mesma leitura responde as perguntas de reserva da
-    // ordem, para o Jev que falhar.
+    // 2. O modelo pequeno da sessão lê o resto de uma vez, com o objetivo de
+    // cada onda em andamento, e põe cada tarefa numa onda, uma por sentido,
+    // juntando as tarefas iguais ou próximas; a onda do mesmo sentido de uma
+    // em andamento a segue. A leitura dele, quando já voltou para esta mesma
+    // lista, dá as ondas. A tarefa que sobra sozinha, sem resumo, já é a
+    // própria onda. Com o Jev ligado, a mesma leitura responde as perguntas
+    // de reserva da ordem, para o Jev que falhar.
+    let running_objectives = following::objectives(&log, &live);
+    let running: Vec<RunningWave> =
+        running_objectives.iter().map(|(wave, objective)| RunningWave { key: format!("w{wave}"), objective: objective.clone() }).collect();
     let fresh_in_rest: Vec<&Candidate> = fresh.iter().filter(|task| !fitted.contains_key(&task.id)).copied().collect();
     let extras = jev_on.then(|| task_triage::grouping_extras(&known, fresh_in_rest.iter().map(|task| code(task.id)).collect()));
     let (mut formed, answers): (Vec<WaveGroup>, Option<GroupingAnswers>) = if rest.len() + summaries.len() < 2 || room == 0 {
@@ -264,7 +282,7 @@ fn triage_with(opts: &TriageOpts, session: Option<&str>, in_round: bool, jev_on:
             .iter()
             .map(|task| GroupingTask { code: code(task.id), title: task.title.into(), text: task.text.into(), files: task.files.iter().cloned().collect() })
             .collect();
-        let request = task_triage::grouping_request(&project.root, &tasks, &summaries, room, extras.as_ref());
+        let request = task_triage::grouping_request(&project.root, &tasks, (&summaries, &running), extras.as_ref());
         if let Some(reason) = request.get("unavailable") {
             report["miss"] = reason.clone();
             return finish(report, &warnings);
@@ -299,8 +317,13 @@ fn triage_with(opts: &TriageOpts, session: Option<&str>, in_round: bool, jev_on:
     let continued = |wave: &WaveGroup| summaries.iter().find(|summary| summary.tasks.iter().any(|left| wave.tasks.contains(left))).map(|summary| summary.code.clone());
     // O objetivo de cada onda é o nome do grupo e é único: a rodada junta
     // numa onda as tarefas de mesmo grupo. O assunto que já existia vem
-    // primeiro, com o nome dele.
-    let mut named: BTreeMap<String, usize> = BTreeMap::new();
+    // primeiro, com o nome dele. A onda que segue uma em andamento leva o
+    // objetivo dela, e o assunto com esse nome espera a volta dela
+    // ([`AFTER`]).
+    let after: BTreeMap<String, u64> = running_objectives.iter().map(|(wave, objective)| (objective.clone(), *wave)).collect();
+    let followed_objective =
+        |wave: &WaveGroup| wave.follows.as_ref().and_then(|key| running.iter().find(|known| &known.key == key)).map(|known| known.objective.clone());
+    let mut named: BTreeMap<String, usize> = after.keys().map(|objective| (objective.clone(), 1)).collect();
     let fitted_subjects: Vec<OrderedSubject> = known
         .iter()
         .filter(|subject| fitted_names.contains(&subject.name))
@@ -318,6 +341,9 @@ fn triage_with(opts: &TriageOpts, session: Option<&str>, in_round: bool, jev_on:
                 wave.merges.iter().find(|merge| &merge.keep == keep).map(|merge| merge.absorb.iter().filter_map(id_of).collect()).unwrap_or_default()
             };
             let tasks = wave.tasks.iter().filter(|said| !absorbed.contains(said)).filter_map(|said| Some((id_of(said)?, joined(said)))).collect();
+            if let Some(name) = followed_objective(wave) {
+                return OrderedSubject { name, tasks };
+            }
             let seen = named.entry(wave.objective.clone()).or_default();
             *seen += 1;
             let name = if *seen == 1 { wave.objective.clone() } else { format!("{} ({seen})", wave.objective) };
@@ -330,8 +356,11 @@ fn triage_with(opts: &TriageOpts, session: Option<&str>, in_round: bool, jev_on:
     placed.extend(fitted.keys().copied());
     // Cada tarefa que entra num assunto que já existia fica depois das que
     // ele já tem.
-    let starts: BTreeMap<String, u64> =
-        known.iter().filter(|subject| fitted_names.contains(&subject.name)).map(|subject| (subject.name.clone(), subject.last_position)).collect();
+    let starts: BTreeMap<String, u64> = known
+        .iter()
+        .filter(|subject| fitted_names.contains(&subject.name) || after.contains_key(&subject.name))
+        .map(|subject| (subject.name.clone(), subject.last_position))
+        .collect();
     let subjects: Vec<OrderedSubject> = fitted_subjects.into_iter().chain(formed_subjects).collect();
     let later: Vec<String> = open.iter().filter(|task| !placed.contains(&task.id)).map(|task| code(task.id)).collect();
     // 3. O programa confere se cada onda cabe no limite de uma onda, pelos
@@ -371,10 +400,7 @@ fn triage_with(opts: &TriageOpts, session: Option<&str>, in_round: bool, jev_on:
     let facts: BTreeMap<u64, OrderFacts> = backlog_population(&log, &BTreeSet::new())
         .into_iter()
         .filter(|task| classified.contains(&task.id))
-        .map(|task| {
-            let cleanup = log.get(task.id).is_some_and(is_cleanup);
-            (task.id, OrderFacts { priority: task.priority, cleanup, depends_on: task.depends_on })
-        })
+        .map(|task| (task.id, OrderFacts { priority: task.priority, depends_on: task.depends_on }))
         .collect();
     // A reserva da ordem, da mesma leitura: o valor de cada onda formada e
     // de cada assunto que já existia, pelo nome, e a nota de cada tarefa lida.
@@ -445,7 +471,7 @@ fn triage_with(opts: &TriageOpts, session: Option<&str>, in_round: bool, jev_on:
         return report;
     }
     // 4. A gravação: as junções e o assunto de cada tarefa.
-    match apply(&opts.root, &spec, &path, (&order, &starts), &held, lang) {
+    match apply(&opts.root, &spec, &path, (&order, &starts, &after), &held, lang) {
         Ok(Applied { versions, emptied }) => {
             let after = store::read(&path).ok().flatten().unwrap_or(log);
             let rewrite: Vec<Value> = versions.iter().map(|(version, group)| rewrite_of(&project.root, &after, *version, group)).collect();
@@ -504,13 +530,15 @@ struct Applied {
 /// entram saem, com o motivo no idioma `lang`. A tarefa que já está no
 /// assunto e na posição, sem nada a receber, não grava nada. No assunto que
 /// já existia (`starts`, com a última posição ocupada nele), a posição segue
-/// depois da última. Uma recusa no meio volta o arquivo ao que era antes da
-/// primeira gravação, e nada fica.
+/// depois da última. O assunto do mesmo sentido de uma onda em andamento
+/// (`after`, pelo nome) grava o número dela no grupo ([`AFTER`]), e a tarefa
+/// espera a volta dela. Uma recusa no meio volta o arquivo ao que era antes
+/// da primeira gravação, e nada fica.
 fn apply(
     start: &Path,
     spec: &str,
     path: &Path,
-    (order, starts): (&BacklogOrder, &BTreeMap<String, u64>),
+    (order, starts, after): (&BacklogOrder, &BTreeMap<String, u64>, &BTreeMap<String, u64>),
     held: &BTreeSet<u64>,
     lang: Locale,
 ) -> Result<Applied, Refusal> {
@@ -529,6 +557,9 @@ fn apply(
                     let mut place = json!({ "name": subject.name, "position": position, "formed": true });
                     if let Some(difficulty) = order.difficulty.get(keep) {
                         place["difficulty"] = difficulty.to_value();
+                    }
+                    if let Some(wave) = after.get(&subject.name) {
+                        place[AFTER] = json!(wave);
                     }
                     let mut draft = if group.len() > 1 {
                         joined_version(locked.log(), &group, lang)?
@@ -575,7 +606,7 @@ fn joined_version(log: &SpecLog, group: &[u64], lang: Locale) -> Result<Map<Stri
         let line = translate("triage.joined_line", lang)
             .replace("{code}", &codes.get(&other.id).cloned().unwrap_or_else(|| other.id.to_string()))
             .replace("{title}", other.str_field("title").unwrap_or_default())
-            .replace("{text}", &other.str_field("text").unwrap_or_default().split_whitespace().collect::<Vec<_>>().join(" "));
+            .replace("{text}", &one_line(other.str_field("text").unwrap_or_default()));
         append_agent_line(&mut draft, &line);
         for field in ["files", "covers", "depends_on"] {
             let mut list: Vec<Value> = draft.get(field).and_then(Value::as_array).cloned().unwrap_or_default();
@@ -692,14 +723,13 @@ mod tests {
     /// Quatro tarefas de um projeto em TypeScript: a retomada que lista as
     /// ondas no ar, a busca que não espera a trava do mapa, a retomada que diz
     /// a onda que perdeu o processo e o título do commit. A primeira chamada
-    /// só devolve o pedido ao modelo pequeno da sessão, com a lista inteira e
-    /// as quatro vagas livres, e não pergunta nada ao Jev. Ele forma duas
-    /// ondas — a retomada, com a terceira dentro da primeira, e a busca — e
-    /// deixa o commit para depois. O Jev ordena as ondas: a busca vale mais.
-    /// Sem `--apply` nada se grava; com `--apply`, a primeira ganha a versão
-    /// nova com a terceira e o objetivo da onda, a terceira sai, a busca ganha
-    /// o objetivo dela, o commit fica como está, e a resposta traz o pedido de
-    /// reescrita.
+    /// só devolve o pedido ao modelo pequeno da sessão, com a lista inteira,
+    /// e não pergunta nada ao Jev. Ele põe cada tarefa numa onda, uma por
+    /// sentido — a retomada, com a terceira dentro da primeira, a busca e o
+    /// commit. O Jev ordena as ondas: a busca vale mais. Sem `--apply` nada se
+    /// grava; com `--apply`, a primeira ganha a versão nova com a terceira e o
+    /// objetivo da onda, a terceira sai, a busca e o commit ganham o objetivo
+    /// de cada um, e a resposta traz o pedido de reescrita.
     #[test]
     fn backlog_triage_forms_waves_by_objective_and_orders_with_jev() {
         let dir = tempfile::tempdir().unwrap();
@@ -716,20 +746,21 @@ mod tests {
         let asked = triage_with(&opts(false), None, false, false, &|_, _, _| panic!("the Jev only orders, after the reading"));
         let prompt = asked["grouping"]["delegation"]["request"]["prompt"].as_str().unwrap_or_else(|| panic!("{asked}"));
         assert!(prompt.contains("A retomada lista as ondas no ar") && prompt.contains("O commit leva título e corpo"), "the whole list in one request");
-        assert!(prompt.contains("Form up to 4 waves"), "the free slots: {prompt}");
+        assert!(prompt.contains("Running waves: []"), "no wave runs: {prompt}");
         assert_eq!(asked["grouping"]["delegation"]["model_family"], json!("haiku"), "{asked}");
         read_by_the_session(root, &asked, json!([
             { "objective": "A retomada mostra as ondas no ar", "tasks": ["MSTD-TASK-0001", "MSTD-TASK-0003"],
               "merges": [{ "keep": "MSTD-TASK-0001", "absorb": ["MSTD-TASK-0003"] }] },
             { "objective": "A busca responde sem esperar a trava", "tasks": ["MSTD-TASK-0002"], "merges": [] },
+            { "objective": "O commit leva título e corpo", "tasks": ["MSTD-TASK-0004"], "merges": [] },
         ]));
 
         let jev = scored(&[("value_s0", 1), ("value_s1", 3)]);
         let shown = triage_with(&opts(false), None, false, false, &jev);
         let objectives: Vec<&str> = shown["waves"].as_array().unwrap().iter().map(|wave| wave["objective"].as_str().unwrap()).collect();
-        assert_eq!(objectives, ["A busca responde sem esperar a trava", "A retomada mostra as ondas no ar"], "{shown}");
-        assert_eq!(shown["waves"][1]["merges"], json!([{ "keep": "MSTD-TASK-0001", "join": ["MSTD-TASK-0003"] }]), "{shown}");
-        assert_eq!(shown["later"], json!(["MSTD-TASK-0004"]), "the task left out waits for a later forming: {shown}");
+        assert_eq!(objectives, ["A busca responde sem esperar a trava", "O commit leva título e corpo", "A retomada mostra as ondas no ar"], "{shown}");
+        assert_eq!(shown["waves"][2]["merges"], json!([{ "keep": "MSTD-TASK-0001", "join": ["MSTD-TASK-0003"] }]), "{shown}");
+        assert_eq!(shown["later"], json!([]), "no task is left out: {shown}");
         assert_eq!(shown["requests"], json!(1), "only the order of the waves, which also grades each one-task wave: {shown}");
         assert_eq!(log_of(root).events.len(), events, "nothing is recorded without --apply");
 
@@ -744,14 +775,14 @@ mod tests {
         assert_eq!(kept.fields["group"], json!({ "name": "A retomada mostra as ondas no ar", "position": 1, "formed": true }));
         let search = visible.iter().find(|e| e.int("replaces") == Some(ids[1])).expect("the search gets its wave");
         assert_eq!(search.fields["group"], json!({ "name": "A busca responde sem esperar a trava", "position": 1, "formed": true }));
+        let commit = visible.iter().find(|e| e.int("replaces") == Some(ids[3])).expect("the commit gets its wave");
+        assert_eq!(commit.fields["group"], json!({ "name": "O commit leva título e corpo", "position": 1, "formed": true }));
 
-        // A formação seguinte só lê o commit, que nenhuma onda levou: as das
-        // duas ondas formadas esperam a vez, e cada uma toma uma vaga. Sozinho,
-        // o commit já é a própria onda, e o Haiku nem é chamado.
+        // A formação seguinte não tem o que ler: as três ondas formadas
+        // esperam a vez, e cada uma toma uma vaga.
         let next = triage_with(&opts(false), None, false, false, &|_, _, _| panic!("nothing to order"));
-        assert_eq!((next["classified"].clone(), next["free_waves"].clone()), (json!(1), json!(2)), "{next}");
+        assert_eq!((next["classified"].clone(), next["free_waves"].clone()), (json!(0), json!(1)), "{next}");
         assert!(next.get("grouping").is_none() && next["waves"] == json!([]), "{next}");
-        assert!(visible.iter().any(|e| e.id == ids[3] && !e.fields.contains_key("group")), "the task left for later stays as it is");
         assert!(visible.iter().all(|e| e.id != ids[2]), "the joined task leaves");
         assert!(applied["rewrite"][0]["request"]["delegation"]["model_family"].is_string(), "{applied}");
     }
@@ -845,7 +876,7 @@ mod tests {
         }
         assert!(!prompt.contains(&title(ids[3])), "the task of the live wave is not read again");
         assert!(!prompt.contains(&title(ids[4])), "the returned wave counts as delivered");
-        assert!(prompt.contains("Form up to 3 waves"), "four slots, one held by the live wave: {prompt}");
+        assert!(prompt.contains(r#"Running waves: [{"key":"w3","objective":"Onda 3."}]"#), "the live wave goes with its objective: {prompt}");
         assert_eq!((asked["classified"].clone(), asked["kept_out"].clone()), (json!(4), json!(1)), "{asked}");
         assert!(asked["warnings"][0].as_str().is_some_and(|said| said.contains("MSTD-TASK-0004")), "{asked}");
         let codes = ["MSTD-TASK-0001", "MSTD-TASK-0002", "MSTD-TASK-0003", "MSTD-TASK-0006"];
@@ -885,7 +916,10 @@ mod tests {
         let pending = asked.pending.expect("the request to the session's analysis agent");
         assert!(pending["grouping"]["delegation"]["request"]["prompt"].as_str().is_some_and(|prompt| prompt.contains("A busca")), "{pending}");
         assert_eq!(log_of(root).events.len(), events, "nothing is recorded while the reading is pending");
-        read_by_the_session(root, &pending, json!([{ "objective": "A retomada mostra as ondas no ar", "tasks": ["MSTD-TASK-0001"], "merges": [] }]));
+        read_by_the_session(root, &pending, json!([
+            { "objective": "A retomada mostra as ondas no ar", "tasks": ["MSTD-TASK-0001"], "merges": [] },
+            { "objective": "A busca responde sem esperar a trava", "tasks": ["MSTD-TASK-0002"], "merges": [] },
+        ]));
         let formed = form_for_round(root, "x", Some("session"), &applying(root));
         assert!(formed.pending.is_none() && formed.applied, "the formed wave is recorded");
         let log = log_of(root);
@@ -1133,5 +1167,35 @@ mod tests {
         let refused = triage_with(&opts(true), None, false, false, &jev);
         assert_eq!(refused["reason"], json!("task-dependency-cycle"), "{refused}");
         assert_eq!(log_of(root).events.len(), events, "a refusal in the middle records nothing");
+    }
+
+    /// Duas vagas, a onda 1 em andamento e duas tarefas novas no backlog. O
+    /// assunto já formado que segue a onda 1 espera a volta dela, e não uma
+    /// vaga: a conta das vagas livres desconta só a onda 1, e as duas
+    /// tarefas novas ainda cabem na formação, que a rodada pede ao modelo
+    /// pequeno.
+    #[test]
+    fn a_subject_following_a_running_wave_does_not_take_a_free_wave() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        backlog(root, &[("A retomada lista as ondas no ar", "web/flow/resume.ts", &[]), ("A busca não espera a trava do mapa", "web/search/index.ts", &[])]);
+        std::fs::write(root.join("mustard.json"), r#"{"maxCompilingWaves":2}"#).unwrap();
+        let seed = |event_type: &str, body: Value| crate::shared::spec_state::seed_event(root, "x", event_type, body);
+        let crit = seed("criterion", json!({ "when": "a onda roda", "then": "a suíte passa", "proof": "git --version", "form": "ubiquitous" }));
+        let said = seed("message", json!({ "author": "user", "text": "o plano" }));
+        seed("wave", json!({ "n": 1, "text": "Onda 1.", "criteria": [crit], "done_when": "A suíte passa.", "author": "binary" }));
+        seed("task", json!({ "wave": 1, "title": "O painel mostra o custo", "text": "Mostrar o custo.", "files": [{ "path": "web/panel/cost.ts" }],
+            "depends_on": [], "origin": said }));
+        seed("send", json!({ "wave": 1, "role": "wave", "text": "pedido", "lines": 1, "chars": 6, "items": [], "mustard": "0", "author": "binary" }));
+        seed("task", json!({ "title": "O painel mostra o custo por onda", "text": "Mostrar o custo de cada onda.", "agent": "- conferir pelo teste",
+            "files": [{ "path": "web/panel/waves.ts" }], "depends_on": [], "origin": said,
+            "group": { "name": "O painel mostra o custo", "position": 1, "formed": true, "after": 1 } }));
+        let opts = TriageOpts { root: root.to_path_buf(), spec: Some("x".into()), apply: false };
+
+        let asked = triage_with(&opts, None, true, false, &|_, _, _| None);
+
+        assert_eq!(asked["free_waves"], json!(1), "only the running wave takes a slot: {asked}");
+        let prompt = asked["grouping"]["delegation"]["request"]["prompt"].as_str().unwrap_or_else(|| panic!("the formation is asked: {asked}"));
+        assert!(prompt.contains("A retomada lista as ondas no ar") && prompt.contains("A busca não espera a trava do mapa"), "{prompt}");
     }
 }

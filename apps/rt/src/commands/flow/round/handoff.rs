@@ -3,8 +3,11 @@
 //! commit; se é esse mesmo programa que roda a rodada, o processo atual é o
 //! antigo, e a onda que ele soltasse sairia montada pelo código de antes do
 //! commit. Então, com a compilação verde, a rodada termina a parte do commit
-//! e pede o despacho ao programa novo (`run round --dispatch`, sem relatório),
-//! devolvendo a resposta dele junto da sua. Sem compilação, fora do
+//! e pede o despacho ao programa novo (`run round --dispatch --full`, sem
+//! relatório), devolvendo a resposta dele junto da sua. A resposta inteira, e
+//! não a curta: o processo que imprime é este, e é ele quem a encurta, uma vez
+//! só — agrupar as tarefas seguradas de uma resposta já agrupada as perde. Sem
+//! compilação, fora do
 //! repositório do Mustard, com outro programa rodando a rodada, com onda
 //! pausada pelo relatório — que só este processo conhece — ou com o programa
 //! novo sem resposta legível, o despacho segue no próprio processo.
@@ -42,14 +45,15 @@ fn same_program(running: &Path, program: &Path) -> bool {
 /// rodada refez o programa (`rebuilt`), nenhuma onda pausou por este
 /// relatório (`paused`), e o programa refeito é o que roda agora
 /// (`program`). O despacho é a rodada da spec `spec` em `start` sem
-/// relatório, pelo `run`. `None` manda despachar no próprio processo.
+/// relatório, pelo `run`, com a resposta inteira (`--full`): quem a encurta é
+/// o processo que imprime. `None` manda despachar no próprio processo.
 pub(super) fn dispatch_by_new_program(start: &Path, spec: &str, rebuilt: bool, paused: bool, program: Option<PathBuf>, run: Runner<'_>) -> Option<Value> {
     if !rebuilt || paused {
         return None;
     }
     let program = program?;
     let args: Vec<String> =
-        ["run", "round", "--dispatch", "--spec", spec, "--root"].into_iter().map(str::to_string).chain([start.display().to_string()]).collect();
+        ["run", "round", "--dispatch", "--full", "--spec", spec, "--root"].into_iter().map(str::to_string).chain([start.display().to_string()]).collect();
     run(&program, &args).filter(|answer| answer.get("ok").is_some())
 }
 
@@ -62,11 +66,13 @@ pub(super) fn run_program(program: &Path, args: &[String]) -> Option<Value> {
 
 /// A resposta da rodada que passou o despacho: a do programa novo, com o
 /// que esta rodada gravou, formatou e comitou antes dela, e os avisos das
-/// duas, os desta primeiro.
+/// duas, os desta primeiro. O programa novo lê a spec de depois do commit e
+/// refaz as conferências das voltas que seguem esperando, como esta rodada
+/// acabou de fazer: o aviso que ele repete igual ao daqui sai uma vez só.
 pub(super) fn joined(recorded: &[Value], formatted: &[String], commit: Option<&Value>, warnings: &[Value], mut answer: Value) -> Value {
     let theirs = |answer: &Value, field: &str| answer[field].as_array().cloned().unwrap_or_default();
     let all_recorded: Vec<Value> = recorded.iter().cloned().chain(theirs(&answer, "recorded")).collect();
-    let all_warnings: Vec<Value> = warnings.iter().cloned().chain(theirs(&answer, "warnings")).collect();
+    let all_warnings: Vec<Value> = warnings.iter().cloned().chain(theirs(&answer, "warnings").into_iter().filter(|warning| !warnings.contains(warning))).collect();
     answer["recorded"] = json!(all_recorded);
     if !formatted.is_empty() {
         answer["formatted"] = json!(formatted);
@@ -104,7 +110,7 @@ mod tests {
         assert_eq!(answer["dispatch"][0]["wave"], json!(7));
         assert_eq!(
             calls.borrow().as_slice(),
-            [(program.clone(), ["run", "round", "--dispatch", "--spec", "x", "--root", "/repo"].map(str::to_string).to_vec())]
+            [(program.clone(), ["run", "round", "--dispatch", "--full", "--spec", "x", "--root", "/repo"].map(str::to_string).to_vec())]
         );
 
         for (rebuilt, paused, running) in [(false, false, Some(program.clone())), (true, true, Some(program.clone())), (true, false, None)] {

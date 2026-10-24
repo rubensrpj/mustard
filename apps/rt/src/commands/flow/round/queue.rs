@@ -7,16 +7,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use mustard_core::domain::spec_events::{Block, BlockQuery, EventRef, Refusal, SEND_REQUEST_FIELDS, SpecEvent, SpecLog};
-use mustard_core::domain::spec_state::PhaseWriter;
+use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SEND_REQUEST_FIELDS, SpecEvent, SpecLog};
+use mustard_core::domain::spec_state::{PhaseWriter, last_change};
 use mustard_core::domain::wave_prompt::{Choice, dispatch_items};
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Map, Value, json};
 
-use super::leftovers::is_cleanup;
 use super::stops::waves_replanned;
 use super::vacancy::Vacancies;
 use crate::commands::wave::wave_overlap_check::{WaveGraph, wave_graph};
+use crate::commands::spec_events::task_dependents::TaskRefs;
 use crate::commands::spec_events::write::record;
 use crate::shared::dag::touches_whole_tree;
 
@@ -184,6 +184,20 @@ pub(crate) fn unanswered_sends(log: &SpecLog) -> BTreeMap<u64, u64> {
     sends_without_return(log).into_iter().filter(|(n, _)| planned.contains(n)).collect()
 }
 
+/// `true` quando o agente da onda `wave` ainda pode entregar: ela tem envio
+/// sem volta ([`unanswered_sends`]), mesmo com o plano mudado depois dele, e
+/// nenhuma entrega esperando a rodada ([`waves_returned`]). As duas leituras
+/// ficam: a volta que o agente grava sai da leitura até a rodada assumi-la, e
+/// até lá o envio segue sem volta, guardando a vaga e a cópia da onda (a
+/// volta que a junção segurou por conflito ainda precisa dela). É a leitura
+/// da gravação de uma tarefa, que não pode tirar da onda o que o agente entrega.
+/// Ao contrário de [`waves_in_progress`], não olha se o Claude Code que mandou
+/// o pedido segue aberto: a onda cujo agente caiu sem voltar segue dona das
+/// tarefas dela até sair de novo ou voltar.
+pub(crate) fn agent_working(log: &SpecLog, wave: u64) -> bool {
+    unanswered_sends(log).contains_key(&wave) && !waves_returned(log).contains(&wave)
+}
+
 /// As ondas com pedido despachado e sem volta, cada uma com o número do
 /// pedido, estejam ou não no plano: a leitura que [`unanswered_sends`]
 /// restringe às do plano e que [`waves_left_without_tasks`] restringe às que
@@ -250,6 +264,7 @@ pub(super) fn record_waves_left_without_tasks(start: &Path, spec: &str, log: &Sp
         .flatten()
         .collect();
     let waves = log.block(BlockQuery::Block(Block::Waves));
+    let returned = waves_returned(log);
     let mut recorded = Vec::new();
     for (wave, sent) in left {
         let Some(event) = waves.iter().rfind(|e| e.event_type == "wave" && e.wave() == Some(wave)) else {
@@ -260,7 +275,9 @@ pub(super) fn record_waves_left_without_tasks(start: &Path, spec: &str, log: &Sp
             continue;
         }
         let send = codes.get(&sent).cloned().unwrap_or_else(|| sent.to_string());
-        let text = translate("round.wave_left_without_tasks", lang).replace("{wave}", &wave.to_string()).replace("{send}", &send);
+        // O agente que já gravou a volta antes da remoção não ficou sem volta.
+        let key = if returned.contains(&wave) { "round.wave_left_after_return" } else { "round.wave_left_without_tasks" };
+        let text = translate(key, lang).replace("{wave}", &wave.to_string()).replace("{send}", &send);
         let mut draft = Map::new();
         draft.insert("text".into(), json!(text));
         draft.insert("keys".into(), json!([code, WAVE_LEFT_KEY]));
@@ -286,6 +303,15 @@ pub(crate) fn open_review(log: &SpecLog) -> Option<u64> {
     (!visible.iter().any(|e| e.event_type == "verdict" && !super::wave_review::is_wave_verdict(e) && e.id > asked)).then_some(asked)
 }
 
+/// O pedido de revisão final aberto ([`open_review`]) cujo veredito ainda
+/// pode aprovar a obra: o mais novo que a última mudança dela
+/// ([`last_change`]). O pedido aberto mais velho que ela não espera veredito:
+/// o revisor não recebeu o que mudou depois dele, e o fechamento abre um
+/// pedido novo.
+pub(crate) fn awaited_review(log: &SpecLog) -> Option<u64> {
+    open_review(log).filter(|asked| *asked > last_change(log))
+}
+
 /// A versão nova do envio mais recente da onda `wave`: os campos dele, tirando
 /// `v`, `id`, `code`, `at`, `type`, `search` e o pedido
 /// ([`SEND_REQUEST_FIELDS`], que quem lê acha na versão que o gravou, por
@@ -294,8 +320,14 @@ pub(crate) fn open_review(log: &SpecLog) -> Option<u64> {
 /// o modelo usado de verdade, os passos e os tokens —, que só se sabe depois
 /// do envio já gravado. `None` sem envio para a onda.
 pub(crate) fn send_revision(log: &SpecLog, wave: u64, extra: Map<String, Value>) -> Option<Map<String, Value>> {
-    let id = *log.last_by_wave("send").get(&wave)?;
-    let event = log.get(id)?;
+    revise_send(log, *log.last_by_wave("send").get(&wave)?, extra)
+}
+
+/// A versão nova do envio `id`, na forma de [`send_revision`]: o caminho do
+/// envio que não é de onda nenhuma, como o da revisão final. `None` sem esse
+/// envio.
+pub(crate) fn revise_send(log: &SpecLog, id: u64, extra: Map<String, Value>) -> Option<Map<String, Value>> {
+    let event = log.get(id).filter(|event| event.event_type == "send")?;
     let mut draft: Map<String, Value> = event
         .fields
         .iter()
@@ -436,17 +468,25 @@ pub(crate) fn agent_known(root: &Path, spec: &str, log: &SpecLog, wave: u64, sen
 }
 
 /// Grava que o agente da onda `wave` da spec `spec`, de `root`, começou: o
-/// envio aberto dela que despachou a onda na posição `dispatch` ganha uma
-/// versão com [`launch_fields`]. Só a prova de que o agente existe chama isto
-/// — a primeira chamada dele ligada ao envio, ou o despacho nativo que
-/// terminou —, nunca o pedido de despacho, que a permissão ainda pode negar.
-/// Ler, conferir e gravar correm com a trava do arquivo de eventos presa. O
-/// envio que já marca o lançamento, que voltou ou que um reenvio substituiu
-/// não grava nada. `false` só quando a gravação falha.
+/// envio dela que despachou a onda na posição `dispatch` ganha uma versão com
+/// [`launch_fields`]. É o envio aberto ou, na onda que quem conduz a obra
+/// reprovou, que já voltou e não tem pedido aberto, o que guarda a reprovação
+/// ([`rejected_send`]), onde o despacho do agente novo gravou o Claude Code
+/// dele. Só a prova de que o agente existe chama isto — a primeira chamada
+/// dele ligada ao envio, ou o despacho nativo que terminou —, nunca o pedido
+/// de despacho, que a permissão ainda pode negar. Ler, conferir e gravar
+/// correm com a trava do arquivo de eventos presa, a mesma que a rodada pega
+/// para soltar a onda do agente que não começou
+/// ([`super::rejection::release_unstarted`]): o lançamento e a soltura não se
+/// perdem um ao outro. O envio que já marca o lançamento, o de outro despacho
+/// e o que um reenvio substituiu não gravam nada. `false` só quando a
+/// gravação falha.
 pub(crate) fn record_launch(root: &Path, spec: &str, wave: u64, dispatch: u64) -> bool {
     let Ok(path) = mustard_core::io::spec_events::spec_file(root, spec) else { return false };
     let written = mustard_core::io::spec_events::with_locked_writer(&path, |locked| {
-        let Some(sent) = open_sends(locked.log()).get(&wave).copied() else { return Some(()) };
+        // A onda reprovada já voltou e não tem pedido aberto: o agente novo
+        // dela marca o lançamento no envio que guarda a reprovação.
+        let Some(sent) = open_sends(locked.log()).get(&wave).copied().or_else(|| rejected_send(locked.log(), wave)) else { return Some(()) };
         if locked.log().dispatch_position(sent) != dispatch || agent_launched(locked.log(), sent) {
             return Some(());
         }
@@ -497,9 +537,13 @@ pub(crate) fn orphaned_waves(log: &SpecLog) -> BTreeMap<u64, u64> {
 /// conduz a obra reprovou também espera um agente novo, com o Claude Code do
 /// envio aberto ou fechado, até o despacho dele ([`rejected_unclaimed`]). O
 /// despacho do agente novo grava uma versão do envio com o Claude Code dele,
-/// e a onda sai daqui enquanto esse Claude Code está aberto. A entrega nova
-/// muda o nome do trecho, e a onda sai daqui sozinha. O gancho do despacho e
-/// a recusa da rodada leem daqui, e só daqui.
+/// e a onda sai daqui enquanto esse Claude Code está aberto. O agente novo
+/// que nunca começou não a segura para sempre: a rodada tira o Claude Code
+/// dele do envio ([`super::rejection::release_unstarted`]) quando nenhuma
+/// chamada do agente gravou o lançamento ([`record_launch`]), e a onda volta
+/// a esperar um agente. A entrega nova muda o nome do trecho, e a onda sai
+/// daqui sozinha. O gancho do despacho e a recusa da rodada leem daqui, e só
+/// daqui.
 pub(crate) fn waves_awaiting_new_agent(root: &Path, spec: &str, log: &SpecLog) -> BTreeMap<u64, PathBuf> {
     let sends = log.last_by_wave("send");
     waves_returned(log)
@@ -516,32 +560,45 @@ pub(crate) fn waves_awaiting_new_agent(root: &Path, spec: &str, log: &SpecLog) -
 /// que mandou a onda, aberto ou fechado, não segura nada aqui; o despacho do
 /// agente novo grava o Claude Code dele, e a regra de sempre volta a valer.
 fn rejected_unclaimed(log: &SpecLog, wave: u64, sent: u64) -> bool {
-    let unclaimed = log.get(sent).is_some_and(|event| event.int("claude_pid").is_none());
-    unclaimed && super::rejection::rejection_of(log, wave).is_some_and(|(back, _)| super::rejection::pending_return(log, wave) == Some(back))
+    let unclaimed = log.get(sent).is_some_and(|event| event.int("claude_pid").is_none()) && !agent_launched(log, sent);
+    unclaimed && rejected_send(log, wave) == Some(sent)
+}
+
+/// O envio mais novo da onda `wave` quando ele guarda a reprovação da volta
+/// pendente dela: a onda espera um agente novo, ou o agente novo que a tomou.
+pub(crate) fn rejected_send(log: &SpecLog, wave: u64) -> Option<u64> {
+    let sent = *log.last_by_wave("send").get(&wave)?;
+    super::rejection::rejection_of(log, wave).filter(|(back, _)| super::rejection::pending_return(log, wave) == Some(*back)).map(|_| sent)
+}
+
+/// Tira do rascunho de uma versão do envio o agente que ele tinha: o Claude
+/// Code que o mandou e o lançamento ([`AGENT_LAUNCHED`]). A onda volta a
+/// esperar um agente novo, que só a toma quando começa de fato.
+pub(crate) fn without_agent(draft: &mut Map<String, Value>) {
+    for field in ["claude_pid", "claude_started", AGENT_LAUNCHED] {
+        draft.remove(field);
+    }
 }
 
 /// As ondas que voltaram e esperam a rodada: a entrega que o agente gravou
-/// depois do envio que a despachou e que nenhuma rodada assumiu ainda — a
-/// que pede novo plano sem o clique do usuário, a que uma conferência da
-/// própria volta segurou, ou a que a junção segurou por conflito.
+/// depois do envio que a despachou e que nenhuma rodada assumiu ainda
+/// ([`SpecLog::returns_after_dispatch`]) — a que pede novo plano sem o
+/// clique do usuário, a que uma conferência da própria volta segurou, ou a
+/// que a junção segurou por conflito. A onda que saiu do plano depois de
+/// voltar segue aqui: o agente dela terminou.
 pub(crate) fn waves_returned(log: &SpecLog) -> BTreeSet<u64> {
-    pending_returns(log).filter_map(SpecEvent::wave).collect()
+    log.returns_after_dispatch().into_iter().filter_map(SpecEvent::wave).collect()
 }
 
 /// As ondas que voltaram ([`waves_returned`]) sem pedir mudança de plano: o
 /// trabalho delas está entregue e só espera a rodada assumi-lo. A que pede
 /// mudança espera a resposta do usuário, e as tarefas dela seguem por fazer.
 pub(crate) fn waves_returned_without_replan(log: &SpecLog) -> BTreeSet<u64> {
-    pending_returns(log).filter(|e| e.str_field("replan").is_none_or(|change| change.trim().is_empty())).filter_map(SpecEvent::wave).collect()
-}
-
-/// A entrega que o agente gravou depois do envio que despachou a onda dela e
-/// que nenhuma rodada assumiu ainda, uma por onda.
-fn pending_returns(log: &SpecLog) -> impl Iterator<Item = &SpecEvent> + '_ {
-    let dispatched = log.last_dispatch_by_wave();
-    log.unassumed_returns()
+    log.returns_after_dispatch()
         .into_iter()
-        .filter(move |e| e.event_type == "delivered" && e.wave().is_some_and(|n| e.id > dispatched.get(&n).copied().unwrap_or_default()))
+        .filter(|e| e.str_field("replan").is_none_or(|change| change.trim().is_empty()))
+        .filter_map(SpecEvent::wave)
+        .collect()
 }
 
 /// A onda `n` é de lote — o binário a formou a partir do backlog, com autor
@@ -729,7 +786,13 @@ fn task_transitive_deps(n: u64, deps: &BTreeMap<u64, BTreeSet<u64>>) -> BTreeSet
 /// Os arquivos que uma tarefa declara: cada item de `files` é o caminho, seja
 /// como texto solto ou como `{"path": ...}`.
 pub(crate) fn task_files(task: &SpecEvent) -> BTreeSet<String> {
-    task.fields
+    files_in(&task.fields)
+}
+
+/// Os arquivos que os campos `fields` de uma tarefa — a gravada ou a que ainda
+/// vai ser — declaram em `files`, como [`task_files`] os lê.
+pub(crate) fn files_in(fields: &Map<String, Value>) -> BTreeSet<String> {
+    fields
         .get("files")
         .and_then(Value::as_array)
         .into_iter()
@@ -738,18 +801,6 @@ pub(crate) fn task_files(task: &SpecEvent) -> BTreeSet<String> {
         .map(|path| path.trim().replace('\\', "/"))
         .filter(|path| !path.is_empty())
         .collect()
-}
-
-/// A tarefa que `value` aponta, pelo número do evento ou pelo código, na
-/// versão vigente dela — a mesma resolução que a gravação de uma tarefa nova
-/// já faz para conferir o `depends_on` dela, só que lida aqui, não repetida à
-/// parte por acaso: uma referência que não bate com tarefa nenhuma some.
-pub(super) fn backlog_task_ref(log: &SpecLog, codes: &BTreeMap<u64, String>, value: &Value) -> Option<u64> {
-    let raw = match EventRef::from_value(value)? {
-        EventRef::Id(id) => id,
-        EventRef::Code(code) => log.visible().into_iter().filter(|event| event.event_type == "task" && codes.get(&event.id) == Some(&code)).map(|event| event.id).next_back()?,
-    };
-    log.current(raw).filter(|event| event.event_type == "task").map(|event| event.id)
 }
 
 /// A versão nova da tarefa `id`: os campos dela, tirando `v`, `id`, `code`,
@@ -793,35 +844,24 @@ pub(super) fn task_revision(log: &SpecLog, id: u64, extra: Map<String, Value>) -
 /// As tarefas vigentes da spec como o motor do backlog as lê: cada uma com as
 /// dependências resolvidas para a versão vigente, os arquivos que declara,
 /// se já está feita — a onda dela está entre as entregues e aprovadas
-/// (`done_waves`) — e se traz a marca de prioridade.
+/// (`done_waves`) —, se está presa (`blocked_by` ou dependência quebrada) e se
+/// traz a marca de prioridade.
 pub(crate) fn backlog_population(log: &SpecLog, done_waves: &BTreeSet<u64>) -> Vec<crate::shared::dag::BacklogTask<u64>> {
     let codes = log.codes();
-    let visible=log.visible();
-    let current=log.current_versions();
-    let by_code:BTreeMap<_,_>=visible.iter().filter(|event|event.event_type=="task")
-        .filter_map(|event|codes.get(&event.id).map(|code|(code,event.id))).collect();
-    visible
+    let refs = TaskRefs::new(log, &codes);
+    // A tarefa com dependência que não aponta tarefa nenhuma da spec não sai:
+    // a rodada a segura com o motivo, e as que dependem dela esperam junto.
+    let broken = crate::commands::spec_events::task_dependents::broken_dependencies(log);
+    log.visible()
         .into_iter()
         .filter(|e| e.event_type == "task")
         .map(|task| {
-            let depends_on: BTreeSet<u64> = task
-                .fields
-                .get("depends_on")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(|value| {
-                    let raw=match EventRef::from_value(value)? {
-                        EventRef::Id(id)=>id,EventRef::Code(code)=>*by_code.get(&code)?,
-                    };
-                    current.get(&raw).filter(|event|event.event_type=="task").map(|event|event.id)
-                })
-                .collect();
+            let depends_on: BTreeSet<u64> = refs.depends_on(task).collect();
             let done = task.wave().is_some_and(|w| done_waves.contains(&w));
             // A marca de prioridade é lida do evento, como o usuário a deu: o
             // Jev não a julga.
             let priority = task.str_field("priority").is_some_and(|reason| !reason.trim().is_empty());
-            let blocked = task.str_field("blocked_by").is_some();
+            let blocked = task.str_field("blocked_by").is_some() || broken.contains_key(&task.id);
             crate::shared::dag::BacklogTask { id: task.id, depends_on, files: task_files(task), done, blocked, priority }
         })
         .collect()
@@ -894,33 +934,15 @@ pub(crate) struct LeftTask {
 pub(crate) fn tasks_left(log: &SpecLog) -> Vec<LeftTask> {
     let left = tasks_not_delivered(log, &BTreeSet::new());
     let codes = log.codes();
+    let refs = TaskRefs::new(log, &codes);
     left.iter()
         .filter_map(|id| log.get(*id))
         .map(|task| LeftTask {
             id: task.id,
             files: task_files(task),
-            depends_on: task
-                .fields
-                .get("depends_on")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(|value| backlog_task_ref(log, &codes, value))
-                .filter(|dependency| left.contains(dependency))
-                .collect(),
+            depends_on: refs.depends_on(task).filter(|dependency| left.contains(dependency)).collect(),
         })
         .collect()
-}
-
-/// `true` quando a limpeza ainda espera ([`is_cleanup`]): há onda do plano
-/// por terminar — em andamento, por sair ou com conserto pendente
-/// ([`first_unfinished`]) — ou tarefa do backlog (`left`) que não é
-/// limpeza. A limpeza sai numa onda só, no fim da obra, quando nada mais
-/// resta a fazer.
-fn cleanup_waits(log: &SpecLog, running: &BTreeMap<u64, u64>, left: &BTreeSet<u64>, undone: &BTreeSet<u64>) -> bool {
-    let done = waves_done(log, running);
-    log.planned_waves().into_iter().any(|n| !done.contains(&n) && !undone.contains(&n))
-        || left.iter().filter_map(|id| log.get(*id)).any(|task| !is_cleanup(task))
 }
 
 /// `true` quando a tarefa `task` não cobre item nenhum: `covers` ausente ou
@@ -941,11 +963,10 @@ pub(crate) fn backlog_uncovered(log: &SpecLog) -> BTreeSet<u64> {
 /// As tarefas do backlog ([`backlog_left`]) que já estão prontas — todas as
 /// dependências entregues ou aprovadas —, na ordem em que o motor do backlog
 /// as empacota. Vazia quando o backlog está vazio ou quando toda tarefa dele
-/// ainda espera uma dependência. A limpeza só entra quando nada mais resta
-/// ([`cleanup_waits`]): até lá ela não forma lote, e o próximo passo da
-/// rodada não a oferece. A tarefa que não cobre nada ([`covers_nothing`])
-/// nunca está pronta: ela segura as que dependem dela, e a rodada que só tem
-/// ela no backlog a nomeia entre as presas, em vez de mandar rodar de novo.
+/// ainda espera uma dependência. A tarefa que não cobre nada
+/// ([`covers_nothing`]) nunca está pronta: ela segura as que dependem dela, e
+/// a rodada que só tem ela no backlog a nomeia entre as presas, em vez de
+/// mandar rodar de novo.
 pub(crate) fn backlog_ready(log: &SpecLog) -> Vec<u64> {
     backlog_ready_without(log, &BTreeSet::new())
 }
@@ -956,11 +977,9 @@ pub(super) fn backlog_ready_without(log: &SpecLog, undone: &BTreeSet<u64>) -> Ve
     let running = waves_in_progress(log);
     let done_waves = waves_done(log, &running);
     let left = backlog_left_without(log, undone);
-    let held = cleanup_waits(log, &running, &left, undone);
     crate::shared::dag::ready_tasks(&backlog_population(log, &done_waves))
         .into_iter()
         .filter(|id| left.contains(id))
-        .filter(|id| !held || !log.get(*id).is_some_and(is_cleanup))
         .filter(|id| !log.get(*id).is_some_and(covers_nothing))
         .collect()
 }
@@ -1037,6 +1056,8 @@ mod tests {
     use crate::commands::flow::round::backlog::dispatch_backlog;
     use crate::commands::flow::round::tests::*;
     use crate::commands::spec_events::write::record;
+
+    mod removal_after_delivery;
 
     /// A cópia gravada no envio da onda `wave`.
     fn sent_copy(root: &Path, wave: u64) -> String {
@@ -3355,13 +3376,10 @@ mod tests {
         wave.map(|w| w.ints("order")).unwrap_or_default()
     }
 
-    /// A limpeza espera a onda da tarefa comum terminar. A primeira rodada
-    /// solta só a tarefa comum, e a limpeza segue sem onda. Com a onda 1 no ar,
-    /// a rodada não forma onda; a que assume a entrega da 1 não solta nada e
-    /// manda rodar de novo; a seguinte solta a limpeza sozinha na onda 2, e
-    /// entregue a 2 a rodada manda fechar.
+    /// A limpeza que divide o arquivo com uma tarefa comum sai na mesma onda
+    /// dela, já na primeira rodada.
     #[test]
-    fn related_ready_cleanup_joins_the_last_small_batch_without_an_extra_wave() {
+    fn a_cleanup_sharing_a_file_with_a_task_leaves_in_its_wave() {
         let dir = tempdir().unwrap(); let root = dir.path();
         let (said, crit) = backlog_project(root);
         let normal = backlog_task(root, said, crit, "Mexer no código de um.", "src/a.rs");
@@ -3371,33 +3389,18 @@ mod tests {
         assert_eq!(wave_order(root, 1), vec![normal, tidy], "{out}");
     }
 
+    /// A limpeza de outro arquivo não espera a tarefa comum terminar: a
+    /// primeira rodada solta as duas, cada uma na sua onda.
     #[test]
-    fn once_the_normal_task_is_delivered_the_cleanup_goes_out_in_the_next_round() {
+    fn a_cleanup_on_another_file_leaves_in_the_same_round_as_the_task() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let (said, crit) = backlog_project(root);
         let normal = backlog_task(root, said, crit, "Mexer no código de um.", "src/a.rs");
         let tidy = cleanup_task(root, said, crit, "Acertar o comentário de dois.", "src/b.rs");
-        let first = round(root, "x", None);
-        assert_eq!(waves_in(&first, "dispatch"), vec![1], "{first}");
-        assert_eq!(wave_order(root, 1), vec![normal], "{first}");
-        assert_eq!(spec_now(root).current(tidy).and_then(SpecEvent::wave), None, "a limpeza segue sem onda");
-
-        let idle = round(root, "x", None);
-        assert_eq!(idle["ok"], json!(true), "{idle}");
-        let formed: Vec<Value> = every_line_of(root, "wave").iter().map(|w| w["n"].clone()).collect();
-        assert_eq!(formed, vec![json!(1)], "com a onda 1 no ar, nenhuma onda nova: {idle}");
-
-        let assumed = round(root, "x", Some(&delivered(root, 1, "Saiu.", &["src/a.rs"])));
-        assert_eq!(assumed["ok"], json!(true), "{assumed}");
-        assert_eq!(waves_in(&assumed, "dispatch"), vec![2], "the existing cleanup is released in the same round: {assumed}");
-
-        let again = round(root, "x", None);
-        assert!(waves_in(&again, "dispatch").is_empty(), "the cleanup was already dispatched: {again}");
-        assert_eq!(wave_order(root, 2), vec![tidy], "a onda 2 leva só a limpeza");
-
-        let done = round(root, "x", Some(&delivered(root, 2, "Saiu.", &["src/b.rs"])));
-        assert_eq!(done["command"], json!("mustard-rt run close --spec x"), "{done}");
+        let out = round(root, "x", None);
+        assert_eq!(waves_in(&out, "dispatch"), vec![1, 2], "{out}");
+        assert_eq!((wave_order(root, 1), wave_order(root, 2)), (vec![normal], vec![tidy]), "{out}");
     }
 
     /// As limpezas se agrupam por arquivo como as outras tarefas: as que
@@ -3756,13 +3759,15 @@ mod tests {
         assert_eq!(versions, 1, "nenhuma versão sem onda no meio: só a original");
     }
 
-    /// Com a onda da tarefa comum entregue e a limpeza ainda no backlog, o
-    /// fechamento recusa pelo backlog que não esvaziou.
+    /// Com uma vaga só, a limpeza fica no backlog enquanto a onda da tarefa
+    /// comum roda. Entregue essa onda, a limpeza sai na seguinte, e o
+    /// fechamento recusa pela onda dela, ainda sem commit.
     #[test]
     fn closing_refuses_with_a_cleanup_to_do() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let (said, crit) = backlog_project(root);
+        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":1}"#).unwrap();
         backlog_task(root, said, crit, "Mexer no código de um.", "src/a.rs");
         cleanup_task(root, said, crit, "Acertar o comentário de dois.", "src/b.rs");
         let first = round(root, "x", None);
@@ -4213,12 +4218,15 @@ mod tests {
     }
 
 
-    /// Duas ondas saem, uma num arquivo TypeScript e outra num C#, e a única
-    /// tarefa da onda 1 é removida com o pedido dela ainda aberto. A rodada
-    /// com relatório já não lista a onda 1 em andamento e grava a nota do
-    /// binário que diz por quê; a rodada de despacho seguinte também não a
-    /// lista e não grava outra nota; a leitura do andamento e a das vagas
-    /// ocupadas, que a retomada e a fila usam, também a deixam de fora.
+    /// Duas ondas saem, uma num arquivo TypeScript e outra num C#, e as duas
+    /// estão em andamento. A única tarefa da onda 1 é removida pelo programa
+    /// (a triagem tira assim as tarefas de uma onda parada; a remoção do `run
+    /// write` seria recusada enquanto o agente trabalha), sem entrega e com o
+    /// pedido ainda aberto: só a remoção tira a onda 1 do andamento. A rodada
+    /// com relatório já não a lista em andamento e grava a nota do binário
+    /// que diz por quê; a rodada de despacho seguinte também não a lista e
+    /// não grava outra nota; a leitura do andamento e a das vagas ocupadas,
+    /// que a retomada e a fila usam, também a deixam de fora.
     #[test]
     fn a_wave_whose_tasks_were_all_removed_leaves_the_air_in_every_round() {
         let dir = tempdir().unwrap();
@@ -4230,8 +4238,14 @@ mod tests {
         let task = log.visible().into_iter().find(|e| e.event_type == "task" && e.wave() == Some(1)).unwrap().id;
         let code = log.codes().get(&task).cloned().unwrap();
         let send = log.codes().get(&log.last_by_wave("send")[&1]).cloned().unwrap();
-        let removed = write(root, "x", "remove", json!({"targets": [code], "reason": "Já foi feito fora da onda."}));
-        assert_eq!(removed["ok"], json!(true), "{removed}");
+        assert_eq!(waves_in_progress(&log).into_keys().collect::<Vec<_>>(), vec![1, 2], "antes da remoção as duas ondas estão em andamento");
+        let removal = json!({"targets": [code], "reason": "Já foi feito fora da onda."});
+        let refused = write(root, "x", "remove", removal.clone());
+        assert_eq!(refused["reason"], json!("wave-agent-working"), "o run write recusa enquanto o agente trabalha: {refused}");
+        record(root, "x", "remove", removal.as_object().cloned().unwrap(), PhaseWriter::Binary).unwrap();
+        let log = spec_now(root);
+        assert!(!waves_returned(&log).contains(&1), "o agente da onda 1 não voltou");
+        assert_eq!(waves_left_without_tasks(&log).into_keys().collect::<Vec<_>>(), vec![1], "a remoção tirou a onda 1 do ar");
 
         let notes = || -> Vec<String> {
             spec_now(root)
@@ -4259,11 +4273,12 @@ mod tests {
         assert_eq!(waves_in_progress(&log).into_keys().collect::<Vec<_>>(), vec![2]);
         assert_eq!(open_sends(&log).into_keys().collect::<Vec<_>>(), vec![2]);
     }
-    /// A remoção da única tarefa de uma onda enviada responde com o número
-    /// dessa onda, que sai do ar com ela, e nunca com a onda que segue com
-    /// tarefa. A remoção seguinte, de uma tarefa do backlog, fora de qualquer
-    /// onda, responde sem onda nenhuma: a onda que já tinha saído do ar não
-    /// volta à lista. O projeto é em TypeScript e C#.
+    /// A remoção da única tarefa de uma onda enviada, depois da entrega do
+    /// agente, responde com o número dessa onda, que sai do ar com ela, e
+    /// nunca com a onda que segue com tarefa. A remoção seguinte, de uma
+    /// tarefa do backlog, fora de qualquer onda, responde sem onda nenhuma: a
+    /// onda que já tinha saído do ar não volta à lista. O projeto é em
+    /// TypeScript e C#.
     #[test]
     fn removing_the_only_task_of_a_sent_wave_answers_with_that_wave() {
         let dir = tempdir().unwrap();
@@ -4276,6 +4291,7 @@ mod tests {
         let loose = backlog_task_on(root, first_of("message"), first_of("criterion"), "Mexer na tela de fora.", &["web/other.ts"]);
         let task = log.visible().into_iter().find(|e| e.event_type == "task" && e.wave() == Some(1)).unwrap().id;
 
+        delivered(root, 1, "Saiu.", &["web/app.ts"]);
         let removed = write(root, "x", "remove", json!({"targets": [task], "reason": "Já foi feito fora da onda."}));
         assert_eq!(removed["ok"], json!(true), "{removed}");
         assert_eq!(removed["waves_left_without_tasks"], json!([1]), "a remoção diz que a entrega 1 saiu do ar: {removed}");

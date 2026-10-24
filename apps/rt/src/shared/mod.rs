@@ -98,6 +98,8 @@ pub(crate) mod search_gateway;
 /// A procura de segredo no texto, a mesma da página da spec, do expurgo e do
 /// envio a serviço de fora.
 pub mod secret;
+/// O argumento JSON dos comandos `run`, direto ou lido de `@arquivo`.
+pub(crate) mod json_arg;
 /// O que a triagem do mapa põe na resposta da busca.
 pub mod triage_view;
 /// O que o usuário digitou numa conversa, lido do arquivo da sessão.

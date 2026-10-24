@@ -15,8 +15,11 @@
 //! (`backlog`) forma no máximo uma onda por vaga livre, cada uma com as
 //! tarefas do mesmo tipo de trabalho, com decisões tipadas do Jev em cache,
 //! ou por arquivos e relações atuais do scan quando não há Jev. A onda montada
-//! que não saiu se desfaz, e as tarefas dela voltam ao backlog e entram na
-//! conta.
+//! que não saiu por outro motivo, como a falta de cópia, se desfaz, e as
+//! tarefas dela voltam ao backlog e entram na conta. A que a rodada segurou à
+//! espera da escolha dos itens ou da escolha das skills pelo Jev não se
+//! desfaz: segue gravada, com as tarefas dela, e sai com o número que ganhou
+//! na rodada em que a decisão chega.
 //!
 //! **A escolha dos itens do pedido.** Antes de criar a cópia de uma onda
 //! pronta, a rodada olha os itens combinados que o pedido dela não leva nem
@@ -142,6 +145,7 @@ mod answer;
 mod backlog;
 mod checks;
 mod evidence;
+pub(crate) mod following;
 mod scheduling;
 pub(crate) use scheduling::snapshot as scheduling_snapshot;
 mod commit;
@@ -154,6 +158,8 @@ pub(crate) use dependencies::prepare as prepare_copy_dependencies;
 mod environment;
 mod finish_check;
 mod fixes;
+mod git_ignored;
+pub(crate) use git_ignored::all_ignored;
 mod handoff;
 mod imports_check;
 pub(crate) mod dispatch_jev;
@@ -164,6 +170,7 @@ mod keep;
 mod leftovers;
 mod lost_commit;
 mod map_pass;
+mod next_step;
 #[cfg(test)]
 mod off_path_tests;
 #[cfg(test)]
@@ -174,7 +181,6 @@ mod dispatch_jev_tests;
 mod triage_jev_tests;
 mod planning;
 pub(crate) use planning::needs_planning;
-pub(crate) use leftovers::is_cleanup;
 pub(crate) mod queue;
 mod read_check;
 mod rehearsal;
@@ -216,20 +222,22 @@ pub(crate) use map_pass::{BACKGROUND_PASS_ENV, refresh_map_while_behind, refresh
 #[cfg(test)]
 pub(crate) use map_pass::map_after_rounds;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
+use mustard_core::domain::spec_state::SpecState as _;
 use serde_json::{Value, json};
 
 use crate::commands::spec_events;
-use crate::shared::spec_state::session_from_env;
+use crate::shared::spec_state::{DiskSpecState, checkout, session_from_env};
 
 pub(crate) use answer::{RoundRefusal, agents_refreshed, minutes_since, read_command, wave_dispatch};
 pub(crate) use jev_decision::{FINAL_REVIEW, Waiting};
+pub(crate) use leftovers::record_final_leftovers;
 pub(crate) use triage_questions::ask_after_locks;
 pub(crate) use fixes::{fix_file, sweep_fixes};
 pub(crate) use keep::{Kept, landed_kept};
 pub(crate) use queue::{
-    backlog_left, new_agent_escalation, open_review, send_revision, sender_fields, tasks_left, waves_awaiting_new_agent, waves_in_progress,
+    awaited_review, backlog_left, new_agent_escalation, open_review, send_revision, sender_fields, tasks_left, waves_awaiting_new_agent, waves_in_progress,
     waves_left_without_tasks, waves_pending_fix,
 };
 pub(crate) use read_check::request_name;
@@ -237,8 +245,9 @@ pub(crate) use rejection::{replaced_by_rejection, replaced_in_file};
 #[cfg(test)]
 pub(crate) use slots::copies_leave_with_the_test;
 pub(crate) use slots::{
-    LEAVING_COPIES, Removal, code_kept_hint, ensure_copy, held_slots, leaving_place, local_file_ignored, local_file_missing, remove_single_copy,
-    remove_spec_copies, reset_slot, slot_owner, remove_spec_copies_held, remove_spec_copies_under, spec_copies, standing_in_a_copy,
+    Removal, clean_copy, code_kept_hint, ensure_copy, held_slots, leaving_place, local_file_ignored, local_file_missing,
+    remove_single_copy, remove_spec_copies, reset_slot, slot_owner, remove_spec_copies_held, remove_spec_copies_under, spec_copies,
+    standing_in_a_copy,
 };
 #[cfg(test)]
 pub(crate) use tests::{deliver_after_refusals, finish_tasks, read_request, read_review, seed_read, shipped_agent};
@@ -326,10 +335,37 @@ pub(crate) fn round_for(opts: &RoundOpts, session: Option<&str>) -> Value {
 pub(crate) fn round_in(opts: &RoundOpts, caller: Caller<'_>) -> Value {
     let project = spec_events::project(&opts.root);
     let lang = project.lang;
+    let unchecked = spec_without_base_check(opts, &project.root, caller.session);
     match answer::run_round(opts, &project.root, lang, caller) {
-        Ok(report) => report,
+        Ok(mut report) => {
+            // O lint do projeto na base roda no primeiro despacho de onda,
+            // uma vez só: a rodada já passou por todas as conferências dela,
+            // e a onda que acabou de sair ainda não tem commit na branch,
+            // então o disco é a base. Só avisa quando não pôde gravar.
+            let dispatched = report["dispatch"].as_array().is_some_and(|waves| !waves.is_empty());
+            if let Some(spec) = unchecked.filter(|_| dispatched)
+                && let Some(reason) = super::validation::record_base_check(&project.root, &spec)
+            {
+                spec_events::pages::push_warning(&mut report, "base-check-not-recorded", &reason);
+            }
+            report
+        }
         Err(refusal) => refusal.to_value(lang),
     }
+}
+
+/// A spec desta rodada, quando ela ainda não teve onda enviada nem a
+/// conferência da base gravada ([`super::validation::base_check_due`]). Lida
+/// antes da rodada: depois dela, o envio que ela grava já esconde que este
+/// foi o primeiro. A spec é a do pedido ou, sem ela, a atual da sessão,
+/// como a rodada a acha.
+fn spec_without_base_check(opts: &RoundOpts, root: &Path, session: Option<&str>) -> Option<String> {
+    let spec = match opts.spec.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(spec) => spec.to_string(),
+        None => DiskSpecState::new(&checkout(&opts.root)).active(session)?,
+    };
+    let log = mustard_core::io::spec_events::read(&mustard_core::io::spec_events::spec_file(root, &spec).ok()?).ok()??;
+    super::validation::base_check_due(&log).then_some(spec)
 }
 
 /// A spec na fase `phase` pode ter ondas despachadas: está aprovada, ou já em

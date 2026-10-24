@@ -10,14 +10,13 @@ pub(super) fn configuration(root:&Path, config:&mustard_core::ProjectConfig, env
     let fallback=config.ai_fallback_enabled();
     let mut purposes=serde_json::Map::new();
     for purpose in mustard_core::domain::config::JEV_PURPOSES {
-        let setting=config.judgement_filter(purpose);
-        let reason=if !fallback {"ai-fallback-disabled"}
-            else if !jev_gate::setting_allows(setting) {"purpose-not-configured"}
-            else if let Err(error)=&key {error.reason()}
-            else {"configured"};
+        let reason=match jev_gate::purpose_key(config,purpose,||key.as_ref().map(|_|()).map_err(Clone::clone)) {
+            Ok(())=>"configured",
+            Err(missing)=>missing.reason(),
+        };
         // `chosen` diz se o `mustard.json` traz a escolha da finalidade: sem
         // ela, a finalidade fica desligada e o painel diz por quê.
-        let chosen=setting!=mustard_core::domain::config::FilterSetting::Absent;
+        let chosen=config.judgement_filter(purpose)!=mustard_core::domain::config::FilterSetting::Absent;
         purposes.insert(purpose.into(),json!({"enabled":reason=="configured","reason":reason,"chosen":chosen}));
     }
     json!({"fallback_enabled":fallback,"usable_key":key.is_ok(),"purposes":purposes,"provider_verified":false})

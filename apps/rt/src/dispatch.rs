@@ -285,6 +285,8 @@ mod tests {
         std::fs::write(root.join("mustard.json"), "{}").expect("config");
         stand_on_spec_branch(root, spec);
         record_open(root, spec, &format!("feature/{spec}"), "dev").expect("open");
+        // A conversa dos ganchos destes testes abriu a spec.
+        crate::shared::context::session::bind_session_spec(&root.to_string_lossy(), "s1", spec);
         dir
     }
 

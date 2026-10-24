@@ -56,7 +56,8 @@ fn settled(path: &Path) -> PathBuf {
 }
 
 /// Grava o recibo dos itens lidos, todos numa chamada `read` só, na spec
-/// `spec`. A gravação recusada fica sem registro e nunca falha a leitura.
-pub(super) fn record(root: &Path, spec: &str, request: &Request, items: &[String], started: Instant) {
-    let _ = record_receipt(root, spec, &request.name, items, started);
+/// `spec`, com a sessão `session` que a entrada da leitura passou. A gravação
+/// recusada fica sem registro e nunca falha a leitura.
+pub(super) fn record(root: &Path, spec: &str, session: Option<&str>, request: &Request, items: &[String], started: Instant) {
+    let _ = record_receipt(root, spec, session, &request.name, items, started);
 }

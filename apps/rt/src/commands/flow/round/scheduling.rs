@@ -1,6 +1,6 @@
 //! Cheap, read-only explanation of the declared queue. Source relationships
 //! are checked at dispatch; observing the queue never scans or calls a model.
-use super::{backlog::Hold, leftovers::is_cleanup, planning::needs_planning, queue};
+use super::{backlog::Hold, planning::needs_planning, queue};
 use mustard_core::domain::{spec_events::SpecLog, spec_state::State};
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Value, json};
@@ -10,16 +10,20 @@ use std::{collections::BTreeMap, path::Path};
 const SHOWN: usize = 40;
 
 /// Os motivos da tarefa pronta — sem dependência aberta, sem trava e com
-/// item coberto — que ficou na fila: sem vaga, limpeza à espera das outras,
-/// ou pronta e fora da montagem — esta com o motivo exato que a montagem
-/// devolveu, quando ela o deu. Nenhuma fica pelo arquivo de uma onda aberta:
-/// cada onda trabalha na própria cópia.
-const HELD: [&str; 3] = ["capacity", "cleanup-last", "ready"];
+/// item coberto — que ficou na fila: sem vaga, ou pronta e fora da montagem
+/// — esta com o motivo exato que a montagem devolveu, quando ela o deu.
+/// Nenhuma fica pelo arquivo de uma onda aberta — cada onda trabalha na
+/// própria cópia — nem por ser limpeza.
+const HELD: [&str; 2] = ["capacity", "ready"];
+
+/// O motivo da tarefa presa por uma dependência que não aponta tarefa nenhuma
+/// da spec: segura só ela, com o nome da dependência no detalhe.
+const BROKEN: &str = "broken-dependency";
 
 /// Os motivos exatos da pronta com vaga que a montagem deixou de fora: o
-/// julgamento do Jev, a chegada ao backlog nesta rodada e a decisão do Jev
-/// que ela ainda espera.
-const EXACT: [&str; 3] = ["judged-clash", "arrived-this-round", "jev-pending"];
+/// julgamento do Jev, a chegada ao backlog nesta rodada, a decisão do Jev
+/// que ela ainda espera e a onda do mesmo sentido em andamento.
+const EXACT: [&str; 4] = ["judged-clash", "arrived-this-round", "jev-pending", "following-running-wave"];
 
 /// A fila declarada: as vagas do projeto, se o número vem do `mustard.json`
 /// (`declared`), as ondas com pedido aberto que ocupam as vagas e cada
@@ -34,12 +38,15 @@ struct Queue {
 }
 
 /// Uma tarefa do backlog na fila declarada: o motivo que a segura, ou
-/// `ready`, e as dependências ainda abertas.
+/// `ready`, as dependências ainda abertas e as quebradas (`broken`), as que
+/// não apontam tarefa nenhuma da spec. `dependencies` traz também as
+/// quebradas.
 struct Row {
     id: u64,
     code: String,
     reason: &'static str,
     dependencies: Vec<String>,
+    broken: Vec<String>,
 }
 
 fn queue(root: &Path, spec: &str, log: &SpecLog) -> Queue {
@@ -56,6 +63,7 @@ fn queue(root: &Path, spec: &str, log: &SpecLog) -> Queue {
     let declared = mustard_core::ProjectConfig::load(root).max_compiling_waves().is_some();
     let active = State::from_log(log).phase.is_some_and(super::can_run);
     let code = |id: u64| codes.get(&id).cloned().unwrap_or_else(|| id.to_string());
+    let broken = crate::commands::spec_events::task_dependents::broken_dependencies(log);
     let mut rows = Vec::new();
     for id in &left {
         let Some(task) = log.get(*id) else {
@@ -69,31 +77,28 @@ fn queue(root: &Path, spec: &str, log: &SpecLog) -> Queue {
             .iter()
             .filter(|id| !population.iter().any(|t| t.id == **id && t.done))
             .map(|id| code(*id))
+            .chain(broken.get(id).into_iter().flatten().cloned())
             .collect();
-        let cleanup_wait = is_cleanup(task)
-            && population
-                .iter()
-                .any(|other| !other.done && log.get(other.id).is_some_and(|e| !is_cleanup(e)));
         let reason = if !active {
             "spec-not-running"
         } else if needs_planning(task) {
             // A tarefa presa sem arquivo nenhum, como a que nasce da sobra
             // que não cita arquivo: espera quem conduz a obra planejá-la.
             "needs-planning"
+        } else if broken.contains_key(id) {
+            BROKEN
         } else if entry.blocked {
             "task-blocked"
         } else if uncovered.contains(id) {
             "missing-criteria"
         } else if !dependencies.is_empty() {
             "dependencies"
-        } else if cleanup_wait {
-            "cleanup-last"
         } else if free == 0 {
             "capacity"
         } else {
             "ready"
         };
-        rows.push(Row { id: *id, code: code(*id), reason, dependencies });
+        rows.push(Row { id: *id, code: code(*id), reason, dependencies, broken: broken.get(id).cloned().unwrap_or_default() });
     }
     Queue { backlog: left.len(), capacity, declared, occupied: vacancies.working.union(&vacancies.holding).copied().collect(), free, rows }
 }
@@ -116,22 +121,24 @@ pub(crate) fn snapshot(root: &Path, spec: &str, log: &SpecLog) -> Value {
         "omitted_tasks":queue.backlog.saturating_sub(SHOWN),"basis":"declared-queue; source relationships verified at dispatch"})
 }
 
-/// As tarefas prontas que ficaram na fila, cada uma com o motivo e o
-/// detalhe dele (`tasks`, o `held` da resposta da rodada), e a linha que o
-/// próximo passo diz delas (`line`).
+/// As tarefas que ficaram na fila, cada uma com o motivo e o detalhe dele
+/// (`tasks`, o `held` da resposta da rodada), e a linha que o próximo passo
+/// diz delas (`line`): as prontas e a presa por dependência quebrada.
 pub(super) struct Held {
     pub(super) tasks: Vec<Value>,
     pub(super) line: String,
 }
 
-/// O que segura cada tarefa pronta que a rodada não despachou, lido da fila
+/// O que segura cada tarefa que a rodada não despachou, lido da fila
 /// declarada na spec de depois dos envios da rodada: as vagas que eles
-/// ocuparam já contam. Sem vaga, o detalhe diz o limite de ondas compilando
-/// ao mesmo tempo, de onde vem o número — o `maxCompilingWaves` do
-/// `mustard.json` ou o padrão — e as ondas que ocupam as vagas. A pronta com
-/// vaga que a montagem deixou de fora sai com o motivo exato que ela devolveu
-/// (`assembled`, pelo código da tarefa): o julgamento do Jev ou a chegada
-/// nesta rodada. `None` quando nenhuma tarefa pronta ficou.
+/// ocuparam já contam. Entram a tarefa pronta e a presa por uma dependência
+/// que não aponta tarefa nenhuma da spec; o detalhe desta nomeia só a
+/// dependência quebrada, sem as abertas e válidas. Sem vaga, o detalhe diz o
+/// limite de ondas compilando ao mesmo tempo, de onde vem o número — o
+/// `maxCompilingWaves` do `mustard.json` ou o padrão — e as ondas que ocupam
+/// as vagas. A pronta com vaga que a montagem deixou de fora sai com o motivo
+/// exato que ela devolveu (`assembled`, pelo código da tarefa): o julgamento
+/// do Jev ou a chegada nesta rodada. `None` quando nenhuma tarefa ficou.
 pub(super) fn held(root: &Path, spec: &str, log: &SpecLog, lang: Locale, assembled: &BTreeMap<String, Hold>) -> Option<Held> {
     let mut queue = queue(root, spec, log);
     for row in queue.rows.iter_mut().filter(|row| row.reason == "ready") {
@@ -140,10 +147,11 @@ pub(super) fn held(root: &Path, spec: &str, log: &SpecLog, lang: Locale, assembl
                 Hold::Judged(_) => 0,
                 Hold::Arrived => 1,
                 Hold::JevPending => 2,
+                Hold::Following(_) => 3,
             }];
         }
     }
-    let rows: Vec<&Row> = queue.rows.iter().filter(|row| HELD.contains(&row.reason) || EXACT.contains(&row.reason)).collect();
+    let rows: Vec<&Row> = queue.rows.iter().filter(|row| HELD.contains(&row.reason) || EXACT.contains(&row.reason) || row.reason == BROKEN).collect();
     if rows.is_empty() {
         return None;
     }
@@ -158,7 +166,7 @@ pub(super) fn held(root: &Path, spec: &str, log: &SpecLog, lang: Locale, assembl
     let detail = |row: &Row| -> String {
         match row.reason {
             "capacity" => slots.clone(),
-            "cleanup-last" => translate("round.queued.cleanup", lang).to_string(),
+            BROKEN => translate("round.queued.broken_dependency", lang).replace("{dependencies}", &row.broken.join(", ")),
             _ => assembled.get(&row.code).map_or_else(|| translate("round.queued.assembly", lang).to_string(), |hold| exact(hold, lang)),
         }
     };
@@ -169,10 +177,10 @@ pub(super) fn held(root: &Path, spec: &str, log: &SpecLog, lang: Locale, assembl
     if !waiting.is_empty() {
         line.push(translate("round.queued.line_capacity", lang).replace("{tasks}", &waiting).replace("{detail}", &slots));
     }
-    for row in rows.iter().filter(|row| EXACT.contains(&row.reason)) {
+    for row in rows.iter().filter(|row| EXACT.contains(&row.reason) || row.reason == BROKEN) {
         line.push(translate("round.queued.line_held", lang).replace("{task}", &row.code).replace("{detail}", &detail(row)));
     }
-    let other = named(&|reason| ["cleanup-last", "ready"].contains(&reason));
+    let other = named(&|reason| reason == "ready");
     if !other.is_empty() {
         line.push(translate("round.queued.line_other", lang).replace("{tasks}", &other));
     }
@@ -201,6 +209,7 @@ fn exact(hold: &Hold, lang: Locale) -> String {
         Hold::Judged(chance) => translate("round.queued.judged", lang).replace("{chance}", &chance.to_string()),
         Hold::Arrived => translate("round.queued.arrived", lang).to_string(),
         Hold::JevPending => translate("round.queued.jev_pending", lang).to_string(),
+        Hold::Following(wave) => translate("round.queued.following", lang).replace("{wave}", &wave.to_string()),
     }
 }
 

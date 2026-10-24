@@ -349,3 +349,44 @@ fn the_path_of_a_reexport_is_not_a_fixed_text() {
     assert_eq!(values(&map, "lib/loja.dart"), Vec::<String>::new());
     assert_eq!(values(&map, "web/barril.ts"), Vec::<String>::new());
 }
+
+/// O teto do valor de um texto fixo, em caracteres.
+const TEXT_CEILING: usize = 300;
+
+/// O texto fixo `value` que o mapa guarda na linha 2 de `src/longos.rs`,
+/// escrito sozinho numa função.
+fn kept_long_text(value: &str) -> Value {
+    let source = format!("pub fn longos() -> &'static str {{\n    \"{value}\"\n}}\n");
+    let temp = project_with(&[("src/longos.rs", &source)]);
+    let (map, _) = scan(temp.path());
+    let kept = texts(&map, "src/longos.rs");
+    kept.as_array().unwrap().iter().find(|text| text["line"] == json!(2)).cloned().unwrap_or_else(|| panic!("{kept}"))
+}
+
+/// O texto que passa do teto fica, no valor, com as palavras inteiras que
+/// cabem: a que termina bem no último caractere do teto fica, e a vírgula
+/// solta antes do corte sai. O texto inteiro fica à parte.
+#[test]
+fn a_long_text_keeps_the_whole_words_that_fit_without_a_loose_comma() {
+    let exact = format!("{}fins depois", "palavra ".repeat(37));
+    let text = kept_long_text(&exact);
+    let value = format!("{}fins", "palavra ".repeat(37));
+    assert_eq!(value.chars().count(), TEXT_CEILING);
+    assert_eq!((text["value"].as_str(), text["full_value"].as_str()), (Some(value.as_str()), Some(exact.as_str())));
+
+    let comma = format!("{}conferida, seguinte", "palavra ".repeat(36));
+    let text = kept_long_text(&comma);
+    let value = format!("{}conferida", "palavra ".repeat(36));
+    assert_eq!(value.chars().count(), TEXT_CEILING - 3);
+    assert_eq!((text["value"].as_str(), text["full_value"].as_str()), (Some(value.as_str()), Some(comma.as_str())));
+}
+
+/// O texto sem branco que passa do teto, como um endereço longo, não fica
+/// vazio: nem a primeira palavra cabe, e o corte cai no caractere do teto.
+#[test]
+fn a_long_text_without_a_blank_is_cut_at_the_ceiling_character() {
+    let unbroken = format!("https://exemplo.com/{}", "a".repeat(TEXT_CEILING));
+    let text = kept_long_text(&unbroken);
+    let value: String = unbroken.chars().take(TEXT_CEILING).collect();
+    assert_eq!((text["value"].as_str(), text["full_value"].as_str()), (Some(value.as_str()), Some(unbroken.as_str())));
+}

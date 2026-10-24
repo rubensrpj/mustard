@@ -70,7 +70,7 @@ pub(crate) fn run(
                 "exit_code":observed.exit_code,"result_status":observed.result_status}));
             let mut draft=current.fields.iter().filter(|(key,_)|["block","gap","from","status","closes","result","reused_results","reason","reminders","origin"].contains(&key.as_str())).map(|(key,value)|(key.clone(),value.clone())).collect::<serde_json::Map<_,_>>();
             draft.insert("replaces".into(),json!(current.id));draft.insert("facts".into(),json!(facts));
-            let written=crate::commands::spec_events::write::record_locked_by_model(locked,start,&spec,"point",draft).map_err(|e|format!("{e:?}"))?.written;
+            let written=crate::commands::spec_events::write::record_locked_by_model(locked,start,&spec,"point",draft,session.as_deref()).map_err(|e|format!("{e:?}"))?.written;
             Ok(json!({"ok":true,"changed":true,"point":written.code,"id":written.id,"receipt":receipt_id,"claim_verified":false}))
         }).map_err(|e|format!("{e:?}"))?.ok_or("no-spec-file")?
     })();

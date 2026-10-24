@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use crate::shared::prompt::is_harness_notice;
+use crate::shared::prompt::person_text;
 
 /// O arquivo da conversa principal da sessão `session` no projeto de `root`,
 /// guardado pelo Claude Code em
@@ -31,16 +31,11 @@ pub(crate) fn session_transcript(root: &Path, session: &str) -> Option<PathBuf> 
     Some(folder.parent()?.join(format!("{session}.jsonl")))
 }
 
-/// Os blocos que o próprio Claude Code põe na fala do usuário: a saída de um
-/// comando local, o comando do modo bash e a saída dele, e o lembrete do
-/// sistema. Só o começo do bloco conta.
-const HARNESS_BLOCKS: &[&str] =
-    &["<local-command-", "<bash-input>", "<bash-stdout>", "<bash-stderr>", "<system-reminder>"];
-
 /// O que o usuário digitou na conversa `transcript`, em ordem, como ele
-/// escreveu. Fica de fora o que não é dele: o resultado de ferramenta, a
-/// linha de sistema (`isMeta`, o resumo da compactação, a fala de um
-/// subagente), o aviso do harness e o bloco do Claude Code. O comando de barra
+/// escreveu, uma vez cada fala. Fica de fora o que não é dele: o resultado de
+/// ferramenta, a linha de sistema (`isMeta`, o resumo da compactação, a fala
+/// de um subagente), a cópia da fala no pedido à API (`api-request-blob`), e
+/// o aviso e os blocos que o filtro da fala tira ([`person_text`]). O comando de barra
 /// entra como foi digitado, `/nome argumentos`, e só quando traz argumentos.
 /// Vazio quando o arquivo falta ou não abre.
 pub(crate) fn typed_messages(transcript: &Path) -> Vec<String> {
@@ -64,6 +59,11 @@ pub(crate) fn text_of(block: &Value) -> Option<&str> {
 /// O texto digitado de uma linha da conversa, quando ela é uma mensagem do
 /// usuário escrita por gente.
 fn typed_text(entry: &Value) -> Option<String> {
+    // Só a linha da fala digitada: o Claude Code repete a fala numa linha
+    // `api-request-blob`, também de papel `user`.
+    if entry.get("type").and_then(Value::as_str) != Some("user") {
+        return None;
+    }
     let flag = |key: &str| entry.get(key).and_then(Value::as_bool) == Some(true);
     if ["isMeta", "isSidechain", "isCompactSummary", "isVisibleInTranscriptOnly"].into_iter().any(flag) {
         return None;
@@ -90,11 +90,11 @@ fn typed_text(entry: &Value) -> Option<String> {
     let text = blocks
         .into_iter()
         .map(str::trim)
-        .filter(|block| !block.is_empty() && !HARNESS_BLOCKS.iter().any(|tag| block.starts_with(tag)))
+        .filter(|block| !block.is_empty())
         .map(typed_back)
         .collect::<Option<Vec<String>>>()?
         .join("\n\n");
-    (!text.is_empty() && !is_harness_notice(&text)).then_some(text)
+    person_text(&text)
 }
 
 /// O texto que um bloco leva à mensagem: o próprio bloco quando ele não é um

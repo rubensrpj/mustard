@@ -509,7 +509,12 @@ mod tests {
     fn a_rejection_in_the_group_that_motivated_a_skill_the_wave_got_creates_the_update_task() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        super::super::tests::approved_with(root, "x", &[(1, &["src/a.rs"], &[])], |said| {
+            let criterion = log_of(root).visible().into_iter().find(|e| e.event_type == "criterion").map(|e| e.id).unwrap();
+            let task = json!({"wave": 1, "title": "Testar o vazio", "text": "Cobrir o caso vazio.", "files": [{"path": "src/a.rs"}],
+                "depends_on": [], "covers": [criterion], "origin": said});
+            assert_eq!(super::super::tests::write(root, "x", "task", task)["ok"], json!(true));
+        });
         let motivated = mustard_core::io::failures::SkillTask { spec: "antiga".into(), task: Some(5) };
         let earlier = mustard_core::io::failures::Failure {
             id: "antiga:9".into(),
@@ -554,6 +559,8 @@ mod tests {
         assert_eq!(updates.len(), 1, "{:?}", skill_tasks(root));
         let agent = updates[0].str_field("agent").unwrap_or_default();
         assert!(agent.contains("Falta o teste do caso vazio.") && agent.contains("mesma falha"), "{agent}");
+        let criterion = log_of(root).visible().into_iter().find(|e| e.event_type == "criterion").map(|e| e.id).unwrap();
+        assert_eq!(updates[0].ints("covers"), vec![criterion], "the update covers what the rejected wave's tasks covered: {:?}", updates[0].fields);
         assert_eq!(skill_tasks(root).len(), 1, "the group that already had its skill gets no second creation task");
     }
 

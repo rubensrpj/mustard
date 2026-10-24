@@ -200,19 +200,69 @@ fn keep_unsaved(dir: &Path, head: &str, keeping: &Keeping) -> Result<Option<Kept
     }
     git(dir, &["add", "-A"])?;
     let tree = git(dir, &["write-tree"])?.trim().to_string();
-    let names = |from: &str| -> Result<BTreeSet<String>, String> {
-        let listed = git(dir, &["diff", "--name-only", "-z", "--no-renames", from, &tree])?;
-        Ok(listed.split('\0').filter(|name| !name.is_empty()).map(str::to_string).collect())
-    };
-    let differs = names(head)?;
-    let lost: BTreeSet<String> = match git(dir, &["merge-base", &at, head]) {
-        Ok(base) => differs.intersection(&names(base.trim())?).cloned().collect(),
-        Err(_) => differs,
-    };
+    let lost = lost_files(dir, &at, head, &tree)?;
     if lost.is_empty() {
         return Ok(None);
     }
     store_tree(dir, dir, &tree, &at, lost, keeping).map(Some)
+}
+
+/// Os arquivos que a árvore `tree`, tirada de uma cópia no commit `at`, traz
+/// e o commit `head` não tem: os que diferem de `head` e também do ponto onde
+/// a cópia nasceu (o ancestral comum de `at` e `head`). Sem ancestral comum,
+/// vale todo arquivo que difere de `head`. O git roda em `dir`.
+fn lost_files(dir: &Path, at: &str, head: &str, tree: &str) -> Result<BTreeSet<String>, String> {
+    let names = |from: &str| -> Result<BTreeSet<String>, String> {
+        let listed = git(dir, &["diff", "--name-only", "-z", "--no-renames", from, tree])?;
+        Ok(listed.split('\0').filter(|name| !name.is_empty()).map(str::to_string).collect())
+    };
+    let differs = names(head)?;
+    Ok(match git(dir, &["merge-base", at, head]) {
+        Ok(base) => differs.intersection(&names(base.trim())?).cloned().collect(),
+        Err(_) => differs,
+    })
+}
+
+/// O resto que um agente de onda deixou numa cópia que a rodada zerou, como o
+/// reenvio da onda o cita: a ref que o guarda, a pasta da cópia em que ela
+/// vale — a do submódulo, ou nenhuma para a própria cópia — e os arquivos que
+/// ela traz e o commit atual não tem.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct KeptRest {
+    pub(super) refname: String,
+    pub(super) folder: Option<String>,
+    pub(super) files: Vec<String>,
+}
+
+/// O resto guardado da onda `wave` da spec `spec` pelos envios que `sent_by`
+/// aceita: cada ref `refs/mustard/kept/<spec>/<wave>-<envio>-…` — o nome que
+/// a limpeza da cópia órfã ([`clean_orphan_copy`]) e a da vaga dão —, no
+/// repositório do checkout `root` e no de cada submódulo dele, com os arquivos
+/// que ela traz e o commit atual de cada um não tem ([`lost_files`]). A ref
+/// cujo código o commit atual já tem fica de fora. A mais nova vem primeiro.
+pub(super) fn kept_rest(root: &Path, spec: &str, wave: u64, sent_by: impl Fn(u64) -> bool) -> Vec<KeptRest> {
+    let prefix = format!("refs/mustard/kept/{spec}/{wave}-");
+    let repos = std::iter::once((root.to_path_buf(), None))
+        .chain(submodules_of(root).into_iter().map(|sub| (root.join(&sub), Some(sub))))
+        .filter(|(dir, _)| dir.join(".git").exists());
+    let mut found: Vec<(u64, KeptRest)> = Vec::new();
+    for (dir, folder) in repos {
+        let head = head(&dir);
+        let Ok(listed) = git(&dir, &["for-each-ref", "--sort=-committerdate", "--format=%(refname)", &format!("{prefix}*")]) else { continue };
+        for refname in listed.lines().filter(|name| !name.is_empty()) {
+            let sent = refname.strip_prefix(&prefix).and_then(|rest| rest.split('-').next()).and_then(|n| n.parse::<u64>().ok());
+            let Some(sent) = sent.filter(|sent| sent_by(*sent)) else { continue };
+            let (Ok(at), Ok(tree)) = (git(&dir, &["rev-parse", &format!("{refname}^")]), git(&dir, &["rev-parse", &format!("{refname}^{{tree}}")])) else {
+                continue;
+            };
+            let files = lost_files(&dir, at.trim(), &head, tree.trim()).unwrap_or_default();
+            if !files.is_empty() {
+                found.push((sent, KeptRest { refname: refname.to_string(), folder: folder.clone(), files: files.into_iter().collect() }));
+            }
+        }
+    }
+    found.sort_by_key(|(sent, _)| std::cmp::Reverse(*sent));
+    found.into_iter().map(|(_, rest)| rest).collect()
 }
 
 /// Guarda a árvore `tree` num commit solto, com `parent` por pai, sob a ref
@@ -227,7 +277,7 @@ fn store_tree(
     files: BTreeSet<String>,
     keeping: &Keeping,
 ) -> Result<Kept, String> {
-    let refname = format!("refs/mustard/kept/{}-{}", keeping.label, &tree[..tree.len().min(8)]);
+    let refname = format!("refs/mustard/kept/{}-{}", ref_safe(&keeping.label), &tree[..tree.len().min(8)]);
     let said = format!("Código guardado antes de zerar a cópia {}", shown(copy));
     let commit = git(
         at,
@@ -236,6 +286,29 @@ fn store_tree(
     )?;
     git(at, &["update-ref", &refname, commit.trim()])?;
     Ok(Kept { wave: keeping.wave, refname, files: files.into_iter().collect(), copy: shown(copy) })
+}
+
+/// O rótulo `label` com cada parte entre barras num nome que o git aceita em
+/// ref: o ponto do começo e do fim, o `..`, o `@{`, o `.lock` do fim e os
+/// caracteres que o git recusa viram `_`, e a parte vazia sai. A pasta
+/// `.claude` vira `_claude`.
+fn ref_safe(label: &str) -> String {
+    let part = |part: &str| {
+        let mut safe: String =
+            part.replace("..", "__").replace("@{", "_{").chars().map(|c| if c.is_control() || " ~^:?*[\\".contains(c) { '_' } else { c }).collect();
+        if safe.starts_with('.') {
+            safe.replace_range(..1, "_");
+        }
+        if safe.ends_with('.') {
+            safe.pop();
+            safe.push('_');
+        }
+        if let Some(stem) = safe.strip_suffix(".lock") {
+            safe = format!("{stem}_lock");
+        }
+        safe
+    };
+    label.split('/').filter(|piece| !piece.is_empty()).map(part).collect::<Vec<_>>().join("/")
 }
 
 /// A pasta `folder` tem algum arquivo, em qualquer fundo, fora o `.git` do
@@ -399,5 +472,27 @@ mod tests {
         std::fs::write(open.path().join("a.txt"), "depois\n").unwrap();
         git_at(open.path(), &["commit", "-q", "-am", "a mudança entrou na base"]);
         assert!(landed_kept(open.path(), "y", true).is_empty(), "a spec not delivered keeps every ref");
+    }
+
+    /// A pasta de nome que começa por ponto, como a `.claude` que um programa
+    /// deixa entre as cópias, e a parte de nome que termina em `.lock` ainda
+    /// têm o código guardado numa ref que o git aceita, e nada se perde antes
+    /// de a pasta sair.
+    #[test]
+    fn code_of_a_dot_folder_is_kept_under_a_ref_git_accepts() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("projeto");
+        std::fs::create_dir_all(&root).unwrap();
+        project(&root, "x", "running");
+        let head = git_text(&root, &["rev-parse", "HEAD"]);
+        let folder = dir.path().join(".claude");
+        std::fs::create_dir_all(folder.join("mustard")).unwrap();
+        std::fs::write(folder.join("mustard/notas.json"), "{}").unwrap();
+
+        let keeping = Keeping { label: ".claude/trava.lock/mustard".to_string(), wave: None };
+        let kept = keep_loose_folder(&root, &folder, &head, &keeping).expect("git accepts the ref").expect("the code is kept");
+        assert!(kept.refname.starts_with("refs/mustard/kept/_claude/trava_lock/mustard-"), "{}", kept.refname);
+        assert_eq!(kept.files, vec!["mustard/notas.json".to_string()]);
+        assert_eq!(git_text(&root, &["for-each-ref", "--format=%(refname)", "refs/mustard/kept/"]), kept.refname);
     }
 }

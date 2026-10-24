@@ -20,7 +20,7 @@ const EXCERPT_BYTES: usize = 4_000;
 mod session;
 pub use session::{
     CERTAINTIES, GroupingAnswers, GroupingExtras, GroupingSubject, GroupingSummary, GroupingTask, Merge, ReserveAnswer, ReserveOption, ReserveQuestion,
-    RewriteSource, SessionReceipt, WaveGroup, cancel_session, check_grouping, complete_session, completed_grouping, completed_grouping_answers,
+    RewriteSource, RunningWave, SessionReceipt, WaveGroup, cancel_session, check_grouping, complete_session, completed_grouping, completed_grouping_answers,
     completed_reserve, prepare_grouping, prepare_reserve, prepare_rewrite, prepare_session, prepared_reserve,
 };
 

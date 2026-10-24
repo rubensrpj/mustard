@@ -20,11 +20,16 @@ pub mod cli;
 pub(crate) mod conversation;
 pub mod find;
 pub mod index;
+pub(crate) mod lean;
 pub(crate) mod pages;
 pub(crate) mod proof_check;
 pub mod read;
 mod read_record;
 mod request_route;
+pub(crate) mod session_spec;
+pub(crate) mod task_dependents;
+mod task_wave;
+pub(crate) mod unrouted;
 pub mod write;
 
 use std::collections::BTreeMap;
@@ -54,6 +59,13 @@ pub(crate) fn project(start: &Path) -> Project {
 /// A recusa como o comando imprime.
 pub(crate) fn refused(refusal: &Refusal, lang: SupportedLocale) -> Value {
     let mut out = json!({ "ok": false, "reason": refusal.reason(), "hint": refusal.message(lang) });
+    // O que a conferência de escrita achou, campo por campo: a chamada
+    // recusada guarda isso, e o motivo de cada recusa fica sabido depois.
+    if let Refusal::ItemUnclear { fields } = refusal {
+        let defects: Vec<String> =
+            fields.iter().flat_map(|(field, report)| report.defects(lang).into_iter().map(move |d| format!("{field}: {d}"))).collect();
+        out["defects"] = json!(defects);
+    }
     if let Refusal::ValidationIssues { issues } = refusal {
         out["issues"] = json!(issues.iter().map(|issue| {
             let mut entry = refused(issue, lang);

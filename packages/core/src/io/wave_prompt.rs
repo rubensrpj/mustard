@@ -375,6 +375,90 @@ pub fn copies_dir(root: &Path) -> PathBuf {
     project_folder(root, "MUSTARD_COPIES_DIR", "copias")
 }
 
+/// A pasta `path` mora dentro de um dos lugares de cópia do projeto `root`:
+/// a pasta das cópias dele ([`copies_dir`]), fora do projeto, ou o lugar
+/// antigo, dentro dele (`.claude/worktrees`). Só aí uma pasta pode ser
+/// apagada; a pasta principal e a compilação dela nunca entram, nem o caminho
+/// que traz `..`.
+///
+/// As duas pontas se comparam pela mesma grafia, a do lugar de verdade
+/// ([`real_place`]): a pasta do terminal, que o sistema dá já resolvida, e a
+/// pasta das cópias, montada da pasta pessoal ou da variável, se encontram
+/// mesmo com um link no caminho de uma delas ou com o prefixo de caminho
+/// literal do Windows.
+#[must_use]
+pub fn inside_copies(root: &Path, path: &Path) -> bool {
+    if path.components().any(|part| matches!(part, std::path::Component::ParentDir)) {
+        return false;
+    }
+    let here = real_place(path);
+    [copies_dir(root), root.join(".claude").join("worktrees")]
+        .iter()
+        .map(|place| real_place(place))
+        .any(|place| here.starts_with(&place) && here != place)
+}
+
+/// O lugar de verdade que `path` nomeia: a parte que existe resolvida pelo
+/// sistema — o link, a pasta pessoal atrás de um link, o nome curto do
+/// Windows —, a que ainda não existe como foi escrita, e sem o prefixo de
+/// caminho literal que o Windows põe no que resolve ([`without_verbatim`]).
+#[must_use]
+pub fn real_place(path: &Path) -> PathBuf {
+    let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut tail = Vec::new();
+    let mut head = absolute.as_path();
+    loop {
+        if let Ok(real) = std::fs::canonicalize(head) {
+            let plain = without_verbatim(&real.to_string_lossy());
+            let real = plain.map_or(real, PathBuf::from);
+            return tail.iter().rev().fold(real, |full, part| full.join(part));
+        }
+        match (head.file_name(), head.parent()) {
+            (Some(name), Some(parent)) => {
+                tail.push(name.to_os_string());
+                head = parent;
+            }
+            _ => return absolute,
+        }
+    }
+}
+
+/// O texto do caminho `text` sem o prefixo de caminho literal do Windows, que
+/// o caminho resolvido pelo sistema traz: `\\?\C:\x` é `C:\x` e
+/// `\\?\UNC\srv\x` é `\\srv\x`; o prefixo de aparelho (`\\.\`) sai do mesmo
+/// jeito. É a regra única do prefixo, de quem resolve o lugar de verdade
+/// ([`real_place`]) e de quem compara caminhos pelo texto.
+///
+/// As barras podem ser as do Windows ou as normais (`//?/C:/x` é `C:/x`), e o
+/// compartilhamento recebe as barras do próprio texto. O prefixo seguido de
+/// outra coisa que um disco ou um compartilhamento — o volume,
+/// `\\?\Volume{…}\x` — fica: sem ele o caminho não diz lugar nenhum. `None`
+/// quando não há prefixo a tirar.
+#[must_use]
+pub fn without_verbatim(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let slash = |at: usize| matches!(bytes.get(at), Some(b'\\' | b'/'));
+    if !(slash(0) && slash(1) && matches!(bytes.get(2), Some(b'?' | b'.')) && slash(3)) {
+        return None;
+    }
+    let rest = &text[4..];
+    if rest.get(..3) == Some("UNC") && slash(7) {
+        let separator = &text[..1];
+        return Some(format!("{separator}{separator}{}", &text[8..]));
+    }
+    let drive = rest.as_bytes();
+    (drive.len() >= 2 && drive[0].is_ascii_alphabetic() && drive[1] == b':').then(|| rest.to_string())
+}
+
+/// A pasta em que o terminal está, como o sistema a dá: a leitura única de
+/// quem pergunta se a chamada veio de dentro de uma cópia — o aviso da rodada
+/// e a chamada de dentro da cópia da spec. `None` quando não se sabe. Quem a
+/// compara com as cópias é [`inside_copies`], pela mesma grafia.
+#[must_use]
+pub fn terminal_folder() -> Option<PathBuf> {
+    std::env::current_dir().ok()
+}
+
 /// A pasta onde nasce o programa compilado da versão em construção do
 /// projeto do checkout principal `root`: o `mustard-rt`, o `scan` e o
 /// `mustard` ficam em `<pasta>/release/`.
@@ -514,20 +598,23 @@ pub fn final_review_commit(root: &Path, log: &SpecLog) -> Option<String> {
 /// arquivos de regras da raiz e das pastas dos arquivos que a obra mexe
 /// ([`project_rules`], [`touched_files`]), quando algum existe com texto.
 ///
-/// Depois de um veredito final que reprovou, o pedido é o da revisão de
-/// volta: ele lista o que mudou desde esse veredito
-/// ([`wave_prompt::since_last_verdict`]), e o revisor confere isso e o
-/// encaixe no resto, sem repetir o que o veredito já concluiu. É o mesmo
-/// pedido quando o veredito aponta uma onda: ele aparece uma vez só, na parte
-/// do que mudou, sem parte de conserto à parte. Nesse caso, as ondas e as
-/// entregas do pedido ficam restritas à onda reprovada, que já entregou o
-/// conserto (o fechamento só chega aqui depois disso: veja
-/// [`crate::domain::spec_events::SpecLog::last_rejected`]), e o parágrafo do
-/// que olhar da revisão de volta diz esse recorte. O recorte sai do mesmo
-/// veredito que abre a revisão de volta ([`wave_prompt::last_final_rejection`]):
-/// ele nunca acontece sem ela. Uma onda reprovada antes de um veredito final
-/// mais novo não recorta o pedido. Os requisitos acordados continuam todos no
-/// pedido, porque o veredito responde por cada um.
+/// Depois de um veredito final, o pedido é o da revisão de volta: ele lista
+/// o que mudou desde esse veredito ([`wave_prompt::since_last_verdict`]), e o
+/// revisor confere isso e o encaixe no resto, sem repetir o que o veredito já
+/// concluiu. Depois de uma aprovação — a obra fechada e reaberta para um
+/// ajuste —, o que ela conferiu e não mudou sai também das outras partes
+/// ([`wave_prompt::Proven`]), e o pedido traz só o ajuste. Depois de uma
+/// reprovação, é o mesmo pedido quando o veredito aponta uma onda: ele
+/// aparece uma vez só, na parte do que mudou, sem parte de conserto à parte.
+/// Nesse caso, as ondas e as entregas do pedido ficam restritas à onda
+/// reprovada, que já entregou o conserto (o fechamento só chega aqui depois
+/// disso: veja [`crate::domain::spec_events::SpecLog::last_rejected`]), e o
+/// parágrafo do que olhar da revisão de volta diz esse recorte. O recorte sai
+/// do veredito reprovado mais novo ([`wave_prompt::last_final_rejection`]):
+/// ele nunca acontece sem a revisão de volta. Uma onda reprovada antes de um
+/// veredito final mais novo não recorta o pedido. Os requisitos acordados
+/// continuam no pedido, menos os que a última aprovação já conferiu, porque o
+/// veredito responde por cada um.
 ///
 /// Junto do texto vem a lista dos itens que ele lista ([`FinalReview::listed`]),
 /// para o fechamento gravá-la no envio e o veredito conferir a leitura.
@@ -3516,12 +3603,28 @@ mod tests {
         assert_eq!(development_build_dir(&one), development_build_dir(&one.join(".")), "o caminho é lido já resolvido");
     }
 
+    /// O prefixo de caminho literal sai do caminho de disco e do de
+    /// compartilhamento, com as barras de cada texto; o do volume e o caminho
+    /// comum ficam como vieram. Texto puro: a mesma resposta em todo sistema.
+    #[test]
+    fn the_literal_prefix_leaves_a_drive_and_a_share_and_keeps_a_volume() {
+        assert_eq!(without_verbatim(r"\\?\C:\Users\runner\proj").as_deref(), Some(r"C:\Users\runner\proj"));
+        assert_eq!(without_verbatim("//?/C:/Users/runner/proj").as_deref(), Some("C:/Users/runner/proj"));
+        assert_eq!(without_verbatim(r"\\.\D:\x").as_deref(), Some(r"D:\x"), "o prefixo de aparelho sai igual");
+        assert_eq!(without_verbatim(r"\\?\UNC\srv\share\x").as_deref(), Some(r"\\srv\share\x"));
+        assert_eq!(without_verbatim("//?/UNC/srv/share/x").as_deref(), Some("//srv/share/x"));
+        assert_eq!(without_verbatim(r"\\?\Volume{0b1c2d3e-0000-0000-0000-100000000000}\x"), None, "o volume não tem outra grafia");
+        assert_eq!(without_verbatim(r"C:\Users\runner\proj"), None);
+        assert_eq!(without_verbatim("/home/runner/proj"), None);
+        assert_eq!(without_verbatim(r"\\srv\share\x"), None, "o compartilhamento sem prefixo fica");
+    }
+
     /// A obra da revisão de volta: três requisitos acordados, um critério, a
     /// onda e o commit dela, e o veredito final que reprovou um requisito.
     /// Depois dele, um commit novo, a versão nova de outro requisito, um
     /// requisito novo e um critério novo. `verdict` troca o veredito: `None`
     /// tira ele e tudo o que veio depois; `Some("approved")` o grava
-    /// aprovando.
+    /// aprovando, com todo requisito atendido.
     fn reviewed_again(root: &Path, verdict: Option<&str>) -> SpecLog {
         let repo = root.file_name().unwrap().to_string_lossy().to_string();
         let commit = |sha: &str| ("commit", json!({"sha": sha, "title": "t", "waves": [1], "files": ["src/a.rs"], "repo": repo}));
@@ -3537,7 +3640,8 @@ mod tests {
         let Some(result) = verdict else {
             return log_of(&events);
         };
-        let agreed = json!([{"item": 1, "met": true}, {"item": 2, "met": false, "text": "falta"}, {"item": 3, "met": true}]);
+        let second = if result == "approved" { json!({"item": 2, "met": true}) } else { json!({"item": 2, "met": false, "text": "falta"}) };
+        let agreed = json!([{"item": 1, "met": true}, second, {"item": 3, "met": true}]);
         events.push(("verdict", json!({"final": true, "result": result, "text": "v", "agreed": agreed})));
         events.push(commit("bbb2222"));
         events.push(("decision", json!({"text": "Regravada de novo", "keys": ["c"], "why": "w", "replaces": 3})));
@@ -3567,11 +3671,12 @@ mod tests {
     /// depois dele, o requisito que ele deu como não atendido, o regravado e
     /// o novo depois dele e o critério novo. O resto não entra nessa parte,
     /// mas todos os requisitos acordados continuam no pedido, porque o
-    /// veredito responde por cada um. A primeira revisão, e a que vem depois
-    /// de uma aprovação, conferem a obra inteira, sem essa parte. Nenhuma
-    /// manda rodar a suíte: dizem que ela passou no fechamento, no commit da
-    /// cópia, e mandam rodar só os testes em volta de cada corte. Nos dois
-    /// idiomas.
+    /// veredito responde por cada um. A que vem depois de uma aprovação traz
+    /// a mesma parte, sem o que a aprovação conferiu e não mudou em parte
+    /// nenhuma. A primeira revisão confere a obra inteira, sem essa parte.
+    /// Nenhuma manda rodar a suíte: dizem que ela passou no fechamento, no
+    /// commit da cópia, e mandam rodar só os testes em volta de cada corte.
+    /// Nos dois idiomas.
     #[test]
     fn a_review_after_a_rejection_lists_only_what_changed_since_the_verdict() {
         let dir = tempdir().unwrap();
@@ -3602,15 +3707,22 @@ mod tests {
             assert!(last.contains(&format!("- {suite}")) && last.contains(&build), "{lang:?}: {last}");
             assert!(whole_suite_once(&last), "a revisão não roda a suíte inteira: {last}");
 
-            for (what, log) in [("primeira", reviewed_again(root, None)), ("aprovada", reviewed_again(root, Some("approved")))] {
-                let first = final_review(root, "teste", &log, lang).text;
-                assert!(part_lines(&first, since).is_empty() && !first.contains(&format!("## {since}")), "{what}: {first}");
-                assert!(first.contains(t("prompt.final.look")) && !first.contains(t("prompt.final.look_again")), "{what}: {first}");
-                assert!(whole_suite_once(&first), "{what}: a revisão não roda a suíte inteira: {first}");
-                let sha = if log.max_id() > 7 { "bbb2222" } else { "aaa1111" };
-                let suite = t("prompt.review.suite").replace("{command}", "make test").replace("{commit}", sha);
-                assert!(first.contains(&format!("- {suite}")) && first.contains(&build), "{what}: {first}");
+            let approved = reviewed_again(root, Some("approved"));
+            let after = final_review(root, "teste", &approved, lang).text;
+            assert_eq!(line_codes(part_lines(&after, since)), [code(8), code(9), code(10), code(11), code(12)], "{lang:?}: {after}");
+            assert_eq!(line_codes(part_lines(&after, t("prompt.part.agreed"))), [code(10), code(11)], "{after}");
+            for old in [1, 2, 7] {
+                assert!(!after.contains(&code(old)), "o que a aprovação conferiu fica fora: {after}");
             }
+            assert!(after.contains(t("prompt.final.look_since_approval")) && !after.contains(t("prompt.final.look_again")), "{after}");
+            assert!(whole_suite_once(&after), "a revisão não roda a suíte inteira: {after}");
+
+            let first = final_review(root, "teste", &reviewed_again(root, None), lang).text;
+            assert!(part_lines(&first, since).is_empty() && !first.contains(&format!("## {since}")), "{first}");
+            assert!(first.contains(t("prompt.final.look")) && !first.contains(t("prompt.final.look_again")), "{first}");
+            assert!(whole_suite_once(&first), "a revisão não roda a suíte inteira: {first}");
+            let suite = t("prompt.review.suite").replace("{command}", "make test").replace("{commit}", "aaa1111");
+            assert!(first.contains(&format!("- {suite}")) && first.contains(&build), "{first}");
         }
     }
 
@@ -3691,9 +3803,9 @@ mod tests {
     /// parte traz só elas. A primeira
     /// revisão não diz o recorte e traz as duas ondas. O veredito que reprovou a obra sem
     /// apontar onda traz as duas ondas na revisão de volta. Um veredito final
-    /// que aprovou depois da reprovação de uma onda faz a revisão seguinte
-    /// conferir a obra inteira, sem recorte e sem a frase dele. Nos dois
-    /// idiomas.
+    /// que aprovou depois da reprovação de uma onda tira o recorte e a frase
+    /// dele: a revisão seguinte confere o que mudou desde a aprovação, e as
+    /// tarefas que ela conferiu ficam fora. Nos dois idiomas.
     #[test]
     fn a_review_after_a_rejected_wave_says_it_carries_only_that_wave() {
         let dir = tempdir().unwrap();
@@ -3754,8 +3866,8 @@ mod tests {
 
             let log = two_waves_reviewed(&Reviewed::ApprovedAfter);
             let after = final_review(root, "teste", &log, lang).text;
-            assert!(after.contains(t("prompt.final.look")) && !after.contains(scope_phrase), "{lang:?}: {after}");
-            assert_eq!(wave_codes(&log, &after), [true, true], "depois da aprovação, a obra inteira: {after}");
+            assert!(after.contains(t("prompt.final.look_since_approval")) && !after.contains(scope_phrase), "{lang:?}: {after}");
+            assert_eq!(wave_codes(&log, &after), [false, false], "a aprovação já conferiu as duas ondas: {after}");
         }
     }
 

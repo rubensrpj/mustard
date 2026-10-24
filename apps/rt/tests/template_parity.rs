@@ -1495,6 +1495,28 @@ fn flag_whitelist_stays_sorted_live_and_not_redundant() {
     }
 }
 
+/// O molde do revisor, nos dois idiomas, traz na seção de conferir a mesma
+/// linha: com o desenho aprovado no pedido, comparar cada tela com ele e
+/// listar cada diferença de aparência; sem ver a tela, comparar o código e
+/// dizer isso no veredito.
+#[test]
+fn the_reviewer_template_compares_each_screen_with_the_approved_design_in_both_languages() {
+    for (lang, header, said) in [
+        ("pt-BR", "## Como conferir", ["desenho aprovado", "compare cada tela com ele", "liste cada diferença",
+            "(fundo, letra, barra, ordem, bloco a mais)", "Sem ver a tela, compare o código", "diga isso no veredito"]),
+        ("en-US", "## How to check", ["approved design", "compare each screen with it", "list every difference",
+            "(backdrop, font size, bar, order, extra block)", "Without seeing the screen, compare the code", "say so in the verdict"]),
+    ] {
+        let review = read_lossy(&repo_root().join(format!("packages/core/templates/agents/{lang}/review.md")));
+        let check: Vec<&str> = review.lines().skip_while(|line| *line != header).skip(1).take_while(|line| !line.starts_with("## ")).collect();
+        let line = check.iter().find(|line| line.contains(said[0]))
+            .unwrap_or_else(|| panic!("the {lang} reviewer does not compare the screens with the approved design:\n{}", check.join("\n")));
+        for phrase in said {
+            assert!(line.contains(phrase), "the {lang} reviewer does not say `{phrase}`: {line}");
+        }
+    }
+}
+
 /// O mapa mantém geração nativa de páginas e exportação somente sob pedido,
 /// sem exigir o transporte legado pelo claude.ai, nos dois idiomas.
 ///

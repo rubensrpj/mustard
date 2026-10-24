@@ -1,5 +1,6 @@
 //! Immutable receipts of a host tool result. A receipt proves what was
 //! observed, not that the model's interpretation of it is true.
+use crate::domain::text::{CutAt, cut};
 use crate::io::fs::lock::LockedFile;
 use crate::io::sha256::Sha256;
 use rusqlite::{Connection, OpenFlags, TransactionBehavior, params};
@@ -267,25 +268,25 @@ fn scoped(root: &Path, spec: &str, dispatch: u64, id: &str) -> Result<Receipt, S
     Ok(receipt)
 }
 
-/// How many characters of the command a page shows for each receipt.
+/// Quantos caracteres do comando a página mostra de cada recibo, antes das
+/// reticências.
 const COMMAND_LINE_CHARS: usize = 80;
 
-/// The first line of the recorded command, cut to [`COMMAND_LINE_CHARS`]. A
-/// leading change of directory, the group a hook opens after it and the
-/// identity a hook puts ahead of a native command are left out: they repeat on
-/// every call of a wave and would fill the line. A cut, a dropped line or a
-/// dropped prefix ends in `…`; the whole command is in the receipt.
+/// A primeira linha do comando gravado, com no máximo [`COMMAND_LINE_CHARS`]
+/// caracteres e as reticências, pelo corte do núcleo ([`cut`]). A troca de
+/// pasta do começo, o grupo que um gancho abre depois dela e a identidade que
+/// um gancho põe à frente de um comando nativo ficam de fora: repetem em toda
+/// chamada da onda e encheriam a linha. Uma linha ou um prefixo deixados de
+/// fora contam como texto que passa do teto e também terminam a linha em `…`;
+/// o comando inteiro fica no recibo.
 fn command_line(source: &str) -> String {
     let whole = source.trim();
     let rest = &whole[command_start(whole)..];
     let mut lines = rest.lines().map(str::trim).filter(|line| !line.is_empty());
     let first = lines.next().unwrap_or_default();
-    let mut chars = first.chars();
-    let mut shown: String = chars.by_ref().take(COMMAND_LINE_CHARS).collect();
-    if chars.next().is_some() || lines.next().is_some() || rest.len() < whole.len() {
-        shown.push('…');
-    }
-    shown
+    let left_out = lines.next().is_some() || rest.len() < whole.len();
+    let line = if left_out { format!("{first}…") } else { first.to_string() };
+    cut(&line, COMMAND_LINE_CHARS + 1, CutAt::Char)
 }
 
 /// Where the command the agent wrote starts in `source`, in bytes: past the

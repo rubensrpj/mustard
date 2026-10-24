@@ -8,6 +8,26 @@ fn error(id: Value, code: i32, message: &str) -> Value {
     json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}})
 }
 
+/// A sessão da conversa que fez a chamada `params`, dita no `_meta` dela. O
+/// Codex 0.160.1 manda em toda `tools/call` o turno em `x-codex-turn-metadata`
+/// (um objeto, com `thread_id`, que é a `CODEX_THREAD_ID` dos comandos dele, e
+/// `session_id`) e os mesmos ids soltos em `threadId` e `sessionId`; o
+/// servidor que ele sobe não recebe a `CODEX_THREAD_ID`. O `_meta` vale mais
+/// que o ambiente do servidor, que é o de quem o subiu e fica velho depois do
+/// `/clear`; sem ele, vale a sessão do ambiente, `environment`, e sem os dois
+/// a chamada não tem sessão.
+fn call_session(params: &Value, environment: Option<String>) -> Option<String> {
+    let meta = &params["_meta"];
+    let turn = &meta["x-codex-turn-metadata"];
+    [&turn["thread_id"], &turn["session_id"], &meta["threadId"], &meta["sessionId"]]
+        .into_iter()
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .find(|session| !session.is_empty())
+        .map(str::to_string)
+        .or(environment)
+}
+
 fn response(root: &Path, message: &Value, initialized: &mut bool) -> Option<Value> {
     if message["jsonrpc"] != "2.0" || !message["method"].is_string() {
         return Some(error(message.get("id").cloned().unwrap_or(Value::Null), -32600, "Invalid JSON-RPC request"));
@@ -32,6 +52,7 @@ fn response(root: &Path, message: &Value, initialized: &mut bool) -> Option<Valu
         "tools/call" => {
             if message["params"]["name"] != "search" { return Some(error(id, -32602, "Unknown tool")); }
             let started = std::time::Instant::now();
+            let session = call_session(&message["params"], crate::shared::spec_state::session_from_env());
             let mut arguments = message["params"]["arguments"].clone();
             // The shared Mods contract omits this transport envelope version.
             if arguments.get("request").is_some() && arguments.get("schema_version").is_none() { arguments["schema_version"] = json!(1); }
@@ -47,12 +68,12 @@ fn response(root: &Path, message: &Value, initialized: &mut bool) -> Option<Valu
                     if !answer.stderr.is_empty() { text.push_str(&String::from_utf8_lossy(&answer.stderr)); }
                     let enriched = answer.report["crossing_status"] == "enriched";
                     let text = String::from_utf8_lossy(&crate::commands::search::conversation_answer(root, &request, text.into_bytes(), None, enriched)).into_owned();
-                    let _ = crate::commands::spec_events::conversation::record_output_call(root, "search", None, started, &answer.report, &text);
+                    let _ = crate::commands::spec_events::conversation::record_output_call_as(root, session.as_deref(), "search", None, started, &answer.report, &text);
                     json!({"content":[{"type":"text","text":text}],"isError":answer.report["ok"] != true})
                 }
                 Err(reason) => {
                     let report = json!({"ok":false,"reason":reason});
-                    let _ = crate::commands::spec_events::conversation::record_output_call(root, "search", None, started, &report, &report.to_string());
+                    let _ = crate::commands::spec_events::conversation::record_output_call_as(root, session.as_deref(), "search", None, started, &report, &report.to_string());
                     json!({"content":[{"type":"text","text":report.to_string()}],"isError":true})
                 }
             }
@@ -79,6 +100,46 @@ pub(crate) fn run(root: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A chamada que o `codex` 0.160.1 desta máquina mandou a um servidor MCP
+    /// de teste (`codex exec`, ferramenta `ping`), como chegou ao servidor.
+    const CODEX_CALL: &str = include_str!("../tests/fixtures/codex-tools-call.json");
+    const CODEX_THREAD: &str = "01a16614-52a7-73e3-a596-56c652948934";
+
+    /// A sessão da chamada sai do `_meta` que o Codex manda: o turno vale pelo
+    /// `thread_id` e, sem ele, pelo `session_id`; sem o turno, valem os ids
+    /// soltos, `threadId` e depois `sessionId`. Vazio, ausente ou de outro tipo
+    /// não é sessão; sem nada no `_meta`, vale a sessão do ambiente, que o
+    /// `_meta` nunca perde para ela.
+    #[test]
+    fn the_session_of_a_call_comes_from_the_meta_codex_sends() {
+        let call: Value = serde_json::from_str(CODEX_CALL).unwrap();
+        let meta = call["params"]["_meta"].clone();
+        assert_eq!(call_session(&call["params"], None).as_deref(), Some(CODEX_THREAD), "a chamada como o Codex a mandou");
+
+        let mut loose = meta.clone();
+        loose.as_object_mut().unwrap().remove("x-codex-turn-metadata");
+        assert_eq!(call_session(&json!({"_meta": loose}), None).as_deref(), Some(CODEX_THREAD), "sem o turno, os ids soltos");
+
+        // Nas chamadas vistas a conversa e a sessão têm o mesmo id; a ordem
+        // abaixo é a da regra, não a de uma chamada vista.
+        let call = |meta: Value| call_session(&json!({"name": "search", "_meta": meta}), None);
+        let turn = json!({"session_id": "raiz", "thread_id": "conversa"});
+        assert_eq!(call(json!({"x-codex-turn-metadata": turn, "threadId": "solta"})).as_deref(), Some("conversa"));
+        assert_eq!(call(json!({"x-codex-turn-metadata": {"session_id": " raiz ", "thread_id": " "}})).as_deref(), Some("raiz"));
+        assert_eq!(call(json!({"threadId": "solta", "sessionId": "outra"})).as_deref(), Some("solta"));
+        assert_eq!(call(json!({"sessionId": "outra"})).as_deref(), Some("outra"));
+        for none in [json!({}), json!({"threadId": ""}), json!({"sessionId": 7}), json!({"x-codex-turn-metadata": "não é objeto"})] {
+            assert_eq!(call(none.clone()), None, "{none}");
+        }
+        assert_eq!(call_session(&json!({"name": "search"}), None), None);
+
+        let environment = || Some("ambiente".to_string());
+        assert_eq!(call_session(&json!({"_meta": meta}), environment()).as_deref(), Some(CODEX_THREAD), "o _meta vale mais que o ambiente");
+        assert_eq!(call_session(&json!({"name": "search"}), environment()).as_deref(), Some("ambiente"), "sem _meta, o ambiente");
+        assert_eq!(call_session(&json!({"_meta": {"threadId": " "}}), environment()).as_deref(), Some("ambiente"), "_meta em branco, o ambiente");
+    }
+
     #[test]
     fn search_transport_returns_text_for_read_grep_and_errors() {
         let dir = tempfile::tempdir().unwrap(); let root = dir.path();

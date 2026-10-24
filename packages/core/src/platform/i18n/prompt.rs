@@ -124,28 +124,32 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("subagent.launch_settings", Locale::PtBr) => {
             "[Mustard] O agente {agent} saiu com modelo {asked_model} e esforço {asked_effort}. O \
              Mustard escolheu modelo {model} e esforço {effort} para ele. O modelo da onda é o do envio \
-             dela, e o do revisor vem do `mustard.json`. O esforço é sempre xhigh. Nos próximos \
-             lançamentos, não passe `effort`. Em `model`, passe só o da entrada de `dispatch`."
+             dela. O do revisor vem do `mustard.json`, salvo o do revisor final: esse fica o que a \
+             chamada pediu. O esforço é sempre xhigh. Nos próximos lançamentos, não passe `effort`. \
+             Em `model`, passe só o da entrada de `dispatch`."
         }
         ("subagent.launch_settings", Locale::EnUs) => {
             "[Mustard] The agent {agent} went out with model {asked_model} and effort {asked_effort}. \
              Mustard chose model {model} and effort {effort} for it. A wave's model is the one its send \
-             recorded, and the reviewer's comes from `mustard.json`. The effort is always xhigh. In the \
-             next launches, do not pass `effort`. In `model`, pass only the one in the `dispatch` entry."
+             recorded. The reviewer's comes from `mustard.json`, except the final reviewer's: that one \
+             stays what the call asked. The effort is always xhigh. In the next launches, do not pass \
+             `effort`. In `model`, pass only the one in the `dispatch` entry."
         }
         // O lançamento que pedia modelo ou esforço diferente do escolhido sai
         // com o escolhido: o gancho troca os dois na chamada.
         ("subagent.launch_settings_forced", Locale::PtBr) => {
             "[Mustard] O agente {agent} foi pedido com modelo {asked_model} e esforço {asked_effort}. \
-             Saiu com modelo {model} e esforço {effort}. O modelo da onda é o do envio dela, e o do \
-             revisor vem do `mustard.json`. O esforço é sempre xhigh. Nos próximos lançamentos, não \
-             passe `effort`. Em `model`, passe só o da entrada de `dispatch`."
+             Saiu com modelo {model} e esforço {effort}. O modelo da onda é o do envio dela. O do \
+             revisor vem do `mustard.json`, salvo o do revisor final: esse fica o que a chamada \
+             pediu. O esforço é sempre xhigh. Nos próximos lançamentos, não passe `effort`. Em \
+             `model`, passe só o da entrada de `dispatch`."
         }
         ("subagent.launch_settings_forced", Locale::EnUs) => {
             "[Mustard] The agent {agent} was asked with model {asked_model} and effort {asked_effort}. \
              It went out with model {model} and effort {effort}. A wave's model is the one its send \
-             recorded, and the reviewer's comes from `mustard.json`. The effort is always xhigh. In the \
-             next launches, do not pass `effort`. In `model`, pass only the one in the `dispatch` entry."
+             recorded. The reviewer's comes from `mustard.json`, except the final reviewer's: that one \
+             stays what the call asked. The effort is always xhigh. In the next launches, do not pass \
+             `effort`. In `model`, pass only the one in the `dispatch` entry."
         }
 
         // O agente que escreve código nunca sai no modelo pequeno da sessão.
@@ -198,13 +202,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.languages", Locale::PtBr) => {
             "Idiomas deste projeto. O texto sai em {text}: comentários, entregas e commits. O código \
              sai em {code}: nomes de variáveis, funções, testes, arquivos, comandos e tabelas do \
-             banco. Isso vale mesmo quando o arquivo já traz nomes em outro idioma."
+             banco. Isso vale mesmo quando o arquivo já traz nomes em outro idioma. Regra do projeto que \
+             trate de idioma vence esta linha."
         }
         ("prompt.languages", Locale::EnUs) => {
             "This project's languages. Text is written in {text}: comments, deliveries and commits. \
              Code is written in {code}: names of variables, functions, tests, files, commands and \
              database tables. This holds even when the file already has names in another \
-             language."
+             language. A project rule that deals with language overrides this line."
         }
         // As seções do pedido da onda, sempre nesta ordem: o que ela entrega,
         // como ler cada item, o que fazer, o que obedecer, o que devolver e
@@ -279,6 +284,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.step.attends", Locale::EnUs) => "Addresses: {item}",
         ("prompt.step.user_message", Locale::PtBr) => "mensagem do usuário",
         ("prompt.step.user_message", Locale::EnUs) => "user message",
+        // A mensagem do usuário que responde a uma pergunta com opções: a
+        // pergunta do assistente, acima da resposta dele.
+        ("prompt.message.question", Locale::PtBr) => "Pergunta: {question}",
+        ("prompt.message.question", Locale::EnUs) => "Question: {question}",
+        ("prompt.message.answer", Locale::PtBr) => "Resposta: {answer}",
+        ("prompt.message.answer", Locale::EnUs) => "Answer: {answer}",
         // O bloco de uma tarefa: o título, com a posição dela na onda, e cada
         // skill dela inteira, pelo nome e pelo caminho. A skill que o teto do
         // bloco cortou fica numa linha, com o caminho para lê-la.
@@ -473,6 +484,23 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              carries every wave's. Check that part and how it fits the rest of the work. For the other \
              agreed requirements, repeat the previous verdict's conclusion. Point it out only; do not \
              fix it."
+        }
+        // A revisão que volta depois de uma aprovação, para o ajuste feito
+        // com a obra reaberta, confere só esse ajuste: o que a aprovação
+        // conferiu e não mudou fica fora do pedido e do veredito.
+        ("prompt.final.look_since_approval", Locale::PtBr) => {
+            "**O que olhar.** Esta revisão volta depois de um veredito que aprovou a obra, para um \
+             ajuste feito depois dele. A parte do que mudou lista esse veredito e os commits e os \
+             itens gravados ou regravados depois do pedido que ele respondeu. Confira essa parte e \
+             como ela se encaixa no resto da obra. O que ele aprovou e não mudou fica fora do pedido \
+             e do veredito. Aponte só; não conserte."
+        }
+        ("prompt.final.look_since_approval", Locale::EnUs) => {
+            "**What to look at.** This review comes back after a verdict that approved the work, for \
+             an adjustment made after it. The part on what changed lists that verdict and the commits \
+             and items recorded or re-recorded after the request it answered. Check that part and how \
+             it fits the rest of the work. What it approved and did not change stays out of the \
+             request and of the verdict. Point it out only; do not fix it."
         }
         ("prompt.part.since_verdict", Locale::PtBr) => "O que mudou desde o veredito anterior",
         ("prompt.part.since_verdict", Locale::EnUs) => "What changed since the previous verdict",
@@ -735,15 +763,25 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // As regras do projeto, no fim de todo pedido ao revisor.
         ("prompt.part.project_rules", Locale::PtBr) => "Regras do projeto",
         ("prompt.part.project_rules", Locale::EnUs) => "Project rules",
-        ("prompt.project_rules.source", Locale::PtBr) => "O texto do `CLAUDE.md` da raiz do projeto. Siga-o nesta execução.",
-        ("prompt.project_rules.source", Locale::EnUs) => "The text of the `CLAUDE.md` at the project root. Follow it during this work.",
+        ("prompt.project_rules.source", Locale::PtBr) => "O texto do `CLAUDE.md` da raiz do projeto. Siga-o nesta execução; onde ele trata de idioma, vence a linha de idiomas do pedido.",
+        ("prompt.project_rules.source", Locale::EnUs) => "The text of the `CLAUDE.md` at the project root. Follow it during this work; where it deals with language, it overrides the request's languages line.",
         ("prompt.project_rules.sources", Locale::PtBr) => {
             "Os arquivos de regras da raiz e das pastas onde a obra mexeu, cada um sob o caminho dele. Siga todos \
-             nesta execução."
+             nesta execução; onde tratam de idioma, vencem a linha de idiomas do pedido."
         }
         ("prompt.project_rules.sources", Locale::EnUs) => {
             "The rules files of the root and of the folders the work touched, each under its path. Follow them all \
-             during this work."
+             during this work; where they deal with language, they override the request's languages line."
+        }
+        // A cópia do desenho que o usuário aprovou, no fim do despacho ao
+        // revisor quando a pasta da spec tem uma.
+        ("prompt.part.approved_design", Locale::PtBr) => "Desenho aprovado",
+        ("prompt.part.approved_design", Locale::EnUs) => "Approved design",
+        ("prompt.approved_design", Locale::PtBr) => {
+            "A cópia do desenho que o usuário aprovou para esta spec está em `{path}`. Compare cada tela com ela."
+        }
+        ("prompt.approved_design", Locale::EnUs) => {
+            "The copy of the design the user approved for this spec is at `{path}`. Compare each screen with it."
         }
         _ => return None,
     })
@@ -756,7 +794,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("prompt.rs"), super::PREFIXES, 111, 0xb3ba_e150_7f0e_0d54);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("prompt.rs"), super::PREFIXES, 116, 0x8b42_fe0c_6e0f_dbea);
     }
 
     /// O bloco do padrão sob a tarefa passa na conferência de escrita nos
@@ -816,6 +854,8 @@ mod tests {
                 "prompt.step.first",
                 "prompt.step.attends",
                 "prompt.step.user_message",
+                "prompt.message.question",
+                "prompt.message.answer",
                 "prompt.task.heading",
                 "prompt.task.skill",
                 "prompt.task.skill_cut",
@@ -830,6 +870,8 @@ mod tests {
                 let text = translate(key, lang)
                     .replace("{part}", "part")
                     .replace("{item}", "item")
+                    .replace("{question}", "Which orders?")
+                    .replace("{answer}", "The paid ones")
                     .replace("{files}", "`src/order.service.ts`")
                     .replace("{hints}", "`create`")
                     .replace("{command}", "make check")

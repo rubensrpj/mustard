@@ -46,11 +46,14 @@ pub(crate) fn snapshot_of(start: &Path, name: &str) -> Value {
 
 fn snapshot_with(start: &Path, selected: Option<&str>, session:Option<&str>, only:Option<&str>) -> Value {
     let root = mustard_core::io::spec_events::spec_root(start);
+    if let Some(refused) = refused_legacy(&root, selected) {
+        return refused;
+    }
     // A spec de antes desta versão do Mustard fica fora do painel e da
     // publicação, que sai daqui.
     let legacy = mustard_core::io::legacy_specs::LegacySpecs::read(&root);
-    let selected = selected.map(str::to_string).or_else(|| crate::shared::context::checkout::current_spec(&start.to_string_lossy()))
-        .filter(|name| !legacy.contains(name));
+    let selected = selected.map(str::to_string)
+        .or_else(|| crate::shared::context::checkout::current_spec(&start.to_string_lossy()).filter(|name| !legacy.contains(name)));
     let jev = jev_usage::Ledger::read(&root);
     let costs = consumption::costs(&root);
     let logs = match only {
@@ -84,6 +87,14 @@ fn snapshot_with(start: &Path, selected: Option<&str>, session:Option<&str>, onl
         "integration_health":integration_health,
         "installation":std::fs::read_to_string(root.join(".claude/mustard/installation.json")).ok().and_then(|text|serde_json::from_str::<Value>(&text).ok()),
         "statusline":consumption::statusline(&root,session)})
+}
+
+/// A recusa da spec pedida pelo nome quando ela é de antes desta versão do
+/// Mustard: o painel nunca mostra outra spec no lugar da pedida. A spec da
+/// cópia, que ninguém pediu pelo nome, só fica de fora.
+fn refused_legacy(root: &Path, asked: Option<&str>) -> Option<Value> {
+    let refusal = mustard_core::io::legacy_specs::refuse_legacy(root, asked?).err()?;
+    Some(crate::commands::spec_events::refused(&refusal, crate::commands::spec_events::project(root).lang))
 }
 
 /// One panel screen for `spec` under `root`, as the plugin asks for it.
@@ -296,20 +307,9 @@ fn definitions(log: &SpecLog) -> Value {
 }
 
 fn display_item(event: &mustard_core::domain::spec_events::SpecEvent, codes: &std::collections::BTreeMap<u64,String>) -> Value {
-    use mustard_core::domain::spec_events::{Kind,type_spec};
     let mut item=crate::commands::spec_events::shown(event,codes);
-    if let Some(spec)=type_spec(&event.event_type) {
-        for field in spec.fields {
-            if let Some(value)=item.get_mut(field.name) {
-                match field.kind {
-                    Kind::Ref => { if let Some(code)=value.as_u64().and_then(|id|codes.get(&id)) {*value=json!(code);} }
-                    Kind::Refs => { if let Some(values)=value.as_array_mut() { for value in values {
-                        if let Some(code)=value.as_u64().and_then(|id|codes.get(&id)) {*value=json!(code);}
-                    } } }
-                    _ => {}
-                }
-            }
-        }
+    if let Some(fields)=item.as_object_mut() {
+        crate::commands::spec_events::lean::link_by_code(mustard_core::domain::spec_events::type_spec(&event.event_type),fields,codes);
     }
     item
 }
@@ -338,7 +338,7 @@ pub(crate) fn wave_detail(start: &Path, name: &str, wave: u64) -> Value {
         (legacy || native) && attempt.is_none_or(|start| event.id > start)
             && event.int("criterion").and_then(|id| log.current(id)).is_some_and(|criterion| criterion_ids.contains(&criterion.id))
     })
-        .map(|event| {let mut item=display_item(event,&codes);if let Some(code)=event.int("criterion").and_then(|id|codes.get(&id)){item["criterion"]=json!(code);}item}).collect();
+        .map(|event| display_item(event,&codes)).collect();
     let user_input = planned.and_then(|event| event.int("origin")).and_then(|id| log.get(id)).and_then(|event| event.str_field("text"));
     let mut skills=sent.and_then(|event|log.send_field(event.id,"skills")).cloned().unwrap_or(Value::Null);
     for skill in skills.as_array_mut().into_iter().flatten() {
@@ -429,7 +429,7 @@ mod tests {
         let folder=root.join(".claude/spec/demo");std::fs::create_dir_all(&folder).unwrap();
         std::fs::write(folder.join("spec.ndjson"),format!("{}\n",json!({"v":1,"id":1,"at":"2026-10-19T10:00:00Z","type":"stage_run","phase":"final","stage":"machine","result":"pass","ms":5,"author":"binary"}))).unwrap();
         let draft=json!({"phase":"delivery","stage":"integration","result":"pass","ms":7,"scope":"leaf","author":"binary"});
-        assert!(super::super::spec_events::conversation::observe(root,"demo","stage_run",vec![draft.as_object().unwrap().clone()]).is_some());
+        assert!(super::super::spec_events::conversation::observe(root,"demo",None,"stage_run",vec![draft.as_object().unwrap().clone()]).is_some());
         let view=snapshot(root,Some("demo"));
         let spec=view["specs"].as_array().unwrap().iter().find(|spec|spec["name"]=="demo").unwrap();
         let stages:Vec<_>=spec["stages"].as_array().unwrap().iter().map(|stage|stage["stage"].clone()).collect();

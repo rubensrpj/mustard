@@ -595,6 +595,8 @@ fn window_size(window: u64, lang: Locale) -> String {
 /// Se a chamada `input` gravou o fim de uma tarefa: o terminal, com um
 /// comando só além dos `cd`, `mustard-rt run write step`, cujo `--json` traz
 /// no `item` o código de uma tarefa, e cuja saída não é a recusa da gravação.
+/// O `--json @arquivo` é relido do arquivo, partindo da pasta da chamada
+/// depois dos `cd` que vêm antes do comando.
 fn finishes_a_task(input: &HookInput) -> bool {
     if input.tool_name.as_deref() != Some("Bash") {
         return false;
@@ -602,20 +604,31 @@ fn finishes_a_task(input: &HookInput) -> bool {
     let Some(command) = input.tool_input.get("command").and_then(Value::as_str) else {
         return false;
     };
-    let mut run = segments(command).into_iter().filter(|segment| program_name(segment) != "cd");
-    let Some(main) = run.next() else { return false };
+    let mut folder = PathBuf::from(input.cwd.as_deref().unwrap_or_default());
+    let mut main = None;
+    for segment in segments(command) {
+        if program_name(&segment) != "cd" {
+            if main.replace(segment).is_some() {
+                return false;
+            }
+        } else if let (None, Some(to)) = (&main, segment.args.first()) {
+            folder = folder.join(&to.text);
+        }
+    }
+    let Some(main) = main else { return false };
     let args: Vec<&str> = main.args.iter().map(|word| word.text.as_str()).collect();
-    if program_name(&main) != "mustard-rt" || !args.starts_with(&["run", "write", "step"]) || run.next().is_some() {
+    if program_name(&main) != "mustard-rt" || !args.starts_with(&["run", "write", "step"]) {
         return false;
     }
     let json = args
         .windows(2)
         .find_map(|pair| (pair[0] == "--json").then_some(pair[1]))
-        .or_else(|| args.iter().find_map(|arg| arg.strip_prefix("--json=")));
+        .or_else(|| args.iter().find_map(|arg| arg.strip_prefix("--json=")))
+        .and_then(|json| crate::shared::json_arg::resolve_in(json.to_string(), &folder).ok());
     // O relatório que já traz a medida veio do próprio passo
     // ([`answer_step`]): medir de novo contaria o passo duas vezes.
     let accepted = tool_report(input).is_some_and(|report|report["ok"]==true && report.get(STEP_SIZE_FIELD).is_none());
-    json.is_some_and(names_a_task) && accepted
+    json.is_some_and(|json| names_a_task(&json)) && accepted
 }
 
 /// O relatório JSON que a chamada de terminal `input` imprimiu; `None` na

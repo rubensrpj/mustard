@@ -224,8 +224,12 @@ fn named_send(root:&Path,host:&str,text:&str,initial:Option<&(String,String)>)->
         if time.zip(sent).is_none_or(|(at,since)|at<since) {return Named::Refused;}
     }
     let dispatch=log.dispatch_position(send.id);
+    // O agente que a reprovação tirou da onda, cuja conversa começou antes da
+    // volta reprovada, não marca o lançamento do agente novo.
+    let replaced=initial.and_then(|(_,stamp)|chrono::DateTime::parse_from_rfc3339(stamp).ok())
+        .is_some_and(|at|crate::commands::flow::round::replaced_by_rejection(&log,identity.wave,at.with_timezone(&chrono::Utc)));
     let launched=crate::commands::flow::round::queue::agent_launched(&log,send.id)
-        || crate::commands::flow::round::queue::record_launch(root,&identity.spec,identity.wave,dispatch);
+        || (!replaced && crate::commands::flow::round::queue::record_launch(root,&identity.spec,identity.wave,dispatch));
     Named::Send {identity,dispatch,launched}
 }
 

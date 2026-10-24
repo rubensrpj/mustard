@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::normalize::{Languages, Normalizer};
+use super::text::{CutAt, cut};
 use super::project_map::{ProjectMap, UseSite, file_history};
 
 pub mod annotation;
@@ -91,7 +92,7 @@ pub fn summary(card: &Card) -> Value {
         "parse_complete":card.parse_complete,"contracts":card.contracts.iter().take(3).collect::<Vec<_>>(),"routes":card.routes.iter().take(3).collect::<Vec<_>>(),
         "outgoing":outgoing,"callers":callers,"inline_tests":card.inline_tests,"test_only":card.test_only,"unresolved_calls":card.unresolved_calls,
         "detail_counts":{"literals":card.literals.len(),"tests":card.tests.len(),"body_comment_chars":card.body_comment.chars().count()},
-        "text_compacted":card.signature.chars().count()>320 || card.documentation.chars().count()>320 || card.file_documentation.chars().count()>220,
+        "text_compacted":compacted(&card.signature,320) || compacted(&card.documentation,320) || compacted(&card.file_documentation,220),
     });
     if !card.syntax.is_null() {
         let mut syntax=card.syntax.clone();
@@ -107,12 +108,12 @@ pub fn summary(card: &Card) -> Value {
                 || card
                     .annotations
                     .iter()
-                    .any(|item| item.text.chars().count() > 240)
+                    .any(|item| compacted(&item.text, 240))
         );
     }
     if !card.identifiers.is_empty() && card.kind=="source-file" {
         projection["identifiers"]=json!(short(&card.identifiers,320));
-        projection["identifiers_compacted"]=json!(card.identifiers.chars().count()>320);
+        projection["identifiers_compacted"]=json!(compacted(&card.identifiers,320));
     }
     projection["detail_counts"]["identifiers"]=json!(card.identifiers.split_whitespace().count());
     projection["detail_counts"]["contracts"]=json!(card.contracts.len());
@@ -121,13 +122,16 @@ pub fn summary(card: &Card) -> Value {
     projection
 }
 
+/// `text` com até `max` caracteres antes das reticências. O texto que passa
+/// do teto por um caractere só cabe no lugar delas e sai inteiro.
 fn short(text: &str, max: usize) -> String {
-    let mut chars = text.chars();
-    let mut out: String = chars.by_ref().take(max).collect();
-    if chars.next().is_some() {
-        out.push('…');
-    }
-    out
+    cut(text, max + 1, CutAt::Char)
+}
+
+/// Se [`short`] corta `text` no teto `max`: é o sinal `*_compacted` do
+/// cartão, que manda pedir `--detail` para ler o texto inteiro.
+fn compacted(text: &str, max: usize) -> bool {
+    text.chars().count() > max + 1
 }
 
 /// Enrich the raw scanner model before its atomic database transaction. The
@@ -927,5 +931,20 @@ mod tests {
             "creation PCP plan",
             &languages
         ));
+    }
+
+    /// O resumo do cartão mostra até 320 caracteres da documentação antes das
+    /// reticências e só se diz compactado quando cortou: a de 321 cabe no
+    /// lugar delas e sai inteira; a de 322 fica com os 320 primeiros.
+    #[test]
+    fn a_card_summary_keeps_its_ceiling_before_the_ellipsis_and_flags_only_a_cut() {
+        for (chars, shown, flagged) in [(321, "x".repeat(321), false), (322, format!("{}…", "x".repeat(320)), true)] {
+            let mut raw = json!({"modules":[{"path":"main.rs","declarations":[{"name":"run","kind":"function","line":1,"end_line":1,"doc":"x".repeat(chars)}]}]});
+            enrich(&mut raw);
+            let map: ProjectMap = serde_json::from_value(raw).unwrap();
+            let projected = summary(&cards(&map)[0]);
+            assert_eq!(projected["documentation"], json!(shown), "{chars}");
+            assert_eq!(projected["text_compacted"], json!(flagged), "{chars}");
+        }
     }
 }

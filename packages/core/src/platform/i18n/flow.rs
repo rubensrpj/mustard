@@ -175,6 +175,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("resume.line", Locale::EnUs) => "Resume: spec {spec}, phase {phase}; last step: {last}; next: {next}.",
         ("resume.none", Locale::PtBr) => "nenhum",
         ("resume.none", Locale::EnUs) => "none",
+        ("resume.unbound", Locale::PtBr) => {
+            "Esta conversa não está ligada à spec: o que se diz aqui não entra nela. Rode `mustard-rt run resume` (ou `/mustard:continue`) para ligá-la."
+        }
+        ("resume.unbound", Locale::EnUs) => {
+            "This conversation is not bound to the spec: what is said here does not enter it. Run `mustard-rt run resume` (or `/mustard:continue`) to bind it."
+        }
+        ("resume.no_spec", Locale::PtBr) => {
+            "Nenhuma spec em andamento neste projeto. Para começar uma obra, abra a spec com `mustard-rt run open`."
+        }
+        ("resume.no_spec", Locale::EnUs) => "No spec in progress in this project. To start a piece of work, open the spec with `mustard-rt run open`.",
         ("resume.wave", Locale::PtBr) => "onda {n}",
         ("resume.wave", Locale::EnUs) => "wave {n}",
         ("resume.next.survey", Locale::PtBr) => "A spec está no levantamento: rode o levantamento e grave a resposta de cada ponto.",
@@ -358,6 +368,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The project suite (`{command}`), run in a clean environment the way the server runs it, \
              did not pass, and the spec did not close: {output}"
         }
+        // A compilação, o lint ou a suíte do fechamento que caiu num projeto
+        // que declara arquivos locais: a cópia limpa nunca os recebe.
+        ("close.ran_without_local_files", Locale::PtBr) => {
+            "O comando rodou na cópia limpa, sem os arquivos locais que o `mustard.json` lista em \
+             `localFiles`: {files}. O git os ignora, e a esteira do servidor também não os tem. O \
+             comando que depende de um deles cai lá como caiu aqui."
+        }
+        ("close.ran_without_local_files", Locale::EnUs) => {
+            "The command ran in the clean copy, without the local files `mustard.json` lists in \
+             `localFiles`: {files}. Git ignores them, and the server pipeline does not have them \
+             either. A command that depends on one of them fails there as it failed here."
+        }
         // O comando do servidor que o `mustard.json` não declara: o
         // fechamento não o roda, e avisa que não promete o que o servidor
         // vai dizer.
@@ -381,6 +403,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("close.review_copy_failed", Locale::PtBr) => "A cópia do revisor `{copy}` não pôde ser criada, e a spec não fechou: {detail}",
         ("close.review_copy_failed", Locale::EnUs) => "The reviewer's copy `{copy}` could not be created, and the spec did not close: {detail}",
+        ("close.clean_copy_failed", Locale::PtBr) => "A cópia limpa `{copy}`, em que a compilação, o lint, a suíte e os critérios rodam, não pôde ser criada, e a spec não fechou: {detail}",
+        ("close.clean_copy_failed", Locale::EnUs) => "The clean copy `{copy}`, where the build, the lint, the suite and the criteria run, could not be created, and the spec did not close: {detail}",
         // As cópias da obra que o fechamento ou o descarte não conseguiram
         // tirar. A obra segue: o aviso só diz o que ficou e como tirar.
         ("close.review_copy_kept", Locale::PtBr) => {
@@ -449,6 +473,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("close.next", Locale::PtBr) => "Depois, abra o pull request: `{command}`.",
         ("close.next", Locale::EnUs) => "Then open the pull request: `{command}`.",
+        // A revisão final aprovou com achados: eles viraram tarefas, e o
+        // pull request espera a entrega delas e uma revisão final nova.
+        ("close.final_leftovers", Locale::PtBr) => {
+            "A revisão final aprovou a obra com achados, que viraram as tarefas {tasks} no backlog. \
+             A spec não fechou: antes do pull request, rode a rodada, que as despacha: `{command}`. \
+             Depois da entrega, o fechamento pede uma revisão final nova."
+        }
+        ("close.final_leftovers", Locale::EnUs) => {
+            "The final review approved the work with findings, which became tasks {tasks} in the \
+             backlog. The spec did not close: before the pull request, run the round, which dispatches \
+             them: `{command}`. After the delivery, the close asks for a new final review."
+        }
         // A pergunta de destino de uma pendência ligada à spec `{spec}`: a
         // mesma linha que a gravação de uma pendência devolve na hora, e que
         // o fechamento repete para cada uma que a spec ainda deixa aberta.
@@ -1167,8 +1203,24 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.leftover_classified", Locale::EnUs) => {
             concat!("Error from wave {wave}'s return — {title}: {detail} (By the map: ", map_commands_en!(), ".)")
         }
+        // Os mesmos textos da sobra, quando quem a apontou é a revisão final,
+        // que não tem onda.
+        ("round.leftover_review_joined", Locale::PtBr) => {
+            concat!("Achado da revisão final, nos mesmos arquivos — {title}: {detail} (Pelo mapa: ", map_commands_pt!(), ".)")
+        }
+        ("round.leftover_review_joined", Locale::EnUs) => {
+            concat!("Finding from the final review, on the same files — {title}: {detail} (By the map: ", map_commands_en!(), ".)")
+        }
+        ("round.leftover_review_classified", Locale::PtBr) => {
+            concat!("Achado da revisão final — {title}: {detail} (Pelo mapa: ", map_commands_pt!(), ".)")
+        }
+        ("round.leftover_review_classified", Locale::EnUs) => {
+            concat!("Finding from the final review — {title}: {detail} (By the map: ", map_commands_en!(), ".)")
+        }
         ("round.leftover_priority", Locale::PtBr) => "Sobra da onda {wave}: erro achado na obra sai antes das tarefas antigas.",
         ("round.leftover_priority", Locale::EnUs) => "Leftover from wave {wave}: an error found in the work goes before the old tasks.",
+        ("round.leftover_review_priority", Locale::PtBr) => "Achado da revisão final: erro achado na obra sai antes das tarefas antigas.",
+        ("round.leftover_review_priority", Locale::EnUs) => "Finding from the final review: an error found in the work goes before the old tasks.",
         ("triage.same_work_open", Locale::PtBr) => {
             "A tarefa aberta {task} — {title} tem o mesmo sentido: nada foi gravado. Grave a versão nova dela, com `replaces` {task}, juntando esta atividade; o pedido em `rewrite` dá o texto. Se for outro trabalho, grave de novo com `distinct` e o motivo."
         }
@@ -1319,6 +1371,38 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("round.leftover_marked", Locale::PtBr) => "Sobra da onda {wave}: {title}",
         ("round.leftover_marked", Locale::EnUs) => "Leftover from wave {wave}: {title}",
+        ("round.leftover_review_marked", Locale::PtBr) => "Achado da revisão final: {title}",
+        ("round.leftover_review_marked", Locale::EnUs) => "Finding from the final review: {title}",
+        // A sobra só em arquivo que o git ignora: mudança local, que não vira
+        // tarefa e fica como nota para o usuário.
+        ("round.leftover_local", Locale::PtBr) => {
+            "Sobra da onda {wave} só em arquivo que o git ignora ({files}). É mudança local: nenhuma onda a entrega e \
+             nenhum commit a leva, por isso não virou tarefa. Cabe ao usuário fazer, nesta máquina — {title}: {detail}"
+        }
+        ("round.leftover_local", Locale::EnUs) => {
+            "Leftover from wave {wave} only in files git ignores ({files}). It is a local change: no wave delivers it \
+             and no commit carries it, so it did not become a task. It is up to the user to make it, on this machine \
+             — {title}: {detail}"
+        }
+        ("round.leftover_review_local", Locale::PtBr) => {
+            "Achado da revisão final só em arquivo que o git ignora ({files}). É mudança local: nenhuma onda a entrega \
+             e nenhum commit a leva, por isso não virou tarefa. Cabe ao usuário fazer, nesta máquina — {title}: {detail}"
+        }
+        ("round.leftover_review_local", Locale::EnUs) => {
+            "Finding from the final review only in files git ignores ({files}). It is a local change: no wave delivers \
+             it and no commit carries it, so it did not become a task. It is up to the user to make it, on this \
+             machine — {title}: {detail}"
+        }
+        ("round.wave_left_after_return", Locale::PtBr) => {
+            "A onda {wave} saiu do ar por ficar sem tarefa. O agente dela já tinha gravado a volta ao pedido {send}, \
+             mas a última tarefa foi removida antes de a rodada assumi-la. A volta fica só na história. A fila, a \
+             retomada e a rodada deixam de listar a onda."
+        }
+        ("round.wave_left_after_return", Locale::EnUs) => {
+            "Wave {wave} left the air for having no task. Its agent had already recorded the return to request \
+             {send}, but the last task was removed before the round took it over. The return stays in the history \
+             only. The queue, the resume and the round no longer list the wave."
+        }
         ("round.wave_left_without_tasks", Locale::PtBr) => {
             "A onda {wave} saiu do ar por ficar sem tarefa: o pedido {send} segue sem volta, e nenhuma tarefa viva \
              aponta a onda. A fila, a retomada e a rodada deixam de listá-la."
@@ -1467,12 +1551,13 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // o lê, e é o agente quem o roda.
         ("round.next", Locale::PtBr) => {
             "Despache cada entrada de `dispatch` a um agente `mustard-wave`, com o modelo do campo \
-             `model` dela. O prompt tem duas linhas: o título `# <spec> — onda <wave>`, com o número do \
-             campo `wave`, e o comando do campo `read`. Esse comando traz o pedido e as regras."
+             `model` dela e a descrição do campo `description`. O prompt tem duas linhas: o título \
+             `# <spec> — onda <wave>`, com o número do campo `wave`, e o comando do campo `read`. Esse \
+             comando traz o pedido e as regras."
         }
         ("round.next", Locale::EnUs) => {
             "Dispatch each `dispatch` entry to a `mustard-wave` agent, on the model in its `model` \
-             field. The prompt has two lines: the title `# <spec> — wave <wave>`, with the number in \
+             field and with the description in its `description` field. The prompt has two lines: the title `# <spec> — wave <wave>`, with the number in \
              the `wave` field, and the command in the `read` field. That command brings the request and \
              the rules."
         }
@@ -1604,8 +1689,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.queued.origin_default", Locale::EnUs) => "Mustard default, with no `maxCompilingWaves` in `mustard.json`",
         ("round.queued.file", Locale::PtBr) => "arquivo {files}, reservado pela onda {wave}",
         ("round.queued.file", Locale::EnUs) => "file {files}, held by wave {wave}",
-        ("round.queued.cleanup", Locale::PtBr) => "limpeza: sai depois das outras tarefas do backlog",
-        ("round.queued.cleanup", Locale::EnUs) => "cleanup: goes out after the other backlog tasks",
         ("round.queued.assembly", Locale::PtBr) => "pronta e com vaga, mas fora desta montagem. A próxima rodada confere de novo",
         ("round.queued.assembly", Locale::EnUs) => "ready with a free slot, but left out of this assembly. The next round checks again",
         ("round.queued.reads", Locale::PtBr) => "lê {files}, que a onda {wave} muda, pelo mapa do scan",
@@ -1618,6 +1701,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.queued.behind", Locale::EnUs) => "held behind {task}, which also stayed and shares {files} with it",
         ("round.queued.behind_lot", Locale::PtBr) => "no mesmo assunto de {task}, que também ficou",
         ("round.queued.behind_lot", Locale::EnUs) => "in the same subject as {task}, which also stayed",
+        ("round.queued.following", Locale::PtBr) => {
+            "vai no mesmo sentido da onda {wave} e espera a volta dela. Sai na próxima onda, com o resumo dela quando houver"
+        }
+        ("round.queued.following", Locale::EnUs) => {
+            "goes in the same direction as wave {wave} and waits for it to return. It leaves in the next wave, with that wave's summary when there is one"
+        }
         ("round.queued.arrived", Locale::PtBr) => "chegou ao backlog nesta rodada e entra na montagem da próxima",
         ("round.queued.arrived", Locale::EnUs) => "reached the backlog this round and joins the next round's assembly",
         ("round.queued.jev_pending", Locale::PtBr) => {
@@ -1625,6 +1714,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("round.queued.jev_pending", Locale::EnUs) => {
             "waits for Jev's decision on it; with `reserves` in the answer, send the reserve's receipt first"
+        }
+        ("round.queued.broken_dependency", Locale::PtBr) => {
+            "depende de {dependencies}, que não existe mais nesta spec; grave uma versão dela com `replaces` e sem essa dependência"
+        }
+        ("round.queued.broken_dependency", Locale::EnUs) => {
+            "depends on {dependencies}, which no longer exists in this spec; write a version of it with `replaces` and without that dependency"
         }
         ("round.queued.line_held", Locale::PtBr) => "{task} ficou: {detail}.",
         ("round.queued.line_held", Locale::EnUs) => "{task} stayed: {detail}.",
@@ -1808,6 +1903,25 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("round.resume.notice", Locale::PtBr) => "Comece vendo o que mudou na cópia.",
         ("round.resume.notice", Locale::EnUs) => "Start by seeing what changed in the copy.",
+        // O reenvio da onda órfã cujo agente deixou código na cópia que a
+        // rodada zerou: as refs que o guardam vêm logo depois desta frase,
+        // uma por linha.
+        ("round.resume.kept", Locale::PtBr) => {
+            "O agente anterior desta onda parou no meio. O que ele deixou na cópia ficou guardado nas \
+             refs abaixo, a mais nova primeiro, cada uma com os arquivos que traz. Confira cada ref com \
+             `git show --stat <ref>`. Traga de volta o que serve com `git cherry-pick --no-commit <ref>`, \
+             na cópia ou na pasta que a linha diz, e continue dali. O resto só se descarta com o motivo \
+             gravado num passo."
+        }
+        ("round.resume.kept", Locale::EnUs) => {
+            "The previous agent of this wave stopped midway. What it left in the copy is kept under the \
+             refs below, newest first, each with the files it carries. Check each ref with \
+             `git show --stat <ref>`. Bring back what still serves with `git cherry-pick --no-commit <ref>`, \
+             in the copy or in the folder the line names, and carry on from there. The rest is only \
+             discarded with the reason recorded in a step."
+        }
+        ("round.resume.kept_in", Locale::PtBr) => "- `{ref}`, na pasta `{folder}` da cópia: {files}",
+        ("round.resume.kept_in", Locale::EnUs) => "- `{ref}`, in the copy folder `{folder}`: {files}",
         ("round.copies_full", Locale::PtBr) => {
             "As {copies} cópias da obra estão ocupadas, e as ondas {waves} já voltaram e guardam a delas até o commit: \
              o despacho espera. Revise e reporte essas ondas para liberar a cópia."
@@ -2069,6 +2183,79 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("pr.submodules.stuck", Locale::EnUs) => "The main pull request #{pr} stays a draft: {reason}. The next check tries again.",
         ("pr.pointer_commit", Locale::PtBr) => "chore(submódulo): atualiza o ponteiro",
         ("pr.pointer_commit", Locale::EnUs) => "chore(submodule): update the pointer",
+        // O corpo do pull request aberto que ficou como estava, porque alguém
+        // o editou depois do último corpo gerado ou o provedor não deixou lê-lo.
+        ("pr.body_kept", Locale::PtBr) => {
+            "O corpo do pull request #{pr} ficou como estava ({reason}). O Mustard só refaz o corpo \
+             que segue igual ao último que ele gerou, e a edição de quem mexeu nele fica. Para o \
+             Mustard voltar a refazê-lo, apague a descrição no provedor."
+        }
+        ("pr.body_kept", Locale::EnUs) => {
+            "The body of pull request #{pr} stayed as it was ({reason}). Mustard only rewrites a body \
+             still equal to the last one it generated, and the edit of whoever changed it stays. For \
+             Mustard to rewrite it again, clear the description on the provider."
+        }
+        // O corpo do pull request aberto que ficou como estava porque não traz
+        // a marca do corpo gerado: é de antes dela ou foi escrito à mão.
+        ("pr.body_unmarked", Locale::PtBr) => {
+            "O corpo do pull request #{pr} ficou como estava ({reason}). Ele não traz a marca que o \
+             Mustard põe no fim do corpo que gera. É de antes dela ou foi escrito à mão. Sem essa \
+             marca, não há como saber se alguém o editou. Para o Mustard voltar a refazê-lo, apague \
+             a descrição no provedor."
+        }
+        ("pr.body_unmarked", Locale::EnUs) => {
+            "The body of pull request #{pr} stayed as it was ({reason}). It lacks the mark Mustard \
+             puts at the end of the body it generates. It predates that mark or was written by hand. \
+             Without the mark, there is no telling whether someone edited it. For Mustard to rewrite \
+             it again, clear the description on the provider."
+        }
+        // A esteira do pull request lida depois de abri-lo e na retomada da
+        // spec com ele aberto, uma frase por resposta do provedor.
+        ("pr.checks.passed", Locale::PtBr) => {
+            "A esteira do pull request #{pr} passou: as verificações do provedor terminaram sem falha."
+        }
+        ("pr.checks.passed", Locale::EnUs) => {
+            "The pipeline of pull request #{pr} passed: the provider's checks finished without a failure."
+        }
+        ("pr.checks.running", Locale::PtBr) => {
+            "A esteira do pull request #{pr} ainda está rodando. A retomada da spec lê de novo, e o \
+             merge espera o resultado."
+        }
+        ("pr.checks.running", Locale::EnUs) => {
+            "The pipeline of pull request #{pr} is still running. Resuming the spec reads it again, \
+             and the merge waits for the result."
+        }
+        ("pr.checks.failed", Locale::PtBr) => {
+            "A esteira do pull request #{pr} reprovou: uma verificação do provedor terminou em falha."
+        }
+        ("pr.checks.failed", Locale::EnUs) => {
+            "The pipeline of pull request #{pr} failed: a check of the provider finished in failure."
+        }
+        ("pr.checks.fix", Locale::PtBr) => {
+            "Leia no provedor o que falhou e rode `mustard-rt run reopen --spec {spec} --fix --reason \
+             <o que o servidor informou>`: a porta de conserto abre a onda de correção na mesma branch."
+        }
+        ("pr.checks.fix", Locale::EnUs) => {
+            "Read on the provider what failed and run `mustard-rt run reopen --spec {spec} --fix \
+             --reason <what the server reported>`: the repair door opens the fix wave on the same \
+             branch."
+        }
+        ("pr.checks.absent", Locale::PtBr) => {
+            "O pull request #{pr} ainda não tem verificação nenhuma do provedor: a esteira não \
+             começou, ou o projeto não tem uma."
+        }
+        ("pr.checks.absent", Locale::EnUs) => {
+            "Pull request #{pr} has no check from the provider yet: the pipeline has not started, or \
+             the project has none."
+        }
+        ("pr.checks.unreadable", Locale::PtBr) => {
+            "A esteira do pull request #{pr} não pôde ser lida ({reason}). O merge pergunta antes de \
+             juntar sem ela."
+        }
+        ("pr.checks.unreadable", Locale::EnUs) => {
+            "The pipeline of pull request #{pr} could not be read ({reason}). The merge asks before \
+             merging without it."
+        }
         // A recusa do merge de uma spec que voltou à execução depois do
         // fechamento: o pull request dela leva a versão sem o ajuste até a
         // spec fechar de novo.
@@ -2264,18 +2451,26 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              with `mustard-rt run write request --spec {spec}` and, from it, the new tasks. Their \
              waves go out through the round after the user approves the change."
         }
-        // O fim do passo da reabertura, pelo pull request da spec: o mesmo, ou
-        // o fechado sem merge, que não vai para rascunho e dá lugar a outro.
-        ("reopen.same_pr", Locale::PtBr) => "Depois vem o fechamento de novo, e o pull request continua o mesmo.",
-        ("reopen.same_pr", Locale::EnUs) => "Then comes the close again, and the pull request stays the same.",
+        // O fim do passo da reabertura, pelo pull request da spec: o mesmo,
+        // como está no provedor, que só o merge do Mustard segura até o
+        // fechamento, ou o fechado sem merge, que dá lugar a outro.
+        ("reopen.same_pr", Locale::PtBr) => {
+            "Depois vem o fechamento de novo, e o pull request continua o mesmo, como está no \
+             provedor. Até lá, o merge pelo Mustard recusa; pelo botão do provedor, ele juntaria na \
+             base a versão sem o ajuste."
+        }
+        ("reopen.same_pr", Locale::EnUs) => {
+            "Then comes the close again, and the pull request stays the same, as it is on the \
+             provider. Until then, Mustard's merge refuses; through the provider's button, it would \
+             take the version without the change into the base."
+        }
         ("reopen.pr_closed", Locale::PtBr) => {
-            "O pull request #{pr} dela está fechado, sem merge, e por isso não foi posto em rascunho. \
-             Depois vem o fechamento de novo, e o `pr-open` que ele aponta abre outro pull request, na \
-             mesma branch."
+            "O pull request #{pr} dela está fechado, sem merge. Depois vem o fechamento de novo, e o \
+             `pr-open` que ele aponta abre outro pull request, na mesma branch."
         }
         ("reopen.pr_closed", Locale::EnUs) => {
-            "Its pull request #{pr} is closed, not merged, so it was not put in draft. Then comes the \
-             close again, and the `pr-open` it points to opens another pull request, on the same branch."
+            "Its pull request #{pr} is closed, not merged. Then comes the close again, and the \
+             `pr-open` it points to opens another pull request, on the same branch."
         }
         ("reopen.fix_not_red", Locale::PtBr) => {
             "A porta de conserto da spec {spec} não abriu. Ela pede a spec com o pull request \
@@ -2289,8 +2484,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              the phase {phase} without that. For a new request, run `mustard-rt run reopen` \
              without `--fix`. Nothing was written."
         }
-        // Os avisos da reabertura de uma spec com o pull request aberto: o
-        // merge que não deu para conferir e o rascunho que o provedor recusou.
+        // O aviso da reabertura de uma spec com o pull request aberto: o merge
+        // que não deu para conferir.
         ("reopen.merge_unchecked", Locale::PtBr) => {
             "Não deu para conferir no provedor se o pull request da spec {spec} já entrou na base \
              ({reason}). A spec voltou à execução mesmo assim. Se alguém já fez o merge, o ajuste \
@@ -2301,17 +2496,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              merged ({reason}). The spec went back to running anyway. If someone already merged it, \
              the new change would go to a branch already merged: check on the provider before \
              going on."
-        }
-        ("reopen.draft_failed", Locale::PtBr) => {
-            "O pull request da spec {spec} não foi posto em rascunho ({reason}) e ficou liberado. Um \
-             merge pelo botão do provedor agora juntaria na base a versão sem o ajuste. Ponha-o em \
-             rascunho pelo provedor, se puder; o merge do Mustard recusa até a spec fechar de novo."
-        }
-        ("reopen.draft_failed", Locale::EnUs) => {
-            "The pull request of the spec {spec} was not put in draft ({reason}) and stays open to \
-             merging. A merge through the provider's button now would take the version without the \
-             change into the base. Put it in draft on the provider if you can; Mustard's merge \
-             refuses until the spec closes again."
         }
         // O levantamento lembra o tipo de trabalho gravado: o comando sai sem
         // o tipo e roda como veio.
@@ -2446,7 +2630,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 358, 0x006e_9fdb_6968_7418);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 380, 0xd31b_bbf6_6256_0523);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
@@ -2537,6 +2721,7 @@ mod tests {
             ("discard.done", &[][..]),
             ("resume.line", &["{spec}", "{phase}", "{last}", "{next}"][..]),
             ("resume.none", &[][..]),
+            ("resume.unbound", &[][..]),
             ("resume.wave", &["{n}"][..]),
             ("resume.next.survey", &[][..]),
             ("resume.next.plan", &["{question}", "{option}"][..]),
@@ -2575,12 +2760,14 @@ mod tests {
             ("close.lint_failed", &["{command}", "{output}"][..]),
             ("close.lint_from_the_base", &["{command}", "{files}", "{output}"][..]),
             ("close.suite_failed", &["{command}", "{output}"][..]),
+            ("close.ran_without_local_files", &["{files}"][..]),
             ("close.cited_outside", &["{files}"][..]),
             ("close.cited_nothing", &[][..]),
             ("close.cited_unowned", &[][..]),
             ("close.server_command_not_declared", &["{key}"][..]),
             ("close.review_copy_dirty", &["{copy}", "{files}"][..]),
             ("close.review_copy_failed", &["{copy}", "{detail}"][..]),
+            ("close.clean_copy_failed", &["{copy}", "{detail}"][..]),
             ("close.review_copy_kept", &["{copies}", "{detail}"][..]),
             ("close.code_not_kept", &["{copies}", "{detail}"][..]),
             ("close.build_output_unsafe", &["{folder}"][..]),
@@ -2588,6 +2775,7 @@ mod tests {
             ("close.build_output_failed", &["{folder}", "{detail}"][..]),
             ("close.final_review", &["{spec}"][..]),
             ("close.next", &["{command}"][..]),
+            ("close.final_leftovers", &["{tasks}", "{command}"][..]),
             ("close.pending_destination", &["{id}", "{title}", "{spec}"][..]),
             ("close.unowned_item", &["{code}", "{title}"][..]),
             ("close.unowned_test", &["{name}", "{file}"][..]),
@@ -2617,6 +2805,14 @@ mod tests {
             ("pr.merge_no_verdict", &[][..]),
             ("pr.merge_provider_refused", &[][..]),
             ("pr.promotion_merged", &["{head}"][..]),
+            ("pr.body_kept", &["{pr}", "{reason}"][..]),
+            ("pr.body_unmarked", &["{pr}", "{reason}"][..]),
+            ("pr.checks.passed", &["{pr}"][..]),
+            ("pr.checks.running", &["{pr}"][..]),
+            ("pr.checks.failed", &["{pr}"][..]),
+            ("pr.checks.fix", &["{spec}"][..]),
+            ("pr.checks.absent", &["{pr}"][..]),
+            ("pr.checks.unreadable", &["{pr}", "{reason}"][..]),
             ("reopen.same_pr", &[][..]),
             ("reopen.pr_closed", &["{pr}"][..]),
             ("stuck.found", &["{list}"][..]),
@@ -2704,6 +2900,9 @@ mod tests {
             ("round.leftover_joined", &["{wave}", "{title}", "{detail}"][..]),
             ("round.leftover_classified", &["{wave}", "{title}", "{detail}"][..]),
             ("round.leftover_priority", &["{wave}"][..]),
+            ("round.leftover_review_joined", &["{title}", "{detail}"][..]),
+            ("round.leftover_review_classified", &["{title}", "{detail}"][..]),
+            ("round.leftover_review_priority", &[][..]),
             ("triage.same_work_open", &["{task}", "{title}"][..]),
             ("triage.same_work_covered", &["{task}", "{title}"][..]),
             ("round.jev_pending.removed_name", &["{wave}"][..]),
@@ -2728,7 +2927,13 @@ mod tests {
             ("round.leftover_repeated", &["{wave}", "{task}", "{detail}"][..]),
             ("round.leftover_judged", &["{chance}"][..]),
             ("round.leftover_marked", &["{wave}", "{title}"][..]),
+            ("round.leftover_review_marked", &["{title}"][..]),
+            ("round.leftover_local", &["{wave}", "{files}", "{title}", "{detail}"][..]),
+            ("round.leftover_review_local", &["{files}", "{title}", "{detail}"][..]),
             ("round.wave_left_without_tasks", &["{wave}", "{send}"][..]),
+            ("round.wave_left_after_return", &["{wave}", "{send}"][..]),
+            ("round.queued.broken_dependency", &["{dependencies}"][..]),
+            ("round.queued.following", &["{wave}"][..]),
             ("round.leftover_without_files", &[][..]),
             ("round.tasks_returned", &["{wave}", "{tasks}"][..]),
             ("round.proof_rerouted", &["{item}", "{criterion}"][..]),
@@ -2785,6 +2990,8 @@ mod tests {
             ("round.fix_limit.question", &["{wave}", "{max}"][..]),
             ("round.resume.steps", &[][..]),
             ("round.resume.notice", &[][..]),
+            ("round.resume.kept", &[][..]),
+            ("round.resume.kept_in", &["{ref}", "{folder}", "{files}"][..]),
             ("round.resume.task", &[][..]),
             ("round.resume.silent", &["{wave}"][..]),
             ("round.copies_full", &["{copies}", "{waves}"][..]),

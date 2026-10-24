@@ -64,6 +64,22 @@ impl Project {
     }
 
     fn command(&self, args: &[&str], stdin: &str) -> std::process::Output {
+        self.command_as(None, args, stdin)
+    }
+
+    /// A abertura da spec pela conversa da sessão [`SESSION`], como quem
+    /// conduz a roda: o gancho do terminal passa a sessão ao comando, e é a
+    /// conversa dela que fica ligada à spec.
+    fn open(&self) -> Value {
+        let out = self.command_as(Some(SESSION), &["run", "open", "--kind", "feature", "--name", SPEC, "--base", "dev"], "");
+        let report: Value = serde_json::from_slice(&out.stdout).expect("the opening answers JSON");
+        assert_eq!(report["ok"], json!(true), "{report}");
+        report
+    }
+
+    /// Como [`Self::command`], com a sessão `session` no ambiente, como o
+    /// gancho do terminal a passa ao comando numa conversa.
+    fn command_as(&self, session: Option<&str>, args: &[&str], stdin: &str) -> std::process::Output {
         let mut child = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
             .args(args)
             .current_dir(&self.root)
@@ -80,6 +96,7 @@ impl Project {
             .env_remove("MUSTARD_SESSION_ID")
             .env_remove("CLAUDE_SESSION_ID")
             .env_remove("CLAUDE_CODE_SESSION_ID")
+            .envs(session.map(|session| ("MUSTARD_SESSION_ID", session)))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -209,6 +226,112 @@ fn approve(project: &Project) {
 }
 
 
+/// As razões dos achados da lista `list` (`blocking` ou `warnings`) do plano,
+/// cada uma com a dica dela.
+fn findings(report: &Value, list: &str) -> Vec<(String, String)> {
+    let all = report[list].as_array().cloned().unwrap_or_default();
+    all.iter()
+        .map(|finding| {
+            (finding["reason"].as_str().unwrap_or_default().to_string(), finding["hint"].as_str().unwrap_or_default().to_string())
+        })
+        .collect()
+}
+
+/// O critério gravado depois do levantamento, com a prova `proof`.
+fn criterion_citing(project: &Project, said: u64, proof: &str) -> Value {
+    project.answer(&[
+        "write",
+        "criterion",
+        "--spec",
+        SPEC,
+        "--json",
+        &json!({"title": "Combinar o item", "when": "o módulo roda", "then": "a soma aparece", "proof": proof, "form": "ubiquitous",
+            "origin": said})
+        .to_string(),
+    ])
+}
+
+/// O critério cita o teste que a tarefa gravada depois dele declara criar, e
+/// a tarefa que espera essa cita, sem a marca de novo, o arquivo que ela
+/// cria. A gravação aceita o critério e o plano passa: o arquivo que algum
+/// item da spec declara criar conta como existente, gravado antes ou depois,
+/// e não sai como arquivo fora do git.
+#[test]
+fn a_file_another_item_creates_passes_the_write_and_the_plan() {
+    let project = Project::new();
+    project.open();
+    survey(&project);
+    let said = user_says(&project, "A soma ganha um módulo novo, com o teste dele.");
+    let criterion = criterion_citing(&project, said, "git diff --exit-code -- web/x.spec.ts");
+    assert_eq!(criterion["ok"], json!(true), "the test a later task creates counts: {criterion}");
+    let creates = project.write(
+        "task",
+        &json!({"agent": "- criar o módulo", "title": "Criar o módulo", "text": "Criar o módulo da soma, com o teste dele.",
+            "files": [{"path": "web/x.ts", "new": true}, {"path": "web/x.spec.ts", "new": true}],
+            "depends_on": [], "covers": [criterion["id"]], "origin": said}),
+    );
+    project.write(
+        "task",
+        &json!({"agent": "- usar o módulo", "title": "Usar o módulo", "text": "Usar o módulo da soma no programa.",
+            "files": [{"path": "web/x.ts"}, {"path": "src/main.rs"}],
+            "depends_on": [creates["id"]], "covers": [criterion["id"]], "origin": said}),
+    );
+
+    let planned = project.answer(&["plan", "--spec", SPEC]);
+    assert_eq!(planned["ok"], json!(true), "{planned}");
+    let outside: Vec<(String, String)> = findings(&planned, "warnings").into_iter().filter(|(reason, _)| reason == "file-outside-git").collect();
+    assert!(outside.is_empty(), "the file another task creates is not outside git: {outside:?}");
+}
+
+/// O arquivo que nenhum item da spec cria e que o projeto não tem segue
+/// recusado: o critério que o cita é gravado, porque a tarefa que o cria
+/// pode vir depois, e o plano, que confere de novo com todos os itens
+/// gravados, trava nele; a tarefa que o cita sem a marca de novo também.
+#[test]
+fn a_file_no_item_creates_holds_the_plan() {
+    let project = Project::new();
+    project.open();
+    survey(&project);
+    let said = user_says(&project, "A soma ganha um módulo que ninguém cria.");
+    let criterion = criterion_citing(&project, said, "git diff --exit-code -- web/ninguem.spec.ts");
+    assert_eq!(criterion["ok"], json!(true), "the plan checks it again at the end: {criterion}");
+    project.write(
+        "task",
+        &json!({"agent": "- usar o módulo", "title": "Usar o módulo", "text": "Usar o módulo da soma no programa.",
+            "files": [{"path": "web/ninguem.ts"}], "depends_on": [], "covers": [criterion["id"]], "origin": said}),
+    );
+
+    let planned = project.answer(&["plan", "--spec", SPEC]);
+    assert_eq!(planned["ok"], json!(false), "{planned}");
+    let blocking = findings(&planned, "blocking");
+    assert!(blocking.iter().any(|(reason, hint)| reason == "proof-path-missing" && hint.contains("web/ninguem.spec.ts")), "{blocking:?}");
+    assert!(blocking.iter().any(|(reason, hint)| reason == "cited-file-missing" && hint.contains("web/ninguem.ts")), "{blocking:?}");
+}
+
+/// Depois da aprovação o plano não roda de novo, e a gravação confere na
+/// hora: o critério que cita um arquivo que nenhum item cria é recusado sem
+/// gravar; o que cita o arquivo que uma tarefa já gravada declara criar
+/// passa.
+#[test]
+fn after_approval_the_write_refuses_a_file_no_item_creates() {
+    let project = Project::new();
+    project.open();
+    survey(&project);
+    let (said, criterion, planned) = plan(&project);
+    assert_eq!(planned["ok"], json!(true), "{planned}");
+    approve(&project);
+
+    let refused = criterion_citing(&project, said, "git diff --exit-code -- web/ninguem.spec.ts");
+    assert_eq!(refused["reason"], json!("proof-path-missing"), "{refused}");
+    project.write(
+        "task",
+        &json!({"agent": "- criar o teste", "title": "Criar o teste", "text": "Criar o teste da soma.",
+            "files": [{"path": "web/soma.spec.ts", "new": true}], "depends_on": [], "covers": [criterion], "origin": said}),
+    );
+    let accepted = criterion_citing(&project, said, "git diff --exit-code -- web/soma.spec.ts");
+    assert_eq!(accepted["ok"], json!(true), "{accepted}");
+}
+
 fn no_automatic_publication(project: &Project, report: &Value) {
     assert!(report.get("publish").is_none(), "{report}");
     assert!(report.get("copy").is_none(), "{report}");
@@ -218,7 +341,7 @@ fn no_automatic_publication(project: &Project, report: &Value) {
 #[test]
 fn approval_round_and_request_do_not_export_without_an_explicit_publication() {
     let project = Project::new();
-    let opened = project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    let opened = project.open();
     assert_eq!(opened["step"], json!("ask_goal"));
     survey(&project);
     let (_, _, planned) = plan(&project);
@@ -256,7 +379,7 @@ fn approval_round_and_request_do_not_export_without_an_explicit_publication() {
 fn an_explicit_export_reuses_unchanged_public_state_and_versions_a_phase_change() {
     for lang in [Locale::PtBr, Locale::EnUs] {
         let project = Project::in_language(lang);
-        project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+        project.open();
         survey(&project);
         let (said, _, planned) = plan(&project);
         no_automatic_publication(&project, &planned);
