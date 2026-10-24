@@ -132,7 +132,9 @@ impl Project {
     }
 
     /// A recusa de um comando `run` que não passa: a resposta em JSON, com
-    /// `ok` falso, e o código de saída que o fechamento usa para recusar.
+    /// `ok` falso, e o código de saída que o fechamento usa para recusar. Só
+    /// os testes do fechamento na cópia limpa, que rodam no Unix, a pedem.
+    #[cfg(unix)]
     pub fn refused(&self, args: &[&str]) -> Value {
         let mut all = vec!["run"];
         all.extend_from_slice(args);
