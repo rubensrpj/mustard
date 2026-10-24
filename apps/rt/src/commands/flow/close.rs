@@ -2386,9 +2386,13 @@ mod tests {
         std::fs::write(root.join("apps/rt/Cargo.toml"), b"[package]\nname=\"mustard-rt\"\n").unwrap();
         std::fs::write(root.join(".gitignore"), "suites-rodadas\n").unwrap();
         // A suíte roda na cópia limpa, que sai com a obra: o registro das
-        // rodadas mora na pasta do projeto, por caminho absoluto.
+        // rodadas mora na pasta do projeto, por caminho absoluto. O comando
+        // vai a um shell POSIX também no Windows, onde a barra invertida
+        // escapa o caractere seguinte e `D:\tmp\x` viraria `D:tmpx`, um
+        // arquivo na cópia limpa: o caminho vai com barras normais e entre
+        // aspas simples, que também guardam um espaço no nome da pasta.
         let ledger = root.join("suites-rodadas");
-        let suite = format!("echo rodou >> {}", ledger.display());
+        let suite = format!("echo rodou >> '{}'", mustard_core::io::wave_prompt::shown(&ledger));
         std::fs::write(root.join("mustard.json"), json!({ "testCommand": suite }).to_string()).unwrap();
         let runs = || std::fs::read_to_string(&ledger).unwrap_or_default().lines().count();
 
