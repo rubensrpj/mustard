@@ -231,11 +231,15 @@ fn the_settings_change_read_from_a_file_is_saved_like_the_direct_text() {
         if let Some(json)=json {command.args(["--json",json]);}
         serde_json::from_slice::<Value>(&command.output().unwrap().stdout).unwrap()
     };
-    let missing=dir.path().join("falta.json");
+    // O `\` no nome faz no Linux o que o separador faz no Windows: o caminho
+    // do arquivo chega à recusa com barras invertidas.
+    let missing=dir.path().join("fal\\ta.json");
     let config=std::fs::read_to_string(root.join("mustard.json")).unwrap();
     let refused=run(Some(&format!("@{}",missing.display())));
     assert_eq!(refused["ok"],false,"{refused}");
-    assert!(refused.to_string().contains(&missing.display().to_string()),"the refusal names the file: {refused}");
+    // O texto do campo, e não o JSON impresso, que escapa a barra invertida.
+    let names_the_file=refused["detail"].as_str().is_some_and(|detail|detail.contains(&missing.display().to_string()));
+    assert!(names_the_file,"the refusal names the file: {refused}");
     assert_eq!(std::fs::read_to_string(root.join("mustard.json")).unwrap(),config,"nothing changes");
 
     let patch=json!({"schema_version":1,"revision":run(None)["revision"],"changes":{"agent_model":"opus"}});

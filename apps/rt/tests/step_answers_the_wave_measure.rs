@@ -45,6 +45,12 @@ fn rt(root: &Path, args: &[&str]) -> Command {
     cmd
 }
 
+/// O caminho entre aspas simples, como o agente o escreve na linha de comando:
+/// sem elas, o shell come as barras invertidas do caminho do Windows.
+fn quoted(path: &Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
+}
+
 fn stdout_json(out: &std::process::Output) -> Value {
     serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("not JSON ({e}): {}", String::from_utf8_lossy(&out.stdout)))
 }
@@ -267,7 +273,9 @@ fn the_hook_measures_a_task_end_step_whose_json_came_from_a_file() {
     let config = dir.path().join("claude-config");
     let tasks = dispatched_wave(&root);
     conversations(&config, &root, &[30_000, 60_000]);
-    let scratch = dir.path().join("temporario");
+    // O `\` no nome faz no Linux o que o separador faz no Windows: a pasta
+    // chega à linha de comando com barras invertidas.
+    let scratch = dir.path().join("tem\\porario");
     std::fs::create_dir_all(&scratch).expect("the temporary folder");
     let body = json!({"wave": 1, "item": tasks[0], "text": "A tarefa ficou pronta: \"saudação\" (nova)."});
     std::fs::write(scratch.join("passo.json"), body.to_string()).expect("the step file");
@@ -277,7 +285,7 @@ fn the_hook_measures_a_task_end_step_whose_json_came_from_a_file() {
     let report = stdout_json(&out);
     assert!(out.status.success() && report.get("size").is_none(), "the step itself does not measure: {report}");
 
-    let command = format!("cd {} && mustard-rt run {} --root {}", scratch.display(), args.join(" "), root.display());
+    let command = format!("cd {} && mustard-rt run {} --root {}", quoted(&scratch), args.join(" "), quoted(&root));
     let main = config.join("projects").join("projeto-de-teste").join(format!("{SESSION}.jsonl"));
     let context = after_tool(&root, &json!({
         "hook_event_name": "PostToolUse",

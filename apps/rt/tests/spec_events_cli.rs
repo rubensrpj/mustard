@@ -1930,7 +1930,9 @@ fn a_json_argument_read_from_a_file_writes_the_same_as_the_direct_text() {
     assert_eq!(said_in(&answered_from_file.1)[4], Some(facts.clone()), "the facts read from the file close the point");
     assert_eq!(said_in(&answered_from_file.1), said_in(&answered.1));
 
-    let missing = dir.path().join("falta.json");
+    // O `\` no nome faz no Linux o que o separador faz no Windows: o caminho
+    // do arquivo chega à recusa com barras invertidas.
+    let missing = dir.path().join("fal\\ta.json");
     let before = event_lines(root);
     for args in [
         vec!["write", "context", "--spec", "teste", "--json", &format!("@{}", missing.display())],
@@ -1939,7 +1941,9 @@ fn a_json_argument_read_from_a_file_writes_the_same_as_the_direct_text() {
         let out = rt(root, &args).output().expect("the command runs");
         let refused = stdout_json(&out);
         assert_eq!((out.status.code(), refused["reason"].clone()), (Some(1), json!("io-failed")), "{args:?}: {refused}");
-        assert!(refused.to_string().contains(&missing.display().to_string()), "the refusal names the file: {refused}");
+        // O texto do campo, e não o JSON impresso, que escapa a barra invertida.
+        let names_the_file = refused["hint"].as_str().is_some_and(|hint| hint.contains(&missing.display().to_string()));
+        assert!(names_the_file, "the refusal names the file: {refused}");
     }
     assert_eq!(event_lines(root), before, "nothing is written");
 }
