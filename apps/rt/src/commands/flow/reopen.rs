@@ -84,6 +84,11 @@
 //! empurrão, e só conta numa spec fechada ou com o pull request aberto: a onda
 //! nova de uma spec reaberta, em execução, é onda comum.
 //!
+//! Ela e a tarefa dela respondem pelos critérios da obra. A obra que fechou sem
+//! critério nenhum não fica sem porta: elas respondem pelos itens que as
+//! tarefas da obra cobriam, ou, sem nenhum, pelo pedido mais recente do
+//! usuário.
+//!
 //! ```text
 //! {"ok": true, "spec": "x", "action": "fix", "phase": "pr_open", "pr": 12,
 //!  "checks": "failed", "wave": 7, "recorded": true, "next": "…"}
@@ -100,6 +105,7 @@ use serde_json::{Map, Value, json};
 use crate::commands::git_settle::settle_unit_at;
 use crate::commands::review::pr_door::{MergedElsewhere, merged_elsewhere_with, provider_checks, red_reported};
 use crate::commands::spec_events::{self, write::record};
+use crate::shared::failure_skills::skill_task_covers;
 use crate::shared::pr_provider::{PrChecks, PrProvider, provider_for};
 use crate::shared::spec_state::{DiskSpecState, checkout, session_from_env};
 
@@ -400,6 +406,21 @@ fn criteria_of(log: &SpecLog) -> Vec<u64> {
         .collect()
 }
 
+/// Os itens que a onda de conserto responde e que a tarefa dela cobre: os
+/// critérios da obra e, na obra que fechou sem critério, o que as tarefas dela
+/// cobriam ou o pedido mais recente do usuário — a mesma leitura da tarefa de
+/// skill, aqui sobre todas as ondas do plano. A onda e a tarefa saem sempre com
+/// a mesma lista: a gravação da onda recusa a que ficaria sem nenhum item, e a
+/// rodada segura a tarefa que não cobre nada.
+fn fix_covers(root: &Path, spec: &str, log: &SpecLog) -> Vec<u64> {
+    let criteria = criteria_of(log);
+    if !criteria.is_empty() {
+        return criteria;
+    }
+    let waves: Vec<(&str, u64)> = log.planned_waves().into_iter().map(|n| (spec, n)).collect();
+    skill_task_covers(root, spec, &waves)
+}
+
 /// A onda de conserto aberta de uma spec fechada: a que esta porta gravou e
 /// que ainda não entregou. `None` quando não há nenhuma.
 ///
@@ -501,8 +522,10 @@ fn open_fix_wave(opts: &ReopenOpts, spec: &str, log: &SpecLog, red: &FixRed, lan
     // Os critérios da onda de conserto são os da obra: o servidor reprovando
     // diz que o que a obra prometeu não está provado lá, então é por eles que
     // o conserto responde. Critério novo não nasce aqui — a obra já decidiu o
-    // que tinha a decidir.
-    wave.insert("criteria".to_string(), json!(criteria_of(log)));
+    // que tinha a decidir. Sem critério na obra, são os itens que as tarefas
+    // dela cobriam.
+    let covers = fix_covers(&opts.root, spec, log);
+    wave.insert("criteria".to_string(), json!(covers));
     wave.insert("done_when".to_string(), json!(fill("reopen.fix_wave_done", lang, &[("{pr}", &pr)])));
     let recorded = match record(&opts.root, spec, "wave", wave, PhaseWriter::Binary) {
         Ok(recorded) => recorded,
@@ -518,6 +541,7 @@ fn open_fix_wave(opts: &ReopenOpts, spec: &str, log: &SpecLog, red: &FixRed, lan
     task.insert("text".to_string(), json!(what));
     task.insert("files".to_string(), json!([]));
     task.insert("depends_on".to_string(), json!([]));
+    task.insert("covers".to_string(), json!(covers));
     if let Err(refusal) = record(&opts.root, spec, "task", task, PhaseWriter::Binary) {
         return refuse(ReopenRefusal::Spec(refusal));
     }
@@ -991,6 +1015,48 @@ mod tests {
         assert_eq!(bytes_of(root, "epico"), before, "closed: nothing was written");
     }
 
+    /// A obra que fechou sem critério nenhum também tem porta de conserto: a
+    /// onda e a tarefa dela respondem pelos itens que as tarefas da obra
+    /// cobriam; sem tarefa que cubra algo, pelo pedido mais recente do
+    /// usuário, e não pelo que a revisão gravou.
+    #[test]
+    fn a_work_without_criterion_opens_the_fix_wave_over_what_its_tasks_covered_or_the_latest_request() {
+        use crate::shared::spec_state::seed_event;
+        let red: Checks = &|_, _| Ok(PrChecks::Failed);
+        // O que a onda de conserto aberta responde e o que a tarefa dela cobre.
+        let opened_over = |root: &Path| -> (Vec<u64>, Vec<u64>) {
+            let opened = reopen_checked(root, "epico", "O servidor reprovou dois testes.", true, red);
+            assert_eq!(opened["ok"], json!(true), "{opened}");
+            let wave = opened["wave"].as_u64().unwrap_or_else(|| panic!("{opened}"));
+            let log = DiskSpecState::new(root).log("epico").expect("the event file");
+            let recorded = log.get(opened["id"].as_u64().unwrap_or_else(|| panic!("{opened}"))).expect("the fix wave");
+            let task = log.visible().into_iter().find(|e| e.event_type == "task" && e.wave() == Some(wave)).expect("the task of the fix wave");
+            (recorded.ints("criteria"), task.ints("covers"))
+        };
+
+        // Uma tarefa da obra cobre o objetivo, e a revisão gravou um pedido
+        // depois dele: a onda de conserto cobre o que a tarefa cobria.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        spec_in(root, "epico", "pr_open");
+        let said = seed_event(root, "epico", "message", json!({"author": "user", "text": "Travar o merge."}));
+        let goal = seed_event(root, "epico", "context", json!({"title": "Objetivo", "text": "Travar o merge.", "origin": said}));
+        seed_event(root, "epico", "wave", json!({"author": "binary", "n": 1, "text": "Onda 1.", "criteria": [goal], "done_when": "pronto"}));
+        seed_event(root, "epico", "task", json!({"author": "binary", "wave": 1, "text": "Travar o merge.", "files": [], "depends_on": [], "covers": [goal]}));
+        seed_event(root, "epico", "request", json!({"title": "Sobra", "text": "Achado da revisão.", "effect": "new_waves", "keys": ["merge"], "author": "review"}));
+        assert_eq!(opened_over(root), (vec![goal], vec![goal]));
+
+        // Nenhuma tarefa cobre nada: vale o pedido mais recente do usuário, e
+        // o que a revisão gravou depois dele fica de fora.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        spec_in(root, "epico", "pr_open");
+        seed_event(root, "epico", "request", json!({"title": "Antigo", "text": "Primeiro pedido.", "effect": "new_waves", "keys": ["merge"], "author": "assistant"}));
+        let asked = seed_event(root, "epico", "request", json!({"title": "Pedido", "text": "Travar o merge.", "effect": "new_waves", "keys": ["merge"], "author": "assistant"}));
+        seed_event(root, "epico", "request", json!({"title": "Sobra", "text": "Achado da revisão.", "effect": "new_waves", "keys": ["merge"], "author": "review"}));
+        assert_eq!(opened_over(root), (vec![asked], vec![asked]));
+    }
+
     /// O motivo é obrigatório: em branco, a volta é recusada e nada é
     /// gravado.
     #[test]
@@ -1127,6 +1193,7 @@ mod tests {
             .find(|e| e.event_type == "task" && e.wave() == Some(wave))
             .unwrap_or_else(|| panic!("the fix wave has no task, and the round never sends one"));
         assert!(task.str_field("text").unwrap().contains("O servidor reprovou dois testes."), "{:?}", task.fields);
+        assert_eq!(task.ints("covers"), vec![criterion], "the task covers what the wave answers for");
 
         // Chamada de novo antes da entrega: nada é gravado e o passo é o mesmo.
         let before = std::fs::read(&spec_file).unwrap();

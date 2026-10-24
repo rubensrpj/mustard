@@ -715,6 +715,24 @@ fn plan_files(project: &Project, files: &[&str]) {
     assert_eq!(State::from_log(&project.log()).phase, Some("plan"), "{planned}");
 }
 
+/// O plano de uma tarefa só, sem critério nenhum: a tarefa cobre o objetivo
+/// que o levantamento gravou, e o plano passa do mesmo jeito.
+fn plan_covering_the_goal(project: &Project) {
+    let said = user_says(project, "O plano é uma tarefa só, que muda a saudação.");
+    let goal = project.log().visible().into_iter().find(|e| e.event_type == "context").expect("the goal of the survey").id;
+    project.write(
+        "task",
+        &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Trocar a saudação no programa.",
+            "files": [{"path": "src/main.rs"}], "depends_on": [], "covers": [goal], "origin": said}),
+    );
+    let planned = project.run(&["plan", "--spec", SPEC]);
+    assert_eq!(State::from_log(&project.log()).phase, Some("plan"), "{planned}");
+    assert!(
+        !project.log().visible().into_iter().any(|e| e.event_type == "criterion"),
+        "the plan of this work has no criterion: {planned}"
+    );
+}
+
 /// A primeira rodada: as respostas do levantamento valem para o projeto todo
 /// e vão no pedido por padrão, sem Jev, e a rodada solta a onda na mesma
 /// chamada, sem pedir escolha a quem conduz nem agente nenhum. Devolve a
@@ -896,9 +914,21 @@ fn closed_with_goal(project: &Project, title: &str, goal: &str) -> Vec<String> {
 /// é por ela que um teste fecha a spec de dentro de uma pasta e de uma
 /// conversa.
 fn closed_by(project: &Project, title: &str, goal: &str, closing: &dyn Fn(&[&str]) -> Value) -> Vec<String> {
+    closed_planned(project, title, goal, &plan, closing)
+}
+
+/// [`closed_by`] com o plano feito por `planning`: é por ele que um teste
+/// fecha uma spec cujo plano não é o de sempre.
+fn closed_planned(
+    project: &Project,
+    title: &str,
+    goal: &str,
+    planning: &dyn Fn(&Project),
+    closing: &dyn Fn(&[&str]) -> Value,
+) -> Vec<String> {
     project.open();
     survey_with(project, title, goal);
-    plan(project);
+    planning(project);
     approve(project);
     let first = first_round(project);
     assert_eq!(first["dispatch"].as_array().map(Vec::len), Some(1), "{first}");
@@ -1243,6 +1273,45 @@ fn a_pull_request_body_without_the_mark_is_kept_with_its_own_reason() {
     );
     assert!(asked.iter().any(|call| call.starts_with("api --method PATCH repos/{owner}/{repo}/pulls/7 -f title=")), "{asked:?}");
     assert_eq!(std::fs::read_to_string(&stored).unwrap(), unmarked, "the description stays on the provider");
+}
+
+/// A porta de conserto abre a onda numa obra fechada sem critério nenhum. O
+/// pull request da obra volta vermelho do servidor, e `reopen --fix` grava a
+/// onda de conserto e a tarefa dela sobre o que as tarefas da obra cobriam —
+/// o objetivo, aqui —, e a rodada seguinte despacha essa onda, sem aviso de
+/// tarefa sem cobertura.
+#[test]
+fn the_fix_door_opens_the_fix_wave_of_a_closed_work_without_criterion() {
+    let project = Project::new();
+    executable::write_executable(&project.bin.join("gh"), OPENED_PR_GH);
+    let line = closed_planned(&project, "Combinar o item", GOAL, &plan_covering_the_goal, &|args| project.run(args));
+    let argv: Vec<&str> = line.iter().map(String::as_str).collect();
+    let goal = project.log().visible().into_iter().find(|e| e.event_type == "context").expect("the goal").id;
+    std::fs::write(project.remotes.join("checks"), json!({"statusCheckRollup": []}).to_string()).expect("the checks");
+    let opened = project.run(&argv);
+    assert_eq!(opened["number"], json!(7), "{opened}");
+    let rows = json!({"statusCheckRollup": [{"__typename": "CheckRun", "name": "ci", "status": "COMPLETED", "conclusion": "FAILURE"}]});
+    std::fs::write(project.remotes.join("checks"), rows.to_string()).expect("the red checks");
+
+    let fix = project.run(&["reopen", "--spec", SPEC, "--reason", "O servidor reprovou dois testes.", "--fix"]);
+    assert_eq!((fix["action"].clone(), fix["phase"].clone(), fix["recorded"].clone()), (json!("fix"), json!("pr_open"), json!(true)), "{fix}");
+    let wave = fix["wave"].as_u64().unwrap_or_else(|| panic!("{fix}"));
+    let log = project.log();
+    let recorded = log.get(fix["id"].as_u64().unwrap_or_else(|| panic!("{fix}"))).expect("the fix wave");
+    assert_eq!(recorded.ints("criteria"), vec![goal], "the fix wave answers for what the tasks of the work covered");
+    let task = log
+        .visible()
+        .into_iter()
+        .find(|e| e.event_type == "task" && e.wave() == Some(wave))
+        .unwrap_or_else(|| panic!("the fix wave has no task: {fix}"));
+    assert_eq!(task.ints("covers"), vec![goal], "the task of the fix wave covers the same items");
+
+    let round = project.run(&["round", "--dispatch", "--spec", SPEC]);
+    let dispatched: Vec<u64> = round["dispatch"].as_array().into_iter().flatten().filter_map(|sent| sent["wave"].as_u64()).collect();
+    assert_eq!(dispatched, vec![wave], "the round sends the fix wave: {round}");
+    let warned = round["warnings"].as_array().into_iter().flatten().any(|warning| warning["reason"] == json!("task-without-covers"));
+    assert!(!warned, "the task of the fix wave covers something: {round}");
+    assert_eq!(State::from_log(&project.log()).phase, Some("pr_open"), "the work was not reopened");
 }
 
 /// A esteira do pull request aparece na resposta do `pr-open` e na retomada
