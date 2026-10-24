@@ -410,8 +410,8 @@ fn criteria_of(log: &SpecLog) -> Vec<u64> {
 /// critérios da obra e, na obra que fechou sem critério, o que as tarefas dela
 /// cobriam ou o pedido mais recente do usuário — a mesma leitura da tarefa de
 /// skill, aqui sobre todas as ondas do plano. A onda e a tarefa saem sempre com
-/// a mesma lista: a gravação da onda recusa a que ficaria sem nenhum item, e a
-/// rodada segura a tarefa que não cobre nada.
+/// a mesma lista: a gravação da onda recusa a que ficaria sem nenhum item, e é
+/// a cobertura da tarefa que põe esses itens no pedido da onda, sob ela.
 fn fix_covers(root: &Path, spec: &str, log: &SpecLog) -> Vec<u64> {
     let criteria = criteria_of(log);
     if !criteria.is_empty() {
@@ -1092,8 +1092,7 @@ mod tests {
         assert_eq!(missing["reason"], json!("no-spec-file"), "{missing}");
     }
 
-    /// Um critério da obra, que é o que a onda de conserto responde: sem
-    /// critério nenhum não há obra a consertar.
+    /// Um critério da obra: é o que a onda de conserto responde nesta obra.
     fn criterion_of_the_work(root: &Path, spec: &str) -> u64 {
         let said = seed_at(&WriteOpts {
             root: root.to_path_buf(),

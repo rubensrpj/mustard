@@ -1278,8 +1278,8 @@ fn a_pull_request_body_without_the_mark_is_kept_with_its_own_reason() {
 /// A porta de conserto abre a onda numa obra fechada sem critério nenhum. O
 /// pull request da obra volta vermelho do servidor, e `reopen --fix` grava a
 /// onda de conserto e a tarefa dela sobre o que as tarefas da obra cobriam —
-/// o objetivo, aqui —, e a rodada seguinte despacha essa onda, sem aviso de
-/// tarefa sem cobertura.
+/// o objetivo, aqui —, e a rodada seguinte despacha essa onda, com o objetivo
+/// no pedido dela, sob a tarefa: é a cobertura da tarefa que o leva até lá.
 #[test]
 fn the_fix_door_opens_the_fix_wave_of_a_closed_work_without_criterion() {
     let project = Project::new();
@@ -1309,8 +1309,16 @@ fn the_fix_door_opens_the_fix_wave_of_a_closed_work_without_criterion() {
     let round = project.run(&["round", "--dispatch", "--spec", SPEC]);
     let dispatched: Vec<u64> = round["dispatch"].as_array().into_iter().flatten().filter_map(|sent| sent["wave"].as_u64()).collect();
     assert_eq!(dispatched, vec![wave], "the round sends the fix wave: {round}");
-    let warned = round["warnings"].as_array().into_iter().flatten().any(|warning| warning["reason"] == json!("task-without-covers"));
-    assert!(!warned, "the task of the fix wave covers something: {round}");
+    let code = log.codes().get(&goal).cloned().expect("the code of the goal");
+    let block = format!("request-{wave}");
+    let read = project.command(&["run", "read", block.as_str(), "--spec", SPEC], "");
+    let request = String::from_utf8_lossy(&read.stdout);
+    assert!(read.status.success(), "{request}");
+    let attends = translate("prompt.step.attends", Locale::PtBr).replace("{item}", "");
+    assert!(
+        request.lines().any(|line| line.contains(attends.trim()) && line.contains(&code)),
+        "the request of the fix wave brings the goal under its task: {request}"
+    );
     assert_eq!(State::from_log(&project.log()).phase, Some("pr_open"), "the work was not reopened");
 }
 
