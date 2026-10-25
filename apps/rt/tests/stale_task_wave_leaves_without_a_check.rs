@@ -68,6 +68,22 @@ impl Project {
     }
 
     fn command(&self, args: &[&str], stdin: &str) -> std::process::Output {
+        self.command_as(None, args, stdin)
+    }
+
+    /// A abertura da spec pela conversa da sessão [`SESSION`], como quem
+    /// conduz a roda: o gancho do terminal passa a sessão ao comando, e é a
+    /// conversa dela que fica ligada à spec.
+    fn open(&self) -> Value {
+        let out = self.command_as(Some(SESSION), &["run", "open", "--kind", "feature", "--name", SPEC, "--base", "dev"], "");
+        let report: Value = serde_json::from_slice(&out.stdout).expect("the opening answers JSON");
+        assert_eq!(report["ok"], json!(true), "{report}");
+        report
+    }
+
+    /// Como [`Self::command`], com a sessão `session` no ambiente, como o
+    /// gancho do terminal a passa ao comando numa conversa.
+    fn command_as(&self, session: Option<&str>, args: &[&str], stdin: &str) -> std::process::Output {
         let mut child = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
             .args(args)
             .current_dir(&self.root)
@@ -82,6 +98,7 @@ impl Project {
             .env_remove("MUSTARD_SESSION_ID")
             .env_remove("CLAUDE_SESSION_ID")
             .env_remove("CLAUDE_CODE_SESSION_ID")
+            .envs(session.map(|session| ("MUSTARD_SESSION_ID", session)))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -213,7 +230,7 @@ fn seconds_of(log: &SpecLog, id: u64) -> i64 {
 fn a_task_whose_file_changed_after_its_text_leaves_in_the_first_round_without_a_check() {
     for (language, lang) in [("pt-BR", Locale::PtBr), ("en-US", Locale::EnUs)] {
         let project = Project::new(language);
-        project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+        project.open();
         survey(&project);
         let task = plan(&project);
         approve(&project, lang);

@@ -30,9 +30,10 @@ pub(super) fn revision(start:&Path,root:&Path,section:&str,spec:Option<&str>,ses
     let git=mustard_core::platform::git::run(start,&["rev-parse","--git-dir"]).out();
     let git=PathBuf::from(git.unwrap_or_default().trim());let git=if git.is_absolute(){git}else{start.join(git)};
     stamp(&git.join("HEAD"),&mut hash,0);
-    if section=="usage" {
+    if matches!(section,"usage"|"waves") {
         // The live usage of the session changes at every step: the usage
         // screen reads it, but never re-reads the whole screen because of it.
+        // The waves screen shows the same measured tokens of each wave.
         let usage=root.join(".claude/mustard/usage");
         if let Ok(entries)=std::fs::read_dir(&usage) {
             let mut paths:Vec<_>=entries.flatten().map(|entry|entry.path()).filter(|path|!path.ends_with("live")).collect();paths.sort();
@@ -58,8 +59,9 @@ pub(super) fn query_with(start:&Path,selected:Option<&str>,session:Option<&str>,
     if !SECTIONS.contains(&section) {return json!({"ok":false,"reason":"panel-invalid-section"});}
     let started=std::time::Instant::now();
     let root=mustard_core::io::spec_events::spec_root(start);
-    let selected=selected.map(str::to_string).or_else(||crate::shared::context::checkout::current_spec(&start.to_string_lossy()))
-        .filter(|name|!mustard_core::io::legacy_specs::is_legacy(&root,name));
+    if let Some(refused)=super::refused_legacy(&root,selected) {return refused;}
+    let selected=selected.map(str::to_string).or_else(||crate::shared::context::checkout::current_spec(&start.to_string_lossy())
+        .filter(|name|!mustard_core::io::legacy_specs::is_legacy(&root,name)));
     let token=revision(start,&root,section,selected.as_deref(),session,wave,params);
     if previous==Some(token.as_str()) {return json!({"ok":true,"schema_version":1,"unchanged":true,"revision":token,"section":section});}
     screen(start,&root,selected,session,section,params,token,started)
@@ -82,6 +84,7 @@ fn screen(start:&Path,root:&Path,selected:Option<String>,session:Option<&str>,se
         ("items",_,Some(log))=>sections::items(log,params,&mustard_core::domain::normalize::Languages::of(&config)),
         ("item",_,Some(log))=>params.item.as_deref().map_or_else(||json!({"item":null,"reason":"panel-item-missing"}),|code|sections::item(log,code)),
         ("usage",name,log)=>sections::usage(root,name,log,session),
+        ("waves",Some(name),Some(log))=>sections::waves(root,name,log,params),
         _=>json!({"reason":"panel-no-spec"}),
     };
     if let (Some(fields),Value::Object(body))=(data.as_object_mut(),body) {fields.extend(body);}
@@ -112,7 +115,7 @@ mod tests {
     #[test]
     fn a_section_the_panel_no_longer_has_is_refused() {
         let dir=tempfile::tempdir().unwrap();let root=dir.path();std::fs::write(root.join("mustard.json"),"{}").unwrap();
-        for section in ["project","definitions","waves","execution","settings","ideas","diagnostics"] {
+        for section in ["project","definitions","execution","settings","ideas","diagnostics"] {
             assert_eq!(query(root,None,section,None)["reason"],"panel-invalid-section","{section}");
         }
     }

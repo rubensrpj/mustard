@@ -197,6 +197,7 @@ Leituras simples de `mustard.json` por `cat`, `grep`, `egrep`, `fgrep`, `head` e
   "testCommand":  "cargo test",
   "lintCommand":  "cargo clippy",
   "typeCheckCommand": "cargo check",
+  "proofTimeoutSecs": 900,  // opcional: teto, em segundos, da prova de cada critério
   "language": {             // os dois idiomas, cada um na sua chave
     "text": "pt-BR",        // conversa, specs, páginas, comentários e commits
     "code": "en-US"         // nomes no código: variáveis, funções, testes, arquivos, comandos e tabelas; sem a chave, inglês
@@ -204,7 +205,7 @@ Leituras simples de `mustard.json` por `cat`, `grep`, `egrep`, `fgrep`, `head` e
 }
 ```
 
-O Mustard é **agnóstico** de linguagem e de arquitetura: o texto gerado segue `language.text`; os nomes no código (variáveis, funções, testes, arquivos, comandos e tabelas do banco) seguem `language.code`. A instalação pergunta os dois idiomas e grava só o que você escolher; sem escolha, os nomes no código ficam em inglês. Os comandos de build/test/lint são lidos daqui. Regras de monorepo: todo o estado vive na **raiz** do repositório git; um subprojeto só é um projeto Mustard próprio quando é um repositório git independente (submódulo).
+O Mustard é **agnóstico** de linguagem e de arquitetura: o texto gerado segue `language.text`; os nomes no código (variáveis, funções, testes, arquivos, comandos e tabelas do banco) seguem `language.code`. A instalação pergunta os dois idiomas e grava só o que você escolher; sem escolha, os nomes no código ficam em inglês. Os comandos de build/test/lint são lidos daqui. A prova de cada critério tem 120 s, ou 600 s quando compila: `cargo`, uma checagem de tipos ou o `buildCommand`, o `typeCheckCommand` ou o `testCommand` declarado. `proofTimeoutSecs` troca os dois pelo número inteiro de segundos que você escrever; um valor que não é inteiro positivo é ignorado. A variável de ambiente `MUSTARD_QA_AC_TIMEOUT_SECS` vence a chave. O lint e a suíte que o servidor roda têm o teto de uma hora, que nenhuma das duas alcança. Regras de monorepo: todo o estado vive na **raiz** do repositório git; um subprojeto só é um projeto Mustard próprio quando é um repositório git independente (submódulo).
 
 ---
 

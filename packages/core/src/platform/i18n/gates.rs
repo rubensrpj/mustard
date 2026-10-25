@@ -541,6 +541,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("runtime_output.ready", Locale::EnUs) => {
             "Run this instead, the same command with the whole answer in a file:\n{ready}"
         }
+        // O comando pronto longo, que volta sem o meio: `…` marca cada pedaço
+        // tirado, e o arquivo de cada etapa volta inteiro.
+        ("runtime_output.ready_shortened", Locale::PtBr) => {
+            "O comando pronto é longo e volta sem o meio, marcado com `…`. Rode o seu comando sem a \
+             etapa que filtra a resposta, com cada etapa do Mustard gravando no arquivo que ele \
+             mostra:\n{ready}"
+        }
+        ("runtime_output.ready_shortened", Locale::EnUs) => {
+            "The ready command is long and comes back without its middle, marked with `…`. Run your \
+             command without the step that filters the answer, with each Mustard step writing to \
+             the file it shows:\n{ready}"
+        }
         ("runtime_output.summary", Locale::PtBr) => {
             "O bloco `{block}` tem um resumo pronto, que cabe inteiro: `mustard-rt run read {summary}`."
         }
@@ -551,16 +563,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Comando barrado: ele passa a resposta do Mustard por script, filtro ou corte.\nComando: \
              {command}\nA resposta do Mustard se lê inteira, e nada dela passa por script, filtro ou \
              corte. Rode o comando do Mustard sozinho. Para ler só uma parte, use `mustard-rt run read \
-             <bloco> --term <termo>`. Se a resposta for grande, grave num arquivo com `> arquivo` e leia \
-             o arquivo por partes. Se o Mustard não traz o recorte de que você precisa, isso vira um \
+             <bloco> --term <termo>`. Se a resposta for grande, grave num arquivo na pasta temporária, \
+             fora do repositório, um por etapa, e leia o arquivo por partes. Se o Mustard não traz o recorte de que você precisa, isso vira um \
              pedido, não um corte."
         }
         ("runtime_output.scripted", Locale::EnUs) => {
             "Command blocked: it runs the Mustard answer through a script, a filter or a cut.\nCommand: \
              {command}\nThe Mustard answer is read whole, and none of it goes through a script, a filter \
              or a cut. Run the Mustard command alone. To read only one part, use `mustard-rt run read \
-             <block> --term <term>`. When the answer is long, save it to a file with `> file` and read \
-             the file in parts. When Mustard does not give the part you need, that becomes a request, \
+             <block> --term <term>`. When the answer is long, save it to a file in the temporary \
+             folder, one per step. Keep the file outside the repository, and read it in parts. When Mustard does not give the part you need, that becomes a request, \
              not a cut."
         }
         // O aviso depois do executor de teste ou de compilação cujo resumo o
@@ -616,10 +628,10 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "sentence with {words} words: \"{opening}…\"; say the same idea in short sentences"
         }
         ("clarity.unexpanded_acronym", Locale::PtBr) => {
-            "{acronym} é uma sigla sem explicação; diga o nome por extenso"
+            "{acronym} é uma sigla sem explicação; diga o nome por extenso, ou liste a sigla na chave `acronyms` do mustard.json"
         }
         ("clarity.unexpanded_acronym", Locale::EnUs) => {
-            "{acronym} is an unexplained acronym; spell out its full name"
+            "{acronym} is an unexplained acronym; spell out its full name, or list it under the `acronyms` key of mustard.json"
         }
         ("clarity.internal_code", Locale::PtBr) => {
             "{code} é um código interno; diga o assunto pelo nome"
@@ -690,8 +702,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("gates.rs"),
             super::PREFIXES,
-            85,
-            0x2447_a92d_4f0b_eb20,
+            86,
+            0x6080_c0cb_de33_5e7d,
         );
     }
 
@@ -861,6 +873,7 @@ mod tests {
             ("runtime_output.scripted", &["{command}"][..]),
             ("command_guard.glued_argument", &["{argument}"][..]),
             ("runtime_output.ready", &["{ready}"][..]),
+            ("runtime_output.ready_shortened", &["{ready}"][..]),
             ("runtime_output.summary", &["{block}", "{summary}"][..]),
             ("tool_observations.summary_hidden", &["{command}"][..]),
         ] {

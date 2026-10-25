@@ -56,6 +56,51 @@ pub fn setting_allows(setting: FilterSetting) -> bool {
     matches!(setting, FilterSetting::Jev)
 }
 
+/// O primeiro ajuste que falta para o Jev servir uma finalidade.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Missing {
+    /// `ai.fallback` não é `true` no `mustard.json`.
+    Fallback,
+    /// A finalidade sem `jev` em `judgement.<finalidade>.filter`.
+    Purpose,
+    /// A chave que falta ou que o git vê.
+    Key(FilterError),
+}
+
+impl Missing {
+    /// O motivo numa palavra, o que o painel mostra; o da chave é o do erro
+    /// dela, sem a chave.
+    #[must_use]
+    pub fn reason(&self) -> &'static str {
+        match self {
+            Self::Fallback => "ai-fallback-disabled",
+            Self::Purpose => "purpose-not-configured",
+            Self::Key(error) => error.reason(),
+        }
+    }
+}
+
+/// A chave que `key` lê para a finalidade `purpose`, ou o primeiro ajuste
+/// que falta, na ordem em que o `mustard.json` os pede: o interruptor geral
+/// `ai.fallback`, o filtro `jev` da finalidade e a chave. A chave só é lida
+/// com os dois primeiros feitos.
+///
+/// # Errors
+/// O primeiro ajuste que falta, como acima.
+pub fn purpose_key<K>(
+    config: &ProjectConfig,
+    purpose: &str,
+    key: impl FnOnce() -> Result<K, FilterError>,
+) -> Result<K, Missing> {
+    if !config.ai_fallback_enabled() {
+        return Err(Missing::Fallback);
+    }
+    if !setting_allows(config.judgement_filter(purpose)) {
+        return Err(Missing::Purpose);
+    }
+    key().map_err(Missing::Key)
+}
+
 /// A chave do projeto em `root`, pela regra dos segredos do projeto
 /// ([`project_secret::find`]): `env` (o valor de [`KEY_ENV`], que quem chama
 /// lê) no ambiente; sem ela, o env local privado e então `jev.key` do
@@ -135,6 +180,24 @@ mod tests {
         assert!(!allows(json!("none")));
         assert!(!allows(json!("another")));
         assert!(!allows(json!(3)));
+    }
+
+    #[test]
+    fn the_first_missing_setting_follows_switch_purpose_then_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = |text: &str| {
+            std::fs::write(dir.path().join("mustard.json"), text).unwrap();
+            ProjectConfig::load(dir.path())
+        };
+        let never = || -> Result<(), FilterError> { panic!("the key is read only after the switch and the purpose") };
+        let purpose_only = config(r#"{"judgement":{"search":{"filter":"jev"}}}"#);
+        assert_eq!(purpose_key(&purpose_only, "search", never), Err(Missing::Fallback));
+        let switch_only = config(r#"{"ai":{"fallback":true}}"#);
+        assert_eq!(purpose_key(&switch_only, "search", never), Err(Missing::Purpose));
+        let both = config(r#"{"ai":{"fallback":true},"judgement":{"search":{"filter":"jev"}}}"#);
+        assert_eq!(purpose_key(&both, "context", never), Err(Missing::Purpose));
+        assert_eq!(purpose_key(&both, "search", || Err::<(), _>(FilterError::KeyInGit)), Err(Missing::Key(FilterError::KeyInGit)));
+        assert_eq!(purpose_key(&both, "search", || Ok::<_, FilterError>("found")), Ok("found"));
     }
 
     #[test]

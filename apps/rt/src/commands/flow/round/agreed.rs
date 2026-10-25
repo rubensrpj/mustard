@@ -19,6 +19,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use mustard_core::domain::spec_events::{Refusal, SpecEvent, SpecLog};
+use mustard_core::domain::text::one_line;
 use mustard_core::domain::wave_prompt as agreed_prompt;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Map, Value};
@@ -275,7 +276,7 @@ fn take_unmet(task: &mut Map<String, Value>, by: AnsweredBy, code: &str, item: &
         }
     }
     task.insert("files".into(), json!(paths));
-    let said = item.text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let said = one_line(&item.text);
     let line = by.said("round.unmet_joined", "round.unmet_review_joined", lang).replace("{code}", code).replace("{text}", &said);
     append_agent_line(task, &line);
 }
@@ -288,7 +289,7 @@ fn take_unmet(task: &mut Map<String, Value>, by: AnsweredBy, code: &str, item: &
 /// aponta, sem mudar nada nela.
 fn covered_note(log: &SpecLog, (by, code, item): (AnsweredBy, &str, &Unmet), task: &SpecEvent, chance: f64, lang: Locale) -> Map<String, Value> {
     let task_code = log.codes().get(&task.id).cloned().unwrap_or_else(|| task.id.to_string());
-    let said = item.text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let said = one_line(&item.text);
     let text = by
         .said("round.unmet_covered", "round.unmet_review_covered", lang)
         .replace("{code}", code)

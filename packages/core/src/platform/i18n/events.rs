@@ -38,10 +38,24 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("spec_events.find_none", Locale::EnUs) => "Nothing found.",
         ("spec_events.find_jev_off", Locale::PtBr) => "Jev fora: {reason}.",
         ("spec_events.find_jev_off", Locale::EnUs) => "Jev off: {reason}.",
+        // Por que o Jev ficou fora da procura: o desligado diz o ajuste do
+        // mustard.json que o liga.
+        ("spec_events.find_off_test", Locale::PtBr) => "o programa de teste não chama o serviço",
+        ("spec_events.find_off_test", Locale::EnUs) => "the test program does not call the service",
+        ("spec_events.find_off_fallback", Locale::PtBr) => {
+            "o Jev está desligado no projeto; para ligar, ponha true em ai.fallback no mustard.json"
+        }
+        ("spec_events.find_off_fallback", Locale::EnUs) => "Jev is off in the project; to turn it on, set ai.fallback to true in mustard.json",
+        ("spec_events.find_off_purpose", Locale::PtBr) => {
+            "a busca na spec está desligada; para ligar, ponha jev em judgement.{purpose}.filter no mustard.json"
+        }
+        ("spec_events.find_off_purpose", Locale::EnUs) => {
+            "the spec search is off; to turn it on, set judgement.{purpose}.filter to jev in mustard.json"
+        }
         ("spec_events.find_no_key", Locale::PtBr) => "sem chave",
         ("spec_events.find_no_key", Locale::EnUs) => "no key",
-        ("spec_events.find_no_answer", Locale::PtBr) => "sem resposta",
-        ("spec_events.find_no_answer", Locale::EnUs) => "no answer",
+        ("spec_events.find_key_in_git", Locale::PtBr) => "a chave em jev.key não vale, porque o git guarda o mustard.json ou não o ignora",
+        ("spec_events.find_key_in_git", Locale::EnUs) => "the key in jev.key does not count, because git tracks mustard.json or does not ignore it",
         // A procura que pediu a escolha ao Jev e ficou sem ela: ele falhou ou
         // passou do prazo. A escolha fica com quem procurou.
         ("spec_events.find_choice_left", Locale::PtBr) => "O Jev não escolheu a tempo: a escolha é sua, entre os itens acima.",
@@ -156,6 +170,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Task {task} depends on {depends_on}, which does not exist in this spec. Nothing was \
              written."
         }
+        ("spec_events.task_has_dependents", Locale::PtBr) => {
+            "Remover {removed} deixaria {dependents} dependendo de tarefa que não existe mais nesta spec. \
+             Remova as dependentes no mesmo `targets`, ou grave antes uma versão delas sem essa dependência. \
+             Nada foi gravado."
+        }
+        ("spec_events.task_has_dependents", Locale::EnUs) => {
+            "Removing {removed} would leave {dependents} depending on a task that no longer exists in this \
+             spec. Remove the dependents in the same `targets`, or first write a version of them without that \
+             dependency. Nothing was written."
+        }
         ("spec_events.task_dependency_cycle", Locale::PtBr) => {
             "As tarefas dependem umas das outras em círculo: {cycle}. Nada foi gravado."
         }
@@ -212,6 +236,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              again and, once it is green, record the task's step with `run write step`. Then record the \
              delivery again. Nothing was written."
         }
+        ("spec_events.delivery_item_code_in_comment", Locale::PtBr) => {
+            "A entrega da onda {wave} foi recusada: comentário acrescentado cita código de item da spec, \
+             em {found}. O código do item fala da obra, e o comentário fica no código depois que ela \
+             acaba. Escreva no comentário o comportamento, sem o código, ou tire o comentário. Depois \
+             grave o passo da tarefa e a entrega de novo. Nada foi gravado."
+        }
+        ("spec_events.delivery_item_code_in_comment", Locale::EnUs) => {
+            "The delivery of wave {wave} was refused: an added comment cites a spec item code, at \
+             {found}. The item code speaks of the work, and the comment stays in the code after the \
+             work ends. Write the behavior in the comment, without the code, or remove the comment. \
+             Then record the task's step and the delivery again. Nothing was written."
+        }
         ("spec_events.verdict_read_missing", Locale::PtBr) => {
             "O veredito foi recusado: o pedido da revisão lista item que ainda não foi lido, e faltou \
              {missing}. Leia cada um de dentro da cópia do revisor. Use o comando de \"Como ler cada \
@@ -222,6 +258,23 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              {missing} is missing. Read each one from inside the reviewer's copy. Use the command of \
              \"How to read each item\" in the request. Then record the verdict again. Nothing was \
              written."
+        }
+        ("spec_events.verdict_leftovers_not_approved", Locale::PtBr) => {
+            "O veredito foi recusado: os achados em `leftovers` só viram tarefas no veredito final \
+             aprovado, e neste nada os leria, então se perderiam em silêncio. Tire o campo. Na \
+             revisão de uma onda, reprove com o motivo em `text` e os arquivos em `files`. Na \
+             revisão final, para reprovar, marque o item combinado afetado em `agreed` com \
+             `met:false`, `text` e `files`, e ele vira tarefa no backlog; para aprovar, os \
+             achados ficam em `leftovers`. Depois grave o veredito de novo. Nada foi gravado."
+        }
+        ("spec_events.verdict_leftovers_not_approved", Locale::EnUs) => {
+            "The verdict was refused: findings in `leftovers` become tasks only in the approved \
+             final verdict, and in this one nothing would read them, so they would be lost \
+             silently. Remove the field. In a wave review, reject with the reason in `text` and \
+             the files in `files`. In the final review, to reject, mark the affected agreed item \
+             in `agreed` with `met:false`, `text` and `files`, and it becomes a backlog task; to \
+             approve, the findings stay in `leftovers`. Then record the verdict again. Nothing \
+             was written."
         }
         ("spec_events.criterion_form_missing", Locale::PtBr) => {
             "O critério precisa declarar a forma dele, uma das cinco do padrão. São elas: a que vale \
@@ -406,16 +459,30 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              {origin} is not a user message. Nothing was written."
         }
         ("spec_events.goal_title_too_long", Locale::PtBr) => {
-            "A primeira frase do objetivo tem {chars} caracteres e o limite é {max}: ela é o título \
-             do pull request. A frase: \"{sentence}\". Escreva outra primeira frase, mais curta: o \
-             corte automático mentiria sobre o que a mensagem diz. O resto do objetivo e o `title` \
-             do item não foram medidos. Nada foi gravado."
+            "O objetivo não tem `title`, e a primeira frase dele é o título do pull request: ela tem \
+             {chars} caracteres e o limite é {max}. A frase: \"{sentence}\". Dê ao objetivo um \
+             `title` de até {max} caracteres ou escreva uma primeira frase mais curta: o corte \
+             automático mentiria sobre o que a mensagem diz. O resto do objetivo não foi medido. \
+             Nada foi gravado."
         }
         ("spec_events.goal_title_too_long", Locale::EnUs) => {
-            "The goal's first sentence has {chars} characters and the limit is {max}: that sentence \
-             is the pull request title. The sentence: \"{sentence}\". Write a shorter first \
-             sentence: truncating would misstate what the message says. The rest of the goal and \
-             the item's `title` were not measured. Nothing was written."
+            "The goal has no `title`, so its first sentence is the pull request title: it has \
+             {chars} characters and the limit is {max}. The sentence: \"{sentence}\". Give the goal \
+             a `title` of up to {max} characters or write a shorter first sentence: truncating would \
+             misstate what the message says. The rest of the goal was not measured. Nothing was \
+             written."
+        }
+        ("spec_events.goal_title_field_too_long", Locale::PtBr) => {
+            "O `title` do objetivo tem {chars} caracteres e o limite é {max}. Ele é o título do pull \
+             request e o nome da spec no painel e no resumo do projeto. O título: \"{title}\". \
+             Escreva um `title` mais curto: o corte automático mentiria sobre o que a mensagem diz. \
+             O texto do objetivo não foi medido. Nada foi gravado."
+        }
+        ("spec_events.goal_title_field_too_long", Locale::EnUs) => {
+            "The goal's `title` has {chars} characters and the limit is {max}. It is the pull request \
+             title and the spec's name in the panel and in the project summary. The title: \
+             \"{title}\". Write a shorter `title`: truncating would misstate what the message says. \
+             The goal's text was not measured. Nothing was written."
         }
         ("spec_events.survey_open", Locale::PtBr) => {
             "A spec {spec} ainda tem pontos abertos no levantamento ({count}): {points}. Feche cada um, \
@@ -550,6 +617,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("spec_events.no_open_send", Locale::EnUs) => {
             "There is no open send for wave {wave}. Nothing was written."
         }
+        ("spec_events.wave_agent_working", Locale::PtBr) => {
+            "A onda {wave} está em andamento: o agente dela ainda trabalha, e esta remoção tiraria a \
+             última tarefa dela. A onda sairia do ar e a entrega dele seria recusada. Espere a entrega \
+             do agente para remover a tarefa. Para cancelar a onda de propósito, remova a própria onda: \
+             as tarefas dela voltam ao backlog. Nada foi gravado."
+        }
+        ("spec_events.wave_agent_working", Locale::EnUs) => {
+            "Wave {wave} is in progress: its agent is still working, and this removal would take out \
+             its last task. The wave would leave the air and the agent's delivery would be refused. \
+             Wait for the agent's delivery before removing the task. To cancel the wave on purpose, \
+             remove the wave itself: its tasks go back to the backlog. Nothing was written."
+        }
         ("spec_events.no_open_review", Locale::PtBr) => {
             "Não há pedido de revisão aberto nesta spec. Nada foi gravado."
         }
@@ -567,10 +646,10 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              new review request was opened."
         }
         ("spec_events.leftover_field_missing", Locale::PtBr) => {
-            "Falta o campo {field} numa sobra (leftovers) da entrega. Nada foi gravado."
+            "Falta o campo {field} numa sobra (leftovers) da volta. Nada foi gravado."
         }
         ("spec_events.leftover_field_missing", Locale::EnUs) => {
-            "A leftover (leftovers) of the delivery lacks the field {field}. Nothing was written."
+            "A leftover (leftovers) of the return lacks the field {field}. Nothing was written."
         }
         ("spec_events.report_carries_return_line", Locale::PtBr) => {
             "A entrega e o veredito moram na spec: o agente os grava com mustard-rt run write. O \
@@ -781,14 +860,28 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              o programa que monta o lote na hora de despachar. Grave só a tarefa, sem `wave`, com o \
              que ela faz (`text`), os arquivos (`files`) e as tarefas de que depende \
              (`depends_on`). Na versão nova de uma tarefa que já está numa onda, repita o `wave` da \
-             versão que ela substitui."
+             versão que ela substitui; numa onda em andamento, omitir o `wave` também vale, e a \
+             versão nova fica na onda da que ela substitui."
         }
         ("spec_events.wave_by_backlog", Locale::EnUs) => {
             "A wave is not written by `run write`, and nothing was written. The wave is born from \
              the backlog, and the program puts the batch together when it dispatches. Write only \
              the task, without `wave`, with what it does (`text`), the files (`files`) and the \
              tasks it depends on (`depends_on`). In the new version of a task that is already in a \
-             wave, repeat the `wave` of the version it replaces."
+             wave, repeat the `wave` of the version it replaces; in a wave in progress, leaving out \
+             `wave` works too, and the new version stays in the wave of the one it replaces."
+        }
+        ("spec_events.files_ignored_by_git", Locale::PtBr) => {
+            "A tarefa só mexe em arquivo que o git ignora ({files}), e nada foi gravado. É mudança \
+             local: nenhuma onda a entrega e nenhum commit a leva. Grave uma nota com o que o \
+             usuário deve fazer nesta máquina, com `mustard-rt run write note`; se a tarefa também \
+             mexe em arquivo versionado, declare esse arquivo em `files`."
+        }
+        ("spec_events.files_ignored_by_git", Locale::EnUs) => {
+            "The task only touches files that git ignores ({files}), and nothing was written. It is \
+             a local change: no wave delivers it and no commit carries it. Write a note with what \
+             the user must do on this machine, with `mustard-rt run write note`; if the task also \
+             touches a versioned file, declare that file in `files`."
         }
         ("spec_events.request_on_closed_spec", Locale::PtBr) => {
             "A spec {spec} está na fase {phase}: ela já fechou, e o pedido novo só entra nela \
@@ -926,6 +1019,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("spec_events.spec_required", Locale::EnUs) => {
             "The spec is missing: a {type} event is written to a spec's event file. Pass \
              `--spec <name>`. Nothing was written."
+        }
+        ("spec_events.session_unbound", Locale::PtBr) => {
+            "Sem `--spec`, o tipo {type} vai para a spec ligada a esta conversa, e esta \
+             conversa não está ligada a nenhuma. Rode `mustard-rt run resume --spec <nome>` \
+             (o `/mustard:continue` faz isso) ou passe `--spec <nome>`. Nada foi gravado."
+        }
+        ("spec_events.session_unbound", Locale::EnUs) => {
+            "Without `--spec`, a {type} event goes to the spec bound to this conversation, and \
+             this conversation is bound to none. Run `mustard-rt run resume --spec <name>` \
+             (`/mustard:continue` does it) or pass `--spec <name>`. Nothing was written."
         }
         ("spec_events.no_current_spec", Locale::PtBr) => {
             "Nenhuma spec atual: nem `MUSTARD_ACTIVE_SPEC`, nem a branch, nem a sessão apontam \
@@ -1240,8 +1343,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            177,
-            0xf8f0_c803_3d22_68e3,
+            187,
+            0x6300_12cd_2d8a_f420,
         );
     }
 
@@ -1255,8 +1358,11 @@ mod tests {
             ("spec_events.find_more", &["{shown}", "{total}"][..]),
             ("spec_events.find_none", &[][..]),
             ("spec_events.find_jev_off", &["{reason}"][..]),
+            ("spec_events.find_off_test", &[][..]),
+            ("spec_events.find_off_fallback", &[][..]),
+            ("spec_events.find_off_purpose", &["{purpose}"][..]),
             ("spec_events.find_no_key", &[][..]),
-            ("spec_events.find_no_answer", &[][..]),
+            ("spec_events.find_key_in_git", &[][..]),
             ("spec_events.find_choice_left", &[][..]),
             ("spec_events.find_partial", &[][..]),
             ("spec_events.find_user_message", &[][..]),
@@ -1284,12 +1390,14 @@ mod tests {
             ("spec_events.item_part_user_cites", &["{found}"][..]),
             ("spec_events.item_unclear", &["{defects}"][..]),
             ("spec_events.task_depends_on_unknown", &["{task}", "{depends_on}"][..]),
+            ("spec_events.task_has_dependents", &["{removed}", "{dependents}"][..]),
             ("spec_events.task_dependency_cycle", &["{cycle}"][..]),
             ("spec_events.agreed_items_missing", &["{missing}"][..]),
             ("spec_events.delivery_agreed_missing", &["{wave}", "{missing}"][..]),
             ("spec_events.delivery_read_missing", &["{wave}", "{missing}"][..]),
             ("spec_events.task_not_released", &["{task}"][..]),
             ("spec_events.delivery_proof_older_than_file", &["{wave}", "{files}"][..]),
+            ("spec_events.delivery_item_code_in_comment", &["{wave}", "{found}"][..]),
             ("spec_events.verdict_read_missing", &["{missing}"][..]),
             ("spec_events.criterion_form_missing", &[][..]),
             ("spec_events.proof_not_a_command", &["{criterion}", "{found}"][..]),
@@ -1310,6 +1418,7 @@ mod tests {
             ("spec_events.names_unchecked", &[][..]),
             ("spec_events.goal_origin_not_user", &["{spec}", "{origin}"][..]),
             ("spec_events.goal_title_too_long", &["{chars}", "{max}", "{sentence}"][..]),
+            ("spec_events.goal_title_field_too_long", &["{chars}", "{max}", "{title}"][..]),
             ("spec_events.survey_open", &["{spec}", "{count}", "{points}"][..]),
             ("spec_events.survey_not_started", &["{spec}"][..]),
             ("spec_events.plan_without_task", &["{spec}"][..]),
@@ -1325,6 +1434,7 @@ mod tests {
             ("spec_events.closing_point_last_record", &["{code}"][..]),
             ("spec_events.delivered_too_long", &["{chars}", "{max}"][..]),
             ("spec_events.no_open_send", &["{wave}"][..]),
+            ("spec_events.wave_agent_working", &["{wave}"][..]),
             ("spec_events.no_open_review", &[][..]),
             ("spec_events.verdict_missing", &[][..]),
             ("spec_events.leftover_field_missing", &["{field}"][..]),
@@ -1357,6 +1467,7 @@ mod tests {
             ("spec_events.binary_only_type", &["{type}", "{spec}"][..]),
             ("spec_events.binary_author", &[][..]),
             ("spec_events.wave_by_backlog", &[][..]),
+            ("spec_events.files_ignored_by_git", &["{files}"][..]),
             ("spec_events.request_on_closed_spec", &["{spec}", "{phase}"][..]),
             ("spec_events.work_on_finished_spec", &["{spec}", "{phase}", "{type}"][..]),
             ("spec_events.user_message_by_hook", &["{spec}"][..]),
@@ -1403,6 +1514,7 @@ mod tests {
             ("spec_index.stale_search", &["{count}"][..]),
             ("spec_index.no_specs", &[][..]),
             ("spec_events.spec_required", &["{type}"][..]),
+            ("spec_events.session_unbound", &["{type}"][..]),
             ("lessons.unknown_lesson", &["{id}"][..]),
             ("lessons.origin_missing", &[][..]),
             ("lessons.repeated", &["{id}", "{text}"][..]),

@@ -370,15 +370,6 @@ pub(crate) trait PrProvider {
         unsupported()
     }
 
-    /// Põe o pull request `number` de volta em rascunho.
-    ///
-    /// É o que segura o merge pelo botão do provedor enquanto a spec reaberta
-    /// não fecha de novo. Quem não sabe fazer responde [`PR_UNSUPPORTED`], e
-    /// quem chamou avisa que o pull request ficou liberado.
-    fn mark_draft(&self, _number: u64) -> Result<(), String> {
-        unsupported()
-    }
-
     /// One pull request, normalised — the one [`PrRef`] points at.
     fn view(&self, which: PrRef<'_>) -> Result<PrView, String>;
 
@@ -660,10 +651,6 @@ impl PrProvider for GithubPrCli {
     fn edit_title(&self, number: u64, title: &str) -> Result<(), String> {
         let argv = patch_title_argv(number, title);
         gh_out(&self.repo, &argv.iter().map(String::as_str).collect::<Vec<_>>()).map(|_| ())
-    }
-
-    fn mark_draft(&self, number: u64) -> Result<(), String> {
-        gh_out(&self.repo, &["pr", "ready", &number.to_string(), "--undo"]).map(|_| ())
     }
 
     fn view(&self, which: PrRef<'_>) -> Result<PrView, String> {

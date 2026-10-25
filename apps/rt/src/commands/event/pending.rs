@@ -286,12 +286,6 @@ impl Selector {
 /// mostrá-la.
 const STALE_DAYS: i64 = 30;
 
-/// Um texto como o arquivo guarda: uma linha, espaços colapsados. Um detalhe
-/// colado com quebras de linha não pode virar vários itens nem nenhum.
-fn one_line(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
 fn refused(reason: &str, hint: &str) -> Value {
     json!({ "ok": false, "reason": reason, "hint": hint })
 }
@@ -418,8 +412,8 @@ fn resolve_action(opts: &PendingOpts, lang: Locale) -> Result<Action, Value> {
     }
 
     if opts.add {
-        let title = opts.title.as_deref().map(one_line).unwrap_or_default();
-        let detail = opts.detail.as_deref().map(one_line).unwrap_or_default();
+        let title = opts.title.as_deref().map(text::one_line).unwrap_or_default();
+        let detail = opts.detail.as_deref().map(text::one_line).unwrap_or_default();
         if title.is_empty() || detail.is_empty() {
             return Err(refused(
                 "missing-field",
@@ -431,7 +425,7 @@ fn resolve_action(opts: &PendingOpts, lang: Locale) -> Result<Action, Value> {
 
     // Motivo em branco é motivo nenhum: `--reason ""` e `--reason "   "` recusam
     // igual à flag ausente.
-    let reason = opts.reason.as_deref().map(one_line).unwrap_or_default();
+    let reason = opts.reason.as_deref().map(text::one_line).unwrap_or_default();
     if let Some(id) = &opts.close {
         let id = id.trim().to_ascii_uppercase();
         if id.is_empty() {
@@ -470,7 +464,7 @@ fn resolve_action(opts: &PendingOpts, lang: Locale) -> Result<Action, Value> {
         return Ok(Action::Expire { keep: opts.keep.as_deref().map(parse_ids).unwrap_or_default() });
     }
     if let Some(term) = &opts.term {
-        let term = one_line(term);
+        let term = text::one_line(term);
         if term.is_empty() {
             return Err(refused(
                 "missing-term",
@@ -744,7 +738,7 @@ fn push_open(ledger: &mut Ledger, title: String, detail: String, born: Option<St
 /// lê ou não grava, ou o título de outra pendência aberta.
 pub(crate) fn add_for_the_project(root: &Path, title: &str, detail: &str) -> Result<String, String> {
     let hint = |refusal: Value| refusal["hint"].as_str().unwrap_or_default().to_string();
-    let (title, detail) = (one_line(title), one_line(detail));
+    let (title, detail) = (text::one_line(title), text::one_line(detail));
     if title.is_empty() || detail.is_empty() {
         return Err("an item needs both a title and a detail; nothing was written".to_string());
     }
@@ -1023,22 +1017,31 @@ fn count_line_of(ledger: &Ledger, today: &str, lang: Locale) -> Option<String> {
     Some(line)
 }
 
+/// O que o início da sessão sabe das pendências abertas.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PendingCount {
+    /// A lista não se lê, ou o projeto não tem `mustard.json`: quem recusa e
+    /// explica o conserto é `run pending`.
+    Unread,
+    /// Nada está aberto.
+    NoneOpen,
+    /// A linha com a contagem e o comando que mostra a lista.
+    Line(String),
+}
+
 /// A linha que o início da sessão mostra: quantas pendências estão abertas e
-/// onde está a lista inteira. `None` quando nada está aberto, ou quando a
-/// lista não se lê: quem recusa e explica o conserto é `run pending`.
+/// onde está a lista inteira, ou nada aberto, ou a lista que não se lê.
 #[must_use]
-pub(crate) fn count_line(root: &Path, lang: Locale) -> Option<String> {
+pub(crate) fn count_line(root: &Path, lang: Locale) -> PendingCount {
     let project = ledger_root(root);
-    let paths = mustard_core::ClaudePaths::for_project(&project).ok()?;
-    let ledger = load(&paths.pending_ledger_path()).ok()?;
-    count_line_of(&ledger, &today(None), lang)
+    let Ok(paths) = mustard_core::ClaudePaths::for_project(&project) else {
+        return PendingCount::Unread;
+    };
+    let Ok(ledger) = load(&paths.pending_ledger_path()) else {
+        return PendingCount::Unread;
+    };
+    count_line_of(&ledger, &today(None), lang).map_or(PendingCount::NoneOpen, PendingCount::Line)
 }
-
-/// Identity and content, rather than just the count, for session notices.
-pub(crate) fn notice_state(root: &Path) -> String {
-    serde_json::to_string(&open_items_of(root)).unwrap_or_default()
-}
-
 
 /// Uma pendência aberta, como a enxergam os leitores de fora do ledger — o
 /// início de sessão, a cobrança de fim de turno, a abertura e o merge da
@@ -1161,7 +1164,7 @@ pub(crate) fn hand_to_project(root: &Path, id: &str, spec: &str, later: Option<&
     };
     item.born.get_or_insert_with(|| spec.to_string());
     item.owner = Owner::Project;
-    item.later = later.map(one_line).filter(|reason| !reason.is_empty());
+    item.later = later.map(text::one_line).filter(|reason| !reason.is_empty());
     write(&mut file, &mut ledger, &today(None)).is_ok()
 }
 
@@ -1729,7 +1732,7 @@ mod tests {
         add(root, "dois", "b");
         let line = pending_at(&opts(root))["count_line"].as_str().unwrap_or_default().to_string();
         assert!(line.starts_with("[Mustard] 2 "), "{line}");
-        assert_eq!(count_line(root, Locale::default()).as_deref(), Some(line.as_str()));
+        assert_eq!(count_line(root, Locale::default()), PendingCount::Line(line));
     }
 
     /// Hoje, nos testes da faxina e da remoção.

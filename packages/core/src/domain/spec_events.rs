@@ -36,6 +36,7 @@
 //! caminhos públicos continuam os mesmos.
 
 mod against;
+mod awaiting;
 mod check;
 mod codes;
 mod line;
@@ -46,7 +47,7 @@ mod refusal;
 mod search;
 mod types;
 
-pub use against::{carry_closed_identity, carry_open_point, check_against, resolve_codes, Effects};
+pub use against::{carry_closed_identity, carry_open_point, check_against, referenced_id, resolve_codes, Effects};
 pub use check::{normalize, validate, validation_issues, COPY_FILES_FIELD, COPY_STATE_FIELD};
 pub(crate) use check::{check_field, is_empty};
 pub use codes::code_after;

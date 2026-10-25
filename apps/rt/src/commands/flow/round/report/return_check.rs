@@ -18,6 +18,7 @@ use super::super::agreed::{Unmet, covered_codes, request_agreed, settle_agreed};
 use super::super::commit::{git_lock, unknown_file};
 use super::super::commit_title::message;
 use super::super::finish_check::{proof_older_than_files, unfinished_work};
+use super::super::leftovers::leftovers_of;
 use super::super::queue::{open_review, open_sends};
 use super::super::read_check::{request_name, unread_items, without_undone};
 use super::super::task_release::held_back;
@@ -131,6 +132,8 @@ pub(crate) fn check_return(
     unfinished_work(&log, sent, &report, draft)?;
     // E de não levar ao commit arquivo mudado depois da prova verde.
     proof_older_than_files(&log, sent, &report)?;
+    // E de não levar ao código comentário que cite código de item da spec.
+    super::comment_codes::refuse_item_codes_in_comments(&project.root, &log, wave)?;
     if draft.contains_key("files") {
         draft.insert("files".into(), json!(report.files));
     }
@@ -143,7 +146,11 @@ pub(crate) fn check_return(
 /// feitas antes de gravar, como as da entrega, com a trava do passo do git
 /// que [`check_return`] prendeu: há pedido de revisão aberto;
 /// cada critério e cada item do combinado citado existe; o veredito final
-/// responde pelo combinado que lhe cabe ([`agreed_prompt::review_agreed`]); e o revisor leu, de dentro da cópia
+/// responde pelo combinado que lhe cabe ([`agreed_prompt::review_agreed`]); os achados dele em `leftovers`, que o
+/// fechamento grava como tarefas, têm a marca de limpeza e os arquivos legíveis
+/// ([`leftovers_of`]) — e só o veredito final aprovado os leva: em outro
+/// veredito, o da revisão de uma onda ou o final reprovado, nada lê o campo, e
+/// a gravação o recusa ([`refuse_unread_leftovers`]); e o revisor leu, de dentro da cópia
 /// dele, cada item que o pedido da revisão lista. Passando, o veredito ganha
 /// `returned` e o autor da revisão, e fica como o revisor o escreveu: a
 /// rodada o resolve de novo ao assumi-lo.
@@ -153,7 +160,9 @@ pub(crate) fn check_verdict_return(start: &Path, spec: &str, draft: &mut Map<Str
     // ele, e nunca à revisão final: a gravação o marca, e só ele leva a marca.
     let wave = draft.get("wave").and_then(Value::as_u64);
     if draft.get("final") != Some(&Value::Bool(true)) && wave.is_some_and(|wave| super::super::wave_review::open_requests(&log).contains_key(&wave)) {
-        settle_verdict(&log, &mut draft.clone()).map_err(RoundRefusal::Refused)?;
+        let mut settled = draft.clone();
+        settle_verdict(&log, &mut settled).map_err(RoundRefusal::Refused)?;
+        refuse_unread_leftovers(&settled)?;
         draft.insert("wave_review".into(), json!(true));
         draft.insert("returned".into(), json!(true));
         draft.insert("author".into(), json!("review"));
@@ -163,7 +172,12 @@ pub(crate) fn check_verdict_return(start: &Path, spec: &str, draft: &mut Map<Str
     let Some(asked) = open_review(&log) else {
         return Err(RoundRefusal::NoOpenReview);
     };
-    settle_verdict(&log, &mut draft.clone()).map_err(RoundRefusal::Refused)?;
+    let mut settled = draft.clone();
+    settle_verdict(&log, &mut settled).map_err(RoundRefusal::Refused)?;
+    refuse_unread_leftovers(&settled)?;
+    if let Some(Value::Array(listed)) = draft.get("leftovers") {
+        leftovers_of("verdict", listed).map_err(RoundRefusal::Refused)?;
+    }
     // E de ter lido cada item que o pedido da revisão lista: o pedido de antes
     // desta conferência não grava a lista, e o veredito dele não é cobrado.
     let unread = unread_items(&log, asked, &request_name(None));
@@ -172,6 +186,22 @@ pub(crate) fn check_verdict_return(start: &Path, spec: &str, draft: &mut Map<Str
     }
     draft.insert("returned".into(), json!(true));
     draft.insert("author".into(), json!("review"));
+    Ok(())
+}
+
+/// Recusa o veredito `settled` — como a rodada o grava ([`settle_verdict`]) —
+/// que traz achados em `leftovers` sem ser o veredito final aprovado. Só esse
+/// veredito é lido pelo fechamento, que grava os achados como tarefas
+/// ([`record_final_leftovers`](super::super::record_final_leftovers)); no da
+/// revisão de uma onda e no final reprovado — também o que um item
+/// combinado sem atender força a reprovado — o campo não teria leitor, e os
+/// achados se perderiam em silêncio. A lista vazia não perde nada e passa.
+fn refuse_unread_leftovers(settled: &Map<String, Value>) -> Result<(), RoundRefusal> {
+    let found = settled.get("leftovers").and_then(Value::as_array).is_some_and(|listed| !listed.is_empty());
+    let approved_final = settled.get("final") == Some(&Value::Bool(true)) && settled.get("result").and_then(Value::as_str).map(str::trim) == Some("approved");
+    if found && !approved_final {
+        return Err(RoundRefusal::Refused(Refusal::VerdictLeftoversNotApproved));
+    }
     Ok(())
 }
 

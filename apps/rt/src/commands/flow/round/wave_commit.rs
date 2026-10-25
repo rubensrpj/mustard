@@ -5,23 +5,27 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use mustard_core::domain::spec_state::PhaseWriter;
 use mustard_core::io::fs::lock::LockedFile;
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Map, Value, json};
 
 use super::answer::RoundRefusal;
-use super::commit::{ForCommit, Joined, RoundRepos, commit_draft, git, git_with, head, record_commit, round_repos, write_joined};
+use super::commit::{ForCommit, Joined, RoundRepos, commit_draft, git, git_with, head, round_repos, write_joined};
 use super::commit_title::WaveCommit;
 use crate::commands::git_settle::enter_unit_branch;
+use crate::commands::spec_events::write::record;
 
 /// Um commit feito pela rodada: o do principal e o de cada submódulo, pelo
-/// caminho dele, com o título, as ondas que ele cobre e os arquivos que
-/// leva, separados por repositório.
+/// caminho dele, com o título, as ondas que ele cobre — e, à parte, as que
+/// entraram nele sem mudança — e os arquivos que leva, separados por
+/// repositório.
 pub(super) struct Made {
     pub(super) sha: String,
     pub(super) subs: Vec<(String, String)>,
     pub(super) title: String,
     pub(super) waves: Vec<u64>,
+    pub(super) unchanged: Vec<u64>,
     pub(super) files: Vec<String>,
     pub(super) repos: RoundRepos,
 }
@@ -125,7 +129,9 @@ type Shas = (String, Vec<(String, String)>);
 /// ondas volta, no disco, ao que era antes delas — desfeitas da última para
 /// a primeira. A onda cujo commit não teria o que levar — o código dela já
 /// está num commit desta mesma rodada — entra no commit anterior, sem commit
-/// novo; sem commit anterior, o git diz por quê.
+/// novo, à parte das que escreveram nele: o commit fecha a entrega dela, mas
+/// a falha numa linha dele não a implica. Sem commit anterior, o git diz por
+/// quê.
 pub(super) fn commit_waves(
     root: &Path,
     held: &LockedFile,
@@ -173,12 +179,15 @@ pub(super) fn commit_waves(
                 subs,
                 title: one.message.title.clone(),
                 waves: one.covered.clone(),
+                unchanged: Vec::new(),
                 files: one.files.clone(),
                 repos,
             }),
             Ok(None) => {
                 if let Some(last) = made.last_mut() {
-                    last.waves.extend(one.covered.iter().filter(|wave| !last.waves.contains(wave)).copied().collect::<Vec<_>>());
+                    let joined: Vec<u64> = one.covered.iter().filter(|wave| !last.waves.contains(wave)).copied().collect();
+                    last.waves.extend(&joined);
+                    last.unchanged.extend(joined);
                     last.files.extend(one.files.iter().filter(|file| !last.files.contains(file)).cloned().collect::<Vec<_>>());
                 }
             }
@@ -391,13 +400,25 @@ fn carried_beyond(root: &Path, files: &[String]) -> Result<Vec<String>, String> 
 pub(super) fn made_drafts(root: &Path, made: &[Made]) -> Vec<Map<String, Value>> {
     let mut drafts = Vec::new();
     for one in made {
-        drafts.push(commit_draft(root, &one.sha, &one.title, &one.waves, &one.files));
+        drafts.push(made_draft(root, &one.sha, one, &one.files));
         drafts.extend(one.subs.iter().map(|(sub, sha)| {
             let own = one.repos.subs.get(sub).map(Vec::as_slice).unwrap_or_default();
-            commit_draft(&root.join(sub), sha, &one.title, &one.waves, own)
+            made_draft(&root.join(sub), sha, one, own)
         }));
     }
     drafts
+}
+
+/// O evento do commit `sha` de `one`, no repositório `root`, com os arquivos
+/// `files`, como a spec o grava: o de [`commit_draft`] e, quando alguma onda
+/// entrou nele sem mudança, a lista delas à parte, que a falha numa linha do
+/// commit não implica.
+fn made_draft(root: &Path, sha: &str, one: &Made, files: &[String]) -> Map<String, Value> {
+    let mut draft = commit_draft(root, sha, &one.title, &one.waves, files);
+    if !one.unchanged.is_empty() {
+        draft.insert("unchanged".into(), json!(one.unchanged));
+    }
+    draft
 }
 
 /// Grava na spec cada commit de `made`, com as ondas dele, na ordem em que
@@ -405,15 +426,17 @@ pub(super) fn made_drafts(root: &Path, made: &[Made]) -> Vec<Map<String, Value>>
 /// resposta da rodada diz do commit — o último e, quando a rodada fez mais de
 /// um, a lista de todos em `commits` — e os arquivos que eles levaram.
 pub(super) fn record_made(start: &Path, root: &Path, spec: &str, made: &[Made]) -> Result<(Option<Value>, Vec<String>), RoundRefusal> {
+    let keep = |draft: Map<String, Value>| record(start, spec, "commit", draft, PhaseWriter::Binary).map_err(RoundRefusal::Refused);
     let mut commit: Option<Value> = None;
     let mut listed: Vec<Value> = Vec::new();
     let mut files: Vec<String> = Vec::new();
     for one in made {
-        let mut entry = record_commit(start, root, spec, &one.sha, &one.title, &one.waves, &one.files)?;
+        keep(made_draft(root, &one.sha, one, &one.files))?;
+        let mut entry = json!({ "sha": one.sha, "title": one.title });
         let mut subs: Vec<Value> = Vec::new();
         for (sub, sha) in &one.subs {
             let own = one.repos.subs.get(sub).map(Vec::as_slice).unwrap_or_default();
-            record_commit(start, &root.join(sub), spec, sha, &one.title, &one.waves, own)?;
+            keep(made_draft(&root.join(sub), sha, one, own))?;
             subs.push(json!({ "path": sub, "sha": sha }));
         }
         if !subs.is_empty() {

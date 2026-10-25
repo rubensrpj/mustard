@@ -22,8 +22,8 @@ use super::commit::git_lock;
 use super::fixes::sweep_fixes;
 use super::item_choice::choose_items;
 use super::queue::{
-    agent_known, backlog_left, backlog_ready, backlog_uncovered, first_unfinished, max_parallel, next_waves, open_review, open_sends, orphaned_waves,
-    sender_fields, sent_items, silent_minutes, waves_in_progress, waves_returned,
+    agent_known, backlog_uncovered, max_parallel, next_waves, open_sends, orphaned_waves, sender_fields, sent_items, silent_minutes, waves_in_progress,
+    waves_returned,
 };
 use super::rejection::rejected_message;
 use super::report::Taken;
@@ -31,7 +31,7 @@ use super::slots::{open_copies, sharing_copy, without_live_copy};
 use super::stops::{HeldReturn, stopped_waves, waves_stuck};
 use super::task_release;
 use super::usage::Caller;
-use super::{DONE_STEP, RoundOpts, can_run};
+use super::{RoundOpts, can_run};
 use crate::commands::git_settle::CopiesLock;
 use crate::commands::spec_events::write::record;
 use crate::shared::judgement::Board;
@@ -548,7 +548,10 @@ pub(super) fn run_entered_round(
     // antes de qualquer trava, pela spec gravada, e a resposta fica gravada:
     // com as travas presas, o despacho só a lê. A que o Jev não respondeu
     // vai em `reserves`.
-    let early = super::dispatch_jev::ask_before_locks(&opts.root, root, &spec, &log, caller.session, lang);
+    // O Jev da escolha das skills se carrega uma vez na rodada: as duas
+    // passadas antes das travas e o despacho o usam.
+    let picks_jev = crate::shared::jev::yes_no::project_jev(root, &spec, crate::shared::skill_cycle::PICK_CALL);
+    let early = super::dispatch_jev::ask_before_locks(&opts.root, root, &spec, &log, caller.session, lang, picks_jev.as_deref());
     // A trava das cópias vale da volta ao despacho, inteira: duas rodadas do
     // mesmo checkout nunca soltam a mesma onda nem pegam a mesma vaga, e
     // nenhuma limpeza tira uma cópia no meio do preparo. A spec que fechou ou
@@ -575,6 +578,9 @@ pub(super) fn run_entered_round(
     let raw = opts.report.as_deref().map(str::trim).filter(|r| !r.is_empty());
     let Taken { mut recorded, formatted, warnings, commit, paused, waiting: held, program_rebuilt, asking } =
         super::report::take_report_with_mine(&opts.root, root, &spec, raw, &log, lang, caller, mine)?;
+    // O commit desta rodada solta a tarefa que esperava a onda comitada: a
+    // passada de antes pergunta de novo, para a onda dela sair agora.
+    let early = super::dispatch_jev::ask_after_commit((&opts.root, root, &spec, &path), commit.is_some(), early, caller.session, lang, picks_jev.as_deref());
     // A pergunta ao Jev de cada volta que espera a decisão só sai depois de
     // soltas a trava do passo do git e a das cópias; a que ele não respondeu
     // vai em `reserves`.
@@ -605,7 +611,7 @@ pub(super) fn run_entered_round(
     // A recusa que vem depois deste ponto chega depois do commit e das
     // gravações da volta, e às vezes depois de envios já gravados: ela sai
     // junto do que a rodada já fez ([`Done::after_work`]), e nunca no lugar disso.
-    let entered = Entered { spec: &spec, path: &path, phase: &phase, log_on_entry, operations_on_entry, paused, held };
+    let entered = Entered { spec: &spec, path: &path, phase: &phase, log_on_entry, operations_on_entry, paused, held, picks_jev: picks_jev.as_deref() };
     let mut done = Done { recorded, formatted, warnings, commit, dispatched: Vec::new() };
     let dispatched = dispatch_round(opts, root, lang, caller, mine, entered, &copies, &mut done);
     drop(copies);
@@ -623,6 +629,8 @@ struct Entered<'a> {
     operations_on_entry: SpecLog,
     paused: Vec<u64>,
     held: Vec<HeldReturn>,
+    /// O Jev da escolha das skills, o que a rodada carregou ao entrar.
+    picks_jev: Option<&'a crate::shared::jev::yes_no::AskFn<'a>>,
 }
 
 /// O despacho da rodada, depois de assumidas as voltas, com a trava das
@@ -640,7 +648,7 @@ fn dispatch_round(
     done: &mut Done,
 ) -> Result<Value, RoundRefusal> {
     let session = caller.session;
-    let Entered { spec, path, phase, log_on_entry, operations_on_entry, paused, held } = entered;
+    let Entered { spec, path, phase, log_on_entry, operations_on_entry, paused, held, picks_jev } = entered;
     let spec = spec.to_string();
     let Done { recorded, formatted, warnings, commit, dispatched } = done;
 
@@ -714,10 +722,18 @@ fn dispatch_round(
     // leitura do modelo pequeno da sessão pronta, as ondas se gravam e a
     // montagem as solta inteiras; sem ela, o pedido vai ao condutor, e nenhuma
     // onda nova sai da lista nesta rodada, para nenhuma tarefa sair sem passar
-    // por ele.
+    // por ele. Com menos de duas tarefas que podem sair agora — a fila em que
+    // cada uma espera a anterior —, não há leitura a pedir, e a que pode sair
+    // sai já nesta rodada.
     // Com as travas presas, as perguntas ao Jev do despacho só leem a decisão
     // que a passada de antes gravou ([`super::dispatch_jev`]).
     let asker = super::dispatch_jev::Asker::new(&opts.root, root, &spec, &locked, super::dispatch_jev::Phase::Read);
+    // O Jev de contexto se carrega uma vez: a montagem o usa para saber se a
+    // onda montada e não enviada espera a escolha dos itens, e a escolha, mais
+    // abaixo, para perguntar. O da escolha das skills, que a rodada carregou ao
+    // entrar, a montagem o usa para saber se a onda espera a escolha delas.
+    let context_jev = crate::shared::jev::for_context(root, &spec);
+    let asking = (&asker, context_jev.filter.as_deref(), picks_jev);
     let forming = crate::commands::flow::triage::form_for_round(&opts.root, &spec, session, &asker);
     let locked = if forming.applied {
         store::read(path).map_err(RoundRefusal::Refused)?.ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.clone() }))?
@@ -729,9 +745,9 @@ fn dispatch_round(
     // pendente, só as ondas que ele já formou saem: as tarefas que ele ainda
     // vai ler esperam, e nenhuma vai ao Jev.
     let assembled = if forming.pending.is_some() {
-        dispatch_formed(&opts.root, &spec, &log_on_entry, &locked, max_parallel(root)).map_err(RoundRefusal::Refused)?.1
+        dispatch_formed(&opts.root, &spec, &log_on_entry, &locked, max_parallel(root), asking).map_err(RoundRefusal::Refused)?.1
     } else {
-        dispatch_backlog(&opts.root, &spec, &log_on_entry, &locked, max_parallel(root), (judge.as_ref().map(|judge| judge as &Judge<'_>), Some(&asker)))
+        dispatch_backlog(&opts.root, &spec, &log_on_entry, &locked, max_parallel(root), (judge.as_ref().map(|judge| judge as &Judge<'_>), Some(asking)))
             .map_err(RoundRefusal::Refused)?
             .1
     };
@@ -789,15 +805,13 @@ fn dispatch_round(
             return Err(RoundRefusal::WaveLoop { cycle, answered });
         }
     };
-    // O teto de cópias que segura o despacho vai no aviso e no próximo passo.
-    let copies_full = super::vacancy::copies_full_warning(&log, &vacancies, ready.len(), &stuck, lang);
-    let copies_line = copies_full.as_ref().and_then(|warning| warning["hint"].as_str().map(str::to_string));
-    warnings.extend(copies_full);
+    // Quantas ondas o teto de cópias deixa sair. O aviso de cópias cheias só
+    // sai mais abaixo, contado com as que saem de fato.
+    let allowed = ready.len();
     // A escolha dos itens do pedido, antes da cópia: a decisão do Jev, uma
     // por onda, gravada antes das travas, sobre o item do projeto todo, o dos
     // arquivos dela e o sem ligação com ela. Sem Jev, ou com o recibo incerto
     // da reserva, o pedido leva o padrão.
-    let context_jev = crate::shared::jev::for_context(root, &spec);
     let (choices, items_waiting) = choose_items(&opts.root, &spec, &log, &ready, context_jev.filter.as_deref(), &asker);
     // A onda cuja escolha dos itens ainda espera a decisão do Jev não sai
     // nesta rodada, só ela, e nem ganha cópia.
@@ -868,9 +882,17 @@ fn dispatch_round(
     // dela. A onda nova sem essa escolha fica fora desta rodada, e só ela: a
     // pergunta, ou o recibo da reserva, a manda na rodada seguinte.
     let mut flight = Flight { host: Some(host.into()), running: away, copies, choices, skill_picks: BTreeMap::new() };
-    let (built, picks_held) = crate::shared::skill_cycle::prompts_with_picks(root, &spec, (&log, lang), &mut flight, (&mut next, &mut outgoing), &asker);
+    let (built, picks_held) = crate::shared::skill_cycle::prompts_with_picks(root, &spec, (&log, lang), &mut flight, (&mut next, &mut outgoing), picks_jev, &asker);
     let mut picks_lines = crate::shared::skill_cycle::held_notes(picks_held, warnings, lang);
     picks_lines.extend(items_lines);
+    // O teto de cópias que segura o despacho vai no aviso e no próximo passo,
+    // contado com as ondas que saem de fato: a que a escolha dos itens, a
+    // cópia que não saiu ou a escolha das skills seguram não toma cópia, e a
+    // reenviada em cópia nova toma.
+    let leaving: Vec<&str> = next.iter().filter_map(|wave| flight.copies.get(wave)).chain(renewed_copies.values()).map(|copy| copy.path.as_str()).collect();
+    let copies_full = super::vacancy::copies_full_warning(&log, &vacancies, (allowed, &leaving), &stuck, lang);
+    let copies_line = copies_full.as_ref().and_then(|warning| warning["hint"].as_str().map(str::to_string));
+    warnings.extend(copies_full);
     // A onda cujo pedido passa do teto de tokens sai com as tarefas que
     // cabem, e o resto volta ao backlog; a spec relida dá o pedido novo.
     // A leitura de antes segue viva: as ondas paradas (`stuck`) apontam para
@@ -891,7 +913,7 @@ fn dispatch_round(
             continue;
         };
         let lines = log.send_field(*sent, "lines").cloned().unwrap_or(Value::Null);
-        dispatched.push(json!({ "wave": wave, "lines": lines, "read": request_command(root, &spec, *wave), "agent": send.str_field("agent").unwrap_or("wave"),
+        dispatched.push(json!({ "wave": wave, "description": wave_title(&spec, *wave, lang), "lines": lines, "read": request_command(root, &spec, *wave), "agent": send.str_field("agent").unwrap_or("wave"),
             "model": send.str_field("model") }));
     }
     // O código e o número do envio de cada onda em andamento — o número é o
@@ -958,9 +980,9 @@ fn dispatch_round(
         draft.extend(sender_fields(sender));
         draft.insert("author".into(), json!("binary"));
         let written = record(&opts.root, &spec, "send", draft, PhaseWriter::Binary).map_err(RoundRefusal::Refused)?;
-        task_release::record_first_block(&opts.root, &spec, *wave, &prompt.tasks);
+        task_release::record_first_block(&opts.root, &spec, session, *wave, &prompt.tasks);
         recorded.push(json!({ "wave": wave, "type": "send", "id": written.written.id }));
-        dispatched.push(json!({ "wave": wave, "lines": prompt.lines, "read": request_command(root, &spec, *wave), "agent": agent, "model": prompt.model }));
+        dispatched.push(json!({ "wave": wave, "description": wave_title(&spec, *wave, lang), "lines": prompt.lines, "read": request_command(root, &spec, *wave), "agent": agent, "model": prompt.model }));
         let code = written.written.code.clone().unwrap_or_else(|| written.written.id.to_string());
         in_flight.insert(*wave, (code, written.written.id));
     }
@@ -995,15 +1017,18 @@ fn dispatch_round(
         } else {
             own
         };
-        let steps = wave_steps(log, wave, &codes);
+        // Os passos já gravados e o que o agente anterior deixou na cópia que
+        // a rodada zerou vão no pedido, para o agente novo conferir e
+        // continuar dali.
+        let (steps, kept) = (wave_steps(log, wave, &codes), super::resend::kept_rest_of(root, &spec, log, wave, previous));
         let mut draft = Map::new();
         draft.insert("wave".into(), json!(wave));
         draft.insert("role".into(), json!("wave"));
         // As ondas em andamento de agora, e não as do envio anterior: a
         // rodada que reenvia já sabe quem está em curso ([`flight`]).
         let running: Vec<(u64, Vec<String>)> = flight.running.iter().filter(|n| **n != wave).map(|n| (*n, wave_files(log, *n))).collect();
-        let mut text = super::resend::resend_text(log.send_text(previous).unwrap_or_default(), &running, &steps, lang);
-        text.extend(task_release::resend_block(&opts.root, &spec, log, previous, wave, lang));
+        let mut text = super::resend::resend_text(log.send_text(previous).unwrap_or_default(), &running, &steps, &kept, lang);
+        text.extend(task_release::resend_block(&opts.root, &spec, session, log, previous, wave, lang));
         let migrated = prior.str_field("host").unwrap_or("claude") != host;
         let current = built.iter().find(|prompt| prompt.wave == wave);
         if migrated && current.is_none() {
@@ -1026,11 +1051,8 @@ fn dispatch_round(
         // de tarefa única, que foi juntado a ele e não existe mais no projeto.
         let agent = "wave";
         draft.insert("agent".into(), json!(agent));
-        if let Some(model) = prior.str_field("model") {
-            draft.insert("model".into(), json!(model));
-        }
-        if let Some(effort) = prior.str_field("effort") {
-            draft.insert("effort".into(), json!(effort));
+        for field in ["model", "effort"] {
+            draft.extend(prior.str_field(field).map(|value| (field.to_string(), json!(value))));
         }
         draft.insert("items".into(), log.send_field(previous, "items").cloned().unwrap_or_else(|| json!([])));
         // O pedido do reenvio é o do envio anterior: a lista de leitura dele
@@ -1056,7 +1078,7 @@ fn dispatch_round(
         let model = draft.get("model").cloned();
         let written = record(&opts.root, &spec, "send", draft, PhaseWriter::Binary).map_err(RoundRefusal::Refused)?;
         recorded.push(json!({ "wave": wave, "type": "send", "id": written.written.id }));
-        dispatched.push(json!({ "wave": wave, "lines": text.lines().count(), "read": request_command(root, &spec, wave), "agent": agent,
+        dispatched.push(json!({ "wave": wave, "description": wave_title(&spec, wave, lang), "lines": text.lines().count(), "read": request_command(root, &spec, wave), "agent": agent,
             "model": model }));
         let code = written.written.code.clone().unwrap_or_else(|| written.written.id.to_string());
         in_flight.insert(wave, (code, written.written.id));
@@ -1103,67 +1125,12 @@ fn dispatch_round(
         }
     }
 
-    // O próximo passo: despachar o que saiu agora; esperar as que estão em
-    // andamento; dizer qual onda falta, quando nada se move; rodar de novo,
-    // ou nomear as tarefas presas, quando o backlog ainda tem tarefa;
-    // esperar o veredito, quando a revisão final segue aberta; ou fechar,
-    // com tudo entregue e aprovado e o backlog vazio. A revisão do diff da
-    // onda antecede o commit; a revisão final permanece no fechamento.
+    // O próximo passo ([`super::next_step`]), com a spec já em execução na
+    // primeira rodada.
     if entering {crate::commands::spec_events::write::record_phase(&opts.root, &spec, "running", session);}
-    let report_back = super::checks::report_back(root, lang);
-    let mut command: Option<String> = None;
-    let then = if !dispatched.is_empty() {
-        format!("{} {report_back}", translate("round.next", lang))
-    } else if !running.is_empty() {
-        let waves: Vec<String> = running.keys().map(u64::to_string).collect();
-        format!("{} {report_back}", translate("round.waiting", lang).replace("{waves}", &waves.join(", ")))
-    } else if !stuck.is_empty() || !held.is_empty() || !picks_lines.is_empty() {
-        String::new()
-    } else if let Some(wave) = first_unfinished(log, &in_progress) {
-        translate("round.missing", lang).replace("{wave}", &wave.to_string())
-    } else if !backlog_left(log).is_empty() {
-        // Toda onda planejada terminou, mas o backlog ainda tem tarefa: a obra
-        // não fecha. A tarefa que ficou pronta pela entrega desta mesma
-        // rodada só vira lote na rodada seguinte, porque o backlog foi formado
-        // pela leitura de entrada; sem tarefa pronta e sem nada em andamento,
-        // as que sobraram estão presas, e a resposta as nomeia, com a que
-        // espera plano à parte, dizendo o que falta a ela.
-        let shown = |ids: &mut dyn Iterator<Item = u64>| -> String {
-            ids.map(|id| codes.get(&id).cloned().unwrap_or_else(|| id.to_string())).collect::<Vec<_>>().join(", ")
-        };
-        let ready = backlog_ready(log);
-        if ready.is_empty() {
-            super::planning::stuck_backlog_line(log, &codes, lang)
-        } else {
-            let state = State::from_log(log);
-            let step = crate::commands::flow::resume::step_command("round", &spec, &state);
-            let text = translate("round.backlog_left", lang)
-                .replace("{tasks}", &shown(&mut ready.into_iter()))
-                .replace("{command}", step.as_deref().unwrap_or_default());
-            command = step;
-            text
-        }
-    } else if open_review(log).is_some() {
-        // Toda onda está entregue, mas a revisão final segue aberta, sem o
-        // veredito do revisor: a obra ainda não está aprovada, e o fechamento
-        // recusaria. A resposta manda esperar o veredito, sem o comando de
-        // fechar.
-        translate("round.review_open", lang).to_string()
-    } else {
-        let state = State::from_log(log);
-        // A obra já fechada não fecha de novo: a rodada acabou de receber o
-        // conserto do pull request reprovado, e o passo é empurrá-lo pela
-        // mesma porta que o abriu.
-        let (step, key) = if state.phase == Some("pr_open") {
-            let reason = translate("round.fix_reason", lang);
-            (Some(format!("mustard-rt run reopen --fix --spec {spec} --reason \"{reason}\"")), "round.fix_push")
-        } else {
-            (crate::commands::flow::resume::step_command(DONE_STEP, &spec, &state), "round.close")
-        };
-        let text = translate(key, lang).replace("{command}", step.as_deref().unwrap_or_default());
-        command = step;
-        text
-    };
+    let explained = !stuck.is_empty() || !held.is_empty() || !picks_lines.is_empty();
+    let standing = super::next_step::Standing { dispatched: !dispatched.is_empty(), running: &running, in_progress: &in_progress, explained };
+    let (then, command) = super::next_step::next_step(root, &spec, (log, &codes), &standing, lang);
     // A pergunta da onda parada vem antes do resto, que segue sem ela; a da
     // mudança de plano de cada onda que espera o clique vem em seguida.
     let (stopped, question) = stopped_waves(&stuck, &codes, lang);
@@ -1280,19 +1247,24 @@ pub(super) fn end_answer(root: &Path, spec: &str, out: &mut Value, then: &str, l
             let withheld = crate::commands::spec_events::pages::secrets::withheld(&log);
             crate::commands::spec_events::pages::note_withheld(out, spec, &withheld, lang);
         }
-    if let Some(number) = rewrite_open_pr(root, spec) {
-        out["pr"] = json!({ "number": number, "body": "rewritten" });
+    use crate::commands::review::pr_publish::{BodyRewrite, body_kept_warning};
+    match rewrite_open_pr(root, spec) {
+        Some(BodyRewrite::Rewritten(number)) => out["pr"] = json!({ "number": number, "body": "rewritten" }),
+        Some(BodyRewrite::Kept { number, reason }) => {
+            out["pr"] = json!({ "number": number, "body": "kept", "warning": body_kept_warning(number, &reason, lang) });
+        }
+        None => {}
     }
 }
 
-/// Refaz o corpo do pull request desta spec, quando há um aberto. Devolve o
-/// número do pull request reescrito, `None` quando não há nenhum ou quando o
+/// Refaz o corpo do pull request desta spec, quando há um aberto e o corpo
+/// dele segue igual ao último gerado. `None` quando não há nenhum ou quando o
 /// provedor não respondeu — a rodada nunca para por causa disso.
 ///
 /// O pull request é o da branch DESTA spec, não o da branch em que o checkout
 /// está. Fora da branch da spec não há o que refazer aqui, e perguntar pelo
 /// checkout reescreveria o corpo do pull request de outra unidade.
-fn rewrite_open_pr(root: &Path, spec: &str) -> Option<u64> {
+fn rewrite_open_pr(root: &Path, spec: &str) -> Option<crate::commands::review::pr_publish::BodyRewrite> {
     let branch = crate::commands::spec_events::write::branch_of_spec(root, spec)?;
     let (_, body) = crate::commands::review::pr_publish::message_of(root, spec).ok()?;
     let provider = crate::shared::pr_provider::provider_for(root);
@@ -2717,8 +2689,8 @@ mod tests {
         assert!(done["next"].as_str().unwrap_or_default().ends_with(&close), "{done}");
     }
 
-    /// Com a revisão final aberta e ainda sem o veredito do revisor, a
-    /// rodada que comita a última onda não manda fechar: a resposta manda
+    /// Com a revisão final pedida depois da última onda comitada e ainda sem
+    /// o veredito do revisor, a rodada não manda fechar: a resposta manda
     /// esperar o veredito, sem o comando de fechar. Só depois de o veredito
     /// aprovado ser gravado e assumido a rodada manda fechar.
     #[test]
@@ -2727,11 +2699,12 @@ mod tests {
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
         assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1]);
+        let committed = round(root, "x", Some(&delivered(root, 1, "Saiu.", &["src/a.rs"])));
+        assert!(committed["commit"]["sha"].is_string(), "a última onda foi comitada: {committed}");
         seed_review(root);
 
-        let done = round(root, "x", Some(&delivered(root, 1, "Saiu.", &["src/a.rs"])));
+        let done = round(root, "x", None);
         assert_eq!(done["ok"], json!(true), "{done}");
-        assert!(done["commit"]["sha"].is_string(), "a última onda foi comitada: {done}");
         assert!(done.get("command").is_none(), "sem o comando de fechar: {done}");
         let next = done["next"].as_str().unwrap_or_default();
         assert!(next.ends_with(translate("round.review_open", Locale::PtBr)), "{done}");
@@ -3106,14 +3079,16 @@ mod tests {
 
     /// The dispatch line says, in one reading, what goes to whom: every
     /// `dispatch` entry to a wave agent, with the request's title and the
-    /// entry's `read` command, the same two lines the dispatch hook keeps.
+    /// entry's `read` command, the same two lines the dispatch hook keeps,
+    /// and the entry's `description` as the agent's title, so the chat names
+    /// the wave by the request's number.
     /// No review goes out of a round, and nothing in it is left to choose.
     #[test]
     fn the_dispatch_line_names_the_agent_the_title_and_the_read_field() {
         for lang in [Locale::PtBr, Locale::EnUs] {
             let next = translate("round.next", lang);
             let title = mustard_core::domain::wave_prompt::wave_title("<spec>", 7, lang).replace('7', "<wave>");
-            for expected in ["`dispatch`", "`mustard-wave`", "`read`", "`wave`", title.as_str()] {
+            for expected in ["`dispatch`", "`mustard-wave`", "`read`", "`wave`", "`description`", title.as_str()] {
                 assert!(next.contains(expected), "{lang:?}: {expected} in {next}");
             }
             for gone in ["mustard-review", "revis", "review", "Acrescente", "Add only"] {

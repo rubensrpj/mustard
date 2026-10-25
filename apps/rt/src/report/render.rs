@@ -10,6 +10,7 @@
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
+use mustard_core::domain::text::one_line;
 use mustard_core::platform::i18n::{translate, Locale};
 use mustard_core::view::document::{Document, Meta, Node, Section, Table};
 
@@ -208,7 +209,7 @@ fn plain(text: &str) -> String {
         .replace("&quot;", "\"")
         .replace("&#39;", "'")
         .replace("&amp;", "&");
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
+    one_line(&out)
 }
 
 #[cfg(test)]

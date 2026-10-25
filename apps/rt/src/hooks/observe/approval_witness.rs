@@ -29,17 +29,21 @@
 //!   com o objetivo inteiro, ou na pergunta curta quando a última resposta
 //!   do assistente gravada antes do clique mostrou o objetivo inteiro. A
 //!   fala do mesmo turno da pergunta, que só viraria resposta no fim dele, é
-//!   lida da conversa e gravada como resposta antes do clique.
+//!   lida da conversa e gravada como resposta antes do clique. O clique que
+//!   não confirmou é dito na hora, com o objetivo gravado, e só enquanto o
+//!   objetivo ainda não está confirmado.
 //!
 //! ## A resposta de cada pergunta
 //!
 //! Toda pergunta com opções respondida, de gesto ou qualquer outra, vai para
-//! o bloco da conversa da spec atual como mensagem do usuário: a pergunta, a
-//! resposta e a nota, quando ele escreveu uma. Numa pergunta de gesto, o
-//! clique numa das opções oferecidas grava a mensagem com a testemunha — a
-//! pergunta e a opção —, e é essa mensagem que a rodada lê como o "sim" da
-//! mudança. Texto livre também é gravado, sem testemunha: gravar o que o
-//! usuário disse não destrava nada. Uma pergunta cancelada não grava nada.
+//! o bloco da conversa da spec ligada à sessão como mensagem do usuário. O texto dela é
+//! só o que ele disse — a resposta e a nota, quando ele escreveu uma —, e a
+//! pergunta, que é do assistente, fica na mesma mensagem, fora do texto. Numa
+//! pergunta de gesto, o clique numa das opções oferecidas grava a mensagem
+//! com a testemunha — a pergunta e a opção —, e é essa mensagem que a rodada
+//! lê como o "sim" da mudança. Texto livre também é gravado, sem testemunha e
+//! com a pergunta ao lado: gravar o que o usuário disse não destrava nada.
+//! Uma pergunta cancelada não grava nada.
 //!
 //! ## O que conta como "sim"
 //!
@@ -55,8 +59,10 @@
 //!    "Aprovar" ou "Approve", "Aceitar" ou "Accept". "Não aprovar", "Don't
 //!    approve" e "Aprovar depois" não contam.
 //!
-//! A aprovação da spec pede ainda um terceiro: a spec atual, pela escada
-//! única, está na fase `plan`, ou ainda não nasceu. O modelo não grava essa
+//! A aprovação da spec pede ainda um terceiro: a spec ligada à conversa da
+//! sessão pela abertura ou pela retomada está na fase `plan`, ou ainda não
+//! nasceu. A branch não conta: a conversa sem ligação, na mesma branch, não
+//! aprova nada. O modelo não grava essa
 //! aprovação à mão: o `run write` recusa o tipo `state`, e também toda
 //! mensagem com a testemunha, de qualquer autor, para gravar, rever ou tirar.
 //!
@@ -93,15 +99,17 @@ use std::path::Path;
 use mustard_core::domain::model::contract::{AskAnswer, Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::domain::spec_events::Refusal;
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState};
+use mustard_core::domain::text::{cut, CutAt};
+use mustard_core::io::spec_events::spec_root;
 use mustard_core::platform::error::Error;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Map, Value};
 
 use crate::commands::flow::round::change_code_of;
-use crate::commands::spec_events::conversation::{record_message, record_said_before_click, record_witnessed_message};
+use crate::commands::spec_events::conversation::{record_answered_message, record_said_before_click, record_witnessed_message};
 use crate::hooks::write::write_gate::say;
 use crate::shared::agent_said::last_said;
-use crate::shared::spec_state::DiskSpecState;
+use crate::shared::spec_state::{conversation_bound_spec, DiskSpecState};
 
 /// A testemunha dos gestos de aprovação, no `PostToolUse` da pergunta com
 /// opções.
@@ -229,16 +237,21 @@ fn is_yes(gesture: &Gesture, label: &str) -> bool {
 }
 
 /// A confirmação do objetivo: o clique gravado conta pela mesma regra que a
-/// retomada lê, e só então a testemunha diz que o objetivo ficou confirmado.
+/// retomada lê, e a testemunha diz na hora se o objetivo ficou confirmado. O
+/// clique em "Confirmar objetivo" que não confirmou é dito no próprio clique,
+/// com o motivo e o objetivo gravado: calado, o aviso só chegava no comando
+/// seguinte. Só quando o objetivo ainda não está confirmado: um clique a mais,
+/// com o objetivo já confirmado por um clique anterior, pelo texto do usuário
+/// ou pela aprovação da spec, não tem o que recusar. O objetivo lido é o da
+/// spec ligada à conversa, onde o clique foi gravado, e nunca o da branch.
 fn decide_goal(answer: &Answered<'_>) -> Option<String> {
-    let message = answer.recorded?;
+    answer.recorded?;
     if !matches!(answer.choice, Choice::Yes(_)) {
         return None;
     }
-    let disk = DiskSpecState::new(Path::new(answer.root));
-    let log = disk.log(&disk.active(answer.session)?)?;
-    if !log.get(message).is_some_and(|event| crate::commands::flow::goal::confirms(&log, event)) {
-        return None;
+    let log = DiskSpecState::new(Path::new(answer.root)).log(&bound_spec(answer.root, answer.session)?)?;
+    if crate::commands::flow::goal::status(&log, answer.lang)["confirmed"] != json!(true) {
+        return crate::commands::flow::goal::refused_click(&log, answer.lang);
     }
     Some(match answer.lang {
         Locale::PtBr => "Objetivo confirmado e gravado na spec. A retomada preserva esta escolha após /clear.".into(),
@@ -321,11 +334,19 @@ enum Standing {
     NoPlan,
 }
 
-/// A spec que a pergunta de aprovação decide, e onde ela está: a spec atual,
-/// pela escada única. Outra spec ligada à sessão nunca é decidida por ali: a
-/// sessão se liga a toda spec que um evento nomeia.
+/// A spec ligada à conversa da sessão `session`, com a ligação lida no
+/// checkout principal, onde a abertura e a retomada a gravam: a pergunta
+/// respondida num worktree acha a mesma spec.
+fn bound_spec(root: &str, session: Option<&str>) -> Option<String> {
+    conversation_bound_spec(&spec_root(Path::new(root)).to_string_lossy(), session)
+}
+
+/// A spec que a pergunta de aprovação decide, e onde ela está: a spec ligada
+/// à conversa da sessão pela abertura ou pela retomada, a mesma que recebe a
+/// resposta. A branch não conta: a conversa paralela na mesma branch, sem
+/// ligação, não aprova a obra da outra.
 fn standing(root: &str, session: Option<&str>) -> Standing {
-    let Some(spec) = DiskSpecState::new(Path::new(root)).active(session) else {
+    let Some(spec) = bound_spec(root, session) else {
         return Standing::NoPlan;
     };
     // O estado que a trava lê, pela mesma função do portão: a spec sem nenhum
@@ -439,12 +460,15 @@ fn decide_change(answer: &Answered<'_>) -> Option<String> {
 // A resposta gravada
 // ---------------------------------------------------------------------------
 
+/// Quantos caracteres de cada rótulo citado ficam antes das reticências.
+const QUOTED_CHARS: usize = 80;
+
 /// Os rótulos entre aspas, separados por vírgula, cada um cortado: uma
 /// resposta digitada pode ser uma mensagem inteira.
 fn quote(values: &[String]) -> String {
     values
         .iter()
-        .map(|v| format!("\"{}\"", truncate(v.trim())))
+        .map(|v| format!("\"{}\"", cut(v.trim(), QUOTED_CHARS + 1, CutAt::Char)))
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -454,20 +478,15 @@ fn menu(offered: &[String]) -> String {
     if offered.is_empty() { "—".to_string() } else { quote(offered) }
 }
 
-fn truncate(s: &str) -> String {
-    const MAX: usize = 80;
-    if s.chars().count() <= MAX {
-        return s.to_string();
-    }
-    let head: String = s.chars().take(MAX).collect();
-    format!("{head}…")
-}
-
-/// Grava a pergunta respondida como mensagem do usuário, na spec atual: a
-/// pergunta, a resposta (várias escolhas separadas por vírgula) e a nota,
-/// cada uma numa linha. Com `witness`, a mensagem leva a testemunha: a
-/// pergunta e a opção clicada. Pergunta sem resposta não grava nada; o
-/// número da mensagem quando gravou.
+/// Grava a pergunta respondida como mensagem do usuário, na spec atual. O
+/// texto é só o que o usuário disse: a resposta (várias escolhas separadas
+/// por vírgula, ou o que ele digitou em "Outro") e a nota, cada uma numa
+/// linha. A pergunta é do assistente e fica na própria mensagem, nunca como
+/// resposta solta: a regra do objetivo lê a última resposta antes do clique,
+/// e a pergunta curta no meio tomaria o lugar da fala que mostrou o objetivo.
+/// Com `witness`, ela vai na testemunha, ao lado da opção clicada; sem, no
+/// campo `question`. Pergunta sem resposta não grava nada; o número da
+/// mensagem quando gravou.
 fn record_answer(
     root: &Path,
     session: Option<&str>,
@@ -476,18 +495,17 @@ fn record_answer(
     change: Option<&str>,
 ) -> Option<u64> {
     let question = item.question.trim();
-    let answer = item.labels.iter().map(|label| label.trim()).collect::<Vec<_>>().join(", ");
-    if question.is_empty() || answer.is_empty() {
+    let mut text = item.labels.iter().map(|label| label.trim()).collect::<Vec<_>>().join(", ");
+    if question.is_empty() || text.is_empty() {
         return None;
     }
-    let mut text = format!("{question}\n{answer}");
     if let Some(notes) = item.notes.as_deref().map(str::trim).filter(|notes| !notes.is_empty()) {
         text.push('\n');
         text.push_str(notes);
     }
     match witness {
         Some(clicked) => record_witnessed_message(root, session, &text, question, clicked, change),
-        None => record_message(root, session, &text),
+        None => record_answered_message(root, session, &text, question),
     }
 }
 
@@ -635,8 +653,9 @@ mod tests {
     }
 
     /// Sem o objetivo na última resposta antes da pergunta curta, o clique não
-    /// confirma nada, mesmo com o objetivo numa resposta mais antiga; a dica,
-    /// nas duas línguas, diz como perguntar curto.
+    /// confirma nada, mesmo com o objetivo numa resposta mais antiga: a
+    /// testemunha diz isso no clique, e a dica da retomada, nas duas línguas,
+    /// diz como perguntar curto.
     #[test]
     fn goal_approval_does_not_count_a_short_question_when_the_last_response_lacks_the_goal() {
         if ambient_override() {
@@ -646,7 +665,7 @@ mod tests {
         let root = dir.path();
         assistant_said(root, &format!("O objetivo é: {GOAL}"), said);
         assistant_said(root, "Vou confirmar com você.", said);
-        assert_eq!(witness(root, &short_goal_question("Confirmar objetivo")), Verdict::Allow);
+        assert!(matches!(witness(root, &short_goal_question("Confirmar objetivo")), Verdict::Inject { .. }));
         let status = goal_status(root, Locale::PtBr);
         assert_eq!(status["confirmed"], false, "{status}");
         assert_eq!(status["question"], format!("O objetivo é: {GOAL}\nConfirma este objetivo?"), "{status}");
@@ -770,7 +789,7 @@ mod tests {
         let end_of_turn = format!("O objetivo é:\n{GOAL}\n");
         assert_eq!(crate::commands::spec_events::conversation::record_response(root, Some(SESSION), &end_of_turn), None);
         assert_eq!(responses(root), std::slice::from_ref(&shown));
-        record_message(root, Some(SESSION), "e agora?");
+        crate::commands::spec_events::conversation::record_message(root, Some(SESSION), "e agora?");
         assert!(crate::commands::spec_events::conversation::record_response(root, Some(SESSION), &end_of_turn).is_some());
         assert_eq!(responses(root).len(), 2);
     }
@@ -988,9 +1007,9 @@ mod tests {
         assert_eq!(
             witnessed(root),
             [
-                (format!("{question}\nAceitar"), clicked("Aceitar")),
-                (format!("{question}\nRecusar"), clicked("Recusar")),
-                (format!("{question}\nAceitar, pode seguir"), None),
+                ("Aceitar".to_string(), clicked("Aceitar")),
+                ("Recusar".to_string(), clicked("Recusar")),
+                ("Aceitar, pode seguir".to_string(), None),
             ]
         );
 
@@ -1021,7 +1040,7 @@ mod tests {
         assert_eq!(said, Verdict::Inject { context: expected });
 
         let clicked = Some(json!({ "question": question, "answer": "Aceitar", "change": code }));
-        assert_eq!(witnessed(root), [(format!("{question}\nAceitar"), clicked)]);
+        assert_eq!(witnessed(root), [("Aceitar".to_string(), clicked)]);
 
         // A mesma pergunta sem o código no cabeçalho não aceita nada, e o
         // clique fica gravado sem código nenhum ao lado da resposta.
@@ -1323,59 +1342,10 @@ mod tests {
         assert!(!state(bare.path()).approved, "a plan without any task approves nothing");
     }
 
-    /// Um ajuste ligado à sessão, com o `meta.json` que nomeia como mãe a
-    /// spec da branch, não é aprovado por ali: a escada nomeia a spec da
-    /// branch, já aprovada, e é ela que responde. O ajuste fica em plano, e a
-    /// mãe fica como estava.
-    #[test]
-    fn a_fix_bound_to_the_session_is_not_approved_through_its_parents_branch() {
-        if ambient_override() {
-            return;
-        }
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        crate::shared::spec_state::stand_on_spec_branch(root, "epic-1");
-        record_for(root, "epic-1", "state", json!({ "phase": "running", "branch": "feature/epic-1" }));
-        record_for(root, "ajuste", "state", json!({ "phase": "plan", "branch": "feature/epic-1" }));
-        std::fs::write(
-            root.join(".claude").join("spec").join("ajuste").join("meta.json"),
-            // A mãe gravada como veio, com espaço, barra e maiúscula.
-            r#"{"scope":"light","stage":"Analyze","parent":" Epic-1/ "}"#,
-        )
-        .unwrap();
-        bind_session_spec(&root.to_string_lossy(), SESSION, "ajuste");
-
-        let said = witness(root, &approve_or_adjust("Aprovar"));
-        let expected = say("approval.witness.already", lang(root), &[("{spec}", "epic-1")]);
-        assert_eq!(said, Verdict::Inject { context: expected }, "the branch spec answers");
-        let disk = DiskSpecState::new(root);
-        assert!(!disk.state("ajuste").unwrap().approved, "the fix stays in plan");
-        assert_eq!(disk.state("epic-1").unwrap().phase, Some("running"), "the parent is untouched");
-    }
-
-    /// Uma spec ligada à sessão que não é ajuste da spec da branch nunca é
-    /// aprovada por ali: a sessão se liga a toda spec que um evento nomeia.
-    #[test]
-    fn a_bound_spec_that_is_not_a_fix_of_the_branch_spec_is_never_approved() {
-        if ambient_override() {
-            return;
-        }
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        crate::shared::spec_state::stand_on_spec_branch(root, "epic-1");
-        record_for(root, "epic-1", "state", json!({ "phase": "running", "branch": "feature/epic-1" }));
-        record_for(root, "outra", "state", json!({ "phase": "plan", "branch": "feature/outra" }));
-        bind_session_spec(&root.to_string_lossy(), SESSION, "outra");
-
-        let said = witness(root, &approve_or_adjust("Aprovar"));
-        let expected = say("approval.witness.already", lang(root), &[("{spec}", "epic-1")]);
-        assert_eq!(said, Verdict::Inject { context: expected }, "the branch spec answers");
-        assert!(!DiskSpecState::new(root).state("outra").unwrap().approved, "the other spec stays in plan");
-    }
-
-    /// Respondida num worktree, a pergunta lê os pontos abertos da spec no
-    /// checkout principal: com um ponto aberto lá, nada é aprovado, e a
-    /// testemunha diz qual.
+    /// Respondida num worktree, a pergunta lê a ligação da sessão e os
+    /// pontos abertos da spec no checkout principal, onde a abertura os
+    /// grava: com um ponto aberto lá, nada é aprovado, e a testemunha diz
+    /// qual.
     #[test]
     fn in_a_worktree_the_witness_reads_the_open_points_of_the_main_checkout() {
         if ambient_override() {
@@ -1412,6 +1382,7 @@ mod tests {
         );
         let wt = tmp.path().join("wt");
         git(&main, &["worktree", "add", "-q", &wt.to_string_lossy(), "-b", "feature/epic"]);
+        bind_session_spec(&main.to_string_lossy(), SESSION, "epic");
 
         match witness(&wt, &approve_or_adjust("Aprovar")) {
             Verdict::Inject { context } => assert!(context.contains("MSTD-POINT-0001"), "{context}"),
@@ -1495,9 +1466,9 @@ mod tests {
     }
 
     /// A resposta de cada pergunta do levantamento vai para a conversa, com a
-    /// pergunta e a nota; a resposta digitada também. A de aprovação vai do
-    /// mesmo jeito, ao lado do estado aprovado. Uma pergunta cancelada e uma
-    /// resposta sem spec atual não gravam nada.
+    /// nota; a resposta digitada também. A de aprovação vai do mesmo jeito,
+    /// ao lado do estado aprovado. Uma pergunta cancelada e uma resposta sem
+    /// spec atual não gravam nada.
     #[test]
     fn each_answered_question_is_recorded_as_a_user_message() {
         if ambient_override() {
@@ -1516,15 +1487,24 @@ mod tests {
         assert_eq!(
             user_messages(root),
             [
-                "Qual o objetivo?\nEnxugar\nsem peça nova",
-                "Quais telas?\nLogin, Painel",
-                "Qual a base?\na main, por favor",
-                "Aprovar esta spec?\nAprovar",
+                "Enxugar\nsem peça nova",
+                "Login, Painel",
+                "a main, por favor",
+                "Aprovar",
             ]
         );
 
         let bare = tempdir().unwrap();
         witness(bare.path(), &ask_on("Qual o objetivo?", &["Enxugar"], json!("Enxugar")));
         assert!(!bare.path().join(".claude").exists(), "no spec, nothing recorded");
+    }
+
+    /// O rótulo de 81 caracteres sai inteiro entre aspas, no lugar das
+    /// reticências; o de 82 fica com os 80 primeiros e termina nelas.
+    #[test]
+    fn a_quoted_label_keeps_eighty_characters_before_the_ellipsis() {
+        let whole = "x".repeat(81);
+        assert_eq!(quote(std::slice::from_ref(&whole)), format!("\"{whole}\""));
+        assert_eq!(quote(&["x".repeat(82)]), format!("\"{}…\"", "x".repeat(80)));
     }
 }

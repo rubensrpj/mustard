@@ -372,7 +372,10 @@ pub fn dispatch(cmd: FlowCmd) {
         }
         FlowCmd::Round { spec, report, root, dispatch, full } => {
             if !dispatch && report.is_none() {
-                let mut out = flow::resume::resume_at(&flow::resume::ResumeOpts { root, spec });
+                // O estado da rodada não liga a conversa à spec: só a abertura e
+                // a retomada ligam.
+                let session = crate::shared::spec_state::session_from_env();
+                let mut out = flow::resume::resume_for(&flow::resume::ResumeOpts { root, spec }, session.as_deref());
                 out["mode"] = serde_json::json!("status");
                 out["mutated"] = serde_json::json!(false);
                 println!("{out}");
@@ -409,8 +412,20 @@ pub fn dispatch(cmd: FlowCmd) {
             flow::answer("triage", &opts.root, opts.spec.as_deref(), started, &flow::triage::triage_at(&opts), false);
         }
         FlowCmd::Answer { spec, point, event_type, json, facts, result, not_applicable, reason, root } => {
-            let opts = flow::answer::AnswerOpts { root, spec, point, event_type, json, facts, result, not_applicable, reason };
-            flow::answer("answer", &opts.root, opts.spec.as_deref(), started, &flow::answer::answer_at(&opts), false);
+            use crate::shared::json_arg::resolve_opt;
+            match resolve_opt(json).and_then(|json| Ok((json, resolve_opt(facts)?))) {
+                Ok((json, facts)) => {
+                    let opts = flow::answer::AnswerOpts { root, spec, point, event_type, json, facts, result, not_applicable, reason };
+                    flow::answer("answer", &opts.root, opts.spec.as_deref(), started, &flow::answer::answer_at(&opts), false);
+                }
+                // O arquivo do `--json` ou do `--facts` que não se lê recusa
+                // sem gravar nada.
+                Err(detail) => {
+                    let refusal = mustard_core::domain::spec_events::Refusal::Io { detail };
+                    let refused = crate::commands::spec_events::refused(&refusal, crate::commands::spec_events::project(&root).lang);
+                    flow::answer("answer", &root, spec.as_deref(), started, &refused, false);
+                }
+            }
         }
     }
 }

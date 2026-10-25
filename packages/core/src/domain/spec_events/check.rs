@@ -160,11 +160,12 @@ pub fn validation_issues(event: &Map<String, Value>) -> Vec<Refusal> {
 fn checked_fields(event: &Map<String, Value>, spec: &TypeSpec) -> Vec<Field> {
     // O `origin` é obrigatório no que o assistente grava a partir da
     // conversa; o que o binário grava, como os critérios tirados do
-    // `spec.md`, não tem mensagem de onde veio.
+    // `spec.md`, não tem mensagem de onde veio. Ele aponta a mensagem pelo
+    // número ou pelo código do item.
     let by_assistant = event.get("author").and_then(Value::as_str) == Some(DEFAULT_AUTHOR);
     let mut fields = vec![
         req("author", Kind::OneOf(AUTHORS)),
-        Field { name: "origin", kind: Kind::Int, required: spec.needs_origin && by_assistant },
+        Field { name: "origin", kind: Kind::Ref, required: spec.needs_origin && by_assistant },
         opt("label", Kind::Text),
         // De qual sessão do Claude Code veio este registro. Duas conversas no
         // mesmo projeto gravavam na mesma spec sem jeito de separar quem fez o
@@ -251,9 +252,11 @@ const NESTED: &[(&str, &str, &[&str])] = &[
     ("task", "files", &["path"]),
     ("send", "skills", &["name", "sha"]),
     ("send", "rejected", &["delivered", "reason"]),
-    // A sobra que a onda relata vira tarefa da spec: sem título ou sem
-    // detalhe, não há o que abrir.
+    // A sobra que a onda relata, e o achado que a revisão final traz no
+    // mesmo formato, vira tarefa da spec: sem título ou sem detalhe, não há o
+    // que abrir.
     ("delivered", "leftovers", &["title", "detail"]),
+    ("verdict", "leftovers", &["title", "detail"]),
     ("delivered", "proofs", &["criterion", "proof"]),
     ("delivered", "agreed", &["item", "met"]),
     ("verdict", "criteria", &["criterion", "tests_rule"]),

@@ -25,11 +25,11 @@ use std::time::Duration;
 
 use mustard_core::domain::agent_model::Difficulty;
 use mustard_core::io::knowledge::enrichment::{
-    GroupingAnswers, GroupingExtras, GroupingSubject, GroupingSummary, GroupingTask, ReserveAnswer, RewriteSource, prepare_grouping, prepare_rewrite,
+    GroupingAnswers, GroupingExtras, GroupingSubject, GroupingSummary, GroupingTask, ReserveAnswer, RewriteSource, RunningWave, prepare_grouping, prepare_rewrite,
 };
 use serde_json::{Map, Value, json};
 
-use super::jev::reserve::as_jev;
+use super::jev::reserve::{self, as_jev};
 use super::jev::yes_no::{SURE, choice_in, noul_in};
 use super::jev::{JEV_MODEL, JevFilter, MAX_CHOICES, TASK_TRIAGE_CALL, validate_wire_size};
 use super::secret::without_secrets;
@@ -133,6 +133,10 @@ pub(crate) fn classify_with(
 /// do Jev ou da reserva dele.
 pub(crate) struct Classifying {
     pub payload: String,
+    /// A impressão das atividades que o pedido pergunta, como o Jev as vê e
+    /// sem as tarefas abertas: só muda quando elas mudam, e por ela a
+    /// decisão tomada se acha de novo mesmo que a fila tenha mudado.
+    pub items_key: String,
     options: Vec<String>,
     near: Vec<String>,
     items: usize,
@@ -155,7 +159,8 @@ pub(crate) fn classifying(candidates: &[Candidate], items: &[Item], summary: &[S
         ordered.pop();
         payload = payload_of(&ordered, items, summary);
     }
-    Some(Classifying { payload, options: options(&ordered), near: near_options(&ordered), items: items.len() })
+    let items_key = reserve::subject(&[Value::Object(shown_items(items)).to_string()]);
+    Some(Classifying { payload, items_key, options: options(&ordered), near: near_options(&ordered), items: items.len() })
 }
 
 impl Classifying {
@@ -301,20 +306,27 @@ fn read_order(doc: &Value, request: &OrderRequest, subjects: &[OrderedSubject]) 
 
 /// O pedido ao modelo pequeno da própria sessão (o Haiku no Claude, a Luna no
 /// Codex, ou o modelo da família que o projeto escolhe em
-/// `ai.session_models`) que lê de uma vez as tarefas `tasks` ainda sem onda e
-/// os resumos `summaries` das ondas que voltaram, e forma até `max_waves`
-/// ondas, cada uma com um objetivo ([`prepare_grouping`]). Com `extras`, a
+/// `ai.session_models`) que lê de uma vez as tarefas `tasks` ainda sem onda,
+/// os resumos `summaries` das ondas que voltaram e o objetivo das ondas
+/// `running` em andamento, e forma as ondas, cada uma com as tarefas do mesmo
+/// sentido, sem deixar tarefa de fora ([`prepare_grouping`]). Com `extras`, a
 /// mesma leitura responde as perguntas de reserva da ordem do Jev
 /// ([`grouping_extras`]). Todo texto vai sem segredo. A preparação que falha
 /// dá só o motivo, em `unavailable`.
-pub(crate) fn grouping_request(root: &Path, tasks: &[GroupingTask], summaries: &[GroupingSummary], max_waves: usize, extras: Option<&GroupingExtras>) -> Value {
+pub(crate) fn grouping_request(
+    root: &Path,
+    tasks: &[GroupingTask],
+    (summaries, running): (&[GroupingSummary], &[RunningWave]),
+    extras: Option<&GroupingExtras>,
+) -> Value {
     let host = if is_codex_session(session_from_env().as_deref()) { "codex" } else { "claude" };
     let config = mustard_core::domain::config::ProjectConfig::load(root);
     let model = config.ai.session_models.get(host).map(String::as_str);
     let tasks: Vec<GroupingTask> =
         tasks.iter().map(|task| GroupingTask { title: without_secrets(&task.title), text: without_secrets(&task.text), ..task.clone() }).collect();
     let summaries: Vec<GroupingSummary> = summaries.iter().map(|summary| GroupingSummary { text: without_secrets(&summary.text), ..summary.clone() }).collect();
-    prepare_grouping(root, host, model, &tasks, &summaries, max_waves, extras).unwrap_or_else(|reason| json!({ "unavailable": reason }))
+    let running: Vec<RunningWave> = running.iter().map(|wave| RunningWave { objective: without_secrets(&wave.objective), ..wave.clone() }).collect();
+    prepare_grouping(root, host, model, &tasks, (&summaries, &running), extras).unwrap_or_else(|reason| json!({ "unavailable": reason }))
 }
 
 /// As perguntas de reserva que a leitura do modelo pequeno leva para a ordem
@@ -548,12 +560,10 @@ fn difficulty_in(answer: &Value) -> Option<Difficulty> {
 
 /// O que o programa já sabe de uma tarefa aberta para ordená-la, sem
 /// perguntar a ninguém, lido da mesma fonte da fila da rodada: a marca de
-/// prioridade que o usuário deu, se é limpeza e as tarefas de que ela
-/// depende.
+/// prioridade que o usuário deu e as tarefas de que ela depende.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct OrderFacts {
     pub priority: bool,
-    pub cleanup: bool,
     pub depends_on: BTreeSet<u64>,
 }
 
@@ -575,9 +585,9 @@ fn after_dependencies<T>(items: &mut Vec<T>, ids: &dyn Fn(&T) -> BTreeSet<u64>, 
 
 /// Ordena `subjects`, que o modelo pequeno da sessão montou com as tarefas
 /// abertas `open`. A ordem parte do que o programa já sabe (`facts`): o que o
-/// usuário marcou como prioridade vai primeiro, a limpeza vai por último, e
-/// cada tarefa sai depois daquelas de que depende. O Jev só desempata, pelos
-/// pedidos que `invoke` manda juntos ([`backlog_jev_ask`]), e só onde há o
+/// usuário marcou como prioridade vai primeiro, e cada tarefa sai depois
+/// daquelas de que depende. O Jev só desempata, pelos pedidos que `invoke`
+/// manda juntos ([`backlog_jev_ask`]), e só onde há o
 /// que ordenar: cada assunto com mais de uma tarefa vai num pedido, com elas
 /// no estado e duas notas por tarefa, o valor da entrega e a complexidade,
 /// porque a documentação dele pede um julgamento rápido por pergunta e o peso
@@ -699,7 +709,6 @@ pub(crate) fn order_backlog_with(
     let members = |(keep, absorbed): &(u64, Vec<u64>)| -> BTreeSet<u64> { std::iter::once(*keep).chain(absorbed.iter().copied()).collect() };
     let fact = |id: &u64| facts.get(id).cloned().unwrap_or_default();
     let marked = |entry: &(u64, Vec<u64>)| members(entry).iter().any(|id| fact(id).priority);
-    let cleanup = |entry: &(u64, Vec<u64>)| members(entry).iter().all(|id| fact(id).cleanup);
     let needs = |entry: &(u64, Vec<u64>)| -> BTreeSet<u64> {
         let own = members(entry);
         own.iter().flat_map(|id| fact(id).depends_on).filter(|id| !own.contains(id)).collect()
@@ -710,25 +719,24 @@ pub(crate) fn order_backlog_with(
             .drain(..)
             .enumerate()
             .map(|(position, entry)| {
-                (!marked(&entry), cleanup(&entry), task_scores.get(&entry.0).copied().unwrap_or(0.0), files(&entry).len(), position, entry)
+                (!marked(&entry), task_scores.get(&entry.0).copied().unwrap_or(0.0), files(&entry).len(), position, entry)
             })
             .collect();
-        ranked.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(b.2.total_cmp(&a.2)).then(a.3.cmp(&b.3)).then(a.4.cmp(&b.4)));
+        ranked.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.total_cmp(&a.1)).then(a.2.cmp(&b.2)).then(a.3.cmp(&b.3)));
         subject.tasks = ranked.into_iter().map(|(.., entry)| entry).collect();
         after_dependencies(&mut subject.tasks, &members, &needs);
     }
     let values = subject_values.unwrap_or_else(|| vec![0.0; subjects.len()]);
-    let mut ranked: Vec<(bool, bool, f64, usize, usize, OrderedSubject)> = subjects
+    let mut ranked: Vec<(bool, f64, usize, usize, OrderedSubject)> = subjects
         .into_iter()
         .zip(values)
         .enumerate()
         .map(|(position, (subject, value))| {
             let any_marked = subject.tasks.iter().any(&marked);
-            let all_cleanup = subject.tasks.iter().all(&cleanup);
-            (!any_marked, all_cleanup, value, subject.tasks.iter().map(|entry| files(entry).len()).sum(), position, subject)
+            (!any_marked, value, subject.tasks.iter().map(|entry| files(entry).len()).sum(), position, subject)
         })
         .collect();
-    ranked.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(b.2.total_cmp(&a.2)).then(a.3.cmp(&b.3)).then(a.4.cmp(&b.4)));
+    ranked.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.total_cmp(&a.1)).then(a.2.cmp(&b.2)).then(a.3.cmp(&b.3)));
     let mut subjects: Vec<OrderedSubject> = ranked.into_iter().map(|(.., subject)| subject).collect();
     let subject_ids = |subject: &OrderedSubject| -> BTreeSet<u64> { subject.tasks.iter().flat_map(&members).collect() };
     let subject_needs = |subject: &OrderedSubject| -> BTreeSet<u64> {
@@ -758,10 +766,24 @@ fn near_options(candidates: &[&Candidate]) -> Vec<String> {
     candidates.iter().map(|c| format!("t{}", c.id)).chain(std::iter::once("none".to_string())).collect()
 }
 
+/// O texto `said` como vai ao Jev: sem segredo e só o começo.
+fn shown(said: &str) -> String {
+    without_secrets(&said.chars().take(SHOWN_CHARS).collect::<String>())
+}
+
+/// As atividades `items` como o estado do pedido as traz, cada uma pela
+/// chave `i<posição>`.
+fn shown_items(items: &[Item]) -> Map<String, Value> {
+    items
+        .iter()
+        .enumerate()
+        .map(|(at, item)| (format!("i{at}"), json!({ "title": shown(&item.title), "text": shown(&item.text), "files": item.files })))
+        .collect()
+}
+
 /// O pedido ao Jev: o estado, uma vez só e sem segredo, e as duas perguntas de
 /// cada atividade.
 fn payload_of(candidates: &[&Candidate], items: &[Item], summary: &[Summary]) -> String {
-    let shown = |said: &str| without_secrets(&said.chars().take(SHOWN_CHARS).collect::<String>());
     let tasks: Map<String, Value> = candidates
         .iter()
         .map(|c| (format!("t{}", c.id), json!({ "title": shown(c.title), "text": shown(c.text), "files": c.files })))
@@ -774,13 +796,12 @@ fn payload_of(candidates: &[&Candidate], items: &[Item], summary: &[Summary]) ->
             json!({ "text": shown(&s.text), "tasks": tasks })
         })
         .collect();
-    let (mut state_items, mut questions) = (Map::new(), Map::new());
+    let mut questions = Map::new();
     let criteria = |labels: Vec<String>, describe: &dyn Fn(&str) -> String| -> Map<String, Value> {
         labels.into_iter().map(|label| { let said = describe(&label); (label, json!(said)) }).collect()
     };
-    for (at, item) in items.iter().enumerate() {
+    for at in 0..items.len() {
         let key = format!("i{at}");
-        state_items.insert(key.clone(), json!({ "title": shown(&item.title), "text": shown(&item.text), "files": item.files }));
         let destination = criteria(options(candidates), &|label| match label.split_once(':') {
             Some(("covered", task)) => format!("tasks.{task} covers it"),
             Some((_, task)) => format!("join tasks.{task}"),
@@ -799,7 +820,7 @@ fn payload_of(candidates: &[&Candidate], items: &[Item], summary: &[Summary]) ->
     }
     json!({
         "model": JEV_MODEL,
-        "state": { "revision": "task-triage-v1", "tasks": tasks, "items": state_items, "summaries": summaries },
+        "state": { "revision": "task-triage-v1", "tasks": tasks, "items": shown_items(items), "summaries": summaries },
         "questions": questions,
     })
     .to_string()
@@ -1039,12 +1060,12 @@ mod tests {
     }
 
     /// O que o programa já sabe manda na ordem antes do Jev. O Jev dá a maior
-    /// nota à tarefa de limpeza e ao assunto da exportação. O assunto com a
-    /// tarefa que o usuário marcou sai primeiro mesmo assim; no carrinho, a
-    /// limpeza fica por último, e a tarefa que depende de outra sai depois
-    /// dela.
+    /// nota à tarefa do comentário da soma e ao assunto da exportação. O
+    /// assunto com a tarefa que o usuário marcou sai primeiro mesmo assim; no
+    /// carrinho, a tarefa de maior nota sai primeiro, e a tarefa que depende
+    /// de outra sai depois dela.
     #[test]
-    fn backlog_triage_puts_the_marked_first_the_cleanup_last_and_each_task_after_its_dependencies() {
+    fn backlog_triage_puts_the_marked_first_then_the_value_and_each_task_after_its_dependencies() {
         let open = [
             candidate(1, "O comentário da soma diz dois", "web/cart/total.ts", true),
             candidate(2, "O total arredonda o desconto", "web/cart/total.ts", true),
@@ -1053,7 +1074,6 @@ mod tests {
             candidate(5, "A exportação mantém a ordem das colunas", "web/report/export.ts", true),
         ];
         let facts = BTreeMap::from([
-            (1, OrderFacts { cleanup: true, ..OrderFacts::default() }),
             (2, OrderFacts { depends_on: BTreeSet::from([3]), ..OrderFacts::default() }),
             (4, OrderFacts { priority: true, ..OrderFacts::default() }),
         ]);
@@ -1082,7 +1102,7 @@ mod tests {
         let names: Vec<&str> = ordered.subjects.iter().map(|subject| subject.name.as_str()).collect();
         assert_eq!(names, ["Login", "Exportação", "Carrinho"], "the marked subject first, then the value");
         let cart: Vec<u64> = ordered.subjects[2].tasks.iter().map(|(id, _)| *id).collect();
-        assert_eq!(cart, [3, 2, 1], "the dependency before its dependent, the cleanup last");
+        assert_eq!(cart, [1, 3, 2], "the highest value first, the dependency before its dependent");
     }
 
     /// O agente lê de cada arquivo da tarefa só a declaração que ela cita

@@ -14,7 +14,8 @@ use mustard_core::io::fs::lock::LockedFile;
 
 use crate::commands::git_settle::CopiesLock;
 use mustard_core::io::wave_prompt::{
-    copies_dir, final_copy_path, is_slot_of, local_file_inside, recorded_copy, shown, slot_path, spec_copies_dir,
+    copies_dir, final_copy_path, inside_copies, is_slot_of, local_file_inside, recorded_copy, shown, slot_path, spec_copies_dir,
+    terminal_folder,
 };
 use mustard_core::platform::git;
 use mustard_core::platform::i18n::{Locale, translate};
@@ -401,6 +402,27 @@ pub(super) fn live_copy(path: &Path) -> bool {
 /// git, de uma pasta que sumiu, sai pelo `worktree prune` antes do `add`. A
 /// pasta mãe nasce antes da cópia.
 fn new_copy(root: &Path, path: &Path, head: &str, owner: &Keeping) -> Result<Prepared, String> {
+    let kept = new_bare_copy(root, path, head, owner)?;
+    Ok(Prepared { missing: copy_local_files(root, path), reused: None, kept })
+}
+
+/// A cópia de checagem em `path`, no commit `head` do checkout `root`, sem os
+/// arquivos locais do projeto: o que o git ignora (`.env`) não existe nela, e
+/// o que um comando lê dali falha como falharia num checkout limpo. A vaga que
+/// já é cópia viva volta ao commit sem apagar o que o git ignora, a compilação
+/// e as dependências, e a pasta que não é cópia viva nasce de novo
+/// ([`new_bare_copy`]). Devolve o código que a limpeza guardou antes.
+pub(crate) fn clean_copy(root: &Path, path: &Path, head: &str, owner: &Keeping) -> Result<Vec<Kept>, String> {
+    if live_copy(path) {
+        super::keep::reset_with_submodules(root, path, head, owner)
+    } else {
+        new_bare_copy(root, path, head, owner)
+    }
+}
+
+/// [`new_copy`] sem levar os arquivos locais do projeto: devolve só o código
+/// que a pasta velha tinha e ficou guardado.
+fn new_bare_copy(root: &Path, path: &Path, head: &str, owner: &Keeping) -> Result<Vec<Kept>, String> {
     let mut kept = Vec::new();
     if path.exists() {
         if !inside_copies(root, path) {
@@ -415,7 +437,7 @@ fn new_copy(root: &Path, path: &Path, head: &str, owner: &Keeping) -> Result<Pre
     git::run(root, &["worktree", "prune"]).result()?;
     let target = path.to_string_lossy();
     git::run(root, &["worktree", "add", "--detach", &target, head]).result()?;
-    Ok(Prepared { missing: copy_local_files(root, path), reused: None, kept })
+    Ok(kept)
 }
 
 /// Os arquivos que mudaram do commit `before` ao commit `head`, que o git do
@@ -433,28 +455,17 @@ fn changed_since(root: &Path, before: &str, head: &str) -> Option<Reuse> {
     Some(Reuse { since: before.to_string(), changed })
 }
 
-/// A pasta `path` mora dentro de um dos lugares de cópia do projeto `root`:
-/// a pasta das cópias dele, fora do projeto, ou o lugar antigo, dentro dele
-/// (`.claude/worktrees`). Só aí o Mustard apaga pasta; a pasta principal e a
-/// compilação dela nunca entram.
-pub(crate) fn inside_copies(root: &Path, path: &Path) -> bool {
-    let places = [copies_dir(root), root.join(".claude").join("worktrees")];
-    places.iter().any(|place| path.starts_with(place) && path != place.as_path())
-        && path.components().all(|part| !matches!(part, std::path::Component::ParentDir))
-}
-
 /// O aviso de quem chamou a rodada de dentro de uma cópia de onda: a pasta em
 /// que o terminal está pode ser apagada pela própria rodada
 /// ([`remove_spec_copies`]), e um shell que perde a pasta em que está não roda
 /// mais nada.
 ///
 /// `None` quando o terminal está na pasta principal, ou quando não se sabe
-/// onde ele está. Nenhuma chamada de `exit` ou `kill` existe nesse caminho: o
-/// terminal morria por isso, e não por alguém o encerrar (reproduzido em
-/// 22/10/2026).
+/// onde ele está ([`terminal_folder`]). Nenhuma chamada de `exit` ou `kill`
+/// existe nesse caminho: o terminal morria por isso, e não por alguém o
+/// encerrar (reproduzido em 22/10/2026).
 pub(crate) fn standing_in_a_copy(root: &Path, lang: mustard_core::platform::i18n::Locale) -> Option<serde_json::Value> {
-    let here = std::env::current_dir().ok()?;
-    let here = here.canonicalize().unwrap_or(here);
+    let here = terminal_folder()?;
     inside_copies(root, &here).then(|| {
         let hint = crate::shared::say::say("round.terminal_inside_a_copy", lang, &[("{folder}", &shown(&here))]);
         serde_json::json!({"reason": "terminal-inside-a-copy", "hint": hint})
@@ -1148,9 +1159,9 @@ mod standing_tests {
         let root = dir.path();
         let copies = mustard_core::io::wave_prompt::copies_dir(root);
         let slot = copies.join("obra").join("0");
-        assert!(crate::commands::flow::round::slots::inside_copies(root, &slot), "a vaga de uma onda está dentro das cópias");
-        assert!(!crate::commands::flow::round::slots::inside_copies(root, root), "a pasta principal não");
-        assert!(!crate::commands::flow::round::slots::inside_copies(root, &root.join("src")), "nem uma pasta do projeto");
+        assert!(inside_copies(root, &slot), "a vaga de uma onda está dentro das cópias");
+        assert!(!inside_copies(root, root), "a pasta principal não");
+        assert!(!inside_copies(root, &root.join("src")), "nem uma pasta do projeto");
 
         let said = crate::shared::say::say(
             "round.terminal_inside_a_copy",

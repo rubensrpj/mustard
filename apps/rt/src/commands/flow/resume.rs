@@ -3,7 +3,8 @@
 //! Lê o arquivo de eventos da spec e responde a fase em que ela está, a
 //! branch e a base, o próximo passo em palavras e como comando, a aprovação
 //! do objetivo e o que aconteceu desde a última mensagem do usuário: as ondas
-//! aceitas, os commits, os despachos e o que está à espera. É essa resposta
+//! aceitas, os commits, os despachos e o que está à espera. Com o pull request
+//! aberto, ela traz também a esteira dele, lida na hora. É essa resposta
 //! que conduz a conversa de volta ao ponto em que ela parou. Nenhum endereço
 //! de página entra na resposta: o link mora na barra de status.
 //!
@@ -40,10 +41,16 @@ pub struct ResumeOpts {
     pub spec: Option<String>,
 }
 
-/// O núcleo testável de [`run_cmd`]. A sessão vem do ambiente. Nunca entra em
-/// pânico.
+/// O núcleo testável de [`run_cmd`]. A sessão vem do ambiente, e a conversa
+/// dela fica ligada à spec retomada: depois do `/clear`, a sessão nova volta
+/// a gravar na spec por aqui. Nunca entra em pânico.
 pub(crate) fn resume_at(opts: &ResumeOpts) -> Value {
-    resume_for(opts, session_from_env().as_deref())
+    let session = session_from_env();
+    let report = resume_for(opts, session.as_deref());
+    if let Some(spec) = report["spec"].as_str().filter(|_| report["ok"] == json!(true)) {
+        spec_events::session_spec::bind(&opts.root, session.as_deref(), spec);
+    }
+    report
 }
 
 /// [`resume_at`] com a sessão recebida, que é como um teste a escolhe.
@@ -54,9 +61,12 @@ pub(crate) fn resume_for(opts: &ResumeOpts, session: Option<&str>) -> Value {
 
     let spec = match opts.spec.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(spec) => spec.to_string(),
+        // Sem spec nenhuma, a retomada não é erro: o mapa da sessão manda
+        // rodá-la sempre, e o próximo passo do projeto que ainda não começou
+        // obra é abrir a spec. Sem fase, não há comando de fase.
         None => match DiskSpecState::new(&checkout(&opts.root)).active(session) {
             Some(spec) => spec,
-            None => return refuse(&Refusal::NoCurrentSpec),
+            None => return json!({ "ok": true, "next": translate("resume.no_spec", lang) }),
         },
     };
     if let Err(refusal) = mustard_core::io::legacy_specs::refuse_legacy(&project.root, &spec) {
@@ -104,6 +114,13 @@ pub(crate) fn resume_for(opts: &ResumeOpts, session: Option<&str>) -> Value {
     if let Some(said) = refused_close(&project.root, &spec, &log, lang) {
         out["close_refused"] = json!(said);
         out["next"] = json!(said);
+    }
+    // Com o pull request aberto, o passo que falta depende da esteira dele: a
+    // retomada a lê agora, pela mesma leitura do merge, e diz o que ela pede.
+    if phase == "pr_open"
+        && let Some(checks) = crate::commands::review::pr_checks::of_spec(&project.root, &spec, lang)
+    {
+        out["checks"] = json!(checks);
     }
     if let Some(branch) = work_copies::lost_branch(&project.root, &state) {
         out["branch_missing"] = json!(translate("copies.branch_missing", lang).replace("{branch}", &branch));
@@ -206,7 +223,8 @@ fn since_last_message(root: &Path, spec: &str, log: &SpecLog) -> Value {
         })
         .collect();
 
-    let returns: Vec<&SpecEvent> = log.unassumed_returns().into_iter().filter(|e| e.event_type == "delivered").collect();
+    // As voltas à espera são as que a rodada assume, pela mesma leitura.
+    let returns = log.returns_awaiting_round();
     let returned: BTreeSet<u64> = returns.iter().filter_map(|e| e.wave()).collect();
     let awaiting: Vec<Value> = returns
         .iter()
@@ -341,8 +359,7 @@ pub(crate) fn resume_block(spec: &str, log: &SpecLog, observed: &[SpecEvent], la
     // As mesmas contas da barra de status e do painel.
     let states = crate::commands::panel::progress::wave_states(log);
     let delivered = states.values().filter(|state| state.finished()).count();
-    let returns: Vec<_> =
-        log.unassumed_returns().into_iter().filter(|e| e.event_type == "delivered").collect();
+    let returns = log.returns_awaiting_round();
     let returned: BTreeSet<u64> = returns.iter().filter_map(|e| e.wave()).collect();
     let running: BTreeSet<u64> =
         waves_in_progress(log).into_keys().filter(|n| !returned.contains(n)).collect();
@@ -556,7 +573,7 @@ pub(crate) fn next_command_now(root: &Path, phase: &str, spec: &str, state: &Sta
 /// a aprovação.
 fn step_of(root: &Path, phase: &str, spec: &str, log: &SpecLog, lang: Locale) -> (&'static str, String) {
     use crate::commands::flow::round::queue::{backlog_ready, next_waves};
-    use crate::commands::flow::round::{backlog_left, open_review, waves_stuck};
+    use crate::commands::flow::round::{awaited_review, backlog_left, waves_stuck};
     use mustard_core::view::document::WaveState;
 
     let said = |key: &str| ("close", translate(key, lang).to_string());
@@ -609,7 +626,9 @@ fn step_of(root: &Path, phase: &str, spec: &str, log: &SpecLog, lang: Locale) ->
     if !backlog_left(log).is_empty() {
         return round("resume.step.backlog_held");
     }
-    if open_review(log).is_some() {
+    // O pedido aberto mais velho que a última mudança não espera veredito:
+    // o passo é o fechamento, que abre o pedido novo.
+    if awaited_review(log).is_some() {
         return ("close", translate("resume.step.review_open", lang).to_string());
     }
     let review = crate::commands::panel::progress::review(log);
@@ -821,7 +840,7 @@ mod tests {
     /// não são passo.
     #[test]
     fn the_last_step_is_the_newest_flow_step() {
-        use crate::commands::spec_events::conversation::record_call;
+        use crate::commands::spec_events::conversation::record_call_as;
         let dir = tempdir().unwrap();
         let root = dir.path();
         std::fs::write(root.join("mustard.json"), b"{}").unwrap();
@@ -829,7 +848,7 @@ mod tests {
         crate::shared::spec_state::seed_event(root, "x", "call", json!({"command": "round", "ms": 3, "result": "ok", "author": "binary"}));
         let ok = json!({"ok": true, "spec": "x"});
         for command in ["close", "pr-open", "find", "read", "search", "map search", "resume"] {
-            record_call(root, command, Some("x"), std::time::Instant::now(), &ok);
+            record_call_as(root, None, command, Some("x"), std::time::Instant::now(), &ok);
         }
 
         let template = translate("resume.line", Locale::PtBr);
@@ -855,7 +874,7 @@ mod tests {
         let said = seed("message", json!({"author": "user", "text": "o plano"}));
         let criterion = |when: &str| seed("criterion", json!({"when": when, "then": "b", "proof": "p", "form": "ubiquitous", "origin": said}));
         let early = criterion("antes");
-        crate::commands::spec_events::conversation::record_call(root, "round", Some("x"), std::time::Instant::now(), &json!({"ok": true, "spec": "x"}));
+        crate::commands::spec_events::conversation::record_call_as(root, None, "round", Some("x"), std::time::Instant::now(), &json!({"ok": true, "spec": "x"}));
         let late = criterion("depois");
 
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
@@ -1045,7 +1064,9 @@ mod tests {
         }
     }
 
-    /// Sem spec nenhuma, a retomada recusa dizendo que não há spec atual.
+    /// A spec pedida pelo nome e que não existe é recusada, dizendo que o
+    /// arquivo dela falta. Sem spec pedida nem atual, a retomada não recusa:
+    /// diz para abrir uma.
     #[test]
     fn resuming_without_a_current_spec_is_refused() {
         let dir = tempdir().unwrap();

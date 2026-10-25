@@ -16,7 +16,7 @@
 
 use std::path::Path;
 
-use mustard_core::domain::spec_events::SpecLog;
+use mustard_core::domain::spec_events::{SpecLog, referenced_id};
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Map, Value, json};
 
@@ -56,7 +56,9 @@ pub(super) fn question(log: &SpecLog, draft: &Map<String, Value>) -> Option<Stri
         return None;
     }
     let goal = mustard_core::domain::survey::goal(log).and_then(|event| event.str_field("text"))?;
-    let said = draft.get("origin").and_then(Value::as_u64).and_then(|origin| log.get(origin)).and_then(|message| message.str_field("text"));
+    // A origem chega pelo número ou pelo código da mensagem, e a gravação só a
+    // troca pelo número depois desta pergunta.
+    let said = referenced_id(log, "request", draft, "origin").and_then(|origin| log.get(origin)).and_then(|message| message.str_field("text"));
     Some(payload(goal, draft, said))
 }
 

@@ -61,6 +61,27 @@ pub(super) fn asks_jev(jev: Option<&dyn WaveJudge>) -> bool {
     jev.is_some()
 }
 
+/// As ondas de `waves`, montadas pelo backlog e não enviadas, na spec lida em
+/// `log`, que a rodada que as montou segurou à espera da escolha dos itens
+/// pelo Jev de contexto `jev`, o que a rodada já carregou: algum pedido da
+/// escolha dela não tinha decisão gravada, por `asker`, quando a onda foi
+/// gravada. A montagem não as desfaz: cada uma sai com o número que ganhou,
+/// na rodada em que a decisão chega. A onda que já tinha a decisão e não saiu
+/// por outro motivo fica de fora, e todas ficam com o Jev desligado.
+pub(super) fn held_for_the_jev(log: &SpecLog, waves: &BTreeSet<u64>, jev: Option<&dyn WaveJudge>, asker: &Asker<'_>) -> BTreeSet<u64> {
+    if waves.is_empty() || !asks_jev(jev) {
+        return BTreeSet::new();
+    }
+    let held = |wave: u64| -> Option<bool> {
+        let formed = log.block(BlockQuery::Wave(wave)).into_iter().filter(|e| e.event_type == "wave").map(|e| e.id).max()?;
+        let (_, board) = board_for(log, wave)?;
+        let parts = items_payloads(&board).ok()?;
+        let payloads: Vec<String> = parts.into_iter().map(|(payload, _)| payload).collect();
+        Some(asker.undecided_at(ITEMS_CALL, &payloads, formed))
+    };
+    waves.iter().copied().filter(|wave| held(*wave) == Some(true)).collect()
+}
+
 /// A pergunta de uma onda: o número, os candidatos, o quadro e os pedidos ao
 /// Jev, cada um com os itens que pergunta.
 type Asked<'l> = (u64, Candidates<'l>, ItemsBoard, Vec<(String, Vec<u64>)>);
@@ -83,14 +104,8 @@ fn choose_with(start: &Path, spec: &str, log: &SpecLog, ready: &[u64], judge: Op
     let Some(judge) = judge else {
         return (BTreeMap::new(), BTreeSet::new());
     };
-    let mut boards: Vec<(u64, Candidates<'_>, ItemsBoard)> = Vec::new();
-    for wave in ready {
-        let found = candidates(log, *wave);
-        if !found.is_empty() {
-            let board = board_of(log, *wave, &found);
-            boards.push((*wave, found, board));
-        }
-    }
+    let boards: Vec<(u64, Candidates<'_>, ItemsBoard)> =
+        ready.iter().filter_map(|wave| board_for(log, *wave).map(|(found, board)| (*wave, found, board))).collect();
     // O quadro que passa do que o serviço aceita leva o padrão, sem chamada;
     // antes das travas, a falha fica gravada com o motivo.
     let mut asked: Vec<Asked<'_>> = Vec::new();
@@ -153,6 +168,19 @@ fn choose_with(start: &Path, spec: &str, log: &SpecLog, ready: &[u64], judge: Op
         }
     }
     (choices, waiting)
+}
+
+/// Os candidatos da onda `wave` e o quadro deles ([`board_of`]); `None` na
+/// onda sem candidato, que leva o pedido padrão. É o quadro que a escolha dos
+/// itens ([`choose_with`]) e a espera por ela ([`held_for_the_jev`]) perguntam,
+/// montado num lugar só para as duas acharem a mesma decisão.
+fn board_for(log: &SpecLog, wave: u64) -> Option<(Candidates<'_>, ItemsBoard)> {
+    let found = candidates(log, wave);
+    if found.is_empty() {
+        return None;
+    }
+    let board = board_of(log, wave, &found);
+    Some((found, board))
 }
 
 /// O quadro da onda `wave`: as tarefas dela e os candidatos (`found`), cada um

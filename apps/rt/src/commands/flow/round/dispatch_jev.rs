@@ -21,7 +21,12 @@
 //! mesmas tarefas, acha a mesma decisão, e a espera não se repete. Cada pedido
 //! fica gravado por si: a decisão de uma tarefa vale em qualquer montagem que
 //! a leve, e a rodada em que a spec mudou entre a pergunta e a trava só espera
-//! pelo pedido que mudou.
+//! pelo pedido que mudou. A onda montada que a escolha dos itens ou a das
+//! skills segurou não volta a ser montada: a montagem a mantém enquanto a
+//! decisão de uma das duas falta ou veio depois dela ([`Asker::undecided_at`]),
+//! e ela sai com o número que ganhou. A onda cujas decisões já estavam
+//! gravadas antes dela e que não saiu por outro motivo, como a falta de cópia,
+//! se desfaz e volta ao backlog.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -75,6 +80,11 @@ pub(crate) struct Asker<'a> {
     spec: &'a str,
     phase: Phase,
     known: RefCell<BTreeMap<String, Value>>,
+    /// O número do evento que gravou primeiro a decisão de cada impressão,
+    /// lido da spec na entrada. A decisão que a passada grava depois
+    /// ([`Self::record`]) não entra: o evento dela é mais novo que toda onda
+    /// já gravada, e [`Self::undecided_at`] já a conta como gravada depois.
+    since: BTreeMap<String, u64>,
     reserves: RefCell<Vec<Value>>,
 }
 
@@ -82,13 +92,24 @@ impl<'a> Asker<'a> {
     /// As decisões gravadas na spec lida em `log`, na fase `phase`.
     pub(crate) fn new(start: &'a Path, root: &'a Path, spec: &'a str, log: &SpecLog, phase: Phase) -> Self {
         let mut known = BTreeMap::new();
+        let mut since = BTreeMap::new();
         let prefix = format!("{STAGE}:");
         for event in log.events.iter().filter(|e| e.event_type == "stage_run" && e.str_field("stage").is_some_and(|stage| stage.starts_with(&prefix))) {
             if let Some(kept) = event.str_field("output").and_then(|text| serde_json::from_str::<Map<String, Value>>(text).ok()) {
-                known.extend(kept);
+                for (print, doc) in kept {
+                    since.entry(print.clone()).or_insert(event.id);
+                    known.insert(print, doc);
+                }
             }
         }
-        Self { start, root, spec, phase, known: RefCell::new(known), reserves: RefCell::new(Vec::new()) }
+        Self { start, root, spec, phase, known: RefCell::new(known), since, reserves: RefCell::new(Vec::new()) }
+    }
+
+    /// `true` quando algum pedido de `payloads` da chamada `command` ainda não
+    /// tinha decisão gravada no evento `formed`: a decisão falta, ou foi
+    /// gravada depois dele, inclusive a que esta passada gravou.
+    pub(crate) fn undecided_at(&self, command: &str, payloads: &[String], formed: u64) -> bool {
+        payloads.iter().any(|payload| self.since.get(&print(command, payload).0).is_none_or(|at| *at > formed))
     }
 
     /// `true` antes das travas, quando a pergunta pode sair.
@@ -289,19 +310,57 @@ pub(crate) fn without(ready: Vec<u64>, waiting: &BTreeSet<u64>) -> Vec<u64> {
     ready.into_iter().filter(|wave| !waiting.contains(wave)).collect()
 }
 
+/// A passada de antes das travas ([`ask_before_locks`]) de novo, depois do
+/// commit que esta rodada acabou de fazer (`committed`), pela spec gravada
+/// em `path`: a tarefa que esperava a onda comitada só fica pronta agora, e a
+/// onda dela nasce na passada travada desta mesma rodada. Sem a pergunta
+/// feita aqui, a escolha dos itens dela esperaria a decisão do Jev, e a onda
+/// ficaria gravada sem sair. A trava das cópias segue presa: nenhuma outra
+/// rodada solta onda no meio, e a pergunta a segura no máximo pelo prazo do
+/// Jev; a do passo do git o commit já soltou. Devolve os pedidos de reserva
+/// de `early`, os da passada de antes, mais os novos desta; sem commit,
+/// `early` como veio. O Jev da escolha das skills (`picks_jev`) é o que a
+/// rodada já carregou.
+pub(super) fn ask_after_commit(
+    (start, root, spec, path): (&Path, &Path, &str, &Path),
+    committed: bool,
+    mut early: Vec<Value>,
+    session: Option<&str>,
+    lang: Locale,
+    picks_jev: Option<&crate::shared::jev::yes_no::AskFn<'_>>,
+) -> Vec<Value> {
+    let Some(log) = mustard_core::io::spec_events::read(path).ok().flatten().filter(|_| committed) else { return early };
+    for asked in ask_before_locks(start, root, spec, &log, session, lang, picks_jev) {
+        if !early.contains(&asked) {
+            early.push(asked);
+        }
+    }
+    early
+}
+
 /// A passada antes das travas da rodada da spec `spec` de `start` (`root`,
 /// o repositório principal), lida em `log`, na sessão `session` e no idioma
 /// `lang`: refaz o despacho que a rodada vai fazer, sem gravar onda nenhuma —
 /// a formação da lista, a montagem das ondas, a escolha dos itens de cada
 /// onda pronta e a das skills das tarefas dela —, e cada pergunta ao Jev sem
 /// decisão sai agora, com a resposta gravada. Volta os pedidos de reserva da
-/// pergunta que o Jev não respondeu.
-pub(super) fn ask_before_locks(start: &Path, root: &Path, spec: &str, log: &SpecLog, session: Option<&str>, lang: Locale) -> Vec<Value> {
+/// pergunta que o Jev não respondeu. O Jev da escolha das skills
+/// (`picks_jev`) é o que a rodada já carregou: a passada o usa na escolha das
+/// skills e o passa à montagem, que o usa para saber se a onda montada espera
+/// por ela.
+pub(super) fn ask_before_locks(
+    start: &Path,
+    root: &Path,
+    spec: &str,
+    log: &SpecLog,
+    session: Option<&str>,
+    lang: Locale,
+    picks_jev: Option<&crate::shared::jev::yes_no::AskFn<'_>>,
+) -> Vec<Value> {
     // Com o Jev desligado em todos os pontos, não há o que perguntar: o
     // despacho segue a regra de sempre, sem a passada.
     let waves_jev = crate::shared::jev::for_waves(root, spec);
     let context_jev = crate::shared::jev::for_context(root, spec);
-    let picks_jev = crate::shared::jev::yes_no::project_jev(root, spec, crate::shared::skill_cycle::PICK_CALL);
     let order_jev = crate::shared::jev::yes_no::orchestration_jev(root, spec, crate::shared::jev::TASK_TRIAGE_CALL).is_some();
     if waves_jev.filter.is_none() && !super::item_choice::asks_jev(context_jev.filter.as_deref()) && picks_jev.is_none() && !order_jev {
         return Vec::new();
@@ -311,7 +370,7 @@ pub(super) fn ask_before_locks(start: &Path, root: &Path, spec: &str, log: &Spec
     let judge = waves_jev.filter.as_deref().map(|jev| move |board: &crate::shared::judgement::Board| jev.judge_backlog(board));
     let judging = judge.as_ref().map(|judge| judge as &super::backlog::Judge<'_>);
     let limit = super::queue::max_parallel(root);
-    let Ok(planned) = super::backlog::planned_backlog(start, spec, log, limit, (judging, &asker), forming.pending.is_some()) else {
+    let Ok(planned) = super::backlog::planned_backlog(start, spec, log, limit, (judging, (&asker, context_jev.filter.as_deref(), picks_jev)), forming.pending.is_some()) else {
         return asker.into_reserves();
     };
     let vacancies = super::vacancy::vacancies(root, spec, &planned);
@@ -324,7 +383,7 @@ pub(super) fn ask_before_locks(start: &Path, root: &Path, spec: &str, log: &Spec
     if let Some(jev) = picks_jev.filter(|_| !ready.is_empty()) {
         let flight = mustard_core::io::wave_prompt::Flight { running: ready.clone(), choices, ..Default::default() };
         let built = mustard_core::io::wave_prompt::prompts(root, spec, &planned, lang, &flight, &ready);
-        crate::shared::skill_cycle::picks_decided(&built, &ready, Some(&*jev), &asker);
+        crate::shared::skill_cycle::picks_decided(&built, &ready, Some(jev), &asker);
     }
     asker.into_reserves()
 }

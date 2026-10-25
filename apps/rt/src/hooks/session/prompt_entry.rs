@@ -10,14 +10,15 @@
 //!    idiomas, uma linha em cada. O `/mustard` sozinho, sem dois pontos, é a
 //!    ajuda e passa. Texto comum nunca é barrado: num projeto sem Mustard os
 //!    ganchos ficam calados.
-//! 2. **A mensagem, gravada.** Com uma spec atual, a mensagem do usuário vai
-//!    para o bloco da conversa, como ele a escreveu. O aviso que o próprio
-//!    Claude Code manda pelo mesmo canal (o fim de um comando em segundo
-//!    plano, a volta de um subagente) não é mensagem de ninguém e não é
-//!    gravado. A mensagem dita antes de a spec existir, a do turno da
-//!    abertura inclusive, quem grava é a abertura (`run open`), lida da
-//!    conversa da sessão com o mesmo filtro do aviso; daqui saem só as
-//!    seguintes, sem repetir nenhuma.
+//! 2. **A mensagem, gravada.** Na sessão que a abertura ou a retomada ligou
+//!    a uma spec, a mensagem do usuário vai para o bloco da conversa dela,
+//!    como ele a escreveu. O aviso que o próprio Claude Code manda pelo mesmo
+//!    canal (o fim de um comando em segundo plano, a volta de um subagente)
+//!    não é mensagem de ninguém e não é gravado, e o lembrete do sistema que
+//!    vem dentro da fala sai dela. A mensagem dita antes de a spec existir, a
+//!    do turno da abertura inclusive, quem grava é a abertura (`run open`),
+//!    lida da conversa da sessão com o mesmo filtro do aviso; daqui saem só
+//!    as seguintes, sem repetir nenhuma.
 //! 3. **A correção.** A regra de escrita mora no estilo de resposta, dita uma
 //!    vez, e uma mensagem comum não coloca texto nenhum na conversa: repetida
 //!    em toda mensagem, a lembrança empurrava a resposta a encolher. Só depois
@@ -36,7 +37,7 @@ use mustard_core::ProjectConfig;
 
 use crate::commands::spec_events::conversation::record_message;
 use crate::hooks::task::clarity_check::take_next_note;
-use crate::shared::prompt::is_harness_notice;
+use crate::shared::prompt::person_text;
 
 /// A entrada da mensagem.
 pub struct PromptEntry;
@@ -108,8 +109,8 @@ impl Check for PromptEntry {
             }
             return Ok(Verdict::Allow);
         }
-        if !is_harness_notice(prompt) {
-            let _ = record_message(root, input.session_id.as_deref(), prompt);
+        if let Some(text) = person_text(prompt) {
+            let _ = record_message(root, input.session_id.as_deref(), &text);
         }
         let Some(line) = message_line(root) else {
             return Ok(Verdict::Allow);
@@ -264,6 +265,8 @@ mod tests {
         .unwrap();
         stand_on_spec_branch(root, spec);
         record_open(root, spec, &format!("feature/{spec}"), "dev").expect("open");
+        // A conversa das mensagens destes testes abriu a spec.
+        crate::shared::context::session::bind_session_spec(&root.to_string_lossy(), "s1", spec);
         dir
     }
 

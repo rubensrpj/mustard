@@ -32,6 +32,7 @@ use mustard_core::ProjectConfig;
 use mustard_core::domain::map_filter::{
     FilterCandidate, FilterError, FilterRequest, FilterUsage, Filtered, MapFilter, Partial, Scored, Verdict, joined, judged,
 };
+use mustard_core::domain::text::one_line;
 use mustard_core::io::jev_gate;
 use serde_json::{Map, Value, json};
 
@@ -194,23 +195,53 @@ pub struct JevFilter {
     purpose: Purpose,
 }
 
+/// Por que o filtro de uma finalidade não sai montado, para quem avisa dizer
+/// o motivo certo e, no desligado, o ajuste do `mustard.json` que o liga.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum JevOff {
+    /// O programa de teste nunca chama o serviço.
+    InTest,
+    /// `ai.fallback` não é `true` no `mustard.json`.
+    Fallback,
+    /// A finalidade, pelo nome dela, sem `jev` em
+    /// `judgement.<finalidade>.filter`.
+    Purpose(&'static str),
+    /// Nem o ambiente nem o projeto trazem a chave.
+    NoKey,
+    /// A única chave está no `mustard.json` que o git guarda ou não ignora.
+    KeyInGit,
+}
+
 impl JevFilter {
     pub(crate) fn for_orchestration(root: &Path, spec: &str) -> Option<Self> {
-        Self::orchestrating(root, spec, Purpose::WavePlanning)
+        Self::orchestrating(root, spec, Purpose::WavePlanning).ok()
     }
 
     /// O filtro da busca na spec: a finalidade própria, que o
     /// `mustard.json` liga ou desliga à parte; sem ela escrita, fica
-    /// desligada até ser ligada.
-    pub(crate) fn for_spec_search(root: &Path, spec: &str) -> Option<Self> {
+    /// desligada até ser ligada. Sem o filtro, o motivo.
+    pub(crate) fn for_spec_search(root: &Path, spec: &str) -> Result<Self, JevOff> {
         Self::orchestrating(root, spec, Purpose::SpecSearch)
     }
 
-    fn orchestrating(root: &Path, spec: &str, purpose: Purpose) -> Option<Self> {
-        let config=ProjectConfig::load(root);
-        if cfg!(test) || !config.ai_fallback_enabled() || !jev_gate::setting_allows(config.judgement_filter(purpose.key())) { return None; }
-        let loaded=key_in(root,&config,std::env::var(jev_gate::KEY_ENV).ok()).ok()?;
-        let mut filter=Self::new(root,loaded.key); filter.spec=Some(spec.into()); filter.purpose=purpose; Some(filter)
+    /// O filtro da finalidade `purpose`, ou o primeiro ajuste que falta, na
+    /// ordem de [`jev_gate::purpose_key`]: o Jev, a finalidade e a chave.
+    fn orchestrating(root: &Path, spec: &str, purpose: Purpose) -> Result<Self, JevOff> {
+        if cfg!(test) {
+            return Err(JevOff::InTest);
+        }
+        let config = ProjectConfig::load(root);
+        let loaded = jev_gate::purpose_key(&config, purpose.key(), || key_in(root, &config, std::env::var(jev_gate::KEY_ENV).ok()))
+            .map_err(|missing| match missing {
+                jev_gate::Missing::Fallback => JevOff::Fallback,
+                jev_gate::Missing::Purpose => JevOff::Purpose(purpose.key()),
+                jev_gate::Missing::Key(FilterError::KeyInGit) => JevOff::KeyInGit,
+                jev_gate::Missing::Key(_) => JevOff::NoKey,
+            })?;
+        let mut filter = Self::new(root, loaded.key);
+        filter.spec = Some(spec.into());
+        filter.purpose = purpose;
+        Ok(filter)
     }
 
     /// O filtro das perguntas do resumo do projeto: só o interruptor geral do
@@ -239,9 +270,9 @@ impl JevFilter {
     /// Knowledge uses the same authorization, cache and attempt ledger
     /// as other search decisions, without enabling context or wave judgement.
     pub(crate) fn for_knowledge(root:&Path)->Option<Self> {
+        if cfg!(test) {return None;}
         let config=ProjectConfig::load(root);
-        if cfg!(test) || !config.ai_fallback_enabled() || !jev_gate::setting_allows(config.judgement_filter("search")) {return None;}
-        let loaded=key_in(root,&config,std::env::var(jev_gate::KEY_ENV).ok()).ok()?;
+        let loaded=jev_gate::purpose_key(&config,"search",||key_in(root,&config,std::env::var(jev_gate::KEY_ENV).ok())).ok()?;
         let mut filter=Self::new(root,loaded.key);
         let session=crate::shared::spec_state::session_from_env();
         filter.spec=crate::shared::spec_state::active_spec(&root.to_string_lossy(),session.as_deref());
@@ -295,11 +326,10 @@ impl JevFilter {
             let started = Instant::now();
             let mut status = None;
             let mut wait = Duration::ZERO;
-            // A leitura que um sinal do processo interrompeu não é falha do
-            // serviço: o pedido sai de novo na hora, dentro do mesmo prazo.
+            // A leitura interrompida dentro do prazo sai de novo na hora.
             let interrupted = std::cell::Cell::new(false);
             let failed = |error: ureq::Error| {
-                interrupted.set(interrupted.get() || matches!(&error, ureq::Error::Io(io) if io.kind() == ErrorKind::Interrupted));
+                interrupted.set(interrupted.get() || interrupted_in_time(&error, deadline));
                 transport_error(error)
             };
             let result = (|| {
@@ -525,6 +555,15 @@ fn transport_error(error: ureq::Error) -> FilterError {
     }
 }
 
+/// Se a tentativa que falhou com `error` sai de novo na hora: a leitura que um
+/// sinal do processo interrompeu não é falha da rede nem do serviço, e o pedido
+/// se refaz enquanto `deadline` não passou. No Linux, a leitura de um socket
+/// com prazo volta interrompida a cada sinal tratado ou a cada processo parado
+/// e retomado, mesmo com o pedido de recomeçar sozinho.
+fn interrupted_in_time(error: &ureq::Error, deadline: Instant) -> bool {
+    matches!(error, ureq::Error::Io(io) if io.kind() == ErrorKind::Interrupted) && Instant::now() < deadline
+}
+
 /// O excesso de pedidos (429), a sobrecarga (529) e a falha do serviço (5xx)
 /// passam com o tempo; o resto não.
 fn retryable(status: u16) -> bool {
@@ -566,7 +605,7 @@ struct Context {
 impl Context {
     fn of(request: &FilterRequest) -> Self {
         let asked = if request.phrase.trim().is_empty() { request.words.join(" ") } else { request.phrase.clone() };
-        let said = squash(&without_secrets(&request.said));
+        let said = one_line(&without_secrets(&request.said));
         let kept = said.chars().count().saturating_sub(SAID_CHARS);
         Self {
             request: without_secrets(&asked),
@@ -804,7 +843,7 @@ fn candidate_id(at: usize) -> String {
 /// segredos antes de qualquer divisão: a divisão não parte um segredo num
 /// trecho que a procura já não reconhece.
 fn block_lines(candidate: &FilterCandidate, sources: &mut Sources<'_>) -> Vec<String> {
-    let clean = |text: &str| squash(&without_secrets(text));
+    let clean = |text: &str| one_line(&without_secrets(text));
     let mut lines = Vec::new();
     let documentation = clean(&candidate.documentation);
     if !documentation.is_empty() {
@@ -867,12 +906,6 @@ fn read_source(root: &Path, path: &str) -> Option<String> {
         return None;
     }
     std::fs::read(&file).ok().map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-}
-
-/// Os espaços juntados: toda sequência de brancos vira um espaço, e as
-/// pontas somem.
-fn squash(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 // ---------------------------------------------------------------------------
@@ -970,16 +1003,13 @@ fn waves_filter(root: &Path, config: &ProjectConfig, env: Option<String>) -> Wav
     purpose_filter(root, config, env, "wave-planning", None)
 }
 fn purpose_filter(root: &Path, config: &ProjectConfig, env: Option<String>, purpose: &str, spec: Option<&str>) -> WavesJev {
-    if !config.ai_fallback_enabled() || !jev_gate::setting_allows(config.judgement_filter(purpose)) {
-        return WavesJev::default();
-    }
-    match key_in(root, config, env) {
+    match jev_gate::purpose_key(config, purpose, || key_in(root, config, env)) {
         Ok(loaded) => {
             let mut filter = JevFilter::new(root, loaded.key);
             filter.spec = spec.map(str::to_string);
             WavesJev { filter: Some(std::sync::Arc::new(filter)), ..WavesJev::default() }
         }
-        Err(error) => WavesJev { key_in_git: error == FilterError::KeyInGit, ..WavesJev::default() },
+        Err(missing) => WavesJev { key_in_git: missing == jev_gate::Missing::Key(FilterError::KeyInGit), ..WavesJev::default() },
     }
 }
 impl JevFilter {
@@ -1793,12 +1823,14 @@ mod tests {
             })
         };
 
-        let started = Instant::now();
         let got = service.filter().filter(&asked).unwrap();
 
+        // Todos no ar ao mesmo tempo é a prova de que saíram juntos: um depois
+        // do outro, nunca haveria mais de um pedido no serviço. O relógio não
+        // entra: na máquina carregada, os pedidos juntos passam do tempo de
+        // dois em fila sem que nenhum espere o outro.
         assert!(got.usage.requests >= 2);
         assert_eq!(peak.load(Ordering::SeqCst) as u64, got.usage.requests, "every request was in flight together");
-        assert!(started.elapsed() < Duration::from_millis(500 * got.usage.requests), "one wait, not one after the other");
     }
 
     /// A resposta de cada pedido da lista grande: o que tem o candidato 3 diz

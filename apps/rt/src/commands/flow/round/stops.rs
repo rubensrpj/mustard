@@ -644,7 +644,7 @@ pub(super) fn triage_returns(root: &Path, log: &SpecLog, waves: &mut Vec<WaveRep
         let payloads = vec![asked];
         let doc = match decided(root, log, Question::NoChange, &payloads, jev_on) {
             Judged::Waiting => {
-                waiting.push(Waiting { wave: wave.wave, question: Question::NoChange, payloads });
+                waiting.push(Waiting::by_payloads(wave.wave, Question::NoChange, payloads));
                 return Err(RoundRefusal::JevPending { wave: wave.wave, question: Question::NoChange });
             }
             Judged::Answered(docs) => docs.into_iter().next(),

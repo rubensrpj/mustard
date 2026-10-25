@@ -5,7 +5,10 @@
 //! gravada e da própria volta ([`decide`]): com a trava do passo do git
 //! presa, a rodada só lê a decisão já tomada — a resposta que uma rodada
 //! anterior gravou, ou o recibo da reserva —, e a volta, ou o veredito
-//! final, sem decisão fica fora desta rodada, e só ela. A pergunta sai
+//! final, sem decisão fica fora desta rodada, e só ela. A decisão se acha
+//! pela onda, pela pergunta e pelas atividades que ela decide
+//! ([`triage_key`]), e não pelo pedido inteiro: uma tarefa que entra na fila
+//! no meio-tempo muda as opções do pedido, não a decisão. A pergunta sai
 //! depois de soltas a trava do passo do git e a das cópias
 //! ([`ask_after_locks`]), refeita sobre a spec como a rodada a deixou, com o
 //! prazo de toda chamada; a que falha vai à reserva do Jev, e a volta espera
@@ -21,10 +24,11 @@ use mustard_core::platform::i18n::Locale;
 use serde_json::Value;
 
 use super::answer::RoundRefusal;
-use super::jev_decision::{Decisions, FINAL_REVIEW, JevOn, Judged, Question, Waiting, decided};
+use super::jev_decision::{Decisions, FINAL_REVIEW, JevOn, Judged, Question, Waiting, decided_by, triage_key};
 use super::report::{Report, VerdictReport, WaveReport, rehearse_verdicts, returned_verdict, returned_waves};
 use super::stops::{HeldReturn, hold_waiting_changes};
 use crate::commands::spec_events::write::RecordCheck;
+use crate::shared::task_triage::Classifying;
 
 /// A spec como está gravada, de onde sai a pergunta de cada volta, as ondas
 /// cuja volta ainda não foi assumida, e as decisões já tomadas.
@@ -43,11 +47,13 @@ impl<'a> Triage<'a> {
     }
 
     /// A decisão da pergunta `question` da volta `wave`, feita pelo pedido
-    /// `payload`, com o Jev ligado em `on`: a já tomada fica guardada; sem
-    /// ela e com o Jev ligado, volta a espera.
-    fn judge(&mut self, root: &Path, (wave, question): (u64, Question), payload: String, on: JevOn) -> Option<Waiting> {
-        let payloads = vec![payload];
-        match decided(root, self.log, question, &payloads, on) {
+    /// `asked`, com o Jev ligado em `on`: a já tomada, achada pelas atividades
+    /// do pedido, fica guardada sob o pedido de agora; sem ela e com o Jev
+    /// ligado, volta a espera.
+    fn judge(&mut self, root: &Path, (wave, question): (u64, Question), asked: Classifying, on: JevOn) -> Option<Waiting> {
+        let key = triage_key(wave, question, &asked.items_key);
+        let payloads = vec![asked.payload];
+        match decided_by(root, self.log, question, &key, &payloads, on) {
             Judged::Answered(docs) => {
                 if let Some(doc) = docs.into_iter().next() {
                     self.decisions.keep(&payloads[0], doc);
@@ -55,7 +61,7 @@ impl<'a> Triage<'a> {
                 None
             }
             Judged::Rule => None,
-            Judged::Waiting => Some(Waiting { wave, question, payloads }),
+            Judged::Waiting => Some(Waiting { wave, question, payloads, key }),
         }
     }
 }
@@ -63,18 +69,18 @@ impl<'a> Triage<'a> {
 /// As perguntas da triagem da volta `wave`, lidas em `triage`, cada uma com
 /// o pedido: o alvo da mudança de plano aceita, os itens não cumpridos e as
 /// sobras.
-fn wave_questions(root: &Path, triage: &Triage<'_>, wave: &WaveReport) -> Vec<(Question, String)> {
+fn wave_questions(root: &Path, triage: &Triage<'_>, wave: &WaveReport) -> Vec<(Question, Classifying)> {
     let mut out = Vec::new();
     if let Some(plan) = wave.replan.as_ref().filter(|plan| plan.refused.is_none())
         && let Some(question) = super::stops::change_target_question(triage.log, &plan.change, &wave.undone)
     {
-        out.push((Question::ChangeTarget, question.payload));
+        out.push((Question::ChangeTarget, question));
     }
     if let Some((question, _)) = super::agreed::unmet_question(triage.log, &triage.returning, wave) {
-        out.push((Question::UnmetItems, question.payload));
+        out.push((Question::UnmetItems, question));
     }
     if let Some((question, _)) = super::leftovers::leftover_question(root, triage.log, &triage.returning, wave) {
-        out.push((Question::Leftovers, question.payload));
+        out.push((Question::Leftovers, question));
     }
     out
 }
@@ -82,13 +88,13 @@ fn wave_questions(root: &Path, triage: &Triage<'_>, wave: &WaveReport) -> Vec<(Q
 /// O pedido da triagem dos itens que a revisão final de `verdicts` não
 /// cumpriu, sobre a spec `spec` de `start` com o veredito já ensaiado, como
 /// a rodada o ensaia; `None` sem veredito ou sem item.
-fn review_question(start: &Path, spec: &str, verdicts: &[VerdictReport]) -> Option<String> {
+fn review_question(start: &Path, spec: &str, verdicts: &[VerdictReport]) -> Option<Classifying> {
     if verdicts.is_empty() {
         return None;
     }
     let mut check = RecordCheck::open(start, spec, PhaseWriter::Binary).ok()?;
     let (_, unmet) = rehearse_verdicts(&mut check, verdicts).ok()?;
-    super::agreed::review_question(check.log(), &unmet).map(|question| question.payload)
+    super::agreed::review_question(check.log(), &unmet)
 }
 
 /// Com a trava do passo do git presa: a decisão de cada pergunta da triagem
@@ -103,12 +109,12 @@ pub(super) fn decide<'a>(start: &Path, root: &Path, spec: &str, log: &'a SpecLog
     let mut triage = Triage::of(log);
     let mut waiting = Vec::new();
     for wave in &report.waves {
-        for (question, payload) in wave_questions(root, &triage, wave) {
-            waiting.extend(triage.judge(root, (wave.wave, question), payload, on));
+        for (question, asked) in wave_questions(root, &triage, wave) {
+            waiting.extend(triage.judge(root, (wave.wave, question), asked, on));
         }
     }
-    if let Some(payload) = review_question(start, spec, &report.verdicts) {
-        waiting.extend(triage.judge(root, (FINAL_REVIEW, Question::ReviewUnmet), payload, on));
+    if let Some(asked) = review_question(start, spec, &report.verdicts) {
+        waiting.extend(triage.judge(root, (FINAL_REVIEW, Question::ReviewUnmet), asked, on));
     }
     let mut out: BTreeSet<u64> = BTreeSet::new();
     let mut held = Vec::new();
@@ -161,14 +167,14 @@ fn refreshed(start: &Path, root: &Path, spec: &str, waiting: &[Waiting], lang: L
     // rodada.
     let _ = hold_waiting_changes(&log, &mut waves, &[], lang);
     for wave in waves.iter().filter(|wave| held.contains(&wave.wave)) {
-        for (question, payload) in wave_questions(root, &triage, wave) {
-            out.extend(triage.judge(root, (wave.wave, question), payload, on));
+        for (question, asked) in wave_questions(root, &triage, wave) {
+            out.extend(triage.judge(root, (wave.wave, question), asked, on));
         }
     }
     if held.contains(&FINAL_REVIEW)
-        && let Some(payload) = review_question(start, spec, &returned_verdict(&log))
+        && let Some(asked) = review_question(start, spec, &returned_verdict(&log))
     {
-        out.extend(triage.judge(root, (FINAL_REVIEW, Question::ReviewUnmet), payload, on));
+        out.extend(triage.judge(root, (FINAL_REVIEW, Question::ReviewUnmet), asked, on));
     }
     out
 }

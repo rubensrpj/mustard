@@ -6,6 +6,10 @@
 //! 2. compactar o estado da sessão: as fotos de `.claude/.compact-state/` com
 //!    mais de 24 horas saem, e a pasta sai quando fica vazia.
 //!
+//! A conversa que acabou, por qualquer motivo (`/clear`, saída, janela
+//! fechada), também perde a ligação com a spec: a sessão nova liga de novo ao
+//! retomar, e a velha deixa de contar como outra conversa na obra.
+//!
 //! Os dois mexem só em caminhos conhecidos e nenhum chama processo de fora: o
 //! `SessionEnd` tem o prazo mais curto que o harness dá, e um passo que
 //! pudesse travar deixaria a faxina pela metade.
@@ -77,7 +81,14 @@ impl Observer for SessionCleanupObserver {
         if ctx.trigger != Some(Trigger::SessionEnd) {
             return;
         }
-        let Some(claude) = claude_dir(&ctx.project_dir_or_cwd(input)) else {
+        let root = ctx.project_dir_or_cwd(input);
+        // A conversa que acabou, pelo `/clear`, pela saída ou pela janela
+        // fechada, deixa de estar ligada à spec: a sessão que a retoma não é
+        // avisada de outra conversa na obra por causa dela.
+        if let Some(session) = input.session_id.as_deref() {
+            crate::shared::context::session::unbind_session_spec(&root, session);
+        }
+        let Some(claude) = claude_dir(&root) else {
             return;
         };
         for step in STEPS {

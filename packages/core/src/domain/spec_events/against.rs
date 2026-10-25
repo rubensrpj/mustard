@@ -16,9 +16,10 @@ use super::{is_empty, Block, BlockQuery, EventRef, Hidden, Refusal, SpecEvent, S
 
 /// Troca cada código (`MSTD-RULE-NNNN`) dos campos que apontam eventos pelos
 /// números que ele nomeia no arquivo como está, para que a linha gravada
-/// guarde só números: em `replaces` (um só ou a lista) e no `closes` de um
-/// ponto, a versão mais nova do item; nos alvos de `remove` e `purge`, todas
-/// as versões dele. Um código que não existe na spec recusa o evento.
+/// guarde só números: em `origin`, em `replaces` (um só ou a lista) e no
+/// `closes` de um ponto, a versão mais nova do item; nos alvos de `remove` e
+/// `purge`, todas as versões dele. Um código que não existe na spec recusa o
+/// evento.
 ///
 /// Na remoção, a tarefa sai sempre inteira: o número de qualquer versão dela,
 /// e a versão dela que o filtro pega, viram todas as versões da tarefa nos
@@ -56,6 +57,13 @@ pub fn resolve_codes(log: &SpecLog, event: &mut Map<String, Value>) -> Result<()
                     let resolved = resolve(value)?;
                     event.insert(field.name.into(), resolved);
                 }
+        }
+        // O `origin` é comum a todo tipo e por isso nenhum o declara, mas
+        // aponta um evento como qualquer campo de referência: aceita o
+        // código do item e grava o número.
+        if let Some(value) = event.get("origin") {
+            let resolved = resolve(value)?;
+            event.insert("origin".into(), resolved);
         }
     }
     let is_code = |v: &Value| matches!(EventRef::from_value(v), Some(EventRef::Code(_)));
@@ -140,6 +148,22 @@ pub fn resolve_codes(log: &SpecLog, event: &mut Map<String, Value>) -> Result<()
         event.insert("targets".into(), Value::Array(resolved));
     }
     Ok(())
+}
+
+/// O número que o campo de referência `field` de um rascunho do tipo
+/// `event_type` aponta no arquivo como está: o código do item vira o número
+/// que a gravação gravaria ([`resolve_codes`]), e o número fica como veio. A
+/// troca é feita numa cópia, e o rascunho segue com o que trouxe, para quem o
+/// lê antes da gravação. `None` quando o campo falta, é uma lista ou nomeia um
+/// código que a spec não tem: a conferência da gravação recusa esse código
+/// depois.
+#[must_use]
+pub fn referenced_id(log: &SpecLog, event_type: &str, draft: &Map<String, Value>, field: &str) -> Option<u64> {
+    let mut probe = Map::new();
+    probe.insert("type".into(), Value::from(event_type));
+    probe.insert(field.into(), draft.get(field)?.clone());
+    resolve_codes(log, &mut probe).ok()?;
+    probe.get(field).and_then(Value::as_u64)
 }
 
 /// O que uma gravação muda no resto do arquivo.
@@ -579,6 +603,62 @@ mod tests {
         unknown.insert("depends_on".into(),json!(["MSTD-TASK-9999"]));
         resolve_codes(&log,&mut unknown).unwrap();
         assert_eq!(unknown["depends_on"],json!(["MSTD-TASK-9999"]),"unknown dependencies retain the task-specific refusal in the runtime");
+    }
+
+    /// O `origin` aceita o código da mensagem e grava o número dela: o número
+    /// segue como veio, o código que a spec não tem é recusado citando o
+    /// código, e o texto fora do formato do código nem passa da conferência.
+    #[test]
+    fn the_origin_accepts_a_code_and_resolves_it_to_the_number() {
+        let log = parse_log(&line(1, "message", ",\"code\":\"MSTD-MSG-0001\",\"author\":\"user\""));
+        let note = |origin: Value| json!({"text": "t", "keys": ["k"], "origin": origin});
+        for origin in [json!("MSTD-MSG-0001"), json!(1)] {
+            assert_eq!(checked("note", note(origin.clone())), Ok(()), "{origin}");
+            let mut event = obj(note(origin.clone()));
+            event.insert("type".into(), json!("note"));
+            resolve_codes(&log, &mut event).unwrap();
+            assert_eq!(event["origin"], json!(1), "{origin}");
+        }
+
+        let mut unknown = obj(note(json!("MSTD-MSG-0009")));
+        unknown.insert("type".into(), json!("note"));
+        assert_eq!(
+            resolve_codes(&log, &mut unknown),
+            Err(Refusal::UnknownTarget { target: EventRef::Code("MSTD-MSG-0009".into()) })
+        );
+        assert!(matches!(
+            checked("note", note(json!("a mensagem"))).unwrap_err(),
+            Refusal::InvalidValue { ref field, expected: Kind::Ref, .. } if field == "origin"
+        ));
+    }
+
+    /// O campo de referência de um rascunho se lê como o número que ele aponta,
+    /// numa cópia: o código vira a versão mais nova do item, o número fica
+    /// como veio, e o código que a spec não tem, como o campo que falta, não
+    /// aponta nada. O rascunho segue com o código que trouxe.
+    #[test]
+    fn a_reference_field_of_a_draft_reads_as_the_number_it_points_at() {
+        let log = parse_log(
+            &[
+                line(1, "message", ",\"code\":\"MSTD-MSG-0001\",\"author\":\"user\""),
+                line(2, "task", ",\"code\":\"MSTD-TASK-0001\""),
+                line(3, "task", ",\"code\":\"MSTD-TASK-0001\",\"replaces\":2"),
+            ]
+            .concat(),
+        );
+        let by_code = obj(json!({"replaces": "MSTD-TASK-0001", "origin": "MSTD-MSG-0001"}));
+        assert_eq!(referenced_id(&log, "task", &by_code, "replaces"), Some(3));
+        assert_eq!(referenced_id(&log, "request", &by_code, "origin"), Some(1));
+        assert_eq!(by_code["replaces"], json!("MSTD-TASK-0001"), "the draft keeps the code");
+
+        let by_number = obj(json!({"replaces": 2, "origin": 1}));
+        assert_eq!(referenced_id(&log, "task", &by_number, "replaces"), Some(2));
+        assert_eq!(referenced_id(&log, "request", &by_number, "origin"), Some(1));
+
+        let unknown = obj(json!({"replaces": "MSTD-TASK-0009", "origin": "MSTD-MSG-0009"}));
+        assert_eq!(referenced_id(&log, "task", &unknown, "replaces"), None);
+        assert_eq!(referenced_id(&log, "request", &unknown, "origin"), None);
+        assert_eq!(referenced_id(&log, "task", &obj(json!({})), "replaces"), None, "a missing field points at nothing");
     }
 
     /// Na remoção, o número de qualquer versão de uma tarefa vira todas as

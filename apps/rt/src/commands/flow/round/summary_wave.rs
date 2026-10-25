@@ -11,6 +11,7 @@ use std::collections::BTreeSet;
 
 use mustard_core::domain::spec_events::SpecLog;
 
+use super::following::followed;
 use super::leftovers::{GROUP, group_name};
 use crate::shared::dag::{BacklogTask, Batch, sets_cross, touches_whole_tree};
 
@@ -74,8 +75,11 @@ pub(super) fn summary_waves(log: &SpecLog, ready: &[u64], population: &[BacklogT
 /// na posição que ele deu a cada uma, com os arquivos de `population`; os
 /// grupos, na ordem da primeira tarefa pronta de cada um. Cada onda leva como
 /// base o resumo que ainda vale e que deixou alguma tarefa dela: um resumo
-/// que deixou tarefas de vários objetivos vai com cada uma dessas ondas. A
-/// tarefa com o curinga da árvore inteira não entra: ela sai sozinha.
+/// que deixou tarefas de vários objetivos vai com cada uma dessas ondas. O
+/// grupo que seguiu uma onda que voltou ([`followed`]) leva o resumo dela,
+/// quando ela deixou um, e, na frente, as tarefas sem grupo que ele
+/// acompanha. A tarefa com o curinga da árvore inteira não entra: ela sai
+/// sozinha.
 pub(super) fn group_waves(log: &SpecLog, ready: &[u64], population: &[BacklogTask<u64>]) -> Vec<(Batch<u64>, Option<u64>)> {
     let live = log.live_summaries();
     let files_of = |id: u64| population.iter().find(|task| task.id == id).map(|task| &task.files);
@@ -102,13 +106,29 @@ pub(super) fn group_waves(log: &SpecLog, ready: &[u64], population: &[BacklogTas
             tasks.push((0, id));
         }
     }
+    // O resumo da onda que o grupo seguiu traz, na frente, as tarefas sem
+    // grupo que ele acompanha: elas e o grupo vão no mesmo sentido.
+    let grouped: BTreeSet<u64> = groups.iter().flat_map(|(_, tasks)| tasks.iter().map(|(_, id)| *id)).collect();
+    let after = |tasks: &[(u64, u64)]| tasks.iter().find_map(|(_, id)| log.get(*id).and_then(followed));
+    let summary_of = |wave: u64| live.iter().find(|(summary, _)| summary.wave() == Some(wave));
+    let mut taken: BTreeSet<u64> = BTreeSet::new();
+    for (_, tasks) in &mut groups {
+        let Some((_, left)) = after(tasks).and_then(summary_of) else { continue };
+        for &id in ready {
+            let loose = log.get(id).is_some_and(|task| !task.fields.contains_key(GROUP)) && !files_of(id).is_some_and(touches_whole_tree);
+            if left.contains(&id) && loose && !grouped.contains(&id) && taken.insert(id) {
+                tasks.push((0, id));
+            }
+        }
+    }
     groups
         .into_iter()
         .map(|(_, mut tasks)| {
+            let followed_summary = after(&tasks).and_then(summary_of).map(|(summary, _)| summary.id);
             tasks.sort_unstable();
             let tasks: Vec<u64> = tasks.into_iter().map(|(_, id)| id).collect();
             let files = tasks.iter().flat_map(|id| files_of(*id).into_iter().flatten().cloned()).collect();
-            let base = live.iter().find(|(_, left)| tasks.iter().any(|id| left.contains(id))).map(|(summary, _)| summary.id);
+            let base = live.iter().find(|(_, left)| tasks.iter().any(|id| left.contains(id))).map(|(summary, _)| summary.id).or(followed_summary);
             (Batch { tasks, files }, base)
         })
         .collect()
@@ -118,16 +138,19 @@ pub(super) fn group_waves(log: &SpecLog, ready: &[u64], population: &[BacklogTas
 mod tests {
     use std::path::Path;
 
+    use mustard_core::domain::spec_events::{SpecLog, parse_log};
     use mustard_core::platform::i18n::{Locale, translate};
-    use serde_json::json;
+    use serde_json::{Value, json};
     use tempfile::tempdir;
 
     use super::super::agreed::request_agreed;
+    use super::super::following::AFTER;
     use super::super::backlog::dispatch_backlog;
     use super::super::queue::{SIX_FILES, backlog_project, backlog_task_on, max_parallel, open_sends, seed_running, spec_now, wave_order};
     use super::super::read_check::{request_name, unread_items};
     use super::super::tests::{delivered, id_of, request_at, returned_unread, round, seed_read, seed_send, waves_in, write};
     use crate::commands::spec_events::read::{ReadOpts, read_for};
+    use crate::shared::dag::BacklogTask;
     use crate::shared::spec_state::seed_event;
 
     /// A entrega de uma onda que parou e deixou por fazer as tarefas `left`,
@@ -379,29 +402,23 @@ mod tests {
         assert_eq!(wave_order(root, 2), vec![two], "it leaves with its own summary");
     }
 
-    /// As tarefas prontas que gravam a mesma onda do classificador saem
-    /// juntas, na posição que ele deu; a sem grupo fica para a montagem de
-    /// sempre, e cada onda leva os arquivos das tarefas dela.
-    #[test]
-    fn the_waves_the_classifier_formed_leave_whole_in_its_order() {
-        let task = |id: u64, file: &str, group: Option<(&str, u64)>| {
-            let mut line = json!({ "v": 1, "id": id, "type": "task", "title": format!("t{id}"), "files": [{ "path": file }], "depends_on": [] });
-            if let Some((name, position)) = group {
-                line["group"] = json!({ "name": name, "position": position });
-            }
-            line.to_string()
-        };
-        let lines = [
-            task(1, "web/auth/token.ts", Some(("A sessão renova o token", 2))),
-            task(2, "web/cart/total.ts", None),
-            task(3, "web/auth/session.ts", Some(("A sessão renova o token", 1))),
-            task(4, "web/report/export.ts", Some(("A exportação grava um arquivo limpo", 1))),
-        ];
-        let log = mustard_core::domain::spec_events::parse_log(&lines.join("\n"));
-        let population: Vec<crate::shared::dag::BacklogTask<u64>> = log
-            .visible()
+    /// Uma linha de tarefa do arquivo de eventos, com o grupo de assunto
+    /// quando a tarefa tem um.
+    fn task_line(id: u64, file: &str, group: Option<Value>) -> String {
+        let mut line = json!({ "v": 1, "id": id, "type": "task", "title": format!("t{id}"), "files": [{ "path": file }], "depends_on": [] });
+        if let Some(group) = group {
+            line["group"] = group;
+        }
+        line.to_string()
+    }
+
+    /// As tarefas de `log` como o backlog as entrega à montagem: nenhuma
+    /// entregue, bloqueada ou com dependência.
+    fn population_of(log: &SpecLog) -> Vec<BacklogTask<u64>> {
+        log.visible()
             .into_iter()
-            .map(|event| crate::shared::dag::BacklogTask {
+            .filter(|event| event.event_type == "task")
+            .map(|event| BacklogTask {
                 id: event.id,
                 depends_on: std::collections::BTreeSet::new(),
                 files: super::super::queue::task_files(event),
@@ -409,11 +426,72 @@ mod tests {
                 blocked: false,
                 priority: false,
             })
-            .collect();
+            .collect()
+    }
+
+    /// As tarefas prontas que gravam a mesma onda do classificador saem
+    /// juntas, na posição que ele deu; a sem grupo fica para a montagem de
+    /// sempre, e cada onda leva os arquivos das tarefas dela.
+    #[test]
+    fn the_waves_the_classifier_formed_leave_whole_in_its_order() {
+        let lines = [
+            task_line(1, "web/auth/token.ts", Some(json!({ "name": "A sessão renova o token", "position": 2 }))),
+            task_line(2, "web/cart/total.ts", None),
+            task_line(3, "web/auth/session.ts", Some(json!({ "name": "A sessão renova o token", "position": 1 }))),
+            task_line(4, "web/report/export.ts", Some(json!({ "name": "A exportação grava um arquivo limpo", "position": 1 }))),
+        ];
+        let log = parse_log(&lines.join("\n"));
+        let population = population_of(&log);
         let waves = super::group_waves(&log, &[1, 2, 3, 4], &population);
         let tasks: Vec<Vec<u64>> = waves.iter().map(|(wave, _)| wave.tasks.clone()).collect();
         assert_eq!(tasks, [vec![3, 1], vec![4]]);
         assert!(waves[0].0.files.contains("web/auth/token.ts") && waves[0].0.files.contains("web/auth/session.ts"), "{:?}", waves[0]);
         assert_eq!((waves[0].1, waves[1].1), (None, None), "no summary is live in this log");
+    }
+
+    /// O grupo que seguiu a onda 7, que voltou com um resumo, leva na frente
+    /// a tarefa sem grupo que o resumo deixou e que está pronta, e o resumo
+    /// como base. A outra tarefa sem grupo, que o resumo não deixou, fica de
+    /// fora.
+    #[test]
+    fn a_group_that_followed_a_returned_wave_takes_the_loose_task_its_summary_left_in_front() {
+        let follows = |position: u64| Some(json!({ "name": "Os comentários seguem a onda", "position": position, AFTER: 7 }));
+        let lines = [
+            task_line(1, "web/left.ts", None),
+            task_line(2, "web/first.ts", follows(1)),
+            task_line(3, "web/second.ts", follows(2)),
+            task_line(4, "web/other.ts", None),
+            json!({ "v": 1, "id": 5, "type": "delivered", "wave": 7, "text": "Parei no limite.", "files": [], "undone": [1] }).to_string(),
+        ];
+        let log = parse_log(&lines.join("\n"));
+        let population = population_of(&log);
+
+        let waves = super::group_waves(&log, &[1, 2, 3, 4], &population);
+
+        assert_eq!(waves.len(), 1, "{waves:?}");
+        assert_eq!(waves[0].0.tasks, vec![1, 2, 3], "the task the summary left goes in front of the group, and the other loose one stays out");
+        assert_eq!(waves[0].1, Some(5), "the summary is the base of the wave");
+    }
+
+    /// O grupo que seguiu a onda 7 leva o resumo dela como base mesmo quando
+    /// a única tarefa que o resumo deixou não está pronta e nenhuma tarefa do
+    /// grupo é uma delas.
+    #[test]
+    fn a_group_that_followed_a_returned_wave_carries_its_summary_when_none_of_its_tasks_was_left() {
+        let follows = |position: u64| Some(json!({ "name": "Os comentários seguem a onda", "position": position, AFTER: 7 }));
+        let lines = [
+            task_line(1, "web/left.ts", None),
+            task_line(2, "web/first.ts", follows(1)),
+            task_line(3, "web/second.ts", follows(2)),
+            json!({ "v": 1, "id": 4, "type": "delivered", "wave": 7, "text": "Parei no limite.", "files": [], "undone": [1] }).to_string(),
+        ];
+        let log = parse_log(&lines.join("\n"));
+        let population = population_of(&log);
+
+        let waves = super::group_waves(&log, &[2, 3], &population);
+
+        assert_eq!(waves.len(), 1, "{waves:?}");
+        assert_eq!(waves[0].0.tasks, vec![2, 3], "the task the summary left is not ready, so the group goes alone");
+        assert_eq!(waves[0].1, Some(4), "the group carries the summary of the wave it followed");
     }
 }

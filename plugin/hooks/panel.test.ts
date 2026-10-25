@@ -11,7 +11,11 @@ const usageScreen=(extra:any={})=>({ok:true,schema_version:1,section:'usage',rev
   trend:null,days:[],cost:{total_micro_usd:null,sessions:0,outside_spec_micro_usd:null,by_spec:[],specs_without_cost:0},spec:null,
   tools:{rtk:{configured:false},jev:{calls:0,by_purpose:{},input_tokens:0,cost_micro_usd:null},search:{total:0,in_spec:null}},
   session:{started_at:null,agents:null,working:null},copies_disk:null,...extra});
-const answerFor=(argv:string[])=>argv[argv.indexOf('--section')+1]==='usage'?usageScreen():overview();
+// The second page of the waves screen: the oldest wave, with its own spend.
+const wavesScreen=(argv:string[])=>({ok:true,schema_version:1,section:'waves',revision:'rev-waves',project:{name:'fixture'},selected_spec:'demo',total:9,
+  offset:Number(argv[argv.indexOf('--offset')+1]),limit:8,rows:[{wave:1,title:'Primeira',state:'committed',at:'2026-10-02T11:05:00Z',attention:null,tasks:1,returned:0,
+    files:1,delivered_files:1,commit:'abc1234',seconds:7200,model_used:'claude-opus-5-5',model_asked:'opus',effort_asked:'xhigh',effort_used:null,tokens:4321}]});
+const answerFor=(argv:string[])=>({usage:usageScreen,waves:()=>wavesScreen(argv)}[argv[argv.indexOf('--section')+1]] ?? overview)();
 async function openPane($,on,{saved,surface='desktop'}:{saved?:any,surface?:'desktop'|'terminal'}={}) {
   const clock=mock.clock(on);mock.env(on,{});
   mock.store(on,saved?{'mustard-panel:fixture-session':{schema_version:2,cwd:'/fixture',...saved}}:{});
@@ -379,6 +383,16 @@ test('a module restart restores the requested pane, spec and screen without a mo
   const f=await openPane($,on,{saved:{wanted:true,state:{screen:'usage',spec:'demo'}}});
   expect(f.opens).toBe(1);expect(f.commands[0]).toEqual(expect.arrayContaining(['--section','usage','--spec','demo']));
   expect(await f.pane.find({text:/medido até/i})).toBeDefined();expect(f.turns).toBe(0);await f.pane.press({key:'quit'});
+});
+test('a module restart reopens the waves screen on its page, each wave with its own spend',async ($,on)=>{
+  const f=await openPane($,on,{saved:{wanted:true,state:{screen:'waves',spec:'demo',waveOffset:8}}});
+  expect(f.commands[0]).toEqual(expect.arrayContaining(['--section','waves','--spec','demo','--offset','8','--limit','8']));
+  for(const text of ['ONDAS · 9','página 2 de 2','Onda 1','comitada em 02/10','4,32 mil tokens · 2 h 0 min · claude-opus-5-5 · esforço pedido xhigh','9 de 9 · da mais nova para a mais antiga'])
+    expect(await f.pane.find({text}),text).toBeDefined();
+  expect(await f.pane.find({key:'waves-previous'})).toBeDefined();expect(await f.pane.find({key:'waves-next'})).toBeUndefined();
+  await f.pane.press({key:'waves-previous'});
+  expect(f.commands.at(-1)).toEqual(expect.arrayContaining(['--section','waves','--offset','0']));
+  expect(f.turns).toBe(0);await f.pane.press({key:'quit'});
 });
 test('each reopening records its own render',async ($,on)=>{
   const f=await openPane($,on);

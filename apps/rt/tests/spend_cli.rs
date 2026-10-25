@@ -262,3 +262,36 @@ fn local_measurement_never_prepares_external_resources_and_keeps_parallel_machin
     drop(scenes);
     assert!(directories.iter().all(|p| !p.exists()), "all fixture ledgers and conversations are removed");
 }
+
+/// A chamada que o binário grava guarda o comando e o bloco pedido — na
+/// gravação, o tipo —, e nunca o texto de `--json` nem o termo livre do
+/// `find`, que é texto de quem procura e não bloco.
+#[test]
+fn a_recorded_call_keeps_the_command_and_the_block_asked() {
+    let scene = Scene::new();
+    let git = |args: &[&str]| {
+        let out = Command::new("git").args(args).current_dir(&scene.project).output().expect("git runs");
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    };
+    std::fs::write(scene.project.join(".git/info/exclude"), ".claude/\nmustard.json\n").unwrap();
+    git(&["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "init"]);
+    git(&["branch", "dev"]);
+    let opened: Value = serde_json::from_str(scene.rt(&["run", "open", "--kind", "feature", "--name", "x", "--base", "dev"], "").trim()).unwrap();
+    assert_eq!(opened["ok"], json!(true), "{opened}");
+
+    scene.rt(&["run", "read", "agreed", "--spec", "x"], "");
+    scene.rt(&["run", "write", "note", "--spec", "x", "--json", r#"{"title":"texto-do-json","text":"texto-do-json"}"#], "");
+    scene.rt(&["run", "find", "termo-livre", "--spec", "x"], "");
+
+    let operations = std::fs::read_to_string(scene.project.join(".claude/mustard/operations/x.ndjson")).unwrap();
+    let calls: Vec<Value> = operations
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .filter(|event| event["type"] == "call" && event["invocation"] == json!(true))
+        .collect();
+    let call = |command: &str| calls.iter().find(|call| call["command"] == command).unwrap_or_else(|| panic!("no {command} call: {operations}"));
+    assert_eq!(call("read")["block"], json!("agreed"), "{operations}");
+    assert_eq!(call("write")["block"], json!("note"), "{operations}");
+    assert!(call("find").get("block").is_none(), "{operations}");
+    assert!(!operations.contains("texto-do-json") && !operations.contains("termo-livre"), "{operations}");
+}

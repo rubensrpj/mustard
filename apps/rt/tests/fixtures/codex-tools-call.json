@@ -1,0 +1,33 @@
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "tools/call",
+  "params": {
+    "_meta": {
+      "callId": "exec-2c9111e0-f0a7-4a16-ab93-ddfba3135f05",
+      "x-codex-turn-metadata": {
+        "session_id": "01a16614-52a7-73e3-a596-56c652948934",
+        "thread_id": "01a16614-52a7-73e3-a596-56c652948934",
+        "reasoning_effort": "low",
+        "turn_id": "01a16614-556e-7fb1-a03d-3dffc7b96e1f",
+        "model": "gpt-6.1-sol",
+        "thread_source": "user",
+        "turn_trigger": "exec",
+        "sandbox": "seccomp",
+        "sandbox_mode": "read-only",
+        "auto_review_enabled": false,
+        "node_repl_auto_review_required": true,
+        "node_repl_disabled": false,
+        "turn_started_at_unix_ms": 1792713971057,
+        "codex_version": "0.160.1"
+      },
+      "threadId": "01a16614-52a7-73e3-a596-56c652948934",
+      "sessionId": "01a16614-52a7-73e3-a596-56c652948934",
+      "windowId": "01a16614-52a7-73e3-a596-56c652948934:0",
+      "itemId": "ctc_02b4da6c27df9170016adaa4f7100881918d3fcdca04ba6e2f",
+      "progressToken": 1
+    },
+    "name": "ping",
+    "arguments": {}
+  }
+}
