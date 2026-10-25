@@ -6,8 +6,9 @@ use crate::platform::i18n::{translate, Locale};
 
 use super::SpecLog;
 
-/// O teto de caracteres do título de um pull request e de um commit, montado
-/// da primeira frase do objetivo da obra.
+/// O teto de caracteres do título de um pull request e de um commit. O título
+/// do pull request é o `title` do objetivo da obra ou, sem `title`, a primeira
+/// frase dele.
 ///
 /// É outro teto, de outra coisa, que o de
 /// [`TASK_TITLE_MAX`](super::refusal::TASK_TITLE_MAX): aquele é o do título de

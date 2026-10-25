@@ -61,7 +61,7 @@ use crate::commands::event::work_branch::{
     CheckoutWork, RefusalCause,
 };
 use crate::commands::spec_events::conversation::record_earlier_messages;
-use crate::commands::spec_events::{self, write::record_open};
+use crate::commands::spec_events::{self, session_spec, write::record_open};
 use crate::shared::typed_messages::{session_transcript, typed_messages};
 use crate::shared::spec_state::DiskSpecState;
 use crate::shared::work_kind::WorkKind;
@@ -524,6 +524,7 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
             note_pending(&project.root, pending.as_deref(), &name, lang).into_iter().collect();
         let base = state.base.unwrap_or_default();
         let pending_project = pending_project_notice(&project.root, lang);
+        session_spec::bind(&project.root, opts.session.as_deref(), &name);
         let mut report = opened(&name, &target, &base, &kind, None, &warnings, pending_project, lang);
         report["already_open"] = json!(true);
         if let Some(id) = pending {
@@ -598,6 +599,7 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
             return refuse(OpenRefusal::Spec(refusal));
         }
     };
+    session_spec::bind(&project.root, opts.session.as_deref(), &name);
     // O pedido que o usuário fez antes da abertura entra na spec que acabou
     // de nascer, nas palavras dele.
     let earlier = born.then(|| bring_earlier_messages(&root, &name, opts.session.as_deref(), lang));
@@ -605,13 +607,6 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
     // A nota da pendência, e o mapa, só no que mudou; a falha de cada um só
     // avisa.
     let mut warnings: Vec<String> = note_pending(&project.root, pending.as_deref(), &name, lang).into_iter().collect();
-    // O que o lint do projeto diz da base, gravado agora, com a branch recém
-    // cortada e sem commit nenhum: é por esta marca que o fechamento sabe
-    // separar o erro que a obra criou do que já estava aqui. Só avisa quando
-    // não pôde gravar.
-    if born {
-        warnings.extend(super::validation::record_base_check(&project.root, &name));
-    }
     let map = match refresh(&project.root) {
         Ok(report) => Some(json!({ "full": report.full, "read": report.read.len() })),
         Err(detail) => {
@@ -652,7 +647,7 @@ fn bring_earlier_messages(root: &Path, spec: &str, session: Option<&str>, lang: 
     let Some(transcript) = session.and_then(|session| session_transcript(root, session)) else {
         return Err(translate("open.earlier_messages_missing", lang).to_string());
     };
-    Ok(record_earlier_messages(root, spec, &typed_messages(&transcript)))
+    Ok(record_earlier_messages(root, spec, session, &typed_messages(&transcript)))
 }
 
 
@@ -1456,16 +1451,18 @@ mod tests {
     /// O caminho de verdade da abertura: a spec nasce pelo `open`, e o
     /// usuário responde, pelo gancho da mensagem, com o objetivo na primeira
     /// frase e, junto, o card, os critérios de aceite e os documentos
-    /// antigos. O `run write` grava como objetivo a primeira frase, com
-    /// `origin` na mensagem, e o card como `context` logo depois; o índice
-    /// mostra a primeira frase. O objetivo que não aponta uma mensagem do
-    /// usuário é recusado, e nada é gravado.
+    /// antigos. O `run write` grava o objetivo com um `title` e com `origin`
+    /// na mensagem, e o card como `context` logo depois; o índice mostra o
+    /// `title` do objetivo. O objetivo que não aponta uma mensagem do usuário
+    /// é recusado, e nada é gravado.
     #[test]
-    fn the_goal_is_the_first_sentence_of_an_answer_that_brings_the_card() {
+    fn the_goal_of_an_answer_that_brings_the_card_is_indexed_by_its_title() {
         use crate::commands::spec_events::write::write_at;
         let dir = repo(DEV_MAIN);
         let root = dir.path();
-        assert_eq!(open(root, Some("feature"), Some("x"), Some("dev"))["step"], json!("ask_goal"));
+        // A conversa que abre é a mesma que responde pelo gancho.
+        let opening = OpenOpts { session: Some("s1".to_string()), ..opts(root, Some("feature"), Some("x"), Some("dev")) };
+        assert_eq!(open_with(&opening, mapped)["step"], json!("ask_goal"));
         let goal = "Travar o merge enquanto houver pendência aberta.";
         let card = "Card MUS-12: o merge espera a revisão.\nCritérios de aceite: o merge barrado mostra a \
                     pendência.\nDocumentos antigos: docs/merge.md.";
@@ -1515,7 +1512,7 @@ mod tests {
             .filter_map(|line| serde_json::from_str::<Value>(line).ok())
             .find(|line| line["name"] == json!("x"))
             .expect("the spec has its index line");
-        assert_eq!(line["goal"], json!(goal));
+        assert_eq!(line["goal"], json!("O objetivo da obra"), "the index shows the title of the goal");
     }
 
     /// Sem o tipo, o `open` pergunta por ele, com as sugestões; o tipo que não
@@ -1555,7 +1552,7 @@ mod tests {
         };
         let answer = "Travar o merge enquanto houver pendência aberta.";
         let message = write("message", json!({ "text": answer, "author": "user" }));
-        let goal = write("context", json!({ "text": answer, "origin": message["id"] }));
+        let goal = write("context", json!({ "title": "Travar o merge com pendência", "text": answer, "origin": message["id"] }));
         assert_eq!(goal["ok"], json!(true), "{goal}");
         let index = std::fs::read_to_string(root.join(".claude").join("spec").join("index.ndjson")).unwrap();
         let line: Value = index
@@ -1563,7 +1560,7 @@ mod tests {
             .filter_map(|line| serde_json::from_str::<Value>(line).ok())
             .find(|line| line["name"] == json!("x"))
             .expect("the spec has its index line");
-        assert_eq!(line["goal"], json!(answer));
+        assert_eq!(line["goal"], json!("Travar o merge com pendência"));
     }
 
     /// Quando a spec não pode ser gravada depois de a branch nascer, o

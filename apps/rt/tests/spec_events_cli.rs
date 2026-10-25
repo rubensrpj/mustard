@@ -727,11 +727,11 @@ fn the_index_command_rebuilds_the_same_bytes_after_the_file_is_deleted() {
     let root = dir.path();
     seed_state(root, &json!({"author": "binary", "phase": "survey", "branch": "feature/teste", "base": "dev"}));
     let msg = seed_binary(root, "message", &json!({"author": "user", "text": "Deixar o índice certo. Depois o resto."}));
-    write(root, "context", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": "Deixar o índice certo. Depois o resto.", "origin": msg}));
+    write(root, "context", &json!({"title": "Deixar o índice certo", "agent": "- conferir pelo teste", "text": "Deixar o índice certo. Depois o resto.", "origin": msg}));
     write(root, "rule", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": "**Uma linha por spec.** Com o objetivo.", "keys": ["índice"], "example": "e", "origin": msg}));
     let written = std::fs::read(index_file(root)).expect("the write left the index");
     let text = String::from_utf8_lossy(&written);
-    assert!(text.contains("\"name\":\"teste\"") && text.contains("\"goal\":\"Deixar o índice certo.\""), "{text}");
+    assert!(text.contains("\"name\":\"teste\"") && text.contains("\"goal\":\"Deixar o índice certo\""), "{text}");
 
     std::fs::remove_file(index_file(root)).expect("delete the index");
     let out = rt(root, &["index"]).output().expect("run index");
@@ -900,13 +900,81 @@ fn task_without_a_title_is_refused_and_with_a_title_is_written() {
     assert_eq!((code, &out["ok"]), (Some(0), &json!(true)), "70 caracteres passam: {out}");
     let first = out["id"].as_u64().expect("o número da tarefa");
     let written = read(root, "waves");
-    let saved = written["events"].as_array().expect("events").iter().find(|e| e["id"] == json!(first)).cloned();
+    let saved = written["events"].as_array().expect("events").iter().find(|e| e["code"] == out["code"]).cloned();
     assert_eq!(saved.map(|e| e["title"].clone()), Some(json!(exact)), "o título fica gravado: {written}");
 
     // A versão nova pelo modelo, sem título: recusada.
     refused(&task(None, json!({"replaces": first})), "versão nova sem título");
     let (code, out) = write_out(root, "task", &task(Some("Fechamento confere cada critério"), json!({"replaces": first})));
     assert_eq!((code, &out["ok"]), (Some(0), &json!(true)), "a versão nova com título passa: {out}");
+}
+
+/// Duas tarefas, a segunda depende da primeira: o `remove` da primeira é
+/// recusado nomeando a dependente, e nada é gravado. Remover as duas no mesmo
+/// `targets` passa, porque nenhuma dependente fica viva.
+#[test]
+fn removing_a_task_with_a_live_dependent_is_refused_naming_the_dependent() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    seed_state(root, &json!({"author": "binary", "phase": "plan", "branch": "feature/teste", "base": "dev"}));
+    let msg = seed_binary(root, "message", &json!({"author": "user", "text": "o plano"}));
+    let crit = write(root, "criterion",
+        &json!({"title": "Combinar o item", "when": "a", "then": "b", "proof": "git --version", "form": "ubiquitous", "origin": msg}));
+    let task = |title: &str, depends_on: Value| json!({"agent": "- conferir pelo teste", "title": title, "text": "Tarefa.", "files": [{"path": "a.rs"}],
+        "depends_on": depends_on, "covers": [crit], "origin": msg});
+    let (_, first) = write_out(root, "task", &task("Entregar a primeira", json!([])));
+    let (_, second) = write_out(root, "task", &task("Entregar a segunda", json!([first["id"]])));
+
+    let before = event_lines(root);
+    let (code, refused) = write_out(root, "remove", &json!({"targets": [first["id"]], "reason": "Já foi feito fora."}));
+    assert_eq!((code, &refused["reason"]), (Some(1), &json!("task-has-dependents")), "{refused}");
+    let hint = refused["hint"].as_str().unwrap_or_default();
+    let (first_code, second_code) = (first["code"].as_str().unwrap_or_default(), second["code"].as_str().unwrap_or_default());
+    assert!(hint.contains(second_code) && hint.contains(first_code), "a recusa nomeia a dependente e a tarefa que sairia: {hint}");
+    assert_eq!(event_lines(root), before, "nada foi gravado");
+
+    let (code, removed) = write_out(root, "remove", &json!({"targets": [first["id"], second["id"]], "reason": "As duas saem."}));
+    assert_eq!((code, &removed["ok"]), (Some(0), &json!(true)), "{removed}");
+}
+
+/// A tarefa cuja dependência foi removida (a remoção que o programa de antes
+/// aceitava, semeada no arquivo) recebe a versão nova com a dependência que
+/// já trazia: a gravação julga só a que acrescenta. A versão que acrescenta
+/// uma dependência que não existe é recusada, nomeando só essa, e nada é
+/// gravado.
+#[test]
+fn a_revision_keeps_the_dependency_already_broken_and_is_refused_only_for_the_one_it_adds() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    seed_state(root, &json!({"author": "binary", "phase": "plan", "branch": "feature/teste", "base": "dev"}));
+    let msg = seed_binary(root, "message", &json!({"author": "user", "text": "o plano"}));
+    let crit = write(root, "criterion",
+        &json!({"title": "Combinar o item", "when": "a", "then": "b", "proof": "git --version", "form": "ubiquitous", "origin": msg}));
+    let task = |title: &str, depends_on: Value, extra: Value| {
+        let mut body = json!({"agent": "- conferir pelo teste", "title": title, "text": "Tarefa.", "files": [{"path": "a.rs"}],
+            "depends_on": depends_on, "covers": [crit], "origin": msg});
+        for (key, value) in extra.as_object().into_iter().flatten() {
+            body[key] = value.clone();
+        }
+        body
+    };
+    let (_, first) = write_out(root, "task", &task("Entregar a primeira", json!([]), json!({})));
+    let (_, second) = write_out(root, "task", &task("Entregar a segunda", json!([first["id"]]), json!({})));
+    seed_binary(root, "remove", &json!({"targets": [first["id"]], "reason": "Já foi feito fora."}));
+
+    let before = event_lines(root);
+    let added = task("Entregar a segunda", json!([first["id"], "MSTD-TASK-0099"]), json!({"replaces": second["id"]}));
+    let (code, refused) = write_out(root, "task", &added);
+    assert_eq!((code, &refused["reason"]), (Some(1), &json!("task-depends-on-unknown")), "{refused}");
+    let hint = refused["hint"].as_str().unwrap_or_default();
+    assert!(hint.contains("MSTD-TASK-0099"), "a recusa nomeia a dependência que a versão acrescenta: {hint}");
+    assert!(!hint.contains(first["code"].as_str().unwrap_or_default()), "a que a versão anterior já trazia fica fora da recusa: {hint}");
+    assert_eq!(event_lines(root), before, "nada foi gravado");
+
+    let kept = task("Entregar a segunda", json!([first["id"]]), json!({"replaces": second["id"]}));
+    let (code, revised) = write_out(root, "task", &kept);
+    assert_eq!((code, &revised["ok"]), (Some(0), &json!(true)), "a versão com só a dependência herdada grava: {revised}");
+    assert_eq!(event_lines(root), before + 1);
 }
 
 /// O item combinado com dono pelos arquivos, em `applies_to`, vai no pedido
@@ -1059,9 +1127,8 @@ fn a_new_version_over_a_replaced_version_is_refused_and_names_the_current_one() 
     let (v3, _) = written(&decision("A conta, sobre a vigente.", Some(json!(v2))));
 
     let (v4, _) = written(&decision("A conta, pelo código.", Some(json!(item))));
-    let agreed = read(root, "agreed");
-    let saved = agreed["events"].as_array().expect("events").iter().find(|e| e["id"] == json!(v4)).cloned();
-    assert_eq!(saved.map(|e| e["replaces"].clone()), Some(json!(v3)), "pelo código vai à vigente: {agreed}");
+    let saved = read(root, &format!("item-{v4}"));
+    assert_eq!(saved["events"][0]["replaces"], json!(v3), "pelo código vai à vigente: {saved}");
 
     let (other, _) = written(&decision("Outra conta.", None));
     refused(&decision("As duas contas.", Some(json!([other, v2]))), &format!("{item} ({v4})"), "lista com a 2");
@@ -1085,14 +1152,14 @@ fn a_new_version_over_a_replaced_version_is_refused_and_names_the_current_one() 
     }
     std::fs::write(&path, content).expect("the old event file");
     let agreed = read(root, "agreed");
-    let tips: Vec<u64> = agreed["events"]
+    let tips: Vec<&Value> = agreed["events"]
         .as_array()
         .expect("events")
         .iter()
         .filter(|e| e["code"] == json!("MSTD-DEC-0099"))
-        .filter_map(|e| e["id"].as_u64())
+        .map(|e| &e["text"])
         .collect();
-    assert_eq!(tips, vec![base + 2, base + 1], "as duas pontas seguem na leitura, a mais nova primeiro: {agreed}");
+    assert_eq!(tips, [&json!("Ponta dois."), &json!("Ponta um.")], "as duas pontas seguem na leitura, a mais nova primeiro: {agreed}");
 }
 
 /// O comando de ler, rodado pelo binário de dentro de `from`, que é a pasta
@@ -1158,6 +1225,58 @@ fn reading_from_inside_the_copy_of_an_open_request_shows_the_message_and_records
     assert_eq!(reads_recorded(root).len(), 2, "a leitura de fora da cópia não é do pedido");
 }
 
+/// Quantas chamadas `read` o binário observou na spec `teste`: as do arquivo
+/// de operações dela, onde a chamada mora.
+fn read_calls(root: &Path) -> usize {
+    let path = mustard_core::io::spec_events::operations_file(root, "teste").expect("the operations file");
+    let log = mustard_core::io::spec_events::read(&path).ok().flatten().unwrap_or_default();
+    log.visible().into_iter().filter(|e| e.event_type == "call" && e.str_field("command") == Some("read")).count()
+}
+
+/// O agente de uma conversa sem ligação parado na cópia da própria spec, com a
+/// pasta das cópias escrita de outro jeito pelo sistema: no Linux e no macOS,
+/// a base das cópias atrás de um link — a pasta pessoal num link —, e o
+/// sistema dá a pasta do terminal já resolvida; no Windows, sem o link, o
+/// lugar resolvido traz o prefixo de caminho literal. O `run read` dele fica
+/// gravado, uma vez só; o mesmo comando da mesma conversa, rodado da pasta
+/// principal, não fica.
+#[test]
+fn a_read_from_a_spec_copy_behind_a_link_is_recorded_for_an_unbound_conversation() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().join("projeto");
+    std::fs::create_dir_all(&root).expect("the project");
+    seed_state(&root, &json!({"author": "binary", "phase": "plan", "branch": "feature/teste", "base": "dev"}));
+    seed_binary(&root, "message", &json!({"author": "user", "text": "O agente lê de dentro da cópia."}));
+    let real = dir.path().join("real");
+    std::fs::create_dir_all(&real).expect("the real base");
+    #[cfg(unix)]
+    let base = {
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).expect("the link");
+        link
+    };
+    #[cfg(not(unix))]
+    let base = real.clone();
+    let project_folder = mustard_core::io::wave_prompt::copies_dir(&root).file_name().expect("the project folder").to_os_string();
+    let copy = real.join(project_folder).join("teste").join("a");
+    std::fs::create_dir_all(&copy).expect("the copy");
+    let read_unbound_from = |from: &Path| {
+        let out = rt(&root, &["read", "conversation", "--spec", "teste"])
+            .current_dir(from)
+            .env("MUSTARD_COPIES_DIR", &base)
+            .env("MUSTARD_SESSION_ID", "s-paralela")
+            .env_remove("MUSTARD_ACTIVE_SPEC")
+            .output()
+            .expect("run read");
+        assert!(out.status.success(), "read from {}: {}", from.display(), String::from_utf8_lossy(&out.stdout));
+    };
+
+    read_unbound_from(&root);
+    assert_eq!(read_calls(&root), 0, "a conversa sem ligação lendo da pasta principal não grava a chamada");
+    read_unbound_from(&copy);
+    assert_eq!(read_calls(&root), 1, "lendo de dentro da cópia da spec, a chamada fica uma vez");
+}
+
 /// O campo `every_wave` é aceito na gravação de uma regra e aparece na leitura
 /// do item, pelo código; o valor que não é verdadeiro ou falso é recusado sem
 /// gravar nada, e o item com a marca tem dono sem onda nem arquivo, mesmo numa
@@ -1195,14 +1314,16 @@ fn the_every_wave_mark_is_accepted_on_write_and_shown_on_read() {
 fn a_conversation_read_brings_the_newest_up_to_the_cap_and_all_brings_every_one() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
-    let ids: Vec<u64> =
-        (1..=35).map(|n| seed_binary(root, "message", &json!({"author": "user", "text": format!("mensagem {n}")}))).collect();
-    let numbers = |report: &Value| -> Vec<u64> {
-        report["events"].as_array().expect("events").iter().map(|e| e["id"].as_u64().expect("id")).collect()
+    let ids: Vec<String> = (1..=35)
+        .map(|n| seed_binary(root, "message", &json!({"author": "user", "text": format!("mensagem {n}")})))
+        .map(|id| format!("MSTD-MSG-{id:04}"))
+        .collect();
+    let numbers = |report: &Value| -> Vec<String> {
+        report["events"].as_array().expect("events").iter().map(|e| e["code"].as_str().expect("code").to_string()).collect()
     };
 
     let capped = read(root, "conversation");
-    let newest: Vec<u64> = ids.iter().rev().take(30).copied().collect();
+    let newest: Vec<String> = ids.iter().rev().take(30).cloned().collect();
     assert_eq!(numbers(&capped), newest, "{capped}");
     assert_eq!(capped["count"], json!(30), "{capped}");
     let more = capped["more"].as_str().unwrap_or_default();
@@ -1211,7 +1332,7 @@ fn a_conversation_read_brings_the_newest_up_to_the_cap_and_all_brings_every_one(
     let out = rt(root, &["read", "conversation", "--spec", "teste", "--all"]).output().expect("run read");
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
     let all = stdout_json(&out);
-    assert_eq!(numbers(&all), ids.iter().rev().copied().collect::<Vec<_>>(), "{all}");
+    assert_eq!(numbers(&all), ids.iter().rev().cloned().collect::<Vec<_>>(), "{all}");
     assert!(all.get("more").is_none(), "{all}");
 }
 
@@ -1277,6 +1398,234 @@ fn a_metrics_search_comes_as_a_summary_and_all_brings_the_events() {
     assert_eq!(commands, [&json!("map search"); 3], "{all}");
 }
 
+/// As marcas de conferência de um fato, que só a leitura do item traz.
+const FACT_MARKS: [&str; 5] = ["source_version", "current_source_version", "classification", "verification", "source_status"];
+
+/// O campo `name` de uma linha do tipo `kind` aponta outro item, e a leitura
+/// de um bloco o mostra pelo código: o tipo o declara como referência, ou ele
+/// é uma ligação que qualquer linha traz sem o tipo declarar (a origem, a
+/// versão que ela substitui e a mensagem a que a resposta responde).
+fn links_an_item(kind: &str, name: &str) -> bool {
+    use mustard_core::domain::spec_events::{Kind, type_spec};
+    ["origin", "replaces", "reply_to"].contains(&name)
+        || type_spec(kind).is_some_and(|spec| spec.fields.iter().any(|field| field.name == name && matches!(field.kind, Kind::Ref | Kind::Refs)))
+}
+
+/// O número de um evento, ou a lista deles, trocado pelo código do item.
+fn by_code(codes: &std::collections::BTreeMap<u64, String>, value: &Value) -> Value {
+    match value {
+        Value::Array(list) => Value::Array(list.iter().map(|one| by_code(codes, one)).collect()),
+        one => one.as_u64().and_then(|id| codes.get(&id)).map_or_else(|| one.clone(), |code| json!(code)),
+    }
+}
+
+/// Uma spec com um item de cada tipo, cada linha com as marcas que o binário
+/// carimba (versão do formato, número, hora em nanossegundos, autor e
+/// sessão); dois pontos com os mesmos fatos; e as ligações: a origem, a
+/// resposta a uma mensagem, a versão nova de uma decisão, o ponto que fecha
+/// outro com o resultado e o ponto que reaproveita resultados de antes; e
+/// cada referência que o tipo declara, apontando a primeira mensagem.
+/// Devolve os códigos de cada número.
+fn spec_with_every_item_type(root: &Path) -> std::collections::BTreeMap<u64, String> {
+    open_spec(root);
+    let fact = |source: &str, text: &str| {
+        json!({"source": source, "text": text, "classification": "syntax-candidate", "verification": "requires-source-confirmation",
+            "source_version": "c21d75f84991d3ef1951c00770f9ad5939451299ec672ff0da55c364c45ddbba"})
+    };
+    let shared = vec![fact("src/soma.rs:1", "A soma mora em src/soma.rs."), fact("src/total.rs:2", "O total mora em src/total.rs.")];
+    let mut lines = vec![json!({"type": "message", "author": "user", "text": "Somar a fatura."})];
+    let mut first_of: std::collections::BTreeMap<&str, u64> = std::collections::BTreeMap::new();
+    for spec in mustard_core::domain::spec_events::TYPES.iter().filter(|spec| spec.name != "message") {
+        first_of.insert(spec.name, lines.len() as u64 + 1);
+        let mut line = json!({"type": spec.name, "author": "assistant", "title": format!("Título {}", spec.name),
+            "text": format!("Texto {}.", spec.name), "agent": "- a parte do agente", "keys": ["chave"], "example": "um exemplo",
+            "why": "um porquê", "expected": "o esperado", "value": "um valor", "effect": "new_waves", "origin": 1});
+        // Os alvos da remoção e do expurgo somem da leitura: eles ficam fora.
+        for field in spec.fields.iter().filter(|field| field.name != "targets") {
+            match field.kind {
+                mustard_core::domain::spec_events::Kind::Ref => line[field.name] = json!(1),
+                mustard_core::domain::spec_events::Kind::Refs => line[field.name] = json!([1]),
+                _ => {}
+            }
+        }
+        lines.push(line);
+    }
+    let point = |facts: Vec<Value>| json!({"type": "point", "author": "binary", "block": "defect", "gap": "Onde a fatura soma",
+        "from": "gap", "status": "open", "origin": 1, "facts": facts});
+    lines.push(point(shared.clone()));
+    let mut more = shared;
+    more.push(fact("src/fatura.rs:3", "A fatura mora em src/fatura.rs."));
+    lines.push(point(more));
+    lines.push(json!({"type": "response", "author": "assistant", "text": "Feito.", "reply_to": 1}));
+    lines.push(json!({"type": "decision", "author": "assistant", "title": "Título decision", "text": "Texto decision, revisto.",
+        "agent": "- a parte do agente", "keys": ["chave"], "why": "um porquê", "origin": 1, "replaces": first_of["decision"]}));
+    lines.push(json!({"type": "point", "author": "assistant", "block": "defect", "gap": "Onde a fatura soma", "from": "gap",
+        "status": "closed", "origin": 1, "closes": first_of["point"], "result": [lines.len()]}));
+    lines.push(json!({"type": "point", "author": "assistant", "block": "defect", "gap": "Onde o total soma", "from": "gap",
+        "status": "closed", "origin": 1, "result": [first_of["decision"]], "reused_results": [first_of["decision"], first_of["task"]]}));
+    let text: String = lines
+        .into_iter()
+        .enumerate()
+        .fold(String::new(), |text, (at, mut line)| {
+            line["v"] = json!(1);
+            line["id"] = json!(at + 1);
+            line["at"] = json!("2026-10-22T14:38:48.128232016-03:00");
+            line["session"] = json!("sessao-da-obra");
+            text + &line.to_string() + "\n"
+        });
+    let path = mustard_core::io::spec_events::spec_file(root, "teste").expect("spec file");
+    std::fs::write(&path, text).expect("the event file");
+    mustard_core::io::spec_events::read(&path).expect("read").expect("the spec file").codes()
+}
+
+/// A leitura de um bloco traz o conteúdo de cada item sem as marcas internas.
+/// Saem a versão do formato, a sessão e o número, porque o código fica. A
+/// hora sai fora da conversa e, nela, fica até o minuto. O autor fica só na
+/// conversa, e cada fato sai sem as marcas de conferência. As ligações saem
+/// pelo código do item, e todo o resto continua igual ao que a leitura do
+/// item traz. O fato repetido sai uma vez, e o ponto seguinte aponta para
+/// ele. A leitura do item pelo código segue com o evento inteiro.
+#[test]
+fn a_block_read_shows_each_item_without_the_internal_marks_and_links_by_code() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let codes = spec_with_every_item_type(root);
+    let conversation = |kind: &str| {
+        mustard_core::domain::spec_events::type_spec(kind)
+            .is_some_and(|spec| spec.block == mustard_core::domain::spec_events::Block::Conversation)
+    };
+    // Cada versão, lida pelo número como hoje: o ponto que fecha outro leva o
+    // código dele, e as duas linhas se separam pelo texto e pela situação.
+    let wholes: Vec<Value> = codes.keys().map(|id| read(root, &format!("item-{id}"))["events"][0].clone()).collect();
+    let mut seen_types = std::collections::BTreeSet::new();
+    for block in ["conversation", "state", "agreed", "specification", "criteria", "waves", "review", "progress", "notes"] {
+        let report = read(root, block);
+        let mut facts_seen: std::collections::BTreeMap<(String, String), (Value, usize)> = std::collections::BTreeMap::new();
+        for lean in report["events"].as_array().expect("events") {
+            let code = lean["code"].as_str().unwrap_or_else(|| panic!("each item comes with its code: {lean}"));
+            let same: Vec<&Value> = wholes.iter().filter(|whole| whole["code"] == json!(code)).collect();
+            let whole = match same[..] {
+                [one] => one.clone(),
+                _ => (*same.iter().find(|whole| whole.get("text") == lean.get("text") && whole.get("status") == lean.get("status")).expect("the version shown")).clone(),
+            };
+            let kind = whole["type"].as_str().expect("the type").to_string();
+            if whole.get("facts").is_some() && same.len() == 1 {
+                let by_code = read(root, &format!("item-{code}"))["events"][0].clone();
+                assert_eq!(by_code, whole, "the item read by code keeps the whole event");
+            }
+            seen_types.insert(kind.clone());
+            for mark in ["v", "id", "session", "search"] {
+                assert!(lean.get(mark).is_none(), "{block}: {kind} without {mark}: {lean}");
+                assert!(mark == "search" || whole.get(mark).is_some(), "the item read keeps {mark}: {whole}");
+            }
+            let at = whole["at"].as_str().expect("the item read keeps the whole time");
+            assert_eq!(at, "2026-10-22T14:38:48.128232016-03:00", "{whole}");
+            if conversation(&kind) {
+                assert_eq!(lean["at"], json!("2026-10-22T14:38"), "{block}: in the conversation, the time to the minute: {lean}");
+                assert_eq!(lean["author"], whole["author"], "{block}: in the conversation, who spoke: {lean}");
+            } else {
+                assert!(lean.get("at").is_none() && lean.get("author").is_none(), "{block}: {kind} without time or author: {lean}");
+            }
+            for (key, value) in whole.as_object().expect("an object") {
+                match key.as_str() {
+                    "v" | "id" | "session" | "at" | "author" | "changed" | "replaced_by" | "removed" => {}
+                    "text" | "tasks" if kind == "send" => {}
+                    link if links_an_item(&kind, link) => {
+                        assert_eq!(lean[link], by_code(&codes, value), "{block}: {kind} links {link} by code: {lean}");
+                        assert!(lean[link].to_string().contains("MSTD-"), "{block}: {lean}");
+                    }
+                    "facts" => {
+                        let shown = lean["facts"].as_array().expect("the facts stay");
+                        for (n, (fact, kept)) in value.as_array().expect("facts").iter().zip(shown).enumerate() {
+                            for mark in FACT_MARKS {
+                                assert!(fact.get(mark).is_some(), "the item read keeps {mark}: {fact}");
+                            }
+                            let key = (fact["source"].to_string(), fact["text"].to_string());
+                            match facts_seen.get(&key) {
+                                Some((first, at)) => assert_eq!(kept, &json!({"same_as": first, "fact": at}), "{block}: {lean}"),
+                                None => {
+                                    let mut bare = fact.clone();
+                                    for mark in FACT_MARKS {
+                                        bare.as_object_mut().expect("a fact").remove(mark);
+                                    }
+                                    assert_eq!(kept, &bare, "{block}: the fact without its marks: {lean}");
+                                    facts_seen.insert(key, (json!(code), n + 1));
+                                }
+                            }
+                        }
+                        assert_eq!(shown.len(), value.as_array().map_or(0, Vec::len), "{lean}");
+                    }
+                    other => assert_eq!(lean.get(other), Some(value), "{block}: {kind} keeps {other}: {lean}"),
+                }
+            }
+        }
+        if block == "agreed" {
+            let text = report.to_string();
+            for said in ["A soma mora em src/soma.rs.", "O total mora em src/total.rs.", "A fatura mora em src/fatura.rs."] {
+                assert_eq!(text.matches(said).count(), 1, "the repeated fact comes once: {report}");
+            }
+            assert!(!text.contains("c21d75f8"), "{report}");
+        }
+    }
+    for kind in ["message", "response", "point", "rule", "limit", "edge_case", "decision", "context", "criterion", "task", "wave", "request"] {
+        assert!(seen_types.contains(kind), "the {kind} was read: {seen_types:?}");
+    }
+}
+
+/// O nome parecido `messages` lê a conversa, e a resposta diz o nome certo.
+#[test]
+fn reading_messages_brings_the_conversation_and_says_its_name() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    seed_binary(root, "message", &json!({"author": "user", "text": "Somar a fatura."}));
+    let read = read(root, "messages");
+    assert_eq!((&read["block"], &read["count"]), (&json!("conversation"), &json!(1)), "{read}");
+    let warned = read["warnings"].to_string();
+    assert!(warned.contains("messages") && warned.contains("conversation"), "{read}");
+}
+
+/// A leitura de um bloco mostra a origem pelo código da mensagem, e a gravação
+/// aceita esse mesmo código em `origin`: o arquivo guarda o número da
+/// mensagem. O código que a spec não tem e o texto fora do formato do código
+/// são recusados pelo nome, sem gravar nada, e o número segue valendo.
+#[test]
+fn the_origin_of_a_write_accepts_the_item_code_and_stores_its_number() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = &dir.path().canonicalize().expect("the folder");
+    let said = opened_by_a_session(root, "o pedido");
+    let path = mustard_core::io::spec_events::spec_file(root, "teste").expect("spec file");
+    let stored = |id: u64| {
+        let log = mustard_core::io::spec_events::read(&path).expect("read").expect("the spec file");
+        log.get(id).and_then(|event| event.fields.get("origin").cloned())
+    };
+    let code = mustard_core::io::spec_events::read(&path)
+        .expect("read")
+        .expect("the spec file")
+        .codes()
+        .get(&said)
+        .cloned()
+        .expect("the message has its code");
+    let context = |origin: &Value, text: &str| json!({"title": "Combinar o item", "agent": "- conferir pelo teste",
+        "text": text, "origin": origin});
+
+    let by_code = write(root, "context", &context(&json!(code), "A fatura soma centavos."));
+    assert_eq!(stored(by_code), Some(json!(said)), "the file keeps the message number, not its code");
+    let by_number = write(root, "context", &context(&json!(said), "O total soma a fatura."));
+    assert_eq!(stored(by_number), Some(json!(said)), "the number keeps working");
+    let shown = read(root, "specification")["events"].to_string();
+    assert!(shown.contains(&format!("\"origin\":\"{code}\"")), "the block read links the origin by code: {shown}");
+
+    let (stem, _) = code.rsplit_once('-').expect("a code has its number");
+    let before = event_lines(root);
+    let (status, unknown) = write_out(root, "context", &context(&json!(format!("{stem}-9999")), "Outro texto."));
+    assert_ne!(status, Some(0), "{unknown}");
+    assert_eq!(unknown["reason"], json!("unknown-target"), "{unknown}");
+    let (status, malformed) = write_out(root, "context", &context(&json!("a mensagem do pedido"), "Mais um texto."));
+    assert_ne!(status, Some(0), "{malformed}");
+    assert_eq!(malformed["reason"], json!("invalid-value"), "{malformed}");
+    assert_eq!(event_lines(root), before, "a refused origin writes nothing");
+}
+
 /// A spec de antes desta versão do Mustard só se lê. A gravação, a rodada, a
 /// retomada, o plano, a reabertura, o fechamento e a abertura do pull request
 /// recusam com o código próprio, e o arquivo dela fica com os mesmos bytes; a
@@ -1321,4 +1670,382 @@ fn a_legacy_spec_is_read_only_and_move_records_is_gone() {
     assert!(!gone.status.success());
     let gone = stdout_json(&gone);
     assert_eq!(gone["kind"], json!("InvalidSubcommand"), "{gone}");
+}
+
+/// A spec `teste` aberta pelo `run open`, num repositório parado em `dev`, e
+/// a fala `said` do usuário gravada pelo gancho da entrada, como numa sessão
+/// de verdade. Devolve o número da fala.
+fn opened_by_a_session(root: &Path, said: &str) -> u64 {
+    let git = |args: &[&str]| {
+        let out = Command::new("git").args(args).current_dir(root).output().expect("git runs");
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "t@example.com"]);
+    git(&["config", "user.name", "t"]);
+    git(&["config", "commit.gpgsign", "false"]);
+    git(&["checkout", "-q", "-b", "main"]);
+    std::fs::write(root.join(".git/info/exclude"), ".claude/\nmustard.json\n").expect("exclude");
+    std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"pt-BR"},"git":{"flow":{"*":"dev","dev":"main"}}}"#).expect("config");
+    std::fs::write(root.join("README.md"), "oi\n").expect("code");
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "init"]);
+    git(&["checkout", "-q", "-b", "dev"]);
+    // A conversa que abre a spec é a mesma que fala depois: o gancho do
+    // terminal passa a sessão ao comando, e só a spec ligada a ela grava a fala.
+    let opening = rt(root, &["open", "--kind", "feature", "--name", "teste", "--base", "dev"])
+        .env("MUSTARD_SESSION_ID", "s-teste")
+        .output()
+        .expect("run open");
+    let opened = stdout_json(&opening);
+    assert_eq!(opened["ok"], json!(true), "{opened}");
+
+    let prompt = json!({"hook_event_name": "UserPromptSubmit", "prompt": said, "session_id": "s-teste", "cwd": root.to_string_lossy()});
+    let mut hook = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
+        .args(["on", "UserPromptSubmit"])
+        .current_dir(root)
+        .env("CLAUDE_PROJECT_DIR", root)
+        .env_remove("MUSTARD_ACTIVE_SPEC")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("the hook runs");
+    if let Some(mut pipe) = hook.stdin.take() {
+        std::io::Write::write_all(&mut pipe, prompt.to_string().as_bytes()).expect("the hook reads the prompt");
+    }
+    assert!(hook.wait().expect("the hook finishes").success(), "a hook always exits 0");
+    let path = mustard_core::io::spec_events::spec_file(root, "teste").expect("spec file");
+    std::fs::read_to_string(path)
+        .expect("the event file")
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .rfind(|event| event["type"] == json!("message") && event["author"] == json!("user") && event["text"] == json!(said))
+        .and_then(|event| event["id"].as_u64())
+        .expect("the entry hook recorded the message")
+}
+
+/// A sigla explicada num item da spec vale nas gravações seguintes: o
+/// objetivo diz "Planejamento Integrado (PI)", e a regra que cita só "PI"
+/// passa. A sigla nunca explicada é recusada, a recusa cita a chave
+/// `acronyms`, e a chamada recusada guarda o motivo. A spec nasce do `run
+/// open` e a fala do usuário, do gancho da entrada.
+#[test]
+fn an_acronym_explained_in_the_spec_counts_for_the_whole_spec() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = &dir.path().canonicalize().expect("the folder");
+    let msg = opened_by_a_session(root, "o pedido");
+    write(root, "context", &json!({"title": "Planejamento da carga", "agent": "- conferir a carga",
+        "text": "Ligar o Planejamento Integrado (PI) ao estoque.", "origin": msg}));
+    let rule = |text: &str| json!({"title": "Carga do dia", "agent": "- conferir a carga", "text": text,
+        "keys": ["carga"], "example": "A carga sai às oito.", "origin": msg});
+
+    let (code, explained) = write_out(root, "rule", &rule("O PI fecha a carga do dia."));
+    assert_eq!(code, Some(0), "the acronym explained in the goal counts: {explained}");
+
+    let (code, refused) = write_out(root, "rule", &rule("O MRP fecha a carga do dia."));
+    assert_ne!(code, Some(0), "{refused}");
+    assert_eq!(refused["reason"], json!("item-unclear"), "{refused}");
+    assert!(refused["hint"].as_str().is_some_and(|hint| hint.contains("acronyms")), "the refusal names the key: {refused}");
+    let operations = mustard_core::io::spec_events::operations_file(root, "teste").expect("the operations file");
+    let calls = std::fs::read_to_string(operations).expect("the calls");
+    let call: Value = serde_json::from_str(calls.lines().last().expect("the refused call")).expect("a call");
+    assert_eq!(call["refusal"], json!("item-unclear"), "{call}");
+    assert!(call["refusal_detail"].as_str().is_some_and(|detail| detail.contains("MRP")), "the call keeps the reason: {call}");
+}
+
+/// A recusa por texto confuso cita o começo da frase longa; se a frase abre
+/// com uma chave, a chamada recusada guarda o motivo sem a chave: o arquivo
+/// de operações da spec nunca recebe o segredo, e o resto do motivo fica.
+#[test]
+fn a_refusal_detail_quoting_a_key_never_reaches_the_operations_file() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = &dir.path().canonicalize().expect("the folder");
+    let msg = opened_by_a_session(root, "o pedido");
+    let key = "AKIAIOSFODNN7EXAMPLE";
+    let long = format!("{key} {}", vec!["palavra"; 30].join(" "));
+
+    let (code, refused) = write_out(root, "rule", &json!({"title": "Carga do dia", "agent": "- conferir a carga",
+        "text": long, "keys": ["carga"], "example": "A carga sai às oito.", "origin": msg}));
+    assert_ne!(code, Some(0), "{refused}");
+    assert_eq!(refused["reason"], json!("item-unclear"), "{refused}");
+
+    let operations = mustard_core::io::spec_events::operations_file(root, "teste").expect("the operations file");
+    let calls = std::fs::read_to_string(operations).expect("the calls");
+    assert!(!calls.contains(key), "the key reached the operations file: {calls}");
+    let call: Value = serde_json::from_str(calls.lines().last().expect("the refused call")).expect("a call");
+    assert_eq!(call["refusal"], json!("item-unclear"), "{call}");
+    let detail = call["refusal_detail"].as_str().expect("the call keeps the reason");
+    assert!(detail.contains("…") && detail.contains("palavra"), "the reason keeps the rest of the sentence opening: {call}");
+}
+
+/// O objetivo que o painel mostra da spec `teste`, nas três leituras dele: a
+/// visão geral, a tela da spec e a lista das specs.
+fn panel_goals(root: &Path) -> Vec<Value> {
+    let screen = |args: &[&str]| {
+        let out = rt(root, args).output().expect("run panel");
+        assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stdout));
+        stdout_json(&out)
+    };
+    let overview = screen(&["panel", "--spec", "teste", "--section", "overview"]);
+    let spec = screen(&["panel", "--spec", "teste", "--section", "spec"]);
+    let listed = screen(&["panel", "--spec", "teste"]);
+    let row = listed["specs"].as_array().and_then(|specs| specs.iter().find(|spec| spec["name"] == json!("teste")).cloned());
+    vec![overview["spec"]["goal"].clone(), spec["spec"]["goal"].clone(), row.map_or(Value::Null, |row| row["goal"].clone())]
+}
+
+/// O `title` do objetivo é o título dele em toda tela: com um título de 30
+/// caracteres e uma primeira frase de 80, a gravação passa e o painel mostra
+/// o título. O teto do título do pull request vale para o `title`: a versão
+/// com um título de 61 caracteres é recusada, a recusa traz o título medido e
+/// nada é gravado. A spec nasce do `run open` e a fala do usuário, do gancho
+/// da entrada.
+#[test]
+fn the_goal_title_is_measured_and_shown_instead_of_the_first_sentence() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = &dir.path().canonicalize().expect("the folder");
+    let msg = opened_by_a_session(root, "o pedido");
+    let title = "Título do objetivo vale sempre";
+    let sentence = "O título gravado no objetivo vira o nome do pull request, do painel e do resumo.";
+    assert_eq!((title.chars().count(), sentence.chars().count()), (30, 80));
+    let goal = |title: &str| {
+        json!({"title": title, "agent": "- conferir o título", "text": format!("{sentence} O resto fica no texto."), "origin": msg})
+    };
+
+    let (code, written) = write_out(root, "context", &goal(title));
+    assert_eq!(code, Some(0), "a short title passes with a long first sentence: {written}");
+    assert_eq!(panel_goals(root), vec![json!(title); 3], "every panel reading shows the title");
+
+    let long = "O título do objetivo passa do teto e a gravação o recusa logo";
+    assert_eq!(long.chars().count(), 61);
+    let mut revised = goal(long);
+    revised["replaces"] = written["id"].clone();
+    let before = event_lines(root);
+    let (code, refused) = write_out(root, "context", &revised);
+    assert_eq!((code, &refused["reason"]), (Some(1), &json!("goal-title-too-long")), "{refused}");
+    let hint = refused["hint"].as_str().unwrap_or_default();
+    assert!(hint.contains(long) && hint.contains("61") && hint.contains("60"), "the refusal names the measured title: {hint}");
+    assert_eq!(event_lines(root), before, "nothing was written");
+}
+
+/// O `title` do objetivo escrito em negrito sai sem o negrito, como já sai a
+/// primeira frase: o painel mostra o título limpo, e o teto do título do pull
+/// request mede o título limpo. Um título de 60 caracteres entre asteriscos
+/// passa, porque os asteriscos não chegam ao pull request.
+#[test]
+fn a_bold_goal_title_is_shown_and_measured_without_the_bold() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = &dir.path().canonicalize().expect("the folder");
+    let msg = opened_by_a_session(root, "o pedido");
+    let plain = "Travar o merge enquanto houver pendência aberta em toda spec";
+    assert_eq!(plain.chars().count(), 60, "the plain title is at the cap");
+    let goal = json!({"title": format!("**{plain}**"), "agent": "- conferir o título", "text": "O merge espera a pendência fechar.", "origin": msg});
+
+    let (code, written) = write_out(root, "context", &goal);
+    assert_eq!(code, Some(0), "the asterisks are not measured: {written}");
+    assert_eq!(panel_goals(root), vec![json!(plain); 3], "every panel reading shows the title without the bold");
+}
+
+/// O objetivo de antes do `title`, como as specs de antes da forma fixa o
+/// têm, segue medido e mostrado pela primeira frase: a versão nova dele, sem
+/// título, com a primeira frase acima de 60 caracteres é recusada com a frase
+/// na recusa; com a frase curta, passa e o painel mostra a frase. O objetivo
+/// antigo entra pela gravação do núcleo, que é como ele chegou ao arquivo.
+#[test]
+fn a_goal_without_a_title_is_still_measured_and_shown_by_its_first_sentence() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = &dir.path().canonicalize().expect("the folder");
+    let msg = opened_by_a_session(root, "o pedido");
+    let path = mustard_core::io::spec_events::spec_file(root, "teste").expect("spec file");
+    let untitled = json!({"author": "assistant", "text": "Medir o objetivo antigo pela frase.", "origin": msg});
+    let old = mustard_core::io::spec_events::write(&path, "context", untitled.as_object().cloned().expect("an object"), &[])
+        .expect("the old goal")
+        .id;
+
+    let sentence = "O objetivo de antes do título segue medido pela primeira frase dele como sempre.";
+    assert_eq!(sentence.chars().count(), 80);
+    let version = |text: &str| json!({"replaces": old, "text": format!("{text} O resto fica no texto."), "origin": msg});
+    let before = event_lines(root);
+    let (code, refused) = write_out(root, "context", &version(sentence));
+    assert_eq!((code, &refused["reason"]), (Some(1), &json!("goal-title-too-long")), "{refused}");
+    assert!(refused["hint"].as_str().is_some_and(|hint| hint.contains(sentence)), "the refusal names the sentence: {refused}");
+    assert_eq!(event_lines(root), before, "nothing was written");
+
+    let short = "Medir o objetivo revisto pela frase.";
+    let (code, written) = write_out(root, "context", &version(short));
+    assert_eq!(code, Some(0), "{written}");
+    assert_eq!(panel_goals(root), vec![json!(short); 3], "without a title the panel shows the first sentence");
+}
+
+/// Um JSON com acento, aspas, crase, parênteses e dois-pontos vai direto e
+/// por `@arquivo`, gravado pela ferramenta de escrita, ao `run write context`
+/// e ao `--json` e ao `--facts` do `run answer`: o arquivo grava o mesmo que
+/// o texto direto. O arquivo que falta recusa, com o motivo e o caminho, sem
+/// gravar nada, no `run write` e no `run answer`.
+#[test]
+fn a_json_argument_read_from_a_file_writes_the_same_as_the_direct_text() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    open_spec(root);
+    let said = write(root, "message", &json!({"text": "Trocar a saudação."}));
+    for gap in ["Onde a saudação nasce", "Onde a saudação aparece"] {
+        let seen = json!([{"text": "A saudação mora na página.", "source": "mensagem 1"}]);
+        seed_binary(root, "point", &json!({"block": "defect", "gap": gap, "from": "gap", "status": "open", "origin": said, "facts": seen}));
+    }
+    let text = "Ação “citada” (parênteses): dois-pontos; 'simples' e \"duplas\".";
+    let agent = "- conferir: pelo `teste`";
+    let fields = json!({"title": "Saudação nova", "text": text, "agent": agent, "origin": said});
+    let decision = json!({"title": "Saudação nova", "text": text, "agent": agent, "keys": ["saudação"], "why": "pedido: \"trocar\"", "origin": said});
+    let facts = json!([{"text": text, "source": "mensagem 1"}]);
+    let in_file = |name: &str, value: &Value| {
+        let file = dir.path().join(name);
+        std::fs::write(&file, value.to_string()).expect("the file");
+        format!("@{}", file.display())
+    };
+    let recorded = |args: &[&str]| {
+        let out = rt(root, args).output().expect("the command runs");
+        let report = stdout_json(&out);
+        assert!(out.status.success(), "{args:?}: {report}");
+        report
+    };
+    let context = |json: &str| recorded(&["write", "context", "--spec", "teste", "--json", json])["id"].clone();
+    let (direct, from_file) = (context(&fields.to_string()), context(&in_file("contexto.json", &fields)));
+    let answer = |json: &str, facts: &str| {
+        let report = recorded(&["answer", "--spec", "teste", "--type", "decision", "--json", json, "--facts", facts]);
+        (report["id"].clone(), report["closed"]["id"].clone())
+    };
+    let answered = answer(&decision.to_string(), &facts.to_string());
+    let answered_from_file = answer(&in_file("decisao.json", &decision), &in_file("fatos.json", &facts));
+
+    let path = mustard_core::io::spec_events::spec_file(root, "teste").expect("spec file");
+    let log = mustard_core::io::spec_events::read(&path).expect("readable").expect("the spec");
+    let said_in = |id: &Value| {
+        let event = id.as_u64().and_then(|id| log.get(id)).unwrap_or_else(|| panic!("no item {id}"));
+        ["title", "text", "agent", "why", "facts"].map(|field| event.fields.get(field).cloned())
+    };
+    assert_eq!(said_in(&from_file), said_in(&direct), "the file writes the same context as the direct text");
+    assert_eq!(said_in(&direct)[1], Some(json!(text)));
+    assert_eq!(said_in(&answered_from_file.0), said_in(&answered.0), "the file writes the same answer as the direct text");
+    assert_eq!(said_in(&answered.0)[3], Some(decision["why"].clone()));
+    assert_eq!(said_in(&answered_from_file.1)[4], Some(facts.clone()), "the facts read from the file close the point");
+    assert_eq!(said_in(&answered_from_file.1), said_in(&answered.1));
+
+    // O `\` no nome faz no Linux o que o separador faz no Windows: o caminho
+    // do arquivo chega à recusa com barras invertidas.
+    let missing = dir.path().join("fal\\ta.json");
+    let before = event_lines(root);
+    for args in [
+        vec!["write", "context", "--spec", "teste", "--json", &format!("@{}", missing.display())],
+        vec!["answer", "--spec", "teste", "--type", "decision", "--json", "{}", "--facts", &format!("@{}", missing.display())],
+    ] {
+        let out = rt(root, &args).output().expect("the command runs");
+        let refused = stdout_json(&out);
+        assert_eq!((out.status.code(), refused["reason"].clone()), (Some(1), json!("io-failed")), "{args:?}: {refused}");
+        // O texto do campo, e não o JSON impresso, que escapa a barra invertida.
+        let names_the_file = refused["hint"].as_str().is_some_and(|hint| hint.contains(&missing.display().to_string()));
+        assert!(names_the_file, "the refusal names the file: {refused}");
+    }
+    assert_eq!(event_lines(root), before, "nothing is written");
+}
+
+/// O código de um item gravado na spec, como o pedido da onda e a leitura
+/// o mostram.
+fn code_of(root: &Path, id: u64) -> String {
+    let path = mustard_core::io::spec_events::spec_file(root, "teste").expect("spec file");
+    let log = mustard_core::io::spec_events::read(&path).expect("read").expect("the spec file");
+    log.codes().get(&id).cloned().unwrap_or_else(|| panic!("no code for {id}"))
+}
+
+/// A resposta aponta a mensagem do usuário pelo código que a leitura mostra,
+/// e a linha gravada guarda o número da mensagem, como faz com a origem. A
+/// resposta é do binário, que a grava pela gravação do núcleo: o `run write`
+/// a recusa.
+#[test]
+fn a_response_replying_by_the_message_code_keeps_the_message_number() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    open_spec(root);
+    let said = seed_binary(root, "message", &json!({"author": "user", "text": "Trocar o tema do site."}));
+    let answered =
+        seed_binary(root, "response", &json!({"author": "assistant", "text": "Troquei o tema.", "reply_to": code_of(root, said)}));
+    let path = mustard_core::io::spec_events::spec_file(root, "teste").expect("spec file");
+    let log = mustard_core::io::spec_events::read(&path).expect("read").expect("the spec file");
+    assert_eq!(log.get(answered).and_then(|answer| answer.int("reply_to")), Some(said));
+}
+
+/// O pedido que aponta pelo código a mensagem do usuário de onde veio leva a
+/// fala dela à pergunta sobre o lugar do pedido. Com o Jev ligado e fora do
+/// ar, a decisão vai à reserva, cujo material é o mesmo pedido ao Jev.
+#[test]
+fn a_request_from_the_message_code_takes_what_the_user_said_to_the_jev() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    open_spec(root);
+    let config = json!({"ai": {"fallback": true}, "judgement": {"wave-planning": {"filter": "jev"}}});
+    std::fs::write(root.join("mustard.json"), config.to_string()).expect("config");
+    let goal = seed_binary(root, "message", &json!({"author": "user", "text": "Somar dois números na calculadora."}));
+    write(root, "context", &json!({"title": "Somar na calculadora", "text": "Somar dois números na calculadora.",
+        "agent": "- conferir pelo teste", "origin": goal}));
+    let user_said = "Quero a tela inteira no modo escuro, por favor.";
+    let said = seed_binary(root, "message", &json!({"author": "user", "text": user_said}));
+    let request = json!({"title": "Tema escuro", "text": "Trocar o tema do site.", "keys": ["tema"], "effect": "new_waves",
+        "agent": "- conferir pelo teste", "origin": code_of(root, said)});
+    // Um endereço que ninguém atende: a pergunta ao Jev falha na hora.
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+    let url = format!("http://{}/v1/systemone", closed.local_addr().expect("address"));
+    drop(closed);
+    let out = rt(root, &["write", "request", "--spec", "teste", "--json", &request.to_string()])
+        .env("TYPESAFE_API_KEY", "fake-key")
+        .env("MUSTARD_JEV_URL", &url)
+        .output()
+        .expect("run write");
+    let reserved = stdout_json(&out);
+    assert_eq!(reserved["reason"], json!("jev-reserve"), "{reserved}");
+    let prompt = reserved["reserve"]["delegation"]["request"]["prompt"].as_str().expect("the reserve prompt");
+    assert!(prompt.contains(user_said), "the user's words go to the Jev: {prompt}");
+}
+
+/// A busca na spec que precisa do Jev e fica sem ele diz por quê, pelo
+/// `mustard.json` de verdade: o Jev desligado no projeto, a busca na spec sem
+/// a escolha própria — mesmo com a chave e as outras finalidades ligadas —, a
+/// chave que falta e a do `mustard.json` que o git guarda. O desligado nomeia
+/// o ajuste que o liga.
+#[test]
+fn a_spec_search_without_the_jev_says_why_and_which_setting_turns_it_on() {
+    let others = json!({"context": {"filter": "jev"}, "search": {"filter": "jev"}, "wave-planning": {"filter": "jev"}});
+    let own = json!({"context": {"filter": "jev"}, "spec-search": {"filter": "jev"}});
+    // (mustard.json, chave no ambiente, git guarda o mustard.json, a última linha)
+    let cases = [
+        (json!({"ai": {"fallback": false}, "judgement": own}), Some("fake-key"), false, "ai.fallback"),
+        (json!({"ai": {"fallback": true}, "judgement": others, "jev": {"key": "from-file"}}), None, false, "judgement.spec-search.filter"),
+        (json!({"ai": {"fallback": true}, "judgement": own}), None, false, "Jev fora: sem chave."),
+        (json!({"ai": {"fallback": true}, "judgement": own, "jev": {"key": "from-file"}}), None, true, "git"),
+    ];
+    let mut lines = std::collections::BTreeSet::new();
+    for (mut config, env, tracked, says) in cases {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        config["language"] = json!({"text": "pt-BR"});
+        std::fs::write(root.join("mustard.json"), config.to_string()).expect("config");
+        if tracked {
+            assert!(mustard_core::platform::git::run(root, &["init", "-q"]).ok);
+            assert!(mustard_core::platform::git::run(root, &["add", "mustard.json"]).ok);
+        }
+        open_spec(root);
+        let said = seed_binary(root, "message", &json!({"author": "user", "text": "nada"}));
+        for (title, text) in [("Commit da onda", "A página mostra o commit."), ("Rodada formata", "A rodada formata os arquivos antes do commit.")] {
+            write(root, "context", &json!({"title": title, "text": text, "agent": "- conferir pelo teste", "origin": said}));
+        }
+        let mut find = rt(root, &["find", "rodada formata arquivos commit onda", "--spec", "teste"]);
+        if let Some(key) = env {
+            find.env("TYPESAFE_API_KEY", key);
+        }
+        let out = find.output().expect("run find");
+        let shown = String::from_utf8_lossy(&out.stdout).to_string();
+        assert!(out.status.success(), "{config}: {shown}");
+        let last = shown.lines().last().unwrap_or_default().to_string();
+        assert!(last.starts_with("Jev fora: ") && last.contains(says), "{config}: {shown}");
+        lines.insert(last);
+    }
+    assert_eq!(lines.len(), 4, "each case has its own reason: {lines:?}");
 }

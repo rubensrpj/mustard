@@ -30,6 +30,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::domain::ast::is_test_path;
 use crate::domain::pattern::Pattern;
+use crate::domain::text::{CutAt, cut};
 pub use crate::domain::search::{Found, FoundText};
 use crate::platform::i18n::{Locale, translate};
 
@@ -430,7 +431,7 @@ pub const SPEC_SENTENCE_CHARS: usize = 200;
 /// A primeira frase de `text`, até [`SPEC_SENTENCE_CHARS`] caracteres.
 #[must_use]
 pub fn spec_sentence(text: &str) -> String {
-    crate::domain::spec_index::cut(crate::domain::spec_index::first_sentence(text), SPEC_SENTENCE_CHARS)
+    cut(crate::domain::spec_index::first_sentence(text), SPEC_SENTENCE_CHARS, CutAt::Char)
 }
 
 /// A história de uma declaração na base: onde ela mora, quantos commits a
@@ -499,7 +500,7 @@ pub fn decl_history(map: &ProjectMap, file: &str, name: &str, shown: usize) -> R
                 }
             }
             let comments =
-                declared.map(|d| d.comments.iter().map(|c| (c.pr, crate::domain::spec_index::cut(c.body.trim(), COMMENT_CHARS))).collect()).unwrap_or_default();
+                declared.map(|d| d.comments.iter().map(|c| (c.pr, cut(c.body.trim(), COMMENT_CHARS, CutAt::Char))).collect()).unwrap_or_default();
             DeclHistory {
                 file: module.path.clone(),
                 line: decl.line,
@@ -520,7 +521,7 @@ pub fn pull_description(map: &ProjectMap, number: u32) -> Option<(String, String
     let text = map.pulls.texts.iter().find(|text| text.number == number && !text.title.trim().is_empty())?;
     let body = text.body.replace("\r\n", "\n");
     let paragraph = body.trim().split("\n\n").next().unwrap_or_default().trim();
-    Some((text.title.trim().to_string(), crate::domain::spec_index::cut(paragraph, DESCRIPTION_CHARS)))
+    Some((text.title.trim().to_string(), cut(paragraph, DESCRIPTION_CHARS, CutAt::Char)))
 }
 
 /// Uma linha da história de uma declaração: a data, o começo do hash, o

@@ -31,10 +31,10 @@ use super::commit::{
 use super::wave_commit::{commit_waves, made_drafts, record_made, removed_warnings};
 use super::commit_title::{check_summary, wave_commits};
 use super::copy_check::check_against_copies;
-use super::leftovers::{Leftover, LeftoverEvent, MeaningJoin, ask_rewrites, leftover_destinations, leftover_events, leftovers_of, meaning_joins};
+use super::leftovers::{Leftover, LeftoverEvent, MeaningJoin, ask_rewrites, cover_asks, leftover_destinations, leftover_events, leftovers_of, meaning_joins};
 use super::queue::{backlog_wave, open_review, open_sends, waves_in_progress};
 use super::rehearsal::{Recording, Rehearsed, rehearse};
-use super::rejection::{held_rejection, keep_rejections, record_rejections, rejected_lines};
+use super::rejection::{held_rejection, keep_rejections, record_rejections, rejected_lines, release_unstarted};
 use super::lost_commit::already_committed;
 use super::stops::{HeldReturn, hold_refused, hold_waiting_changes, plan_refusals_point_at_changes, tasks_returned, undone_of, undone_returns};
 use super::usage::{Caller, Usage, measure_usage, usage_missing};
@@ -286,6 +286,7 @@ pub(crate) fn take_report_with_mine(
     report.rejected.extend(by_reviewer);
     let (mut rejections, unmeasured) = record_rejections(start, spec, &path, &mut fresh, &report.rejected, caller, lang)?;
     rejections.splice(0..0, reviewed);
+    rejections.extend(release_unstarted(start, spec, &path, &mut fresh, log)?);
     // O falso positivo de quem conduz também é gravado antes, preso à volta
     // pendente da onda: a conferência depois da onda o lê da spec.
     if super::stops::record_false_positives(start, spec, &fresh, &report.false_positive)? {
@@ -652,8 +653,10 @@ pub(super) fn dispatched_at(log: &SpecLog, wave: u64) -> Option<u64> {
 
 /// As voltas que a rodada assume agora, uma por onda: a última entrega que a
 /// onda gravou depois do envio que a despachou e que ninguém assumiu ainda,
-/// com todas as voltas dela desde esse envio. A volta de antes do envio —
-/// de um envio já superado por um reenvio — não conta. A volta que não se lê
+/// com todas as voltas dela desde esse envio, pela mesma leitura que a
+/// retomada conta como voltas à espera ([`SpecLog::returns_awaiting_round`]).
+/// A volta de antes do envio — de um envio já superado por um reenvio — e a
+/// da onda que saiu do plano não contam. A volta que não se lê
 /// como a rodada a assume ([`wave_report_of`]) vem à parte, com a recusa
 /// dela: segura só a própria onda. A volta que quem conduz a obra reprovou
 /// ([`held_rejection`]) também vem à parte, a cada rodada, enquanto for a última
@@ -662,14 +665,11 @@ pub(super) fn returned_waves(log: &SpecLog) -> (Vec<WaveReport>, Vec<HeldReturn>
     let hidden = log.hidden();
     let mut waves = Vec::new();
     let mut refused = Vec::new();
-    for last in log.unassumed_returns().into_iter().filter(|e| e.event_type == "delivered") {
-        let Some(wave) = last.wave().filter(|w| log.planned_waves().contains(w)) else {
+    for last in log.returns_awaiting_round() {
+        let Some(wave) = last.wave() else {
             continue;
         };
         let since = dispatched_at(log, wave).unwrap_or_default();
-        if last.id <= since {
-            continue;
-        }
         let mut report = match held_rejection(log, wave, last.id).map_or_else(|| wave_report_of(log, &last.fields), Err) {
             Ok(report) => report,
             Err(refusal) => {
@@ -751,7 +751,7 @@ fn wave_report_of(log: &SpecLog, fields: &Map<String, Value>) -> Result<WaveRepo
     let proofs = listed("proofs").iter().filter_map(|p| Some((p.get("criterion").filter(|c| !c.is_null())?.clone(), field(p, "proof")?))).collect();
     let fixes = listed("fixes").iter().filter_map(Value::as_u64).filter(|n| *n != wave).collect();
     let (undone, taken_elsewhere) = undone_of(log, wave, fields, replan.is_some() || text("blocked_by").is_some())?;
-    let leftovers = leftovers_of(&listed("leftovers")).map_err(RoundRefusal::Refused)?;
+    let leftovers = leftovers_of("delivered", &listed("leftovers")).map_err(RoundRefusal::Refused)?;
     Ok(WaveReport {
         wave,
         delivered,
@@ -826,6 +826,7 @@ fn match_usage(log: &SpecLog, report: &mut Report, held: &[HeldReturn]) -> Resul
 }
 
 /// Os trechos entre `<tag>` e `</tag>` de `raw`, na ordem.
+mod comment_codes;
 mod input;
 mod knowledge;
 mod observations;
@@ -1075,15 +1076,7 @@ fn check_reports(
     meaning.extend(meaning_joins(&leftovers, work_from + wave_tasks.len()));
     let mut rehearsed: Vec<u64> = Vec::new();
     for LeftoverEvent { wave, kind, mut draft, asks, .. } in leftovers {
-        if !asks.is_empty() {
-            let mut covers: Vec<u64> = draft.get("covers").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_u64).collect();
-            for id in asks.iter().filter_map(|at| rehearsed.get(*at).copied()) {
-                if !covers.contains(&id) {
-                    covers.push(id);
-                }
-            }
-            draft.insert("covers".into(), json!(covers));
-        }
+        cover_asks(&mut draft, &asks, &rehearsed);
         let event = rehearse(&mut check, kind, draft)?;
         rehearsed.push(event.id);
         wave_tasks.push((wave, kind, event));
@@ -4377,7 +4370,7 @@ fn main() { sum_comes_out_right(); double_comes_out_right(); }
             "commit": "a soma sai", "leftovers": [{"detail": "Sem título."}]}),
         );
         assert_eq!(untitled["reason"], json!("leftover-field-missing"), "{untitled}");
-        assert_eq!(untitled["hint"], json!("Falta o campo title numa sobra (leftovers) da entrega. Nada foi gravado."), "{untitled}");
+        assert_eq!(untitled["hint"], json!("Falta o campo title numa sobra (leftovers) da volta. Nada foi gravado."), "{untitled}");
         assert_eq!(spec_lines(root), before, "nada foi gravado: {untitled}");
 
         let cites = "Sem o índice, `src/commit.rs` para de ler o arquivo; `src/nao_existe.rs` também.";
@@ -4455,7 +4448,7 @@ fn main() { sum_comes_out_right(); double_comes_out_right(); }
             .collect();
         assert_eq!(tasks.len(), 2, "{out}");
         assert_eq!(tasks[0].fields.get("cleanup"), Some(&json!(true)), "{:?}", tasks[0].fields);
-        assert!(!tasks[0].fields.contains_key("priority"), "a limpeza sai por último: {:?}", tasks[0].fields);
+        assert!(!tasks[0].fields.contains_key("priority"), "a limpeza não passa à frente das tarefas antigas; sai na onda do mesmo sentido: {:?}", tasks[0].fields);
         assert!(!tasks[1].fields.contains_key("cleanup"), "{:?}", tasks[1].fields);
         assert!(tasks[1].fields.get("priority").and_then(Value::as_str).is_some_and(|said| !said.is_empty()), "{:?}", tasks[1].fields);
     }

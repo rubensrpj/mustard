@@ -147,13 +147,15 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("survey.done", Locale::PtBr) => {
             "O levantamento não tem ponto aberto. Mostre ao usuário as mensagens de `unrouted`, que \
-             nenhum registro aponta, e pergunte o que fazer com cada uma. Depois grave a \
-             especificação e as tarefas."
+             nenhum registro aponta (cada linha traz o código e o começo da mensagem; o texto \
+             inteiro sai por `mustard-rt run read item-<código>`), e pergunte o que fazer com cada \
+             uma. Depois grave a especificação e as tarefas."
         }
         ("survey.done", Locale::EnUs) => {
             "The survey has no open point. Show the user the messages in `unrouted`, which no record \
-             points to, and ask what to do with each one. Then record the specification and the \
-             tasks."
+             points to (each line has the code and the start of the message; the whole text comes \
+             from `mustard-rt run read item-<item-code>`), and ask what to do with each one. Then record \
+             the specification and the tasks."
         }
         ("survey.review_step", Locale::PtBr) => {
             "O bloco {block} fechou. Releia só as decisões dele e ache o que pode ter ficado de fora \
@@ -185,6 +187,21 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              contradicts itself and returns its text to you, recording no verdict. Record each of \
              its findings as an open point, with `block` and `from` outside_review, and present it \
              like the others. With no finding, go on."
+        }
+        // O nome do arquivo é o mesmo nos dois idiomas: é ele que o gancho do
+        // despacho procura na pasta da spec para apontar o desenho ao revisor.
+        // Sai com os pontos que o `grill` abre, antes de qualquer sim: a cópia
+        // é salva enquanto o modelo aprovado ainda está à mão, e o fim do
+        // levantamento não a pede de novo.
+        ("survey.save_design", Locale::PtBr) => {
+            "Se o usuário aprovar um modelo visual de tela neste levantamento, salve a cópia aprovada \
+             em `.claude/spec/{spec}/desenho.html`. Salve logo depois de gravar o sim, enquanto o \
+             modelo ainda está à mão. Com o arquivo ali, o pedido do revisor aponta o desenho."
+        }
+        ("survey.save_design", Locale::EnUs) => {
+            "If the user approves a visual model of a screen in this survey, save the approved copy at \
+             `.claude/spec/{spec}/desenho.html`. Save it right after recording the yes, while the \
+             model is still at hand. With the file there, the reviewer's request points to the design."
         }
         ("survey.fact_declared", Locale::PtBr) => "`{name}` é declarado em {path}, linha {line}.",
         ("survey.fact_declared", Locale::EnUs) => "`{name}` is declared in {path}, line {line}.",
@@ -272,7 +289,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("survey.rs"), super::PREFIXES, 45, 0x17b0_0296_cbf5_fd8e);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("survey.rs"), super::PREFIXES, 46, 0x35c2_d3b8_d12d_ccf1);
     }
 
     /// O ponto aberto sem fato só fecha com os fatos: a dica de fechar um
@@ -308,7 +325,6 @@ mod tests {
             ("reopen.reopened".into(), &["{spec}"][..]),
             ("reopen.fix_not_red".into(), &["{spec}", "{phase}"][..]),
             ("reopen.merge_unchecked".into(), &["{spec}", "{reason}"][..]),
-            ("reopen.draft_failed".into(), &["{spec}", "{reason}"][..]),
             ("survey.answer_options".into(), &[][..]),
             ("survey.answer_not_applicable_mixed".into(), &[][..]),
             ("survey.answer_no_open_point".into(), &["{spec}"][..]),
@@ -321,6 +337,7 @@ mod tests {
             ("survey.review_question".into(), &[][..]),
             ("survey.continue_option".into(), &[][..]),
             ("survey.outside_review_step".into(), &["{spec}"][..]),
+            ("survey.save_design".into(), &["{spec}"][..]),
             ("survey.fact_declared".into(), &["{name}", "{path}", "{line}"][..]),
             ("survey.fact_importers".into(), &["{path}", "{importers}"][..]),
             ("survey.fact_test_candidates".into(), &["{path}", "{tests}", "{inline}"][..]),

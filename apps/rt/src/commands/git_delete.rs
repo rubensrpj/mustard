@@ -92,6 +92,61 @@ fn close_open_pr(root: &Path, branch: &str) -> (Option<u64>, bool, Option<String
     }
 }
 
+/// Por que a branch não se apaga como unidade de trabalho ([`not_a_unit`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NotAUnit {
+    /// O projeto não tem o registro dela: o nome no formato de unidade não
+    /// basta, e `release/2026-Q3` tem esse formato.
+    NoRecord,
+    /// Ela é base de integração: declarada, protegida ou a padrão do remoto.
+    IntegrationBase,
+}
+
+impl NotAUnit {
+    /// O motivo, como os relatórios o mostram.
+    pub(crate) fn reason(self) -> &'static str {
+        match self {
+            NotAUnit::NoRecord => "no unit record",
+            NotAUnit::IntegrationBase => "integration base",
+        }
+    }
+}
+
+/// A leitura única de "esta branch é uma unidade de trabalho que se apaga",
+/// que a porta do descarte e a limpeza das cópias fazem antes de apagar: o
+/// registro da unidade no projeto
+/// ([`has_unit_record`](crate::shared::work_kind::BaseFlow::has_unit_record))
+/// e a base de integração ([`on_integration_base`]). `None` quando é.
+pub(crate) fn not_a_unit(
+    main: &Path,
+    branch: &str,
+    flow: &crate::shared::work_kind::BaseFlow,
+    cfg: &mustard_core::ProjectConfig,
+) -> Option<NotAUnit> {
+    if !flow.has_unit_record(branch) {
+        Some(NotAUnit::NoRecord)
+    } else if on_integration_base(main, branch, cfg) {
+        Some(NotAUnit::IntegrationBase)
+    } else {
+        None
+    }
+}
+
+/// Apaga a branch local `unit`, já conferida por quem chama ([`not_a_unit`]).
+/// `-D`, e não `-d`: a unidade abandonada não tem merge, e a que a base já tem
+/// foi conferida antes. O erro é o que o git disse ao recusar, como a branch
+/// em uso por outra cópia.
+pub(crate) fn delete_local_branch(main: &Path, unit: &str) -> Result<(), String> {
+    let out = mustard_core::platform::git::run(main, &["branch", "-D", unit]);
+    if out.ok {
+        Ok(())
+    } else if out.stderr.trim().is_empty() {
+        Err(format!("git branch -D {unit}"))
+    } else {
+        Err(out.stderr.trim().to_string())
+    }
+}
+
 /// The delete pass. `unit` is the work branch to remove; the checkout `start`
 /// stands on must be an integration base. Never panics, and every refusal
 /// touches nothing.
@@ -132,7 +187,7 @@ pub(crate) fn delete_with(start: &Path, unit: &str, remote: bool) -> Value {
     // sobre a MESMA branch num projeto recém-instalado: sem fluxo declarado a
     // lista é vazia, e a branch que o próprio remoto chama de padrão passava a
     // contar como unidade de alguém.
-    if flow.has_unit_record(&branch) && !on_integration_base(&main, &branch, &cfg) {
+    if not_a_unit(&main, &branch, &flow, &cfg).is_none() {
         // What the flow and the branch name establish answers where to go back
         // to; `origin/HEAD` is the last resort, so nothing here spells a branch
         // name of its own.
@@ -218,7 +273,7 @@ pub(crate) fn delete_with(start: &Path, unit: &str, remote: bool) -> Value {
     // worktree the guard answered "not a unit", declined to refuse, and this
     // line then permitted the destruction of the caller's own worktree. One
     // reading, in one place, is what makes that impossible to reintroduce.
-    if !flow.has_unit_record(unit) || on_integration_base(&main, unit, &cfg) {
+    if not_a_unit(&main, unit, &flow, &cfg).is_some() {
         return json!({
             "ok": false,
             "reason": "not-a-work-unit",
@@ -240,7 +295,7 @@ pub(crate) fn delete_with(start: &Path, unit: &str, remote: bool) -> Value {
     //
     // `-D`, never `-d`: an abandoned unit is unmerged BY DEFINITION, and `-d`
     // would refuse exactly the branches this command exists to remove.
-    let branch_deleted = local && git_ok(&main, &["branch", "-D", unit]);
+    let branch_deleted = local && delete_local_branch(&main, unit).is_ok();
     let remote_deleted = remote && git_ok(&main, &["push", "origin", "--delete", unit]);
 
     let local_clear = !local || branch_deleted;

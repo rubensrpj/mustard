@@ -1016,3 +1016,33 @@ fn the_map_help_teaches_the_search_with_the_text_of_grep_and_hides_the_measuring
     let report: serde_json::Value = serde_json::from_slice(&described.stdout).unwrap();
     assert_eq!(report["ok"], true, "the hidden options of the description and the speech are accepted: {report}");
 }
+
+/// A retomada num projeto com o Mustard e nenhuma spec diz o próximo passo —
+/// abrir a spec — e sai com código 0, sem comando de fase. O mapa da sessão
+/// manda rodá-la sempre, e antes ela saía com erro justamente no projeto que
+/// ainda não começou obra nenhuma.
+#[test]
+fn resume_without_a_spec_says_to_open_one_and_exits_0() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("projeto");
+    fs::create_dir_all(&root).unwrap();
+    let git = |args: &[&str]| assert!(std::process::Command::new("git").args(args).current_dir(&root).status().unwrap().success());
+    git(&["init", "-q"]);
+    fs::write(root.join("mustard.json"), r#"{"language":{"text":"pt-BR"}}"#).unwrap();
+
+    let out = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
+        .args(["run", "resume"])
+        .current_dir(&root)
+        .env("HOME", dir.path())
+        .env("USERPROFILE", dir.path())
+        .env("CLAUDE_PROJECT_DIR", &root)
+        .env_remove("MUSTARD_ACTIVE_SPEC")
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "{text}{}", String::from_utf8_lossy(&out.stderr));
+    let report: serde_json::Value = serde_json::from_str(&text).unwrap_or_else(|e| panic!("{e}: {text}"));
+    assert_eq!(report["ok"], serde_json::json!(true), "{report}");
+    assert!(report["next"].as_str().is_some_and(|next| next.contains("mustard-rt run open")), "{report}");
+    assert!(report.get("command").is_none(), "no phase command without a spec: {report}");
+}

@@ -3,6 +3,7 @@
 
 use crate::domain::clarity::ClarityReport;
 use crate::domain::survey::GapKey;
+use crate::domain::text::{cut, CutAt};
 use crate::platform::i18n::{translate, Locale};
 
 use super::{type_names, BlockQuery, EventRef, Kind};
@@ -60,6 +61,9 @@ pub enum Refusal {
     NoCurrentSpec,
     /// Um tipo de evento da spec gravado sem dizer a spec.
     SpecRequired { event_type: String },
+    /// Uma gravação sem `--spec` de uma conversa que nem a abertura nem a
+    /// retomada ligou a uma spec.
+    SessionUnbound { event_type: String },
     /// A lição que `replaces` aponta não existe no banco de lições.
     UnknownLesson { id: u64 },
     /// A lição não diz onde nasceu.
@@ -89,6 +93,10 @@ pub enum Refusal {
     /// onda que a versão revista dela não tinha: a onda nasce do backlog, e só
     /// o programa monta o lote.
     WaveByBacklog,
+    /// A tarefa cujos arquivos o git ignora todos: é mudança local, que nenhuma
+    /// onda entrega, e ela vai ao usuário como nota. `files` são os arquivos,
+    /// numa linha só.
+    FilesIgnoredByGit { files: String },
     /// O `run write` com uma mensagem do usuário, ou uma gravação dele que
     /// tiraria ou reveria uma: a fala do usuário chega pelos ganchos.
     UserMessageByHook { spec: String },
@@ -105,15 +113,16 @@ pub enum Refusal {
     /// O primeiro `context` de uma spec em levantamento, o objetivo, não
     /// aponta em `origin` uma mensagem do usuário.
     GoalOriginNotUser { spec: String, origin: String },
-    /// O objetivo gravado cuja primeira frase — a que vira o título do pull
-    /// request — passa do teto do título. Recusado na gravação, e não lá na
-    /// abertura do pull request, com a obra inteira já feita em cima dele.
+    /// O objetivo gravado cujo título — o `title` dele ou, sem `title`, a
+    /// primeira frase, o que vira o título do pull request — passa do teto do
+    /// título. Recusado na gravação, e não lá na abertura do pull request,
+    /// com a obra inteira já feita em cima dele.
     ///
-    /// `sentence` é a frase medida, e ela vai na recusa: sem ela, a recusa
-    /// nomeava um campo `title` que não tinha sido olhado, e quem escreveu um
-    /// título curto com uma primeira frase longa foi procurar o defeito no
-    /// lugar errado (campo, 21/10/2026).
-    GoalTitleTooLong { chars: usize, max: usize, sentence: String },
+    /// `measured` é o texto medido e `source`, a parte de onde ele saiu; os
+    /// dois vão na recusa: sem eles, a recusa nomeava uma parte que não tinha
+    /// sido olhada, e quem a leu foi encurtar a parte errada (campo,
+    /// 21/10/2026).
+    GoalTitleTooLong { chars: usize, max: usize, measured: String, source: crate::domain::spec_index::GoalSource },
     /// O `run write` com o tipo `work_type`, ou uma gravação dele que tiraria
     /// ou reveria o tipo de trabalho: quem o grava é o `grill`.
     WorkTypeByGrill,
@@ -160,6 +169,10 @@ pub enum Refusal {
     /// A volta de uma onda gravada sem envio aberto para ela: a rodada já a
     /// assumiu, ou a onda nunca foi despachada. Nada é gravado.
     NoOpenSend { wave: u64 },
+    /// Um `remove` que tiraria a última tarefa da onda `wave`, cujo agente
+    /// ainda trabalha (envio aberto, sem entrega): a onda sairia do ar e a
+    /// entrega dele seria recusada. Nada é gravado.
+    WaveAgentWorking { wave: u64 },
     /// Uma sobra da entrega sem título ou sem detalhe: `field` é o campo que
     /// falta na primeira sobra incompleta. Nada é gravado.
     LeftoverFieldMissing { field: String },
@@ -187,6 +200,11 @@ pub enum Refusal {
     /// Uma tarefa cujo `depends_on` aponta uma tarefa que não existe nesta
     /// spec. Nada é gravado, e a mensagem nomeia as duas.
     TaskDependsOnUnknown { task: String, depends_on: String },
+    /// Um `remove` que tiraria tarefas de que outras tarefas vivas dependem:
+    /// elas ficariam apontando uma tarefa que não existe mais. Nada é
+    /// gravado, e a mensagem nomeia as tarefas que sairiam e as que dependem
+    /// delas.
+    TaskHasDependents { removed: Vec<String>, dependents: Vec<String> },
     /// Um `depends_on` que fecha um círculo entre tarefas desta spec. Nada é
     /// gravado, e a mensagem nomeia o círculo inteiro, na ordem, voltando ao
     /// começo.
@@ -214,11 +232,21 @@ pub enum Refusal {
     /// commit sem prova que o cubra. Nada é gravado, e a mensagem nomeia cada
     /// arquivo e manda rodar a prova e gravar o passo de novo.
     DeliveryProofOlderThanFile { wave: u64, files: Vec<String> },
+    /// A entrega da onda `wave` cuja cópia acrescentou linha de comentário
+    /// citando o código de um item da spec: `found` traz cada uma como
+    /// `arquivo:linha (código)`. O código fala da obra, e o comentário fica no
+    /// código depois que ela acaba. Nada é gravado.
+    DeliveryItemCodeInComment { wave: u64, found: Vec<String> },
     /// O veredito da revisão final sem a leitura, registrada, de algum item
     /// que o pedido dela lista: o código do item. Nada é gravado, e a
     /// mensagem nomeia cada item não lido e manda lê-lo de dentro da cópia do
     /// revisor.
     VerdictReadMissing { missing: Vec<String> },
+    /// Um veredito que traz achados em `leftovers` sem ser o veredito final
+    /// aprovado: só ele os grava como tarefas, e em qualquer outro nada lê o
+    /// campo, e os achados se perderiam em silêncio. Nada é gravado, e a
+    /// mensagem diz onde o achado vai em cada caso.
+    VerdictLeftoversNotApproved,
     /// Um critério gravado sem declarar a forma: nenhuma das cinco do padrão
     /// de critério de aceitação. Nada é gravado, e a mensagem lista as cinco
     /// pelo nome, nos dois idiomas.
@@ -289,12 +317,12 @@ pub enum TaskDeclaration {
 /// outros saem contados.
 const UNCOVERED_SHOWN: usize = 10;
 
-/// O tamanho máximo do título de uma tarefa, em caracteres.
 /// O teto de caracteres do título de um ITEM da spec: a tarefa, a regra, a
 /// nota, o critério. É outro teto, de outra coisa, que o de
 /// [`MESSAGE_TITLE_MAX`](super::message::MESSAGE_TITLE_MAX): aquele é o do
-/// título de um commit e de um pull request, montado da primeira frase do
-/// objetivo. Os dois juntos na ajuda pareciam o mesmo teto com dois valores.
+/// título de um commit e de um pull request, e o do pull request é o `title`
+/// do objetivo ou, sem `title`, a primeira frase dele. Os dois juntos na ajuda
+/// pareciam o mesmo teto com dois valores.
 pub const TASK_TITLE_MAX: usize = 70;
 
 /// Uma das partes da forma fixa de um item que descreve o trabalho.
@@ -368,6 +396,7 @@ impl Refusal {
             Self::SpecNotOpen { .. } => "spec-not-open",
             Self::NoCurrentSpec => "no-current-spec",
             Self::SpecRequired { .. } => "spec-required",
+            Self::SessionUnbound { .. } => "session-unbound",
             Self::UnknownLesson { .. } => "unknown-lesson",
             Self::LessonOriginMissing => "lesson-origin-missing",
             Self::LessonRepeated { .. } => "lesson-repeated",
@@ -377,6 +406,7 @@ impl Refusal {
             Self::BinaryOnlyType { .. } => "binary-only-type",
             Self::BinaryAuthor => "binary-author",
             Self::WaveByBacklog => "wave-by-backlog",
+            Self::FilesIgnoredByGit { .. } => "files-ignored-by-git",
             Self::UserMessageByHook { .. } => "user-message-by-hook",
             Self::OldFormatSpec { .. } => "old-format-spec",
             Self::LegacySpec { .. } => "legacy-spec",
@@ -400,19 +430,23 @@ impl Refusal {
             Self::ClosingPointLastRecord { .. } => "closing-point-last-record",
             Self::DeliveredTooLong { .. } => "delivered-too-long",
             Self::NoOpenSend { .. } => "no-open-send",
+            Self::WaveAgentWorking { .. } => "wave-agent-working",
             Self::LeftoverFieldMissing { .. } => "leftover-field-missing",
             Self::OwnerMissing { .. } => "owner-missing",
             Self::TaskDeclarationMissing { .. } => "task-declaration-missing",
             Self::ItemFormMissing { .. } => "item-form-missing",
             Self::ItemUnclear { .. } => "item-unclear",
             Self::TaskDependsOnUnknown { .. } => "task-depends-on-unknown",
+            Self::TaskHasDependents { .. } => "task-has-dependents",
             Self::TaskDependencyCycle { .. } => "task-dependency-cycle",
             Self::AgreedItemsMissing { .. } => "agreed-items-missing",
             Self::DeliveryAgreedMissing { .. } => "delivery-agreed-missing",
             Self::DeliveryReadMissing { .. } => "delivery-read-missing",
             Self::TaskNotReleased { .. } => "task-not-released",
             Self::DeliveryProofOlderThanFile { .. } => "delivery-proof-older-than-file",
+            Self::DeliveryItemCodeInComment { .. } => "delivery-item-code-in-comment",
             Self::VerdictReadMissing { .. } => "verdict-read-missing",
+            Self::VerdictLeftoversNotApproved => "verdict-leftovers-not-approved",
             Self::CriterionFormMissing => "criterion-form-missing",
             Self::ProofNotACommand { .. } => "proof-not-a-command",
             Self::ProofProgramUnknown { .. } => "proof-program-unknown",
@@ -554,11 +588,14 @@ impl Refusal {
             Self::SpecRequired { event_type } => {
                 fill("spec_events.spec_required", &[("{type}", event_type.clone())])
             }
+            Self::SessionUnbound { event_type } => {
+                fill("spec_events.session_unbound", &[("{type}", event_type.clone())])
+            }
             Self::UnknownLesson { id } => fill("lessons.unknown_lesson", &[("{id}", id.to_string())]),
             Self::LessonOriginMissing => fill("lessons.origin_missing", &[]),
             Self::LessonRepeated { id, text } => fill(
                 "lessons.repeated",
-                &[("{id}", id.to_string()), ("{text}", opening(text, REPEATED_TEXT_CHARS))],
+                &[("{id}", id.to_string()), ("{text}", cut(text.trim(), REPEATED_TEXT_CHARS + 1, CutAt::Char))],
             ),
             Self::LessonUnclear { report } => {
                 fill("lessons.unclear", &[("{defects}", report.defects(lang).join("; "))])
@@ -580,6 +617,7 @@ impl Refusal {
             ),
             Self::BinaryAuthor => fill("spec_events.binary_author", &[]),
             Self::WaveByBacklog => fill("spec_events.wave_by_backlog", &[]),
+            Self::FilesIgnoredByGit { files } => fill("spec_events.files_ignored_by_git", &[("{files}", files.clone())]),
             Self::UserMessageByHook { spec } => {
                 fill("spec_events.user_message_by_hook", &[("{spec}", spec.clone())])
             }
@@ -594,18 +632,17 @@ impl Refusal {
                 &[("{spec}", spec.clone()), ("{origin}", origin.clone())],
             ),
             // O teto é o do título do pull request, e a recusa o explica com
-            // as mesmas palavras da abertura dele. O que ela não repete é o
-            // nome da parte: aqui o medido é a primeira frase do objetivo, e
-            // chamá-la de `title` mandava quem escreveu encurtar um campo que
-            // nunca foi olhado.
-            Self::GoalTitleTooLong { chars, max, sentence } => fill(
-                "spec_events.goal_title_too_long",
-                &[
-                    ("{chars}", chars.to_string()),
-                    ("{max}", max.to_string()),
-                    ("{sentence}", sentence.clone()),
-                ],
-            ),
+            // as mesmas palavras da abertura dele. O que ela não empresta é o
+            // nome da parte: a recusa nomeia a parte que foi medida, o `title`
+            // ou a primeira frase do objetivo sem `title`, para que quem
+            // escreveu encurte a parte certa.
+            Self::GoalTitleTooLong { chars, max, measured, source } => {
+                let (key, slot) = match source {
+                    crate::domain::spec_index::GoalSource::Title => ("spec_events.goal_title_field_too_long", "{title}"),
+                    crate::domain::spec_index::GoalSource::FirstSentence => ("spec_events.goal_title_too_long", "{sentence}"),
+                };
+                fill(key, &[("{chars}", chars.to_string()), ("{max}", max.to_string()), (slot, measured.clone())])
+            }
             Self::WorkTypeByGrill => fill("grill.work_type_by_grill", &[]),
             Self::SurveyOpen { spec, count, points } => fill(
                 "spec_events.survey_open",
@@ -644,6 +681,7 @@ impl Refusal {
                 &[("{chars}", chars.to_string()), ("{max}", max.to_string())],
             ),
             Self::NoOpenSend { wave } => fill("spec_events.no_open_send", &[("{wave}", wave.to_string())]),
+            Self::WaveAgentWorking { wave } => fill("spec_events.wave_agent_working", &[("{wave}", wave.to_string())]),
             Self::LeftoverFieldMissing { field } => {
                 fill("spec_events.leftover_field_missing", &[("{field}", field.clone())])
             }
@@ -685,6 +723,10 @@ impl Refusal {
                 "spec_events.task_depends_on_unknown",
                 &[("{task}", task.clone()), ("{depends_on}", depends_on.clone())],
             ),
+            Self::TaskHasDependents { removed, dependents } => fill(
+                "spec_events.task_has_dependents",
+                &[("{removed}", removed.join(", ")), ("{dependents}", dependents.join(", "))],
+            ),
             Self::TaskDependencyCycle { cycle } => fill(
                 "spec_events.task_dependency_cycle",
                 &[("{cycle}", cycle.join(" → "))],
@@ -706,9 +748,14 @@ impl Refusal {
                 "spec_events.delivery_proof_older_than_file",
                 &[("{wave}", wave.to_string()), ("{files}", files.join(", "))],
             ),
+            Self::DeliveryItemCodeInComment { wave, found } => fill(
+                "spec_events.delivery_item_code_in_comment",
+                &[("{wave}", wave.to_string()), ("{found}", found.join(", "))],
+            ),
             Self::VerdictReadMissing { missing } => {
                 fill("spec_events.verdict_read_missing", &[("{missing}", missing.join(", "))])
             }
+            Self::VerdictLeftoversNotApproved => fill("spec_events.verdict_leftovers_not_approved", &[]),
             Self::CriterionFormMissing => fill("spec_events.criterion_form_missing", &[]),
             Self::ProofNotACommand { criterion, found } => fill(
                 "spec_events.proof_not_a_command",
@@ -746,19 +793,9 @@ impl Refusal {
 }
 
 /// Quantos caracteres do texto da lição que já existe a recusa de repetição
-/// mostra: o bastante para achar a lição, pouco para não copiá-la inteira.
+/// mostra antes das reticências: o bastante para achar a lição, pouco para
+/// não copiá-la inteira.
 const REPEATED_TEXT_CHARS: usize = 160;
-
-/// O começo de `text`, com no máximo `max` caracteres; o corte ganha "…".
-fn opening(text: &str, max: usize) -> String {
-    let text = text.trim();
-    if text.chars().count() <= max {
-        return text.to_string();
-    }
-    let mut cut: String = text.chars().take(max).collect();
-    cut.push('…');
-    cut
-}
 
 #[cfg(test)]
 mod tests {
@@ -785,5 +822,18 @@ mod tests {
         let refusal = Refusal::TaskDeclarationMissing { missing: vec![TaskDeclaration::Covers], uncovered: Vec::new() };
         let pt = refusal.message(Locale::PtBr);
         assert!(pt.contains("`covers`") && !pt.contains("Itens que nenhuma tarefa cobre"), "{pt}");
+    }
+
+    /// A recusa da lição repetida cita a lição guardada inteira até 161
+    /// caracteres, no lugar das reticências; a de 162 fica com os 160
+    /// primeiros e termina nelas.
+    #[test]
+    fn the_repeated_lesson_refusal_quotes_160_characters_before_the_ellipsis() {
+        let quoted = |text: String| Refusal::LessonRepeated { id: 3, text }.message(Locale::PtBr);
+        let whole = "x".repeat(161);
+        let got = quoted(format!("  {whole}\n"));
+        assert!(got.contains(&format!("\"{whole}\"")), "{got}");
+        let got = quoted("x".repeat(162));
+        assert!(got.contains(&format!("\"{}…\"", "x".repeat(160))), "{got}");
     }
 }

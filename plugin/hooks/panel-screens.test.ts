@@ -90,6 +90,26 @@ const agents={waves_sent:367,waves:[
     {wave:366,model_used:null,model_asked:'opus',effort_asked:'xhigh',effort_used:null,skills:[],summary_reused:false,tokens:null,refused_returns:0,review_rejections:0}],
   models:[{model:'claude-opus-5-5',effort:'xhigh',waves:340}],skills:[{name:'add-run-command',waves:12}],reuse:{summaries:30,knowledge_calls:10,knowledge_cached:4},
   failures:{jev:{calls:3,reasons:{no_credit:3}},hook_blocks:{total:5,by_hook:{command_guard:5}},refused_returns:9,review_rejections:2}};
+// The waves screen of the approved model of the waves, page by page: the
+// first page with the model's own waves, the others committed, 208 in all.
+const wave=(n:number,title:string,extra:any={})=>({wave:n,title,state:'committed',at:'2026-10-16T12:00:00-03:00',attention:null,tasks:1,returned:0,files:1,delivered_files:1,
+  commit:'9b91cd2a0e',seconds:3900,model_used:'claude-opus-5-5',model_asked:'opus',effort_asked:'xhigh',effort_used:null,tokens:1000000,...extra});
+const stoppedWave={state:'no-agent',at:'2026-10-17T15:03:00-03:00',attention:'wave-no-agent',delivered_files:null,commit:null,seconds:null,model_used:null,tokens:null};
+const modelWaves=[wave(208,'A onda lê cada item só com o título e a parte do agente',{...stoppedWave,files:2}),
+  wave(207,'Busca única na spec por tipo, código ou texto, com o Jev na dúvida',{...stoppedWave,files:13}),
+  wave(206,'Recibo da instalação nomeia o programa atrás do plugin',{at:'2026-10-17T10:00:00-03:00',commit:'15db4cd7aa',seconds:660,tokens:1090000}),
+  wave(205,'Recibo de prova guarda o resultado do cargo mesmo atrás do pipe',{tasks:6,returned:5,files:10,delivered_files:6,tokens:8850000}),
+  wave(204,'Entrega recusa prova verde mais velha que o arquivo entregue',{tasks:6,returned:5,files:9,delivered_files:4,tokens:6150000}),
+  wave(203,'Retomada lista o que a rodada fez desde a última mensagem',{tasks:3,returned:2,files:4,delivered_files:3,tokens:6290000}),
+  wave(202,'Busca explícita responde sem esperar a trava da passada',{tasks:3,returned:1,files:8,delivered_files:4,tokens:7500000}),
+  wave(201,'Rodada parte a pergunta ao Jev em lotes que cabem no teto',{tasks:5,returned:3,files:20,delivered_files:5,tokens:9400000}),
+  ...Array.from({length:200},(_,n)=>wave(200-n,`Onda de exemplo ${200-n}`))];
+function waves(argv:string[]) {
+  const at=(flag:string)=>argv.includes(flag)?argv[argv.indexOf(flag)+1]:undefined;
+  const offset=Number(at('--offset') ?? 0),limit=Number(at('--limit') ?? 8);
+  return {ok:true,schema_version:1,section:'waves',revision:`rev-waves-${offset}-${limit}`,project,selected_spec:'ajuste-na-spec-fechada',
+    total:modelWaves.length,offset,limit,rows:modelWaves.slice(offset,offset+limit)};
+}
 const skills=[{name:'falta-teste',state:'active',tasks:12,gain:'Acertou 3 de 3 com a skill.',wave_tokens:220008},{name:'parada',state:'retired',tasks:0,gain:null,wave_tokens:null}];
 // As the binary answers a project with no spec search choice saved: off.
 const settingsValues={enabled:true,rtk:true,vectors:true,jev:true,agent_model:'opus',agent_effort:'xhigh',search_answer:true,session_claude_model:'haiku',
@@ -132,7 +152,7 @@ async function open($,on,surface,{theme='dark',conflict=false,review,task,column
       // What the pane shows while the measure runs.
       if(e.argv.includes('--refresh-consumption')){during.push({button:await mounted?.find({key:'measure'}),note:await mounted?.find({text:/Medindo/})});measured=true;}
       value=section==='overview'?early?survey:overview:section==='spec'?spec:section==='items'?items(e.argv):section==='item'?{...item,item:{...item.item,...(review?{review}:{}),...task}}
-        :section==='usage'?{...usage,copies_disk:measured?{bytes:126000000000,measured_at:'2026-10-18T13:00:00Z'}:null}:{ok:false,reason:'panel-invalid-section'};
+        :section==='usage'?{...usage,copies_disk:measured?{bytes:126000000000,measured_at:'2026-10-18T13:00:00Z'}:null}:section==='waves'?waves(e.argv):{ok:false,reason:'panel-invalid-section'};
       if(patch[section])value={...value,...patch[section]};
       if(at('--if-revision')===value.revision)value={ok:true,schema_version:1,unchanged:true,revision:value.revision,section};
     } else if(e.argv[2]==='publish') {
@@ -1151,7 +1171,7 @@ for(const surface of SURFACES)test(`the other specs read their name as bold text
 });
 
 // 2. Os seis cartões do combinado são desenhados do mesmo jeito: a mesma caixa,
-// e o número de cada um é o botão dele; o das ondas abre o Consumo.
+// e o número de cada um é o botão dele; o das ondas abre a tela das ondas.
 for(const surface of SURFACES)test(`the six boxes of the agreement are drawn alike, each number its own button · ${surface}`,async ($,on)=>{
   const f=await open($,on,surface);const tree:any=await reach(f,'spec');
   const tiles=nodesOf(tree,'Box').filter((node:any)=>node.props.width==='30%' && node.props.backgroundColor===DARK.card);
@@ -1159,7 +1179,7 @@ for(const surface of SURFACES)test(`the six boxes of the agreement are drawn ali
   const look=(box:any)=>({...box.props,children:undefined});
   for(const box of tiles)expect(look(box)).toEqual(look(tiles[0]));
   expect(tiles.map((box:any)=>[kidsOf(box)[0].type,inline(kidsOf(kidsOf(box)[0])[0])])).toEqual([['Button','584'],['Button','42'],['Button','22'],['Button','154'],['Button','66'],['Button','367']]);
-  await f.pane.press({key:'go-waves'});expect(f.section()).toBe('usage');
+  await f.pane.press({key:'go-waves'});expect(f.section()).toBe('waves');
   await f.close();
 });
 
@@ -1466,3 +1486,70 @@ for(const columns of [56,55])test(`the waves in the air card breaks well · ${co
   else {expect(lines[at]).toMatch(/● Nenhuma onda trabalhando\s+╎$/);expect(lines[at+1]).toMatch(/^\s+╎\s{10,}1 agente na sessão {2}╎$/);}
   await f.close();
 });
+
+// A tela das ondas, a sétima: o cartão das ondas da spec a abre, cada onda
+// traz o que levou, o que entregou e o próprio consumo, e as páginas trazem
+// todas, da mais nova para a mais antiga.
+const dotColors=async (pane:any)=>(await pane.findAll({type:'Text'})).filter((node:any)=>node.text==='●').map((node:any)=>node.props.color);
+const WAVES:(string|RegExp)[]=['Visão geral','Spec','Consumo','ajuste-na-spec-fechada','ONDAS · 208','página 1 de 26',
+  'Onda 208','em execução sem agente desde 17/10','A onda lê cada item só com o título e a parte do agente','levou','1 tarefa · 2 arquivos',
+  'entregou','nada ainda · sem commit','gastou','— tokens · tempo — · opus (pedido) · esforço pedido xhigh',
+  'Onda 207','em execução sem agente desde 17/10','1 tarefa · 13 arquivos',
+  'Onda 206','comitada em 17/10','Recibo da instalação nomeia o programa atrás do plugin','1 tarefa · 1 arquivo','1 feita · 1 arquivo · commit 15db4cd',
+  '1,09 mi tokens · 11 min · claude-opus-5-5 · esforço pedido xhigh',
+  'Onda 205','comitada em 16/10','Recibo de prova guarda o resultado do cargo mesmo atrás do pipe','· e mais 5','6 tarefas · 10 arquivos',
+  '1 feita, 5 voltaram · 6 arquivos · commit 9b91cd2','8,85 mi tokens · 1 h 5 min · claude-opus-5-5 · esforço pedido xhigh',
+  'Onda 202','2 feitas, 1 voltou · 4 arquivos · commit 9b91cd2','7,5 mi tokens · 1 h 5 min · claude-opus-5-5 · esforço pedido xhigh',
+  'Onda 201','5 tarefas · 20 arquivos','9,4 mi tokens · 1 h 5 min · claude-opus-5-5 · esforço pedido xhigh','8 de 208 · da mais nova para a mais antiga'];
+for(const surface of SURFACES)test(`the waves card of the spec opens the waves screen, each wave with its own spend, in the layout's palette · ${surface}`,async ($,on)=>{
+  const f=await open($,on,surface);await reach(f,'spec');
+  await f.pane.press({key:'go-waves'});const tree:any=await f.pane.drawn();
+  expect(f.reads().at(-1)).toEqual(expect.arrayContaining(['--section','waves','--offset','0','--limit','8']));
+  inOrder(reading(tree),[...WAVES,surface==='terminal'?'Próxima':'Próxima ›']);
+  expect(surface==='terminal'?termHeadings(tree):await headings(f.pane)).toEqual(['ONDAS · 208']);
+  expect(outside(tree,DARK)).toEqual([]);
+  // As que pedem atenção no fundo delas, o ponto e o estado no laranja; as comitadas no verde.
+  expect((await boxes(f.pane,{backgroundColor:DARK.attention})).map((box:any)=>reading(box)[1])).toEqual(['Onda 208','Onda 207']);
+  expect(await dotColors(f.pane)).toEqual([DARK.warning,DARK.warning,...Array(6).fill(DARK.success)]);
+  expect(await style(f.pane,'comitada em 17/10')).toMatchObject({color:DARK.success});
+  // A aba Spec segue acesa e a volta leva o nome da spec; no terminal, a volta no v e a página seguinte no m.
+  expect((await f.pane.find({key:'back'}))!.props.label).toBe(surface==='terminal'?'‹ ajuste-na-spec-fechada':'ajuste-na-spec-fechada');
+  if(surface==='terminal'){expect(hotkeys(tree)).toEqual(['go-settings: a','go-usage: c','back: v','waves-next: m']);expect(glued(tree)).toEqual([]);expect(merged(tree)).toEqual([]);}
+  else {expect(hotkeys(tree)).toEqual([]);expect(touching(tree)).toEqual([]);}
+  await f.close();
+});
+
+for(const surface of SURFACES)test(`the waves screen pages through every wave, newest first · ${surface}`,async ($,on)=>{
+  const f=await open($,on,surface);await reach(f,'spec');await f.pane.press({key:'go-waves'});
+  await lacks(f.pane,/Anterior/);
+  const seen:number[]=[];
+  for(let page=1;page<=26;page++) {
+    const tree:any=await f.pane.drawn();
+    seen.push(...reading(tree).filter(value=>/^Onda \d+$/.test(value)).map(value=>Number(value.slice(5))));
+    await has(f.pane,`página ${page} de 26`);
+    // Entre a primeira e a última, as duas páginas: no terminal a anterior no r e a seguinte no m.
+    if(page===2)expect(hotkeys(tree)).toEqual(surface==='terminal'?['go-settings: a','go-usage: c','back: v','waves-previous: r','waves-next: m']:[]);
+    if(page<26)await f.pane.press({key:'waves-next'});
+  }
+  expect(seen).toEqual(Array.from({length:208},(_,n)=>208-n));
+  expect(await f.pane.find({key:'waves-next'})).toBeUndefined();await has(f.pane,'208 de 208 · da mais nova para a mais antiga');
+  await f.pane.press({key:'waves-previous'});await has(f.pane,'página 25 de 26');
+  expect(f.reads().at(-1)).toEqual(expect.arrayContaining(['--section','waves','--offset','192']));
+  // A volta leva à spec, e o cartão abre de novo na primeira página.
+  await f.pane.press({key:'back'});expect(f.section()).toBe('spec');
+  await f.pane.press({key:'go-waves'});await has(f.pane,'página 1 de 26');
+  await f.close();
+});
+
+// Uma resposta real do binário, de 22/10, com o nome da spec trocado por um
+// neutro: os números das ondas com lacunas, as ondas no ar, as comitadas com
+// o commit inteiro.
+const realWaves={"ok": true, "schema_version": 1, "section": "waves", "revision": "real-waves", "at": "2026-10-22T19:48:45.752808036+00:00", "project": {"name": "mustard", "branch": "fix/ondas-com-intervalos", "version": "0.2.27", "language": "pt-BR"}, "selected_spec": "ondas-com-intervalos", "total": 12, "offset": 0, "limit": 8, "rows": [{"wave": 19, "title": "Recusar uma onda não trava o despacho dela", "state": "running", "at": "2026-10-22T16:47:56.112626918-03:00", "attention": null, "tasks": 2, "returned": 0, "files": 9, "delivered_files": null, "commit": null, "seconds": null, "model_used": null, "model_asked": "opus", "effort_asked": "xhigh", "effort_used": "xhigh", "tokens": null}, {"wave": 18, "title": "Tela das ondas no painel, com o consumo de cada uma", "state": "running", "at": "2026-10-22T16:35:32.926424962-03:00", "attention": null, "tasks": 3, "returned": 0, "files": 5, "delivered_files": null, "commit": null, "seconds": null, "model_used": null, "model_asked": "opus", "effort_asked": "xhigh", "effort_used": "xhigh", "tokens": null}, {"wave": 17, "title": "reused_results do ponto pelo código na leitura enxuta", "state": "running", "at": "2026-10-22T16:30:06.046529344-03:00", "attention": null, "tasks": 2, "returned": 0, "files": 4, "delivered_files": null, "commit": null, "seconds": null, "model_used": null, "model_asked": "sonnet", "effort_asked": "xhigh", "effort_used": "xhigh", "tokens": null}, {"wave": 15, "title": "O aviso do início sai uma vez e a limpeza alcança tudo", "state": "running", "at": "2026-10-22T16:29:37.901515611-03:00", "attention": null, "tasks": 1, "returned": 0, "files": 5, "delivered_files": null, "commit": null, "seconds": null, "model_used": null, "model_asked": "opus", "effort_asked": "xhigh", "effort_used": "xhigh", "tokens": null}, {"wave": 14, "title": "Só a conversa ligada à spec grava nela", "state": "running", "at": "2026-10-22T16:25:05.189026816-03:00", "attention": null, "tasks": 3, "returned": 0, "files": 12, "delivered_files": null, "commit": null, "seconds": null, "model_used": null, "model_asked": "opus", "effort_asked": "xhigh", "effort_used": "xhigh", "tokens": null}, {"wave": 13, "title": "Tarefa e critério citam o arquivo que outra tarefa cria", "state": "todo", "at": null, "attention": null, "tasks": 3, "returned": 0, "files": 8, "delivered_files": null, "commit": null, "seconds": null, "model_used": null, "model_asked": "opus", "effort_asked": "xhigh", "effort_used": "xhigh", "tokens": null}, {"wave": 12, "title": "O fim do levantamento mostra cada mensagem sem destino uma vez", "state": "committed", "at": "2026-10-22T16:40:31.691207035-03:00", "attention": null, "tasks": 1, "returned": 0, "files": 3, "delivered_files": 7, "commit": "c695d03b50e6e81e7c3a3e0b876a80a22aec69ac", "seconds": 1717, "model_used": "claude-sonnet-5-5", "model_asked": "sonnet", "effort_asked": "xhigh", "effort_used": "xhigh", "tokens": 3547767}, {"wave": 10, "title": "O painel mostra a spec pedida ou recusa a spec antiga", "state": "committed", "at": "2026-10-22T16:23:18.493453754-03:00", "attention": null, "tasks": 2, "returned": 0, "files": 7, "delivered_files": 9, "commit": "352ab4cce5de37f09276548ec76c19e3aab07583", "seconds": 2578, "model_used": "claude-opus-5-5", "model_asked": "opus", "effort_asked": "xhigh", "effort_used": "xhigh", "tokens": 10535032}]};
+for(const [answers,patch] of [['example',{}],['real',{waves:realWaves}]] as const)for(const columns of [40,56,80,100])
+  test(`no word is split and no line passes the screen on the waves screen · ${answers} answers · ${columns} columns`,async ($,on)=>{
+    const f=await open($,on,'terminal',{columns,patch});await reach(f,'spec');await f.pane.press({key:'go-waves'});
+    split.length=0;spill.length=0;const lines=screenLines(await f.pane.drawn(),columns);
+    expect([...split,...spill]).toEqual([]);expect(widest(lines)).toBeLessThanOrEqual(Math.min(columns,110));
+    if(answers==='real')await has(f.pane,`ONDAS · ${realWaves.total}`);
+    await f.close();
+  });

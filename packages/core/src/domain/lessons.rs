@@ -69,7 +69,7 @@ use crate::domain::config::glob_matches;
 use crate::domain::normalize::{Languages, Normalizer};
 use crate::domain::project_map::cited_paths;
 use crate::domain::search::{self, Hit, SearchIndex};
-use crate::domain::text::fold;
+use crate::domain::text::{fold, one_line};
 use crate::domain::spec_events::{
     check_field, is_empty, opt, req, Kind, Refusal, SpecEvent, SpecLog, AUTHORS,
     BINARY_FIELDS, DEFAULT_AUTHOR, PURGED_FIELD, REFUSED_FIELDS,
@@ -313,7 +313,7 @@ pub fn check_against(bank: &SpecLog, event: &Map<String, Value>) -> Result<(), R
 /// mesmo texto.
 #[must_use]
 pub fn comparable(text: &str) -> String {
-    fold(text).split_whitespace().collect::<Vec<_>>().join(" ")
+    one_line(&fold(text))
 }
 
 /// A lição vigente do banco cujo texto é o mesmo de `text`, pela forma de

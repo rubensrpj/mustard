@@ -29,6 +29,10 @@ worktrees/
 # unidade cortada antes do item não o veria.
 pending/
 
+# A última contagem que cada aviso do início da sessão deu, lembrada no
+# projeto para o aviso não se repetir a cada sessão. É da máquina, não da obra.
+mustard/notices/
+
 # Plan-mode plan files. The peer of `scratch/` below — the write gate treats
 # both as the harness's carve-out, and neither is code. It was covered only by
 # the clone-local exclude, which does not travel.

@@ -15,6 +15,13 @@
 //! `/clear` e da compactação, a janela perdeu o texto, e ele volta mesmo com a
 //! marca.
 //!
+//! ## Uma vez por contagem
+//!
+//! Os avisos do início da sessão que contam alguma coisa — as pendências, as
+//! branches mergeadas — guardam no projeto, e não na sessão, a última
+//! contagem que deram ([`told_in_project`]): a sessão seguinte, com a mesma
+//! contagem, não os repete, e a contagem nova os traz de volta.
+//!
 //! ## Nunca barra
 //!
 //! Configuração que não se lê → nenhum texto. Arquivo declarado que falta ou
@@ -138,19 +145,55 @@ fn marker_path(project_dir: &str, session_id: Option<&str>, marker_name: &str) -
 
 /// Notices with an unchanged state need not consume the renewed context.
 /// Missing or unwritable markers always allow delivery.
-pub(super) fn notice_seen(root: &Path, session: Option<&str>, name: &str, fingerprint: &str) -> bool {
+fn notice_seen(root: &Path, session: Option<&str>, name: &str, fingerprint: &str) -> bool {
     marker_path(&root.to_string_lossy(), session, &format!("notice-{name}"))
         .and_then(|path| std::fs::read_to_string(path).ok())
         .is_some_and(|seen| seen == fingerprint)
 }
 
-pub(super) fn remember_notice(root: &Path, session: Option<&str>, name: &str, fingerprint: &str) {
+fn remember_notice(root: &Path, session: Option<&str>, name: &str, fingerprint: &str) {
     let Some(path) = marker_path(&root.to_string_lossy(), session, &format!("notice-{name}")) else {
         return;
     };
+    remember_at(&path, fingerprint);
+}
+
+/// O arquivo em que o projeto de `root` guarda a última contagem que o aviso
+/// `name` do início da sessão deu: `.claude/mustard/notices/<name>` do
+/// checkout principal, o mesmo para toda sessão e toda cópia de onda. `None`
+/// quando a raiz não tem lugar para a marca.
+fn told_path(root: &Path, name: &str) -> Option<PathBuf> {
+    let home = mustard_core::io::workspace::linked_worktree_main(root).unwrap_or_else(|| root.to_path_buf());
+    Some(ClaudePaths::for_project(&home).ok()?.claude_dir().join("mustard").join("notices").join(name))
+}
+
+/// O aviso `name` já deu a contagem `count` neste projeto, numa sessão
+/// qualquer. Marca que falta ou não se lê deixa o aviso sair.
+pub(super) fn told_in_project(root: &Path, name: &str, count: &str) -> bool {
+    told_path(root, name).and_then(|path| std::fs::read_to_string(path).ok()).is_some_and(|told| told == count)
+}
+
+/// Lembra no projeto que o aviso `name` deu a contagem `count`. Falha ao
+/// gravar só faz o aviso sair de novo.
+pub(super) fn remember_in_project(root: &Path, name: &str, count: &str) {
+    if let Some(path) = told_path(root, name) {
+        remember_at(&path, count);
+    }
+}
+
+/// Esquece a contagem que o aviso `name` deu: quando ele não tem mais o que
+/// dizer, a próxima contagem, qualquer que seja, é novidade.
+pub(super) fn forget_in_project(root: &Path, name: &str) {
+    if let Some(path) = told_path(root, name) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// Grava `fingerprint` em `path`, criando a pasta, sem nunca falhar.
+fn remember_at(path: &Path, fingerprint: &str) {
     let Some(parent) = path.parent() else { return };
     if fs::create_dir_all(parent).is_ok() {
-        let _ = fs::write_atomic(&path, fingerprint.as_bytes());
+        let _ = fs::write_atomic(path, fingerprint.as_bytes());
     }
 }
 

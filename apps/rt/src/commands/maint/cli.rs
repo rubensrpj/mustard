@@ -59,6 +59,11 @@ pub enum MaintCmd {
     /// regra de idade; a de obra aberta fica. A cópia da página de um
     /// descarte sai só com mais de um dia; a de descarte recém-feito fica. A
     /// pasta principal nunca entra.
+    ///
+    /// As branches locais de obra também: saem as de obra que acabou ou não
+    /// existe mais e as já mergeadas na base, só as que o projeto registrou
+    /// como obra e cujas refs a base já tem. Base de integração ou protegida,
+    /// a branch atual e a com commit fora da base ficam, com o motivo.
     #[command(name = "clean")]
     #[command(display_order = 18)]
     ScratchGc {
@@ -132,6 +137,10 @@ pub fn dispatch(cmd: MaintCmd) {
             }
         }
         MaintCmd::ConfigRead { file, reader, args_json } => {
+            let args_json = crate::shared::json_arg::resolve(args_json).unwrap_or_else(|detail| {
+                eprintln!("[Mustard] config-read: {detail}");
+                std::process::exit(2)
+            });
             maint::config_read::run(&file, &reader, &args_json);
         }
         MaintCmd::ScratchGc { dry_run, apply, path } => {

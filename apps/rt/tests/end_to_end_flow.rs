@@ -13,6 +13,16 @@
 //! No fim, cada passo do fluxo gravou uma chamada só — a aprovação nenhuma — e
 //! a pasta da spec tem os três arquivos dela.
 //!
+//! Com o pull request aberto, a reabertura pedida pelo usuário o deixa fora de
+//! rascunho, e o merge pelo Mustard espera a spec fechar de novo. O `pr-open`
+//! seguinte refaz o corpo que segue igual ao gerado e deixa o que alguém
+//! editou no provedor, e a rodada depois da reabertura também o deixa.
+//!
+//! O `pr-open` e a retomada da spec com o pull request aberto leem a esteira
+//! do provedor e dizem o que ela respondeu; e o corpo do pull request que
+//! alguém editou fica como está, enquanto o que segue igual ao gerado é
+//! refeito.
+//!
 //! A mesma spec, num projeto com um submódulo e servidores locais, prova o
 //! fluxo de submódulo: a branch de mesmo nome nos dois repositórios, o pull
 //! request do submódulo aberto antes e o do principal como rascunho até o do
@@ -394,9 +404,26 @@ impl Project {
 
     /// Como [`Self::command`], rodando de dentro de `dir`.
     fn command_in(&self, dir: &Path, args: &[&str], stdin: &str) -> Output {
+        self.command_as(None, dir, args, stdin)
+    }
+
+    /// Como [`Self::command_in`], com a sessão `session` no ambiente: numa
+    /// conversa, o gancho do terminal passa a sessão dela ao comando.
+    fn command_as(&self, session: Option<&str>, dir: &Path, args: &[&str], stdin: &str) -> Output {
+        self.command_without(session, dir, args, stdin, &[])
+    }
+
+    /// Como [`Self::command_as`], sem as variáveis `unset` no ambiente.
+    fn command_without(&self, session: Option<&str>, dir: &Path, args: &[&str], stdin: &str, unset: &[&str]) -> Output {
         let mut binary = binary::isolated(self.rt.as_deref().unwrap_or_else(|| Path::new(env!("CARGO_BIN_EXE_mustard-rt"))));
-        let mut child = self
-            .env(&mut binary)
+        self.env(&mut binary);
+        if let Some(session) = session {
+            binary.env("MUSTARD_SESSION_ID", session);
+        }
+        for name in unset {
+            binary.env_remove(name);
+        }
+        let mut child = binary
             .args(args)
             .current_dir(dir)
             .stdin(Stdio::piped())
@@ -473,7 +500,7 @@ impl Project {
             .unwrap_or_else(|| panic!("nenhum envio gravado para a leitura"));
         let copy = PathBuf::from(sent.str_field("copy").expect("the copy"));
         let root = self.root.display().to_string();
-        let listed = sent.fields.get("read_items").and_then(Value::as_array).cloned().unwrap_or_default();
+        let listed = log.send_field(sent.id, "read_items").and_then(Value::as_array).cloned().unwrap_or_default();
         for item in listed.iter().filter_map(Value::as_str) {
             let block = format!("item-{item}");
             let lesson = item.strip_prefix("lesson-");
@@ -494,11 +521,17 @@ impl Project {
 
     /// Um comando `run` que pode recusar: a resposta vem como veio.
     fn answer(&self, args: &[&str]) -> Value {
+        self.answer_in(None, &self.root, args)
+    }
+
+    /// Como [`Self::answer`], rodando de dentro de `dir` e, com `session`,
+    /// na conversa dela.
+    fn answer_in(&self, session: Option<&str>, dir: &Path, args: &[&str]) -> Value {
         let mut owned: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
         if matches!(args.first(), Some(&"round" | &"close")) {
             let previous = args.windows(2).find(|pair| pair[0] == "--report").map(|pair| pair[1]).unwrap_or_default();
             let report = wave_review::review_report(&self.root, SPEC, previous, |wave| {
-                self.answer(&["review-wave", "--wave", &wave.to_string(), "--spec", SPEC])
+                self.answer_in(session, dir, &["review-wave", "--wave", &wave.to_string(), "--spec", SPEC])
             });
             if !report.is_empty() {
                 if let Some(at) = owned.iter().position(|arg| arg == "--report") {
@@ -510,10 +543,35 @@ impl Project {
         }
         let mut all = vec!["run"];
         all.extend(owned.iter().map(String::as_str));
-        let out = self.command(&all, "");
+        let out = self.command_as(session, dir, &all, "");
         let text = String::from_utf8_lossy(&out.stdout).to_string();
         serde_json::from_str(&text)
             .unwrap_or_else(|e| panic!("{args:?} did not answer JSON ({e}): {text}{}", String::from_utf8_lossy(&out.stderr)))
+    }
+
+    /// Um comando `run` da conversa da sessão `session`, que pode recusar: a
+    /// resposta vem como veio.
+    fn answer_as(&self, session: &str, args: &[&str]) -> Value {
+        let mut all = vec!["run"];
+        all.extend_from_slice(args);
+        let out = self.command_as(Some(session), &self.root, &all, "");
+        let text = String::from_utf8_lossy(&out.stdout).to_string();
+        serde_json::from_str(&text)
+            .unwrap_or_else(|e| panic!("{args:?} did not answer JSON ({e}): {text}{}", String::from_utf8_lossy(&out.stderr)))
+    }
+
+    /// Um comando `run` da conversa da sessão `session`, que precisa
+    /// responder `ok`.
+    fn run_as(&self, session: &str, args: &[&str]) -> Value {
+        let report = self.answer_as(session, args);
+        assert_eq!(report["ok"], json!(true), "{args:?}: {report}");
+        report
+    }
+
+    /// A abertura da spec pela conversa da sessão [`SESSION`], como quem
+    /// conduz a roda: é ela que fica ligada à spec, e a fala dela entra.
+    fn open(&self) -> Value {
+        self.run_as(SESSION, &["open", "--kind", "feature", "--name", SPEC, "--base", "dev"])
     }
 
     /// Uma gravação pelo `run write`.
@@ -525,6 +583,15 @@ impl Project {
     /// o que o gancho disse.
     fn hook(&self, event: &str, payload: &Value) -> String {
         let out = self.command(&["on", event], &payload.to_string());
+        assert_eq!(out.status.code(), Some(0), "a hook always exits 0: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).to_string()
+    }
+
+    /// Como [`Self::hook`], com o gancho rodando de dentro de `dir` e sem a
+    /// pasta do projeto no ambiente: a raiz sai só de onde ele roda e do
+    /// `cwd` do evento.
+    fn hook_from(&self, dir: &Path, event: &str, payload: &Value) -> String {
+        let out = self.command_without(None, dir, &["on", event], &payload.to_string(), &["CLAUDE_PROJECT_DIR"]);
         assert_eq!(out.status.code(), Some(0), "a hook always exits 0: {}", String::from_utf8_lossy(&out.stderr));
         String::from_utf8_lossy(&out.stdout).to_string()
     }
@@ -583,8 +650,16 @@ fn user_says(project: &Project, text: &str) -> u64 {
 /// O levantamento inteiro: o objetivo, o `grill`, que grava os pontos, e
 /// cada ponto com os fatos somados, respondido e fechado.
 fn survey(project: &Project) {
-    let said = user_says(project, GOAL);
-    project.write("context", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": GOAL, "origin": said}));
+    survey_with(project, "Combinar o item", GOAL);
+}
+
+/// O começo do levantamento: o objetivo de título `title` e texto `goal`, que
+/// o usuário diz, o `grill`, que grava os pontos, e cada ponto com os fatos
+/// somados, ainda aberto. Devolve o número da fala do objetivo, os pontos do
+/// `grill` e o ponto que ficou aberto por último.
+fn open_the_points(project: &Project, title: &str, goal: &str) -> (u64, Vec<Value>, Value) {
+    let said = user_says(project, goal);
+    project.write("context", &json!({"title": title, "agent": "- conferir pelo teste", "text": goal, "origin": said}));
     let grilled = project.run(&["grill", "--spec", SPEC, "--kinds", "feature", "--full"]);
     let points = grilled["points"].as_array().cloned().expect("the point list");
     assert!(!points.is_empty(), "{grilled}");
@@ -593,6 +668,13 @@ fn survey(project: &Project) {
         let facts = json!([{"text": "A saudação mora no programa.", "source": "src/main.rs:2"}]);
         current = project.write("point", &json!({"replaces": point["id"], "facts": facts}))["point"].clone();
     }
+    (said, points, current)
+}
+
+/// [`survey`] com o objetivo de título `title` e texto `goal`, que o usuário
+/// diz.
+fn survey_with(project: &Project, title: &str, goal: &str) {
+    let (said, points, mut current) = open_the_points(project, title, goal);
     for point in &points {
         let code = current["code"].as_str().expect("the open point").to_string();
         let answer = project.write(
@@ -631,6 +713,24 @@ fn plan_files(project: &Project, files: &[&str]) {
     );
     let planned = project.run(&["plan", "--spec", SPEC]);
     assert_eq!(State::from_log(&project.log()).phase, Some("plan"), "{planned}");
+}
+
+/// O plano de uma tarefa só, sem critério nenhum: a tarefa cobre o objetivo
+/// que o levantamento gravou, e o plano passa do mesmo jeito.
+fn plan_covering_the_goal(project: &Project) {
+    let said = user_says(project, "O plano é uma tarefa só, que muda a saudação.");
+    let goal = project.log().visible().into_iter().find(|e| e.event_type == "context").expect("the goal of the survey").id;
+    project.write(
+        "task",
+        &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Trocar a saudação no programa.",
+            "files": [{"path": "src/main.rs"}], "depends_on": [], "covers": [goal], "origin": said}),
+    );
+    let planned = project.run(&["plan", "--spec", SPEC]);
+    assert_eq!(State::from_log(&project.log()).phase, Some("plan"), "{planned}");
+    assert!(
+        !project.log().visible().into_iter().any(|e| e.event_type == "criterion"),
+        "the plan of this work has no criterion: {planned}"
+    );
 }
 
 /// A primeira rodada: as respostas do levantamento valem para o projeto todo
@@ -693,7 +793,7 @@ fn calls(project: &Project) -> BTreeMap<String, usize> {
 fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
     let project = Project::new();
 
-    let opened = project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    let opened = project.open();
     assert_eq!(opened["step"], json!("ask_goal"), "{opened}");
     survey(&project);
     plan(&project);
@@ -802,9 +902,33 @@ fn a_test_spec_runs_end_to_end_one_call_per_step_and_leaves_three_files() {
 /// A spec de uma onda, da abertura ao fechamento, com a mudança entregue: devolve
 /// os argumentos do `pr-open` que o fechamento apontou.
 fn closed_with_one_wave(project: &Project) -> Vec<String> {
-    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
-    survey(project);
-    plan(project);
+    closed_with_goal(project, "Combinar o item", GOAL)
+}
+
+/// [`closed_with_one_wave`] com o objetivo de título `title` e texto `goal`.
+fn closed_with_goal(project: &Project, title: &str, goal: &str) -> Vec<String> {
+    closed_by(project, title, goal, &|args| project.run(args))
+}
+
+/// [`closed_with_goal`] com as duas chamadas do `close` feitas por `closing`:
+/// é por ela que um teste fecha a spec de dentro de uma pasta e de uma
+/// conversa.
+fn closed_by(project: &Project, title: &str, goal: &str, closing: &dyn Fn(&[&str]) -> Value) -> Vec<String> {
+    closed_planned(project, title, goal, &plan, closing)
+}
+
+/// [`closed_by`] com o plano feito por `planning`: é por ele que um teste
+/// fecha uma spec cujo plano não é o de sempre.
+fn closed_planned(
+    project: &Project,
+    title: &str,
+    goal: &str,
+    planning: &dyn Fn(&Project),
+    closing: &dyn Fn(&[&str]) -> Value,
+) -> Vec<String> {
+    project.open();
+    survey_with(project, title, goal);
+    planning(project);
     approve(project);
     let first = first_round(project);
     assert_eq!(first["dispatch"].as_array().map(Vec::len), Some(1), "{first}");
@@ -818,14 +942,96 @@ fn closed_with_one_wave(project: &Project) -> Vec<String> {
     project.finish_tasks(1);
     project.run(&["write", "delivered", "--spec", SPEC, "--json", &delivered.to_string()]);
     project.run(&["round", "--dispatch", "--spec", SPEC]);
-    project.run(&["close", "--spec", SPEC]);
+    closing(&["close", "--spec", SPEC]);
     let verdict = json!({"final": true, "result": "approved", "text": "A saudação mudou.",
         "agreed": agreed_all_met(project)});
     project.read_review();
     project.run(&["write", "verdict", "--spec", SPEC, "--json", &verdict.to_string()]);
-    let closed = project.run(&["close", "--spec", SPEC]);
+    let closed = closing(&["close", "--spec", SPEC]);
     let line = closed["command"].as_str().expect("the pr-open line").to_string();
     line.split_whitespace().skip(2).map(str::to_string).collect()
+}
+
+/// O revisor final, lançado pelo gancho com o JSON do Claude Code, sai no
+/// modelo que a chamada pede e no esforço de sempre, e o envio da revisão
+/// grava o modelo que valeu; sem modelo na chamada, sai o do `mustard.json`,
+/// e o envio grava esse. O veredito aprovado da versão nova do envio ainda
+/// fecha a spec.
+#[test]
+fn the_final_reviewer_keeps_the_model_the_call_asks_and_the_send_records_it() {
+    let project = Project::new();
+    deliver_the_first_wave(&project);
+    project.run(&["round", "--dispatch", "--spec", SPEC]);
+    let asked = project.run(&["close", "--spec", SPEC]);
+    assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+    let read = asked["review"]["read"].as_str().expect("the command that reads the request").to_string();
+    let launch = |model: Option<&str>| -> Value {
+        let mut input = json!({"subagent_type": "mustard-review", "description": "revisão final", "prompt": read});
+        if let Some(model) = model {
+            input["model"] = json!(model);
+        }
+        let payload = json!({"hook_event_name": "PreToolUse", "tool_name": "Agent", "session_id": SESSION,
+            "cwd": project.root.to_string_lossy(), "tool_input": input});
+        let out = project.hook("PreToolUse", &payload);
+        let said: Value = serde_json::from_str(&out).unwrap_or_else(|_| panic!("the hook answers JSON: {out}"));
+        said["hookSpecificOutput"]["updatedInput"].clone()
+    };
+    let recorded = || {
+        let log = project.log();
+        let sent = log.visible().into_iter().rfind(|e| e.event_type == "send" && e.str_field("role") == Some("review")).expect("the review send");
+        (log.send_field(sent.id, "model_used").and_then(Value::as_str).map(str::to_string), log.send_field(sent.id, "model").and_then(Value::as_str).map(str::to_string))
+    };
+
+    let asked_opus = launch(Some("opus"));
+    assert_eq!((asked_opus["model"].as_str(), asked_opus["effort"].as_str()), (Some("opus"), Some("xhigh")), "{asked_opus}");
+    assert_eq!(recorded(), (Some("opus".into()), Some("sonnet".into())), "the send keeps what was configured and records what held");
+
+    let unasked = launch(None);
+    assert_eq!((unasked["model"].as_str(), unasked["effort"].as_str()), (Some("sonnet"), Some("xhigh")), "{unasked}");
+    assert_eq!(recorded(), (Some("sonnet".into()), Some("sonnet".into())), "a call without a model goes on the configured one");
+
+    let verdict = json!({"final": true, "result": "approved", "text": "A saudação mudou.", "agreed": agreed_all_met(&project)});
+    project.read_review();
+    project.run(&["write", "verdict", "--spec", SPEC, "--json", &verdict.to_string()]);
+    let closed = project.run(&["close", "--spec", SPEC]);
+    assert_eq!(closed["phase"], json!("closed"), "{closed}");
+}
+
+/// O pedido da onda e o do revisor final, lidos pelo comando que o agente
+/// roda, dizem nos dois idiomas que a regra do projeto sobre idioma vence a
+/// linha de idiomas do pedido: uma vez na própria linha e outra na seção
+/// das regras do projeto, que leva o `CLAUDE.md` da raiz. Sem isso o agente
+/// segue o idioma do código contra a regra local, e o revisor cobra o que a
+/// regra manda.
+#[test]
+fn the_wave_and_final_review_requests_say_a_project_rule_on_language_wins_over_the_languages_line() {
+    for (text, on_the_line, on_the_rules) in [
+        ("pt-BR", "Regra do projeto que trate de idioma vence esta linha.", "onde ele trata de idioma, vence a linha de idiomas do pedido"),
+        ("en-US", "A project rule that deals with language overrides this line.", "where it deals with language, it overrides the request's languages line"),
+    ] {
+        let project = Project::new();
+        let config = std::fs::read_to_string(project.root.join("mustard.json")).expect("the config");
+        let mut config: Value = serde_json::from_str(&config).expect("the config is JSON");
+        config["language"]["text"] = json!(text);
+        std::fs::write(project.root.join("mustard.json"), config.to_string()).expect("the config");
+        std::fs::write(project.root.join("CLAUDE.md"), "# Regras\n\n- Títulos de describe e it em português.\n").expect("the rules");
+        git(&project.root, &["add", "CLAUDE.md"]);
+        git(&project.root, &["commit", "-q", "-m", "regras"]);
+
+        deliver_the_first_wave(&project);
+        project.run(&["round", "--dispatch", "--spec", SPEC]);
+        let asked = project.run(&["close", "--spec", SPEC]);
+        assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+
+        for block in ["request-1", "request-review"] {
+            let out = project.command(&["run", "read", block, "--spec", SPEC], "");
+            assert!(out.status.success(), "{text} {block}: {}", String::from_utf8_lossy(&out.stdout));
+            let request = String::from_utf8_lossy(&out.stdout);
+            assert!(request.contains("Títulos de describe e it em português."), "{text} {block} carries the rules file: {request}");
+            assert_eq!(request.matches(on_the_line).count(), 1, "{text} {block}: the languages line says the rule wins: {request}");
+            assert_eq!(request.matches(on_the_rules).count(), 1, "{text} {block}: the rules section says it wins: {request}");
+        }
+    }
 }
 
 /// O `pr-open` envia a branch da spec ao servidor antes de abrir o pull
@@ -876,12 +1082,357 @@ fn a_pr_open_sends_the_branch_first_and_a_refused_send_opens_nothing() {
     );
 }
 
+/// O `gh` falso do pull request 7 aberto e fora de rascunho: anota cada
+/// chamada e responde a consulta dele. Qualquer outro pedido falha, e fica
+/// anotado do mesmo jeito.
+const OPEN_PR_GH: &str = r#"#!/bin/sh
+echo "$*" >> "$GH_LOG"
+case "$1 $2" in
+"pr view")
+  echo '{"number":7,"title":"t","state":"OPEN","headRefName":"feature/ponta","baseRefName":"dev","isDraft":false,"url":"https://github.com/exemplo/projeto/pull/7"}'
+  exit 0 ;;
+esac
+exit 1
+"#;
+
+/// A obra fechada abre o pull request, e o usuário pede um ajuste: a
+/// reabertura volta a spec à execução e só pergunta ao provedor se o pull
+/// request já entrou na base. Nada o põe em rascunho, e a resposta não fala em
+/// rascunho. O merge pelo Mustard é recusado enquanto a spec não fecha de novo,
+/// sem perguntar as verificações ao provedor nem juntar nada.
+#[test]
+fn reopening_leaves_the_open_pull_request_out_of_draft_and_the_merge_waits_for_the_close() {
+    let project = Project::new();
+    let line = closed_with_one_wave(&project);
+    let argv: Vec<&str> = line.iter().map(String::as_str).collect();
+    let opened = project.run(&argv);
+    assert_eq!(opened["number"], json!(7), "{opened}");
+    executable::write_executable(&project.bin.join("gh"), OPEN_PR_GH);
+
+    let asked_before = project.gh_calls().len();
+    let reopened = project.run(&["reopen", "--spec", SPEC, "--reason", "Trocar a saudação de novo."]);
+    assert_eq!((reopened["from"].clone(), reopened["phase"].clone()), (json!("pr_open"), json!("running")), "{reopened}");
+    assert!(reopened.get("draft").is_none() && reopened.get("warnings").is_none(), "{reopened}");
+    let next = reopened["next"].as_str().unwrap_or_default();
+    assert!(next.contains(translate("reopen.same_pr", Locale::PtBr)), "{next}");
+    let asked = project.gh_calls()[asked_before..].to_vec();
+    assert_eq!(asked.len(), 1, "only whether the pull request is already merged: {asked:?}");
+    assert!(asked[0].starts_with("pr view 7 "), "{asked:?}");
+    assert_eq!(State::from_log(&project.log()).phase, Some("running"));
+
+    let asked_before = project.gh_calls().len();
+    let merge = project.answer(&["pr-merge", "--pr", "7"]);
+    assert_eq!(merge["ok"], json!(false), "{merge}");
+    assert_eq!((merge["action"].clone(), merge["reason"].clone()), (json!("refused"), json!("spec-not-closed")), "{merge}");
+    assert_eq!(merge["checks"], json!("not-asked"), "{merge}");
+    let hint = merge["hint"].as_str().unwrap_or_default();
+    assert!(hint.contains("foi reaberta e ainda não fechou de novo") && hint.contains("#7"), "{hint}");
+    let asked = project.gh_calls()[asked_before..].to_vec();
+    assert_eq!(asked.len(), 1, "only which pull request it is: {asked:?}");
+    assert!(asked[0].starts_with("pr view 7 "), "{asked:?}");
+    assert_eq!(State::from_log(&project.log()).phase, Some("running"), "nothing was merged");
+}
+
+/// O `gh` falso que guarda o corpo do pull request 7 como o provedor guarda:
+/// o `pr create` e o PATCH do corpo copiam o arquivo que recebem, a consulta
+/// só acha o pull request depois de criado, e o `gh api -i` devolve os
+/// cabeçalhos e o documento com o corpo guardado, escapado para JSON. O PATCH
+/// do título passa. Cada chamada fica anotada; qualquer outro pedido falha.
+const STORED_BODY_GH: &str = r#"#!/bin/sh
+echo "$*" >> "$GH_LOG"
+body="$GH_STATE/pr7-body.md"
+case "$*" in
+"pr create "*)
+  while [ $# -gt 0 ]; do [ "$1" = "--body-file" ] && cp "$2" "$body"; shift; done
+  echo 'https://github.com/exemplo/projeto/pull/7'
+  exit 0 ;;
+"pr view "*)
+  [ -f "$body" ] || { echo 'no pull requests found' >&2; exit 1; }
+  echo '{"number":7,"title":"t","state":"OPEN","headRefName":"feature/ponta","baseRefName":"dev","isDraft":false,"url":"https://github.com/exemplo/projeto/pull/7"}'
+  exit 0 ;;
+"api -i repos/{owner}/{repo}/pulls/7")
+  printf 'HTTP/2.0 200 OK\r\nEtag: W/"e"\r\n\r\n{"number":7,"title":"t","body":"'
+  sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' "$body" | awk 'NR > 1 { printf "%s", "\\n" } { printf "%s", $0 }'
+  printf '"}\n'
+  exit 0 ;;
+"api --method PATCH repos/{owner}/{repo}/pulls/7 -F body=@"*)
+  cp "${6#body=@}" "$body"
+  exit 0 ;;
+"api --method PATCH repos/{owner}/{repo}/pulls/7 -f title="*) exit 0 ;;
+esac
+exit 1
+"#;
+
+/// O `gh` falso de um pull request que nasce no `pr create`, o 7: anota cada
+/// chamada e, depois de criado, responde a consulta dele aberto e as
+/// verificações com o que o teste deixa em `checks`. Qualquer outro pedido
+/// falha, e fica anotado do mesmo jeito.
+const OPENED_PR_GH: &str = r#"#!/bin/sh
+echo "$*" >> "$GH_LOG"
+case "$1 $2" in
+"pr create")
+  touch "$GH_STATE/open"
+  echo 'https://github.com/exemplo/projeto/pull/7'
+  exit 0 ;;
+"pr view")
+  [ -f "$GH_STATE/open" ] || { echo 'no pull requests found' >&2; exit 1; }
+  case "$*" in *statusCheckRollup*) cat "$GH_STATE/checks"; exit $? ;; esac
+  echo '{"number":7,"title":"t","state":"OPEN","headRefName":"feature/ponta","baseRefName":"dev","isDraft":false,"url":"https://github.com/exemplo/projeto/pull/7"}'
+  exit 0 ;;
+esac
+exit 1
+"#;
+
+/// O corpo do pull request que alguém editou no provedor fica. A obra fechada
+/// abre o pull request com o corpo gerado; o `pr-open` seguinte lê o corpo
+/// pelo `gh api -i`, vê que ele segue igual ao gerado e o refaz. Depois que
+/// alguém muda a descrição no provedor, o `pr-open` seguinte lê o corpo
+/// editado, não pede a edição do corpo — só a do título —, responde com
+/// `bodyKept` e o aviso, e a edição segue no provedor.
+#[test]
+fn a_pull_request_body_edited_on_the_provider_is_kept_by_the_next_pr_open() {
+    let project = Project::new();
+    let line = closed_with_one_wave(&project);
+    let argv: Vec<&str> = line.iter().map(String::as_str).collect();
+    executable::write_executable(&project.bin.join("gh"), STORED_BODY_GH);
+    let stored = project.remotes.join("pr7-body.md");
+    let body_edit = "api --method PATCH repos/{owner}/{repo}/pulls/7 -F body=@";
+    let title_edit = "api --method PATCH repos/{owner}/{repo}/pulls/7 -f title=";
+    let body_read = "api -i repos/{owner}/{repo}/pulls/7";
+
+    let opened = project.run(&argv);
+    assert_eq!((opened["action"].clone(), opened["number"].clone()), (json!("open"), json!(7)), "{opened}");
+    let generated = std::fs::read_to_string(&stored).expect("the provider keeps the body it got");
+
+    // Ninguém mexeu no corpo: ele é lido, segue igual ao gerado e é refeito.
+    let asked_before = project.gh_calls().len();
+    let rewritten = project.run(&argv);
+    assert_eq!((rewritten["action"].clone(), rewritten.get("bodyKept")), (json!("edit"), None), "{rewritten}");
+    let asked = project.gh_calls()[asked_before..].to_vec();
+    assert!(asked.iter().any(|call| call == body_read), "{asked:?}");
+    assert!(asked.iter().any(|call| call.starts_with(body_edit)), "the untouched body is rewritten: {asked:?}");
+    assert_eq!(std::fs::read_to_string(&stored).unwrap(), generated, "the rewrite carries the same generated body");
+
+    // Alguém acrescenta uma nota à descrição no provedor; o comentário
+    // escondido do fim fica onde estava.
+    let (text, mark) = generated.rsplit_once("<!-- mustard-body:").expect("the generated body carries its mark");
+    let edited = format!("{text}Nota de quem revisa: conferir a saudação no terminal.\n\n<!-- mustard-body:{mark}");
+    std::fs::write(&stored, &edited).expect("the edit on the provider");
+
+    let asked_before = project.gh_calls().len();
+    let kept = project.run(&argv);
+    assert_eq!(
+        (kept["action"].clone(), kept["number"].clone(), kept["bodyKept"].clone()),
+        (json!("edit"), json!(7), json!("body-edited")),
+        "{kept}"
+    );
+    let warning = kept["warning"].as_str().unwrap_or_default();
+    let body_kept = translate("pr.body_kept", Locale::PtBr).replace("{pr}", "7").replace("{reason}", "body-edited");
+    assert!(warning.contains(&body_kept), "{warning}");
+    let asked = project.gh_calls()[asked_before..].to_vec();
+    assert!(asked.iter().any(|call| call == body_read), "the body is read before anything is written: {asked:?}");
+    assert!(!asked.iter().any(|call| call.starts_with(body_edit)), "the edited body is not rewritten: {asked:?}");
+    assert!(asked.iter().any(|call| call.starts_with(title_edit)), "the title still follows the spec: {asked:?}");
+    assert_eq!(std::fs::read_to_string(&stored).unwrap(), edited, "the edit stays on the provider");
+    assert_eq!(State::from_log(&project.log()).phase, Some("pr_open"), "{kept}");
+}
+
+/// O corpo sem a marca, de um pull request aberto antes de o Mustard marcar o
+/// corpo que gera, fica com um motivo próprio. A obra fechada abre o pull
+/// request; a descrição no provedor passa a ser uma sem a marca, e o
+/// `pr-open` seguinte lê o corpo, não pede a edição dele — só a do título —,
+/// responde `bodyKept` com `body-unmarked` e o aviso desse motivo, e a
+/// descrição segue no provedor.
+#[test]
+fn a_pull_request_body_without_the_mark_is_kept_with_its_own_reason() {
+    let project = Project::new();
+    let line = closed_with_one_wave(&project);
+    let argv: Vec<&str> = line.iter().map(String::as_str).collect();
+    executable::write_executable(&project.bin.join("gh"), STORED_BODY_GH);
+    let stored = project.remotes.join("pr7-body.md");
+    let opened = project.run(&argv);
+    assert_eq!((opened["action"].clone(), opened["number"].clone()), (json!("open"), json!(7)), "{opened}");
+    let unmarked = "## Objetivo\n\nTrocar a saudação do programa.\n";
+    std::fs::write(&stored, unmarked).expect("a description without the mark on the provider");
+
+    let asked_before = project.gh_calls().len();
+    let kept = project.run(&argv);
+    assert_eq!(
+        (kept["action"].clone(), kept["number"].clone(), kept["bodyKept"].clone()),
+        (json!("edit"), json!(7), json!("body-unmarked")),
+        "{kept}"
+    );
+    let warning = kept["warning"].as_str().unwrap_or_default();
+    let said = translate("pr.body_unmarked", Locale::PtBr).replace("{pr}", "7").replace("{reason}", "body-unmarked");
+    assert!(warning.contains(&said), "{warning}");
+    let asked = project.gh_calls()[asked_before..].to_vec();
+    assert!(asked.iter().any(|call| call == "api -i repos/{owner}/{repo}/pulls/7"), "the body is read: {asked:?}");
+    assert!(
+        !asked.iter().any(|call| call.starts_with("api --method PATCH repos/{owner}/{repo}/pulls/7 -F body=@")),
+        "the unmarked body is not rewritten: {asked:?}"
+    );
+    assert!(asked.iter().any(|call| call.starts_with("api --method PATCH repos/{owner}/{repo}/pulls/7 -f title=")), "{asked:?}");
+    assert_eq!(std::fs::read_to_string(&stored).unwrap(), unmarked, "the description stays on the provider");
+}
+
+/// A porta de conserto abre a onda numa obra fechada sem critério nenhum. O
+/// pull request da obra volta vermelho do servidor, e `reopen --fix` grava a
+/// onda de conserto e a tarefa dela sobre o que as tarefas da obra cobriam —
+/// o objetivo, aqui —, e a rodada seguinte despacha essa onda, com o objetivo
+/// no pedido dela, sob a tarefa: é a cobertura da tarefa que o leva até lá.
+#[test]
+fn the_fix_door_opens_the_fix_wave_of_a_closed_work_without_criterion() {
+    let project = Project::new();
+    executable::write_executable(&project.bin.join("gh"), OPENED_PR_GH);
+    let line = closed_planned(&project, "Combinar o item", GOAL, &plan_covering_the_goal, &|args| project.run(args));
+    let argv: Vec<&str> = line.iter().map(String::as_str).collect();
+    let goal = project.log().visible().into_iter().find(|e| e.event_type == "context").expect("the goal").id;
+    std::fs::write(project.remotes.join("checks"), json!({"statusCheckRollup": []}).to_string()).expect("the checks");
+    let opened = project.run(&argv);
+    assert_eq!(opened["number"], json!(7), "{opened}");
+    let rows = json!({"statusCheckRollup": [{"__typename": "CheckRun", "name": "ci", "status": "COMPLETED", "conclusion": "FAILURE"}]});
+    std::fs::write(project.remotes.join("checks"), rows.to_string()).expect("the red checks");
+
+    let fix = project.run(&["reopen", "--spec", SPEC, "--reason", "O servidor reprovou dois testes.", "--fix"]);
+    assert_eq!((fix["action"].clone(), fix["phase"].clone(), fix["recorded"].clone()), (json!("fix"), json!("pr_open"), json!(true)), "{fix}");
+    let wave = fix["wave"].as_u64().unwrap_or_else(|| panic!("{fix}"));
+    let log = project.log();
+    let recorded = log.get(fix["id"].as_u64().unwrap_or_else(|| panic!("{fix}"))).expect("the fix wave");
+    assert_eq!(recorded.ints("criteria"), vec![goal], "the fix wave answers for what the tasks of the work covered");
+    let task = log
+        .visible()
+        .into_iter()
+        .find(|e| e.event_type == "task" && e.wave() == Some(wave))
+        .unwrap_or_else(|| panic!("the fix wave has no task: {fix}"));
+    assert_eq!(task.ints("covers"), vec![goal], "the task of the fix wave covers the same items");
+
+    let round = project.run(&["round", "--dispatch", "--spec", SPEC]);
+    let dispatched: Vec<u64> = round["dispatch"].as_array().into_iter().flatten().filter_map(|sent| sent["wave"].as_u64()).collect();
+    assert_eq!(dispatched, vec![wave], "the round sends the fix wave: {round}");
+    let code = log.codes().get(&goal).cloned().expect("the code of the goal");
+    let block = format!("request-{wave}");
+    let read = project.command(&["run", "read", block.as_str(), "--spec", SPEC], "");
+    let request = String::from_utf8_lossy(&read.stdout);
+    assert!(read.status.success(), "{request}");
+    let attends = translate("prompt.step.attends", Locale::PtBr).replace("{item}", "");
+    assert!(
+        request.lines().any(|line| line.contains(attends.trim()) && line.contains(&code)),
+        "the request of the fix wave brings the goal under its task: {request}"
+    );
+    assert_eq!(State::from_log(&project.log()).phase, Some("pr_open"), "the work was not reopened");
+}
+
+/// A esteira do pull request aparece na resposta do `pr-open` e na retomada
+/// da spec com o pull request aberto, cada vez com o que o provedor responde
+/// naquela hora: rodando logo depois de abrir, vermelha numa retomada — com a
+/// porta de conserto da spec na frase — e verde na seguinte.
+#[test]
+fn the_pipeline_of_the_pull_request_is_read_after_the_open_and_on_resume() {
+    let project = Project::new();
+    executable::write_executable(&project.bin.join("gh"), OPENED_PR_GH);
+    let line = closed_with_one_wave(&project);
+    let argv: Vec<&str> = line.iter().map(String::as_str).collect();
+    let pipeline = |status: &str, conclusion: &str| {
+        let rows = json!({"statusCheckRollup": [{"__typename": "CheckRun", "name": "ci", "status": status, "conclusion": conclusion}]});
+        std::fs::write(project.remotes.join("checks"), rows.to_string()).expect("the checks");
+    };
+    let said = |key: &str| translate(key, Locale::PtBr).replace("{pr}", "7").replace("{spec}", SPEC);
+
+    pipeline("IN_PROGRESS", "");
+    let opened = project.run(&argv);
+    assert_eq!(opened["number"], json!(7), "{opened}");
+    assert_eq!(opened["checks"], json!({"state": "running", "text": said("pr.checks.running")}), "{opened}");
+    assert!(project.gh_calls().iter().any(|call| call == "pr view 7 --json statusCheckRollup"), "{:?}", project.gh_calls());
+
+    pipeline("COMPLETED", "FAILURE");
+    let red = project.run(&["resume", "--spec", SPEC]);
+    assert_eq!(red["phase"], json!("pr_open"), "{red}");
+    let fix = format!("{} {}", said("pr.checks.failed"), said("pr.checks.fix"));
+    assert_eq!(red["checks"], json!({"state": "failed", "text": fix}), "{red}");
+    assert!(fix.contains(&format!("mustard-rt run reopen --spec {SPEC} --fix")), "{fix}");
+
+    pipeline("COMPLETED", "SUCCESS");
+    let green = project.run(&["resume", "--spec", SPEC]);
+    assert_eq!(green["checks"], json!({"state": "passed", "text": said("pr.checks.passed")}), "{green}");
+}
+
+/// A rodada que refaz o corpo do pull request aberto deixa o que alguém
+/// editou no provedor. A obra fechada abre o pull request pelo `pr-open`,
+/// alguém acrescenta uma nota à descrição e o usuário reabre a spec; a rodada
+/// seguinte lê o corpo pelo `gh api -i`, não pede a edição dele, e a resposta
+/// traz o pull request com o corpo mantido e o aviso. A nota segue no
+/// provedor.
+#[test]
+fn an_edited_pull_request_body_is_kept_by_the_round_after_a_reopen() {
+    let project = Project::new();
+    let line = closed_with_one_wave(&project);
+    let argv: Vec<&str> = line.iter().map(String::as_str).collect();
+    executable::write_executable(&project.bin.join("gh"), STORED_BODY_GH);
+    let stored = project.remotes.join("pr7-body.md");
+    let opened = project.run(&argv);
+    assert_eq!((opened["action"].clone(), opened["number"].clone()), (json!("open"), json!(7)), "{opened}");
+
+    let generated = std::fs::read_to_string(&stored).expect("the provider keeps the body it got");
+    let (text, mark) = generated.rsplit_once("<!-- mustard-body:").expect("the generated body carries its mark");
+    let edited = format!("{text}Nota de quem revisa: conferir a saudação no terminal.\n\n<!-- mustard-body:{mark}");
+    std::fs::write(&stored, &edited).expect("the edit on the provider");
+    let reopened = project.run(&["reopen", "--spec", SPEC, "--reason", "Trocar a saudação de novo."]);
+    assert_eq!(reopened["phase"], json!("running"), "{reopened}");
+
+    let asked_before = project.gh_calls().len();
+    let round = project.run(&["round", "--dispatch", "--spec", SPEC]);
+    let body_kept = translate("pr.body_kept", Locale::PtBr).replace("{pr}", "7").replace("{reason}", "body-edited");
+    assert_eq!(round["pr"], json!({"number": 7, "body": "kept", "warning": body_kept}), "{round}");
+    let asked = project.gh_calls()[asked_before..].to_vec();
+    assert!(asked.iter().any(|call| call == "api -i repos/{owner}/{repo}/pulls/7"), "the round reads the body on the provider: {asked:?}");
+    assert!(
+        !asked.iter().any(|call| call.starts_with("api --method PATCH repos/{owner}/{repo}/pulls/7 -F body=@")),
+        "the round does not rewrite the edited body: {asked:?}"
+    );
+    assert_eq!(std::fs::read_to_string(&stored).unwrap(), edited, "the edit stays on the provider");
+}
+
+/// O `title` do objetivo dá nome ao pull request e à linha da spec no resumo
+/// do projeto, mesmo com uma primeira frase acima do teto: a spec vai da
+/// abertura ao fechamento, o `pr-open` abre o pedido com o título, o servidor
+/// junta a branch na base, a entrega fora da porta do pull request grava a
+/// linha do resumo e a visão geral do painel a mostra com o título.
+#[test]
+fn the_goal_title_names_the_pull_request_and_the_project_summary() {
+    let title = "Saudação nova no programa";
+    let goal = "Trocar a saudação do programa por uma frase nova que diga olá a quem abre o terminal.";
+    assert!(goal.chars().count() > 60, "the first sentence alone would be refused");
+    let project = Project::new();
+    let line = closed_with_goal(&project, title, goal);
+    let argv: Vec<&str> = line.iter().map(String::as_str).collect();
+
+    let opened = project.run(&argv);
+    assert_eq!(opened["number"], json!(7), "{opened}");
+    let created = project.gh_calls().into_iter().find(|call| call.starts_with("pr create")).expect("the pull request was created");
+    assert!(created.starts_with(&format!("pr create --title {title} --body-file ")), "{created}");
+
+    // O servidor junta o pull request na base com um commit de merge, como o
+    // provedor faz: a base antes da spec é o primeiro pai, a branch o segundo.
+    let tree = git_out(&project.root, &["rev-parse", &format!("{BRANCH}^{{tree}}")]);
+    let merge = git_out(&project.root, &["commit-tree", &tree, "-p", "dev", "-p", BRANCH, "-m", "Merge do pull request #7"]);
+    git(&project.root, &["push", "-q", "origin", &format!("{merge}:refs/heads/dev")]);
+    git(&project.root, &["fetch", "-q", "origin"]);
+    let delivered = project.run(&["deliver-merged", "--spec", SPEC]);
+    assert_eq!(State::from_log(&project.log()).phase, Some("delivered"), "{delivered}");
+    let overview = project.run(&["panel", "--spec", SPEC, "--section", "overview"]);
+    let shown: Vec<(Value, Value)> = overview["deliveries"]["shown"]
+        .as_array()
+        .map(|rows| rows.iter().map(|row| (row["spec"].clone(), row["title"].clone())).collect())
+        .unwrap_or_default();
+    assert_eq!(shown, vec![(json!(SPEC), json!(title))], "the summary line carries the title: {overview}");
+}
+
 /// Um critério gravado sem declarar a forma dele é recusado, e a recusa lista
 /// as cinco formas do padrão pelo nome, em vez de um nome de campo cru.
 #[test]
 fn criterion_without_a_declared_form_is_refused() {
     let project = Project::new();
-    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    project.open();
     survey(&project);
     let said = user_says(&project, "O plano é uma onda só, que muda a saudação.");
 
@@ -924,7 +1475,7 @@ fn criterion_without_a_declared_form_is_refused() {
 #[test]
 fn amending_an_old_criterion_does_not_require_a_form() {
     let project = Project::new();
-    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    project.open();
     survey(&project);
     let said = user_says(&project, "O plano é uma onda só, que muda a saudação.");
 
@@ -989,7 +1540,7 @@ fn three_terms_use_the_market_name() {
 /// fechamento devolve a linha do `pr-open`, que roda. Confere o que a rodada
 /// deixou nos dois repositórios e devolve a resposta do `pr-open`.
 fn open_pull_requests_with_a_submodule(project: &Project) -> Value {
-    let opened = project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    let opened = project.open();
     assert_eq!(opened["step"], json!("ask_goal"), "{opened}");
     survey(project);
     plan_files(project, &["src/main.rs", SUB_FILE]);
@@ -1052,6 +1603,279 @@ fn open_pull_requests_with_a_submodule(project: &Project) -> Value {
 fn session_start(project: &Project) -> Value {
     json!({"hook_event_name": "SessionStart", "source": "startup", "session_id": SESSION,
         "cwd": project.root.to_string_lossy()})
+}
+
+/// Duas conversas no mesmo projeto e na mesma branch: só a que abriu ou
+/// retomou a spec grava nela. A que abriu grava sem `--spec` logo depois da
+/// abertura. A outra não grava fala, resposta nem chamada, e a gravação dela
+/// sem `--spec` é recusada com o comando de retomar. Depois do `/clear`, a
+/// sessão nova retoma, e a fala e a gravação dela entram sem o aviso de outra
+/// sessão. A leitura com `--root` de outro projeto não deixa chamada lá.
+#[test]
+fn only_the_conversation_bound_to_the_spec_records_in_it() {
+    const PARALLEL: &str = "s-paralela";
+    const CLEARED: &str = "s-ponta-depois-do-clear";
+    let project = Project::new();
+    let cwd = project.root.to_string_lossy().to_string();
+    let says = |session: &str, text: &str| {
+        project.hook("UserPromptSubmit", &json!({"hook_event_name": "UserPromptSubmit", "prompt": text, "session_id": session, "cwd": cwd}));
+    };
+    let message = |text: &str| {
+        project.log().visible().into_iter().rfind(|e| e.event_type == "message" && e.str_field("text") == Some(text)).cloned()
+    };
+    let context = |text: &str, origin: u64| {
+        json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": text, "origin": origin}).to_string()
+    };
+
+    // A conversa que abre grava a fala e, sem `--spec`, o item.
+    project.open();
+    says(SESSION, GOAL);
+    let goal = message(GOAL).expect("the conversation that opened records its message");
+    assert_eq!(goal.str_field("session"), Some(SESSION), "the message says its conversation");
+    let written = project.answer_as(SESSION, &["write", "context", "--json", &context(GOAL, goal.id)]);
+    assert_eq!((&written["ok"], &written["spec"]), (&json!(true), &json!(SPEC)), "{written}");
+    let item = project.log().visible().into_iter().rfind(|e| e.event_type == "context" && e.str_field("text") == Some(GOAL)).cloned();
+    assert_eq!(item.expect("the item the conversation wrote").str_field("session"), Some(SESSION), "the item says its conversation");
+
+    // A conversa paralela, sem ligação: nada dela entra.
+    let before = (project.log().events.len(), project.operations().events.len());
+    says(PARALLEL, "Na outra conversa, quero outra coisa.");
+    project.hook(
+        "Stop",
+        &json!({"hook_event_name": "Stop", "last_assistant_message": "A resposta da outra conversa.", "session_id": PARALLEL, "cwd": cwd}),
+    );
+    let refused = project.answer_as(PARALLEL, &["write", "context", "--json", &context("O objetivo da outra conversa.", goal.id)]);
+    assert_eq!(refused["reason"], json!("session-unbound"), "{refused}");
+    assert!(refused["hint"].as_str().unwrap_or_default().contains("mustard-rt run resume"), "{refused}");
+    project.run_as(PARALLEL, &["read", "conversation", "--spec", SPEC]);
+    let after = (project.log().events.len(), project.operations().events.len());
+    assert_eq!(after, before, "the parallel conversation left nothing in the spec");
+
+    // O `/clear` troca a sessão; a nova retoma e grava sem o aviso.
+    project.hook("SessionEnd", &json!({"hook_event_name": "SessionEnd", "reason": "clear", "session_id": SESSION, "cwd": cwd}));
+    project.hook("SessionStart", &json!({"hook_event_name": "SessionStart", "source": "clear", "session_id": CLEARED, "cwd": cwd}));
+    assert_eq!(project.run_as(CLEARED, &["resume"])["spec"], json!(SPEC));
+    let later = "Depois de limpar, sigo na mesma obra.";
+    says(CLEARED, later);
+    let said = message(later).expect("the conversation that resumed records its message");
+    assert_eq!(said.str_field("session"), Some(CLEARED));
+    let again = project.run_as(CLEARED, &["write", "context", "--json", &context(later, said.id)]);
+    assert!(!again.to_string().contains("another-session"), "{again}");
+
+    // A leitura de outro projeto não grava chamada lá.
+    let elsewhere = Project::new();
+    elsewhere.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    let there = elsewhere.root.to_string_lossy().to_string();
+    project.run_as(CLEARED, &["read", "conversation", "--root", &there, "--spec", SPEC]);
+    let reads = elsewhere.operations().visible().into_iter().filter(|e| e.str_field("command") == Some("read")).count();
+    assert_eq!(reads, 0, "a reading from another conversation's project leaves no call there");
+}
+
+/// O agente da onda roda numa sessão sem ligação com a spec. De dentro da
+/// cópia da onda, a leitura do pedido e a gravação do passo deixam na spec o
+/// recibo da leitura e as duas chamadas, cada uma com o bloco pedido, mesmo
+/// com as opções antes dele.
+#[test]
+fn the_wave_agent_calls_from_its_copy_count_without_a_binding() {
+    const AGENT: &str = "s-agente-da-onda";
+    let project = Project::new();
+    project.open();
+    survey(&project);
+    plan(&project);
+    approve(&project);
+    first_round(&project);
+    let log = project.log();
+    let sent = log.visible().into_iter().rfind(|e| e.event_type == "send" && e.wave() == Some(1)).expect("the wave was sent");
+    let copy = PathBuf::from(sent.str_field("copy").expect("the copy"));
+    let task = log.visible().into_iter().find(|e| e.event_type == "task" && e.wave() == Some(1)).expect("the wave task").id;
+    let task = log.codes().get(&task).cloned().expect("the task code");
+    let root = project.root.display().to_string();
+
+    let read = project.command_as(Some(AGENT), &copy, &["run", "read", "--root", &root, "--spec", SPEC, "request-1"], "");
+    assert!(read.status.success(), "{}", String::from_utf8_lossy(&read.stdout));
+    let step = json!({"wave": 1, "item": task, "text": "A tarefa ficou pronta."}).to_string();
+    let written = project.command_as(Some(AGENT), &copy, &["run", "write", "step", "--root", &root, "--spec", SPEC, "--json", &step], "");
+    assert!(written.status.success(), "{}", String::from_utf8_lossy(&written.stdout));
+
+    let receipts = project.log().visible().into_iter().filter(|e| e.event_type == "call" && e.str_field("request") == Some("request-1")).count();
+    assert!(receipts > 0, "the reading of the request left its receipt");
+    let operations = project.operations();
+    let invoked: Vec<(&str, &str)> = operations
+        .visible()
+        .into_iter()
+        .filter(|e| e.event_type == "call" && e.fields.get("invocation") == Some(&json!(true)))
+        .filter_map(|e| Some((e.str_field("command")?, e.str_field("block")?)))
+        .collect();
+    assert!(invoked.contains(&("read", "request-1")) && invoked.contains(&("write", "step")), "{invoked:?}");
+}
+
+/// A conversa que abriu a spec na raiz do projeto segue gravando nela de uma
+/// subpasta: a fala e a resposta que o gancho recebe com o `cwd` ali, rodado
+/// dali e sem a pasta do projeto no ambiente, e a busca rodada dali. A
+/// sessão cujo nome sairia da pasta das sessões não liga nada: a retomada
+/// por ela não grava arquivo fora dali.
+#[test]
+fn the_conversation_opened_at_the_root_records_from_a_subfolder() {
+    let project = Project::new();
+    project.open();
+    let sub = project.root.join("src");
+    let cwd = sub.to_string_lossy().to_string();
+
+    let said = "Da subpasta, a fala segue na obra.";
+    project.hook_from(&sub, "UserPromptSubmit", &json!({"hook_event_name": "UserPromptSubmit", "prompt": said, "session_id": SESSION, "cwd": cwd}));
+    let replied = "A resposta dada na subpasta.";
+    project.hook_from(&sub, "Stop", &json!({"hook_event_name": "Stop", "last_assistant_message": replied, "session_id": SESSION, "cwd": cwd}));
+    let log = project.log();
+    let recorded = |kind: &str, text: &str| log.visible().into_iter().any(|e| e.event_type == kind && e.str_field("text") == Some(text));
+    assert!(recorded("message", said) && recorded("response", replied), "the message and the reply from the subfolder enter the spec");
+
+    let search = ["run", "search", "--shell-output", "--intent", "Find the greeting", "--purpose", "locate", "--", "grep", "-n", "println", "main.rs"];
+    let out = project.command_as(Some(SESSION), &sub, &search, "");
+    assert!(out.status.success(), "{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    let searches = project.operations().visible().into_iter().filter(|e| e.event_type == "call" && e.str_field("command") == Some("search")).count();
+    assert_eq!(searches, 1, "the search run from the subfolder counts as a call of the conversation");
+
+    let escaping = "../../fora";
+    let resumed = project.command_as(Some(escaping), &project.root, &["run", "resume"], "");
+    assert!(resumed.status.success(), "{}", String::from_utf8_lossy(&resumed.stdout));
+    assert!(!project.root.join("fora").exists(), "a session named outside the sessions folder writes nothing out there");
+}
+
+/// O `_meta` da chamada que o Codex manda a um servidor MCP: a captura do
+/// `codex` 0.160.1 (`fixtures/codex-tools-call.json`), com os ids da conversa
+/// trocados por `session`.
+fn codex_meta(session: &str) -> Value {
+    let call: Value = serde_json::from_str(&include_str!("fixtures/codex-tools-call.json").replace("01a16614-52a7-73e3-a596-56c652948934", session)).unwrap();
+    call["params"]["_meta"].clone()
+}
+
+/// Uma busca pelo servidor `mustard-rt mcp` do projeto, rodado sem pasta de
+/// sessão no ambiente a menos que `env_session` a dê: `initialize` e depois o
+/// `tools/call`, com `meta` no `_meta` da chamada quando há. Devolve a
+/// resposta da chamada.
+fn mcp_search(project: &Project, env_session: Option<&str>, meta: Option<Value>) -> Value {
+    let request = json!({"tool": "Grep", "input": {"pattern": "println", "path": project.root.join("src"), "output_mode": "content"},
+        "intent": "Find the greeting", "purpose": "locate"});
+    let mut params = json!({"name": "search", "arguments": {"request": request}});
+    if let Some(meta) = meta {
+        params["_meta"] = meta;
+    }
+    let lines = [
+        json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-11-25"}}),
+        json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+        json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": params}),
+    ]
+    .map(|line| line.to_string() + "\n")
+    .concat();
+    let root = project.root.to_string_lossy().to_string();
+    let out = project.command_as(env_session, &project.root, &["mcp", "--root", &root], &lines);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let replies: Vec<Value> = String::from_utf8_lossy(&out.stdout).lines().filter_map(|line| serde_json::from_str(line).ok()).collect();
+    let reply = replies.into_iter().find(|reply| reply["id"] == json!(2)).expect("the server answers the call");
+    assert_eq!(reply["result"]["isError"], json!(false), "{reply}");
+    reply
+}
+
+/// A busca que a conversa faz pelo servidor `mustard-rt mcp` conta nas
+/// operações da spec a que a sessão dela está ligada, venha a sessão pelo
+/// `_meta` que o Codex manda, só pelo turno dele ou pelo ambiente de quem subiu
+/// o servidor. O `_meta` vale mais que o ambiente, que fica velho
+/// depois do `/clear`; a chamada sem sessão, ou de sessão sem ligação, não
+/// entra na spec de ninguém.
+#[test]
+fn the_mcp_search_server_counts_its_calls_in_the_spec_of_the_conversation() {
+    let project = Project::new();
+    project.open();
+    let searches = || -> Vec<SpecEvent> {
+        project.operations().visible().into_iter().filter(|e| e.event_type == "call" && e.str_field("command") == Some("search")).cloned().collect()
+    };
+    assert!(searches().is_empty(), "a spec recém-aberta não tem busca");
+
+    mcp_search(&project, None, Some(codex_meta(SESSION)));
+    let counted = searches();
+    assert_eq!(counted.len(), 1, "a sessão dita no _meta que o Codex manda conta na spec");
+    assert_eq!(counted[0].str_field("session"), Some(SESSION), "a chamada leva a sessão que a gravou");
+
+    mcp_search(&project, None, Some(json!({"x-codex-turn-metadata": {"session_id": "s-raiz", "thread_id": SESSION, "turn_id": "t1"}})));
+    assert_eq!(searches().len(), 2, "o turno que o Codex manda no _meta também liga a chamada à conversa");
+
+    mcp_search(&project, None, None);
+    assert_eq!(searches().len(), 2, "sem sessão nenhuma, a chamada não entra na spec");
+
+    mcp_search(&project, Some(SESSION), None);
+    assert_eq!(searches().len(), 3, "a sessão do ambiente do servidor segue valendo");
+
+    mcp_search(&project, Some(SESSION), Some(codex_meta("s-outra")));
+    assert_eq!(searches().len(), 3, "o _meta vale mais que o ambiente: a sessão sem ligação não grava na spec da outra");
+}
+
+/// A fala que o usuário diz com um ponto do levantamento aberto entra pelo
+/// gancho com o número do ponto, e a leitura da conversa pelo comando a
+/// mostra apontando o ponto pelo código dele.
+#[test]
+fn a_message_said_during_an_open_point_reads_with_the_point_code() {
+    let project = Project::new();
+    project.open();
+    let (_, _, open) = open_the_points(&project, "Combinar o item", GOAL);
+    let code = open["code"].as_str().unwrap_or_else(|| panic!("an open point: {open}")).to_string();
+    let question = "A saudação muda em todo lugar?";
+    let asked = user_says(&project, question);
+    assert_eq!(project.log().get(asked).and_then(|message| message.int("during")), open["id"].as_u64(), "the file keeps the point number");
+
+    let read = project.run(&["read", "conversation", "--spec", SPEC]);
+
+    let shown = read["events"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|line| line["text"] == json!(question))
+        .unwrap_or_else(|| panic!("the message is read: {read}"));
+    assert_eq!(shown["during"], json!(code), "the open point is shown by its code: {shown}");
+}
+
+/// A marca da ligação da conversa `session` com a spec, onde a abertura a
+/// grava: na raiz do projeto, e não na pasta de onde a conversa roda.
+fn binding_mark(project: &Project, session: &str) -> PathBuf {
+    project.root.join(".claude/.session").join(session).join("active-spec")
+}
+
+/// O fechamento rodado de uma subpasta, pela conversa que abriu a spec na
+/// raiz, apaga a ligação que a abertura gravou lá: a conversa seguinte não
+/// grava mais na spec fechada.
+#[test]
+fn closing_from_a_subfolder_clears_the_binding_the_open_wrote_at_the_root() {
+    let project = Project::new();
+    let sub = project.root.join("src");
+    let mark = binding_mark(&project, SESSION);
+
+    let line = closed_by(&project, "Combinar o item", GOAL, &|args| {
+        assert!(mark.exists(), "the conversation stays bound until the spec closes: {}", mark.display());
+        let report = project.answer_in(Some(SESSION), &sub, args);
+        assert_eq!(report["ok"], json!(true), "{args:?}: {report}");
+        report
+    });
+
+    assert!(!line.is_empty(), "the close still names the pull request line");
+    assert!(!mark.exists(), "the closed spec leaves no binding mark at the root: {}", mark.display());
+}
+
+/// O descarte rodado de uma subpasta, pela conversa que abriu a spec na raiz,
+/// apaga a ligação que a abertura gravou lá.
+#[test]
+fn discarding_from_a_subfolder_clears_the_binding_the_open_wrote_at_the_root() {
+    let project = Project::new();
+    let sub = project.root.join("src");
+    let mark = binding_mark(&project, SESSION);
+    project.open();
+    assert!(mark.exists(), "the open binds the conversation at the root: {}", mark.display());
+
+    let preview = project.answer_in(Some(SESSION), &sub, &["discard", "--spec", SPEC]);
+    let token = preview["token"].as_str().expect("the discard code").to_string();
+    assert!(mark.exists(), "the preview discards nothing");
+    let done = project.answer_in(Some(SESSION), &sub, &["discard", "--spec", SPEC, "--confirm", &token]);
+
+    assert_eq!(done["ok"], json!(true), "{done}");
+    assert!(!mark.exists(), "the discarded spec leaves no binding mark at the root: {}", mark.display());
 }
 
 /// Outra pessoa mergeia o pull request do submódulo, pelo `gh` de fora do
@@ -1320,7 +2144,7 @@ fn two_sessions_checking_the_submodule_at_the_same_time_move_the_pointer_once() 
 #[test]
 fn opening_a_spec_starts_the_reading_of_the_history_of_the_map_it_refreshes() {
     let project = Project::with_scan();
-    let opened = project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    let opened = project.open();
     assert_eq!(opened["step"], json!("ask_goal"), "{opened}");
 
     let model = map_store::model_path(&project.root);
@@ -1353,7 +2177,7 @@ fn a_project_in_a_temp_folder_with_two_names_is_asked_about_by_its_real_path() {
         "the project is named by the real path, not through the shortcut: {}",
         project.root.display()
     );
-    let opened = project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    let opened = project.open();
     assert_eq!(opened["step"], json!("ask_goal"), "{opened}");
     let model = map_store::model_path(&project.root);
     assert_eq!(
@@ -1371,7 +2195,7 @@ fn deliver_the_first_wave(project: &Project) {
 
 /// [`deliver_the_first_wave`] com a onda mudando o arquivo `file`.
 fn deliver_the_first_wave_changing(project: &Project, file: &str) {
-    project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    project.open();
     survey(project);
     plan_files(project, &[file]);
     approve(project);
@@ -1389,8 +2213,11 @@ fn deliver_the_first_wave_changing(project: &Project, file: &str) {
 
 /// As passadas e as leituras da história que uma chamada trouxe, contadas
 /// desde o ponto `(passes, reads)` anterior a ela; a lista de leituras só
-/// vale depois de o processo em segundo plano parar de anotar.
+/// vale depois de o processo em segundo plano parar de anotar. A primeira
+/// leitura nova é esperada antes, por um tempo: na máquina carregada, o
+/// processo em segundo plano demora mais que a pausa da conferência a começar.
 fn since(project: &Project, before: &(usize, usize)) -> (Vec<String>, Vec<String>) {
+    project.history_reads_after_waiting(before.1 + 1);
     let reads = project.settled_history_reads();
     (project.scan_passes()[before.0..].to_vec(), reads[before.1..].to_vec())
 }

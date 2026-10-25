@@ -37,7 +37,7 @@ pub enum PanelCmd {
         #[arg(long, conflicts_with = "document")]
         include_consumption: bool,
     },
-    /// Read one panel screen: the overview, the spec, a page of items, one item or the usage.
+    /// Read one panel screen: the overview, the spec, a page of items, one item, the usage or a page of waves.
     #[command(display_order = 26)]
     Panel {
         #[arg(long, default_value = ".")]
@@ -113,15 +113,19 @@ pub fn dispatch(cmd: PanelCmd) {
             println!("{}",super::safe_value(result));
         },
         PanelCmd::Settings {root,json,stdin,full} => {
+            let json = crate::shared::json_arg::resolve_opt(json);
             let report=if stdin {
                 use std::io::Read;let mut text=String::new();
                 match std::io::stdin().take(16_385).read_to_string(&mut text) {
                     Ok(_)=>super::settings::run(&root,Some(&text)),
                     Err(_)=>serde_json::json!({"ok":false,"schema_version":1,"reason":"settings-invalid-request"}),
                 }
-            } else if json.as_deref().is_some_and(super::settings::carries_token) {
+            } else if let Err(detail) = &json {
+                // O arquivo do `--json` que não se lê recusa sem gravar nada.
+                serde_json::json!({"ok":false,"schema_version":1,"reason":"settings-invalid-request","detail":detail})
+            } else if let Ok(json) = &json && json.as_deref().is_some_and(super::settings::carries_token) {
                 serde_json::json!({"ok":false,"schema_version":1,"reason":"settings-token-argument"})
-            } else {super::settings::run(&root,json.as_deref())};
+            } else {super::settings::run(&root,json.ok().flatten().as_deref())};
             println!("{}",crate::commands::flow::projection("settings",&report,full).unwrap_or(report));
         }
         PanelCmd::Publish {

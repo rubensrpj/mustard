@@ -20,12 +20,18 @@ use crate::domain::spec_events::{SpecEvent, SpecLog};
 /// que uma onda cobre, citado no `covers` de uma tarefa terminada. A resposta
 /// `met` da entrega é a palavra do agente, não prova. Tarefa e combinado vão
 /// pelo código, que é o mesmo em toda versão; o critério vai pelo número,
-/// porque a versão nova pede execução nova.
+/// porque a versão nova pede execução nova. A última aprovação final também
+/// conta ([`super::last_final_approval`]): o item cuja versão vigente veio
+/// antes do pedido que ela respondeu já foi conferido por ela, e o ajuste
+/// feito depois é revisado sozinho.
 pub struct Proven {
     criteria: BTreeSet<u64>,
     tasks: BTreeSet<String>,
     agreed: BTreeSet<String>,
     codes: BTreeMap<u64, String>,
+    /// O número a partir do qual o item escapa da última aprovação final; 0
+    /// sem aprovação.
+    approved_until: u64,
 }
 
 impl Proven {
@@ -59,7 +65,8 @@ impl Proven {
             .flat_map(|task| task.ints("covers"))
             .filter_map(|id| codes.get(&id).cloned())
             .collect();
-        Self { criteria, tasks, agreed, codes }
+        let approved_until = super::last_final_approval(log).map_or(0, |(_, since)| since);
+        Self { criteria, tasks, agreed, codes, approved_until }
     }
 
     fn code(&self, item: &SpecEvent) -> Option<&String> {
@@ -67,9 +74,13 @@ impl Proven {
     }
 
     /// Se o item já tem prova verde: o critério, a tarefa ou o combinado
-    /// conforme o tipo. Os outros tipos nunca têm.
+    /// conforme o tipo, ou qualquer um deles conferido pela última aprovação
+    /// final. Os outros tipos nunca têm.
     #[must_use]
     pub fn covers(&self, item: &SpecEvent) -> bool {
+        if item.id < self.approved_until {
+            return true;
+        }
         match item.event_type.as_str() {
             "criterion" => self.criteria.contains(&item.id),
             "task" => self.code(item).is_some_and(|code| self.tasks.contains(code)),
@@ -124,7 +135,7 @@ impl Writer<'_> {
     /// O pedido do agente de teste dedicado, que o fechamento pede a toda
     /// obra: as instruções fixas dele, o que olhar — a obra inteira na
     /// primeira revisão; na de volta, o que mudou desde o veredito que
-    /// reprovou e o encaixe disso no resto —, como ler cada item e, em
+    /// reprovou ou aprovou e o encaixe disso no resto —, como ler cada item e, em
     /// seguida, uma linha por item: o que mudou, as ondas com as tarefas, as
     /// emendas gravadas para elas, o que cada uma entregou, os critérios e os
     /// commits que já entraram na branch. Por fim, como revisar numa cópia
@@ -139,7 +150,12 @@ impl Writer<'_> {
         let _ = writeln!(out, "{}\n", language_line(&m.execution.language));
         out.push_str(self.t("prompt.final.fixed"));
         out.push_str("\n\n");
-        let look = if m.since_verdict.is_empty() { "prompt.final.look" } else { "prompt.final.look_again" };
+        // O primeiro item do que mudou é o veredito de onde a revisão volta.
+        let look = match m.since_verdict.first() {
+            None => "prompt.final.look",
+            Some(verdict) if super::approved(verdict) => "prompt.final.look_since_approval",
+            Some(_) => "prompt.final.look_again",
+        };
         out.push_str(self.t(look));
         out.push_str("\n\n");
         let _ = writeln!(out, "## {}\n", self.t("prompt.part.read"));

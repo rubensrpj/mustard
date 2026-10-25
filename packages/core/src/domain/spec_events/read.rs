@@ -701,7 +701,9 @@ impl SpecLog {
     /// leitura; a rodada a assume gravando a versão oficial, sem o campo, com
     /// `replaces` para ela. Da versão oficial para trás, nenhuma volta da
     /// mesma onda espera mais, nem a que ela não apontou: só a gravada depois
-    /// dela.
+    /// dela. A volta de onda que saiu do plano continua aqui, como história;
+    /// a entrega que ainda espera a rodada se lê em
+    /// [`Self::returns_awaiting_round`].
     #[must_use]
     pub fn unassumed_returns(&self) -> Vec<&SpecEvent> {
         let derived = self.derived();

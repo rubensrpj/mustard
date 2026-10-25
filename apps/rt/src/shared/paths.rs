@@ -10,6 +10,7 @@ use std::path::Path;
 use mustard_core::domain::model::contract::HookInput;
 use mustard_core::io::claude_paths::{LESSONS_FILE, SPEC_INDEX_FILE};
 use mustard_core::io::spec_events::spec_root;
+use mustard_core::io::wave_prompt::{real_place, without_verbatim};
 
 /// The files of a spec folder only the binary writes. The spec root's
 /// `meta.json` counts too: it is what says whether an old draft, with no event
@@ -52,23 +53,27 @@ pub(crate) fn relative_to_cwd(cwd: &str, file_path: &str) -> Option<String> {
     below(&cwd, &abs)
 }
 
-/// The one spelling of a path text, which every comparison of two paths goes
-/// through: forward slashes; no verbatim prefix (`\\?\C:\x` is `C:/x`,
-/// `\\?\UNC\srv\share\x` is `//srv/share/x`); `.`, `..` and doubled slashes
-/// resolved in the text only, without looking at the disk; the drive letter in
-/// capitals. A relative path stays relative. Pure: the same text gives the
-/// same answer on every system.
+/// A grafia única do texto de um caminho, por onde passa toda comparação de
+/// dois caminhos: barras normais; sem o prefixo de caminho literal, pela regra
+/// única do núcleo ([`without_verbatim`]: `\\?\C:\x` é `C:/x`); `.`, `..` e
+/// barras dobradas resolvidos só no texto, sem olhar o disco; a letra do disco
+/// em maiúscula. As duas barras que abrem um compartilhamento ficam
+/// (`\\srv\share\x` é `//srv/share/x`, outro lugar que `/srv/share/x`), como o
+/// POSIX deixa; três ou mais no começo são a raiz. O caminho relativo fica
+/// relativo. Pura: o mesmo texto dá a mesma resposta em todo sistema; fora do
+/// Windows, quem lê o lugar no disco ([`on_disk`]) ainda acha `//p` em `/p`.
 #[must_use]
 pub(crate) fn canonical(path: &str) -> String {
+    lexical(&unprefixed(path))
+}
+
+/// O texto de `path` com barras normais e sem o prefixo de caminho literal
+/// ([`without_verbatim`]), antes de [`lexical`]: nele a pasta compartilhada da
+/// rede abre com exatamente duas barras (`//srv/share/x`), escrita simples ou
+/// literal, seja qual for o número de barras que [`canonical`] guarda.
+fn unprefixed(path: &str) -> String {
     let text = path.replace('\\', "/");
-    let text = if let Some(rest) = text.strip_prefix("//?/UNC/").or_else(|| text.strip_prefix("//./UNC/")) {
-        format!("/{rest}")
-    } else if let Some(rest) = text.strip_prefix("//?/").or_else(|| text.strip_prefix("//./")) {
-        if has_drive(rest) { rest.to_string() } else { text }
-    } else {
-        text
-    };
-    lexical(&text)
+    without_verbatim(&text).unwrap_or(text)
 }
 
 /// `true` when `path` opens with a drive letter (`C:`): a Windows path, the
@@ -77,12 +82,33 @@ fn has_drive(path: &str) -> bool {
     path.len() >= 2 && path.as_bytes()[0].is_ascii_alphabetic() && path.as_bytes()[1] == b':'
 }
 
-/// The key two spellings of one place share: [`canonical`], and lower case
-/// when it is a Windows path. Use it as the key of a map or a set of paths.
+/// A chave que as grafias de um mesmo lugar dividem: [`canonical`], toda em
+/// minúsculas no caminho com letra de disco, e com o servidor e a pasta
+/// compartilhada em minúsculas no caminho da rede (`\\srv\share\x`), o resto
+/// como veio. O caminho da rede se reconhece pelas exatamente duas barras com
+/// que é escrito ([`unprefixed`]; três ou mais são a raiz), e a chave guarda as
+/// barras do começo do jeito que [`canonical`] as deixa. Serve de chave de
+/// mapa ou conjunto de caminhos.
 #[must_use]
 pub(crate) fn place_key(path: &str) -> String {
-    let canonical = canonical(path);
-    if has_drive(&canonical) { canonical.to_lowercase() } else { canonical }
+    let unprefixed = unprefixed(path);
+    let canonical = lexical(&unprefixed);
+    if has_drive(&canonical) {
+        return canonical.to_lowercase();
+    }
+    let share = unprefixed.strip_prefix("//").is_some_and(|rest| !rest.starts_with('/'));
+    if !share {
+        return canonical;
+    }
+    // O servidor e a pasta compartilhada são os dois primeiros pedaços depois
+    // das barras do começo, quantas forem.
+    let rest = canonical.trim_start_matches('/');
+    let slashes = &canonical[..canonical.len() - rest.len()];
+    let mut parts: Vec<String> = rest.splitn(3, '/').map(str::to_string).collect();
+    for part in parts.iter_mut().take(2) {
+        *part = part.to_lowercase();
+    }
+    format!("{slashes}{}", parts.join("/"))
 }
 
 /// `true` when `a` and `b` name the same place ([`place_key`]).
@@ -91,10 +117,11 @@ pub(crate) fn same_place(a: &str, b: &str) -> bool {
     place_key(a) == place_key(b)
 }
 
-/// What is left of `path` below `folder`, in the spelling of `path` (empty for
-/// the folder itself); `None` when `path` is not inside it. A folder that only
-/// shares the start of a name (`/pp` for `/p`) is not the folder. The letter
-/// case counts only for a path that is not a Windows one.
+/// O que sobra de `path` abaixo de `folder`, na grafia de `path` (vazio para a
+/// própria pasta); `None` quando `path` não está dentro dela. A pasta que só
+/// divide o começo do nome (`/pp` para `/p`) não é a pasta, e um
+/// compartilhamento (`//srv/share`) não fica abaixo da raiz `/`. A diferença
+/// de maiúsculas só conta no caminho que não é do Windows.
 #[must_use]
 pub(crate) fn below(folder: &str, path: &str) -> Option<String> {
     let (folder, path) = (canonical(folder), canonical(path));
@@ -104,39 +131,29 @@ pub(crate) fn below(folder: &str, path: &str) -> Option<String> {
     let prefix = if folder.is_empty() || folder.ends_with('/') { folder } else { format!("{folder}/") };
     let head = path.get(..prefix.len())?;
     let same = if has_drive(&prefix) { head.eq_ignore_ascii_case(&prefix) } else { head == prefix };
-    same.then(|| path[prefix.len()..].to_string())
+    let rest = &path[prefix.len()..];
+    // Abaixo de uma pasta que não é vazia, o texto canônico só volta a começar
+    // com barra quando o caminho abre um compartilhamento e a pasta é a raiz.
+    (same && (prefix.is_empty() || !rest.starts_with('/'))).then(|| rest.to_string())
 }
 
-/// The canonical text of the real place `path` names: the part that exists is
-/// resolved by the system (a Windows short name such as `RUNNER~1`, a link, the
-/// case on disk), and the part that does not exist yet is kept as written.
-/// What the system gives back is spelled by [`canonical`], so the verbatim
-/// prefix Windows puts on it is gone.
+/// O texto canônico do lugar de verdade que `path` nomeia ([`real_place`]): a
+/// parte que existe resolvida pelo sistema (o nome curto do Windows, como
+/// `RUNNER~1`, o link, as letras como estão no disco), e a que ainda não
+/// existe como foi escrita, na grafia de [`canonical`].
 #[must_use]
 pub(crate) fn on_disk(path: &Path) -> String {
-    let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
-    let mut tail: Vec<std::ffi::OsString> = Vec::new();
-    let mut head = abs.as_path();
-    loop {
-        if let Ok(real) = std::fs::canonicalize(head) {
-            let full = tail.iter().rev().fold(real, |full, part| full.join(part));
-            return canonical(&full.to_string_lossy());
-        }
-        match (head.file_name(), head.parent()) {
-            (Some(name), Some(parent)) => {
-                tail.push(name.to_os_string());
-                head = parent;
-            }
-            _ => return canonical(&abs.to_string_lossy()),
-        }
-    }
+    canonical(&real_place(path).to_string_lossy())
 }
 
-/// `path` with `.` and `..` resolved in the text only, without looking at the
-/// disk. A `..` that would go past the root of an absolute path stops at it;
-/// one at the start of a relative path stays.
+/// `path` com `.` e `..` resolvidos só no texto, sem olhar o disco. O `..` que
+/// passaria da raiz de um caminho absoluto para nela; o do começo de um
+/// caminho relativo fica. Exatamente duas barras no começo são uma raiz
+/// própria, a do compartilhamento; três ou mais são `/`.
 fn lexical(path: &str) -> String {
-    let (root, rest) = if let Some(rest) = path.strip_prefix('/') {
+    let (root, rest) = if let Some(rest) = path.strip_prefix("//").filter(|rest| !rest.starts_with('/')) {
+        ("//".to_string(), rest)
+    } else if let Some(rest) = path.strip_prefix('/') {
         ("/".to_string(), rest)
     } else if is_absolute(path) {
         let drive = path.get(..1).unwrap_or_default().to_ascii_uppercase();
@@ -429,8 +446,10 @@ mod tests {
         }
     }
 
-    /// The same place written the ways Windows writes it has one canonical
-    /// text, and the letter case of a drive path does not tell places apart.
+    /// O mesmo lugar, escrito dos jeitos que o Windows escreve, tem um texto
+    /// canônico só, e as maiúsculas de um caminho com letra de disco não
+    /// separam lugares. O compartilhamento da rede guarda as duas barras que
+    /// o abrem, então nunca é a pasta de mesmo nome sob a raiz.
     #[test]
     fn a_windows_place_has_one_canonical_text_however_it_is_written() {
         for written in [
@@ -442,12 +461,32 @@ mod tests {
         ] {
             assert_eq!(canonical(written), "C:/Users/runner/proj/src/a.rs", "{written}");
         }
-        assert_eq!(canonical(r"\\?\UNC\srv\share\x"), "/srv/share/x");
+        for share in [r"\\?\UNC\srv\share\x", r"\\srv\share\x", "//srv/share/./x", r"\\srv\share\y\..\x"] {
+            assert_eq!(canonical(share), "//srv/share/x", "{share}");
+        }
+        assert!(same_place(r"\\?\UNC\srv\share\x", "//srv/share/x/"));
+        assert!(!same_place(r"\\srv\share\x", "/srv/share/x"), "a share is not a folder under the root");
+        assert_eq!(canonical("///srv/share/x"), "/srv/share/x", "three slashes or more are the root");
         assert_eq!(canonical("src/../../a.rs"), "../a.rs", "a relative path keeps the step out of its start");
         assert_eq!(canonical("/p/../../x"), "/x", "an absolute path stops at its root");
         assert!(same_place(r"c:\USERS\Runner\proj", r"\\?\C:\Users\runner\proj\"));
         assert!(!same_place("/Users/x", "/users/x"), "outside Windows the letter case counts");
         assert!(!same_place(r"C:\Users\runner", r"D:\Users\runner"));
+    }
+
+    /// O caminho da rede é o mesmo lugar com o servidor e a pasta
+    /// compartilhada em maiúsculas ou minúsculas, escrito simples ou literal;
+    /// abaixo da pasta compartilhada a diferença de maiúscula segue contando,
+    /// como em todo caminho sem letra de disco. A chave guarda as barras do
+    /// começo do jeito que o texto canônico as deixa.
+    #[test]
+    fn the_server_and_the_share_of_a_network_path_ignore_the_letter_case() {
+        assert_eq!(place_key(r"\\SRV\Share\x"), place_key(r"\\srv\share\x"));
+        assert_eq!(place_key(r"\\?\UNC\SRV\Share\x"), place_key(r"\\srv\share\x"));
+        assert_eq!(place_key(r"\\SRV\Share\Dir\x"), canonical(r"\\srv\share\Dir\x"));
+        assert_ne!(place_key(r"\\srv\share\X"), place_key(r"\\srv\share\x"));
+        assert!(!same_place("/SRV/Share/x", "/srv/share/x"), "a path opened by one slash is not a share");
+        assert!(!same_place("///SRV/Share/x", "///srv/share/x"), "three slashes or more are the root");
     }
 
     /// What is below a folder is read in the spelling of the path, whatever the
@@ -464,6 +503,20 @@ mod tests {
         assert_eq!(below("C:/Users/runner/proj", "D:/Users/runner/proj/a.rs"), None);
         assert_eq!(below("/p", "/P/a.rs"), None, "outside Windows the letter case counts");
         assert_eq!(relative_to_cwd(r"\\?\C:\p", r"c:\P\src\a.rs").as_deref(), Some("src/a.rs"));
+        assert_eq!(below(r"\\?\UNC\srv\share", r"\\srv\share\x\a.rs").as_deref(), Some("x/a.rs"));
+        assert_eq!(below("/", r"\\srv\share\x"), None, "a share is not below the root");
+    }
+
+    /// Fora do Windows, duas barras no começo são a raiz no disco, então o
+    /// caminho escrito assim ainda alcança os arquivos do projeto.
+    #[cfg(unix)]
+    #[test]
+    fn on_unix_two_leading_slashes_still_reach_the_project_on_disk() {
+        let target = WriteTarget::classify("/p", &input("Write", "//p/.claude/spec/x/spec.ndjson"));
+        assert_eq!(
+            target.map(|t| (t.path, t.class)),
+            Some((".claude/spec/x/spec.ndjson".to_string(), PathClass::SpecFile { spec: Some("x".to_string()) })),
+        );
     }
 
     /// A folder that exists is read as the real place, so a link to it names it

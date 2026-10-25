@@ -24,8 +24,9 @@ use mustard_core::io::wave_prompt::{Flight, WavePrompt, prompts};
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Map, Value, json};
 
-use super::queue::{backlog_task_ref, task_revision, tasks_not_delivered};
+use super::queue::{task_revision, tasks_not_delivered};
 use super::report::backlog_return;
+use crate::commands::spec_events::task_dependents::TaskRefs;
 use crate::commands::spec_events::write::{RecordCheck, record};
 
 /// A leitura da spec depois da divisão e os pedidos montados de novo sobre
@@ -125,11 +126,11 @@ fn trial(
     keep: usize,
 ) -> Result<Option<Trial>, Refusal> {
     let codes = log.codes();
+    let refs = TaskRefs::new(log, &codes);
     let mut returned: BTreeSet<u64> = tasks[keep..].iter().map(|task| task.id).collect();
     let mut kept: Vec<&SpecEvent> = Vec::new();
     for task in &tasks[..keep] {
-        let waits = task.fields.get("depends_on").and_then(Value::as_array).into_iter().flatten();
-        if waits.filter_map(|value| backlog_task_ref(log, &codes, value)).any(|id| returned.contains(&id)) {
+        if refs.depends_on(task).any(|id| returned.contains(&id)) {
             returned.insert(task.id);
         } else {
             kept.push(task);

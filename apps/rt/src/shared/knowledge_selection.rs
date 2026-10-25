@@ -7,6 +7,7 @@ use mustard_core::domain::knowledge::{
 };
 use mustard_core::domain::map_filter::FilterError;
 use mustard_core::domain::normalize::Languages;
+use mustard_core::domain::text::one_line;
 use serde_json::{Value, json};
 use std::cell::Cell;
 use std::path::Path;
@@ -95,7 +96,7 @@ impl SymbolSelector for KnowledgeSelector {
                     if c.test_only {item["test_only"]=json!(true);}
                     let source=source_text(&group.excerpts[&c.id].text);
                     for (field,value,limit) in [("signature",&c.signature,320),("documentation",&c.documentation,400)] {
-                        if !value.trim().is_empty() && !source.contains(&compact(value)) {
+                        if !value.trim().is_empty() && !source.contains(&one_line(value)) {
                             item[field]=json!(value.chars().take(limit).collect::<String>());
                         }
                     }
@@ -188,9 +189,8 @@ impl SymbolSelector for KnowledgeSelector {
     }
 }
 
-fn compact(text:&str)->String {text.split_whitespace().collect::<Vec<_>>().join(" ")}
 fn source_text(text:&str)->String {
-    compact(&text.lines().map(|line|line.split_once(':').filter(|(at,_)|at.parse::<u64>().is_ok()).map_or(line,|(_,text)|text)).collect::<Vec<_>>().join("\n"))
+    one_line(&text.lines().map(|line|line.split_once(':').filter(|(at,_)|at.parse::<u64>().is_ok()).map_or(line,|(_,text)|text)).collect::<Vec<_>>().join("\n"))
 }
 
 fn criteria(card:&mustard_core::domain::knowledge::Card,at:usize,witnesses:&[Vec<Value>])->Value {

@@ -24,9 +24,10 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use mustard_core::domain::project_summary::{SURE, cut_at_word};
+use mustard_core::domain::project_summary::SURE;
 use mustard_core::domain::spec_events::{SpecEvent, SpecLog, TASK_TITLE_MAX};
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState as _};
+use mustard_core::domain::text::cut_line;
 use mustard_core::io::failures::{self as disk, Failure, SkillTask};
 use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{Locale, translate};
@@ -148,7 +149,7 @@ pub(crate) fn from_log(spec: &str, log: &SpecLog) -> Vec<Failure> {
 
 /// O que o Jev vê de uma falha: o motivo, cortado, e os arquivos.
 fn shown(failure: &Failure) -> Value {
-    json!({ "reason": without_secrets(&cut_at_word(&failure.reason, REASON_CHARS)), "files": failure.files })
+    json!({ "reason": without_secrets(&cut_line(&failure.reason, REASON_CHARS)), "files": failure.files })
 }
 
 /// A pergunta da mesma falha: a nova no estado, cada candidata uma entrada.
@@ -250,7 +251,7 @@ fn skill_task_draft(members: &[&Failure], lang: Locale) -> Map<String, Value> {
     let count = members.len().to_string();
     let title = translate("failures.skill_task_title", lang);
     let room = TASK_TITLE_MAX.saturating_sub(title.replace("{reason}", "").chars().count()).min(TITLE_REASON_CHARS);
-    let title = title.replace("{reason}", &cut_at_word(&members[0].reason, room));
+    let title = title.replace("{reason}", &cut_line(&members[0].reason, room));
     let recent = &members[members.len().saturating_sub(OCCURRENCES_MAX)..];
     let occurrences: Vec<String> = recent
         .iter()
@@ -259,7 +260,7 @@ fn skill_task_draft(members: &[&Failure], lang: Locale) -> Map<String, Value> {
                 .replace("{spec}", &row.spec)
                 .replace("{wave}", &row.wave.to_string())
                 .replace("{source}", &source_name(&row.source, lang))
-                .replace("{reason}", &cut_at_word(&row.reason, OCCURRENCE_CHARS));
+                .replace("{reason}", &cut_line(&row.reason, OCCURRENCE_CHARS));
             if !row.files.is_empty() {
                 let files: Vec<String> = row.files.iter().map(|file| format!("`{file}`")).collect();
                 line.push(' ');
@@ -286,10 +287,45 @@ fn skill_task_draft(members: &[&Failure], lang: Locale) -> Map<String, Value> {
     draft.as_object().cloned().unwrap_or_default()
 }
 
+/// Os itens que cobre a tarefa de skill que nasce na spec `target` do projeto
+/// de `start`, pelas ondas reprovadas `waves`, cada uma pela spec e pelo
+/// número: os itens que as tarefas dessas ondas cobriam, só das ondas da
+/// própria `target`, na versão vigente. Sem item achado, o pedido do usuário
+/// mais recente da spec, fora os que a revisão ou o programa gravaram. A
+/// rodada segura a tarefa que não cobre nada, e o fechamento não passa.
+pub(crate) fn skill_task_covers(start: &Path, target: &str, waves: &[(&str, u64)]) -> Vec<u64> {
+    let root = store::spec_root(start);
+    let Some(log) = store::spec_file(&root, target).ok().and_then(|file| store::read(&file).ok().flatten()) else { return Vec::new() };
+    let rejected = |task: &SpecEvent| waves.iter().any(|(spec, wave)| *spec == target && task.wave() == Some(*wave));
+    let mut covers: Vec<u64> = Vec::new();
+    for task in log.visible().into_iter().filter(|e| e.event_type == "task" && rejected(e)) {
+        for id in task.ints("covers").into_iter().filter_map(|id| log.current(id).map(|item| item.id)) {
+            if !covers.contains(&id) {
+                covers.push(id);
+            }
+        }
+    }
+    if covers.is_empty() {
+        let by_user = |e: &&SpecEvent| e.event_type == "request" && !matches!(e.str_field("author"), Some("review" | "binary" | "wave"));
+        covers.extend(log.visible().into_iter().rev().find(by_user).map(|request| request.id));
+    }
+    covers
+}
+
+/// O rascunho `draft` de uma tarefa de skill passa a cobrir os itens `covers`,
+/// quando há algum.
+pub(crate) fn with_covers(mut draft: Map<String, Value>, covers: Vec<u64>) -> Map<String, Value> {
+    if !covers.is_empty() {
+        draft.insert("covers".into(), json!(covers));
+    }
+    draft
+}
+
 /// Cria a tarefa de criar a skill de cada grupo do projeto de `start` com
 /// duas ocorrências ou mais e sem tarefa, na spec aberta da última
-/// ([`target_spec`]), e marca no grupo que ela existe. Sem spec que rode, o
-/// grupo fica marcado à espera. Devolve as tarefas gravadas.
+/// ([`target_spec`]), cobrindo os itens das ondas reprovadas do grupo
+/// ([`skill_task_covers`]), e marca no grupo que ela existe. Sem spec que
+/// rode, o grupo fica marcado à espera. Devolve as tarefas gravadas.
 ///
 /// # Errors
 ///
@@ -312,7 +348,9 @@ fn skill_tasks(start: &Path, lang: Locale) -> Result<Vec<Value>, String> {
         let (Some(last), false) = (members.last(), done || members.len() < 2) else { continue };
         let mark = match target_spec(start, &last.spec) {
             Some(spec) => {
-                let written = crate::commands::spec_events::write::record(start, &spec, "task", skill_task_draft(&members, lang), PhaseWriter::Binary)
+                let waves: Vec<(&str, u64)> = members.iter().map(|row| (row.spec.as_str(), row.wave)).collect();
+                let draft = with_covers(skill_task_draft(&members, lang), skill_task_covers(start, &spec, &waves));
+                let written = crate::commands::spec_events::write::record(start, &spec, "task", draft, PhaseWriter::Binary)
                     .map_err(|refusal| refusal.message(lang))?;
                 recorded.push(json!({ "type": "task", "spec": spec, "id": written.written.id, "skill": mustard_core::io::skill_creator::NAME, "group": group }));
                 SkillTask { spec, task: Some(written.written.id) }
@@ -664,6 +702,24 @@ mod tests {
         assert_eq!(found.len(), 1, "{found:?}");
         assert_eq!((found[0].id.as_str(), found[0].source.as_str(), found[0].wave), ("x:2", "final_review", 2));
         assert_eq!((found[0].reason.as_str(), found[0].files.clone()), ("A onda 2 repete a 1.", vec!["src/b.rs".to_string()]));
+    }
+
+    /// A tarefa de skill cobre o que cobriam as tarefas das ondas reprovadas da
+    /// própria spec; a onda de outra spec não conta, e sem item achado ela
+    /// cobre o pedido do usuário mais recente, não o que a revisão gravou.
+    #[test]
+    fn the_skill_task_covers_the_rejected_waves_items_or_else_the_latest_user_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let seed = |kind: &str, fields: Value| crate::shared::spec_state::seed_event(root, "x", kind, fields);
+        let criterion = seed("criterion", json!({"title": "Saudação", "when": "roda", "then": "sai em português", "proof": "git --version", "form": "ubiquitous"}));
+        let asked = seed("request", json!({"title": "Pedido", "text": "Trocar a saudação.", "effect": "new_waves", "keys": ["saudação"], "author": "assistant"}));
+        seed("request", json!({"title": "Sobra", "text": "Achado da revisão.", "effect": "new_waves", "keys": ["saudação"], "author": "review"}));
+        let said = seed("message", json!({"author": "user", "text": "Trocar a saudação."}));
+        seed("task", json!({"wave": 1, "title": "Saudação", "text": "Trocar.", "files": [], "depends_on": [], "covers": [criterion], "origin": said}));
+
+        assert_eq!(skill_task_covers(root, "x", &[("x", 1), ("antiga", 2)]), vec![criterion]);
+        assert_eq!(skill_task_covers(root, "x", &[("antiga", 1)]), vec![asked]);
     }
 
     fn git(root: &Path, args: &[&str]) -> bool {

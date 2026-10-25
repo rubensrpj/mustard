@@ -65,8 +65,11 @@
 //!   pacote. O campo, a propriedade ou o membro de enum que ainda é lido
 //!   pelo texto (`objeto.nome`, `objeto->nome`) fora de teste, num arquivo
 //!   que uma onda mudou ou que o lia na base, não é órfão: o mapa não liga a
-//!   leitura depois de uma variável cujo tipo o arquivo não escreve
-//!   ([`member_read_remains`]). O órfão cujo nome ainda aparece como palavra
+//!   leitura depois de uma variável cujo tipo o arquivo não escreve. O membro
+//!   de enum ou do objeto de constantes cujo contêiner o texto lê por inteiro
+//!   (`Object.values(X)`, `for ... in X`, `...X`, `X[chave]`, o
+//!   `Enum.GetValues` do C#) também não é órfão: a leitura em grupo não
+//!   escreve o nome dele ([`member_read_remains`]). O órfão cujo nome ainda aparece como palavra
 //!   inteira fora de teste e fora das linhas dele, pela mesma busca do resto
 //!   pelo nome, vai só como aviso: o texto pode ser um uso que o mapa não
 //!   ligou.
@@ -76,8 +79,8 @@
 //!   trecho do programa usa. Teste chamando não conta como uso, como no
 //!   órfão, e vale o mesmo ponto de entrada livre, com o tipo que tem um
 //!   método de rota, o método que cumpre um contrato (a implementação de um
-//!   traço, ainda que o traço seja de fora do projeto) e o campo que o texto
-//!   ainda lê. A declaração já sem uso na base, que continua no mesmo
+//!   traço, ainda que o traço seja de fora do projeto) e o campo ou o membro
+//!   que o texto ainda lê, pelo nome ou em grupo. A declaração já sem uso na base, que continua no mesmo
 //!   arquivo, fica de fora: não foi a onda que a pôs. Só a análise final, no
 //!   fechamento, procura o posto sem uso, e a prova é do mapa, em qualquer
 //!   linguagem: o achado recusa quando a declaração não é exportada (o scan
@@ -203,7 +206,7 @@ pub(super) fn findings(root: &Path, maps: &AfterWave, lang: Locale, decide: &dyn
     for wave in waves {
         let mut own: Vec<&mut Citation> = cites.iter_mut().filter(|cite| cite.finding.wave == wave).collect();
         if let Some(payloads) = judge_citations(root, &mut own, decide) {
-            waiting.push(Waiting { wave, question: Question::RemovedName, payloads });
+            waiting.push(Waiting::by_payloads(wave, Question::RemovedName, payloads));
         }
     }
     let mut out: Vec<Finding> = cites.into_iter().map(|cite| cite.finding).collect();
@@ -434,20 +437,29 @@ fn span_around(maps: &AfterWave, file: &str, line: u64) -> Option<(u64, u64)> {
 const READ_KINDS: &[&str] = &["field", "property", "enum_member"];
 
 /// O campo, a propriedade ou o membro de enum `decl`, declarado em `module`,
-/// ainda é lido pelo texto fora de teste: alguma linha de código escreve
-/// `objeto.nome` ou `objeto->nome` (o nome como palavra inteira) num arquivo
-/// que uma onda mudou ou num dos que o liam na base (`callers`). O mapa liga
-/// a leitura ao campo pelo tipo que o arquivo escreve para o objeto; depois
-/// de uma variável cujo tipo vem de uma chamada (`let walked = Walked::of(x)`)
-/// ele não liga, e o campo parece sem uso ainda que o texto o leia. Fora
-/// deste texto ficam o arquivo de teste, o trecho de teste do arquivo, a
+/// ainda é lido pelo texto fora de teste, de um de dois jeitos:
+///
+/// - Pelo nome: alguma linha de código escreve `objeto.nome` ou `objeto->nome`
+///   (o nome como palavra inteira) num arquivo que uma onda mudou ou num dos
+///   que o liam na base (`callers`). O mapa liga a leitura ao campo pelo tipo
+///   que o arquivo escreve para o objeto; depois de uma variável cujo tipo vem
+///   de uma chamada (`let walked = Walked::of(x)`) ele não liga, e o campo
+///   parece sem uso ainda que o texto o leia.
+/// - Em grupo: alguma linha lê o contêiner dele, o enum ou o objeto de
+///   constantes, por inteiro ([`reads_whole`]), num dos arquivos acima ou num
+///   que o mapa de depois liga ao contêiner. O mapa não liga o membro a essa
+///   leitura, e o nome dele nem aparece nela.
+///
+/// Fora deste texto ficam o arquivo de teste, o trecho de teste do arquivo, a
 /// linha de comentário e as linhas da própria declaração.
 fn member_read_remains(root: &Path, maps: &AfterWave, module: &MapModule, decl: &MapDecl, callers: &[&str]) -> bool {
     if !READ_KINDS.contains(&decl.kind.as_str()) {
         return false;
     }
     let own = decl.line..=decl.end_line.max(decl.line);
-    let files: BTreeSet<&str> = maps.changed.iter().flat_map(|(_, files)| files).map(String::as_str).chain(callers.iter().copied()).collect();
+    let by_name: BTreeSet<&str> = maps.changed.iter().flat_map(|(_, files)| files).map(String::as_str).chain(callers.iter().copied()).collect();
+    let container = decl.owner.first().map(String::as_str);
+    let files: BTreeSet<&str> = by_name.iter().copied().chain(container_users(maps, module, container)).collect();
     files.into_iter().filter(|file| !is_test_path(file)).any(|file| {
         let Ok(text) = std::fs::read_to_string(root.join(file)) else {
             return false;
@@ -457,13 +469,87 @@ fn member_read_remains(root: &Path, maps: &AfterWave, module: &MapModule, decl: 
             let number = u64::try_from(at + 1).unwrap_or(u64::MAX);
             let own_lines = file == module.path && own.contains(&number);
             let test_block = tests.is_some_and(|site| in_test_lines(site, number));
-            !own_lines && !test_block && !is_comment_line(line) && reads_member(line, &decl.name)
+            let by_text = (by_name.contains(file) && reads_member(line, &decl.name)) || container.is_some_and(|name| reads_whole(line, name));
+            !own_lines && !test_block && !is_comment_line(line) && by_text
         })
     })
 }
 
+/// Os arquivos do programa que o mapa de depois liga ao contêiner `container`
+/// declarado em `module`: quem o usa fora de teste. Um membro posto num
+/// contêiner que um arquivo já percorria inteiro é lido ali, ainda que a onda
+/// não mude esse arquivo.
+fn container_users<'a>(maps: &'a AfterWave, module: &'a MapModule, container: Option<&str>) -> impl Iterator<Item = &'a str> {
+    let named = container.map(str::to_string);
+    module
+        .declarations
+        .iter()
+        .filter(move |d| !READ_KINDS.contains(&d.kind.as_str()) && named.as_deref() == Some(d.name.as_str()))
+        .flat_map(|d| &d.used_by)
+        .filter(|site| from_program(&maps.after, site))
+        .map(|site| site.file.as_str())
+}
+
+/// As chamadas que percorrem inteiro o contêiner que recebem: o objeto de
+/// constantes (`Object.values(CATALOGO)`) e o enum do C# (`Enum.GetValues(typeof(Cor))`).
+const WALKING_CALLS: &[&str] = &[
+    "Object.values(",
+    "Object.keys(",
+    "Object.entries(",
+    "Object.getOwnPropertyNames(",
+    "Enum.GetValues(typeof(",
+    "Enum.GetValues<",
+    "Enum.GetNames(typeof(",
+    "Enum.GetNames<",
+];
+
+/// Os acessos que percorrem inteiro o contêiner que os antecede: o
+/// `Cor.values` do enum do Dart e do Java, o `Cor::cases()` do PHP e o
+/// `Cor::iter()` do Rust.
+const WALKING_ACCESS: &[&str] = &[".values", "::cases", "::iter"];
+
+/// A linha lê `container`, o enum ou o objeto de constantes, por inteiro, e
+/// com isso cada membro dele: percorre-o com `for ... in` ou `for ... of`,
+/// espalha-o (`...Cor`), indexa-o por um valor que só se sabe na execução
+/// (`Cor[chave]`), passa-o a uma chamada que o percorre ([`WALKING_CALLS`]) ou
+/// pede a lista dos membros dele ([`WALKING_ACCESS`]). O caminho que segue o
+/// nome (`Cor.total`, `Cor::novo`, `Cor.sub`) lê outra coisa, e o índice
+/// escrito por extenso (`Cor['verde']`, `Cor[0]`) lê um membro só.
+fn reads_whole(line: &str, container: &str) -> bool {
+    word_starts(line, container).any(|at| walks_whole(&line[..at], &line[at + container.len()..]))
+}
+
+/// O nome de um contêiner, com `before` antes dele na linha e `after` depois,
+/// é lido por inteiro ([`reads_whole`]).
+fn walks_whole(before: &str, after: &str) -> bool {
+    let head = before.trim_end();
+    let in_loop = before.split(|c: char| !is_word_char(c)).any(|word| matches!(word, "for" | "foreach"));
+    let looped = in_loop && (ends_with_word(head, "in") || ends_with_word(head, "of"));
+    let handed = looped || before.ends_with("...") || WALKING_CALLS.iter().any(|call| head.ends_with(call));
+    let listed = WALKING_ACCESS.iter().any(|access| after.strip_prefix(access).is_some_and(|rest| !rest.starts_with(is_word_char)));
+    listed || (handed && !path_goes_on(after)) || (dynamic_index(after) && !ends_with_word(head, "new"))
+}
+
+/// `head` termina na palavra inteira `word`.
+fn ends_with_word(head: &str, word: &str) -> bool {
+    head.strip_suffix(word).is_some_and(|rest| !rest.ends_with(is_word_char))
+}
+
+/// O caminho segue o nome do contêiner: `.sub`, `::novo` ou `[`.
+fn path_goes_on(after: &str) -> bool {
+    after.starts_with("::") || after.starts_with('[') || after.strip_prefix('.').is_some_and(|rest| rest.starts_with(is_word_char))
+}
+
+/// O que vem depois do nome do contêiner abre um índice que só se sabe na
+/// execução: `[chave]`. O `[]` e o `[,]` do tipo de vetor, o número e o texto
+/// escrito por extenso (`[0]`, `['verde']`) não são.
+fn dynamic_index(after: &str) -> bool {
+    let first = after.strip_prefix('[').and_then(|inside| inside.trim_start().chars().next());
+    first.is_some_and(|first| !matches!(first, ']' | ',' | '\'' | '"') && !first.is_ascii_digit())
+}
+
 /// A linha só tem comentário, de linha ou de bloco, pelo começo dela.
-fn is_comment_line(line: &str) -> bool {
+pub(super) fn is_comment_line(line: &str) -> bool {
     let line = line.trim_start();
     line.starts_with("//") || line.starts_with("/*") || line.starts_with('*') || line.starts_with('#')
 }
@@ -2036,6 +2122,150 @@ mod tests {
             let after = json!({"modules": [{"path": file, "language": language, "declarations": [walked, member]}]});
             let (refused, _) = final_after_delivery(root, file, after);
             assert!(refused.contains(&format!("`{name}` em `{file}` linha 2 é código novo sem uso fora de teste")), "{language}: {refused}");
+        }
+    }
+
+    /// Um objeto de constantes ou um enum do mapa: o nome, o tipo, a linha, os
+    /// usos dele (`arquivo:linha:quem`) e os membros `(nome, linha)`.
+    struct Group<'a> {
+        name: &'a str,
+        kind: &'a str,
+        line: u64,
+        used: &'a [&'a str],
+        members: &'a [(&'a str, u64)],
+    }
+
+    /// O arquivo `path` do mapa com os contêineres `groups`, cada membro
+    /// como o scan o grava: `enum_member` com o contêiner por dono.
+    fn groups_module(language: &str, path: &str, groups: &[Group]) -> Value {
+        let mut declarations = Vec::new();
+        for group in groups {
+            let end = group.members.iter().map(|(_, line)| *line).max().unwrap_or(group.line) + 1;
+            declarations.push(json!({"kind": group.kind, "name": group.name, "line": group.line, "end_line": end, "used_by": group.used}));
+            for (member, line) in group.members {
+                declarations.push(json!({"kind": "enum_member", "name": member, "line": line, "end_line": line, "owner": [group.name]}));
+            }
+        }
+        json!({"path": path, "language": language, "declarations": declarations})
+    }
+
+    /// O mapa da base de um arquivo que ainda não declara nada.
+    fn empty_base(language: &str, path: &str) -> Value {
+        json!({"modules": [{"path": path, "language": language, "declarations": []}]})
+    }
+
+    /// O catálogo `CATALOG` (linhas 1 a 4) é lido por inteiro na linha 8; o
+    /// `SPARE` (linhas 5 a 7) só tem o tamanho lido, na linha 9.
+    const CATALOG_TS: &str = "export const CATALOG = {\n  alpha: 'a',\n  beta: 'b',\n};\nexport const SPARE = {\n  gamma: 'g',\n};\n\
+        export const listed = Object.values(CATALOG);\nexport const size = SPARE.length;\n";
+
+    /// O enum `Color` (linhas 1 a 4) é percorrido na linha 9; o `Shade`
+    /// (linhas 5 a 7) só tem o nome escrito, na linha 10.
+    const PALETTE_CS: &str = "enum Color {\n    Red,\n    Green,\n}\nenum Shade {\n    Dark,\n}\nclass Palette {\n\
+        \x20   static readonly Color[] All = (Color[])Enum.GetValues(typeof(Color));\n    static readonly string Name = nameof(Shade);\n}\n";
+
+    #[test]
+    fn a_new_member_of_an_object_or_enum_read_whole_is_not_unused_and_the_unread_one_still_is() {
+        // O catálogo TypeScript lido por `Object.values` e o enum C# percorrido
+        // por `Enum.GetValues`: o mapa não liga o membro a essas leituras, mas
+        // o texto lê todos de uma vez. O outro contêiner do arquivo é usado
+        // sem ser percorrido, e o membro dele segue sem uso.
+        let cases: [(&str, &str, &str, [Group; 2]); 2] = [
+            (
+                "typescript",
+                "src/catalog.ts",
+                CATALOG_TS,
+                [
+                    Group { name: "CATALOG", kind: "const", line: 1, used: &["src/catalog.ts:8:listed"], members: &[("alpha", 2), ("beta", 3)] },
+                    Group { name: "SPARE", kind: "const", line: 5, used: &["src/catalog.ts:9:size"], members: &[("gamma", 6)] },
+                ],
+            ),
+            (
+                "csharp",
+                "src/Palette.cs",
+                PALETTE_CS,
+                [
+                    Group { name: "Color", kind: "enum", line: 1, used: &["src/Palette.cs:9:Palette"], members: &[("Red", 2), ("Green", 3)] },
+                    Group { name: "Shade", kind: "enum", line: 5, used: &["src/Palette.cs:10:Palette"], members: &[("Dark", 6)] },
+                ],
+            ),
+        ];
+        for (language, file, text, groups) in cases {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            project_at(root, file, &[(file, text)], &empty_base(language, file));
+            let (refused, _) = final_after_delivery(root, file, json!({"modules": [groups_module(language, file, &groups)]}));
+            for (member, _) in groups[0].members {
+                assert!(!refused.contains(&format!("`{member}`")), "{language}: a member read whole is used: {refused}");
+            }
+            for (member, line) in groups[1].members {
+                assert!(refused.contains(&format!("`{member}` em `{file}` linha {line} é código novo sem uso fora de teste")), "{language}: {refused}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_new_member_of_an_object_whose_whole_read_is_in_a_file_the_wave_did_not_change_is_not_unused() {
+        // O leitor `src/reader.ts` percorre o catálogo inteiro e a onda não o
+        // muda: o mapa liga o uso do catálogo a ele, e o membro novo é lido ali.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let catalog = "export const CATALOG = {\n  alpha: 'a',\n};\n";
+        let reader = "import { CATALOG } from './catalog';\nexport const listed = Object.values(CATALOG);\n";
+        project_at(root, "src/catalog.ts", &[("src/catalog.ts", catalog), ("src/reader.ts", reader)], &empty_base("typescript", "src/catalog.ts"));
+        let group = Group { name: "CATALOG", kind: "const", line: 1, used: &["src/reader.ts:2:listed"], members: &[("alpha", 2)] };
+        let (refused, _) = final_after_delivery(root, "src/catalog.ts", json!({"modules": [groups_module("typescript", "src/catalog.ts", &[group])]}));
+        assert!(refused.is_empty(), "the reader walks the whole catalog: {refused}");
+    }
+
+    #[test]
+    fn a_container_is_read_whole_by_a_loop_a_spread_a_dynamic_index_or_a_walk_and_not_by_a_path_into_it() {
+        let whole = [
+            "export const all = Object.values(CATALOG);",
+            "Object.keys( CATALOG ).forEach(show);",
+            "const rows = Object.entries(CATALOG);",
+            "const names = Object.getOwnPropertyNames(CATALOG);",
+            "for (const key in CATALOG) {",
+            "for (const item of CATALOG) {",
+            "for await (const item of CATALOG) {",
+            "rows = [key.lower() for key in CATALOG]",
+            "const merged = { ...CATALOG, extra: 1 };",
+            "const one = CATALOG[key];",
+            "type Name = keyof typeof CATALOG[number];",
+            "var all = Enum.GetValues(typeof(CATALOG));",
+            "var names = System.Enum.GetNames<CATALOG>();",
+            "for (final c in CATALOG.values) {",
+            "$all = CATALOG::cases();",
+            "CATALOG::iter().for_each(show);",
+            "for k in CATALOG.values() {",
+        ];
+        for line in whole {
+            assert!(reads_whole(line, "CATALOG"), "{line}");
+        }
+        let partial = [
+            "const n = CATALOG.length;",
+            "Object.values(CATALOG.sub);",
+            "Object.values(CATALOG[0]);",
+            "const one = CATALOG['alpha'];",
+            "const one = CATALOG[0];",
+            "const one = CATALOG[\"alpha\"];",
+            "static readonly CATALOG[] all = new CATALOG[count];",
+            "CATALOG[] palette;",
+            "CATALOG[,] grid;",
+            "for (const item of CATALOGUE) {",
+            "for (const item of CATALOG.sub) {",
+            "if ('alpha' in CATALOG) {",
+            "for i in 0..CATALOG {",
+            "let merged = [...CATALOG.items];",
+            "let merged = [..CATALOG];",
+            "Object.values(xCATALOG);",
+            "Enum.Parse(typeof(CATALOG), text);",
+            "let name = nameof(CATALOG);",
+            "CATALOG::new();",
+            "CATALOG.values_total();",
+        ];
+        for line in partial {
+            assert!(!reads_whole(line, "CATALOG"), "{line}");
         }
     }
 

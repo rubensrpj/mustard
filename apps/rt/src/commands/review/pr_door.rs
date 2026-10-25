@@ -109,6 +109,7 @@ use crate::commands::agent::render::skills::build_skills_list;
 use crate::commands::event::pending::{OpenPending, carried_by, close_pending, open_pending_born_in};
 use crate::commands::event::work_branch::on_integration_base;
 use crate::commands::git_settle::{git_out, main_checkout_root, settle_at, settle_unit_at, superproject_of};
+use crate::commands::review::pr_checks::checks_word;
 use crate::commands::review::pr_publish::{SpecPr, SubmodulePrs, spec_pr, submodules_landed};
 use crate::shared::branch_state::PrStatus;
 use crate::shared::pr_provider::{PrChecks, PrProvider, provider_for, provider_in};
@@ -624,7 +625,8 @@ fn is_base_promotion(head: &str, flow: &BaseFlow) -> bool {
 /// É por aqui que a porta de conserto
 /// ([`crate::commands::flow::reopen`]) pergunta o mesmo que o merge pergunta:
 /// uma leitura só do vermelho do servidor, para as duas portas nunca
-/// discordarem sobre o que o provedor respondeu.
+/// discordarem sobre o que o provedor respondeu. O `pr-open` e a retomada
+/// relatam esta mesma leitura ([`crate::commands::review::pr_checks`]).
 pub(crate) fn provider_checks(root: &Path, number: u64) -> Result<PrChecks, String> {
     provider_for(root).checks(number)
 }
@@ -839,10 +841,7 @@ fn merge_or_ask(
     }
     let verdict = spec.as_deref().and_then(|slug| recorded_verdict(root, slug));
     let checks = checks(root, facts.number);
-    let checks_word = match &checks {
-        Ok(state) => state.word().to_string(),
-        Err(reason) => reason.clone(),
-    };
+    let checks_word = checks_word(&checks);
 
     let promotion = is_base_promotion(&facts.head, flow);
     let lang = mustard_core::ProjectConfig::load(root).language().text_or_default();
@@ -1107,8 +1106,7 @@ pub(crate) enum MergedElsewhere {
     /// O provedor não respondeu, com o motivo que ele deu; nada foi mudado.
     Unanswered { reason: String },
     /// O pull request foi fechado sem merge; nada foi mudado. A reabertura
-    /// segue sem pedir rascunho, que o provedor recusa num pull request
-    /// fechado, e o fechamento seguinte abre outro.
+    /// segue, e o fechamento seguinte abre outro.
     Closed {
         /// O número do pull request fechado.
         pr: u64,
@@ -2163,6 +2161,12 @@ mod tests {
         }
     }
 
+    /// O pedido da revisão final, como o fechamento o grava: a aprovação final
+    /// vale só respondendo a um pedido gravado depois da última entrega.
+    fn review_request() -> Value {
+        json!({ "role": "review", "text": "revise", "lines": 1, "chars": 6, "mustard": "0", "author": "binary" })
+    }
+
     /// O merge lê o veredito do `spec.ndjson` com a mesma regra do
     /// fechamento. A reprovação de uma onda faz o merge perguntar antes de
     /// juntar; a aprovação final da obra, gravada pelo agente de teste
@@ -2212,9 +2216,11 @@ mod tests {
         assert_eq!((asked.action, asked.reason), ("confirm", Some("review-not-approved")), "{asked:?}");
         assert_eq!(merges.get(), 0, "a onda reprovada nunca é juntada sem perguntar");
 
-        // O conserto sai pela rodada e o agente de teste dedicado aprova a
-        // obra: a aprovação fica na última onda, como o fechamento a grava.
+        // O conserto sai pela rodada, o fechamento pede a revisão final e o
+        // agente de teste dedicado aprova a obra: a aprovação fica na última
+        // onda, como o fechamento a grava.
         delivery(1);
+        seed_event(root, "unit-a", "send", review_request());
         let quittance = seed_verdict(root, "unit-a", 2, "approved", criteria[0]);
         assert_eq!(closing(), Some(quittance), "o fechamento lê a aprovação final");
         assert_eq!(recorded_verdict(root, "unit-a").as_deref(), Some("approved"), "e o portão lê a mesma");
@@ -2255,6 +2261,9 @@ mod tests {
         assert_eq!((asked.action, asked.reason), ("confirm", Some("no-review-verdict")), "{asked:?}");
         assert_eq!(merges.get(), 0);
 
+        // O fechamento pede a revisão final, e o agente de teste dedicado
+        // aprova a obra.
+        seed_event(root, "unit-b", "send", review_request());
         seed_event(
             root,
             "unit-b",
@@ -2565,7 +2574,10 @@ mod tests {
         let lang = mustard_core::ProjectConfig::load(root).language().text_or_default();
 
         // The session start: one line with the count, and the idle ones counted.
-        let notice = crate::hooks::session::session_start_inject::pending_notice(root, lang).expect("twelve open");
+        let crate::commands::event::pending::PendingCount::Line(notice) = crate::hooks::session::session_start_inject::pending_notice(root, lang)
+        else {
+            panic!("twelve open");
+        };
         assert!(notice.starts_with("[Mustard] 12 ") && !notice.contains('\n'), "{notice}");
         assert!(notice.contains(" 3 ") && !notice.contains("parada 1"), "{notice}");
 

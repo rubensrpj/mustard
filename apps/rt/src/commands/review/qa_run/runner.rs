@@ -18,11 +18,12 @@ const AC_TIMEOUT_SECS: u64 = 120;
 /// quando o programa existe no `PATH`, mas o veredito continua `fail`.
 pub(crate) const EXIT_COMMAND_NOT_FOUND: i64 = 127;
 
-/// Per-AC timeout ceiling (10 min) for commands invoking `cargo `: a
-/// `cargo build`/`cargo test` AC that runs right after an edit must recompile,
-/// and a cold compile routinely exceeds the 120 s default (real case:
-/// `cargo test -p mustard-rt` hit 120 s mid-recompile and degraded to a
-/// silent `skip`). Mirrors `TIMEOUT_RUST_SECS` in the pipeline verifier.
+/// O teto (10 minutos) da prova que compila ([`is_compile_bound`]), a
+/// começar pela que chama `cargo `: o critério que roda logo depois de uma
+/// edição precisa recompilar, e a compilação sem cache passa dos 120 s do
+/// padrão (caso real: `cargo test -p mustard-rt` bateu nos 120 s no meio da
+/// recompilação e virou um `skip` calado). Espelha o `TIMEOUT_RUST_SECS` do
+/// verificador do pipeline.
 const AC_TIMEOUT_CARGO_SECS: u64 = 600;
 
 /// Teto (uma hora) dos dois comandos que o servidor roda e que a rodada e o
@@ -30,7 +31,8 @@ const AC_TIMEOUT_CARGO_SECS: u64 = 600;
 /// de uma prova de critério: uma suíte inteira leva o tempo que o projeto
 /// precisa, e o `pnpm test` de um projeto Node passa com folga dos 2 minutos
 /// de um critério. Ele só existe para a máquina não ficar presa num processo
-/// travado, e a variável `MUSTARD_QA_AC_TIMEOUT_SECS` não o alcança.
+/// travado, e nem a variável `MUSTARD_QA_AC_TIMEOUT_SECS` nem a chave
+/// `proofTimeoutSecs` o alcançam.
 const SERVER_COMMAND_TIMEOUT_SECS: u64 = 3600;
 
 /// Que teto de tempo vale para um comando: o de uma prova de critério ou o
@@ -38,7 +40,8 @@ const SERVER_COMMAND_TIMEOUT_SECS: u64 = 3600;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Ceiling {
     /// A prova de um critério: 2 minutos, 10 para o que compila, ou o valor
-    /// da variável `MUSTARD_QA_AC_TIMEOUT_SECS`.
+    /// da variável `MUSTARD_QA_AC_TIMEOUT_SECS` ou, sem ela, da chave
+    /// `proofTimeoutSecs` do `mustard.json`.
     Criterion,
     /// Declared build, irrespective of language/tool.
     Build,
@@ -166,21 +169,37 @@ fn tests_run(output: &str) -> Option<u64> {
     (!counts.is_empty() || said_none || (go_said_none && !go_ran)).then_some(0)
 }
 
-/// Timeout for `command` under `ceiling`, env-aware: the environment is read
-/// here, and the choice itself is [`ceiling_secs`], a pure function.
+/// O teto de `command` sob `ceiling`: o ambiente e o `mustard.json` são lidos
+/// aqui, e a escolha é de [`ceiling_secs`], função pura.
 ///
-/// `MUSTARD_QA_AC_TIMEOUT_SECS` (whole seconds, `u64`) overrides BOTH defaults
-/// when set to a parseable value; an invalid value is ignored. Without the
-/// override, commands containing `cargo ` get [`AC_TIMEOUT_CARGO_SECS`]
-/// (compilation-bound) and everything else keeps [`AC_TIMEOUT_SECS`].
+/// `MUSTARD_QA_AC_TIMEOUT_SECS` (segundos inteiros) troca OS DOIS padrões
+/// quando traz um número; sem ela, a chave `proofTimeoutSecs` do
+/// `mustard.json` faz o mesmo ([`chosen_override`]). Sem nenhuma das duas, o
+/// comando que compila ganha [`AC_TIMEOUT_CARGO_SECS`] e o resto fica com
+/// [`AC_TIMEOUT_SECS`].
 fn ac_timeout_secs(command: &str, ceiling: Ceiling, cwd: &Path) -> u64 {
-    let env = timeout_variable();
-    // The project's OWN build and type-check commands, so the compile-bound
-    // ceiling is not a list of tool names this file happens to know. Both are
-    // already declared in `mustard.json`; fail-open to none.
-    let declared = mustard_core::ProjectConfig::load(cwd).commands();
-    let compiling: Vec<String> = [declared.build, declared.type_check].into_iter().flatten().collect();
-    ceiling_secs(ceiling, command, env.as_deref(), &compiling)
+    let config = mustard_core::ProjectConfig::load(cwd);
+    // Os comandos de compilação, de checagem de tipos e de teste do PRÓPRIO
+    // projeto, para que o teto de quem compila não seja uma lista de
+    // ferramentas que este arquivo conhece. Os três já moram no
+    // `mustard.json`; sem eles, nenhum.
+    let declared = config.commands();
+    let compiling: Vec<String> = [declared.build, declared.type_check, declared.test].into_iter().flatten().collect();
+    let chosen = chosen_override(timeout_variable(), config.proof_timeout_secs());
+    ceiling_secs(ceiling, command, chosen.as_deref(), &compiling)
+}
+
+/// O teto que quem configura escolheu no lugar dos padrões: o da variável
+/// `MUSTARD_QA_AC_TIMEOUT_SECS`, quando ela traz um número; senão o da chave
+/// `proofTimeoutSecs` do `mustard.json`; senão nenhum. A variável vence a
+/// chave, e a variável que não é número não apaga a chave. Sai como texto
+/// porque [`ceiling_secs`] lê o valor escolhido do mesmo jeito que lia a
+/// variável.
+fn chosen_override(variable: Option<String>, key: mustard_core::Setting) -> Option<String> {
+    variable.filter(|value| value.trim().parse::<u64>().is_ok()).or_else(|| match key {
+        mustard_core::Setting::Set(secs) => Some(secs.to_string()),
+        mustard_core::Setting::Absent | mustard_core::Setting::Invalid => None,
+    })
 }
 
 /// O valor da variável `MUSTARD_QA_AC_TIMEOUT_SECS`. Nos testes, o valor
@@ -213,8 +232,10 @@ pub(crate) fn with_timeout_variable<T>(value: &str, f: impl FnOnce() -> T) -> T 
 }
 
 /// A escolha do teto, função pura das entradas: sem relógio e sem ambiente
-/// lidos aqui dentro. O comando do servidor tem sempre o teto dele, com ou
-/// sem a variável; a prova de critério segue o teto de sempre.
+/// lidos aqui dentro. `env_override` é o valor escolhido por
+/// [`chosen_override`], da variável ou da chave. O comando do servidor tem
+/// sempre o teto dele, com ou sem esse valor; a prova de critério segue o
+/// teto de sempre.
 pub(crate) fn ceiling_secs(ceiling: Ceiling, command: &str, env_override: Option<&str>, compiling: &[String]) -> u64 {
     match ceiling {
         Ceiling::ServerCommand => SERVER_COMMAND_TIMEOUT_SECS,
@@ -246,9 +267,11 @@ fn ac_timeout_secs_with_override(command: &str, env_override: Option<&str>, comp
 /// Three signals, in order of how much they are worth:
 ///
 /// 1. `cargo ` — this workspace's own case, unchanged.
-/// 2. The project's DECLARED commands (`mustard.json#buildCommand` and
-///    `#typeCheckCommand`, passed in as `compiling`): the one place a project
-///    already says how it compiles, so nothing here has to guess.
+/// 2. Os comandos DECLARADOS do projeto (`mustard.json#buildCommand`,
+///    `#typeCheckCommand` e `#testCommand`, que chegam em `compiling`): o
+///    único lugar onde o projeto já diz como compila, e nada aqui adivinha. O
+///    comando de teste também compila antes de responder, e a prova que o
+///    roda numa cópia sem cache precisa do mesmo tempo.
 /// 3. A small set of type-check drivers, for a project that declared neither —
 ///    a type check compiles without being called "build".
 fn is_compile_bound(command: &str, compiling: &[String]) -> bool {
@@ -806,6 +829,56 @@ mod tests {
         // Invalid values fall back to the command-sensitive defaults.
         assert_eq!(ac_timeout_secs_with_override("cargo build", Some("not-a-number"), &[]), AC_TIMEOUT_CARGO_SECS);
         assert_eq!(ac_timeout_secs_with_override("echo ok", Some(""), &[]), AC_TIMEOUT_SECS);
+    }
+
+    /// `proofTimeoutSecs` no `mustard.json` troca o teto da prova, e a
+    /// variável vence a chave. Pelo executor da prova: com a chave em 1
+    /// segundo, o comando de 2 segundos é cortado; sem ela, ele passa. A chave
+    /// vale para a prova que compila também, e não alcança o comando do
+    /// servidor. A chave inválida cai no padrão sem tornar o arquivo
+    /// ilegível: o `testCommand` ao lado dela continua valendo.
+    #[test]
+    fn the_proof_ceiling_key_changes_the_ceiling_below_the_variable() {
+        use mustard_core::Setting;
+        assert_eq!(chosen_override(Some("42".into()), Setting::Set(300)).as_deref(), Some("42"), "a variável vence a chave");
+        assert_eq!(chosen_override(Some("not-a-number".into()), Setting::Set(300)).as_deref(), Some("300"), "a variável inválida não apaga a chave");
+        assert_eq!(chosen_override(None, Setting::Set(300)).as_deref(), Some("300"));
+        assert_eq!(chosen_override(None, Setting::Invalid), None);
+        assert_eq!(chosen_override(None, Setting::Absent), None);
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let free = run_ac_command("sleep 2", None, root);
+        assert_eq!(free.status, "pass", "sem a chave, o teto é o padrão: {}", free.stderr_excerpt);
+        std::fs::write(root.join("mustard.json"), r#"{"proofTimeoutSecs":1}"#).unwrap();
+        let cut = run_ac_command("sleep 2", None, root);
+        assert_eq!(cut.status, "timeout", "a chave de 1 segundo corta a prova: {}", cut.stderr_excerpt);
+
+        std::fs::write(root.join("mustard.json"), r#"{"proofTimeoutSecs":300}"#).unwrap();
+        assert_eq!(ac_timeout_secs("echo ok", Ceiling::Criterion, root), 300);
+        assert_eq!(ac_timeout_secs("cargo test -p mustard-rt", Ceiling::Criterion, root), 300, "a prova que compila também");
+        assert_eq!(ac_timeout_secs("pnpm test", Ceiling::ServerCommand, root), SERVER_COMMAND_TIMEOUT_SECS, "o servidor tem o teto dele");
+
+        std::fs::write(root.join("mustard.json"), r#"{"proofTimeoutSecs":"muito","testCommand":"pnpm test"}"#).unwrap();
+        assert_eq!(ac_timeout_secs("echo ok", Ceiling::Criterion, root), AC_TIMEOUT_SECS, "a chave inválida cai no padrão");
+        assert_eq!(ac_timeout_secs("pnpm test", Ceiling::Criterion, root), AC_TIMEOUT_CARGO_SECS, "o resto do arquivo continua lido");
+    }
+
+    /// A prova que roda o `testCommand` declarado conta como a que compila e
+    /// ganha 600 segundos, como a do `buildCommand` e a do
+    /// `typeCheckCommand`: a suíte compila antes de responder, e numa cópia
+    /// sem cache os 2 minutos não bastam. Sem o `testCommand`, o mesmo
+    /// comando fica nos 2 minutos, e outra prova segue neles.
+    #[test]
+    fn a_proof_running_the_declared_test_command_gets_the_compile_ceiling() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let coverage = "pnpm test -- --coverage";
+        assert_eq!(ac_timeout_secs(coverage, Ceiling::Criterion, root), AC_TIMEOUT_SECS, "sem o testCommand declarado");
+        std::fs::write(root.join("mustard.json"), r#"{"testCommand":"pnpm test"}"#).unwrap();
+        assert_eq!(ac_timeout_secs(coverage, Ceiling::Criterion, root), AC_TIMEOUT_CARGO_SECS);
+        assert_eq!(AC_TIMEOUT_CARGO_SECS, 600);
+        assert_eq!(ac_timeout_secs("pnpm lint", Ceiling::Criterion, root), AC_TIMEOUT_SECS, "outra prova segue no padrão");
     }
 
     /// The pure `Expect:` matcher: absent ⇒ NoExpectation, a compiling pattern

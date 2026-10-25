@@ -15,12 +15,17 @@
 //! - O pull request segue aberto: o provedor é perguntado uma vez só, pelo
 //!   pull request da spec, e nada muda.
 //! - O pull request entrou pelas mãos de outra pessoa, por merge normal ou por
-//!   squash: roda o mesmo caminho do merge do Mustard — a spec gravada como
+//!   squash: roda o mesmo caminho do merge do fluxo — a spec gravada como
 //!   entregue, a base atualizada, a branch local apagada, a do servidor só com
 //!   a opção ligada, e a pergunta das pendências nascidas na spec —, sem uma
 //!   pergunta por branch de colega. No squash o git não prova o merge, e é a
 //!   lista do provedor que decide se a branch sai.
 //! - O provedor não responde: o aviso diz isso, e nada muda.
+//!
+//! E o que o início da sessão já contou não se repete na sessão seguinte, a
+//! limpeza alcança a cópia e a branch da spec que o usuário apagou, e uma
+//! cópia do projeto recém-feita na pasta temporária não entra no aviso de
+//! disco.
 
 #[path = "support/executable.rs"]
 mod executable;
@@ -29,6 +34,8 @@ mod support;
 
 #[path = "support/binary.rs"]
 mod binary;
+
+use crate::one_wave_spec;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -77,7 +84,7 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
-/// Um projeto com o Mustard, o checkout na branch da spec em "pull request
+/// Um projeto com o fluxo instalado, o checkout na branch da spec em "pull request
 /// aberto", trinta branches de colegas com trabalho próprio (aqui e no
 /// remoto) e uma pendência nascida na spec.
 struct Scene {
@@ -360,7 +367,7 @@ fn an_open_pull_request_costs_one_question_whatever_the_number_of_branches() {
 }
 
 /// Com o pull request da spec feito por outra pessoa, o início da sessão roda
-/// o mesmo caminho do merge do Mustard: a spec gravada como entregue, a base
+/// o mesmo caminho do merge do fluxo: a spec gravada como entregue, a base
 /// atualizada, a branch local apagada e a do servidor mantida, e a pergunta
 /// das pendências nascidas na spec armada e dita no texto. O provedor não é
 /// perguntado por nenhuma branch de colega.
@@ -500,7 +507,7 @@ fn test_copies_base() -> String {
     std::env::var("MUSTARD_COPIES_DIR").expect("the tests point the copies at their own folder")
 }
 
-/// Um projeto com o Mustard e o remoto, sem pull request nenhum: a obra das
+/// Um projeto com o fluxo instalado e o remoto, sem pull request nenhum: a obra das
 /// specs entra na base pelas mãos de um colega, sem passar pelo fechamento.
 struct Outside {
     dir: TempDir,
@@ -798,7 +805,7 @@ fn a_running_spec_merged_outside_frees_its_copies_then_is_delivered() {
     assert!(hint.contains("entregue") && !hint.contains("delivered"), "the phase is said by its name: {hint}");
 }
 
-/// A spec de antes desta versão do Mustard fica fora da conferência do
+/// A spec de antes desta versão fica fora da conferência do
 /// início da sessão: juntada na base por um colega, ela não é entregue nem
 /// citada.
 #[test]
@@ -996,4 +1003,314 @@ fn a_spec_squashed_or_rebased_outside_is_delivered_by_its_content() {
         assert!(context.contains("entrou na base fora do fechamento"), "squash={squash}: {context}");
         assert!(asked.is_empty(), "git alone proves it: {asked:#?}");
     }
+}
+
+/// A spec da obra que o usuário apaga do disco no meio do caminho.
+const DELETED: &str = "apagada";
+
+/// A branch que o projeto protege em `git.protected`, com registro de obra e
+/// já na base.
+const PROTECTED: &str = "feature/protegida";
+
+/// A branch de `branch` existe no repositório do projeto `root`.
+fn has_branch(root: &Path, branch: &str) -> bool {
+    !git(root, &["branch", "--list", branch]).is_empty()
+}
+
+/// Corta `branch` de `dev` com um commit que versiona o registro de obra de
+/// `spec`, e volta para `dev`; com `merge`, a branch entra em `dev` por merge.
+fn recorded_branch(root: &Path, branch: &str, spec: &str, merge: bool) {
+    git(root, &["checkout", "-q", "-b", branch, "dev"]);
+    let dir = root.join(".claude/spec").join(spec);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("nota.md"), format!("{spec}\n")).unwrap();
+    git(root, &["add", "-f", &format!(".claude/spec/{spec}")]);
+    git(root, &["commit", "-q", "-m", &format!("o registro de {spec}")]);
+    git(root, &["checkout", "-q", "dev"]);
+    if merge {
+        git(root, &["merge", "-q", "--no-ff", "-m", &format!("{branch} entra"), branch]);
+    }
+}
+
+/// Os nomes das branches de uma parte da resposta da limpeza.
+fn branches_of(answer: &Value, part: &str) -> Vec<String> {
+    answer["copies"][part]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|record| record["branch"].as_str().or_else(|| record.as_str()).map(str::to_string))
+        .collect()
+}
+
+/// Uma obra levada pelo fluxo de verdade até a onda 1 sair, com a cópia dela;
+/// depois a spec vai versionada na branch, que entra em `dev` por merge, e o
+/// usuário apaga a spec do disco. Ao lado: uma branch protegida, com registro
+/// e já na base; uma com registro e commit que a base não tem; uma
+/// `release/x` sem registro, contida na base. Na pasta das cópias, um
+/// programa deixou uma pasta `.claude`.
+///
+/// No início da sessão, em `dev`, o aviso das pendências e o das branches
+/// mergeadas saem na primeira sessão e não na segunda, com a mesma contagem;
+/// a lista de pendências que não se lê não faz a contagem ser esquecida; a
+/// contagem nova traz o aviso de volta. A limpeza lista a cópia da spec
+/// apagada e nunca a `.claude`, e com `--apply` tira a cópia e a branch da
+/// spec apagada sem nenhum erro, deixando a `.claude`, a branch protegida, a
+/// `release/x`, a branch atual e a com commit fora da base, cada uma com o
+/// motivo. Com uma branch mergeada a menos, o aviso delas volta.
+#[test]
+fn a_start_notice_comes_once_per_count_and_the_clean_reaches_the_deleted_spec() {
+    use mustard_core::io::wave_prompt::shown;
+    use mustard_core::platform::i18n::{Locale, translate};
+
+    let config = json!({"git": {"flow": {"*": "dev", "dev": "main"}, "protected": [PROTECTED]}});
+    let project = one_wave_spec::Project::new(DELETED, &config, &[]);
+    project.approved();
+    project.run(&["round", "--dispatch", "--spec", DELETED]);
+    let log = project.log();
+    let sent = log.visible().into_iter().rfind(|e| e.event_type == "send" && e.wave() == Some(1)).expect("the wave went out");
+    let copy = PathBuf::from(sent.str_field("copy").expect("the copy of the wave"));
+    let spec_copies = copy.parent().expect("the folder of the spec copies").to_path_buf();
+    let copies = spec_copies.parent().expect("the copies folder").to_path_buf();
+    let root = project.root.clone();
+    let branch = format!("feature/{DELETED}");
+    assert!(copy.join(".git").is_file(), "the round made the copy of the wave");
+    assert!(has_branch(&root, &branch), "the opening cut the branch of the spec");
+
+    // O que o usuário e outros programas fazem por fora do fluxo.
+    git(&root, &["checkout", "-q", &branch]);
+    git(&root, &["add", "-f", &format!(".claude/spec/{DELETED}")]);
+    git(&root, &["commit", "-q", "-m", "a spec na branch"]);
+    git(&root, &["checkout", "-q", "dev"]);
+    git(&root, &["merge", "-q", "--no-ff", "-m", "a obra entra", &branch]);
+    recorded_branch(&root, PROTECTED, "protegida", true);
+    recorded_branch(&root, "feature/sem-base", "sem-base", false);
+    git(&root, &["branch", "release/x", "dev"]);
+    for spec in [DELETED, "protegida"] {
+        std::fs::remove_dir_all(root.join(".claude/spec").join(spec)).unwrap();
+    }
+    let foreign = copies.join(".claude/mustard/host-observations");
+    std::fs::create_dir_all(&foreign).unwrap();
+    std::fs::write(foreign.join("claude-x.json"), "{}").unwrap();
+
+    let one = translate("pending.count.one", Locale::PtBr).to_string();
+    let merged = |count: &str, branches: &str| translate("session.merged", Locale::PtBr).replace("{count}", count).replace("{branches}", branches);
+    let both = merged("2", &format!("{branch}, {PROTECTED}"));
+    let added = project.run(&["pending", "--add", "--title", "Revisar o texto", "--detail", "combinado na conversa"]);
+    assert_eq!(added["id"], json!("P-1"), "{added}");
+    let first = project.session_start("s-primeira");
+    assert!(first.contains(&one) && first.contains(&both), "the first session gets both counts: {first}");
+    let second = project.session_start("s-segunda");
+    assert!(!second.contains(&one) && !second.contains(PROTECTED), "the next session, with the same counts, gets neither: {second}");
+    let ledger = root.join(".claude/pending/ledger.json");
+    let saved = std::fs::read(&ledger).expect("the pending list");
+    std::fs::write(&ledger, "{ quebrada").unwrap();
+    let unread = project.session_start("s-ilegivel");
+    assert!(!unread.contains(&one), "an unreadable list says nothing: {unread}");
+    std::fs::write(&ledger, saved).unwrap();
+    let back = project.session_start("s-de-volta");
+    assert!(!back.contains(&one), "an unreadable list does not forget the count it gave: {back}");
+    project.run(&["pending", "--add", "--title", "Trocar o nome", "--detail", "combinado na conversa"]);
+    let two = translate("pending.count.many", Locale::PtBr).replace("{count}", "2");
+    let third = project.session_start("s-terceira");
+    assert!(third.contains(&two) && !third.contains(PROTECTED), "only the new count comes back: {third}");
+
+    git(&root, &["checkout", "-q", "-b", "feature/atual", "dev"]);
+    std::fs::create_dir_all(root.join(".claude/spec/atual")).unwrap();
+    let listed = project.answer(&["clean"]);
+    let records: Vec<&Value> = ["candidates", "kept"]
+        .iter()
+        .flat_map(|part| listed["copies"][part].as_array().into_iter().flatten())
+        .collect();
+    assert!(
+        records.iter().any(|record| record["path"] == json!(shown(&spec_copies)) && record["reason"] == json!("spec missing")),
+        "the copy of the deleted spec leaves: {listed}"
+    );
+    assert!(records.iter().all(|record| !record["path"].as_str().unwrap_or_default().contains(".claude")), "{listed}");
+    assert_eq!(branches_of(&listed, "branches"), vec![branch.clone()], "{listed}");
+    let reasons: Vec<(&str, &str)> = listed["copies"]["branches_kept"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|record| (record["branch"].as_str().unwrap_or_default(), record["reason"].as_str().unwrap_or_default()))
+        .collect();
+    assert_eq!(
+        reasons,
+        vec![
+            ("feature/atual", "spec missing; current branch"),
+            (PROTECTED, "spec missing; integration base"),
+            ("feature/sem-base", "spec missing; commits outside the base"),
+            ("release/x", "spec missing; no unit record"),
+        ],
+        "{listed}"
+    );
+    assert!(spec_copies.is_dir() && has_branch(&root, &branch), "without --apply nothing leaves");
+
+    let applied = project.answer(&["clean", "--apply"]);
+    assert_eq!(applied["copies"]["errors"], json!([]), "{applied}");
+    assert!(!spec_copies.exists(), "the copy of the deleted spec left: {applied}");
+    assert!(foreign.join("claude-x.json").is_file(), "the `.claude` folder is not a copy and stays: {applied}");
+    assert_eq!(branches_of(&applied, "branches_removed"), vec![branch.clone()], "{applied}");
+    assert!(!has_branch(&root, &branch), "the branch of the deleted spec left: {applied}");
+    for stays in ["feature/atual", PROTECTED, "feature/sem-base", "release/x", "dev", "main"] {
+        assert!(has_branch(&root, stays), "{stays} stays: {applied}");
+    }
+
+    git(&root, &["checkout", "-q", "dev"]);
+    let after = project.session_start("s-depois");
+    assert!(after.contains(&merged("1", PROTECTED)), "one merged branch less brings the notice back: {after}");
+}
+
+/// A obra aberta cuja branch um colega juntou na base.
+const OPEN_MERGED: &str = "aberta-juntada";
+
+/// A obra aberta cuja branch acabou de ser cortada da base.
+const OPEN_JUST_CUT: &str = "aberta-recem";
+
+/// Com duas obras ainda abertas, a limpeza tira, com `--apply`, a branch local
+/// da que um colega juntou na base e deixa a da que acabou de ser cortada: a
+/// base também contém a branch recém-cortada, mas não há trabalho nela.
+#[test]
+fn the_clean_removes_the_merged_branch_of_an_open_spec_and_keeps_the_one_just_cut() {
+    let project = one_wave_spec::Project::new(OPEN_MERGED, &json!({}), &[]);
+    let root = project.root.clone();
+    let merged = format!("feature/{OPEN_MERGED}");
+    let just_cut = format!("feature/{OPEN_JUST_CUT}");
+
+    // A primeira obra, aberta pelo comando de verdade; o trabalho dela entra
+    // na base por um merge de outra pessoa.
+    project.run(&["open", "--kind", "feature", "--name", OPEN_MERGED, "--base", "dev"]);
+    git(&root, &["checkout", "-q", &merged]);
+    std::fs::write(root.join("juntada.txt"), "o trabalho da obra\n").unwrap();
+    git(&root, &["add", "juntada.txt"]);
+    git(&root, &["commit", "-q", "-m", "o trabalho da obra"]);
+    git(&root, &["checkout", "-q", "dev"]);
+    git(&root, &["merge", "-q", "--no-ff", "-m", "a obra entra", &merged]);
+    // A segunda, aberta depois: cortada da base que já tem a primeira.
+    project.run(&["open", "--kind", "feature", "--name", OPEN_JUST_CUT, "--base", "dev"]);
+    git(&root, &["checkout", "-q", "dev"]);
+    assert!(has_branch(&root, &merged) && has_branch(&root, &just_cut), "both branches exist before the clean");
+
+    let listed = project.answer(&["clean"]);
+    assert_eq!(branches_of(&listed, "branches"), vec![merged.clone()], "{listed}");
+    assert!(has_branch(&root, &merged), "without --apply nothing leaves");
+
+    let applied = project.answer(&["clean", "--apply"]);
+    assert_eq!(applied["copies"]["errors"], json!([]), "{applied}");
+    assert_eq!(branches_of(&applied, "branches_removed"), vec![merged.clone()], "{applied}");
+    assert!(!has_branch(&root, &merged), "the merged branch of the open spec left: {applied}");
+    assert!(has_branch(&root, &just_cut), "the branch just cut stays: {applied}");
+    assert!(root.join(".claude/spec").join(OPEN_MERGED).join("spec.ndjson").is_file(), "the clean never touches the open spec");
+}
+
+/// O binário com `args`, de dentro de `root`, com a pasta pessoal `home`, a
+/// pasta temporária `temp` e o limite do aviso de disco em `limit` bytes
+/// (`None` deixa a variável fora do ambiente), sem sessão nem spec forçada.
+/// Devolve o que ele imprimiu.
+fn with_a_disk_limit(root: &Path, home: &Path, temp: &Path, limit: Option<&str>, args: &[&str], stdin: &str) -> String {
+    let mut command = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"));
+    command
+        .args(args)
+        .current_dir(root)
+        .env("HOME", home)
+        .env("TMPDIR", temp)
+        .env("TMP", temp)
+        .env("TEMP", temp)
+        .env("MUSTARD_COPIES_DIR", test_copies_base())
+        .env_remove("MUSTARD_WORKSPACE_ROOT")
+        .env_remove("MUSTARD_ACTIVE_SPEC")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    match limit {
+        Some(bytes) => command.env("MUSTARD_SCRATCH_WARN_BYTES", bytes),
+        None => command.env_remove("MUSTARD_SCRATCH_WARN_BYTES"),
+    };
+    let mut child = command.spawn().expect("spawn mustard-rt");
+    child.stdin.take().unwrap().write_all(stdin.as_bytes()).unwrap();
+    let out = child.wait_with_output().expect("wait mustard-rt");
+    assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// O limite do aviso de disco vem do ambiente do binário: a limpeza mostra,
+/// no que imprime, o limite com que o aviso do início da sessão compara o
+/// total das sobras. Um número de bytes na variável, alto ou baixo, é o
+/// limite; sem a variável, ou com um valor que não é número, vale o padrão de
+/// 5 GiB.
+#[test]
+fn the_clean_shows_the_disk_limit_the_environment_sets() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().join("projeto");
+    let home = dir.path().join("casa");
+    let temp = dir.path().join("tmp");
+    for folder in [&root, &home, &temp] {
+        std::fs::create_dir_all(folder).unwrap();
+    }
+    let limit_with = |value: Option<&str>| -> Value {
+        let listed: Value = serde_json::from_str(&with_a_disk_limit(&root, &home, &temp, value, &["run", "clean"], "")).expect("the clean answers JSON");
+        listed["warn_bytes"].clone()
+    };
+
+    let default = json!(5u64 * 1024 * 1024 * 1024);
+    assert_eq!(limit_with(Some("1024")), json!(1024), "a low limit is the number in the variable");
+    assert_eq!(limit_with(Some("0")), json!(0), "zero turns the notice on for any leftover");
+    assert_eq!(limit_with(Some("107374182400")), json!(107_374_182_400u64), "a high limit is the number in the variable");
+    assert_eq!(limit_with(None), default, "without the variable the default stays");
+    assert_eq!(limit_with(Some("muito")), default, "a value that is not a number leaves the default");
+}
+
+/// Uma cópia do projeto recém-feita na pasta temporária, com as datas de dois
+/// dias atrás que o `cp -a` traz da origem, não entra no aviso de disco do
+/// início da sessão, nem com o limite do aviso em zero: o binário lê a pasta
+/// temporária e o limite do ambiente, e a varredura data a cópia pela mudança
+/// do inode, que nenhuma cópia preserva. A limpeza, no mesmo ambiente, mostra
+/// que a varredura viu a cópia e a guardou pela idade, e não por não achá-la.
+#[test]
+fn a_copy_just_made_in_the_temporary_folder_brings_no_disk_notice_even_with_a_zero_limit() {
+    use mustard_core::platform::i18n::{Locale, translate};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().join("projeto");
+    let home = dir.path().join("casa");
+    let temp = dir.path().join("tmp");
+    for folder in [&root, &home, &temp] {
+        std::fs::create_dir_all(folder).unwrap();
+    }
+    git(&root, &["init", "-q", "-b", "dev"]);
+    std::fs::write(root.join(".git/info/exclude"), ".claude/\nmustard.json\n").unwrap();
+    std::fs::write(root.join("mustard.json"), json!({"language": {"text": "pt-BR"}}).to_string()).unwrap();
+    std::fs::write(root.join("README.md"), "loja\n").unwrap();
+    git(&root, &["add", "README.md"]);
+    git(&root, &["commit", "-q", "-m", "semente"]);
+    support::copies_leave_with_the_test(&root);
+
+    // A cópia, feita agora, com as datas da origem em cada arquivo e pasta.
+    let copy = temp.join("tmp.copia");
+    std::fs::create_dir_all(copy.join("apps/rt")).unwrap();
+    std::fs::write(copy.join("Cargo.toml"), "[workspace]\n").unwrap();
+    std::fs::write(copy.join("apps/rt/big.bin"), vec![0u8; 4096]).unwrap();
+    let two_days_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(48 * 3600);
+    for path in [copy.join("apps/rt/big.bin"), copy.join("Cargo.toml"), copy.join("apps/rt"), copy.join("apps"), copy.clone()] {
+        std::fs::File::open(&path).unwrap().set_modified(two_days_ago).unwrap();
+    }
+
+    let payload = json!({"hook_event_name": "SessionStart", "session_id": "s-disco", "source": "startup", "cwd": root.to_string_lossy()});
+    let said = with_a_disk_limit(&root, &home, &temp, Some("0"), &["on", "SessionStart"], &payload.to_string());
+    let context = serde_json::from_str::<Value>(said.trim())
+        .ok()
+        .and_then(|v| v.pointer("/hookSpecificOutput/additionalContext").and_then(Value::as_str).map(str::to_string))
+        .unwrap_or_default();
+    let notice = translate("scratch.residue.notice", Locale::PtBr);
+    let opening = notice.split("{total}").next().unwrap_or_default();
+    assert!(!opening.is_empty(), "{notice}");
+    assert!(!context.contains(opening), "a copy just made is not residue: {context}");
+
+    let listed: Value = serde_json::from_str(&with_a_disk_limit(&root, &home, &temp, Some("0"), &["run", "clean"], "")).expect("the clean answers JSON");
+    assert_eq!(listed["candidates"], json!([]), "{listed}");
+    let copy_path = copy.display().to_string();
+    assert!(
+        listed["kept"].as_array().into_iter().flatten().any(|kept| kept["path"] == json!(copy_path) && kept["reason"] == json!("younger than 12h")),
+        "the scan saw the copy and kept it for its age: {listed}"
+    );
+    assert!(copy.join("apps/rt/big.bin").is_file(), "the notice and the list only read");
 }

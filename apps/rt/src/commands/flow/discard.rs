@@ -153,9 +153,7 @@ pub(crate) fn discard_for(opts: &DiscardOpts, session: Option<&str>) -> Value {
     } else {
         (phase_written && archive(&spec, &folder).is_some(), phase_written)
     };
-    if let Some(sid) = session {
-        crate::shared::context::session::unbind_session_spec(&opts.root.to_string_lossy(), sid);
-    }
+    crate::commands::spec_events::session_spec::unbind(&opts.root, session);
     let mut out = json!({
         "ok": moved && index_done,
         "spec": spec,

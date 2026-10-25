@@ -17,6 +17,7 @@
 //! só avisam: o mapa pode estar atrás do código, e um aviso não prende o
 //! assistente num laço de repetição.
 
+use crate::domain::clarity::is_file_path;
 use crate::domain::project_map::clean_path;
 use crate::domain::spec_events::Refusal;
 use crate::platform::i18n::{translate, Locale};
@@ -57,13 +58,45 @@ pub fn file_citation(source: &str) -> Option<(String, u64)> {
 #[must_use]
 pub fn file_citations(text: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    for piece in text.split(|c: char| c.is_whitespace() || "`\"'()[]{}<>,;".contains(c)) {
-        let piece = piece.trim_end_matches(['.', ':']);
+    for piece in pieces(text) {
         if file_citation(piece).is_some() && !out.iter().any(|seen| seen == piece) {
             out.push(piece.to_string());
         }
     }
     out
+}
+
+/// Os arquivos que um texto cita, na ordem em que aparecem e sem repetir, com
+/// barras normais: o pedaço no formato de [`file_citation`] vale pelo
+/// caminho, sem a linha, e o caminho sem linha vale quando o detector único
+/// ([`is_file_path`]) o reconhece e ele tem pasta (`apps/rt/src/a.rs`,
+/// `.claude/spec`). O nome sem pasta e sem linha (`Cargo.toml`,
+/// `self.facts`) não vale, porque não se distingue de um nome de código.
+///
+/// Serve ao levantamento: dois textos que citam o mesmo arquivo falam do
+/// mesmo trecho do código.
+#[must_use]
+pub fn cited_files(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for piece in pieces(text) {
+        let path = match file_citation(piece) {
+            Some((path, _)) => path,
+            None if is_file_path(piece) && piece.contains(['/', '\\']) => piece.replace('\\', "/"),
+            None => continue,
+        };
+        let path = clean_path(&path);
+        if !out.contains(&path) {
+            out.push(path);
+        }
+    }
+    out
+}
+
+/// Os pedaços de um texto que podem citar um arquivo: separados por espaço,
+/// crase, aspas e abertura ou fecho de grupo, sem a pontuação da frase no
+/// fim.
+fn pieces(text: &str) -> impl Iterator<Item = &str> {
+    text.split(|c: char| c.is_whitespace() || "`\"'()[]{}<>,;".contains(c)).map(|piece| piece.trim_end_matches(['.', ':']))
 }
 
 /// Os nomes de código que um texto cita entre crases, na ordem em que
@@ -273,6 +306,30 @@ mod tests {
             decls: vec![("src/a.rs", "SpecLog", 12), ("src/b.rs", "check_citations", 3), ("src/b.rs", "run", 7)],
             map: true,
         }
+    }
+
+    /// O arquivo citado vale pelo caminho: sem a linha, com barras normais e
+    /// sem repetir. O caminho sem linha precisa de pasta e extensão; o nome
+    /// solto, a frase, o endereço e o número não valem.
+    #[test]
+    fn the_files_a_text_cites_are_told_apart_from_names_and_addresses() {
+        let text = "Veja `apps/rt/src/a.rs:10-20`, src\\b.rs e (docs/c.md). Depois ./src/d.rs: de novo apps/rt/src/a.rs.";
+        assert_eq!(cited_files(text), ["apps/rt/src/a.rs", "src/b.rs", "docs/c.md", "src/d.rs"]);
+        assert_eq!(cited_files("`Cargo.toml`, `self.facts`, https://example.com/a.html, e/ou, docs/v1.2, 3/4"), Vec::<String>::new());
+        assert_eq!(cited_files("Cargo.toml:3 e README.md:10"), ["Cargo.toml", "README.md"]);
+    }
+
+    /// O caminho sem linha segue o detector de caminho da conferência de
+    /// escrita: a pasta oculta e a que parte da casa contam, mesmo sem
+    /// extensão; a extensão longa conta, porque o caminho tem pasta, e a só de
+    /// maiúsculas não conta.
+    #[test]
+    fn a_path_without_a_line_is_cited_as_the_writing_check_detects_it() {
+        assert_eq!(cited_files("Grava em .claude/spec e lê ~/projetos/notas."), [".claude/spec", "~/projetos/notas"]);
+        assert_eq!(
+            cited_files("Veja src/App.svelte, prisma/schema.prisma, docs/guia.markdown e docs/LEIA.MD."),
+            ["src/App.svelte", "prisma/schema.prisma", "docs/guia.markdown"]
+        );
     }
 
     #[test]

@@ -104,4 +104,21 @@ mod tests {
             assert!(wave.contains(rules) && carries_project_rules(&wave, lang), "mandatory rules reach the executor: {wave}");
         }
     }
+
+    /// A origem da seção diz, com o arquivo da raiz e com vários arquivos,
+    /// que onde as regras tratam de idioma elas vencem a linha de idiomas do
+    /// pedido. Nos dois idiomas.
+    #[test]
+    fn the_rules_section_says_a_rule_on_language_wins_over_the_languages_line() {
+        let file = |path: &str| RulesFile { path: path.to_string(), text: "- Regra.".to_string() };
+        for (lang, one, many) in [
+            (Locale::PtBr, "onde ele trata de idioma, vence a linha de idiomas do pedido", "onde tratam de idioma, vencem a linha de idiomas do pedido"),
+            (Locale::EnUs, "where it deals with language, it overrides the request's languages line", "where they deal with language, they override the request's languages line"),
+        ] {
+            let single = project_rules_section(&[file("CLAUDE.md")], lang).expect("the root file's section");
+            assert!(single.contains(one), "{lang:?}: {single}");
+            let several = project_rules_section(&[file("CLAUDE.md"), file("apps/cli/CLAUDE.md")], lang).expect("the section of several files");
+            assert!(several.contains(many), "{lang:?}: {several}");
+        }
+    }
 }

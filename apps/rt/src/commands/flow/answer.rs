@@ -148,7 +148,7 @@ fn answer_in(
     }
     let path = store::spec_file(&project.root, &spec)?;
     let answered =
-        store::with_locked_writer(&path, |locked| answer_locked(locked, &spec, opts, asked, project.lang))?;
+        store::with_locked_writer(&path, |locked| answer_locked(locked, &spec, opts, asked, project.lang, session))?;
     let report = answered.ok_or_else(|| Refusal::NoSpecFile { spec: spec.clone() })??;
     // O item e o fechamento entram no bloco das specs do mapa. A gravação na
     // spec já está feita: a falha no mapa não a desfaz, e a próxima resposta
@@ -183,13 +183,15 @@ fn asked(opts: &AnswerOpts) -> Result<Asked, AnswerRefusal> {
 
 /// As gravações sob a trava do arquivo de eventos: confere o ponto e os itens
 /// apontados, grava o item e o fechamento e monta a saída. O fechamento
-/// recusado volta o arquivo ao que era antes do item.
+/// recusado volta o arquivo ao que era antes do item. Os dois levam a sessão
+/// `session` que a entrada passou.
 fn answer_locked(
     locked: &mut store::LockedLog,
     spec: &str,
     opts: &AnswerOpts,
     asked: Asked,
     lang: Locale,
+    session: Option<&str>,
 ) -> Result<Value, AnswerRefusal> {
     let before = locked.log().clone();
     let open = survey::open_points(&before);
@@ -203,7 +205,7 @@ fn answer_locked(
     let mut report = json!({ "ok": true, "spec": spec });
     let mut origin = None;
     if let Some((event_type, draft)) = asked.item {
-        let item = write::record_locked_by_model(locked, &opts.root, spec, &event_type, draft)?.written;
+        let item = write::record_locked_by_model(locked, &opts.root, spec, &event_type, draft, session)?.written;
         origin = locked.log().get(item.id).and_then(|event| event.int("origin"));
         report["id"] = json!(item.id);
         report["type"] = json!(event_type);
@@ -217,7 +219,7 @@ fn answer_locked(
     if let Some(facts) = asked.facts {
         draft.insert("facts".into(), facts);
     }
-    let closed = match write::record_locked_by_model(locked, &opts.root, spec, "point", draft) {
+    let closed = match write::record_locked_by_model(locked, &opts.root, spec, "point", draft, session) {
         Ok(closed) => closed.written,
         Err(refusal) => {
             locked.restore(saved)?;

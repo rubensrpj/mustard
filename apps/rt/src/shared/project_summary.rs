@@ -25,6 +25,7 @@ use std::path::Path;
 use mustard_core::domain::project_summary::{self as summary, Agreed, Entry, GOAL_CHARS, SURE};
 use mustard_core::domain::spec_events::SpecLog;
 use mustard_core::domain::spec_state::SpecState as _;
+use mustard_core::domain::text::cut_line;
 use mustard_core::io::project_summary as disk;
 use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{Locale, translate};
@@ -66,13 +67,13 @@ fn item_entries(items: &[Agreed]) -> Vec<(String, Value)> {
             let note = if item.kind == "decision" { "why" } else { "example" };
             let mut shown = json!({
                 "kind": item.kind,
-                "text": without_secrets(&summary::cut_at_word(&item.text, ITEM_CHARS)),
+                "text": without_secrets(&cut_line(&item.text, ITEM_CHARS)),
             });
             if !item.title.is_empty() {
                 shown["title"] = json!(without_secrets(&item.title));
             }
             if !item.note.is_empty() {
-                shown[note] = json!(without_secrets(&summary::cut_at_word(&item.note, ITEM_CHARS)));
+                shown[note] = json!(without_secrets(&cut_line(&item.note, ITEM_CHARS)));
             }
             (item_key(item.id), shown)
         })
@@ -360,7 +361,7 @@ mod tests {
         std::fs::write(root.join("mustard.json"), "{}").unwrap();
         let lines = [
             json!({"type":"state","phase":"approved","author":"binary"}),
-            json!({"type":"context","title":"Objetivo","text":format!("Entregar a obra {spec}.")}),
+            json!({"type":"context","title":format!("Entregar a obra {spec}"),"text":format!("Entregar a obra {spec} com a saída em JSON.")}),
             json!({"type":"decision","title":"Resposta em JSON","text":"Toda resposta do binário sai em JSON.","why":"Quem lê é programa.","keys":["json"]}),
             json!({"type":"decision","title":"Nome da tela","text":"A tela nova se chama Painel.","why":"Pedido do usuário.","keys":["tela"]}),
             json!({"type":"task","title":"Saída","text":"Muda a saída.","agent":"src/out.rs","covers":[3],"files":[{"path":"src/out.rs"}],"wave":1}),
@@ -400,7 +401,7 @@ mod tests {
         let entries = disk::read(root);
         assert_eq!(entries.len(), 1, "{entries:?}");
         assert_eq!(entries[0].spec, "saida");
-        assert_eq!(entries[0].title, "Entregar a obra saida.");
+        assert_eq!(entries[0].title, "Entregar a obra saida");
         assert_eq!(entries[0].delivered, "Grava a saída em JSON.");
         assert_eq!(entries[0].delivered_at, "2026-10-16T10:00:00Z");
         assert_eq!(entries[0].skills, Vec::<String>::new());

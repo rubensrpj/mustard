@@ -579,12 +579,13 @@ export function register(on) {
         openSearch:()=>setPanel($,{searching:true}),
         search:query=>reread($,{query:String(query ?? '').trim(),rows:PAGE,searching:false}),
         more:()=>showMore($),
+        pageWaves:offset=>reread($,{waveOffset:Math.max(0,offset)}),
         toggleWaveRequest:()=>setPanel($,now=>({waveRequest:!now.waveRequest})),
         toggleSpecs:()=>setPanel($,now=>({pickSpec:!now.pickSpec})),
         toggleDelivered:()=>setPanel($,now=>({delivered:!now.delivered})),
         selectSpec:async name=>{
           ticket++;cache={};
-          await setPanel($,{spec:name,item:null,rows:PAGE,query:'',filter:'all',pickSpec:false,history:false,waveRequest:false});
+          await setPanel($,{spec:name,item:null,rows:PAGE,query:'',filter:'all',waveOffset:0,pickSpec:false,history:false,waveRequest:false});
           if((await panel($)).screen==='overview')return navigate($,'spec');
           return refresh($);
         },

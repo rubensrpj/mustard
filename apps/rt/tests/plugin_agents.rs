@@ -718,7 +718,7 @@ fn wave_template_puts_in_the_task_the_file_the_change_requires() {
 /// grava, com o título, o detalhe e os arquivos a mudar: toda sobra vai ao backlog, e o
 /// molde não pede mais que o agente diga se ela quebra algo ou é cosmética. A
 /// sobra que só de comentário/documentação/ajuda leva a marca
-/// de limpeza, que a rodada segura para o fim da obra.
+/// de limpeza, e sai na onda do mesmo sentido, como as outras tarefas.
 #[test]
 fn boundary_says_to_remove_what_the_change_left_unused() {
     for (lang, said) in [
@@ -886,6 +886,39 @@ fn templates_forbid_spec_codes_in_comments() {
     }
 }
 
+/// Os dois agentes instalados sabem que a regra do projeto sobre idioma vence a
+/// linha de idiomas do pedido: o revisor não cobra idioma contra ela, nem no
+/// nome de teste, e o agente de onda só segue o idioma do código no nome de
+/// teste quando nenhuma regra do projeto diz outro. Nos dois idiomas.
+#[test]
+fn the_installed_agents_let_a_project_language_rule_win_over_the_languages_line() {
+    for (lang, check, reviewer, wave) in [
+        (
+            "pt-BR",
+            "## Como conferir",
+            ["vence a linha de idiomas do pedido", "não cobre idioma contra ela, nem no nome de teste"],
+            "o nome de teste segue o idioma do código, salvo regra do projeto que diga outro",
+        ),
+        (
+            "en-US",
+            "## How to check",
+            ["overrides the request's languages line", "do not charge language against it, test names included"],
+            "test names follow the code language, unless a project rule says otherwise",
+        ),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, _home) = installed(dir.path(), &format!(r#"{{"version":"1.0.0","language":{{"text":"{lang}"}}}}"#));
+        let review = std::fs::read_to_string(root.join(".claude/agents/mustard/review.md")).unwrap();
+        let line = section(&review, check)
+            .lines()
+            .find(|line| line.contains(reviewer[0]))
+            .unwrap_or_else(|| panic!("the {lang} reviewer's checks never say a project language rule wins:\n{review}"));
+        assert!(line.contains(reviewer[1]), "the {lang} reviewer still charges language against the rule: {line}");
+        let agent = std::fs::read_to_string(root.join(".claude/agents/mustard/wave.md")).unwrap();
+        assert!(agent.contains(wave), "the {lang} wave agent fixes the test name's language against a project rule");
+    }
+}
+
 /// O revisor diz os dois caminhos da volta: na revisão final da obra, grava o
 /// veredito pela ferramenta, com a linha de exemplo que a gravação aceita; na
 /// revisão de um levantamento e no pull request de um colega, devolve o texto
@@ -927,6 +960,52 @@ fn reviewer_template_states_the_two_paths() {
     }
     let pr = std::fs::read_to_string(repo_root().join("plugin/commands/pr.md")).unwrap();
     assert!(pr.contains("`mustard-review` agent, from that brief: it returns its text to you and records nothing"), "{pr}");
+}
+
+/// O despacho ao revisor, pelo gancho com o JSON do Claude Code, leva o
+/// caminho da cópia do desenho aprovado quando a pasta da spec tem uma: no
+/// pedido gravado da revisão final, no da revisão de uma onda e no texto que
+/// quem conduz escreve para a revisão do levantamento, cuja spec é a da
+/// branch. Sem a cópia, nenhum deles fala de desenho.
+#[test]
+fn the_reviewer_dispatch_points_to_the_approved_design_only_when_the_spec_has_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("project");
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&home).unwrap();
+    git(&root, &["init", "-q", "-b", "feature/tela"]);
+    std::fs::write(root.join("mustard.json"), "{}").unwrap();
+    let events = store::spec_file(&root, "tela").unwrap();
+    std::fs::create_dir_all(events.parent().unwrap()).unwrap();
+    let state = json!({"author": "binary", "phase": "survey", "branch": "feature/tela", "base": "dev"});
+    store::write(&events, "state", state.as_object().cloned().unwrap(), &[]).unwrap();
+    let design = events.parent().unwrap().join("desenho.html");
+
+    let shown = mustard_core::io::wave_prompt::shown(&root);
+    let final_review = format!("mustard-rt run read request-review --root {shown} --spec tela");
+    let title = translate("round.wave_review.title", Locale::PtBr).replace("{spec}", "tela").replace("{wave}", "1");
+    let wave_review = format!("# {title}\n\nmustard-rt run read review-request-1 --root {shown} --spec tela");
+    let survey_review = "Revise o levantamento da spec tela: os pontos, as regras e as decisões.".to_string();
+    let dispatch = |prompt: &str| -> String {
+        let payload = json!({"hook_event_name": "PreToolUse", "tool_name": "Agent", "session_id": "sessao-revisor",
+            "cwd": root.to_string_lossy(), "tool_input": {"subagent_type": "mustard-review", "description": "revisão", "prompt": prompt}});
+        let out = rt(&root, &home, &["on", "PreToolUse"], Some(&payload.to_string()));
+        let sent = out["hookSpecificOutput"]["updatedInput"]["prompt"].as_str().unwrap_or_else(|| panic!("no rewritten prompt: {out}"));
+        assert!(sent.contains(prompt), "the dispatch lost its own text: {sent}");
+        sent.to_string()
+    };
+
+    for prompt in [&final_review, &wave_review, &survey_review] {
+        let sent = dispatch(prompt);
+        assert!(!sent.contains("desenho.html"), "a spec without the approved design got a design: {sent}");
+    }
+    std::fs::write(&design, "<html><body><main>tela aprovada</main></body></html>\n").unwrap();
+    for prompt in [&final_review, &wave_review, &survey_review] {
+        let sent = dispatch(prompt);
+        assert!(sent.contains(".claude/spec/tela/desenho.html`"), "the reviewer was not pointed to the approved design: {sent}");
+        assert_eq!(sent.matches("desenho.html").count(), 1, "{sent}");
+    }
 }
 
 /// O erro que pode se repetir não vira lição no molde do revisor, nos dois
@@ -1340,10 +1419,17 @@ fn request_says_to_write_the_delivery_through_the_tool() {
 }
 
 /// A parte fixa de cada pedido que o binário monta: o da onda e o da revisão
-/// final do conjunto, com o que olhar da primeira revisão e o da revisão de
-/// volta, e a linha dos idiomas do projeto, que abre todo pedido a um agente.
-const FIXED_PARTS: [&str; 5] =
-    ["prompt.fixed", "prompt.final.fixed", "prompt.final.look", "prompt.final.look_again", "prompt.languages"];
+/// final do conjunto, com o que olhar da primeira revisão e o das revisões de
+/// volta, depois de uma reprovação e depois de uma aprovação, e a linha dos
+/// idiomas do projeto, que abre todo pedido a um agente.
+const FIXED_PARTS: [&str; 6] = [
+    "prompt.fixed",
+    "prompt.final.fixed",
+    "prompt.final.look",
+    "prompt.final.look_again",
+    "prompt.final.look_since_approval",
+    "prompt.languages",
+];
 
 /// Quantas palavras seguidas fazem uma frase repetida.
 const REPEATED_RUN: usize = 6;

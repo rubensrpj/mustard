@@ -12,7 +12,14 @@ use std::time::Instant;
 use mustard_core::domain::map_filter::{FilterError, FilterUsage};
 use serde_json::{Map, Value, json};
 
-use crate::commands::spec_events::conversation::{record_measured_call, record_measured_calls};
+use crate::commands::spec_events::conversation::record_measured_calls;
+
+/// A sessão que cada chamada ao Jev leva: a do processo. Quem pergunta ao Jev
+/// são os passos do fluxo, que não recebem a sessão da entrada; a do processo
+/// é a mesma que a entrada `run` leu.
+fn process_session() -> Option<String> {
+    crate::shared::spec_state::session_from_env()
+}
 
 /// O nome que a montagem das ondas grava.
 pub(crate) const ASSEMBLY_CALL: &str = "wave assembly";
@@ -47,7 +54,7 @@ pub(crate) fn record_reserve_call(start: &Path, spec: &str, command: &str) {
     let mut measured = Map::new();
     measured.insert("filter".to_string(), json!("reserve"));
     measured.insert("reserve_for".to_string(), json!(command));
-    let _ = record_measured_calls(start, spec, RESERVE_CALL, Instant::now(), vec![measured]);
+    let _ = record_measured_calls(start, spec, process_session().as_deref(), RESERVE_CALL, Instant::now(), vec![measured]);
 }
 
 /// Grava o evento `call` da chamada `command` ao Jev, feita em `called`, na
@@ -63,8 +70,7 @@ pub(crate) fn record_jev_call(
     answer: Result<&FilterUsage, &FilterError>,
 ) {
     let measured = jev_measure(counts, called, answer);
-    let report = json!({ "ok": true, "spec": spec });
-    let _ = record_measured_call(start, command, Some(spec), None, called, &report, measured);
+    let _ = record_measured_calls(start, spec, process_session().as_deref(), command, called, vec![measured]);
 }
 
 /// [`record_jev_call`] para as chamadas `command` que saíram juntas em
@@ -72,7 +78,7 @@ pub(crate) fn record_jev_call(
 /// operações da spec ([`record_measured_calls`]).
 pub(crate) fn record_jev_calls(start: &Path, spec: &str, command: &str, called: Instant, answers: &[Result<&FilterUsage, &FilterError>]) {
     let measured = answers.iter().map(|answer| jev_measure(None, called, *answer)).collect();
-    let _ = record_measured_calls(start, spec, command, called, measured);
+    let _ = record_measured_calls(start, spec, process_session().as_deref(), command, called, measured);
 }
 
 /// A medida de uma chamada ao Jev feita em `called`: os candidatos que foram

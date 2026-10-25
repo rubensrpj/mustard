@@ -9,7 +9,8 @@
 //! empty result, or a kill error degrades to an `eprintln!` warning and an empty
 //! / `false` value. None of them panic. The crate forbids `unsafe`, so none of
 //! these use raw OS signal APIs — they shell out to `netstat`/`lsof`/`taskkill`/
-//! `kill`/`tasklist` instead.
+//! `kill`/`tasklist` instead, and to `taskset` for the CPU affinity of a
+//! project command.
 //!
 //! [`run_shell_with_deadline`] additionally depends on [`crate::util::platform`]
 //! for the platform shell. That is a sideways edge, not a layering inversion:
@@ -214,6 +215,117 @@ fn append_missing(existing: &[PathBuf], candidates: Vec<PathBuf>) -> Option<std:
     std::env::join_paths(joined).ok()
 }
 
+/// A memória que cada processo de um executor de testes pede: o jest abriu
+/// um processo por núcleo, e cada um usou de 1,1 a 1,5 GB.
+#[cfg(target_os = "linux")]
+const MEMORY_PER_PROCESS_KIB: u64 = 2 * 1024 * 1024;
+
+/// O comando do projeto no shell da plataforma, preso aos núcleos que a
+/// máquina aguenta.
+///
+/// O executor de testes que abre um processo por núcleo visível — o jest lê a
+/// afinidade de CPU — abria, numa máquina de 12 núcleos e 15 GB, 12 processos
+/// de 1,1 a 1,5 GB cada, e o matador de falta de memória os derrubava. No
+/// Linux, o comando roda por `taskset -c`, nos núcleos que [`affordable_cpus`]
+/// escolhe: a afinidade passa a cada processo que ele abre. Sem limite a
+/// impor, sem `taskset` na máquina, ou noutro sistema, o comando roda no shell
+/// como sempre rodou.
+fn project_shell_command(command: &str) -> Command {
+    #[cfg(target_os = "linux")]
+    if let Some(cpus) = affordable_cpus(command) {
+        let shell = crate::util::platform::build_shell_command(command);
+        let mut pinned = Command::new("taskset");
+        pinned.arg("-c").arg(cpus).arg(shell.get_program()).args(shell.get_args());
+        return pinned;
+    }
+    crate::util::platform::build_shell_command(command)
+}
+
+/// Os núcleos em que o comando roda, na forma que o `taskset -c` lê, ou
+/// `None` quando não há o que limitar.
+///
+/// O comando que já traz o próprio `taskset` fica como está: quem o escreveu
+/// já escolheu os núcleos. A afinidade e a memória vêm do `/proc`; se algum
+/// deles não responde, o comando roda sem limite, como antes.
+#[cfg(target_os = "linux")]
+fn affordable_cpus(command: &str) -> Option<String> {
+    if names_taskset(command) || !resolves("taskset") {
+        return None;
+    }
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let allowed = cpu_list(status.lines().find_map(|line| line.strip_prefix("Cpus_allowed_list:"))?)?;
+    let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let memory_kib = meminfo.lines().find_map(|line| line.strip_prefix("MemTotal:"))?.trim().trim_end_matches("kB").trim().parse().ok()?;
+    let cores = std::thread::available_parallelism().map_or(allowed.len(), std::num::NonZero::get);
+    pick_cpus(&allowed, cores, memory_kib)
+}
+
+/// A regra inteira, em função só das entradas: o limite é o menor entre os
+/// núcleos e a memória total em GB dividida por 2, no mínimo 1, e os núcleos
+/// escolhidos são os primeiros que o processo já pode usar — nunca um núcleo
+/// fora da afinidade que ele herdou. Com o limite cobrindo todos os
+/// permitidos, nada muda, e a resposta é `None`.
+#[cfg(target_os = "linux")]
+fn pick_cpus(allowed: &[usize], cores: usize, memory_kib: u64) -> Option<String> {
+    let by_memory = usize::try_from(memory_kib / MEMORY_PER_PROCESS_KIB).unwrap_or(usize::MAX);
+    let limit = cores.min(by_memory).max(1);
+    (limit < allowed.len()).then(|| allowed[..limit].iter().map(ToString::to_string).collect::<Vec<_>>().join(","))
+}
+
+/// A lista de núcleos do `/proc` (`0-3,8,10-11`), núcleo por núcleo. `None`
+/// quando algum pedaço não é número nem faixa.
+#[cfg(target_os = "linux")]
+fn cpu_list(text: &str) -> Option<Vec<usize>> {
+    let mut cpus = Vec::new();
+    for part in text.trim().split(',').filter(|part| !part.is_empty()) {
+        match part.split_once('-') {
+            Some((first, last)) => cpus.extend(first.trim().parse::<usize>().ok()?..=last.trim().parse::<usize>().ok()?),
+            None => cpus.push(part.trim().parse().ok()?),
+        }
+    }
+    (!cpus.is_empty()).then_some(cpus)
+}
+
+/// O comando chama o `taskset` em algum ponto, também dentro de aspas — o
+/// fechamento entrega o comando do projeto entre aspas simples, dentro do
+/// roteiro que limpa o ambiente.
+#[cfg(target_os = "linux")]
+fn names_taskset(command: &str) -> bool {
+    command
+        .split(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | ')' | '\'' | '"' | '`' | '{' | '}'))
+        .any(|word| word.rsplit('/').next() == Some("taskset"))
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod core_tests {
+    use super::*;
+
+    /// Números fixos, para a regra valer em qualquer máquina: 12 núcleos e
+    /// 15 GB dão 7; a memória folgada deixa os núcleos; a pouca memória ainda
+    /// dá 1; e a escolha fica dentro da afinidade herdada.
+    #[test]
+    fn the_limit_is_the_smaller_of_the_cores_and_half_the_memory() {
+        let gib = 1024 * 1024;
+        let twelve: Vec<usize> = (0..12).collect();
+        assert_eq!(pick_cpus(&twelve, 12, 15 * gib), Some("0,1,2,3,4,5,6".to_string()));
+        assert_eq!(pick_cpus(&twelve, 4, 64 * gib), Some("0,1,2,3".to_string()), "a quota below the allowed set still limits");
+        assert_eq!(pick_cpus(&twelve, 12, gib), Some("0".to_string()), "at least one core");
+        assert_eq!(pick_cpus(&[4, 5, 8, 9], 4, 4 * gib), Some("4,5".to_string()), "only cores the process may already use");
+        assert_eq!(pick_cpus(&twelve, 12, 64 * gib), None, "nothing to limit");
+        assert_eq!(cpu_list("0-3,8,10-11\n"), Some(vec![0, 1, 2, 3, 8, 10, 11]));
+    }
+
+    /// O comando que já traz o `taskset` fica como está, também entre as
+    /// aspas do roteiro do fechamento; o que não o traz ganha o limite.
+    #[test]
+    fn a_command_that_brings_its_own_taskset_stays_as_it_is() {
+        assert!(names_taskset("taskset -c 0-3 npx jest"));
+        assert!(names_taskset("mustard_cmd='/usr/bin/taskset -c 0 npm test'\nexit 0"));
+        assert!(!names_taskset("npx jest --maxWorkers=4"));
+        assert!(!names_taskset("mustard_cmd='npm run tasksets'"));
+    }
+}
+
 /// Poll cadence of [`run_shell_with_deadline`]'s wait loop. `std` has no
 /// native wait-with-timeout, so the child is polled with `try_wait`; 50 ms is
 /// the historical cadence of both call sites this helper absorbed.
@@ -274,7 +386,7 @@ pub fn run_shell_interleaved_with_deadline(command: &str, cwd: &Path, timeout: D
 /// O corpo único dos dois executores acima; `interleaved` escolhe um cano só
 /// para as duas saídas em vez de um para cada.
 fn run_under_deadline(command: &str, cwd: &Path, timeout: Duration, interleaved: bool) -> ShellOutcome {
-    let mut cmd = crate::util::platform::build_shell_command(command);
+    let mut cmd = project_shell_command(command);
     cmd.current_dir(cwd).stdin(Stdio::null());
     let shared = if interleaved {
         match one_pipe_for_both(&mut cmd) {

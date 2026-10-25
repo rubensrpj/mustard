@@ -3,6 +3,7 @@
 use super::answer::RoundRefusal;
 use super::report::WaveReport;
 use super::stops::{HeldReturn, hold_refused};
+use crate::hooks::bash::lex::Segment;
 use mustard_core::platform::i18n::Locale;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -58,24 +59,69 @@ struct Stale {
     command: Option<String>,
 }
 
+/// O schema do Prisma do projeto em `root`: o caminho `prisma.schema` do
+/// `package.json`, senão `prisma/schema.prisma`, senão a pasta `prisma/schema`.
+fn schema_path(root: &Path, package: &Value) -> PathBuf {
+    package.pointer("/prisma/schema").and_then(Value::as_str).map(|p| root.join(p)).unwrap_or_else(|| {
+        let single = root.join("prisma/schema.prisma");
+        if single.is_file() { single } else { root.join("prisma/schema") }
+    })
+}
+
+/// Se o comando `segment` roda o `prisma generate`, direto ou pelo
+/// gerenciador de pacotes.
+pub(super) fn generates(segment: &Segment) -> bool {
+    let prisma = |name: &str| matches!(name.rsplit(['/', '\\']).next().unwrap_or(name), "prisma" | "prisma.cmd" | "prisma.exe");
+    let args: Vec<_> = segment.args.iter().map(|arg| arg.text.as_str()).collect();
+    let direct = |args: &[&str]| args.first().is_some_and(|name| prisma(name)) && args.get(1) == Some(&"generate");
+    prisma(segment.name()) && args.first() == Some(&"generate")
+        || match segment.name() {
+            "npx" | "bunx" => direct(&args),
+            "pnpm" | "yarn" | "bun" => direct(&args) || args.first() == Some(&"exec") && direct(&args[1..]),
+            "npm" => args.first() == Some(&"exec") && direct(&args[1..]),
+            _ => false,
+        }
+}
+
+/// A geração do cliente do Prisma que o projeto declara: o script do
+/// `package.json` que roda o `prisma generate` e o comando que o roda.
+pub(super) struct Generator {
+    /// O nome do script, como o `package.json` o declara.
+    pub(super) script: String,
+    /// O script rodado pelo gerenciador de pacotes do projeto.
+    pub(super) command: String,
+}
+
+/// O único script de geração do projeto em `root`, com o gerenciador que ele
+/// declara. Os nomes dos scripts são do projeto: com mais de um gerador, ou sem
+/// gerenciador declarado, nenhum é escolhido, e o preparo fica a cargo dele.
+fn generator(root: &Path, package: &Value) -> Option<Generator> {
+    let runner = mustard_core::domain::command_detect::detect_js_package_manager(root)
+        .filter(|runner| matches!(runner.as_str(), "npm" | "pnpm" | "yarn" | "bun"))?;
+    let scripts: Vec<_> = package["scripts"].as_object().into_iter().flatten()
+        .filter(|(_, body)| body.as_str().is_some_and(|body| crate::hooks::bash::lex::segments(body).iter().any(generates)))
+        .map(|(name, _)| name)
+        .collect();
+    let [script] = scripts.as_slice() else { return None };
+    Some(Generator { command: format!("{runner} run {}", crate::shared::search_gateway::quote(script)), script: (*script).clone() })
+}
+
+/// A geração que o projeto em `root` declara, quando ele tem schema do Prisma.
+pub(super) fn declared_generator(root: &Path) -> Option<Generator> {
+    let package: Value = serde_json::from_slice(&std::fs::read(root.join("package.json")).ok()?).ok()?;
+    if schema_files(&schema_path(root, &package))?.is_empty() {
+        return None;
+    }
+    generator(root, &package)
+}
+
 fn stale(root: &Path) -> Option<Stale> {
     let package: Value = serde_json::from_str(&std::fs::read_to_string(root.join("package.json")).ok()?).ok()?;
     let client = root.join("node_modules/@prisma/client").canonicalize().ok()?;
     let generated = client.ancestors().nth(2)?.join(".prisma/client/schema.prisma");
     let generated = models(&std::fs::read_to_string(generated).ok()?)?;
-    let schema = package
-        .pointer("/prisma/schema")
-        .and_then(Value::as_str)
-        .map(|p| root.join(p))
-        .unwrap_or_else(|| {
-            if root.join("prisma/schema.prisma").is_file() {
-                root.join("prisma/schema.prisma")
-            } else {
-                root.join("prisma/schema")
-            }
-        });
     let mut current = Models::new();
-    for file in schema_files(&schema)? {
+    for file in schema_files(&schema_path(root, &package))? {
         let text = std::fs::read_to_string(file).ok()?;
         if let Some(part) = models(&text) {
             current.extend(part);
@@ -92,31 +138,9 @@ fn stale(root: &Path) -> Option<Stale> {
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect();
-    let runner = mustard_core::domain::command_detect::detect_js_package_manager(root)
-        .filter(|runner| matches!(runner.as_str(), "npm" | "pnpm" | "yarn" | "bun"));
-    let scripts: Vec<_> = package["scripts"].as_object().into_iter().flatten().filter_map(|(name, body)| {
-        body.as_str().filter(|body| crate::hooks::bash::lex::segments(body).iter().any(|segment| {
-            let prisma=|name:&str| matches!(name.rsplit(['/', '\\']).next().unwrap_or(name),"prisma"|"prisma.cmd"|"prisma.exe");
-            let args:Vec<_>=segment.args.iter().map(|arg|arg.text.as_str()).collect();
-            let direct=|args:&[&str]| args.first().is_some_and(|name|prisma(name)) && args.get(1)==Some(&"generate");
-            prisma(segment.name()) && args.first()==Some(&"generate")
-                || match segment.name() {
-                    "npx"|"bunx" => direct(&args),
-                    "pnpm"|"yarn"|"bun" => direct(&args) || args.first()==Some(&"exec") && direct(&args[1..]),
-                    "npm" => args.first()==Some(&"exec") && direct(&args[1..]),
-                    _ => false,
-                }
-        })).map(|_|name)
-    }).collect();
-    // Script names belong to the project. Multiple possible generators need
-    // an explicit preparation decision, rather than an arbitrary alias win.
-    let command = match (runner, scripts.as_slice()) {
-        (Some(runner), [script]) => Some(format!("{runner} run {}",crate::shared::search_gateway::quote(script))),
-        _ => None,
-    };
     Some(Stale {
         models: changed,
-        command,
+        command: generator(root, &package).map(|generator| generator.command),
     })
 }
 

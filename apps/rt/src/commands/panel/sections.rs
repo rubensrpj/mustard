@@ -8,13 +8,14 @@ use std::path::Path;
 
 use mustard_core::domain::spec_events::{SpecEvent, SpecLog};
 use mustard_core::domain::spec_state::State;
+use mustard_core::domain::text::cut_line;
 use mustard_core::view::document::{WaveState, WaveStates};
 use serde_json::{Value, json};
 
 use super::progress;
 
 /// The screens this module answers.
-pub(super) const SCREENS: &[&str] = &["overview", "spec", "items", "item", "usage"];
+pub(super) const SCREENS: &[&str] = &["overview", "spec", "items", "item", "usage", "waves"];
 
 /// Item kinds the list screen pages through.
 pub(super) const KINDS: &[&str] = &["task", "criterion", "decision", "rule", "question"];
@@ -200,14 +201,14 @@ const DELIVERY_CHARS: usize = 200;
 /// each text cut, and how many the summary holds. Read from the summary file
 /// alone; no spec's events are parsed.
 fn deliveries(root: &Path) -> Value {
-    use mustard_core::domain::project_summary::{cut_at_word, shown};
+    use mustard_core::domain::project_summary::shown;
     let entries = mustard_core::io::project_summary::read(root);
     let rows: Vec<Value> = entries
         .iter()
         .take(DELIVERIES_SHOWN)
         .map(|entry| {
             let mut row = shown(entry);
-            row["delivered"] = json!(cut_at_word(&entry.delivered, DELIVERY_CHARS));
+            row["delivered"] = json!(cut_line(&entry.delivered, DELIVERY_CHARS));
             row["rules"] = json!(entry.rules.iter().map(|file| file.rules.len()).sum::<usize>());
             row
         })
@@ -247,10 +248,17 @@ struct WaveRow {
     unmet: usize,
     resends: usize,
     tokens: Option<u64>,
+    /// The wave's own commit: the first one recorded for it. A repair commit
+    /// recorded later for the wave does not take its place.
+    commit: Option<String>,
+    /// When the wave first went out, and when its accepted delivery came.
+    first_sent: Option<String>,
+    delivered: Option<String>,
 }
 
 /// One pass over the events for every wave's row: the commit or the return
-/// that closed it, its files, the unmet agreed items and the resends.
+/// that closed it, its files, the unmet agreed items, the resends, and when
+/// it first went out and came back.
 fn wave_rows(log: &SpecLog, states: &WaveStates) -> BTreeMap<u64, WaveRow> {
     let dispatches = log.last_dispatch_by_wave();
     let belongs = |n: u64, id: u64| dispatches.get(&n).is_none_or(|start| id > *start);
@@ -259,6 +267,7 @@ fn wave_rows(log: &SpecLog, states: &WaveStates) -> BTreeMap<u64, WaveRow> {
     for event in &log.events {
         if event.event_type == "send" && event.str_field("role").is_none_or(|role| role == "wave") && let Some(n) = event.wave() {
             attempts.entry(n).or_default().insert(log.dispatch_position(event.id));
+            if let Some(row) = rows.get_mut(&n) { row.first_sent.get_or_insert_with(|| event.at().to_string()); }
         }
     }
     for event in log.visible() {
@@ -269,10 +278,16 @@ fn wave_rows(log: &SpecLog, states: &WaveStates) -> BTreeMap<u64, WaveRow> {
             "delivered" => if let Some(n) = event.wave() && let Some(row) = rows.get_mut(&n) {
                 row.files = event.fields.get("files").and_then(Value::as_array).map(Vec::len);
                 row.unmet = event.fields.get("agreed").and_then(Value::as_array).map_or(0, |items| items.iter().filter(|item| item["met"] == false).count());
+                row.delivered = Some(event.at().to_string());
                 if matches!(row.state, Some(WaveState::Approved | WaveState::Rejected)) { row.at = Some(event.at().to_string()); }
             },
             "commit" => for n in event.ints("waves") {
-                if belongs(n, event.id) && let Some(row) = rows.get_mut(&n) && row.state == Some(WaveState::Committed) { row.at = Some(event.at().to_string()); }
+                if let Some(row) = rows.get_mut(&n) && row.commit.is_none() {
+                    row.commit = event.str_field("sha").map(str::to_string);
+                }
+                if belongs(n, event.id) && let Some(row) = rows.get_mut(&n) && row.state == Some(WaveState::Committed) {
+                    row.at = Some(event.at().to_string());
+                }
             },
             "send" => if let Some(n) = event.wave() && let Some(row) = rows.get_mut(&n) {
                 row.tokens = event.int("tokens").or(row.tokens);
@@ -304,16 +319,90 @@ fn event_type(kind: &str) -> &str {
 /// Why a row asks for attention, if it does.
 fn attention(event: &SpecEvent, wave: Option<&WaveRow>, qa: &mustard_core::domain::spec_state::Qa, proven: &BTreeSet<u64>) -> Option<&'static str> {
     match event.event_type.as_str() {
-        "task" => match wave.and_then(|row| row.state) {
-            Some(WaveState::NoAgent) => Some("wave-no-agent"),
-            Some(WaveState::Rejected) => Some("wave-rejected"),
-            _ => None,
-        },
+        "task" => wave_attention(wave.and_then(|row| row.state)),
         "criterion" if qa.failed_ids.contains(&event.id) => Some("criterion-failing"),
         "criterion" if !proven.contains(&event.id) => Some("criterion-without-proof"),
         "point" if event.str_field("status") == Some("open") => Some("question-open"),
         _ => None,
     }
+}
+
+/// Why a wave in `state` asks for attention: stopped with no agent, or
+/// rejected.
+fn wave_attention(state: Option<WaveState>) -> Option<&'static str> {
+    match state {
+        Some(WaveState::NoAgent) => Some("wave-no-agent"),
+        Some(WaveState::Rejected) => Some("wave-rejected"),
+        _ => None,
+    }
+}
+
+/// What a wave carried: every task some version of which was in it, in the
+/// order they entered, with the files of those versions, and how many of
+/// them the current version took elsewhere.
+#[derive(Default)]
+struct Carried {
+    tasks: Vec<String>,
+    files: BTreeSet<String>,
+    returned: usize,
+}
+
+/// [`Carried`] of every wave, in one pass over every version of every task.
+/// A task whose item was removed is not counted.
+fn carried(log: &SpecLog) -> BTreeMap<u64, Carried> {
+    let codes = log.codes();
+    let current: BTreeMap<&str, Option<u64>> = log.visible().into_iter().filter(|e| e.event_type == "task")
+        .filter_map(|e| Some((codes.get(&e.id)?.as_str(), e.wave()))).collect();
+    let mut out: BTreeMap<u64, Carried> = BTreeMap::new();
+    for event in log.events.iter().filter(|e| e.event_type == "task") {
+        let (Some(n), Some(code)) = (event.wave(), codes.get(&event.id)) else { continue };
+        let Some(now) = current.get(code.as_str()) else { continue };
+        let wave = out.entry(n).or_default();
+        if !wave.tasks.contains(code) {
+            wave.tasks.push(code.clone());
+            wave.returned += usize::from(*now != Some(n));
+        }
+        let files = event.fields.get("files").and_then(Value::as_array).into_iter().flatten();
+        wave.files.extend(files.filter_map(|file| file.get("path").unwrap_or(file).as_str().map(str::to_string)));
+    }
+    out
+}
+
+/// The waves screen: one page of the plan's waves, newest number first, each
+/// with its title, its state, what it carried and delivered, its commit, the
+/// time from the first send to the accepted delivery, and the model, the
+/// effort and the tokens of the usage screen's own row. The total is the
+/// plan's, the one the spec screen counts.
+pub(super) fn waves(root: &Path, name: &str, log: &SpecLog, params: &Params) -> Value {
+    let limit = params.limit.unwrap_or(PAGE).clamp(1, 50);
+    let offset = params.offset.unwrap_or(0);
+    let states = progress::wave_states(log);
+    let rows = wave_rows(log, &states);
+    let carried = carried(log);
+    let live = super::wave_usage::read(root, name);
+    let agents: BTreeMap<u64, Value> = agent_rows(log, &live).rows.into_iter().map(|(_, wave, row)| (wave, row)).collect();
+    let codes = log.codes();
+    let visible = log.visible();
+    let page: Vec<Value> = states.iter().rev().skip(offset).take(limit).map(|(n, state)| {
+        let row = rows.get(n);
+        let carried = carried.get(n);
+        // The first task's title, or the wave's own text when it carried none.
+        let title = carried.and_then(|wave| wave.tasks.first())
+            .and_then(|code| visible.iter().find(|e| e.event_type == "task" && codes.get(&e.id) == Some(code)))
+            .or_else(|| visible.iter().rev().find(|e| e.event_type == "wave" && e.wave() == Some(*n)))
+            .and_then(|event| title(event));
+        let seconds = row.filter(|_| state.finished()).and_then(|row| instant(row.first_sent.as_deref()?).zip(instant(row.delivered.as_deref()?)))
+            .map(|(sent, back)| (back - sent).num_seconds()).filter(|seconds| *seconds >= 0);
+        let agent = agents.get(n);
+        let spent = |field: &str| agent.map_or(Value::Null, |agent| agent[field].clone());
+        json!({"wave":n,"title":title,"state":state.word(),"at":row.and_then(|row|row.at.clone()),"attention":wave_attention(Some(*state)),
+            "tasks":carried.map_or(0,|wave|wave.tasks.len()),"returned":carried.map_or(0,|wave|wave.returned),
+            "files":carried.map_or(0,|wave|wave.files.len()),"delivered_files":row.and_then(|row|row.files),
+            "commit":row.and_then(|row|row.commit.clone()),"seconds":seconds,
+            "model_used":spent("model_used"),"model_asked":spent("model_asked"),"effort_asked":spent("effort_asked"),
+            "effort_used":spent("effort_used"),"tokens":spent("tokens")})
+    }).collect();
+    json!({"total":states.len(),"offset":offset,"limit":limit,"rows":page})
 }
 
 /// The criteria with a run of their proof, by current version.
@@ -427,7 +516,7 @@ pub(super) fn item(log: &SpecLog, code: &str) -> Value {
     // The newest verdict of the wave's reviewer, from any attempt: a rejection
     // explains why the wave runs again until the next verdict replaces it.
     let review = event.wave().and_then(|n| visible.iter().rev().find(|e| crate::commands::flow::round::is_wave_verdict(e) && e.wave() == Some(n)))
-        .map(|verdict| json!({"result":verdict.str_field("result"),"reason":verdict.str_field("text").map(|text| mustard_core::domain::project_summary::cut_at_word(text, REVIEW_REASON_CHARS)),
+        .map(|verdict| json!({"result":verdict.str_field("result"),"reason":verdict.str_field("text").map(|text| cut_line(text, REVIEW_REASON_CHARS)),
             "files":verdict.fields.get("files").and_then(Value::as_array).cloned().unwrap_or_default(),"at":verdict.at()}));
     let item_code = codes.get(&event.id);
     let mut versions: Vec<&SpecEvent> = log.events.iter().filter(|e| codes.get(&e.id) == item_code).collect();
@@ -530,7 +619,7 @@ fn mustard_skills(root: &Path) -> Value {
         .skills
         .iter()
         .map(|(name, skill)| {
-            let gain = skill.gain.as_deref().map(|gain| mustard_core::domain::project_summary::cut_at_word(gain, GAIN_CHARS));
+            let gain = skill.gain.as_deref().map(|gain| cut_line(gain, GAIN_CHARS));
             json!({"name":name,"state":skill.state,"tasks":skill.deliveries,"gain":gain,"wave_tokens":creating_tokens(root, skill)})
         })
         .collect();
@@ -591,16 +680,21 @@ fn sent_field<'a>(log: &'a SpecLog, id: u64, field: &str) -> Option<&'a Value> {
     None
 }
 
-/// O que cada onda enviada recebeu e o que deu errado nela, das últimas
-/// [`PAGE`] despachadas, a mais nova primeiro: o modelo que o agente usou
-/// (medido no arquivo dele), o modelo e o esforço que o envio pediu, o
-/// esforço que valeu no lançamento (`effort_used`), as
-/// skills entregues, se o pedido continuou um resumo, as voltas recusadas e
-/// as reprovações da revisão. Depois, o mesmo somado na spec, com o
-/// conhecimento reaproveitado e as chamadas ao Jev e os ganchos que falharam,
-/// lidos do histórico inteiro das operações. Só números e nomes: motivo e
-/// texto ficam na spec.
-fn wave_agents(root: &Path, name: &str, log: &SpecLog, live: &Value) -> serde_json::Map<String, Value> {
+/// A linha de cada onda enviada, com a posição do despacho dela, e as voltas
+/// recusadas e as reprovações da revisão por onda.
+struct AgentRows {
+    rows: Vec<(u64, u64, Value)>,
+    refused: BTreeMap<u64, u64>,
+    reviewed: BTreeMap<u64, u64>,
+}
+
+/// O que cada onda enviada recebeu e o que deu errado nela, a mais nova
+/// primeiro: o modelo que o agente usou (medido no arquivo dele), o modelo e
+/// o esforço que o envio pediu, o esforço que valeu no lançamento
+/// (`effort_used`), as skills entregues, se o pedido continuou um resumo, os
+/// tokens, as voltas recusadas e as reprovações da revisão. A tela do
+/// Consumo e a das ondas leem a mesma linha.
+fn agent_rows(log: &SpecLog, live: &Value) -> AgentRows {
     let last = log.last_by_wave("send");
     let dispatches = log.last_dispatch_by_wave();
     // A volta recusada: a que nenhuma entrega oficial assumiu e que não espera
@@ -618,32 +712,42 @@ fn wave_agents(root: &Path, name: &str, log: &SpecLog, live: &Value) -> serde_js
     let reviewed: BTreeMap<u64, u64> = log.verdicts_by_wave().into_iter()
         .map(|(wave, verdicts)| (wave, verdicts.iter().filter(|v| v.event_type == "verdict" && v.str_field("result") == Some("rejected")).count() as u64))
         .filter(|(_, count)| *count > 0).collect();
-    let mut models: BTreeMap<(String, Option<String>), u64> = BTreeMap::new();
-    let mut skills: BTreeMap<String, u64> = BTreeMap::new();
-    let mut summaries = 0u64;
-    let mut rows: Vec<(u64, Value)> = Vec::new();
+    let mut rows: Vec<(u64, u64, Value)> = Vec::new();
     for (wave, id) in &last {
         let text = |field: &str| sent_field(log, *id, field).and_then(Value::as_str);
         let measured = dispatches.get(wave).and_then(|dispatch| super::wave_usage::current_at(live, *wave, *dispatch));
         let used = measured.and_then(|usage| usage["model_used"].as_str()).or_else(|| text("model_used"));
-        let effort = text("effort");
-        if let Some(model) = used {
-            *models.entry((model.to_string(), effort.map(str::to_string))).or_default() += 1;
-        }
         let delivered: Vec<&str> = sent_field(log, *id, "skills").and_then(Value::as_array).into_iter().flatten()
             .filter_map(|skill| skill["name"].as_str().or_else(|| skill.as_str())).collect();
-        for skill in &delivered {
-            *skills.entry((*skill).to_string()).or_default() += 1;
-        }
-        let summary = sent_field(log, *id, "summary").is_some();
-        summaries += u64::from(summary);
         let tokens = measured.and_then(|usage| usage["tokens"].as_u64()).or_else(|| sent_field(log, *id, "tokens").and_then(Value::as_u64));
-        rows.push((dispatches.get(wave).copied().unwrap_or(*id), json!({"wave":wave,"model_used":used,"model_asked":text("model"),"effort_asked":effort,
+        rows.push((dispatches.get(wave).copied().unwrap_or(*id), *wave, json!({"wave":wave,"model_used":used,"model_asked":text("model"),"effort_asked":text("effort"),
             "effort_used":text("effort_used"),
-            "skills":delivered,"summary_reused":summary,"tokens":tokens,
+            "skills":delivered,"summary_reused":sent_field(log, *id, "summary").is_some(),"tokens":tokens,
             "refused_returns":refused.get(wave).copied().unwrap_or(0),"review_rejections":reviewed.get(wave).copied().unwrap_or(0)})));
     }
-    rows.sort_by_key(|(dispatch, _)| std::cmp::Reverse(*dispatch));
+    rows.sort_by_key(|(dispatch, _, _)| std::cmp::Reverse(*dispatch));
+    AgentRows { rows, refused, reviewed }
+}
+
+/// As linhas de [`agent_rows`] das últimas [`PAGE`] ondas despachadas, a mais
+/// nova primeiro, e o mesmo somado na spec, com o conhecimento reaproveitado
+/// e as chamadas ao Jev e os ganchos que falharam, lidos do histórico inteiro
+/// das operações. Só números e nomes: motivo e texto ficam na spec.
+fn wave_agents(root: &Path, name: &str, log: &SpecLog, live: &Value) -> serde_json::Map<String, Value> {
+    let AgentRows { rows, refused, reviewed } = agent_rows(log, live);
+    let mut models: BTreeMap<(String, Option<String>), u64> = BTreeMap::new();
+    let mut skills: BTreeMap<String, u64> = BTreeMap::new();
+    let mut summaries = 0u64;
+    for (_, _, row) in &rows {
+        if let Some(model) = row["model_used"].as_str() {
+            *models.entry((model.to_string(), row["effort_asked"].as_str().map(str::to_string))).or_default() += 1;
+        }
+        for skill in row["skills"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+            *skills.entry(skill.to_string()).or_default() += 1;
+        }
+        summaries += u64::from(row["summary_reused"] == true);
+    }
+    let sent = rows.len();
     let mut models: Vec<_> = models.into_iter().collect();
     models.sort_by_key(|(_, waves)| std::cmp::Reverse(*waves));
     let mut skills: Vec<_> = skills.into_iter().collect();
@@ -674,8 +778,8 @@ fn wave_agents(root: &Path, name: &str, log: &SpecLog, live: &Value) -> serde_js
         }
     }
     let mut out = serde_json::Map::new();
-    out.insert("waves_sent".into(), json!(last.len()));
-    out.insert("waves".into(), json!(rows.into_iter().take(PAGE).map(|(_, row)| row).collect::<Vec<_>>()));
+    out.insert("waves_sent".into(), json!(sent));
+    out.insert("waves".into(), json!(rows.into_iter().take(PAGE).map(|(_, _, row)| row).collect::<Vec<_>>()));
     out.insert("models".into(), json!(models.into_iter().map(|((model, effort), waves)| json!({"model":model,"effort":effort,"waves":waves})).collect::<Vec<_>>()));
     out.insert("skills".into(), json!(skills.into_iter().take(PAGE).map(|(name, waves)| json!({"name":name,"waves":waves})).collect::<Vec<_>>()));
     out.insert("reuse".into(), json!({"summaries":summaries,"knowledge_calls":knowledge,"knowledge_cached":cached}));
@@ -858,6 +962,55 @@ mod tests {
         assert_eq!(overview["spec"]["tasks"]["total"], 13);
         assert_eq!(overview["spec"]["criteria"]["passed"], 1);
         assert_eq!(overview["warnings"][0], json!({"kind":"wave-no-agent","waves":[2]}));
+    }
+
+    /// The waves screen brings every wave of the plan, newest first and a page
+    /// at a time, each with what it carried and delivered, its commit, its
+    /// time and the spend of the usage screen's own row; its total is the one
+    /// the spec screen counts.
+    #[test]
+    fn the_waves_screen_pages_every_wave_with_its_own_spend_and_counts_as_the_spec_screen() {
+        let dir = fixture();
+        let root = dir.path();
+        let path = root.join(".claude/spec/demo/spec.ndjson");
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        for n in 3..=10u64 {
+            text.push_str(&format!("{}\n", json!({"v":1,"id":100+n,"at":"2026-10-05T08:00:00Z","type":"wave","n":n,"text":format!("Onda {n}."),"criteria":[2],"done_when":"Ok.","origin":1})));
+            text.push_str(&format!("{}\n", json!({"v":1,"id":200+n,"at":"2026-10-05T08:01:00Z","type":"task","wave":n,"title":format!("Tarefa da onda {n}"),"text":"Fazer.","files":[{"path":format!("src/w{n}.rs")}]})));
+        }
+        // The measured spend of wave 1, and a task that wave 3 carried and the backlog took back.
+        for row in [
+            json!({"v":1,"id":300,"at":"2026-10-02T11:01:00Z","type":"send","wave":1,"replaces":8,"model":"opus","effort":"xhigh","model_used":"claude-opus-5-5","tokens":4321}),
+            json!({"v":1,"id":301,"at":"2026-10-05T09:00:00Z","type":"task","wave":3,"title":"Voltou","text":"Fazer.","files":[{"path":"src/delta.rs"}]}),
+            json!({"v":1,"id":302,"at":"2026-10-05T09:10:00Z","type":"task","title":"Voltou","text":"Fazer.","files":[{"path":"src/delta.rs"}],"replaces":301}),
+        ] {
+            text.push_str(&format!("{row}\n"));
+        }
+        std::fs::write(&path, text).unwrap();
+        let first = screen(root, "waves", &Params::default());
+        assert_eq!(first["ok"], true, "{first}");
+        let spec = screen(root, "spec", &Params::default());
+        assert_eq!((first["total"].clone(), spec["spec"]["counts"]["waves"].clone()), (json!(10), json!(10)), "{first}");
+        let numbers = |page: &Value| page["rows"].as_array().unwrap().iter().map(|row| row["wave"].as_u64().unwrap()).collect::<Vec<_>>();
+        assert_eq!(numbers(&first), [10, 9, 8, 7, 6, 5, 4, 3], "{first}");
+        let rest = screen(root, "waves", &Params { offset: Some(8), ..Params::default() });
+        assert_eq!(numbers(&rest), [2, 1], "{rest}");
+        let one = &rest["rows"][1];
+        assert_eq!((one["title"].clone(), one["state"].clone(), one["commit"].clone()), (json!("Primeira"), json!("committed"), json!("abc123")), "{one}");
+        assert_eq!((one["tasks"].clone(), one["files"].clone(), one["delivered_files"].clone(), one["seconds"].clone()), (json!(1), json!(1), json!(1), json!(7200)), "{one}");
+        let usage = screen(root, "usage", &Params::default());
+        let by_wave = usage["spec"]["waves"].as_array().unwrap().iter().find(|row| row["wave"] == 1).cloned().unwrap_or_else(|| panic!("{usage}"));
+        for field in ["model_used", "model_asked", "effort_asked", "tokens"] {
+            assert_eq!(one[field], by_wave[field], "{field}: {one} {by_wave}");
+        }
+        assert_eq!(one["tokens"], 4321, "{one}");
+        let two = &rest["rows"][0];
+        assert_eq!((two["state"].clone(), two["attention"].clone(), two["tasks"].clone(), two["title"].clone()),
+            (json!("no-agent"), json!("wave-no-agent"), json!(1), json!("Segunda, reescrita")), "{two}");
+        assert!(two["tokens"].is_null() && two["commit"].is_null() && two["seconds"].is_null(), "{two}");
+        let three = &first["rows"][7];
+        assert_eq!((three["wave"].clone(), three["tasks"].clone(), three["returned"].clone(), three["files"].clone()), (json!(3), json!(2), json!(1), json!(2)), "{three}");
+        assert_eq!(first["rows"][0]["title"], "Tarefa da onda 10", "{first}");
     }
 
     #[test]

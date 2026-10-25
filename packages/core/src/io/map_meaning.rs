@@ -32,6 +32,7 @@ use model2vec_rs::model::StaticModel;
 use rusqlite::{Connection, OptionalExtension,params};
 
 use crate::domain::normalize::{Languages, Normalizer,plain_words, split_identifier};
+use crate::domain::text::one_line;
 use crate::io::map_db::{Block, Kind, MapDb,table_exists};
 use crate::io::map_revision;
 use crate::platform::error::Result;
@@ -500,14 +501,13 @@ fn stored_words(conn: &Connection) -> Result<HashSet<String>> {
 /// As palavras de um texto de código: o nome colado separado, em minúsculas,
 /// e tudo o que não é letra nem número vira espaço.
 fn words_of(text: &str) -> String {
-    split_identifier(text)
-        .to_lowercase()
-        .chars()
-        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+    one_line(
+        &split_identifier(text)
+            .to_lowercase()
+            .chars()
+            .map(|c| if c.is_alphanumeric() { c } else { ' ' })
+            .collect::<String>(),
+    )
 }
 
 /// O texto compilado de uma declaração, sem corte, nesta ordem: o nome em
@@ -531,7 +531,7 @@ fn compiled_text(parts: &Parts<'_>) -> String {
         path_words,
         parts.titles.join(" "),
     ];
-    pieces.join(" ").split_whitespace().collect::<Vec<_>>().join(" ")
+    one_line(&pieces.join(" "))
 }
 
 /// O que entra no compilado de uma declaração.

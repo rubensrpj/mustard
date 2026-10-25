@@ -25,7 +25,9 @@
 //! como conserto pela rodada; entregue o conserto, o fechamento pede o mesmo
 //! agente de novo, mas só para conferir o conserto, não a obra inteira. Em
 //! até duas voltas de conserto sem aprovar, a onda para e a decisão passa a
-//! ser do usuário — o mesmo limite de qualquer conserto.
+//! ser do usuário — o mesmo limite de qualquer conserto. Os achados que o
+//! veredito aprovado traz em `leftovers` viram tarefas no backlog, e a
+//! resposta manda rodar a rodada no lugar do pull request.
 //!
 //! **A cópia do revisor.** É o binário que cria a cópia onde o agente de
 //! teste dedicado confere a obra, pela mesma porta das cópias de onda, antes
@@ -41,7 +43,8 @@
 //! **O que trava.** Onda sem commit; onda cuja última revisão reprovou e
 //! ainda não recebeu o conserto; pedido do usuário que nenhuma onda entregou;
 //! a cópia do revisor com mudança, ou que não pôde ser criada; a
-//! compilação, o lint ou a suíte que falham, com a saída; critério cuja prova
+//! compilação, o lint ou a suíte que falham, com a saída e, quando o projeto
+//! declara arquivos locais, o nome de cada um, que a cópia limpa não tem; critério cuja prova
 //! não passou; e
 //! critério cuja prova saiu verde sem rodar teste nenhum — a saída do
 //! executor diz zero teste, que é o que um nome de teste errado dá, e a
@@ -76,6 +79,7 @@ use crate::commands::review::qa_run::ProofFault;
 use crate::commands::spec_events::{self, write::record};
 use crate::shared::spec_state::{DiskSpecState, checkout, session_from_env};
 
+mod clean_copy;
 pub(crate) mod stale_marks;
 mod unused;
 
@@ -120,24 +124,30 @@ enum CloseRefusal {
     BacklogNotEmpty {
         tasks: String,
     },
-    /// A compilação declarada do projeto falhou. `no_wave` diz por que
-    /// nenhuma onda reabriu, quando a saída não cita arquivo que uma onda da
-    /// obra mudou.
+    /// A compilação declarada do projeto falhou. `local_files` são os
+    /// arquivos locais que o `mustard.json` declara e que a cópia limpa não
+    /// tem. `no_wave` diz por que nenhuma onda reabriu, quando a saída não
+    /// cita arquivo que uma onda da obra mudou.
     BuildFailed {
         command: String,
         output: String,
+        local_files: Vec<String>,
         no_wave: Option<String>,
     },
-    /// O lint do projeto falhou, com o mesmo `no_wave` da compilação.
+    /// O lint do projeto falhou, com os mesmos `local_files` e `no_wave` da
+    /// compilação.
     LintFailed {
         command: String,
         output: String,
+        local_files: Vec<String>,
         no_wave: Option<String>,
     },
-    /// A suíte inteira do projeto falhou, com o mesmo `no_wave` do lint.
+    /// A suíte inteira do projeto falhou, com os mesmos `local_files` e
+    /// `no_wave` do lint.
     SuiteFailed {
         command: String,
         output: String,
+        local_files: Vec<String>,
         no_wave: Option<String>,
     },
     /// A cópia do revisor final chegou com mudança, com os arquivos dela.
@@ -147,6 +157,12 @@ enum CloseRefusal {
     },
     /// A cópia do revisor final não pôde ser criada, com o que o git disse.
     ReviewCopyFailed {
+        copy: String,
+        detail: String,
+    },
+    /// A cópia limpa em que a máquina roda não pôde ser criada, com o que o
+    /// git disse.
+    CleanCopyFailed {
         copy: String,
         detail: String,
     },
@@ -206,6 +222,7 @@ impl CloseRefusal {
             Self::SuiteFailed { .. } => "suite-failed".into(),
             Self::ReviewCopyDirty { .. } => "review-copy-dirty".into(),
             Self::ReviewCopyFailed { .. } => "review-copy-failed".into(),
+            Self::CleanCopyFailed { .. } => "clean-copy-failed".into(),
             Self::CriterionFailed { .. } => "criterion-failed".into(),
             Self::NewUnused { .. } => "final-new-unused".into(),
             Self::ValidationInputsChanged => "validation-inputs-changed".into(),
@@ -218,6 +235,13 @@ impl CloseRefusal {
         let fill = |key: &str, slots: &[(&str, String)]| {
             slots.iter().fold(translate(key, lang).to_string(), |text, (slot, value)| text.replace(slot, value))
         };
+        // A compilação, o lint ou a suíte que caiu: a recusa da chave `key`,
+        // os arquivos locais que a cópia limpa não tem e por que nenhuma onda
+        // reabriu, cada um numa linha.
+        let command_failed = |key: &str, command: &str, output: &str, local_files: &[String], no_wave: Option<&str>| {
+            let refusal = fill(key, &[("{command}", command.to_string()), ("{output}", output.to_string())]);
+            with_no_wave(without_local_files(refusal, local_files, lang), no_wave)
+        };
         match self {
             Self::Many(all) => all.iter().map(|refusal| refusal.message(lang)).collect::<Vec<_>>().join("\n\n"),
             Self::Refused(refusal) => refusal.message(lang),
@@ -229,17 +253,12 @@ impl CloseRefusal {
             Self::WaveRejected { wave } => fill("close.wave_rejected", &[("{wave}", wave.to_string())]),
             Self::RequestNotDelivered { code } => fill("close.request_not_delivered", &[("{code}", code.clone())]),
             Self::BacklogNotEmpty { tasks } => fill("close.backlog_not_empty", &[("{tasks}", tasks.clone())]),
-            Self::BuildFailed { command, output, no_wave } => {
-                with_no_wave(fill("close.build_failed", &[("{command}", command.clone()), ("{output}", output.clone())]), no_wave.as_deref())
-            }
-            Self::LintFailed { command, output, no_wave } => {
-                with_no_wave(fill("close.lint_failed", &[("{command}", command.clone()), ("{output}", output.clone())]), no_wave.as_deref())
-            }
-            Self::SuiteFailed { command, output, no_wave } => {
-                with_no_wave(fill("close.suite_failed", &[("{command}", command.clone()), ("{output}", output.clone())]), no_wave.as_deref())
-            }
+            Self::BuildFailed { command, output, local_files, no_wave } => command_failed("close.build_failed", command, output, local_files, no_wave.as_deref()),
+            Self::LintFailed { command, output, local_files, no_wave } => command_failed("close.lint_failed", command, output, local_files, no_wave.as_deref()),
+            Self::SuiteFailed { command, output, local_files, no_wave } => command_failed("close.suite_failed", command, output, local_files, no_wave.as_deref()),
             Self::ReviewCopyDirty { copy, files } => fill("close.review_copy_dirty", &[("{copy}", copy.clone()), ("{files}", files.clone())]),
             Self::ReviewCopyFailed { copy, detail } => fill("close.review_copy_failed", &[("{copy}", copy.clone()), ("{detail}", detail.clone())]),
+            Self::CleanCopyFailed { copy, detail } => fill("close.clean_copy_failed", &[("{copy}", copy.clone()), ("{detail}", detail.clone())]),
             Self::CriterionFailed { code, output } => fill("close.criterion_failed", &[("{code}", code.clone()), ("{output}", output.clone())]),
             Self::CriterionRanNoTest { code, command, tests } => {
                 fill("close.criterion_ran_no_test", &[("{code}", code.clone()), ("{command}", command.clone()), ("{count}", tests.to_string())])
@@ -273,6 +292,19 @@ fn with_no_wave(refusal: String, no_wave: Option<&str>) -> String {
         Some(why) => format!("{refusal}\n{why}"),
         None => refusal,
     }
+}
+
+/// A recusa `refusal` da compilação, do lint ou da suíte, seguida, numa linha
+/// própria, de que o comando rodou na cópia limpa sem os arquivos locais que o
+/// projeto declara (`local_files`), cada um nomeado. Quem só tem o `.env` na
+/// máquina entende por que o comando caiu. Sem arquivo local declarado, a
+/// recusa fica como está.
+fn without_local_files(refusal: String, local_files: &[String], lang: Locale) -> String {
+    if local_files.is_empty() {
+        return refusal;
+    }
+    let files = local_files.iter().map(|file| format!("`{file}`")).collect::<Vec<_>>().join(", ");
+    format!("{refusal}\n{}", translate("close.ran_without_local_files", lang).replace("{files}", &files))
 }
 
 /// O núcleo testável de [`run_cmd`]. A sessão e a pasta de configuração da
@@ -430,8 +462,11 @@ fn run_close(
     missing.extend(unfinished(&log).into_iter().filter(|refusal| !matches!(refusal, CloseRefusal::WaveWithoutCommit { wave } if held.contains(wave))));
     // O pedido de revisão só fecha com o veredito que o revisor grava e que a
     // leitura acima assume: sem ele, o fechamento não abre outro pedido, e a
-    // resposta manda o revisor gravar o veredito.
-    if crate::commands::flow::round::open_review(&log).is_some() && !held.contains(&crate::commands::flow::round::FINAL_REVIEW) {
+    // resposta manda o revisor gravar o veredito. O pedido aberto mais velho
+    // que a última mudança da obra não espera: o revisor não recebeu o que
+    // mudou depois dele, o veredito dele não aprovaria a obra, e o fechamento
+    // abre um pedido novo, mais abaixo.
+    if crate::commands::flow::round::awaited_review(&log).is_some() && !held.contains(&crate::commands::flow::round::FINAL_REVIEW) {
         missing.push(CloseRefusal::Report(crate::commands::flow::round::RoundRefusal::VerdictMissing));
     }
     if let Some(refusal) = CloseRefusal::all(missing) {
@@ -464,7 +499,8 @@ fn run_close(
         if super::validation::reusable(root, &log) {
             (Machine::default(), true)
         } else {
-            match machine(opts, root, &spec, &log, lang) {
+            let clean = clean_copy::prepare(root, &spec, &log, &copies)?;
+            match machine(opts, root, &clean, &spec, &log, lang) {
                 Ok(ran) => (ran, false),
                 Err(failure) => return Err(authorize_final_repair(root, &spec, &log, failure, lang)),
             }
@@ -557,7 +593,27 @@ fn run_close(
     // próprio veredito já trouxe por item, e a situação. Sem essa tabela,
     // ninguém consultava depois qual item tem qual verificação, nem onde o
     // comportamento mora — o resultado morria no veredito.
+    // Antes dela, os achados que o veredito aprovado traz em `leftovers` viram
+    // tarefas no backlog, e a obra não fecha: a resposta manda rodar a rodada
+    // no lugar do pull request. O fechamento seguinte recusa pelo backlog, e
+    // a entrega das tarefas pede revisão final nova.
     if let Some(verdict) = final_approval(&log) {
+        let found = crate::commands::flow::round::record_final_leftovers(&opts.root, root, &spec, (&log, verdict), lang)
+            .map_err(CloseRefusal::Refused)?;
+        // O achado só em arquivo que o git ignora vira nota ao usuário, sem
+        // tarefa: sem tarefa nenhuma, a obra fecha como sempre.
+        if found.iter().any(|entry| entry["type"] == json!("task")) {
+            let mut out = final_leftovers_answer(&spec, recorded, found, &read(&path)?, lang);
+            out["criteria"] = json!(runs);
+            out["validation"] = json!({"status":"pass","reused":reused});
+            if let Some(hint) = &stuck_hint {
+                spec_events::pages::push_warning(&mut out, "stuck-found", hint);
+            }
+            if let Some((reason, hint)) = &agents_hint {
+                spec_events::pages::push_warning(&mut out, reason, hint);
+            }
+            return Ok(out);
+        }
         record_tracking_table(&opts.root, &spec, verdict).map_err(CloseRefusal::Refused)?;
     }
 
@@ -565,9 +621,7 @@ fn run_close(
     // das pendências. A função antiga de fechar, que grava arquivos do formato
     // velho, não é chamada.
     crate::commands::spec_events::write::record_phase(&opts.root, &spec, "closed", session);
-    if let Some(sid) = session {
-        crate::shared::context::session::unbind_session_spec(&opts.root.to_string_lossy(), sid);
-    }
+    crate::commands::spec_events::session_spec::unbind(&opts.root, session);
     // A obra fechou: ninguém mais trabalha nas cópias dela, e todas saem
     // daqui, cada vaga com o que tiver dentro e com a compilação — o que o
     // revisor cortou para ver a prova cair não é trabalho de ninguém. A que
@@ -682,6 +736,25 @@ fn run_close(
     Ok(out)
 }
 
+/// A resposta do fechamento que gravou como tarefas os achados do veredito
+/// final aprovado — `found`, cada evento com o tipo e o número —, lidos em
+/// `log`: a obra segue em execução, o que o fechamento gravou (`recorded`)
+/// ganha esses eventos, e o passo seguinte é a rodada, com o código de cada
+/// tarefa, no idioma `lang` — nunca o pull request.
+fn final_leftovers_answer(spec: &str, mut recorded: Vec<Value>, found: Vec<Value>, log: &SpecLog, lang: Locale) -> Value {
+    let codes = log.codes();
+    let tasks: Vec<String> = found
+        .iter()
+        .filter(|entry| entry["type"] == json!("task"))
+        .filter_map(|entry| entry["id"].as_u64())
+        .map(|id| codes.get(&id).cloned().unwrap_or_else(|| id.to_string()))
+        .collect();
+    let command = crate::commands::flow::resume::step_command("round", spec, &State::from_log(log)).unwrap_or_default();
+    let next = translate("close.final_leftovers", lang).replace("{tasks}", &tasks.join(", ")).replace("{command}", &command);
+    recorded.extend(found);
+    json!({ "ok": true, "spec": spec, "phase": "running", "recorded": recorded, "next": next, "command": command })
+}
+
 /// A linha que grava a resposta "fica para depois" da pendência `id`, pronta
 /// para o assistente rodar assim que o usuário responder: ela sai junto com a
 /// pergunta, e o motivo entra no lugar do `…`.
@@ -756,10 +829,14 @@ fn hand_pending_to_project(root: &Path, spec: &str, log: &SpecLog, answers: &[St
 /// sem nada que ele pudesse consertar no código da obra. A compilação que
 /// falta nem aviso dá: há linguagem sem passo de compilar, e o plano já avisa
 /// o projeto que não a declara.
-fn machine(opts: &CloseOpts, root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Result<Machine, CloseRefusal> {
+fn machine(opts: &CloseOpts, root: &Path, clean: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Result<Machine, CloseRefusal> {
     let mut timing = super::validation::Stage::new(root, spec, "final", "machine", true);
     let before = super::validation::fingerprint(root, log);
-    let declared = mustard_core::ProjectConfig::load(root).commands();
+    let config = mustard_core::ProjectConfig::load(root);
+    let declared = config.commands();
+    // A cópia limpa nunca recebe os arquivos locais do projeto: a recusa dos
+    // comandos os nomeia.
+    let local_files = mustard_core::io::wave_prompt::local_files(&config);
     let mut undeclared: Vec<String> = Vec::new();
     let mut from_base: Vec<String> = Vec::new();
     let mut native_outputs = Vec::new();
@@ -773,17 +850,17 @@ fn machine(opts: &CloseOpts, root: &Path, spec: &str, log: &SpecLog, lang: Local
             }
             continue;
         };
-        let command = if key == "lintCommand" { crate::commands::review::qa_run::readonly_lint_command(root, &command) } else { command };
+        let command = if key == "lintCommand" { crate::commands::review::qa_run::readonly_lint_command(clean, &command) } else { command };
         // Nenhum deles é prova de critério: eles não prometem rodar um
         // teste pelo nome, e a leitura de quantos testes a saída diz fica
         // fora do caminho deles. O teto também é o deles, de uma hora, e não
         // o de um critério: a compilação e a suíte inteira levam o tempo que o
         // projeto pede.
-        let out = crate::commands::review::qa_run::run_server_command(&clean_env(&command), root);
+        let out = crate::commands::review::qa_run::run_server_command(&clean_env(&command), clean);
         super::validation::record_run(root, spec, "final", key, &command, &out).map_err(CloseRefusal::Refused)?;
         if out.result != "pass" {
             if key == "buildCommand" {
-                return Err(CloseRefusal::BuildFailed { command, output: out.output, no_wave: None });
+                return Err(CloseRefusal::BuildFailed { command, output: out.output, local_files, no_wave: None });
             }
             // O lint que só acusa arquivo que a obra não tocou e que a base
             // já acusava não é erro da obra: ele vira aviso, e o fechamento
@@ -802,8 +879,8 @@ fn machine(opts: &CloseOpts, root: &Path, spec: &str, log: &SpecLog, lang: Local
                 continue;
             }
             failures.push(match key {
-                "lintCommand" => CloseRefusal::LintFailed { command, output: out.output, no_wave: None },
-                _ => CloseRefusal::SuiteFailed { command, output: out.output, no_wave: None },
+                "lintCommand" => CloseRefusal::LintFailed { command, output: out.output, local_files: local_files.clone(), no_wave: None },
+                _ => CloseRefusal::SuiteFailed { command, output: out.output, local_files: local_files.clone(), no_wave: None },
             });
             continue;
         }
@@ -812,7 +889,7 @@ fn machine(opts: &CloseOpts, root: &Path, spec: &str, log: &SpecLog, lang: Local
 
     // Cada critério roda uma vez, e cada execução é gravada.
     let criteria = criteria_list(log);
-    let outcomes = crate::commands::review::qa_run::run_criteria_proofs(root, &criteria);
+    let outcomes = crate::commands::review::qa_run::run_criteria_proofs(clean, &criteria);
     let mut runs: Vec<Value> = Vec::new();
     for (id, code, out) in &outcomes {
         native_outputs.push(out.evidence.clone());
@@ -872,13 +949,13 @@ struct Machine {
 
 /// Os arquivos que a saída `output` acusa e que já eram da base: a saída não
 /// cita arquivo nenhum da obra, cita ao menos um de fora, e todos os de fora
-/// já apareciam na conferência que a abertura gravou. `None` quando a falha é
-/// da obra, e é ela que trava o fechamento.
+/// já apareciam na conferência que o primeiro despacho de onda gravou. `None`
+/// quando a falha é da obra, e é ela que trava o fechamento.
 ///
-/// Sem a marca da abertura, nada é da base: o fechamento cobra tudo, como
-/// antes dela. Na correção do usuário o fechamento caiu num arquivo de outro
-/// time, mudado na base seis dias antes, que a obra não toca; o projeto dele
-/// já tinha cinco exceções para contornar isso.
+/// Sem a marca do primeiro despacho, nada é da base: o fechamento cobra tudo,
+/// como antes dela. Na correção do usuário o fechamento caiu num arquivo de
+/// outro time, mudado na base seis dias antes, que a obra não toca; o projeto
+/// dele já tinha cinco exceções para contornar isso.
 fn already_in_the_base(root: &Path, log: &SpecLog, output: &str) -> Option<Vec<String>> {
     let planned: Vec<u64> = log.planned_waves().into_iter().collect();
     let work = super::validation::Work::of(root, log, &planned);
@@ -892,7 +969,8 @@ fn already_in_the_base(root: &Path, log: &SpecLog, output: &str) -> Option<Vec<S
 
 /// A compilação, o lint e a suíte reabrem só as ondas que declararam ou
 /// entregaram um arquivo da obra que a saída cita, pela mesma leitura da
-/// rodada ([`super::validation::cited`]). Sem onda citada, nenhuma reabre:
+/// rodada ([`super::validation::cited`]); com a linha citada, só a onda cujo
+/// commit mudou a linha por último. Sem onda citada, nenhuma reabre:
 /// eles rodam pela primeira vez aqui, sobre a obra inteira, e não há base para
 /// culpar ninguém; a recusa diz o que a saída citou, e a decisão é do
 /// usuário. A análise de declarações sem uso passa pela mesma leitura, com o
@@ -976,9 +1054,9 @@ fn no_wave_reopened(failure: CloseRefusal, cited: &super::validation::Cited, lan
         translate("close.cited_outside", lang).replace("{files}", &files)
     };
     match failure {
-        CloseRefusal::BuildFailed { command, output, .. } => CloseRefusal::BuildFailed { command, output, no_wave: Some(why) },
-        CloseRefusal::LintFailed { command, output, .. } => CloseRefusal::LintFailed { command, output, no_wave: Some(why) },
-        CloseRefusal::SuiteFailed { command, output, .. } => CloseRefusal::SuiteFailed { command, output, no_wave: Some(why) },
+        CloseRefusal::BuildFailed { command, output, local_files, .. } => CloseRefusal::BuildFailed { command, output, local_files, no_wave: Some(why) },
+        CloseRefusal::LintFailed { command, output, local_files, .. } => CloseRefusal::LintFailed { command, output, local_files, no_wave: Some(why) },
+        CloseRefusal::SuiteFailed { command, output, local_files, .. } => CloseRefusal::SuiteFailed { command, output, local_files, no_wave: Some(why) },
         CloseRefusal::NewUnused { text, .. } => CloseRefusal::NewUnused { text, no_wave: Some(why) },
         other => other,
     }
@@ -1580,6 +1658,20 @@ mod tests {
 
     fn id_of(report: &Value) -> u64 {
         report["id"].as_u64().unwrap_or_else(|| panic!("não gravou: {report}"))
+    }
+
+    /// A pasta da cópia limpa em que a máquina do fechamento da obra `x` roda:
+    /// é nela que os comandos do servidor escrevem o que deixam para trás.
+    pub(super) fn check_copy(root: &Path) -> PathBuf {
+        mustard_core::io::wave_prompt::spec_copies_dir(root, "x").join("check")
+    }
+
+    /// Comita o arquivo `file`, ainda que o git o ignore: a cópia limpa é um
+    /// checkout do commit, e o script que o comando do servidor roda tem de
+    /// estar nele.
+    pub(super) fn commit_file(root: &Path, file: &str) {
+        git_at(root, &["add", "-f", file]);
+        git_at(root, &["commit", "-q", "-m", "script do servidor"]);
     }
 
     pub(super) fn git_at(root: &Path, args: &[&str]) {
@@ -2293,8 +2385,16 @@ mod tests {
         std::fs::create_dir_all(root.join("apps/rt")).unwrap();
         std::fs::write(root.join("apps/rt/Cargo.toml"), b"[package]\nname=\"mustard-rt\"\n").unwrap();
         std::fs::write(root.join(".gitignore"), "suites-rodadas\n").unwrap();
-        std::fs::write(root.join("mustard.json"), br#"{"testCommand":"echo rodou >> suites-rodadas"}"#).unwrap();
-        let runs = || std::fs::read_to_string(root.join("suites-rodadas")).unwrap_or_default().lines().count();
+        // A suíte roda na cópia limpa, que sai com a obra: o registro das
+        // rodadas mora na pasta do projeto, por caminho absoluto. O comando
+        // vai a um shell POSIX também no Windows, onde a barra invertida
+        // escapa o caractere seguinte e `D:\tmp\x` viraria `D:tmpx`, um
+        // arquivo na cópia limpa: o caminho vai com barras normais e entre
+        // aspas simples, que também guardam um espaço no nome da pasta.
+        let ledger = root.join("suites-rodadas");
+        let suite = format!("echo rodou >> '{}'", mustard_core::io::wave_prompt::shown(&ledger));
+        std::fs::write(root.join("mustard.json"), json!({ "testCommand": suite }).to_string()).unwrap();
+        let runs = || std::fs::read_to_string(&ledger).unwrap_or_default().lines().count();
 
         let asked = close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None, ..Default::default() }, None);
         assert_eq!(asked["ok"], json!(true), "{asked}");
@@ -2950,10 +3050,10 @@ exit "${2:-0}"
     }
 
     /// O lint que só acusa arquivo que a obra não tocou e que a base já
-    /// acusava na abertura não trava o fechamento: ele vira aviso, com os
-    /// arquivos e com o que o comando disse. O mesmo lint acusando um arquivo
-    /// da obra segue recusando. Sem a marca da abertura, o fechamento cobra
-    /// tudo, como antes dela.
+    /// acusava no primeiro despacho de onda não trava o fechamento: ele vira
+    /// aviso, com os arquivos e com o que o comando disse. O mesmo lint
+    /// acusando um arquivo da obra segue recusando. Sem a marca do primeiro
+    /// despacho, o fechamento cobra tudo, como antes dela.
     ///
     /// Em campo (21/10/2026) o fechamento caiu num arquivo de outro time,
     /// mudado na base seis dias antes, que a obra não toca; o projeto do
@@ -2971,13 +3071,14 @@ exit "${2:-0}"
             let script = root.join("lint");
             std::fs::write(&script, format!("#!/bin/sh\necho '{named}:1:1 erro de formatação'\nexit 1\n")).unwrap();
             std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+            commit_file(root, "lint");
             std::fs::write(root.join("mustard.json"), json!({"lintCommand":"./lint", "testCommand":"git --version"}).to_string()).unwrap();
             "./lint"
         };
         let closing = || close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), ..Default::default() }, None);
         let hints = |out: &Value, reason: &str| hints_of(out, reason).into_iter().map(str::to_string).collect::<Vec<_>>();
 
-        // Sem a marca da abertura, o lint que cai trava o fechamento.
+        // Sem a marca do primeiro despacho, o lint que cai trava o fechamento.
         lint("src/outro.rs");
         let strict = closing();
         assert_eq!(strict["reason"], json!("lint-failed"), "sem a marca da base, cobra tudo: {strict}");
@@ -3020,6 +3121,7 @@ exit "${2:-0}"
         let script = root.join("lint");
         std::fs::write(&script, format!("#!/bin/sh\necho '{}:1:1 erro'\nexit 1\n", wave_file(1))).unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        commit_file(root, "lint");
         std::fs::write(root.join("mustard.json"), json!({"lintCommand":"./lint", "testCommand":"git --version"}).to_string()).unwrap();
 
         let refused = close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), ..Default::default() }, None);
@@ -3047,7 +3149,7 @@ exit "${2:-0}"
 
     /// O que o roteiro gravou para o papel `role`, uma chave por linha.
     fn probed(root: &Path, role: &str) -> std::collections::BTreeMap<String, String> {
-        let text = std::fs::read_to_string(root.join(format!("ran-{role}"))).unwrap_or_default();
+        let text = std::fs::read_to_string(check_copy(root).join(format!("ran-{role}"))).unwrap_or_default();
         text.lines().filter_map(|l| l.split_once('=')).map(|(k, v)| (k.to_string(), v.to_string())).collect()
     }
 
@@ -3064,6 +3166,7 @@ exit "${2:-0}"
         let root = dir.path();
         ready_to_close(root, "x", &["git --version"]);
         std::fs::write(root.join("probe.sh"), PROBE).unwrap();
+        commit_file(root, "probe.sh");
         let exclude = root.join(".git/info/exclude");
         let mut ignores = std::fs::read_to_string(&exclude).unwrap_or_default();
         ignores.push_str("\nran-lint\nran-test\n");
@@ -3071,7 +3174,7 @@ exit "${2:-0}"
         let close_with = |lint: &str, test: &str| {
             repair_machine_failure(root, "x");
             for role in ["lint", "test"] {
-                let _ = std::fs::remove_file(root.join(format!("ran-{role}")));
+                let _ = std::fs::remove_file(check_copy(root).join(format!("ran-{role}")));
             }
             std::fs::write(root.join("mustard.json"), json!({ "lintCommand": lint, "testCommand": test }).to_string()).unwrap();
             close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), ..Default::default() }, None)
@@ -3079,7 +3182,7 @@ exit "${2:-0}"
 
         let refused = close_with("sh probe.sh lint 1", "sh probe.sh test");
         assert_eq!(refused["reason"], json!("lint-failed"), "{refused}");
-        assert!(root.join("ran-test").exists(), "com o lint vermelho, a suíte roda assim mesmo");
+        assert!(check_copy(root).join("ran-test").exists(), "com o lint vermelho, a suíte roda assim mesmo");
 
         let refused = close_with("sh probe.sh lint", "sh probe.sh test 1");
         assert_eq!(refused["reason"], json!("suite-failed"), "a suíte vermelha trava o fechamento: {refused}");
@@ -3117,6 +3220,7 @@ exit "${2:-0}"
         let root = dir.path();
         ready_to_close(root, "x", &["git --version"]);
         std::fs::write(root.join("probe.sh"), PROBE).unwrap();
+        commit_file(root, "probe.sh");
         let exclude = root.join(".git/info/exclude");
         let mut ignores = std::fs::read_to_string(&exclude).unwrap_or_default();
         ignores.push_str("\nran-lint\nran-test\n");
@@ -3124,7 +3228,7 @@ exit "${2:-0}"
         std::fs::write(root.join("mustard.json"), json!({ "lintCommand": "sh probe.sh lint" }).to_string()).unwrap();
         let asked = close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), ..Default::default() }, None);
         assert_eq!(asked["review"]["final"], json!(true), "{asked}");
-        assert!(root.join("ran-lint").is_file(), "o que está declarado roda");
+        assert!(check_copy(root).join("ran-lint").is_file(), "o que está declarado roda");
         let hints: Vec<String> = asked["warnings"]
             .as_array()
             .cloned()
@@ -3525,7 +3629,7 @@ exit "${2:-0}"
     #[test]
     fn closing_runs_the_project_lint_and_opens_the_pull_request_only_after_the_dedicated_test_agent() {
         let lint = "git init -q lint-rodou";
-        let ran = |root: &Path| root.join("lint-rodou").is_dir();
+        let ran = |root: &Path| check_copy(root).join("lint-rodou").is_dir();
 
         // O lint que falha recusa com a saída dele, e os critérios rodam
         // assim mesmo: a recusa lista tudo o que caiu de uma vez.
@@ -3581,7 +3685,7 @@ exit "${2:-0}"
 
         // Depois do conserto, a máquina roda de novo, e o pedido volta —
         // agora só com o conserto, não a obra inteira de novo.
-        std::fs::remove_dir_all(root.join("lint-rodou")).unwrap();
+        std::fs::remove_dir_all(check_copy(root).join("lint-rodou")).unwrap();
         let again = close_with_lint(root, lint, None);
         assert_eq!(again["review"]["final"], json!(true), "{again}");
         assert!(ran(root), "{again}");
@@ -3590,7 +3694,7 @@ exit "${2:-0}"
         assert!(!fix_prompt.contains("MSTD-WAVE-0001") && !fix_prompt.contains("MSTD-TASK-0001"), "só o conserto: {fix_prompt}");
 
         // Aprovado, a spec fecha sem rodar a máquina outra vez.
-        std::fs::remove_dir_all(root.join("lint-rodou")).unwrap();
+        std::fs::remove_dir_all(check_copy(root).join("lint-rodou")).unwrap();
         let before = criterion_runs(root);
         let approved = json!({"final": true, "result": "approved", "text": "O conserto ficou certo."});
         let closed = close_with_lint(root, lint, verdict_written(root, "x", approved));
@@ -4540,7 +4644,7 @@ exit "${2:-0}"
         assert_eq!(refused["reason"], json!("build-failed"), "{refused}");
         let hint = refused["hint"].as_str().unwrap_or_default();
         assert!(hint.contains(&format!("`{build}`")) && hint.contains("error TS2304"), "{refused}");
-        assert!(!root.join("rodou").exists(), "com a compilação vermelha, o lint e a suíte nem rodam: {refused}");
+        assert!(!check_copy(root).join("rodou").exists(), "com a compilação vermelha, o lint e a suíte nem rodam: {refused}");
         assert_eq!(criterion_runs(root), 0, "{refused}");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         assert_eq!(log.last_rejected().keys().copied().collect::<Vec<_>>(), vec![2], "{refused}");

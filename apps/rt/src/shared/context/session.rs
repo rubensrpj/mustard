@@ -28,6 +28,17 @@ pub(super) fn is_placeholder_session(id: &str) -> bool {
     id.is_empty() || PLACEHOLDER_SESSION_IDS.contains(&id)
 }
 
+/// `true` quando o id `id` de uma sessão serve de nome de uma pasta só: até
+/// 128 letras e algarismos ASCII, `-`, `_` e `.`, sem começar por ponto. O id
+/// vem do ambiente ou do gancho, e uma barra ou um `..` nele montariam um
+/// caminho fora da pasta das sessões.
+fn is_folder_name(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && !id.starts_with('.')
+        && id.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+}
+
 /// Resolve the current session id, defaulting to `"unknown"`.
 ///
 /// Resolution order:
@@ -159,17 +170,15 @@ fn spec_for_session_uncached(project_dir_path: &str, session_id: &str) -> Option
     }
 }
 
-/// Persist the session→spec binding as the `active-spec` marker, best-effort.
+/// Grava a ligação da sessão com a spec, a marca `active-spec`, sem falhar.
 ///
-/// Sem chamador na produção desde a refatoração que enxugou o runtime: quem
-/// escreve a ligação hoje são os testes dos portões que a LEEM por
-/// [`spec_for_session`], e por isso ela mora sob `cfg(test)` em vez de sair.
-/// Fail-open: qualquer erro de IO é engolido.
+/// Quem liga é a abertura e a retomada da spec, com a sessão da conversa que
+/// as rodou: é por esta ligação que a fala, a resposta e as chamadas dela vão
+/// para a spec, e não para a da branch. Qualquer erro de disco é engolido.
 ///
 /// A placeholder session id ([`is_placeholder_session`]) is REFUSED: a binding
 /// written under a bucket no hook is ever handed is unreachable, and the gates
 /// keyed on it would silently fall back to whichever spec is newest.
-#[cfg(test)]
 pub fn bind_session_spec(project_dir_path: &str, session_id: &str, spec: &str) {
     if is_placeholder_session(session_id) || spec.is_empty() {
         return;
@@ -216,8 +225,13 @@ pub fn unbind_session_spec(project_dir: &str, session_id: &str) {
 /// The `.session/` base is not exposed via [`ClaudePaths`] (it is the events
 /// writer's consumer, not Mustard-owned), so compose it from `claude_dir()` the
 /// same way [`session_id`]'s fallback and the NDJSON writer do. `None` on a `.claude/.claude/`
-/// guard rejection of the project root.
+/// guard rejection of the project root, e com o id que não serve de nome de
+/// pasta ([`is_folder_name`]): sem a conferência, um `..` vindo do ambiente
+/// levava a marca para fora da pasta das sessões.
 fn session_spec_marker(project_dir_path: &str, session_id: &str) -> Option<PathBuf> {
+    if !is_folder_name(session_id) {
+        return None;
+    }
     Some(
         ClaudePaths::for_project(Path::new(project_dir_path))
             .ok()?

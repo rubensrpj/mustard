@@ -11,7 +11,9 @@
 //! ([`crate::commands::flow::round::dispatch_jev`]); com as travas presas, a
 //! rodada só a lê, e a onda nova sem decisão não sai nesta rodada, só ela.
 //! Com o Jev ligado falhando, a escolha vai à reserva, e o recibo a manda na
-//! rodada seguinte, com a dúvida abaixo do corte.
+//! rodada seguinte, com a dúvida abaixo do corte. A onda que a montagem do
+//! backlog formou e a escolha segurou não volta a ser montada
+//! ([`held_for_picks`]): sai com o número que ganhou.
 //!
 //! A conta: cada envio soma, a cada skill do Mustard, uma candidatura quando
 //! ela foi candidata a alguma tarefa e uma entrega por bloco que a levou.
@@ -31,9 +33,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use mustard_core::domain::project_summary::cut_at_word;
 use mustard_core::domain::spec_events::{SpecLog, TASK_TITLE_MAX};
 use mustard_core::domain::spec_state::PhaseWriter;
+use mustard_core::domain::text::cut_line;
 use mustard_core::domain::wave_prompt::{SkillOption, SkillTie};
 use mustard_core::io::failures::{self, Failure, SkillTask};
 use mustard_core::io::mustard_skills::{self as registry, IDLE_CANDIDACIES, MustardSkill, RETIRED};
@@ -43,7 +45,7 @@ use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Map, Value, json};
 
 use crate::commands::flow::round::dispatch_jev::{Asker, Outcome, reserved};
-use crate::shared::failure_skills::{copy_folder, runs, skill_dir, target_spec};
+use crate::shared::failure_skills::{copy_folder, runs, skill_dir, skill_task_covers, target_spec, with_covers};
 use crate::shared::jev::yes_no::{self, YesNo};
 use crate::shared::secret::without_secrets;
 
@@ -122,7 +124,17 @@ struct WaveTies<'a> {
     payloads: Vec<String>,
 }
 
-impl WaveTies<'_> {
+impl<'a> WaveTies<'a> {
+    /// As perguntas da escolha das skills das tarefas com empate do pedido
+    /// `prompt`.
+    fn of(prompt: &'a WavePrompt) -> Self {
+        let ties: Vec<&SkillTie> = prompt.skill_ties.iter().collect();
+        let (questions, entries) = pick_groups(&ties);
+        let parts: Vec<Vec<(String, Vec<String>)>> = questions.iter().zip(&entries).map(|(question, entries)| question.payloads(entries)).collect();
+        let payloads: Vec<String> = parts.iter().flatten().map(|(payload, _)| payload.clone()).collect();
+        Self { wave: prompt.wave, ties, parts, payloads }
+    }
+
     /// As skills de cada tarefa pelas respostas `docs`, uma por pedido, com
     /// a chance mínima `cut`; `None` quando alguma não se lê.
     fn picked(&self, docs: &[Value], cut: f64) -> Option<BTreeMap<u64, Vec<String>>> {
@@ -152,29 +164,20 @@ impl WaveTies<'_> {
     }
 }
 
-/// [`picks`] com o Jev `jev` (desligado, sem ele), decidida por `asker`, com
-/// as chamadas gravadas na spec `spec` de `root`. Antes das travas, o recibo
-/// da reserva já entregue da escolha de uma onda vale primeiro, e as ondas
-/// ainda sem decisão vão ao Jev numa chamada; a resposta de cada uma fica
-/// gravada, ou vai à reserva. Com as travas presas, só se lê a decisão
-/// gravada. A do recibo põe a dúvida abaixo do corte: só o sim certo entra. A
-/// onda de `holdable` sem decisão fica fora da rodada; a outra, e a cuja
-/// reserva não se prepara, leva a escolha que se lê e, no resto, as
-/// primeiras.
+/// As skills escolhidas para as tarefas dos pedidos `built` que têm mais
+/// candidatas do que cabem, com o Jev `jev` do projeto, o que a rodada já
+/// carregou (desligado, sem ele), decididas por `asker`. Sem tarefa assim, ou
+/// sem Jev, nenhuma. Antes das travas, o recibo da reserva já entregue da
+/// escolha de uma onda vale primeiro, e as ondas ainda sem decisão vão ao Jev
+/// numa chamada; a resposta de cada uma fica gravada, ou vai à reserva. Com as
+/// travas presas, só se lê a decisão gravada. A do recibo põe a dúvida abaixo
+/// do corte: só o sim certo entra. A onda de `holdable` sem decisão fica fora
+/// da rodada; a outra, e a cuja reserva não se prepara, leva a escolha que se
+/// lê e, no resto, as primeiras.
 pub(crate) fn picks_decided(built: &[WavePrompt], holdable: &BTreeSet<u64>, jev: Option<&yes_no::AskFn<'_>>, asker: &Asker<'_>) -> Picked {
     let mut out = Picked::default();
     let Some(invoke) = jev else { return out };
-    let ones: Vec<WaveTies<'_>> = built
-        .iter()
-        .filter(|prompt| !prompt.skill_ties.is_empty())
-        .map(|prompt| {
-            let ties: Vec<&SkillTie> = prompt.skill_ties.iter().collect();
-            let (questions, entries) = pick_groups(&ties);
-            let parts: Vec<Vec<(String, Vec<String>)>> = questions.iter().zip(&entries).map(|(question, entries)| question.payloads(entries)).collect();
-            let payloads: Vec<String> = parts.iter().flatten().map(|(payload, _)| payload.clone()).collect();
-            WaveTies { wave: prompt.wave, ties, parts, payloads }
-        })
-        .collect();
+    let ones: Vec<WaveTies<'_>> = built.iter().filter(|prompt| !prompt.skill_ties.is_empty()).map(WaveTies::of).collect();
     if asker.asks() {
         let asking: Vec<(&WaveTies<'_>, Vec<String>)> = ones
             .iter()
@@ -216,19 +219,21 @@ pub(crate) fn picks_decided(built: &[WavePrompt], holdable: &BTreeSet<u64>, jev:
 /// Os pedidos das ondas `outgoing` da spec `spec` do projeto `root`, lida em
 /// `log`, no idioma `lang`, com as ondas fora em `flight`: montados uma vez e,
 /// quando alguma tarefa tem mais skills candidatas do que cabem, montados de
-/// novo com a escolha do Jev, decidida por `asker`, que fica em `flight`. A
-/// onda nova (de `next`) cuja escolha espera a decisão sai de `next`, de
-/// `outgoing` e das ondas fora, sem pedido montado, e volta à parte.
+/// novo com a escolha do Jev `jev`, o que a rodada já carregou, decidida por
+/// `asker`, que fica em `flight`. A onda nova (de `next`) cuja escolha espera
+/// a decisão sai de `next`, de `outgoing` e das ondas fora, sem pedido
+/// montado, e volta à parte.
 pub(crate) fn prompts_with_picks(
     root: &Path,
     spec: &str,
     (log, lang): (&SpecLog, Locale),
     flight: &mut Flight,
     (next, outgoing): (&mut Vec<u64>, &mut BTreeSet<u64>),
+    jev: Option<&yes_no::AskFn<'_>>,
     asker: &Asker<'_>,
 ) -> (Vec<WavePrompt>, BTreeSet<u64>) {
     let built = mustard_core::io::wave_prompt::prompts(root, spec, log, lang, flight, outgoing);
-    let Picked { picks, held } = picks(root, spec, &built, &next.iter().copied().collect(), asker);
+    let Picked { picks, held } = picks_decided(&built, &next.iter().copied().collect(), jev, asker);
     if picks.is_empty() && held.is_empty() {
         return (built, held);
     }
@@ -248,16 +253,36 @@ pub(crate) fn held_notes(held: BTreeSet<u64>, warnings: &mut Vec<Value>, lang: L
     lines
 }
 
-/// As skills escolhidas para as tarefas dos pedidos `built` da spec `spec`
-/// do projeto `root` que têm mais candidatas do que cabem, com o Jev do
-/// projeto, decididas por `asker` ([`picks_decided`]). Sem tarefa assim, ou
-/// sem Jev, nenhuma.
-pub(crate) fn picks(root: &Path, spec: &str, built: &[WavePrompt], holdable: &BTreeSet<u64>, asker: &Asker<'_>) -> Picked {
-    if built.iter().all(|prompt| prompt.skill_ties.is_empty()) {
-        return Picked::default();
+/// As ondas de `waves`, montadas pelo backlog e não enviadas, da spec `spec`
+/// do projeto `root`, lida em `log`, que a rodada que as montou segurou à
+/// espera da escolha das skills pelo Jev `jev`, o que a rodada já carregou:
+/// alguma tarefa delas tem mais skills candidatas do que cabem, e algum
+/// pedido dessa escolha não tinha decisão gravada, por `asker`, quando a onda
+/// foi gravada. A montagem não as desfaz: cada uma sai com o número que
+/// ganhou, na rodada em que a decisão chega. A onda que já tinha a decisão e
+/// não saiu por outro motivo fica de fora, e, sem o Jev da escolha das
+/// skills, nenhuma onda é segurada. O empate das skills de uma tarefa não
+/// depende do idioma `lang` nem das ondas que estão fora: o pedido se monta
+/// sem elas.
+pub(crate) fn held_for_picks(
+    root: &Path,
+    spec: &str,
+    (log, lang): (&SpecLog, Locale),
+    waves: &BTreeSet<u64>,
+    jev: Option<&yes_no::AskFn<'_>>,
+    asker: &Asker<'_>,
+) -> BTreeSet<u64> {
+    if waves.is_empty() || jev.is_none() {
+        return BTreeSet::new();
     }
-    let jev = yes_no::project_jev(root, spec, PICK_CALL);
-    picks_decided(built, holdable, jev.as_deref(), asker)
+    let formed = log.last_by_wave("wave");
+    let built = mustard_core::io::wave_prompt::prompts(root, spec, log, lang, &Flight::default(), waves);
+    built
+        .iter()
+        .filter(|prompt| !prompt.skill_ties.is_empty())
+        .filter(|prompt| formed.get(&prompt.wave).is_some_and(|at| asker.undecided_at(PICK_CALL, &WaveTies::of(prompt).payloads, *at)))
+        .map(|prompt| prompt.wave)
+        .collect()
 }
 
 /// Conta os envios dos pedidos `sent` no registro do projeto `root`: as
@@ -372,7 +397,7 @@ impl Why {
             Self::Failure { spec, wave, reason, .. } => translate("skills.update_why_failure", lang)
                 .replace("{spec}", spec)
                 .replace("{wave}", &wave.to_string())
-                .replace("{reason}", &cut_at_word(reason, REASON_CHARS)),
+                .replace("{reason}", &cut_line(reason, REASON_CHARS)),
         }
     }
 }
@@ -427,7 +452,11 @@ fn update_task(start: &Path, spec: &str, name: &str, why: &Why, lang: Locale) ->
         return Ok(None);
     }
     let Some(target) = target_spec(start, spec) else { return Ok(None) };
-    let draft = update_draft(&root, name, &skill, why, lang);
+    let waves: Vec<(&str, u64)> = match why {
+        Why::Failure { spec, wave, .. } => vec![(spec.as_str(), *wave)],
+        Why::Change { .. } | Why::Gone { .. } => Vec::new(),
+    };
+    let draft = with_covers(update_draft(&root, name, &skill, why, lang), skill_task_covers(start, &target, &waves));
     let written = crate::commands::spec_events::write::record(start, &target, "task", draft, PhaseWriter::Binary).map_err(|refusal| refusal.message(lang))?;
     let id = written.written.id;
     let mark = SkillTask { spec: target.clone(), task: Some(id) };
@@ -803,7 +832,7 @@ mod tests {
         let root = dir.path();
         let log = project(root, false);
         let built = prompts(root, "x", &log, Locale::PtBr, &Flight::default(), &BTreeSet::from([1]));
-        let picked = picks(root, "x", &built, &BTreeSet::from([1]), &Asker::new(root, root, "x", &log, Phase::Ask));
+        let picked = picks_decided(&built, &BTreeSet::from([1]), None, &Asker::new(root, root, "x", &log, Phase::Ask));
         assert!(picked.picks.is_empty() && picked.held.is_empty(), "no Jev in the tests, no choice and no wait");
         assert_eq!(built[0].tasks[0].skills, ["a1", "a2", "a3"]);
         assert_eq!(built[0].skill_candidates, ["a1", "a2", "a3", "a4", "a5"]);

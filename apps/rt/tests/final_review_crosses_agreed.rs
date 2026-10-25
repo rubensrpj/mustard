@@ -8,8 +8,12 @@
 //! é recusado nomeando quem faltou, e o item que ela marca sem atender vira
 //! tarefa no backlog — a rodada seguinte forma o lote, despacha, e o
 //! fechamento só fecha depois de uma revisão final nova com tudo atendido.
-//! Prova de ponta a ponta, pelo binário de verdade, num repositório
-//! temporário.
+//! A aprovação final vale só para o que o revisor recebeu: a onda comitada
+//! depois do pedido de revisão faz o fechamento pedir revisão nova, e o
+//! ajuste depois da obra fechada e reaberta é revisado sozinho. A falha do
+//! fechamento numa linha reabre só a onda que a escreveu, e o conserto dela
+//! não toma, no painel, o lugar do commit da onda. Prova de ponta a ponta,
+//! pelo binário de verdade, num repositório temporário.
 
 #[path = "support/binary.rs"]
 mod binary;
@@ -20,6 +24,7 @@ use std::process::{Command, Stdio};
 
 use mustard_core::domain::spec_events::{SpecEvent, SpecLog};
 use mustard_core::io::spec_events as store;
+use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Value, json};
 
 #[path = "support/mod.rs"]
@@ -74,6 +79,22 @@ impl Project {
 
     /// Como [`Self::command`], rodando de dentro de `dir`.
     fn command_in(&self, dir: &Path, args: &[&str], stdin: &str) -> std::process::Output {
+        self.command_as(None, dir, args, stdin)
+    }
+
+    /// A abertura da spec pela conversa da sessão [`SESSION`], como quem
+    /// conduz a roda: o gancho do terminal passa a sessão ao comando, e é a
+    /// conversa dela que fica ligada à spec.
+    fn open(&self) -> Value {
+        let out = self.command_as(Some(SESSION), &self.root, &["run", "open", "--kind", "feature", "--name", SPEC, "--base", "dev"], "");
+        let report: Value = serde_json::from_slice(&out.stdout).expect("the opening answers JSON");
+        assert_eq!(report["ok"], json!(true), "{report}");
+        report
+    }
+
+    /// Como [`Self::command_in`], com a sessão `session` no ambiente, como o
+    /// gancho do terminal a passa ao comando numa conversa.
+    fn command_as(&self, session: Option<&str>, dir: &Path, args: &[&str], stdin: &str) -> std::process::Output {
         let mut child = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
             .args(args)
             .current_dir(dir)
@@ -90,6 +111,7 @@ impl Project {
             .env_remove("MUSTARD_SESSION_ID")
             .env_remove("CLAUDE_SESSION_ID")
             .env_remove("CLAUDE_CODE_SESSION_ID")
+            .envs(session.map(|session| ("MUSTARD_SESSION_ID", session)))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -307,6 +329,14 @@ fn dispatch_wave(project: &Project, wave: u64) -> Value {
 /// rodada abriu para ela e grava a entrega na spec, que a rodada assume e
 /// fecha com o commit.
 fn deliver_wave(project: &Project, wave: u64, text: &str, changes: &[(&str, &str)]) -> Value {
+    record_delivery(project, wave, text, changes);
+    project.run(&["round", "--dispatch", "--spec", SPEC])
+}
+
+/// A entrega da onda `wave` já despachada, sem a rodada que a assume: muda
+/// `changes` na cópia que a rodada abriu para ela, lê o pedido, termina as
+/// tarefas e grava a entrega na spec.
+fn record_delivery(project: &Project, wave: u64, text: &str, changes: &[(&str, &str)]) {
     let log = project.log();
     let sent = log
         .visible()
@@ -330,14 +360,13 @@ fn deliver_wave(project: &Project, wave: u64, text: &str, changes: &[(&str, &str
     project.read_request(wave);
     project.finish_tasks(wave);
     project.run(&["write", "delivered", "--spec", SPEC, "--json", &delivered.to_string()]);
-    project.run(&["round", "--dispatch", "--spec", SPEC])
 }
 
 /// A spec pronta para a revisão final: aberta, levantada, planejada,
 /// aprovada, com a onda 1 despachada e entregue. Devolve a gravação de cada
 /// decisão do projeto todo — o combinado vigente que nenhuma onda carrega.
 fn ready(project: &Project) -> Vec<Value> {
-    let opened = project.run(&["open", "--kind", "feature", "--name", SPEC, "--base", "dev"]);
+    let opened = project.open();
     assert_eq!(opened["step"], json!("ask_goal"), "{opened}");
     let decisions = survey(project);
     plan(project);
@@ -345,6 +374,46 @@ fn ready(project: &Project) -> Vec<Value> {
     dispatch_wave(project, 1);
     deliver_wave(project, 1, "A soma apareceu.", &[("src/main.rs", "fn main() {\n    println!(\"{}\", 3);\n}\n")]);
     decisions
+}
+
+/// A entrega cujo comentário acrescentado na cópia cita o código de um item
+/// da spec é recusada, nomeando o arquivo e a linha, e nada é gravado; o
+/// comentário com um código que a spec não tem passa.
+#[test]
+fn a_delivery_whose_added_comment_cites_a_spec_item_code_is_refused() {
+    let project = Project::new();
+    project.open();
+    survey(&project);
+    plan(&project);
+    approve(&project);
+    dispatch_wave(&project, 1);
+
+    let log = project.log();
+    let task = log.visible().into_iter().find(|e| e.event_type == "task").expect("the task");
+    let code = log.codes().get(&task.id).cloned().expect("the task code");
+    let unknown = format!("{}-9999", code.rsplit_once('-').expect("a numbered code").0);
+    let sent = log.visible().into_iter().rfind(|e| e.event_type == "send" && e.wave() == Some(1)).expect("the send of wave 1");
+    let copy = PathBuf::from(sent.str_field("copy").expect("the copy"));
+    let agreed: Vec<Value> = mustard_core::domain::wave_prompt::all_agreed(&log).iter().map(|item| json!({"item": item.id, "met": true})).collect();
+    let deliveries = |project: &Project| project.log().events.iter().filter(|e| e.event_type == "delivered").count();
+    let deliver = |comment: &str| -> Value {
+        let body = format!("fn main() {{\n    {comment}\n    println!(\"{{}}\", 3);\n}}\n");
+        std::fs::write(copy.join("src/main.rs"), body).expect("the change");
+        project.read_request(1);
+        project.finish_tasks(1);
+        let delivered = json!({"wave": 1, "text": "A soma apareceu.", "files": ["src/main.rs"], "commit": "ajuste da soma", "agreed": agreed});
+        project.answer(&["write", "delivered", "--spec", SPEC, "--json", &delivered.to_string()])
+    };
+
+    let before = deliveries(&project);
+    let refused = deliver(&format!("// {code}: soma os dois números"));
+    assert_eq!(refused["reason"], json!("delivery-item-code-in-comment"), "{refused}");
+    let hint = refused["hint"].as_str().unwrap_or_default();
+    assert!(hint.contains("src/main.rs:2") && hint.contains(&code), "the refusal names the file, the line and the code: {hint}");
+    assert_eq!(deliveries(&project), before, "nothing was written");
+
+    let accepted = deliver(&format!("// {unknown}: soma os dois números"));
+    assert_eq!(accepted["ok"], json!(true), "a code the spec does not have passes: {accepted}");
 }
 
 /// A revisão final, no pedido do fechamento, responde por todo o combinado
@@ -487,4 +556,498 @@ fn unmet_item_becomes_a_backlog_task_and_the_final_review_runs_again() {
     project.write("verdict", &approved);
     let closed = project.run(&["close", "--spec", SPEC]);
     assert_eq!(closed["phase"], json!("closed"), "{closed}");
+}
+
+/// O veredito final aprovado, com todo o combinado atendido.
+fn all_met_verdict(decisions: &[Value]) -> Value {
+    let all_met: Vec<Value> = decisions.iter().map(|decision| json!({"item": decision["code"], "met": true})).collect();
+    json!({"final": true, "result": "approved", "text": "Tudo atendido.", "agreed": all_met})
+}
+
+/// O veredito final aprovado que traz achados em `leftovers`, no formato da
+/// entrega de onda, não leva a obra ao pull request: o fechamento grava cada
+/// achado como uma tarefa no backlog, que cobre o pedido dele, e manda rodar
+/// a rodada em vez de abrir o pull request. O fechamento seguinte recusa pelo
+/// backlog e não grava os achados de novo.
+#[test]
+fn an_approved_final_verdict_with_leftovers_becomes_backlog_tasks_instead_of_the_pull_request() {
+    let project = Project::new();
+    let decisions = ready(&project);
+    let asked = project.run(&["close", "--spec", SPEC]);
+    assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+
+    let mut verdict = all_met_verdict(&decisions);
+    verdict["leftovers"] = json!([
+        {"title": "A soma não trata estouro", "detail": "A soma de números grandes estoura em src/main.rs.", "files": ["src/main.rs"]},
+        {"title": "O README não cita a soma", "detail": "O README não explica a soma.", "files": ["README.md"], "cleanup": true},
+    ]);
+    project.read_review();
+    project.write("verdict", &verdict);
+    let after = project.run(&["close", "--spec", SPEC]);
+
+    assert_eq!(after["phase"], json!("running"), "a obra não fecha com achados: {after}");
+    let round = format!("mustard-rt run round --dispatch --spec {SPEC}");
+    assert_eq!(after["command"], json!(round), "o fechamento manda rodar a rodada: {after}");
+    assert!(!after.to_string().contains("pr-open"), "o fechamento não manda abrir o pull request: {after}");
+
+    let log = project.log();
+    let backlog = |log: &SpecLog| -> Vec<SpecEvent> {
+        log.visible().into_iter().filter(|e| e.event_type == "task" && e.wave().is_none()).cloned().collect()
+    };
+    let tasks = backlog(&log);
+    let titles: Vec<&str> = tasks.iter().filter_map(|task| task.str_field("title")).collect();
+    assert_eq!(titles, vec!["A soma não trata estouro", "O README não cita a soma"], "{tasks:?}");
+    for task in &tasks {
+        let title = task.str_field("title").unwrap_or_default();
+        let request = log
+            .visible()
+            .into_iter()
+            .find(|e| e.event_type == "request" && task.ints("covers").contains(&e.id))
+            .unwrap_or_else(|| panic!("a tarefa {title} não cobre o pedido do achado: {task:?}"));
+        assert_eq!(request.str_field("title"), Some(title), "{request:?}");
+    }
+    let files = |task: &SpecEvent| -> Vec<String> {
+        task.fields.get("files").and_then(Value::as_array).into_iter().flatten().filter_map(|f| f["path"].as_str().map(str::to_string)).collect()
+    };
+    assert_eq!(files(&tasks[0]), vec!["src/main.rs".to_string()], "{:?}", tasks[0]);
+    assert_eq!(files(&tasks[1]), vec!["README.md".to_string()], "{:?}", tasks[1]);
+    assert_eq!(tasks[1].fields.get("cleanup"), Some(&json!(true)), "a limpeza segue marcada: {:?}", tasks[1]);
+
+    let again = project.answer(&["close", "--spec", SPEC]);
+    assert_eq!(again["reason"], json!("backlog-not-empty"), "{again}");
+    assert_eq!(backlog(&project.log()).len(), 2, "o fechamento seguinte não grava os achados de novo");
+}
+
+/// O achado do veredito final aprovado que só mexe em arquivo que o git
+/// ignora é mudança local: o fechamento o grava como nota ao usuário, sem
+/// tarefa, e a obra fecha em vez de voltar à rodada.
+#[test]
+fn an_approved_final_verdict_with_a_leftover_only_in_a_git_ignored_file_closes_with_a_note() {
+    let project = Project::new();
+    let exclude = project.root.join(".git/info/exclude");
+    let kept = std::fs::read_to_string(&exclude).expect("the exclude file");
+    std::fs::write(&exclude, format!("{kept}.env\n")).expect("the local file is ignored");
+    let decisions = ready(&project);
+    let asked = project.run(&["close", "--spec", SPEC]);
+    assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+
+    let title = "A chave da API falta no ambiente local";
+    let mut verdict = all_met_verdict(&decisions);
+    verdict["leftovers"] = json!([{"title": title, "detail": "Falta a chave da API no .env desta máquina.", "files": [".env"]}]);
+    project.read_review();
+    project.write("verdict", &verdict);
+    let after = project.run(&["close", "--spec", SPEC]);
+
+    assert_eq!(after["phase"], json!("closed"), "a mudança local não segura a obra: {after}");
+    let log = project.log();
+    let titled = |kind: &str| log.visible().into_iter().filter(|e| e.event_type == kind && e.str_field("title") == Some(title)).count();
+    assert_eq!((titled("task"), titled("request"), titled("note")), (0, 0, 1), "só a nota fica: {after}");
+}
+
+/// O veredito final que traz um achado sem título é recusado na gravação
+/// pelo revisor, e a recusa não fala em entrega: o texto vale para a volta de
+/// qualquer um dos dois, onda ou revisão. Nada é gravado, e o pedido da
+/// revisão final segue aberto, esperando o veredito.
+#[test]
+fn a_final_verdict_with_an_untitled_finding_is_refused_without_naming_the_delivery() {
+    let project = Project::new();
+    let decisions = ready(&project);
+    let asked = project.run(&["close", "--spec", SPEC]);
+    assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+    project.read_review();
+    let recorded_kinds = |project: &Project| -> usize {
+        project.log().events.iter().filter(|e| e.event_type == "verdict" || e.event_type == "task").count()
+    };
+    let before = recorded_kinds(&project);
+
+    let mut verdict = all_met_verdict(&decisions);
+    verdict["leftovers"] = json!([{"detail": "O README não explica a soma."}]);
+    let refused = project.answer(&["write", "verdict", "--spec", SPEC, "--json", &verdict.to_string()]);
+
+    assert_eq!(refused["ok"], json!(false), "{refused}");
+    assert_eq!(refused["reason"], json!("leftover-field-missing"), "{refused}");
+    assert_eq!(refused["hint"], json!("Falta o campo title numa sobra (leftovers) da volta. Nada foi gravado."), "{refused}");
+    assert_eq!(recorded_kinds(&project), before, "nada foi gravado: {refused}");
+    let still_open = project.answer(&["close", "--spec", SPEC]);
+    assert_eq!(still_open["reason"], json!("review-verdict-missing"), "{still_open}");
+}
+
+/// Os eventos de veredito e de tarefa gravados: a recusa de uma gravação não
+/// muda esse total, que não conta a telemetria de cada chamada.
+fn verdicts_and_tasks(project: &Project) -> usize {
+    project.log().events.iter().filter(|e| e.event_type == "verdict" || e.event_type == "task").count()
+}
+
+/// Os achados que um veredito que não é o final aprovado traria em
+/// `leftovers`: nada lê o campo nesse veredito, e eles se perderiam em
+/// silêncio.
+fn findings() -> Value {
+    json!([{"title": "A soma não trata estouro", "detail": "A soma de números grandes estoura em src/main.rs.", "files": ["src/main.rs"]}])
+}
+
+/// A recusa que manda o achado para onde alguém o lê.
+fn assert_leftovers_refused(refused: &Value) {
+    assert_eq!(refused["ok"], json!(false), "{refused}");
+    assert_eq!(refused["reason"], json!("verdict-leftovers-not-approved"), "{refused}");
+    let hint = refused["hint"].as_str().unwrap_or_default();
+    assert!(hint.contains("leftovers") && hint.contains("agreed"), "a recusa diz onde o achado vai: {hint}");
+}
+
+/// O veredito do revisor de uma onda não é lido por quem grava tarefas dos
+/// achados: a gravação recusa o campo `leftovers` nele, sem gravar nada, e o
+/// mesmo veredito sem o campo é gravado — a recusa é pelo campo.
+#[test]
+fn a_wave_review_verdict_refuses_leftovers_instead_of_losing_them() {
+    let project = Project::new();
+    project.open();
+    survey(&project);
+    plan(&project);
+    approve(&project);
+    dispatch_wave(&project, 1);
+    record_delivery(&project, 1, "A soma apareceu.", &[("src/main.rs", "fn main() {\n    println!(\"{}\", 3);\n}\n")]);
+    let out = project.command(&["run", "round", "--dispatch", "--spec", SPEC], "");
+    let held: Value = serde_json::from_slice(&out.stdout).expect("the round answers JSON");
+    assert_eq!(held["warnings"][0]["reason"], json!("wave-review-required"), "a rodada pede o revisor da onda: {held}");
+    let before = verdicts_and_tasks(&project);
+
+    let with_findings = json!({"wave": 1, "result": "approved", "text": "Conferi o diff.", "leftovers": findings()});
+    assert_leftovers_refused(&project.answer(&["write", "verdict", "--spec", SPEC, "--json", &with_findings.to_string()]));
+    assert_eq!(verdicts_and_tasks(&project), before, "nada foi gravado com os achados no veredito da onda");
+
+    project.write("verdict", &json!({"wave": 1, "result": "approved", "text": "Conferi o diff."}));
+    assert_eq!(verdicts_and_tasks(&project), before + 1, "o veredito da onda sem o campo é gravado");
+}
+
+/// Só o veredito final aprovado transforma `leftovers` em tarefas: o final
+/// reprovado, também o aprovado que um item combinado sem atender força a
+/// reprovado, recusa o campo sem gravar nada, e o pedido da revisão segue
+/// aberto. O mesmo veredito sem o campo é gravado.
+#[test]
+fn a_rejected_final_verdict_refuses_leftovers_instead_of_losing_them() {
+    let project = Project::new();
+    let decisions = ready(&project);
+    let asked = project.run(&["close", "--spec", SPEC]);
+    assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+    project.read_review();
+    let before = verdicts_and_tasks(&project);
+
+    let mut rejected = all_met_verdict(&decisions);
+    rejected["result"] = json!("rejected");
+    rejected["leftovers"] = findings();
+    assert_leftovers_refused(&project.answer(&["write", "verdict", "--spec", SPEC, "--json", &rejected.to_string()]));
+
+    let mut agreed: Vec<Value> = decisions.iter().map(|decision| json!({"item": decision["code"], "met": true})).collect();
+    agreed[0] = json!({"item": decisions[0]["code"], "met": false, "text": "Falta tratar o estouro da soma.", "files": ["src/main.rs"]});
+    let forced = json!({"final": true, "result": "approved", "text": "Quase tudo certo.", "agreed": agreed, "leftovers": findings()});
+    assert_leftovers_refused(&project.answer(&["write", "verdict", "--spec", SPEC, "--json", &forced.to_string()]));
+    assert_eq!(verdicts_and_tasks(&project), before, "nada foi gravado com os achados no veredito reprovado");
+    let still_open = project.answer(&["close", "--spec", SPEC]);
+    assert_eq!(still_open["reason"], json!("review-verdict-missing"), "o pedido da revisão final segue aberto: {still_open}");
+
+    let mut without = forced.clone();
+    without.as_object_mut().expect("the verdict is an object").remove("leftovers");
+    project.write("verdict", &without);
+    // O fechamento assume o veredito: o item sem atender o força a reprovado.
+    project.answer(&["close", "--spec", SPEC]);
+    let recorded = project.log().visible().into_iter().rfind(|e| e.event_type == "verdict").expect("the recorded verdict").clone();
+    assert_eq!(recorded.str_field("result"), Some("rejected"), "o veredito reprovado sem o campo é gravado: {recorded:?}");
+}
+
+/// Os números dos pedidos de revisão final gravados, do mais velho ao mais
+/// novo.
+fn review_requests(project: &Project) -> Vec<u64> {
+    project.log().visible().into_iter().filter(|e| e.event_type == "send" && e.str_field("role") == Some("review")).map(|e| e.id).collect()
+}
+
+/// A onda 2 comitada com a revisão final aberta: o usuário pede mais uma
+/// tarefa depois do pedido de revisão, e a rodada a despacha e comita.
+/// Devolve o número do commit dela na spec e a resposta da rodada que a
+/// comitou.
+fn commit_a_wave_past_the_request(project: &Project) -> (u64, Value) {
+    let said = user_says(project, "Imprima também a soma de três números.");
+    let criterion = project.log().visible().into_iter().find(|e| e.event_type == "criterion").expect("the criterion").id;
+    project.write(
+        "task",
+        &json!({"agent": "- conferir pelo teste", "title": "Somar três números", "text": "Imprimir a soma de três números.",
+            "files": [{"path": "src/main.rs"}], "depends_on": [], "covers": [criterion], "origin": said}),
+    );
+    dispatch_wave(project, 2);
+    let round = deliver_wave(project, 2, "A soma de três apareceu.", &[("src/main.rs", "fn main() {\n    println!(\"{}\", 1 + 1 + 1);\n}\n")]);
+    (commit_of(project, 2), round)
+}
+
+/// O veredito final aprovado que chega depois de uma onda comitada entre o
+/// pedido de revisão e ele não fecha a obra: o revisor não recebeu o que a
+/// onda mudou, e o fechamento seguinte pede uma revisão nova, gravada depois
+/// do commit. Só o veredito que responde a esse pedido novo fecha.
+#[test]
+fn a_final_approval_answering_a_request_older_than_a_committed_wave_asks_for_a_new_review() {
+    let project = Project::new();
+    let decisions = ready(&project);
+    let asked = project.run(&["close", "--spec", SPEC]);
+    assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+    project.read_review();
+    let (committed, _) = commit_a_wave_past_the_request(&project);
+
+    project.write("verdict", &all_met_verdict(&decisions));
+    let again = project.run(&["close", "--spec", SPEC]);
+    assert_eq!(again["phase"], json!("running"), "o veredito de antes do commit não fecha a obra: {again}");
+    assert_eq!(again["review"]["final"], json!(true), "o fechamento pede revisão nova: {again}");
+    let requests = review_requests(&project);
+    assert_eq!(requests.len(), 2, "{requests:?}");
+    assert!(requests[1] > committed, "o pedido novo vem depois do commit da onda 2: {requests:?}, commit {committed}");
+
+    project.read_review();
+    project.write("verdict", &all_met_verdict(&decisions));
+    let closed = project.run(&["close", "--spec", SPEC]);
+    assert_eq!(closed["phase"], json!("closed"), "o veredito do pedido novo fecha: {closed}");
+}
+
+/// O pedido de revisão final aberto, mais velho que uma onda comitada depois
+/// dele, não deixa o fechamento esperando um veredito que não aprovaria a
+/// obra: o fechamento abre um pedido novo, depois do commit, em vez de
+/// recusar dizendo que falta o veredito.
+#[test]
+fn closing_with_an_open_request_older_than_a_committed_wave_opens_a_new_request() {
+    let project = Project::new();
+    ready(&project);
+    let asked = project.run(&["close", "--spec", SPEC]);
+    assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+    let (committed, _) = commit_a_wave_past_the_request(&project);
+
+    let again = project.answer(&["close", "--spec", SPEC]);
+    assert_eq!(again["ok"], json!(true), "o fechamento não espera o veredito do pedido velho: {again}");
+    assert_eq!(again["review"]["final"], json!(true), "{again}");
+    let requests = review_requests(&project);
+    assert_eq!(requests.len(), 2, "{requests:?}");
+    assert!(requests[1] > committed, "o pedido novo vem depois do commit da onda 2: {requests:?}, commit {committed}");
+}
+
+/// O número do commit gravado para a onda `wave`.
+fn commit_of(project: &Project, wave: u64) -> u64 {
+    project
+        .log()
+        .visible()
+        .into_iter()
+        .rfind(|e| e.event_type == "commit" && e.fields.get("waves").and_then(Value::as_array).is_some_and(|waves| waves.contains(&json!(wave))))
+        .unwrap_or_else(|| panic!("a onda {wave} não comitou"))
+        .id
+}
+
+/// A obra fechada com a aprovação final e reaberta para um ajuste pequeno —
+/// uma decisão nova e a tarefa dela, numa onda comitada — pede uma revisão
+/// final só do que mudou desde a aprovação: o pedido novo cita o commit novo e
+/// a decisão nova, e não cita o commit nem as decisões que a aprovação já
+/// conferiu. O veredito que responde só pela decisão nova fecha a obra de
+/// novo.
+#[test]
+fn a_small_change_after_a_final_approval_is_reviewed_alone() {
+    let project = Project::new();
+    let decisions = ready(&project);
+    let asked = project.run(&["close", "--spec", SPEC]);
+    assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+    project.read_review();
+    project.write("verdict", &all_met_verdict(&decisions));
+    let closed = project.run(&["close", "--spec", SPEC]);
+    assert_eq!(closed["phase"], json!("closed"), "{closed}");
+    let old_commit = commit_of(&project, 1);
+
+    let reopened = project.run(&["reopen", "--spec", SPEC, "--reason", "Imprimir também a soma de três números."]);
+    assert_eq!(reopened["phase"], json!("running"), "{reopened}");
+    let said = user_says(&project, "Imprima também a soma de três números.");
+    let decision = project.write(
+        "decision",
+        &json!({"title": "Somar três números", "agent": "- conferir pelo teste", "text": "A soma de três números aparece junto.",
+            "keys": ["ajuste"], "why": "o usuário pediu", "origin": said, "applies_to": {"files": ["**"]}}),
+    );
+    let new_decision = decision["code"].as_str().expect("the new decision code").to_string();
+    let criterion = project.log().visible().into_iter().find(|e| e.event_type == "criterion").expect("the criterion").id;
+    project.write(
+        "task",
+        &json!({"agent": "- conferir pelo teste", "title": "Somar três números", "text": "Imprimir a soma de três números.",
+            "files": [{"path": "src/main.rs"}], "depends_on": [], "covers": [criterion], "origin": said}),
+    );
+    dispatch_wave(&project, 2);
+    deliver_wave(&project, 2, "A soma de três apareceu.", &[("src/main.rs", "fn main() {\n    println!(\"{}\", 1 + 1 + 1);\n}\n")]);
+    let new_commit = commit_of(&project, 2);
+
+    let again = project.run(&["close", "--spec", SPEC]);
+    assert_eq!(again["review"]["final"], json!(true), "{again}");
+    let prompt = project.read_command(again["review"]["read"].as_str().unwrap_or_default());
+    let codes = project.log().codes();
+    assert!(prompt.contains(&codes[&new_commit]), "o pedido cita o commit novo: {prompt}");
+    assert!(prompt.contains(&new_decision), "o pedido cita a decisão nova: {prompt}");
+    assert!(!prompt.contains(&codes[&old_commit]), "o commit que a aprovação conferiu fica fora: {prompt}");
+    for old in &decisions {
+        let code = old["code"].as_str().expect("the decision code");
+        assert!(!prompt.contains(code), "a decisão {code}, que a aprovação conferiu, fica fora: {prompt}");
+    }
+
+    project.read_review();
+    let only_new = json!({"final": true, "result": "approved", "text": "O ajuste ficou certo.", "agreed": [{"item": new_decision, "met": true}]});
+    project.write("verdict", &only_new);
+    let closed_again = project.run(&["close", "--spec", SPEC]);
+    assert_eq!(closed_again["phase"], json!("closed"), "o veredito do que mudou fecha a obra: {closed_again}");
+}
+
+/// O código git do commit gravado para a onda `wave`.
+fn sha_of(project: &Project, wave: u64) -> String {
+    let log = project.log();
+    log.get(commit_of(project, wave)).and_then(|e| e.str_field("sha")).expect("the commit sha").to_string()
+}
+
+/// O `src/main.rs` com a soma de um e dois na terceira linha, depois da
+/// segunda, que a onda 1 escreveu: a linha que o lint do fechamento acusa.
+const SUM_OF_ONE_AND_TWO: &str = "fn main() {\n    println!(\"{}\", 3);\n    println!(\"{}\", 1 + 2);\n}\n";
+
+/// O lint do fechamento caindo, com arquivo e linha, na linha da soma de um e
+/// dois em `src/main.rs`.
+fn lint_the_sum_of_one_and_two(project: &Project) {
+    let config = json!({"language": {"text": "pt-BR"}, "git": {"flow": {"*": "dev", "dev": "main"}},
+        "lintCommand": "git grep -n \"1 + 2\" -- src/main.rs && exit 1"});
+    std::fs::write(project.root.join("mustard.json"), config.to_string()).expect("config");
+}
+
+/// A tarefa `title` do backlog, que muda `file`, pedida na fala `said` e
+/// cobrindo o critério do plano.
+fn backlog_task(project: &Project, said: u64, title: &str, file: &str) {
+    let criterion = project.log().visible().into_iter().find(|e| e.event_type == "criterion").expect("the criterion").id;
+    project.write(
+        "task",
+        &json!({"agent": "- conferir pelo teste", "title": title, "text": format!("{title}."),
+            "files": [{"path": file}], "depends_on": [], "covers": [criterion], "origin": said}),
+    );
+}
+
+/// As ondas que a falha do fechamento reabriu, na ordem.
+fn reopened(project: &Project) -> Vec<u64> {
+    project.log().visible().into_iter().filter(|e| e.event_type == "validation_failure").filter_map(SpecEvent::wave).collect()
+}
+
+/// A obra com as ondas 1 e 2 no mesmo arquivo — a 1 escreve a segunda linha,
+/// a 2 acrescenta a terceira — e o lint do fechamento caindo, com arquivo e
+/// linha, só na linha que a onda 2 escreveu. Devolve a resposta do
+/// fechamento.
+fn close_with_lint_on_a_line_of_wave_2(project: &Project) -> Value {
+    lint_the_sum_of_one_and_two(project);
+    ready(project);
+    let said = user_says(project, "Imprima também a soma de um e dois.");
+    backlog_task(project, said, "Somar um e dois", "src/main.rs");
+    dispatch_wave(project, 2);
+    deliver_wave(project, 2, "A soma de um e dois apareceu.", &[("src/main.rs", SUM_OF_ONE_AND_TWO)]);
+    project.answer(&["close", "--spec", SPEC])
+}
+
+/// O lint do fechamento que cai numa linha de um arquivo das ondas 1 e 2,
+/// escrita só pela onda 2, reabre só a onda 2: o `git blame` da linha acha o
+/// commit dela entre os commits da obra.
+#[test]
+fn a_closing_lint_failure_reopens_only_the_wave_that_wrote_the_line() {
+    let project = Project::new();
+    let refused = close_with_lint_on_a_line_of_wave_2(&project);
+    assert_eq!(refused["ok"], json!(false), "{refused}");
+    assert_eq!(reopened(&project), [2], "só a onda que escreveu a linha reabre: {refused}");
+}
+
+/// Depois do conserto da onda 2, comitado, a tela das ondas mostra para ela o
+/// commit dela, e não o do conserto.
+#[test]
+fn the_repair_commit_does_not_take_the_place_of_the_wave_commit_in_the_panel() {
+    let project = Project::new();
+    close_with_lint_on_a_line_of_wave_2(&project);
+    let own = sha_of(&project, 2);
+    dispatch_wave(&project, 2);
+    let fixed = "fn main() {\n    println!(\"{}\", 3);\n    println!(\"{}\", 2 + 1);\n}\n";
+    deliver_wave(&project, 2, "A soma não repete a linha que o lint acusou.", &[("src/main.rs", fixed)]);
+    let repair = sha_of(&project, 2);
+    assert_ne!(repair, own, "o conserto ganhou commit próprio");
+
+    let screen = project.answer(&["panel", "--spec", SPEC, "--section", "waves"]);
+    let rows = screen["rows"].as_array().cloned().unwrap_or_default();
+    let row = rows.iter().find(|row| row["wave"] == json!(2)).unwrap_or_else(|| panic!("a onda 2 fora da tela: {screen}"));
+    assert_eq!(row["commit"], json!(own), "a onda mostra o commit dela, não o do conserto: {screen}");
+}
+
+/// O texto do próximo passo da spec que o painel mostra.
+fn panel_step(project: &Project) -> String {
+    let overview = project.answer(&["panel", "--spec", SPEC, "--section", "overview"]);
+    overview["spec"]["next"]["text"].as_str().unwrap_or_else(|| panic!("o painel sem o próximo passo: {overview}")).to_string()
+}
+
+/// A rodada que comita uma onda depois do pedido de revisão final aberto
+/// manda fechar, com o comando do fechamento, e o painel diz o mesmo passo:
+/// o veredito do pedido velho já não aprovaria a obra, e é o fechamento que
+/// abre o pedido novo. Com o pedido novo aberto, mais novo que a última
+/// mudança, a rodada e o painel voltam a mandar esperar o veredito.
+#[test]
+fn the_round_past_an_open_request_older_than_a_committed_wave_says_to_close() {
+    let project = Project::new();
+    ready(&project);
+    let asked = project.run(&["close", "--spec", SPEC]);
+    assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+    let (_, round) = commit_a_wave_past_the_request(&project);
+
+    let close = format!("mustard-rt run close --spec {SPEC}");
+    assert_eq!(round["command"], json!(close), "a rodada manda fechar: {round}");
+    let next = round["next"].as_str().unwrap_or_default();
+    assert!(next.ends_with(&translate("round.close", Locale::PtBr).replace("{command}", &close)), "{round}");
+    assert!(!next.contains(translate("round.review_open", Locale::PtBr)), "a rodada não espera o veredito do pedido velho: {round}");
+    assert_eq!(panel_step(&project), translate("resume.step.close", Locale::PtBr));
+
+    let again = project.run(&["close", "--spec", SPEC]);
+    assert_eq!(again["review"]["final"], json!(true), "o fechamento abre o pedido novo: {again}");
+    let waiting = project.run(&["round", "--dispatch", "--spec", SPEC]);
+    assert!(waiting.get("command").is_none(), "sem o comando de fechar: {waiting}");
+    let next = waiting["next"].as_str().unwrap_or_default();
+    assert!(next.ends_with(translate("round.review_open", Locale::PtBr)), "a rodada espera o veredito do pedido novo: {waiting}");
+    assert_eq!(panel_step(&project), translate("resume.step.review_open", Locale::PtBr));
+}
+
+/// A onda da tarefa `title`, depois de a rodada formar o lote dela.
+fn wave_of_task(project: &Project, title: &str) -> u64 {
+    project
+        .log()
+        .visible()
+        .into_iter()
+        .rfind(|e| e.event_type == "task" && e.str_field("title") == Some(title))
+        .and_then(SpecEvent::wave)
+        .unwrap_or_else(|| panic!("a tarefa {title} sem onda"))
+}
+
+/// O lint do fechamento que cai numa linha escrita só por uma onda, num commit
+/// em que outra onda entrou sem mudança nenhuma — as duas voltaram na mesma
+/// rodada, e o commit da segunda não teria o que levar —, reabre só a que
+/// escreveu a linha: a que veio sem mudança divide o commit, mas não escreveu
+/// linha nenhuma dele.
+#[test]
+fn a_closing_lint_failure_spares_a_wave_that_joined_the_commit_without_change() {
+    let project = Project::new();
+    // O arquivo que a segunda onda só confere já está na base, em `main` e em
+    // `dev`, antes da obra.
+    let readme = "# Soma\n";
+    git(&project.root, &["checkout", "-q", "main"]);
+    std::fs::write(project.root.join("README.md"), readme).expect("readme");
+    git(&project.root, &["add", "README.md"]);
+    git(&project.root, &["commit", "-q", "-m", "readme"]);
+    git(&project.root, &["checkout", "-q", "dev"]);
+    git(&project.root, &["merge", "-q", "--ff-only", "main"]);
+    lint_the_sum_of_one_and_two(&project);
+    ready(&project);
+    let said = user_says(&project, "Imprima também a soma de um e dois, e confira o README.");
+    backlog_task(&project, said, "Somar um e dois", "src/main.rs");
+    backlog_task(&project, said, "Conferir o README", "README.md");
+    let dispatched = project.run(&["round", "--dispatch", "--spec", SPEC]);
+    let sum = wave_of_task(&project, "Somar um e dois");
+    let check = wave_of_task(&project, "Conferir o README");
+    let out: Vec<u64> = dispatched["dispatch"].as_array().into_iter().flatten().filter_map(|entry| entry["wave"].as_u64()).collect();
+    assert_eq!(out, [sum, check], "as duas ondas saem juntas: {dispatched}");
+
+    record_delivery(&project, sum, "A soma de um e dois apareceu.", &[("src/main.rs", SUM_OF_ONE_AND_TWO)]);
+    record_delivery(&project, check, "O README já dizia o que precisa.", &[("README.md", readme)]);
+    project.run(&["round", "--dispatch", "--spec", SPEC]);
+    assert_eq!(sha_of(&project, check), sha_of(&project, sum), "a onda sem mudança entra no commit da que mudou");
+
+    let refused = project.answer(&["close", "--spec", SPEC]);
+    assert_eq!(refused["ok"], json!(false), "{refused}");
+    assert_eq!(reopened(&project), [sum], "só a onda que escreveu a linha reabre: {refused}");
 }

@@ -111,8 +111,9 @@ pub enum SpecEventsCmd {
     /// version it replaced comes back, except on a `task`, where any version
     /// takes out the whole task. A new agreed item written here comes
     /// in three parts: a short `title` (the item's own name, up to 70
-    /// characters — not the 60 of a commit or pull request title, which is
-    /// built from the goal's first sentence and is another thing), the user's part
+    /// characters — not the 60 of a commit or pull request title, another
+    /// limit: the pull request title is the goal's `title` or, without one,
+    /// the goal's first sentence, so those are held to 60), the user's part
     /// in `text`, which says why by the effect the user sees and carries no
     /// backtick, file path or item code, and the agent's part in `agent`, in
     /// markdown, with files, lines, commands and what to test. A `request` or
@@ -279,15 +280,34 @@ pub fn write_help_for_type(args: &[String]) -> Option<String> {
     ))
 }
 
+/// O bloco que a chamada `cmd` pediu, como o clap o leu, em qualquer posição
+/// entre as opções: o bloco da leitura ou o tipo da gravação. O termo do
+/// `find` é texto de quem procura, e não bloco.
+fn asked_block(cmd: &SpecEventsCmd) -> Option<&str> {
+    match cmd {
+        SpecEventsCmd::Read { block, .. } | SpecEventsCmd::Write { event_type: block, .. } => Some(block),
+        SpecEventsCmd::Find { .. } | SpecEventsCmd::Index { .. } => None,
+    }
+}
+
 /// Dispatch one `spec_events`-family `run` subcommand.
 pub fn dispatch(cmd: SpecEventsCmd) {
+    if let Some(block) = asked_block(&cmd) {
+        spec_events::conversation::note_asked_block(block);
+    }
     match cmd {
         SpecEventsCmd::Read { block, spec, term, full, all, session, root } => {
             spec_events::read::run(&spec_events::read::ReadOpts { root, spec, block, term, session }, full, all);
         }
-        SpecEventsCmd::Write { event_type, spec, json, copy, root } => {
-            spec_events::write::run(&spec_events::write::WriteOpts { root, spec, event_type, json }, copy);
-        }
+        SpecEventsCmd::Write { event_type, spec, json, copy, root } => match crate::shared::json_arg::resolve(json) {
+            Ok(json) => spec_events::write::run(&spec_events::write::WriteOpts { root, spec, event_type, json }, copy),
+            // O arquivo do `--json` que não se lê recusa sem gravar nada.
+            Err(detail) => {
+                let refused = spec_events::refused(&mustard_core::domain::spec_events::Refusal::Io { detail }, spec_events::project(&root).lang);
+                println!("{}", serde_json::to_string_pretty(&refused).unwrap_or_else(|_| "{}".into()));
+                std::process::exit(1);
+            }
+        },
         SpecEventsCmd::Find { term, types, spec, root } => {
             spec_events::find::run(&spec_events::find::FindOpts { root, spec, term, types });
         }
@@ -300,6 +320,7 @@ pub fn dispatch(cmd: SpecEventsCmd) {
 #[cfg(test)]
 mod tests {
     use clap::{CommandFactory, Parser};
+    use mustard_core::domain::text::one_line;
     use serde_json::{json, Value};
 
     use super::*;
@@ -312,6 +333,22 @@ mod tests {
         cmd: SpecEventsCmd,
     }
 
+    /// O bloco da leitura e o tipo da gravação saem da chamada em qualquer
+    /// posição, com opções antes ou depois deles; o valor de uma opção nunca
+    /// passa por bloco, e o termo do `find` não é bloco.
+    #[test]
+    fn the_asked_block_is_read_wherever_it_sits_in_the_call() {
+        let asked = |call: &[&str]| {
+            let parsed = Harness::try_parse_from(std::iter::once("x").chain(call.iter().copied())).expect("the call parses");
+            asked_block(&parsed.cmd).map(str::to_string)
+        };
+        assert_eq!(asked(&["read", "--spec", "obra", "agreed"]).as_deref(), Some("agreed"));
+        assert_eq!(asked(&["read", "--root", "/projeto", "--all", "request-3"]).as_deref(), Some("request-3"));
+        assert_eq!(asked(&["read", "agreed", "--spec", "obra"]).as_deref(), Some("agreed"));
+        assert_eq!(asked(&["write", "--spec", "obra", "--json", "{\"text\":\"segredo\"}", "step"]).as_deref(), Some("step"));
+        assert_eq!(asked(&["find", "login", "--spec", "obra"]), None);
+    }
+
     /// A ajuda do comando de ler diz que a mensagem do usuário sai com o
     /// texto inteiro e que a leitura de dentro da cópia de um pedido aberto
     /// fica registrada; a frase antiga, que escondia o texto, não volta.
@@ -320,7 +357,7 @@ mod tests {
         let mut tree = Harness::command();
         let read = tree.find_subcommand_mut("read").expect("the read command is registered");
         let help = read.render_long_help().to_string();
-        let flat = help.split_whitespace().collect::<Vec<_>>().join(" ");
+        let flat = one_line(&help);
         assert!(flat.contains("a user message shows its whole text like any other item"), "{help}");
         assert!(flat.contains("is recorded as read"), "{help}");
         assert!(!flat.contains("shows only its number and type"), "{help}");
@@ -338,7 +375,7 @@ mod tests {
             assert!(help.contains(&format!("\n  {}: ", spec.name)), "the help has no line for {}:\n{help}", spec.name);
         }
         assert!(help.contains("\n  decision: text, keys, why, origin (applies_to, waves, every_wave, no_code, title, agent)"), "{help}");
-        assert!(help.contains("\n  message: text (witness, during)"), "{help}");
+        assert!(help.contains("\n  message: text (witness, during, question)"), "{help}");
         assert!(
             help.contains("a `task` missing one of its three mandatory declarations"),
             "the help does not name the task-declaration refusal:\n{help}"
@@ -392,34 +429,5 @@ mod tests {
         assert!(hint.contains("keys, why"), "{refused}");
         assert_eq!(std::fs::read_to_string(&events).expect("events"), before, "a refusal writes nothing");
         assert_eq!(refused.get("id"), None::<&Value>);
-    }
-}
-
-#[cfg(test)]
-mod title_limits_tests {
-    use clap::{Parser, Subcommand};
-
-    /// O comando montado só para ler a ajuda da família.
-    #[derive(Debug, Parser)]
-    struct Harness {
-        #[command(subcommand)]
-        cmd: super::SpecEventsCmd,
-    }
-
-    /// A ajuda do `write` diz de que é cada teto de título: o de 70 é do nome
-    /// do item, e o de 60 é do título de um commit e de um pull request,
-    /// montado da primeira frase do objetivo. Quem lia a ajuda achava que era
-    /// o mesmo teto com dois valores.
-    #[test]
-    fn the_help_says_what_each_title_limit_is_of() {
-        let tree = super::SpecEventsCmd::augment_subcommands(clap::Command::new("run"));
-        let write = tree.find_subcommand("write").expect("o comando write");
-        let said = write.get_about().map(ToString::to_string).unwrap_or_default();
-        assert!(said.contains("70"), "{said}");
-        assert!(said.contains("60"), "a ajuda cita os dois tetos: {said}");
-        let at = said.find("70").expect("o teto do item");
-        let around = &said[at.saturating_sub(60)..(at + 200).min(said.len())];
-        assert!(around.contains("item"), "o de 70 é do item: {around}");
-        assert!(around.contains("goal") || around.contains("pull request"), "e diz do que é o outro: {around}");
     }
 }

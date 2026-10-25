@@ -12,9 +12,17 @@
 // parte.
 #![allow(clippy::duplicate_mod)]
 
+// A spec de uma onda pelo fluxo de verdade entra uma vez só, aqui: cada
+// arquivo que a usa só usa parte dela, e trazida por arquivo a parte que um
+// deles não usa sobrava sem uso. A parte que só um arquivo de um sistema usa
+// leva o `cfg` dele.
+#[path = "support/one_wave_spec.rs"]
+mod one_wave_spec;
+
 mod agents_find_code_through_the_map;
 mod approval_refusal_explains;
 mod clean_exit;
+mod closing_clean_copy;
 mod command_frontmatter;
 mod command_guard;
 mod config_read;
@@ -50,6 +58,8 @@ mod round_status;
 mod round_report_usage_documented;
 mod run_command_surface;
 mod search_answer_layers;
+mod server_commands_cores;
+mod session_end_unbinds;
 mod session_map_arrives;
 mod session_start_merged;
 mod spec_events_cli;
@@ -59,6 +69,7 @@ mod stale_task_wave_leaves_without_a_check;
 mod step_answers_the_wave_measure;
 mod survey_cli;
 mod template_parity;
+mod title_limits_documented;
 mod version_full;
 mod vocabulary;
 mod wave_request_token_cap;

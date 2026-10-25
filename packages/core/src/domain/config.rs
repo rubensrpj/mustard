@@ -675,6 +675,13 @@ pub struct ProjectConfig {
     /// um número maior aqui.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_compiling_waves: Option<u64>,
+    /// O teto, em segundos inteiros, da prova de cada critério, no lugar dos
+    /// 2 minutos e dos 10 da prova que compila; a variável
+    /// `MUSTARD_QA_AC_TIMEOUT_SECS` vence a chave. Fica como o arquivo o
+    /// traz, para que um texto ou um zero não torne o arquivo inteiro
+    /// ilegível. Lida só por [`ProjectConfig::proof_timeout_secs`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proof_timeout_secs: Option<Value>,
     /// Os números da pergunta da história do mapa — veja [`MapConfig`]. Lidos
     /// só por [`ProjectConfig::history_moves`] e
     /// [`ProjectConfig::history_commits`].
@@ -927,6 +934,12 @@ impl ProjectConfig {
     #[must_use]
     pub fn max_compiling_waves(&self) -> Option<usize> {
         self.max_compiling_waves.and_then(|n| usize::try_from(n).ok())
+    }
+
+    /// `proofTimeoutSecs`: o teto da prova de cada critério, em segundos.
+    #[must_use]
+    pub fn proof_timeout_secs(&self) -> Setting {
+        Setting::of(self.proof_timeout_secs.as_ref())
     }
 
     /// `map.historyMoves`: quantas vezes seguidas a história de uma função

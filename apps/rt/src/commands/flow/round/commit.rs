@@ -55,19 +55,6 @@ pub(crate) fn waves_checked_only(log: &SpecLog) -> BTreeSet<u64> {
         .collect()
 }
 
-/// O começo de `text` que cabe em `room` caracteres, cortado sempre numa
-/// palavra inteira, sem sobra de espaço nem de pontuação no fim: vazio quando
-/// nem a primeira palavra cabe. O texto que já cabe volta como está.
-pub(super) fn shorten_to(text: &str, room: usize) -> String {
-    if text.chars().count() <= room {
-        return text.to_string();
-    }
-    let kept: String = text.chars().take(room).collect();
-    let whole_word = text.chars().nth(room).is_some_and(char::is_whitespace);
-    let cut = if whole_word { kept.as_str() } else { kept.rsplit_once(char::is_whitespace).map_or("", |(head, _)| head) };
-    cut.trim_end_matches(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | ':' | '-' | '.')).to_string()
-}
-
 /// A mensagem de commit cabe no modelo, pela MESMA conferência que o pull
 /// request usa.
 ///
@@ -1422,15 +1409,14 @@ mod tests {
     }
 
     /// O commit de cada onda descreve a mudança e nada do Mustard: o título é
-    /// o resumo da entrega, cortado numa palavra inteira quando o escopo do
-    /// projeto não deixa espaço para ele todo, e o corpo traz então o resumo
-    /// inteiro, sem número de onda, sem tamanho e sem rodapé.
+    /// o resumo inteiro da entrega, sem o escopo que não deixa espaço para ele
+    /// todo, e sem corpo, número de onda, tamanho ou rodapé.
     #[test]
     fn the_round_commit_says_what_changed_and_nothing_of_the_waves() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        // A pasta de nome longo da onda 1 é o escopo dela, e é ele que não
-        // deixa espaço para o resumo inteiro no título.
+        // A pasta de nome longo da onda 1 é o escopo dela, e ele não deixa
+        // espaço para o resumo inteiro no título.
         let deep = "src/camada-de-armazenamento/a.rs";
         approved(root, "x", &[(1, &[deep], &[]), (2, &["src/b.rs"], &[])]);
         std::fs::write(root.join(deep), "fn one() {}\n// antes\n").unwrap();
@@ -1448,7 +1434,7 @@ mod tests {
         let out = round(root, "x", None);
         assert_eq!(out["ok"], json!(true), "{out}");
         let shown = git_text(root, &["log", "-1", "--format=%s%n%b", "HEAD~1"]);
-        assert_eq!(shown, format!("feat(camada-de-armazenamento): Leitura das planilhas grandes\n{first}"), "{out}");
+        assert_eq!(shown, format!("feat: {first}"), "{out}");
         assert_eq!(last_commit(root), ("feat: Aviso da rodada e envio".to_string(), String::new()), "{out}");
         assert_eq!(out["commit"]["title"], json!("feat: Aviso da rodada e envio"), "{out}");
     }

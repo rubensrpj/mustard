@@ -220,7 +220,7 @@ fn each_draft_item_becomes_an_event_of_its_type_and_lands_in_its_block() {
     for (kind, _, fields, _) in &items {
         let (ok, report) = rt(root, "write", &[*kind, "--spec", "demo", "--json", &fields.to_string()]);
         assert!(ok, "write {kind}: {report}");
-        written.push(report["id"].as_u64().unwrap_or_else(|| panic!("write {kind} gives no number: {report}")));
+        written.push(report["code"].as_str().unwrap_or_else(|| panic!("write {kind} gives no code: {report}")).to_string());
     }
 
     for ((kind, block, fields, same), id) in items.iter().zip(written) {
@@ -229,7 +229,7 @@ fn each_draft_item_becomes_an_event_of_its_type_and_lands_in_its_block() {
         let events = read["events"].as_array().cloned().unwrap_or_default();
         let event = events
             .iter()
-            .find(|e| e["id"].as_u64() == Some(id))
+            .find(|e| e["code"].as_str() == Some(id.as_str()))
             .unwrap_or_else(|| panic!("the {kind} written as {id} is not in the {block} block: {read}"));
         assert_eq!(event["type"], *kind, "{event}");
         for field in *same {

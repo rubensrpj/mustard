@@ -13,7 +13,7 @@ import {settingsScreen} from './panel-settings.js';
 export const PAGE=8;
 export const KINDS=['task','criterion','decision','rule','question'];
 export const FILTERS=['all','attention','committed','uncommitted'];
-export const initialPanelState=()=>({screen:'overview',spec:null,kind:'task',query:'',filter:'all',rows:PAGE,item:null,
+export const initialPanelState=()=>({screen:'overview',spec:null,kind:'task',query:'',filter:'all',rows:PAGE,item:null,waveOffset:0,
   back:[],history:false,waveRequest:false,searching:false,pickSpec:false,delivered:false});
 
 /** The `run panel` section and arguments of a screen; none for Settings. */
@@ -21,6 +21,8 @@ export function screenQuery(state) {
   if(state.screen==='items')return {section:'items',args:['--kind',state.kind,'--filter',state.filter,'--offset','0','--limit',String(Math.min(50,state.rows)),
     ...(state.query.trim()?['--query',state.query.trim()]:[])]};
   if(state.screen==='item')return {section:'item',args:state.item?['--item',state.item]:[]};
+  // The waves screen reads one page of the binary at a time.
+  if(state.screen==='waves')return {section:'waves',args:['--offset',String(state.waveOffset ?? 0),'--limit',String(PAGE)]};
   return ['overview','spec','usage'].includes(state.screen)?{section:state.screen,args:[]}:undefined;
 }
 
@@ -47,7 +49,7 @@ const fieldNames={depends_on:['dependência','dependency'],files:['arquivo','fil
   cleanup:['limpeza','cleanup'],must_read:['leitura obrigatória','required reading'],retry_guard:['trava de repetição','retry guard'],role_pair:['par de papéis','role pair'],
   distinct:['motivo de trabalho próprio','own-work reason'],proof:['prova','proof'],why:['motivo','reason'],reason:['motivo','reason'],origin:['origem','origin'],
   effect:['efeito','effect'],status:['estado','state'],result:['resultado','result']};
-const titles={overview:['Visão geral','Overview'],spec:['Spec','Spec'],items:['Itens','Items'],item:['Item','Item'],usage:['Consumo','Usage'],settings:['Configurações','Settings']};
+const titles={overview:['Visão geral','Overview'],spec:['Spec','Spec'],items:['Itens','Items'],item:['Item','Item'],usage:['Consumo','Usage'],waves:['Ondas','Waves'],settings:['Configurações','Settings']};
 
 // A paleta do layout é a do tema escuro, a mesma nas duas superfícies; o tema
 // claro é a variante. Os nomes dizem o papel: o fundo da página, o do
@@ -280,6 +282,13 @@ export function renderPanel({elements,surface,columns,state,screens={},project,u
     return {context:usage?.context?.percent,five:limits.five_hour?.percentUsed,week:limits.seven_day?.percentUsed};};
   const delivery=item=>[day(item.delivered_at),item.pr!=null?`PR #${item.pr}`:'',item.rules?`${int(item.rules)} ${t(item.rules===1?'regra':'regras',item.rules===1?'rule':'rules')}`:''];
   const phaseOf=phase=>upper(name(phases[phase]) ?? phase);
+  // O modelo e o esforço de uma onda, como o envio os gravou: o modelo usado,
+  // medido, ou o pedido; o esforço que valeu no lançamento ou o pedido. O
+  // Consumo e a tela das ondas escrevem a mesma linha do binário assim.
+  const modelOf=w=>w.model_used ?? (w.model_asked?`${w.model_asked} ${t('(pedido)','(asked)')}`:t('modelo não medido','model not measured'));
+  const effortOf=w=>w.effort_used?`${t('esforço','effort')} ${w.effort_used}`:w.effort_asked?`${t('esforço pedido','effort asked')} ${w.effort_asked}`:'';
+  // A cor do estado de uma linha: a que pede atenção no laranja, a comitada no verde, a integrada no mostarda.
+  const stateColor=item=>item.attention?paint.warning:item.state==='committed'?paint.success:item.state==='integrated'?paint.mustard:paint.muted;
 
   // Tela Visão geral: Agora, Ondas no ar, Outras specs, Uso e o rodapé.
   function overview(d) {
@@ -407,14 +416,14 @@ export function renderPanel({elements,surface,columns,state,screens={},project,u
     // Seis cartões iguais, de 13 px de padding: o número grande, o tipo e o
     // estado. O número de cada um se aperta, porque o aplicativo só deixa
     // apertar um botão, e o botão leva a moldura dele: as cinco primeiras abrem
-    // a lista, a das tarefas também na tecla t, e a das ondas abre o Consumo,
-    // onde estão os agentes das ondas.
+    // a lista, a das tarefas também na tecla t, e a das ondas abre a tela das
+    // ondas, na primeira página.
     const tile=children=>column(children,{flexGrow:1,width:'30%',backgroundColor:paint.card,...frame(paint.line),padding:space(13)});
     const figure=value=>Text({children:int(value),size:'title',weight:'bold',tabular:true,color:paint.ink});
     const press=(key,caption,value,onPress,extra={})=>Button({key,label:`${int(value)} ${caption}`,plain:true,onPress,...extra,children:[figure(value)]});
     const tiles=counts(s.counts).map(line=>tile([press(line.kind==='task'?'go-items':line.key,line.caption,line.figure,()=>actions.go('items',{kind:line.kind}),line.kind==='task'?hot('t'):{}),
       soft(line.caption),...(line.status?[text(line.status[0],{size:'caption',color:line.status[1]})]:[])]));
-    tiles.push(tile([press('go-waves',t('ondas','waves'),s.counts.waves,()=>actions.go('usage')),soft(t('ondas','waves'))]));
+    tiles.push(tile([press('go-waves',t('ondas','waves'),s.counts.waves,()=>actions.go('waves',{waveOffset:0})),soft(t('ondas','waves'))]));
     // Três por linha, como o layout; menos no terminal estreito, para nenhuma palavra se partir.
     const per=perRow(3,t('perguntas','questions').length,(width ?? 100)-2*cells('paddingX',20),1+cells('paddingX',13));
     body.push(section(t('O que foi combinado','What was agreed'),[column(Array.from({length:Math.ceil(tiles.length/per)},(_,n)=>row(tiles.slice(n*per,n*per+per),{flexWrap:'nowrap',columnGap:space(10)})),
@@ -535,9 +544,8 @@ export function renderPanel({elements,surface,columns,state,screens={},project,u
     // Uma linha por item, com 15 px por 18 px: o ponto da cor do estado, o
     // título e o detalhe. A que pede atenção leva o fundo dela; no terminal a
     // linha que tem o foco leva a tinta mostarda e a barra na primeira coluna.
-    const color=item=>item.attention?paint.warning:item.state==='committed'?paint.success:item.state==='integrated'?paint.mustard:paint.muted;
     const line=(item,n)=>{const detail=rowDetail(item,kind),title=item.title || t('Sem título','Untitled'),key=`item-${item.code}`,on=terminal && focused===key;
-      return row([...(terminal?[whole(TextOf({children:on?'▌':' ',color:paint.mustard}))]:[]),dot(color(item)),column([link(key,title,()=>actions.openItem(item.code),
+      return row([...(terminal?[whole(TextOf({children:on?'▌':' ',color:paint.mustard}))]:[]),dot(stateColor(item)),column([link(key,title,()=>actions.openItem(item.code),
         {size:'body',weight:item.attention?'semibold':'medium',color:paint.ink},terminal && !n?{autoFocus:true}:{}),
         ...(detail?[phrases(detail,{size:'caption',color:item.attention?paint.warning:paint.muted})]:[])],{flexGrow:1,flexShrink:1,rowGap:space(2)})],
         {flexWrap:'nowrap',alignItems:'flex-start',columnGap:space(12),paddingX:space(18),paddingY:space(15),...(terminal?{paddingLeft:0}:{}),
@@ -545,6 +553,42 @@ export function renderPanel({elements,surface,columns,state,screens={},project,u
     body.push(d.rows.length?rows(d.rows.map(line)):card([label(t('Nenhum item encontrado.','No item found.'))]));
     if(d.rows.length)body.push(row([fill(phrases(countLine(d,d.rows.length),{size:'footnote',color:paint.muted})),
       ...(d.rows.length<d.total?[whole(action('more',t('Mostrar mais','Show more'),actions.more,'outline',hot('m')))]:[])],
+      {flexWrap:'nowrap',alignItems:'center',columnGap:space(10)}));
+  }
+
+  // Tela Ondas: a volta para a spec, as ondas da página, da mais nova para a
+  // mais antiga, cada uma com o que levou, o que entregou e quanto gastou, e as
+  // páginas. O botão do terminal só aceita uma letra ou um algarismo como
+  // tecla: a seguinte vai no m, como o Mostrar mais da lista, e a anterior no r.
+  function wavesScreen(d) {
+    body.push(...backLink(d));
+    const pages=Math.max(1,Math.ceil(d.total/d.limit)),page=Math.floor(d.offset/d.limit)+1;
+    const captions=[t('levou','carried'),t('entregou','delivered'),t('gastou','spent')],pad=Math.max(...captions.map(caption=>caption.length));
+    // Cada fato: o rótulo numa coluna fixa e o valor, que quebra nas pausas dele.
+    const fact=(caption,value)=>row([Box({flexShrink:0,...(terminal?{width:pad}:{width:58}),children:[label(caption)]}),fill(phrases(value,{size:'caption',color:paint.soft}))],
+      {flexWrap:'nowrap',columnGap:space(8)});
+    const minutes=seconds=>{const all=Math.max(1,Math.round(seconds/60));return all<60?`${all} min`:`${Math.floor(all/60)} h ${all%60} min`;};
+    const since=w=>!w.at?'':['running','no-agent','todo'].includes(w.state)?` ${t('desde','since')} ${day(w.at)}`:` ${t('em','on')} ${day(w.at)}`;
+    const line=w=>{const done=['committed','integrated','rejected'].includes(w.state),kept=w.tasks-w.returned;
+      const back=w.returned?`${plural(kept,t('feita','done'),t('feitas','done'))}, ${int(w.returned)} ${w.returned===1?t('voltou','returned'):t('voltaram','returned')}`:plural(kept,t('feita','done'),t('feitas','done'));
+      const files=w.delivered_files==null?'':w.delivered_files?plural(w.delivered_files,t('arquivo','file'),t('arquivos','files')):t('nenhum arquivo','no file');
+      const more=w.tasks>1?` · ${t('e mais','and')} ${int(w.tasks-1)}`:'';
+      // O número à esquerda, inteiro, e o estado à direita, que num painel estreito quebra nas palavras.
+      return row([dot(stateColor(w)),column([row([whole(text(`${t('Onda','Wave')} ${w.wave}`,{size:'body',weight:'semibold'})),
+          row([text(`${name(boardStates[w.state]) ?? name(waveStates[w.state]) ?? w.state}${since(w)}`,{size:'caption',weight:'semibold',color:stateColor(w)})],
+            {flexGrow:1,flexShrink:1,justifyContent:'flex-end'})],{flexWrap:'wrap',alignItems:'flex-end',columnGap:space(8)}),
+        Text({wrap:'wrap',size:'footnote',color:paint.ink,children:[clean(w.title || t('Sem título','Untitled')),...(more?[Text({children:more,size:'footnote',color:paint.muted})]:[])]}),
+        column([fact(captions[0],join(plural(w.tasks,t('tarefa','task'),t('tarefas','tasks')),plural(w.files,t('arquivo','file'),t('arquivos','files')))),
+          fact(captions[1],join(done?back:t('nada ainda','nothing yet'),done?files:'',w.commit?`commit ${String(w.commit).slice(0,7)}`:t('sem commit','no commit'))),
+          fact(captions[2],join(w.tokens!=null?`${compact(w.tokens)} tokens`:`— tokens`,w.seconds!=null?minutes(w.seconds):t('tempo —','time —'),modelOf(w),effortOf(w)))],{rowGap:space(4)})],
+        {flexGrow:1,flexShrink:1,rowGap:space(2)})],
+        {flexWrap:'nowrap',alignItems:'flex-start',columnGap:space(12),paddingX:space(16),paddingY:space(12),...(w.attention?{backgroundColor:paint.attention}:{})});};
+    body.push(section(`${t('Ondas','Waves')} · ${int(d.total)}`,[d.rows.length?rows(d.rows.map(line)):card([label(t('Nenhuma onda ainda.','No wave yet.'))])],
+      label(`${t('página','page')} ${int(page)} ${t('de','of')} ${int(pages)}`)));
+    // As páginas: quantas foram vistas, a ordem, e a anterior e a seguinte quando há.
+    const turn=[...(d.offset>0?[whole(action('waves-previous',terminal?t('Anterior','Previous'):`‹ ${t('Anterior','Previous')}`,()=>actions.pageWaves(Math.max(0,d.offset-d.limit)),'card',hot('r')))]:[]),
+      ...(d.offset+d.rows.length<d.total?[whole(action('waves-next',terminal?t('Próxima','Next'):`${t('Próxima','Next')} ›`,()=>actions.pageWaves(d.offset+d.limit),'outline',hot('m')))]:[])];
+    if(d.rows.length)body.push(row([fill(phrases(`${int(d.offset+d.rows.length)} ${t('de','of')} ${int(d.total)} · ${t('da mais nova para a mais antiga','newest first')}`,{size:'footnote',color:paint.muted})),...turn],
       {flexWrap:'nowrap',alignItems:'center',columnGap:space(10)}));
   }
 
@@ -737,7 +781,6 @@ export function renderPanel({elements,surface,columns,state,screens={},project,u
     const rejected=n=>n?plural(n,t('reprovação da revisão','review rejection'),t('reprovações da revisão','review rejections')):'';
     // The effort the send asked; a wave shows the one that held at the launch instead, when the send recorded it.
     const effort=value=>value?`${t('esforço pedido','effort asked')} ${value}`:'';
-    const held=value=>`${t('esforço','effort')} ${value}`;
     const reuse=s.reuse || {};
     const look={paddingY:space(16),rowGap:space(8)};
     body.push(block(t('Agentes das ondas','Wave agents'),[
@@ -747,9 +790,8 @@ export function renderPanel({elements,surface,columns,state,screens={},project,u
         reuse.knowledge_calls?`${int(reuse.knowledge_cached)} ${t('de','of')} ${int(reuse.knowledge_calls)} ${t('consultas de conhecimento reaproveitadas','knowledge lookups reused')}`:''])],look));
     if(s.waves.length)body.push(block(`${t('Por onda','By wave')} · ${t('últimas','last')} ${s.waves.length} ${t('de','of')} ${int(s.waves_sent)} ${t('ondas enviadas','waves sent')}`,
       s.waves.map(w=>{
-        const used=w.model_used ?? (w.model_asked?`${w.model_asked} ${t('(pedido)','(asked)')}`:t('modelo não medido','model not measured'));
         const extra=[(w.skills || []).join(', '),w.summary_reused?t('continuou um resumo','continued a summary'):'',refused(w.refused_returns),rejected(w.review_rejections)];
-        return column([...joined([`${t('onda','wave')} ${w.wave}`,used,w.effort_used?held(w.effort_used):effort(w.effort_asked),w.tokens!=null?`${compact(w.tokens)} tokens`:'']),...joined(extra,label)]);
+        return column([...joined([`${t('onda','wave')} ${w.wave}`,modelOf(w),effortOf(w),w.tokens!=null?`${compact(w.tokens)} tokens`:'']),...joined(extra,label)]);
       }),look));
     const f=s.failures || {},lines=[];
     if(f.jev?.calls)lines.push(text(`Jev ${t('falhou','failed')} ${plural(f.jev.calls,t('vez','time'),t('vezes','times'))}: ${counted(f.jev.reasons,reasons)}`));
@@ -806,13 +848,14 @@ export function renderPanel({elements,surface,columns,state,screens={},project,u
   if(screen==='settings')body.push(settingsScreen(settings,actions,{t,terminal,paint,space,apart,text,soft,label,join,row,column,fill,section,rows,entry,block,action,Box,Select,Input,Button,Text,hot}));
   else if(!answer || answer.reason==='panel-no-spec' && screen!=='overview') {
     // Enquanto a lista ou a tarefa não chega, a volta segue à vista.
-    if(['items','item'].includes(screen))body.push(...backLink(answer ?? {}));
+    if(['items','item','waves'].includes(screen))body.push(...backLink(answer ?? {}));
     body.push(answer?text(t('Nenhuma spec neste projeto.','No spec in this project.')):label(t('Carregando…','Loading…')));
   } else if(screen==='overview') overview(answer);
   else if(screen==='spec') spec(answer);
   else if(screen==='items') items(answer);
   else if(screen==='item') itemScreen(answer);
   else if(screen==='usage') usageScreen(answer);
+  else if(screen==='waves') wavesScreen(answer);
 
   // O cabeçalho do layout, no fundo dele e com a linha de baixo: a marca, o
   // nome, a branch, atualizar, configurações e as três abas, a aberta
@@ -829,7 +872,7 @@ export function renderPanel({elements,surface,columns,state,screens={},project,u
       alt:'Mustard',width:34,height:34});
   const underline=()=>Box({backgroundColor:paint.mustard,children:[Svg({source:`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 2" width="2" height="2"><rect width="2" height="2" fill="${paint.mustard}"/></svg>`,
     alt:t('aba aberta','open tab'),width:2,height:2})]});
-  const tabs=[['go-overview','overview'],['go-spec','spec'],['go-usage','usage']].map(([id,target])=>{const on=(['items','item'].includes(screen)?'spec':screen)===target;
+  const tabs=[['go-overview','overview'],['go-spec','spec'],['go-usage','usage']].map(([id,target])=>{const on=(['items','item','waves'].includes(screen)?'spec':screen)===target;
     return {id,target,on,caption:name(titles[target]),letter:on?undefined:{overview:['spec','usage'].includes(screen)?'v':undefined,spec:'s',usage:'c'}[target]};});
   const tabRow=row(tabs.map(tab=>{const button=link(tab.id,tab.caption,()=>actions.go(tab.target),{size:'body',weight:tab.on?'semibold':'medium',color:tab.on?paint.ink:paint.muted},tab.letter?hot(tab.letter):{});
     return tab.on && !terminal?column([button,underline()],{rowGap:space(11)}):column([button]);}),{columnGap:space(24),flexWrap:'nowrap'});
@@ -863,7 +906,7 @@ export function renderPanel({elements,surface,columns,state,screens={},project,u
   const foot=screen==='overview'?[column([rule(),row([publish,fill(...(answer?.at?[row([label(`${t('atualizado às','updated at')} ${clock(answer.at)}`)],{flexGrow:1,justifyContent:'flex-end'})]:[]))],
     {flexWrap:tight?'wrap':'nowrap',alignItems:'center',columnGap:space(12),paddingX:space(20),paddingY:space(14)})],{backgroundColor:paint.header})]:[];
   // O espaço entre os blocos de cada tela: 24 px na Visão geral, 16 nas
-  // Tarefas, 20 na tarefa e 22 nas outras.
-  const gaps={overview:24,items:16,item:20};
+  // Tarefas e nas Ondas, 20 na tarefa e 22 nas outras.
+  const gaps={overview:24,items:16,item:20,waves:16};
   return Box({flexDirection:'column',backgroundColor:paint.page,...(width?{width}:{}),children:[top,column(body,{rowGap:space(gaps[screen] ?? 22),paddingX:space(20),paddingY:space(22)}),...foot]});
 }
