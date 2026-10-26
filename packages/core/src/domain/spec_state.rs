@@ -665,21 +665,57 @@ pub fn final_approval(log: &SpecLog) -> Option<&SpecEvent> {
         .filter(|verdict| answered_request(log, verdict.id).is_some_and(|asked| asked > since))
 }
 
+/// Um pedido da revisão final: o envio de papel `review` que o fechamento
+/// grava, nas duas versões que importam dele.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReviewSend {
+    /// O número da versão que gravou o pedido ([`SpecLog::dispatch_position`]):
+    /// é com ele que todo número da spec se compara — a última mudança da
+    /// obra, o veredito, o envio de onda e o item gravado depois. O lançamento
+    /// do revisor grava uma versão nova do envio, com o modelo que valeu, e
+    /// ela não refaz o pedido: o que veio entre o pedido e o lançamento ficou
+    /// fora do que o revisor recebeu.
+    pub asked: u64,
+    /// A versão vigente do envio, a que a leitura mostra: a que ganha a versão
+    /// seguinte quando o lançamento grava o que valeu nele.
+    pub current: u64,
+}
+
+/// Os pedidos da revisão final que a leitura mostra, do mais velho ao mais
+/// novo, na ordem em que saíram ([`ReviewSend::asked`]). É a única procura do
+/// pedido da revisão final: quem pergunta qual pedido vale — o aberto, o que
+/// um veredito responde, o texto e a lista dele, o tempo da revisão — parte
+/// daqui ou de [`review_send`].
+#[must_use]
+pub fn review_sends(log: &SpecLog) -> Vec<ReviewSend> {
+    let mut sends: Vec<ReviewSend> = log
+        .visible()
+        .into_iter()
+        .filter(|e| e.event_type == "send" && e.str_field("role") == Some("review"))
+        .map(|e| ReviewSend { asked: log.dispatch_position(e.id), current: e.id })
+        .collect();
+    sends.sort_by_key(|send| (send.asked, send.current));
+    sends
+}
+
+/// O pedido da revisão final mais novo ([`review_sends`]) que saiu antes do
+/// evento de número `before` — com `None`, o mais novo de todos. A conta é
+/// pela versão que gravou o pedido: a versão do lançamento gravada depois de
+/// `before` não esconde o pedido que saiu antes dele. `None` sem pedido assim.
+#[must_use]
+pub fn review_send(log: &SpecLog, before: Option<u64>) -> Option<ReviewSend> {
+    review_sends(log).into_iter().rfind(|send| before.is_none_or(|before| send.asked < before))
+}
+
 /// O pedido de revisão final que o veredito de número `verdict` responde: o
-/// envio de revisão final (papel `review`) mais novo antes dele, na posição da
-/// versão que gravou o pedido ([`SpecLog::dispatch_position`]). O lançamento
-/// do revisor grava uma versão nova do envio, com o modelo que valeu, e ela
-/// não refaz o pedido: o item gravado entre o pedido e o lançamento ficou fora
-/// do que o revisor recebeu, e a aprovação não responde por ele. `None` sem
-/// envio assim — o veredito sem pedido gravado não responde a pedido nenhum.
+/// pedido mais novo que saiu antes dele ([`review_send`]), pelo número da
+/// versão que o gravou. O item gravado entre o pedido e o lançamento do
+/// revisor ficou fora do que ele recebeu, e a aprovação não responde por ele.
+/// `None` sem pedido assim — o veredito sem pedido gravado não responde a
+/// pedido nenhum.
 #[must_use]
 pub fn answered_request(log: &SpecLog, verdict: u64) -> Option<u64> {
-    log.visible()
-        .into_iter()
-        .filter(|e| e.event_type == "send" && e.str_field("role") == Some("review") && e.id < verdict)
-        .map(|e| e.id)
-        .max()
-        .map(|asked| log.dispatch_position(asked))
+    review_send(log, Some(verdict)).map(|send| send.asked)
 }
 
 /// O veredito de uma spec, pelos eventos `verdict` que a leitura mostra: o

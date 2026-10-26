@@ -617,20 +617,50 @@ pub fn final_review_commit(root: &Path, log: &SpecLog) -> Option<String> {
 /// veredito responde por cada um.
 ///
 /// Junto do texto vem a lista dos itens que ele lista ([`FinalReview::listed`]),
-/// para o fechamento gravá-la no envio e o veredito conferir a leitura.
+/// para o fechamento gravá-la no envio e o veredito conferir a leitura. Os
+/// itens saem só da spec ([`final_review_items`]); o disco dá a cópia, o
+/// commit, as regras da execução e as do projeto, que o texto leva e a lista
+/// não.
 ///
 /// Só lê o disco, nunca grava: o fechamento grava o envio com o que ela
 /// devolve, e a leitura `request-review-preview` imprime o mesmo texto sem
 /// gravar nada, para o usuário ver o pedido real antes de ele valer.
 #[must_use]
 pub fn final_review(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> FinalReview {
+    let commit = final_review_commit(root, log);
+    let copy = final_copy_path(root, spec, log);
+    let prepared = crate::io::workspace::checkout_git_dir(&copy).is_some_and(|admin| admin.join("mustard-dependencies.sha256").is_file());
+    let execution = Execution { commit, prepared, copy: Some(WaveCopy { path: shown(&copy), reused: None }), ..project_execution(root) };
+    let material = Material {
+        spec: spec.to_string(),
+        execution,
+        project_rules: project_rules(root, &touched_files(root, Some(log))),
+        ..final_review_items(log)
+    };
+    FinalReview { text: wave_prompt::write_final_review(&material, lang), listed: wave_prompt::listed_final_review(&material) }
+}
+
+/// O que o pedido da revisão final lista ([`FinalReview::listed`]), tirado só
+/// da spec, sem montar o pedido: nem texto, nem cópia, nem git, nem regras do
+/// projeto. O painel, a rodada e o fechamento perguntam daqui se o pedido
+/// gravado ficou para trás de um item novo; a lista é a mesma que
+/// [`final_review`] grava no envio, porque as duas saem dos mesmos itens.
+#[must_use]
+pub fn final_review_listed(log: &SpecLog) -> Vec<String> {
+    wave_prompt::listed_final_review(&final_review_items(log))
+}
+
+/// Os itens do pedido da revisão final, só da spec. Só o que nenhuma prova
+/// verde cobre: a tarefa sem passo de término — da onda reprovada, no
+/// conserto, ou de todo o plano —, o combinado que nenhuma onda cobre e o
+/// critério sem execução que passou. A onda, a entrega, o commit e o recibo
+/// da máquina já são prova, e o revisor os acha na cópia. Depois de um
+/// veredito final, também o que mudou desde ele
+/// ([`wave_prompt::since_last_verdict`]).
+fn final_review_items(log: &SpecLog) -> Material<'_> {
     let planned = log.planned_waves();
     let fixing: BTreeSet<u64> = wave_prompt::last_final_rejection(log).and_then(SpecEvent::wave).filter(|n| planned.contains(n)).into_iter().collect();
     let scope: &BTreeSet<u64> = if fixing.is_empty() { &planned } else { &fixing };
-    // Só o que nenhuma prova verde cobre: a tarefa sem passo de término, o
-    // combinado que nenhuma onda cobre e o critério sem execução que passou.
-    // A onda, a entrega, o commit e o recibo da máquina já são prova, e o
-    // revisor os acha na cópia.
     let proven = wave_prompt::Proven::of(log);
     let visible = log.block(BlockQuery::Block(Block::Waves));
     let block: Vec<&SpecEvent> = visible
@@ -643,22 +673,7 @@ pub fn final_review(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Fin
         log.block(BlockQuery::Block(Block::Criteria)).into_iter().filter(|e| e.event_type == "criterion" && !proven.covers(e)).collect();
     let mut agreed: Vec<&SpecEvent> = wave_prompt::all_agreed(log).into_iter().filter(|e| !proven.covers(e)).collect();
     agreed.sort_by_key(|e| e.id);
-    let commit = final_review_commit(root, log);
-    let copy = final_copy_path(root, spec, log);
-    let prepared = crate::io::workspace::checkout_git_dir(&copy).is_some_and(|admin| admin.join("mustard-dependencies.sha256").is_file());
-    let execution = Execution { commit, prepared, copy: Some(WaveCopy { path: shown(&copy), reused: None }), ..project_execution(root) };
-    let material = Material {
-        spec: spec.to_string(),
-        block,
-        criteria,
-        agreed,
-        since_verdict: wave_prompt::since_last_verdict(log),
-        execution,
-        codes: log.codes(),
-        project_rules: project_rules(root, &touched_files(root, Some(log))),
-        ..Material::default()
-    };
-    FinalReview { text: wave_prompt::write_final_review(&material, lang), listed: wave_prompt::listed_final_review(&material) }
+    Material { block, criteria, agreed, since_verdict: wave_prompt::since_last_verdict(log), codes: log.codes(), ..Material::default() }
 }
 
 /// A cópia gravada no envio mais novo da onda `wave`. `None` quando esse
@@ -3723,6 +3738,23 @@ mod tests {
             assert!(whole_suite_once(&first), "a revisão não roda a suíte inteira: {first}");
             let suite = t("prompt.review.suite").replace("{command}", "make test").replace("{commit}", "aaa1111");
             assert!(first.contains(&format!("- {suite}")) && first.contains(&build), "{first}");
+        }
+    }
+
+    /// O que o pedido da revisão lista sai só da spec, sem montar o pedido: a
+    /// lista que o painel, a rodada e o fechamento conferem é a mesma que o
+    /// pedido montado no projeto grava, com as regras do projeto e a cópia do
+    /// revisor no disco, na primeira revisão e na de volta.
+    #[test]
+    fn the_items_the_final_review_lists_come_from_the_spec_alone() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("CLAUDE.md"), "Nunca duplicar tipos.\n").unwrap();
+        for log in [reviewed_again(root, None), reviewed_again(root, Some("rejected"))] {
+            let request = final_review(root, "teste", &log, Locale::PtBr);
+            assert!(request.text.contains("Nunca duplicar tipos."), "{}", request.text);
+            assert!(request.listed.len() > 3, "{}", request.text);
+            assert_eq!(final_review_listed(&log), request.listed, "{}", request.text);
         }
     }
 

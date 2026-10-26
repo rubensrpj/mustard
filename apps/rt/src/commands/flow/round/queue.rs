@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SEND_REQUEST_FIELDS, SpecEvent, SpecLog};
-use mustard_core::domain::spec_state::{PhaseWriter, last_change};
+use mustard_core::domain::spec_state::{PhaseWriter, last_change, review_send};
 use mustard_core::domain::wave_prompt::{Choice, dispatch_items};
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Map, Value, json};
@@ -292,22 +292,23 @@ pub(super) fn record_waves_left_without_tasks(start: &Path, spec: &str, log: &Sp
 /// A chave que marca a nota de onda que saiu do ar por ficar sem tarefa.
 const WAVE_LEFT_KEY: &str = "wave-left-without-tasks";
 
-/// O pedido de revisão aberto, pelo número dele: o último envio de revisão,
-/// que o fechamento grava, sem veredito oficial depois dele. A volta que o
-/// revisor gravou e ninguém assumiu ainda não fecha o pedido: só o veredito
-/// que a rodada ou o fechamento grava ao assumi-la. O veredito do revisor de
-/// uma onda nunca o fecha.
+/// O pedido de revisão aberto, pelo número da versão que o gravou: o pedido
+/// mais novo da revisão final, que o fechamento grava ([`review_send`]), sem
+/// veredito oficial depois dele. A volta que o revisor gravou e ninguém
+/// assumiu ainda não fecha o pedido: só o veredito que a rodada ou o
+/// fechamento grava ao assumi-la. O veredito do revisor de uma onda nunca o
+/// fecha.
 pub(crate) fn open_review(log: &SpecLog) -> Option<u64> {
-    let visible = log.visible();
-    let asked = visible.iter().filter(|e| e.event_type == "send" && e.str_field("role") == Some("review")).map(|e| e.id).max()?;
-    (!visible.iter().any(|e| e.event_type == "verdict" && !super::wave_review::is_wave_verdict(e) && e.id > asked)).then_some(asked)
+    let asked = review_send(log, None)?.asked;
+    (!log.visible().iter().any(|e| e.event_type == "verdict" && !super::wave_review::is_wave_verdict(e) && e.id > asked)).then_some(asked)
 }
 
 /// O pedido de revisão final aberto ([`open_review`]) cujo veredito ainda
 /// pode aprovar a obra: o mais novo que a última mudança dela
-/// ([`last_change`]). O pedido aberto mais velho que ela não espera veredito:
-/// o revisor não recebeu o que mudou depois dele, e o fechamento abre um
-/// pedido novo.
+/// ([`last_change`]), pelo número da versão que gravou o pedido. O pedido
+/// aberto mais velho que ela não espera veredito: o revisor não recebeu o que
+/// mudou depois dele, e o fechamento abre um pedido novo — também quando o
+/// lançamento do revisor gravou uma versão do envio depois da mudança.
 pub(crate) fn awaited_review(log: &SpecLog) -> Option<u64> {
     open_review(log).filter(|asked| *asked > last_change(log))
 }

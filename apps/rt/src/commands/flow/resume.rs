@@ -630,7 +630,7 @@ fn step_of(root: &Path, phase: &str, spec: &str, log: &SpecLog, lang: Locale) ->
     // nem o que ficou para trás de um item gravado depois dele, pela mesma
     // conferência da rodada e do fechamento: o passo é o fechamento, que
     // grava o pedido novo.
-    if awaits_verdict(root, spec, log, lang) {
+    if awaits_verdict(log) {
         return ("close", translate("resume.step.review_open", lang).to_string());
     }
     let review = crate::commands::panel::progress::review(log);

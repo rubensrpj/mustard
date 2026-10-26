@@ -23,7 +23,7 @@ fn close(root: &Path, report: Option<String>) -> Value {
 
 /// Quantos pedidos de revisão final a spec gravou.
 fn review_sends(root: &Path) -> usize {
-    log_of(root).visible().into_iter().filter(|e| e.event_type == "send" && e.str_field("role") == Some("review")).count()
+    mustard_core::domain::spec_state::review_sends(&log_of(root)).len()
 }
 
 /// Grava um critério novo na spec `x`, com a obra já pedida ao revisor, e

@@ -13,10 +13,18 @@
 //! ajuste depois da obra fechada e reaberta é revisado sozinho. A falha do
 //! fechamento numa linha reabre só a onda que a escreveu, e o conserto dela
 //! não toma, no painel, o lugar do commit da onda. Prova de ponta a ponta,
-//! pelo binário de verdade, num repositório temporário.
+//! pelo binário de verdade, num repositório temporário. E só um lugar do
+//! código procura o pedido da revisão final: quem pergunta qual pedido vale
+//! lê de lá, contado pela versão que o gravou.
 
 #[path = "support/binary.rs"]
 mod binary;
+
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+
+#[path = "support/sources.rs"]
+mod sources;
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -1050,4 +1058,33 @@ fn a_closing_lint_failure_spares_a_wave_that_joined_the_commit_without_change() 
     let refused = project.answer(&["close", "--spec", SPEC]);
     assert_eq!(refused["ok"], json!(false), "{refused}");
     assert_eq!(reopened(&project), [sum], "só a onda que escreveu a linha reabre: {refused}");
+}
+
+/// O que, no código de produção sem espaços, procura o envio da revisão final
+/// pelo papel dele.
+const REVIEW_SEND_LOOKUP: &str = "str_field(\"role\")==Some(\"review\")";
+
+/// Só um lugar do código de produção procura o pedido da revisão final pelo
+/// papel do envio: a leitura única do estado da spec, que conta cada pedido
+/// pela versão que o gravou. Outro lugar que procurasse por conta própria
+/// voltaria a contar pela versão mais nova, que o lançamento do revisor grava
+/// depois do pedido.
+#[test]
+fn only_one_place_looks_up_the_review_send() {
+    let root = manifest_dir::manifest_dir().join("../..");
+    let mut files = Vec::new();
+    for top in ["apps", "packages"] {
+        sources::rust_sources(&root.join(top), &mut files);
+    }
+    assert!(files.len() > 100, "the scan found only {} files", files.len());
+    let looking: Vec<String> = files
+        .iter()
+        .filter(|file| {
+            let source = std::fs::read_to_string(file).unwrap_or_default();
+            let code: String = sources::production_code(&source).chars().filter(|c| !c.is_whitespace()).collect();
+            code.contains(REVIEW_SEND_LOOKUP)
+        })
+        .map(|file| file.strip_prefix(&root).unwrap_or(file).to_string_lossy().replace('\\', "/"))
+        .collect();
+    assert_eq!(looking, ["packages/core/src/domain/spec_state.rs"], "the review send is looked up outside the single reading");
 }

@@ -68,7 +68,7 @@ pub(super) fn next_step(root: &Path, spec: &str, (log, codes): (&SpecLog, &BTree
             command = step;
             text
         }
-    } else if awaits_verdict(root, spec, log, lang) {
+    } else if awaits_verdict(log) {
         // Toda onda está entregue, mas a revisão final segue aberta, sem o
         // veredito do revisor: a obra ainda não está aprovada, e o fechamento
         // recusaria. A resposta manda esperar o veredito, sem o comando de

@@ -936,16 +936,15 @@ pub fn all_agreed(log: &SpecLog) -> Vec<&SpecEvent> {
 }
 
 /// O combinado que o veredito final responde: o que o pedido mais novo da
-/// revisão listou (`read_items`) e o que nem uma tarefa terminada nem a última
-/// aprovação final cobrem agora ([`Proven`]) — o item gravado depois do pedido
-/// também. O combinado que uma delas cobre e o pedido não listou já tem
-/// prova. O pedido sem a lista, de antes dela, responde por todo o combinado
-/// ([`all_agreed`]).
+/// revisão ([`crate::domain::spec_state::review_send`]) listou (`read_items`)
+/// e o que nem uma tarefa terminada nem a última aprovação final cobrem agora
+/// ([`Proven`]) — o item gravado depois do pedido também. O combinado que uma
+/// delas cobre e o pedido não listou já tem prova. O pedido sem a lista, de
+/// antes dela, responde por todo o combinado ([`all_agreed`]).
 #[must_use]
 pub fn review_agreed(log: &SpecLog) -> Vec<&SpecEvent> {
-    let visible = log.visible();
-    let sent = visible.iter().filter(|e| e.event_type == "send" && e.str_field("role") == Some("review")).max_by_key(|e| e.id);
-    let Some(listed) = sent.and_then(|e| log.send_field(e.id, "read_items")).and_then(Value::as_array) else {
+    let sent = crate::domain::spec_state::review_send(log, None);
+    let Some(listed) = sent.and_then(|send| log.send_field(send.asked, "read_items")).and_then(Value::as_array) else {
         return all_agreed(log);
     };
     let listed: BTreeSet<&str> = listed.iter().filter_map(Value::as_str).collect();

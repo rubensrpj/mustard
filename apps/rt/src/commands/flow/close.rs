@@ -70,7 +70,7 @@ use std::path::{Path, PathBuf};
 
 use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog};
 use mustard_core::domain::spec_index::title_of;
-use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State, final_approval};
+use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State, final_approval, review_send};
 use mustard_core::domain::wave_prompt::{count_lines, recorded_choice, unowned};
 use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{Locale, translate};
@@ -84,6 +84,8 @@ use crate::shared::spec_state::{DiskSpecState, checkout, session_from_env};
 mod clean_copy;
 #[cfg(test)]
 mod outdated_request_tests;
+#[cfg(test)]
+mod review_request_tests;
 pub(crate) mod stale_marks;
 mod unused;
 
@@ -472,7 +474,7 @@ fn run_close(
     // abre um pedido novo, mais abaixo. O mesmo vale para o pedido que ficou
     // para trás de um item gravado depois dele: o pedido novo o lista, e a
     // aprovação do antigo não fecha a obra.
-    let outdated = crate::commands::flow::round::outdated_review(root, &spec, &log, lang);
+    let outdated = crate::commands::flow::round::outdated_review(&log);
     if crate::commands::flow::round::awaited_review(&log).is_some()
         && !held.contains(&crate::commands::flow::round::FINAL_REVIEW)
         && outdated.is_none()
@@ -1170,13 +1172,17 @@ fn prepare_review_copy(
     Ok((prepared.missing, prepared.kept))
 }
 
-/// Um revisor já recebeu pedido depois do último envio de onda: o envio de
-/// revisão mais novo vem depois do envio de onda mais novo, ou não há envio
-/// de onda nenhum.
+/// Um revisor já recebeu pedido depois do último envio de onda: o pedido de
+/// revisão mais novo ([`review_send`]) saiu depois do envio de onda mais
+/// novo, ou não há envio de onda nenhum. Os dois contam pela versão que
+/// despachou ([`SpecLog::dispatch_position`]): a versão que o lançamento do
+/// revisor ou a volta de uma onda grava depois não muda quando cada um saiu.
 fn reviewed_after_last_wave(log: &SpecLog) -> bool {
-    let sends: Vec<&SpecEvent> = log.visible().into_iter().filter(|e| e.event_type == "send").collect();
-    let newest = |review: bool| sends.iter().filter(|e| (e.str_field("role") == Some("review")) == review).map(|e| e.id).max();
-    newest(true).is_some_and(|review| newest(false).is_none_or(|wave| review > wave))
+    let Some(review) = review_send(log, None) else {
+        return false;
+    };
+    let waves = log.visible().into_iter().filter(|e| e.event_type == "send" && e.str_field("role") != Some("review"));
+    waves.map(|e| log.dispatch_position(e.id)).max().is_none_or(|wave| review.asked > wave)
 }
 
 /// O aviso das cópias da obra que não saíram (`left`, cada uma com o motivo

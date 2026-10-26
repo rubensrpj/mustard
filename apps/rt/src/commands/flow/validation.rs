@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 
 use mustard_core::domain::spec_events::{Refusal, SpecLog};
-use mustard_core::domain::spec_state::{PhaseWriter, State};
+use mustard_core::domain::spec_state::{PhaseWriter, State, answered_request};
 use mustard_core::platform::git;
 use serde_json::{Map, Value, json};
 
@@ -787,8 +787,11 @@ fn record_run_fields(root: &Path, spec: &str, phase: &str, stage: &str, command:
     record(root, spec, "stage_run", draft, PhaseWriter::Binary).map(|_| ())
 }
 
-/// Review elapsed wall time includes the host's dispatch and waiting time;
-/// it is observational and must not be added to machine stage durations.
+/// O tempo de relógio da revisão final inclui o despacho e a espera do
+/// hospedeiro; é observação, e não soma às durações das etapas da máquina.
+/// Ele conta do pedido que o veredito responde ([`answered_request`]), na
+/// versão que o gravou: a versão que o lançamento do revisor grava depois
+/// deixaria a espera do despacho de fora.
 pub(super) fn review_elapsed(root: &Path, spec: &str, log: &mustard_core::domain::spec_events::SpecLog) -> Result<(), Refusal> {
     let verdict = log.visible().into_iter().rev().find(|e| e.event_type == "verdict" && e.fields.get("final") == Some(&Value::Bool(true)));
     let Some(verdict) = verdict else {
@@ -798,7 +801,7 @@ pub(super) fn review_elapsed(root: &Path, spec: &str, log: &mustard_core::domain
     if log.events.iter().any(|e| e.event_type == "stage_run" && e.str_field("fingerprint") == Some(&key)) {
         return Ok(());
     }
-    let Some(sent) = log.visible().into_iter().rev().find(|e| e.event_type == "send" && e.str_field("role") == Some("review") && e.id < verdict.id) else {
+    let Some(sent) = answered_request(log, verdict.id).and_then(|asked| log.get(asked)) else {
         return Ok(());
     };
     let Some(ms) = chrono::DateTime::parse_from_rfc3339(sent.at())

@@ -57,7 +57,7 @@ use std::path::Path;
 use mustard_core::domain::config::{AgentSettings, DEFAULT_AGENT_EFFORT, DEFAULT_AGENT_MODEL};
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::domain::spec_events::{Refusal, SpecLog};
-use mustard_core::domain::spec_state::{PhaseWriter, SpecState as _};
+use mustard_core::domain::spec_state::{PhaseWriter, SpecState as _, review_send};
 use mustard_core::domain::wave_prompt::{carries_project_rules, language_line, project_rules_section, wave_title};
 use mustard_core::io::spec_events as store;
 use mustard_core::io::transcript::agent_request;
@@ -569,7 +569,10 @@ fn launch_settings_with(verdict: Verdict, input: &HookInput, ctx: &Ctx, effort_e
         record_on_send(&project.root, &read.spec, EFFORT_USED, held, |log| log.last_by_wave("send").get(&read.wave).copied());
     }
     if final_review && let Some(spec) = read_spec(dispatch_prompt(input)) {
-        record_on_send(&project.root, spec, MODEL_USED, effective, crate::commands::flow::round::awaited_review);
+        // A versão nova sai da vigente do pedido que espera veredito, para não
+        // abrir um segundo ramo de versões do mesmo envio.
+        let awaited = |log: &SpecLog| crate::commands::flow::round::awaited_review(log).and_then(|_| review_send(log, None)).map(|send| send.current);
+        record_on_send(&project.root, spec, MODEL_USED, effective, awaited);
     }
     let Some(fields) = tool_input.as_object_mut() else { return with_warning(Verdict::Allow, warning) };
     if raised {
