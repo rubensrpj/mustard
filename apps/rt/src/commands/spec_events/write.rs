@@ -6319,8 +6319,12 @@ mod tests {
             assert_eq!(log.get(recorded).and_then(|event| event.str_field("author")), Some("binary"), "a versão {recorded}, que substitui a {from}, é da rodada");
             recorded
         };
+        // Ao pôr a tarefa numa onda, a rodada grava a versão com os campos
+        // dela, a onda e o autor `binary`, substituindo a vigente.
         let log = DiskSpecState::new(root).log("teste").unwrap();
-        let in_wave = crate::commands::flow::round::queue::task_revision(&log, finding, Map::from_iter([("wave".to_string(), json!(1))])).expect("o rascunho da onda");
+        let mut in_wave = backlog_return(log.get(finding).expect("a tarefa do achado"));
+        in_wave.insert("wave".into(), json!(1));
+        in_wave.insert("author".into(), json!("binary"));
         let in_wave = by_the_round(finding, in_wave);
         let log = DiskSpecState::new(root).log("teste").unwrap();
         let back = by_the_round(in_wave, backlog_return(log.get(in_wave).expect("a versão na onda")));
