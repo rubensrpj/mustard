@@ -256,43 +256,93 @@ mod shouting_words;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::path::Path;
+
+    /// A variável que manda regravar as impressões de uma parte em vez de
+    /// conferi-las: com ela em `1`, o teste da parte grava o arquivo dela.
+    const REWRITE_STAMPS: &str = "MUSTARD_REWRITE_STAMPS";
 
     /// Confere uma parte do catálogo pelo texto do arquivo dela. Cada chave
     /// começa por um dos começos que a parte declara, a porta responde cada
-    /// uma nos dois idiomas, e o número de chaves e a impressão dos textos
-    /// são os que a parte gravou. Uma chave que sai, que vai para a parte
-    /// errada ou que muda de texto derruba a conferência.
-    pub(super) fn assert_part_unchanged(source: &str, prefixes: &[&str], keys: usize, fingerprint: u64) {
+    /// uma nos dois idiomas, e o texto de cada chave tem a impressão que o
+    /// arquivo `stamps/<parte>.txt` guarda. Uma chave que entra, que sai, que
+    /// vai para a parte errada ou que muda de texto derruba a conferência, e a
+    /// falha diz quais chaves e o comando que regrava o arquivo.
+    pub(super) fn assert_part_unchanged(part: &str, source: &str, prefixes: &[&str]) {
         let found = part_keys(source);
-        // A impressão é o FNV-1a de 64 bits sobre chave, idioma e texto, na
-        // ordem das chaves: estável entre versões do Rust, ao contrário do
-        // hasher da biblioteca padrão.
-        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
         for key in &found {
             let prefix = key.split_once('.').map_or(*key, |(head, _)| head);
             assert!(prefixes.contains(&prefix), "{key} starts with {prefix}, which this part does not declare");
             for lang in [Locale::PtBr, Locale::EnUs] {
-                let text = translate(key, lang);
-                assert_ne!(text, "<missing-key>", "{key} has no text in {lang}");
-                for byte in key.bytes().chain([0]).chain(lang.as_str().bytes()).chain([0]).chain(text.bytes()).chain([0xff]) {
-                    hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
-                }
+                assert_ne!(translate(key, lang), "<missing-key>", "{key} has no text in {lang}");
             }
         }
-        let shown = format!(
-            "0x{:04x}_{:04x}_{:04x}_{:04x}",
-            hash >> 48,
-            (hash >> 32) & 0xffff,
-            (hash >> 16) & 0xffff,
-            hash & 0xffff
-        );
-        assert!(
-            (found.len(), hash) == (keys, fingerprint),
-            "the part changed: it now holds {} keys with fingerprint {shown}; if the change is on purpose, \
-             write these two numbers in the part's test",
-            found.len()
-        );
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/platform/i18n/stamps").join(format!("{part}.txt"));
+        let rewrite = std::env::var(REWRITE_STAMPS).is_ok_and(|value| value == "1");
+        if let Err(report) = settle_stamps(part, &path, &part_stamps(&found, translate), rewrite) {
+            panic!("{report}");
+        }
+    }
+
+    /// A impressão de uma chave: o FNV-1a de 64 bits sobre a chave e o texto
+    /// dela nos dois idiomas. É estável entre versões do Rust, ao contrário do
+    /// hasher da biblioteca padrão.
+    fn key_stamp<'t>(key: &str, text: &impl Fn(&str, Locale) -> &'t str) -> u64 {
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let bytes = key.bytes().chain([0]).chain(lang.as_str().bytes()).chain([0]);
+            for byte in bytes.chain(text(key, lang).bytes()).chain([0xff]) {
+                hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+            }
+        }
+        hash
+    }
+
+    /// O conteúdo do arquivo de impressões de uma parte: uma linha por chave,
+    /// `chave<TAB>impressão`, na ordem das chaves. Cada linha só muda quando o
+    /// texto da própria chave muda, e é por isso que duas ondas que mexem em
+    /// chaves diferentes juntam sem conflito.
+    fn part_stamps<'t>(keys: &BTreeSet<&str>, text: impl Fn(&str, Locale) -> &'t str) -> String {
+        keys.iter().map(|key| format!("{key}\t{:016x}\n", key_stamp(key, &text))).collect()
+    }
+
+    /// Compara as impressões gravadas com as de agora. A falha nomeia as
+    /// chaves novas, as que sumiram e as que mudaram de texto, e manda
+    /// regravar o arquivo pelo comando único.
+    fn compare_stamps(part: &str, recorded: &str, current: &str) -> Result<(), String> {
+        if recorded.lines().eq(current.lines()) {
+            return Ok(());
+        }
+        fn read(stamps: &str) -> BTreeMap<&str, &str> {
+            stamps.lines().filter_map(|line| line.split_once('\t')).collect()
+        }
+        let (before, now) = (read(recorded), read(current));
+        let new: Vec<&str> = now.keys().filter(|key| !before.contains_key(*key)).copied().collect();
+        let gone: Vec<&str> = before.keys().filter(|key| !now.contains_key(*key)).copied().collect();
+        let changed: Vec<&str> =
+            now.iter().filter(|(key, stamp)| before.get(*key).is_some_and(|old| old != *stamp)).map(|(key, _)| *key).collect();
+        let mut report = vec![format!("the {part} part no longer matches stamps/{part}.txt:")];
+        for (label, keys) in [("new keys", &new), ("keys that are gone", &gone), ("keys whose text changed", &changed)] {
+            if !keys.is_empty() {
+                report.push(format!("  {label}: {}", keys.join(", ")));
+            }
+        }
+        if report.len() == 1 {
+            report.push("  the file is not one line per key, in key order".to_string());
+        }
+        report.push(format!("if the change is on purpose, rewrite the file with one command: {REWRITE_STAMPS}=1 cargo test -p mustard-core --lib -- i18n"));
+        Err(report.join("\n"))
+    }
+
+    /// Confere as impressões de agora com o arquivo da parte em `path` ou, com
+    /// `rewrite`, grava-as nele. Arquivo ausente conta como vazio: toda chave
+    /// aparece como nova.
+    fn settle_stamps(part: &str, path: &Path, current: &str, rewrite: bool) -> Result<(), String> {
+        if rewrite {
+            return std::fs::write(path, current).map_err(|err| format!("could not write {}: {err}", path.display()));
+        }
+        compare_stamps(part, &std::fs::read_to_string(path).unwrap_or_default(), current)
     }
 
     /// As chaves de uma parte, lidas do texto do arquivo dela: cada braço do
@@ -530,6 +580,82 @@ mod tests {
                 assert!(seen.insert(*prefix), "{prefix} is declared by two parts");
             }
         }
+    }
+
+    /// Uma parte de exemplo, com a chave, o texto em pt-BR e o texto em en-US.
+    type SampleTexts<'t> = Vec<(&'t str, &'t str, &'t str)>;
+
+    /// O catálogo de exemplo antes de qualquer onda: seis chaves.
+    fn sample_texts() -> SampleTexts<'static> {
+        vec![
+            ("sample.a", "Texto a.", "Text a."),
+            ("sample.b", "Texto b.", "Text b."),
+            ("sample.c", "Texto c.", "Text c."),
+            ("sample.d", "Texto d.", "Text d."),
+            ("sample.e", "Texto e.", "Text e."),
+            ("sample.f", "Texto f.", "Text f."),
+        ]
+    }
+
+    /// As impressões de uma parte de exemplo, calculadas como as de uma parte
+    /// de verdade: as chaves em ordem e o texto de cada uma nos dois idiomas.
+    fn sample_stamps(texts: &SampleTexts<'_>) -> String {
+        let keys: BTreeSet<&str> = texts.iter().map(|(key, ..)| *key).collect();
+        part_stamps(&keys, |key, lang| {
+            let (_, pt, en) = texts.iter().find(|(known, ..)| *known == key).expect("the key is in the sample");
+            if lang == Locale::PtBr { pt } else { en }
+        })
+    }
+
+    /// Duas ondas em paralelo, cada uma na sua cópia, mexem em chaves
+    /// diferentes da mesma parte: uma muda o texto de uma chave, a outra
+    /// acrescenta uma chave. Cada onda regrava as impressões da parte, e o
+    /// `git merge-file` junta os dois arquivos a partir do que havia antes
+    /// delas, sem conflito e com as impressões de quem tem as duas mudanças.
+    #[test]
+    fn two_waves_changing_different_catalog_keys_merge_without_conflict() {
+        let base = sample_texts();
+        let mut first_wave = sample_texts();
+        first_wave[1] = ("sample.b", "Texto b, mudado.", "Text b, changed.");
+        let mut second_wave = sample_texts();
+        second_wave.insert(4, ("sample.dd", "Texto dd.", "Text dd."));
+        let mut both = first_wave.clone();
+        both.insert(4, ("sample.dd", "Texto dd.", "Text dd."));
+
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        for (name, texts) in [("base.txt", &base), ("first.txt", &first_wave), ("second.txt", &second_wave)] {
+            settle_stamps("sample", &dir.path().join(name), &sample_stamps(texts), true).expect("the stamps are written");
+        }
+        let merged = crate::platform::git::run(dir.path(), &["merge-file", "-p", "first.txt", "base.txt", "second.txt"]);
+
+        assert!(merged.ok, "the two waves conflict:\n{}{}", merged.stdout, merged.stderr);
+        assert_eq!(merged.stdout, sample_stamps(&both), "the merge holds the stamps of both changes");
+    }
+
+    /// Texto mudado sem regravar as impressões derruba a conferência da parte,
+    /// que nomeia a chave nova, a que sumiu e a que mudou, e o comando que
+    /// regrava o arquivo. Regravado, o arquivo volta a passar.
+    #[test]
+    fn a_changed_catalog_text_is_named_by_key_until_the_stamps_are_rewritten() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let path = dir.path().join("sample.txt");
+        settle_stamps("sample", &path, &sample_stamps(&sample_texts()), true).expect("the stamps are written");
+        let mut edited = sample_texts();
+        edited.retain(|(key, ..)| *key != "sample.a");
+        edited[0] = ("sample.b", "Texto b, mudado.", "Text b.");
+        edited.push(("sample.g", "Texto g.", "Text g."));
+        let stamps = sample_stamps(&edited);
+
+        let report = settle_stamps("sample", &path, &stamps, false).expect_err("the stamps are old");
+
+        assert_eq!(
+            report,
+            "the sample part no longer matches stamps/sample.txt:\n  new keys: sample.g\n  keys that are gone: sample.a\n  \
+             keys whose text changed: sample.b\n\
+             if the change is on purpose, rewrite the file with one command: MUSTARD_REWRITE_STAMPS=1 cargo test -p mustard-core --lib -- i18n"
+        );
+        settle_stamps("sample", &path, &stamps, true).expect("the stamps are rewritten");
+        settle_stamps("sample", &path, &stamps, false).expect("the rewritten stamps match");
     }
 
     // Short forms are rejected with a typed error.

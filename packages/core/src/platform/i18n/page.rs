@@ -200,16 +200,11 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     /// Esta parte guarda as mesmas chaves, com os mesmos textos nos dois
-    /// idiomas. Quem muda um texto de propósito grava aqui os dois números
-    /// novos que a falha mostra.
+    /// idiomas, como o arquivo de impressões dela em `stamps/` guarda. Quem muda
+    /// um texto de propósito regrava o arquivo pelo comando que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(
-            include_str!("page.rs"),
-            super::PREFIXES,
-            70,
-            0xf80f_a570_4181_817f,
-        );
+        crate::platform::i18n::tests::assert_part_unchanged("page", include_str!("page.rs"), super::PREFIXES);
     }
 
 }

@@ -2653,11 +2653,11 @@ mod tests {
     use crate::platform::i18n::translate;
 
     /// Esta parte guarda as mesmas chaves, com os mesmos textos nos dois
-    /// idiomas. Quem muda um texto de propósito grava aqui os dois números
-    /// novos que a falha mostra.
+    /// idiomas, como o arquivo de impressões dela em `stamps/` guarda. Quem muda
+    /// um texto de propósito regrava o arquivo pelo comando que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 381, 0xfe10_c7e6_c5a0_179e);
+        crate::platform::i18n::tests::assert_part_unchanged("flow", include_str!("flow.rs"), super::PREFIXES);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do

@@ -313,16 +313,11 @@ mod tests {
     use crate::platform::i18n::translate;
 
     /// Esta parte guarda as mesmas chaves, com os mesmos textos nos dois
-    /// idiomas. Quem muda um texto de propósito grava aqui os dois números
-    /// novos que a falha mostra.
+    /// idiomas, como o arquivo de impressões dela em `stamps/` guarda. Quem muda
+    /// um texto de propósito regrava o arquivo pelo comando que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(
-            include_str!("session.rs"),
-            super::PREFIXES,
-            40,
-            0x8bf7_2006_9cd0_96b2,
-        );
+        crate::platform::i18n::tests::assert_part_unchanged("session", include_str!("session.rs"), super::PREFIXES);
     }
 
     /// Work-unit surfacing copy is catalogue-driven in BOTH locales: the
