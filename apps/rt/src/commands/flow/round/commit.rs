@@ -877,7 +877,7 @@ pub(super) fn ensure_after_wave(
     let (mut warnings, mut held) = after_wave_answer(waves, &found, lang);
     held.extend(waiting.iter().map(|one| HeldReturn { wave: one.wave, refusal: RoundRefusal::JevPending { wave: one.wave, question: one.question } }));
     let files = maps.changed.iter().flat_map(|(_, files)| files.iter().cloned()).collect::<Vec<_>>();
-    let ownerless = crate::commands::flow::close::ownerless_tests::hints(root, log, &maps.base, &maps.after, &files, lang);
+    let ownerless = crate::commands::flow::close::ownerless_tests::hints(log, &maps.base, &maps.after, &files, lang);
     warnings.extend(ownerless.iter().map(|hint| json!({ "reason": crate::commands::flow::close::ownerless_tests::REASON, "hint": hint })));
     let sizes = super::size_check::lines(&super::size_check::measure(root, &maps.changed), lang);
     warnings.extend(sizes.iter().filter(|(wave, _)| !out.contains(wave)).map(|(wave, hint)| json!({ "reason": "wave-size", "wave": wave, "hint": hint })));

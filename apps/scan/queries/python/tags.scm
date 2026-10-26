@@ -107,6 +107,37 @@
         name: (identifier) @name
         body: (block . (expression_statement (string (string_content) @doc)))) @definition.method)))
 
+; Os testes. O método `test*` de uma classe do `unittest` (a que herda de um
+; `TestCase`: `unittest.TestCase`, o `TestCase` do Django, o
+; `IsolatedAsyncioTestCase`) é teste em qualquer arquivo. A função `test*` do
+; topo do módulo e o método `test*` de uma classe `Test*`, que o pytest roda
+; só no arquivo de teste, são teste só nele. Com decorador ou sem, e também a
+; função `async`. A declaração sai marcada como teste.
+((class_definition
+  superclasses: (argument_list [(identifier) (attribute)] @_base)
+  body: (block (function_definition name: (identifier) @_name) @test_unit))
+  (#match? @_base "TestCase$")
+  (#match? @_name "^test"))
+((class_definition
+  superclasses: (argument_list [(identifier) (attribute)] @_base)
+  body: (block (decorated_definition definition: (function_definition name: (identifier) @_name) @test_unit) @test_unit))
+  (#match? @_base "TestCase$")
+  (#match? @_name "^test"))
+((module (function_definition name: (identifier) @_name) @test_unit.in_test_file)
+  (#match? @_name "^test"))
+((module (decorated_definition definition: (function_definition name: (identifier) @_name) @test_unit.in_test_file))
+  (#match? @_name "^test"))
+((class_definition
+  name: (identifier) @_class
+  body: (block (function_definition name: (identifier) @_name) @test_unit.in_test_file))
+  (#match? @_class "^Test")
+  (#match? @_name "^test"))
+((class_definition
+  name: (identifier) @_class
+  body: (block (decorated_definition definition: (function_definition name: (identifier) @_name) @test_unit.in_test_file)))
+  (#match? @_class "^Test")
+  (#match? @_name "^test"))
+
 ; Decorations — a decorator (`@app.get("/")`, `@dataclass`) is not code of the
 ; declaration it adorns: the engine passes over it to find the comment above
 ; and reads no call out of it.

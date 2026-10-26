@@ -36,6 +36,28 @@
 (property_declaration (property_element name: (variable_name (name) @name))) @definition.property
 (enum_case name: (name) @name) @definition.enum_member
 
+; Os testes. No PHPUnit, o método `test*` da classe de teste (a de nome
+; `*Test` ou a que herda de um `TestCase`), o método com `@test` no comentário
+; de documentação colado a ele e o com o atributo `#[Test]`, com o caminho ou
+; sem ele. A declaração sai marcada como teste. No Pest, a chamada
+; `test('...', fn)` e `it('...', fn)` entra no mapa como declaração de teste,
+; com o texto do primeiro argumento sem as aspas; o grupo (`describe`) não é
+; teste.
+((class_declaration name: (name) @_class body: (declaration_list (method_declaration name: (name) @_name) @test_unit))
+  (#match? @_class "Test$")
+  (#match? @_name "^test"))
+((class_declaration (base_clause (_) @_base) body: (declaration_list (method_declaration name: (name) @_name) @test_unit))
+  (#match? @_base "TestCase$")
+  (#match? @_name "^test"))
+((comment) @_doc . (method_declaration) @test_unit
+  (#match? @_doc "(?s)^/\\*\\*.*@test\\b"))
+((method_declaration attributes: (attribute_list (attribute_group (attribute [(name) (qualified_name)] @_attr)))) @test_unit
+  (#match? @_attr "(^|\\\\)Test$"))
+((function_call_expression
+  function: (name) @_callee
+  arguments: (arguments . (argument [(string) (encapsed_string)] @name.text) (argument [(anonymous_function) (arrow_function)]))) @definition.test @test_unit
+  (#match? @_callee "^(test|it)$"))
+
 ; Decorations — an attribute list (`#[Route('/lista')]`) is not code of the
 ; declaration it adorns: the engine starts the header after it and reads no
 ; call out of it.

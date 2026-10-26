@@ -120,12 +120,19 @@
   ] @test_block
   (#match? @_marker "(?s)^#\\[\\s*cfg\\(\\s*(test|(all|any)\\(\\s*(.*,\\s*)?test\\s*[,)].*)\\s*\\)\\s*\\]$"))
 
-; A função com `#[test]` solta, fora de um módulo de teste: é teste, e não
-; programa, com os atributos colados a ela e o mesmo trecho do item solto de
-; cima. A chamada que ela faz não é uso do que chama, e a declaração dela não
-; é código sem uso. No arquivo que é ele mesmo de teste (`@test_unit`, e não
-; `@test_block`) a chamada segue sendo uso: é ela que mostra quem testa cada
-; declaração.
+; A função de teste, dentro ou fora de um módulo de teste: a marca é o
+; atributo cujo último trecho do caminho é `test` (`#[test]`,
+; `#[tokio::test]`, `#[tokio::test(flavor = "multi_thread")]`,
+; `#[async_std::test]`) ou o de um framework de teste que roda a função
+; sozinho (`#[bench]`, `#[rstest]`, `#[test_case(..)]`, `#[test_matrix(..)]`,
+; `#[proptest]`, `#[property_test]`, `#[quickcheck]`,
+; `#[wasm_bindgen_test]`), em qualquer ponto da fila de atributos colada a
+; ela. A declaração dela sai marcada como teste. Solta, fora de um módulo de
+; teste, ela é teste, e não programa, com os atributos colados a ela e o
+; mesmo trecho do item solto de cima: a chamada que ela faz não é uso do que
+; chama, e a declaração dela não é código sem uso. No arquivo que é ele mesmo
+; de teste (`@test_unit`, e não `@test_block`) a chamada segue sendo uso: é
+; ela que mostra quem testa cada declaração.
 ((attribute_item)* @test_unit
   .
   (attribute_item) @_marker @test_unit
@@ -133,7 +140,7 @@
   (attribute_item)* @test_unit
   .
   (function_item) @test_unit
-  (#match? @_marker "^#\\[\\s*test\\s*\\]$"))
+  (#match? @_marker "(?s)^#\\[\\s*([A-Za-z_][A-Za-z0-9_]*\\s*::\\s*)*(test|bench|rstest|test_case|test_matrix|proptest|property_test|quickcheck|wasm_bindgen_test)\\s*(\\(.*\\))?\\s*\\]$"))
 
 ; Todo módulo com corpo escrito dentro do arquivo, o de teste incluído: o
 ; `super` escrito dentro de N deles sai primeiro desses N módulos, e só depois

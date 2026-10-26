@@ -85,6 +85,15 @@
   type: [(identifier) (qualified_name)] @member.of
   (property_pattern_clause (subpattern (identifier) @member ":")))
 
+; O método de teste: o atributo de teste do xUnit (`[Fact]`, `[Theory]`), do
+; NUnit (`[Test]`, `[TestCase(..)]`, `[TestCaseSource(..)]`) ou do MSTest
+; (`[TestMethod]`, `[DataTestMethod]`), com o caminho ou sem ele
+; (`[Xunit.Fact]`), com o sufixo `Attribute` ou sem ele, em qualquer lista de
+; atributos do método. A declaração sai marcada como teste.
+((method_declaration
+  (attribute_list (attribute name: [(identifier) @_attr (qualified_name name: (identifier) @_attr)]))) @test_unit
+  (#match? @_attr "^(Fact|Theory|SkippableFact|SkippableTheory|Test|TestCase|TestCaseSource|TestMethod|DataTestMethod)(Attribute)?$"))
+
 ; Decorations — an attribute list (`[HttpGet("{id}")]`, `[Fact]`) is not code
 ; of the declaration it adorns: the engine starts the header after it and reads
 ; no call out of it.

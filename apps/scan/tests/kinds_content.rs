@@ -139,6 +139,10 @@ fn every_language_files_a_free_function_as_unit_and_a_type_member_as_member() {
                 ("shout", "method"),
                 ("summarize", "function"),
                 ("defaultRole", "const"),
+                // O teste que é chamada entra como declaração de teste, com o
+                // texto do nome, dentro do `main` do arquivo de teste.
+                ("main", "function"),
+                ("loads an account", "test"),
             ],
         ),
         (
@@ -171,6 +175,7 @@ fn every_language_files_a_free_function_as_unit_and_a_type_member_as_member() {
                 ("load", "method"),
                 ("User", "class"),
                 ("name", "field"),
+                ("loads a user", "test"),
             ],
         ),
         (
@@ -193,6 +198,7 @@ fn every_language_files_a_free_function_as_unit_and_a_type_member_as_member() {
                 ("Inactive", "enum_member"),
                 ("helper", "function"),
                 ("DEFAULT_LABEL", "const"),
+                ("loads a user", "test"),
             ],
         ),
         // The language has no top-level function, so its whole declaration surface

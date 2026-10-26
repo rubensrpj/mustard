@@ -7,7 +7,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use mustard_core::domain::project_map::{MapDecl, MapModule, ProjectMap};
+use mustard_core::domain::project_map::{MapDecl, ProjectMap};
 use mustard_core::domain::spec_events::{Block, BlockQuery, SpecLog};
 use mustard_core::platform::i18n::{Locale, translate};
 
@@ -17,9 +17,9 @@ pub(crate) const REASON: &str = "unowned-test";
 /// O aviso de cada teste que `after` declara num arquivo de `files` e que
 /// `before` não tinha no mesmo arquivo, quando nenhuma prova de critério do
 /// `log` cita o nome dele. Sai na ordem dos arquivos e, em cada um, na das
-/// declarações. O texto de cada arquivo, lido de `root`, diz se a declaração
-/// leva a marca de teste logo acima dela.
-pub(crate) fn hints(root: &Path, log: &SpecLog, before: &ProjectMap, after: &ProjectMap, files: &[String], lang: Locale) -> Vec<String> {
+/// declarações. Teste é a declaração que o mapa marca como teste
+/// ([`is_test`]).
+pub(crate) fn hints(log: &SpecLog, before: &ProjectMap, after: &ProjectMap, files: &[String], lang: Locale) -> Vec<String> {
     let proofs: Vec<&str> =
         log.block(BlockQuery::Block(Block::Criteria)).into_iter().filter(|e| e.event_type == "criterion").filter_map(|e| e.str_field("proof")).collect();
     let files: BTreeSet<&str> = files.iter().map(String::as_str).collect();
@@ -28,12 +28,10 @@ pub(crate) fn hints(root: &Path, log: &SpecLog, before: &ProjectMap, after: &Pro
         let Some(module) = after.module(file) else {
             continue;
         };
-        let text = std::fs::read_to_string(root.join(file)).unwrap_or_default();
-        let lines: Vec<&str> = text.lines().collect();
         let old = before.module(file);
         for decl in &module.declarations {
             let existed = old.is_some_and(|m| m.declarations.iter().any(|d| d.name == decl.name && d.kind == decl.kind));
-            if existed || !is_test(file, module, decl, &lines) || proofs.iter().any(|proof| proof.contains(&decl.name)) {
+            if existed || !is_test(decl) || proofs.iter().any(|proof| proof.contains(&decl.name)) {
                 continue;
             }
             let hint = translate("close.unowned_test", lang).replace("{name}", &decl.name).replace("{file}", file).replace("{line}", &decl.line.to_string());
@@ -52,24 +50,15 @@ pub(super) fn at_close(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> 
         return Vec::new();
     };
     let files: Vec<String> = log.delivered_files().into_iter().collect();
-    hints(root, log, &before, &after, &files, lang)
+    hints(log, &before, &after, &files, lang)
 }
 
-/// Se a declaração `decl` do arquivo `file` é um teste: uma função com a marca
-/// de teste numa das três linhas de cima (`lines` é o texto do arquivo), ou
-/// com nome de teste dentro de arquivo ou trecho de teste. A leitura é de
-/// sintaxe: o aviso que ela dá não prova cobertura nenhuma.
-fn is_test(file: &str, module: &MapModule, decl: &MapDecl, lines: &[&str]) -> bool {
-    if !matches!(decl.kind.as_str(), "function" | "method" | "test") {
-        return false;
-    }
-    let at = usize::try_from(decl.line.saturating_sub(1)).unwrap_or(usize::MAX);
-    let marked = lines
-        .get(at.saturating_sub(3)..at.min(lines.len()))
-        .is_some_and(|prior| prior.iter().any(|line| line.contains("#[test]") || line.contains("@Test")));
-    let named = decl.name.starts_with("Test") || decl.name.starts_with("test_") || decl.kind == "test";
-    let in_tests = mustard_core::domain::ast::is_test_path(file) || module.test_lines.iter().any(|(from, to)| (*from..=*to).contains(&decl.line));
-    marked || (named && in_tests)
+/// Se a declaração `decl` é um teste: a marca de teste que o mapa põe em toda
+/// unidade de teste de cada língua, nas formas dos frameworks de teste dela
+/// (`syntax.test`). A leitura é de sintaxe: o aviso que ela dá não prova
+/// cobertura nenhuma.
+fn is_test(decl: &MapDecl) -> bool {
+    decl.syntax.get("test").and_then(serde_json::Value::as_bool).unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -95,12 +84,17 @@ mod tests {
         "    #[test]\n    fn fresh_check() { assert_eq!(4, 4); }\n}\n",
     );
 
-    /// O mapa do arquivo da onda com as funções `names`, cada uma na linha
-    /// dela, e o trecho de teste de `tests`.
-    fn map_of(names: &[(&str, u64)], tests: (u64, u64)) -> Value {
-        let declarations: Vec<Value> =
-            names.iter().map(|(name, line)| json!({"kind": "function", "name": name, "line": line, "end_line": line, "used_by": []})).collect();
-        json!({"modules": [{"path": "src/w1.rs", "language": "rust", "test_lines": [[tests.0, tests.1]], "declarations": declarations}]})
+    /// A declaração `name` de tipo `kind` na linha `line`, com a marca de teste
+    /// do mapa quando `test`.
+    fn decl(kind: &str, name: &str, line: u64, test: bool) -> Value {
+        let syntax = if test { json!({"test": true}) } else { Value::Null };
+        json!({"kind": kind, "name": name, "line": line, "end_line": line, "syntax": syntax, "used_by": []})
+    }
+
+    /// O módulo `path` da língua `language` no mapa, com o trecho de teste
+    /// `tests` e as declarações `declarations`.
+    fn module(path: &str, language: &str, tests: (u64, u64), declarations: Vec<Value>) -> Value {
+        json!({"path": path, "language": language, "test_lines": [[tests.0, tests.1]], "declarations": declarations})
     }
 
     /// Os textos dos avisos de teste sem dono de uma resposta.
@@ -109,27 +103,37 @@ mod tests {
         warnings.filter(|w| w["reason"] == json!(REASON)).filter_map(|w| w["hint"].as_str().map(str::to_string)).collect()
     }
 
-    /// A onda muda um teste que a base já tinha e cria dois: um que a prova
-    /// do critério cita e um que nenhuma prova cita. A rodada que junta a
-    /// onda e o fechamento da obra dão a mesma lista, com um aviso só: o do
-    /// teste novo sem critério, com o arquivo e a linha dele.
-    #[test]
-    fn only_a_test_the_work_created_can_be_ownerless() {
+    /// Uma obra de uma onda que muda os arquivos `base` para `after` e cria
+    /// os arquivos novos de `after`, com um critério cuja prova é `proof`, e
+    /// os mapas `before` e `later` de antes e de depois dela. Devolve os
+    /// avisos de teste sem dono da rodada que junta a onda e os do
+    /// fechamento da obra, e o texto que cada aviso de `expected` (o nome, o
+    /// arquivo e a linha) tem na língua do projeto.
+    fn warned(
+        base: &[(&str, &str)],
+        after: &[(&str, &str)],
+        proof: &str,
+        (before, later): (Vec<Value>, Vec<Value>),
+        expected: &[(&str, &str, u64)],
+    ) -> (Vec<String>, Vec<String>, Vec<String>) {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let spec = "x";
-        crate::shared::test_fixture::seeded_repo_on(root, &format!("feature/{spec}"), &[("mustard.json", "{}"), ("src/w1.rs", BEFORE)]);
+        let mut seed = vec![("mustard.json", "{}")];
+        seed.extend_from_slice(base);
+        crate::shared::test_fixture::seeded_repo_on(root, &format!("feature/{spec}"), &seed);
         assert_eq!(record_open(root, spec, &format!("feature/{spec}"), "dev"), Ok(true));
         let said = id_of(&write(root, spec, "message", json!({"author": "user", "text": "o objetivo"})));
         let gate = id_of(&write(
             root,
             spec,
             "criterion",
-            json!({"when": "a onda roda", "then": "o teste citado passa", "proof": "echo running 1 test cited_check",
-                "form": "ubiquitous", "origin": said}),
+            json!({"when": "a onda roda", "then": "o teste citado passa", "proof": proof, "form": "ubiquitous", "origin": said}),
         ));
+        let files: Vec<&str> = after.iter().map(|(path, _)| *path).collect();
+        let task_files: Vec<Value> = files.iter().map(|path| json!({"path": path})).collect();
         write(root, spec, "wave", json!({"n": 1, "text": "Onda 1.", "criteria": [gate], "done_when": "A suíte passa.", "origin": said}));
-        write(root, spec, "task", json!({"wave": 1, "text": "Tarefa da onda 1.", "files": [{"path": "src/w1.rs"}], "origin": said}));
+        write(root, spec, "task", json!({"wave": 1, "text": "Tarefa da onda 1.", "files": task_files, "origin": said}));
         crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join(spec));
         copies_leave_with_the_test(root);
         std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":4}"#).unwrap();
@@ -137,26 +141,88 @@ mod tests {
         assert_eq!(dispatch["ok"], json!(true), "{dispatch}");
 
         // O mapa da base entra depois do envio, que relê o mapa do disco.
-        let before = map_of(&[("one", 1), ("old_check", 5)], (2, 6));
-        let after = map_of(&[("one", 1), ("old_check", 5), ("cited_check", 7), ("fresh_check", 9)], (2, 10));
-        mustard_core::io::project_map::write_text(root, &before.to_string()).unwrap();
-        std::fs::write(root.join("src/w1.rs"), AFTER).unwrap();
-        returned(root, spec, json!({"wave": 1, "text": "Saiu.", "files": ["src/w1.rs"], "commit": "testes novos saem"}));
-        let back = round_with_mine(root, spec, None, &mine_giving(after.clone()));
+        mustard_core::io::project_map::write_text(root, &json!({"modules": before}).to_string()).unwrap();
+        for (path, body) in after {
+            std::fs::write(root.join(path), body).unwrap();
+        }
+        returned(root, spec, json!({"wave": 1, "text": "Saiu.", "files": files, "commit": "testes novos saem"}));
+        let later = json!({"modules": later});
+        let back = round_with_mine(root, spec, None, &mine_giving(later.clone()));
         assert_eq!(back["ok"], json!(true), "{back}");
         let in_round = ownerless(&back);
 
         // A passada do mapa depois do commit deixa o mapa do projeto no de
         // depois da onda, e é ele que o fechamento lê.
-        mustard_core::io::project_map::write_text(root, &after.to_string()).unwrap();
+        mustard_core::io::project_map::write_text(root, &later.to_string()).unwrap();
         std::fs::write(root.join("mustard.json"), b"{}").unwrap();
         let closed = close(root, spec);
         assert_eq!(closed["phase"], json!("closed"), "{closed}");
         let at_close = ownerless(&closed);
 
         let lang = crate::commands::spec_events::project(root).lang;
-        let expected = translate("close.unowned_test", lang).replace("{name}", "fresh_check").replace("{file}", "src/w1.rs").replace("{line}", "9");
-        assert_eq!(in_round, vec![expected.clone()], "{back}");
-        assert_eq!(at_close, vec![expected], "{closed}");
+        let text = |(name, file, line): &(&str, &str, u64)| {
+            translate("close.unowned_test", lang).replace("{name}", name).replace("{file}", file).replace("{line}", &line.to_string())
+        };
+        (in_round, at_close, expected.iter().map(text).collect())
+    }
+
+    /// A onda muda um teste que a base já tinha e cria dois: um que a prova
+    /// do critério cita e um que nenhuma prova cita. A rodada que junta a
+    /// onda e o fechamento da obra dão a mesma lista, com um aviso só: o do
+    /// teste novo sem critério, com o arquivo e a linha dele. A função nova
+    /// sem a marca de teste do mapa não é teste.
+    #[test]
+    fn only_a_test_the_work_created_can_be_ownerless() {
+        let before = vec![module("src/w1.rs", "rust", (2, 6), vec![decl("function", "one", 1, false), decl("function", "old_check", 5, true)])];
+        let later = vec![module(
+            "src/w1.rs",
+            "rust",
+            (2, 10),
+            vec![
+                decl("function", "one", 1, false),
+                decl("function", "old_check", 5, true),
+                decl("function", "cited_check", 7, true),
+                decl("function", "fresh_check", 9, true),
+                decl("function", "test_helper", 10, false),
+            ],
+        )];
+        let (in_round, at_close, expected) =
+            warned(&[("src/w1.rs", BEFORE)], &[("src/w1.rs", AFTER)], "echo running 1 test cited_check", (before, later), &[("fresh_check", "src/w1.rs", 9)]);
+        assert_eq!(in_round, expected);
+        assert_eq!(at_close, expected);
+    }
+
+    /// O teste novo de qualquer forma que a língua e os frameworks dela usam,
+    /// sem critério que o cite, ganha o aviso na rodada e no fechamento: o do
+    /// Rust por `#[tokio::test]`, sem o `#[test]` em cima nem nome começado
+    /// por `test_`, e o do TypeScript por `it(...)`, que o mapa guarda como
+    /// declaração de teste com o texto do nome.
+    #[test]
+    fn a_new_test_of_any_form_without_a_criterion_is_warned() {
+        let rust_after = concat!(
+            "fn one() {}\n#[cfg(test)]\nmod tests {\n",
+            "    #[tokio::test]\n    async fn tokio_check() { assert_eq!(2, 2); }\n",
+            "    #[test]\n    fn old_check() { assert_eq!(1, 1); }\n}\n",
+        );
+        let typescript = "import { sum } from \"./sum\";\n\nit(\"adds two numbers\", () => {\n  expect(sum(1, 2)).toBe(3);\n});\n";
+        let before = vec![module("src/w1.rs", "rust", (2, 6), vec![decl("function", "one", 1, false), decl("function", "old_check", 5, true)])];
+        let later = vec![
+            module(
+                "src/w1.rs",
+                "rust",
+                (2, 8),
+                vec![decl("function", "one", 1, false), decl("function", "tokio_check", 4, true), decl("function", "old_check", 6, true)],
+            ),
+            module("src/sum.test.ts", "typescript", (3, 5), vec![decl("test", "adds two numbers", 3, true)]),
+        ];
+        let (in_round, at_close, expected) = warned(
+            &[("src/w1.rs", BEFORE)],
+            &[("src/w1.rs", rust_after), ("src/sum.test.ts", typescript)],
+            "echo running 1 test old_check",
+            (before, later),
+            &[("adds two numbers", "src/sum.test.ts", 3), ("tokio_check", "src/w1.rs", 4)],
+        );
+        assert_eq!(in_round, expected);
+        assert_eq!(at_close, expected);
     }
 }

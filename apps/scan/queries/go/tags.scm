@@ -34,6 +34,35 @@
   name: (field_identifier) @name) @definition.method
 (field_declaration name: (field_identifier) @name) @definition.field
 
+; Os testes que o `go test` roda, só no arquivo `_test.go`: `func TestX(t
+; *testing.T)`, `func BenchmarkX(b *testing.B)`, `func FuzzX(f *testing.F)`,
+; o exemplo sem parâmetro (`func ExampleX()`) e o método `TestX` de uma suíte
+; (testify). O `TestMain(m *testing.M)` prepara os testes, e não é teste. A
+; declaração sai marcada como teste.
+((function_declaration
+  name: (identifier) @_name
+  parameters: (parameter_list . (parameter_declaration type: (pointer_type (qualified_type package: (package_identifier) @_pkg name: (type_identifier) @_type))) .)) @test_unit.in_test_file
+  (#match? @_name "^Test([^a-z]|$)")
+  (#eq? @_pkg "testing")
+  (#eq? @_type "T"))
+((function_declaration
+  name: (identifier) @_name
+  parameters: (parameter_list . (parameter_declaration type: (pointer_type (qualified_type package: (package_identifier) @_pkg name: (type_identifier) @_type))) .)) @test_unit.in_test_file
+  (#match? @_name "^Benchmark([^a-z]|$)")
+  (#eq? @_pkg "testing")
+  (#eq? @_type "B"))
+((function_declaration
+  name: (identifier) @_name
+  parameters: (parameter_list . (parameter_declaration type: (pointer_type (qualified_type package: (package_identifier) @_pkg name: (type_identifier) @_type))) .)) @test_unit.in_test_file
+  (#match? @_name "^Fuzz([^a-z]|$)")
+  (#eq? @_pkg "testing")
+  (#eq? @_type "F"))
+((function_declaration name: (identifier) @_name parameters: (parameter_list) @_params) @test_unit.in_test_file
+  (#match? @_name "^Example([^a-z]|$)")
+  (#match? @_params "^\\(\\s*\\)$"))
+((method_declaration name: (field_identifier) @_name) @test_unit.in_test_file
+  (#match? @_name "^Test([^a-z]|$)"))
+
 ; An interface method is a member like a receiver method; left uncaptured, its
 ; header was read as a call.
 (method_elem name: (field_identifier) @name) @definition.method

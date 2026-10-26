@@ -56,6 +56,25 @@
 (type_alias_declaration name: (_) @name) @definition.type
 (function_declaration name: (_) @name) @definition.function
 
+; O teste que é chamada (Jest, Vitest, Mocha, Jasmine, Playwright, Bun, o
+; executor de testes do Node e o do Deno): `it(...)`, `test(...)`,
+; `specify(...)`, `bench(...)`, as formas de foco e de pulo (`fit`, `xit`,
+; `xtest`, `it.only`, `test.skip`, `test.concurrent`, `test.fixme`...),
+; `Deno.test(...)` e a tabela, `it.each(...)(...)`, com a lista ou com o
+; texto marcado depois do `each`.
+; O primeiro argumento é o texto do nome, e um argumento depois dele é a
+; função do teste, mesmo com as opções no meio (`test('x', { timeout }, fn)`).
+; A chamada entra no mapa como declaração de teste, com o texto do nome sem
+; as aspas. O grupo (`describe`) não é teste.
+((call_expression
+   function: [(identifier) (member_expression)] @_callee
+   arguments: (arguments . [(string) (template_string)] @name.text [(arrow_function) (function_expression)])) @definition.test @test_unit
+  (#match? @_callee "^((it|test|specify|bench|fit|xit|xtest|xspecify)(\\.(only|skip|concurrent|sequential|failing|fails|todo|fixme|slow|serial|parallel))*|Deno\\.test(\\.(only|ignore))?)$"))
+((call_expression
+   function: (call_expression function: (member_expression) @_callee)
+   arguments: (arguments . [(string) (template_string)] @name.text [(arrow_function) (function_expression)])) @definition.test @test_unit
+  (#match? @_callee "^(it|test|specify|bench)(\\.(only|skip|concurrent|sequential|failing|fails|serial))*\\.each$"))
+
 ; O JavaScript antigo exporta a função pondo-a no objeto `exports`, no topo
 ; do arquivo: a declaração leva o nome da propriedade
 ; (`exports.ler = function (req, res) {}`, `module.exports.ler = () => {}`)

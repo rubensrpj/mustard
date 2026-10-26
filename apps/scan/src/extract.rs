@@ -44,6 +44,7 @@ mod line_end;
 mod chunks;
 mod named_exports;
 mod reach;
+mod test_units;
 mod typed;
 
 #[derive(Default)]
@@ -455,6 +456,9 @@ enum CapKind {
     /// `module_alias` dela.
     CallPath,
     Name,
+    /// O nome da declaração do mesmo pattern escrito como literal de texto
+    /// (o primeiro argumento de `it('soma', …)`): vale o valor, sem as aspas.
+    NameText,
     Supertype,
     /// O tipo dono escrito fora da declaração do mesmo pattern (o de um bloco
     /// `impl`, o receptor de um método): vem depois dos donos que a contêm no
@@ -490,11 +494,12 @@ enum CapKind {
     /// Um trecho de teste escrito dentro do arquivo: o que se importa nele é
     /// do teste, e o que se chama ou se cita nele não é uso do código.
     TestBlock,
-    /// Uma unidade de teste que a língua marca na própria declaração, solta no
-    /// arquivo: vale como [`CapKind::TestBlock`], a não ser no arquivo que é
-    /// ele mesmo de teste, onde a chamada que ela faz segue sendo uso do que
-    /// chama, porque é ela que mostra quem testa cada declaração.
-    TestUnit,
+    /// Uma unidade de teste, que a língua marca na própria declaração ou que
+    /// um framework de teste dela roda: a declaração do nó sai com
+    /// `syntax.test`, e as linhas valem como [`CapKind::TestBlock`], a não ser
+    /// no arquivo que é ele mesmo de teste ([`test_units`]). A forma que a
+    /// língua só roda no arquivo de teste não vale fora dele.
+    TestUnit(test_units::Runs),
     /// O nome de um módulo sem corpo que o arquivo declara como teste: o
     /// arquivo que ele nomeia é todo de teste.
     TestModule,
@@ -564,6 +569,7 @@ fn classify(cap: &str) -> CapKind {
         "local.outside" => CapKind::LocalOutside,
         "variable" => CapKind::Variable,
         "name" => CapKind::Name,
+        "name.text" => CapKind::NameText,
         "supertype" => CapKind::Supertype,
         "owner" => CapKind::Owner,
         "owner.contract" => CapKind::Contract,
@@ -575,7 +581,8 @@ fn classify(cap: &str) -> CapKind {
         "value" => CapKind::Value,
         "doc" => CapKind::Doc,
         "test_block" => CapKind::TestBlock,
-        "test_unit" => CapKind::TestUnit,
+        "test_unit" => CapKind::TestUnit(test_units::Runs::Anywhere),
+        "test_unit.in_test_file" => CapKind::TestUnit(test_units::Runs::InTestFile),
         "test_module" => CapKind::TestModule,
         "inner_module" => CapKind::InnerModule,
         "local" => CapKind::Local,
@@ -761,6 +768,7 @@ impl Analyzer {
         let walked = if self.declarations_only { Walked { comments: Vec::new(), leaves: Vec::new() } } else { Walked::of(root) };
         let comments: Spans = walked.comments.iter().map(|c| (c.start_byte(), c.end_byte())).collect();
         let test_file = is_test_path(project.path);
+        let mut units = test_units::TestUnits::of(test_file);
         let mut matches = cursor.matches(&self.query, root, bytes);
         while let Some(m) = matches.next() {
             let mut def: Option<(Node, &str)> = None;
@@ -893,6 +901,15 @@ impl Analyzer {
                             name_kind = node.kind();
                         }
                     }
+                    CapKind::NameText => {
+                        // O nó do texto não é nó de nome: a palavra escrita
+                        // num texto não vira nome do arquivo. O texto vazio
+                        // não dá nome.
+                        if let Ok(t) = node.utf8_text(bytes) {
+                            name_text = Some(one_line(literal_value(t))).filter(|name| !name.is_empty());
+                            name_byte = node.start_byte();
+                        }
+                    }
                     CapKind::Decoration => {
                         decorations.insert((node.start_byte(), node.end_byte()));
                     }
@@ -934,12 +951,12 @@ impl Analyzer {
                             into.push(n);
                         }
                     }
-                    CapKind::TestBlock | CapKind::TestUnit => {
-                        // A unidade de teste solta no arquivo de teste não é
-                        // trecho de teste dele: tudo ali já é teste, e a
-                        // chamada que ela faz fica em quem usa o que chama.
-                        let loose = matches!(self.cap_kinds[cap.index as usize], CapKind::TestUnit);
-                        if !(loose && test_file) {
+                    CapKind::TestBlock | CapKind::TestUnit(_) => {
+                        let lines = match self.cap_kinds[cap.index as usize] {
+                            CapKind::TestUnit(runs) => units.take(node, runs),
+                            _ => true,
+                        };
+                        if lines {
                             test_blocks.insert((node.start_byte(), node.end_byte()));
                             out.test_lines.push((node.start_position().row + 1, node.end_position().row + 1));
                         }
@@ -1097,7 +1114,7 @@ impl Analyzer {
                     body_comment: String::new(),
                     body_names: String::new(),
                     signature: signature_of(h.node, bytes, &decorations, h.value_start, split),
-                    syntax: header_fields(h.node, bytes, exported(h.node, &visible, &hidden)),
+                    syntax: header_fields(h.node, bytes, exported(h.node, &visible, &hidden), units.holds(h.node)),
                     calls: Vec::new(),
                     used_by: Vec::new(),
                     common_calls: 0,
@@ -1720,13 +1737,17 @@ fn quoted_value(text: &str) -> Option<String> {
     Some(body[..end].to_string())
 }
 
-/// Declared parameter/type fields with source coordinates, and `exported`
+/// Declared parameter/type fields with source coordinates, `exported`
 /// when the language makes the declaration visible outside its file
-/// ([`exported`]); absent fields stay unknown.
-fn header_fields(node: Node, bytes: &[u8], exported: bool) -> serde_json::Value {
+/// ([`exported`]) and `test` when the declaration is a test unit
+/// ([`test_units`]); absent fields stay unknown.
+fn header_fields(node: Node, bytes: &[u8], exported: bool, test: bool) -> serde_json::Value {
     let mut fields=serde_json::Map::new();
     if exported {
         fields.insert("exported".into(), serde_json::Value::Bool(true));
+    }
+    if test {
+        fields.insert("test".into(), serde_json::Value::Bool(true));
     }
     fields.insert("source_chunks".into(),chunks::of(node));
     let body_start=node.child_by_field_name("body").map_or(node.end_byte(),|body|body.start_byte());

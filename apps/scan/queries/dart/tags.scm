@@ -125,6 +125,20 @@
 (part_of_directive (dotted_identifier_list) @import)
 (library_name (dotted_identifier_list) @namespace)
 
+; O teste que é chamada: `test('...', fn)` do `package:test`, `testWidgets`
+; do Flutter, `testGoldens` e o `patrolTest`, com a função do teste depois do
+; nome, e o `blocTest('...', build: ...)`. A chamada entra no mapa como
+; declaração de teste, com o texto do primeiro argumento sem as aspas; o
+; grupo (`group`) não é teste.
+((method_invocation
+  function: (identifier) @_callee
+  arguments: (argument_part (arguments . (argument (string_literal) @name.text) (argument (function_expression))))) @definition.test @test_unit
+  (#match? @_callee "^(test|testWidgets|testGoldens|patrolTest|patrolWidgetTest)$"))
+((method_invocation
+  function: (identifier) @_callee
+  arguments: (argument_part (arguments . (argument (string_literal) @name.text)))) @definition.test @test_unit
+  (#eq? @_callee "blocTest"))
+
 ; Decorations — an annotation (`@override`, `@immutable`) is not code of the
 ; declaration it adorns: the engine passes over it to find the doc comment
 ; above, starts the header after it, and reads no call out of it.
