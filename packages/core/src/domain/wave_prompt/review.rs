@@ -135,7 +135,8 @@ impl Writer<'_> {
     /// O pedido do agente de teste dedicado, que o fechamento pede a toda
     /// obra: as instruções fixas dele, o que olhar — a obra inteira na
     /// primeira revisão; na de volta, o que mudou desde o veredito que
-    /// reprovou ou aprovou e o encaixe disso no resto —, como ler cada item e, em
+    /// reprovou ou aprovou e o encaixe disso no resto —, os princípios do
+    /// produto que o revisor recebe, como ler cada item e, em
     /// seguida, uma linha por item: o que mudou, as ondas com as tarefas, as
     /// emendas gravadas para elas, o que cada uma entregou, os critérios e os
     /// commits que já entraram na branch. Por fim, como revisar numa cópia
@@ -158,6 +159,7 @@ impl Writer<'_> {
         };
         out.push_str(self.t(look));
         out.push_str("\n\n");
+        let _ = writeln!(out, "{}", crate::platform::seeds::principles_for(self.lang, crate::platform::seeds::Reader::Review, 3));
         let _ = writeln!(out, "## {}\n", self.t("prompt.part.read"));
         self.read_example(&mut out, "prompt.read.final", true);
         for (key, items) in &listing.parts {

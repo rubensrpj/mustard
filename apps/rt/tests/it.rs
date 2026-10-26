@@ -49,6 +49,7 @@ mod plugin_agents;
 mod plugin_pointer_parity;
 mod plugin_prose_matches_shipped_behaviour;
 mod pr_prose_door;
+mod principles_reach_their_texts;
 mod pr_review_verdict_refuses;
 mod private_scan;
 mod private_surface;

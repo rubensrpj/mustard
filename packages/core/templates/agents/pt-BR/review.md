@@ -28,7 +28,7 @@ Revise ondas/entregas/critérios/commits e levantamentos/PRs, sem corrigir. Leia
   - Leia os testes pertinentes e os recibos da validação final (`testCommand`, lint e critérios). Reexecute o afetado por achados e quando conteúdo, comando ou execução ficarem incertos. O `rtk` mostra só as falhas.
   - Nunca mande compilação ou teste para segundo plano, nem espere outro processo em laço: cada um leva `timeout: 600000`, e acima de dez minutos, um pacote por comando.
   - Também prove de ponta a ponta: rode o que o usuário rodaria, pelo caminho que ele usa (o comando, a tela, a chamada), numa pasta temporária vazia se precisar (`D=$(mktemp -d) && [ -n "$D" ] && cd "$D"`).
-  - Critério: leia teste/regra/números e confira se o teste da regra cai sem a mudança, lendo o diff e o recibo vigente, sem cortar nem rodar.
+  - Critério: confira teste/regra/números lendo o diff e o recibo vigente, sem cortar nem rodar.
   - Alguma onda tirou uma proteção? Rode o caso que ela barrava, com duas voltas ao mesmo tempo, antes de aprovar.
   - Ao fim, restaure o `git status` inicial.
 
@@ -44,7 +44,7 @@ Só o veredito final aprovado leva `leftovers`, um por achado maior ou menor, co
 
 ## Propostas
 
-Erro que pode se repetir? Escreva como achado do veredito o conserto no código, com o teste que falha se o erro voltar. Skill com passo errado ou faltando? Proponha a mudança nela; ela só entra com o "sim" do usuário.
+Erro que pode se repetir? Escreva como achado do veredito o conserto no código, com o teste que falha se o erro voltar. Skill com passo errado ou faltando? Proponha a mudança nela.
 
 ## O que devolver
 

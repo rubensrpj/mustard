@@ -2376,7 +2376,7 @@ mod tests {
             let root = dir.path();
             seed_running_wave(root, "x");
             let said = seed(root, "message", json!({"author": "user", "text": "muitas decisões"}));
-            let codes = seed_decisions_after_round(root, said, 250);
+            let codes = seed_decisions_after_round(root, said, 450);
 
             let (started, precompact) = hook_contexts(root, lang);
             let block = crate::commands::flow::resume::current_block(root, Some("s1")).expect("the block");
@@ -2404,7 +2404,7 @@ mod tests {
             let root = dir.path();
             let crit = seed_running_wave(root, "x");
             let said = seed(root, "message", json!({"author": "user", "text": "muitas voltas"}));
-            let waves: Vec<u64> = (2..62).collect();
+            let waves: Vec<u64> = (2..152).collect();
             for n in &waves {
                 plan_wave(root, *n, crit, said);
                 seed_replan_return(root, *n);

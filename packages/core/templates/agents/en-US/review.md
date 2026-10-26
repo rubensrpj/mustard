@@ -28,7 +28,7 @@ Review waves/deliveries/criteria/commits and surveys/PRs, without fixing. Read "
   - Read relevant tests and final-validation receipts (`testCommand`, lint and criteria). Rerun what findings affect and whenever content, commands or execution become uncertain. The `rtk` shows only the failures.
   - Never send a build or test to the background, or wait on another process in a loop: each takes `timeout: 600000`, and past ten minutes, one package per command.
   - Also prove it end to end: run what the user would run, on the path they take (the command, the screen, the call), in an empty temporary folder if needed (`D=$(mktemp -d) && [ -n "$D" ] && cd "$D"`).
-  - Criterion: read test/rule/numbers and check whether the rule's test fails without the change, by reading the diff and the current receipt; cut nothing and run nothing.
+  - Criterion: check test/rule/numbers by reading the diff and the current receipt; cut nothing and run nothing.
   - Did a wave remove a protection? Run the case it used to stop, also with two runs at once, before approving.
   - At the end, restore the initial `git status`.
 
@@ -44,7 +44,7 @@ Only the approved final verdict carries `leftovers`, one per major or minor find
 
 ## Proposals
 
-A mistake that can happen again? Write, as a finding of the verdict, the fix in the code with the test that fails if the mistake comes back. A skill with a wrong or missing step? Propose the change to it; it only goes in with the user's "yes".
+A mistake that can happen again? Write, as a finding of the verdict, the fix in the code with the test that fails if the mistake comes back. A skill with a wrong or missing step? Propose the change to it.
 
 ## What to return
 

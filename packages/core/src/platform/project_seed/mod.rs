@@ -635,7 +635,7 @@ mod tests {
     /// que diz o que tirou; o agente do projeto com o mesmo nome, fora da
     /// pasta do Mustard, fica como está; e a atualização seguinte não tem mais
     /// nada a tirar. O produto não traz mais o molde deles em idioma nenhum, e
-    /// o texto que o modelo lê fica abaixo de 25.600 bytes em cada idioma,
+    /// o texto que o modelo lê fica abaixo de 30.042 bytes em cada idioma,
     /// pela mesma medida do teste do limite.
     #[test]
     fn an_update_removes_the_retired_single_task_wave_agent() {

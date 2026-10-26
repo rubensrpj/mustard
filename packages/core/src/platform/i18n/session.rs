@@ -232,6 +232,17 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "[Mustard] The Claude Code plugin is on Mustard {plugin}, and the running binary is \
              {running}. Suggest `/mustard:upsert` and reopening Claude Code."
         }
+        // A linha que abre a janela renovada, depois de `/clear` e da
+        // compactação, antes dos princípios do condutor: o caminho da busca,
+        // a retomada e onde mora o mapa inteiro.
+        ("session.guide", Locale::PtBr) => {
+            "Mustard: busque código com `mcp__mustard__search` ou `run search`, e `mustard-rt run \
+             resume` retoma a spec. O mapa inteiro está em `.claude/mustard/session-map.md`."
+        }
+        ("session.guide", Locale::EnUs) => {
+            "Mustard: search code with `mcp__mustard__search` or `run search`, and `mustard-rt run \
+             resume` restores the spec. The full map is in `.claude/mustard/session-map.md`."
+        }
         // O programa compilado da branch do Mustard, só no código-fonte dele,
         // quando falta ou está atrás do commit: `{running}` é o programa que
         // roda a sessão até a compilação acabar, `{compiled}` e `{head}` são
@@ -309,8 +320,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("session.rs"),
             super::PREFIXES,
-            39,
-            0xf790_2c9f_e42d_96cf,
+            40,
+            0x8bf7_2006_9cd0_96b2,
         );
     }
 
