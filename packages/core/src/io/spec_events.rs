@@ -1812,7 +1812,7 @@ mod tests {
             "commit": "a onda saiu",
             "proofs": [{"criterion": "MSTD-CRIT-0001", "proof": "cargo test a"}],
             "fixes": [1],
-            "leftovers": [{"title": "Comentário velho", "detail": "src/b.rs:3 cita um comando que saiu."}],
+            "leftovers": [{"title": "Comentário velho", "detail": "src/b.rs:3 cita um comando que saiu.", "rule": "O comentário cita só comando que existe", "places": ["src/b.rs:3"]}],
             "returned": true,
         })
     }
@@ -1823,8 +1823,7 @@ mod tests {
     /// oficial com `replaces` para ela. O leitor de voltas devolve só a última
     /// de cada onda; depois da versão oficial, nenhuma volta anterior da onda
     /// espera, nem a que ela não apontou, e a gravada depois volta a esperar.
-    /// A sobra sem título ou sem detalhe é recusada sem gravar nada, e a que
-    /// traz os dois passa.
+    /// O achado incompleto é recusado sem gravar nada, e o completo passa.
     #[test]
     fn the_wave_return_stays_out_of_the_read_until_the_round_assumes_it() {
         let dir = tempfile::tempdir().unwrap();
@@ -1836,7 +1835,7 @@ mod tests {
         let mut missing = wave_return(2, "Sobra pela metade.");
         missing["leftovers"] = json!([{"title": "  ", "detail": "d"}, {"title": "Outra sobra"}]);
         let refused = write_at(&path, "delivered", obj(missing), &[], &at("10:01")).unwrap_err();
-        assert_eq!(refused, Refusal::LeftoverFieldMissing { field: "title".into() });
+        assert_eq!(refused, Refusal::LeftoverFieldMissing { finding: 1, field: "title, rule, places".into() });
         assert_eq!(std::fs::read(&path).unwrap(), before, "nada foi gravado");
 
         let first = put(&path, &[], "delivered", &at("10:02"), wave_return(2, "Primeira volta.")).id;

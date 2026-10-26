@@ -1067,9 +1067,10 @@ pub const TYPES: &[TypeSpec] = &[
             // O que o agente achou fora da tarefa e não é dele consertar, cada
             // sobra com título e detalhe (`title`, `detail`), a regra que ela
             // quebrou (`rule`, o código de uma regra da spec ou o texto de uma
-            // regra nova) e os lugares dessa regra (`places`): vira tarefa da
-            // spec quando a rodada assume a volta, e os achados da mesma regra
-            // viram uma tarefa só. A sobra que só muda comentário,
+            // regra nova) e os lugares dessa regra (`places`), os quatro
+            // obrigatórios ([`super::check`]): vira tarefa da spec quando a
+            // rodada assume a volta, e os achados da mesma regra viram uma
+            // tarefa só. A sobra que só muda comentário,
             // documentação ou texto de ajuda leva a marca `cleanup`, que a
             // tarefa herda.
             opt("leftovers", Kind::Objects),
@@ -1117,8 +1118,8 @@ pub const TYPES: &[TypeSpec] = &[
             opt("final", Kind::Bool),
             opt("agreed", Kind::Objects),
             // Os achados maiores e menores da revisão final, no formato das
-            // sobras da entrega de onda (`title`, `detail`, `rule`, `places`,
-            // `files`, `cleanup`): com o veredito aprovado, o fechamento os grava
+            // sobras da entrega de onda (`title`, `detail`, `rule` e `places`,
+            // obrigatórios, e `files` e `cleanup`): com o veredito aprovado, o fechamento os grava
             // como tarefas no backlog e manda rodar a rodada antes do pull
             // request. Em outro veredito nada lê o campo, e a gravação o
             // recusa.

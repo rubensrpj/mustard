@@ -1,6 +1,6 @@
-//! A triagem das atividades que a rodada grava — a sobra, o alvo da mudança
-//! de plano, o item que a onda não cumpriu e o item que a revisão final não
-//! cumpriu — nunca pergunta ao Jev com a trava do passo do git ou a das
+//! A triagem das atividades que a rodada grava — o alvo da mudança de plano,
+//! o item que a onda não cumpriu e o item que a revisão final não cumpriu —
+//! nunca pergunta ao Jev com a trava do passo do git ou a das
 //! cópias presa: a volta espera fora do commit, a pergunta sai depois de as
 //! travas soltarem, e a rodada seguinte aplica a resposta gravada. O Jev que
 //! falha manda a pergunta à reserva, e a volta espera o recibo. Com o Jev
@@ -221,20 +221,6 @@ fn scenario(root: &Path, mode: Mode, take: &dyn Fn() -> Value, applied: &dyn Fn(
     assert!(seen.take().is_empty(), "the receipt answers in place of the Jev: {applied_now}");
     assert!(waiting(&applied_now).is_empty(), "{applied_now}");
     assert!(applied() && !rule(), "the receipt decides like the Jev: {applied_now}");
-}
-
-/// A leftover of the return: the Jev puts it in the open task, which covers
-/// it; today's rule, without the Jev, makes a task of its own.
-#[test]
-fn a_leftover_is_triaged_outside_the_locks_and_the_next_round_applies_the_decision() {
-    for mode in MODES {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        sent_with_an_open_task(root);
-        let leftover = json!({"leftovers": [{"title": "O log não gira", "detail": "O arquivo de log cresce sem limite."}]});
-        return_wave_one(root, false, leftover);
-        scenario(root, mode, &|| round(root, "x", None), &|| notes_on_the_open_task(root) == 1, &|| tasks_saying(root, "O log não gira") == 1);
-    }
 }
 
 /// An agreed item the return did not meet: the Jev says the open task

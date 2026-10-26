@@ -586,8 +586,8 @@ fn an_approved_final_verdict_with_leftovers_becomes_backlog_tasks_instead_of_the
 
     let mut verdict = all_met_verdict(&decisions);
     verdict["leftovers"] = json!([
-        {"title": "A soma não trata estouro", "detail": "A soma de números grandes estoura em src/main.rs.", "files": ["src/main.rs"]},
-        {"title": "O README não cita a soma", "detail": "O README não explica a soma.", "files": ["README.md"], "cleanup": true},
+        {"title": "A soma não trata estouro", "detail": "A soma de números grandes estoura em src/main.rs.", "files": ["src/main.rs"], "rule": "A soma trata estouro", "places": ["src/main.rs"]},
+        {"title": "O README não cita a soma", "detail": "O README não explica a soma.", "files": ["README.md"], "cleanup": true, "rule": "O README explica cada conta", "places": ["README.md"]},
     ]);
     project.read_review();
     project.write("verdict", &verdict);
@@ -641,7 +641,7 @@ fn an_approved_final_verdict_with_a_leftover_only_in_a_git_ignored_file_closes_w
 
     let title = "A chave da API falta no ambiente local";
     let mut verdict = all_met_verdict(&decisions);
-    verdict["leftovers"] = json!([{"title": title, "detail": "Falta a chave da API no .env desta máquina.", "files": [".env"]}]);
+    verdict["leftovers"] = json!([{"title": title, "detail": "Falta a chave da API no .env desta máquina.", "files": [".env"], "rule": "A chave da API mora no ambiente", "places": [".env"]}]);
     project.read_review();
     project.write("verdict", &verdict);
     let after = project.run(&["close", "--spec", SPEC]);
@@ -674,7 +674,11 @@ fn a_final_verdict_with_an_untitled_finding_is_refused_without_naming_the_delive
 
     assert_eq!(refused["ok"], json!(false), "{refused}");
     assert_eq!(refused["reason"], json!("leftover-field-missing"), "{refused}");
-    assert_eq!(refused["hint"], json!("Falta o campo title numa sobra (leftovers) da volta. Nada foi gravado."), "{refused}");
+    assert_eq!(
+        refused["hint"],
+        json!("O achado 1 da volta (leftovers) não traz title, rule, places: todo achado diz o título, o detalhe, a regra que quebrou (rule) e os lugares dela (places). Nada foi gravado."),
+        "{refused}"
+    );
     assert_eq!(recorded_kinds(&project), before, "nada foi gravado: {refused}");
     let still_open = project.answer(&["close", "--spec", SPEC]);
     assert_eq!(still_open["reason"], json!("review-verdict-missing"), "{still_open}");
@@ -690,7 +694,7 @@ fn verdicts_and_tasks(project: &Project) -> usize {
 /// `leftovers`: nada lê o campo nesse veredito, e eles se perderiam em
 /// silêncio.
 fn findings() -> Value {
-    json!([{"title": "A soma não trata estouro", "detail": "A soma de números grandes estoura em src/main.rs.", "files": ["src/main.rs"]}])
+    json!([{"title": "A soma não trata estouro", "detail": "A soma de números grandes estoura em src/main.rs.", "files": ["src/main.rs"], "rule": "A soma trata estouro", "places": ["src/main.rs"]}])
 }
 
 /// A recusa que manda o achado para onde alguém o lê.

@@ -1,6 +1,6 @@
 //! A triagem das atividades que a rodada grava — o alvo da mudança de plano
-//! que não cita tarefa, o item combinado que a onda ou a revisão final não
-//! cumpriu e a sobra da volta — decidida antes do ensaio, sem chamar o Jev
+//! que não cita tarefa e o item combinado que a onda ou a revisão final não
+//! cumpriu — decidida antes do ensaio, sem chamar o Jev
 //! com trava nenhuma presa. A pergunta de cada volta sai da spec como está
 //! gravada e da própria volta ([`decide`]): com a trava do passo do git
 //! presa, a rodada só lê a decisão já tomada — a resposta que uma rodada
@@ -67,9 +67,8 @@ impl<'a> Triage<'a> {
 }
 
 /// As perguntas da triagem da volta `wave`, lidas em `triage`, cada uma com
-/// o pedido: o alvo da mudança de plano aceita, os itens não cumpridos e as
-/// sobras.
-fn wave_questions(root: &Path, triage: &Triage<'_>, wave: &WaveReport) -> Vec<(Question, Classifying)> {
+/// o pedido: o alvo da mudança de plano aceita e os itens não cumpridos.
+fn wave_questions(triage: &Triage<'_>, wave: &WaveReport) -> Vec<(Question, Classifying)> {
     let mut out = Vec::new();
     if let Some(plan) = wave.replan.as_ref().filter(|plan| plan.refused.is_none())
         && let Some(question) = super::stops::change_target_question(triage.log, &plan.change, &wave.undone)
@@ -78,9 +77,6 @@ fn wave_questions(root: &Path, triage: &Triage<'_>, wave: &WaveReport) -> Vec<(Q
     }
     if let Some((question, _)) = super::agreed::unmet_question(triage.log, &triage.returning, wave) {
         out.push((Question::UnmetItems, question));
-    }
-    if let Some((question, _)) = super::leftovers::leftover_question(root, triage.log, &triage.returning, wave) {
-        out.push((Question::Leftovers, question));
     }
     out
 }
@@ -109,7 +105,7 @@ pub(super) fn decide<'a>(start: &Path, root: &Path, spec: &str, log: &'a SpecLog
     let mut triage = Triage::of(log);
     let mut waiting = Vec::new();
     for wave in &report.waves {
-        for (question, asked) in wave_questions(root, &triage, wave) {
+        for (question, asked) in wave_questions(&triage, wave) {
             waiting.extend(triage.judge(root, (wave.wave, question), asked, on));
         }
     }
@@ -167,7 +163,7 @@ fn refreshed(start: &Path, root: &Path, spec: &str, waiting: &[Waiting], lang: L
     // rodada.
     let _ = hold_waiting_changes(&log, &mut waves, &[], lang);
     for wave in waves.iter().filter(|wave| held.contains(&wave.wave)) {
-        for (question, asked) in wave_questions(root, &triage, wave) {
+        for (question, asked) in wave_questions(&triage, wave) {
             out.extend(triage.judge(root, (wave.wave, question), asked, on));
         }
     }

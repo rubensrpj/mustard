@@ -727,7 +727,7 @@ mod tests {
         let wrote = returned(
             root,
             json!({"wave": 1, "text": "Saiu.", "files": ["src/a.ts"], "commit": "sai",
-                "leftovers": [{"title": "A soma perde o sinal", "files": ["src/soma.ts"],
+                "leftovers": [{"title": "A soma perde o sinal", "files": ["src/soma.ts"], "rule": "A soma guarda o sinal", "places": ["src/soma.ts"],
                     "detail": "Com número negativo, a soma perde o sinal. Prova: `npm test -- soma`."}]}),
         );
         assert_eq!(wrote["ok"], json!(true), "{wrote}");

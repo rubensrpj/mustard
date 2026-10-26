@@ -29,7 +29,7 @@ fn log_of(root: &Path) -> SpecLog {
 fn spec_with_a_final_finding(root: &Path) -> u64 {
     std::fs::write(root.join("mustard.json"), "{}").unwrap();
     seed_event(root, SPEC, "send", json!({"role": "review", "text": "revise", "lines": 1, "chars": 6, "mustard": "0", "author": "binary"}));
-    let findings = json!([{"title": "A soma não trata estouro", "detail": "A soma estoura em src/main.rs.", "files": ["src/main.rs"]}]);
+    let findings = json!([{"title": "A soma não trata estouro", "detail": "A soma estoura em src/main.rs.", "files": ["src/main.rs"], "rule": "A soma trata estouro", "places": ["src/main.rs"]}]);
     seed_event(root, SPEC, "verdict", json!({"final": true, "result": "approved", "text": "Pronta, com um achado.", "author": "review", "leftovers": findings}));
     let log = log_of(root);
     let approval = final_approval(&log).expect("o veredito final aprova");

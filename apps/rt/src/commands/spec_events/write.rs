@@ -6341,7 +6341,7 @@ mod tests {
         let (_, _, ordinary) = subtraction_backlog(root);
         let seed = crate::shared::spec_state::seed_event;
         seed(root, "teste", "send", json!({"role": "review", "text": "revise", "lines": 1, "chars": 6, "mustard": "0", "author": "binary"}));
-        let findings = json!([{"title": "A soma não trata estouro", "detail": "A soma estoura em src/main.rs.", "files": ["src/main.rs"]}]);
+        let findings = json!([{"title": "A soma não trata estouro", "detail": "A soma estoura em src/main.rs.", "files": ["src/main.rs"], "rule": "A soma trata estouro", "places": ["src/main.rs"]}]);
         let verdict = seed(root, "teste", "verdict", json!({"final": true, "result": "approved", "text": "Pronta, com um achado.", "author": "review", "leftovers": findings}));
         let log = DiskSpecState::new(root).log("teste").unwrap();
         let approval = mustard_core::domain::spec_state::final_approval(&log).expect("o veredito final aprova");

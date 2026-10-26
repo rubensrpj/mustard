@@ -667,10 +667,13 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              new review request was opened."
         }
         ("spec_events.leftover_field_missing", Locale::PtBr) => {
-            "Falta o campo {field} numa sobra (leftovers) da volta. Nada foi gravado."
+            "O achado {finding} da volta (leftovers) não traz {field}: todo achado diz o título, o \
+             detalhe, a regra que quebrou (rule) e os lugares dela (places). Nada foi gravado."
         }
         ("spec_events.leftover_field_missing", Locale::EnUs) => {
-            "A leftover (leftovers) of the return lacks the field {field}. Nothing was written."
+            "Finding {finding} of the return (leftovers) lacks {field}: every finding states the \
+             title, the detail, the rule it broke (rule) and its places (places). Nothing was \
+             written."
         }
         ("spec_events.finding_place_missing", Locale::PtBr) => {
             "O achado {finding} cita o lugar {place}, que o projeto não tem. Confira o caminho e a \
@@ -1486,7 +1489,7 @@ mod tests {
             ("spec_events.wave_agent_working", &["{wave}"][..]),
             ("spec_events.no_open_review", &[][..]),
             ("spec_events.verdict_missing", &[][..]),
-            ("spec_events.leftover_field_missing", &["{field}"][..]),
+            ("spec_events.leftover_field_missing", &["{finding}", "{field}"][..]),
             ("spec_events.finding_place_missing", &["{finding}", "{place}"][..]),
             ("spec_events.finding_place_missing.same_name", &["{finding}", "{place}", "{found}"][..]),
             ("finding.rule", &["{rule}"][..]),

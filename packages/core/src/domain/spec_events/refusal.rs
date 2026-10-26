@@ -176,9 +176,11 @@ pub enum Refusal {
     /// ainda trabalha (envio aberto, sem entrega): a onda sairia do ar e a
     /// entrega dele seria recusada. Nada é gravado.
     WaveAgentWorking { wave: u64 },
-    /// Uma sobra da entrega sem título ou sem detalhe: `field` é o campo que
-    /// falta na primeira sobra incompleta. Nada é gravado.
-    LeftoverFieldMissing { field: String },
+    /// Um achado da entrega ou do veredito sem título, detalhe, regra ou
+    /// lugares: `finding` é o número do primeiro achado incompleto na lista
+    /// `leftovers`, a contar de um, e `field`, os campos que faltam nele,
+    /// separados por vírgula. Nada é gravado.
+    LeftoverFieldMissing { finding: usize, field: String },
     /// O achado número `finding` da lista `leftovers` cita o lugar `place`, de
     /// um arquivo ou de uma linha que o projeto não tem. `same_name` são os
     /// arquivos do projeto com o mesmo nome, quando o lugar traz só o nome e
@@ -700,9 +702,10 @@ impl Refusal {
             ),
             Self::NoOpenSend { wave } => fill("spec_events.no_open_send", &[("{wave}", wave.to_string())]),
             Self::WaveAgentWorking { wave } => fill("spec_events.wave_agent_working", &[("{wave}", wave.to_string())]),
-            Self::LeftoverFieldMissing { field } => {
-                fill("spec_events.leftover_field_missing", &[("{field}", field.clone())])
-            }
+            Self::LeftoverFieldMissing { finding, field } => fill(
+                "spec_events.leftover_field_missing",
+                &[("{finding}", finding.to_string()), ("{field}", field.clone())],
+            ),
             Self::FindingPlaceMissing { finding, place, same_name } if same_name.is_empty() => fill(
                 "spec_events.finding_place_missing",
                 &[("{finding}", finding.to_string()), ("{place}", place.clone())],

@@ -31,7 +31,7 @@ use super::commit::{
 use super::wave_commit::{commit_waves, made_drafts, record_made, removed_warnings};
 use super::commit_title::{check_summary, wave_commits};
 use super::copy_check::check_against_copies;
-use super::leftovers::{Leftover, LeftoverEvent, MeaningJoin, ask_rewrites, cover_asks, leftover_destinations, leftover_events, leftovers_of, meaning_joins};
+use super::leftovers::{Leftover, LeftoverEvent, MeaningJoin, ask_rewrites, cover_asks, leftover_events, leftovers_of};
 use super::queue::{backlog_wave, open_review, open_sends, waves_in_progress};
 use super::rehearsal::{Recording, Rehearsed, rehearse};
 use super::rejection::{held_rejection, keep_rejections, record_rejections, rejected_lines, release_unstarted};
@@ -915,10 +915,9 @@ struct CheckedReport {
     /// lote. O item ou a sobra que uma tarefa ainda por entregar já cobre vem
     /// como nota, e o de mesmo sentido, como versão nova dessa tarefa.
     wave_tasks: Vec<(u64, &'static str, Rehearsed)>,
-    /// Cada tarefa que uma sobra ou um item não cumprido ganhou pelo sentido,
-    /// pela posição entre as entradas que a rodada grava, com as dos pedidos
-    /// dessas sobras e os números desses itens: a resposta da rodada leva o
-    /// pedido de reescrita de cada uma.
+    /// Cada tarefa que um item não cumprido ganhou pelo sentido, pela posição
+    /// entre as entradas que a rodada grava, com os números desses itens: a
+    /// resposta da rodada leva o pedido de reescrita de cada uma.
     meaning_joins: Vec<MeaningJoin>,
 }
 
@@ -943,9 +942,8 @@ pub(super) fn own_copy_relative(log: &SpecLog, wave: u64, file: &str) -> String 
 /// nunca deixa gravada a que veio antes dela, e nada é recusado depois do
 /// commit. O entregou vai também em cada onda que o conserto fecha, e o item
 /// combinado que a entrega não cumpriu e cada sobra viram tarefa no backlog,
-/// pela mesma conferência das tarefas que nascem do veredito — a sobra cujos
-/// arquivos já estão numa tarefa aberta vira uma linha nela, e a que repete
-/// uma tarefa ainda por entregar vira nota que a aponta ([`leftover_events`]). A tarefa que a
+/// pela mesma conferência das tarefas que nascem do veredito — o achado entra
+/// na tarefa da mesma regra, quando ela existe ([`leftover_events`]). A tarefa que a
 /// onda não fez volta ao backlog antes das entregas, com a mudança aceita
 /// anotada no idioma `lang`, e leva o item combinado que a onda não cumpriu
 /// ([`join_unmet`]), que então não vira tarefa nova.
@@ -1058,22 +1056,17 @@ fn check_reports(
         }
     }
     let found: Vec<(u64, &Leftover)> = report.waves.iter().flat_map(|wave| wave.leftovers.iter().map(move |leftover| (wave.wave, leftover))).collect();
-    // A sobra que entra numa tarefa que voltou ao backlog nesta rodada aponta
-    // o número que o ensaio deu à volta, e o pedido da sobra aponta o da
+    // O achado que entra numa tarefa que voltou ao backlog nesta rodada aponta
+    // o número que o ensaio deu à volta, e o pedido do achado aponta o da
     // entrega e é coberto pelo número que o ensaio deu a ele: a gravação de
     // verdade troca cada um pelo dela.
-    let returning: BTreeSet<u64> = report.waves.iter().flat_map(|wave| std::iter::once(wave.wave).chain(wave.fixes.iter().copied())).collect();
-    // O destino de cada sobra sai da pergunta da volta dela, feita sobre a
-    // spec gravada, com o resumo da volta que deixou tarefa por fazer.
-    let destinations = leftover_destinations(root, (triage.log, &triage.returning), &report.waves, &ask);
-    let leftovers = leftover_events(root, check.log(), &found, &returning, &reported, &destinations, lang);
+    let leftovers = leftover_events(root, check.log(), &found, &reported, lang);
     // As posições das junções pelo sentido entre as entradas que a rodada
     // grava, na ordem de [`record_reports`]: vereditos, o que a revisão final
-    // deu, as tarefas devolvidas, as entregas e o que os itens e as sobras viram.
+    // deu, as tarefas devolvidas, as entregas e o que os itens viram.
     let returned_from = verdicts.len() + agreed_tasks.len();
     let work_from = returned_from + undone_tasks.len() + deliveries.len();
     meaning.extend(unmet_meaning_joins(unmet_joins, returned_from, work_from));
-    meaning.extend(meaning_joins(&leftovers, work_from + wave_tasks.len()));
     let mut rehearsed: Vec<u64> = Vec::new();
     for LeftoverEvent { wave, kind, mut draft, asks, .. } in leftovers {
         cover_asks(&mut draft, &asks, &rehearsed);
@@ -1193,8 +1186,8 @@ fn joined_proof(had: &str, new: &str) -> Option<String> {
 /// andar. Devolve o que foi gravado e, de cada prova nova, o código do critério e o
 /// comando. A entrada de cada entregou leva o texto, os arquivos e as provas
 /// que a própria onda mandou: quem conduz a obra confere a entrega pela
-/// resposta da rodada, sem ir ler a spec. A entrada da tarefa que uma sobra
-/// ganhou pelo sentido leva o pedido de reescrita dela ([`ask_rewrites`]).
+/// resposta da rodada, sem ir ler a spec. A entrada da tarefa que um item não
+/// cumprido deu pelo sentido leva o pedido de reescrita dela ([`ask_rewrites`]).
 fn record_reports(start: &Path, spec: &str, checked: CheckedReport) -> Result<RecordedReport, Refusal> {
     let CheckedReport { verdicts, deliveries, proofs, sent_proofs, sends, agreed_tasks, undone_tasks, wave_tasks, meaning_joins } = checked;
     let root = crate::commands::spec_events::project(start).root;
@@ -4423,7 +4416,8 @@ fn main() { sum_comes_out_right(); double_comes_out_right(); }
             "commit": "a soma sai", "leftovers": [{"detail": "Sem título."}]}),
         );
         assert_eq!(untitled["reason"], json!("leftover-field-missing"), "{untitled}");
-        assert_eq!(untitled["hint"], json!("Falta o campo title numa sobra (leftovers) da volta. Nada foi gravado."), "{untitled}");
+        let hint = untitled["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("O achado 1") && hint.contains("title, rule, places"), "{untitled}");
         assert_eq!(spec_lines(root), before, "nada foi gravado: {untitled}");
 
         let cites = "Sem o índice, `src/commit.rs` para de ler o arquivo; `src/nao_existe.rs` também.";
@@ -4431,10 +4425,11 @@ fn main() { sum_comes_out_right(); double_comes_out_right(); }
             root,
             json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"],
             "commit": "a soma sai", "leftovers": [
-                {"title": "O log não gira", "detail": "O arquivo de log cresce sem limite."},
-                {"title": "O nome da variável confunde", "detail": "Um nome mais claro.", "kind": "cosmetic"},
-                {"title": "A leitura para sem o índice", "detail": cites, "kind": "breaks"},
-                {"title": "a busca ignora ACENTO", "detail": "Achei de novo.", "kind": "later"},
+                {"title": "O log não gira", "detail": "O arquivo de log cresce sem limite.", "rule": "O log gira por dia", "places": ["src/a.rs"]},
+                {"title": "O nome da variável confunde", "detail": "Um nome mais claro.", "kind": "cosmetic",
+                    "rule": "Cada nome diz o que guarda", "places": ["src/a.rs"]},
+                {"title": "A leitura para sem o índice", "detail": cites, "kind": "breaks", "rule": "A leitura tem índice", "places": ["src/commit.rs"]},
+                {"title": "a busca ignora ACENTO", "detail": "Achei de novo.", "kind": "later", "rule": "A busca vê acento", "places": ["src/a.rs"]},
             ]}),
         );
         assert_eq!(wrote["ok"], json!(true), "a volta com `kind` de qualquer valor é aceita: {wrote}");
@@ -4483,8 +4478,9 @@ fn main() { sum_comes_out_right(); double_comes_out_right(); }
             root,
             json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"],
             "commit": "a soma sai", "leftovers": [
-                {"title": "O comentário da soma diz dois", "detail": "A soma é de três.", "cleanup": true},
-                {"title": "O log não gira", "detail": "O arquivo de log cresce sem limite."},
+                {"title": "O comentário da soma diz dois", "detail": "A soma é de três.", "cleanup": true,
+                    "rule": "O comentário diz o que o código faz", "places": ["src/a.rs"]},
+                {"title": "O log não gira", "detail": "O arquivo de log cresce sem limite.", "rule": "O log gira por dia", "places": ["src/a.rs"]},
             ]}),
         );
         assert_eq!(wrote["ok"], json!(true), "{wrote}");
@@ -4519,7 +4515,8 @@ fn main() { sum_comes_out_right(); double_comes_out_right(); }
         let before = spec_lines(root);
 
         for (field, wrong) in [("cleanup", json!("sim")), ("files", json!("src/a.rs")), ("files", json!([1]))] {
-            let mut leftover = json!({"title": "O comentário da soma diz dois", "detail": "A soma é de três."});
+            let mut leftover = json!({"title": "O comentário da soma diz dois", "detail": "A soma é de três.",
+                "rule": "O comentário diz o que o código faz", "places": ["src/a.rs"]});
             leftover[field] = wrong;
             let refused = returned(
                 root,

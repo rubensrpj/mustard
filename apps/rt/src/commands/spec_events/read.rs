@@ -1730,14 +1730,14 @@ mod tests {
             json!({"author": "binary", "wave": 1, "text": "Assumida.",
             "files": ["a.rs", "b.rs"], "replaces": [own],
             "agreed": [{"item": "MSTD-RULE-0001", "met": true}, {"item": "MSTD-RULE-0002", "met": false, "text": "falta o teste"}],
-            "leftovers": [{"title": "Sobra", "detail": "no `x.rs`"}], "undone": ["MSTD-TASK-0002"]}),
+            "leftovers": [{"title": "Sobra", "detail": "no `x.rs`", "rule": "R", "places": ["x.rs"]}], "undone": ["MSTD-TASK-0002"]}),
         );
         let (report, got) = only_line(root, "delivered-1");
         assert_eq!(got["code"], code_of(root, assumed), "{report}");
         assert_eq!(got["text"], json!("Assumida."), "{report}");
         assert_eq!(got["agreed"], json!([{"item": "MSTD-RULE-0002", "met": false, "text": "falta o teste"}]), "{report}");
         assert_eq!(got["files"], json!(["a.rs", "b.rs"]), "{report}");
-        assert_eq!(got["leftovers"], json!([{"title": "Sobra", "detail": "no `x.rs`"}]), "{report}");
+        assert_eq!(got["leftovers"], json!([{"title": "Sobra", "detail": "no `x.rs`", "rule": "R", "places": ["x.rs"]}]), "{report}");
         assert_eq!(got["undone"], json!(["MSTD-TASK-0002"]), "{report}");
         assert!(events(&read_at(&opts(root, "delivered-2", None)).unwrap()).is_empty(), "a wave with no delivery reads empty");
     }

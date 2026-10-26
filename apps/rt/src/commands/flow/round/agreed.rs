@@ -523,8 +523,7 @@ fn place_unmet<T: Copy>(
     (events, joins.into_iter().collect())
 }
 
-/// As junções pelo sentido `joins` como as das sobras ([`MeaningJoin`]),
-/// pela posição entre as entradas que a rodada grava: a versão devolvida a
+/// As junções pelo sentido `joins` ([`MeaningJoin`]), pela posição entre as entradas que a rodada grava: a versão devolvida a
 /// partir de `returned_from`, o evento a partir de `events_from`. Os itens
 /// juntados já existem na spec e entram na reescrita pelo número.
 pub(super) fn unmet_meaning_joins(joins: UnmetJoins, returned_from: usize, events_from: usize) -> Vec<MeaningJoin> {
@@ -535,7 +534,6 @@ pub(super) fn unmet_meaning_joins(joins: UnmetJoins, returned_from: usize, event
                 JoinedAt::Returned(at) => returned_from + at,
                 JoinedAt::Event(at) => events_from + at,
             },
-            requests: Vec::new(),
             items,
         })
         .collect()
