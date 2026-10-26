@@ -50,6 +50,11 @@
 //! biblioteca, e não liga; a aberta pelo tipo do projeto, pelo campo, pelo
 //! parâmetro ou pelo objeto visto pelo tipo de cima segue ligando.
 //!
+//! O repasse que troca o nome, no Rust, no TypeScript, no JavaScript e no
+//! Python, leva a chamada escrita pelo caminho ou pelo módulo trazido à
+//! função de origem, provada, e o método do valor que ela devolve ganha o uso
+//! de quem chama.
+//!
 //! E a pasta do projeto de teste some mesmo quando o teste quebra no meio, e
 //! nenhum teste do scan monta essa pasta à mão.
 
@@ -1769,4 +1774,132 @@ fn a_call_through_a_name_the_root_file_passes_on_is_a_proven_use() {
     let map = scan(temp.path());
     let uses = uses_of(&map, "core/src/io/leitor.rs", "novo");
     assert_eq!(uses.proven, vec!["app/src/main.rs:4:main".to_string()], "{:?}", uses.suspect);
+}
+
+/// Um projeto em cada língua que repassa uma função com outro nome: o
+/// arquivo `round` oferece `find`, declarada em `outdated`, como
+/// `outdated_review`, e `find` devolve um `Outdated`, com o método `hint`. O
+/// arquivo `close` chama o nome novo pelo caminho escrito antes dele: no Rust,
+/// pelo caminho inteiro (`crate::round::outdated_review()`), pelo módulo que
+/// ele traz (`round::outdated_review()`) e sozinho, trazido pelo `*`; no
+/// TypeScript, no JavaScript e no Python, pelo módulo que ele traz. Depois,
+/// chama `hint` no valor que recebeu.
+const PASSED_ON_RENAMED: &[(&str, &str)] = &[
+    ("rs/src/lib.rs", "pub mod close;\npub mod glob;\npub mod round;\n"),
+    ("rs/src/round.rs", "mod outdated;\npub(crate) use outdated::{find as outdated_review};\n"),
+    (
+        "rs/src/round/outdated.rs",
+        "pub struct Outdated;\n\nimpl Outdated {\n    pub fn hint(&self) -> String {\n        String::new()\n    }\n}\n\n\
+         pub fn find() -> Option<Outdated> {\n    None\n}\n",
+    ),
+    (
+        "rs/src/close.rs",
+        "use crate::round;\n\npub fn by_whole_path() -> String {\n    let outdated = crate::round::outdated_review();\n    \
+         outdated.map(|o| o.hint()).unwrap_or_default()\n}\n\npub fn by_module() -> bool {\n    round::outdated_review().is_some()\n}\n",
+    ),
+    ("rs/src/glob.rs", "use crate::round::*;\n\npub fn by_glob() -> bool {\n    outdated_review().is_none()\n}\n"),
+    (
+        "ts/outdated.ts",
+        "export class Outdated {\n  hint(): string {\n    return '';\n  }\n}\n\n\
+         export function find(): Outdated | undefined {\n  return new Outdated();\n}\n",
+    ),
+    ("ts/round.ts", "export { find as outdatedReview } from './outdated';\n"),
+    (
+        "ts/close.ts",
+        "import * as round from './round';\n\nexport function byModule(): string {\n  const outdated = round.outdatedReview();\n  \
+         return outdated ? outdated.hint() : '';\n}\n",
+    ),
+    (
+        "js/outdated.js",
+        "export class Outdated {\n  hint() {\n    return '';\n  }\n}\n\nexport function find() {\n  return new Outdated();\n}\n",
+    ),
+    ("js/round.js", "export { find as outdatedReview } from './outdated.js';\n"),
+    (
+        "js/close.js",
+        "import * as round from './round.js';\n\nexport function byModule() {\n  const outdated = round.outdatedReview();\n  \
+         return outdated ? outdated.hint() : '';\n}\n",
+    ),
+    ("py/shop/__init__.py", "\n"),
+    ("py/shop/round/__init__.py", "from .outdated import find as outdated_review\n"),
+    (
+        "py/shop/round/outdated.py",
+        "class Outdated:\n    def hint(self):\n        return ''\n\n\ndef find():\n    return Outdated()\n",
+    ),
+    (
+        "py/shop/close.py",
+        "from . import round\n\n\ndef by_module():\n    outdated = round.outdated_review()\n    return outdated.hint()\n",
+    ),
+];
+
+/// O mapa do projeto que repassa com outro nome, montado uma vez para os
+/// testes dele.
+fn passed_on_renamed_map() -> &'static Value {
+    static MAP: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+    MAP.get_or_init(|| {
+        let temp = project_dir("passed-on-renamed");
+        for (rel, body) in PASSED_ON_RENAMED {
+            write(temp.path(), rel, body);
+        }
+        scan(temp.path())
+    })
+}
+
+/// O lugar (`arquivo:linha`) em que `text` aparece pela primeira vez no
+/// arquivo `file` do projeto que repassa com outro nome.
+fn passed_on_place(file: &str, text: &str) -> String {
+    let body = PASSED_ON_RENAMED.iter().find(|(rel, _)| *rel == file).unwrap().1;
+    format!("{file}:{}", line_of(body, text))
+}
+
+/// A chamada do nome que o repasse troca, escrita pelo caminho, pelo módulo
+/// trazido ou trazida pelo `*`, é uso provado da função de origem, com o nome
+/// que ela tem no arquivo que a declara, em cada língua que repassa com outro
+/// nome. E só dela: a `find` de outra língua, de mesmo nome, não ganha uso.
+#[test]
+fn a_call_by_path_to_a_name_passed_on_under_another_name_is_a_proven_use() {
+    let map = passed_on_renamed_map();
+    let cases = [
+        ("rs/src/round/outdated.rs", vec![("rs/src/close.rs", "crate::round::outdated_review()"), ("rs/src/close.rs", "round::outdated_review().is_some()"), ("rs/src/glob.rs", "outdated_review().is_none()")]),
+        ("ts/outdated.ts", vec![("ts/close.ts", "round.outdatedReview()")]),
+        ("js/outdated.js", vec![("js/close.js", "round.outdatedReview()")]),
+        ("py/shop/round/outdated.py", vec![("py/shop/close.py", "round.outdated_review()")]),
+    ];
+    let mut failures: Vec<String> = Vec::new();
+    for (declaring, calls) in cases {
+        let uses = uses_of(map, declaring, "find");
+        let mut proven: Vec<String> = uses.proven.iter().map(|at| at.rsplitn(2, ':').nth(1).unwrap().to_string()).collect();
+        proven.sort();
+        let mut expected: Vec<String> = calls.iter().map(|(file, text)| passed_on_place(file, text)).collect();
+        expected.sort();
+        if proven != expected || !uses.suspect.is_empty() {
+            failures.push(format!("{declaring}: provados {proven:?}, esperados {expected:?}, suspeitos {:?}", uses.suspect));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// O método do valor que a função repassada com outro nome devolve tem uso
+/// no arquivo que o chama: o arquivo de origem fica à vista de quem chama
+/// pelo repasse, como ficaria com o import do nome, e a chamada no valor
+/// (`outdated.hint()`) chega ao `hint` dele, em cada língua. Sem esse uso, a
+/// conferência do código sem uso acusaria o método.
+#[test]
+fn a_method_reached_through_a_renamed_pass_through_is_not_reported_unused() {
+    let map = passed_on_renamed_map();
+    let cases = [
+        ("rs/src/round/outdated.rs", passed_on_place("rs/src/close.rs", "o.hint()")),
+        ("ts/outdated.ts", passed_on_place("ts/close.ts", "outdated.hint()")),
+        ("js/outdated.js", passed_on_place("js/close.js", "outdated.hint()")),
+        ("py/shop/round/outdated.py", passed_on_place("py/shop/close.py", "outdated.hint()")),
+    ];
+    let mut failures: Vec<String> = Vec::new();
+    for (declaring, place) in cases {
+        let uses = uses_of(map, declaring, "hint");
+        let here = format!("{place}:");
+        let at_place = uses.proven.iter().chain(uses.suspect.iter().map(|(at, _)| at)).filter(|at| at.starts_with(&here)).count();
+        if at_place != 1 {
+            failures.push(format!("{declaring}: o hint tem um uso em {place}: {:?} {:?}", uses.proven, uses.suspect));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
