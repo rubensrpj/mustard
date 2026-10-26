@@ -71,14 +71,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              in the spec, and approval stays locked until a plan passes."
         }
         ("plan.next", Locale::PtBr) => {
-            "Diga ao usuário o texto de `forecast`, com as ondas, as etapas e o tempo das ondas neste \
-             projeto. Depois, faça a pergunta de aprovação na ordem de explicar do estilo de resposta, com o \
+            "Diga ao usuário o texto de `forecast`, com as regras primeiro, depois as ondas, as etapas e o \
+             tempo das ondas neste projeto. Depois, faça a pergunta de aprovação na ordem de explicar do estilo de resposta, com o \
              texto exato \"{question}\". As opções são \"{option}\" e \"Ajustar\", e com outro texto \
              a aprovação não vale."
         }
         ("plan.next", Locale::EnUs) => {
-            "Tell the user the `forecast` text, with the waves, the stages and the time of the waves in \
-             this project. Then ask the approval question in the order of explaining from the response style, with \
+            "Tell the user the `forecast` text, with the rules first, then the waves, the stages and the \
+             time of the waves in this project. Then ask the approval question in the order of explaining from the response style, with \
              the exact text \"{question}\". The options are \"{option}\" and \"Adjust\", and with \
              another text the approval does not count."
         }
@@ -233,14 +233,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("resume.next.survey", Locale::EnUs) => "The spec is in the survey: run the survey and record the answer to each point.",
         ("resume.next.plan", Locale::PtBr) => {
             "O plano está gravado: confira o plano pelo próximo comando. A resposta dele traz o bloco \
-             `forecast`, com as ondas, as etapas e o tempo das ondas neste projeto. Diga esse bloco ao \
+             `forecast`, com as regras primeiro, depois as ondas, as etapas e o tempo das ondas neste \
+             projeto. Diga esse bloco ao \
              usuário antes da pergunta. Depois, faça a pergunta de aprovação na ordem \
              de explicar do estilo de resposta, com o texto exato \"{question}\". As opções são \
              \"{option}\" e \"Ajustar\", e com outro texto a aprovação não vale."
         }
         ("resume.next.plan", Locale::EnUs) => {
             "The plan is recorded: check the plan with the next command. Its answer carries the \
-             `forecast` block, with the waves, the stages and the time of the waves in this project. \
+             `forecast` block, with the rules first, then the waves, the stages and the time of the waves \
+             in this project. \
              Tell the user that block before the question. Then ask the approval question in the order of \
              explaining from the response style, with the exact text \"{question}\". The options \
              are \"{option}\" and \"Adjust\", and with another text the approval does not count."
@@ -2655,7 +2657,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 381, 0x3346_e231_9592_1b8e);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 381, 0xfe10_c7e6_c5a0_179e);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
@@ -3151,6 +3153,23 @@ mod tests {
             for key in ["plan.next", "resume.next.plan"] {
                 let said = translate(key, lang).replace("{question}", translate("approval.question", lang));
                 assert!(said.contains(&format!("\"{question}\"")), "{key} in {lang} lacks the exact question: {said}");
+            }
+        }
+    }
+
+    /// O bloco `forecast` do plano abre com a lista de regras da obra. Os dois
+    /// textos que mandam dizê-lo ao usuário, o próximo passo do plano e o da
+    /// retomada, citam as regras antes das ondas nos dois idiomas.
+    #[test]
+    fn the_plan_steps_name_the_rules_before_the_waves() {
+        for (lang, rules, waves) in [(Locale::PtBr, "regras", "ondas"), (Locale::EnUs, "rules", "waves")] {
+            for key in ["plan.next", "resume.next.plan"] {
+                let text = translate(key, lang);
+                let from = text.find("`forecast`").unwrap_or_else(|| panic!("{key} in {lang:?} does not name the forecast: {text}"));
+                let said = &text[from..];
+                let rules_at = said.find(rules).unwrap_or_else(|| panic!("{key} in {lang:?} does not name the rules: {text}"));
+                let waves_at = said.find(waves).unwrap_or_else(|| panic!("{key} in {lang:?} does not name the waves: {text}"));
+                assert!(rules_at < waves_at, "{key} in {lang:?} names the waves before the rules: {text}");
             }
         }
     }
