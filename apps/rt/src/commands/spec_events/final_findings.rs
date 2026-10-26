@@ -8,9 +8,7 @@
 //! faltar, então o `remove` do modelo que a tirasse só adiaria o achado. Ele é
 //! recusado ([`removal_rule`]), e a tarefa sai pela entrega.
 
-use std::collections::BTreeSet;
-
-use mustard_core::domain::spec_events::{Refusal, SpecEvent, SpecLog, TimeFilter};
+use mustard_core::domain::spec_events::{Refusal, SpecEvent, SpecLog};
 use mustard_core::domain::spec_state::final_approval;
 
 /// O autor que o fechamento põe no pedido e na tarefa de cada achado.
@@ -19,8 +17,9 @@ const REVIEW: &str = "review";
 /// O `remove` que o modelo grava não tira a tarefa de um achado do veredito
 /// final aprovado vigente em `before` ([`final_approval`]): o alvo é uma
 /// tarefa de autor `review` que cobre um pedido do mesmo autor cuja `origin`
-/// é esse veredito. Os alvos são os que a gravação já conferiu, em `after`:
-/// os números do `remove`, o que pelo código virou todas as versões, e o que o
+/// é esse veredito. Os alvos são os que a leitura tira, contados em `after`
+/// ([`SpecLog::removal_targets`]), depois de a gravação os conferir: os
+/// números do `remove`, o que pelo código virou todas as versões, e o que o
 /// filtro de horário pegou. Outra tarefa sai como sempre, e sem aprovação
 /// final vigente nenhuma tarefa é guardada: a entrega que veio depois dela já
 /// tirou o achado do caminho.
@@ -39,11 +38,7 @@ pub(super) fn removal_rule(event_type: &str, before: &SpecLog, after: &SpecLog) 
     let Some(removal) = after.events.iter().rev().find(|event| event.event_type == "remove" && event.id > before.max_id()) else {
         return Ok(());
     };
-    let mut targets: BTreeSet<u64> = removal.ints("targets").into_iter().collect();
-    if let Some(filter) = removal.fields.get("filter").and_then(TimeFilter::from_value) {
-        targets.extend(after.filter_matches(&filter, removal.id));
-    }
-    let guarded = targets.into_iter().filter_map(|id| before.get(id)).find(|target| is_final_finding(before, target, verdict.id));
+    let guarded = after.removal_targets(removal).into_iter().filter_map(|id| before.get(id)).find(|target| is_final_finding(before, target, verdict.id));
     match guarded {
         Some(task) => Err(Refusal::FinalFindingRemoved { code: before.codes().get(&task.id).cloned().unwrap_or_else(|| task.id.to_string()) }),
         None => Ok(()),

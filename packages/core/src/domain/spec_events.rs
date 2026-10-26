@@ -44,6 +44,7 @@ mod message;
 mod purge;
 mod read;
 mod refusal;
+mod removal;
 mod search;
 mod types;
 
