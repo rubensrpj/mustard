@@ -1075,6 +1075,7 @@ mod tests {
     use crate::commands::flow::round::tests::*;
     use crate::commands::spec_events::write::record;
 
+    mod rejected_wave_new_agent;
     mod removal_after_delivery;
 
     /// A cópia gravada no envio da onda `wave`.
