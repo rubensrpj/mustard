@@ -171,8 +171,8 @@
 ; above, starts the header after it, and reads no call out of it.
 (decorator) @decoration
 
-; Os nomes que o corpo de uma função liga: da linha seguinte até o fim da
-; declaração, o mesmo nome escrito sozinho é deles.
+; Os nomes que o corpo de uma função liga: no alcance que a língua dá a cada
+; um, marcado mais abaixo, o mesmo nome escrito sozinho é deles.
 (variable_declarator name: (identifier) @local)
 ; Named callable values inside functions also have addressable source ranges.
 ; Earlier top-level declarations retain their established kinds.
@@ -188,6 +188,29 @@
 (rest_pattern (identifier) @local)
 (for_in_statement left: (identifier) @local)
 (catch_clause parameter: (identifier) @local)
+; O nome com valor padrão dentro de uma lista desmontada (`[x = 1]`) e o
+; nome da função anônima com nome (`function x() {}`), que vale dentro dela.
+(array_pattern (assignment_pattern left: (identifier) @local))
+(function_expression name: (identifier) @local)
+
+; Até onde vale cada nome ligado: o bloco, o `for`, o `catch` e o corpo do
+; `switch` fecham o alcance do `let`, do `const`, do nome do laço e do
+; parâmetro do `catch`; a função fecha o de todo nome, também o do `var`, que
+; passa pelos blocos até ela.
+(statement_block) @local.scope
+(for_statement) @local.scope
+(for_in_statement) @local.scope
+(catch_clause) @local.scope
+(switch_body) @local.scope
+(function_declaration) @local.scope.function
+(function_expression) @local.scope.function
+(arrow_function) @local.scope.function
+(method_definition) @local.scope.function
+(generator_function_declaration) @local.scope.function
+(generator_function) @local.scope.function
+(class_static_block) @local.scope.function
+(variable_declaration) @local.hoist
+(for_in_statement kind: "var" left: (_) @local.hoist)
 
 ; O tipo que a assinatura ou a variável escreve para um nome local
 ; (`pedido: Pedido`, `const repo: IRepo = ...;`): a chamada feita sobre esse

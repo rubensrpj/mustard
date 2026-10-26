@@ -38,12 +38,40 @@
 ; header was read as a call.
 (method_elem name: (field_identifier) @name) @definition.method
 
-; Os nomes que o corpo de uma função liga: da linha seguinte até o fim da
-; declaração, o mesmo nome escrito sozinho é deles.
+; Os nomes que o corpo de uma função liga: no alcance que a língua dá a cada
+; um, marcado mais abaixo, o mesmo nome escrito sozinho é deles.
 (short_var_declaration left: (expression_list (identifier) @local))
 (var_spec name: (identifier) @local)
 (parameter_declaration name: (identifier) @local)
 (range_clause left: (expression_list (identifier) @local))
+; O nome do `switch v := x.(type)`, o do `case v := <-ch` do `select` e o
+; parâmetro variádico (`xs ...int`). O resultado com nome já é
+; `parameter_declaration`.
+(type_switch_statement alias: (expression_list (identifier) @local))
+(receive_statement left: (expression_list (identifier) @local))
+(variadic_parameter_declaration name: (identifier) @local)
+
+; Até onde vale cada nome ligado: o bloco, o `if`, o `for`, o `switch`, cada
+; caso dele e do `select`, e as funções fecham o alcance. O valor que a
+; declaração curta, o `var`, o `range`, o `switch` de tipo e o recebimento
+; leem antes de ligar o nome fica fora do alcance dos nomes que eles ligam.
+(block) @local.scope
+(if_statement) @local.scope
+(for_statement) @local.scope
+(expression_switch_statement) @local.scope
+(type_switch_statement) @local.scope
+(expression_case) @local.scope
+(type_case) @local.scope
+(default_case) @local.scope
+(communication_case) @local.scope
+(function_declaration) @local.scope
+(method_declaration) @local.scope
+(func_literal) @local.scope
+(short_var_declaration right: (_) @local.outside)
+(var_spec value: (_) @local.outside)
+(range_clause right: (_) @local.outside)
+(type_switch_statement value: (_) @local.outside)
+(receive_statement right: (_) @local.outside)
 
 ; A função entregue como valor, sem ser chamada ali: o nome escrito como
 ; argumento (`sort.Slice(xs, menor)`, `http.HandleFunc("/", rotas.Inicio)`),

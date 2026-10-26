@@ -130,10 +130,64 @@
 ; above, starts the header after it, and reads no call out of it.
 (annotation) @decoration
 
-; Os nomes que o corpo de uma função liga: da linha seguinte até o fim da
-; declaração, o mesmo nome escrito sozinho é deles.
+; Os nomes que o corpo de uma função liga: no alcance que a língua dá a cada
+; um, marcado mais abaixo, o mesmo nome escrito sozinho é deles.
 (initialized_variable_definition name: (identifier) @local)
-(formal_parameter name: (identifier) @local)
+; O parâmetro, com tipo ou sem ele (`(x) { }`), e o parâmetro com forma de
+; função (`int x()`).
+(formal_parameter (identifier) @local)
+; Os outros jeitos de ligar nome: os outros nomes da mesma declaração
+; (`var a = 1, x = 2;`), o nome do `for (var x in ...)`, os do `catch (e, s)`
+; e os do padrão do Dart 3. A variável do padrão (`var x`, `int x`) liga em
+; todo padrão; o nome sozinho no padrão só liga numa declaração (`var (a, x)
+; = ...`, `for (var (a, x) in ...)`), até dois padrões de profundidade: no
+; `case`, ele é a constante que o padrão compara.
+(initialized_variable_definition (initialized_identifier . (identifier) @local))
+(for_loop_parts name: (identifier) @local)
+(catch_parameters (identifier) @local)
+(variable_pattern (identifier) @local)
+(pattern_variable_declaration
+  [(record_pattern (constant_pattern (identifier) @local))
+   (list_pattern (constant_pattern (identifier) @local))
+   (map_pattern (constant_pattern (identifier) @local))
+   (object_pattern (constant_pattern (identifier) @local))])
+(for_loop_parts
+  [(record_pattern (constant_pattern (identifier) @local))
+   (list_pattern (constant_pattern (identifier) @local))
+   (map_pattern (constant_pattern (identifier) @local))
+   (object_pattern (constant_pattern (identifier) @local))])
+(pattern_variable_declaration
+  [(record_pattern [(record_pattern (constant_pattern (identifier) @local)) (list_pattern (constant_pattern (identifier) @local)) (rest_pattern (constant_pattern (identifier) @local))])
+   (list_pattern [(record_pattern (constant_pattern (identifier) @local)) (list_pattern (constant_pattern (identifier) @local)) (rest_pattern (constant_pattern (identifier) @local))])])
+(for_loop_parts
+  [(record_pattern [(record_pattern (constant_pattern (identifier) @local)) (list_pattern (constant_pattern (identifier) @local))])
+   (list_pattern [(record_pattern (constant_pattern (identifier) @local)) (list_pattern (constant_pattern (identifier) @local))])])
+
+; Até onde vale cada nome ligado: o bloco, o `for` (também o da coleção), o
+; `if` com padrão, cada caso do `switch` e da expressão `switch`, a função
+; anônima e a função local fecham o alcance. O corpo que a gramática põe ao
+; lado da assinatura fecha o do parâmetro, e o bloco ao lado do `catch` o dos
+; nomes dele. O iterável que o `for` lê e o `else` do `if` com padrão ficam
+; fora do alcance dos nomes que eles ligam.
+(block) @local.scope
+(for_statement) @local.scope
+(for_element) @local.scope
+(if_statement) @local.scope
+(switch_statement_case) @local.scope
+(switch_expression_case) @local.scope
+(function_expression) @local.scope
+(lambda_expression) @local.scope
+((function_signature
+  (formal_parameter_list
+    [(formal_parameter (identifier) @local)
+     (optional_formal_parameters (formal_parameter (identifier) @local))])) . (function_body) @local.scope)
+((method_signature
+  (_ (formal_parameter_list
+    [(formal_parameter (identifier) @local)
+     (optional_formal_parameters (formal_parameter (identifier) @local))]))) . (function_body) @local.scope)
+((catch_clause (catch_parameters (identifier) @local)) . (block) @local.scope)
+(for_loop_parts value: (_) @local.outside)
+(if_statement alternative: (_) @local.outside)
 
 ; A função entregue como valor, sem ser chamada ali: o nome escrito como
 ; argumento (`xs.map(dobro)`, `onPressed: salvar`), como valor de uma

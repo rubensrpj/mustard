@@ -41,7 +41,11 @@
 //! O nome que o próprio código liga a outra coisa vence a declaração do
 //! projeto de mesmo nome, no Rust, no TypeScript e no Python: a variável, o
 //! parâmetro e o nome tirado de desestruturação, o nome trazido por um import
-//! de fora do projeto e o nome que a língua põe em todo arquivo.
+//! de fora do projeto e o nome que a língua põe em todo arquivo. Em toda
+//! língua do mapa, o nome ligado dentro de uma função por qualquer forma da
+//! língua (o padrão do `if let` e do `match`, a exceção pega, o `with … as`,
+//! o laço, o padrão do parâmetro) é local, e o uso dele ali não é da função
+//! do projeto de mesmo nome.
 //!
 //! O arquivo JavaScript entra no mapa como o TypeScript, e o `require` importa
 //! como o `import`, nos dois: o arquivo que ele nomeia vira dependência, e o
@@ -1427,6 +1431,1825 @@ fn a_name_the_code_binds_itself_wins_over_the_project_declaration() {
             "o Result do projeto só vale onde o arquivo o traz: {:?} {:?}",
             result.proven, result.suspect
         ));
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// O projeto em que cada língua do mapa liga o nome `hint`, que o arquivo
+/// também declara como função, por cada forma de ligar nome dela: uma função
+/// por forma, que usa o nome ligado nas linhas de baixo como valor e como
+/// chamada. Só `neighbor` usa a função sem ligar o nome. Os outros arquivos
+/// trazem os tipos que os padrões desmontam. O mesmo texto vale para o `.ts`,
+/// o `.tsx` e o `.js`.
+fn binding_forms_project() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("rs/src/lib.rs", BINDING_FORMS_RS),
+        ("rs/src/wrapper.rs", "pub struct Wrapper {\n    pub hint: u32,\n    pub inner: u32,\n}\n"),
+        ("py/pkg/forms.py", BINDING_FORMS_PY),
+        ("py/pkg/box.py", "class Point:\n    __match_args__ = (\"x\",)\n    x = None\n"),
+        ("ts/src/forms.ts", BINDING_FORMS_JS),
+        ("tsx/src/forms.tsx", BINDING_FORMS_JS),
+        ("js/src/forms.js", BINDING_FORMS_JS),
+        ("cs/Forms.cs", BINDING_FORMS_CS),
+        ("cs/Box.cs", "namespace Demo;\n\npublic class Box\n{\n    public System.Func<int> Inner { get; set; }\n}\n"),
+        ("go/forms/forms.go", BINDING_FORMS_GO),
+        ("php/Forms.php", BINDING_FORMS_PHP),
+        ("dart/lib/forms.dart", BINDING_FORMS_DART),
+        ("dart/lib/box.dart", "class Box {\n  int Function() hint = () => 1;\n  int Function() inner = () => 1;\n}\n"),
+    ]
+}
+
+const BINDING_FORMS_RS: &str = r#"mod wrapper;
+
+use crate::wrapper::Wrapper;
+
+pub fn hint() -> u32 {
+    1
+}
+
+pub fn take<T>(_value: T) {}
+
+pub fn neighbor() {
+    take(hint);
+    hint();
+}
+
+pub fn if_let(found: Option<u32>) {
+    if let Some(hint) = found {
+        take(hint);
+        hint();
+    }
+}
+
+pub fn while_let(mut found: Option<u32>) {
+    while let Some(hint) = found.take() {
+        take(hint);
+        hint();
+    }
+}
+
+pub fn let_chain(first: Option<u32>, second: Option<u32>) {
+    if let Some(_one) = first
+        && let Some(hint) = second
+    {
+        take(hint);
+        hint();
+    }
+}
+
+pub fn match_arm(found: Option<u32>) {
+    match found {
+        Some(hint) => {
+            take(hint);
+            hint();
+        }
+        None => {}
+    }
+}
+
+pub fn match_name(found: u32) {
+    match found {
+        hint if found > 0 => {
+            take(hint);
+            hint();
+        }
+        _ => {}
+    }
+}
+
+pub fn let_else(found: Option<u32>) {
+    let Some(hint) = found else {
+        return;
+    };
+    take(hint);
+    hint();
+}
+
+pub fn struct_shorthand(found: Wrapper) {
+    let Wrapper { hint, .. } = found;
+    take(hint);
+    hint();
+}
+
+pub fn struct_shorthand_ref(found: &Wrapper) {
+    let Wrapper { ref hint, .. } = *found;
+    take(hint);
+    hint();
+}
+
+pub fn struct_field(found: Wrapper) {
+    let Wrapper { inner: hint, .. } = found;
+    take(hint);
+    hint();
+}
+
+pub fn ref_binding(found: Option<u32>) {
+    if let Some(ref hint) = found {
+        take(hint);
+        hint();
+    }
+}
+
+pub fn mut_binding(found: (u32, u32)) {
+    let (mut hint, _) = found;
+    take(hint);
+    hint();
+}
+
+pub fn reference_binding(found: &u32) {
+    let &hint = found;
+    take(hint);
+    hint();
+}
+
+pub fn captured(found: Option<u32>) {
+    match found {
+        hint @ Some(_) => {
+            take(hint);
+            hint();
+        }
+        _ => {}
+    }
+}
+
+pub fn slice(found: &[u32]) {
+    if let [hint, ..] = found {
+        take(hint);
+        hint();
+    }
+}
+
+pub fn or_binding(found: Result<u32, u32>) {
+    match found {
+        Ok(hint) | Err(hint) => {
+            take(hint);
+            hint();
+        }
+    }
+}
+
+pub fn nested_tuple(found: (u32, (u32, u32))) {
+    let (_first, (_second, hint)) = found;
+    take(hint);
+    hint();
+}
+
+pub fn for_tuple(found: Vec<(u32, u32)>) {
+    for (_index, hint) in found {
+        take(hint);
+        hint();
+    }
+}
+
+pub fn closure_tuple(found: Vec<(u32, u32)>) {
+    found.into_iter().for_each(|(_index, hint)| {
+        take(hint);
+        hint();
+    });
+}
+
+pub fn parameter_tuple((_first, hint): (u32, u32)) {
+    take(hint);
+    hint();
+}
+
+pub fn parameter_struct(Wrapper { hint, .. }: Wrapper) {
+    take(hint);
+    hint();
+}
+
+pub fn same_line_closure() {
+    take(|hint: fn() -> u32| { take(hint); hint() });
+}
+
+pub fn same_line_arm(found: Option<fn() -> u32>) {
+    match found {
+        Some(hint) => { take(hint); hint(); }
+        None => {}
+    }
+}
+
+pub fn same_line_if_let(found: Option<fn() -> u32>) {
+    if let Some(hint) = found { take(hint); hint(); }
+}
+
+pub fn same_line_for(found: Vec<fn() -> u32>) {
+    for hint in found { take(hint); hint(); }
+}
+
+pub fn same_line_parameter(hint: fn() -> u32) -> u32 { take(hint); hint() }
+"#;
+
+const BINDING_FORMS_PY: &str = r#"from pkg.box import Point
+
+
+def hint():
+    return 1
+
+
+def take(value):
+    return value
+
+
+def neighbor():
+    take(hint)
+    hint()
+
+
+def with_as(path):
+    with open(path) as hint:
+        take(hint)
+        hint()
+
+
+def with_tuple(path):
+    with open(path) as (first, hint):
+        take(hint)
+        hint()
+
+
+def except_as():
+    try:
+        take(1)
+    except ValueError as hint:
+        take(hint)
+        hint()
+
+
+def except_group():
+    try:
+        take(1)
+    except* ValueError as hint:
+        take(hint)
+        hint()
+
+
+def comprehension(items):
+    found = [1 for hint in items
+             if take(hint) and hint()]
+    return found
+
+
+def comprehension_tuple(items):
+    found = {1 for index, hint in items
+             if take(hint) and hint()}
+    return found
+
+
+def walrus(items):
+    if (hint := items[0]):
+        take(hint)
+        hint()
+
+
+def match_capture(found):
+    match found:
+        case hint:
+            take(hint)
+            hint()
+
+
+def match_list(found):
+    match found:
+        case [first, hint]:
+            take(hint)
+            hint()
+
+
+def match_as(found):
+    match found:
+        case int() as hint:
+            take(hint)
+            hint()
+
+
+def match_class(found):
+    match found:
+        case Point(x=hint):
+            take(hint)
+            hint()
+
+
+def match_positional(found):
+    match found:
+        case Point(hint):
+            take(hint)
+            hint()
+
+
+def match_dict(found):
+    match found:
+        case {"key": hint}:
+            take(hint)
+            hint()
+
+
+def match_star(found):
+    match found:
+        case [first, *hint]:
+            take(hint)
+            hint()
+
+
+def match_rest(found):
+    match found:
+        case {"key": first, **hint}:
+            take(hint)
+            hint()
+
+
+def match_or(found):
+    match found:
+        case [hint] | (hint, _):
+            take(hint)
+            hint()
+
+
+def for_tuple(items):
+    for index, hint in items:
+        take(hint)
+        hint()
+
+
+def for_nested(items):
+    for index, (key, hint) in items:
+        take(hint)
+        hint()
+
+
+def for_list(items):
+    for [index, hint] in items:
+        take(hint)
+        hint()
+
+
+def star_args(*hint):
+    take(hint)
+    hint()
+
+
+def star_kwargs(**hint):
+    take(hint)
+    hint()
+
+
+def typed_star(*hint: int):
+    take(hint)
+    hint()
+
+
+def typed_kwargs(**hint: int):
+    take(hint)
+    hint()
+
+
+def nested_assignment(items):
+    first, (second, hint) = items
+    take(hint)
+    hint()
+
+
+def list_assignment(items):
+    [first, hint] = items
+    take(hint)
+    hint()
+
+
+def star_assignment(items):
+    first, *hint = items
+    take(hint)
+    hint()
+
+
+def chained_assignment(items):
+    first = hint = items
+    take(hint)
+    hint()
+
+
+def lambda_star():
+    return (lambda *hint:
+            take(hint) and hint())
+
+
+def lambda_default():
+    return (lambda hint=1:
+            take(hint) and hint())
+
+
+def same_line_comprehension(items):
+    return [hint() for hint in items if take(hint)]
+
+
+def same_line_lambda():
+    return lambda hint: take(hint) and hint()
+
+
+def same_line_for(items):
+    for hint in items: take(hint); hint()
+
+
+def same_line_parameter(hint): take(hint); return hint()
+
+
+def after_block(items):
+    if items:
+        hint = items[0]
+    take(hint)
+    hint()
+"#;
+
+const BINDING_FORMS_JS: &str = r#"export function hint() {
+  return 1;
+}
+
+function take(value) {
+  return value;
+}
+
+export function neighbor() {
+  take(hint);
+  hint();
+}
+
+export function forOf(items) {
+  for (const hint of items) {
+    take(hint);
+    hint();
+  }
+}
+
+export function forOfArray(items) {
+  for (const [index, hint] of items) {
+    take(hint);
+    hint();
+  }
+}
+
+export function forOfObject(items) {
+  for (const { hint } of items) {
+    take(hint);
+    hint();
+  }
+}
+
+export function forIn(items) {
+  for (let hint in items) {
+    take(hint);
+    hint();
+  }
+}
+
+export function objectParameter({ hint }) {
+  take(hint);
+  hint();
+}
+
+export function arrayParameter([hint]) {
+  take(hint);
+  hint();
+}
+
+export function renamedParameter({ inner: hint }) {
+  take(hint);
+  hint();
+}
+
+export function defaultObjectParameter({ hint = take }) {
+  take(hint);
+  hint();
+}
+
+export function defaultArrayParameter([hint = take]) {
+  take(hint);
+  hint();
+}
+
+export function nestedParameter({ inner: [hint] }) {
+  take(hint);
+  hint();
+}
+
+export function restParameter(...hint) {
+  take(hint);
+  hint();
+}
+
+export function restObjectParameter({ ...hint }) {
+  take(hint);
+  hint();
+}
+
+export function arrowObject() {
+  return ({ hint }) => {
+    take(hint);
+    hint();
+  };
+}
+
+export function arrowArray() {
+  return ([hint]) => {
+    take(hint);
+    hint();
+  };
+}
+
+export function arrowName() {
+  return (hint) => {
+    take(hint);
+    hint();
+  };
+}
+
+export function catchObject() {
+  try {
+    take(1);
+  } catch ({ hint }) {
+    take(hint);
+    hint();
+  }
+}
+
+export function catchArray() {
+  try {
+    take(1);
+  } catch ([hint]) {
+    take(hint);
+    hint();
+  }
+}
+
+export function catchName() {
+  try {
+    take(1);
+  } catch (hint) {
+    take(hint);
+    hint();
+  }
+}
+
+export function functionExpressionName() {
+  return function hint() {
+    take(hint);
+    hint();
+  };
+}
+
+export function destructuringAssignment(items) {
+  let hint;
+  [hint] = items;
+  take(hint);
+  hint();
+}
+
+export function sameLineArrow() {
+  return (hint) => take(hint) && hint();
+}
+
+export function sameLineFor(items) {
+  for (const hint of items) { take(hint); hint(); }
+}
+
+export function sameLineCatch() {
+  try { take(1); } catch (hint) { take(hint); hint(); }
+}
+
+export function sameLineParameter(hint) { take(hint); return hint(); }
+
+export function varInBlock(found) {
+  if (found) {
+    var hint = found;
+  }
+  take(hint);
+  hint();
+}
+
+export function varInLoop(items) {
+  for (var hint of items) {
+    take(hint);
+  }
+  take(hint);
+  hint();
+}
+"#;
+
+const BINDING_FORMS_CS: &str = r#"using System;
+
+namespace Demo;
+
+public static class Forms
+{
+    public static int hint() => 1;
+
+    static int take(object value) => 0;
+
+    public static void neighbor()
+    {
+        take(hint);
+        hint();
+    }
+
+    public static void outVar(string text)
+    {
+        if (int.TryParse(text, out var hint))
+        {
+            take(hint);
+            hint();
+        }
+    }
+
+    public static void outTyped(string text)
+    {
+        if (int.TryParse(text, out int hint))
+        {
+            take(hint);
+            hint();
+        }
+    }
+
+    public static void isType(object found)
+    {
+        if (found is Func<int> hint)
+        {
+            take(hint);
+            hint();
+        }
+    }
+
+    public static void isVar(object found)
+    {
+        if (found is var hint)
+        {
+            take(hint);
+            hint();
+        }
+    }
+
+    public static void switchCase(object found)
+    {
+        switch (found)
+        {
+            case Func<int> hint when hint != null:
+                take(hint);
+                hint();
+                break;
+        }
+    }
+
+    public static int switchExpression(object found)
+    {
+        return found switch
+        {
+            Func<int> hint =>
+                hint() + take(hint),
+            _ => 0,
+        };
+    }
+
+    public static void foreachTuple((int, Func<int>)[] items)
+    {
+        foreach (var (index, hint) in items)
+        {
+            take(hint);
+            hint();
+        }
+    }
+
+    public static void foreachTyped(Func<int>[] items)
+    {
+        foreach (Func<int> hint in items)
+        {
+            take(hint);
+            hint();
+        }
+    }
+
+    public static void deconstruct((int, Func<int>) pair)
+    {
+        var (index, hint) = pair;
+        take(hint);
+        hint();
+    }
+
+    public static void deconstructTyped((int, Func<int>) pair)
+    {
+        (int index, Func<int> hint) = pair;
+        take(hint);
+        hint();
+    }
+
+    public static void positionalPattern(object found)
+    {
+        if (found is (int index, Func<int> hint))
+        {
+            take(hint);
+            hint();
+        }
+    }
+
+    public static void propertyPattern(Box found)
+    {
+        if (found is { Inner: var hint })
+        {
+            take(hint);
+            hint();
+        }
+    }
+
+    public static void listPattern(Func<int>[] found)
+    {
+        if (found is [var hint, ..])
+        {
+            take(hint);
+            hint();
+        }
+    }
+
+    public static void catchNamed()
+    {
+        try
+        {
+            take(1);
+        }
+        catch (Exception hint)
+        {
+            take(hint);
+            hint();
+        }
+    }
+
+    public static void lambdaImplicit()
+    {
+        Action<Func<int>> run = hint =>
+        {
+            take(hint);
+            hint();
+        };
+    }
+
+    public static void lambdaTyped()
+    {
+        Action<Func<int>> run = (Func<int> hint) =>
+        {
+            take(hint);
+            hint();
+        };
+    }
+
+    public static void usingStatement()
+    {
+        using (var hint = Open())
+        {
+            take(hint);
+            hint();
+        }
+    }
+
+    public static void usingDeclaration()
+    {
+        using var hint = Open();
+        take(hint);
+        hint();
+    }
+
+    public static void queryFrom(Func<int>[] items)
+    {
+        var found = from hint in items
+                    where take(hint) == hint()
+                    select 1;
+    }
+
+    public static void queryLet(Func<int>[] items)
+    {
+        var found = from item in items
+                    let hint = item
+                    where take(hint) == hint()
+                    select 1;
+    }
+
+    public static void queryJoin(Func<int>[] items)
+    {
+        var found = from item in items
+                    join hint in items on item equals hint
+                    where take(hint) == hint()
+                    select 1;
+    }
+
+    public static void queryInto(Func<int>[] items)
+    {
+        var found = from item in items
+                    group item by item into hint
+                    where take(hint) == hint()
+                    select 1;
+    }
+
+    public static void queryJoinInto(Func<int>[] items)
+    {
+        var found = from item in items
+                    join other in items on item equals other into hint
+                    where take(hint) == hint()
+                    select 1;
+    }
+
+    public static void localWithType()
+    {
+        Func<int> hint = () => 1;
+        take(hint);
+        hint();
+    }
+
+    public static void sameLineLambda()
+    {
+        Action<Func<int>> run = hint => { take(hint); hint(); };
+    }
+
+    public static int sameLineSwitch(object found)
+    {
+        return found switch { Func<int> hint => hint() + take(hint), _ => 0 };
+    }
+
+    public static void sameLineForeach(Func<int>[] items)
+    {
+        foreach (var hint in items) { take(hint); hint(); }
+    }
+
+    public static void sameLineQuery(Func<int>[] items)
+    {
+        var found = from hint in items where take(hint) == hint() select 1;
+    }
+
+    public static void sameLineParameter(Func<int> hint) { take(hint); hint(); }
+
+    public static void patternAfterIf(object found)
+    {
+        if (found is not Func<int> hint)
+            return;
+        take(hint);
+        hint();
+    }
+}
+"#;
+
+const BINDING_FORMS_GO: &str = r#"package forms
+
+func hint() int {
+	return 1
+}
+
+func take(value any) int {
+	return 0
+}
+
+func neighbor() {
+	take(hint)
+	hint()
+}
+
+func typeSwitch(found any) {
+	switch hint := found.(type) {
+	case func() int:
+		take(hint)
+		hint()
+	}
+}
+
+func receive(found chan func() int) {
+	select {
+	case hint := <-found:
+		take(hint)
+		hint()
+	}
+}
+
+func receivePair(found chan func() int) {
+	select {
+	case hint, ok := <-found:
+		take(hint)
+		hint()
+		take(ok)
+	}
+}
+
+func namedResult() (hint func() int) {
+	take(hint)
+	hint()
+	return
+}
+
+func variadic(hint ...func() int) {
+	take(hint)
+	hint()
+}
+
+func rangeClause(items []func() int) {
+	for _, hint := range items {
+		take(hint)
+		hint()
+	}
+}
+
+func ifInit() {
+	if hint := take(1); hint > 0 {
+		take(hint)
+		hint()
+	}
+}
+
+func funcLiteral() {
+	run := func(hint func() int) {
+		take(hint)
+		hint()
+	}
+	run(nil)
+}
+
+func varBlock() {
+	var (
+		hint = func() int { return 1 }
+	)
+	take(hint)
+	hint()
+}
+
+func sameLineLiteral() {
+	run := func(hint func() int) int { take(hint); return hint() }
+	run(nil)
+}
+
+func sameLineRange(items []func() int) {
+	for _, hint := range items { take(hint); hint() }
+}
+
+func sameLineParameter(hint func() int) int { take(hint); return hint() }
+
+func ifInitElse() {
+	if hint := take(1); hint > 0 {
+	} else {
+		take(hint)
+		hint()
+	}
+}
+"#;
+
+const BINDING_FORMS_PHP: &str = r#"<?php
+
+namespace Demo;
+
+function hint(): int
+{
+    return 1;
+}
+
+function take($value): int
+{
+    return 0;
+}
+
+function neighbor(): void
+{
+    hint();
+}
+
+function foreachValue(array $items): void
+{
+    foreach ($items as $hint) {
+        take($hint);
+        $hint();
+    }
+}
+
+function foreachPair(array $items): void
+{
+    foreach ($items as $key => $hint) {
+        take($hint);
+        $hint();
+    }
+}
+
+function foreachReference(array $items): void
+{
+    foreach ($items as &$hint) {
+        take($hint);
+        $hint();
+    }
+}
+
+function foreachList(array $items): void
+{
+    foreach ($items as [$key, $hint]) {
+        take($hint);
+        $hint();
+    }
+}
+
+function catchNamed(): void
+{
+    try {
+        take(1);
+    } catch (\Exception $hint) {
+        take($hint);
+        $hint();
+    }
+}
+
+function listCall(array $items): void
+{
+    list($first, $hint) = $items;
+    take($hint);
+    $hint();
+}
+
+function shortList(array $items): void
+{
+    [$first, $hint] = $items;
+    take($hint);
+    $hint();
+}
+
+function keyedList(array $items): void
+{
+    ['key' => $hint] = $items;
+    take($hint);
+    $hint();
+}
+
+function nestedList(array $items): void
+{
+    [[$first, $hint]] = $items;
+    take($hint);
+    $hint();
+}
+
+function globalName(): void
+{
+    global $hint;
+    take($hint);
+    $hint();
+}
+
+function staticName(): void
+{
+    static $hint = null;
+    take($hint);
+    $hint();
+}
+
+function variadic(...$hint): void
+{
+    take($hint);
+    $hint();
+}
+
+function closureUse(): void
+{
+    $run = function () use (&$hint) {
+        take($hint);
+        $hint();
+    };
+}
+
+function referenceAssignment(array $items): void
+{
+    $hint = &$items[0];
+    take($hint);
+    $hint();
+}
+
+function coalesceAssignment(): void
+{
+    $hint ??= null;
+    take($hint);
+    $hint();
+}
+
+function sameLineArrow(): void
+{
+    $run = fn($hint) => $hint() + take($hint);
+}
+
+function sameLineForeach(array $items): void
+{
+    foreach ($items as $hint) { take($hint); $hint(); }
+}
+
+function sameLineParameter($hint): int { take($hint); return $hint(); }
+
+function afterForeach(array $items): void
+{
+    foreach ($items as $hint) {
+    }
+    take($hint);
+    $hint();
+}
+
+class Box
+{
+    public function __construct(private $hint)
+    {
+        take($hint);
+        $hint();
+    }
+}
+"#;
+
+const BINDING_FORMS_DART: &str = r#"import 'box.dart';
+
+int hint() => 1;
+
+int take(Object? value) => 0;
+
+void neighbor() {
+  take(hint);
+  hint();
+}
+
+void forIn(List<int Function()> items) {
+  for (var hint in items) {
+    take(hint);
+    hint();
+  }
+}
+
+void forInFinal(List<int Function()> items) {
+  for (final hint in items) {
+    take(hint);
+    hint();
+  }
+}
+
+void forInTyped(List<Box> items) {
+  for (Box hint in items) {
+    take(hint);
+    hint();
+  }
+}
+
+void forClassic() {
+  for (var hint = 0; hint < 1; hint++) {
+    take(hint);
+    hint();
+  }
+}
+
+void catchError() {
+  try {
+    take(1);
+  } catch (hint) {
+    take(hint);
+    hint();
+  }
+}
+
+void catchStack() {
+  try {
+    take(1);
+  } catch (error, hint) {
+    take(hint);
+    hint();
+  }
+}
+
+void onCatch() {
+  try {
+    take(1);
+  } on Exception catch (hint) {
+    take(hint);
+    hint();
+  }
+}
+
+void recordPattern((int, int Function()) pair) {
+  var (index, hint) = pair;
+  take(hint);
+  hint();
+}
+
+void finalRecordPattern((int, int Function()) pair) {
+  final (index, hint) = pair;
+  take(hint);
+  hint();
+}
+
+void ifCase(Object found) {
+  if (found case int Function() hint) {
+    take(hint);
+    hint();
+  }
+}
+
+void switchCase(Object found) {
+  switch (found) {
+    case [var hint]:
+      take(hint);
+      hint();
+  }
+}
+
+int switchExpression(Object found) {
+  return switch (found) {
+    int Function() hint =>
+      hint() + take(hint),
+    _ => 0,
+  };
+}
+
+void objectPattern(Box found) {
+  if (found case Box(:var hint)) {
+    take(hint);
+    hint();
+  }
+}
+
+void objectNamedPattern(Box found) {
+  if (found case Box(inner: var hint)) {
+    take(hint);
+    hint();
+  }
+}
+
+void mapPattern(Map<String, Object> found) {
+  if (found case {'key': var hint}) {
+    take(hint);
+    hint();
+  }
+}
+
+void restPattern(List<int> found) {
+  if (found case [_, ...var hint]) {
+    take(hint);
+    hint();
+  }
+}
+
+void forPattern(List<(int, int Function())> items) {
+  for (var (index, hint) in items) {
+    take(hint);
+    hint();
+  }
+}
+
+void localMany() {
+  var first = 1, hint = () => 1;
+  take(hint);
+  hint();
+}
+
+void localLate() {
+  late final int Function() hint;
+  hint = () => 1;
+  take(hint);
+  hint();
+}
+
+void closureParameter() {
+  final run = (hint) {
+    take(hint);
+    hint();
+  };
+}
+
+void namedParameter({required int Function() hint}) {
+  take(hint);
+  hint();
+}
+
+void optionalParameter([int Function()? hint]) {
+  take(hint);
+  hint();
+}
+
+void functionTypedParameter(int hint()) {
+  take(hint);
+  hint();
+}
+
+void sameLineClosure() {
+  final run = (hint) { take(hint); hint(); };
+}
+
+void sameLineFor(List<int Function()> items) {
+  for (var hint in items) { take(hint); hint(); }
+}
+
+int sameLineSwitch(Object found) {
+  return switch (found) { int Function() hint => hint() + take(hint), _ => 0 };
+}
+
+void sameLineCatch() {
+  try { take(1); } catch (hint) { take(hint); hint(); }
+}
+
+void sameLineParameter(int Function() hint) { take(hint); hint(); }
+"#;
+
+/// O nome que uma forma de ligar nome da língua cria dentro de uma função é
+/// local, em toda língua do mapa: o uso dele no alcance que a língua lhe dá,
+/// como valor e como chamada, não é da função do projeto de mesmo nome. O
+/// alcance começa na ligação, e o uso na mesma linha também é do nome local;
+/// onde a língua dá alcance de função (o `var`, o nome ligado num bloco do
+/// Python, o do `foreach` do PHP), o uso depois do bloco também. Só
+/// `neighbor`, que não liga o nome, usa a função; no PHP, onde a função não
+/// vai como valor pelo nome, só pela chamada.
+#[test]
+fn a_name_any_binding_form_makes_local_is_not_a_use_of_the_project() {
+    let temp = project_dir("binding-forms");
+    let project = binding_forms_project();
+    for (rel, body) in &project {
+        write(temp.path(), rel, body);
+    }
+    let map = scan(temp.path());
+    let mut failures: Vec<String> = Vec::new();
+    for (file, neighbor) in [
+        ("rs/src/lib.rs", &["    take(hint);", "    hint();"][..]),
+        ("py/pkg/forms.py", &["    take(hint)", "    hint()"][..]),
+        ("ts/src/forms.ts", &["  take(hint);", "  hint();"][..]),
+        ("tsx/src/forms.tsx", &["  take(hint);", "  hint();"][..]),
+        ("js/src/forms.js", &["  take(hint);", "  hint();"][..]),
+        ("cs/Forms.cs", &["        take(hint);", "        hint();"][..]),
+        ("go/forms/forms.go", &["\ttake(hint)", "\thint()"][..]),
+        ("php/Forms.php", &["    hint();"][..]),
+        ("dart/lib/forms.dart", &["  take(hint);", "  hint();"][..]),
+    ] {
+        let body = project.iter().find(|(rel, _)| *rel == file).unwrap().1;
+        let mut expected: Vec<String> = neighbor.iter().map(|text| format!("{file}:{}:neighbor", line_of(body, text))).collect();
+        expected.sort();
+        let mut found = places(&uses_of(&map, file, "hint"));
+        found.sort();
+        if found != expected {
+            failures.push(format!("{file}: a hint do projeto só é usada por {expected:?}, e não por {found:?}"));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// No padrão do Rust, o nome que começa por maiúscula é a constante que o
+/// padrão compara, e não nome novo: a `LIMIT` escrita no braço do `match` e
+/// no `if let` segue ganhando o uso das linhas de baixo.
+#[test]
+fn a_constant_written_in_a_pattern_keeps_its_uses() {
+    let temp = project_dir("pattern-constant");
+    let body = "pub const LIMIT: u32 = 10;\n\npub fn take<T>(_value: T) {}\n\n\
+                pub fn compare(found: Option<u32>) {\n    match found {\n        Some(LIMIT) => {}\n        _ => {}\n    }\n    \
+                take(LIMIT);\n    if let Some(LIMIT) = found {}\n    take(LIMIT);\n}\n";
+    write(temp.path(), "rs/src/lib.rs", body);
+    let map = scan(temp.path());
+    let mut found = places(&uses_of(&map, "rs/src/lib.rs", "LIMIT"));
+    found.sort();
+    let lines: Vec<usize> = body.lines().enumerate().filter(|(_, l)| l.contains("LIMIT") && !l.contains("const")).map(|(i, _)| i + 1).collect();
+    let mut expected: Vec<String> = lines.iter().map(|l| format!("rs/src/lib.rs:{l}:compare")).collect();
+    expected.sort();
+    assert_eq!(found, expected);
+}
+
+/// O projeto em que cada língua do mapa liga o nome `hint`, que o arquivo
+/// também declara como função, e chama `hint()` fora do alcance do nome
+/// local: depois do bloco, do braço, da closure, do laço, do `catch`, da
+/// compreensão e do `except`; no `else` que a língua separa do padrão; e no
+/// valor que a própria ligação lê, onde a língua o lê antes de ligar o nome.
+/// No PHP, a variável `$config` convive com a função `config`. Cada
+/// chamada à função, depois da declaração dela, é um uso dela. O mesmo texto
+/// vale para o `.ts`, o `.tsx` e o `.js`.
+fn outside_reach_project() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("rs/src/lib.rs", OUTSIDE_REACH_RS),
+        ("py/pkg/reach.py", OUTSIDE_REACH_PY),
+        ("ts/src/reach.ts", OUTSIDE_REACH_JS),
+        ("tsx/src/reach.tsx", OUTSIDE_REACH_JS),
+        ("js/src/reach.js", OUTSIDE_REACH_JS),
+        ("cs/Reach.cs", OUTSIDE_REACH_CS),
+        ("go/reach/reach.go", OUTSIDE_REACH_GO),
+        ("php/Reach.php", OUTSIDE_REACH_PHP),
+        ("dart/lib/reach.dart", OUTSIDE_REACH_DART),
+    ]
+}
+
+const OUTSIDE_REACH_RS: &str = r#"pub fn hint() -> u32 {
+    1
+}
+
+pub fn take<T>(_value: T) {}
+
+pub fn after_block() {
+    {
+        let hint = 2;
+        take(hint);
+    }
+    hint();
+}
+
+pub fn after_if_let(found: Option<u32>) {
+    if let Some(hint) = found {
+        take(hint);
+    }
+    hint();
+}
+
+pub fn in_else(found: Option<u32>) {
+    if let Some(hint) = found {
+        take(hint);
+    } else {
+        hint();
+    }
+}
+
+pub fn in_let_else(found: Option<u32>) {
+    let Some(hint) = found else {
+        hint();
+        return;
+    };
+    take(hint);
+}
+
+pub fn after_match(found: Option<u32>) {
+    match found {
+        Some(hint) => take(hint),
+        None => {}
+    }
+    hint();
+}
+
+pub fn after_closure() {
+    let run = |hint: u32| take(hint);
+    run(1);
+    hint();
+}
+
+pub fn after_for(found: Vec<u32>) {
+    for hint in found {
+        take(hint);
+    }
+    hint();
+}
+
+pub fn in_value() {
+    let hint = hint();
+    take(hint);
+}
+
+pub fn in_scrutinee() {
+    if let Some(hint) = Some(hint()) {
+        take(hint);
+    }
+}
+
+pub fn in_iterable() {
+    for hint in [hint()] {
+        take(hint);
+    }
+}
+"#;
+
+const OUTSIDE_REACH_PY: &str = r#"def hint():
+    return 1
+
+
+def take(value):
+    return value
+
+
+def after_comprehension(items):
+    found = [take(hint) for hint in items]
+    hint()
+    return found
+
+
+def after_generator(items):
+    found = list(take(hint) for hint in items)
+    hint()
+    return found
+
+
+def after_except():
+    try:
+        take(1)
+    except ValueError as hint:
+        take(hint)
+    hint()
+
+
+def after_lambda():
+    run = lambda hint: take(hint)
+    hint()
+    return run
+
+
+def in_first_iterable():
+    return [take(hint) for hint in hint()]
+
+
+def in_default(hint=hint()):
+    return take(hint)
+"#;
+
+const OUTSIDE_REACH_JS: &str = r#"export function hint() {
+  return 1;
+}
+
+function take(value) {
+  return value;
+}
+
+export function afterBlock() {
+  {
+    const hint = 2;
+    take(hint);
+  }
+  hint();
+}
+
+export function afterLoop(items) {
+  for (const hint of items) {
+    take(hint);
+  }
+  hint();
+}
+
+export function afterArrow() {
+  const run = (hint) => take(hint);
+  run(1);
+  hint();
+}
+
+export function afterCatch() {
+  try {
+    take(1);
+  } catch (hint) {
+    take(hint);
+  }
+  hint();
+}
+
+export function afterFunctionName() {
+  const run = function hint(value) {
+    return value;
+  };
+  hint();
+  return run;
+}
+"#;
+
+const OUTSIDE_REACH_CS: &str = r#"using System;
+
+namespace Demo;
+
+public static class Reach
+{
+    public static int hint() => 1;
+
+    static int take(object value) => 0;
+
+    public static void afterBlock()
+    {
+        {
+            Func<int> hint = () => 1;
+            take(hint);
+        }
+        hint();
+    }
+
+    public static void afterForeach(Func<int>[] items)
+    {
+        foreach (var hint in items)
+        {
+            take(hint);
+        }
+        hint();
+    }
+
+    public static void afterLambda()
+    {
+        Action<Func<int>> run = hint => take(hint);
+        hint();
+    }
+
+    public static void afterCatch()
+    {
+        try
+        {
+            take(1);
+        }
+        catch (Exception hint)
+        {
+            take(hint);
+        }
+        hint();
+    }
+
+    public static void afterSwitch(object found)
+    {
+        switch (found)
+        {
+            case Func<int> hint:
+                take(hint);
+                break;
+        }
+        hint();
+    }
+
+    public static void inForeachSource()
+    {
+        foreach (var hint in new[] { hint() })
+        {
+            take(hint);
+        }
+    }
+
+    public static void inQuerySource()
+    {
+        var found = from hint in new[] { hint() } select take(hint);
+    }
+}
+"#;
+
+const OUTSIDE_REACH_GO: &str = r#"package reach
+
+func hint() int {
+	return 1
+}
+
+func take(value any) int {
+	return 0
+}
+
+func afterBlock() {
+	{
+		hint := 2
+		take(hint)
+	}
+	hint()
+}
+
+func afterIf() {
+	if hint := take(1); hint > 0 {
+		take(hint)
+	}
+	hint()
+}
+
+func afterRange(items []int) {
+	for _, hint := range items {
+		take(hint)
+	}
+	hint()
+}
+
+func afterLiteral() {
+	run := func(hint int) {
+		take(hint)
+	}
+	run(1)
+	hint()
+}
+
+func afterSwitch(found any) {
+	switch hint := found.(type) {
+	case int:
+		take(hint)
+	}
+	hint()
+}
+
+func inValue() {
+	hint := hint()
+	take(hint)
+}
+
+func inRangeSource() {
+	for _, hint := range []int{hint()} {
+		take(hint)
+	}
+}
+"#;
+
+const OUTSIDE_REACH_PHP: &str = r#"<?php
+
+namespace Demo;
+
+function config(): int
+{
+    return 1;
+}
+
+function take($value): int
+{
+    return 0;
+}
+
+function sameName(): void
+{
+    $config = 1;
+    config();
+    take($config);
+}
+
+function parameterName($config): void
+{
+    config();
+    take($config);
+}
+
+function closureName(): void
+{
+    $run = function ($config) {
+        config();
+        return take($config);
+    };
+}
+"#;
+
+const OUTSIDE_REACH_DART: &str = r#"int hint() => 1;
+
+int take(Object? value) => 0;
+
+void afterBlock() {
+  {
+    var hint = 2;
+    take(hint);
+  }
+  hint();
+}
+
+void afterFor(List<int> items) {
+  for (var hint in items) {
+    take(hint);
+  }
+  hint();
+}
+
+void afterCatch() {
+  try {
+    take(1);
+  } catch (hint) {
+    take(hint);
+  }
+  hint();
+}
+
+void afterClosure() {
+  final run = (hint) {
+    take(hint);
+  };
+  run(1);
+  hint();
+}
+
+void afterCase(Object found) {
+  switch (found) {
+    case [var hint]:
+      take(hint);
+  }
+  hint();
+}
+
+void inElse(Object found) {
+  if (found case int hint) {
+    take(hint);
+  } else {
+    hint();
+  }
+}
+
+void inForSource() {
+  for (var hint in [hint()]) {
+    take(hint);
+  }
+}
+"#;
+
+/// Fora do alcance que a língua dá ao nome local, em toda língua do mapa, o
+/// nome do projeto segue ligando: a chamada depois do fim do bloco, do braço,
+/// da closure, do laço, do `catch`, da compreensão e do `except`, a do `else`
+/// que a língua separa do padrão e a do valor que a ligação lê antes de ligar
+/// o nome são usos da função. No PHP, a variável `$config` corta só a
+/// variável, e `config()` segue sendo a função.
+#[test]
+fn a_project_name_outside_the_reach_of_a_local_one_keeps_its_uses() {
+    let temp = project_dir("outside-reach");
+    let project = outside_reach_project();
+    for (rel, body) in &project {
+        write(temp.path(), rel, body);
+    }
+    let map = scan(temp.path());
+    let mut failures: Vec<String> = Vec::new();
+    for (file, body) in &project {
+        let name = if file.ends_with(".php") { "config" } else { "hint" };
+        let call = format!("{name}()");
+        // A primeira linha com a chamada é a da declaração.
+        let mut expected: Vec<String> = body
+            .lines()
+            .enumerate()
+            .filter(|(_, line)| line.contains(&call))
+            .skip(1)
+            .map(|(i, _)| format!("{file}:{}", i + 1))
+            .collect();
+        expected.sort();
+        let mut found: Vec<String> =
+            places(&uses_of(&map, file, name)).iter().map(|p| p.rsplit_once(':').map_or(p.clone(), |(at, _)| at.to_string())).collect();
+        found.sort();
+        found.dedup();
+        if found != expected {
+            failures.push(format!("{file}: a {name} do projeto é usada em {expected:?}, e não em {found:?}"));
+        }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }

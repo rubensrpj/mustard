@@ -90,8 +90,8 @@
 ; no call out of it.
 (attribute_list) @decoration
 
-; Os nomes que o corpo de uma função liga: da linha seguinte até o fim da
-; declaração, o mesmo nome escrito sozinho é deles.
+; Os nomes que o corpo de uma função liga: no alcance que a língua dá a cada
+; um, marcado mais abaixo, o mesmo nome escrito sozinho é deles.
 (variable_declarator name: (identifier) @local)
 (local_function_statement name: (identifier) @name) @definition.method
 (parameter name: (identifier) @local)
@@ -106,6 +106,45 @@
 (catch_declaration name: (identifier) @local)
 (from_clause name: (identifier) @local)
 (let_clause . (identifier) @local)
+; A consulta liga também o nome do `join` (o escrito logo antes do `in`) e o
+; do `into`, depois do `join` e depois do `group` ou do `select`.
+(join_clause (identifier) @local . "in")
+(join_into_clause (identifier) @local)
+(query_expression "into" . (identifier) @local)
+
+; Até onde vale cada nome ligado: o bloco, cada caso do `switch` e da
+; expressão `switch`, a lambda, a consulta, o `catch`, os laços, o `using`, o
+; `fixed`, os membros com corpo e o tipo com parâmetros fecham o alcance. O
+; nome ligado na condição de um `if` vale no bloco em volta, como a língua
+; diz. O que o `foreach`, o `from` e o `let` da consulta leem fica fora do
+; alcance do nome que eles ligam.
+(block) @local.scope
+(switch_section) @local.scope
+(switch_expression_arm) @local.scope
+(lambda_expression) @local.scope
+(anonymous_method_expression) @local.scope
+(query_expression) @local.scope
+(catch_clause) @local.scope
+(foreach_statement) @local.scope
+(for_statement) @local.scope
+(while_statement) @local.scope
+(do_statement) @local.scope
+(using_statement) @local.scope
+(fixed_statement) @local.scope
+(method_declaration) @local.scope
+(constructor_declaration) @local.scope
+(destructor_declaration) @local.scope
+(operator_declaration) @local.scope
+(conversion_operator_declaration) @local.scope
+(local_function_statement) @local.scope
+(accessor_declaration) @local.scope
+(indexer_declaration) @local.scope
+(class_declaration) @local.scope
+(struct_declaration) @local.scope
+(record_declaration) @local.scope
+(foreach_statement right: (_) @local.outside)
+(from_clause (_) @local.outside .)
+(let_clause (_) @local.outside .)
 
 ; O tipo que a assinatura ou a variável escreve para um nome local
 ; (`Pedido pedido`, `IRepo repo = ...;`): a chamada feita sobre esse nome, ou

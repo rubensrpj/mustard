@@ -43,6 +43,7 @@ use tree_sitter::{Language, Node, Parser, Query, QueryCursor};
 mod line_end;
 mod chunks;
 mod named_exports;
+mod reach;
 mod typed;
 
 #[derive(Default)]
@@ -501,8 +502,8 @@ enum CapKind {
     /// que começa pelo `parent_alias` da língua sai dele antes de subir pasta.
     InnerModule,
     /// Um nome que o corpo de uma função liga (a variável, o parâmetro, o nome
-    /// novo de uma desestruturação): escrito sozinho depois, na mesma
-    /// declaração, ele é esse valor, e não a declaração do projeto de mesmo
+    /// novo de uma desestruturação): escrito sozinho no alcance da ligação
+    /// ([`reach`]), ele é esse valor, e não a declaração do projeto de mesmo
     /// nome.
     Local,
     /// Um nome escrito onde vai um valor, como o argumento de uma chamada ou
@@ -521,6 +522,16 @@ enum CapKind {
     /// (`Pedido` em `pedido: &Pedido`): o membro lido depois desse nome é do
     /// tipo.
     LocalType,
+    /// O nó que fecha o alcance dos nomes locais ligados dentro dele, do
+    /// jeito que [`reach::Closes`] diz; no mesmo pattern do `Local`, o fim do
+    /// alcance só dele ([`reach`]).
+    LocalScope(reach::Closes),
+    /// O filho que fica fora do alcance dos nomes que o resto do pai liga
+    /// ([`reach`]).
+    LocalOutside,
+    /// O nome escrito como variável, que a língua separa da função e do tipo
+    /// de mesmo nome ([`reach`]).
+    Variable,
     /// Um literal de texto escrito no código: vira texto fixo do arquivo
     /// quando tem cara de texto e não cai num import, num trecho de teste
     /// nem numa documentação. `plain` é o texto escrito sem aspas (o texto
@@ -546,6 +557,12 @@ fn classify(cap: &str) -> CapKind {
         "member" => CapKind::Member,
         "member.of" => CapKind::MemberOf,
         "local.type" => CapKind::LocalType,
+        "local.scope" => CapKind::LocalScope(reach::Closes::Scope),
+        "local.scope.function" => CapKind::LocalScope(reach::Closes::Function),
+        "local.scope.whole" => CapKind::LocalScope(reach::Closes::Whole),
+        "local.hoist" => CapKind::LocalScope(reach::Closes::Hoist),
+        "local.outside" => CapKind::LocalOutside,
+        "variable" => CapKind::Variable,
         "name" => CapKind::Name,
         "supertype" => CapKind::Supertype,
         "owner" => CapKind::Owner,
@@ -708,6 +725,8 @@ impl Analyzer {
         // Cada nome que o corpo de uma função liga, com a linha e o byte em
         // que foi escrito.
         let mut locals: Vec<(usize, usize, String)> = Vec::new();
+        // O que a consulta marca para medir até onde vale cada um deles.
+        let mut marked = reach::Marked::default();
         // O byte de cada nome escrito onde vai um valor e de cada nome de
         // membro escrito depois do objeto.
         let mut value_at: BTreeSet<usize> = BTreeSet::new();
@@ -769,6 +788,10 @@ impl Analyzer {
             let mut here_local_type: Option<String> = None;
             let mut here_members: Vec<usize> = Vec::new();
             let mut here_member_of: Option<String> = None;
+            // Os nomes locais que este match liga e o nó que fecha o alcance,
+            // dele ou deles.
+            let mut here_bound: Option<Vec<Node>> = None;
+            let mut here_scope: Option<(Node, reach::Closes)> = None;
 
             for cap in m.captures {
                 let node = cap.node;
@@ -812,8 +835,14 @@ impl Analyzer {
                         {
                             here_local = Some(locals.len());
                             locals.push((node.start_position().row + 1, node.start_byte(), t.to_string()));
+                            here_bound.get_or_insert_with(Vec::new).push(node);
+                        } else {
+                            here_bound.get_or_insert_with(Vec::new);
                         }
                     }
+                    CapKind::LocalScope(closes) => here_scope = Some((node, *closes)),
+                    CapKind::LocalOutside => marked.outside(node),
+                    CapKind::Variable => marked.variable(node),
                     CapKind::LocalType => here_local_type = node.utf8_text(bytes).ok().and_then(simple_type_name),
                     CapKind::MemberOf => here_member_of = node.utf8_text(bytes).ok().map(str::to_string),
                     CapKind::CallValue => {
@@ -933,6 +962,14 @@ impl Analyzer {
 
             if let (Some(at), Some(ty)) = (here_local, here_local_type) {
                 local_types.push((at, ty));
+            }
+            match here_bound {
+                Some(bound) => bound.into_iter().for_each(|node| marked.bind(node, here_scope.map(|(scope, _)| scope))),
+                None => {
+                    if let Some((node, closes)) = here_scope {
+                        marked.closes(node, closes);
+                    }
+                }
             }
             if let Some(ty) = here_member_of {
                 member_of.extend(here_members.into_iter().map(|byte| (byte, ty.clone())));
@@ -1105,10 +1142,11 @@ impl Analyzer {
         let heads;
         let brought: HashSet<&str> = imported_at.iter().map(|(_, name)| name.as_str()).collect();
         let owners = typed::Owners::new(member_of, typed::Bindings::of(&out.declarations, &locals, &local_types, &names_at));
-        let marks = Marks { value_at: &value_at, member_at: &member_at, owners: &owners };
-        let found = use_sites(&walked.leaves, bytes, &comments, &quiet, &names_at, &name_kinds, &self.name, &brought, &marks);
-        (out.calls, out.cites, out.value_uses, out.member_reads, heads) = found;
-        drop_local_uses(&out.declarations, &locals, &names_at, [&mut out.calls, &mut out.cites, &mut out.value_uses, &mut out.member_reads]);
+        let bound_at: BTreeSet<usize> = locals.iter().map(|&(_, byte, _)| byte).collect();
+        let marks = Marks { value_at: &value_at, member_at: &member_at, bound_at: &bound_at, owners: &owners };
+        let (found, written_heads) = use_sites(&walked.leaves, bytes, &comments, &quiet, &names_at, &name_kinds, &self.name, &brought, &marks);
+        heads = written_heads;
+        [out.calls, out.cites, out.value_uses, out.member_reads] = drop_local_uses(&marked.reaches(bytes, &names_at), found);
 
         // Cada nome trazido é do import escrito no mesmo comando: o que fica
         // dentro do nó mais próximo, subindo a partir do nome, que contém
@@ -1259,43 +1297,28 @@ fn name_before_list(node: Node, bytes: &[u8]) -> Option<String> {
     std::str::from_utf8(&before[start..end]).ok().filter(|name| is_identifier(name)).map(str::to_string)
 }
 
-/// Tira de `sites` o uso de um nome que o corpo da declaração em volta liga.
-/// O nome escrito sozinho, numa linha depois daquela em que ele foi ligado —
-/// a variável, o parâmetro, o nome novo de uma desestruturação — e até o fim
-/// da declaração em volta dela (a de [`crate::graph::enclosing`]), também
-/// dentro de uma declaração escrita ali, é esse valor, e não a declaração do
-/// projeto de mesmo nome. Na própria linha do nome ligado, o uso fica: em
-/// `let hoje = hoje(None);` a chamada é da função, e o nome só vale depois. A
-/// mesma chamada numa declaração vizinha, sem o nome ligado, fica. O nome
-/// ligado que é o nome de uma declaração (`names_at`) não conta: é a própria
-/// declaração.
-fn drop_local_uses(decls: &[Decl], locals: &[(usize, usize, String)], names_at: &BTreeSet<usize>, sites: [&mut Vec<CallSite>; 4]) {
-    // Cada nome ligado, com a linha em que foi ligado e a última da
-    // declaração em volta (sem fim conhecido, até o fim do arquivo).
-    let mut bound: HashMap<&str, Vec<(usize, usize)>> = HashMap::new();
-    for (line, byte, name) in locals {
-        if names_at.contains(byte) {
-            continue;
-        }
-        let Some(di) = crate::graph::enclosing(decls, *line) else {
-            continue;
-        };
-        let last = match decls[di].end_line {
-            0 => usize::MAX,
-            end => end,
-        };
-        bound.entry(name.as_str()).or_default().push((*line, last));
-    }
-    if bound.is_empty() {
-        return;
-    }
-    for list in sites {
-        list.retain(|site| {
-            let local = site.qualifier.is_empty()
-                && bound.get(site.name.as_str()).is_some_and(|spans| spans.iter().any(|&(first, last)| first < site.line && site.line <= last));
-            !local
-        });
-    }
+/// Um uso como [`use_sites`] o lê: a linha, o nome, o qualificador e o byte em
+/// que o nome foi escrito.
+type Placed = (usize, String, String, usize);
+
+/// Tira de cada lista de `found` o uso de um nome que o código liga ali: o
+/// nome escrito sozinho no alcance de uma ligação dele ([`reach::Reaches`]),
+/// que começa no byte da ligação e acaba onde a língua a encerra, é esse
+/// valor, e não a declaração do projeto de mesmo nome. A conta é por byte: o
+/// uso na mesma linha da ligação também é dela, e o valor que a ligação lê
+/// antes de ligar o nome não é (`let hoje = hoje(None);` chama a função). O
+/// uso depois do fim do alcance, mesmo na mesma declaração, fica. Cada lista
+/// sai sem o byte, um uso por linha, nome e qualificador.
+fn drop_local_uses(reaches: &reach::Reaches, found: [BTreeSet<Placed>; 4]) -> [Vec<CallSite>; 4] {
+    found.map(|placed| {
+        let mut sites: Vec<CallSite> = placed
+            .into_iter()
+            .filter(|(_, name, qualifier, byte)| !(qualifier.is_empty() && reaches.covers(name, *byte)))
+            .map(|(line, name, qualifier, _)| CallSite { name, line, qualifier })
+            .collect();
+        sites.dedup();
+        sites
+    })
 }
 
 /// A chamada do nome no nó, como [`use_sites`] a lê: o nome, a linha e o
@@ -1978,7 +2001,8 @@ fn glob(entry: &str, text: &str) -> bool {
 /// type keyword before a parenthesis is not.
 ///
 /// Os nós lidos são as folhas que a caminhada pela árvore juntou
-/// ([`Walked`]); a que está dentro de um trecho de `quiet` fica de fora.
+/// ([`Walked`]); a que está dentro de um trecho de `quiet` fica de fora. Cada
+/// uso sai com o byte em que foi escrito, que [`drop_local_uses`] lê.
 ///
 /// O qualificador se lê pelos separadores de `lang` ([`qualifier_before`]).
 /// Vêm junto os qualificadores que abrem a cadeia de uma chamada
@@ -2003,11 +2027,11 @@ fn use_sites(
     lang: &str,
     brought: &HashSet<&str>,
     marks: &Marks,
-) -> (Vec<CallSite>, Vec<CallSite>, Vec<CallSite>, Vec<CallSite>, BTreeSet<String>) {
-    let mut calls: BTreeSet<(usize, String, String)> = BTreeSet::new();
-    let mut cites: BTreeSet<(usize, String, String)> = BTreeSet::new();
-    let mut values: BTreeSet<(usize, String, String)> = BTreeSet::new();
-    let mut members: BTreeSet<(usize, String, String)> = BTreeSet::new();
+) -> ([BTreeSet<Placed>; 4], BTreeSet<String>) {
+    let mut calls: BTreeSet<Placed> = BTreeSet::new();
+    let mut cites: BTreeSet<Placed> = BTreeSet::new();
+    let mut values: BTreeSet<Placed> = BTreeSet::new();
+    let mut members: BTreeSet<Placed> = BTreeSet::new();
     let mut heads: BTreeSet<String> = BTreeSet::new();
     for leaf in leaves {
         let node = match leaf.word {
@@ -2026,8 +2050,15 @@ fn use_sites(
         if !(is_identifier(text) || (brought.contains(text) && text.chars().all(char::is_alphabetic))) {
             continue;
         }
-        let site = (node.start_position().row + 1, text.to_string(), qualifier_before(node, bytes, comments, lang));
+        let byte = node.start_byte();
+        let site = (node.start_position().row + 1, text.to_string(), qualifier_before(node, bytes, comments, lang), byte);
         if followed_by_open_paren(node, bytes) {
+            // O nome que o código liga ali mesmo, escrito antes dos
+            // parênteses dos parâmetros dele (`function x() {}` como valor,
+            // `int x()` como parâmetro), não chama nada.
+            if marks.bound_at.contains(&node.start_byte()) {
+                continue;
+            }
             if opens_chain(node, bytes, comments, lang, &site.2) {
                 heads.insert(site.2.clone());
             }
@@ -2035,7 +2066,7 @@ fn use_sites(
             // diz de que tipo é o receptor: o grafo liga pelo tipo, e não pelo
             // nome do método.
             match marks.owners.receiver_of(node, bytes, comments, lang) {
-                Some(receiver) => calls.insert((site.0, site.1, receiver)),
+                Some(receiver) => calls.insert((site.0, site.1, receiver, byte)),
                 None => calls.insert(site),
             };
         } else if !against_a_quote(node, bytes) {
@@ -2047,7 +2078,7 @@ fn use_sites(
                     heads.insert(site.2.clone());
                 }
                 match marks.owners.of(node, bytes, comments, lang) {
-                    Some(owners) => members.extend(owners.into_iter().map(|owner| (site.0, site.1.clone(), owner))),
+                    Some(owners) => members.extend(owners.into_iter().map(|owner| (site.0, site.1.clone(), owner, byte))),
                     None => {
                         members.insert(site.clone());
                     }
@@ -2056,15 +2087,17 @@ fn use_sites(
             cites.insert(site);
         }
     }
-    let sites = |found: BTreeSet<(usize, String, String)>| found.into_iter().map(|(line, name, qualifier)| CallSite { name, line, qualifier }).collect();
-    (sites(calls), sites(cites), sites(values), sites(members), heads)
+    ([calls, cites, values, members], heads)
 }
 
 /// Os bytes em que a consulta marcou um nome: escrito onde vai um valor
-/// (`@call.value`) e escrito como membro depois do objeto (`@member`).
+/// (`@call.value`), escrito como membro depois do objeto (`@member`) e ligado
+/// pelo corpo de uma função (`@local`).
 struct Marks<'a> {
     value_at: &'a BTreeSet<usize>,
     member_at: &'a BTreeSet<usize>,
+    /// O byte de cada nome que o corpo de uma função liga (`@local`).
+    bound_at: &'a BTreeSet<usize>,
     /// O dono que o arquivo escreve para os membros ([`typed::Owners`]).
     owners: &'a typed::Owners,
 }
