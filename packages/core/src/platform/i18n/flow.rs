@@ -1302,6 +1302,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.skill_pick_reserve", Locale::EnUs) => {
             "Wave {wave} did not go out in this round. The skill choice of one of its tasks waits for Jev's decision. With `reserves` in the answer, send the reserve's receipt first. It goes out in the next round with the chosen skills."
         }
+        ("round.skill_waits_open_tasks", Locale::PtBr) => {
+            "A onda {wave} não saiu nesta rodada. Ela leva a avaliação de uma skill e espera as tarefas abertas {tasks}, que mexem em arquivos que a skill cita. Ela sai depois que elas entregarem, com todas as mudanças."
+        }
+        ("round.skill_waits_open_tasks", Locale::EnUs) => {
+            "Wave {wave} did not go out in this round. It carries the evaluation of a skill and waits for the open tasks {tasks}, which change files the skill cites. It goes out once they deliver, with every change."
+        }
         ("round.items_jev_pending", Locale::PtBr) => {
             "A onda {wave} não saiu nesta rodada. A escolha dos itens do pedido dela espera a decisão do Jev. Com `reserves` na resposta, mande antes o recibo da reserva. Ela sai na rodada seguinte."
         }
@@ -1719,6 +1725,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("round.queued.following", Locale::EnUs) => {
             "goes in the same direction as wave {wave} and waits for it to return. It leaves in the next wave, with that wave's summary when there is one"
+        }
+        ("round.queued.open_tasks", Locale::PtBr) => {
+            "avalia uma skill e espera as tarefas abertas {tasks}, que mexem em arquivos que a skill cita. Sai depois que elas entregarem, com todas as mudanças"
+        }
+        ("round.queued.open_tasks", Locale::EnUs) => {
+            "evaluates a skill and waits for the open tasks {tasks}, which change files the skill cites. It leaves once they deliver, with every change"
         }
         ("round.queued.arrived", Locale::PtBr) => "chegou ao backlog nesta rodada e entra na montagem da próxima",
         ("round.queued.arrived", Locale::EnUs) => "reached the backlog this round and joins the next round's assembly",
@@ -2643,7 +2655,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 379, 0xa4f9_ab76_416e_2c41);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 381, 0x3346_e231_9592_1b8e);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
@@ -2927,6 +2939,7 @@ mod tests {
             ("round.jev_pending.review_unmet", &[][..]),
             ("round.skill_pick_reserve", &["{wave}"][..]),
             ("round.items_jev_pending", &["{wave}"][..]),
+            ("round.skill_waits_open_tasks", &["{wave}", "{tasks}"][..]),
             ("triage.request_new_spec", &[][..]),
             ("triage.request_pending", &["{pending}"][..]),
             ("triage.request_unsure", &[][..]),
@@ -2946,6 +2959,7 @@ mod tests {
             ("round.wave_left_after_return", &["{wave}", "{send}"][..]),
             ("round.queued.broken_dependency", &["{dependencies}"][..]),
             ("round.queued.following", &["{wave}"][..]),
+            ("round.queued.open_tasks", &["{tasks}"][..]),
             ("round.leftover_without_files", &[][..]),
             ("round.tasks_returned", &["{wave}", "{tasks}"][..]),
             ("round.proof_rerouted", &["{item}", "{criterion}"][..]),

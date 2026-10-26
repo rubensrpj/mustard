@@ -834,6 +834,11 @@ pub const TYPES: &[TypeSpec] = &[
             // `depends_on`.
             opt("files", Kind::Objects),
             opt("skill", Kind::Text),
+            // Os motivos que a avaliação de uma skill do Mustard soma, cada um
+            // com o commit e os arquivos, e a chance que o Jev deu à mudança:
+            // a mudança que chega com a avaliação à espera entra numa versão
+            // nova dela. Ausente é tarefa comum.
+            opt("skill_whys", Kind::Objects),
             // An unresolved external condition or a returned plan that must
             // be revised. A new task version removes this explicit hold.
             opt("blocked_by", Kind::Text),

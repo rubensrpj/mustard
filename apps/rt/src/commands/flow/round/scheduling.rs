@@ -13,7 +13,8 @@ const SHOWN: usize = 40;
 /// item coberto — que ficou na fila: sem vaga, ou pronta e fora da montagem
 /// — esta com o motivo exato que a montagem devolveu, quando ela o deu.
 /// Nenhuma fica pelo arquivo de uma onda aberta — cada onda trabalha na
-/// própria cópia — nem por ser limpeza.
+/// própria cópia — nem por ser limpeza; só a avaliação de uma skill espera as
+/// tarefas abertas nos arquivos que a skill cita, com o motivo exato.
 const HELD: [&str; 2] = ["capacity", "ready"];
 
 /// O motivo da tarefa presa por uma dependência que não aponta tarefa nenhuma
@@ -22,8 +23,9 @@ const BROKEN: &str = "broken-dependency";
 
 /// Os motivos exatos da pronta com vaga que a montagem deixou de fora: o
 /// julgamento do Jev, a chegada ao backlog nesta rodada, a decisão do Jev
-/// que ela ainda espera e a onda do mesmo sentido em andamento.
-const EXACT: [&str; 4] = ["judged-clash", "arrived-this-round", "jev-pending", "following-running-wave"];
+/// que ela ainda espera, a onda do mesmo sentido em andamento e, na
+/// avaliação de uma skill, as tarefas abertas nos arquivos que a skill cita.
+const EXACT: [&str; 5] = ["judged-clash", "arrived-this-round", "jev-pending", "following-running-wave", "skill-waits-open-tasks"];
 
 /// A fila declarada: as vagas do projeto, se o número vem do `mustard.json`
 /// (`declared`), as ondas com pedido aberto que ocupam as vagas e cada
@@ -148,6 +150,7 @@ pub(super) fn held(root: &Path, spec: &str, log: &SpecLog, lang: Locale, assembl
                 Hold::Arrived => 1,
                 Hold::JevPending => 2,
                 Hold::Following(_) => 3,
+                Hold::OpenTasks(_) => 4,
             }];
         }
     }
@@ -210,6 +213,7 @@ fn exact(hold: &Hold, lang: Locale) -> String {
         Hold::Arrived => translate("round.queued.arrived", lang).to_string(),
         Hold::JevPending => translate("round.queued.jev_pending", lang).to_string(),
         Hold::Following(wave) => translate("round.queued.following", lang).replace("{wave}", &wave.to_string()),
+        Hold::OpenTasks(tasks) => translate("round.queued.open_tasks", lang).replace("{tasks}", &tasks.join(", ")),
     }
 }
 

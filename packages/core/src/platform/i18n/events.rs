@@ -1391,6 +1391,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("skills.update_why_gone", Locale::PtBr) => "O commit `{sha}` apagou {files}, que a skill cita.",
         ("skills.update_why_gone", Locale::EnUs) => "The commit `{sha}` deleted {files}, which the skill cites.",
+        ("skills.update_why_listed", Locale::PtBr) => {
+            "O commit `{sha}` mudou {files}, que a skill cita, desde a última avaliação dela. A mudança:\n\n```diff\n{diff}\n```"
+        }
+        ("skills.update_why_listed", Locale::EnUs) => {
+            "The commit `{sha}` changed {files}, which the skill cites, since its last evaluation. The change:\n\n```diff\n{diff}\n```"
+        }
         ("skills.update_why_failure", Locale::PtBr) => {
             "A onda {wave} da spec {spec} recebeu a skill e foi reprovada pela mesma falha que a motivou: {reason}"
         }
@@ -1430,8 +1436,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            198,
-            0xe61a_9578_6d09_82a9,
+            199,
+            0xfca0_c589_0a14_5392,
         );
     }
 

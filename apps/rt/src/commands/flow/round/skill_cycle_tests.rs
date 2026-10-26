@@ -13,7 +13,7 @@ use mustard_core::io::spec_events as store;
 use serde_json::{Map, Value, json};
 use tempfile::tempdir;
 
-use super::tests::{approved, delivered, git_at, round, waves_in};
+use super::tests::{approved, delivered, git_at, round, waves_in, write};
 
 fn log_of(root: &Path) -> mustard_core::domain::spec_events::SpecLog {
     store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap()
@@ -188,6 +188,76 @@ fn a_cited_file_deleted_by_a_commit_creates_the_update_task_without_the_jev() {
     let tasks = update_tasks(root);
     assert_eq!(tasks.len(), 1);
     assert!(tasks[0].str_field("agent").unwrap().contains("apagou `src/b.rs`"), "{:?}", tasks[0].fields);
+}
+
+/// Appends `line` to `src/a.rs`, commits it and records the commit of wave 1
+/// as the round records it. Returns the commit.
+fn cited_change(root: &Path, line: &str) -> String {
+    let path = root.join("src/a.rs");
+    let before = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, format!("{before}{line}\n")).unwrap();
+    git_at(root, &["commit", "-q", "-am", line]);
+    let sha = super::commit::head(root);
+    let draft = json!({"sha": sha, "title": line, "waves": [1], "files": ["src/a.rs"], "repo": "x", "author": "binary"});
+    crate::commands::spec_events::write::record(root, "x", "commit", draft.as_object().cloned().unwrap(), PhaseWriter::Binary).unwrap();
+    sha
+}
+
+/// Two commits change the file the skill cites, each read after its own
+/// round: the evaluation that the first one created gets a new version with
+/// both changes, each with its diff and the chance the Jev gave it, and the
+/// registry keeps pointing at it.
+#[test]
+fn two_changes_to_a_skill_file_make_one_evaluation_with_both() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+    write_skill(root, "falta-teste", false);
+    registered(root, &[("falta-teste", made(&["src/a.rs"]))]);
+    let asked = Rc::new(RefCell::new(Vec::new()));
+    crate::shared::jev::yes_no::ask_in_test(Some(jev(0.9, &asked)));
+    let first = cited_change(root, "// soma em centavos");
+    let (created, _, _) = crate::shared::skill_cycle::after_round(root, "x", mustard_core::platform::i18n::Locale::PtBr);
+    let second = cited_change(root, "// arredonda no fim");
+    let (revised, _, _) = crate::shared::skill_cycle::after_round(root, "x", mustard_core::platform::i18n::Locale::PtBr);
+    crate::shared::jev::yes_no::ask_in_test(None);
+    assert_eq!((created.len(), revised.len()), (1, 1), "{created:?} {revised:?}");
+    let tasks = update_tasks(root);
+    assert_eq!(tasks.len(), 1, "one evaluation for the two changes: {tasks:?}");
+    let agent = tasks[0].str_field("agent").unwrap();
+    for (sha, added) in [(&first, "+// soma em centavos"), (&second, "+// arredonda no fim")] {
+        assert!(agent.contains(&sha[..12]) && agent.contains(added), "each change with its diff: {agent}");
+    }
+    assert_eq!(agent.matches("chance de 0.90").count(), 2, "the chance of each change: {agent}");
+    let marked = registry::read(root).skills["falta-teste"].update_task.clone().expect("the registry marks the task");
+    assert_eq!(marked.task, Some(tasks[0].id), "{marked:?}");
+}
+
+/// The evaluation removed from the spec leaves its change to the next one:
+/// the next commit on the cited file creates a new task, which lists every
+/// commit since the last evaluation of the skill, the removed one's included.
+#[test]
+fn a_removed_evaluation_leaves_its_change_to_the_next_one() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+    write_skill(root, "falta-teste", false);
+    registered(root, &[("falta-teste", made(&["src/a.rs"]))]);
+    crate::shared::jev::yes_no::ask_in_test(Some(jev(0.9, &Rc::new(RefCell::new(Vec::new())))));
+    let first = cited_change(root, "// soma em centavos");
+    crate::shared::skill_cycle::after_round(root, "x", mustard_core::platform::i18n::Locale::PtBr);
+    let removed = update_tasks(root)[0].id;
+    assert_eq!(write(root, "x", "remove", json!({"targets": [removed], "reason": "Não é agora."}))["ok"], json!(true));
+    let second = cited_change(root, "// arredonda no fim");
+    let (recorded, _, _) = crate::shared::skill_cycle::after_round(root, "x", mustard_core::platform::i18n::Locale::PtBr);
+    crate::shared::jev::yes_no::ask_in_test(None);
+    assert_eq!(recorded.len(), 1, "the next change makes a new evaluation: {recorded:?}");
+    let tasks = update_tasks(root);
+    assert_eq!(tasks.len(), 1, "{tasks:?}");
+    let agent = tasks[0].str_field("agent").unwrap();
+    for (sha, added) in [(&first, "+// soma em centavos"), (&second, "+// arredonda no fim")] {
+        assert!(agent.contains(&sha[..12]) && agent.contains(added), "every change since the last evaluation: {agent}");
+    }
 }
 
 /// The skill-folder and backup of `name` in `root`.

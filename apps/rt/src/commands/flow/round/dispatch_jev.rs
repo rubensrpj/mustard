@@ -375,7 +375,8 @@ pub(super) fn ask_before_locks(
     };
     let vacancies = super::vacancy::vacancies(root, spec, &planned);
     let stuck = super::waves_stuck(&planned);
-    let ready = super::queue::next_waves(&planned, &vacancies, &stuck).unwrap_or_default();
+    let evaluating = super::skill_hold::waves_waiting(root, spec, &planned);
+    let ready = super::queue::next_waves(&planned, &vacancies, (&stuck, &evaluating)).unwrap_or_default();
     let (choices, waiting) = super::item_choice::choose_items(start, spec, &planned, &ready, context_jev.filter.as_deref(), &asker);
     let ready: BTreeSet<u64> = without(ready, &waiting).into_iter().collect();
     // As skills só se escolhem com o pedido montado: ele só se monta com o

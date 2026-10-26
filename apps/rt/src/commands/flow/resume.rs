@@ -603,7 +603,10 @@ fn step_of(root: &Path, phase: &str, spec: &str, log: &SpecLog, lang: Locale) ->
     // As vagas pela conta única da rodada: a onda que voltou guarda a cópia
     // sem ocupar vaga.
     let vacancies = crate::commands::flow::round::vacancy::vacancies(root, spec, log);
-    let mut going = match next_waves(log, &vacancies, &stuck) {
+    // A onda que leva a avaliação de uma skill e espera tarefas abertas nos
+    // arquivos que a skill cita não sai, como na rodada.
+    let evaluating = crate::commands::flow::round::skill_hold::waves_waiting(root, spec, log);
+    let mut going = match next_waves(log, &vacancies, (&stuck, &evaluating)) {
         Ok(going) => going,
         Err(cycle) => return waves("resume.step.cycle", "resume.step.cycle", &cycle),
     };

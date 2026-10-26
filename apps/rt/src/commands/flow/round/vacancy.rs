@@ -15,7 +15,7 @@ use mustard_core::io::wave_prompt::{shown, slot_path};
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Value, json};
 
-use super::queue::{backlog_ready, max_parallel, open_sends, orphaned_waves, outgoing, unanswered_sends, waves_in_progress};
+use super::queue::{Holding, backlog_ready, max_parallel, open_sends, orphaned_waves, outgoing, unanswered_sends, waves_in_progress};
 use super::stops::waves_replanned;
 use crate::shared::paths::same_place;
 
@@ -128,12 +128,14 @@ pub(crate) fn vacancies_with(root: &Path, spec: &str, log: &SpecLog, capacity: u
 /// onda que a escolha dos itens, a criação da cópia ou a escolha das skills
 /// seguram não toma cópia, e a que sobra depois do despacho diz que o que
 /// ficou espera outra coisa, como o Jev ou a vez de sair sozinha, e não há
-/// aviso. Diz quais ondas seguram e o que as libera.
+/// aviso. A onda parada e a que espera pela avaliação de skill que leva
+/// (`holding`) não sairiam nem sem o teto, e não contam. Diz quais ondas
+/// seguram e o que as libera.
 pub(super) fn copies_full_warning(
     log: &SpecLog,
     vacancies: &Vacancies,
     (allowed, leaving): (usize, &[&str]),
-    stuck: &BTreeMap<u64, Vec<&SpecEvent>>,
+    holding: Holding<'_, '_>,
     lang: Locale,
 ) -> Option<Value> {
     let held = vacancies.held_by_copies();
@@ -141,7 +143,7 @@ pub(super) fn copies_full_warning(
     if held.is_empty() || vacancies.copies_free > taken {
         return None;
     }
-    let uncapped = outgoing(log, &Vacancies { copies_free: usize::MAX, ..vacancies.clone() }, stuck, &BTreeSet::new()).ok()?;
+    let uncapped = outgoing(log, &Vacancies { copies_free: usize::MAX, ..vacancies.clone() }, holding, &BTreeSet::new()).ok()?;
     let left = uncapped.go.len() > allowed || (uncapped.free > 0 && !backlog_ready(log).is_empty());
     if !left {
         return None;
@@ -249,7 +251,7 @@ mod tests {
         let log = spec_x(root);
         let held: BTreeSet<String> = ["/copies/0", "/copies/1"].map(String::from).into();
         let vacancies = Vacancies { capacity: 3, copies: 4, waiting: BTreeSet::from([9]), copies_free: 2, held, ..Vacancies::default() };
-        let warn = |leaving: &[&str]| copies_full_warning(&log, &vacancies, (1, leaving), &BTreeMap::new(), Locale::PtBr);
+        let warn = |leaving: &[&str]| copies_full_warning(&log, &vacancies, (1, leaving), (&BTreeMap::new(), &BTreeMap::new()), Locale::PtBr);
 
         let both = warn(&["/copies/2", "/copies/3"]).expect("the new wave and the resent one take the two free copies");
         assert_eq!(both["waves"], json!([9]), "{both}");

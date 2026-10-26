@@ -22,7 +22,7 @@ use super::commit::git_lock;
 use super::fixes::sweep_fixes;
 use super::item_choice::choose_items;
 use super::queue::{
-    agent_known, backlog_uncovered, max_parallel, next_waves, open_sends, orphaned_waves, sender_fields, sent_items, silent_minutes, waves_in_progress,
+    agent_known, backlog_uncovered, max_parallel, open_sends, orphaned_waves, outgoing, sender_fields, sent_items, silent_minutes, waves_in_progress,
     waves_returned,
 };
 use super::rejection::rejected_message;
@@ -788,8 +788,12 @@ fn dispatch_round(
     // já ter sido juntado, comitado e gravado: a recusa sai com o que a
     // rodada fez até agora, e a página, que o relatório mudou, é copiada do
     // mesmo jeito que numa rodada que despacha.
-    let ready = match next_waves(&log, &vacancies, &stuck) {
-        Ok(ready) => ready,
+    // A onda que leva a avaliação de uma skill espera as tarefas abertas, fora
+    // dela, que mexem nos arquivos que a skill cita: não sai, e o aviso diz
+    // quais ela espera.
+    let evaluating = super::skill_hold::waves_waiting(root, &spec, &log);
+    let (ready, kept) = match outgoing(&log, &vacancies, (&stuck, &evaluating), &BTreeSet::new()) {
+        Ok(out) => (out.go, out.evaluating),
         Err(cycle) => {
             let mut answered = json!({ "spec": spec, "recorded": recorded, "formatted": formatted });
             if let Some(commit) = commit {
@@ -885,12 +889,13 @@ fn dispatch_round(
     let (built, picks_held) = crate::shared::skill_cycle::prompts_with_picks(root, &spec, (&log, lang), &mut flight, (&mut next, &mut outgoing), picks_jev, &asker);
     let mut picks_lines = crate::shared::skill_cycle::held_notes(picks_held, warnings, lang);
     picks_lines.extend(items_lines);
+    picks_lines.extend(super::skill_hold::waiting_notes(&log, &evaluating, &kept, warnings, lang));
     // O teto de cópias que segura o despacho vai no aviso e no próximo passo,
     // contado com as ondas que saem de fato: a que a escolha dos itens, a
     // cópia que não saiu ou a escolha das skills seguram não toma cópia, e a
     // reenviada em cópia nova toma.
     let leaving: Vec<&str> = next.iter().filter_map(|wave| flight.copies.get(wave)).chain(renewed_copies.values()).map(|copy| copy.path.as_str()).collect();
-    let copies_full = super::vacancy::copies_full_warning(&log, &vacancies, (allowed, &leaving), &stuck, lang);
+    let copies_full = super::vacancy::copies_full_warning(&log, &vacancies, (allowed, &leaving), (&stuck, &evaluating), lang);
     let copies_line = copies_full.as_ref().and_then(|warning| warning["hint"].as_str().map(str::to_string));
     warnings.extend(copies_full);
     // A onda cujo pedido passa do teto de tokens sai com as tarefas que

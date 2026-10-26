@@ -41,7 +41,11 @@ pub(crate) fn max_parallel(root: &Path) -> usize {
 /// processo que a mandou — não conta como vaga ocupada para as outras
 /// entrarem, porque ela não está compilando nada; a cópia dela é limpa à
 /// parte, em [`open_copies`]. A onda parada pelo limite de consertos
-/// (`stuck`) não sai, nem a que depende dela, direta ou por outra onda.
+/// (`stuck`) não sai, nem a que depende dela, direta ou por outra onda. A
+/// onda que leva a avaliação de uma skill e espera tarefas abertas nos
+/// arquivos que a skill cita (`evaluating`,
+/// [`waves_waiting`](super::skill_hold::waves_waiting)) também não sai, nem
+/// toma vaga.
 ///
 /// A onda de lote nasce sem dependência entre ondas, então uma dependência em
 /// círculo não tem de onde vir pelo backlog, e o plano não a procura. O ciclo
@@ -49,9 +53,14 @@ pub(crate) fn max_parallel(root: &Path) -> usize {
 /// nunca uma conta própria à parte —, e, se uma onda gravada antes do backlog
 /// trouxer um, a rodada devolve os números do ciclo em vez de escolher uma
 /// ordem às cegas.
-pub(crate) fn next_waves(log: &SpecLog, vacancies: &Vacancies, stuck: &BTreeMap<u64, Vec<&SpecEvent>>) -> Result<Vec<u64>, Vec<u64>> {
-    outgoing(log, vacancies, stuck, &BTreeSet::new()).map(|out| out.go)
+pub(crate) fn next_waves(log: &SpecLog, vacancies: &Vacancies, (stuck, evaluating): Holding<'_, '_>) -> Result<Vec<u64>, Vec<u64>> {
+    outgoing(log, vacancies, (stuck, evaluating), &BTreeSet::new()).map(|out| out.go)
 }
+
+/// O que segura uma onda pronta na fila: a parada pelo limite de consertos,
+/// com os eventos que a pararam, e a que espera, pela avaliação de skill que
+/// leva, estas tarefas abertas.
+pub(crate) type Holding<'a, 'b> = (&'a BTreeMap<u64, Vec<&'b SpecEvent>>, &'a BTreeMap<u64, Vec<u64>>);
 
 /// As ondas que saem nesta rodada ([`next_waves`]) e o que sobra para a
 /// montagem do backlog: quantas vagas seguem livres depois delas e se há
@@ -66,6 +75,9 @@ pub(super) struct Outgoing {
     /// Nada em andamento e nada saindo: só então uma onda com o curinga da
     /// árvore inteira pode sair, e sozinha.
     pub alone: bool,
+    /// As ondas prontas, com vaga, que a avaliação de skill que levam segura:
+    /// sem ela, sairiam agora.
+    pub evaluating: Vec<u64>,
 }
 
 /// [`next_waves`] com mais um dado: as ondas de `skip` são tratadas como se
@@ -74,7 +86,7 @@ pub(super) struct Outgoing {
 pub(super) fn outgoing(
     log: &SpecLog,
     vacancies: &Vacancies,
-    stuck: &BTreeMap<u64, Vec<&SpecEvent>>,
+    (stuck, evaluating): Holding<'_, '_>,
     skip: &BTreeSet<u64>,
 ) -> Result<Outgoing, Vec<u64>> {
     let running = &vacancies.open;
@@ -138,6 +150,7 @@ pub(super) fn outgoing(
     let mut busy = !running.is_empty();
     let mut whole_tree_out = running.keys().any(|n| graph.files.get(n).is_some_and(touches_whole_tree));
     let mut go = Vec::new();
+    let mut held = Vec::new();
     let mut fresh = 0;
     let (own, rest): (Vec<u64>, Vec<u64>) = ready_in_order(&depends, &graph, &already_out, &delivered, &done)?.into_iter().partition(|n| holding.contains(n));
     for n in own.into_iter().chain(rest) {
@@ -146,6 +159,10 @@ pub(super) fn outgoing(
         }
         if stuck.contains_key(&n) || blocked.contains(&n)
             || dependencies_of(n, &depends).iter().any(|d| stuck.contains_key(d) || blocked.contains(d)) {
+            continue;
+        }
+        if evaluating.contains_key(&n) {
+            held.push(n);
             continue;
         }
         let whole_tree = touches_whole_tree(graph.files.get(&n).into_iter().flatten());
@@ -158,7 +175,7 @@ pub(super) fn outgoing(
         go.push(n);
     }
     let free = if whole_tree_out { 0 } else { slots.saturating_sub(fresh) };
-    Ok(Outgoing { go, free, alone: !busy })
+    Ok(Outgoing { go, free, alone: !busy, evaluating: held })
 }
 
 /// As ondas com pedido aberto, cada uma com o número do pedido dela: a onda
@@ -819,7 +836,7 @@ pub(crate) fn files_in(fields: &Map<String, Value>) -> BTreeSet<String> {
 /// depois desta leitura continua recusando esta como substituída, e o texto
 /// dela não se perde. O evento sem código, e o que não é tarefa, vão pelo
 /// número, como antes.
-pub(super) fn task_revision(log: &SpecLog, id: u64, extra: Map<String, Value>) -> Option<Map<String, Value>> {
+pub(crate) fn task_revision(log: &SpecLog, id: u64, extra: Map<String, Value>) -> Option<Map<String, Value>> {
     let event = log.get(id)?;
     let mut draft: Map<String, Value> = event
         .fields
