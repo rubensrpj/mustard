@@ -142,6 +142,33 @@
   (function_item) @test_unit
   (#match? @_marker "(?s)^#\\[\\s*([A-Za-z_][A-Za-z0-9_]*\\s*::\\s*)*(test|bench|rstest|test_case|test_matrix|proptest|property_test|quickcheck|wasm_bindgen_test)\\s*(\\(.*\\))?\\s*\\]$"))
 
+; A função de teste escrita dentro do bloco do `proptest!`
+; (`proptest! { #[test] fn x(a in 0..10) {} }`): a gramática não lê o corpo
+; da macro como código e o deixa em pedaços soltos, sem nó de função. A
+; sequência `#[test]`, `fn`, o nome, os parâmetros e o corpo é a função: ela
+; entra no mapa com o nome escrito depois do `fn`, marcada como teste, e vai
+; do `#[test]` ao fim do corpo, com os atributos escritos entre os dois
+; (`#[should_panic]`). O atributo escrito antes do `#[test]` fica fora do
+; trecho. A função do bloco sem `#[test]` não é teste e não entra.
+((macro_invocation
+   macro: [(identifier) (scoped_identifier name: (identifier))] @_macro
+   (token_tree
+     "#"
+     .
+     (token_tree . (identifier) @_attribute .) @decoration @test_unit
+     .
+     ("#" . (token_tree) @decoration @test_unit)*
+     .
+     "fn"
+     .
+     (identifier) @name @definition.function @test_unit
+     .
+     (token_tree) @test_unit
+     .
+     (token_tree) @body @test_unit))
+  (#match? @_macro "^(.*::)?proptest$")
+  (#eq? @_attribute "test"))
+
 ; Todo módulo com corpo escrito dentro do arquivo, o de teste incluído: o
 ; `super` escrito dentro de N deles sai primeiro desses N módulos, e só depois
 ; sobe pasta. O `mod x;` sem corpo mora em outro arquivo e não entra.

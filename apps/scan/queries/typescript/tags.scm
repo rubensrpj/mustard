@@ -75,6 +75,54 @@
    arguments: (arguments . [(string) (template_string)] @name.text [(arrow_function) (function_expression)])) @definition.test @test_unit
   (#match? @_callee "^(it|test|specify|bench)(\\.(only|skip|concurrent|sequential|failing|fails|serial))*\\.each$"))
 
+; O teste do Deno escrito com um objeto: o nome é o texto da propriedade
+; `name` do objeto do primeiro argumento, com a função dentro dele
+; (`Deno.test({ name: 'x', fn() {} })`) ou depois dele
+; (`Deno.test({ name: 'x', permissions }, () => {})`). Sem o `name`, o nome é
+; o da função passada, sozinha (`Deno.test(function x() {})`) ou depois do
+; objeto (`Deno.test({ permissions }, function x() {})`); com os dois, o
+; Deno roda o teste com o `name`.
+((call_expression
+   function: (member_expression) @_callee
+   arguments: (arguments . (object (pair key: (property_identifier) @_key value: [(string) (template_string)] @name.text)))) @definition.test @test_unit
+  (#match? @_callee "^Deno\\.test(\\.(only|ignore))?$")
+  (#eq? @_key "name"))
+((call_expression
+   function: (member_expression) @_callee
+   arguments: (arguments . (function_expression name: (identifier) @name))) @definition.test @test_unit
+  (#match? @_callee "^Deno\\.test(\\.(only|ignore))?$"))
+((call_expression
+   function: (member_expression) @_callee
+   arguments: (arguments . (object) @_options . (function_expression name: (identifier) @name))) @definition.test @test_unit
+  (#match? @_callee "^Deno\\.test(\\.(only|ignore))?$")
+  (#not-match? @_options "(^|[{,])\\s*name\\s*:"))
+
+; O subteste: a chamada `test` (o executor do Node) ou `step` (o Deno) feita
+; no parâmetro da função de um teste, com o texto do nome e a função dele
+; (`test('x', async (t) => { await t.test('y', () => {}); })`), escrita como
+; comando do corpo dela, com o `await` ou sem ele. O teste de fora pode ser
+; ele mesmo um subteste (`t.test('y', async (u) => { await u.test('z', …) })`).
+; A mesma chamada num nome que não é o parâmetro (`outro.test('x', …)`) não é
+; subteste.
+((call_expression
+   function: [(identifier) (member_expression)] @_outer
+   arguments: (arguments
+     (_
+       [parameter: (identifier) @_context
+        parameters: (formal_parameters . (required_parameter pattern: (identifier) @_context))]
+       body: (statement_block
+         (expression_statement
+           [(call_expression
+              function: (member_expression object: (identifier) @_receiver property: (property_identifier) @_method)
+              arguments: (arguments . [(string) (template_string)] @name.text [(arrow_function) (function_expression)])) @definition.test @test_unit
+            (await_expression
+              (call_expression
+                function: (member_expression object: (identifier) @_receiver property: (property_identifier) @_method)
+                arguments: (arguments . [(string) (template_string)] @name.text [(arrow_function) (function_expression)])) @definition.test @test_unit)])))))
+  (#match? @_outer "^((it|test|specify|bench|fit|xit|xtest|xspecify)(\\.(only|skip|concurrent|sequential|failing|fails|todo|fixme|slow|serial|parallel))*|Deno\\.test(\\.(only|ignore))?|[A-Za-z_$][A-Za-z0-9_$]*\\.(test|step))$")
+  (#match? @_method "^(test|step)$")
+  (#eq? @_receiver @_context))
+
 ; O JavaScript antigo exporta a função pondo-a no objeto `exports`, no topo
 ; do arquivo: a declaração leva o nome da propriedade
 ; (`exports.ler = function (req, res) {}`, `module.exports.ler = () => {}`)

@@ -3,7 +3,11 @@
 //! (`syntax.test`) e com um nome. O teste que a língua declara (a função com
 //! o atributo, o método da classe de teste) leva o nome da declaração; o que
 //! é uma chamada (`it('soma', …)`) entra como declaração de teste com o texto
-//! do primeiro argumento como nome. O grupo (`describe`, `group`) não é
+//! do primeiro argumento como nome, ou com o da propriedade `name` do objeto
+//! (`Deno.test({ name: 'soma', fn() {} })`), ou com o da função passada a
+//! ela. O subteste chamado no parâmetro do teste de fora (`t.test('x', …)`)
+//! também é teste, e a função escrita dentro do bloco de uma macro de teste
+//! (`proptest! { #[test] fn x(..) {} }`) também. O grupo (`describe`, `group`) não é
 //! teste, a função de apoio também não, e a forma que a língua só roda no
 //! arquivo de teste (o `def test_*` do pytest, o `func TestX` do Go) não é
 //! teste fora dele.
@@ -45,7 +49,13 @@ const RUST: Language = Language {
              #[test_case(1 ; \"one\")]\n    #[test_case(2 ; \"two\")]\n    fn test_case_check(x: u32) {\n        assert!(x > 0);\n    }\n\n    \
              #[proptest]\n    fn proptest_check(x: u32) {\n        assert!(x >= 0);\n    }\n\n    \
              #[quickcheck]\n    fn quickcheck_check(x: u32) -> bool {\n        x == x\n    }\n\n    \
-             #[test]\n    #[should_panic]\n    fn panicking_check() {\n        panic!();\n    }\n}\n",
+             #[test]\n    #[should_panic]\n    fn panicking_check() {\n        panic!();\n    }\n\n    \
+             proptest! {\n        \
+             #![proptest_config(ProptestConfig::with_cases(4))]\n\n        \
+             #[test]\n        fn proptest_block_check(x in 0..10u32) {\n            prop_assert!(x < 10);\n        }\n\n        \
+             /// Cai com qualquer valor.\n        \
+             #[test]\n        #[should_panic]\n        fn proptest_block_panicking(x in 0..10u32, y in 0..2u8) {\n            panic!(\"{x} {y}\");\n        }\n    \
+             }\n}\n",
         ),
         ("tests/api.rs", "#[test]\nfn loose_check_in_a_test_file() {\n    assert_eq!(sums::sum(1, 1), 2);\n}\n"),
     ],
@@ -59,6 +69,8 @@ const RUST: Language = Language {
         ("src/lib.rs", "proptest_check"),
         ("src/lib.rs", "quickcheck_check"),
         ("src/lib.rs", "panicking_check"),
+        ("src/lib.rs", "proptest_block_check"),
+        ("src/lib.rs", "proptest_block_panicking"),
         ("tests/api.rs", "loose_check_in_a_test_file"),
     ],
     not_tests: &[("src/lib.rs", "sum"), ("src/lib.rs", "helper")],
@@ -86,6 +98,29 @@ const TYPESCRIPT: Language = Language {
         ),
         ("src/view.test.tsx", "test(\"renders the total\", () => {\n  const view = <p>3</p>;\n  expect(view).toBeTruthy();\n});\n"),
         ("src/sum.spec.js", "const { sum } = require(\"./sum\");\n\nit(\"adds in javascript\", function () {\n  sum(1, 2);\n});\n"),
+        (
+            "src/sum_deno.test.ts",
+            "import { sum } from \"./sum\";\n\n\
+             Deno.test({ name: \"adds by the name property\", fn() {\n  sum(1, 2);\n} });\n\
+             Deno.test({ name: \"adds with options first\", permissions: { read: true } }, () => {});\n\
+             Deno.test(function addsByTheFunctionName() {});\n\
+             Deno.test({ permissions: { read: true } }, function addsAfterTheOptions() {});\n\
+             Deno.test({ name: \"the name property wins\" }, function notTheTestName() {});\n\
+             Deno.test(\"adds in steps\", async (t) => {\n  await t.step(\"adds one step\", () => {});\n});\n",
+        ),
+        (
+            "src/sum_node.test.js",
+            "const test = require(\"node:test\");\n\n\
+             test(\"adds with subtests\", async (t) => {\n  \
+             await t.test(\"adds an awaited subtest\", () => {});\n  \
+             t.test(\"adds a subtest with options\", { skip: true }, function () {});\n  \
+             other.test(\"is not a subtest\", () => {});\n\
+             });\n\
+             test(\"nests subtests\", async t => {\n  \
+             await t.test(\"adds a middle subtest\", async (inner) => {\n    \
+             await inner.test(\"adds a deep subtest\", () => {});\n  });\n\
+             });\n",
+        ),
     ],
     tests: &[
         ("src/sum.test.ts", "adds two numbers"),
@@ -98,9 +133,23 @@ const TYPESCRIPT: Language = Language {
         ("src/sum.test.ts", "takes options"),
         ("src/view.test.tsx", "renders the total"),
         ("src/sum.spec.js", "adds in javascript"),
+        ("src/sum_deno.test.ts", "adds by the name property"),
+        ("src/sum_deno.test.ts", "adds with options first"),
+        ("src/sum_deno.test.ts", "addsByTheFunctionName"),
+        ("src/sum_deno.test.ts", "addsAfterTheOptions"),
+        ("src/sum_deno.test.ts", "the name property wins"),
+        ("src/sum_deno.test.ts", "adds one step"),
+        ("src/sum_node.test.js", "adds an awaited subtest"),
+        ("src/sum_node.test.js", "adds a subtest with options"),
+        ("src/sum_node.test.js", "adds a middle subtest"),
+        ("src/sum_node.test.js", "adds a deep subtest"),
     ],
     not_tests: &[("src/sum.ts", "sum")],
-    absent: &[("src/sum.test.ts", "sum")],
+    absent: &[
+        ("src/sum.test.ts", "sum"),
+        ("src/sum_deno.test.ts", "notTheTestName"),
+        ("src/sum_node.test.js", "is not a subtest"),
+    ],
 };
 
 const PYTHON: Language = Language {
@@ -298,7 +347,8 @@ fn marked(decl: &Value) -> bool {
 
 /// O que o mapa da língua `language` diz de errado das formas dela: cada
 /// teste sem a marca ou sem declaração, cada declaração de fora com a marca
-/// e cada nome de grupo que virou declaração.
+/// e cada nome que não é de declaração (o do grupo, o da chamada que não é
+/// teste, o da função cujo teste leva outro nome) e virou uma.
 fn wrong_forms(language: &Language) -> Vec<String> {
     let temp = tempfile::Builder::new().prefix(&format!("scan-test-units-{}-", language.name)).tempdir().unwrap();
     let dir = temp.path();
@@ -322,7 +372,7 @@ fn wrong_forms(language: &Language) -> Vec<String> {
     for (path, name) in language.absent {
         let found = declarations(&map, path, name);
         if !found.is_empty() {
-            wrong.push(format!("{}: {path} `{name}` é grupo, e não declaração ({found:?})", language.name));
+            wrong.push(format!("{}: {path} `{name}` não é nome de declaração ({found:?})", language.name));
         }
     }
     wrong
@@ -335,4 +385,32 @@ fn wrong_forms(language: &Language) -> Vec<String> {
 fn every_test_form_is_marked_as_a_test_in_every_language() {
     let wrong: Vec<String> = [RUST, TYPESCRIPT, PYTHON, CSHARP, GO, PHP, DART].iter().flat_map(wrong_forms).collect();
     assert!(wrong.is_empty(), "{} formas erradas:\n{}", wrong.len(), wrong.join("\n"));
+}
+
+/// A função de teste escrita no bloco do `proptest!`, num arquivo do
+/// programa e fora de módulo de teste, vai do `#[test]` ao fim do corpo, com
+/// a documentação de cima, e o trecho inteiro é de teste: a chamada que o
+/// corpo faz não é uso do programa.
+#[test]
+fn a_test_in_a_macro_block_spans_from_its_test_attribute_to_the_end_of_its_body() {
+    let temp = tempfile::Builder::new().prefix("scan-test-units-macro-").tempdir().unwrap();
+    let dir = temp.path();
+    write(dir, "Cargo.toml", "[package]\nname = \"sums\"\nversion = \"0.1.0\"\n");
+    write(
+        dir,
+        "src/lib.rs",
+        "pub fn sum(a: u32) -> u32 {\n    a\n}\n\nproptest! {\n    \
+         #![proptest_config(ProptestConfig::with_cases(4))]\n    \
+         /// Soma o valor.\n    #[test]\n    #[ignore]\n    fn loose_prop(\n        x in 0..10u32,\n    ) {\n        \
+         prop_assert!(sum(x) < 10);\n    }\n}\n",
+    );
+    let (map, _) = model::scan(dir, &dir.join(".claude"), &[]);
+    let test = declarations(&map, "src/lib.rs", "loose_prop");
+    let lines: Vec<(Value, Value, Value)> = test.iter().map(|d| (d["line"].clone(), d["end_line"].clone(), d["doc"].clone())).collect();
+    assert_eq!(lines, [(Value::from(8), Value::from(14), Value::from("Soma o valor."))], "{test:?}");
+    let module = map["modules"].as_array().unwrap().iter().find(|m| m["path"] == "src/lib.rs").unwrap();
+    let covered = module["test_lines"].as_array().into_iter().flatten().any(|r| r[0].as_u64() <= Some(8) && r[1].as_u64() >= Some(14));
+    assert!(covered, "o trecho de teste cobre a função: {}", module["test_lines"]);
+    let sum = declarations(&map, "src/lib.rs", "sum");
+    assert!(sum.iter().all(|d| d["used_by"].as_array().is_none_or(Vec::is_empty)), "a chamada do teste não é uso: {sum:?}");
 }

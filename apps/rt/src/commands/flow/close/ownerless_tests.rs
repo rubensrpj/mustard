@@ -7,7 +7,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use mustard_core::domain::project_map::{MapDecl, ProjectMap};
+use mustard_core::domain::project_map::ProjectMap;
 use mustard_core::domain::spec_events::{Block, BlockQuery, SpecLog};
 use mustard_core::platform::i18n::{Locale, translate};
 
@@ -18,7 +18,7 @@ pub(crate) const REASON: &str = "unowned-test";
 /// `before` não tinha no mesmo arquivo, quando nenhuma prova de critério do
 /// `log` cita o nome dele. Sai na ordem dos arquivos e, em cada um, na das
 /// declarações. Teste é a declaração que o mapa marca como teste
-/// ([`is_test`]).
+/// ([`mustard_core::domain::project_map::MapDecl::is_test`]).
 pub(crate) fn hints(log: &SpecLog, before: &ProjectMap, after: &ProjectMap, files: &[String], lang: Locale) -> Vec<String> {
     let proofs: Vec<&str> =
         log.block(BlockQuery::Block(Block::Criteria)).into_iter().filter(|e| e.event_type == "criterion").filter_map(|e| e.str_field("proof")).collect();
@@ -31,7 +31,7 @@ pub(crate) fn hints(log: &SpecLog, before: &ProjectMap, after: &ProjectMap, file
         let old = before.module(file);
         for decl in &module.declarations {
             let existed = old.is_some_and(|m| m.declarations.iter().any(|d| d.name == decl.name && d.kind == decl.kind));
-            if existed || !is_test(decl) || proofs.iter().any(|proof| proof.contains(&decl.name)) {
+            if existed || !decl.is_test() || proofs.iter().any(|proof| proof.contains(&decl.name)) {
                 continue;
             }
             let hint = translate("close.unowned_test", lang).replace("{name}", &decl.name).replace("{file}", file).replace("{line}", &decl.line.to_string());
@@ -51,14 +51,6 @@ pub(super) fn at_close(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> 
     };
     let files: Vec<String> = log.delivered_files().into_iter().collect();
     hints(log, &before, &after, &files, lang)
-}
-
-/// Se a declaração `decl` é um teste: a marca de teste que o mapa põe em toda
-/// unidade de teste de cada língua, nas formas dos frameworks de teste dela
-/// (`syntax.test`). A leitura é de sintaxe: o aviso que ela dá não prova
-/// cobertura nenhuma.
-fn is_test(decl: &MapDecl) -> bool {
-    decl.syntax.get("test").and_then(serde_json::Value::as_bool).unwrap_or(false)
 }
 
 #[cfg(test)]
