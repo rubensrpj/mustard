@@ -103,7 +103,20 @@ const TYPESCRIPT: Language = Language {
              test.each`\n    a\n    ${1}\n  `('adds $a by table', ({ a }) => {\n    expect(sum(a, 0)).toBe(a);\n  });\n  \
              it.only(\"adds only this one\", () => {});\n  \
              test.skip(`skips ${\"this\"} one`, function () {});\n  \
-             test(\"takes options\", { timeout: 10 }, () => {});\n\
+             test(\"takes options\", { timeout: 10 }, () => {});\n  \
+             it.only.each([[3]])(\"adds %i only from a table\", (a) => {});\n  \
+             test.skip.failing(\"fails while skipped\", () => {});\n  \
+             test.cb.serial.retry(\"adds in any chain\", (t) => {});\n\
+             });\n",
+        ),
+        (
+            "src/sum_groups.test.ts",
+            "test.describe(\"groups the way playwright does\", () => {\n  \
+             test.beforeEach(\"opens the page\", async () => {});\n  \
+             test.step(\"runs a step\", async () => {});\n  \
+             test.fixme(\"fixes the total later\", async () => {});\n  \
+             test.describe.parallel(\"groups in parallel\", () => {\n    \
+             test(\"adds in a group\", async () => {});\n  });\n\
              });\n",
         ),
         ("src/view.test.tsx", "test(\"renders the total\", () => {\n  const view = <p>3</p>;\n  expect(view).toBeTruthy();\n});\n"),
@@ -118,9 +131,23 @@ const TYPESCRIPT: Language = Language {
              Deno.test({ name: \"the name property wins\" }, function notTheTestName() {});\n\
              Deno.test(\"adds in steps\", async (t) => {\n  await t.step(\"adds one step\", () => {});\n});\n\
              Deno.test({ name: \"adds in object steps\", async fn(t) {\n  await t.step(\"adds a method step\", () => {});\n} });\n\
-             Deno.test({ name: \"adds in arrow steps\", fn: async (t) => {\n  t.step(\"adds an arrow step\", () => {});\n} });\n",
+             Deno.test({ name: \"adds in arrow steps\", fn: async (t) => {\n  t.step(\"adds an arrow step\", () => {});\n} });\n\
+             Deno.test(\"adds in described steps\", async (t) => {\n  \
+             await t.step({ name: \"adds a described step\", fn: () => {} });\n  \
+             t.step({ ignore: false, name: \"adds a described step with options\", fn() {} });\n  \
+             t.step({ label: \"is not a described step\", fn: () => {} });\n});\n\
+             Deno.test({ name: \"adds in described object steps\", async fn(t) {\n  \
+             await t.step({ name: \"adds a described method step\", fn: () => {} });\n} });\n\
+             Deno.test.only(\"adds only in deno\", () => {});\n",
         ),
-        ("src/sum_tap.test.js", "const tap = require(\"tap\");\n\ntap.test(\"adds with tap\", (t) => {\n  t.end();\n});\n"),
+        (
+            "src/sum_tap.test.js",
+            "const tap = require(\"tap\");\n\n\
+             tap.test(\"adds with tap\", (t) => {\n  t.end();\n});\n\
+             tap.only(\"adds only with tap\", (t) => {\n  t.end();\n});\n\
+             tap.skip(\"adds skipped with tap\", (t) => {\n  t.end();\n});\n\
+             tap.todo(\"adds later with tap\", (t) => {\n  t.end();\n});\n",
+        ),
         (
             "src/sum_node.test.js",
             "const test = require(\"node:test\");\n\n\
@@ -144,6 +171,11 @@ const TYPESCRIPT: Language = Language {
         ("src/sum.test.ts", "adds only this one"),
         ("src/sum.test.ts", "skips ${\"this\"} one"),
         ("src/sum.test.ts", "takes options"),
+        ("src/sum.test.ts", "adds %i only from a table"),
+        ("src/sum.test.ts", "fails while skipped"),
+        ("src/sum.test.ts", "adds in any chain"),
+        ("src/sum_groups.test.ts", "fixes the total later"),
+        ("src/sum_groups.test.ts", "adds in a group"),
         ("src/view.test.tsx", "renders the total"),
         ("src/sum.spec.js", "adds in javascript"),
         ("src/sum_deno.test.ts", "adds by the name property"),
@@ -154,7 +186,16 @@ const TYPESCRIPT: Language = Language {
         ("src/sum_deno.test.ts", "adds one step"),
         ("src/sum_deno.test.ts", "adds a method step"),
         ("src/sum_deno.test.ts", "adds an arrow step"),
+        ("src/sum_deno.test.ts", "adds in described steps"),
+        ("src/sum_deno.test.ts", "adds a described step"),
+        ("src/sum_deno.test.ts", "adds a described step with options"),
+        ("src/sum_deno.test.ts", "adds in described object steps"),
+        ("src/sum_deno.test.ts", "adds a described method step"),
+        ("src/sum_deno.test.ts", "adds only in deno"),
         ("src/sum_tap.test.js", "adds with tap"),
+        ("src/sum_tap.test.js", "adds only with tap"),
+        ("src/sum_tap.test.js", "adds skipped with tap"),
+        ("src/sum_tap.test.js", "adds later with tap"),
         ("src/sum_node.test.js", "adds an awaited subtest"),
         ("src/sum_node.test.js", "adds a subtest with options"),
         ("src/sum_node.test.js", "adds a middle subtest"),
@@ -164,6 +205,11 @@ const TYPESCRIPT: Language = Language {
     absent: &[
         ("src/sum.test.ts", "sum"),
         ("src/sum_deno.test.ts", "notTheTestName"),
+        ("src/sum_deno.test.ts", "is not a described step"),
+        ("src/sum_groups.test.ts", "groups the way playwright does"),
+        ("src/sum_groups.test.ts", "groups in parallel"),
+        ("src/sum_groups.test.ts", "opens the page"),
+        ("src/sum_groups.test.ts", "runs a step"),
         ("src/sum_node.test.js", "is not a subtest"),
     ],
 };

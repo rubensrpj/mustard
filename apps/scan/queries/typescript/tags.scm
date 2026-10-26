@@ -56,53 +56,63 @@
 (type_alias_declaration name: (_) @name) @definition.type
 (function_declaration name: (_) @name) @definition.function
 
-; O teste que é chamada (Jest, Vitest, Mocha, Jasmine, Playwright, Bun, tap,
-; o executor de testes do Node e o do Deno): `it(...)`, `test(...)`,
-; `specify(...)`, `bench(...)`, as formas de foco e de pulo (`fit`, `xit`,
-; `xtest`, `it.only`, `test.skip`, `test.concurrent`, `test.fixme`...),
-; `Deno.test(...)`, `tap.test(...)` e a tabela, `it.each(...)(...)`, com a
-; lista ou com o texto marcado depois do `each`.
+; O teste que é chamada (Jest, Vitest, Mocha, Jasmine, Playwright, Bun, AVA,
+; tap, o executor de testes do Node e o do Deno) se reconhece pela raiz, e não
+; por uma lista de variantes: a chamada cuja raiz é um nome de teste (`it`,
+; `test`, `specify`, `bench`, `fit`, `xit`, `xtest`, `xspecify`, `tap`,
+; `Deno.test`), seguida de qualquer cadeia de membros (`it.only`,
+; `test.skip.failing`, `test.concurrent`, `tap.todo`, `Deno.test.ignore` e os
+; que vierem) e, quando há, da chamada `.each(...)(...)` que traz a tabela
+; (`it.only.each([...])('x', fn)`, ou com o texto marcado depois do `each`).
+; A variante nova de um framework já é teste. O que a cadeia não pode ter é o
+; nome de grupo, de passo, de gancho ou de configuração (`describe`, `suite`,
+; `step`, `use`, `extend`, `configure`, `before`, `after`, `beforeAll`,
+; `beforeEach`, `afterAll`, `afterEach`): têm a forma de chamada do teste e
+; não são teste (`test.describe('x', () => {})`, `test.step('x', async () => {})`).
 ; O primeiro argumento é o texto do nome, e um argumento depois dele é a
-; função do teste, mesmo com as opções no meio (`test('x', { timeout }, fn)`).
-; A chamada entra no mapa como declaração de teste, com o texto do nome sem
-; as aspas. O grupo (`describe`) não é teste.
+; função do teste, mesmo com as opções no meio (`test('x', { timeout }, fn)`);
+; ou o primeiro argumento é o objeto cuja propriedade `name` é o nome
+; (`Deno.test({ name: 'x', fn() {} })`), com a função dentro dele ou depois
+; dele. A chamada entra no mapa como declaração de teste, com o texto do nome
+; sem as aspas. O grupo (`describe`) não é teste.
 ((call_expression
    function: [(identifier) (member_expression)] @_callee
    arguments: (arguments . [(string) (template_string)] @name.text [(arrow_function) (function_expression)])) @definition.test @test_unit
-  (#match? @_callee "^((it|test|specify|bench|fit|xit|xtest|xspecify)(\\.(only|skip|concurrent|sequential|failing|fails|todo|fixme|slow|serial|parallel))*|Deno\\.test(\\.(only|ignore))?|tap\\.test)$"))
+  (#match? @_callee "^(it|test|specify|bench|fit|xit|xtest|xspecify|tap|Deno\\.test)(\\.[A-Za-z_$][A-Za-z0-9_$]*)*$")
+  (#not-match? @_callee "(^|\\.)(describe|suite|step|use|extend|configure|before|after|beforeAll|beforeEach|afterAll|afterEach)(\\.|$)"))
 ((call_expression
    function: (call_expression function: (member_expression) @_callee)
    arguments: (arguments . [(string) (template_string)] @name.text [(arrow_function) (function_expression)])) @definition.test @test_unit
-  (#match? @_callee "^(it|test|specify|bench)(\\.(only|skip|concurrent|sequential|failing|fails|serial))*\\.each$"))
-
-; O teste do Deno escrito com um objeto: o nome é o texto da propriedade
-; `name` do objeto do primeiro argumento, com a função dentro dele
-; (`Deno.test({ name: 'x', fn() {} })`) ou depois dele
-; (`Deno.test({ name: 'x', permissions }, () => {})`). Sem o `name`, o nome é
-; o da função passada, sozinha (`Deno.test(function x() {})`) ou depois do
-; objeto (`Deno.test({ permissions }, function x() {})`); com os dois, o
-; Deno roda o teste com o `name`.
+  (#match? @_callee "^(it|test|specify|bench|fit|xit|xtest|xspecify|tap|Deno\\.test)(\\.[A-Za-z_$][A-Za-z0-9_$]*)*\\.each$")
+  (#not-match? @_callee "(^|\\.)(describe|suite|step|use|extend|configure|before|after|beforeAll|beforeEach|afterAll|afterEach)(\\.|$)"))
 ((call_expression
-   function: (member_expression) @_callee
+   function: [(identifier) (member_expression)] @_callee
    arguments: (arguments . (object (pair key: (property_identifier) @_key value: [(string) (template_string)] @name.text)))) @definition.test @test_unit
-  (#match? @_callee "^Deno\\.test(\\.(only|ignore))?$")
+  (#match? @_callee "^(it|test|specify|bench|fit|xit|xtest|xspecify|tap|Deno\\.test)(\\.[A-Za-z_$][A-Za-z0-9_$]*)*$")
+  (#not-match? @_callee "(^|\\.)(describe|suite|step|use|extend|configure|before|after|beforeAll|beforeEach|afterAll|afterEach)(\\.|$)")
   (#eq? @_key "name"))
+
+; O teste do Deno sem o `name`: o nome é o da função passada, sozinha
+; (`Deno.test(function x() {})`) ou depois do objeto
+; (`Deno.test({ permissions }, function x() {})`); com os dois, o Deno roda o
+; teste com o `name`.
 ((call_expression
    function: (member_expression) @_callee
    arguments: (arguments . (function_expression name: (identifier) @name))) @definition.test @test_unit
-  (#match? @_callee "^Deno\\.test(\\.(only|ignore))?$"))
+  (#match? @_callee "^Deno\\.test(\\.[A-Za-z_$][A-Za-z0-9_$]*)*$"))
 ((call_expression
    function: (member_expression) @_callee
    arguments: (arguments . (object) @_options . (function_expression name: (identifier) @name))) @definition.test @test_unit
-  (#match? @_callee "^Deno\\.test(\\.(only|ignore))?$")
+  (#match? @_callee "^Deno\\.test(\\.[A-Za-z_$][A-Za-z0-9_$]*)*$")
   (#not-match? @_options "(^|[{,])\\s*name\\s*:"))
 
 ; O subteste: a chamada `test` (o executor do Node) ou `step` (o Deno) feita
 ; no parâmetro da função de um teste, com o texto do nome e a função dele
-; (`test('x', async (t) => { await t.test('y', () => {}); })`), escrita como
-; comando do corpo dela, com o `await` ou sem ele. O teste de fora pode ser
-; ele mesmo um subteste (`t.test('y', async (u) => { await u.test('z', …) })`).
-; A mesma chamada num nome que não é o parâmetro (`outro.test('x', …)`) não é
+; (`test('x', async (t) => { await t.test('y', () => {}); })`) ou com o objeto
+; que leva o `name` (`t.step({ name: 'y', fn })`), escrita como comando do
+; corpo dela, com o `await` ou sem ele. O teste de fora pode ser ele mesmo um
+; subteste (`t.test('y', async (u) => { await u.test('z', …) })`). A mesma
+; chamada num nome que não é o parâmetro (`outro.test('x', …)`) não é
 ; subteste.
 ((call_expression
    function: [(identifier) (member_expression)] @_outer
@@ -114,13 +124,20 @@
          (expression_statement
            [(call_expression
               function: (member_expression object: (identifier) @_receiver property: (property_identifier) @_method)
-              arguments: (arguments . [(string) (template_string)] @name.text [(arrow_function) (function_expression)])) @definition.test @test_unit
+              arguments: (arguments
+                .
+                [(object (pair key: (property_identifier) @_key value: [(string) (template_string)] @name.text))
+                 ([(string) (template_string)] @name.text [(arrow_function) (function_expression)])])) @definition.test @test_unit
             (await_expression
               (call_expression
                 function: (member_expression object: (identifier) @_receiver property: (property_identifier) @_method)
-                arguments: (arguments . [(string) (template_string)] @name.text [(arrow_function) (function_expression)])) @definition.test @test_unit)])))))
-  (#match? @_outer "^((it|test|specify|bench|fit|xit|xtest|xspecify)(\\.(only|skip|concurrent|sequential|failing|fails|todo|fixme|slow|serial|parallel))*|Deno\\.test(\\.(only|ignore))?|[A-Za-z_$][A-Za-z0-9_$]*\\.(test|step))$")
+                arguments: (arguments
+                  .
+                  [(object (pair key: (property_identifier) @_key value: [(string) (template_string)] @name.text))
+                   ([(string) (template_string)] @name.text [(arrow_function) (function_expression)])])) @definition.test @test_unit)])))))
+  (#match? @_outer "^((it|test|specify|bench|fit|xit|xtest|xspecify|tap|Deno\\.test)(\\.[A-Za-z_$][A-Za-z0-9_$]*)*|[A-Za-z_$][A-Za-z0-9_$]*\\.(test|step))$")
   (#match? @_method "^(test|step)$")
+  (#eq? @_key "name")
   (#eq? @_receiver @_context))
 
 ; O subteste do teste do Deno escrito com um objeto: a função do teste é a
@@ -141,11 +158,17 @@
             (expression_statement
               [(call_expression
                  function: (member_expression object: (identifier) @_receiver property: (property_identifier) @_method)
-                 arguments: (arguments . [(string) (template_string)] @name.text [(arrow_function) (function_expression)])) @definition.test @test_unit
+                 arguments: (arguments
+                   .
+                   [(object (pair key: (property_identifier) @_key value: [(string) (template_string)] @name.text))
+                    ([(string) (template_string)] @name.text [(arrow_function) (function_expression)])])) @definition.test @test_unit
                (await_expression
                  (call_expression
                    function: (member_expression object: (identifier) @_receiver property: (property_identifier) @_method)
-                   arguments: (arguments . [(string) (template_string)] @name.text [(arrow_function) (function_expression)])) @definition.test @test_unit)])))
+                   arguments: (arguments
+                     .
+                     [(object (pair key: (property_identifier) @_key value: [(string) (template_string)] @name.text))
+                      ([(string) (template_string)] @name.text [(arrow_function) (function_expression)])])) @definition.test @test_unit)])))
         (pair
           key: (property_identifier) @_function
           value: (_
@@ -155,14 +178,21 @@
               (expression_statement
                 [(call_expression
                    function: (member_expression object: (identifier) @_receiver property: (property_identifier) @_method)
-                   arguments: (arguments . [(string) (template_string)] @name.text [(arrow_function) (function_expression)])) @definition.test @test_unit
+                   arguments: (arguments
+                     .
+                     [(object (pair key: (property_identifier) @_key value: [(string) (template_string)] @name.text))
+                      ([(string) (template_string)] @name.text [(arrow_function) (function_expression)])])) @definition.test @test_unit
                  (await_expression
                    (call_expression
                      function: (member_expression object: (identifier) @_receiver property: (property_identifier) @_method)
-                     arguments: (arguments . [(string) (template_string)] @name.text [(arrow_function) (function_expression)])) @definition.test @test_unit)]))))])))
-  (#match? @_outer "^Deno\\.test(\\.(only|ignore))?$")
+                     arguments: (arguments
+                       .
+                       [(object (pair key: (property_identifier) @_key value: [(string) (template_string)] @name.text))
+                        ([(string) (template_string)] @name.text [(arrow_function) (function_expression)])])) @definition.test @test_unit)]))))])))
+  (#match? @_outer "^Deno\\.test(\\.[A-Za-z_$][A-Za-z0-9_$]*)*$")
   (#eq? @_function "fn")
   (#match? @_method "^(test|step)$")
+  (#eq? @_key "name")
   (#eq? @_receiver @_context))
 
 ; O JavaScript antigo exporta a função pondo-a no objeto `exports`, no topo
