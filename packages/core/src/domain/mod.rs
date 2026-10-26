@@ -31,4 +31,5 @@ pub mod wave_prompt;
 pub mod spend;
 pub mod project_summary;
 pub mod measure;
+pub mod wave_times;
 pub mod context_window;

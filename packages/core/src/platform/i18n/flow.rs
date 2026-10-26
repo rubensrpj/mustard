@@ -71,14 +71,52 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              in the spec, and approval stays locked until a plan passes."
         }
         ("plan.next", Locale::PtBr) => {
-            "Depois, faça a pergunta de aprovação na ordem de explicar do estilo de resposta, com o \
+            "Diga ao usuário o texto de `forecast`, com as ondas, as etapas e o tempo das ondas neste \
+             projeto. Depois, faça a pergunta de aprovação na ordem de explicar do estilo de resposta, com o \
              texto exato \"{question}\". As opções são \"{option}\" e \"Ajustar\", e com outro texto \
              a aprovação não vale."
         }
         ("plan.next", Locale::EnUs) => {
-            "Then ask the approval question in the order of explaining from the response style, with \
+            "Tell the user the `forecast` text, with the waves, the stages and the time of the waves in \
+             this project. Then ask the approval question in the order of explaining from the response style, with \
              the exact text \"{question}\". The options are \"{option}\" and \"Adjust\", and with \
              another text the approval does not count."
+        }
+        ("plan.formation_pending", Locale::PtBr) => {
+            "A formação das ondas espera a leitura da lista. Entregue o pedido de `formation` ao agente de análise da sessão. Mande o recibo por `mustard-rt run knowledge --complete-session <recibo.json>` e rode o plano de novo. A pergunta de aprovação sai depois, com as ondas formadas."
+        }
+        ("plan.formation_pending", Locale::EnUs) => {
+            "The wave formation waits for the list to be read. Hand the `formation` request to the session's analysis agent. Send its receipt with `mustard-rt run knowledge --complete-session <receipt.json>` and run the plan again. The approval question comes after, with the formed waves."
+        }
+        ("plan.forecast.waves", Locale::PtBr) => {
+            "Ondas pela formação: {waves}. Etapas, a cadeia mais longa de espera entre elas: {stages}."
+        }
+        ("plan.forecast.waves", Locale::EnUs) => {
+            "Waves by the formation: {waves}. Stages, the longest chain of waiting between them: {stages}."
+        }
+        ("plan.forecast.ceiling", Locale::PtBr) => {
+            "Ondas, no máximo: {waves}, uma por tarefa sem assunto. A formação ainda não juntou essas \
+             tarefas, e o número é um teto. Etapas, a cadeia mais longa de espera entre elas: {stages}."
+        }
+        ("plan.forecast.ceiling", Locale::EnUs) => {
+            "Waves, at most: {waves}, one per task without a subject. The formation has not grouped these \
+             tasks yet, so the number is a ceiling. Stages, the longest chain of waiting between them: {stages}."
+        }
+        ("plan.forecast.times", Locale::PtBr) => {
+            "Ondas medidas neste projeto, da saída ao commit: {measured}. A mais curta levou {shortest} min, \
+             a do meio {median} min e a mais longa {longest} min. Estimativa do total, a do meio vezes as \
+             etapas: {estimate} min."
+        }
+        ("plan.forecast.times", Locale::EnUs) => {
+            "Waves measured in this project, from dispatch to commit: {measured}. The shortest took {shortest} \
+             min, the middle one {median} min and the longest {longest} min. Estimated total, the middle one \
+             times the stages: {estimate} min."
+        }
+        ("plan.forecast.no_measure", Locale::PtBr) => {
+            "Este projeto ainda não tem onda medida da saída ao commit, e por isso não há medida de tempo."
+        }
+        ("plan.forecast.no_measure", Locale::EnUs) => {
+            "This project has no wave measured from dispatch to commit yet, so there is no time measure."
         }
         ("plan.wave_loop", Locale::PtBr) => {
             "As ondas {waves} dependem umas das outras em círculo, e nenhuma pode começar. Corte uma \
@@ -194,12 +232,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("resume.next.survey", Locale::PtBr) => "A spec está no levantamento: rode o levantamento e grave a resposta de cada ponto.",
         ("resume.next.survey", Locale::EnUs) => "The spec is in the survey: run the survey and record the answer to each point.",
         ("resume.next.plan", Locale::PtBr) => {
-            "O plano está gravado: confira o plano. Depois, faça a pergunta de aprovação na ordem \
+            "O plano está gravado: confira o plano pelo próximo comando. A resposta dele traz o bloco \
+             `forecast`, com as ondas, as etapas e o tempo das ondas neste projeto. Diga esse bloco ao \
+             usuário antes da pergunta. Depois, faça a pergunta de aprovação na ordem \
              de explicar do estilo de resposta, com o texto exato \"{question}\". As opções são \
              \"{option}\" e \"Ajustar\", e com outro texto a aprovação não vale."
         }
         ("resume.next.plan", Locale::EnUs) => {
-            "The plan is recorded: check the plan. Then ask the approval question in the order of \
+            "The plan is recorded: check the plan with the next command. Its answer carries the \
+             `forecast` block, with the waves, the stages and the time of the waves in this project. \
+             Tell the user that block before the question. Then ask the approval question in the order of \
              explaining from the response style, with the exact text \"{question}\". The options \
              are \"{option}\" and \"Adjust\", and with another text the approval does not count."
         }
@@ -2647,7 +2689,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 381, 0xe6a9_ab0c_62be_94dd);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 386, 0x9c31_402f_3d88_3c74);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
@@ -2716,6 +2758,11 @@ mod tests {
         for (key, slots) in [
             ("plan.not_ready", &["{count}"][..]),
             ("plan.next", &["{question}", "{option}"][..]),
+            ("plan.formation_pending", &[][..]),
+            ("plan.forecast.waves", &["{waves}", "{stages}"][..]),
+            ("plan.forecast.ceiling", &["{waves}", "{stages}"][..]),
+            ("plan.forecast.times", &["{measured}", "{shortest}", "{median}", "{longest}", "{estimate}"][..]),
+            ("plan.forecast.no_measure", &[][..]),
             ("page.purge_pending", &["{codes}", "{spec}"][..]),
             ("plan.wave_loop", &["{waves}"][..]),
             ("plan.file_outside_git", &["{task}", "{path}"][..]),

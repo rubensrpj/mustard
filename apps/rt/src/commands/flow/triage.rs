@@ -107,6 +107,23 @@ pub(crate) fn form_for_round(root: &Path, spec: &str, session: Option<&str>, ask
     RoundForming { pending: None, applied: report["applied"] == json!(true) }
 }
 
+/// A formação das ondas antes da aprovação da spec `spec` de `root`, na
+/// sessão `session`: a mesma leitura do modelo pequeno que a rodada pede, com
+/// a lista inteira, e gravada quando o recibo já voltou. O plano diz quantas
+/// ondas a obra terá por ela, e a primeira rodada acha as tarefas já formadas,
+/// sem pedir outra leitura. Sem sessão, nada se forma.
+pub(crate) fn form_for_plan(root: &Path, spec: &str, session: Option<&str>) -> RoundForming {
+    if session.is_none() {
+        return RoundForming::default();
+    }
+    let opts = TriageOpts { root: root.to_path_buf(), spec: Some(spec.into()), apply: true };
+    let report = triage_with(&opts, session, false, reserve::jev_on(root), &|root, spec, payloads| task_triage::backlog_jev_ask(root, spec)(payloads));
+    if report.get("grouping").is_some() {
+        return RoundForming { pending: Some(json!({ "grouping": report["grouping"], "next": report["next"] })), applied: false };
+    }
+    RoundForming { pending: None, applied: report["applied"] == json!(true) }
+}
+
 /// `true` quando a tarefa `task` está numa onda que o classificador formou
 /// e que ainda não voltou com resumo: ela não se relê.
 fn formed(task: &SpecEvent) -> bool {
