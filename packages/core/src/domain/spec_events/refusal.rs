@@ -186,6 +186,15 @@ pub enum Refusal {
     /// arquivos do projeto com o mesmo nome, quando o lugar traz só o nome e
     /// mais de um o tem: a mensagem os sugere. Nada é gravado.
     FindingPlaceMissing { finding: usize, place: String, same_name: Vec<String> },
+    /// Uma tarefa cujos itens cobertos (`covers`, cada um pelo código) não dão
+    /// à onda prova nenhuma que ela rode: nenhum critério com prova, nenhum
+    /// pedido cujo relato nomeie a prova. Toda tarefa cobre uma regra com a
+    /// prova que a onda roda. Nada é gravado.
+    TaskWithoutProof { covers: Vec<String> },
+    /// A entrega da onda `wave` que dá por feita a tarefa `task` sem mudar
+    /// arquivo nenhum de cada lugar de `places`, os lugares da regra que ela
+    /// faz valer. Nada é gravado.
+    DeliveryPlaceUntouched { wave: u64, task: String, places: Vec<String> },
     /// Um item combinado novo, gravado depois da aprovação, que não tem dono:
     /// nenhuma tarefa o cobre, ele não diz as ondas dele nem vale no projeto
     /// todo.
@@ -447,6 +456,8 @@ impl Refusal {
             Self::WaveAgentWorking { .. } => "wave-agent-working",
             Self::LeftoverFieldMissing { .. } => "leftover-field-missing",
             Self::FindingPlaceMissing { .. } => "finding-place-missing",
+            Self::TaskWithoutProof { .. } => "task-without-proof",
+            Self::DeliveryPlaceUntouched { .. } => "delivery-place-untouched",
             Self::OwnerMissing { .. } => "owner-missing",
             Self::TaskDeclarationMissing { .. } => "task-declaration-missing",
             Self::ItemFormMissing { .. } => "item-form-missing",
@@ -713,6 +724,11 @@ impl Refusal {
             Self::FindingPlaceMissing { finding, place, same_name } => fill(
                 "spec_events.finding_place_missing.same_name",
                 &[("{finding}", finding.to_string()), ("{place}", place.clone()), ("{found}", same_name.join(", "))],
+            ),
+            Self::TaskWithoutProof { covers } => fill("spec_events.task_without_proof", &[("{covers}", covers.join(", "))]),
+            Self::DeliveryPlaceUntouched { wave, task, places } => fill(
+                "spec_events.delivery_place_untouched",
+                &[("{wave}", wave.to_string()), ("{task}", task.clone()), ("{places}", places.iter().map(|place| format!("`{place}`")).collect::<Vec<_>>().join(", "))],
             ),
             Self::OwnerMissing { event_type } => {
                 fill("plan.owner_missing", &[("{type}", event_type.clone())])

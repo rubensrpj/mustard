@@ -720,10 +720,18 @@ fn plan_files(project: &Project, files: &[&str]) {
 fn plan_covering_the_goal(project: &Project) {
     let said = user_says(project, "O plano é uma tarefa só, que muda a saudação.");
     let goal = project.log().visible().into_iter().find(|e| e.event_type == "context").expect("the goal of the survey").id;
+    // Sem critério, a regra com prova que a tarefa cobre é o pedido cujo
+    // relato nomeia a prova.
+    project.write(
+        "request",
+        &json!({"title": "Saudação nova", "text": "Trocar a saudação.", "agent": "- Prova: `git --version`", "keys": ["saudação"],
+            "effect": "new_waves", "origin": said}),
+    );
+    let asked = project.log().visible().into_iter().rfind(|e| e.event_type == "request").expect("the request").id;
     project.write(
         "task",
         &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Trocar a saudação no programa.",
-            "files": [{"path": "src/main.rs"}], "depends_on": [], "covers": [goal], "origin": said}),
+            "files": [{"path": "src/main.rs"}], "depends_on": [], "covers": [goal, asked], "origin": said}),
     );
     let planned = project.run(&["plan", "--spec", SPEC]);
     assert_eq!(State::from_log(&project.log()).phase, Some("plan"), "{planned}");
@@ -1348,6 +1356,8 @@ fn the_fix_door_opens_the_fix_wave_of_a_closed_work_without_criterion() {
     let line = closed_planned(&project, "Combinar o item", GOAL, &plan_covering_the_goal, &|args| project.run(args));
     let argv: Vec<&str> = line.iter().map(String::as_str).collect();
     let goal = project.log().visible().into_iter().find(|e| e.event_type == "context").expect("the goal").id;
+    let covered = project.log().visible().into_iter().find(|e| e.event_type == "task").expect("the task of the work").ints("covers");
+    assert!(covered.contains(&goal), "{covered:?}");
     std::fs::write(project.remotes.join("checks"), json!({"statusCheckRollup": []}).to_string()).expect("the checks");
     let opened = project.run(&argv);
     assert_eq!(opened["number"], json!(7), "{opened}");
@@ -1359,13 +1369,13 @@ fn the_fix_door_opens_the_fix_wave_of_a_closed_work_without_criterion() {
     let wave = fix["wave"].as_u64().unwrap_or_else(|| panic!("{fix}"));
     let log = project.log();
     let recorded = log.get(fix["id"].as_u64().unwrap_or_else(|| panic!("{fix}"))).expect("the fix wave");
-    assert_eq!(recorded.ints("criteria"), vec![goal], "the fix wave answers for what the tasks of the work covered");
+    assert_eq!(recorded.ints("criteria"), covered, "the fix wave answers for what the tasks of the work covered");
     let task = log
         .visible()
         .into_iter()
         .find(|e| e.event_type == "task" && e.wave() == Some(wave))
         .unwrap_or_else(|| panic!("the fix wave has no task: {fix}"));
-    assert_eq!(task.ints("covers"), vec![goal], "the task of the fix wave covers the same items");
+    assert_eq!(task.ints("covers"), covered, "the task of the fix wave covers the same items");
 
     let round = project.run(&["round", "--dispatch", "--spec", SPEC]);
     let dispatched: Vec<u64> = round["dispatch"].as_array().into_iter().flatten().filter_map(|sent| sent["wave"].as_u64()).collect();

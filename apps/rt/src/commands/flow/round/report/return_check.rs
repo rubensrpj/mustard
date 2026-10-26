@@ -6,6 +6,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
+use mustard_core::domain::rule_places::untouched_places;
 use mustard_core::domain::spec_events::{Refusal, SpecLog};
 use mustard_core::domain::wave_prompt as agreed_prompt;
 use mustard_core::io::fs::lock::LockedFile;
@@ -21,8 +22,9 @@ use super::super::finish_check::{proof_older_than_files, unfinished_work};
 use super::super::leftovers::leftovers_of;
 use super::super::queue::{open_review, open_sends};
 use super::super::read_check::{request_name, unread_items, without_undone};
+use super::super::sent_tasks::sent_tasks;
 use super::super::task_release::held_back;
-use super::{RoundRefusal, criterion_id, observations, proof_target, wave_report_of};
+use super::{RoundRefusal, WaveReport, criterion_id, observations, proof_target, wave_report_of};
 
 /// As conferências da volta que só leem a própria volta, feitas na gravação
 /// dela (`run write delivered`), antes de gravar: há envio aberto para a
@@ -32,7 +34,8 @@ use super::{RoundRefusal, criterion_id, observations, proof_target, wave_report_
 /// linha de comando; cada item combinado que o pedido da onda levou tem
 /// resposta em `agreed` ([`request_agreed`]); o agente leu o pedido; e a
 /// volta não devolve trabalho começado nem dá tarefa por feita sem o passo
-/// de término dela ([`unfinished_work`]); e nenhum arquivo entregue mudou
+/// de término dela ([`unfinished_work`]); a tarefa feita muda cada lugar da
+/// regra dela ([`places_left_out`]); e nenhum arquivo entregue mudou
 /// depois do último passo de término, o da prova verde
 /// ([`proof_older_than_files`]). Passando, a volta ganha
 /// `returned` e o autor da onda, e os arquivos ficam relativos ao
@@ -130,6 +133,8 @@ pub(crate) fn check_return(
     // com a cópia mudada depois do último passo de término, e a tarefa dada
     // como feita sem o passo dela, recusam.
     unfinished_work(&log, sent, &report, draft)?;
+    // E de mudar cada lugar da regra de cada tarefa que dá por feita.
+    places_left_out(start, &project.root, &log, &report)?;
     // E de não levar ao commit arquivo mudado depois da prova verde.
     proof_older_than_files(&log, sent, &report)?;
     // E de não levar ao código comentário que cite código de item da spec.
@@ -140,6 +145,33 @@ pub(crate) fn check_return(
     draft.insert("returned".into(), json!(true));
     draft.insert("author".into(), json!("wave"));
     Ok((held, warnings))
+}
+
+/// Confere que a entrega `report`, lida na spec `log` do projeto em `root`,
+/// visto de `start`, muda cada lugar da regra de cada tarefa com que a onda
+/// saiu e que ela não devolve em `undone`: o lugar que leva a um arquivo — pela
+/// linha, pelo caminho ou pelo nome que o mapa declara ([`untouched_places`]) —
+/// e cujo arquivo nenhum está entre os entregues recusa, com a tarefa e os
+/// lugares. A mudança de plano não entrega tarefa, e não confere nada aqui.
+fn places_left_out(start: &Path, root: &Path, log: &SpecLog, report: &WaveReport) -> Result<(), RoundRefusal> {
+    if report.replan.is_some() {
+        return Ok(());
+    }
+    let codes = log.codes();
+    let touched: BTreeSet<String> = report.files.iter().cloned().collect();
+    let world = mustard_core::io::citation::DiskWorld::new(store::citation_roots(start, root), Some(root));
+    for task in sent_tasks(log, report.wave) {
+        let code = codes.get(&task.id).cloned().unwrap_or_else(|| task.id.to_string());
+        if report.undone.iter().any(|(_, undone)| *undone == code) {
+            continue;
+        }
+        let places: Vec<String> = task.fields.get("places").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
+        let left: Vec<String> = untouched_places(&world, &places, &touched).into_iter().map(str::to_string).collect();
+        if !left.is_empty() {
+            return Err(RoundRefusal::Refused(Refusal::DeliveryPlaceUntouched { wave: report.wave, task: code, places: left }));
+        }
+    }
+    Ok(())
 }
 
 /// As conferências do veredito que o revisor grava (`run write verdict`),

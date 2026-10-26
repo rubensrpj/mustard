@@ -867,6 +867,10 @@ pub const TYPES: &[TypeSpec] = &[
             // regra nova. O achado de outra volta com a mesma regra entra
             // nela enquanto ela espera no backlog. Ausente é tarefa sem regra.
             opt("rule", Kind::Text),
+            // Os lugares da regra que a tarefa faz valer, achados pelo mapa:
+            // o arquivo com linha, o arquivo ou o nome de código. A entrega
+            // que dá a tarefa por feita muda cada um deles.
+            opt("places", Kind::Texts),
             // O motivo de quem grava uma tarefa nova que o classificador das
             // atividades daria como o mesmo trabalho de uma aberta: com ele,
             // a gravação passa sem perguntar e o motivo fica no evento.

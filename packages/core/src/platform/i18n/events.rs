@@ -692,6 +692,27 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Finding {finding} cites the place {place}, which the project does not have. With that \
              name, the project has {found}: cite the whole path. Nothing was written."
         }
+        ("spec_events.task_without_proof", Locale::PtBr) => {
+            "A tarefa cobre {covers}, e nenhum deles dá à onda uma prova que ela rode. Toda tarefa \
+             cobre uma regra com prova. Vale o critério com a prova dele, ou o pedido cujo relato \
+             traga `Prova:` e o comando entre crases. Grave antes o critério e cubra-o. Nada foi \
+             gravado."
+        }
+        ("spec_events.task_without_proof", Locale::EnUs) => {
+            "The task covers {covers}, and none of them gives the wave a proof it runs. Every task \
+             covers a rule with a proof. That is a criterion with its proof, or a request whose \
+             account carries `Proof:` and the command in backticks. Record the criterion first and \
+             cover it. Nothing was written."
+        }
+        ("spec_events.delivery_place_untouched", Locale::PtBr) => {
+            "A entrega da onda {wave} dá a tarefa {task} por feita sem mudar os lugares {places} da \
+             regra dela. Mude cada lugar, ou devolva a tarefa em `undone`. Nada foi gravado."
+        }
+        ("spec_events.delivery_place_untouched", Locale::EnUs) => {
+            "The delivery of wave {wave} gives task {task} as done without changing the places \
+             {places} of its rule. Change every place, or return the task in `undone`. Nothing was \
+             written."
+        }
         // O achado que vira tarefa da spec: a regra que ele quebrou, os
         // lugares dela e a linha do achado que entra na tarefa da mesma regra,
         // com os comandos do mapa que acham os lugares da regra.
@@ -1403,8 +1424,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            195,
-            0xaf99_6ad9_8db0_9b6b,
+            197,
+            0x329d_5434_a5d9_5d07,
         );
     }
 
@@ -1502,6 +1523,8 @@ mod tests {
             ("spec_events.leftover_field_missing", &["{finding}", "{field}"][..]),
             ("spec_events.finding_place_missing", &["{finding}", "{place}"][..]),
             ("spec_events.finding_place_missing.same_name", &["{finding}", "{place}", "{found}"][..]),
+            ("spec_events.task_without_proof", &["{covers}"][..]),
+            ("spec_events.delivery_place_untouched", &["{wave}", "{task}", "{places}"][..]),
             ("finding.rule", &["{rule}"][..]),
             ("finding.places", &["{places}"][..]),
             ("finding.joined_by_rule", &["{wave}", "{title}", "{detail}"][..]),

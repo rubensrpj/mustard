@@ -150,7 +150,7 @@ fn sent_with_an_open_task(root: &Path) {
         let decision = json!({"text": "A soma arredonda para baixo.", "why": "w", "waves": [1], "keys": ["k"], "origin": said});
         assert_eq!(write(root, "x", "decision", decision)["ok"], json!(true));
         let other = id_of(&write(root, "x", "decision", json!({"text": "O log gira por dia.", "why": "w", "keys": ["log"], "origin": said})));
-        let task = json!({"text": OPEN_TASK, "files": [{"path": "src/b.rs"}], "depends_on": [], "covers": [other], "origin": said});
+        let task = json!({"text": OPEN_TASK, "files": [{"path": "src/b.rs"}], "depends_on": [], "covers": [other, "MSTD-CRIT-0001"], "origin": said});
         assert_eq!(write(root, "x", "task", task)["ok"], json!(true));
     });
     std::fs::write(root.join("src/b.rs"), "fn two() {}\n").unwrap();

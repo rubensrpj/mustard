@@ -16,6 +16,7 @@ pub mod lessons;
 pub mod clarity;
 pub mod text;
 pub mod citation;
+pub mod rule_places;
 pub mod spec_events;
 pub mod spec_index;
 pub mod spec_state;

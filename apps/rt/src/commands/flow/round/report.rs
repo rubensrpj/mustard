@@ -3218,7 +3218,7 @@ mod tests {
     /// Uma tarefa no backlog da spec `x`, sem onda, cobrindo o item `item`.
     fn backlog_task_covering(root: &Path, item: u64, origin: u64) {
         let body = json!({"text": "A tarefa do backlog que já cobre a decisão.", "files": [{"path": "src/b.rs"}],
-            "depends_on": [], "covers": [item], "origin": origin});
+            "depends_on": [], "covers": [item, "MSTD-CRIT-0001"], "origin": origin});
         assert_eq!(write(root, "x", "task", body)["ok"], json!(true));
     }
 

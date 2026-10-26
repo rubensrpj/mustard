@@ -61,7 +61,8 @@ const PRIORITY: &str = "priority";
 /// dele faz valer: é por ele que os achados se juntam numa tarefa só.
 const RULE: &str = "rule";
 
-/// O campo dos lugares da regra que o achado diz.
+/// O campo dos lugares da regra que o achado diz, e dos que a tarefa nascida
+/// dele guarda, para a entrega dela mudar cada um.
 const PLACES: &str = "places";
 
 /// O campo do grupo de assunto da tarefa: o nome do grupo e a posição dela
@@ -264,6 +265,7 @@ pub(super) fn leftover_events(
             None => {
                 let mut task = leftover_task(root, log, wave, leftover, lang);
                 task.insert(RULE.into(), json!(leftover.rule));
+                task.insert(PLACES.into(), json!(leftover.places));
                 append_agent_line(&mut task, &rule_line(leftover, lang));
                 work.push(LeftoverEvent { asks: vec![request], ..event(wave, TASK, task) });
                 work.len() - 1
@@ -397,7 +399,8 @@ fn leftover_request(leftover: &Leftover, files: &BTreeSet<String>, origin: Optio
 /// tarefa da mesma regra: a parte do agente ganha uma linha com o título, o
 /// detalhe numa linha só e os lugares dele, no idioma `lang`; os arquivos
 /// `files` do achado entram nos da tarefa; a tarefa sem prioridade ganha a do
-/// achado ([`leftover_priority`]), salvo quando ele é limpeza; e a marca de
+/// achado ([`leftover_priority`]), salvo quando ele é limpeza; os lugares do
+/// achado entram nos da tarefa, que a entrega dela muda; e a marca de
 /// limpeza fica só quando o achado também a traz — a tarefa que passa a mudar
 /// comportamento deixa de ser limpeza. Os critérios da tarefa ficam como
 /// estão.
@@ -414,6 +417,14 @@ fn join(draft: &mut Map<String, Value>, wave: u64, leftover: &Leftover, files: &
         }
     }
     draft.insert(FILES.into(), json!(paths));
+    let mut places: Vec<Value> = draft.get(PLACES).and_then(Value::as_array).cloned().unwrap_or_default();
+    for place in &leftover.places {
+        let place = json!(place);
+        if !places.contains(&place) {
+            places.push(place);
+        }
+    }
+    draft.insert(PLACES.into(), json!(places));
     if !leftover.cleanup {
         draft.remove(CLEANUP);
         if draft.get(PRIORITY).and_then(Value::as_str).is_none_or(|said| said.trim().is_empty()) {

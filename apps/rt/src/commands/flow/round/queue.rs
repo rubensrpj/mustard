@@ -3015,14 +3015,14 @@ mod tests {
             "x",
             "task",
             json!({"title": "Gravar a versao nova de uma decisao", "text": "A decisao ja foi feita fora da onda.",
-                "files": [{"path": "src/b.rs"}], "depends_on": [], "covers": [item1], "origin": said}),
+                "files": [{"path": "src/b.rs"}], "depends_on": [], "covers": [item1, "MSTD-CRIT-0001"], "origin": said}),
         ));
         id_of(&write(
             root,
             "x",
             "task",
             json!({"title": "Trocar a mensagem de erro do campo vazio", "text": "Hoje a mensagem nao diz o campo.",
-                "files": [{"path": "src/b.rs"}], "depends_on": [], "covers": [item2], "origin": said}),
+                "files": [{"path": "src/b.rs"}], "depends_on": [], "covers": [item2, "MSTD-CRIT-0001"], "origin": said}),
         ));
 
         let log = store::read(&path).unwrap().unwrap();

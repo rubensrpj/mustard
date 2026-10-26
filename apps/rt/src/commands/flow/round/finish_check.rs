@@ -566,6 +566,48 @@ mod tests {
         assert_eq!(wrote["ok"], json!(true), "with the step after the change the delivery goes in: {wrote}");
     }
 
+    /// A segunda tarefa da onda faz valer uma regra de dois lugares, uma linha
+    /// de `src/b.rs` e o arquivo `src/c.rs`. A entrega que a dá por feita sem
+    /// mudar `src/c.rs` é recusada, nomeando a tarefa e só esse lugar, sem
+    /// gravar nada; com `src/c.rs` mudado e provado, a mesma entrega grava.
+    #[test]
+    fn a_delivery_that_leaves_a_place_of_its_rule_untouched_is_refused() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved_with(root, "x", &[(1, &["src/a.rs"], &[])], |said| {
+            let task = json!({"wave": 1, "text": "Segunda tarefa da onda 1.", "files": [{"path": "src/b.rs"}], "depends_on": [],
+                "rule": "A soma arredonda para baixo", "places": ["src/b.rs:1", "src/c.rs"], "origin": said});
+            assert_eq!(write(root, "x", "task", task)["ok"], json!(true));
+        });
+        let sent = round(root, "x", None);
+        assert_eq!(waves_in(&sent, "dispatch"), vec![1], "{sent}");
+        read_request(root, "x", 1);
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let copy = PathBuf::from(log.get(open_sends(&log)[&1]).and_then(|send| send.str_field("copy")).expect("the copy"));
+        edit(&copy, "src/a.rs", "a soma saiu");
+        edit(&copy, "src/b.rs", "o arredondamento saiu");
+        step(root, "MSTD-TASK-0001", json!({}));
+        step(root, "MSTD-TASK-0002", json!({}));
+
+        let before = spec_lines(root);
+        let body = json!({"wave": 1, "text": "A soma e o arredondamento saíram.", "files": ["src/a.rs", "src/b.rs"], "commit": "a soma arredonda"});
+        let refused = returned_unread(root, body);
+        assert_eq!(refused["reason"], json!("delivery-place-untouched"), "{refused}");
+        let expected = translate("spec_events.delivery_place_untouched", Locale::PtBr)
+            .replace("{wave}", "1")
+            .replace("{task}", "MSTD-TASK-0002")
+            .replace("{places}", "`src/c.rs`");
+        assert_eq!(refused["hint"], json!(expected), "{refused}");
+        assert_eq!(spec_lines(root), before, "nothing was written: {refused}");
+
+        edit(&copy, "src/c.rs", "o arredondamento vale aqui também");
+        step(root, "MSTD-TASK-0002", json!({}));
+        let body = json!({"wave": 1, "text": "A soma e o arredondamento saíram.", "files": ["src/a.rs", "src/b.rs", "src/c.rs"],
+            "commit": "a soma arredonda"});
+        let wrote = returned_unread(root, body);
+        assert_eq!(wrote["ok"], json!(true), "with every place changed the delivery goes in: {wrote}");
+    }
+
     /// A primeira tarefa lista `src/a.rs`; a segunda, devolvida, lista o
     /// mesmo arquivo e `src/b.rs`. A volta que devolve a segunda grava, e o
     /// conserto seguinte muda só `src/a.rs`, com o que pode ser trabalho

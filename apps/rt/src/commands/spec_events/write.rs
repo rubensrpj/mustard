@@ -214,7 +214,7 @@ use mustard_core::domain::spec_state::{
     PhaseWriter, SpecState, State, birth_event, goal_rule, last_user_message, not_closed_yet, phase_write_allowed, reply_rule, returns_to_running, survey_rule,
 };
 use mustard_core::domain::survey::{self, SurveyStep};
-use mustard_core::domain::wave_prompt::{marked_proofs, owner_rule, proofs_named_in};
+use mustard_core::domain::wave_prompt::{item_proofs, owner_rule, proofs_named_in};
 use mustard_core::io::{lessons, spec_events as store};
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Map, Value, json};
@@ -747,8 +747,8 @@ pub(crate) fn draft_object(json: &str) -> Result<Map<String, Value>, Refusal> {
 /// campos, antes de ler a spec: o autor do programa; o estado e o tipo de
 /// trabalho, que têm porta própria; os tipos que só o binário grava; a onda,
 /// que nasce do backlog; a fala que só um gancho grava; a pendência que o
-/// pedido adiado aponta, vista de `start`; e a prova do critério, ou a que a
-/// linha `Prova:` da tarefa nomeia, que não se sustenta, com os manifestos
+/// pedido adiado aponta, vista de `start`; e a prova do critério, ou as que a
+/// tarefa e o pedido nomeiam, que não se sustenta, com os manifestos
 /// do projeto lidos de `start`. Com `returns`, a volta da onda e a do revisor passam, para a
 /// conferência delas; sem ele, são recusadas como os outros tipos do binário.
 pub(crate) fn draft_rules(start: &Path, spec: &str, event_type: &str, draft: &mut Map<String, Value>, returns: bool) -> Result<(), Refusal> {
@@ -792,12 +792,10 @@ pub(crate) fn draft_rules(start: &Path, spec: &str, event_type: &str, draft: &mu
     // existente, e o que a própria tarefa declara também.
     let named: Vec<String> = match event_type {
         "criterion" => draft.get("proof").and_then(Value::as_str).map(str::to_string).into_iter().collect(),
-        // A tarefa nomeia a prova dela na linha `Prova:` do texto ou da parte
-        // do agente, e a onda roda esses comandos no fim.
-        "task" => ["text", "agent"].iter().filter_map(|field| draft.get(*field).and_then(Value::as_str)).flat_map(marked_proofs).collect(),
         // O pronto-quando da onda sai das provas que o pedido coberto nomeia,
+        // e a tarefa nomeia as dela no texto ou na parte do agente: as duas
         // pela mesma seleção da formação do lote.
-        "request" => {
+        "task" | "request" => {
             let fields: Vec<&str> = ["text", "agent"].iter().filter_map(|field| draft.get(*field).and_then(Value::as_str)).collect();
             proofs_named_in(&fields, project_test(start).as_deref())
         }
@@ -1008,6 +1006,39 @@ fn task_declarations_missing(draft: &Map<String, Value>, by_model: bool) -> Vec<
         missing.push(TaskDeclaration::Covers);
     }
     missing
+}
+
+/// A recusa da tarefa `draft`, gravada na spec lida em `log`, cujos itens
+/// cobertos não dão à onda prova nenhuma, pela seleção do pronto-quando dela
+/// ([`item_proofs`]), com o comando de teste do projeto (`test`): toda tarefa
+/// cobre uma regra com a prova que a onda roda de verdade. A tarefa sem
+/// `covers` fica para a recusa da declaração que falta, e a versão de uma
+/// tarefa que já não dava prova segue como era, como a forma fixa.
+fn task_without_proof(log: &SpecLog, draft: &Map<String, Value>, test: Option<&str>) -> Option<Refusal> {
+    let codes = log.codes();
+    let item = |reference: &Value| -> Option<&SpecEvent> {
+        let id = reference.as_u64().or_else(|| {
+            let said = reference.as_str()?.trim();
+            said.parse().ok().or_else(|| codes.iter().filter(|(_, code)| code.eq_ignore_ascii_case(said)).map(|(id, _)| *id).max())
+        })?;
+        log.get(id)
+    };
+    let gives_proof = |covers: &[Value]| covers.iter().filter_map(item).any(|covered| !item_proofs(covered, test).is_empty());
+    let covers = draft.get("covers").and_then(Value::as_array).filter(|covers| !covers.is_empty())?;
+    if gives_proof(covers) {
+        return None;
+    }
+    if let Some(old) = draft.get("replaces").and_then(item) {
+        let had = old.fields.get("covers").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+        if !gives_proof(had) {
+            return None;
+        }
+    }
+    let shown = covers
+        .iter()
+        .map(|reference| item(reference).and_then(|covered| codes.get(&covered.id).cloned()).unwrap_or_else(|| reference.as_str().map_or_else(|| reference.to_string(), str::to_string)))
+        .collect();
+    Some(Refusal::TaskWithoutProof { covers: shown })
 }
 
 /// Recusa a tarefa com declaração faltando ([`task_declarations_missing`]);
@@ -1333,6 +1364,14 @@ fn record_to(
     // segue como ele era.
     let by_model = by.is_none() && item_form(event_type).is_some();
     let mut issues: Vec<_> = declaration_issue.into_iter().collect();
+    // A tarefa que o modelo grava cobre uma regra com a prova que a onda roda.
+    if event_type == "task"
+        && by.is_none()
+        && let Some(log) = Source::of(&path, locked.as_deref()).log()?
+        && let Some(refusal) = task_without_proof(&log, &draft, project_test(start).as_deref())
+    {
+        issues.push(refusal);
+    }
     if by_model && !revises_an_item_without_the_form(&Source::of(&path, locked.as_deref()), &draft, event_type)? {
         let missing = item_form_missing(&draft, event_type, by_model);
         if !missing.is_empty() {
@@ -2197,7 +2236,7 @@ mod tests {
         std::fs::write(root.join("mustard.json"), "{}").unwrap();
         let asked = write(root, "message", r#"{"author":"user","text":"inclua a subtração"}"#)["id"].as_u64().unwrap();
         let request = json!({"title": "Subtração", "text": "Incluir a subtração.", "keys": ["subtração"], "effect": "new_waves",
-            "agent": "- conferir pelo teste", "origin": asked});
+            "agent": "- conferir pelo teste. Prova: `git --version`", "origin": asked});
         let request = write(root, "request", &request.to_string())["id"].as_u64().unwrap();
         let task = json!({"title": "Subtrair", "text": "Subtrair dois números.", "agent": "- subtrair", "files": [{"path": "src/calc.ts"}],
             "depends_on": [], "covers": [request], "origin": asked});
@@ -6305,6 +6344,43 @@ mod tests {
         let log = store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap();
         let written = log.get(recorded.written.id).expect("a versão gravada");
         assert_eq!(written.str_field("title"), Some("Fechamento confere cada critério"), "{:?}", written.fields);
+    }
+
+    /// A tarefa que cobre só uma decisão, sem prova nenhuma, é recusada sem
+    /// gravar nada, e a recusa nomeia o que ela cobre. A que cobre o pedido
+    /// cujo relato nomeia a prova grava, e a prova que a gravação aceitou é a
+    /// mesma que o pronto-quando da onda dela roda.
+    #[test]
+    fn every_task_covers_a_rule_with_a_proof_the_wave_runs() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), "{}").unwrap();
+        let said = write(root, "message", r#"{"author":"user","text":"inclua a subtração"}"#)["id"].as_u64().unwrap();
+        let decision = json!({"title": "Subtração fica no módulo", "text": "A subtração fica no módulo da soma.", "agent": "- no módulo",
+            "keys": ["subtração"], "why": "w", "origin": said});
+        let decision = write(root, "decision", &decision.to_string());
+        let decision_code = decision["code"].as_str().unwrap().to_string();
+        let request = json!({"title": "Subtração", "text": "Incluir a subtração.", "agent": "- Prova: `git --version`",
+            "keys": ["subtração"], "effect": "new_waves", "origin": said});
+        let request = write(root, "request", &request.to_string())["id"].as_u64().unwrap();
+        let by_model =
+            |covers: Value| write_at(&WriteOpts { root: root.to_path_buf(), spec: Some("teste".into()), event_type: "task".into(), json: json!({
+                "title": "Subtração no módulo", "text": "Incluir a subtração.", "agent": "- conferir pelo teste", "files": [], "depends_on": [],
+                "covers": covers, "origin": said}).to_string() });
+
+        let refused = by_model(json!([decision_code]));
+        assert_eq!(refused["reason"], json!("task-without-proof"), "{refused}");
+        assert!(refused["hint"].as_str().unwrap_or_default().contains(&decision_code), "{refused}");
+        let log = store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap();
+        assert!(!log.visible().iter().any(|event| event.event_type == "task"), "nada foi gravado");
+
+        let written = by_model(json!([decision_code, request]));
+        let task = written["id"].as_u64().unwrap_or_else(|| panic!("a tarefa que cobre a prova grava: {written}"));
+        let log = store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap();
+        let task = log.get(task).unwrap();
+        let commands = mustard_core::ProjectConfig::load(root).commands();
+        let fields = mustard_core::domain::wave_prompt::backlog_fields(&log, &[task], &commands, &BTreeSet::new());
+        assert_eq!(fields.done_when, "git --version", "a onda roda a prova que a tarefa cobre");
     }
 
     /// O item gravado pelo comando de gravação entra na hora no bloco das

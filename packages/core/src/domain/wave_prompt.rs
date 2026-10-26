@@ -1249,14 +1249,10 @@ pub fn backlog_fields(log: &SpecLog, tasks: &[&SpecEvent], commands: &Commands, 
     let waits = |id: u64| waiting.contains(&id) || codes.get(&id).is_some_and(|code| waiting_codes.contains(code));
     let mut proofs: Vec<String> = Vec::new();
     for item in criteria.iter().filter(|id| !waits(**id)).filter_map(|id| log.get(*id)) {
-        let own: Vec<String> = match item.str_field("proof") {
-            Some(proof) => vec![proof.trim().to_string()],
-            None if item.event_type == "request" => {
-                let named = named_proofs(item, commands.test.as_deref());
-                if named.is_empty() { commands.build.iter().cloned().collect() } else { named }
-            }
-            None => Vec::new(),
-        };
+        let mut own = item_proofs(item, commands.test.as_deref());
+        if own.is_empty() && item.event_type == "request" {
+            own = commands.build.iter().cloned().collect();
+        }
         for proof in own {
             if !proof.is_empty() && !proofs.contains(&proof) {
                 proofs.push(proof);
@@ -1266,6 +1262,22 @@ pub fn backlog_fields(log: &SpecLog, tasks: &[&SpecEvent], commands: &Commands, 
     let text = titles.join("; ");
     let done_when = if proofs.is_empty() { text.clone() } else { proofs.join(" && ") };
     BacklogFields { criteria, text, done_when }
+}
+
+/// As provas que a onda roda pelo item coberto `item`, com o comando de teste
+/// que o projeto declara (`test`): a prova gravada nele, a do critério; sem
+/// ela, no pedido, as que o relato nomeia ([`named_proofs`]). Os outros itens
+/// não dão prova. É a seleção única do pronto-quando da onda
+/// ([`backlog_fields`]) e da conferência de que uma tarefa cobre uma regra
+/// com prova: as duas nunca discordam sobre o que a onda roda.
+#[must_use]
+pub fn item_proofs(item: &SpecEvent, test: Option<&str>) -> Vec<String> {
+    match item.str_field("proof").map(str::trim) {
+        Some(proof) if !proof.is_empty() => vec![proof.to_string()],
+        Some(_) => Vec::new(),
+        None if item.event_type == "request" => named_proofs(item, test),
+        None => Vec::new(),
+    }
 }
 
 /// As marcas com que um relato nomeia a prova dele, nos dois idiomas do
