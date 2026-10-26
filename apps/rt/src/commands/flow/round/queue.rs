@@ -716,7 +716,7 @@ fn dependencies_of(n: u64, depends: &BTreeMap<u64, Vec<u64>>) -> BTreeSet<u64> {
 /// não existisse: a onda volta para a fila e sai com o pedido do plano
 /// atual. A reprovação do fechamento que não cita arquivo da onda já saiu
 /// antes desta leitura, na soltura que a rodada chama
-/// ([`crate::commands::flow::close::stale_marks::release`]), e não traz a
+/// ([`crate::commands::flow::common::stale_marks::release`]), e não traz a
 /// onda de volta.
 pub(crate) fn waves_to_redo(log: &SpecLog) -> BTreeSet<u64> {
     let last_send = log.last_dispatch_by_wave();

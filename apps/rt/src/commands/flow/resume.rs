@@ -28,6 +28,7 @@ use mustard_core::io::spec_index::later;
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Value, json};
 
+use super::common::step_command;
 use crate::commands::maint::work_copies;
 use crate::commands::spec_events;
 use crate::commands::spec_events::conversation::observed;
@@ -140,7 +141,7 @@ pub(crate) fn resume_for(opts: &ResumeOpts, session: Option<&str>) -> Value {
 /// foi tentado, ou quando ainda há onda ou tarefa a rodar.
 ///
 /// O motivo vem da marca que o próprio fechamento grava quando recusa
-/// ([`super::close::REFUSED_STAGE`]). A retomada não repete a mensagem
+/// ([`super::common::REFUSED_STAGE`]). A retomada não repete a mensagem
 /// inteira: ela manda rodar o fechamento de novo, que a diz com a saída do
 /// comando que caiu.
 fn refused_close(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Option<String> {
@@ -153,7 +154,7 @@ fn refused_close(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Option
     let last = log
         .events
         .iter()
-        .rfind(|event| event.event_type == "stage_run" && event.str_field("stage") == Some(super::close::REFUSED_STAGE))?;
+        .rfind(|event| event.event_type == "stage_run" && event.str_field("stage") == Some(super::common::REFUSED_STAGE))?;
     // A marca velha não vale: um fechamento depois dela, que pediu a revisão
     // ou fechou, apaga o que a de antes dizia.
     let newer = log.events.iter().any(|event| {
@@ -357,14 +358,14 @@ pub(crate) fn resume_block(spec: &str, log: &SpecLog, observed: &[SpecEvent], la
     let none = translate("resume.none", lang);
 
     // As mesmas contas da barra de status e do painel.
-    let states = crate::commands::panel::progress::wave_states(log);
+    let states = crate::commands::flow::round::wave_states(log);
     let delivered = states.values().filter(|state| state.finished()).count();
     let returns = log.returns_awaiting_round();
     let returned: BTreeSet<u64> = returns.iter().filter_map(|e| e.wave()).collect();
     let running: BTreeSet<u64> =
         waves_in_progress(log).into_keys().filter(|n| !returned.contains(n)).collect();
     let stuck: Vec<String> = waves_stuck(log).into_keys().map(|n| n.to_string()).collect();
-    let missing: Vec<String> = crate::commands::panel::progress::missing_waves(&states, &running, &returned)
+    let missing: Vec<String> = super::common::progress::missing_waves(&states, &running, &returned)
         .into_iter()
         .map(|n| n.to_string())
         .collect();
@@ -572,8 +573,9 @@ pub(crate) fn next_command_now(root: &Path, phase: &str, spec: &str, state: &Sta
 /// veredito e, sem nada disso, o fechamento, que refaz a revisão final quando
 /// a reabertura anulou a aprovação.
 fn step_of(root: &Path, phase: &str, spec: &str, log: &SpecLog, lang: Locale) -> (&'static str, String) {
-    use crate::commands::flow::round::queue::{backlog_ready, next_waves};
-    use crate::commands::flow::round::{awaits_verdict, backlog_left, waves_stuck};
+    use super::common::outdated_request::awaits_verdict;
+    use crate::commands::flow::round::queue::{awaited_review, backlog_ready, next_waves};
+    use crate::commands::flow::round::{backlog_left, waves_stuck};
     use mustard_core::view::document::WaveState;
 
     let said = |key: &str| ("close", translate(key, lang).to_string());
@@ -594,7 +596,7 @@ fn step_of(root: &Path, phase: &str, spec: &str, log: &SpecLog, lang: Locale) ->
     if log.planned_waves().is_empty() {
         return round("resume.step.backlog");
     }
-    let states = crate::commands::panel::progress::wave_states(log);
+    let states = crate::commands::flow::round::wave_states(log);
     let in_state = |wanted: WaveState| states.iter().filter(|(_, state)| **state == wanted).map(|(n, _)| *n).collect::<Vec<u64>>();
     let stuck = waves_stuck(log);
     if !stuck.is_empty() {
@@ -633,32 +635,16 @@ fn step_of(root: &Path, phase: &str, spec: &str, log: &SpecLog, lang: Locale) ->
     // nem o que ficou para trás de um item gravado depois dele, pela mesma
     // conferência da rodada e do fechamento: o passo é o fechamento, que
     // grava o pedido novo.
-    if awaits_verdict(log) {
+    if awaits_verdict(log, awaited_review(log)) {
         return ("close", translate("resume.step.review_open", lang).to_string());
     }
-    let review = crate::commands::panel::progress::review(log);
+    let review = super::common::progress::review(log);
     if review["valid"] == true {
         said("resume.step.close_approved")
     } else if review["reopened_at"].is_null() {
         said("resume.step.close")
     } else {
         said("resume.step.close_again")
-    }
-}
-
-/// A linha inteira do passo `name` da spec `spec`, com as opções que o passo
-/// exige tiradas do estado: o pull request sai da branch da spec para a base
-/// dela. `None` quando o estado não traz o que o passo exige — uma linha sem
-/// uma opção obrigatória é recusada pelo binário antes de fazer qualquer coisa.
-pub fn step_command(name: &str, spec: &str, state: &State) -> Option<String> {
-    match name {
-        "round" => Some(format!("mustard-rt run round --dispatch --spec {spec}")),
-        "pr-open" => {
-            let base = state.base.as_deref().map(str::trim).filter(|b| !b.is_empty())?;
-            let head = state.branch.as_deref().map(str::trim).filter(|b| !b.is_empty())?;
-            Some(format!("mustard-rt run pr-open --base {base} --head {head} --spec {spec}"))
-        }
-        _ => Some(format!("mustard-rt run {name} --spec {spec}")),
     }
 }
 

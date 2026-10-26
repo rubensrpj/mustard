@@ -696,7 +696,8 @@ fn dispatch_round(
     // de a rodada escolher quem volta ao conserto, pela mesma soltura do
     // fechamento: a onda solta não é despachada de novo por uma marca sem
     // prova.
-    let locked = if crate::commands::flow::close::stale_marks::release(root, &spec, &locked, lang).map_err(RoundRefusal::Refused)?.is_empty() {
+    let pending = super::queue::waves_pending_fix(&locked);
+    let locked = if crate::commands::flow::common::stale_marks::release(root, &spec, &locked, pending, lang).map_err(RoundRefusal::Refused)?.is_empty() {
         locked
     } else {
         store::read(path).map_err(RoundRefusal::Refused)?.ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.clone() }))?

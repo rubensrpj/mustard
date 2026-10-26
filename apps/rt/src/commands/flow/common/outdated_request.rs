@@ -16,14 +16,14 @@
 //! então grava o pedido novo no lugar de esperar o veredito do antigo, e a
 //! aprovação do pedido antigo não fecha a obra. A rodada e o passo do painel
 //! fazem a mesma conferência antes de mandar esperar o veredito
-//! ([`awaits_verdict`]): com o envio para trás, eles mandam fechar.
+//! ([`awaits_verdict`]): com o envio para trás, eles mandam fechar. O pedido
+//! aberto que ainda espera veredito vem de quem chama, pela leitura da fila
+//! da rodada (`awaited_review`): esta parte comum não importa a rodada.
 
 use mustard_core::domain::spec_events::SpecLog;
 use mustard_core::domain::spec_state::{answered_request, final_approval};
 use mustard_core::io::wave_prompt::final_review_listed;
 use mustard_core::platform::i18n::{Locale, translate};
-
-use super::queue::awaited_review;
 
 /// O envio de revisão final que ficou para trás, com os itens que a spec
 /// ganhou depois dele e que o pedido de agora lista.
@@ -44,25 +44,26 @@ impl Outdated {
 
 /// O envio de revisão final que o veredito responde — o que a aprovação final
 /// vigente respondeu ([`answered_request`]) ou, sem ela, o pedido aberto que
-/// ainda espera veredito ([`awaited_review`]) —, os dois pelo número da
+/// ainda espera veredito (`awaited`) —, os dois pelo número da
 /// versão que gravou o pedido. O lançamento do revisor grava uma versão nova
 /// do envio, com o modelo que valeu, e ela não refaz o pedido: o item gravado
 /// entre o pedido e o lançamento continua fora do que o revisor recebe.
-fn answered_send(log: &SpecLog) -> Option<u64> {
+fn answered_send(log: &SpecLog, awaited: Option<u64>) -> Option<u64> {
     match final_approval(log) {
         Some(verdict) => answered_request(log, verdict.id),
-        None => awaited_review(log),
+        None => awaited,
     }
 }
 
-/// O envio de revisão final da spec de `log` que ficou para trás: algum item
+/// O envio de revisão final da spec de `log`, com o pedido aberto que ainda
+/// espera veredito `awaited`, que ficou para trás: algum item
 /// que o pedido de agora lista ([`final_review_listed`], que lê só a spec, sem
 /// montar o pedido) foi gravado — ou regravado — depois dele. `None` sem envio
 /// que o veredito responda, ou quando o envio já trazia tudo o que o pedido de
 /// agora lista. O veredito não conta como item novo: é a resposta ao próprio
 /// envio.
-pub(crate) fn find(log: &SpecLog) -> Option<Outdated> {
-    let send = answered_send(log)?;
+pub(crate) fn find(log: &SpecLog, awaited: Option<u64>) -> Option<Outdated> {
+    let send = answered_send(log, awaited)?;
     let listed = final_review_listed(log);
     let codes = log.codes();
     let mut items: Vec<String> = Vec::new();
@@ -75,10 +76,10 @@ pub(crate) fn find(log: &SpecLog) -> Option<Outdated> {
 }
 
 /// Se a obra da spec de `log` espera o veredito do pedido de revisão final
-/// aberto: o pedido é mais novo que a última mudança ([`awaited_review`]) e
-/// não ficou para trás de um item gravado depois dele ([`find`]). Com o pedido
+/// aberto: há o pedido mais novo que a última mudança (`awaited`) e ele não
+/// ficou para trás de um item gravado depois dele ([`find`]). Com o pedido
 /// velho ou para trás, o veredito dele já não aprovaria a obra, e o passo é
 /// fechar, que grava o pedido novo.
-pub(crate) fn awaits_verdict(log: &SpecLog) -> bool {
-    awaited_review(log).is_some() && find(log).is_none()
+pub(crate) fn awaits_verdict(log: &SpecLog, awaited: Option<u64>) -> bool {
+    awaited.is_some() && find(log, awaited).is_none()
 }

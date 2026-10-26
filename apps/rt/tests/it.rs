@@ -42,6 +42,7 @@ mod doctor_follows_config_dir;
 mod doctor_known_events;
 mod end_to_end_flow;
 mod final_review_crosses_agreed;
+mod flow_modules_import_cycle;
 mod hooks_never_break_the_session;
 mod installer_switches;
 mod upsert_installation;

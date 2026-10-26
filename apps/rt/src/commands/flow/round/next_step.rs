@@ -14,8 +14,10 @@ use mustard_core::domain::spec_events::SpecLog;
 use mustard_core::domain::spec_state::State;
 use mustard_core::platform::i18n::{Locale, translate};
 
-use super::queue::{backlog_left, backlog_ready, first_unfinished};
-use super::{DONE_STEP, awaits_verdict};
+use super::DONE_STEP;
+use super::queue::{awaited_review, backlog_left, backlog_ready, first_unfinished};
+use crate::commands::flow::common::outdated_request::awaits_verdict;
+use crate::commands::flow::common::step_command;
 
 /// Onde as ondas estão depois dos envios da rodada.
 pub(super) struct Standing<'a> {
@@ -61,14 +63,14 @@ pub(super) fn next_step(root: &Path, spec: &str, (log, codes): (&SpecLog, &BTree
             super::planning::stuck_backlog_line(log, codes, lang)
         } else {
             let state = State::from_log(log);
-            let step = crate::commands::flow::resume::step_command("round", spec, &state);
+            let step = step_command("round", spec, &state);
             let text = translate("round.backlog_left", lang)
                 .replace("{tasks}", &shown(&mut ready.into_iter()))
                 .replace("{command}", step.as_deref().unwrap_or_default());
             command = step;
             text
         }
-    } else if awaits_verdict(log) {
+    } else if awaits_verdict(log, awaited_review(log)) {
         // Toda onda está entregue, mas a revisão final segue aberta, sem o
         // veredito do revisor: a obra ainda não está aprovada, e o fechamento
         // recusaria. A resposta manda esperar o veredito, sem o comando de
@@ -86,7 +88,7 @@ pub(super) fn next_step(root: &Path, spec: &str, (log, codes): (&SpecLog, &BTree
             let reason = translate("round.fix_reason", lang);
             (Some(format!("mustard-rt run reopen --fix --spec {spec} --reason \"{reason}\"")), "round.fix_push")
         } else {
-            (crate::commands::flow::resume::step_command(DONE_STEP, spec, &state), "round.close")
+            (step_command(DONE_STEP, spec, &state), "round.close")
         };
         let text = translate(key, lang).replace("{command}", step.as_deref().unwrap_or_default());
         command = step;

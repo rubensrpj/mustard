@@ -32,7 +32,8 @@ use clap::{Command, Subcommand};
 use regex::Regex;
 use mustard_core::domain::model::contract::Trigger;
 use mustard_core::domain::spec_state::State;
-use mustard_rt::commands::flow::resume::{next_command, step_command, NEXT_BY_PHASE};
+use mustard_rt::commands::flow::common::step_command;
+use mustard_rt::commands::flow::resume::{next_command, NEXT_BY_PHASE};
 use mustard_rt::commands::flow::round::DONE_STEP;
 use mustard_rt::commands::RunCmd;
 

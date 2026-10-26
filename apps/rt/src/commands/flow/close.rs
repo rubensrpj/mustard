@@ -87,11 +87,12 @@ use crate::shared::spec_state::{DiskSpecState, checkout, session_from_env};
 mod clean_copy;
 #[cfg(test)]
 mod outdated_request_tests;
-pub(crate) mod ownerless_tests;
+mod ownerless_tests;
 mod proof_runs;
 #[cfg(test)]
 mod review_request_tests;
-pub(crate) mod stale_marks;
+#[cfg(test)]
+mod stale_marks;
 mod unused;
 
 /// As opções de `mustard-rt run close`.
@@ -380,9 +381,6 @@ fn close_in(opts: &CloseOpts, caller: Caller<'_>) -> Value {
     value
 }
 
-/// A etapa em que o fechamento recusado fica gravado, para a retomada.
-pub(crate) const REFUSED_STAGE: &str = "close-refused";
-
 /// Grava, na spec, que este fechamento caiu, e com que motivo. Melhor
 /// esforço: a gravação que falha não muda a resposta, e a retomada volta a
 /// não saber do fechamento, como antes desta marca.
@@ -396,7 +394,7 @@ fn record_refused_close(start: &Path, spec: Option<&str>, value: &Value) {
     let Some(reason) = value.get("reason").and_then(Value::as_str) else {
         return;
     };
-    let draft = json!({"phase": "final", "stage": REFUSED_STAGE, "result": "fail", "ms": 0,
+    let draft = json!({"phase": "final", "stage": super::common::REFUSED_STAGE, "result": "fail", "ms": 0,
         "output": reason, "author": "binary"});
     let _ = record(start, spec, "stage_run", draft.as_object().cloned().unwrap_or_default(), PhaseWriter::Binary);
 }
@@ -479,7 +477,8 @@ fn run_close(
     // gravaram sem citar arquivo da onda sai antes de a obra ser conferida: a
     // onda solta não trava mais o fechamento, que segue para a máquina sem
     // pedir conserto.
-    let log = if stale_marks::release(root, &spec, &log, lang).map_err(CloseRefusal::Refused)?.is_empty() { log } else { read(&path)? };
+    let pending = crate::commands::flow::round::waves_pending_fix(&log);
+    let log = if super::common::stale_marks::release(root, &spec, &log, pending, lang).map_err(CloseRefusal::Refused)?.is_empty() { log } else { read(&path)? };
     // A onda segurada acima não é cobrada de novo por falta de commit.
     missing.extend(unfinished(&log).into_iter().filter(|refusal| !matches!(refusal, CloseRefusal::WaveWithoutCommit { wave } if held.contains(wave))));
     // O pedido de revisão só fecha com o veredito que o revisor grava e que a
@@ -490,8 +489,9 @@ fn run_close(
     // abre um pedido novo, mais abaixo. O mesmo vale para o pedido que ficou
     // para trás de um item gravado depois dele: o pedido novo o lista, e a
     // aprovação do antigo não fecha a obra.
-    let outdated = crate::commands::flow::round::outdated_review(&log);
-    if crate::commands::flow::round::awaited_review(&log).is_some()
+    let awaited = crate::commands::flow::round::awaited_review(&log);
+    let outdated = super::common::outdated_request::find(&log, awaited);
+    if awaited.is_some()
         && !held.contains(&crate::commands::flow::round::FINAL_REVIEW)
         && outdated.is_none()
     {
@@ -605,7 +605,7 @@ fn run_close(
             spec_events::pages::push_warning(&mut out, "unused-analysis", hint);
         }
         for hint in &unowned_tests {
-            spec_events::pages::push_warning(&mut out, ownerless_tests::REASON, hint);
+            spec_events::pages::push_warning(&mut out, super::common::ownerless::REASON, hint);
         }
         for file in &not_copied {
             let hint = crate::commands::flow::round::local_file_missing(file, &copy, lang);
@@ -725,7 +725,7 @@ fn run_close(
         spec_events::pages::push_warning(&mut out, "unused-analysis", hint);
     }
     for hint in &unowned_tests {
-        spec_events::pages::push_warning(&mut out, ownerless_tests::REASON, hint);
+        spec_events::pages::push_warning(&mut out, super::common::ownerless::REASON, hint);
     }
     ask_about_findings(&mut out, questions, lang);
     // As pendências abertas nascidas nesta spec vão ao usuário na hora, para
@@ -795,7 +795,7 @@ fn final_leftovers_answer(spec: &str, mut recorded: Vec<Value>, found: crate::co
         .filter_map(|entry| entry["id"].as_u64())
         .map(|id| codes.get(&id).cloned().unwrap_or_else(|| id.to_string()))
         .collect();
-    let command = crate::commands::flow::resume::step_command("round", spec, &State::from_log(log)).unwrap_or_default();
+    let command = super::common::step_command("round", spec, &State::from_log(log)).unwrap_or_default();
     let next = translate("close.final_leftovers", lang).replace("{tasks}", &tasks.join(", ")).replace("{command}", &command);
     recorded.extend(found.recorded);
     let mut out = json!({ "ok": true, "spec": spec, "phase": "running", "recorded": recorded, "next": next, "command": command });
