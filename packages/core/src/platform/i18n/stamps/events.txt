@@ -87,6 +87,7 @@ spec_events.find_pasted	e482b5669ee37bf4
 spec_events.find_user_message	bab05884e0b64973
 spec_events.finding_place_missing	f66e7e9a58dd9d68
 spec_events.finding_place_missing.same_name	d974e522612482fc
+spec_events.finding_proof_missing	c904665fc9c1ddd9
 spec_events.goal_origin_not_user	2fbd0b5d343d1761
 spec_events.goal_title_field_too_long	f740523dee567dc0
 spec_events.goal_title_too_long	fe268905a3f55e3e

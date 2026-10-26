@@ -186,6 +186,11 @@ pub enum Refusal {
     /// arquivos do projeto com o mesmo nome, quando o lugar traz só o nome e
     /// mais de um o tem: a mensagem os sugere. Nada é gravado.
     FindingPlaceMissing { finding: usize, place: String, same_name: Vec<String> },
+    /// O achado número `finding` da lista `leftovers`, a contar de um, cujo
+    /// detalhe não nomeia prova nenhuma: a tarefa que ele vira cobre o pedido
+    /// com esse detalhe como relato, e sem prova a onda dela não teria o que
+    /// rodar. Nada é gravado.
+    FindingProofMissing { finding: usize },
     /// Uma tarefa cujos itens cobertos (`covers`, cada um pelo código) não dão
     /// à onda prova nenhuma que ela rode: nenhum critério com prova, nenhum
     /// pedido cujo relato nomeie a prova. Toda tarefa cobre uma regra com a
@@ -452,6 +457,7 @@ impl Refusal {
             Self::WaveAgentWorking { .. } => "wave-agent-working",
             Self::LeftoverFieldMissing { .. } => "leftover-field-missing",
             Self::FindingPlaceMissing { .. } => "finding-place-missing",
+            Self::FindingProofMissing { .. } => "finding-proof-missing",
             Self::TaskWithoutProof { .. } => "task-without-proof",
             Self::DeliveryPlaceUntouched { .. } => "delivery-place-untouched",
             Self::OwnerMissing { .. } => "owner-missing",
@@ -720,6 +726,7 @@ impl Refusal {
                 "spec_events.finding_place_missing.same_name",
                 &[("{finding}", finding.to_string()), ("{place}", place.clone()), ("{found}", same_name.join(", "))],
             ),
+            Self::FindingProofMissing { finding } => fill("spec_events.finding_proof_missing", &[("{finding}", finding.to_string())]),
             Self::TaskWithoutProof { covers } => fill("spec_events.task_without_proof", &[("{covers}", covers.join(", "))]),
             Self::DeliveryPlaceUntouched { wave, task, places } => fill(
                 "spec_events.delivery_place_untouched",

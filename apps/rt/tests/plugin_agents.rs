@@ -756,17 +756,19 @@ fn boundary_sends_a_running_waves_file_to_leftovers_and_the_backlog() {
 
 /// O agente de onda e o revisor pedem, em cada achado que gravam em
 /// `leftovers`, a regra que ele quebrou — o código de uma regra da spec ou o
-/// texto de uma regra nova — e os lugares dela, achados pelo mapa: é pela
-/// regra que os achados se juntam numa tarefa.
+/// texto de uma regra nova —, os lugares dela, achados pelo mapa, e a prova
+/// no detalhe: é pela regra que os achados se juntam numa tarefa, e a prova
+/// do detalhe é a que a onda dela roda.
 #[test]
-fn both_agent_texts_ask_each_finding_for_its_rule_and_places() {
+fn both_agent_texts_ask_each_finding_for_its_rule_places_and_proof() {
     let fields = "\"rule\":\"…\",\"places\":[\"…\"]";
-    for (lang, rule, places) in
-        [("pt-BR", "a regra que o achado quebrou (código da spec ou regra nova)", "lugares dela pelo mapa"), ("en-US", "the rule the finding broke (a spec code or a new rule)", "places from the map")]
-    {
+    for (lang, rule, places, proof) in [
+        ("pt-BR", "a regra que o achado quebrou (código da spec ou regra nova)", "lugares dela pelo mapa", "o detalhe traz `Prova:` e o comando entre crases"),
+        ("en-US", "the rule the finding broke (a spec code or a new rule)", "places from the map", "the detail carries `Proof:` and the command in backticks"),
+    ] {
         for name in ["wave", "review"] {
             let body = template(lang, name);
-            for said in [fields, rule, places] {
+            for said in [fields, rule, places, proof] {
                 assert!(body.contains(said), "the {lang} `{name}` agent does not ask each finding for `{said}`");
             }
         }

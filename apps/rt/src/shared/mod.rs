@@ -110,6 +110,9 @@ pub mod pr_history;
 pub mod pr_provider;
 pub mod proc;
 pub mod prompt;
+/// Os itens que dão à onda a prova que ela roda: os critérios da obra e os
+/// que a tarefa gravada pelo programa cobre.
+pub(crate) mod rule_proof;
 /// O texto do catálogo com as vagas preenchidas.
 pub mod say;
 pub mod spec_state;

@@ -963,9 +963,12 @@ fn check_reports(
     // A triagem de cada atividade lê só a decisão já tomada: o Jev nunca é
     // chamado daqui, com a trava do passo do git presa.
     let ask = |payload: &str| triage.decisions.answer(payload);
+    // A tarefa nova de um item não cumprido cobre também os itens com prova
+    // por que a volta responde, lidos pelo comando de teste do projeto.
+    let test = mustard_core::ProjectConfig::load(root).commands().test;
     // O item que a revisão final não cumpriu passa pelo classificador, como o
     // da volta de uma onda: a nota, a versão nova de uma tarefa ou a tarefa nova.
-    let (review_events, review_joins) = place_review_unmet(check.log(), review_unmet, lang, &ask);
+    let (review_events, review_joins) = place_review_unmet(check.log(), review_unmet, (lang, test.as_deref()), &ask);
     let agreed_tasks =
         review_events.into_iter().map(|(kind, draft)| Ok((kind, rehearse(&mut check, kind, draft)?))).collect::<Result<Vec<_>, Refusal>>()?;
     let mut meaning = unmet_meaning_joins(review_joins, verdicts.len(), verdicts.len());
@@ -975,7 +978,7 @@ fn check_reports(
     // item que a onda não cumpriu entra nessa mesma versão, e também não
     // vira tarefa nova.
     let mut returned = undone_returns(check.log(), &report.waves, lang, &ask);
-    let (unmet, unmet_joins) = join_unmet((triage.log, &triage.returning), check.log(), &report.waves, &mut returned, lang, &ask)?;
+    let (unmet, unmet_joins) = join_unmet((triage.log, &triage.returning), check.log(), &report.waves, &mut returned, (lang, test.as_deref()), &ask)?;
     let mut undone_tasks = Vec::new();
     for (wave, task) in returned {
         undone_tasks.push((wave, rehearse(&mut check, "task", task)?));
@@ -2829,7 +2832,8 @@ mod tests {
         assert_eq!(took["ok"], json!(true), "{took}");
         let tasks = backlog();
         assert_eq!(tasks.len(), 1, "one task, for the item not met: {tasks:?}");
-        assert_eq!(tasks[0]["covers"], json!([edge]), "{tasks:?}");
+        let crit = read().visible().into_iter().find(|e| e.event_type == "criterion").map(|e| e.id).expect("the criterion");
+        assert_eq!(tasks[0]["covers"], json!([edge, crit]), "the item and the criterion with proof of the wave: {tasks:?}");
         assert_eq!(tasks[0]["author"], json!("wave"), "{tasks:?}");
         assert_eq!(tasks[0]["text"], json!("Falta a lista vazia somar zero."), "{tasks:?}");
         let log = read();
@@ -4409,16 +4413,16 @@ fn main() { sum_comes_out_right(); double_comes_out_right(); }
         assert!(hint.contains("O achado 1") && hint.contains("title, rule, places"), "{untitled}");
         assert_eq!(spec_lines(root), before, "nada foi gravado: {untitled}");
 
-        let cites = "Sem o índice, `src/commit.rs` para de ler o arquivo; `src/nao_existe.rs` também.";
+        let cites = "Sem o índice, `src/commit.rs` para de ler o arquivo; `src/nao_existe.rs` também. Prova: `git --version`";
         let wrote = returned(
             root,
             json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"],
             "commit": "a soma sai", "leftovers": [
-                {"title": "O log não gira", "detail": "O arquivo de log cresce sem limite.", "rule": "O log gira por dia", "places": ["src/a.rs"]},
-                {"title": "O nome da variável confunde", "detail": "Um nome mais claro.", "kind": "cosmetic",
+                {"title": "O log não gira", "detail": "O arquivo de log cresce sem limite. Prova: `git --version`", "rule": "O log gira por dia", "places": ["src/a.rs"]},
+                {"title": "O nome da variável confunde", "detail": "Um nome mais claro. Prova: `git --version`", "kind": "cosmetic",
                     "rule": "Cada nome diz o que guarda", "places": ["src/a.rs"]},
                 {"title": "A leitura para sem o índice", "detail": cites, "kind": "breaks", "rule": "A leitura tem índice", "places": ["src/commit.rs"]},
-                {"title": "a busca ignora ACENTO", "detail": "Achei de novo.", "kind": "later", "rule": "A busca vê acento", "places": ["src/a.rs"]},
+                {"title": "a busca ignora ACENTO", "detail": "Achei de novo. Prova: `git --version`", "kind": "later", "rule": "A busca vê acento", "places": ["src/a.rs"]},
             ]}),
         );
         assert_eq!(wrote["ok"], json!(true), "a volta com `kind` de qualquer valor é aceita: {wrote}");
@@ -4445,7 +4449,7 @@ fn main() { sum_comes_out_right(); double_comes_out_right(); }
             assert!(!task.fields.contains_key("kind"), "o `kind` da volta fica de fora: {:?}", task.fields);
             assert_eq!(task.fields.get("priority"), Some(&json!(priority)), "a sobra vai à frente da fila: {:?}", task.fields);
         }
-        assert_eq!(tasks[1].fields["text"], json!("Um nome mais claro."), "{:?}", tasks[1].fields);
+        assert_eq!(tasks[1].fields["text"], json!("Um nome mais claro. Prova: `git --version`"), "{:?}", tasks[1].fields);
         assert_eq!(tasks[2].fields["text"], json!(cites), "{:?}", tasks[2].fields);
         assert_eq!(tasks[2].fields["files"], json!([{"path": "src/commit.rs"}]), "{:?}", tasks[2].fields);
         assert_eq!(tasks[0].fields["files"], json!([]), "{:?}", tasks[0].fields);
@@ -4467,9 +4471,9 @@ fn main() { sum_comes_out_right(); double_comes_out_right(); }
             root,
             json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"],
             "commit": "a soma sai", "leftovers": [
-                {"title": "O comentário da soma diz dois", "detail": "A soma é de três.", "cleanup": true,
+                {"title": "O comentário da soma diz dois", "detail": "A soma é de três. Prova: `git --version`", "cleanup": true,
                     "rule": "O comentário diz o que o código faz", "places": ["src/a.rs"]},
-                {"title": "O log não gira", "detail": "O arquivo de log cresce sem limite.", "rule": "O log gira por dia", "places": ["src/a.rs"]},
+                {"title": "O log não gira", "detail": "O arquivo de log cresce sem limite. Prova: `git --version`", "rule": "O log gira por dia", "places": ["src/a.rs"]},
             ]}),
         );
         assert_eq!(wrote["ok"], json!(true), "{wrote}");

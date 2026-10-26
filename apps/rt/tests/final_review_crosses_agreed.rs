@@ -588,8 +588,8 @@ fn an_approved_final_verdict_with_leftovers_becomes_backlog_tasks_instead_of_the
     let mut verdict = all_met_verdict(&decisions);
     let rule = |at: usize| decisions[at]["code"].as_str().expect("the decision code").to_string();
     verdict["leftovers"] = json!([
-        {"title": "A soma não trata estouro", "detail": "A soma de números grandes estoura em src/main.rs.", "files": ["src/main.rs"], "rule": rule(0), "places": ["src/main.rs"]},
-        {"title": "O README não cita a soma", "detail": "O README não explica a soma.", "files": ["README.md"], "cleanup": true, "rule": rule(1), "places": ["README.md"]},
+        {"title": "A soma não trata estouro", "detail": "A soma de números grandes estoura em src/main.rs. Prova: `git --version`", "files": ["src/main.rs"], "rule": rule(0), "places": ["src/main.rs"]},
+        {"title": "O README não cita a soma", "detail": "O README não explica a soma. Prova: `git --version`", "files": ["README.md"], "cleanup": true, "rule": rule(1), "places": ["README.md"]},
     ]);
     project.read_review();
     project.write("verdict", &verdict);
@@ -643,7 +643,7 @@ fn an_approved_final_verdict_with_a_leftover_only_in_a_git_ignored_file_closes_w
 
     let title = "A chave da API falta no ambiente local";
     let mut verdict = all_met_verdict(&decisions);
-    verdict["leftovers"] = json!([{"title": title, "detail": "Falta a chave da API no .env desta máquina.", "files": [".env"], "rule": "A chave da API mora no ambiente", "places": [".env"]}]);
+    verdict["leftovers"] = json!([{"title": title, "detail": "Falta a chave da API no .env desta máquina. Prova: `git --version`", "files": [".env"], "rule": "A chave da API mora no ambiente", "places": [".env"]}]);
     project.read_review();
     project.write("verdict", &verdict);
     let after = project.run(&["close", "--spec", SPEC]);
@@ -696,7 +696,7 @@ fn verdicts_and_tasks(project: &Project) -> usize {
 /// `leftovers`: nada lê o campo nesse veredito, e eles se perderiam em
 /// silêncio.
 fn findings() -> Value {
-    json!([{"title": "A soma não trata estouro", "detail": "A soma de números grandes estoura em src/main.rs.", "files": ["src/main.rs"], "rule": "A soma trata estouro", "places": ["src/main.rs"]}])
+    json!([{"title": "A soma não trata estouro", "detail": "A soma de números grandes estoura em src/main.rs. Prova: `git --version`", "files": ["src/main.rs"], "rule": "A soma trata estouro", "places": ["src/main.rs"]}])
 }
 
 /// A recusa que manda o achado para onde alguém o lê.

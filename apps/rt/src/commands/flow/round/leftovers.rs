@@ -628,12 +628,16 @@ mod tests {
         events.iter().filter(|event| event.kind == kind).collect()
     }
 
+    /// A prova que o detalhe de cada achado nomeia: um comando que roda em
+    /// toda máquina onde estes testes rodam.
+    const PROOF: &str = "Prova: `git --version`";
+
     /// O achado que quebra a regra `rule` nos lugares `places`, com o título
-    /// `title` e os arquivos `files` a mudar.
+    /// `title`, a prova ([`PROOF`]) no detalhe e os arquivos `files` a mudar.
     fn ruled(title: &str, rule: &str, files: &[&str], places: &[&str]) -> Leftover {
         Leftover {
             title: title.into(),
-            detail: format!("{title}."),
+            detail: format!("{title}. {PROOF}"),
             files: Some(files.iter().map(|file| (*file).to_string()).collect()),
             cleanup: false,
             rule: rule.into(),
@@ -709,8 +713,8 @@ mod tests {
             std::fs::write(root.join(file), "x\n").unwrap();
         }
         let log = log_of(&[json!({"v":1,"id":1,"type":"wave","n":1,"text":"t","criteria":[],"done_when":"d"})]);
-        let detail = "O acerto errado aparece em `web/layout.css`, `scripts/install.ps1` e `apps/rt/Cargo.toml`; o conserto é em `src/soma.ts`.";
-        let declared = Leftover { detail: detail.into(), ..ruled("Acerto errado", "O acerto vale em todo lugar", &["src/soma.ts"], &["src/soma.ts:1"]) };
+        let detail = format!("O acerto errado aparece em `web/layout.css`, `scripts/install.ps1` e `apps/rt/Cargo.toml`; o conserto é em `src/soma.ts`. {PROOF}");
+        let declared = Leftover { detail, ..ruled("Acerto errado", "O acerto vale em todo lugar", &["src/soma.ts"], &["src/soma.ts:1"]) };
 
         let events = leftover_events(root, &log, &[(1, &declared)], &BTreeMap::new(), Locale::PtBr);
         let task = of_kind(&events, TASK)[0];
@@ -769,9 +773,10 @@ mod tests {
         approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
         assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1, 2]);
         let rule = "As cópias cabem no disco";
+        let detail = format!("As cópias lotam o disco durante a obra. {PROOF}");
         for (wave, file) in [(1, "src/a.rs"), (2, "src/b.rs")] {
             std::fs::write(root.join(file), "fn one() {}\n// Saiu.\n").unwrap();
-            let found = finding("O disco enche", "As cópias lotam o disco durante a obra.", rule, &[file]);
+            let found = finding("O disco enche", &detail, rule, &[file]);
             let wrote = returned(root, json!({"wave": wave, "text": "Saiu.", "files": [file], "commit": "sai", "leftovers": [found]}));
             assert_eq!(wrote["ok"], json!(true), "{wrote}");
         }
@@ -784,7 +789,7 @@ mod tests {
         let joined = translate("finding.joined_by_rule", Locale::PtBr)
             .replace("{wave}", "2")
             .replace("{title}", "O disco enche")
-            .replace("{detail}", "As cópias lotam o disco durante a obra.");
+            .replace("{detail}", &detail);
         assert!(tasks[0].str_field("agent").is_some_and(|agent| agent.contains(&joined)), "{:?}", tasks[0].fields);
     }
 
@@ -808,7 +813,7 @@ mod tests {
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
         round(root, "x", None);
         std::fs::write(root.join("src/a.rs"), "fn one() {}\n// A soma saiu.\n").unwrap();
-        let found = finding("O disco enche", "As cópias lotam o disco durante a obra.", "As cópias cabem no disco", &["src/a.rs"]);
+        let found = finding("O disco enche", &format!("As cópias lotam o disco durante a obra. {PROOF}"), "As cópias cabem no disco", &["src/a.rs"]);
         let wrote = returned(root, json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": "a soma sai", "leftovers": [found]}));
         assert_eq!(wrote["ok"], json!(true), "{wrote}");
         let out = round(root, "x", None);
@@ -869,7 +874,7 @@ mod tests {
         let second = translate("finding.joined_by_rule", Locale::PtBr)
             .replace("{wave}", "1")
             .replace("{title}", "A leitura de b.rs abre o arquivo")
-            .replace("{detail}", "A leitura de b.rs abre o arquivo.");
+            .replace("{detail}", &format!("A leitura de b.rs abre o arquivo. {PROOF}"));
         assert!(agent.contains(&rule) && agent.contains("`src/a.rs:3`"), "{agent}");
         assert!(agent.contains(&second) && agent.contains("`src/b.rs:7`"), "{agent}");
         assert_eq!(other.asks, [2]);
@@ -916,7 +921,7 @@ mod tests {
     /// espaços das pontas.
     #[test]
     fn a_finding_rule_or_places_of_the_wrong_type_is_refused() {
-        let base = finding("A leitura abre o arquivo", "Abre.", "Toda leitura passa pelo mapa", &["src/a.rs:3"]);
+        let base = finding("A leitura abre o arquivo", &format!("Abre. {PROOF}"), "Toda leitura passa pelo mapa", &["src/a.rs:3"]);
         for (field, wrong, expected) in [("rule", json!(3), Kind::Text), ("places", json!("a.rs:1"), Kind::Texts), ("places", json!([1]), Kind::Texts)] {
             let mut item = base.clone();
             item[field] = wrong;

@@ -87,7 +87,8 @@
 //! Ela e a tarefa dela respondem pelos critérios da obra. A obra que fechou sem
 //! critério nenhum não fica sem porta: elas respondem pelos itens que as
 //! tarefas da obra cobriam, ou, sem nenhum, pelo pedido mais recente do
-//! usuário.
+//! usuário — desses, só os que dão à onda a prova que ela roda, quando algum
+//! dá.
 //!
 //! ```text
 //! {"ok": true, "spec": "x", "action": "fix", "phase": "pr_open", "pr": 12,
@@ -107,6 +108,7 @@ use crate::commands::review::pr_door::{MergedElsewhere, merged_elsewhere_with, p
 use crate::commands::spec_events::{self, write::record};
 use crate::shared::failure_skills::skill_task_covers;
 use crate::shared::pr_provider::{PrChecks, PrProvider, provider_for};
+use crate::shared::rule_proof::{with_proof, work_criteria};
 use crate::shared::spec_state::{DiskSpecState, checkout, session_from_env};
 
 /// Como a porta pergunta ao provedor as verificações de um pull request.
@@ -397,28 +399,26 @@ fn carries_fix_keys(event: &mustard_core::domain::spec_events::SpecEvent) -> boo
     FIX_KEYS.iter().all(|fix| keys.is_some_and(|keys| keys.iter().any(|key| key.as_str() == Some(fix))))
 }
 
-/// Os critérios vigentes da obra, pelo número de cada um.
-fn criteria_of(log: &SpecLog) -> Vec<u64> {
-    log.block(BlockQuery::Block(Block::Criteria))
-        .into_iter()
-        .filter(|event| event.event_type == "criterion")
-        .map(|event| event.id)
-        .collect()
-}
-
 /// Os itens que a onda de conserto responde e que a tarefa dela cobre: os
 /// critérios da obra e, na obra que fechou sem critério, o que as tarefas dela
 /// cobriam ou o pedido mais recente do usuário — a mesma leitura da tarefa de
-/// skill, aqui sobre todas as ondas do plano. A onda e a tarefa saem sempre com
-/// a mesma lista: a gravação da onda recusa a que ficaria sem nenhum item, e é
-/// a cobertura da tarefa que põe esses itens no pedido da onda, sob ela.
+/// skill, aqui sobre todas as ondas do plano —, só com os itens que dão à onda
+/// a prova que ela roda ([`with_proof`]), pelo comando de teste do projeto de
+/// `root`, quando algum dá: a tarefa cobre uma regra com prova. Sem item com
+/// prova na obra, a lista fica inteira, e a porta abre do mesmo jeito. A onda
+/// e a tarefa saem sempre com a mesma lista: a gravação da onda recusa a que
+/// ficaria sem nenhum item, e é a cobertura da tarefa que põe esses itens no
+/// pedido da onda, sob ela.
 fn fix_covers(root: &Path, spec: &str, log: &SpecLog) -> Vec<u64> {
-    let criteria = criteria_of(log);
+    let criteria = work_criteria(log);
     if !criteria.is_empty() {
         return criteria;
     }
     let waves: Vec<(&str, u64)> = log.planned_waves().into_iter().map(|n| (spec, n)).collect();
-    skill_task_covers(root, spec, &waves)
+    let covered = skill_task_covers(root, spec, &waves);
+    let test = mustard_core::ProjectConfig::load(&spec_events::project(root).root).commands().test;
+    let proven = with_proof(log, covered.iter().copied(), test.as_deref());
+    if proven.is_empty() { covered } else { proven }
 }
 
 /// A onda de conserto aberta de uma spec fechada: a que esta porta gravou e
@@ -522,8 +522,8 @@ fn open_fix_wave(opts: &ReopenOpts, spec: &str, log: &SpecLog, red: &FixRed, lan
     // Os critérios da onda de conserto são os da obra: o servidor reprovando
     // diz que o que a obra prometeu não está provado lá, então é por eles que
     // o conserto responde. Critério novo não nasce aqui — a obra já decidiu o
-    // que tinha a decidir. Sem critério na obra, são os itens que as tarefas
-    // dela cobriam.
+    // que tinha a decidir. Sem critério na obra, são os itens com prova que as
+    // tarefas dela cobriam.
     let covers = fix_covers(&opts.root, spec, log);
     wave.insert("criteria".to_string(), json!(covers));
     wave.insert("done_when".to_string(), json!(fill("reopen.fix_wave_done", lang, &[("{pr}", &pr)])));
@@ -1018,7 +1018,9 @@ mod tests {
     /// A obra que fechou sem critério nenhum também tem porta de conserto: a
     /// onda e a tarefa dela respondem pelos itens que as tarefas da obra
     /// cobriam; sem tarefa que cubra algo, pelo pedido mais recente do
-    /// usuário, e não pelo que a revisão gravou.
+    /// usuário, e não pelo que a revisão gravou. Quando algum desses itens dá
+    /// à onda a prova que ela roda, só ele fica: a tarefa cobre uma regra com
+    /// prova.
     #[test]
     fn a_work_without_criterion_opens_the_fix_wave_over_what_its_tasks_covered_or_the_latest_request() {
         use crate::shared::spec_state::seed_event;
@@ -1045,6 +1047,20 @@ mod tests {
         seed_event(root, "epico", "task", json!({"author": "binary", "wave": 1, "text": "Travar o merge.", "files": [], "depends_on": [], "covers": [goal]}));
         seed_event(root, "epico", "request", json!({"title": "Sobra", "text": "Achado da revisão.", "effect": "new_waves", "keys": ["merge"], "author": "review"}));
         assert_eq!(opened_over(root), (vec![goal], vec![goal]));
+
+        // Outra tarefa da obra cobre o objetivo e o pedido cujo relato nomeia
+        // a prova: a onda de conserto cobre só o pedido.
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        spec_in(root, "epico", "pr_open");
+        let said = seed_event(root, "epico", "message", json!({"author": "user", "text": "Travar o merge."}));
+        let goal = seed_event(root, "epico", "context", json!({"title": "Objetivo", "text": "Travar o merge.", "origin": said}));
+        let proven = seed_event(root, "epico", "request", json!({"title": "Merge travado", "text": "O merge trava. Prova: `git --version`",
+            "effect": "new_waves", "keys": ["merge"], "author": "assistant"}));
+        seed_event(root, "epico", "wave", json!({"author": "binary", "n": 1, "text": "Onda 1.", "criteria": [goal, proven], "done_when": "pronto"}));
+        seed_event(root, "epico", "task", json!({"author": "binary", "wave": 1, "text": "Travar o merge.", "files": [], "depends_on": [],
+            "covers": [goal, proven]}));
+        assert_eq!(opened_over(root), (vec![proven], vec![proven]));
 
         // Nenhuma tarefa cobre nada: vale o pedido mais recente do usuário, e
         // o que a revisão gravou depois dele fica de fora.

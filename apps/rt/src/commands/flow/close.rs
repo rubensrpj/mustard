@@ -4570,11 +4570,12 @@ exit "${2:-0}"
     }
 
     /// O achado da revisão final que cita, pelo código, o critério escrito na
-    /// spec, e o que diz só o texto de uma regra nova.
+    /// spec, e o que diz só o texto de uma regra nova, cada um com a prova no
+    /// detalhe.
     fn findings_of_the_final_review() -> (Value, Value) {
-        let written = json!({"title": "A soma não trata estouro", "detail": "A soma estoura em src/w1.rs.", "files": ["src/w1.rs"],
+        let written = json!({"title": "A soma não trata estouro", "detail": "A soma estoura em src/w1.rs. Prova: `git --version`", "files": ["src/w1.rs"],
             "rule": "MSTD-CRIT-0001", "places": ["src/w1.rs"]});
-        let unwritten = json!({"title": "O nome da função não diz o que ela faz", "detail": "A função de src/w1.rs se chama one.",
+        let unwritten = json!({"title": "O nome da função não diz o que ela faz", "detail": "A função de src/w1.rs se chama one. Prova: `git --version`",
             "files": ["src/w1.rs"], "rule": "Toda função diz no nome o que faz", "places": ["src/w1.rs"]});
         (written, unwritten)
     }

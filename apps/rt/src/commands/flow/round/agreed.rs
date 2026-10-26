@@ -9,8 +9,11 @@
 //! ([`super::triage_questions`]): o que uma tarefa aberta já cobre vira nota que a aponta; o
 //! de mesmo sentido de uma tarefa aberta entra nela, e a tarefa pede a
 //! reescrita ao modelo pequeno da sessão; o novo vira tarefa, no grupo da
-//! tarefa de assunto mais próximo. A tarefa devolvida que nasceu do item o
-//! recebe sem pergunta. Sem leitura confiante, vale a regra nativa: na volta
+//! tarefa de assunto mais próximo, que cobre também os itens com prova da
+//! onda que respondeu — na revisão final, os critérios da obra —, porque
+//! toda tarefa cobre uma regra com a prova que a onda roda. A tarefa
+//! devolvida que nasceu do item o recebe sem pergunta. Sem leitura
+//! confiante, vale a regra nativa: na volta
 //! que deixou tarefas por fazer, o item entra numa delas, na versão que volta
 //! ao backlog; sem tarefa devolvida, nasce como tarefa nova.
 //!
@@ -28,6 +31,7 @@ use super::leftovers::{group_after, MeaningJoin, GROUP};
 use super::queue::{backlog_left, task_files, tasks_not_delivered};
 use super::report::{agreed_item_id, backlog_return, dispatched_at, WaveReport};
 use super::stops::append_agent_line;
+use crate::shared::rule_proof::{with_proof, work_criteria};
 use crate::shared::task_triage::{self, Candidate, Destination, Item, Summary};
 
 /// O que [`settle_agreed`] devolve: cada item não cumprido que ainda pede
@@ -240,11 +244,27 @@ pub(super) fn settle_agreed(
 }
 
 /// A tarefa nova que refaz o item não cumprido `item`, de autor `author`: o
-/// que falta, os arquivos e o item em `covers`, sem dependência.
-fn unmet_task(item: Unmet, author: &str) -> Map<String, Value> {
+/// que falta, os arquivos e, em `covers`, o item e depois os itens com prova
+/// `proven` por que responde quem respondeu por ele ([`proven_by`]), sem
+/// dependência. O item combinado quase nunca traz prova, e é a dos outros que
+/// a onda da tarefa roda.
+fn unmet_task(item: Unmet, author: &str, proven: Vec<u64>) -> Map<String, Value> {
     let Unmet { id, text, files } = item;
-    let task = json!({ "text": text, "files": files, "depends_on": [], "covers": [id], "author": author });
+    let covers: Vec<u64> = std::iter::once(id).chain(proven.into_iter().filter(|proof| *proof != id)).collect();
+    let task = json!({ "text": text, "files": files, "depends_on": [], "covers": covers, "author": author });
     task.as_object().cloned().unwrap_or_default()
+}
+
+/// Os itens com prova por que responde quem respondeu pelo item não cumprido
+/// (`by`), lidos em `log`, com o comando de teste do projeto (`test`)
+/// ([`with_proof`]): os que a onda cobria, pelos critérios que ela aponta, ou,
+/// na revisão final, os critérios da obra.
+fn proven_by(log: &SpecLog, by: AnsweredBy, test: Option<&str>) -> Vec<u64> {
+    let items: Vec<u64> = match by {
+        AnsweredBy::Wave(wave) => log.wave_criteria(wave).into_iter().map(|item| item.id).collect(),
+        AnsweredBy::Review => work_criteria(log),
+    };
+    with_proof(log, items, test)
 }
 
 /// A resposta `agreed` da volta, já na entrega oficial `draft` dela, com cada
@@ -321,13 +341,14 @@ fn covered_note(log: &SpecLog, (by, code, item): (AnsweredBy, &str, &Unmet), tas
 ///
 /// O item de que nasceu uma tarefa devolvida pela mesma volta (`origin`), a
 /// ligação que o pedido da onda mostra, entra nela sem pergunta. Os outros
-/// vão ao destino que o classificador deu ([`place_unmet`]).
+/// vão ao destino que o classificador deu ([`place_unmet`]), e a tarefa nova
+/// cobre também os itens com prova da onda, pelo comando de teste `test`.
 pub(super) fn join_unmet(
     triage: (&SpecLog, &BTreeSet<u64>),
     log: &SpecLog,
     waves: &[WaveReport],
     returned: &mut [(u64, Map<String, Value>)],
-    lang: Locale,
+    (lang, test): (Locale, Option<&str>),
     ask: &dyn Fn(&str) -> Option<Value>,
 ) -> Result<(Vec<UnmetEvent>, UnmetJoins), Refusal> {
     let codes = log.codes();
@@ -360,7 +381,7 @@ pub(super) fn join_unmet(
         placed.extend(items.into_iter().zip(read).map(|(item, destination)| ((wave.wave, item), destination)));
     }
     let decided = asked.iter().map(|(wave, item)| placed.get(&(*wave, item.id)).copied().flatten()).collect();
-    Ok(place_unmet(log, asked, AnsweredBy::Wave, returned, decided, lang))
+    Ok(place_unmet(log, asked, AnsweredBy::Wave, returned, decided, (lang, test)))
 }
 
 /// A pergunta ao classificador das atividades sobre os itens combinados que
@@ -441,14 +462,19 @@ fn items_of(log: &SpecLog, unmet: &[Unmet]) -> Vec<Item> {
 /// `log`, a spec com o veredito já ensaiado, pela decisão do classificador
 /// das atividades que `ask` dá ao pedido de [`review_question`] — a já
 /// tomada, que nunca chama o Jev —, como o da volta de uma onda
-/// ([`place_unmet`]), de autor da revisão. Devolve cada evento que os itens
-/// viram, com o tipo, na ordem dos itens, e cada tarefa que ganhou itens
-/// pelo sentido.
-pub(super) fn place_review_unmet(log: &SpecLog, unmet: Vec<Unmet>, lang: Locale, ask: &dyn Fn(&str) -> Option<Value>) -> (Vec<ReviewEvent>, UnmetJoins) {
+/// ([`place_unmet`]), de autor da revisão, com o comando de teste `test`.
+/// Devolve cada evento que os itens viram, com o tipo, na ordem dos itens, e
+/// cada tarefa que ganhou itens pelo sentido.
+pub(super) fn place_review_unmet(
+    log: &SpecLog,
+    unmet: Vec<Unmet>,
+    (lang, test): (Locale, Option<&str>),
+    ask: &dyn Fn(&str) -> Option<Value>,
+) -> (Vec<ReviewEvent>, UnmetJoins) {
     let read = review_question(log, &unmet).and_then(|question| ask(&question.payload).map(|doc| question.read(&doc))).unwrap_or_default();
     let decided = (0..unmet.len()).map(|at| read.get(at).copied().flatten()).collect();
     let asked = unmet.into_iter().map(|item| ((), item)).collect();
-    let (events, joins) = place_unmet(log, asked, |()| AnsweredBy::Review, &mut [], decided, lang);
+    let (events, joins) = place_unmet(log, asked, |()| AnsweredBy::Review, &mut [], decided, (lang, test));
     (events.into_iter().map(|((), kind, draft)| (kind, draft)).collect(), joins)
 }
 
@@ -460,16 +486,18 @@ pub(super) fn place_review_unmet(log: &SpecLog, unmet: Vec<Unmet>, lang: Locale,
 /// versão devolvida em `returned`, quando é uma delas, ou numa versão nova da
 /// tarefa do backlog, uma só por tarefa — e a junção volta para a reescrita
 /// ([`JoinedAt`]); o novo vira tarefa nova ([`unmet_task`]), no grupo da
-/// tarefa de assunto mais próximo ([`group_after`]). Sem leitura confiante,
-/// o item da volta de uma onda entra na primeira tarefa que ela devolveu e,
-/// sem ela, vira tarefa nova sem grupo, como o da revisão final.
+/// tarefa de assunto mais próximo ([`group_after`]), com os itens com prova
+/// por que responde quem respondeu por ele ([`proven_by`]), pelo comando de
+/// teste `test`. Sem leitura confiante, o item da volta de uma onda entra na
+/// primeira tarefa que ela devolveu e, sem ela, vira tarefa nova sem grupo,
+/// como o da revisão final.
 fn place_unmet<T: Copy>(
     log: &SpecLog,
     asked: Vec<(T, Unmet)>,
     by: impl Fn(T) -> AnsweredBy,
     returned: &mut [(u64, Map<String, Value>)],
     decided: Vec<Option<Destination>>,
-    lang: Locale,
+    (lang, test): (Locale, Option<&str>),
 ) -> (Vec<PlacedEvent<T>>, UnmetJoins) {
     let codes = log.codes();
     let code_of = |id: u64| codes.get(&id).cloned().unwrap_or_else(|| id.to_string());
@@ -504,7 +532,7 @@ fn place_unmet<T: Copy>(
             }
         }
         if let Some(Destination::New { near }) = destination {
-            let mut task = unmet_task(item, answered.author());
+            let mut task = unmet_task(item, answered.author(), proven_by(log, answered, test));
             if let Some(group) = near.and_then(&current).and_then(|near| group_after(log, near.id)) {
                 task.insert(GROUP.into(), group);
             }
@@ -517,7 +545,7 @@ fn place_unmet<T: Copy>(
         };
         match first {
             Some(first) => take_unmet(&mut returned[first].1, answered, &code, &item, lang),
-            None => events.push((tag, "task", unmet_task(item, answered.author()))),
+            None => events.push((tag, "task", unmet_task(item, answered.author(), proven_by(log, answered, test)))),
         }
     }
     (events, joins.into_iter().collect())
@@ -612,6 +640,77 @@ pub(super) mod tests {
         assert_eq!(redoing[0].str_field("text"), Some("Falta a segunda metade."), "{redoing:?}");
         let expected = json!([{"path": "src/app.ts"}, {"path": "src/Api.cs"}]);
         assert_eq!(redoing[0].fields["files"], expected, "{redoing:?}");
+    }
+
+    /// Toda tarefa que a rodada grava cobre uma regra com a prova que a onda
+    /// roda. A tarefa que refaz o item não cumprido de uma volta cobre também
+    /// o critério com prova da onda que respondeu, e a onda que ela forma roda
+    /// essa prova; a do item que a revisão final não cumpriu cobre os
+    /// critérios com prova da obra. O achado cujo detalhe não nomeia prova é
+    /// recusado na gravação da volta e na do veredito, sem gravar nada, e o
+    /// ensaio da rodada recusa a tarefa que não cobre item com prova.
+    #[test]
+    fn every_task_the_round_records_covers_a_rule_with_a_proof() {
+        use std::collections::BTreeSet;
+
+        use mustard_core::domain::spec_events::{parse_log, Refusal};
+        use mustard_core::domain::spec_state::PhaseWriter;
+        use mustard_core::platform::i18n::Locale;
+
+        use super::super::tests::returned_unread;
+        use super::{place_review_unmet, Unmet};
+        use crate::commands::spec_events::write::{write_at, RecordCheck, WriteOpts};
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let code = returned_with_its_task_unmet(root);
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let codes = log.codes();
+        let crit = log.visible().into_iter().find(|e| e.event_type == "criterion").map(|e| e.id).expect("the criterion");
+        let redoing = log
+            .visible()
+            .into_iter()
+            .find(|e| e.event_type == "task" && e.ints("covers").iter().any(|id| codes.get(id) == Some(&code)))
+            .expect("the task that redoes the unmet item");
+        assert!(redoing.ints("covers").contains(&crit), "{:?}", redoing.fields);
+        let commands = mustard_core::ProjectConfig::load(root).commands();
+        let fields = mustard_core::domain::wave_prompt::backlog_fields(&log, &[redoing], &commands, &BTreeSet::new());
+        assert_eq!(fields.done_when, "git --version", "the wave of the task runs the proof it covers");
+
+        let lines = [
+            json!({"v":1,"id":1,"type":"criterion","when":"w","then":"t","proof":"git --version"}),
+            json!({"v":1,"id":2,"type":"decision","title":"Total arredonda","text":"A soma mostra duas casas."}),
+        ];
+        let review = parse_log(&lines.iter().map(Value::to_string).collect::<Vec<_>>().join("\n"));
+        let unmet = vec![Unmet { id: 2, text: "Falta o arredondamento.".into(), files: Vec::new() }];
+        let (events, _) = place_review_unmet(&review, unmet, (Locale::PtBr, None), &|_| None);
+        assert_eq!(events.iter().map(|(_, draft)| draft["covers"].clone()).collect::<Vec<_>>(), [json!([2, 1])], "{events:?}");
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        let sent = round(root, "x", None);
+        assert_eq!(waves_in(&sent, "dispatch"), vec![1], "{sent}");
+        let path = store::spec_file(root, "x").unwrap();
+        let finding = |detail: &str| json!({"title": "A leitura abre o arquivo", "detail": detail, "rule": "A leitura não abre o arquivo",
+            "places": ["src/a.rs:1"], "files": ["src/a.rs"]});
+        let before = std::fs::read(&path).unwrap();
+        let unproven = json!({"wave": 1, "text": "A onda 1 saiu.", "leftovers": [finding("A leitura abre o arquivo.")]});
+        let refused = returned_unread(root, unproven.clone());
+        assert_eq!(refused["reason"], json!("finding-proof-missing"), "{refused}");
+        let verdict = write_at(&WriteOpts { root: root.to_path_buf(), spec: Some("x".into()), event_type: "verdict".into(), json: unproven.to_string() });
+        assert_eq!(verdict["reason"], json!("finding-proof-missing"), "{verdict}");
+        assert_eq!(std::fs::read(&path).unwrap(), before, "nothing was written");
+        let proven = json!({"wave": 1, "text": "A onda 1 saiu.", "leftovers": [finding("A leitura abre o arquivo. Prova: `git --version`")]});
+        assert_eq!(returned(root, proven)["ok"], json!(true), "the finding that names its proof goes in");
+
+        let mut check = RecordCheck::open(root, "x", PhaseWriter::Binary).unwrap();
+        let said = check.log().visible().into_iter().find(|e| e.event_type == "message").map(|e| e.id).expect("the message");
+        let crit = check.log().visible().into_iter().find(|e| e.event_type == "criterion").map(|e| e.id).expect("the criterion");
+        let task = |covers: Value| json!({"text": "Refazer a leitura.", "files": [], "depends_on": [], "covers": covers, "origin": said}).as_object().cloned().unwrap();
+        assert!(matches!(check.record("task", task(json!([said]))), Err(Refusal::TaskWithoutProof { .. })), "the rehearsal refuses the task without proof");
+        let passed = check.record("task", task(json!([said, crit])));
+        assert!(passed.is_ok(), "the task that covers the criterion passes the rehearsal: {passed:?}");
     }
 
     /// O comando que lê o bloco `block` da spec `x` do projeto em `root`.
@@ -720,7 +819,7 @@ pub(super) mod tests {
 
         let mut returned = back();
         let returning = std::collections::BTreeSet::from([1]);
-        let (events, joins) = join_unmet((&log, &returning), &log, std::slice::from_ref(&wave), &mut returned, Locale::PtBr, &ask).unwrap();
+        let (events, joins) = join_unmet((&log, &returning), &log, std::slice::from_ref(&wave), &mut returned, (Locale::PtBr, None), &ask).unwrap();
         let asked = asked.into_inner();
         assert_eq!(asked.len(), 1, "um pedido só ao Jev");
         let payload: Value = serde_json::from_str(&asked[0]).unwrap();
@@ -756,7 +855,7 @@ pub(super) mod tests {
 
         let mut returned = back();
         let again = report(2, Vec::new(), vec![unmet(5, "O cupom some de novo.")]);
-        let (events, joins) = join_unmet((&log, &returning), &log, &[wave, again], &mut returned, Locale::PtBr, &|_| None).unwrap();
+        let (events, joins) = join_unmet((&log, &returning), &log, &[wave, again], &mut returned, (Locale::PtBr, None), &|_| None).unwrap();
         assert!(events.is_empty() && joins.is_empty(), "sem Jev, nada nasce fora de T, nem pela segunda volta do mesmo item: {events:?}");
         assert_eq!(returned[0].1["covers"], json!([6, 3, 4, 5]), "{:?}", returned[0].1);
     }
@@ -792,7 +891,7 @@ pub(super) mod tests {
         };
         let ask = |_: &str| Some(json!({"answers": {"i0": sure("covered:t1"), "i1": sure("join:t2"), "i2": sure("new"), "i2_near": sure("t2")}}));
 
-        let (events, joins) = place_review_unmet(&log, unmet(), Locale::PtBr, &ask);
+        let (events, joins) = place_review_unmet(&log, unmet(), (Locale::PtBr, None), &ask);
         let [note, version, born] = events.as_slice() else { panic!("{events:?}") };
         let covered = translate("round.unmet_review_covered", Locale::PtBr)
             .replace("{code}", &codes[&3])
@@ -805,7 +904,7 @@ pub(super) mod tests {
         assert_eq!(born.1["group"], json!({"name": codes[&2], "position": 2}));
         assert_eq!(joins, [(JoinedAt::Event(1), vec![4])]);
 
-        let (events, joins) = place_review_unmet(&log, unmet(), Locale::PtBr, &|_| None);
+        let (events, joins) = place_review_unmet(&log, unmet(), (Locale::PtBr, None), &|_| None);
         let shapes: Vec<(&str, &Value, &Value, bool)> =
             events.iter().map(|(kind, draft)| (*kind, &draft["covers"], &draft["author"], draft.contains_key("group"))).collect();
         assert_eq!(shapes, [("task", &json!([3]), &json!("review"), false), ("task", &json!([4]), &json!("review"), false), ("task", &json!([5]), &json!("review"), false)]);

@@ -826,11 +826,13 @@ pub(crate) fn draft_rules(start: &Path, spec: &str, event_type: &str, draft: &mu
     // detalhe dela como relato, e a rodada não confere o que grava: as provas
     // que esse pedido vai nomear passam aqui, com os arquivos que a sobra
     // declara mudar como os que ela cria. O achado do veredito final vira o
-    // mesmo pedido no fechamento, e passa pela mesma conferência.
+    // mesmo pedido no fechamento, e passa pela mesma conferência. O achado
+    // que não nomeia prova nenhuma recusa: a tarefa dele nasceria sem ela.
     if matches!(event_type, "delivered" | "verdict") {
         resolve_finding_places(start, draft)?;
         let root = checkout(start);
         let test = project_test(start);
+        super::finding_proof::each_finding_names_a_proof(draft, test.as_deref())?;
         for leftover in draft.get("leftovers").and_then(Value::as_array).into_iter().flatten() {
             let Some(detail) = leftover.get("detail").and_then(Value::as_str) else { continue };
             let created: BTreeSet<String> =
@@ -1574,13 +1576,15 @@ fn wave_by_backlog_rule(before: &SpecLog, after: &SpecLog) -> Result<(), Refusal
 /// Gravações do binário na spec conferidas antes, sem gravar nada: cada uma
 /// passa pela mesma conferência de [`record`] — as declarações da tarefa, a
 /// do evento, a do arquivo e as regras da spec —, sobre o arquivo como as
-/// anteriores o deixariam. É assim
+/// anteriores o deixariam, e a tarefa nova cobre uma regra com a prova que a
+/// onda roda, como a que o modelo grava ([`task_without_proof`]). É assim
 /// que a rodada sabe, antes do commit, que nenhuma gravação depois dele será
-/// recusada.
+/// recusada e que toda tarefa que ela grava tem prova.
 pub(crate) struct RecordCheck {
     dry: store::DryRun<'static>,
     name: String,
     by: PhaseWriter,
+    test: Option<String>,
 }
 
 impl RecordCheck {
@@ -1599,7 +1603,7 @@ impl RecordCheck {
         let path = store::spec_file(&project.root, spec)?;
         let roots = store::citation_roots(start, &project.root);
         let dry = store::DryRun::open(&path, roots, &crate::shared::secret::secret_excerpts)?;
-        Ok(Self { dry, name: spec.trim().to_string(), by })
+        Ok(Self { dry, name: spec.trim().to_string(), by, test: project_test(start) })
     }
 
     /// O arquivo como as gravações conferidas até aqui o deixariam.
@@ -1615,6 +1619,11 @@ impl RecordCheck {
     /// A recusa que a gravação daria.
     pub(crate) fn record(&mut self, event_type: &str, draft: Map<String, Value>) -> Result<u64, Refusal> {
         task_declared(event_type, &draft, false)?;
+        if event_type == "task"
+            && let Some(refusal) = task_without_proof(self.dry.log(), &draft, self.test.as_deref())
+        {
+            return Err(refusal);
+        }
         let (carried, replaces) = phase_carried(event_type, &draft);
         let (name, by) = (&self.name, self.by);
         self.dry.write(event_type, draft, |before, after| record_rules(name, event_type, before, after, carried.as_deref(), replaces, Some(by)))
@@ -3361,8 +3370,8 @@ mod tests {
         for event_type in ["delivered", "verdict"] {
             let checked = |places: Value, files: Value| {
                 let mut draft = json!({"wave": 1, "text": "feito", "leftovers": [
-                    {"title": "A", "detail": "Abre.", "rule": "Toda leitura passa pelo mapa", "places": ["src/a.rs:1"]},
-                    {"title": "B", "detail": "Abre.", "rule": "Toda leitura passa pelo mapa", "places": places, "files": files}]})
+                    {"title": "A", "detail": "Abre. Prova: `git --version`", "rule": "Toda leitura passa pelo mapa", "places": ["src/a.rs:1"]},
+                    {"title": "B", "detail": "Abre. Prova: `git --version`", "rule": "Toda leitura passa pelo mapa", "places": places, "files": files}]})
                 .as_object()
                 .cloned()
                 .unwrap();

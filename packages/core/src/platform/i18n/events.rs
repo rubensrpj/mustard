@@ -680,6 +680,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Finding {finding} cites the place {place}, which the project does not have. With that \
              name, the project has {found}: cite the whole path. Nothing was written."
         }
+        ("spec_events.finding_proof_missing", Locale::PtBr) => {
+            "O achado {finding} não nomeia a prova no detalhe. A tarefa que ele vira cobre a regra \
+             com a prova que a onda roda: o detalhe traz `Prova:` e o comando entre crases. Nada \
+             foi gravado."
+        }
+        ("spec_events.finding_proof_missing", Locale::EnUs) => {
+            "Finding {finding} names no proof in its detail. The task it becomes covers the rule \
+             with the proof the wave runs: the detail carries `Proof:` and the command in \
+             backticks. Nothing was written."
+        }
         ("spec_events.task_without_proof", Locale::PtBr) => {
             "A tarefa cobre {covers}, e nenhum deles dá à onda uma prova que ela rode. Toda tarefa \
              cobre uma regra com prova. Vale o critério com a prova dele, ou o pedido cujo relato \
@@ -1529,6 +1539,7 @@ mod tests {
             ("spec_events.leftover_field_missing", &["{finding}", "{field}"][..]),
             ("spec_events.finding_place_missing", &["{finding}", "{place}"][..]),
             ("spec_events.finding_place_missing.same_name", &["{finding}", "{place}", "{found}"][..]),
+            ("spec_events.finding_proof_missing", &["{finding}"][..]),
             ("spec_events.task_without_proof", &["{covers}"][..]),
             ("spec_events.delivery_place_untouched", &["{wave}", "{task}", "{places}"][..]),
             ("finding.rule", &["{rule}"][..]),

@@ -19,6 +19,7 @@
 pub mod cli;
 pub(crate) mod conversation;
 pub mod find;
+mod finding_proof;
 pub mod index;
 pub(crate) mod lean;
 pub(crate) mod pages;

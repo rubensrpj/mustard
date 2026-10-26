@@ -115,7 +115,7 @@ mod tests {
         std::fs::write(root.join("src/a.rs"), "fn one() {}\n// A soma saiu pela metade.\n").unwrap();
         let body = json!({"wave": 1, "text": "A soma saiu pela metade.", "files": ["src/a.rs"],
             "commit": "a soma sai pela metade", "undone": [code],
-            "leftovers": [{"title": "A soma perde o sinal", "detail": "Em `src/a.rs`, o sinal some.", "rule": "A soma guarda o sinal", "places": ["src/a.rs"]}]});
+            "leftovers": [{"title": "A soma perde o sinal", "detail": "Em `src/a.rs`, o sinal some. Prova: `git --version`", "rule": "A soma guarda o sinal", "places": ["src/a.rs"]}]});
         let wrote = returned(root, body);
         assert_eq!(wrote["ok"], json!(true), "{wrote}");
 

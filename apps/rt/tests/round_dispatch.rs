@@ -3472,7 +3472,7 @@ fn a_cleanup_leftover_leaves_with_the_task_of_its_direction() {
     let (mut project, crit, said, _) = backlog_project(&[&[GREETING]]);
     let first = project.run(&ROUND);
     assert_eq!(waves_in(&first, "dispatch"), vec![1], "{first}");
-    let leftovers = json!({"leftovers": [{"title": "O comentário da saudação ainda diz olá", "detail": "A saudação mudou.",
+    let leftovers = json!({"leftovers": [{"title": "O comentário da saudação ainda diz olá", "detail": "A saudação mudou. Prova: `git --version`",
         "files": ["src/greeting-notes.txt"], "cleanup": true, "rule": "O comentário diz o que a saudação diz", "places": ["src/greeting-notes.txt"]}]});
     deliver_file_with(&project, 1, GREETING, "hello\n", &leftovers);
     let back = round_taking_back(&project, 1);
@@ -3519,8 +3519,8 @@ fn a_leftover_only_in_a_git_ignored_file_leaves_a_note_and_no_task() {
     let local = "A chave da API falta no ambiente local";
     let versioned = "O README não cita a saudação";
     let leftovers = json!({"leftovers": [
-        {"title": local, "detail": "Falta a chave da API no .env desta máquina.", "files": [".env"], "rule": "A chave da API mora no ambiente", "places": [".env"]},
-        {"title": versioned, "detail": "O README não explica a saudação.", "files": ["README.md"], "rule": "O README explica a saudação", "places": ["README.md"]}]});
+        {"title": local, "detail": "Falta a chave da API no .env desta máquina. Prova: `git --version`", "files": [".env"], "rule": "A chave da API mora no ambiente", "places": [".env"]},
+        {"title": versioned, "detail": "O README não explica a saudação. Prova: `git --version`", "files": ["README.md"], "rule": "O README explica a saudação", "places": ["README.md"]}]});
     deliver_file_with(&project, 1, GREETING, "hello\n", &leftovers);
 
     let back = round_taking_back(&project, 1);
@@ -3580,8 +3580,8 @@ fn a_round_that_commits_the_program_hands_the_dispatch_over_and_answers_once() {
     assert_eq!(waves_in(&second, "dispatch"), vec![2], "{second}");
     keep_sent(&project, &[2]);
     let leftovers = json!({"leftovers": [
-        {"title": "Limpar o primeiro", "detail": "Sobrou um arquivo.", "files": ["apps/rt/c.txt"], "cleanup": true, "rule": "Nenhum arquivo sobra", "places": ["apps/rt/c.txt"]},
-        {"title": "Limpar o segundo", "detail": "Sobrou outro.", "files": ["apps/rt/d.txt"], "cleanup": true, "rule": "Nenhum texto velho sobra", "places": ["apps/rt/d.txt"]}]});
+        {"title": "Limpar o primeiro", "detail": "Sobrou um arquivo. Prova: `git --version`", "files": ["apps/rt/c.txt"], "cleanup": true, "rule": "Nenhum arquivo sobra", "places": ["apps/rt/c.txt"]},
+        {"title": "Limpar o segundo", "detail": "Sobrou outro. Prova: `git --version`", "files": ["apps/rt/d.txt"], "cleanup": true, "rule": "Nenhum texto velho sobra", "places": ["apps/rt/d.txt"]}]});
     deliver_file_with(&project, 1, "apps/rt/a.txt", "um\n", &leftovers);
     let copy = deliver_file_in_copy(&project, 2, "apps/rt/b.txt", "dois\n");
     std::fs::write(copy.join("apps/rt/fora.txt"), "fora do escopo\n").expect("a file outside the scope");
