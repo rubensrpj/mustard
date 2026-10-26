@@ -392,6 +392,32 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The verification of criterion {code} names the test {name}, which appears in no file of the \
              project. Write that test or record the criterion's new version with the right name, and close again."
         }
+        // A prova que já passava no código de antes da obra: o commit base,
+        // com os arquivos de teste da obra por cima.
+        ("close.criterion_passed_before", Locale::PtBr) => {
+            "A verificação do critério {code} já passava no código de antes da obra: `{command}` rodou \
+             {count} testes no commit base, com os arquivos de teste da obra por cima, e passou. Ela não \
+             prova nada novo. Escreva o teste que cai sem a mudança, ou grave a versão nova do critério com \
+             a verificação certa, e feche de novo."
+        }
+        ("close.criterion_passed_before", Locale::EnUs) => {
+            "The verification of criterion {code} already passed on the code from before the work: \
+             `{command}` ran {count} tests on the base commit, with the work's test files on top, and \
+             passed. It proves nothing new. Write the test that fails without the change, or record the \
+             criterion's new version with the right verification, and close again."
+        }
+        // A obra sem commit base que o git ache: a prova de cada critério não
+        // rodou no código de antes.
+        ("close.proof_before_unchecked", Locale::PtBr) => {
+            "O fechamento não rodou as provas dos critérios no código de antes da obra: a base gravada na \
+             spec não leva a commit nenhum neste repositório, e nada conferiu que cada prova caía antes da \
+             mudança."
+        }
+        ("close.proof_before_unchecked", Locale::EnUs) => {
+            "The close did not run the criteria's proofs on the code from before the work: the base \
+             recorded in the spec leads to no commit in this repository, and nothing checked that each \
+             proof failed before the change."
+        }
         ("close.build_failed", Locale::PtBr) => {
             "A compilação do projeto (`{command}`), rodada em ambiente limpo como o servidor a roda, \
              não passou, e a spec não fechou: {output}"
@@ -2788,6 +2814,8 @@ mod tests {
             ("close.criterion_failed", &["{code}", "{output}"][..]),
             ("close.criterion_ran_no_test", &["{code}", "{command}", "{count}"][..]),
             ("close.criterion_missing_test", &["{code}", "{name}"][..]),
+            ("close.criterion_passed_before", &["{code}", "{command}", "{count}"][..]),
+            ("close.proof_before_unchecked", &[][..]),
             ("close.build_failed", &["{command}", "{output}"][..]),
             ("close.lint_failed", &["{command}", "{output}"][..]),
             ("close.lint_from_the_base", &["{command}", "{files}", "{output}"][..]),

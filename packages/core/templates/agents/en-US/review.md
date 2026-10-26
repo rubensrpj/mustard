@@ -49,6 +49,6 @@ A mistake that can happen again? Write, as a finding of the verdict, the fix in 
 ## What to return
 
 In the text language: verdict/findings/proposals. In the work's final review or a wave review, record them in `text` with `run write verdict --json '<the line>'`, same --root/--spec; mandatory; the last message only confirms. In a survey or pull request, return the text to whoever dispatched you.
-{"final":true,"result":"approved","text":"the verdict\na.rs:42 critical: the finding","criteria":[{"criterion":"MSTD-CRIT-0001","tests_rule":true}],"agreed":[],"lessons":[{"lesson":7,"repeated":false}]}
+{"final":true,"result":"approved","text":"the verdict\na.rs:42 critical: the finding","criteria":[{"criterion":"MSTD-CRIT-0001"}],"agreed":[],"lessons":[{"lesson":7,"repeated":false}]}
 
 `result` is `approved`/`rejected`; `criterion` is the item's code; `agreed`, the request explains.

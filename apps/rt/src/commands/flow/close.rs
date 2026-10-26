@@ -4,7 +4,7 @@
 //! confere se a obra terminou mesmo, roda os comandos do servidor — a
 //! compilação, o lint e a suíte inteira, o `buildCommand`, o `lintCommand` e
 //! o `testCommand` do `mustard.json` — em ambiente limpo, roda cada critério
-//! uma vez e grava a
+//! uma vez no commit da obra e outra no código de antes dela, grava a
 //! execução de cada um, e então fecha — grava a fase `closed`, que arma a
 //! cobrança das pendências pela mesma porta, solta a spec da sessão e atualiza
 //! o estado local observado pelo painel. A pasta da spec mantém os eventos
@@ -34,9 +34,10 @@
 //! **A cópia do revisor.** É o binário que cria a cópia onde o agente de
 //! teste dedicado confere a obra, pela mesma porta das cópias de onda, antes
 //! de a máquina rodar, e que a apaga quando a obra fecha. Uma cópia que
-//! chegou com mudança — o corte que o revisor fez para ver a prova cair e não
-//! desfez — trava o fechamento, com os arquivos: ler código sabotado como se
-//! fosse o da obra é pior do que parar.
+//! chegou com mudança — o que um revisor anterior deixou nela e não desfez —
+//! trava o fechamento, com os arquivos: ler código mexido como se fosse o da
+//! obra é pior do que parar. Quem prova que cada prova caía antes da obra é a
+//! máquina, e não o revisor.
 //!
 //! **A pasta de compilação.** No fim, a obra fechada apaga da pasta principal
 //! as pastas descartáveis declaradas em `buildOutput` que ultrapassam 15 GB;
@@ -47,11 +48,13 @@
 //! a cópia do revisor com mudança, ou que não pôde ser criada; a
 //! compilação, o lint ou a suíte que falham, com a saída e, quando o projeto
 //! declara arquivos locais, o nome de cada um, que a cópia limpa não tem; critério cuja prova
-//! não passou; e
+//! não passou;
 //! critério cuja prova saiu verde sem rodar teste nenhum — a saída do
 //! executor diz zero teste, que é o que um nome de teste errado dá, e a
-//! recusa traz o comando e o número que ela leu. Cada recusa diz qual onda
-//! refazer — não basta os testes passarem.
+//! recusa traz o comando e o número que ela leu; e critério cuja prova já
+//! passava, rodando teste, no código de antes da obra — o commit base, com os
+//! arquivos de teste da obra por cima —, que não prova nada novo. Cada recusa
+//! diz qual onda refazer — não basta os testes passarem.
 //!
 //! **As pendências da obra.** A resposta traz cada pendência aberta nascida
 //! na obra, com a pergunta de destino e a linha que grava a resposta do
@@ -85,6 +88,7 @@ mod clean_copy;
 #[cfg(test)]
 mod outdated_request_tests;
 pub(crate) mod ownerless_tests;
+mod proof_runs;
 #[cfg(test)]
 mod review_request_tests;
 pub(crate) mod stale_marks;
@@ -198,6 +202,13 @@ enum CloseRefusal {
         code: String,
         name: String,
     },
+    /// Um critério cuja prova já passava no código de antes da obra, rodando
+    /// teste, com o comando dela e o número de testes que a saída disse.
+    CriterionPassedBefore {
+        code: String,
+        command: String,
+        tests: u64,
+    },
     /// Mais de uma recusa achada no mesmo passo, na ordem em que apareceram:
     /// a resposta lista todas de uma vez, e o motivo é o da primeira.
     Many(Vec<CloseRefusal>),
@@ -235,6 +246,7 @@ impl CloseRefusal {
             Self::ValidationInputsChanged => "validation-inputs-changed".into(),
             Self::CriterionRanNoTest { .. } => "criterion-ran-no-test".into(),
             Self::CriterionMissingTest { .. } => "criterion-missing-test".into(),
+            Self::CriterionPassedBefore { .. } => "criterion-passed-before".into(),
         }
     }
 
@@ -271,6 +283,9 @@ impl CloseRefusal {
                 fill("close.criterion_ran_no_test", &[("{code}", code.clone()), ("{command}", command.clone()), ("{count}", tests.to_string())])
             }
             Self::CriterionMissingTest { code, name } => fill("close.criterion_missing_test", &[("{code}", code.clone()), ("{name}", name.clone())]),
+            Self::CriterionPassedBefore { code, command, tests } => {
+                fill("close.criterion_passed_before", &[("{code}", code.clone()), ("{command}", command.clone()), ("{count}", tests.to_string())])
+            }
         }
     }
 
@@ -506,14 +521,15 @@ fn run_close(
     // cada critério, uma vez por fechamento. A volta que só
     // confere a aprovação, sem nada mudado desde a máquina verde, não roda
     // nada de novo.
-    let (Machine { runs, undeclared, from_base }, reused) = {
+    let (Machine { runs, undeclared, from_base, before_unchecked }, reused) = {
         let _held = crate::commands::git_settle::git_step_lock(root)
             .map_err(|detail| CloseRefusal::Report(crate::commands::flow::round::RoundRefusal::Git { detail }))?;
         if super::validation::reusable(root, &log) {
             (Machine::default(), true)
         } else {
             let clean = clean_copy::prepare(root, &spec, &log, &copies)?;
-            match machine(opts, root, &clean, &spec, &log, lang) {
+            let before = proof_runs::prepare(root, &spec, &log, &copies)?;
+            match machine(opts, root, (&clean, before.as_ref()), &spec, &log, lang) {
                 Ok(ran) => (ran, false),
                 Err(failure) => return Err(authorize_final_repair(root, &spec, &log, failure, lang)),
             }
@@ -582,6 +598,9 @@ fn run_close(
         for hint in &from_base {
             spec_events::pages::push_warning(&mut out, "lint-from-the-base", hint);
         }
+        if let Some(hint) = &before_unchecked {
+            spec_events::pages::push_warning(&mut out, "proof-before-unchecked", hint);
+        }
         for hint in &unused_hints {
             spec_events::pages::push_warning(&mut out, "unused-analysis", hint);
         }
@@ -643,9 +662,9 @@ fn run_close(
     crate::commands::spec_events::write::record_phase(&opts.root, &spec, "closed", session);
     crate::commands::spec_events::session_spec::unbind(&opts.root, session);
     // A obra fechou: ninguém mais trabalha nas cópias dela, e todas saem
-    // daqui, cada vaga com o que tiver dentro e com a compilação — o que o
-    // revisor cortou para ver a prova cair não é trabalho de ninguém. A que
-    // não sai vira aviso, e a obra fecha do mesmo jeito.
+    // daqui, cada vaga com o que tiver dentro e com a compilação — o que um
+    // revisor deixou na cópia dele não é trabalho de ninguém. A que não sai
+    // vira aviso, e a obra fecha do mesmo jeito.
     let mut removal = crate::commands::flow::round::remove_spec_copies_under(root, &spec, Some(&log), &copies);
     // Apagar o que as cópias têm no disco vem depois de soltar a trava delas.
     drop(copies);
@@ -698,6 +717,9 @@ fn run_close(
     }
     for hint in &from_base {
         spec_events::pages::push_warning(&mut out, "lint-from-the-base", hint);
+    }
+    if let Some(hint) = &before_unchecked {
+        spec_events::pages::push_warning(&mut out, "proof-before-unchecked", hint);
     }
     for hint in &unused_hints {
         spec_events::pages::push_warning(&mut out, "unused-analysis", hint);
@@ -840,11 +862,13 @@ fn hand_pending_to_project(root: &Path, spec: &str, log: &SpecLog, answers: &[St
 
 /// A máquina do fechamento: os comandos que o servidor roda — a compilação,
 /// o lint e a suíte inteira, nessa ordem —, cada um em ambiente limpo
-/// ([`clean_env`]), e depois cada critério, uma vez, com a execução de cada um
-/// gravada. A compilação que falha recusa antes do resto rodar, porque o
-/// resto cairia pelo mesmo erro. Com ela verde, o lint, a suíte, os critérios
-/// e a análise de declarações sem uso rodam todos, e a recusa lista tudo o
-/// que caiu numa resposta só. A
+/// ([`clean_env`]), e depois cada critério, uma vez, na cópia limpa `clean`
+/// do commit da obra, onde a prova tem de passar rodando teste, e uma vez na
+/// cópia do código de antes (`before`, [`proof_runs`]), onde ela tem de cair,
+/// com a execução de cada um gravada. A compilação que falha recusa antes do
+/// resto rodar, porque o resto cairia pelo mesmo erro. Com ela verde, o lint,
+/// a suíte, os critérios e a análise de declarações sem uso rodam todos, e a
+/// recusa lista tudo o que caiu numa resposta só. A
 /// rodada junta e comita sem compilar: esta é a compilação de conferência da
 /// obra.
 ///
@@ -867,9 +891,16 @@ fn hand_pending_to_project(root: &Path, spec: &str, log: &SpecLog, answers: &[St
 /// sem nada que ele pudesse consertar no código da obra. A compilação que
 /// falta nem aviso dá: há linguagem sem passo de compilar, e o plano já avisa
 /// o projeto que não a declara.
-fn machine(opts: &CloseOpts, root: &Path, clean: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Result<Machine, CloseRefusal> {
+fn machine(
+    opts: &CloseOpts,
+    root: &Path,
+    (clean, before): (&Path, Option<&proof_runs::BeforeCopy>),
+    spec: &str,
+    log: &SpecLog,
+    lang: Locale,
+) -> Result<Machine, CloseRefusal> {
     let mut timing = super::validation::Stage::new(root, spec, "final", "machine", true);
-    let before = super::validation::fingerprint(root, log);
+    let fingerprint = super::validation::fingerprint(root, log);
     let config = mustard_core::ProjectConfig::load(root);
     let declared = config.commands();
     // A cópia limpa nunca recebe os arquivos locais do projeto: a recusa dos
@@ -955,19 +986,36 @@ fn machine(opts: &CloseOpts, root: &Path, clean: &Path, spec: &str, log: &SpecLo
         record(&opts.root, spec, "criterion_run", draft, PhaseWriter::Binary).map_err(CloseRefusal::Refused)?;
         runs.push(json!({ "criterion": code, "result": out.result, "exit": out.exit, "ms": out.ms,"reused":out.reused }));
     }
+    // Cada critério roda de novo no código de antes da obra, onde a prova
+    // tem de cair; a que passa ali rodando teste não prova nada novo. Sem
+    // commit base, não há código de antes, e a resposta avisa.
+    let mut before_unchecked = None;
+    match before {
+        Some(copy) => {
+            for (id, code, out) in copy.run(&criteria) {
+                let Some((_, _, command)) = criteria.iter().find(|(criterion, _, _)| *criterion == id) else { continue };
+                super::validation::record_run(root, spec, "final", &format!("criterion-before:{code}"), command, &out).map_err(CloseRefusal::Refused)?;
+                if let Some(tests) = proof_runs::passed_before(&out) {
+                    failures.push(CloseRefusal::CriterionPassedBefore { code, command: command.clone(), tests });
+                }
+            }
+        }
+        None if !criteria.is_empty() => before_unchecked = Some(translate("close.proof_before_unchecked", lang).to_string()),
+        None => {}
+    }
     failures.extend(unused::refusal(root, spec, log, lang, &native_outputs));
     if let Some(refusal) = CloseRefusal::all(failures) {
         return Err(refusal);
     }
     let after = super::validation::fingerprint(root, log);
-    if before != after {
+    if fingerprint != after {
         return Err(CloseRefusal::ValidationInputsChanged);
     }
-    if let Some(key) = before {
+    if let Some(key) = fingerprint {
         super::validation::receipt(root, spec, &key).map_err(CloseRefusal::Refused)?;
     }
     timing.passed();
-    Ok(Machine { runs, undeclared, from_base })
+    Ok(Machine { runs, undeclared, from_base, before_unchecked })
 }
 
 /// A falha da máquina do fechamento (`failure`) reabre, por um evento próprio
@@ -976,13 +1024,15 @@ fn machine(opts: &CloseOpts, root: &Path, clean: &Path, spec: &str, log: &SpecLo
 /// ninguém pediu. Devolve a recusa que o fechamento mostra.
 ///
 /// O que a máquina do fechamento rodou e tem a dizer: a execução de cada
-/// critério, os avisos dos comandos que o projeto não declara e os do lint que
-/// só caiu no que já era da base.
+/// critério, os avisos dos comandos que o projeto não declara, os do lint que
+/// só caiu no que já era da base e o de que as provas não rodaram no código
+/// de antes da obra, por falta de commit base.
 #[derive(Default)]
 struct Machine {
     runs: Vec<Value>,
     undeclared: Vec<String>,
     from_base: Vec<String>,
+    before_unchecked: Option<String>,
 }
 
 /// Os arquivos que a saída `output` acusa e que já eram da base: a saída não
@@ -1039,7 +1089,10 @@ fn authorize_final_repair(root: &Path, spec: &str, log: &SpecLog, failure: Close
                 }
                 cited.waves
             }
-            CloseRefusal::CriterionFailed { code, .. } | CloseRefusal::CriterionRanNoTest { code, .. } | CloseRefusal::CriterionMissingTest { code, .. } => {
+            CloseRefusal::CriterionFailed { code, .. }
+            | CloseRefusal::CriterionRanNoTest { code, .. }
+            | CloseRefusal::CriterionMissingTest { code, .. }
+            | CloseRefusal::CriterionPassedBefore { code, .. } => {
                 let criterion = log.codes().into_iter().find(|(_, c)| c == code).map(|(id, _)| id);
                 planned.iter().copied().filter(|w| criterion.is_none_or(|id| log.criteria_for_waves(&[*w]).iter().any(|c| c.id == id))).collect()
             }
@@ -1151,9 +1204,9 @@ fn clean_env(command: &str) -> String {
 /// já tem a compilação da obra, e o envio da revisão a grava. Quando um
 /// revisor já trabalhou nela depois da última onda — há envio de revisão
 /// depois do último envio de onda —, a cópia com mudança recusa, com os
-/// arquivos, e a recusa diz como descartar: é o corte que o revisor
-/// anterior deixou, e revisar por cima dele é ler código sabotado como se
-/// fosse o da obra; a limpa vai para o commit. Sem revisão depois da última
+/// arquivos, e a recusa diz como descartar: é o que o revisor anterior
+/// deixou, e revisar por cima dele é ler código mexido como se fosse o da
+/// obra; a limpa vai para o commit. Sem revisão depois da última
 /// onda, a mudança é da onda, que a rodada já comitou no principal, e a vaga
 /// é zerada no commit. Como a cópia de onda, ela recebe os arquivos locais do
 /// projeto pelo conteúdo; devolve os que não chegaram e o código que a limpeza
@@ -2194,6 +2247,10 @@ mod tests {
         // teste — sempre verde, para a rodada não travar a entrega.
         assert_eq!(asked["criteria"].as_array().map(Vec::len), Some(3), "os três critérios rodaram: {asked}");
         assert_eq!(asked["review"]["final"], json!(true), "a de uma onda só também pede o agente de teste: {asked}");
+        // A base `dev` da spec não existe no repositório: sem código de antes,
+        // a resposta avisa que as provas não rodaram nele.
+        let warned = asked["warnings"].as_array().into_iter().flatten().any(|w| w["reason"] == json!("proof-before-unchecked"));
+        assert!(warned, "{asked}");
 
         // O trecho de conserto que uma recusa deixou para o agente da onda
         // não fica na pasta da spec fechada.

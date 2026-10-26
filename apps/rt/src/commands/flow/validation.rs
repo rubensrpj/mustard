@@ -293,14 +293,31 @@ fn push_path(files: &mut Vec<String>, file: &str) {
 /// Os arquivos que a branch do checkout em `root` mudou desde a base gravada
 /// no `state` da spec: o que [`Work::of`] conta como obra.
 fn branch_files(root: &Path, log: &SpecLog) -> BTreeSet<String> {
-    let Some(base) = State::from_log(log).base else {
+    let Some(base) = base_ref(root, log) else {
         return BTreeSet::new();
     };
-    let resolves = git::run(root, &["rev-parse", "--verify", "-q", &format!("{base}^{{commit}}")]).ok;
-    let base = if resolves { base } else { format!("origin/{base}") };
     let range = format!("{base}...HEAD");
     let listed = git::run(root, &["diff", "--name-only", "-z", "--no-renames", "--relative", &range]).out().unwrap_or_default();
     listed.split('\0').filter_map(project_path).collect()
+}
+
+/// A base gravada no `state` da spec como o git do checkout em `root` a
+/// acha: a branch local e, sem ela, a do `origin`. `None` sem base gravada.
+fn base_ref(root: &Path, log: &SpecLog) -> Option<String> {
+    let base = State::from_log(log).base?;
+    let resolves = git::run(root, &["rev-parse", "--verify", "-q", &format!("{base}^{{commit}}")]).ok;
+    Some(if resolves { base } else { format!("origin/{base}") })
+}
+
+/// O commit base da obra: onde a branch do checkout em `root` se separou da
+/// base gravada no `state` da spec, o mesmo ponto de que [`Work::of`] conta
+/// os arquivos mudados. É nele que o fechamento roda a prova de cada critério
+/// no código de antes da obra. `None` sem base gravada, ou quando o git não
+/// acha a base nem o ponto em que a branch saiu dela.
+pub(super) fn base_commit(root: &Path, log: &SpecLog) -> Option<String> {
+    let base = base_ref(root, log)?;
+    let sha = git::run(root, &["merge-base", &base, "HEAD"]).out()?;
+    Some(sha.trim().to_string()).filter(|sha| !sha.is_empty())
 }
 
 /// O que a saída de um comando que caiu cita, lida contra a obra.

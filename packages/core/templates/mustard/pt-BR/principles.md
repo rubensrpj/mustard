@@ -5,8 +5,8 @@
 Todo trabalho começa pela regra gravada, acha pelo mapa todos os lugares dela e termina no teste da própria regra, com números combinados, que cai antes e passa depois.
 
 - Para: condutor, onda, revisão
-- Cobrança: o critério só se grava com uma prova que é um comando de verdade.
-- Teste: `the_proof_of_a_criterion_has_to_be_a_real_command`
+- Cobrança: o fechamento roda a prova de cada critério no código de antes da obra, onde ela tem de cair, e no de depois, onde tem de passar rodando teste.
+- Teste: `a_proof_green_before_the_change_or_red_after_it_is_refused`
 
 ## O programa faz e a IA decide
 

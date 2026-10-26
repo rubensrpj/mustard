@@ -264,7 +264,7 @@ const NESTED: &[(&str, &str, &[&str])] = &[
     ("verdict", "leftovers", FINDING_FIELDS),
     ("delivered", "proofs", &["criterion", "proof"]),
     ("delivered", "agreed", &["item", "met"]),
-    ("verdict", "criteria", &["criterion", "tests_rule"]),
+    ("verdict", "criteria", &["criterion"]),
     ("verdict", "lessons", &["lesson", "repeated"]),
     ("tracking", "items", &["item", "met"]),
     ("state", "witness", &["question", "answer"]),
@@ -657,7 +657,7 @@ mod tests {
             Refusal::MissingField { event_type: "verdict".into(), field: "criteria".into() }
         );
         let mut judged = wave.clone();
-        judged["criteria"] = json!([{"criterion": 7, "tests_rule": true}]);
+        judged["criteria"] = json!([{"criterion": 7}]);
         assert_eq!(checked("verdict", judged), Ok(()));
 
         for result in ["approved", "rejected"] {
@@ -668,10 +668,10 @@ mod tests {
         }
         let mut half = wave;
         half["final"] = json!(true);
-        half["criteria"] = json!([{"criterion": 7}]);
+        half["criteria"] = json!([{"tests_rule": true}]);
         assert_eq!(
             checked("verdict", half).unwrap_err(),
-            Refusal::MissingField { event_type: "verdict".into(), field: "criteria[1].tests_rule".into() }
+            Refusal::MissingField { event_type: "verdict".into(), field: "criteria[1].criterion".into() }
         );
     }
 
@@ -690,7 +690,7 @@ mod tests {
         assert_eq!(checked("verdict", rejected), Ok(()));
 
         let no_wave = json!({"author": "review", "result": "approved", "text": "passou",
-            "criteria": [{"criterion": 7, "tests_rule": true}]});
+            "criteria": [{"criterion": 7}]});
         assert_eq!(
             checked("verdict", no_wave).unwrap_err(),
             Refusal::MissingField { event_type: "verdict".into(), field: "wave".into() }

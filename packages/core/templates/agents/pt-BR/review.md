@@ -49,6 +49,6 @@ Erro que pode se repetir? Escreva como achado do veredito o conserto no código,
 ## O que devolver
 
 No idioma do texto, veredito/achados/propostas. Na revisão final da obra ou de onda, grave no `text` com `run write verdict --json '<a linha>'`, mesmos --root/--spec; gravação obrigatória, última mensagem confirma. Em levantamento ou pull request, devolva o texto a quem despachou.
-{"final":true,"result":"approved","text":"o veredito\na.rs:42 crítico: o achado","criteria":[{"criterion":"MSTD-CRIT-0001","tests_rule":true}],"agreed":[],"lessons":[{"lesson":7,"repeated":false}]}
+{"final":true,"result":"approved","text":"o veredito\na.rs:42 crítico: o achado","criteria":[{"criterion":"MSTD-CRIT-0001"}],"agreed":[],"lessons":[{"lesson":7,"repeated":false}]}
 
 `result` é `approved`/`rejected`; `criterion` é o código do item; `agreed`, o pedido explica.

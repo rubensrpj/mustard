@@ -5,8 +5,8 @@
 All work starts from the recorded rule, finds every place of it through the map and ends in the rule's own test, with agreed numbers, which fails before and passes after.
 
 - For: conductor, wave, review
-- Enforcement: a criterion is recorded only with a proof that is a real command.
-- Test: `the_proof_of_a_criterion_has_to_be_a_real_command`
+- Enforcement: the close runs each criterion's proof on the code from before the work, where it must fail, and on the code after, where it must pass running a test.
+- Test: `a_proof_green_before_the_change_or_red_after_it_is_refused`
 
 ## The program does and the AI decides
 
