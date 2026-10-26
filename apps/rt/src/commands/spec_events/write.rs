@@ -6272,9 +6272,9 @@ mod tests {
         let findings = json!([{"title": "A soma não trata estouro", "detail": "A soma estoura em src/main.rs.", "files": ["src/main.rs"]}]);
         let verdict = seed(root, "teste", "verdict", json!({"final": true, "result": "approved", "text": "Pronta, com um achado.", "author": "review", "leftovers": findings}));
         let log = DiskSpecState::new(root).log("teste").unwrap();
-        let approval = mustard_core::domain::spec_state::final_approval(&log).expect("the final verdict approves");
-        let recorded = crate::commands::flow::round::record_final_leftovers(root, root, "teste", (&log, approval), Locale::PtBr).expect("the close records the finding");
-        let finding = recorded.iter().find(|entry| entry["type"] == json!("task")).and_then(|entry| entry["id"].as_u64()).expect("the finding became a task");
+        let approval = mustard_core::domain::spec_state::final_approval(&log).expect("o veredito final aprova");
+        let recorded = crate::commands::flow::round::record_final_leftovers(root, root, "teste", (&log, approval), Locale::PtBr).expect("o fechamento grava o achado");
+        let finding = recorded.iter().find(|entry| entry["type"] == json!("task")).and_then(|entry| entry["id"].as_u64()).expect("o achado virou tarefa");
         (ordinary, verdict, finding)
     }
 
@@ -6300,16 +6300,16 @@ mod tests {
             assert_eq!(refused["reason"], json!("final-finding-removed"), "{removal}: {refused}");
             let hint = refused["hint"].as_str().unwrap();
             assert!(hint.contains(&format!("A tarefa {code} nasceu de um achado")) && hint.contains("ela tem de ser feita"), "{hint}");
-            assert_eq!(std::fs::read(&file).unwrap(), before, "{removal}: nothing is written");
+            assert_eq!(std::fs::read(&file).unwrap(), before, "{removal}: nada é gravado");
         }
         let english = Refusal::FinalFindingRemoved { code: code.clone() }.message(Locale::EnUs);
         assert!(english.starts_with(&format!("Task {code} came from a finding")) && english.contains("the task has to be done"), "{english}");
 
         let removed = write(root, "remove", &json!({"targets": [ordinary], "reason": "não vale"}).to_string());
-        assert_eq!(removed["ok"], json!(true), "another task still leaves: {removed}");
+        assert_eq!(removed["ok"], json!(true), "outra tarefa ainda sai: {removed}");
         let log = DiskSpecState::new(root).log("teste").unwrap();
         let tasks: Vec<u64> = log.visible().into_iter().filter(|event| event.event_type == "task").map(|event| event.id).collect();
-        assert_eq!(tasks, vec![finding], "only the task of the finding stays");
+        assert_eq!(tasks, vec![finding], "só a tarefa do achado fica");
     }
 
     /// O veredito que a tarefa do achado aponta tem de ser o aprovado de

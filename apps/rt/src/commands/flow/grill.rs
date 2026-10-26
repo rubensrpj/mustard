@@ -921,7 +921,7 @@ mod tests {
         let stale: Vec<&str> = before_settling
             .iter()
             .find(|item| item.key == Some(survey::GapKey::Reproduction))
-            .expect("the reproduction gap is in the list")
+            .expect("a lacuna da reprodução está na lista")
             .facts
             .iter()
             .map(|fact| fact.source.as_str())
@@ -934,7 +934,7 @@ mod tests {
         let reproduction = points
             .iter()
             .find(|p| p.str_field("gap") == Some(survey::GapKey::Reproduction.label(Locale::PtBr)))
-            .expect("the reproduction point is recorded");
+            .expect("o ponto da reprodução é gravado");
         let sources: Vec<&str> =
             reproduction.fields.get("facts").and_then(Value::as_array).into_iter().flatten().filter_map(|fact| fact["source"].as_str()).collect();
         assert_eq!(sources, ["src/a.rs:1"], "{reproduction:?}");
