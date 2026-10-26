@@ -818,7 +818,7 @@ pub(crate) fn files_in(fields: &Map<String, Value>) -> BTreeSet<String> {
 /// depois desta leitura continua recusando esta como substituída, e o texto
 /// dela não se perde. O evento sem código, e o que não é tarefa, vão pelo
 /// número, como antes.
-pub(super) fn task_revision(log: &SpecLog, id: u64, extra: Map<String, Value>) -> Option<Map<String, Value>> {
+pub(crate) fn task_revision(log: &SpecLog, id: u64, extra: Map<String, Value>) -> Option<Map<String, Value>> {
     let event = log.get(id)?;
     let mut draft: Map<String, Value> = event
         .fields

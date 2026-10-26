@@ -6281,8 +6281,12 @@ mod tests {
     /// A tarefa que o fechamento gravou de um achado do veredito final
     /// aprovado não sai com `remove`, pelo número, pelo código nem por filtro
     /// de horário: o arquivo não muda, e a recusa diz, nos dois idiomas, que
-    /// o fechamento a recria e que ela tem de ser feita. A outra tarefa da
-    /// spec segue podendo sair, e a do achado continua no backlog.
+    /// o fechamento a recria e que ela tem de ser feita. Vale também depois
+    /// que a rodada regrava a tarefa com o autor `binary` — ao pôr na onda e
+    /// ao devolver ao backlog —, quando a versão vigente já não é a de autor
+    /// `review`: o `remove` de qualquer versão tira todas elas, e o achado
+    /// segue guardado. A outra tarefa da spec segue podendo sair, e a do
+    /// achado continua no backlog.
     #[test]
     fn the_task_of_a_final_review_finding_cannot_be_removed_but_another_task_can() {
         let dir = tempdir().unwrap();
@@ -6290,26 +6294,45 @@ mod tests {
         let (ordinary, _, finding) = spec_with_a_final_finding(root);
         let code = DiskSpecState::new(root).log("teste").unwrap().codes()[&finding].clone();
         let file = root.join(".claude").join("spec").join("teste").join("spec.ndjson");
-        let before = std::fs::read(&file).unwrap();
         let everything = json!({"type": "task", "from": "2000-01-01T00:00:00", "to": "2999-12-31T23:59:59"});
-        for removal in [json!({"targets": [finding]}), json!({"targets": [code]}), json!({"filter": everything})] {
-            let mut draft = removal.clone();
-            draft["reason"] = json!("não vale");
-            let refused = write(root, "remove", &draft.to_string());
-            assert_eq!(refused["ok"], json!(false), "{removal}: {refused}");
-            assert_eq!(refused["reason"], json!("final-finding-removed"), "{removal}: {refused}");
-            let hint = refused["hint"].as_str().unwrap();
-            assert!(hint.contains(&format!("A tarefa {code} nasceu de um achado")) && hint.contains("ela tem de ser feita"), "{hint}");
-            assert_eq!(std::fs::read(&file).unwrap(), before, "{removal}: nada é gravado");
-        }
+        let refuses_every_removal = |targets: Vec<u64>| {
+            let before = std::fs::read(&file).unwrap();
+            let by_number = targets.into_iter().map(|id| json!({"targets": [id]}));
+            for removal in by_number.chain([json!({"targets": [code.clone()]}), json!({"filter": everything.clone()})]) {
+                let mut draft = removal.clone();
+                draft["reason"] = json!("não vale");
+                let refused = write(root, "remove", &draft.to_string());
+                assert_eq!(refused["ok"], json!(false), "{removal}: {refused}");
+                assert_eq!(refused["reason"], json!("final-finding-removed"), "{removal}: {refused}");
+                let hint = refused["hint"].as_str().unwrap();
+                assert!(hint.contains(&format!("A tarefa {code} nasceu de um achado")) && hint.contains("ela tem de ser feita"), "{hint}");
+                assert_eq!(std::fs::read(&file).unwrap(), before, "{removal}: nada é gravado");
+            }
+        };
+        refuses_every_removal(vec![finding]);
         let english = Refusal::FinalFindingRemoved { code: code.clone() }.message(Locale::EnUs);
         assert!(english.starts_with(&format!("Task {code} came from a finding")) && english.contains("the task has to be done"), "{english}");
+
+        let by_the_round = |from: u64, draft: Map<String, Value>| {
+            let recorded = record(root, "teste", "task", draft, PhaseWriter::Binary).expect("a rodada grava a versão dela da tarefa").written.id;
+            let log = DiskSpecState::new(root).log("teste").unwrap();
+            assert_eq!(log.get(recorded).and_then(|event| event.str_field("author")), Some("binary"), "a versão {recorded}, que substitui a {from}, é da rodada");
+            recorded
+        };
+        let log = DiskSpecState::new(root).log("teste").unwrap();
+        let in_wave = crate::commands::flow::round::queue::task_revision(&log, finding, Map::from_iter([("wave".to_string(), json!(1))])).expect("o rascunho da onda");
+        let in_wave = by_the_round(finding, in_wave);
+        let log = DiskSpecState::new(root).log("teste").unwrap();
+        let back = by_the_round(in_wave, backlog_return(log.get(in_wave).expect("a versão na onda")));
+        let log = DiskSpecState::new(root).log("teste").unwrap();
+        assert_eq!(log.current(finding).map(|event| event.id), Some(back), "a versão da rodada é a vigente");
+        refuses_every_removal(vec![in_wave, back]);
 
         let removed = write(root, "remove", &json!({"targets": [ordinary], "reason": "não vale"}).to_string());
         assert_eq!(removed["ok"], json!(true), "outra tarefa ainda sai: {removed}");
         let log = DiskSpecState::new(root).log("teste").unwrap();
         let tasks: Vec<u64> = log.visible().into_iter().filter(|event| event.event_type == "task").map(|event| event.id).collect();
-        assert_eq!(tasks, vec![finding], "só a tarefa do achado fica");
+        assert_eq!(tasks, vec![back], "só a tarefa do achado fica");
     }
 
     /// O veredito que a tarefa do achado aponta tem de ser o aprovado de
