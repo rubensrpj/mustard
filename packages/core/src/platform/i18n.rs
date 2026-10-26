@@ -304,7 +304,11 @@ mod tests {
     /// texto da própria chave muda, e é por isso que duas ondas que mexem em
     /// chaves diferentes juntam sem conflito.
     fn part_stamps<'t>(keys: &BTreeSet<&str>, text: impl Fn(&str, Locale) -> &'t str) -> String {
-        keys.iter().map(|key| format!("{key}\t{:016x}\n", key_stamp(key, &text))).collect()
+        use std::fmt::Write as _;
+        keys.iter().fold(String::new(), |mut stamps, key| {
+            let _ = writeln!(stamps, "{key}\t{:016x}", key_stamp(key, &text));
+            stamps
+        })
     }
 
     /// Compara as impressões gravadas com as de agora. A falha nomeia as

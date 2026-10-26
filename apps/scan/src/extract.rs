@@ -1156,13 +1156,11 @@ impl Analyzer {
         // defined, not a use of it) and minus what is written inside a
         // decoration, an import or a namespace name.
         let quiet = Pruned::of(decorations.union(&import_spans).copied());
-        let heads;
         let brought: HashSet<&str> = imported_at.iter().map(|(_, name)| name.as_str()).collect();
         let owners = typed::Owners::new(member_of, typed::Bindings::of(&out.declarations, &locals, &local_types, &names_at));
         let bound_at: BTreeSet<usize> = locals.iter().map(|&(_, byte, _)| byte).collect();
         let marks = Marks { value_at: &value_at, member_at: &member_at, bound_at: &bound_at, owners: &owners };
-        let (found, written_heads) = use_sites(&walked.leaves, bytes, &comments, &quiet, &names_at, &name_kinds, &self.name, &brought, &marks);
-        heads = written_heads;
+        let (found, heads) = use_sites(&walked.leaves, bytes, &comments, &quiet, &names_at, &name_kinds, &self.name, &brought, &marks);
         [out.calls, out.cites, out.value_uses, out.member_reads] = drop_local_uses(&marked.reaches(bytes, &names_at), found);
 
         // Cada nome trazido é do import escrito no mesmo comando: o que fica

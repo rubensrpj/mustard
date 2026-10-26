@@ -1,3 +1,8 @@
+// Os testes de integração são alvos separados e `#[cfg(test)]` não os isenta
+// de `clippy::unwrap_used`: espelha a isenção de `src/main.rs`, para que o
+// pânico de um `.unwrap()` continue valendo como asserção.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 //! Os módulos do fluxo — a rodada, a retomada, o fechamento, o painel e a
 //! parte comum que os quatro importam — não se importam em ciclo. A conta lê
 //! o código de produção de cada arquivo deles, com os caminhos relativos

@@ -339,7 +339,7 @@ fn declared_module(file: &Path, name: &str, path: Option<&str>) -> PathBuf {
 
 /// O número da linha (a partir de 1) do byte `at`.
 fn line_of(code: &[u8], at: usize) -> usize {
-    code[..at].iter().filter(|&&b| b == b'\n').count() + 1
+    code[..at].split(|&b| b == b'\n').count()
 }
 
 /// O byte anterior a `at` que não é espaço, e o seguinte a `to`.

@@ -3690,7 +3690,7 @@ fn a_call_by_path_to_a_name_passed_on_under_another_name_is_a_proven_use() {
     let mut failures: Vec<String> = Vec::new();
     for (declaring, calls) in cases {
         let uses = uses_of(map, declaring, "find");
-        let mut proven: Vec<String> = uses.proven.iter().map(|at| at.rsplitn(2, ':').nth(1).unwrap().to_string()).collect();
+        let mut proven: Vec<String> = uses.proven.iter().map(|at| at.rsplit_once(':').unwrap().0.to_string()).collect();
         proven.sort();
         let mut expected: Vec<String> = calls.iter().map(|(file, text)| passed_on_place(file, text)).collect();
         expected.sort();

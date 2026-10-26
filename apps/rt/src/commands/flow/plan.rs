@@ -651,7 +651,7 @@ fn forecast(log: &SpecLog, times: Option<WaveTimes>, lang: Locale) -> Value {
         }
         None => text = format!("{text} {}", translate("plan.forecast.no_measure", lang)),
     }
-    let listed: String = rules.iter().map(|rule| format!("- {rule}\n")).collect();
+    let listed: String = rules.iter().flat_map(|rule| ["- ", rule.as_str(), "\n"]).collect();
     let text = if listed.is_empty() { text } else { format!("{listed}\n{text}") };
     block["text"] = json!(text);
     block
