@@ -5,9 +5,12 @@
 //! é uma chamada (`it('soma', …)`) entra como declaração de teste com o texto
 //! do primeiro argumento como nome, ou com o da propriedade `name` do objeto
 //! (`Deno.test({ name: 'soma', fn() {} })`), ou com o da função passada a
-//! ela. O subteste chamado no parâmetro do teste de fora (`t.test('x', …)`)
-//! também é teste, e a função escrita dentro do bloco de uma macro de teste
-//! (`proptest! { #[test] fn x(..) {} }`) também. O grupo (`describe`, `group`) não é
+//! ela. O subteste chamado no parâmetro do teste de fora (`t.test('x', …)`),
+//! escrito com a função passada direto ou com ela no objeto
+//! (`Deno.test({ name: 'x', async fn(t) { await t.step('y', …) } })`), também
+//! é teste, e a função escrita dentro do bloco de uma macro de teste
+//! (`proptest! { #[test] fn x(..) {} }`, `quickcheck! { fn x(..) -> bool {} }`)
+//! também. O grupo (`describe`, `group`) não é
 //! teste, a função de apoio também não, e a forma que a língua só roda no
 //! arquivo de teste (o `def test_*` do pytest, o `func TestX` do Go) não é
 //! teste fora dele.
@@ -19,6 +22,7 @@ mod model;
 
 use std::path::Path;
 
+use mustard_core::domain::ast::is_test_path;
 use serde_json::Value;
 
 /// Uma língua: os arquivos do projeto dela, os testes que o mapa marca (o
@@ -55,6 +59,10 @@ const RUST: Language = Language {
              #[test]\n        fn proptest_block_check(x in 0..10u32) {\n            prop_assert!(x < 10);\n        }\n\n        \
              /// Cai com qualquer valor.\n        \
              #[test]\n        #[should_panic]\n        fn proptest_block_panicking(x in 0..10u32, y in 0..2u8) {\n            panic!(\"{x} {y}\");\n        }\n    \
+             }\n\n    \
+             quickcheck! {\n        \
+             fn quickcheck_block_check(x: u32) -> bool {\n            x == x\n        }\n\n        \
+             #[ignore]\n        fn quickcheck_block_result(x: u32, y: Vec<u8>) -> Result<(), String> {\n            Ok(())\n        }\n    \
              }\n}\n",
         ),
         ("tests/api.rs", "#[test]\nfn loose_check_in_a_test_file() {\n    assert_eq!(sums::sum(1, 1), 2);\n}\n"),
@@ -71,6 +79,8 @@ const RUST: Language = Language {
         ("src/lib.rs", "panicking_check"),
         ("src/lib.rs", "proptest_block_check"),
         ("src/lib.rs", "proptest_block_panicking"),
+        ("src/lib.rs", "quickcheck_block_check"),
+        ("src/lib.rs", "quickcheck_block_result"),
         ("tests/api.rs", "loose_check_in_a_test_file"),
     ],
     not_tests: &[("src/lib.rs", "sum"), ("src/lib.rs", "helper")],
@@ -106,8 +116,11 @@ const TYPESCRIPT: Language = Language {
              Deno.test(function addsByTheFunctionName() {});\n\
              Deno.test({ permissions: { read: true } }, function addsAfterTheOptions() {});\n\
              Deno.test({ name: \"the name property wins\" }, function notTheTestName() {});\n\
-             Deno.test(\"adds in steps\", async (t) => {\n  await t.step(\"adds one step\", () => {});\n});\n",
+             Deno.test(\"adds in steps\", async (t) => {\n  await t.step(\"adds one step\", () => {});\n});\n\
+             Deno.test({ name: \"adds in object steps\", async fn(t) {\n  await t.step(\"adds a method step\", () => {});\n} });\n\
+             Deno.test({ name: \"adds in arrow steps\", fn: async (t) => {\n  t.step(\"adds an arrow step\", () => {});\n} });\n",
         ),
+        ("src/sum_tap.test.js", "const tap = require(\"tap\");\n\ntap.test(\"adds with tap\", (t) => {\n  t.end();\n});\n"),
         (
             "src/sum_node.test.js",
             "const test = require(\"node:test\");\n\n\
@@ -139,6 +152,9 @@ const TYPESCRIPT: Language = Language {
         ("src/sum_deno.test.ts", "addsAfterTheOptions"),
         ("src/sum_deno.test.ts", "the name property wins"),
         ("src/sum_deno.test.ts", "adds one step"),
+        ("src/sum_deno.test.ts", "adds a method step"),
+        ("src/sum_deno.test.ts", "adds an arrow step"),
+        ("src/sum_tap.test.js", "adds with tap"),
         ("src/sum_node.test.js", "adds an awaited subtest"),
         ("src/sum_node.test.js", "adds a subtest with options"),
         ("src/sum_node.test.js", "adds a middle subtest"),
@@ -345,17 +361,22 @@ fn marked(decl: &Value) -> bool {
     decl["syntax"]["test"] == Value::Bool(true)
 }
 
-/// O que o mapa da língua `language` diz de errado das formas dela: cada
-/// teste sem a marca ou sem declaração, cada declaração de fora com a marca
-/// e cada nome que não é de declaração (o do grupo, o da chamada que não é
-/// teste, o da função cujo teste leva outro nome) e virou uma.
-fn wrong_forms(language: &Language) -> Vec<String> {
+/// O mapa do projeto da língua `language`, escrito numa pasta temporária.
+fn map_of(language: &Language) -> Value {
     let temp = tempfile::Builder::new().prefix(&format!("scan-test-units-{}-", language.name)).tempdir().unwrap();
     let dir = temp.path();
     for (path, body) in language.files {
         write(dir, path, body);
     }
-    let (map, _) = model::scan(dir, &dir.join(".claude"), &[]);
+    model::scan(dir, &dir.join(".claude"), &[]).0
+}
+
+/// O que o mapa da língua `language` diz de errado das formas dela: cada
+/// teste sem a marca ou sem declaração, cada declaração de fora com a marca
+/// e cada nome que não é de declaração (o do grupo, o da chamada que não é
+/// teste, o da função cujo teste leva outro nome) e virou uma.
+fn wrong_forms(language: &Language) -> Vec<String> {
+    let map = map_of(language);
     let mut wrong = Vec::new();
     for (path, name) in language.tests {
         let found = declarations(&map, path, name);
@@ -387,6 +408,38 @@ fn every_test_form_is_marked_as_a_test_in_every_language() {
     assert!(wrong.is_empty(), "{} formas erradas:\n{}", wrong.len(), wrong.join("\n"));
 }
 
+/// Toda declaração que o mapa marca como teste, em cada língua, fica inteira
+/// dentro de um trecho de teste do arquivo dela, ou num arquivo que é de teste
+/// pelo caminho: quem decide o que é teste pelo trecho vê todo teste que a
+/// marca vê.
+#[test]
+fn every_marked_test_lies_inside_the_test_lines_of_its_file() {
+    let mut outside = Vec::new();
+    for language in [RUST, TYPESCRIPT, PYTHON, CSHARP, GO, PHP, DART] {
+        let map = map_of(&language);
+        for module in map["modules"].as_array().into_iter().flatten() {
+            let path = module["path"].as_str().unwrap_or_default();
+            if is_test_path(path) {
+                continue;
+            }
+            let blocks: Vec<(u64, u64)> = module["test_lines"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|block| Some((block[0].as_u64()?, block[1].as_u64()?)))
+                .collect();
+            for decl in module["declarations"].as_array().into_iter().flatten().filter(|decl| marked(decl)) {
+                let line = decl["line"].as_u64().unwrap_or(0);
+                let end = decl["end_line"].as_u64().unwrap_or(0).max(line);
+                if !blocks.iter().any(|&(first, last)| first <= line && end <= last) {
+                    outside.push(format!("{}: {path} `{}` linhas {line} a {end}, trechos {blocks:?}", language.name, decl["name"]));
+                }
+            }
+        }
+    }
+    assert!(outside.is_empty(), "{} testes fora do trecho de teste:\n{}", outside.len(), outside.join("\n"));
+}
+
 /// A função de teste escrita no bloco do `proptest!`, num arquivo do
 /// programa e fora de módulo de teste, vai do `#[test]` ao fim do corpo, com
 /// a documentação de cima, e o trecho inteiro é de teste: a chamada que o
@@ -413,4 +466,30 @@ fn a_test_in_a_macro_block_spans_from_its_test_attribute_to_the_end_of_its_body(
     assert!(covered, "o trecho de teste cobre a função: {}", module["test_lines"]);
     let sum = declarations(&map, "src/lib.rs", "sum");
     assert!(sum.iter().all(|d| d["used_by"].as_array().is_none_or(Vec::is_empty)), "a chamada do teste não é uso: {sum:?}");
+}
+
+/// Cada função do bloco do `quickcheck!` vai dos atributos dela, com a
+/// documentação de cima, ao fim do próprio corpo, qualquer que seja o tipo de
+/// volta: a de volta curta não se estende até o corpo da função seguinte.
+#[test]
+fn each_function_of_a_quickcheck_block_ends_at_its_own_body() {
+    let temp = tempfile::Builder::new().prefix("scan-test-units-quickcheck-").tempdir().unwrap();
+    let dir = temp.path();
+    write(dir, "Cargo.toml", "[package]\nname = \"sums\"\nversion = \"0.1.0\"\n");
+    write(
+        dir,
+        "src/lib.rs",
+        "pub fn sum(a: u32) -> u32 {\n    a\n}\n\nquickcheck! {\n    \
+         fn short_prop(x: u32) -> bool { sum(x) == x }\n    \
+         /// Volta um erro.\n    #[ignore]\n    fn result_prop(x: u32) -> Result<(), Box<dyn std::error::Error>> {\n        \
+         Ok(())\n    }\n}\n",
+    );
+    let (map, _) = model::scan(dir, &dir.join(".claude"), &[]);
+    let spans: Vec<(Value, Value, Value)> = ["short_prop", "result_prop"]
+        .iter()
+        .flat_map(|name| declarations(&map, "src/lib.rs", name))
+        .map(|d| (d["line"].clone(), d["end_line"].clone(), d["doc"].clone()))
+        .collect();
+    let expected = [(Value::from(6), Value::from(6), Value::Null), (Value::from(8), Value::from(11), Value::from("Volta um erro."))];
+    assert_eq!(spans, expected);
 }

@@ -169,6 +169,49 @@
   (#match? @_macro "^(.*::)?proptest$")
   (#eq? @_attribute "test"))
 
+; A função escrita dentro do bloco do `quickcheck!`
+; (`quickcheck! { fn x(a: u32) -> bool {} }`): toda função do bloco é teste,
+; sem atributo de teste, e a gramática a deixa em pedaços soltos, como a do
+; bloco do `proptest!`. Ela entra no mapa com o nome escrito depois do `fn`,
+; marcada como teste, e vai do primeiro atributo dela ao fim do corpo: todo
+; atributo escrito no bloco é de uma função dele. O bloco sempre escreve o
+; tipo de volta entre os parâmetros e o corpo, numa fila de pedaços de
+; tamanho livre (`bool`, `Result<(), String>`), e o tree-sitter 0.26 não casa
+; essa fila com quantificador: `(_)*` entre os parâmetros e o corpo só casa o
+; tipo de um pedaço. Cada tamanho, até oito pedaços, é um ramo, e nenhum
+; pedaço do tipo é um bloco entre chaves: o corpo é o primeiro bloco depois
+; da seta, e não o de uma função seguinte.
+((macro_invocation
+   macro: [(identifier) (scoped_identifier name: (identifier))] @_macro
+   (token_tree
+     "#"
+     .
+     (token_tree "[") @decoration @test_unit))
+  (#match? @_macro "^(.*::)?quickcheck$"))
+((macro_invocation
+   macro: [(identifier) (scoped_identifier name: (identifier))] @_macro
+   (token_tree
+     "fn"
+     .
+     (identifier) @name @definition.function @test_unit
+     .
+     (token_tree) @test_unit
+     .
+     "->"
+     .
+     [
+       ((_) @test_unit . (token_tree "{") @body @test_unit)
+       ((_) @test_unit . (_) @_type @test_unit . (token_tree "{") @body @test_unit)
+       ((_) @test_unit . (_) @_type @test_unit . (_) @_type @test_unit . (token_tree "{") @body @test_unit)
+       ((_) @test_unit . (_) @_type @test_unit . (_) @_type @test_unit . (_) @_type @test_unit . (token_tree "{") @body @test_unit)
+       ((_) @test_unit . (_) @_type @test_unit . (_) @_type @test_unit . (_) @_type @test_unit . (_) @_type @test_unit . (token_tree "{") @body @test_unit)
+       ((_) @test_unit . (_) @_type @test_unit . (_) @_type @test_unit . (_) @_type @test_unit . (_) @_type @test_unit . (_) @_type @test_unit . (token_tree "{") @body @test_unit)
+       ((_) @test_unit . (_) @_type @test_unit . (_) @_type @test_unit . (_) @_type @test_unit . (_) @_type @test_unit . (_) @_type @test_unit . (_) @_type @test_unit . (token_tree "{") @body @test_unit)
+       ((_) @test_unit . (_) @_type @test_unit . (_) @_type @test_unit . (_) @_type @test_unit . (_) @_type @test_unit . (_) @_type @test_unit . (_) @_type @test_unit . (_) @_type @test_unit . (token_tree "{") @body @test_unit)
+     ]))
+  (#match? @_macro "^(.*::)?quickcheck$")
+  (#not-match? @_type "^[{]"))
+
 ; Todo módulo com corpo escrito dentro do arquivo, o de teste incluído: o
 ; `super` escrito dentro de N deles sai primeiro desses N módulos, e só depois
 ; sobe pasta. O `mod x;` sem corpo mora em outro arquivo e não entra.

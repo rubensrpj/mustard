@@ -56,12 +56,12 @@
 (type_alias_declaration name: (_) @name) @definition.type
 (function_declaration name: (_) @name) @definition.function
 
-; O teste que é chamada (Jest, Vitest, Mocha, Jasmine, Playwright, Bun, o
-; executor de testes do Node e o do Deno): `it(...)`, `test(...)`,
+; O teste que é chamada (Jest, Vitest, Mocha, Jasmine, Playwright, Bun, tap,
+; o executor de testes do Node e o do Deno): `it(...)`, `test(...)`,
 ; `specify(...)`, `bench(...)`, as formas de foco e de pulo (`fit`, `xit`,
 ; `xtest`, `it.only`, `test.skip`, `test.concurrent`, `test.fixme`...),
-; `Deno.test(...)` e a tabela, `it.each(...)(...)`, com a lista ou com o
-; texto marcado depois do `each`.
+; `Deno.test(...)`, `tap.test(...)` e a tabela, `it.each(...)(...)`, com a
+; lista ou com o texto marcado depois do `each`.
 ; O primeiro argumento é o texto do nome, e um argumento depois dele é a
 ; função do teste, mesmo com as opções no meio (`test('x', { timeout }, fn)`).
 ; A chamada entra no mapa como declaração de teste, com o texto do nome sem
@@ -69,7 +69,7 @@
 ((call_expression
    function: [(identifier) (member_expression)] @_callee
    arguments: (arguments . [(string) (template_string)] @name.text [(arrow_function) (function_expression)])) @definition.test @test_unit
-  (#match? @_callee "^((it|test|specify|bench|fit|xit|xtest|xspecify)(\\.(only|skip|concurrent|sequential|failing|fails|todo|fixme|slow|serial|parallel))*|Deno\\.test(\\.(only|ignore))?)$"))
+  (#match? @_callee "^((it|test|specify|bench|fit|xit|xtest|xspecify)(\\.(only|skip|concurrent|sequential|failing|fails|todo|fixme|slow|serial|parallel))*|Deno\\.test(\\.(only|ignore))?|tap\\.test)$"))
 ((call_expression
    function: (call_expression function: (member_expression) @_callee)
    arguments: (arguments . [(string) (template_string)] @name.text [(arrow_function) (function_expression)])) @definition.test @test_unit
@@ -120,6 +120,48 @@
                 function: (member_expression object: (identifier) @_receiver property: (property_identifier) @_method)
                 arguments: (arguments . [(string) (template_string)] @name.text [(arrow_function) (function_expression)])) @definition.test @test_unit)])))))
   (#match? @_outer "^((it|test|specify|bench|fit|xit|xtest|xspecify)(\\.(only|skip|concurrent|sequential|failing|fails|todo|fixme|slow|serial|parallel))*|Deno\\.test(\\.(only|ignore))?|[A-Za-z_$][A-Za-z0-9_$]*\\.(test|step))$")
+  (#match? @_method "^(test|step)$")
+  (#eq? @_receiver @_context))
+
+; O subteste do teste do Deno escrito com um objeto: a função do teste é a
+; propriedade `fn` do objeto, escrita como método
+; (`Deno.test({ name: 'x', async fn(t) { await t.step('y', () => {}); } })`)
+; ou como valor (`fn: async (t) => { … }`), e o subteste é a chamada `step`
+; ou `test` feita no parâmetro dela, como no teste de fora escrito com a
+; função passada direto.
+((call_expression
+   function: (member_expression) @_outer
+   arguments: (arguments
+     .
+     (object
+       [(method_definition
+          name: (property_identifier) @_function
+          parameters: (formal_parameters . (required_parameter pattern: (identifier) @_context))
+          body: (statement_block
+            (expression_statement
+              [(call_expression
+                 function: (member_expression object: (identifier) @_receiver property: (property_identifier) @_method)
+                 arguments: (arguments . [(string) (template_string)] @name.text [(arrow_function) (function_expression)])) @definition.test @test_unit
+               (await_expression
+                 (call_expression
+                   function: (member_expression object: (identifier) @_receiver property: (property_identifier) @_method)
+                   arguments: (arguments . [(string) (template_string)] @name.text [(arrow_function) (function_expression)])) @definition.test @test_unit)])))
+        (pair
+          key: (property_identifier) @_function
+          value: (_
+            [parameter: (identifier) @_context
+             parameters: (formal_parameters . (required_parameter pattern: (identifier) @_context))]
+            body: (statement_block
+              (expression_statement
+                [(call_expression
+                   function: (member_expression object: (identifier) @_receiver property: (property_identifier) @_method)
+                   arguments: (arguments . [(string) (template_string)] @name.text [(arrow_function) (function_expression)])) @definition.test @test_unit
+                 (await_expression
+                   (call_expression
+                     function: (member_expression object: (identifier) @_receiver property: (property_identifier) @_method)
+                     arguments: (arguments . [(string) (template_string)] @name.text [(arrow_function) (function_expression)])) @definition.test @test_unit)]))))])))
+  (#match? @_outer "^Deno\\.test(\\.(only|ignore))?$")
+  (#eq? @_function "fn")
   (#match? @_method "^(test|step)$")
   (#eq? @_receiver @_context))
 
