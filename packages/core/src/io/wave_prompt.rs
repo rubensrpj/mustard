@@ -600,7 +600,9 @@ pub fn final_review_commit(root: &Path, log: &SpecLog) -> Option<String> {
 ///
 /// Depois de um veredito final, o pedido é o da revisão de volta: ele lista
 /// o que mudou desde esse veredito ([`wave_prompt::since_last_verdict`]), e o
-/// revisor confere isso e o encaixe no resto, sem repetir o que o veredito já
+/// revisor confere só a cadeia de cada conserto — a regra, os lugares e a
+/// prova, que a linha de cada tarefa traz ([`wave_prompt::task_chains`]) —,
+/// sem caçar achado no resto da obra nem repetir o que o veredito já
 /// concluiu. Depois de uma aprovação — a obra fechada e reaberta para um
 /// ajuste —, o que ela conferiu e não mudou sai também das outras partes
 /// ([`wave_prompt::Proven`]), e o pedido traz só o ajuste. Depois de uma
@@ -631,12 +633,14 @@ pub fn final_review(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Fin
     let copy = final_copy_path(root, spec, log);
     let prepared = crate::io::workspace::checkout_git_dir(&copy).is_some_and(|admin| admin.join("mustard-dependencies.sha256").is_file());
     let execution = Execution { commit, prepared, copy: Some(WaveCopy { path: shown(&copy), reused: None }), ..project_execution(root) };
-    let material = Material {
+    let mut material = Material {
         spec: spec.to_string(),
         execution,
         project_rules: project_rules(root, &touched_files(root, Some(log))),
         ..final_review_items(log)
     };
+    let tasks = material.since_verdict.iter().chain(&material.block).copied();
+    material.chains = wave_prompt::task_chains(log, tasks, material.execution.test.as_deref());
     FinalReview { text: wave_prompt::write_final_review(&material, lang), listed: wave_prompt::listed_final_review(&material) }
 }
 
@@ -1036,6 +1040,7 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
         changes: Vec::new(),
         validation: Vec::new(),
         since_verdict: Vec::new(),
+        chains: BTreeMap::new(),
         codes,
         task_patterns,
         task_changes,
@@ -3900,6 +3905,71 @@ mod tests {
             let after = final_review(root, "teste", &log, lang).text;
             assert!(after.contains(t("prompt.final.look_since_approval")) && !after.contains(scope_phrase), "{lang:?}: {after}");
             assert_eq!(wave_codes(&log, &after), [false, false], "a aprovação já conferiu as duas ondas: {after}");
+        }
+    }
+
+    /// A revisão que volta depois de um conserto confere só a cadeia dele. O
+    /// pedido manda conferir a regra, cada lugar e a prova, e não manda olhar
+    /// o encaixe no resto da obra. A parte do que mudou traz a tarefa do
+    /// conserto, que tem passo depois do veredito, com a cadeia logo abaixo:
+    /// a regra pelo código e título, os lugares e a prova do critério que ela
+    /// cobre. A tarefa terminada antes do veredito não entra em parte
+    /// nenhuma. Depois de uma aprovação, o ajuste traz a cadeia dele, com a
+    /// regra nova pelo texto, e o conserto que ela aprovou fica de fora. Nos
+    /// dois idiomas.
+    #[test]
+    fn the_review_after_a_fix_checks_the_rule_its_places_and_its_proof_only() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let commit = |sha: &str, wave: u64| ("commit", json!({"sha": sha, "title": "t", "waves": [wave], "files": ["src/a.rs"]}));
+        let mut events = vec![
+            ("rule", json!({"title": "A soma guarda o sinal", "text": "A soma guarda o sinal.", "keys": ["a"], "example": "e", "applies_to": {"files": ["**"]}})),
+            ("criterion", json!({"when": "a soma roda", "then": "o sinal fica", "proof": "cargo test soma_keeps_sign", "form": "ubiquitous"})),
+            ("wave", json!({"n": 1, "text": "A onda", "criteria": [2], "done_when": "passa"})),
+            ("task", json!({"wave": 1, "text": "Somar", "files": [{"path": "src/a.rs"}], "covers": [2]})),
+            ("step", json!({"wave": 1, "item": 4, "text": "Pronta."})),
+            commit("aaa1111", 1),
+            ("verdict", json!({"final": true, "result": "rejected", "text": "O sinal some.", "agreed": [{"item": 1, "met": false, "text": "falta"}]})),
+            ("wave", json!({"n": 2, "text": "O conserto", "criteria": [2], "done_when": "passa"})),
+            ("task", json!({"wave": 2, "text": "Guardar o sinal", "files": [{"path": "src/a.rs"}], "rule": "MSTD-RULE-0001",
+                "places": ["src/a.rs:3", "soma"], "covers": [1, 2]})),
+            ("step", json!({"wave": 2, "item": 9, "text": "Pronta."})),
+            commit("bbb2222", 2),
+        ];
+        let fixed = log_of(&events);
+        events.push(("verdict", json!({"final": true, "result": "approved", "text": "Pronta.", "agreed": [{"item": 1, "met": true}]})));
+        events.push(("task", json!({"wave": 2, "text": "Mostrar o total", "files": [{"path": "src/b.rs"}], "rule": "O total cabe no visor.",
+            "places": ["src/b.rs"]})));
+        events.push(("step", json!({"wave": 2, "item": 13, "text": "Pronta."})));
+        let adjusted = log_of(&events);
+        let codes = fixed.codes();
+        let code = |id: u64| codes[&id].clone();
+        // A linha logo abaixo da primeira linha de item que cita `code`.
+        let below = |text: &str, code: &str| -> String {
+            let mut lines = text.lines();
+            lines.find(|line| line.starts_with("- ") && line.contains(code));
+            lines.next().unwrap_or_default().to_string()
+        };
+        for (lang, old) in [(Locale::PtBr, "se encaixa no resto da obra"), (Locale::EnUs, "fits the rest of the work")] {
+            let t = |key: &str| crate::platform::i18n::translate(key, lang);
+
+            let again = final_review(root, "teste", &fixed, lang).text;
+            assert!(again.contains(t("prompt.final.look_again")) && !again.contains(old), "{lang:?}: {again}");
+            assert_eq!(line_codes(part_lines(&again, t("prompt.part.since_verdict"))), [code(7), code(11), code(1), code(9)], "{lang:?}: {again}");
+            let chain = format!(
+                "  {} {} {}",
+                t("prompt.final.chain.rule").replace("{rule}", &format!("{} — A soma guarda o sinal", code(1))),
+                t("prompt.final.chain.places").replace("{places}", "`src/a.rs:3`, `soma`"),
+                t("prompt.final.chain.proof").replace("{proofs}", "`cargo test soma_keeps_sign`"),
+            );
+            assert_eq!(below(&again, &code(9)), chain, "{lang:?}: {again}");
+            assert!(!again.contains(&code(4)), "a tarefa terminada antes do veredito fica fora: {again}");
+
+            let after = final_review(root, "teste", &adjusted, lang).text;
+            assert!(after.contains(t("prompt.final.look_since_approval")) && !after.contains(old), "{lang:?}: {after}");
+            let rule = t("prompt.final.chain.rule").replace("{rule}", "O total cabe no visor");
+            assert_eq!(below(&after, &adjusted.codes()[&13]), format!("  {rule} {}", t("prompt.final.chain.places").replace("{places}", "`src/b.rs`")), "{after}");
+            assert!(!after.contains(&code(9)), "o conserto que a aprovação conferiu fica fora: {after}");
         }
     }
 

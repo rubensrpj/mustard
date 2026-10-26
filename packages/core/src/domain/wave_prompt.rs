@@ -58,7 +58,7 @@ mod summary;
 pub use changed::TaskChange;
 pub use dispatch::ReadDispatch;
 pub use request::listed;
-pub use review::{Proven, listed_final_review};
+pub use review::{Chain, Proven, listed_final_review, task_chains};
 pub use rules::{ROOT_RULES_FILE, RulesFile, carries_project_rules, project_rules_section, touched_by};
 pub use summary::summary_of;
 
@@ -332,6 +332,10 @@ pub struct Material<'a> {
     /// ([`since_last_verdict`]): com ele, o pedido da revisão final é o da
     /// revisão de volta. Vazio na primeira revisão.
     pub since_verdict: Vec<&'a SpecEvent>,
+    /// A cadeia de cada tarefa que o pedido da revisão final lista, pelo
+    /// número dela ([`task_chains`]): a linha da tarefa a traz logo abaixo. A
+    /// tarefa sem regra, sem lugar e sem prova fica de fora.
+    pub chains: BTreeMap<u64, Chain>,
     /// O código de cada evento, para o pedido citar item por código.
     pub codes: BTreeMap<u64, String>,
     /// O padrão do projeto que vale para cada tarefa, pelo código dela: as
@@ -780,6 +784,20 @@ impl Writer<'_> {
             None => format!("{kind} {}", lesson.id),
         }
     }
+}
+
+/// Cada regra combinada da spec numa linha, na ordem em que foi gravada, no
+/// idioma `lang`: o tipo por extenso, o código e o título, como o pedido da
+/// onda a cita ([`Writer::item_text`]). Só a versão vigente de cada uma; os
+/// outros itens combinados ficam de fora. É a lista que o plano mostra antes
+/// das ondas, na aprovação.
+#[must_use]
+pub fn rule_lines(log: &SpecLog, lang: Locale) -> Vec<String> {
+    let material = Material { codes: log.codes(), ..Material::default() };
+    let writer = Writer { material: &material, lang };
+    let mut rules: Vec<&SpecEvent> = all_agreed(log).into_iter().filter(|item| item.event_type == "rule").collect();
+    rules.sort_by_key(|rule| rule.id);
+    rules.into_iter().map(|rule| writer.item_text(rule)).collect()
 }
 
 /// Quantas linhas um texto tem; a última conta mesmo sem quebra no fim.
@@ -1572,8 +1590,12 @@ pub fn last_final_approval(log: &SpecLog) -> Option<(&SpecEvent, u64)> {
 /// ordem em que o pedido da revisão de volta o lista: o próprio veredito, os
 /// commits gravados depois dele, os requisitos acordados gravados ou
 /// regravados depois dele, junto com os que ele deu como não atendidos — na
-/// versão vigente de cada um —, e os critérios gravados ou regravados depois
-/// dele. Depois de uma aprovação, o ponto de partida é o pedido que ela
+/// versão vigente de cada um —, as tarefas do conserto — as gravadas ou
+/// regravadas depois dele e as que têm passo gravado depois dele, cada uma
+/// com a regra e os lugares dela — e os critérios gravados ou regravados
+/// depois dele. Na ordem da cadeia: a regra, os lugares, a prova. A tarefa
+/// terminada antes dele fica de fora, mesmo com o passo verde. Depois de uma
+/// aprovação, o ponto de partida é o pedido que ela
 /// respondeu ([`last_final_approval`]): o ajuste pequeno feito com a obra
 /// fechada e reaberta é revisado sozinho. O que veio antes fica de fora: a
 /// conclusão do veredito vale para o que não mudou. Vazio sem veredito final.
@@ -1612,6 +1634,14 @@ pub fn since_last_verdict(log: &SpecLog) -> Vec<&SpecEvent> {
     let mut agreed: Vec<&SpecEvent> = all_agreed(log).into_iter().filter(|e| e.id > since || unmet.contains(&e.id)).collect();
     agreed.sort_by_key(|e| e.id);
     out.extend(agreed);
+    let worked = log.block(BlockQuery::Block(Block::Waves));
+    let stepped: BTreeSet<u64> = worked
+        .iter()
+        .filter(|e| e.event_type == "step" && e.id > since)
+        .filter_map(|step| step.fields.get("item").and_then(item_id))
+        .filter_map(|id| log.current(id).map(|e| e.id))
+        .collect();
+    out.extend(worked.iter().copied().filter(|e| e.event_type == "task" && (e.id > since || stepped.contains(&e.id))));
     out.extend(log.block(BlockQuery::Block(Block::Criteria)).into_iter().filter(|e| e.event_type == "criterion" && e.id > since));
     out
 }

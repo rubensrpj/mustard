@@ -22,7 +22,7 @@ Revise ondas/entregas/critérios/commits e levantamentos/PRs, sem corrigir. Leia
 - Alguma onda apagou ou moveu algo no git? Confira que nada se perdeu. Critério "só depois de" tem teste do caso em que o "antes" falha.
 - Comentário ou nome de teste novo que cite código de item, onda, spec, pendência ou Mustard é achado.
 - Idioma: regra local do projeto que trate dele vence a linha de idiomas do pedido; não cobre idioma contra ela, nem no nome de teste.
-- Em conserto, confira o delta e o impacto nos critérios, consumidores e integrações afetados.
+- Em conserto, confira só a cadeia: a regra, cada lugar e a prova; não cace achado no resto da obra.
 - Pedido com desenho aprovado: compare cada tela com ele e liste cada diferença (fundo, letra, barra, ordem, bloco a mais). Sem ver a tela, compare o código e diga isso no veredito.
 - Revisão final da obra, completa:
   - Leia os testes pertinentes e os recibos da validação final (`testCommand`, lint e critérios). Reexecute o afetado por achados e quando conteúdo, comando ou execução ficarem incertos. O `rtk` mostra só as falhas.

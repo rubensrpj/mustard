@@ -22,7 +22,7 @@ Review waves/deliveries/criteria/commits and surveys/PRs, without fixing. Read "
 - Did a wave delete or move anything in git? Check that nothing was lost. A criterion with "only after" has a test of the case where the "before" fails.
 - A new comment or test name citing an item code, wave, spec, pending item or Mustard is a finding.
 - Language: a local project rule on it overrides the request's languages line; do not charge language against it, test names included.
-- In a fix, check the delta and its impact on affected criteria, consumers and integrations.
+- In a fix, check only its chain: the rule, each place, the proof; hunt no finding elsewhere in the work.
 - Request with an approved design: compare each screen with it and list every difference (backdrop, font size, bar, order, extra block). Without seeing the screen, compare the code and say so in the verdict.
 - The work's final review, in full:
   - Read relevant tests and final-validation receipts (`testCommand`, lint and criteria). Rerun what findings affect and whenever content, commands or execution become uncertain. The `rtk` shows only the failures.

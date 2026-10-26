@@ -625,16 +625,18 @@ fn waves_and_stages(log: &SpecLog) -> WaveCount {
 }
 
 /// O bloco que o plano diz antes da pergunta de aprovação, no idioma `lang`:
-/// as ondas e as etapas da obra de `log`, e a medida `times` das ondas do
-/// projeto, com o total estimado pela onda do meio vezes as etapas. Sem a
-/// formação de alguma tarefa, o número de ondas sai dito como teto, uma onda
-/// por tarefa sem assunto. Sem onda medida, o texto diz que ainda não há
-/// medida, sem número nenhum.
+/// primeiro cada regra da obra de `log` numa linha
+/// ([`wave_prompt::rule_lines`]), e depois as ondas e as etapas dela, e a
+/// medida `times` das ondas do projeto, com o total estimado pela onda do
+/// meio vezes as etapas. Sem a formação de alguma tarefa, o número de ondas
+/// sai dito como teto, uma onda por tarefa sem assunto. Sem onda medida, o
+/// texto diz que ainda não há medida, sem número nenhum.
 fn forecast(log: &SpecLog, times: Option<WaveTimes>, lang: Locale) -> Value {
+    let rules = wave_prompt::rule_lines(log, lang);
     let WaveCount { waves, stages, formed } = waves_and_stages(log);
     let key = if formed { "plan.forecast.waves" } else { "plan.forecast.ceiling" };
     let mut text = translate(key, lang).replace("{waves}", &waves.to_string()).replace("{stages}", &stages.to_string());
-    let mut block = json!({ "waves": waves, "stages": stages, "formed": formed, "wave_minutes": times });
+    let mut block = json!({ "rules": rules, "waves": waves, "stages": stages, "formed": formed, "wave_minutes": times });
     match times {
         Some(times) => {
             let estimate = times.median * stages as u64;
@@ -649,6 +651,8 @@ fn forecast(log: &SpecLog, times: Option<WaveTimes>, lang: Locale) -> Value {
         }
         None => text = format!("{text} {}", translate("plan.forecast.no_measure", lang)),
     }
+    let listed: String = rules.iter().map(|rule| format!("- {rule}\n")).collect();
+    let text = if listed.is_empty() { text } else { format!("{listed}\n{text}") };
     block["text"] = json!(text);
     block
 }
@@ -1822,6 +1826,46 @@ mod tests {
         assert!(forecast["wave_minutes"].is_null() && forecast.get("estimate_minutes").is_none(), "{report}");
         let text = forecast["text"].as_str().unwrap_or_default();
         assert!(text.contains(translate("plan.forecast.no_measure", Locale::PtBr)) && !text.contains("min"), "{text}");
+    }
+
+    /// Pronto para a aprovação, o bloco que o plano diz abre com cada regra
+    /// da obra numa linha — o tipo, o código e o título da versão vigente —,
+    /// antes da frase das ondas. A versão substituída e o item combinado que
+    /// não é regra ficam de fora.
+    #[test]
+    fn the_plan_answer_lists_every_rule_in_one_line_before_the_waves() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        sound_plan(root, "x", said);
+        let rule = |title: &str, replaces: Option<u64>| {
+            let mut body = json!({"title": title, "text": format!("{title}, em todo arquivo."), "keys": ["soma"], "example": "e",
+                "applies_to": {"files": ["**"]}, "origin": said});
+            if let Some(old) = replaces {
+                body["replaces"] = json!(old);
+            }
+            id_of(&write(root, Some("x"), "rule", body))
+        };
+        let old = rule("A soma perde o sinal", None);
+        let sign = rule("A soma guarda o sinal", Some(old));
+        let carry = rule("A soma leva o vai-um", None);
+        let decision =
+            id_of(&write(root, Some("x"), "decision", json!({"title": "Somar em inteiros", "text": "Só inteiros.", "keys": ["soma"], "why": "w", "origin": said})));
+
+        let report = plan(root, "x");
+
+        assert_eq!(report["ok"], json!(true), "{report}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let codes = log.codes();
+        let line = |id: u64, title: &str| format!("Regra {} — {title}", codes[&id]);
+        let expected = [line(sign, "A soma guarda o sinal"), line(carry, "A soma leva o vai-um")];
+        assert_eq!(report["forecast"]["rules"], json!(expected), "{report}");
+        let text = report["forecast"]["text"].as_str().unwrap_or_default();
+        let head = format!("- {}\n- {}\n\n", expected[0], expected[1]);
+        let rest = text.strip_prefix(&head).unwrap_or_else(|| panic!("cada regra numa linha, antes de tudo: {text}"));
+        let waves = translate("plan.forecast.waves", Locale::PtBr).replace("{waves}", "1").replace("{stages}", "1");
+        assert!(rest.starts_with(&waves), "as ondas vêm logo depois das regras: {text}");
+        assert!(!text.contains("perde o sinal") && !text.contains(&codes[&decision]), "{text}");
     }
 
     /// Com uma sessão conduzindo e a lista ainda sem formação, o plano pede a
