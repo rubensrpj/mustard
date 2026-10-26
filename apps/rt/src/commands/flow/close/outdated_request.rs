@@ -13,7 +13,9 @@
 //! ele montaria agora: o item que o pedido de agora lista e que foi gravado
 //! depois do envio deixa o envio para trás. O fechamento então grava o pedido
 //! novo no lugar de esperar o veredito do antigo, e a aprovação do pedido
-//! antigo não fecha a obra.
+//! antigo não fecha a obra. A rodada e o passo do painel fazem a mesma
+//! conferência antes de mandar esperar o veredito ([`awaits_verdict`]): com o
+//! envio para trás, eles mandam fechar.
 
 use std::path::Path;
 
@@ -63,6 +65,17 @@ pub(super) fn find(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Opti
         }
     }
     (!items.is_empty()).then_some(Outdated { send, items })
+}
+
+/// Se a obra de `spec` espera o veredito do pedido de revisão final aberto: o
+/// pedido é mais novo que a última mudança ([`awaited_review`]) e não ficou
+/// para trás de um item gravado depois dele ([`find`]). Com o pedido velho ou
+/// para trás, o veredito dele já não aprovaria a obra, e o passo é fechar, que
+/// grava o pedido novo.
+///
+/// [`awaited_review`]: crate::commands::flow::round::awaited_review
+pub(crate) fn awaits_verdict(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> bool {
+    crate::commands::flow::round::awaited_review(log).is_some() && find(root, spec, log, lang).is_none()
 }
 
 #[cfg(test)]

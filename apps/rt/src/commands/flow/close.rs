@@ -82,7 +82,7 @@ use crate::commands::spec_events::{self, write::record};
 use crate::shared::spec_state::{DiskSpecState, checkout, session_from_env};
 
 mod clean_copy;
-mod outdated_request;
+pub(crate) mod outdated_request;
 pub(crate) mod stale_marks;
 mod unused;
 
