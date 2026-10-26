@@ -2823,7 +2823,7 @@ mod tests {
             }
             assert!(built.is_file(), "the build of the other round stays while it holds the lock");
             drop(held);
-            assert_eq!(done_rx.recv(), Ok(vec!["target".to_string()]));
+            assert_eq!(crate::wait_for::wait_for_message("a remoção da compilação", &done_rx), Ok(vec!["target".to_string()]));
         });
         assert!(!built.exists());
     }

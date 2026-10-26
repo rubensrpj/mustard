@@ -25,7 +25,12 @@
 //!   e o campo são o carimbo da hora de uma chamada ou o prazo que o código
 //!   testado recebe de fora (`agora + espera`), e o teste não os mede;
 //! - `thread::sleep(`: a espera pelo relógio;
-//! - `recv_timeout(`, `wait_timeout(` e `park_timeout(`: a espera com prazo.
+//! - `recv_timeout(`, `wait_timeout(` e `park_timeout(`: a espera com prazo;
+//! - `.recv()`: a espera sem limite pela mensagem de um canal, que deixa a
+//!   suíte parada, sem mensagem, quando o código testado entra em impasse e a
+//!   mensagem nunca vem. A espera do teste é `wait_for_message`, com o limite
+//!   de segurança, ou `try_recv()` depois do `join` da linha de execução que
+//!   manda, quando a mensagem já chegou ou nunca vai chegar.
 //!
 //! A data do calendário (`SystemTime::now()`), que só nomeia uma pasta ou data
 //! um arquivo, não mede o tempo que passa, e fica.
@@ -57,6 +62,9 @@ const SKIPPED_FOLDERS: &[&str] = &["target", "node_modules", ".git", "fixtures"]
 
 /// As esperas com prazo, como o código as chama.
 const BOUNDED_WAITS: &[&str] = &["recv_timeout(", "wait_timeout(", "park_timeout("];
+
+/// A espera sem limite pela mensagem de um canal, como o código a chama.
+const UNBOUNDED_WAIT: &[u8] = b".recv()";
 
 /// Cada leitura do relógio acusada: onde está e o que ela faz.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -370,6 +378,9 @@ fn clock_reads(shown: &str, code: &[u8], from: usize, to: usize) -> Vec<Finding>
             push(offset, "espera com prazo do relógio");
         }
     }
+    for (offset, _) in text.windows(UNBOUNDED_WAIT.len()).enumerate().filter(|(_, window)| *window == UNBOUNDED_WAIT) {
+        push(offset, "espera um canal sem limite (`.recv()`): use `wait_for_message`, ou `try_recv()` depois do `join`");
+    }
     found
 }
 
@@ -456,13 +467,14 @@ fn findings_of(text: &str) -> Vec<(usize, &'static str)> {
     findings_under(top.path()).into_iter().map(|finding| (finding.line, finding.what)).collect()
 }
 
-/// A varredura acusa a medida, o prazo, a espera pelo relógio e a espera com
-/// prazo do código de teste, e deixa o código do programa, os comentários, os
-/// textos, o carimbo passado a uma chamada e a data do calendário.
+/// A varredura acusa a medida, o prazo, a espera pelo relógio, a espera com
+/// prazo e a espera sem limite por um canal do código de teste, e deixa o
+/// código do programa, os comentários, os textos, o carimbo passado a uma
+/// chamada, a data do calendário e a olhada no canal que não espera.
 #[test]
 fn the_clock_scan_flags_only_the_measures_and_the_waits_of_the_test_code() {
     let text = "\
-pub fn program() { let started = std::time::Instant::now(); let _ = started.elapsed(); }
+pub fn program() { let started = std::time::Instant::now(); let _ = started.elapsed(); let _ = rx.recv(); }
 #[cfg(test)]
 mod tests {
     // started.elapsed() num comentário
@@ -470,10 +482,11 @@ mod tests {
     fn measured() { let started = Instant::now(); assert!(started.elapsed() < LIMIT); }
     fn bounded() { let deadline = Instant::now() + LIMIT; let _ = rx.recv_timeout(LIMIT); }
     fn paused() { std::thread::sleep(LIMIT); let _ = r#\"Instant::now() + x\"#; let _ = 'x'; }
+    fn waited() { let _ = rx.recv(); let _ = rx.try_recv(); let _ = \"rx.recv()\"; }
 }
 ";
     let found: Vec<usize> = findings_of(text).into_iter().map(|(line, _)| line).collect();
-    assert_eq!(found, [6, 6, 7, 7, 8], "{:?}", findings_of(text));
+    assert_eq!(found, [6, 6, 7, 7, 8, 9], "{:?}", findings_of(text));
 }
 
 /// O evento que nunca vem derruba o teste com a mensagem do evento esperado,
@@ -499,11 +512,12 @@ fn the_channel_wait_gives_what_was_sent_and_then_the_end_of_the_channel() {
 }
 
 /// Nenhum código de teste do repositório lê o relógio de verdade para medir,
-/// dar prazo ou esperar: só o relógio dos testes o faz.
+/// dar prazo ou esperar, nem espera um canal sem limite: só o relógio dos
+/// testes o faz.
 #[test]
 fn no_test_asserts_on_wall_clock_time() {
     let top = manifest_dir::manifest_dir().join("../..");
     let found = findings_under(&top);
     let listed: Vec<String> = found.iter().map(|finding| format!("{}:{}: {}", finding.file, finding.line, finding.what)).collect();
-    assert!(listed.is_empty(), "{} leituras do relógio no código de teste:\n{}", listed.len(), listed.join("\n"));
+    assert!(listed.is_empty(), "{} leituras do relógio ou esperas sem limite no código de teste:\n{}", listed.len(), listed.join("\n"));
 }

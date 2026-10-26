@@ -3561,7 +3561,7 @@ fn the_test_project_dir_vanishes_even_when_the_test_fails() {
         assert!(map["modules"].as_array().unwrap().is_empty(), "esta conferência quebra de propósito");
     });
     assert!(crashing.join().is_err(), "o teste de dentro devia ter quebrado");
-    let dir = receiver.recv().expect("a pasta foi criada antes da quebra");
+    let dir = receiver.try_recv().expect("a pasta foi criada antes da quebra");
     assert!(!dir.exists(), "a pasta {} ficou depois da quebra", dir.display());
 
     // O nome da chamada é montado em partes, para este arquivo não se acusar.

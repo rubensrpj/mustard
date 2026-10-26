@@ -380,7 +380,7 @@ fn the_copies_a_test_makes_leave_when_it_ends_even_when_it_fails() {
             assert!(!fails, "the test fails on purpose");
         });
         assert_eq!(test.join().is_err(), fails);
-        let copies = made.recv().expect("the copies folder");
+        let copies = made.try_recv().expect("the copies folder");
         assert!(!copies.exists(), "fails={fails}: the copies folder stayed at {}", copies.display());
     }
 }
