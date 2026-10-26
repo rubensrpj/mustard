@@ -174,8 +174,6 @@ mod next_step;
 #[cfg(test)]
 mod off_path_tests;
 #[cfg(test)]
-mod final_finding_tests;
-#[cfg(test)]
 mod skill_cycle_tests;
 #[cfg(test)]
 mod dispatch_jev_tests;
@@ -235,7 +233,7 @@ use crate::shared::spec_state::{DiskSpecState, checkout, session_from_env};
 
 pub(crate) use answer::{RoundRefusal, agents_refreshed, minutes_since, read_command, wave_dispatch};
 pub(crate) use jev_decision::{FINAL_REVIEW, Waiting};
-pub(crate) use leftovers::record_final_leftovers;
+pub(crate) use leftovers::{FinalFindings, record_final_leftovers};
 pub(crate) use triage_questions::ask_after_locks;
 pub(crate) use fixes::{fix_file, sweep_fixes};
 pub(crate) use keep::{Kept, landed_kept};

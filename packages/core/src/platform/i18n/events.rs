@@ -182,18 +182,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              spec. Remove the dependents in the same `targets`, or first write a version of them without that \
              dependency. Nothing was written."
         }
-        ("spec_events.final_finding_removed", Locale::PtBr) => {
-            "A tarefa {code} nasceu de um achado do veredito final aprovado. Esse veredito ainda vale, e o \
-             fechamento recria a tarefa a partir dele. Por isso `remove` não adianta: ela tem de ser feita. \
-             Rode a rodada (`mustard-rt run round --dispatch`) para despachá-la. Depois da entrega, o \
-             fechamento pede uma revisão final nova. Nada foi gravado."
-        }
-        ("spec_events.final_finding_removed", Locale::EnUs) => {
-            "Task {code} came from a finding of the approved final verdict. That verdict still stands, and \
-             the close recreates the task from it. So `remove` does not help: the task has to be done. Run \
-             the round (`mustard-rt run round --dispatch`) to dispatch it. After the delivery, the close \
-             asks for a new final review. Nothing was written."
-        }
         ("spec_events.task_dependency_cycle", Locale::PtBr) => {
             "As tarefas dependem umas das outras em círculo: {cycle}. Nada foi gravado."
         }
@@ -731,6 +719,24 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("finding.review_joined_by_rule", Locale::EnUs) => {
             concat!("Finding from the final review, of the same rule — {title}: {detail} (By the map: ", map_commands_en!(), ".)")
+        }
+        // O achado da revisão final sem regra escrita na spec, que vai ao
+        // usuário como pergunta, e o aviso que manda fazê-la.
+        ("finding.question", Locale::PtBr) => {
+            "A revisão final achou: {title}. A regra que o achado diz, {rule}, não está escrita na spec. \
+             Ela passa a valer nesta obra?"
+        }
+        ("finding.question", Locale::EnUs) => {
+            "The final review found: {title}. The rule the finding names, {rule}, is not written in the \
+             spec. Should it hold in this work?"
+        }
+        ("finding.questions_hint", Locale::PtBr) => {
+            "A revisão final trouxe achados sem regra escrita na spec, e eles não viraram tarefa. Antes do \
+             pull request, faça ao usuário a pergunta de cada um, em `questions`."
+        }
+        ("finding.questions_hint", Locale::EnUs) => {
+            "The final review brought findings without a rule written in the spec, and they did not become \
+             tasks. Before the pull request, ask the user the question of each one, in `questions`."
         }
         ("spec_events.report_carries_return_line", Locale::PtBr) => {
             "A entrega e o veredito moram na spec: o agente os grava com mustard-rt run write. O \
@@ -1424,8 +1430,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            197,
-            0x329d_5434_a5d9_5d07,
+            198,
+            0xe61a_9578_6d09_82a9,
         );
     }
 
@@ -1472,7 +1478,6 @@ mod tests {
             ("spec_events.item_unclear", &["{defects}"][..]),
             ("spec_events.task_depends_on_unknown", &["{task}", "{depends_on}"][..]),
             ("spec_events.task_has_dependents", &["{removed}", "{dependents}"][..]),
-            ("spec_events.final_finding_removed", &["{code}"][..]),
             ("spec_events.task_dependency_cycle", &["{cycle}"][..]),
             ("spec_events.agreed_items_missing", &["{missing}"][..]),
             ("spec_events.delivery_agreed_missing", &["{wave}", "{missing}"][..]),
@@ -1529,6 +1534,7 @@ mod tests {
             ("finding.places", &["{places}"][..]),
             ("finding.joined_by_rule", &["{wave}", "{title}", "{detail}"][..]),
             ("finding.review_joined_by_rule", &["{title}", "{detail}"][..]),
+            ("finding.question", &["{title}", "{rule}"][..]),
             ("spec_events.report_carries_return_line", &[][..]),
             ("spec_events.return_missing", &["{wave}"][..]),
             ("spec_events.return_needs_commit", &["{wave}"][..]),

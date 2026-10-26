@@ -612,13 +612,16 @@ fn run_close(
     // Antes dela, os achados que o veredito aprovado traz em `leftovers` viram
     // tarefas no backlog, e a obra não fecha: a resposta manda rodar a rodada
     // no lugar do pull request. O fechamento seguinte recusa pelo backlog, e
-    // a entrega das tarefas pede revisão final nova.
+    // a entrega das tarefas pede revisão final nova. O achado sem regra
+    // escrita na spec não vira tarefa: vai ao usuário como pergunta, nesta
+    // resposta, e não segura a obra.
+    let mut questions = Vec::new();
     if let Some(verdict) = final_approval(&log) {
         let found = crate::commands::flow::round::record_final_leftovers(&opts.root, root, &spec, (&log, verdict), lang)
             .map_err(CloseRefusal::Refused)?;
         // O achado só em arquivo que o git ignora vira nota ao usuário, sem
         // tarefa: sem tarefa nenhuma, a obra fecha como sempre.
-        if found.iter().any(|entry| entry["type"] == json!("task")) {
+        if found.recorded.iter().any(|entry| entry["type"] == json!("task")) {
             let mut out = final_leftovers_answer(&spec, recorded, found, &read(&path)?, lang);
             out["criteria"] = json!(runs);
             out["validation"] = json!({"status":"pass","reused":reused});
@@ -631,6 +634,7 @@ fn run_close(
             return Ok(out);
         }
         record_tracking_table(&opts.root, &spec, verdict).map_err(CloseRefusal::Refused)?;
+        questions = found.questions;
     }
 
     // A fase `closed` sai só por aqui, e é a mesma porta que arma a cobrança
@@ -701,6 +705,7 @@ fn run_close(
     for hint in &unowned_tests {
         spec_events::pages::push_warning(&mut out, ownerless_tests::REASON, hint);
     }
+    ask_about_findings(&mut out, questions, lang);
     // As pendências abertas nascidas nesta spec vão ao usuário na hora, para
     // ele decidir o destino de cada uma, e cada uma vai com a linha que grava
     // a resposta "fica para depois"; é aviso, nunca recusa — o fechamento
@@ -753,13 +758,16 @@ fn run_close(
 }
 
 /// A resposta do fechamento que gravou como tarefas os achados do veredito
-/// final aprovado — `found`, cada evento com o tipo e o número —, lidos em
-/// `log`: a obra segue em execução, o que o fechamento gravou (`recorded`)
-/// ganha esses eventos, e o passo seguinte é a rodada, com o código de cada
-/// tarefa, no idioma `lang` — nunca o pull request.
-fn final_leftovers_answer(spec: &str, mut recorded: Vec<Value>, found: Vec<Value>, log: &SpecLog, lang: Locale) -> Value {
+/// final aprovado — `found`, cada evento gravado com o tipo e o número, e a
+/// pergunta de cada achado sem regra escrita —, lidos em `log`: a obra segue
+/// em execução, o que o fechamento gravou (`recorded`) ganha esses eventos, o
+/// passo seguinte é a rodada, com o código de cada tarefa, no idioma `lang` —
+/// nunca o pull request —, e as perguntas vão ao usuário
+/// ([`ask_about_findings`]).
+fn final_leftovers_answer(spec: &str, mut recorded: Vec<Value>, found: crate::commands::flow::round::FinalFindings, log: &SpecLog, lang: Locale) -> Value {
     let codes = log.codes();
     let tasks: Vec<String> = found
+        .recorded
         .iter()
         .filter(|entry| entry["type"] == json!("task"))
         .filter_map(|entry| entry["id"].as_u64())
@@ -767,8 +775,22 @@ fn final_leftovers_answer(spec: &str, mut recorded: Vec<Value>, found: Vec<Value
         .collect();
     let command = crate::commands::flow::resume::step_command("round", spec, &State::from_log(log)).unwrap_or_default();
     let next = translate("close.final_leftovers", lang).replace("{tasks}", &tasks.join(", ")).replace("{command}", &command);
-    recorded.extend(found);
-    json!({ "ok": true, "spec": spec, "phase": "running", "recorded": recorded, "next": next, "command": command })
+    recorded.extend(found.recorded);
+    let mut out = json!({ "ok": true, "spec": spec, "phase": "running", "recorded": recorded, "next": next, "command": command });
+    ask_about_findings(&mut out, found.questions, lang);
+    out
+}
+
+/// Leva à resposta `out` do fechamento as perguntas `questions`, uma por
+/// achado da revisão final sem regra escrita na spec, em `questions`, com o
+/// aviso que manda fazê-las ao usuário antes do pull request, no idioma
+/// `lang`. Sem pergunta, a resposta não muda.
+fn ask_about_findings(out: &mut Value, questions: Vec<Value>, lang: Locale) {
+    if questions.is_empty() {
+        return;
+    }
+    out["questions"] = json!(questions);
+    spec_events::pages::push_warning(out, "final-finding-question", translate("finding.questions_hint", lang));
 }
 
 /// A linha que grava a resposta "fica para depois" da pendência `id`, pronta
@@ -4488,5 +4510,97 @@ exit "${2:-0}"
         assert_eq!(criterion_runs(root), 0, "{refused}");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         assert_eq!(log.last_rejected().keys().copied().collect::<Vec<_>>(), vec![2], "{refused}");
+    }
+
+    /// O achado da revisão final que cita, pelo código, o critério escrito na
+    /// spec, e o que diz só o texto de uma regra nova.
+    fn findings_of_the_final_review() -> (Value, Value) {
+        let written = json!({"title": "A soma não trata estouro", "detail": "A soma estoura em src/w1.rs.", "files": ["src/w1.rs"],
+            "rule": "MSTD-CRIT-0001", "places": ["src/w1.rs"]});
+        let unwritten = json!({"title": "O nome da função não diz o que ela faz", "detail": "A função de src/w1.rs se chama one.",
+            "files": ["src/w1.rs"], "rule": "Toda função diz no nome o que faz", "places": ["src/w1.rs"]});
+        (written, unwritten)
+    }
+
+    /// A obra `x` pronta para fechar, cuja revisão final aprova com os dois
+    /// achados de [`findings_of_the_final_review`]. Devolve a resposta do
+    /// fechamento que assume o veredito e o número do critério que o primeiro
+    /// achado cita.
+    fn closed_with_a_written_and_an_unwritten_rule(root: &Path) -> (Value, u64) {
+        ready_to_close(root, "x", &["git --version"]);
+        let opts = CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), ..Default::default() };
+        let asked = close_for(&opts, None);
+        assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+        let (written, unwritten) = findings_of_the_final_review();
+        verdict_written(root, "x", json!({"final": true, "result": "approved", "text": "Pronta, com dois achados.", "leftovers": [written, unwritten]}));
+        let out = close_for(&opts, None);
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let criterion = log.codes().into_iter().find(|(_, code)| code == "MSTD-CRIT-0001").map(|(id, _)| id).expect("the criterion");
+        (out, criterion)
+    }
+
+    /// Os eventos vigentes do tipo `kind` da obra `x`.
+    fn visible_of(root: &Path, kind: &str) -> Vec<SpecEvent> {
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        log.visible().into_iter().filter(|event| event.event_type == kind).cloned().collect()
+    }
+
+    /// O achado que cita o critério escrito vira o pedido e a tarefa da regra,
+    /// que cobre o critério. O achado de regra nova não vira pedido nem
+    /// tarefa: a resposta do fechamento o leva ao usuário como pergunta, com
+    /// o aviso que manda fazê-la antes do pull request.
+    #[test]
+    fn a_final_finding_without_a_written_rule_becomes_a_question_and_no_task() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (out, criterion) = closed_with_a_written_and_an_unwritten_rule(root);
+        assert_eq!(out["phase"], json!("running"), "{out}");
+
+        let (written, unwritten) = findings_of_the_final_review();
+        let titled = |kind: &str, finding: &Value| visible_of(root, kind).into_iter().filter(|event| event.str_field("title") == finding["title"].as_str()).collect::<Vec<_>>();
+        let tasks = titled("task", &written);
+        assert_eq!(tasks.len(), 1, "{out}");
+        assert!(tasks[0].ints("covers").contains(&criterion), "a tarefa da regra cobre o critério: {:?}", tasks[0]);
+        assert_eq!(titled("request", &written).len(), 1, "{out}");
+        assert!(titled("task", &unwritten).is_empty() && titled("request", &unwritten).is_empty(), "a regra nova não vira trabalho: {out}");
+
+        let question = translate("finding.question", Locale::PtBr)
+            .replace("{title}", unwritten["title"].as_str().unwrap())
+            .replace("{rule}", unwritten["rule"].as_str().unwrap());
+        let mut expected = unwritten.clone();
+        expected.as_object_mut().unwrap().remove("files");
+        expected["question"] = json!(question);
+        assert_eq!(out["questions"], json!([expected]), "{out}");
+        assert_eq!(hints_of(&out, "final-finding-question"), vec![translate("finding.questions_hint", Locale::PtBr)], "{out}");
+    }
+
+    /// A tarefa que o achado de regra escrita ganhou sai por `remove`, como
+    /// qualquer outra tarefa. Nenhuma tarefa cobre mais o critério, e o
+    /// fechamento seguinte recusa, pelo pedido do achado que nenhuma onda
+    /// entregou, sem gravar a tarefa de novo.
+    #[test]
+    fn removing_the_task_of_a_rule_leaves_it_uncovered_and_the_close_refuses() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (_, criterion) = closed_with_a_written_and_an_unwritten_rule(root);
+        let covering = |root: &Path| visible_of(root, "task").into_iter().filter(|task| task.ints("covers").contains(&criterion)).map(|task| task.id).collect::<Vec<_>>();
+        let task = covering(root)[0];
+
+        let removed = crate::commands::spec_events::write::write_at(&WriteOpts {
+            root: root.to_path_buf(),
+            spec: Some("x".into()),
+            event_type: "remove".into(),
+            json: json!({"targets": [task], "reason": "não vale"}).to_string(),
+        });
+        assert_eq!(removed["ok"], json!(true), "{removed}");
+        assert!(covering(root).is_empty(), "a regra fica descoberta");
+
+        let refused = close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), ..Default::default() }, None);
+        assert_eq!((refused["ok"].clone(), refused["reason"].clone()), (json!(false), json!("request-not-delivered")), "{refused}");
+        let (written, _) = findings_of_the_final_review();
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let request = visible_of(root, "request").into_iter().find(|request| request.str_field("title") == written["title"].as_str()).expect("the request");
+        assert!(refused["hint"].as_str().unwrap_or_default().contains(&log.codes()[&request.id]), "{refused}");
+        assert!(covering(root).is_empty(), "o fechamento recusado não grava a tarefa de novo");
     }
 }

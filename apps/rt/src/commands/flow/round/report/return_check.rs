@@ -179,7 +179,8 @@ fn places_left_out(start: &Path, root: &Path, log: &SpecLog, report: &WaveReport
 /// que [`check_return`] prendeu: há pedido de revisão aberto;
 /// cada critério e cada item do combinado citado existe; o veredito final
 /// responde pelo combinado que lhe cabe ([`agreed_prompt::review_agreed`]); os achados dele em `leftovers`, que o
-/// fechamento grava como tarefas, têm a marca de limpeza, a regra, os lugares
+/// fechamento grava como tarefas — ou leva ao usuário como pergunta, os de
+/// regra não escrita na spec —, têm a marca de limpeza, a regra, os lugares
 /// e os arquivos legíveis ([`leftovers_of`]) — e só o veredito final aprovado os leva: em outro
 /// veredito, o da revisão de uma onda ou o final reprovado, nada lê o campo, e
 /// a gravação o recusa ([`refuse_unread_leftovers`]); e o revisor leu, de dentro da cópia
@@ -223,7 +224,8 @@ pub(crate) fn check_verdict_return(start: &Path, spec: &str, draft: &mut Map<Str
 
 /// Recusa o veredito `settled` — como a rodada o grava ([`settle_verdict`]) —
 /// que traz achados em `leftovers` sem ser o veredito final aprovado. Só esse
-/// veredito é lido pelo fechamento, que grava os achados como tarefas
+/// veredito é lido pelo fechamento, que grava os achados como tarefas ou os
+/// leva ao usuário como pergunta
 /// ([`record_final_leftovers`](super::super::record_final_leftovers)); no da
 /// revisão de uma onda e no final reprovado — também o que um item
 /// combinado sem atender força a reprovado — o campo não teria leitor, e os

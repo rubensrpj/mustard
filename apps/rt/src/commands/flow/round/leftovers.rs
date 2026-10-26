@@ -21,10 +21,16 @@
 //! sentido, como as outras tarefas do backlog. O campo `kind` que uma volta
 //! antiga ainda traga é aceito e ignorado.
 //!
+//! O achado cuja regra cita, pelo código, um item escrito na spec — um
+//! critério ou um item combinado ([`written_rule`]) — vira a tarefa dessa
+//! regra, que passa a cobrir o item: tirar a tarefa deixa a regra descoberta.
+//!
 //! Os achados que a revisão final aprovada traz em `leftovers`, no mesmo
 //! formato, passam pela mesma montagem quando o fechamento os grava
 //! ([`record_final_leftovers`]), com os textos que nomeiam a revisão final no
-//! lugar da onda.
+//! lugar da onda. Ali, o achado sem regra escrita na spec não vira pedido nem
+//! tarefa: a regra nova é decisão do usuário, e o achado vai a ele como
+//! pergunta.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -32,6 +38,7 @@ use std::path::Path;
 use mustard_core::domain::project_map::cited_paths;
 use mustard_core::domain::spec_events::{Kind, Refusal, SpecEvent, SpecLog};
 use mustard_core::domain::text;
+use mustard_core::domain::wave_prompt::carried_agreed;
 use mustard_core::io::wave_prompt;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Map, Value};
@@ -215,7 +222,8 @@ pub(super) fn ask_rewrites(root: &Path, log: &SpecLog, joins: &[MeaningJoin], en
 /// ou na aberta do backlog que guarda a mesma regra em `rule`, lida em `log`,
 /// numa versão nova; sem nenhuma, vira a tarefa nova da regra
 /// ([`leftover_task`]), com a regra e os lugares na parte do agente. A regra
-/// se compara pelas palavras ([`comparable`]). O pedido do achado que entra
+/// se compara pelas palavras ([`comparable`]), e a tarefa cobre o item escrito
+/// que ela cita pelo código ([`written_rule`]). O pedido do achado que entra
 /// numa tarefa que já existe leva a marca da sobra no título
 /// ([`marked_title`]), e o pedido aponta em `origin` a entrega da onda em
 /// `delivered`, quando ela está lá. O achado só em arquivo que o git ignora
@@ -246,6 +254,7 @@ pub(super) fn leftover_events(
             continue;
         }
         let key = comparable(&leftover.rule);
+        let written = written_rule(log, &leftover.rule).map(|item| item.id);
         let request = requests.len();
         requests.push(event(wave, REQUEST, leftover_request(leftover, &files, delivered.get(&wave).copied())));
         let earlier = ruled.iter().find(|(own, _)| *own == key).map(|(_, at)| *at);
@@ -271,6 +280,9 @@ pub(super) fn leftover_events(
                 work.len() - 1
             }
         };
+        if let Some(item) = written {
+            cover_item(&mut work[at].draft, item);
+        }
         if earlier.is_none() {
             ruled.push((key, at));
         }
@@ -279,26 +291,42 @@ pub(super) fn leftover_events(
     requests
 }
 
+/// O que o fechamento fez dos achados do veredito final aprovado: de cada
+/// evento gravado, o tipo e o número (`recorded`), e a pergunta ao usuário de
+/// cada achado sem regra escrita na spec (`questions`).
+#[derive(Default)]
+pub(crate) struct FinalFindings {
+    pub recorded: Vec<Value>,
+    pub questions: Vec<Value>,
+}
+
 /// Grava no backlog da spec `spec`, vista de `start`, os achados que o
 /// veredito final aprovado `verdict`, lido em `log`, traz em `leftovers`: cada
 /// um vira o pedido com o relato dele, que aponta o veredito em `origin`, e a
 /// tarefa que o cobre, pela mesma montagem das sobras de uma onda
 /// ([`leftover_events`]), com a revisão final no lugar da onda
-/// ([`FINAL_REVIEW`]). Tudo passa antes pelo ensaio: a recusa de um
-/// não deixa gravado nenhum. Devolve, de cada evento gravado, o tipo e o
-/// número; nada sem achado. Os textos saem no idioma `lang`.
+/// ([`FINAL_REVIEW`]). O achado cuja regra não cita item escrito na spec
+/// ([`written_rule`]) não vira pedido nem tarefa: vai ao usuário como
+/// pergunta ([`finding_question`]), porque a regra nova é decisão dele. O
+/// achado só em arquivo que o git ignora segue para a nota, com ou sem regra
+/// escrita. Tudo passa antes pelo ensaio: a recusa de um não deixa gravado
+/// nenhum. Nada sem achado. Os textos saem no idioma `lang`.
 ///
 /// # Errors
 ///
 /// A recusa da leitura dos achados ([`leftovers_of`]), do ensaio ou da
 /// gravação.
-pub(crate) fn record_final_leftovers(start: &Path, root: &Path, spec: &str, (log, verdict): (&SpecLog, &SpecEvent), lang: Locale) -> Result<Vec<Value>, Refusal> {
+pub(crate) fn record_final_leftovers(start: &Path, root: &Path, spec: &str, (log, verdict): (&SpecLog, &SpecEvent), lang: Locale) -> Result<FinalFindings, Refusal> {
     let listed = verdict.fields.get("leftovers").and_then(Value::as_array).cloned().unwrap_or_default();
     let found = leftovers_of("verdict", &listed)?;
-    if found.is_empty() {
-        return Ok(Vec::new());
+    let local = |leftover: &Leftover| all_ignored(root, &leftover_files(root, log, FINAL_REVIEW, leftover).into_iter().collect());
+    let (pointed, asked): (Vec<&Leftover>, Vec<&Leftover>) =
+        found.iter().partition(|leftover| written_rule(log, &leftover.rule).is_some() || local(leftover));
+    let questions = asked.into_iter().map(|leftover| finding_question(leftover, lang)).collect();
+    if pointed.is_empty() {
+        return Ok(FinalFindings { recorded: Vec::new(), questions });
     }
-    let pointed: Vec<(u64, &Leftover)> = found.iter().map(|leftover| (FINAL_REVIEW, leftover)).collect();
+    let pointed: Vec<(u64, &Leftover)> = pointed.into_iter().map(|leftover| (FINAL_REVIEW, leftover)).collect();
     let origin = BTreeMap::from([(FINAL_REVIEW, verdict.id)]);
     let events = leftover_events(root, log, &pointed, &origin, lang);
     let mut check = RecordCheck::open(start, spec, PhaseWriter::Binary)?;
@@ -317,21 +345,46 @@ pub(crate) fn record_final_leftovers(start: &Path, root: &Path, spec: &str, (log
         let (id, _) = recording.record(kind, event)?;
         recorded.push(json!({ "type": kind, "id": id }));
     }
-    Ok(recorded)
+    Ok(FinalFindings { recorded, questions })
+}
+
+/// O item escrito na spec, lida em `log`, que a regra `said` de um achado
+/// cita pelo código, em qualquer caixa: a versão vigente de um critério ou de
+/// um item combinado com texto. `None` quando a regra é só o texto de uma
+/// regra nova, ou cita um código que a spec não tem ou que saiu da leitura.
+fn written_rule<'a>(log: &'a SpecLog, said: &str) -> Option<&'a SpecEvent> {
+    let codes = log.codes();
+    said.split(|c: char| !(c.is_alphanumeric() || c == '-'))
+        .filter(|word| !word.is_empty())
+        .filter_map(|word| codes.iter().filter(|(_, code)| code.eq_ignore_ascii_case(word)).map(|(id, _)| *id).max())
+        .filter_map(|id| log.current(id))
+        .find(|item| item.event_type == "criterion" || !carried_agreed([*item]).is_empty())
+}
+
+/// A pergunta ao usuário sobre o achado `leftover` da revisão final, cuja
+/// regra não está escrita na spec: o título, o detalhe, a regra e os lugares
+/// do achado, e o texto que pergunta se a regra passa a valer, no idioma
+/// `lang`.
+fn finding_question(leftover: &Leftover, lang: Locale) -> Value {
+    let question = translate("finding.question", lang).replace("{title}", &leftover.title).replace("{rule}", &leftover.rule);
+    json!({ "title": leftover.title, "detail": leftover.detail, "rule": leftover.rule, "places": leftover.places, "question": question })
 }
 
 /// Liga a tarefa `draft` aos pedidos das sobras que ela passa a cobrir: cada
 /// posição de `asks` aponta, em `ids`, o número que o ensaio deu ao pedido, e
-/// ele entra em `covers`, sem repetir o que a tarefa já cobria.
+/// ele entra em `covers` ([`cover_item`]).
 pub(super) fn cover_asks(draft: &mut Map<String, Value>, asks: &[usize], ids: &[u64]) {
-    if asks.is_empty() {
-        return;
-    }
-    let mut covers: Vec<u64> = draft.get("covers").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_u64).collect();
     for id in asks.iter().filter_map(|at| ids.get(*at).copied()) {
-        if !covers.contains(&id) {
-            covers.push(id);
-        }
+        cover_item(draft, id);
+    }
+}
+
+/// Põe o item de número `id` em `covers` da tarefa `draft`, sem repetir o
+/// que ela já cobria.
+fn cover_item(draft: &mut Map<String, Value>, id: u64) {
+    let mut covers: Vec<u64> = draft.get("covers").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_u64).collect();
+    if !covers.contains(&id) {
+        covers.push(id);
     }
     draft.insert("covers".into(), json!(covers));
 }

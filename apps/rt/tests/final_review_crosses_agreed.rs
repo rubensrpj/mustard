@@ -573,9 +573,10 @@ fn all_met_verdict(decisions: &[Value]) -> Value {
 }
 
 /// O veredito final aprovado que traz achados em `leftovers`, no formato da
-/// entrega de onda, não leva a obra ao pull request: o fechamento grava cada
-/// achado como uma tarefa no backlog, que cobre o pedido dele, e manda rodar
-/// a rodada em vez de abrir o pull request. O fechamento seguinte recusa pelo
+/// entrega de onda, cada um com a regra escrita na spec que ele quebra, pelo
+/// código, não leva a obra ao pull request: o fechamento grava cada achado
+/// como uma tarefa no backlog, que cobre o pedido dele, e manda rodar a
+/// rodada em vez de abrir o pull request. O fechamento seguinte recusa pelo
 /// backlog e não grava os achados de novo.
 #[test]
 fn an_approved_final_verdict_with_leftovers_becomes_backlog_tasks_instead_of_the_pull_request() {
@@ -585,9 +586,10 @@ fn an_approved_final_verdict_with_leftovers_becomes_backlog_tasks_instead_of_the
     assert_eq!(asked["review"]["final"], json!(true), "{asked}");
 
     let mut verdict = all_met_verdict(&decisions);
+    let rule = |at: usize| decisions[at]["code"].as_str().expect("the decision code").to_string();
     verdict["leftovers"] = json!([
-        {"title": "A soma não trata estouro", "detail": "A soma de números grandes estoura em src/main.rs.", "files": ["src/main.rs"], "rule": "A soma trata estouro", "places": ["src/main.rs"]},
-        {"title": "O README não cita a soma", "detail": "O README não explica a soma.", "files": ["README.md"], "cleanup": true, "rule": "O README explica cada conta", "places": ["README.md"]},
+        {"title": "A soma não trata estouro", "detail": "A soma de números grandes estoura em src/main.rs.", "files": ["src/main.rs"], "rule": rule(0), "places": ["src/main.rs"]},
+        {"title": "O README não cita a soma", "detail": "O README não explica a soma.", "files": ["README.md"], "cleanup": true, "rule": rule(1), "places": ["README.md"]},
     ]);
     project.read_review();
     project.write("verdict", &verdict);
