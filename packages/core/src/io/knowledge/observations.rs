@@ -313,7 +313,7 @@ mod tests {
             // it to commit and then learns.
             Ok(())
         }).unwrap();
-        let learning = receive.recv().unwrap().unwrap();
+        let learning = crate::wait_for::wait_for_message("o aprendizado da gravação que esperava a vez", &receive).unwrap().unwrap();
         worker.unwrap().join().unwrap();
         assert_eq!(learning["new_facts"], 1);
         let saved: (String, String) = db.conn().query_row("SELECT text,sha256 FROM search_facts WHERE path='a.rs' AND line=1", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();

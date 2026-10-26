@@ -611,13 +611,13 @@ mod tests {
                         && let Some((opened, wait_go)) = first.take()
                     {
                         opened.send(()).unwrap();
-                        wait_go.recv().unwrap();
+                        crate::wait_for::wait_for_message("a troca do conteúdo do arquivo", &wait_go).unwrap();
                     }
                 });
                 form(&path)
             })
         };
-        at_open.recv().unwrap();
+        crate::wait_for::wait_for_message("a primeira abertura do arquivo", &at_open).unwrap();
         held.replace(b"dois\n").unwrap();
         go.send(()).unwrap();
         (held, waiter)

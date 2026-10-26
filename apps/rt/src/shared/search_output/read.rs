@@ -147,9 +147,9 @@ mod tests {
         let base=root.path().to_path_buf();
         let writer=std::thread::spawn(move||{
             let mut db=mustard_core::io::map_db::MapDb::open(&model,&base,&[]).unwrap();
-            db.write(|_|{held.send(()).unwrap();let _=released.recv();Ok(())}).unwrap();
+            db.write(|_|{held.send(()).unwrap();let _=crate::wait_for::wait_for_message("a soltura da trava do mapa",&released);Ok(())}).unwrap();
         });
-        holding.recv().unwrap();
+        crate::wait_for::wait_for_message("a trava do mapa com a outra gravação",&holding).unwrap();
         // A leitura volta com a trava ainda presa: só depois ela é solta.
         let note=context(&input,&ctx);
         let _=release.send(());writer.join().unwrap();

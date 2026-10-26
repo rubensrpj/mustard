@@ -428,7 +428,7 @@ mod tests {
 
         let (url,seen)=models_service(401);
         let refused=finish_with_install(root,&report,&MissingPrograms,AMPLE,None,&url,KEY_CHECK_WAIT);
-        let (request,body)=seen.recv().expect("the installation lists the models with the key");
+        let (request,body)=crate::wait_for::wait_for_message("o pedido da lista de modelos",&seen).expect("the installation lists the models with the key");
         assert_eq!(request,"GET /v1/models HTTP/1.1");
         assert!(!body,"the check sends no text");
         assert_eq!(refused["provider_verified"],false,"{refused}");

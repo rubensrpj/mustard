@@ -4,6 +4,9 @@
 //! história do projeto em lotes enquanto o Claude busca, e a busca dele não
 //! pode falhar nesse meio tempo.
 
+#[path = "support/wait_for.rs"]
+mod wait_for;
+
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -38,7 +41,8 @@ fn search(model: &std::path::Path, languages: &Languages) -> usize {
 
 /// A gravação de uma conexão que pega a trava de escrita inteira (a mais
 /// forte que o SQLite dá), avisa por `held` e só a solta quando `release`
-/// manda ou some: nunca pelo relógio.
+/// manda ou some, ou quando a espera chega ao limite de segurança e derruba
+/// a linha de execução: nunca por um prazo que a máquina carregada estoura.
 fn hold_the_write(model: std::path::PathBuf, release: mpsc::Receiver<()>, held: mpsc::Sender<()>) {
     let mut writer = Connection::open(model).unwrap();
     writer.busy_timeout(Duration::from_secs(5)).unwrap();
@@ -47,7 +51,7 @@ fn hold_the_write(model: std::path::PathBuf, release: mpsc::Receiver<()>, held: 
     tx.execute("INSERT INTO held VALUES (1)", []).unwrap();
     // Quem não espera o aviso deixa o outro lado do canal fechar.
     let _ = held.send(());
-    let _ = release.recv();
+    let _ = wait_for::wait_for_message("a soltura da gravação", &release);
     tx.commit().unwrap();
 }
 
@@ -58,7 +62,7 @@ fn holding_the_write(model: &std::path::Path) -> (mpsc::Sender<()>, std::thread:
     let (held, holding) = mpsc::channel();
     let model = model.to_path_buf();
     let writer = std::thread::spawn(move || hold_the_write(model, released, held));
-    holding.recv().unwrap();
+    wait_for::wait_for_message("a trava da gravação", &holding).unwrap();
     (release, writer)
 }
 

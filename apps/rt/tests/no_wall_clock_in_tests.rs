@@ -485,6 +485,19 @@ fn an_event_that_never_comes_fails_the_test_instead_of_hanging() {
     crate::wait_for::wait_for_within(std::time::Duration::from_millis(50), "a soltura que ninguém escreve", || None::<()>);
 }
 
+/// A espera por um canal, a do limite de segurança, dá o que foi mandado e,
+/// quando quem manda some, o fim do canal na hora, como a espera sem limite:
+/// a linha de execução que segura uma trava até o teste soltá-la acaba com o
+/// teste que caiu antes de soltar, sem ficar presa até o limite.
+#[test]
+fn the_channel_wait_gives_what_was_sent_and_then_the_end_of_the_channel() {
+    let (sender, channel) = std::sync::mpsc::channel();
+    sender.send("a soltura").unwrap();
+    drop(sender);
+    assert_eq!(crate::wait_for::wait_for_message("a soltura", &channel), Ok("a soltura"));
+    assert_eq!(crate::wait_for::wait_for_message("o fim do canal", &channel), Err(std::sync::mpsc::RecvError));
+}
+
 /// Nenhum código de teste do repositório lê o relógio de verdade para medir,
 /// dar prazo ou esperar: só o relógio dos testes o faz.
 #[test]

@@ -600,10 +600,10 @@ mod tests {
             let other = Connection::open(path).unwrap();
             other.execute_batch("BEGIN EXCLUSIVE").unwrap();
             held.send(()).unwrap();
-            let _ = released.recv();
+            let _ = crate::wait_for::wait_for_message("a soltura da outra gravação", &released);
             other.execute_batch("COMMIT").unwrap();
         });
-        wait_for_hold.recv().unwrap();
+        crate::wait_for::wait_for_message("a trava da outra gravação", &wait_for_hold).unwrap();
         let mut during = receipt();
         during.call = "call-during-another-write".into();
         let written = record(&root, &during);
@@ -665,10 +665,10 @@ mod tests {
                 .execute_batch("BEGIN EXCLUSIVE; INSERT INTO receipts VALUES('uncommitted','demo',10,'2026-01-01T02:00:00Z','{}')")
                 .unwrap();
             held.send(()).unwrap();
-            wait_for_reader.recv().unwrap();
+            crate::wait_for::wait_for_message("o fim da leitura", &wait_for_reader).unwrap();
             other.execute_batch("ROLLBACK").unwrap();
         });
-        wait_for_hold.recv().unwrap();
+        crate::wait_for::wait_for_message("a trava da outra gravação", &wait_for_hold).unwrap();
         let seen = read(&root, &id);
         let listed = list(&root, "demo", 10);
         finished.send(()).unwrap();
@@ -696,10 +696,10 @@ mod tests {
             let other = Connection::open(path).unwrap();
             other.execute_batch("BEGIN EXCLUSIVE").unwrap();
             held.send(()).unwrap();
-            wait_for_reader.recv().unwrap();
+            crate::wait_for::wait_for_message("o fim da leitura", &wait_for_reader).unwrap();
             other.execute_batch("ROLLBACK").unwrap();
         });
-        wait_for_hold.recv().unwrap();
+        crate::wait_for::wait_for_message("a trava da outra gravação", &wait_for_hold).unwrap();
         let busy = read_within(&root, &id, Duration::ZERO);
         finished.send(()).unwrap();
         holder.join().unwrap();

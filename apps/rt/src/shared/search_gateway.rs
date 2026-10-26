@@ -779,7 +779,7 @@ mod tests {
             crate::wait_for::wait_for("o começo da passada do scan", || watched.exists().then_some(()));
             MapDb::open(&holder_model, &holder_root, &[]).unwrap().write(|_| {
                 std::fs::write(&marker, "").unwrap();
-                let _ = hold.1.recv();
+                let _ = crate::wait_for::wait_for_message("a soltura da trava do mapa", &hold.1);
                 Ok(())
             }).unwrap();
         });
@@ -851,7 +851,7 @@ mod tests {
             crate::wait_for::wait_for("o começo da passada do scan", || watched.exists().then_some(()));
             MapDb::open(&holder_model, &holder_root, &[]).unwrap().write(|_| {
                 std::fs::write(&marker, "").unwrap();
-                let _ = hold.1.recv();
+                let _ = crate::wait_for::wait_for_message("a soltura da trava do mapa", &hold.1);
                 Ok(())
             }).unwrap();
         });
@@ -936,11 +936,11 @@ mod tests {
         let holder = std::thread::spawn(move || {
             MapDb::open(&holder_model, &holder_root, &[]).unwrap().write(|_| {
                 locked.0.send(()).unwrap();
-                let _ = hold.1.recv();
+                let _ = crate::wait_for::wait_for_message("a soltura da trava do mapa", &hold.1);
                 Ok(())
             }).unwrap();
         });
-        locked.1.recv().expect("the other writer holds the map lock");
+        crate::wait_for::wait_for_message("a trava do mapa com a outra gravação", &locked.1).expect("the other writer holds the map lock");
         let request = Request {
             tool: "rg".into(),
             input: json!({"args":["-n","quartzEntry","src"]}),

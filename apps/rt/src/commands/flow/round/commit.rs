@@ -1796,7 +1796,7 @@ mod tests {
             let (read_tx, read_rx) = mpsc::channel();
             let spec = &spec;
             scope.spawn(move || read_tx.send(store::read(spec).is_ok()));
-            let read = read_rx.recv();
+            let read = crate::wait_for::wait_for_message("a leitura da spec com o gancho preso", &read_rx);
 
             let (turn_tx, turn_rx) = mpsc::channel();
             scope.spawn(move || turn_tx.send(git_lock(root).is_ok()));
@@ -1807,7 +1807,7 @@ mod tests {
             let out = going.join().unwrap();
             assert_eq!(read, Ok(true), "a reader of the spec does not wait for the commit hook");
             assert!(early.is_err(), "another git step waits while the commit runs");
-            assert_eq!(turn_rx.recv(), Ok(true), "its turn comes after the commit");
+            assert_eq!(crate::wait_for::wait_for_message("a vez do outro passo do git", &turn_rx), Ok(true), "its turn comes after the commit");
             assert_eq!(out["ok"], json!(true), "{out}");
         });
     }
@@ -1849,7 +1849,7 @@ mod tests {
             drop(index_lock);
             let wrote = writing.join().unwrap();
             assert!(early.is_err(), "another git step waits while the return is being written");
-            assert_eq!(turn_rx.recv(), Ok(true), "its turn comes after the write");
+            assert_eq!(crate::wait_for::wait_for_message("a vez do outro passo do git", &turn_rx), Ok(true), "its turn comes after the write");
             assert_eq!(wrote["ok"], json!(true), "{wrote}");
         });
     }

@@ -1844,12 +1844,12 @@ pub(crate) mod tests {
                 // A gravação de um lote: a trava de gravação fica com ela até o fim.
                 db.write(|_| {
                     inside_tx.send(()).unwrap();
-                    Ok(release_rx.recv().is_ok())
+                    Ok(crate::wait_for::wait_for_message("a soltura do lote", &release_rx).is_ok())
                 })
                 .unwrap()
             })
         };
-        inside_rx.recv().expect("the batch is being written");
+        crate::wait_for::wait_for_message("o lote em gravação", &inside_rx).expect("the batch is being written");
 
         let during = candidates_at(&model, "desconto", "", &languages(), any_path);
         release_tx.send(()).unwrap();

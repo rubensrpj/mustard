@@ -17,6 +17,9 @@
 mod executable;
 #[path = "../../../packages/core/tests/support/pause.rs"]
 mod pause;
+// Estes testes esperam arquivos, não mensagens de canal: a espera pela
+// mensagem, que o arquivo de espera também traz, fica sem uso aqui.
+#[allow(dead_code)]
 #[path = "../../../packages/core/tests/support/wait_for.rs"]
 mod wait_for;
 

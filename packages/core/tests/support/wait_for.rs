@@ -1,6 +1,6 @@
 //! A espera dos testes pelo evento de outro processo ou de outra linha de
 //! execução: o arquivo que um processo em segundo plano escreve, o pedido que
-//! chega a um serviço falso.
+//! chega a um serviço falso, a mensagem que chega por um canal.
 //!
 //! O evento é a prova, e a máquina carregada só alonga o teste. A espera tem
 //! um limite de segurança largo ([`SAFETY_LIMIT`]), que não afirma nada sobre
@@ -14,6 +14,7 @@
 //! pelo caminho, e os de dentro de `src/`, pelo módulo que a raiz do pacote
 //! declara só para teste.
 
+use std::sync::mpsc::{Receiver, RecvError, TryRecvError};
 use std::time::{Duration, Instant};
 
 /// O limite de segurança de toda espera dos testes: largo o bastante para que
@@ -41,4 +42,17 @@ pub fn wait_for_within<T>(limit: Duration, what: &str, mut look: impl FnMut() ->
         assert!(Instant::now() < deadline, "o evento esperado não veio em {limit:?}, o limite de segurança da espera: {what}");
         std::thread::sleep(PAUSE);
     }
+}
+
+/// A mensagem que chega por `channel`, ou o fim dele quando quem manda some
+/// sem mandar: o mesmo que `recv`, com o limite de segurança. O impasse no
+/// código testado, que barra o envio sem derrubar quem envia, derruba o teste
+/// com `what`, a mensagem esperada, em vez de deixar a suíte parada.
+#[track_caller]
+pub fn wait_for_message<T>(what: &str, channel: &Receiver<T>) -> Result<T, RecvError> {
+    wait_for(what, || match channel.try_recv() {
+        Ok(message) => Some(Ok(message)),
+        Err(TryRecvError::Disconnected) => Some(Err(RecvError)),
+        Err(TryRecvError::Empty) => None,
+    })
 }
