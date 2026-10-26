@@ -881,6 +881,9 @@ mod tests {
     /// O mapa velho dá à reprodução um fato que cita um arquivo apagado, e o
     /// pedido cita um arquivo que existe: o fato velho sai, e o ponto da
     /// reprodução é gravado com a citação do pedido, em vez de ficar sem fato.
+    /// O teste confere antes que a lista do mapa traz o fato velho para a
+    /// reprodução: sem isso, ele passaria também quando o mapa deixasse de
+    /// dar o fato, e não guardaria a ligação do `grill` com a limpeza.
     #[test]
     fn a_stale_map_fact_gives_way_to_the_request_citation_in_the_reproduction_point() {
         let dir = tempdir().unwrap();
@@ -893,8 +896,37 @@ mod tests {
         assert_eq!(record_open(root, "x", "feature/x", "dev"), Ok(true));
         let goal = "Consertar o registro de nascimento.";
         let said = id_of(&write(root, Some("x"), "message", json!({"author": "user", "text": "O defeito está em `src/a.rs:1`."})));
-        let context = json!({"title": "Consertar o registro", "text": goal, "agent": "- Consertar `drop_birth`.", "origin": said});
+        let agent = "- Consertar `drop_birth`.";
+        let context = json!({"title": "Consertar o registro", "text": goal, "agent": agent, "origin": said});
         id_of(&write(root, Some("x"), "context", context));
+
+        // A lista do mapa, montada como o `grill` a monta antes da limpeza,
+        // dá à reprodução o fato velho que cita o arquivo apagado.
+        let project = spec_events::project(root);
+        let map = |need: project_map::Need<'_>| project_map::read_for(&project.root, need);
+        let before_settling = survey::build(&Sources {
+            kinds: &["fix"],
+            goal,
+            goal_agent: agent,
+            current: "x",
+            bank: None,
+            lessons_file: "",
+            index: &[],
+            prior: &[],
+            map: Some(&map),
+            condensed: false,
+            lang: project.lang,
+            languages: &project.languages,
+        });
+        let stale: Vec<&str> = before_settling
+            .iter()
+            .find(|item| item.key == Some(survey::GapKey::Reproduction))
+            .expect("the reproduction gap is in the list")
+            .facts
+            .iter()
+            .map(|fact| fact.source.as_str())
+            .collect();
+        assert_eq!(stale, ["src/gone.rs:2"], "a lista do mapa chega à limpeza com o fato velho: {before_settling:?}");
 
         let report = grill(root, "x", Some("fix"), false);
         assert_eq!(report["ok"], json!(true), "{report}");
