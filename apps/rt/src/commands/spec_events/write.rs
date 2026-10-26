@@ -1414,9 +1414,10 @@ fn phase_carried(event_type: &str, draft: &Map<String, Value>) -> (Option<String
 
 /// As regras que toda gravação na spec `spec` cumpre, sobre o arquivo antes e
 /// depois dela: a mudança de fase, o trabalho novo numa spec que já fechou, a
-/// onda que o modelo deixaria sem tarefa com o agente trabalhando, a mensagem
-/// que a resposta responde, o objetivo, o levantamento, o dono do item
-/// combinado e a dependência entre tarefas.
+/// onda que o modelo deixaria sem tarefa com o agente trabalhando, a tarefa
+/// de um achado do veredito final que ele tiraria, a mensagem que a resposta
+/// responde, o objetivo, o levantamento, o dono do item combinado e a
+/// dependência entre tarefas.
 fn record_rules(
     spec: &str,
     event_type: &str,
@@ -1432,6 +1433,7 @@ fn record_rules(
         wave_by_backlog_rule(before, after)?;
         super::task_wave::working_wave_rule(event_type, before, after)?;
         super::task_dependents::removal_rule(event_type, before, after)?;
+        super::final_findings::removal_rule(event_type, before, after)?;
     }
     reply_rule(before, after)?;
     goal_rule(spec, before, after)?;
@@ -6257,5 +6259,74 @@ mod tests {
         assert_eq!((out["ok"].clone(), out["code"].clone()), (json!(true), json!("MSTD-DEC-0002")), "{out}");
         let log = DiskSpecState::new(root).log("teste").unwrap();
         assert!(log.visible().iter().any(|event| event.str_field("title") == Some("Pix confirma na hora")));
+    }
+
+    /// A spec da subtração, com a tarefa comum dela, e o veredito final
+    /// aprovado que traz um achado em `src/main.rs`, que o fechamento grava
+    /// como pedido e tarefa. Devolve a tarefa comum, o veredito e a tarefa do
+    /// achado.
+    fn spec_with_a_final_finding(root: &std::path::Path) -> (u64, u64, u64) {
+        let (_, _, ordinary) = subtraction_backlog(root);
+        let seed = crate::shared::spec_state::seed_event;
+        seed(root, "teste", "send", json!({"role": "review", "text": "revise", "lines": 1, "chars": 6, "mustard": "0", "author": "binary"}));
+        let findings = json!([{"title": "A soma não trata estouro", "detail": "A soma estoura em src/main.rs.", "files": ["src/main.rs"]}]);
+        let verdict = seed(root, "teste", "verdict", json!({"final": true, "result": "approved", "text": "Pronta, com um achado.", "author": "review", "leftovers": findings}));
+        let log = DiskSpecState::new(root).log("teste").unwrap();
+        let approval = mustard_core::domain::spec_state::final_approval(&log).expect("the final verdict approves");
+        let recorded = crate::commands::flow::round::record_final_leftovers(root, root, "teste", (&log, approval), Locale::PtBr).expect("the close records the finding");
+        let finding = recorded.iter().find(|entry| entry["type"] == json!("task")).and_then(|entry| entry["id"].as_u64()).expect("the finding became a task");
+        (ordinary, verdict, finding)
+    }
+
+    /// A tarefa que o fechamento gravou de um achado do veredito final
+    /// aprovado não sai com `remove`, pelo número, pelo código nem por filtro
+    /// de horário: o arquivo não muda, e a recusa diz, nos dois idiomas, que
+    /// o fechamento a recria e que ela tem de ser feita. A outra tarefa da
+    /// spec segue podendo sair, e a do achado continua no backlog.
+    #[test]
+    fn the_task_of_a_final_review_finding_cannot_be_removed_but_another_task_can() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (ordinary, _, finding) = spec_with_a_final_finding(root);
+        let code = DiskSpecState::new(root).log("teste").unwrap().codes()[&finding].clone();
+        let file = root.join(".claude").join("spec").join("teste").join("spec.ndjson");
+        let before = std::fs::read(&file).unwrap();
+        let everything = json!({"type": "task", "from": "2000-01-01T00:00:00", "to": "2999-12-31T23:59:59"});
+        for removal in [json!({"targets": [finding]}), json!({"targets": [code]}), json!({"filter": everything})] {
+            let mut draft = removal.clone();
+            draft["reason"] = json!("não vale");
+            let refused = write(root, "remove", &draft.to_string());
+            assert_eq!(refused["ok"], json!(false), "{removal}: {refused}");
+            assert_eq!(refused["reason"], json!("final-finding-removed"), "{removal}: {refused}");
+            let hint = refused["hint"].as_str().unwrap();
+            assert!(hint.contains(&format!("A tarefa {code} nasceu de um achado")) && hint.contains("ela tem de ser feita"), "{hint}");
+            assert_eq!(std::fs::read(&file).unwrap(), before, "{removal}: nothing is written");
+        }
+        let english = Refusal::FinalFindingRemoved { code: code.clone() }.message(Locale::EnUs);
+        assert!(english.starts_with(&format!("Task {code} came from a finding")) && english.contains("the task has to be done"), "{english}");
+
+        let removed = write(root, "remove", &json!({"targets": [ordinary], "reason": "não vale"}).to_string());
+        assert_eq!(removed["ok"], json!(true), "another task still leaves: {removed}");
+        let log = DiskSpecState::new(root).log("teste").unwrap();
+        let tasks: Vec<u64> = log.visible().into_iter().filter(|event| event.event_type == "task").map(|event| event.id).collect();
+        assert_eq!(tasks, vec![finding], "only the task of the finding stays");
+    }
+
+    /// O veredito que a tarefa do achado aponta tem de ser o aprovado de
+    /// agora: depois que uma revisão final nova aprova a obra, a tarefa do
+    /// veredito antigo sai como qualquer outra.
+    #[test]
+    fn the_task_of_a_finding_of_an_older_final_verdict_can_be_removed() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (_, _, finding) = spec_with_a_final_finding(root);
+        let seed = crate::shared::spec_state::seed_event;
+        seed(root, "teste", "send", json!({"role": "review", "text": "revise de novo", "lines": 1, "chars": 14, "mustard": "0", "author": "binary"}));
+        let newer = seed(root, "teste", "verdict", json!({"final": true, "result": "approved", "text": "Pronta.", "author": "review"}));
+        let log = DiskSpecState::new(root).log("teste").unwrap();
+        assert_eq!(mustard_core::domain::spec_state::final_approval(&log).map(|event| event.id), Some(newer));
+
+        let removed = write(root, "remove", &json!({"targets": [finding], "reason": "não vale"}).to_string());
+        assert_eq!(removed["ok"], json!(true), "{removed}");
     }
 }

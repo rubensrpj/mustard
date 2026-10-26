@@ -180,6 +180,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              spec. Remove the dependents in the same `targets`, or first write a version of them without that \
              dependency. Nothing was written."
         }
+        ("spec_events.final_finding_removed", Locale::PtBr) => {
+            "A tarefa {code} nasceu de um achado do veredito final aprovado. Esse veredito ainda vale, e o \
+             fechamento recria a tarefa a partir dele. Por isso `remove` não adianta: ela tem de ser feita. \
+             Rode a rodada (`mustard-rt run round --dispatch`) para despachá-la. Depois da entrega, o \
+             fechamento pede uma revisão final nova. Nada foi gravado."
+        }
+        ("spec_events.final_finding_removed", Locale::EnUs) => {
+            "Task {code} came from a finding of the approved final verdict. That verdict still stands, and \
+             the close recreates the task from it. So `remove` does not help: the task has to be done. Run \
+             the round (`mustard-rt run round --dispatch`) to dispatch it. After the delivery, the close \
+             asks for a new final review. Nothing was written."
+        }
         ("spec_events.task_dependency_cycle", Locale::PtBr) => {
             "As tarefas dependem umas das outras em círculo: {cycle}. Nada foi gravado."
         }
@@ -1343,8 +1355,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            187,
-            0x6300_12cd_2d8a_f420,
+            188,
+            0x573e_346d_e548_5fce,
         );
     }
 
@@ -1391,6 +1403,7 @@ mod tests {
             ("spec_events.item_unclear", &["{defects}"][..]),
             ("spec_events.task_depends_on_unknown", &["{task}", "{depends_on}"][..]),
             ("spec_events.task_has_dependents", &["{removed}", "{dependents}"][..]),
+            ("spec_events.final_finding_removed", &["{code}"][..]),
             ("spec_events.task_dependency_cycle", &["{cycle}"][..]),
             ("spec_events.agreed_items_missing", &["{missing}"][..]),
             ("spec_events.delivery_agreed_missing", &["{wave}", "{missing}"][..]),

@@ -205,6 +205,10 @@ pub enum Refusal {
     /// gravado, e a mensagem nomeia as tarefas que sairiam e as que dependem
     /// delas.
     TaskHasDependents { removed: Vec<String>, dependents: Vec<String> },
+    /// Um `remove` que tiraria a tarefa de um achado do veredito final
+    /// aprovado vigente: o fechamento a recria a partir desse veredito, e ela
+    /// tem de ser feita. Nada é gravado, e a mensagem nomeia a tarefa.
+    FinalFindingRemoved { code: String },
     /// Um `depends_on` que fecha um círculo entre tarefas desta spec. Nada é
     /// gravado, e a mensagem nomeia o círculo inteiro, na ordem, voltando ao
     /// começo.
@@ -438,6 +442,7 @@ impl Refusal {
             Self::ItemUnclear { .. } => "item-unclear",
             Self::TaskDependsOnUnknown { .. } => "task-depends-on-unknown",
             Self::TaskHasDependents { .. } => "task-has-dependents",
+            Self::FinalFindingRemoved { .. } => "final-finding-removed",
             Self::TaskDependencyCycle { .. } => "task-dependency-cycle",
             Self::AgreedItemsMissing { .. } => "agreed-items-missing",
             Self::DeliveryAgreedMissing { .. } => "delivery-agreed-missing",
@@ -727,6 +732,7 @@ impl Refusal {
                 "spec_events.task_has_dependents",
                 &[("{removed}", removed.join(", ")), ("{dependents}", dependents.join(", "))],
             ),
+            Self::FinalFindingRemoved { code } => fill("spec_events.final_finding_removed", &[("{code}", code.clone())]),
             Self::TaskDependencyCycle { cycle } => fill(
                 "spec_events.task_dependency_cycle",
                 &[("{cycle}", cycle.join(" → "))],

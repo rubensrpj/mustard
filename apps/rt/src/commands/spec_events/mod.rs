@@ -18,6 +18,7 @@
 
 pub mod cli;
 pub(crate) mod conversation;
+mod final_findings;
 pub mod find;
 pub mod index;
 pub(crate) mod lean;
