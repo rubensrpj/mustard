@@ -2553,7 +2553,7 @@ mod tests {
         let rejected_with_agreed = judged(
             root,
             json!({"wave": 1, "result": "rejected", "final": true,
-            "text": "faltou o teste", "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}],
+            "text": "faltou o teste", "criteria": [{"criterion": "MSTD-CRIT-0001"}],
             "agreed": [{"item": "MSTD-DEC-0001", "met": true}]}),
         );
         assert_eq!(rejected_with_agreed["ok"], json!(true), "{rejected_with_agreed}");

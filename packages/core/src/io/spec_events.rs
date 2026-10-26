@@ -957,7 +957,7 @@ mod tests {
             "verdict",
             "verdict",
             "09:03",
-            json!({"author": "review", "wave": 2, "result": "approved", "text": "Sem achados.", "criteria": [{"criterion": c2, "tests_rule": true}]}),
+            json!({"author": "review", "wave": 2, "result": "approved", "text": "Sem achados.", "criteria": [{"criterion": c2}]}),
         );
         add(
             "tracking",

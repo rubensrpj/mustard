@@ -748,7 +748,7 @@ mod tests {
     pub(super) fn verdict(root: &Path, wave: u64, result: &str, text: &str) -> String {
         seed_review(root);
         let body = json!({"wave": wave, "result": result, "final": true, "text": text,
-            "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}]});
+            "criteria": [{"criterion": "MSTD-CRIT-0001"}]});
         let wrote = judged(root, body);
         assert_eq!(wrote["ok"], json!(true), "o veredito da onda {wave} não foi gravado: {wrote}");
         String::new()

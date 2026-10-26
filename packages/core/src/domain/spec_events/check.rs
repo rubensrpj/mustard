@@ -668,7 +668,7 @@ mod tests {
         }
         let mut half = wave;
         half["final"] = json!(true);
-        half["criteria"] = json!([{"tests_rule": true}]);
+        half["criteria"] = json!([{}]);
         assert_eq!(
             checked("verdict", half).unwrap_err(),
             Refusal::MissingField { event_type: "verdict".into(), field: "criteria[1].criterion".into() }

@@ -250,7 +250,7 @@ fn an_unmet_item_of_the_final_review_is_triaged_outside_the_locks_and_the_next_r
         seed_review(root);
         let agreed = json!([{"item": "MSTD-DEC-0001", "met": false, "text": "Falta arredondar."}, {"item": "MSTD-DEC-0002", "met": true}]);
         let verdict = json!({"result": "approved", "final": true, "text": "passou", "agreed": agreed,
-            "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}]});
+            "criteria": [{"criterion": "MSTD-CRIT-0001"}]});
         let wrote = judged(root, verdict);
         assert_eq!(wrote["ok"], json!(true), "{wrote}");
         let official = || log_of(root).visible().into_iter().any(|e| e.event_type == "verdict" && e.str_field("author") == Some("review"));

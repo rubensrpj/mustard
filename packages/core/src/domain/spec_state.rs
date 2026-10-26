@@ -1208,7 +1208,7 @@ mod tests {
     fn the_review_takes_the_last_verdict_of_each_wave() {
         let verdict = |id: u64, wave: u64, result: &str| {
             json!({"v":1,"id":id,"type":"verdict","wave":wave,"result":result,"text":"t",
-                   "criteria":[{"criterion":1,"tests_rule":"r"}]})
+                   "criteria":[{"criterion":1}]})
         };
         assert_eq!(review(&log(&[])), Review::default());
         assert_eq!(review(&log(&[])).word(), None);

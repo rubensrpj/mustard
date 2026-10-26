@@ -2692,7 +2692,7 @@ mod tests {
         let run = format!(r#"{{"criterion":{},"result":"pass","exit":0,"ms":1}}"#, criteria[0]);
         let refused = write(root, "criterion_run", &run);
         assert_eq!(refused["reason"], json!("binary-only-type"), "{refused}");
-        let verdict = format!(r#"{{"wave":1,"result":"approved","text":"ok","criteria":[{{"criterion":{},"tests_rule":true}}]}}"#, criteria[0]);
+        let verdict = format!(r#"{{"wave":1,"result":"approved","text":"ok","criteria":[{{"criterion":{}}}]}}"#, criteria[0]);
         let refused = write(root, "verdict", &verdict);
         assert_eq!(refused["reason"], json!("no-open-review"), "{refused}");
         let removal = write(root, "remove", &format!(r#"{{"targets":[{failing}],"reason":"engano"}}"#));
@@ -6028,7 +6028,7 @@ mod tests {
         born(root);
         let secret = ["ghp_", &"a1".repeat(18)].concat();
         let draft = json!({"wave": 1, "result": "rejected", "author": "review",
-            "criteria": [{"criterion": 1, "tests_rule": true}],
+            "criteria": [{"criterion": 1}],
             "text": format!("O teste imprime o token {secret} no log.")});
         let verdict = record(root, "teste", "verdict", draft.as_object().cloned().unwrap(), PhaseWriter::Binary).unwrap();
         let code = verdict.written.code.clone().unwrap();

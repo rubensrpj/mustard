@@ -3868,7 +3868,7 @@ exit "${2:-0}"
         draft.insert("wave".to_string(), json!(2));
         draft.insert("result".to_string(), json!("rejected"));
         draft.insert("text".to_string(), json!("faltou algo, gravado do jeito antigo"));
-        draft.insert("criteria".to_string(), json!([{"criterion": criterion_id, "tests_rule": true}]));
+        draft.insert("criteria".to_string(), json!([{"criterion": criterion_id}]));
         record(root, "x", "verdict", draft, PhaseWriter::Binary).expect("veredito antigo gravado");
 
         // A rodada não vê conserto pendente: nada a despachar.

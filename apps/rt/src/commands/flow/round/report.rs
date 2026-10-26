@@ -1783,7 +1783,7 @@ mod tests {
         assert_eq!(judged(root, no_wave)["reason"], json!("missing-field"));
 
         let unknown = json!({"wave": 1, "result": "approved", "text": "passou",
-            "criteria": [{"criterion": "MSTD-CRIT-0099", "tests_rule": true}]});
+            "criteria": [{"criterion": "MSTD-CRIT-0099"}]});
         let refused = judged(root, unknown);
         assert_eq!(refused["ok"], json!(false), "{refused}");
 
@@ -2100,7 +2100,7 @@ mod tests {
         seed_review(root);
         let before = spec_lines();
         let no_result = json!({"wave": 1, "text": "sem resultado",
-            "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}]});
+            "criteria": [{"criterion": "MSTD-CRIT-0001"}]});
         let refused = judged(root, no_result);
         assert_eq!(refused["reason"], json!("missing-field"), "{refused}");
         assert_eq!(spec_lines(), before, "the verdict without a result was not recorded");
@@ -2729,7 +2729,7 @@ mod tests {
             judged(
                 root,
                 json!({"result": "approved", "final": true, "text": "passou", "agreed": agreed,
-                "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}]}),
+                "criteria": [{"criterion": "MSTD-CRIT-0001"}]}),
             )
         };
         assert_eq!(judged_with(json!([]))["ok"], json!(true), "sem item combinado, o veredito entra");
@@ -3111,7 +3111,7 @@ mod tests {
     fn final_verdict() -> Value {
         json!({"result": "approved", "final": true, "text": "passou",
             "agreed": [{"item": "MSTD-DEC-0001", "met": true}],
-            "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}]})
+            "criteria": [{"criterion": "MSTD-CRIT-0001"}]})
     }
 
     /// O veredito do revisor só grava depois de ele ler cada item que o
@@ -3140,7 +3140,7 @@ mod tests {
 
         let before = spec_lines(root);
         let unanswered = json!({"result": "approved", "final": true, "text": "passou",
-            "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}]});
+            "criteria": [{"criterion": "MSTD-CRIT-0001"}]});
         let refused = judged(root, unanswered);
         assert_eq!(refused["reason"], json!("agreed-items-missing"), "the agreed answer comes first: {refused}");
 
@@ -3182,7 +3182,7 @@ mod tests {
         std::fs::create_dir_all(&copy).unwrap();
         seed_review_reading(root, &[], &copy);
         let verdict = json!({"result": "approved", "final": true, "text": "passou", "agreed": [],
-            "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}]});
+            "criteria": [{"criterion": "MSTD-CRIT-0001"}]});
         let wrote = judged(root, verdict);
         assert_eq!(wrote["ok"], json!(true), "{wrote}");
     }
@@ -3563,7 +3563,7 @@ mod tests {
         let wrote = judged(
             root,
             json!({"result": "approved", "final": true, "text": "passou", "agreed": agreed,
-            "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}]}),
+            "criteria": [{"criterion": "MSTD-CRIT-0001"}]}),
         );
         assert_eq!(wrote["ok"], json!(true), "{wrote}");
         let took = round(root, "x", None);
