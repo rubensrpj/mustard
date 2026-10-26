@@ -31,6 +31,14 @@
 //! sentido, como as outras tarefas do backlog. O campo `kind` que uma volta
 //! antiga ainda traga é aceito e ignorado.
 //!
+//! O achado que diz a regra que quebrou (`rule`) e os lugares dela
+//! (`places`) não passa pela repetição, pelo classificador nem pela regra dos
+//! mesmos arquivos: vira pedido e entra na tarefa da mesma regra — a que outro
+//! achado da volta já trouxe, ou a aberta do backlog que faz valer a regra —
+//! e, sem nenhuma, vira a tarefa nova da regra, que a guarda em `rule`. Regra
+//! diferente é tarefa diferente, mesmo no mesmo arquivo. O resto deste texto
+//! fala da sobra sem regra.
+//!
 //! Os achados que a revisão final aprovada traz em `leftovers`, no mesmo
 //! formato, passam pela mesma montagem quando o fechamento os grava
 //! ([`record_final_leftovers`]): sem onda, pela regra nativa dos arquivos, e
@@ -69,6 +77,13 @@ const FILES: &str = "files";
 /// O campo da prioridade da tarefa.
 const PRIORITY: &str = "priority";
 
+/// O campo da regra que o achado quebrou, e da regra que a tarefa nascida
+/// dele faz valer: é por ele que os achados se juntam numa tarefa só.
+const RULE: &str = "rule";
+
+/// O campo dos lugares da regra que o achado diz.
+const PLACES: &str = "places";
+
 /// O campo do grupo de assunto da tarefa: o nome do grupo e a posição dela
 /// nele. A montagem lê o grupo pelo mesmo nome ([`group_name`]).
 pub(super) const GROUP: &str = "group";
@@ -83,6 +98,9 @@ const JOINED_ON_FILES: SaidBy = ("round.leftover_joined", "round.leftover_review
 
 /// A seção da sobra que o classificador pôs na tarefa pelo sentido.
 const JOINED_BY_MEANING: SaidBy = ("round.leftover_classified", "round.leftover_review_classified");
+
+/// A seção do achado que entra na tarefa da mesma regra.
+const JOINED_BY_RULE: SaidBy = ("finding.joined_by_rule", "finding.review_joined_by_rule");
 
 /// A prioridade da tarefa que a sobra grava ([`leftover_priority`]).
 const PRIORITY_SAID: SaidBy = ("round.leftover_priority", "round.leftover_review_priority");
@@ -107,31 +125,47 @@ const REQUEST: &str = "request";
 /// Uma sobra da volta: o título e o detalhe dela, os arquivos que ela
 /// declara mudar (`None` quando a volta não traz a lista), e se o agente a
 /// marcou como limpeza — só muda comentário, documentação ou texto de ajuda,
-/// sem mudar comportamento nem o que um teste espera.
+/// sem mudar comportamento nem o que um teste espera. O achado diz também a
+/// regra que quebrou, pelo código de uma regra da spec ou pelo texto de uma
+/// regra nova (`None` na sobra gravada sem ela), e os lugares dessa regra.
 pub(crate) struct Leftover {
     pub title: String,
     pub detail: String,
     pub files: Option<Vec<String>>,
     pub cleanup: bool,
+    pub rule: Option<String>,
+    pub places: Vec<String>,
 }
 
 /// As sobras da lista `leftovers` da volta, um evento `event_type` — a
 /// entrega da onda ou o veredito final —, na ordem. A sobra sem título ou
 /// sem detalhe fica de fora — a gravação já a recusa —, e o `kind` que ela
 /// ainda traga não é lido. A marca de limpeza ausente vale "não"; a que não é
-/// sim nem não é recusada, como a lista de arquivos que não é uma lista de
-/// textos, pelo número da sobra na lista, a contar de um.
+/// sim nem não é recusada, como a lista de arquivos ou de lugares que não é
+/// uma lista de textos e a regra que não é texto, pelo número da sobra na
+/// lista, a contar de um.
 ///
 /// # Errors
 ///
 /// [`Refusal::InvalidValue`] quando a marca de limpeza de uma sobra não é um
-/// booleano, ou os arquivos dela não são uma lista de textos.
+/// booleano, a regra dela não é texto, ou os arquivos ou os lugares dela não
+/// são uma lista de textos.
 pub(super) fn leftovers_of(event_type: &str, items: &[Value]) -> Result<Vec<Leftover>, Refusal> {
     let field = |item: &Value, key: &str| item.get(key).and_then(Value::as_str).map(|t| t.trim().to_string());
     let invalid = |at: usize, name: &str, expected: Kind| Refusal::InvalidValue {
         event_type: event_type.into(),
         field: format!("leftovers[{}].{name}", at + 1),
         expected,
+    };
+    let texts = |at: usize, item: &Value, name: &str| match item.get(name) {
+        None => Ok(None),
+        Some(Value::Array(listed)) => listed
+            .iter()
+            .map(|said| said.as_str().map(|said| said.trim().to_string()))
+            .collect::<Option<Vec<_>>>()
+            .map(Some)
+            .ok_or_else(|| invalid(at, name, Kind::Texts)),
+        Some(_) => Err(invalid(at, name, Kind::Texts)),
     };
     let mut leftovers = Vec::new();
     for (at, item) in items.iter().enumerate() {
@@ -140,19 +174,15 @@ pub(super) fn leftovers_of(event_type: &str, items: &[Value]) -> Result<Vec<Left
             Some(Value::Bool(marked)) => *marked,
             Some(_) => return Err(invalid(at, CLEANUP, Kind::Bool)),
         };
-        let files = match item.get(FILES) {
-            None => None,
-            Some(Value::Array(listed)) => Some(
-                listed
-                    .iter()
-                    .map(|path| path.as_str().map(|path| path.trim().to_string()))
-                    .collect::<Option<Vec<_>>>()
-                    .ok_or_else(|| invalid(at, FILES, Kind::Texts))?,
-            ),
-            Some(_) => return Err(invalid(at, FILES, Kind::Texts)),
+        let files = texts(at, item, FILES)?;
+        let places = texts(at, item, PLACES)?.unwrap_or_default().into_iter().filter(|place| !place.is_empty()).collect();
+        let rule = match item.get(RULE) {
+            None | Some(Value::Null) => None,
+            Some(Value::String(said)) => Some(said.trim().to_string()).filter(|said| !said.is_empty()),
+            Some(_) => return Err(invalid(at, RULE, Kind::Text)),
         };
         if let (Some(title), Some(detail)) = (field(item, "title"), field(item, "detail")) {
-            leftovers.push(Leftover { title, detail, files, cleanup });
+            leftovers.push(Leftover { title, detail, files, cleanup, rule, places });
         }
     }
     Ok(leftovers)
@@ -245,8 +275,12 @@ pub(super) fn ask_rewrites(root: &Path, log: &SpecLog, joins: &[MeaningJoin], en
 /// cobre o pedido, presa até ser planejada quando a sobra não tem arquivo
 /// nenhum. O pedido aponta em `origin` a entrega da onda em `delivered`,
 /// quando ela está lá. O pedido da sobra que entra numa tarefa que já existe
-/// leva a marca da sobra no título ([`marked_title`]). Os textos saem no
-/// idioma `lang`.
+/// leva a marca da sobra no título ([`marked_title`]). O achado com regra
+/// fica fora da repetição, do destino e da regra dos arquivos: entra, com uma
+/// linha e o pedido dele, na tarefa que outro achado da mesma regra desta
+/// volta trouxe ou na aberta do backlog que guarda a mesma regra em `rule`, e
+/// sem nenhuma vira a tarefa nova da regra, com a regra e os lugares na parte
+/// do agente. Os textos saem no idioma `lang`.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn leftover_events(
     root: &Path,
@@ -268,14 +302,19 @@ pub(super) fn leftover_events(
     let files_of: Vec<BTreeSet<String>> =
         found.iter().map(|&(wave, leftover)| leftover_files(root, log, wave, leftover).into_iter().collect()).collect();
     // A repetição de palavras vem antes, e só a sobra que ela não pega segue
-    // o destino que o classificador deu.
+    // o destino que o classificador deu. O achado com regra não passa por
+    // nenhuma das duas: ele se junta pela regra.
     let exact: Vec<Option<&SpecEvent>> = found
         .iter()
         .zip(&files_of)
         .map(|(&(_, leftover), files)| {
-            unfinished.iter().copied().find(|task| repeats(&task_files(task), task.str_field("title"), task.str_field("text"), files, leftover))
+            leftover.rule.is_none().then(|| unfinished.iter().copied().find(|task| repeats(&task_files(task), task.str_field("title"), task.str_field("text"), files, leftover))).flatten()
         })
         .collect();
+    // As tarefas abertas do backlog que fazem valer uma regra, pela forma em
+    // que a regra se compara.
+    let of_rule: Vec<(String, &SpecEvent)> =
+        left.iter().filter_map(|id| log.get(*id)).filter_map(|task| Some((comparable(task.str_field(RULE)?), task))).collect();
     // A tarefa escolhida vale pela versão vigente: a pergunta é feita sobre
     // a spec gravada, e o ensaio pode já ter dado versão nova à tarefa.
     let current = |id: u64| log.current(id).or_else(|| log.get(id)).map(|task| task.id);
@@ -299,11 +338,52 @@ pub(super) fn leftover_events(
     let mut joined: BTreeMap<u64, usize> = BTreeMap::new();
     let mut born: Vec<(BTreeSet<String>, usize)> = Vec::new();
     let mut asked: Vec<(BTreeSet<String>, &Leftover, usize)> = Vec::new();
+    // Onde está, em `work`, a tarefa de cada regra que um achado desta volta
+    // já trouxe.
+    let mut ruled: Vec<(String, usize)> = Vec::new();
     for (position, (&(wave, leftover), files)) in found.iter().zip(files_of).enumerate() {
         // Só em arquivo que o git ignora é mudança local: nenhuma onda a
         // entrega, e o usuário a recebe como nota, sem pedido nem tarefa.
         if all_ignored(root, &files) {
             work.push(event(wave, NOTE, local_note(wave, leftover, &files, lang)));
+            continue;
+        }
+        // O achado com regra vira pedido e entra na tarefa da regra dele: a
+        // que outro achado desta volta já trouxe ou a aberta do backlog que
+        // faz valer a mesma regra; sem nenhuma, vira a tarefa nova da regra.
+        // Regra diferente é tarefa diferente, mesmo no mesmo arquivo.
+        if let Some(rule) = &leftover.rule {
+            let key = comparable(rule);
+            let request = requests.len();
+            requests.push(event(wave, REQUEST, leftover_request(leftover, &files, delivered.get(&wave).copied())));
+            let earlier = ruled.iter().find(|(own, _)| *own == key).map(|(_, at)| *at);
+            let open_task = of_rule.iter().find(|(own, _)| *own == key).map(|(_, task)| *task);
+            let at = earlier.or_else(|| {
+                open_task.map(|task| {
+                    *joined.entry(task.id).or_insert_with(|| {
+                        work.push(event(wave, TASK, backlog_return(task)));
+                        work.len() - 1
+                    })
+                })
+            });
+            let at = match at {
+                Some(at) => {
+                    join(&mut work[at].draft, wave, leftover, &files, JOINED_BY_RULE, lang);
+                    work[at].asks.push(request);
+                    requests[request].draft.insert("title".into(), json!(marked_title(wave, &leftover.title, lang)));
+                    at
+                }
+                None => {
+                    let mut task = leftover_task(root, log, wave, leftover, lang);
+                    task.insert(RULE.into(), json!(rule));
+                    append_agent_line(&mut task, &rule_line(rule, leftover, lang));
+                    work.push(LeftoverEvent { asks: vec![request], ..event(wave, TASK, task) });
+                    work.len() - 1
+                }
+            };
+            if earlier.is_none() {
+                ruled.push((key, at));
+            }
             continue;
         }
         if let Some(task) = exact[position] {
@@ -379,7 +459,7 @@ pub(super) fn leftover_events(
 }
 
 /// A pergunta ao classificador das atividades sobre as sobras da volta
-/// `wave`, lida na spec gravada `log`: cada sobra que não repete uma tarefa
+/// `wave`, lida na spec gravada `log`: cada sobra sem regra que não repete uma tarefa
 /// ainda por entregar — sem contar as das ondas em `returning`, que voltam
 /// agora —, contra as tarefas ainda por entregar fora as da própria onda, e
 /// as que ela devolve ao backlog, que aceitam a sobra, com o resumo da volta
@@ -397,8 +477,9 @@ pub(super) fn leftover_question(root: &Path, log: &SpecLog, returning: &BTreeSet
     let mut items = Vec::new();
     for (at, leftover) in wave.leftovers.iter().enumerate() {
         let files: BTreeSet<String> = leftover_files(root, log, wave.wave, leftover).into_iter().collect();
-        // A sobra só em arquivo ignorado vira nota, sem classificador.
-        if all_ignored(root, &files) {
+        // A sobra só em arquivo ignorado vira nota, sem classificador, e o
+        // achado com regra se junta pela regra, sem ele também.
+        if leftover.rule.is_some() || all_ignored(root, &files) {
             continue;
         }
         if unfinished.iter().any(|task| repeats(&task_files(task), task.str_field("title"), task.str_field("text"), &files, leftover)) {
@@ -625,7 +706,7 @@ fn join(draft: &mut Map<String, Value>, wave: u64, leftover: &Leftover, files: &
     let line = said_by(wave, section, lang)
         .replace("{title}", &leftover.title)
         .replace("{detail}", &text::one_line(&leftover.detail));
-    append_agent_line(draft, &line);
+    append_agent_line(draft, &format!("{line}{}", places_note(leftover, lang)));
     let mut paths: Vec<Value> = draft.get(FILES).and_then(Value::as_array).cloned().unwrap_or_default();
     for path in files {
         let file = json!({ "path": path });
@@ -640,6 +721,23 @@ fn join(draft: &mut Map<String, Value>, wave: u64, leftover: &Leftover, files: &
             draft.insert(PRIORITY.into(), json!(leftover_priority(wave, lang)));
         }
     }
+}
+
+/// A linha da tarefa nova da regra `rule`, que o achado `leftover` traz: a
+/// regra e os lugares dela, no idioma `lang`. É por ela que o agente da onda
+/// sabe a regra e onde ela vale.
+fn rule_line(rule: &str, leftover: &Leftover, lang: Locale) -> String {
+    format!("{}{}", translate("finding.rule", lang).replace("{rule}", rule), places_note(leftover, lang))
+}
+
+/// Os lugares da regra que o achado `leftover` diz, entre crases, depois de
+/// um espaço, no idioma `lang`; nada quando ele não diz lugar nenhum.
+fn places_note(leftover: &Leftover, lang: Locale) -> String {
+    if leftover.places.is_empty() {
+        return String::new();
+    }
+    let listed = leftover.places.iter().map(|place| format!("`{place}`")).collect::<Vec<_>>().join(", ");
+    format!(" {}", translate("finding.places", lang).replace("{places}", &listed))
 }
 
 /// A prioridade da tarefa que a sobra da onda `wave` grava, no idioma
@@ -763,7 +861,7 @@ mod tests {
     /// A sobra de título `title`, com o detalhe `detail` e a marca de limpeza
     /// `cleanup`.
     fn leftover(title: &str, detail: &str, cleanup: bool) -> Leftover {
-        Leftover { title: title.into(), detail: detail.into(), files: None, cleanup }
+        Leftover { title: title.into(), detail: detail.into(), files: None, cleanup, rule: None, places: Vec::new() }
     }
 
     /// A spec `x` gravada à mão com as linhas `events`, já lida.
@@ -857,8 +955,8 @@ mod tests {
             json!({"v":1,"id":3,"type":"wave","n":1,"text":"t","criteria":[1],"done_when":"d"}),
             json!({"v":1,"id":4,"type":"task","title":"B","text":"B.","files":[{"path":"src/b.ts"}],"depends_on":[],"covers":[2]}),
         ]);
-        let born = Leftover { title: "A some".into(), detail: "Some.".into(), files: Some(vec!["src/a.ts".into()]), cleanup: false };
-        let joining = Leftover { title: "B some".into(), detail: "Some.".into(), files: Some(vec!["src/b.ts".into()]), cleanup: false };
+        let born = Leftover { title: "A some".into(), detail: "Some.".into(), files: Some(vec!["src/a.ts".into()]), cleanup: false, rule: None, places: Vec::new() };
+        let joining = Leftover { title: "B some".into(), detail: "Some.".into(), files: Some(vec!["src/b.ts".into()]), cleanup: false, rule: None, places: Vec::new() };
 
         let events = leftover_events(root, &log, &[(1, &born), (1, &joining)], &BTreeSet::new(), &BTreeMap::new(), &[], Locale::PtBr);
         let tasks = of_kind(&events, TASK);
@@ -884,7 +982,7 @@ mod tests {
         }
         let log = log_of(&[json!({"v":1,"id":1,"type":"wave","n":1,"text":"t","criteria":[],"done_when":"d"})]);
         let detail = "O acerto errado aparece em `web/layout.css`, `scripts/install.ps1` e `apps/rt/Cargo.toml`; o conserto é em `src/soma.ts`.";
-        let declared = Leftover { title: "Acerto errado".into(), detail: detail.into(), files: Some(vec!["src/soma.ts".into()]), cleanup: false };
+        let declared = Leftover { title: "Acerto errado".into(), detail: detail.into(), files: Some(vec!["src/soma.ts".into()]), cleanup: false, rule: None, places: Vec::new() };
 
         let events = leftover_events(root, &log, &[(1, &declared)], &BTreeSet::new(), &BTreeMap::new(), &[], Locale::PtBr);
         let task = of_kind(&events, TASK)[0];
@@ -1069,7 +1167,135 @@ mod tests {
     /// A sobra que declara os arquivos `files`, com o título `title` e o
     /// detalhe `detail`.
     fn declared(title: &str, detail: &str, files: &[&str]) -> Leftover {
-        Leftover { title: title.into(), detail: detail.into(), files: Some(files.iter().map(|f| (*f).to_string()).collect()), cleanup: false }
+        Leftover { title: title.into(), detail: detail.into(), files: Some(files.iter().map(|f| (*f).to_string()).collect()), cleanup: false, rule: None, places: Vec::new() }
+    }
+
+    /// O achado que quebra a regra `rule` nos lugares `places`, com o título
+    /// `title` e os arquivos `files` a mudar.
+    fn ruled(title: &str, rule: &str, files: &[&str], places: &[&str]) -> Leftover {
+        Leftover {
+            rule: Some(rule.into()),
+            places: places.iter().map(|place| (*place).to_string()).collect(),
+            ..declared(title, &format!("{title}."), files)
+        }
+    }
+
+    /// A volta da onda 1 traz três achados: dois da regra da leitura pelo
+    /// mapa, em `src/a.rs` e em `src/b.rs`, e um da regra da citação, também
+    /// em `src/a.rs`, onde já espera uma tarefa aberta sem regra. Nenhum vai
+    /// ao Jev: os três viram três pedidos e duas tarefas novas — a da leitura
+    /// cobre os dois primeiros pedidos, com os dois arquivos, a regra e uma
+    /// linha do segundo achado; a da citação cobre o terceiro. A tarefa aberta
+    /// de `src/a.rs` não ganha versão nova.
+    #[test]
+    fn findings_of_one_rule_make_one_task_and_of_two_rules_two_tasks() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let log = log_of(&[json!({"v":1,"id":1,"type":"task","title":"O índice some","text":"Some.",
+            "files":[{"path":"src/a.rs"}],"depends_on":[]})]);
+        let reading = "Toda leitura passa pelo mapa";
+        let findings = vec![
+            ruled("A leitura de a.rs abre o arquivo", reading, &["src/a.rs"], &["src/a.rs:3"]),
+            ruled("A leitura de b.rs abre o arquivo", "toda leitura passa pelo mapa.", &["src/b.rs"], &["src/b.rs:7"]),
+            ruled("A citação de a.rs não confere a pasta", "A gravação confere a citação", &["src/a.rs"], &["src/a.rs:9"]),
+        ];
+        let wave = WaveReport {
+            wave: 1,
+            delivered: "A volta.".into(),
+            files: Vec::new(),
+            commit: None,
+            proofs: Vec::new(),
+            fixes: Vec::new(),
+            replan: None,
+            undone: Vec::new(),
+            taken_elsewhere: false,
+            leftovers: findings,
+            agreed: Vec::new(),
+            returns: Vec::new(),
+            usage: Default::default(),
+        };
+        let asked = std::cell::Cell::new(0);
+        let ask = |_: &str| {
+            asked.set(asked.get() + 1);
+            None
+        };
+        let destinations = leftover_destinations(root, (&log, &BTreeSet::new()), std::slice::from_ref(&wave), &ask);
+        let found: Vec<(u64, &Leftover)> = wave.leftovers.iter().map(|leftover| (1, leftover)).collect();
+
+        let events = leftover_events(root, &log, &found, &BTreeSet::new(), &BTreeMap::new(), &destinations, Locale::PtBr);
+
+        assert_eq!(asked.get(), 0, "o achado com regra não vai ao Jev");
+        assert_eq!(of_kind(&events, REQUEST).len(), 3);
+        let tasks = of_kind(&events, TASK);
+        assert_eq!(tasks.len(), 2, "duas regras, duas tarefas");
+        assert!(tasks.iter().all(|task| !task.draft.contains_key("replaces")), "a tarefa aberta do mesmo arquivo não recebe achado");
+        let (one, other) = (tasks[0], tasks[1]);
+        assert_eq!(one.asks, [0, 1]);
+        assert_eq!(one.draft.get(RULE), Some(&json!(reading)));
+        assert_eq!(one.draft.get(FILES), Some(&json!([{"path": "src/a.rs"}, {"path": "src/b.rs"}])));
+        let agent = one.draft.get("agent").and_then(Value::as_str).unwrap_or_default();
+        let rule = translate("finding.rule", Locale::PtBr).replace("{rule}", reading);
+        let second = translate("finding.joined_by_rule", Locale::PtBr)
+            .replace("{wave}", "1")
+            .replace("{title}", "A leitura de b.rs abre o arquivo")
+            .replace("{detail}", "A leitura de b.rs abre o arquivo.");
+        assert!(agent.contains(&rule) && agent.contains("`src/a.rs:3`"), "{agent}");
+        assert!(agent.contains(&second) && agent.contains("`src/b.rs:7`"), "{agent}");
+        assert_eq!(other.asks, [2]);
+        assert_eq!(other.draft.get(RULE), Some(&json!("A gravação confere a citação")));
+        assert_eq!(other.draft.get(FILES), Some(&json!([{"path": "src/a.rs"}])));
+    }
+
+    /// Uma tarefa do backlog faz valer a regra da leitura pelo mapa, e outra
+    /// tarefa, já numa onda, faz valer a da citação. A volta traz um achado de
+    /// cada regra: o da leitura entra na tarefa do backlog, numa versão nova
+    /// com a linha dele, o arquivo dele e o pedido com a marca da sobra, sem
+    /// tarefa nova; o da citação vira tarefa nova, porque a da onda não espera
+    /// no backlog.
+    #[test]
+    fn a_finding_joins_the_backlog_task_of_its_rule_instead_of_making_a_new_one() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let reading = "Toda leitura passa pelo mapa";
+        let log = log_of(&[
+            json!({"v":1,"id":1,"type":"task","title":"Ler pelo mapa","text":"Ler.","files":[{"path":"src/c.rs"}],"depends_on":[],"rule":reading}),
+            json!({"v":1,"id":2,"type":"wave","n":1,"text":"t","criteria":[],"done_when":"d"}),
+            json!({"v":1,"id":3,"type":"task","wave":1,"title":"Conferir","text":"Conferir.","files":[{"path":"src/d.rs"}],"depends_on":[],
+                "rule":"A gravação confere a citação"}),
+        ]);
+        let again = ruled("A leitura de a.rs abre o arquivo", "TODA leitura passa pelo mapa", &["src/a.rs"], &["src/a.rs:3"]);
+        let cited = ruled("A citação de d.rs não confere", "A gravação confere a citação", &["src/d.rs"], &["src/d.rs:1"]);
+
+        let events = leftover_events(root, &log, &[(2, &again), (2, &cited)], &BTreeSet::new(), &BTreeMap::new(), &[], Locale::PtBr);
+
+        let tasks = of_kind(&events, TASK);
+        assert_eq!(tasks.len(), 2);
+        let version = tasks.iter().find(|task| task.draft.get("replaces") == Some(&json!(1))).expect("a versão nova da tarefa da regra");
+        assert_eq!(version.asks, [0]);
+        assert_eq!(version.draft.get(FILES), Some(&json!([{"path": "src/c.rs"}, {"path": "src/a.rs"}])));
+        assert!(version.draft.get("agent").and_then(Value::as_str).is_some_and(|agent| agent.contains("A leitura de a.rs abre o arquivo")));
+        assert_eq!(of_kind(&events, REQUEST)[0].draft.get("title"), Some(&json!(marked_title(2, "A leitura de a.rs abre o arquivo", Locale::PtBr))));
+        let born = tasks.iter().find(|task| !task.draft.contains_key("replaces")).expect("a tarefa nova da citação");
+        assert_eq!(born.asks, [1]);
+    }
+
+    /// A regra que não é texto, e os lugares que não são uma lista de textos,
+    /// recusam a leitura da volta pelo número do achado; a regra e cada lugar
+    /// chegam sem os espaços das pontas.
+    #[test]
+    fn a_finding_rule_or_places_of_the_wrong_type_is_refused() {
+        let base = json!({"title": "A leitura abre o arquivo", "detail": "Abre."});
+        for (field, wrong, expected) in [("rule", json!(3), Kind::Text), ("places", json!("a.rs:1"), Kind::Texts), ("places", json!([1]), Kind::Texts)] {
+            let mut item = base.clone();
+            item[field] = wrong;
+            let refused = leftovers_of("delivered", &[base.clone(), item]).err();
+            assert_eq!(refused, Some(Refusal::InvalidValue { event_type: "delivered".into(), field: format!("leftovers[2].{field}"), expected }));
+        }
+        let mut item = base;
+        item["rule"] = json!("  Toda leitura passa pelo mapa ");
+        item["places"] = json!([" src/a.rs:3 "]);
+        let read = leftovers_of("verdict", &[item]).unwrap();
+        assert_eq!((read[0].rule.as_deref(), read[0].places.as_slice()), (Some("Toda leitura passa pelo mapa"), &["src/a.rs:3".to_string()][..]));
     }
 
     /// A resposta confiante do Jev com a opção `choice`.

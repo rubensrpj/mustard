@@ -40,7 +40,7 @@ Revise ondas/entregas/critérios/commits e levantamentos/PRs, sem corrigir. Leia
 
 Só o crítico reprova.
 
-Só o veredito final aprovado leva `leftovers`, um por achado maior ou menor, como na entrega de onda: `"leftovers":[{"title":"…","detail":"…","files":["…"]}]`; o que só muda comentário/documentação/ajuda leva `"cleanup":true`. O fechamento os grava como tarefas. Ao reprovar, o achado vai no item de `agreed` com `met:false`, sem `leftovers`.
+Só o veredito final aprovado leva `leftovers`, um por achado maior ou menor: `"leftovers":[{"title":"…","detail":"…","rule":"…","places":["…"],"files":["…"]}]`, com a regra que o achado quebrou (código da spec ou regra nova) e os lugares dela pelo mapa; o que só muda comentário/documentação/ajuda leva `"cleanup":true`. Ao reprovar, o achado vai no item de `agreed` com `met:false`, sem `leftovers`.
 
 ## Propostas
 

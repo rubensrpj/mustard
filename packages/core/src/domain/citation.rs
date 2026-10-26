@@ -272,6 +272,33 @@ pub fn resolve(world: &impl CitationWorld, source: &str) -> Result<String, Findi
     }
 }
 
+/// O lugar `place` que um achado cita, com o caminho certo, pela mesma
+/// conferência das fontes ([`resolve`]).
+///
+/// O lugar com linha se confere como a fonte de um fato. O que é só um
+/// caminho de arquivo (`apps/a.rs`, `a.rs`) tem de existir, e o que traz só o
+/// nome ganha a pasta quando um arquivo só do projeto tem esse nome. O lugar
+/// que não cita arquivo — um nome de código, um comando — volta como veio.
+///
+/// # Errors
+///
+/// O achado que recusa: o arquivo que não existe, com os arquivos que têm o
+/// nome dele quando são dois ou mais, ou a linha que passa do fim.
+pub fn resolve_place(world: &impl CitationWorld, place: &str) -> Result<String, Finding> {
+    let place = place.trim();
+    if file_citation(place).is_some() || !is_file_path(place) {
+        return resolve(world, place);
+    }
+    let path = clean_path(&place.replace('\\', "/"));
+    if world.file_lines(&path).is_some() {
+        return Ok(path);
+    }
+    match missing_file(world, &path) {
+        Finding::MissingFile { same_name, .. } if same_name.len() == 1 => Ok(same_name[0].clone()),
+        finding => Err(finding),
+    }
+}
+
 /// Confere uma fonte e o texto que ela sustenta.
 ///
 /// Quando a fonte cita um arquivo, ele tem de existir e ter a linha citada;
@@ -381,6 +408,27 @@ mod tests {
         assert_eq!(
             cited_files("Veja src/App.svelte, prisma/schema.prisma, docs/guia.markdown e docs/LEIA.MD."),
             ["src/App.svelte", "prisma/schema.prisma", "docs/guia.markdown"]
+        );
+    }
+
+    /// O lugar de um achado se confere com e sem a linha: o que cita só o
+    /// nome de um arquivo que um arquivo só do projeto tem ganha a pasta; o
+    /// arquivo que não existe, o nome que dois arquivos têm e a linha depois
+    /// do fim recusam; o lugar que não cita arquivo volta como veio.
+    #[test]
+    fn a_finding_place_gets_its_folder_and_a_missing_one_is_refused() {
+        let mut two = world();
+        two.files.insert("lib/a.rs", 5);
+        assert_eq!(resolve_place(&world(), "src/a.rs:12"), Ok("src/a.rs:12".into()));
+        assert_eq!(resolve_place(&world(), " a.rs:12 "), Ok("src/a.rs:12".into()));
+        assert_eq!(resolve_place(&world(), "b.rs"), Ok("src/b.rs".into()));
+        assert_eq!(resolve_place(&world(), "./src/b.rs"), Ok("src/b.rs".into()));
+        assert_eq!(resolve_place(&world(), "SpecLog::read"), Ok("SpecLog::read".into()));
+        assert_eq!(resolve_place(&world(), "src/c.rs"), Err(Finding::MissingFile { path: "src/c.rs".into(), same_name: Vec::new() }));
+        assert_eq!(resolve_place(&world(), "src/b.rs:11"), Err(Finding::MissingLine { path: "src/b.rs".into(), line: 11, lines: 10 }));
+        assert_eq!(
+            resolve_place(&two, "a.rs"),
+            Err(Finding::MissingFile { path: "a.rs".into(), same_name: vec!["lib/a.rs".into(), "src/a.rs".into()] })
         );
     }
 

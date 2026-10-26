@@ -744,12 +744,31 @@ fn boundary_sends_a_running_waves_file_to_leftovers_and_the_backlog() {
         let name = "wave";
         let body = template(lang, name);
         let boundary = section(&body, wave_headers(lang).0);
-        let field = "`\"leftovers\":[{\"title\":\"…\",\"detail\":\"…\",\"files\":[\"…\"]}]`";
+        let field = "`\"leftovers\":[{\"title\":\"…\",\"detail\":\"…\",\"rule\":\"…\",\"places\":[\"…\"],\"files\":[\"…\"]}]`";
         for phrase in said.iter().chain(std::iter::once(&field)) {
             assert!(boundary.contains(phrase), "the {lang} `{name}` boundary does not say `{phrase}`:{boundary}");
         }
         for gone in ["\"kind\"", "`kind`", "breaks", "cosmetic"] {
             assert!(!body.contains(gone), "the {lang} `{name}` agent still sorts the leftover by `{gone}`:{boundary}");
+        }
+    }
+}
+
+/// O agente de onda e o revisor pedem, em cada achado que gravam em
+/// `leftovers`, a regra que ele quebrou — o código de uma regra da spec ou o
+/// texto de uma regra nova — e os lugares dela, achados pelo mapa: é pela
+/// regra que os achados se juntam numa tarefa.
+#[test]
+fn both_agent_texts_ask_each_finding_for_its_rule_and_places() {
+    let fields = "\"rule\":\"…\",\"places\":[\"…\"]";
+    for (lang, rule, places) in
+        [("pt-BR", "a regra que o achado quebrou (código da spec ou regra nova)", "lugares dela pelo mapa"), ("en-US", "the rule the finding broke (a spec code or a new rule)", "places from the map")]
+    {
+        for name in ["wave", "review"] {
+            let body = template(lang, name);
+            for said in [fields, rule, places] {
+                assert!(body.contains(said), "the {lang} `{name}` agent does not ask each finding for `{said}`");
+            }
         }
     }
 }

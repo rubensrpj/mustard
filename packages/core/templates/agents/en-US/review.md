@@ -40,7 +40,7 @@ Review waves/deliveries/criteria/commits and surveys/PRs, without fixing. Read "
 
 Only a critical finding rejects.
 
-Only the approved final verdict carries `leftovers`, one per major or minor finding, as in the wave delivery: `"leftovers":[{"title":"…","detail":"…","files":["…"]}]`; one that only changes a comment/documentation/help carries `"cleanup":true`. The close records them as tasks. On rejection, the finding goes in the `agreed` item with `met:false`, never in `leftovers`.
+Only the approved final verdict carries `leftovers`, one per major or minor finding: `"leftovers":[{"title":"…","detail":"…","rule":"…","places":["…"],"files":["…"]}]`, with the rule the finding broke (a spec code or a new rule) and its places from the map; one that only changes a comment/documentation/help carries `"cleanup":true`. On rejection, the finding goes in the `agreed` item with `met:false`, never in `leftovers`.
 
 ## Proposals
 

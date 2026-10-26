@@ -179,6 +179,11 @@ pub enum Refusal {
     /// Uma sobra da entrega sem título ou sem detalhe: `field` é o campo que
     /// falta na primeira sobra incompleta. Nada é gravado.
     LeftoverFieldMissing { field: String },
+    /// O achado número `finding` da lista `leftovers` cita o lugar `place`, de
+    /// um arquivo ou de uma linha que o projeto não tem. `same_name` são os
+    /// arquivos do projeto com o mesmo nome, quando o lugar traz só o nome e
+    /// mais de um o tem: a mensagem os sugere. Nada é gravado.
+    FindingPlaceMissing { finding: usize, place: String, same_name: Vec<String> },
     /// Um item combinado novo, gravado depois da aprovação, que não tem dono:
     /// nenhuma tarefa o cobre, ele não diz as ondas dele nem vale no projeto
     /// todo.
@@ -439,6 +444,7 @@ impl Refusal {
             Self::NoOpenSend { .. } => "no-open-send",
             Self::WaveAgentWorking { .. } => "wave-agent-working",
             Self::LeftoverFieldMissing { .. } => "leftover-field-missing",
+            Self::FindingPlaceMissing { .. } => "finding-place-missing",
             Self::OwnerMissing { .. } => "owner-missing",
             Self::TaskDeclarationMissing { .. } => "task-declaration-missing",
             Self::ItemFormMissing { .. } => "item-form-missing",
@@ -697,6 +703,14 @@ impl Refusal {
             Self::LeftoverFieldMissing { field } => {
                 fill("spec_events.leftover_field_missing", &[("{field}", field.clone())])
             }
+            Self::FindingPlaceMissing { finding, place, same_name } if same_name.is_empty() => fill(
+                "spec_events.finding_place_missing",
+                &[("{finding}", finding.to_string()), ("{place}", place.clone())],
+            ),
+            Self::FindingPlaceMissing { finding, place, same_name } => fill(
+                "spec_events.finding_place_missing.same_name",
+                &[("{finding}", finding.to_string()), ("{place}", place.clone()), ("{found}", same_name.join(", "))],
+            ),
             Self::OwnerMissing { event_type } => {
                 fill("plan.owner_missing", &[("{type}", event_type.clone())])
             }

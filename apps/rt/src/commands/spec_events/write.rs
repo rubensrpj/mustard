@@ -830,6 +830,7 @@ pub(crate) fn draft_rules(start: &Path, spec: &str, event_type: &str, draft: &mu
     // declara mudar como os que ela cria. O achado do veredito final vira o
     // mesmo pedido no fechamento, e passa pela mesma conferência.
     if matches!(event_type, "delivered" | "verdict") {
+        resolve_finding_places(start, draft)?;
         let root = checkout(start);
         let test = project_test(start);
         for leftover in draft.get("leftovers").and_then(Value::as_array).into_iter().flatten() {
@@ -839,6 +840,46 @@ pub(crate) fn draft_rules(start: &Path, spec: &str, event_type: &str, draft: &mu
             let proofs = proofs_named_in(&[detail], test.as_deref());
             if let Some(refusal) = proofs.iter().find_map(|proof| proof_defect(&root, proof, &created)) {
                 return Err(refusal);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Confere os lugares da regra que cada achado de `leftovers` cita, vistos de
+/// `start`, pela conferência das citações ([`resolve_place`]): o lugar que
+/// traz só o nome de um arquivo ganha a pasta quando um arquivo só do projeto
+/// tem esse nome, e fica gravado assim. O lugar num arquivo que o próprio
+/// achado declara em `files` conta como existente: o achado pode pedir um
+/// arquivo novo.
+///
+/// # Errors
+///
+/// [`Refusal::FindingPlaceMissing`], com o número do achado, quando o lugar
+/// cita um arquivo ou uma linha que o projeto não tem.
+///
+/// [`resolve_place`]: mustard_core::domain::citation::resolve_place
+fn resolve_finding_places(start: &Path, draft: &mut Map<String, Value>) -> Result<(), Refusal> {
+    use mustard_core::domain::citation::{Finding, resolve_place};
+    let Some(Value::Array(leftovers)) = draft.get_mut("leftovers") else { return Ok(()) };
+    let root = super::project(start).root;
+    let world = mustard_core::io::citation::DiskWorld::new(store::citation_roots(start, &root), Some(&root));
+    for (at, leftover) in leftovers.iter_mut().enumerate() {
+        let declared: BTreeSet<String> =
+            leftover.get("files").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(relative_path).collect();
+        let Some(Value::Array(places)) = leftover.get_mut("places") else { continue };
+        for place in places.iter_mut() {
+            let Some(cited) = place.as_str() else { continue };
+            match resolve_place(&world, cited) {
+                Ok(found) => *place = json!(found),
+                Err(Finding::MissingFile { path, .. }) if declared.contains(&relative_path(&path)) => {}
+                Err(finding) => {
+                    let same_name = match finding {
+                        Finding::MissingFile { same_name, .. } => same_name,
+                        _ => Vec::new(),
+                    };
+                    return Err(Refusal::FindingPlaceMissing { finding: at + 1, place: cited.trim().to_string(), same_name });
+                }
             }
         }
     }
@@ -3267,6 +3308,37 @@ mod tests {
             let missing = Err(Refusal::ProofPathMissing { path: "web/src/novo.test.ts".into() });
             assert_eq!(returned(json!(["web/src/sum.ts"])), missing, "{event_type}");
             assert_eq!(returned(json!(["web/src/novo.test.ts"])), Ok(()), "{event_type}");
+        }
+    }
+
+    /// O achado de uma volta de onda ou de um veredito que cita o lugar da
+    /// regra só pelo nome do arquivo fica gravado com a pasta; o lugar num
+    /// arquivo que o projeto não tem recusa, com o número do achado, salvo o
+    /// arquivo novo que o próprio achado declara mudar.
+    #[test]
+    fn a_finding_place_cited_by_file_name_alone_is_written_with_its_folder() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        assert!(git::run(root, &["init", "-q"]).ok, "git init");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/a.rs"), "fn one() {}\nfn two() {}\n").unwrap();
+        for event_type in ["delivered", "verdict"] {
+            let checked = |places: Value, files: Value| {
+                let mut draft = json!({"wave": 1, "text": "feito", "leftovers": [
+                    {"title": "A", "detail": "Abre.", "rule": "Toda leitura passa pelo mapa", "places": ["src/a.rs:1"]},
+                    {"title": "B", "detail": "Abre.", "rule": "Toda leitura passa pelo mapa", "places": places, "files": files}]})
+                .as_object()
+                .cloned()
+                .unwrap();
+                draft_rules(root, "teste", event_type, &mut draft, true).map(|()| draft["leftovers"][1]["places"].clone())
+            };
+            assert_eq!(checked(json!(["a.rs:2"]), json!([])), Ok(json!(["src/a.rs:2"])), "{event_type}");
+            assert_eq!(
+                checked(json!(["src/nao.rs:1"]), json!([])),
+                Err(Refusal::FindingPlaceMissing { finding: 2, place: "src/nao.rs:1".into(), same_name: Vec::new() }),
+                "{event_type}"
+            );
+            assert_eq!(checked(json!(["src/novo.rs"]), json!(["src/novo.rs"])), Ok(json!(["src/novo.rs"])), "{event_type}");
         }
     }
 

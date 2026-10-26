@@ -147,8 +147,8 @@ pub(crate) fn check_return(
 /// que [`check_return`] prendeu: há pedido de revisão aberto;
 /// cada critério e cada item do combinado citado existe; o veredito final
 /// responde pelo combinado que lhe cabe ([`agreed_prompt::review_agreed`]); os achados dele em `leftovers`, que o
-/// fechamento grava como tarefas, têm a marca de limpeza e os arquivos legíveis
-/// ([`leftovers_of`]) — e só o veredito final aprovado os leva: em outro
+/// fechamento grava como tarefas, têm a marca de limpeza, a regra, os lugares
+/// e os arquivos legíveis ([`leftovers_of`]) — e só o veredito final aprovado os leva: em outro
 /// veredito, o da revisão de uma onda ou o final reprovado, nada lê o campo, e
 /// a gravação o recusa ([`refuse_unread_leftovers`]); e o revisor leu, de dentro da cópia
 /// dele, cada item que o pedido da revisão lista. Passando, o veredito ganha

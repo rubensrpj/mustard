@@ -1,5 +1,6 @@
 //! O arquivo de eventos da spec: as recusas e os avisos da gravação e da
-//! leitura, o banco de lições e o índice das specs.
+//! leitura, o banco de lições, o índice das specs e o achado que vira tarefa
+//! da spec.
 //!
 //! Uma parte do catálogo de textos: quem lê chama `translate`, a porta do
 //! catálogo, e nunca esta parte direto. Chave nova com um começo que esta
@@ -9,7 +10,7 @@ use super::Locale;
 
 /// Os começos de chave (o trecho antes do primeiro ponto) que esta parte
 /// responde. Nenhum deles é de outra parte.
-pub(super) const PREFIXES: &[&str] = &["spec_events", "lessons", "spec_index", "failures", "skills"];
+pub(super) const PREFIXES: &[&str] = &["spec_events", "lessons", "spec_index", "failures", "skills", "finding"];
 
 /// O texto de `key` em `lang`, ou `None` quando a chave não está aqui.
 pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
@@ -671,6 +672,32 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("spec_events.leftover_field_missing", Locale::EnUs) => {
             "A leftover (leftovers) of the return lacks the field {field}. Nothing was written."
         }
+        ("spec_events.finding_place_missing", Locale::PtBr) => {
+            "O achado {finding} cita o lugar {place}, que o projeto não tem. Confira o caminho e a \
+             linha pelo mapa. Nada foi gravado."
+        }
+        ("spec_events.finding_place_missing", Locale::EnUs) => {
+            "Finding {finding} cites the place {place}, which the project does not have. Check the \
+             path and the line through the map. Nothing was written."
+        }
+        ("spec_events.finding_place_missing.same_name", Locale::PtBr) => {
+            "O achado {finding} cita o lugar {place}, que o projeto não tem. Com esse nome, o \
+             projeto tem {found}: cite o caminho inteiro. Nada foi gravado."
+        }
+        ("spec_events.finding_place_missing.same_name", Locale::EnUs) => {
+            "Finding {finding} cites the place {place}, which the project does not have. With that \
+             name, the project has {found}: cite the whole path. Nothing was written."
+        }
+        // O achado que vira tarefa da spec: a regra que ele quebrou, os
+        // lugares dela e a linha do achado que entra na tarefa da mesma regra.
+        ("finding.rule", Locale::PtBr) => "Regra que o achado quebrou: {rule}.",
+        ("finding.rule", Locale::EnUs) => "Rule the finding broke: {rule}.",
+        ("finding.places", Locale::PtBr) => "Lugares dela: {places}.",
+        ("finding.places", Locale::EnUs) => "Its places: {places}.",
+        ("finding.joined_by_rule", Locale::PtBr) => "Sobra da onda {wave}, da mesma regra — {title}: {detail}",
+        ("finding.joined_by_rule", Locale::EnUs) => "Leftover from wave {wave}, of the same rule — {title}: {detail}",
+        ("finding.review_joined_by_rule", Locale::PtBr) => "Achado da revisão final, da mesma regra — {title}: {detail}",
+        ("finding.review_joined_by_rule", Locale::EnUs) => "Finding from the final review, of the same rule — {title}: {detail}",
         ("spec_events.report_carries_return_line", Locale::PtBr) => {
             "A entrega e o veredito moram na spec: o agente os grava com mustard-rt run write. O \
              relatório leva só as linhas `USAGE`, `PAUSED` e `REJECTED`."
@@ -1363,8 +1390,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            189,
-            0xabef_5f25_0692_90ed,
+            195,
+            0x5417_ffcc_d1dd_547e,
         );
     }
 
@@ -1460,6 +1487,12 @@ mod tests {
             ("spec_events.no_open_review", &[][..]),
             ("spec_events.verdict_missing", &[][..]),
             ("spec_events.leftover_field_missing", &["{field}"][..]),
+            ("spec_events.finding_place_missing", &["{finding}", "{place}"][..]),
+            ("spec_events.finding_place_missing.same_name", &["{finding}", "{place}", "{found}"][..]),
+            ("finding.rule", &["{rule}"][..]),
+            ("finding.places", &["{places}"][..]),
+            ("finding.joined_by_rule", &["{wave}", "{title}", "{detail}"][..]),
+            ("finding.review_joined_by_rule", &["{title}", "{detail}"][..]),
             ("spec_events.report_carries_return_line", &[][..]),
             ("spec_events.return_missing", &["{wave}"][..]),
             ("spec_events.return_needs_commit", &["{wave}"][..]),
