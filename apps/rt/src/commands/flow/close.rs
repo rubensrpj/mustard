@@ -19,7 +19,9 @@
 //! verdict` enquanto o pedido de revisão está aberto, volta aprovado: o
 //! fechamento o assume, sem relatório, e grava o veredito oficial no lugar
 //! da volta. Sem esse veredito, o fechamento não abre outro pedido de
-//! revisão: manda o revisor gravar o dele.
+//! revisão: manda o revisor gravar o dele. A exceção é o pedido que ficou
+//! para trás de um item gravado depois dele, que o pedido novo lista: aí o
+//! fechamento grava o pedido novo, e a aprovação do antigo não fecha a obra.
 //! Enquanto nada muda depois da máquina verde, a volta não roda o lint nem os
 //! critérios de novo. A reprovação fica na onda que ele apontou, que volta
 //! como conserto pela rodada; entregue o conserto, o fechamento pede o mesmo
@@ -80,6 +82,7 @@ use crate::commands::spec_events::{self, write::record};
 use crate::shared::spec_state::{DiskSpecState, checkout, session_from_env};
 
 mod clean_copy;
+mod outdated_request;
 pub(crate) mod stale_marks;
 mod unused;
 
@@ -465,8 +468,14 @@ fn run_close(
     // resposta manda o revisor gravar o veredito. O pedido aberto mais velho
     // que a última mudança da obra não espera: o revisor não recebeu o que
     // mudou depois dele, o veredito dele não aprovaria a obra, e o fechamento
-    // abre um pedido novo, mais abaixo.
-    if crate::commands::flow::round::awaited_review(&log).is_some() && !held.contains(&crate::commands::flow::round::FINAL_REVIEW) {
+    // abre um pedido novo, mais abaixo. O mesmo vale para o pedido que ficou
+    // para trás de um item gravado depois dele: o pedido novo o lista, e a
+    // aprovação do antigo não fecha a obra.
+    let outdated = outdated_request::find(root, &spec, &log, lang);
+    if crate::commands::flow::round::awaited_review(&log).is_some()
+        && !held.contains(&crate::commands::flow::round::FINAL_REVIEW)
+        && outdated.is_none()
+    {
         missing.push(CloseRefusal::Report(crate::commands::flow::round::RoundRefusal::VerdictMissing));
     }
     if let Some(refusal) = CloseRefusal::all(missing) {
@@ -481,7 +490,7 @@ fn run_close(
     // escolhida uma vez só: a mesma que é preparada vai gravada no envio da
     // revisão, e fica presa por ele até o veredito.
     let review_copy = mustard_core::io::wave_prompt::final_copy_path(root, &spec, &log);
-    let not_copied = if final_approved(&log) {
+    let not_copied = if final_approved(&log) && outdated.is_none() {
         Vec::new()
     } else {
         let (not_copied, kept) = prepare_review_copy(root, &spec, &review_copy, &log, &copies)?;
@@ -516,7 +525,7 @@ fn run_close(
         .collect::<Vec<_>>();
 
     let log = read(&path)?;
-    if !final_approved(&log) {
+    if !final_approved(&log) || outdated.is_some() {
         let review = mustard_core::io::wave_prompt::final_review(root, &spec, &log, lang);
         let prompt = review.text;
         // O pedido do agente de revisão final é gravado como evento de
@@ -559,6 +568,9 @@ fn run_close(
         });
         if let Some(hint) = &stuck_hint {
             spec_events::pages::push_warning(&mut out, "stuck-found", hint);
+        }
+        if let Some(outdated) = &outdated {
+            spec_events::pages::push_warning(&mut out, "review-request-renewed", &outdated.hint(lang));
         }
         for hint in &undeclared {
             spec_events::pages::push_warning(&mut out, "server-command-not-declared", hint);
@@ -1827,7 +1839,7 @@ mod tests {
 
     /// O pedido do revisor final, lido como o revisor o lê: rodando o comando
     /// que a resposta do fechamento traz em `review.read`, no lugar do texto.
-    fn review_prompt(asked: &Value) -> String {
+    pub(super) fn review_prompt(asked: &Value) -> String {
         let command = asked["review"]["read"].as_str().unwrap_or_else(|| panic!("a resposta não traz o comando de leitura: {asked}"));
         crate::commands::spec_events::read::read_by_command(command)
     }
@@ -1847,7 +1859,7 @@ mod tests {
     /// O veredito `body` gravado pelo revisor, com o pedido de revisão já
     /// aberto. Devolve o relatório que ele deixa depois de gravar: nenhum,
     /// porque o veredito mora na spec.
-    fn verdict_written(root: &Path, spec: &str, body: Value) -> Option<String> {
+    pub(super) fn verdict_written(root: &Path, spec: &str, body: Value) -> Option<String> {
         let wrote = judged(root, spec, body);
         assert_eq!(wrote["ok"], json!(true), "o veredito não gravou: {wrote}");
         None
@@ -1855,7 +1867,7 @@ mod tests {
 
     /// O veredito final do agente de teste dedicado aprovando a obra
     /// inteira, gravado por ele.
-    fn approve(root: &Path, spec: &str) -> Option<String> {
+    pub(super) fn approve(root: &Path, spec: &str) -> Option<String> {
         verdict_written(root, spec, json!({"final": true, "result": "approved", "text": "A obra está pronta."}))
     }
 

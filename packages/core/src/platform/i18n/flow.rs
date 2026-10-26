@@ -471,6 +471,19 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              for a command. If the verdict is not in the spec, have the agent record it again \
              through the tool."
         }
+        // O pedido de revisão final ficou para trás de itens gravados depois
+        // dele: o fechamento gravou o pedido novo, que os lista.
+        ("close.review_request_renewed", Locale::PtBr) => {
+            "O pedido da revisão final foi refeito: a spec ganhou {items} depois do envio {send}, \
+             e o pedido anterior não mostrava isso. O veredito do pedido anterior não aprova a obra. \
+             O revisor lê o pedido novo pelo comando em `review.read`."
+        }
+        ("close.review_request_renewed", Locale::EnUs) => {
+            "The final review request was rebuilt: the spec gained {items} after send {send}, and \
+             the previous request did not show them. A verdict on the previous request does not \
+             approve the work. The reviewer reads the new request through the command in \
+             `review.read`."
+        }
         ("close.next", Locale::PtBr) => "Depois, abra o pull request: `{command}`.",
         ("close.next", Locale::EnUs) => "Then open the pull request: `{command}`.",
         // A revisão final aprovou com achados: eles viraram tarefas, e o
@@ -2630,7 +2643,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 380, 0xd31b_bbf6_6256_0523);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 381, 0x0191_9f94_c087_1774);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
@@ -2774,6 +2787,7 @@ mod tests {
             ("close.build_output_not_ignored", &["{folder}"][..]),
             ("close.build_output_failed", &["{folder}", "{detail}"][..]),
             ("close.final_review", &["{spec}"][..]),
+            ("close.review_request_renewed", &["{items}", "{send}"][..]),
             ("close.next", &["{command}"][..]),
             ("close.final_leftovers", &["{tasks}", "{command}"][..]),
             ("close.pending_destination", &["{id}", "{title}", "{spec}"][..]),
