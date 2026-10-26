@@ -174,6 +174,8 @@ mod next_step;
 #[cfg(test)]
 mod off_path_tests;
 #[cfg(test)]
+mod final_finding_tests;
+#[cfg(test)]
 mod skill_cycle_tests;
 #[cfg(test)]
 mod dispatch_jev_tests;
