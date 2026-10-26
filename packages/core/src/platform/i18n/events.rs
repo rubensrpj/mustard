@@ -6,6 +6,7 @@
 //! catálogo, e nunca esta parte direto. Chave nova com um começo que esta
 //! parte ainda não responde entra também em `PREFIXES`.
 
+use super::flow::{map_commands_en, map_commands_pt};
 use super::Locale;
 
 /// Os começos de chave (o trecho antes do primeiro ponto) que esta parte
@@ -667,7 +668,7 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              new review request was opened."
         }
         ("spec_events.leftover_field_missing", Locale::PtBr) => {
-            "O achado {finding} da volta (leftovers) não traz {field}: todo achado diz o título, o \
+            "O achado {finding} da volta (leftovers) não traz {field}. Todo achado diz o título, o \
              detalhe, a regra que quebrou (rule) e os lugares dela (places). Nada foi gravado."
         }
         ("spec_events.leftover_field_missing", Locale::EnUs) => {
@@ -692,15 +693,24 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              name, the project has {found}: cite the whole path. Nothing was written."
         }
         // O achado que vira tarefa da spec: a regra que ele quebrou, os
-        // lugares dela e a linha do achado que entra na tarefa da mesma regra.
+        // lugares dela e a linha do achado que entra na tarefa da mesma regra,
+        // com os comandos do mapa que acham os lugares da regra.
         ("finding.rule", Locale::PtBr) => "Regra que o achado quebrou: {rule}.",
         ("finding.rule", Locale::EnUs) => "Rule the finding broke: {rule}.",
         ("finding.places", Locale::PtBr) => "Lugares dela: {places}.",
         ("finding.places", Locale::EnUs) => "Its places: {places}.",
-        ("finding.joined_by_rule", Locale::PtBr) => "Sobra da onda {wave}, da mesma regra — {title}: {detail}",
-        ("finding.joined_by_rule", Locale::EnUs) => "Leftover from wave {wave}, of the same rule — {title}: {detail}",
-        ("finding.review_joined_by_rule", Locale::PtBr) => "Achado da revisão final, da mesma regra — {title}: {detail}",
-        ("finding.review_joined_by_rule", Locale::EnUs) => "Finding from the final review, of the same rule — {title}: {detail}",
+        ("finding.joined_by_rule", Locale::PtBr) => {
+            concat!("Sobra da onda {wave}, da mesma regra — {title}: {detail} (Pelo mapa: ", map_commands_pt!(), ".)")
+        }
+        ("finding.joined_by_rule", Locale::EnUs) => {
+            concat!("Leftover from wave {wave}, of the same rule — {title}: {detail} (By the map: ", map_commands_en!(), ".)")
+        }
+        ("finding.review_joined_by_rule", Locale::PtBr) => {
+            concat!("Achado da revisão final, da mesma regra — {title}: {detail} (Pelo mapa: ", map_commands_pt!(), ".)")
+        }
+        ("finding.review_joined_by_rule", Locale::EnUs) => {
+            concat!("Finding from the final review, of the same rule — {title}: {detail} (By the map: ", map_commands_en!(), ".)")
+        }
         ("spec_events.report_carries_return_line", Locale::PtBr) => {
             "A entrega e o veredito moram na spec: o agente os grava com mustard-rt run write. O \
              relatório leva só as linhas `USAGE`, `PAUSED` e `REJECTED`."
@@ -1394,7 +1404,7 @@ mod tests {
             include_str!("events.rs"),
             super::PREFIXES,
             195,
-            0x5417_ffcc_d1dd_547e,
+            0xaf99_6ad9_8db0_9b6b,
         );
     }
 

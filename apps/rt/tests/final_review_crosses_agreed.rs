@@ -676,7 +676,7 @@ fn a_final_verdict_with_an_untitled_finding_is_refused_without_naming_the_delive
     assert_eq!(refused["reason"], json!("leftover-field-missing"), "{refused}");
     assert_eq!(
         refused["hint"],
-        json!("O achado 1 da volta (leftovers) não traz title, rule, places: todo achado diz o título, o detalhe, a regra que quebrou (rule) e os lugares dela (places). Nada foi gravado."),
+        json!("O achado 1 da volta (leftovers) não traz title, rule, places. Todo achado diz o título, o detalhe, a regra que quebrou (rule) e os lugares dela (places). Nada foi gravado."),
         "{refused}"
     );
     assert_eq!(recorded_kinds(&project), before, "nada foi gravado: {refused}");

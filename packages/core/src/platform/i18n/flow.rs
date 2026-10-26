@@ -33,7 +33,8 @@ pub(super) const PREFIXES: &[&str] = &[
 
 /// Os comandos do mapa que os textos do catálogo citam para achar e ler o
 /// código, ditos numa frase só: o comando e a hora de usar moram aqui, num
-/// lugar único, e cada texto só põe a frase que os introduz.
+/// lugar único, e cada texto só põe a frase que os introduz. As outras partes
+/// do catálogo a importam daqui.
 macro_rules! map_commands_pt {
     () => {
         "`mustard-rt run map search \"<padrão>\"` acha onde mexer, \
@@ -50,6 +51,9 @@ macro_rules! map_commands_en {
          `mustard-rt run map users --name <name>` lists its users"
     };
 }
+
+pub(super) use map_commands_en;
+pub(super) use map_commands_pt;
 
 /// O texto de `key` em `lang`, ou `None` quando a chave não está aqui.
 pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
