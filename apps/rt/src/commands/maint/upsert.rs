@@ -1044,8 +1044,7 @@ mod tests {
         taking: Vec<(&'static str, Duration)>,
         /// The deadline each command was given, in the order they came.
         limits: std::cell::RefCell<Vec<Duration>>,
-        started: std::time::Instant,
-        spent: std::cell::Cell<Duration>,
+        clock: crate::fake_clock::FakeClock,
     }
 
     impl FakeRunner {
@@ -1059,14 +1058,13 @@ mod tests {
                 seeded_when_called: std::cell::RefCell::new(Vec::new()),
                 taking: Vec::new(),
                 limits: std::cell::RefCell::new(Vec::new()),
-                started: std::time::Instant::now(),
-                spent: std::cell::Cell::new(Duration::ZERO),
+                clock: crate::fake_clock::FakeClock::default(),
             }
         }
 
         /// Lets `by` of the fake clock go by, as a command that took that long.
         fn spend(&self, by: Duration) {
-            self.spent.set(self.spent.get() + by);
+            self.clock.advance(by);
         }
     }
 
@@ -1112,7 +1110,7 @@ mod tests {
         }
 
         fn now(&self) -> std::time::Instant {
-            self.started + self.spent.get()
+            self.clock.now()
         }
     }
 
@@ -1121,18 +1119,14 @@ mod tests {
     #[cfg(unix)]
     const SHORT_BUDGET: Duration = Duration::from_secs(1);
 
-    /// O executor da máquina por dentro, com o orçamento curto da etapa,
-    /// anotando quanto tempo os comandos da etapa levaram, somados: o que a
-    /// etapa espera, sem o tempo que a atualização gasta gravando os
-    /// arquivos, que a carga da máquina estica.
+    /// O executor da máquina por dentro, com o orçamento curto da etapa.
     #[cfg(unix)]
-    struct Timed<'a> {
+    struct Short<'a> {
         inner: &'a MachineRunner,
-        in_commands: std::cell::Cell<Duration>,
     }
 
     #[cfg(unix)]
-    impl ToolRunner for Timed<'_> {
+    impl ToolRunner for Short<'_> {
         fn on_path(&self, program: &str) -> bool {
             self.inner.on_path(program)
         }
@@ -1142,10 +1136,7 @@ mod tests {
         }
 
         fn run_outcome(&self, program: &str, args: &[&str], limit: Duration) -> code_tools::RunOutcome {
-            let started = std::time::Instant::now();
-            let outcome = self.inner.run_outcome(program, args, limit);
-            self.in_commands.set(self.in_commands.get() + started.elapsed());
-            outcome
+            self.inner.run_outcome(program, args, limit)
         }
 
         fn found_off_path(&self, program: &str) -> Option<PathBuf> {
@@ -1166,9 +1157,9 @@ mod tests {
     /// orçamento acaba, o passo seguinte nem roda e volta como frase de prazo,
     /// com o comando para a pessoa rodar, e a atualização termina e relata os
     /// arquivos dela. Só o primeiro comando chega a rodar (o registro do
-    /// programa falso tem uma linha), e os comandos levam, somados, perto do
-    /// orçamento, não da soma dos prazos. Só no Unix: os programas falsos são
-    /// scripts.
+    /// programa falso tem uma linha), e a atualização volta com ele ainda
+    /// preso: ela o corta, sem esperar o fim dele. Só no Unix: os programas
+    /// falsos são scripts.
     #[test]
     #[cfg(unix)]
     fn update_with_a_stalled_command_returns_the_deadline_warning_and_finishes() {
@@ -1178,19 +1169,25 @@ mod tests {
         let bin = tempfile::tempdir().expect("temp dir");
         let ran = bin.path().join("ran.log");
         crate::executable::write_executable(&bin.path().join("rust-analyzer"), "#!/bin/sh\nexit 0\n");
+        let (release, ended) = (bin.path().join("release"), bin.path().join("ended"));
         crate::executable::write_executable(
             &bin.path().join("claude"),
-            &format!("#!/bin/sh\necho \"$*\" >> \"{}\"\nexec /bin/sleep 8\n", ran.display()),
+            // O executor roda o programa falso com o `PATH` só da pasta dele:
+            // o laço e o `touch` vêm das pastas do sistema.
+            &format!(
+                "#!/bin/sh\nPATH=/usr/bin:/bin\necho \"$*\" >> \"{}\"\n{}\ntouch '{}'\n",
+                ran.display(),
+                crate::held_command::held_until_released(&release),
+                ended.display()
+            ),
         );
         let machine = MachineRunner::new(&bin.path().display().to_string());
-        let runner = Timed { inner: &machine, in_commands: std::cell::Cell::new(Duration::ZERO) };
+        let runner = Short { inner: &machine };
 
         let outcome = upsert(root, &UpsertOpts::default(), &runner, |_, _| skipped(None, "no registry in a test".to_string()))
             .expect("a plain project is seeded");
-        let took = runner.in_commands.get();
-
-        assert!(took >= Duration::from_millis(500), "the stalled command ran until the budget ended: {took:?}");
-        assert!(took < Duration::from_secs(3), "the stalled command was cut at the budget, not waited for: {took:?}");
+        assert!(!ended.exists(), "the stalled command was cut at the budget, not waited for");
+        std::fs::write(&release, "").unwrap();
         let value = serde_json::to_value(&outcome).expect("serialize");
         assert_eq!(
             value["codeToolWarnings"],
@@ -1339,10 +1336,12 @@ mod tests {
         let machine = MachineRunner::new(&std::env::var("PATH").unwrap_or_default());
         let budget = Budget::start(&machine, Duration::from_secs(1));
 
-        let started = std::time::Instant::now();
-        let first = run_step("sleep 8", dir.path(), &budget);
+        let (release, ended) = (dir.path().join("release"), dir.path().join("ended"));
+        let held = format!("{}; touch '{}'", crate::held_command::held_until_released(&release), ended.display());
+        let first = run_step(&held, dir.path(), &budget);
         assert_eq!(first, Err("timed out after 1s".to_string()));
-        assert!(started.elapsed() < Duration::from_secs(5), "cut at the budget: {:?}", started.elapsed());
+        assert!(!ended.exists(), "cut at the budget, while the step was still held");
+        std::fs::write(&release, "").unwrap();
 
         let marker = dir.path().join("second-step-ran");
         let second = run_step(&format!("touch {}", marker.display()), dir.path(), &budget);

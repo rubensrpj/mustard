@@ -734,11 +734,7 @@ mod tests {
         assert_eq!(left.len(), 1, "the dead swap left its file: {left:?}");
         // O sistema solta a trava do processo morto; no Windows, até um
         // instante depois do fim dele.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while File::open(dir.path().join(&left[0])).unwrap().try_lock().is_err() {
-            assert!(std::time::Instant::now() < deadline, "the dead process still holds its swap file");
-            std::thread::sleep(LOCK_POLL);
-        }
+        crate::wait_for::wait_for("o sistema soltar a trava do processo morto", || File::open(dir.path().join(&left[0])).unwrap().try_lock().is_ok().then_some(()));
         std::fs::write(dir.path().join(".index.json.4242-0.swap"), "x").unwrap();
         let live = swap_path_for(&path);
         std::fs::write(&live, "y").unwrap();

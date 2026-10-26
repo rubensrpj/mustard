@@ -333,16 +333,10 @@ impl Project {
         executable::write_executable(&program, &format!("#!/bin/sh\necho '{says}'\n"));
     }
 
-    /// As chamadas ao `cargo` depois de esperar até `at_least` delas, por um
-    /// tempo: a compilação do início da sessão roda em segundo plano.
+    /// As chamadas ao `cargo` depois de esperar `at_least` delas chegarem: a
+    /// compilação do início da sessão roda em segundo plano.
     fn cargo_calls_after_waiting(&self, at_least: usize) -> Vec<String> {
-        for _ in 0..200 {
-            if self.cargo_calls().len() >= at_least {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-        self.cargo_calls()
+        crate::wait_for::wait_for(&format!("{at_least} chamadas ao cargo"), || Some(self.cargo_calls()).filter(|calls| calls.len() >= at_least))
     }
 
     fn scan_log(&self) -> PathBuf {
@@ -364,31 +358,16 @@ impl Project {
         std::fs::read_to_string(self.history_log()).unwrap_or_default().lines().map(str::to_string).collect()
     }
 
-    /// As leituras da história depois de o processo em segundo plano parar de
-    /// anotar: a lista só vale quando não muda por meio segundo.
+    /// As leituras da história depois de dar à leitura que não devia vir a
+    /// chance de aparecer.
     fn settled_history_reads(&self) -> Vec<String> {
-        let mut last = self.history_reads();
-        for _ in 0..100 {
-            std::thread::sleep(std::time::Duration::from_millis(500));
-            let now = self.history_reads();
-            if now == last {
-                return now;
-            }
-            last = now;
-        }
-        panic!("the reads of the history never stopped: {last:?}");
+        crate::pause::room_for_what_must_not_happen();
+        self.history_reads()
     }
 
-    /// As leituras da história depois de esperar até `at_least` delas
-    /// chegarem, por um tempo.
+    /// As leituras da história depois de esperar `at_least` delas chegarem.
     fn history_reads_after_waiting(&self, at_least: usize) -> Vec<String> {
-        for _ in 0..200 {
-            if self.history_reads().len() >= at_least {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-        self.history_reads()
+        crate::wait_for::wait_for(&format!("{at_least} leituras da história"), || Some(self.history_reads()).filter(|reads| reads.len() >= at_least))
     }
 
     /// A linha que a leitura da história do mapa do projeto deixa no registro.
@@ -2284,9 +2263,9 @@ fn deliver_the_first_wave_changing(project: &Project, file: &str) {
 
 /// As passadas e as leituras da história que uma chamada trouxe, contadas
 /// desde o ponto `(passes, reads)` anterior a ela; a lista de leituras só
-/// vale depois de o processo em segundo plano parar de anotar. A primeira
-/// leitura nova é esperada antes, por um tempo: na máquina carregada, o
-/// processo em segundo plano demora mais que a pausa da conferência a começar.
+/// vale depois de a leitura que não devia vir ganhar a chance de aparecer. A
+/// primeira leitura nova é esperada antes: na máquina carregada, o processo em
+/// segundo plano demora a começar.
 fn since(project: &Project, before: &(usize, usize)) -> (Vec<String>, Vec<String>) {
     project.history_reads_after_waiting(before.1 + 1);
     let reads = project.settled_history_reads();
@@ -2442,13 +2421,7 @@ fn build_notice_head(project: &Project, key: &str, compiled: &str, progress: &st
 /// Espera a compilação em segundo plano acabar: a trava dela passa a dizer
 /// como terminou (`built` ou `failed`).
 fn wait_for_the_background_build(project: &Project) {
-    for _ in 0..200 {
-        if std::fs::read_to_string(project.build_marker()).is_ok_and(|said| !said.trim().is_empty()) {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-    panic!("a compilação em segundo plano nunca escreveu na trava como terminou");
+    crate::wait_for::wait_for("o fim da compilação em segundo plano, escrito na trava dela", || std::fs::read_to_string(project.build_marker()).is_ok_and(|said| !said.trim().is_empty()).then_some(()));
 }
 
 /// No repositório do Mustard sem o programa compilado, o início da sessão
@@ -2489,7 +2462,7 @@ fn a_session_with_the_compiled_program_at_the_head_stays_silent_and_builds_nothi
         let said = session_notices(&project);
         assert!(!said.contains("compilado da branch"), "{stamp}: {said}");
     }
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    crate::pause::room_for_what_must_not_happen();
     assert!(project.cargo_calls().is_empty(), "em dia: nada compila: {:?}", project.cargo_calls());
 }
 
@@ -2503,7 +2476,7 @@ fn a_session_while_another_build_runs_does_not_start_a_second_one() {
 
     let said = session_notices(&project);
     assert!(said.contains(&build_notice_head(&project, "session.build.missing", "", "session.build.in_progress")), "{said}");
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    crate::pause::room_for_what_must_not_happen();
     assert!(project.cargo_calls().is_empty(), "a trava vale: {:?}", project.cargo_calls());
 }
 
@@ -2516,7 +2489,7 @@ fn a_session_in_another_project_says_nothing_about_the_compiled_program() {
 
     let said = session_notices(&project);
     assert!(!said.contains("compilado da branch"), "{said}");
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    crate::pause::room_for_what_must_not_happen();
     assert!(project.cargo_calls().is_empty(), "{:?}", project.cargo_calls());
     assert!(!project.home.join("build").exists(), "nenhuma pasta de compilação nasce");
 }

@@ -293,7 +293,7 @@ fn actual_http_errors_do_not_echo_credentials_or_remote_diagnostics() {
             .http_status_as_error(false)
             .build()
             .new_agent(),
-        deadline: Instant::now() + Duration::from_secs(5),
+        deadline: Instant::now() + Duration::from_secs(60),
     };
     assert_eq!(
         http.request("GET", "/project", "secret-token", None)

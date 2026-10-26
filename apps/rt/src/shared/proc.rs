@@ -609,11 +609,26 @@ mod tests {
         BIG_OUTPUT_EXIT_3_POSIX
     }
 
-    /// A command that stays alive ~3 s, so a 1 s deadline always fires first.
+    /// A command held until a release file the test never writes, so a 1 s
+    /// deadline always fires first, however loaded the machine. It gives up
+    /// only at the safety limit of the test waits; off Windows it then leaves
+    /// `mustard-deadline-test.ended`: the file says the call waited for the
+    /// command instead of cutting it.
     #[cfg(windows)]
-    const SLEEPS_SECONDS: &str = "powershell -NoProfile -Command \"while (-not (Test-Path mustard-deadline-test.release)) { Start-Sleep -Milliseconds 25 }\"";
+    fn sleeps_seconds() -> String {
+        crate::held_command::held_until_released(Path::new("mustard-deadline-test.release"))
+    }
     #[cfg(not(windows))]
-    const SLEEPS_SECONDS: &str = "sleep 3";
+    fn sleeps_seconds() -> String {
+        format!("{}; touch mustard-deadline-test.ended", crate::held_command::held_until_released(Path::new("mustard-deadline-test.release")))
+    }
+
+    /// The shell loop held until `release` exists — or the safety limit of
+    /// the test waits, so it never lingers — that then creates `ended`.
+    #[cfg(unix)]
+    fn held_until(release: &Path, ended: &Path) -> String {
+        format!("{}; touch '{}'", crate::held_command::held_until_released(release), ended.display())
+    }
 
     /// THE regression this helper exists for: a command that overflows the OS
     /// pipe buffer must still finish and be judged by its exit code. Before the
@@ -634,19 +649,17 @@ mod tests {
 
     /// A command that outlives its deadline is killed and reported as
     /// `TimedOut` — a class of its own, never a silent success. The call
-    /// returns at the deadline, not when the command would have ended: the
-    /// sleeping process, a grandchild of the shell, dies with the shell's
-    /// process group.
+    /// returns while the command is still held, not when it would have ended:
+    /// the held process dies with the shell's process group.
     #[test]
     fn shell_reports_timed_out_when_the_deadline_fires_first() {
         let dir = tempfile::tempdir().expect("isolated deadline fixture");
-        let started = Instant::now();
-        let outcome = run_shell_with_deadline(SLEEPS_SECONDS, dir.path(), Duration::from_secs(1));
+        let outcome = run_shell_with_deadline(&sleeps_seconds(), dir.path(), Duration::from_secs(1));
         match outcome {
             ShellOutcome::TimedOut { after } => assert_eq!(after, Duration::from_secs(1)),
             other => panic!("a command past its deadline must report TimedOut, got {other:?}"),
         }
-        assert!(started.elapsed() < Duration::from_millis(2_500), "held past the deadline: {:?}", started.elapsed());
+        assert!(!dir.path().join("mustard-deadline-test.ended").exists(), "held past the deadline");
     }
 
     /// `true` when `pid` no longer runs: absent, or a zombie, which is already
@@ -661,38 +674,37 @@ mod tests {
     }
 
     /// At the deadline, the whole group dies: the grandchild the shell
-    /// launched, sleeping longer than the deadline, no longer runs when the
-    /// function returns, and it returns on time.
+    /// launched, held until the test releases it, stops running without ever
+    /// reaching its end, and the function returns while it is still held.
     #[cfg(unix)]
     #[test]
     fn the_deadline_kills_the_grandchild_too() {
         let dir = tempfile::tempdir().unwrap();
-        let pid_file = dir.path().join("neto.pid");
-        let command = format!("sleep 7 & echo $! > '{}'; wait", pid_file.display());
-        let started = Instant::now();
+        let (pid_file, release, ended) = (dir.path().join("neto.pid"), dir.path().join("release"), dir.path().join("ended"));
+        let command = format!("({}) & echo $! > '{}'; wait", held_until(&release, &ended), pid_file.display());
         let outcome = run_shell_with_deadline(&command, dir.path(), Duration::from_secs(1));
         assert!(matches!(outcome, ShellOutcome::TimedOut { .. }), "{outcome:?}");
-        assert!(started.elapsed() < Duration::from_millis(2_500), "held past the deadline: {:?}", started.elapsed());
+        assert!(!ended.exists(), "held past the deadline");
         let pid: u32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
-        let gone = (0..20).any(|_| {
-            no_longer_runs(pid) || {
-                std::thread::sleep(Duration::from_millis(50));
-                false
-            }
-        });
-        assert!(gone, "the grandchild {pid} outlived the deadline");
+        crate::wait_for::wait_for(&format!("o fim do neto {pid}"), || no_longer_runs(pid).then_some(()));
+        assert!(!ended.exists(), "the grandchild {pid} was killed, and did not run to its end");
+        std::fs::write(&release, "").unwrap();
     }
 
     /// A process that opens its own session escapes the group and holds the
-    /// output open; even so the function returns right after the deadline,
-    /// without waiting for it.
+    /// output open; even so the function returns at the deadline, while that
+    /// process is still held, without waiting for it.
     #[cfg(target_os = "linux")]
     #[test]
     fn a_process_outside_the_group_does_not_hold_the_deadline() {
         let dir = tempfile::tempdir().unwrap();
-        let started = Instant::now();
-        let outcome = run_shell_with_deadline("setsid sleep 5 & sleep 7", dir.path(), Duration::from_secs(1));
+        let (release, outside, inside) = (dir.path().join("release"), dir.path().join("outside-ended"), dir.path().join("inside-ended"));
+        let escaping = dir.path().join("outside.sh");
+        std::fs::write(&escaping, held_until(&release, &outside)).unwrap();
+        let command = format!("setsid sh '{}' & {}", escaping.display(), held_until(&release, &inside));
+        let outcome = run_shell_with_deadline(&command, dir.path(), Duration::from_secs(1));
         assert!(matches!(outcome, ShellOutcome::TimedOut { .. }), "{outcome:?}");
-        assert!(started.elapsed() < Duration::from_millis(2_500), "held past the deadline: {:?}", started.elapsed());
+        assert!(!outside.exists(), "the call came back while the process outside the group still held the output");
+        std::fs::write(&release, "").unwrap();
     }
 }

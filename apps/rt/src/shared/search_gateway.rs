@@ -679,17 +679,18 @@ mod tests {
         }
     }
     /// Um scan de mentira em `dir`: cada passada anota o pedido no registro e
-    /// só acaba quando o teste cria o arquivo de soltura, ou em 10 s.
+    /// só acaba quando o teste cria o arquivo de soltura, ou no limite de
+    /// segurança das esperas dos testes.
     #[cfg(unix)]
     fn held_scan(dir: &Path) -> (Scan, std::path::PathBuf, std::path::PathBuf) {
         let tools = dir.join("tools");
         std::fs::create_dir_all(&tools).unwrap();
         let (log, release) = (dir.join("log"), dir.join("release"));
         let script = format!(
-            "#!/bin/sh\necho \"$1\" >> '{log}'\nn=0\nwhile [ ! -e '{release}' ] && [ $n -lt 500 ]; do sleep 0.02; n=$((n+1)); done\n\
+            "#!/bin/sh\necho \"$1\" >> '{log}'\n{held}\n\
              echo finished >> '{log}'\necho '{{\"ok\":true,\"read\":[]}}'\n",
             log = log.display(),
-            release = release.display()
+            held = crate::held_command::held_until_released(&release)
         );
         let written = std::process::Command::new("/bin/sh")
             .args(["-c", "printf '%s' \"$2\" > \"$1\" && chmod 755 \"$1\"", "sh"])
@@ -702,19 +703,12 @@ mod tests {
     }
 
     /// O registro do scan de mentira de [`held_scan`] depois que a passada
-    /// pedida anotou o começo, ou em 10 s. A busca que responde no prazo pode
-    /// voltar antes de o processo do scan escrever a primeira linha: na
-    /// máquina carregada, ele demora a começar.
+    /// pedida anotou o começo. A busca que responde no prazo pode voltar antes
+    /// de o processo do scan escrever a primeira linha: na máquina carregada,
+    /// ele demora a começar.
     #[cfg(unix)]
     fn log_once_started(log: &Path) -> String {
-        let started = std::time::Instant::now();
-        loop {
-            let calls = std::fs::read_to_string(log).unwrap_or_default();
-            if calls.starts_with("scan\n") || started.elapsed() > Duration::from_secs(10) {
-                return calls;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        crate::wait_for::wait_for("o começo da passada pedida ao scan", || Some(std::fs::read_to_string(log).unwrap_or_default()).filter(|calls| calls.starts_with("scan\n")))
     }
 
     /// A primeira busca numa pasta sem mapa não espera a leitura do projeto
@@ -733,13 +727,11 @@ mod tests {
         let (scan, log, release) = held_scan(dir.path());
         let request = Request::native(&["rg".into(), "-n".into(), "quartz_marker".into(), ".".into()]).unwrap();
 
-        let started = std::time::Instant::now();
         let answer = answer_with(&project, &request, &scan, Duration::from_millis(300)).expect("the search answers");
-        let waited = started.elapsed();
         let calls = log_once_started(&log);
         std::fs::write(&release, "").unwrap();
 
-        assert!(!calls.contains("finished"), "the answer came while the refresh was still running ({waited:?}): {calls}");
+        assert!(!calls.contains("finished"), "the answer came while the refresh was still running: {calls}");
         assert!(calls.starts_with("scan\n"), "the search asked for the refresh: {calls}");
         assert_eq!(answer.report["learning"]["scan"]["status"], "in-progress", "{}", answer.report["learning"]);
         assert!(String::from_utf8_lossy(&answer.stdout).contains("quartz_marker"), "the search result is kept");
@@ -784,13 +776,10 @@ mod tests {
         let (locked, hold) = (dir.path().join("locked"), std::sync::mpsc::channel::<()>());
         let (marker, watched, holder_model, holder_root) = (locked.clone(), log.clone(), model.clone(), project.clone());
         let holder = std::thread::spawn(move || {
-            let started = std::time::Instant::now();
-            while !watched.exists() && started.elapsed() < Duration::from_secs(10) {
-                std::thread::sleep(Duration::from_millis(2));
-            }
+            crate::wait_for::wait_for("o começo da passada do scan", || watched.exists().then_some(()));
             MapDb::open(&holder_model, &holder_root, &[]).unwrap().write(|_| {
                 std::fs::write(&marker, "").unwrap();
-                let _ = hold.1.recv_timeout(Duration::from_secs(60));
+                let _ = hold.1.recv();
                 Ok(())
             }).unwrap();
         });
@@ -802,25 +791,23 @@ mod tests {
         let notice = super::super::say::say("search.gateway.scan_running", lang, &[]);
         let mut answers = Vec::new();
         for request in &requests {
-            let started = std::time::Instant::now();
             let answer = answer_with(&project, request, &scan, Duration::from_secs(1)).expect("the search answers");
-            answers.push((request.tool.clone(), started.elapsed(), locked.exists(), answer));
+            answers.push((request.tool.clone(), locked.exists(), answer));
         }
         let still = version();
         std::fs::write(&release, "").unwrap();
         hold.0.send(()).unwrap();
         holder.join().unwrap();
 
-        for (tool, waited, held, answer) in &answers {
+        for (tool, held, answer) in &answers {
             let stderr = String::from_utf8_lossy(&answer.stderr);
             assert!(held, "{tool}: the pass held the map lock while the search answered");
-            assert!(*waited < Duration::from_secs(5), "{tool}: the search waited for the lock of the pass ({waited:?}); every answer: {:?}", answers.iter().map(|(tool, waited, ..)| (tool, waited)).collect::<Vec<_>>());
             assert_eq!(answer.report["learning"]["scan"]["status"], "in-progress", "{tool}: {}", answer.report["learning"]);
             assert_eq!(answer.report["task_context"]["status"], "native-fallback", "{tool}: {}", answer.report["task_context"]);
             assert!(stderr.contains(&notice), "{tool}: {stderr}");
         }
-        assert!(String::from_utf8_lossy(&answers[0].3.stdout).contains("quartzEntry"), "the search result is kept");
-        assert_eq!(answers[0].3.report["crossing_status"], "index-unavailable-or-stale");
+        assert!(String::from_utf8_lossy(&answers[0].2.stdout).contains("quartzEntry"), "the search result is kept");
+        assert_eq!(answers[0].2.report["crossing_status"], "index-unavailable-or-stale");
         assert_eq!(still, current - 1, "the search leaves the outdated block to the pass");
         assert!(std::fs::read_to_string(&log).unwrap().starts_with("scan\n"), "the search asked for the pass");
     }
@@ -861,13 +848,10 @@ mod tests {
         let (locked, hold) = (dir.path().join("locked"), std::sync::mpsc::channel::<()>());
         let (marker, watched, holder_model, holder_root) = (locked.clone(), log.clone(), model.clone(), project.clone());
         let holder = std::thread::spawn(move || {
-            let started = std::time::Instant::now();
-            while !watched.exists() && started.elapsed() < Duration::from_secs(10) {
-                std::thread::sleep(Duration::from_millis(2));
-            }
+            crate::wait_for::wait_for("o começo da passada do scan", || watched.exists().then_some(()));
             MapDb::open(&holder_model, &holder_root, &[]).unwrap().write(|_| {
                 std::fs::write(&marker, "").unwrap();
-                let _ = hold.1.recv_timeout(Duration::from_secs(60));
+                let _ = hold.1.recv();
                 Ok(())
             }).unwrap();
         });
@@ -878,20 +862,17 @@ mod tests {
         let notice = super::super::say::say("search.gateway.scan_running", lang, &[]);
         let mut answers = Vec::new();
         for request in [&symbol, &structure, &symbol] {
-            let started = std::time::Instant::now();
             let answer = answer_with(&project, request, &scan, Duration::from_secs(1));
-            answers.push((request.tool.clone(), started.elapsed(), locked.exists(), answer));
+            answers.push((request.tool.clone(), locked.exists(), answer));
         }
         let still = version();
         std::fs::write(&release, "").unwrap();
         hold.0.send(()).unwrap();
         holder.join().unwrap();
 
-        let waits: Vec<_> = answers.iter().map(|(tool, waited, ..)| (tool.clone(), *waited)).collect();
-        for (at, (tool, waited, held, answer)) in answers.into_iter().enumerate() {
+        for (at, (tool, held, answer)) in answers.into_iter().enumerate() {
             let answer = answer.unwrap_or_else(|error| panic!("{tool} {at} refused: {error}"));
             assert!(held, "{tool} {at}: the pass held the map lock while the search answered; block version {still} of {current}; {}", answer.report["learning"]);
-            assert!(waited < Duration::from_secs(5), "{tool} {at} waited for the lock of the pass; every wait: {waits:?}");
             assert_eq!(answer.report["learning"]["scan"]["status"], "in-progress", "{tool} {at}: {}", answer.report["learning"]);
             assert!(String::from_utf8_lossy(&answer.stderr).contains(&notice), "{tool} {at}: {}", String::from_utf8_lossy(&answer.stderr));
             let result = &answer.report["result"];
@@ -937,10 +918,10 @@ mod tests {
         std::fs::read_to_string(log).unwrap_or_default().lines().filter(|line| *line == "scan").count()
     }
 
-    /// Outra gravação segura a trava do mapa em dia por 20 s. A busca com
-    /// finalidade não espera por ela: responde em menos de 2 s, com o
-    /// resultado nativo, sem pedir passada, e deixa o que aprendeu para a
-    /// próxima busca. Diz quanto cada etapa levou.
+    /// Outra gravação segura a trava do mapa em dia até a busca voltar. A
+    /// busca com finalidade não espera por ela: responde com a trava ainda
+    /// presa, com o resultado nativo, sem pedir passada, e deixa o que
+    /// aprendeu para a próxima busca. Diz quanto cada etapa levou.
     #[cfg(unix)]
     #[test]
     fn a_purposed_search_answers_without_waiting_for_another_writer_of_the_map() {
@@ -955,11 +936,11 @@ mod tests {
         let holder = std::thread::spawn(move || {
             MapDb::open(&holder_model, &holder_root, &[]).unwrap().write(|_| {
                 locked.0.send(()).unwrap();
-                let _ = hold.1.recv_timeout(Duration::from_secs(20));
+                let _ = hold.1.recv();
                 Ok(())
             }).unwrap();
         });
-        locked.1.recv_timeout(Duration::from_secs(10)).expect("the other writer holds the map lock");
+        locked.1.recv().expect("the other writer holds the map lock");
         let request = Request {
             tool: "rg".into(),
             input: json!({"args":["-n","quartzEntry","src"]}),
@@ -968,16 +949,11 @@ mod tests {
             choose: false,
         };
 
-        let started = std::time::Instant::now();
         let answer = answer_with(&project, &request, &scan, Duration::from_secs(1)).expect("the search answers");
-        let waited = started.elapsed();
         std::fs::write(&release, "").unwrap();
         hold.0.send(()).unwrap();
         holder.join().unwrap();
 
-        // 3 s and not less: opening the map on a slow CI runner takes over a
-        // second; the old wait on the other writer was 5 s.
-        assert!(waited < Duration::from_secs(3), "the search waited for the lock of the other writer ({waited:?})");
         assert!(String::from_utf8_lossy(&answer.stdout).contains("quartzEntry"), "the search result is kept");
         assert!(passes(&log) <= 1, "{}", std::fs::read_to_string(&log).unwrap_or_default());
         assert_eq!(answer.report["learning_write"]["status"], "left-for-next-search", "{}", answer.report["learning_write"]);

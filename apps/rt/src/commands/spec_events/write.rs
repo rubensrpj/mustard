@@ -2499,8 +2499,9 @@ mod tests {
     }
 
     /// As duas perguntas do pedido novo ao Jev — o lugar dele e a comparação
-    /// com as tarefas abertas — saem ao mesmo tempo: com o Jev levando 5 s em
-    /// cada uma, a gravação espera uns 5 s, não 10.
+    /// com as tarefas abertas — saem ao mesmo tempo: o Jev só responde cada
+    /// uma quando as duas estão no ar, e uma depois da outra a primeira nunca
+    /// seria respondida.
     #[test]
     fn a_new_request_asks_both_jev_questions_at_the_same_time() {
         let dir = tempdir().unwrap();
@@ -2509,17 +2510,15 @@ mod tests {
         subtraction_backlog(root);
         let before = requests(root);
         let asked = std::sync::Mutex::new(Vec::new());
-        let started = std::time::Instant::now();
+        let both_in_flight = std::sync::Barrier::new(2);
         let out = write_triaged(&opts(&json!({})), false, None, &|_, _, payload| {
-            std::thread::sleep(std::time::Duration::from_secs(5));
+            both_in_flight.wait();
             asked.lock().unwrap().push(payload.to_string());
             Asked::Answered(if payload.contains("request-route") { route_answer("same_spec", 0.95, 0.97) } else { triaged("new") })
         });
-        let waited = started.elapsed();
         assert_eq!(out["ok"], json!(true), "{out}");
         assert_eq!(requests(root), before + 1);
         assert_eq!(asked.lock().unwrap().len(), 2, "both questions went out");
-        assert!(waited < std::time::Duration::from_secs(8), "waited {waited:?}: one after the other");
     }
 
     /// O Jev que não responde a tempo (o filtro desiste em 10 s): o pedido

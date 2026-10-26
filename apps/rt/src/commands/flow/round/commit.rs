@@ -1772,7 +1772,6 @@ mod tests {
     #[test]
     fn a_slow_commit_hook_holds_the_git_step_and_not_the_readers_of_the_spec() {
         use std::sync::mpsc;
-        use std::time::Duration;
 
         let dir = tempdir().unwrap();
         let root = dir.path();
@@ -1782,11 +1781,7 @@ mod tests {
         std::fs::create_dir_all(&hooks).unwrap();
         let (started, release) = (hooks.join("comecou"), hooks.join("solta"));
         let hook = hooks.join("pre-commit");
-        let script = format!(
-            "#!/bin/sh\ntouch '{}'\nn=0\nwhile [ ! -f '{}' ] && [ $n -lt 600 ]; do sleep 0.05; n=$((n+1)); done\n",
-            started.display(),
-            release.display()
-        );
+        let script = format!("#!/bin/sh\ntouch '{}'\n{}\n", started.display(), crate::held_command::held_until_released(&release));
         crate::executable::write_executable(&hook, &script);
         git_at(root, &["config", "core.hooksPath", &hooks.to_string_lossy()]);
         delivered(root, 1, "Saiu.", &["src/a.rs"]);
@@ -1794,28 +1789,25 @@ mod tests {
 
         std::thread::scope(|scope| {
             let going = scope.spawn(|| round(root, "x", None));
-            for _ in 0..3000 {
-                if started.exists() {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            assert!(started.exists(), "the commit hook never started");
+            crate::wait_for::wait_for("o começo do gancho do commit", || started.exists().then_some(()));
 
+            // A leitura acaba com o gancho ainda preso: a que esperasse por
+            // ele nunca voltaria.
             let (read_tx, read_rx) = mpsc::channel();
             let spec = &spec;
             scope.spawn(move || read_tx.send(store::read(spec).is_ok()));
-            let read = read_rx.recv_timeout(Duration::from_secs(5));
+            let read = read_rx.recv();
 
             let (turn_tx, turn_rx) = mpsc::channel();
             scope.spawn(move || turn_tx.send(git_lock(root).is_ok()));
-            let early = turn_rx.recv_timeout(Duration::from_millis(500));
+            crate::pause::room_for_what_must_not_happen();
+            let early = turn_rx.try_recv();
 
             std::fs::write(&release, b"").unwrap();
             let out = going.join().unwrap();
             assert_eq!(read, Ok(true), "a reader of the spec does not wait for the commit hook");
             assert!(early.is_err(), "another git step waits while the commit runs");
-            assert_eq!(turn_rx.recv_timeout(Duration::from_secs(30)), Ok(true), "its turn comes after the commit");
+            assert_eq!(turn_rx.recv(), Ok(true), "its turn comes after the commit");
             assert_eq!(out["ok"], json!(true), "{out}");
         });
     }
@@ -1829,7 +1821,6 @@ mod tests {
     #[test]
     fn a_return_being_written_holds_the_git_step_until_the_write_is_done() {
         use std::sync::mpsc;
-        use std::time::Duration;
 
         let dir = tempdir().unwrap();
         let root = dir.path();
@@ -1848,22 +1839,17 @@ mod tests {
         let index_lock = mustard_core::io::fs::lock::LockedFile::exclusive(&index).unwrap();
         std::thread::scope(|scope| {
             let writing = scope.spawn(|| returned(root, body));
-            for _ in 0..3000 {
-                if in_the_file(&spec) {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            assert!(in_the_file(&spec), "the return never reached the spec file");
+            crate::wait_for::wait_for("a volta gravada no arquivo da spec", || in_the_file(&spec).then_some(()));
 
             let (turn_tx, turn_rx) = mpsc::channel();
             scope.spawn(move || turn_tx.send(git_lock(root).is_ok()));
-            let early = turn_rx.recv_timeout(Duration::from_millis(500));
+            crate::pause::room_for_what_must_not_happen();
+            let early = turn_rx.try_recv();
 
             drop(index_lock);
             let wrote = writing.join().unwrap();
             assert!(early.is_err(), "another git step waits while the return is being written");
-            assert_eq!(turn_rx.recv_timeout(Duration::from_secs(30)), Ok(true), "its turn comes after the write");
+            assert_eq!(turn_rx.recv(), Ok(true), "its turn comes after the write");
             assert_eq!(wrote["ok"], json!(true), "{wrote}");
         });
     }

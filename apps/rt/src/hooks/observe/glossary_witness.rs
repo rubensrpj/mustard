@@ -116,7 +116,6 @@ mod tests {
     use mustard_core::io::map_db::MapDb;
     use mustard_core::io::{map_search, project_map as store};
     use serde_json::json;
-    use std::time::Instant;
 
     const SESSION: &str = "s-glossario";
 
@@ -309,12 +308,10 @@ mod tests {
             .unwrap();
         });
         locked.recv().unwrap();
-        let started = Instant::now();
+        // O gancho volta com a trava ainda presa: só depois ela é solta.
         assert_eq!(hooked(&after(&root, "Edit", "src/rounds.rs", 3)), Verdict::Allow);
-        let waited = started.elapsed();
         release.send(()).unwrap();
         holder.join().unwrap();
-        assert!(waited < Duration::from_secs(2), "the edit waited {waited:?}");
         assert!(search(&root, "sobra").is_empty());
     }
 

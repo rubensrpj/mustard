@@ -1811,26 +1811,31 @@ mod tests {
     #[test]
     fn the_requests_leave_at_the_same_time() {
         let (_project, asked) = big_request(150, 40);
-        let (live, peak) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let split = FakeService::start(|_, body| Reply::json(200, &sure_answer(body))).filter().filter(&asked).unwrap().usage.requests;
+        assert!(split >= 2, "the request goes in several parts");
+        // Cada pedido espera no serviço até chegar o último: um depois do
+        // outro, o primeiro nunca seria respondido, e a chamada acabaria pelo
+        // prazo dela. O relógio não entra na prova.
+        let (live, peak, gate) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)), crate::shared::test_fixture::Gate::default());
         let service = {
-            let (live, peak) = (Arc::clone(&live), Arc::clone(&peak));
+            let (live, peak, gate) = (Arc::clone(&live), Arc::clone(&peak), gate.clone());
             FakeService::start(move |_, body| {
                 let now = live.fetch_add(1, Ordering::SeqCst) + 1;
                 peak.fetch_max(now, Ordering::SeqCst);
-                std::thread::sleep(Duration::from_millis(500));
-                live.fetch_sub(1, Ordering::SeqCst);
+                if now as u64 == split {
+                    gate.open();
+                }
+                gate.pass();
                 Reply::json(200, &sure_answer(body))
             })
         };
+        let mut filter = service.filter();
+        filter.timeouts.response = Duration::from_secs(60);
 
-        let got = service.filter().filter(&asked).unwrap();
+        let got = filter.filter(&asked).unwrap();
 
-        // Todos no ar ao mesmo tempo é a prova de que saíram juntos: um depois
-        // do outro, nunca haveria mais de um pedido no serviço. O relógio não
-        // entra: na máquina carregada, os pedidos juntos passam do tempo de
-        // dois em fila sem que nenhum espere o outro.
-        assert!(got.usage.requests >= 2);
-        assert_eq!(peak.load(Ordering::SeqCst) as u64, got.usage.requests, "every request was in flight together");
+        assert_eq!(got.usage.requests, split);
+        assert_eq!(peak.load(Ordering::SeqCst) as u64, split, "every request was in flight together");
     }
 
     /// A resposta de cada pedido da lista grande: o que tem o candidato 3 diz
@@ -2213,67 +2218,78 @@ mod tests {
         }
     }
 
+    /// O serviço que segura a resposta até depois do fim da chamada: a
+    /// chamada acaba pelo prazo dela.
     #[test]
     fn a_slow_service_times_out() {
-        let service = FakeService::start(|_, body| {
-            std::thread::sleep(Duration::from_millis(1500));
-            Reply::json(200, &sure_answer(body))
-        });
+        let gate = crate::shared::test_fixture::Gate::default();
+        let service = {
+            let gate = gate.clone();
+            FakeService::start(move |_, body| {
+                gate.pass();
+                Reply::json(200, &sure_answer(body))
+            })
+        };
         let mut filter = service.filter();
         filter.timeouts.response = Duration::from_millis(200);
         let error = filter.filter(&request(vec![candidate(1)])).unwrap_err();
+        gate.open();
         assert_eq!(error, FilterError::Timeout);
     }
 
     #[test]
     fn the_deadline_covers_the_repeats_too() {
-        // Cada tentativa falha em 300 ms; com o prazo de 500 ms, a segunda
-        // tentativa leva só os 200 ms que faltam, e não há terceira.
-        let service = FakeService::start(|_, _| {
-            std::thread::sleep(Duration::from_millis(300));
-            Reply { status: 503, headers: vec![("Retry-After", "0".to_string())], body: String::new() }
-        });
+        // A primeira tentativa é recusada na hora, e a segunda o serviço
+        // segura até depois do fim da chamada: a segunda acaba pelo prazo da
+        // chamada inteira, e não há terceira.
+        let gate = crate::shared::test_fixture::Gate::default();
+        let service = {
+            let gate = gate.clone();
+            FakeService::start(move |number, _| {
+                if number > 0 {
+                    gate.pass();
+                }
+                Reply { status: 503, headers: vec![("Retry-After", "0".to_string())], body: String::new() }
+            })
+        };
         let mut filter = service.filter();
-        filter.timeouts.response = Duration::from_millis(500);
-        let started = Instant::now();
+        filter.timeouts.response = Duration::from_secs(2);
         let error = filter.filter(&request(vec![candidate(1)])).unwrap_err();
-        let waited = started.elapsed();
-        assert_eq!(error, FilterError::Timeout);
-        assert_eq!(service.received().len(), 2);
-        // Well below the 10 s an unbounded call waited, with room for a slow runner.
-        assert!(waited < Duration::from_secs(3), "waited {waited:?} past the 500 ms deadline");
+        assert_eq!(error, FilterError::Timeout, "the repeat was made and ended with the deadline of the call");
+        let received = crate::wait_for::wait_for("o pedido repetido ao serviço", || Some(service.received().len()).filter(|&count| count >= 2));
+        gate.open();
+        assert_eq!(received, 2, "no third attempt");
     }
 
     #[test]
     fn the_symbol_choice_ends_with_the_deadline_of_the_search() {
-        // O serviço leva 1,5 s; a busca tem 200 ms de prazo: a escolha volta
-        // no prazo dela, não no do filtro (10 s).
-        let service = FakeService::start(|_, _| {
-            std::thread::sleep(Duration::from_millis(1500));
-            Reply::json(200, &json!({"answers":{}}))
-        });
-        let filter = service.filter();
-        let started = Instant::now();
-        let error = filter.choose_symbols_until("{}", started + Duration::from_millis(200)).unwrap_err();
-        let waited = started.elapsed();
+        // O serviço segura a resposta até depois do fim da escolha, e o
+        // filtro esperaria uma hora: a escolha acaba no prazo da busca.
+        let gate = crate::shared::test_fixture::Gate::default();
+        let service = {
+            let gate = gate.clone();
+            FakeService::start(move |_, _| {
+                gate.pass();
+                Reply::json(200, &json!({"answers":{}}))
+            })
+        };
+        let mut filter = service.filter();
+        filter.timeouts.response = Duration::from_secs(3600);
+        let error = filter.choose_symbols_until("{}", Instant::now() + Duration::from_millis(200)).unwrap_err();
+        gate.open();
         assert_eq!(error, FilterError::Timeout);
-        // Well below the 10 s an unbounded call waited, with room for a slow runner.
-        assert!(waited < Duration::from_secs(3), "waited {waited:?} past the 200 ms of the search");
     }
 
     #[test]
     fn a_repeat_whose_wait_passes_the_deadline_is_not_made() {
         // O serviço pede 2 s antes de repetir; com o prazo de 500 ms, a
-        // recusa volta na hora, sem esperar nem repetir.
+        // recusa volta sem repetir.
         let service = FakeService::start(|_, _| Reply { status: 429, headers: vec![("Retry-After", "2".to_string())], body: "{}".to_string() });
         let mut filter = service.filter();
         filter.timeouts.response = Duration::from_millis(500);
-        let started = Instant::now();
         let error = filter.filter(&request(vec![candidate(1)])).unwrap_err();
-        let waited = started.elapsed();
         assert_eq!(error, FilterError::Refused { status: 429 });
         assert_eq!(service.received().len(), 1);
-        assert!(waited < Duration::from_millis(500), "waited {waited:?} for a repeat that could not finish in time");
     }
 
     #[test]
@@ -2908,7 +2924,7 @@ mod tests {
         filter.cache = Some(dir.path().into());
         filter.spec = Some("demo".into());
         let payload = json!({"model":JEV_MODEL,"state":"current evidence","questions":{"q":{"type":"noul","instructions":"Is it relevant?"}}}).to_string();
-        let first = filter.send_all_for(std::slice::from_ref(&payload), Instant::now() + Duration::from_secs(2), Purpose::Context).unwrap();
+        let first = filter.send_all_for(std::slice::from_ref(&payload), Instant::now() + Duration::from_secs(60), Purpose::Context).unwrap();
         assert_eq!(first[0]["_attempts"], 2);
         let before = std::fs::read_to_string(dir.path().join("attempts.ndjson")).unwrap();
         let attempts = before.lines().map(|line| serde_json::from_str::<Value>(line).unwrap()).collect::<Vec<_>>();
@@ -2918,7 +2934,7 @@ mod tests {
         assert_eq!(attempts[1]["input_tokens"], 123);
         assert_eq!(attempts[1]["spec"], "demo");
         assert!(!before.contains(SECRET) && !before.contains("current evidence"));
-        let cached = filter.send_all_for(&[payload], Instant::now() + Duration::from_secs(2), Purpose::Context).unwrap();
+        let cached = filter.send_all_for(&[payload], Instant::now() + Duration::from_secs(60), Purpose::Context).unwrap();
         assert_eq!(cached[0]["usage"]["input_tokens"], 0);
         assert_eq!(request_count(&cached[0]), 0);
         assert_eq!(service.received().len(), 2);

@@ -3706,9 +3706,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
-        // O envio sai pelo menos um segundo depois do começo da spec: a conversa
+        // O envio sai depois do começo da spec, nas horas gravadas: a conversa
         // principal conta desde o começo, e não desde o envio.
-        std::thread::sleep(std::time::Duration::from_millis(1_100));
         let out = round(root, "x", None);
         assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
         let prompt = request_at(&out, 0);
@@ -4070,7 +4069,6 @@ fn main() { sum_comes_out_right(); double_comes_out_right(); }
     #[test]
     fn return_written_during_the_round_does_not_produce_a_second_delivery() {
         use std::sync::mpsc;
-        use std::time::Duration;
 
         let dir = tempdir().unwrap();
         let root = dir.path();
@@ -4088,30 +4086,21 @@ fn main() { sum_comes_out_right(); double_comes_out_right(); }
         std::fs::create_dir_all(&hooks).unwrap();
         let (started, release) = (hooks.join("comecou"), hooks.join("solta"));
         let hook = hooks.join("pre-commit");
-        let script = format!(
-            "#!/bin/sh\ntouch '{}'\nn=0\nwhile [ ! -f '{}' ] && [ $n -lt 600 ]; do sleep 0.05; n=$((n+1)); done\n",
-            started.display(),
-            release.display()
-        );
+        let script = format!("#!/bin/sh\ntouch '{}'\n{}\n", started.display(), crate::held_command::held_until_released(&release));
         crate::executable::write_executable(&hook, &script);
         git_at(root, &["config", "core.hooksPath", &hooks.to_string_lossy()]);
 
         let (out, late, written_while_held) = std::thread::scope(|scope| {
             let going = scope.spawn(|| round(root, "x", None));
-            for _ in 0..3000 {
-                if started.exists() {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            assert!(started.exists(), "o gancho do commit não começou");
+            crate::wait_for::wait_for("o começo do gancho do commit", || started.exists().then_some(()));
             let (wrote_tx, wrote_rx) = mpsc::channel();
             let late = scope.spawn(move || {
                 let wrote = returned(root, json!({"wave": 1, "text": "Conferi de novo.", "commit": "a soma sai"}));
                 let _ = wrote_tx.send(());
                 wrote
             });
-            let written_while_held = wrote_rx.recv_timeout(Duration::from_millis(1500)).is_ok();
+            crate::pause::room_for_what_must_not_happen();
+            let written_while_held = wrote_rx.try_recv().is_ok();
             std::fs::write(&release, b"").unwrap();
             (going.join().unwrap(), late.join().unwrap(), written_while_held)
         });

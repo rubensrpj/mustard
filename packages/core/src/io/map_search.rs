@@ -1827,7 +1827,6 @@ pub(crate) mod tests {
     #[test]
     fn a_search_made_while_a_batch_of_histories_is_being_written_answers_with_what_is_stored() {
         use std::sync::mpsc;
-        use std::time::Duration;
 
         let dir = two_files();
         let model = model_path(dir.path());
@@ -1845,12 +1844,12 @@ pub(crate) mod tests {
                 // A gravação de um lote: a trava de gravação fica com ela até o fim.
                 db.write(|_| {
                     inside_tx.send(()).unwrap();
-                    Ok(release_rx.recv_timeout(Duration::from_secs(60)).is_ok())
+                    Ok(release_rx.recv().is_ok())
                 })
                 .unwrap()
             })
         };
-        inside_rx.recv_timeout(Duration::from_secs(60)).expect("the batch is being written");
+        inside_rx.recv().expect("the batch is being written");
 
         let during = candidates_at(&model, "desconto", "", &languages(), any_path);
         release_tx.send(()).unwrap();

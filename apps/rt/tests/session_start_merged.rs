@@ -736,15 +736,10 @@ impl Outside {
     /// acrescenta ao relatório uma linha só, no fim.
     fn background_report(&self, spec: &str) -> Value {
         let report = mustard_core::io::wave_prompt::copies_dir(&self.work).join(format!("{spec}.deliver-merged.log"));
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
-        loop {
+        crate::wait_for::wait_for(&format!("a linha do processo em segundo plano da spec {spec} no relatório"), || {
             let text = std::fs::read_to_string(&report).unwrap_or_default();
-            if let Some(done) = text.lines().rev().find_map(|line| serde_json::from_str::<Value>(line).ok()) {
-                return done;
-            }
-            assert!(std::time::Instant::now() < deadline, "the background delivery never finished: {text}");
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        }
+            text.lines().rev().find_map(|line| serde_json::from_str::<Value>(line).ok())
+        })
     }
 }
 

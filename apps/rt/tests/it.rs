@@ -19,6 +19,15 @@
 #[path = "support/one_wave_spec.rs"]
 mod one_wave_spec;
 
+// O relógio dos testes entra uma vez só, aqui: a espera pelo evento de outro
+// processo e a pausa antes de afirmar que uma coisa não aconteceu (os testes
+// que a usam são todos do Unix).
+#[cfg(unix)]
+#[path = "../../../packages/core/tests/support/pause.rs"]
+mod pause;
+#[path = "../../../packages/core/tests/support/wait_for.rs"]
+mod wait_for;
+
 mod agents_find_code_through_the_map;
 mod approval_refusal_explains;
 mod clean_exit;
@@ -40,6 +49,7 @@ mod installs_nothing;
 mod map_created_when_missing;
 mod map_of_another_scan;
 mod measure_cli;
+mod no_wall_clock_in_tests;
 mod one_page_engine;
 mod open_cli;
 mod pending_ledger_cli;
