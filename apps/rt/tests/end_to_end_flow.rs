@@ -997,6 +997,67 @@ fn the_final_reviewer_keeps_the_model_the_call_asks_and_the_send_records_it() {
     assert_eq!(closed["phase"], json!("closed"), "{closed}");
 }
 
+/// O critério gravado entre o pedido da revisão final e o lançamento do
+/// revisor chega ao revisor, mesmo com o gancho do lançamento gravando a
+/// versão nova do envio depois dele: o pedido para trás se mede pela versão
+/// que gravou o pedido, e não pela mais nova. A aprovação do pedido antigo
+/// não fecha a obra, e o fechamento grava o pedido novo, que lista o critério.
+#[test]
+fn a_criterion_recorded_before_the_reviewer_launch_is_listed_by_the_next_close() {
+    let project = Project::new();
+    deliver_the_first_wave(&project);
+    project.run(&["round", "--dispatch", "--spec", SPEC]);
+    let asked = project.run(&["close", "--spec", SPEC]);
+    assert_eq!(asked["review"]["final"], json!(true), "o fechamento pede a revisão final: {asked}");
+    let read = asked["review"]["read"].as_str().expect("o comando que lê o pedido").to_string();
+
+    // O critério nasce de uma fala que o pedido já trazia: o único item novo
+    // da obra é ele.
+    let said = project
+        .log()
+        .visible()
+        .into_iter()
+        .rfind(|e| e.event_type == "message" && e.str_field("author") == Some("user"))
+        .expect("a fala do usuário")
+        .id;
+    let criterion = project.write(
+        "criterion",
+        &json!({"title": "Citar a pasta", "when": "a busca roda", "then": "a citação sai com a pasta", "proof": "git --version",
+            "form": "ubiquitous", "origin": said}),
+    );
+    let recorded = criterion["id"].as_u64().unwrap_or_else(|| panic!("o critério não gravou: {criterion}"));
+    let code = project.log().codes().get(&recorded).cloned().expect("o código do critério");
+
+    let input = json!({"subagent_type": "mustard-review", "description": "revisão final", "prompt": read});
+    let payload = json!({"hook_event_name": "PreToolUse", "tool_name": "Agent", "session_id": SESSION,
+        "cwd": project.root.to_string_lossy(), "tool_input": input});
+    project.hook("PreToolUse", &payload);
+    let log = project.log();
+    let launched = log.visible().into_iter().rfind(|e| e.event_type == "send" && e.str_field("role") == Some("review")).expect("o envio da revisão");
+    assert!(
+        launched.id > recorded && launched.fields.contains_key("model_used"),
+        "o gancho do lançamento grava a versão do envio depois do critério: {launched:?}"
+    );
+    let waiting = project.run(&["round", "--dispatch", "--spec", SPEC]);
+    assert_eq!(
+        waiting["command"],
+        json!(format!("mustard-rt run close --spec {SPEC}")),
+        "a rodada manda fechar em vez de esperar o veredito do pedido para trás: {waiting}"
+    );
+
+    let verdict = json!({"final": true, "result": "approved", "text": "A saudação mudou.", "agreed": agreed_all_met(&project)});
+    project.read_review();
+    project.run(&["write", "verdict", "--spec", SPEC, "--json", &verdict.to_string()]);
+    let renewed = project.run(&["close", "--spec", SPEC]);
+    assert_eq!(renewed["phase"], json!("running"), "a aprovação do pedido antigo não fecha a obra: {renewed}");
+    assert_eq!(renewed["review"]["final"], json!(true), "o fechamento pede a revisão final de novo: {renewed}");
+    let log = project.log();
+    let request = log.visible().into_iter().rfind(|e| e.event_type == "send" && e.str_field("role") == Some("review")).expect("o envio da revisão");
+    assert!(request.id > launched.id, "o fechamento grava um pedido novo: {renewed}");
+    let text = log.send_text(request.id).unwrap_or_default();
+    assert!(text.contains(&code), "o pedido novo lista o critério {code}: {text}");
+}
+
 /// O pedido da onda e o do revisor final, lidos pelo comando que o agente
 /// roda, dizem nos dois idiomas que a regra do projeto sobre idioma vence a
 /// linha de idiomas do pedido: uma vez na própria linha e outra na seção

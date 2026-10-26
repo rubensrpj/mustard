@@ -666,7 +666,11 @@ pub fn final_approval(log: &SpecLog) -> Option<&SpecEvent> {
 }
 
 /// O pedido de revisão final que o veredito de número `verdict` responde: o
-/// envio de revisão final (papel `review`) mais novo antes dele. `None` sem
+/// envio de revisão final (papel `review`) mais novo antes dele, na posição da
+/// versão que gravou o pedido ([`SpecLog::dispatch_position`]). O lançamento
+/// do revisor grava uma versão nova do envio, com o modelo que valeu, e ela
+/// não refaz o pedido: o item gravado entre o pedido e o lançamento ficou fora
+/// do que o revisor recebeu, e a aprovação não responde por ele. `None` sem
 /// envio assim — o veredito sem pedido gravado não responde a pedido nenhum.
 #[must_use]
 pub fn answered_request(log: &SpecLog, verdict: u64) -> Option<u64> {
@@ -675,6 +679,7 @@ pub fn answered_request(log: &SpecLog, verdict: u64) -> Option<u64> {
         .filter(|e| e.event_type == "send" && e.str_field("role") == Some("review") && e.id < verdict)
         .map(|e| e.id)
         .max()
+        .map(|asked| log.dispatch_position(asked))
 }
 
 /// O veredito de uma spec, pelos eventos `verdict` que a leitura mostra: o
@@ -955,6 +960,28 @@ mod tests {
         // Sem pedido gravado, o veredito não responde a pedido nenhum.
         let without_request = [&lines[..4], &[final_verdict(5)]].concat();
         assert_eq!(final_approval(&log(&without_request)), None, "a verdict with no recorded request");
+    }
+
+    /// O pedido que o veredito responde fica na versão que o gravou: a versão
+    /// que o lançamento do revisor grava depois, com o modelo que valeu, não
+    /// refaz o pedido, e o critério gravado entre as duas fica depois do
+    /// pedido respondido. A aprovação segue valendo: o pedido é mais novo que
+    /// a última mudança da obra.
+    #[test]
+    fn a_verdict_answers_the_request_at_the_version_that_recorded_it() {
+        let lines = [
+            json!({"v":1,"id":1,"type":"state","phase":"survey","branch":"feature/x","base":"dev"}),
+            json!({"v":1,"id":2,"type":"state","phase":"approved","witness":{"question":"q","answer":"a"}}),
+            json!({"v":1,"id":3,"type":"state","phase":"running"}),
+            json!({"v":1,"id":4,"type":"delivered","wave":1,"text":"A onda 1 entregou.","files":["src/a.rs"]}),
+            send(5, "review"),
+            json!({"v":1,"id":6,"type":"criterion","when":"a busca roda","then":"a citação sai com a pasta","proof":"git --version","form":"ubiquitous"}),
+            json!({"v":1,"id":7,"type":"send","role":"review","replaces":5,"model_used":"opus"}),
+            final_verdict(8),
+        ];
+        let log = log(&lines);
+        assert_eq!(answered_request(&log, 8), Some(5), "o pedido respondido é a versão que o gravou, antes do critério");
+        assert_eq!(final_approval(&log).map(|e| e.id), Some(8), "a aprovação do pedido gravado depois da entrega vale");
     }
 
     #[test]

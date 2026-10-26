@@ -42,12 +42,17 @@ impl Outdated {
     }
 }
 
-/// O envio de revisão final que o veredito responde: o que a aprovação final
-/// vigente respondeu ou, sem ela, o pedido aberto que ainda espera veredito.
+/// O envio de revisão final que o veredito responde — o que a aprovação final
+/// vigente respondeu ou, sem ela, o pedido aberto que ainda espera veredito —,
+/// na posição da versão que gravou o pedido ([`SpecLog::dispatch_position`]),
+/// como [`answered_request`] já a dá. O lançamento do revisor grava uma
+/// versão nova do envio, com o modelo que valeu, e ela não refaz o pedido: o
+/// item gravado entre o pedido e o lançamento continua fora do que o revisor
+/// recebe.
 fn answered_send(log: &SpecLog) -> Option<u64> {
     match final_approval(log) {
         Some(verdict) => answered_request(log, verdict.id),
-        None => awaited_review(log),
+        None => awaited_review(log).map(|asked| log.dispatch_position(asked)),
     }
 }
 
