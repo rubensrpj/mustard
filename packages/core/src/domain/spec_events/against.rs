@@ -278,19 +278,22 @@ pub fn check_against(
             }
         }
         "remove" => {
-            if let Some(filter) = event.get("filter").and_then(TimeFilter::from_value) {
-                let matched = log.filter_matches(&filter, new_id);
-                if matched.is_empty() {
-                    return Err(Refusal::FilterMatchesNothing {
-                        event_type: filter.event_type,
-                        from: filter.from,
-                        to: filter.to,
-                    });
-                }
-                targets.extend(matched);
+            // O filtro que não pega nada é recusado à parte: a conta dos
+            // alvos soma os números com o que o filtro pega, e um filtro
+            // vazio ao lado de números não apareceria nela.
+            if let Some(filter) = event.get("filter").and_then(TimeFilter::from_value)
+                && log.filter_matches(&filter, new_id).is_empty()
+            {
+                return Err(Refusal::FilterMatchesNothing {
+                    event_type: filter.event_type,
+                    from: filter.from,
+                    to: filter.to,
+                });
             }
-            targets.sort_unstable();
-            targets.dedup();
+            // Os alvos saem da mesma conta da leitura e das regras de
+            // gravação, sobre o rascunho como o evento que a gravação fará.
+            let draft = SpecEvent { id: new_id, event_type: event_type.to_string(), line: 0, fields: event.clone() };
+            let targets: Vec<u64> = log.removal_targets(&draft).into_iter().collect();
             if let Some(code) = open_point_among(log, &targets) {
                 return Err(Refusal::OpenPointRemoved { code });
             }
@@ -704,6 +707,34 @@ mod tests {
 
         let purge = resolved(json!({"type": "purge", "targets": [3], "reason": "secret"}));
         assert_eq!(purge["targets"], json!([3]), "o expurgo não tira item da leitura e não expande");
+    }
+
+    /// Os alvos que a conferência julga num `remove` são os mesmos que a
+    /// leitura tira dele depois de gravado: os números e o que o filtro pega,
+    /// em ordem e sem repetir o que os dois apontam. Um filtro que não pega
+    /// nada é recusado mesmo ao lado de números que existem.
+    #[test]
+    fn the_removal_check_counts_the_same_targets_as_the_read() {
+        let at = |id: u64, time: &str, event_type: &str| {
+            format!("{{\"v\":1,\"id\":{id},\"at\":\"2026-09-12T{time}:00-03:00\",\"type\":\"{event_type}\"}}\n")
+        };
+        let before = [at(1, "10:00", "note"), at(2, "11:00", "note"), at(3, "11:30", "note"), at(4, "11:40", "message")].concat();
+        let log = parse_log(&before);
+        let in_the_hour = json!({"type": "note", "from": "2026-09-12T11:00", "to": "2026-09-12T11:59"});
+        let draft = obj(json!({"type": "remove", "targets": [3, 1], "filter": in_the_hour, "reason": "r"}));
+
+        let judged = check_against(&log, &draft, 5).unwrap().removed;
+        assert_eq!(judged, [1, 2, 3], "os números 3 e 1 e os 2 e 3 do filtro, sem repetir o 3");
+
+        let mut line = obj(json!({"v": 1, "id": 5, "at": "2026-09-12T12:00:00-03:00"}));
+        line.extend(draft);
+        let recorded = parse_log(&format!("{before}{}\n", Value::Object(line)));
+        let removal = recorded.get(5).unwrap();
+        assert_eq!(recorded.removal_targets(removal).into_iter().collect::<Vec<_>>(), judged, "a leitura tira os mesmos");
+
+        let nothing = json!({"type": "note", "from": "2026-09-12T13:00", "to": "2026-09-12T13:59"});
+        let beside_numbers = obj(json!({"type": "remove", "targets": [1], "filter": nothing, "reason": "r"}));
+        assert!(matches!(check_against(&log, &beside_numbers, 5), Err(Refusal::FilterMatchesNothing { .. })));
     }
 
     /// A versão nova de uma tarefa sobre uma versão que a remoção tirou é

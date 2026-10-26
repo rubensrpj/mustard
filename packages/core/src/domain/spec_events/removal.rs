@@ -1,5 +1,6 @@
 //! Os alvos de uma remoção: a conta única que a leitura usa para tirar os
-//! eventos dela e que as regras de gravação usam para julgar o que ela tira.
+//! eventos dela e que as regras de gravação, e a conferência do rascunho
+//! antes de gravar, usam para julgar o que ela tira.
 
 use std::collections::BTreeSet;
 
