@@ -218,8 +218,7 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
     // não se confere, como o arquivo dito sem a pasta, fica fora e não recusa
     // a gravação dos pontos.
     let world = DiskWorld::new(store::citation_roots(&opts.root, &project.root), None);
-    drop_stale_facts(&mut list, &world);
-    prefill_from_the_request(&mut list, &log, &world, lang);
+    settle_facts(&mut list, &log, &world, lang);
 
     // Os pontos que faltam são gravados aqui, abertos, com os fatos que a
     // lista traz e os lembretes; o assistente soma os fatos que conferiu antes
@@ -483,6 +482,15 @@ fn drop_stale_facts(list: &mut [survey::Proposed], world: &DiskWorld) {
     for item in list {
         item.facts.retain(|fact| checks_out(world, &fact.source));
     }
+}
+
+/// Deixa na lista só os fatos que se conferem: o fato velho do mapa sai
+/// primeiro, e só depois o ponto do defeito que ficou vazio recebe as
+/// citações do pedido. Na ordem inversa, o ponto que só tinha o fato velho
+/// ainda não está vazio quando as citações chegam, e é gravado sem fato.
+fn settle_facts(list: &mut [survey::Proposed], log: &SpecLog, world: &DiskWorld, lang: Locale) {
+    drop_stale_facts(list, world);
+    prefill_from_the_request(list, log, world, lang);
 }
 
 /// Se a citação `source` passa pela mesma conferência que recusaria a
@@ -898,6 +906,43 @@ mod tests {
         let sources: Vec<&str> =
             reproduction.fields.get("facts").and_then(Value::as_array).into_iter().flatten().filter_map(|fact| fact["source"].as_str()).collect();
         assert_eq!(sources, ["src/a.rs:1"], "{reproduction:?}");
+    }
+
+    /// O ponto da reprodução chega à limpeza com o fato velho do mapa, que
+    /// cita um arquivo apagado, e o pedido cita um arquivo que existe: o fato
+    /// velho sai antes do preenchimento, e o ponto fica com a citação do
+    /// pedido. Na ordem inversa, o mesmo ponto termina sem fato nenhum.
+    #[test]
+    fn the_stale_fact_leaves_before_the_request_citation_fills_the_reproduction_point() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src").join("a.rs"), "fn one() {}\n").unwrap();
+        let world = DiskWorld::new(vec![root.to_path_buf()], None);
+        let said = json!({"v": 1, "id": 1, "at": "t", "type": "message", "author": "user", "text": "O defeito está em `src/a.rs:1`."});
+        let log = mustard_core::domain::spec_events::parse_log(&said.to_string());
+        let key = survey::GapKey::Reproduction;
+        let stale = survey::Fact { text: "drop_birth".to_string(), source: "src/gone.rs:2".to_string() };
+        let reproduction = survey::Proposed {
+            block: key.block().to_string(),
+            gap: key.label(Locale::PtBr).to_string(),
+            from: "gap",
+            key: Some(key),
+            facts: vec![stale],
+            reminders: Vec::new(),
+        };
+        let sources = |list: &[survey::Proposed]| list[0].facts.iter().map(|fact| fact.source.clone()).collect::<Vec<_>>();
+
+        let mut list = vec![reproduction.clone()];
+        assert_eq!(sources(&list), ["src/gone.rs:2"], "o ponto chega à limpeza com o fato velho");
+        assert!(!checks_out(&world, "src/gone.rs:2"), "o fato velho cita um arquivo que não existe");
+        settle_facts(&mut list, &log, &world, Locale::PtBr);
+        assert_eq!(sources(&list), ["src/a.rs:1"], "{list:?}");
+
+        let mut inverted = vec![reproduction];
+        prefill_from_the_request(&mut inverted, &log, &world, Locale::PtBr);
+        drop_stale_facts(&mut inverted, &world);
+        assert!(sources(&inverted).is_empty(), "na ordem inversa o ponto fica sem fato: {inverted:?}");
     }
 
     /// O `grill` numa spec nova grava o tipo de trabalho, com o autor e a
