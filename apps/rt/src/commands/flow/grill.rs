@@ -119,6 +119,35 @@ pub(crate) fn grill_at(opts: &GrillOpts) -> Value {
     grill_for(opts, session_from_env().as_deref())
 }
 
+/// A lista do levantamento antes da limpeza dos fatos: as lacunas dos tipos,
+/// com os fatos do banco de lições, do índice, das specs e do mapa do checkout
+/// principal. É a montagem que o `grill` usa, e quem confere o que ela traz
+/// chama esta função em vez de refazê-la.
+fn survey_list(project: &spec_events::Project, spec: &str, kinds: &[&str], goal: &str, goal_agent: &str, condensed: bool) -> Vec<survey::Proposed> {
+    let lessons_path = ClaudePaths::for_project(&project.root).ok().map(|paths| paths.lessons_path());
+    let bank = lessons_path.as_deref().and_then(|path| lessons::read(path).ok().flatten());
+    let lessons_file = lessons_path
+        .as_deref()
+        .and_then(|path| path.strip_prefix(&project.root).ok())
+        .map_or_else(|| ".claude/spec/lessons.ndjson".to_string(), |rel| rel.to_string_lossy().replace('\\', "/"));
+    let (index, prior) = earlier_specs(&project.root);
+    let map = |need: project_map::Need<'_>| project_map::read_for(&project.root, need);
+    survey::build(&Sources {
+        kinds,
+        goal,
+        goal_agent,
+        current: spec,
+        bank: bank.as_ref(),
+        lessons_file: &lessons_file,
+        index: &index,
+        prior: &prior,
+        map: Some(&map),
+        condensed,
+        lang: project.lang,
+        languages: &project.languages,
+    })
+}
+
 /// [`grill_at`] com a sessão recebida, que é como um teste a escolhe.
 pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
     let project = spec_events::project(&opts.root);
@@ -185,31 +214,8 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
         Err(refusal) => return refuse(GrillRefusal::Spec(refusal)),
     };
 
-    // A lista, do banco, do índice, das specs e do mapa do checkout
-    // principal.
-    let lessons_path = ClaudePaths::for_project(&project.root).ok().map(|paths| paths.lessons_path());
-    let bank = lessons_path.as_deref().and_then(|path| lessons::read(path).ok().flatten());
-    let lessons_file = lessons_path
-        .as_deref()
-        .and_then(|path| path.strip_prefix(&project.root).ok())
-        .map_or_else(|| ".claude/spec/lessons.ndjson".to_string(), |rel| rel.to_string_lossy().replace('\\', "/"));
-    let (index, prior) = earlier_specs(&project.root);
-    let map = |need: project_map::Need<'_>| project_map::read_for(&project.root, need);
     let condensed = opts.condensed || survey::condensed(&log);
-    let mut list = survey::build(&Sources {
-        kinds: &kinds,
-        goal: &goal_text,
-        goal_agent: &goal_agent,
-        current: &spec,
-        bank: bank.as_ref(),
-        lessons_file: &lessons_file,
-        index: &index,
-        prior: &prior,
-        map: Some(&map),
-        condensed,
-        lang,
-        languages: &project.languages,
-    });
+    let mut list = survey_list(&project, &spec, &kinds, &goal_text, &goal_agent, condensed);
     // Toda citação passa pela conferência que recusaria a gravação do ponto
     // antes de virar fato. O fato velho do mapa sai primeiro, e o ponto do
     // defeito que ficou vazio recebe as citações do pedido que se conferem:
@@ -900,24 +906,10 @@ mod tests {
         let context = json!({"title": "Consertar o registro", "text": goal, "agent": agent, "origin": said});
         id_of(&write(root, Some("x"), "context", context));
 
-        // A lista do mapa, montada como o `grill` a monta antes da limpeza,
-        // dá à reprodução o fato velho que cita o arquivo apagado.
+        // A lista do mapa, montada pela mesma função que o `grill` usa antes da
+        // limpeza, dá à reprodução o fato velho que cita o arquivo apagado.
         let project = spec_events::project(root);
-        let map = |need: project_map::Need<'_>| project_map::read_for(&project.root, need);
-        let before_settling = survey::build(&Sources {
-            kinds: &["fix"],
-            goal,
-            goal_agent: agent,
-            current: "x",
-            bank: None,
-            lessons_file: "",
-            index: &[],
-            prior: &[],
-            map: Some(&map),
-            condensed: false,
-            lang: project.lang,
-            languages: &project.languages,
-        });
+        let before_settling = survey_list(&project, "x", &["fix"], goal, agent, false);
         let stale: Vec<&str> = before_settling
             .iter()
             .find(|item| item.key == Some(survey::GapKey::Reproduction))
