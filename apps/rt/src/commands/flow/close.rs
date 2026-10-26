@@ -84,6 +84,7 @@ use crate::shared::spec_state::{DiskSpecState, checkout, session_from_env};
 mod clean_copy;
 #[cfg(test)]
 mod outdated_request_tests;
+pub(crate) mod ownerless_tests;
 #[cfg(test)]
 mod review_request_tests;
 pub(crate) mod stale_marks;
@@ -520,7 +521,7 @@ fn run_close(
     };
     // O caminho de volta roda depois que a máquina passa, e nunca trava: os
     // testes sem dono viram aviso na resposta, e não recusa.
-    let unowned_tests = unowned_test_hints(root, &log, lang);
+    let unowned_tests = ownerless_tests::at_close(root, &spec, &log, lang);
     let unused_hints = crate::commands::flow::round::final_unused(root, &spec, &log, lang, &[])
         .into_iter()
         .filter(|(refuses, _)| !refuses)
@@ -585,7 +586,7 @@ fn run_close(
             spec_events::pages::push_warning(&mut out, "unused-analysis", hint);
         }
         for hint in &unowned_tests {
-            spec_events::pages::push_warning(&mut out, "unowned-test", hint);
+            spec_events::pages::push_warning(&mut out, ownerless_tests::REASON, hint);
         }
         for file in &not_copied {
             let hint = crate::commands::flow::round::local_file_missing(file, &copy, lang);
@@ -698,7 +699,7 @@ fn run_close(
         spec_events::pages::push_warning(&mut out, "unused-analysis", hint);
     }
     for hint in &unowned_tests {
-        spec_events::pages::push_warning(&mut out, "unowned-test", hint);
+        spec_events::pages::push_warning(&mut out, ownerless_tests::REASON, hint);
     }
     // As pendências abertas nascidas nesta spec vão ao usuário na hora, para
     // ele decidir o destino de cada uma, e cada uma vai com a linha que grava
@@ -1482,9 +1483,7 @@ pub(crate) fn finished_refusal(log: &SpecLog) -> Option<(String, Option<u64>)> {
 }
 
 /// Os critérios vigentes da spec: id, código e a prova de cada um, na ordem
-/// em que a leitura os dá. A máquina roda a prova de cada um daqui, e o
-/// caminho de volta ([`unowned_test_hints`]) usa a mesma lista para saber
-/// quais testes já têm dono.
+/// em que a leitura os dá. A máquina roda a prova de cada um daqui.
 fn criteria_list(log: &SpecLog) -> Vec<(u64, String, String)> {
     let codes = log.codes();
     log.block(BlockQuery::Block(Block::Criteria))
@@ -1495,138 +1494,6 @@ fn criteria_list(log: &SpecLog) -> Vec<(u64, String, String)> {
             Some((e.id, codes.get(&e.id).cloned().unwrap_or_else(|| e.id.to_string()), proof))
         })
         .collect()
-}
-
-/// O hash da árvore vazia do git — a base de quem toca um arquivo que nasceu
-/// no próprio commit, sem pai para comparar.
-const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
-
-/// A base de onde ler o que a obra mudou em `file`: o pai do commit mais
-/// velho, entre os que esta spec gravou, que tocou `file` — ou a árvore
-/// vazia, quando esse commit não tem pai (o arquivo nasceu nele).
-fn diff_base_for_file(root: &Path, log: &SpecLog, file: &str) -> Option<String> {
-    let sha = log
-        .block(BlockQuery::Block(Block::Progress))
-        .into_iter()
-        .find(|e| {
-            e.event_type == "commit" && e.fields.get("files").and_then(Value::as_array).is_some_and(|files| files.iter().any(|f| f.as_str() == Some(file)))
-        })
-        .and_then(|e| e.str_field("sha").map(str::to_string))?;
-    let parent = mustard_core::platform::git::run(root, &["rev-parse", &format!("{sha}^")]);
-    Some(parent.out().unwrap_or_else(|| EMPTY_TREE.to_string()))
-}
-
-/// As linhas do arquivo `file`, no `HEAD` de hoje, que mudaram desde `base` —
-/// lidas do `git diff` de verdade, e não supostas a partir do que uma tarefa
-/// dizia ir tocar.
-fn changed_lines(root: &Path, base: &str, file: &str) -> BTreeSet<usize> {
-    let out = mustard_core::platform::git::run(root, &["diff", "--unified=0", base, "HEAD", "--", file]);
-    let Some(text) = out.out() else {
-        return BTreeSet::new();
-    };
-    let mut lines = BTreeSet::new();
-    for hunk in text.lines().filter(|l| l.starts_with("@@")) {
-        let Some(plus) = hunk.split_whitespace().nth(2) else {
-            continue;
-        };
-        let plus = plus.trim_start_matches('+');
-        let (start, count) = match plus.split_once(',') {
-            Some((s, c)) => (s.parse::<usize>().unwrap_or(0), c.parse::<usize>().unwrap_or(1)),
-            None => (plus.parse::<usize>().unwrap_or(0), 1),
-        };
-        if count == 0 {
-            lines.insert(start.max(1));
-        } else {
-            lines.extend(start..start + count);
-        }
-    }
-    lines
-}
-
-/// O nome depois de `fn ` numa linha de assinatura, sem os parênteses que
-/// vêm depois.
-fn fn_name(line: &str) -> Option<String> {
-    let rest = &line[line.find("fn ")? + 3..];
-    let name: String = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
-    (!name.is_empty()).then_some(name)
-}
-
-/// Cada teste de Rust do texto de hoje, com a linha do `#[test]` e a última
-/// linha do corpo dele — a chave dos parênteses do próprio texto, e não um
-/// índice guardado à parte.
-fn test_spans(content: &str) -> Vec<(String, usize, usize)> {
-    let lines: Vec<&str> = content.lines().collect();
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < lines.len() {
-        if lines[i].trim_start().starts_with("#[test]") {
-            let attr_line = i + 1;
-            let mut j = i + 1;
-            while j < lines.len() && j < i + 6 && !lines[j].contains("fn ") {
-                j += 1;
-            }
-            if let Some(name) = lines.get(j).and_then(|line| fn_name(line)) {
-                let mut depth = 0i32;
-                let mut opened = false;
-                let mut end = j;
-                for (k, line) in lines.iter().enumerate().skip(j) {
-                    for ch in line.chars() {
-                        match ch {
-                            '{' => {
-                                depth += 1;
-                                opened = true;
-                            }
-                            '}' => depth -= 1,
-                            _ => {}
-                        }
-                    }
-                    end = k;
-                    if opened && depth <= 0 {
-                        break;
-                    }
-                }
-                out.push((name, attr_line, end + 1));
-            }
-        }
-        i += 1;
-    }
-    out
-}
-
-/// Os testes de `file` que a obra criou ou mudou: os que [`test_spans`] acha
-/// no texto de hoje e cujo trecho — do `#[test]` à última chave do corpo —
-/// tem alguma linha que o `git diff` desde a base da obra marca como mudada.
-fn changed_test_names(root: &Path, log: &SpecLog, file: &str) -> Vec<String> {
-    let Some(base) = diff_base_for_file(root, log, file) else {
-        return Vec::new();
-    };
-    let Ok(content) = std::fs::read_to_string(root.join(file)) else {
-        return Vec::new();
-    };
-    let changed = changed_lines(root, &base, file);
-    if changed.is_empty() {
-        return Vec::new();
-    }
-    test_spans(&content).into_iter().filter(|(_, start, end)| changed.iter().any(|line| line >= start && line <= end)).map(|(name, _, _)| name).collect()
-}
-
-/// O caminho de volta: os testes que as entregas desta obra criaram ou
-/// mudaram e que nenhum critério cita na prova dele — cada um vira um aviso
-/// pronto, com o nome do teste e o arquivo. Não trava o fechamento.
-fn unowned_test_hints(root: &Path, log: &SpecLog, lang: Locale) -> Vec<String> {
-    let criteria = criteria_list(log);
-    let mut out = Vec::new();
-    for file in log.delivered_files() {
-        if !file.ends_with(".rs") {
-            continue;
-        }
-        for name in changed_test_names(root, log, &file) {
-            if !criteria.iter().any(|(_, _, proof)| proof.contains(&name)) {
-                out.push(translate("close.unowned_test", lang).replace("{name}", &name).replace("{file}", &file));
-            }
-        }
-    }
-    out
 }
 
 #[cfg(test)]
@@ -1648,7 +1515,7 @@ mod tests {
         super::close_for(opts, session)
     }
 
-    fn write(root: &Path, spec: &str, event_type: &str, mut body: Value) -> Value {
+    pub(super) fn write(root: &Path, spec: &str, event_type: &str, mut body: Value) -> Value {
         if event_type == "task" {
             let map = body.as_object_mut().expect("a tarefa é um objeto");
             map.entry("files").or_insert_with(|| json!([]));
@@ -1660,7 +1527,7 @@ mod tests {
     /// A entrega que o agente da onda grava pela porta do binário, antes de
     /// a rodada assumi-la. Ela precisa sair gravada: a rodada lê a volta da
     /// spec, e não do relatório.
-    fn returned(root: &Path, spec: &str, body: Value) {
+    pub(super) fn returned(root: &Path, spec: &str, body: Value) {
         let write = |body: &Value| {
             crate::commands::spec_events::write::write_at(&WriteOpts {
                 root: root.to_path_buf(),
@@ -1675,7 +1542,7 @@ mod tests {
         assert_eq!(out["ok"], json!(true), "a volta não gravou: {out}");
     }
 
-    fn id_of(report: &Value) -> u64 {
+    pub(super) fn id_of(report: &Value) -> u64 {
         report["id"].as_u64().unwrap_or_else(|| panic!("não gravou: {report}"))
     }
 
@@ -1884,7 +1751,7 @@ mod tests {
     /// Os testes que conferem o pedido dele por dentro chamam `close_for`
     /// direto. Com o pedido já aberto por uma chamada anterior, o fechamento
     /// espera o veredito, e o agente o grava do mesmo jeito.
-    fn close(root: &Path, spec: &str) -> Value {
+    pub(super) fn close(root: &Path, spec: &str) -> Value {
         let out = close_for(&CloseOpts { root: root.to_path_buf(), spec: Some(spec.to_string()), report: None, ..Default::default() }, None);
         if out["review"]["final"] == json!(true) || out["reason"] == json!("review-verdict-missing") {
             return close_for(&CloseOpts { root: root.to_path_buf(), spec: Some(spec.to_string()), report: approve(root, spec), ..Default::default() }, None);
@@ -2284,52 +2151,6 @@ mod tests {
         let verdicts: Vec<&SpecEvent> = log.visible().into_iter().filter(|e| e.event_type == "verdict").collect();
         assert_eq!(verdicts.len(), 1, "{verdicts:?}");
         assert_eq!(verdicts[0].fields.get("replaces"), Some(&json!(wrote["id"].as_u64().unwrap())), "{verdicts:?}");
-    }
-
-    /// O caminho de volta: a onda entrega um teste novo, e o único critério
-    /// da spec não o cita na prova dele. O fechamento não trava — a obra
-    /// fecha do mesmo jeito —, mas a resposta traz um aviso de teste sem
-    /// dono com o nome do teste e o arquivo.
-    #[test]
-    fn closing_points_at_the_test_without_an_owner() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let spec = "x";
-        crate::shared::test_fixture::seeded_repo_on(root, &format!("feature/{spec}"), &[("mustard.json", "{}"), ("src/w1.rs", "fn one() {}\n")]);
-
-        assert_eq!(record_open(root, spec, &format!("feature/{spec}"), "dev"), Ok(true));
-        let said = id_of(&write(root, spec, "message", json!({"author": "user", "text": "o objetivo"})));
-        // Único critério da spec: sempre verde, e não cita o teste que a
-        // onda vai entregar.
-        let gate = id_of(&write(
-            root,
-            spec,
-            "criterion",
-            json!({"when": "a onda roda", "then": "a suíte passa", "proof": "git --version", "form": "ubiquitous",
-                "origin": said}),
-        ));
-        write(root, spec, "wave", json!({"n": 1, "text": "Onda 1.", "criteria": [gate], "done_when": "A suíte passa.", "origin": said}));
-        write(root, spec, "task", json!({"wave": 1, "text": "Tarefa da onda 1.", "files": [{"path": "src/w1.rs"}], "origin": said}));
-        crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join(spec));
-        crate::commands::flow::round::copies_leave_with_the_test(root);
-        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":4}"#).unwrap();
-
-        let round = |report: Option<String>| round_for(&RoundOpts { root: root.to_path_buf(), spec: Some(spec.to_string()), report }, None);
-        let dispatch = round(None);
-        assert_eq!(dispatch["ok"], json!(true), "{dispatch}");
-
-        std::fs::write(root.join("src/w1.rs"), "#[cfg(test)]\nmod tests {\n    #[test]\n    fn one_plus_one() { assert_eq!(1 + 1, 2); }\n}\n").unwrap();
-        returned(root, spec, json!({"wave": 1, "text": "Saiu.", "files": ["src/w1.rs"], "commit": "soma o teste novo"}));
-        let back = round(None);
-        assert_eq!(back["ok"], json!(true), "{back}");
-        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
-
-        let closed = close(root, spec);
-        assert_eq!(closed["phase"], json!("closed"), "{closed}");
-        let warnings = closed["warnings"].as_array().cloned().unwrap_or_default();
-        let found = warnings.iter().find(|w| w["reason"] == json!("unowned-test")).unwrap_or_else(|| panic!("nenhum aviso de teste sem dono: {closed}"));
-        let hint = found["hint"].as_str().unwrap_or_default();
-        assert!(hint.contains("one_plus_one") && hint.contains("src/w1.rs"), "o aviso traz o nome do teste e o arquivo: {hint}");
     }
 
     /// O fechamento roda cada critério uma vez — os dois critérios da spec

@@ -194,7 +194,7 @@ pub(super) mod tests {
 
     /// Quem relê o mapa depois da onda num teste: grava `after` como o mapa
     /// de depois, no lugar que a rodada pede.
-    pub(in super::super) fn mine_giving(
+    pub(crate) fn mine_giving(
         after: Value,
     ) -> impl Fn(&Path, &Path) -> mustard_core::platform::error::Result<mustard_core::domain::scan::ScanReport> {
         move |_root, out| {

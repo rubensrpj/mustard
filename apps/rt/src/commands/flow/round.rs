@@ -151,7 +151,7 @@ pub(crate) use scheduling::snapshot as scheduling_snapshot;
 mod commit;
 mod commit_title;
 mod unused_evidence;
-pub(crate) use commit::final_unused;
+pub(crate) use commit::{final_unused, work_maps};
 mod copy_check;
 mod dependencies;
 pub(crate) use dependencies::prepare as prepare_copy_dependencies;
@@ -201,7 +201,6 @@ mod slots;
 mod stops;
 mod summary_wave;
 pub(crate) mod task_release;
-mod test_warnings;
 mod triage_questions;
 mod usage;
 pub(crate) mod vacancy;
@@ -254,7 +253,9 @@ pub(crate) use slots::{
     standing_in_a_copy,
 };
 #[cfg(test)]
-pub(crate) use tests::{deliver_after_refusals, finish_tasks, read_request, read_review, seed_read, shipped_agent};
+pub(crate) use tests::{deliver_after_refusals, finish_tasks, read_request, read_review, round_with_mine, seed_read, shipped_agent};
+#[cfg(test)]
+pub(crate) use imports_check::tests::mine_giving;
 pub(crate) use usage::snapshot as usage_snapshot;
 // Fora da rodada, só os testes do gancho do despacho leem o processo fechado,
 // e eles rodam só no Linux.
@@ -597,7 +598,7 @@ mod tests {
 
     /// [`round`] com quem relê o mapa depois do commit da rodada (`mine`),
     /// que um teste escolhe sem instalar a ferramenta do scan de verdade.
-    pub(super) fn round_with_mine(
+    pub(crate) fn round_with_mine(
         root: &Path,
         spec: &str,
         report: Option<&str>,

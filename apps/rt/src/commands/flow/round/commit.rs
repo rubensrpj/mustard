@@ -244,11 +244,7 @@ pub(super) fn refresh_map(root: &Path, mine: &dyn Fn(&Path, &Path) -> mustard_co
 /// fica de fora: ela sai dos commits da obra, e o commit de duas ondas daria a
 /// cada uma os arquivos da outra; quem reabre se decide pelo arquivo citado.
 pub(crate) fn final_unused(root: &Path, spec: &str, log: &SpecLog, lang: Locale, outputs: &[String]) -> Vec<(bool, String)> {
-    let base = std::fs::read(mustard_core::io::wave_prompt::validation_base_map(root, spec))
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok());
-    let after = mustard_core::io::project_map::read(root).ok();
-    let (Some(base), Some(after)) = (base, after) else {
+    let Some((base, after)) = work_maps(root, spec) else {
         return vec![(false, translate("round.after_wave.analysis_unknown", lang).to_string())];
     };
     let changed = log
@@ -265,6 +261,15 @@ pub(crate) fn final_unused(root: &Path, spec: &str, log: &SpecLog, lang: Locale,
         })
         .collect();
     super::removed_check::final_findings(root, &AfterWave { base, after, changed }, lang, outputs).into_iter().map(|f| (f.refuses, f.text)).collect()
+}
+
+/// Os dois mapas da obra `spec` inteira: o retrato da base, que a primeira
+/// conferência depois da onda guardou, e o mapa do projeto de agora. `None`
+/// quando falta um dos dois.
+pub(crate) fn work_maps(root: &Path, spec: &str) -> Option<(ProjectMap, ProjectMap)> {
+    let base = std::fs::read(mustard_core::io::wave_prompt::validation_base_map(root, spec)).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok())?;
+    let after = mustard_core::io::project_map::read(root).ok()?;
+    Some((base, after))
 }
 
 /// A conferência do mapa com o conteúdo de agora, antes de toda resposta
@@ -810,7 +815,9 @@ pub(super) struct AfterWave {
 /// com o mapa sem arquivos, ou com o mapeador falhando, não há com que
 /// comparar e a rodada segue.
 ///
-/// Junta aos avisos uma linha de tamanho por onda ([`super::size_check`]),
+/// Junta aos avisos cada teste que as ondas criaram sem critério que o cite
+/// ([`crate::commands::flow::close::ownerless_tests`], a mesma leitura do
+/// fechamento) e uma linha de tamanho por onda ([`super::size_check`]),
 /// que é só dado da onda: vai à resposta da rodada, e nunca ao commit. A onda
 /// cujo código já está num commit (`committed`) fica fora da conferência: não
 /// há mais o que segurar dela.
@@ -870,7 +877,8 @@ pub(super) fn ensure_after_wave(
     let (mut warnings, mut held) = after_wave_answer(waves, &found, lang);
     held.extend(waiting.iter().map(|one| HeldReturn { wave: one.wave, refusal: RoundRefusal::JevPending { wave: one.wave, question: one.question } }));
     let files = maps.changed.iter().flat_map(|(_, files)| files.iter().cloned()).collect::<Vec<_>>();
-    warnings.extend(super::test_warnings::candidates(root, log, &maps.base, &maps.after, &files, lang));
+    let ownerless = crate::commands::flow::close::ownerless_tests::hints(root, log, &maps.base, &maps.after, &files, lang);
+    warnings.extend(ownerless.iter().map(|hint| json!({ "reason": crate::commands::flow::close::ownerless_tests::REASON, "hint": hint })));
     let sizes = super::size_check::lines(&super::size_check::measure(root, &maps.changed), lang);
     warnings.extend(sizes.iter().filter(|(wave, _)| !out.contains(wave)).map(|(wave, hint)| json!({ "reason": "wave-size", "wave": wave, "hint": hint })));
     (warnings, held, waiting)

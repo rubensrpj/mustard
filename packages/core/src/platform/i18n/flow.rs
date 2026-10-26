@@ -513,12 +513,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // fechamento avisa em vez de deixá-lo fora do código para sempre.
         ("close.unowned_item", Locale::PtBr) => "O item {code} ({title}) não tem dono e nenhuma onda o levou: fica fora do código.",
         ("close.unowned_item", Locale::EnUs) => "Item {code} ({title}) has no owner and no wave carried it: it stays out of the code.",
-        // O caminho de volta: um teste que a obra criou ou mudou e que
-        // nenhum critério cita na prova dele — o fechamento avisa, com o
-        // nome do teste e o arquivo, em vez de deixar o teste sem dono.
-        ("close.unowned_test", Locale::PtBr) => "O teste {name}, em {file}, não tem critério que o cite na verificação dele: fica sem cobertura.",
+        // O caminho de volta: um teste que a obra criou e que nenhum critério
+        // cita na prova dele — a rodada e o fechamento avisam, com o nome do
+        // teste, o arquivo e a linha, em vez de deixar o teste sem dono.
+        ("close.unowned_test", Locale::PtBr) => "O teste novo {name}, em {file}:{line}, não tem critério que o cite na prova dele: fica sem cobertura.",
         ("close.unowned_test", Locale::EnUs) => {
-            "The test {name}, in {file}, has no criterion citing it in its verification: it stays without coverage."
+            "The new test {name}, in {file}:{line}, has no criterion citing it in its proof: it stays without coverage."
         }
 
         // A rodada de ondas (`commands/flow/round.rs`).
@@ -2643,7 +2643,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 381, 0x0191_9f94_c087_1774);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 381, 0xe6a9_ab0c_62be_94dd);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
@@ -2792,7 +2792,7 @@ mod tests {
             ("close.final_leftovers", &["{tasks}", "{command}"][..]),
             ("close.pending_destination", &["{id}", "{title}", "{spec}"][..]),
             ("close.unowned_item", &["{code}", "{title}"][..]),
-            ("close.unowned_test", &["{name}", "{file}"][..]),
+            ("close.unowned_test", &["{name}", "{file}", "{line}"][..]),
             ("round.bad_report", &["{detail}"][..]),
             ("round.line_field", &["{line}", "{field}"][..]),
             ("round.merge_conflict", &["{wave}", "{conflicts}", "{copy}", "{head}"][..]),

@@ -1145,11 +1145,13 @@ struct CriterionVersion {
     draft: Map<String, Value>,
 }
 
-/// A versão nova do critério `id`, com a prova `proof` e o mesmo resto da
-/// versão mais nova dele no arquivo `log`. `None` quando o critério saiu da
-/// leitura.
+/// A versão nova do critério `id`, com a prova `proof` somada à que a versão
+/// mais nova dele no arquivo `log` já tinha ([`joined_proof`]), e o mesmo
+/// resto dela. `None` quando o critério saiu da leitura ou quando a prova
+/// dele já tem cada comando de `proof`: nada muda, e não há versão nova.
 fn criterion_version(log: &SpecLog, id: u64, proof: &str) -> Option<CriterionVersion> {
     let criterion = log.current(id)?;
+    let proof = joined_proof(criterion.str_field("proof").unwrap_or_default(), proof)?;
     let mut draft: Map<String, Value> = criterion
         .fields
         .iter()
@@ -1161,6 +1163,22 @@ fn criterion_version(log: &SpecLog, id: u64, proof: &str) -> Option<CriterionVer
     draft.insert("author".into(), json!("wave"));
     let code = log.codes().get(&criterion.id).cloned().unwrap_or_else(|| criterion.id.to_string());
     Some(CriterionVersion { code, replaces: criterion.id, draft })
+}
+
+/// A prova `had` de um critério com cada comando de `new`, partido em `&&`,
+/// que ela ainda não tem, na ordem e depois dos dela: a prova da onda soma à
+/// do critério, e nenhum comando que ele tinha sai. `None` quando `had` já
+/// tem todos.
+fn joined_proof(had: &str, new: &str) -> Option<String> {
+    let parts = |proof: &str| proof.split(" && ").map(str::trim).filter(|part| !part.is_empty()).map(str::to_string).collect::<Vec<_>>();
+    let mut joined = parts(had);
+    let before = joined.len();
+    for part in parts(new) {
+        if !joined.contains(&part) {
+            joined.push(part);
+        }
+    }
+    (joined.len() > before).then(|| joined.join(" && "))
 }
 
 /// Grava o que [`check_reports`] conferiu, pela mesma porta de gravação das
@@ -1523,7 +1541,42 @@ mod tests {
 
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let current = log.visible().into_iter().find(|e| e.event_type == "criterion").expect("the criterion");
-        assert_eq!(current.str_field("proof"), Some("echo a && echo b && echo c"), "{raw}");
+        assert_eq!(current.str_field("proof"), Some("git --version && echo a && echo b && echo c"), "{raw}");
+    }
+
+    /// O critério nasce provado por `git --version`. A onda 1 grava a prova
+    /// `git --help`: o critério fica com as duas, a dele primeiro, numa
+    /// versão nova. A onda 2 grava `git --version`, que ele já tinha: nenhum
+    /// comando sai, e não há versão nova.
+    #[test]
+    fn a_wave_proof_joins_the_criterion_proof_instead_of_replacing_it() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[1])]);
+        assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1], "a onda 2 espera a 1");
+        let criterion = || {
+            let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+            let versions = log.events.iter().filter(|e| e.event_type == "criterion").count();
+            let current = log.visible().into_iter().find(|e| e.event_type == "criterion").expect("o critério");
+            (current.str_field("proof").map(str::to_string), versions)
+        };
+        assert_eq!(criterion(), (Some("git --version".to_string()), 1));
+
+        std::fs::write(root.join("src/a.rs"), "fn one() {}\n// A soma saiu.\n").unwrap();
+        let one = json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": "a soma sai",
+            "proofs": [{"criterion": "MSTD-CRIT-0001", "proof": "git --help"}]});
+        assert_eq!(returned(root, one)["ok"], json!(true));
+        let out = round(root, "x", None);
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!(criterion(), (Some("git --version && git --help".to_string()), 2), "{out}");
+
+        std::fs::write(root.join("src/b.rs"), "fn two() {}\n// A dobra saiu.\n").unwrap();
+        let two = json!({"wave": 2, "text": "A dobra saiu.", "files": ["src/b.rs"], "commit": "a dobra sai",
+            "proofs": [{"criterion": "MSTD-CRIT-0001", "proof": "git --version"}]});
+        assert_eq!(returned(root, two)["ok"], json!(true));
+        let out = round(root, "x", None);
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!(criterion(), (Some("git --version && git --help".to_string()), 2), "{out}");
     }
 
     /// A onda que só foi conferir volta sem arquivo nenhum: a rodada grava a
@@ -3879,8 +3932,8 @@ fn main() { sum_comes_out_right(); double_comes_out_right(); }
         let current = log.visible().into_iter().find(|e| e.event_type == "criterion").expect("o critério");
         assert_eq!(
             current.str_field("proof"),
-            Some("echo running 1 test sum_comes_out_right && echo running 1 test double_comes_out_right"),
-            "as duas provas viram um comando só"
+            Some("git --version && echo running 1 test sum_comes_out_right && echo running 1 test double_comes_out_right"),
+            "as duas provas viram um comando só, depois da que o critério tinha"
         );
     }
 
@@ -3970,7 +4023,7 @@ fn main() { sum_comes_out_right(); double_comes_out_right(); }
         assert!(warning_of(&out, "proof-rerouted")["hint"].as_str().unwrap_or_default().contains(&criterion_code), "{out}");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let current = log.visible().into_iter().find(|e| e.event_type == "criterion").expect("o critério");
-        assert_eq!(current.str_field("proof"), Some("git --help"), "the criterion took the proof");
+        assert_eq!(current.str_field("proof"), Some("git --version && git --help"), "the criterion took the proof");
     }
     /// As linhas do arquivo da spec `x`: a gravação recusada não escreve
     /// nenhuma.
