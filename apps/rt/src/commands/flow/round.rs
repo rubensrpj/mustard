@@ -181,6 +181,8 @@ mod skill_cycle_tests;
 mod dispatch_jev_tests;
 #[cfg(test)]
 mod triage_jev_tests;
+mod outdated_request;
+pub(crate) use outdated_request::{awaits_verdict, find as outdated_review};
 mod planning;
 pub(crate) use planning::needs_planning;
 pub(crate) mod queue;

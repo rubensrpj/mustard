@@ -14,9 +14,8 @@ use mustard_core::domain::spec_events::SpecLog;
 use mustard_core::domain::spec_state::State;
 use mustard_core::platform::i18n::{Locale, translate};
 
-use super::DONE_STEP;
 use super::queue::{backlog_left, backlog_ready, first_unfinished};
-use crate::commands::flow::close::outdated_request;
+use super::{DONE_STEP, awaits_verdict};
 
 /// Onde as ondas estão depois dos envios da rodada.
 pub(super) struct Standing<'a> {
@@ -69,7 +68,7 @@ pub(super) fn next_step(root: &Path, spec: &str, (log, codes): (&SpecLog, &BTree
             command = step;
             text
         }
-    } else if outdated_request::awaits_verdict(root, spec, log, lang) {
+    } else if awaits_verdict(root, spec, log, lang) {
         // Toda onda está entregue, mas a revisão final segue aberta, sem o
         // veredito do revisor: a obra ainda não está aprovada, e o fechamento
         // recusaria. A resposta manda esperar o veredito, sem o comando de

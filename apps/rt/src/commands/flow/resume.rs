@@ -573,8 +573,7 @@ pub(crate) fn next_command_now(root: &Path, phase: &str, spec: &str, state: &Sta
 /// a reabertura anulou a aprovação.
 fn step_of(root: &Path, phase: &str, spec: &str, log: &SpecLog, lang: Locale) -> (&'static str, String) {
     use crate::commands::flow::round::queue::{backlog_ready, next_waves};
-    use crate::commands::flow::close::outdated_request::awaits_verdict;
-    use crate::commands::flow::round::{backlog_left, waves_stuck};
+    use crate::commands::flow::round::{awaits_verdict, backlog_left, waves_stuck};
     use mustard_core::view::document::WaveState;
 
     let said = |key: &str| ("close", translate(key, lang).to_string());

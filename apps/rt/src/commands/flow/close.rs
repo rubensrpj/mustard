@@ -82,7 +82,8 @@ use crate::commands::spec_events::{self, write::record};
 use crate::shared::spec_state::{DiskSpecState, checkout, session_from_env};
 
 mod clean_copy;
-pub(crate) mod outdated_request;
+#[cfg(test)]
+mod outdated_request_tests;
 pub(crate) mod stale_marks;
 mod unused;
 
@@ -471,7 +472,7 @@ fn run_close(
     // abre um pedido novo, mais abaixo. O mesmo vale para o pedido que ficou
     // para trás de um item gravado depois dele: o pedido novo o lista, e a
     // aprovação do antigo não fecha a obra.
-    let outdated = outdated_request::find(root, &spec, &log, lang);
+    let outdated = crate::commands::flow::round::outdated_review(root, &spec, &log, lang);
     if crate::commands::flow::round::awaited_review(&log).is_some()
         && !held.contains(&crate::commands::flow::round::FINAL_REVIEW)
         && outdated.is_none()
