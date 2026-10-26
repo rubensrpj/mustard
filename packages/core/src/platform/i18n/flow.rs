@@ -1250,32 +1250,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Jev judged that finishing the task finishes what the item asks, with chance {chance}; so it did not \
              become a new task."
         }
-        ("round.leftover_joined", Locale::PtBr) => {
-            concat!("Sobra da onda {wave}, nos mesmos arquivos — {title}: {detail} (Pelo mapa: ", map_commands_pt!(), ".)")
-        }
-        ("round.leftover_joined", Locale::EnUs) => {
-            concat!("Leftover from wave {wave}, on the same files — {title}: {detail} (By the map: ", map_commands_en!(), ".)")
-        }
-        ("round.leftover_classified", Locale::PtBr) => {
-            concat!("Erro da volta da onda {wave} — {title}: {detail} (Pelo mapa: ", map_commands_pt!(), ".)")
-        }
-        ("round.leftover_classified", Locale::EnUs) => {
-            concat!("Error from wave {wave}'s return — {title}: {detail} (By the map: ", map_commands_en!(), ".)")
-        }
-        // Os mesmos textos da sobra, quando quem a apontou é a revisão final,
-        // que não tem onda.
-        ("round.leftover_review_joined", Locale::PtBr) => {
-            concat!("Achado da revisão final, nos mesmos arquivos — {title}: {detail} (Pelo mapa: ", map_commands_pt!(), ".)")
-        }
-        ("round.leftover_review_joined", Locale::EnUs) => {
-            concat!("Finding from the final review, on the same files — {title}: {detail} (By the map: ", map_commands_en!(), ".)")
-        }
-        ("round.leftover_review_classified", Locale::PtBr) => {
-            concat!("Achado da revisão final — {title}: {detail} (Pelo mapa: ", map_commands_pt!(), ".)")
-        }
-        ("round.leftover_review_classified", Locale::EnUs) => {
-            concat!("Finding from the final review — {title}: {detail} (By the map: ", map_commands_en!(), ".)")
-        }
         ("round.leftover_priority", Locale::PtBr) => "Sobra da onda {wave}: erro achado na obra sai antes das tarefas antigas.",
         ("round.leftover_priority", Locale::EnUs) => "Leftover from wave {wave}: an error found in the work goes before the old tasks.",
         ("round.leftover_review_priority", Locale::PtBr) => "Achado da revisão final: erro achado na obra sai antes das tarefas antigas.",
@@ -1315,12 +1289,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("round.jev_pending.unmet_items", Locale::EnUs) => {
             "Wave {wave} did not meet an agreed item, and Jev has not yet said where it goes. The question goes out with the git and copies locks released, and the next round applies the answer. Run `mustard-rt run round` again; with `reserves` in the answer, send the reserve's receipt first."
-        }
-        ("round.jev_pending.leftovers", Locale::PtBr) => {
-            "A onda {wave} voltou com sobras, e o Jev ainda não disse para onde cada uma vai. A pergunta sai com as travas do git e das cópias soltas, e a rodada seguinte aplica a resposta. Rode `mustard-rt run round` de novo; com `reserves` na resposta, mande antes o recibo da reserva."
-        }
-        ("round.jev_pending.leftovers", Locale::EnUs) => {
-            "Wave {wave} came back with leftovers, and Jev has not yet said where each one goes. The question goes out with the git and copies locks released, and the next round applies the answer. Run `mustard-rt run round` again; with `reserves` in the answer, send the reserve's receipt first."
         }
         ("round.jev_pending.review_unmet", Locale::PtBr) => {
             "A revisão final não cumpriu um item combinado, e o Jev ainda não disse para onde ele vai: o veredito fica fora desta chamada. A pergunta sai com as travas do git e das cópias soltas, e a chamada seguinte aplica a resposta. Rode o mesmo comando de novo; com `reserves` na resposta, mande antes o recibo da reserva."
@@ -1413,20 +1381,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("triage.next_applied", Locale::EnUs) => {
             "Recorded. Delegate each `rewrite` request to the session's analysis agent and record the new version its receipt returns."
-        }
-        ("round.leftover_repeated", Locale::PtBr) => {
-            "Sobra da onda {wave} que repete a tarefa {task}, ainda por entregar: {detail}"
-        }
-        ("round.leftover_repeated", Locale::EnUs) => {
-            "Leftover from wave {wave} that repeats task {task}, still to deliver: {detail}"
-        }
-        ("round.leftover_judged", Locale::PtBr) => {
-            "O Jev julgou que a sobra descreve o mesmo trabalho da tarefa, com chance {chance}; por isso ela \
-             não virou tarefa nova."
-        }
-        ("round.leftover_judged", Locale::EnUs) => {
-            "Jev judged that the leftover describes the same work as the task, with chance {chance}; so it did \
-             not become a new task."
         }
         ("round.leftover_marked", Locale::PtBr) => "Sobra da onda {wave}: {title}",
         ("round.leftover_marked", Locale::EnUs) => "Leftover from wave {wave}: {title}",
@@ -2689,7 +2643,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 386, 0x9c31_402f_3d88_3c74);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("flow.rs"), super::PREFIXES, 379, 0xa4f9_ab76_416e_2c41);
     }
 
     /// Os passos, as recusas e os avisos da abertura de uma spec saem do
@@ -2962,11 +2916,7 @@ mod tests {
             ("round.unmet_review_joined", &["{code}", "{text}"][..]),
             ("round.unmet_review_covered", &["{code}", "{task}", "{text}"][..]),
             ("round.unmet_judged", &["{chance}"][..]),
-            ("round.leftover_joined", &["{wave}", "{title}", "{detail}"][..]),
-            ("round.leftover_classified", &["{wave}", "{title}", "{detail}"][..]),
             ("round.leftover_priority", &["{wave}"][..]),
-            ("round.leftover_review_joined", &["{title}", "{detail}"][..]),
-            ("round.leftover_review_classified", &["{title}", "{detail}"][..]),
             ("round.leftover_review_priority", &[][..]),
             ("triage.same_work_open", &["{task}", "{title}"][..]),
             ("triage.same_work_covered", &["{task}", "{title}"][..]),
@@ -2974,7 +2924,6 @@ mod tests {
             ("round.jev_pending.no_change", &["{wave}"][..]),
             ("round.jev_pending.change_target", &["{wave}"][..]),
             ("round.jev_pending.unmet_items", &["{wave}"][..]),
-            ("round.jev_pending.leftovers", &["{wave}"][..]),
             ("round.jev_pending.review_unmet", &[][..]),
             ("round.skill_pick_reserve", &["{wave}"][..]),
             ("round.items_jev_pending", &["{wave}"][..]),
@@ -2989,8 +2938,6 @@ mod tests {
             ("triage.wave_too_big", &["{objective}", "{tokens}"][..]),
             ("triage.joined_line", &["{code}", "{title}", "{text}"][..]),
             ("triage.removed_joined", &["{code}"][..]),
-            ("round.leftover_repeated", &["{wave}", "{task}", "{detail}"][..]),
-            ("round.leftover_judged", &["{chance}"][..]),
             ("round.leftover_marked", &["{wave}", "{title}"][..]),
             ("round.leftover_review_marked", &["{title}"][..]),
             ("round.leftover_local", &["{wave}", "{files}", "{title}", "{detail}"][..]),

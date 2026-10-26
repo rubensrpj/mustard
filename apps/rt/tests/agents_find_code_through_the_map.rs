@@ -20,12 +20,10 @@ mod binary;
 use mustard_core::platform::i18n::{translate, Locale};
 
 /// As chaves do catálogo que citam os comandos do mapa: a citação que a onda
-/// deixou, a sobra juntada a uma tarefa aberta nos mesmos arquivos, a linha do
-/// achado (da onda ou da revisão final) juntado à tarefa da mesma regra e os
-/// dois textos que mandam gravar as tarefas de um pedido.
-const CATALOG_KEYS: [&str; 6] = [
+/// deixou, a linha do achado (da onda ou da revisão final) juntado à tarefa da
+/// mesma regra e os dois textos que mandam gravar as tarefas de um pedido.
+const CATALOG_KEYS: [&str; 5] = [
     "round.after_wave.leftover",
-    "round.leftover_joined",
     "finding.joined_by_rule",
     "finding.review_joined_by_rule",
     "request.new_waves",
