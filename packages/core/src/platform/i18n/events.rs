@@ -416,6 +416,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Fact {fact} cites {path}, and that file does not exist. Check the path before stating \
              it. Nothing was written."
         }
+        ("spec_events.cited_file_missing.same_name", Locale::PtBr) => {
+            "O fato {fact} cita {path}, e esse arquivo não existe. Com esse nome, o projeto tem \
+             {found}: cite o caminho inteiro. Nada foi gravado."
+        }
+        ("spec_events.cited_file_missing.same_name", Locale::EnUs) => {
+            "Fact {fact} cites {path}, and that file does not exist. With that name, the project \
+             has {found}: cite the whole path. Nothing was written."
+        }
         ("spec_events.cited_line_missing", Locale::PtBr) => {
             "O fato {fact} cita a linha {line} de {path}, mas o arquivo tem {lines} linhas. Confira \
              a linha antes de afirmar. Nada foi gravado."
@@ -1355,8 +1363,8 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged(
             include_str!("events.rs"),
             super::PREFIXES,
-            188,
-            0x573e_346d_e548_5fce,
+            189,
+            0xabef_5f25_0692_90ed,
         );
     }
 
@@ -1425,6 +1433,7 @@ mod tests {
             ("spec_events.wrong_count", &["{type}", "{field}", "{min}", "{max}", "{count}"][..]),
             ("spec_events.fact_without_source", &["{fact}"][..]),
             ("spec_events.cited_file_missing", &["{fact}", "{path}"][..]),
+            ("spec_events.cited_file_missing.same_name", &["{fact}", "{path}", "{found}"][..]),
             ("spec_events.cited_line_missing", &["{fact}", "{path}", "{line}", "{lines}"][..]),
             ("spec_events.name_elsewhere", &["{fact}", "{name}", "{path}", "{found}"][..]),
             ("spec_events.name_unknown", &["{fact}", "{name}"][..]),

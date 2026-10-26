@@ -389,7 +389,8 @@ fn check(start: &Path, root: &Path, spec: &str, log: &SpecLog, built: &[WaveProm
 
     // As citações de cada tarefa, pela mesma conferência que o ponto do
     // levantamento usa: o arquivo citado existe ou está marcado como novo, e
-    // os nomes citados existem no mapa.
+    // os nomes citados existem no mapa. O arquivo citado só pelo nome, que
+    // não existe, sai com os arquivos do projeto que têm esse nome.
     let roots = store::citation_roots(start, root);
     let world = DiskWorld::new(roots, Some(root));
     let tasks: Vec<&SpecEvent> = tasks_of(log);
@@ -415,7 +416,7 @@ fn check(start: &Path, root: &Path, spec: &str, log: &SpecLog, built: &[WaveProm
         }
         for (path, new) in &files {
             if !new && !by_another(path) && world.file_lines(path).is_none() {
-                out.push(PlanFinding::Cited { task: code.clone(), finding: Finding::MissingFile { path: path.clone() } });
+                out.push(PlanFinding::Cited { task: code.clone(), finding: citation::missing_file(&world, path) });
             }
             if !cited.contains(path) {
                 cited.push(path.clone());
@@ -1039,6 +1040,31 @@ mod tests {
         let blocking = reasons(&report, "blocking");
         assert_eq!(blocking.iter().filter(|r| *r == "cited-file-missing").count(), 1, "{report}");
         assert!(reasons(&report, "warnings").contains(&"names-unchecked".to_string()), "{report}");
+    }
+
+    /// O fato de um ponto e o arquivo de uma tarefa citam `a.rs` só pelo
+    /// nome, e um arquivo só do projeto tem esse nome, em `src`: a gravação do
+    /// ponto recusa, a conferência do plano trava, e as duas mensagens dizem o
+    /// caminho inteiro dele.
+    #[test]
+    fn a_refused_citation_names_the_only_file_with_that_name() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+
+        let fact = json!({"block": "limits", "gap": "tamanho", "from": "gap", "status": "open",
+            "facts": [{"text": "o defeito mora aqui", "source": "a.rs:1"}], "origin": said});
+        let refused = write(root, Some("x"), "point", fact);
+        assert_eq!(refused["reason"], json!("cited-file-missing"), "{refused}");
+        assert!(refused["hint"].as_str().unwrap_or_default().contains("src/a.rs"), "{refused}");
+
+        let crit = criterion(root, "x", said);
+        write(root, Some("x"), "wave", json!({"n": 1, "text": "Somar.", "criteria": [crit], "done_when": "passa", "origin": said}));
+        write(root, Some("x"), "task", json!({"wave": 1, "text": "Somar.", "files": [{"path": "a.rs"}], "origin": said}));
+        let report = plan(root, "x");
+        let hints = hints_of(&report, "blocking", "cited-file-missing");
+        assert_eq!(hints.len(), 1, "{report}");
+        assert!(hints[0].contains("a.rs") && hints[0].contains("src/a.rs"), "{hints:?}");
     }
 
     /// Só avisam, e a pergunta segue: arquivo fora do git, item de uma onda

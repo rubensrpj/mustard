@@ -20,6 +20,26 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("grill.cited_in_the_request", Locale::EnUs) => {
             "The user's own document cites this place in its diagnosis. To be checked."
         }
+        ("grill.citation_left_out", Locale::PtBr) => {
+            "O pedido cita {source}, e essa citação não se confere: o arquivo não está no projeto \
+             ou não tem a linha citada. Ela ficou fora dos fatos do defeito; confira com o \
+             usuário o lugar certo."
+        }
+        ("grill.citation_left_out", Locale::EnUs) => {
+            "The request cites {source}, and that citation does not check: the file is not in the \
+             project or lacks the cited line. It was left out of the defect's facts; check the \
+             right place with the user."
+        }
+        ("grill.citation_left_out.same_name", Locale::PtBr) => {
+            "O pedido cita {source} só pelo nome, e {count} arquivos do projeto têm esse nome: \
+             {found}. A citação ficou fora dos fatos do defeito; pergunte ao usuário de qual deles \
+             ele fala."
+        }
+        ("grill.citation_left_out.same_name", Locale::EnUs) => {
+            "The request cites {source} by its name alone, and {count} files of the project have \
+             that name: {found}. The citation was left out of the defect's facts; ask the user \
+             which one they mean."
+        }
         ("grill.goal_missing", Locale::PtBr) => {
             "A spec {spec} ainda não tem o objetivo. Pergunte ao usuário \"Qual o objetivo, numa \
              frase?\" e rode o grill depois da resposta. Nada foi gravado."
@@ -289,7 +309,7 @@ mod tests {
     /// novos que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("survey.rs"), super::PREFIXES, 46, 0x35c2_d3b8_d12d_ccf1);
+        crate::platform::i18n::tests::assert_part_unchanged(include_str!("survey.rs"), super::PREFIXES, 48, 0x0bb3_4510_2448_7ab0);
     }
 
     /// O ponto aberto sem fato só fecha com os fatos: a dica de fechar um
@@ -313,6 +333,8 @@ mod tests {
     #[test]
     fn i18n_translates_grill_and_survey_keys() {
         let mut keys: Vec<(String, &[&str])> = vec![
+            ("grill.citation_left_out".into(), &["{source}"][..]),
+            ("grill.citation_left_out.same_name".into(), &["{source}", "{count}", "{found}"][..]),
             ("grill.goal_missing".into(), &["{spec}"][..]),
             ("grill.not_in_survey".into(), &["{spec}", "{phase}"][..]),
             ("grill.kinds_missing".into(), &[][..]),

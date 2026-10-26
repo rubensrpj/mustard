@@ -23,7 +23,10 @@ pub enum Refusal {
     EmptyText { event_type: String, field: String },
     WrongCount { event_type: String, field: String, min: usize, max: usize, count: usize },
     FactWithoutSource { fact: usize },
-    CitedFileMissing { fact: usize, path: String },
+    /// O fato `fact` cita o arquivo `path`, que não existe. `same_name` são os
+    /// arquivos do projeto com o mesmo nome, quando a citação traz só o nome:
+    /// a mensagem os sugere.
+    CitedFileMissing { fact: usize, path: String, same_name: Vec<String> },
     CitedLineMissing { fact: usize, path: String, line: u64, lines: u64 },
     BinaryOnlyField { field: String },
     /// Um campo que o tipo não declara. Ele entraria calado e ficaria gravado
@@ -511,9 +514,13 @@ impl Refusal {
             Self::FactWithoutSource { fact } => {
                 fill("spec_events.fact_without_source", &[("{fact}", fact.to_string())])
             }
-            Self::CitedFileMissing { fact, path } => fill(
+            Self::CitedFileMissing { fact, path, same_name } if same_name.is_empty() => fill(
                 "spec_events.cited_file_missing",
                 &[("{fact}", fact.to_string()), ("{path}", path.clone())],
+            ),
+            Self::CitedFileMissing { fact, path, same_name } => fill(
+                "spec_events.cited_file_missing.same_name",
+                &[("{fact}", fact.to_string()), ("{path}", path.clone()), ("{found}", same_name.join(", "))],
             ),
             Self::CitedLineMissing { fact, path, line, lines } => fill(
                 "spec_events.cited_line_missing",
