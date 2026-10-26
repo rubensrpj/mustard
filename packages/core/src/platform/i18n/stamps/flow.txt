@@ -13,7 +13,7 @@ close.clean_copy_failed	57951d3413dc7539
 close.code_not_kept	ad9ae216b05c4bdb
 close.criterion_failed	4fd04eed16bd5b0b
 close.criterion_missing_test	7b2450ce65a4d437
-close.criterion_passed_before	66e234d1dfb7c33f
+close.criterion_passed_before	8bd755b0bd37b373
 close.criterion_ran_no_test	85dbe3fa733455c5
 close.final_leftovers	53da05bc50d9d5cd
 close.final_review	4617d017c397a322
@@ -22,7 +22,7 @@ close.lint_from_the_base	ada60b046bf4d5b6
 close.next	6097bb1601bacc6d
 close.not_running	f6d26f8b1dea8f70
 close.pending_destination	57a579a02563465d
-close.proof_before_unchecked	c32c50d5d71e799e
+close.proof_before_unchecked	de91cb143d7ca5f4
 close.ran_without_local_files	ff5f0265339b8c77
 close.repair_next	0716483f13579f9c
 close.request_not_delivered	9cde2482412aa450
