@@ -109,12 +109,6 @@ pub(crate) fn dashboard_spec_log(root: &Path, spec: &str) -> Option<SpecLog> {
     dashboard::spec_log(&mustard_core::io::spec_events::spec_root(root), spec)
 }
 
-/// O custo de cada spec que os recibos das sessões do projeto `root`
-/// conhecem, em milionésimos de dólar.
-pub(crate) fn spec_costs(root: &Path) -> std::collections::BTreeMap<String, u64> {
-    consumption::costs(root)["by_spec"].as_object().into_iter().flatten().filter_map(|(spec, cost)| Some((spec.clone(), cost.as_u64()?))).collect()
-}
-
 pub(crate) fn observe_statusline(data:&Value) {
     consumption::observe_statusline(data);
 }

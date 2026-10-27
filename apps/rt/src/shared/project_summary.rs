@@ -88,7 +88,7 @@ fn by_item(items: &[Agreed], chances: Option<&BTreeMap<String, f64>>) -> BTreeMa
 
 /// O custo de cada spec que os recibos do projeto `root` conhecem.
 fn costs(root: &Path) -> BTreeMap<String, u64> {
-    crate::commands::panel::spec_costs(root)
+    crate::shared::session_costs::by_spec(root)
 }
 
 /// Grava as regras da spec `spec` e a linha dela no resumo do projeto `root`,

@@ -115,6 +115,8 @@ pub mod prompt;
 pub(crate) mod rule_proof;
 /// O texto do catálogo com as vagas preenchidas.
 pub mod say;
+/// Os recibos de custo das sessões do anfitrião e a soma deles por spec.
+pub(crate) mod session_costs;
 pub mod spec_state;
 /// O classificador das atividades que a rodada grava: coberta, junta a uma
 /// tarefa aberta de mesmo sentido ou nova, perto do assunto dela.

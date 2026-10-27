@@ -1,29 +1,13 @@
-//! Host cost receipts and historical token projection. Session totals and
-//! per-spec deltas are distinct; neither is added to wave usage twice.
-use std::collections::BTreeMap;
+//! A medição de custo que o anfitrião manda, gravada no recibo da sessão
+//! ([`crate::shared::session_costs`]), a linha de status e a projeção
+//! histórica de tokens.
 use std::path::Path;
 
-use mustard_core::io::fs::lock::{LockedFile, read_shared};
+use mustard_core::io::fs::lock::read_shared;
 use mustard_core::io::{sha256::Sha256, spend};
-use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-#[derive(Debug, Default, Serialize, Deserialize)]
-#[serde(default)]
-struct Receipt {
-    last_micro_usd: Option<u64>,
-    total_micro_usd: u64,
-    unattributed_micro_usd: u64,
-    by_spec: BTreeMap<String, u64>,
-    last_spec: Option<String>,
-    measured_at: String,
-    first_at: String,
-    model: Option<String>,
-}
-
-fn folder(root: &Path) -> std::path::PathBuf {
-    root.join(".claude/mustard/usage/sessions")
-}
+pub(super) use crate::shared::session_costs::costs;
 
 fn statusline_path(root: &Path, session: &str) -> std::path::PathBuf {
     let mut hash = Sha256::new();
@@ -61,57 +45,6 @@ pub(super) fn statusline(root: &Path, session: Option<&str>) -> Value {
         .unwrap_or(Value::Null)
 }
 
-fn read(text: &str) -> Result<Receipt, String> {
-    if text.trim().is_empty() {
-        Ok(Receipt::default())
-    } else {
-        serde_json::from_str(text).map_err(|_| "usage-receipt-unreadable".into())
-    }
-}
-
-fn apply(
-    receipt: &mut Receipt,
-    measurement: &Value,
-    spec: Option<&str>,
-    at: &str,
-) -> Result<(), String> {
-    let Some(cost) = measurement["cost"]["usd"].as_f64() else {
-        return Ok(());
-    };
-    if !cost.is_finite() || cost < 0.0 || cost > 1_000_000.0 {
-        return Err("usage-invalid-cost".into());
-    }
-    let cost = (cost * 1_000_000.0).round() as u64;
-    let delta = match receipt.last_micro_usd {
-        Some(previous) if cost >= previous => cost - previous,
-        Some(_) => return Err("usage-out-of-order-or-reset".into()),
-        None => cost,
-    };
-    receipt.total_micro_usd = receipt.total_micro_usd.saturating_add(delta);
-    // An interval crossing branches and the initial nonzero baseline cannot
-    // be attributed safely. Browsing another spec never changes ownership.
-    if receipt.last_micro_usd.is_some()
-        && receipt.last_spec.as_deref() == spec
-        && let Some(spec) = spec
-    {
-        let total = receipt.by_spec.entry(spec.into()).or_default();
-        *total = total.saturating_add(delta);
-    } else {
-        receipt.unattributed_micro_usd = receipt.unattributed_micro_usd.saturating_add(delta);
-    }
-    receipt.last_micro_usd = Some(cost);
-    receipt.last_spec = spec.map(str::to_string);
-    if receipt.first_at.is_empty() {
-        receipt.first_at = at.into();
-    }
-    receipt.measured_at = at.into();
-    receipt.model = measurement["model"]
-        .as_str()
-        .map(str::to_string)
-        .or_else(|| receipt.model.clone());
-    Ok(())
-}
-
 pub(super) fn record(start: &Path, session: &str, measurement: &Value) -> Value {
     if session.is_empty() || session.len() > 200 {
         return json!({"ok":false,"reason":"usage-invalid-session"});
@@ -125,66 +58,10 @@ pub(super) fn record(start: &Path, session: &str, measurement: &Value) -> Value 
         return json!({"ok":live["ok"],"recorded":live["recorded"],"cost_recorded":false,"reason":"usage-cost-unknown","live":live});
     }
     let spec = crate::shared::context::checkout::spec_of_checkout_branch(&start.to_string_lossy());
-    let mut hash = Sha256::new();
-    hash.update(session.as_bytes());
-    let path = folder(&root).join(format!("{}.json", hash.hex_digest()));
-    let result = (|| -> Result<(), String> {
-        let mut lock = LockedFile::exclusive(&path).map_err(|e| e.to_string())?;
-        let mut receipt = read(&lock.read_to_string().map_err(|e| e.to_string())?)?;
-        apply(
-            &mut receipt,
-            measurement,
-            spec.as_deref(),
-            &chrono::Utc::now().to_rfc3339(),
-        )?;
-        let mut bytes = serde_json::to_vec(&receipt).map_err(|e| e.to_string())?;
-        bytes.push(b'\n');
-        lock.replace(&bytes).map_err(|e| e.to_string())
-    })();
-    result.map_or_else(
+    crate::shared::session_costs::add(&root, session, measurement, spec.as_deref()).map_or_else(
         |reason| json!({"ok":false,"reason":reason}),
         |()| json!({"ok":true,"recorded":true,"live":live}),
     )
-}
-
-pub(super) fn costs(root: &Path) -> Value {
-    let mut by_spec = BTreeMap::<String, u64>::new();
-    let mut total = 0u64;
-    let mut unattributed = 0u64;
-    let mut known = 0;
-    let mut unreadable = 0;
-    let mut newest = String::new();
-    let mut model = None;
-    if let Ok(entries) = std::fs::read_dir(folder(root)) {
-        for path in entries
-            .flatten()
-            .map(|entry| entry.path())
-            .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
-        {
-            let receipt = read_shared(&path)
-                .map_err(|e| e.to_string())
-                .and_then(|text| read(&text));
-            match receipt {
-                Ok(receipt) => {
-                    known += 1;
-                    total = total.saturating_add(receipt.total_micro_usd);
-                    unattributed = unattributed.saturating_add(receipt.unattributed_micro_usd);
-                    for (name, cost) in receipt.by_spec {
-                        let sum = by_spec.entry(name).or_default();
-                        *sum = sum.saturating_add(cost);
-                    }
-                    if receipt.measured_at > newest {
-                        newest = receipt.measured_at;
-                        model = receipt.model;
-                    }
-                }
-                Err(_) => unreadable += 1,
-            }
-        }
-    }
-    json!({"known_micro_usd":if known>0{Some(total)}else{None},"unattributed_micro_usd":if known>0{Some(unattributed)}else{None},
-        "by_spec":by_spec,"observed_sessions":known,"unreadable_sessions":unreadable,"measured_at":if newest.is_empty(){None}else{Some(newest)},
-        "model":model,"basis":"host-api-equivalent-estimate","coverage":"observed-sessions-only","billed_micro_usd":null})
 }
 
 pub(super) fn history(root: &Path, dir: Option<&Path>) -> Value {
@@ -233,40 +110,6 @@ mod tests {
         assert_eq!(result["recorded"], false);
         assert_eq!(result["reason"], "project-not-initialized");
         assert!(!root.path().join(".claude").exists());
-    }
-    #[test]
-    fn duplicate_totals_and_branch_switches_never_double_count_or_misattribute() {
-        let mut receipt = Receipt::default();
-        for (cost, spec) in [
-            (1.0, Some("a")),
-            (1.2, Some("a")),
-            (1.2, Some("a")),
-            (1.4, Some("b")),
-            (1.6, Some("b")),
-        ] {
-            apply(&mut receipt, &json!({"cost":{"usd":cost}}), spec, "now").unwrap();
-        }
-        assert_eq!(receipt.total_micro_usd, 1_600_000);
-        assert_eq!(receipt.by_spec["a"], 200_000);
-        assert_eq!(receipt.by_spec["b"], 200_000);
-        assert_eq!(receipt.unattributed_micro_usd, 1_200_000);
-        assert!(
-            apply(
-                &mut receipt,
-                &json!({"cost":{"usd":0.1}}),
-                Some("b"),
-                "later"
-            )
-            .is_err()
-        );
-        assert_eq!(receipt.total_micro_usd, 1_600_000);
-    }
-    #[test]
-    fn missing_and_invalid_cost_do_not_become_zero_observations() {
-        let mut receipt = Receipt::default();
-        apply(&mut receipt, &json!({}), Some("a"), "now").unwrap();
-        assert_eq!(receipt.last_micro_usd, None);
-        assert!(apply(&mut receipt, &json!({"cost":{"usd":-1}}), None, "now").is_err());
     }
     #[test]
     fn historical_project_and_machine_totals_have_different_scopes() {
