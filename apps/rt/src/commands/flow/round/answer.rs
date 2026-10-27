@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecLog};
-use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State, not_closed_yet, returns_to_running};
+use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State, can_run, not_closed_yet, returns_to_running};
 use mustard_core::domain::wave_prompt::{WaveCopy, summary_of, token_cap_message, wave_files, wave_title};
 use mustard_core::io::spec_events as store;
 use mustard_core::io::wave_prompt::{Flight, recorded_copy};
@@ -30,7 +30,7 @@ use super::slots::{open_copies, sharing_copy, without_live_copy};
 use super::stops::{HeldReturn, stopped_waves, waves_stuck};
 use super::task_release;
 use super::usage::Caller;
-use super::{RoundOpts, can_run};
+use super::RoundOpts;
 use crate::commands::git_settle::CopiesLock;
 use crate::commands::spec_events::write::record;
 use crate::shared::judgement::Board;

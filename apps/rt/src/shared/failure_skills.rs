@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 
 use mustard_core::domain::project_summary::SURE;
 use mustard_core::domain::spec_events::{SpecEvent, SpecLog, TASK_TITLE_MAX};
-use mustard_core::domain::spec_state::{PhaseWriter, SpecState as _};
+use mustard_core::domain::spec_state::{PhaseWriter, SpecState as _, can_run};
 use mustard_core::domain::text::cut_line;
 use mustard_core::io::failures::{self as disk, Failure, SkillTask};
 use mustard_core::io::spec_events as store;
@@ -227,7 +227,7 @@ fn group_pending_with(root: &Path, spec: &str, jev: Option<&yes_no::AskFn<'_>>) 
 
 /// A spec `spec` de `start` pode receber a tarefa agora: ela roda.
 pub(crate) fn runs(start: &Path, spec: &str) -> bool {
-    DiskSpecState::new(start).state(spec).and_then(|state| state.phase).is_some_and(crate::commands::flow::round::can_run)
+    DiskSpecState::new(start).state(spec).and_then(|state| state.phase).is_some_and(can_run)
 }
 
 /// A spec aberta onde nasce a tarefa do grupo cuja última ocorrência é de

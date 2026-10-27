@@ -178,6 +178,14 @@ pub fn returns_to_running(phase: &str) -> bool {
     matches!(phase.trim(), "closed" | "pr_open")
 }
 
+/// A spec na fase `phase` pode ter ondas despachadas: está aprovada, ou já em
+/// execução. É a mesma pergunta para a rodada, para a fila que ela mostra e
+/// para quem aponta a spec que recebe a tarefa nascida das falhas do projeto.
+#[must_use]
+pub fn can_run(phase: &str) -> bool {
+    matches!(phase, "approved" | "running")
+}
+
 /// Quem grava uma mudança de fase no `spec.ndjson`. O modelo não está aqui:
 /// o `run write` nunca grava o estado, que é dos comandos do fluxo e da
 /// testemunha da aprovação.

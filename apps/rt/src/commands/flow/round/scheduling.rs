@@ -1,7 +1,7 @@
 //! Cheap, read-only explanation of the declared queue. Source relationships
 //! are checked at dispatch; observing the queue never scans or calls a model.
 use super::{backlog::Hold, planning::needs_planning, queue};
-use mustard_core::domain::{spec_events::SpecLog, spec_state::State};
+use mustard_core::domain::{spec_events::SpecLog, spec_state::{State, can_run}};
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, path::Path};
@@ -63,7 +63,7 @@ fn queue(root: &Path, spec: &str, log: &SpecLog) -> Queue {
     let vacancies = super::vacancy::vacancies(root, spec, log);
     let (capacity, free) = (vacancies.capacity, vacancies.free());
     let declared = mustard_core::ProjectConfig::load(root).max_compiling_waves().is_some();
-    let active = State::from_log(log).phase.is_some_and(super::can_run);
+    let active = State::from_log(log).phase.is_some_and(can_run);
     let code = |id: u64| codes.get(&id).cloned().unwrap_or_else(|| id.to_string());
     let broken = crate::commands::spec_events::task_dependents::broken_dependencies(log);
     let mut rows = Vec::new();

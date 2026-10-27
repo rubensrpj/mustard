@@ -371,12 +371,6 @@ fn spec_without_base_check(opts: &RoundOpts, root: &Path, session: Option<&str>)
     super::validation::base_check_due(&log).then_some(spec)
 }
 
-/// A spec na fase `phase` pode ter ondas despachadas: está aprovada, ou já em
-/// execução. É a mesma pergunta para a rodada e para a fila que ela mostra.
-pub(crate) fn can_run(phase: &str) -> bool {
-    matches!(phase, "approved" | "running")
-}
-
 /// O que os testes das partes da rodada dividem: a spec aprovada com o plano
 /// que o teste pede, a chamada da rodada e as linhas que os agentes devolvem.
 #[cfg(test)]
