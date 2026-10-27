@@ -15,9 +15,9 @@
 //! teste pelos arquivos do relógio dos testes ([`CLOCK_FILES`]).
 //!
 //! Código de teste é o arquivo sob uma pasta `tests` (fora das `fixtures`, que
-//! são dados), o item marcado `#[cfg(test)]` ou `#[cfg(all(test, …))]` e o
-//! arquivo que uma declaração `mod x;` marcada assim traz. Nele, cada uma
-//! destas leituras do relógio é acusada:
+//! são dados), o item cujo `cfg` só vale em teste e o arquivo que uma
+//! declaração `mod x;` desse item traz, pela leitura única das fontes
+//! ([`test_spans`]). Nele, cada uma destas leituras do relógio é acusada:
 //!
 //! - `.elapsed()`: o tempo que passou;
 //! - `Instant::now()` que não é o argumento de uma chamada nem o valor de um
@@ -40,6 +40,8 @@ mod manifest_dir;
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+
+use crate::sources::{code_only, test_spans};
 
 /// Os arquivos do relógio dos testes, do topo do repositório: o relógio
 /// falso, a espera pelo evento de outro processo, a pausa antes de afirmar
@@ -72,195 +74,6 @@ struct Finding {
     file: String,
     line: usize,
     what: &'static str,
-}
-
-/// `text` com os comentários e o conteúdo dos textos e dos caracteres
-/// trocados por espaços, byte por byte: as posições e as quebras de linha
-/// ficam onde estavam.
-fn code_only(text: &str) -> Vec<u8> {
-    let bytes = text.as_bytes();
-    let mut out = bytes.to_vec();
-    let blank = |out: &mut Vec<u8>, from: usize, to: usize| {
-        for byte in &mut out[from..to.min(bytes.len())] {
-            if *byte != b'\n' {
-                *byte = b' ';
-            }
-        }
-    };
-    let mut at = 0;
-    while at < bytes.len() {
-        let rest = &bytes[at..];
-        if rest.starts_with(b"//") {
-            let end = rest.iter().position(|&b| b == b'\n').map_or(bytes.len(), |n| at + n);
-            blank(&mut out, at, end);
-            at = end;
-        } else if rest.starts_with(b"/*") {
-            let mut depth = 0usize;
-            let mut end = at;
-            while end < bytes.len() {
-                if bytes[end..].starts_with(b"/*") {
-                    depth += 1;
-                    end += 2;
-                } else if bytes[end..].starts_with(b"*/") {
-                    depth -= 1;
-                    end += 2;
-                    if depth == 0 {
-                        break;
-                    }
-                } else {
-                    end += 1;
-                }
-            }
-            blank(&mut out, at, end);
-            at = end;
-        } else if let Some(open) = raw_string_open(bytes, at) {
-            let hashes = open.hashes;
-            let mut end = open.body;
-            loop {
-                match bytes[end..].iter().position(|&b| b == b'"') {
-                    Some(quote) if bytes[end + quote + 1..].iter().take(hashes).filter(|&&b| b == b'#').count() == hashes => {
-                        end += quote + 1 + hashes;
-                        break;
-                    }
-                    Some(quote) => end += quote + 1,
-                    None => {
-                        end = bytes.len();
-                        break;
-                    }
-                }
-            }
-            blank(&mut out, open.body, end.saturating_sub(1 + hashes));
-            at = end;
-        } else if bytes[at] == b'"' {
-            let mut end = at + 1;
-            while end < bytes.len() && bytes[end] != b'"' {
-                end += if bytes[end] == b'\\' { 2 } else { 1 };
-            }
-            blank(&mut out, at + 1, end);
-            at = end + 1;
-        } else if bytes[at] == b'\'' {
-            at = char_literal_end(bytes, at).map_or(at + 1, |end| {
-                blank(&mut out, at + 1, end - 1);
-                end
-            });
-        } else {
-            at += 1;
-        }
-    }
-    out
-}
-
-/// O começo de um texto cru (`r"…"`, `r#"…"#`, `br"…"`) em `at`.
-struct RawOpen {
-    body: usize,
-    hashes: usize,
-}
-
-fn raw_string_open(bytes: &[u8], at: usize) -> Option<RawOpen> {
-    let after_prefix = if bytes[at..].starts_with(b"br") {
-        at + 2
-    } else if bytes[at] == b'r' {
-        at + 1
-    } else {
-        return None;
-    };
-    if at > 0 && (bytes[at - 1].is_ascii_alphanumeric() || bytes[at - 1] == b'_') {
-        return None;
-    }
-    let hashes = bytes[after_prefix..].iter().take_while(|&&b| b == b'#').count();
-    (bytes.get(after_prefix + hashes) == Some(&b'"')).then_some(RawOpen { body: after_prefix + hashes + 1, hashes })
-}
-
-/// O fim (depois da aspa) do caractere que abre em `at`, ou `None` quando a
-/// aspa abre um tempo de vida (`'a`).
-fn char_literal_end(bytes: &[u8], at: usize) -> Option<usize> {
-    if bytes.get(at + 1) == Some(&b'\\') {
-        let close = bytes.get(at + 3..)?.iter().position(|&b| b == b'\'')?;
-        return Some(at + 3 + close + 1);
-    }
-    let width = match bytes.get(at + 1)? {
-        b if *b < 0x80 => 1,
-        b if *b >= 0xF0 => 4,
-        b if *b >= 0xE0 => 3,
-        _ => 2,
-    };
-    (bytes.get(at + 1 + width) == Some(&b'\'')).then_some(at + 2 + width)
-}
-
-/// O atributo que abre em `at` no código `code`, inteiro, e onde ele acaba.
-fn attribute_at(code: &[u8], at: usize) -> Option<(String, usize)> {
-    if !code[at..].starts_with(b"#[") {
-        return None;
-    }
-    let mut depth = 0usize;
-    for (offset, &byte) in code[at + 1..].iter().enumerate() {
-        match byte {
-            b'[' => depth += 1,
-            b']' => {
-                depth -= 1;
-                if depth == 0 {
-                    let end = at + 1 + offset + 1;
-                    let text: String = String::from_utf8_lossy(&code[at..end]).split_whitespace().collect();
-                    return Some((text, end));
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-/// O atributo, sem espaços, só vale para os testes: `#[cfg(test)]` ou um
-/// `#[cfg(all(…))]` com `test` entre as condições.
-fn marks_test(attribute: &str) -> bool {
-    attribute == "#[cfg(test)]"
-        || attribute.strip_prefix("#[cfg(all(").and_then(|rest| rest.strip_suffix("))]")).is_some_and(|list| list.split(',').any(|part| part == "test"))
-}
-
-/// O fim do item que começa em `from`: o `;` dele fora de parênteses e
-/// colchetes, ou a chave que fecha o bloco dele, o que vier primeiro.
-fn item_end(code: &[u8], from: usize) -> usize {
-    let (mut braces, mut nested) = (0usize, 0usize);
-    for (offset, &byte) in code[from..].iter().enumerate() {
-        match byte {
-            b';' if braces == 0 && nested == 0 => return from + offset + 1,
-            b'(' | b'[' => nested += 1,
-            b')' | b']' => nested = nested.saturating_sub(1),
-            b'{' => braces += 1,
-            b'}' => {
-                braces = braces.saturating_sub(1);
-                if braces == 0 {
-                    return from + offset + 1;
-                }
-            }
-            _ => {}
-        }
-    }
-    code.len()
-}
-
-/// Os trechos de teste de um arquivo de código: cada um do atributo que
-/// marca o item ao fim dele.
-fn test_items(code: &[u8]) -> Vec<(usize, usize)> {
-    let mut ranges = Vec::new();
-    let mut at = 0;
-    while let Some(found) = code[at..].windows(2).position(|pair| pair == b"#[") {
-        let start = at + found;
-        let mut cursor = start;
-        let mut marked = false;
-        while let Some((attribute, end)) = attribute_at(code, cursor) {
-            marked |= marks_test(&attribute);
-            cursor = end + code[end..].iter().take_while(|b| b.is_ascii_whitespace()).count();
-        }
-        if marked {
-            let end = item_end(code, cursor);
-            ranges.push((start, end));
-            at = end;
-        } else {
-            at = cursor.max(start + 2);
-        }
-    }
-    ranges
 }
 
 /// Os atributos colados antes do byte `at`, do mais perto ao mais longe,
@@ -298,9 +111,10 @@ fn attributes_before(code: &[u8], at: usize) -> Vec<(usize, usize)> {
 }
 
 /// Cada `mod x;` de um arquivo: o arquivo que ele traz e se ele só vale para
-/// os testes. O arquivo vem do `#[path]` da fila de atributos, a partir da
-/// pasta do arquivo, ou do nome.
-fn declared_modules(file: &Path, original: &str, code: &[u8]) -> Vec<(PathBuf, bool)> {
+/// os testes, por estar num dos trechos de teste `spans` do arquivo. O
+/// arquivo vem do `#[path]` da fila de atributos, a partir da pasta do
+/// arquivo, ou do nome.
+fn declared_modules(file: &Path, original: &str, code: &[u8], spans: &[(usize, usize)]) -> Vec<(PathBuf, bool)> {
     let mut found = Vec::new();
     for (at, _) in code.windows(4).enumerate().filter(|(_, window)| *window == b"mod ") {
         if at > 0 && (code[at - 1].is_ascii_alphanumeric() || code[at - 1] == b'_') {
@@ -313,9 +127,8 @@ fn declared_modules(file: &Path, original: &str, code: &[u8]) -> Vec<(PathBuf, b
             continue;
         }
         let name = String::from_utf8_lossy(&rest[..name_len]).into_owned();
-        let attributes = attributes_before(code, at);
-        let test = attributes.iter().any(|(from, to)| marks_test(&String::from_utf8_lossy(&code[*from..*to]).split_whitespace().collect::<String>()));
-        let path = attributes.iter().find_map(|(from, to)| {
+        let test = spans.iter().any(|&(from, to)| (from..to).contains(&at));
+        let path = attributes_before(code, at).iter().find_map(|(from, to)| {
             let text: String = String::from_utf8_lossy(&code[*from..*to]).split_whitespace().collect();
             text.starts_with("#[path=").then(|| original[*from..*to].split('"').nth(1).unwrap_or_default().to_string())
         });
@@ -423,8 +236,8 @@ fn findings_under(top: &Path) -> Vec<Finding> {
     for file in &files {
         let original = std::fs::read_to_string(file).unwrap_or_else(|e| panic!("{}: {e}", file.display()));
         let code = code_only(&original);
-        let ranges = test_items(&code);
-        let modules: Vec<(String, bool)> = declared_modules(file, &original, &code).into_iter().map(|(module, test)| (shown_of(&module), test)).collect();
+        let ranges = test_spans(&code);
+        let modules: Vec<(String, bool)> = declared_modules(file, &original, &code, &ranges).into_iter().map(|(module, test)| (shown_of(&module), test)).collect();
         whole_tests.extend(modules.iter().filter(|(_, test)| *test).map(|(module, _)| module.clone()));
         sources.push((shown_of(file), code, ranges, modules));
     }

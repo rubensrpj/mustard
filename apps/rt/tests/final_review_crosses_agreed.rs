@@ -23,9 +23,6 @@ mod binary;
 #[path = "support/manifest_dir.rs"]
 mod manifest_dir;
 
-#[path = "support/sources.rs"]
-mod sources;
-
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -34,6 +31,8 @@ use mustard_core::domain::spec_events::{SpecEvent, SpecLog};
 use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Value, json};
+
+use crate::sources;
 
 #[path = "support/mod.rs"]
 mod support;

@@ -19,15 +19,12 @@ mod manifest_dir;
 #[path = "support/binary.rs"]
 mod binary;
 
-#[path = "support/sources.rs"]
-mod sources;
-
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use sources::{production_code, rust_sources};
+use crate::sources::{production_code, rust_sources};
 
 /// O que só o motor de página escreve.
 const ENGINE_ONLY: &[&str] = &["<!doctype", "<style", "<code>", "<strong>", "<em>"];
@@ -182,12 +179,4 @@ fn each_draft_item_becomes_an_event_of_its_type_and_lands_in_its_block() {
             assert_eq!(event[field], fields[field], "the {kind} {field} changed on the way: {event}");
         }
     }
-}
-
-#[test]
-fn test_items_are_left_out_of_the_scan() {
-    let source = "fn a() {}\n#[cfg(test)]\nuse x::y;\nfn b() {}\n#[cfg(test)]\nmod tests {\n    fn t() { let _ = \"<style>\"; }\n}\n";
-    let code = production_code(source);
-    assert!(code.contains("fn a()") && code.contains("fn b()"), "{code}");
-    assert!(!code.contains("<style>") && !code.contains("use x::y"), "{code}");
 }

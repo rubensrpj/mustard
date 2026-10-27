@@ -28,6 +28,11 @@ mod pause;
 #[path = "../../../packages/core/tests/support/wait_for.rs"]
 mod wait_for;
 
+// A leitura das fontes de código entra uma vez só, aqui: cada arquivo que a
+// usa só usa parte dela, e os testes dela rodam uma vez.
+#[path = "support/sources.rs"]
+mod sources;
+
 mod agents_find_code_through_the_map;
 mod approval_refusal_explains;
 mod clean_exit;

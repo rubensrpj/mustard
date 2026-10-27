@@ -8,8 +8,9 @@
 //! `run write` que a chama, não se importam em ciclo, nem por um módulo da
 //! pasta da gravação no meio do caminho. A rodada e a parte comum gravam pela
 //! gravação de eventos; ela, por isso, não chega a nenhum deles. A conta lê o
-//! código de produção de cada arquivo do pacote, com os caminhos relativos
-//! (`super::`, `self::`) escritos por inteiro, e liga um módulo ao outro por
+//! código de produção de cada arquivo do pacote, sem os comentários e o
+//! conteúdo dos textos, com os caminhos relativos (`super::`, `self::`)
+//! escritos por inteiro, e liga um módulo ao outro por
 //! todo caminho que nomeia o outro: na importação, no caminho escrito antes
 //! de uma chamada e na lista entre chaves. O caminho que começa por um filho
 //! que o módulo declara fora dos testes (`filho::...`) também liga o módulo a
@@ -18,13 +19,10 @@
 //! dessa pasta não liga um módulo da lista a outro: o ciclo que passa por ele
 //! fica fora desta conta.
 
-#[path = "support/sources.rs"]
-mod sources;
-
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 
-use sources::{production_code, rust_sources};
+use crate::sources::{code_only, production_code, rust_sources};
 
 /// Cada módulo do fluxo, a gravação de eventos e a porta dela, com o caminho
 /// de cada um a partir da raiz do pacote.
@@ -68,14 +66,6 @@ fn node_of(path: &str) -> String {
 /// `true` quando o caractere entra num caminho: letra, número, `_` ou `:`.
 fn in_path(c: char) -> bool {
     c.is_alphanumeric() || c == '_' || c == ':'
-}
-
-/// A linha sem o comentário do fim: o `//` que não segue um `:` de endereço.
-fn without_comment(line: &str) -> &str {
-    let bytes = line.as_bytes();
-    (0..bytes.len().saturating_sub(1))
-        .find(|&at| bytes[at] == b'/' && bytes[at + 1] == b'/' && (at == 0 || bytes[at - 1] != b':'))
-        .map_or(line, |at| &line[..at])
 }
 
 /// Os caminhos relativos da linha escritos a partir da raiz do pacote, no
@@ -214,15 +204,15 @@ fn edges() -> BTreeMap<(String, String), Vec<String>> {
         let rel = file.strip_prefix(&root).unwrap();
         let from = node_of(module);
         let source = std::fs::read_to_string(file).unwrap();
-        let production = production_code(&source);
+        let production = String::from_utf8_lossy(&code_only(&production_code(&source))).into_owned();
         let mut link = |to: &str, line: &str| {
             let to = node_of(to);
             if to != from {
                 out.entry((from.clone(), to)).or_default().push(format!("{}: {}", rel.display(), line.trim()));
             }
         };
-        let children: Vec<&str> = production.lines().filter_map(|line| declared_child(without_comment(line))).collect();
-        for line in production.lines().map(without_comment) {
+        let children: Vec<&str> = production.lines().filter_map(declared_child).collect();
+        for line in production.lines() {
             for child in children.iter().filter(|child| names_child(line, child)) {
                 let child = format!("{module}::{child}");
                 if known.contains(&child) {
@@ -230,7 +220,7 @@ fn edges() -> BTreeMap<(String, String), Vec<String>> {
                 }
             }
         }
-        let code: String = production.lines().map(|line| absolute(without_comment(line), module) + "\n").collect();
+        let code: String = production.lines().map(|line| absolute(line, module) + "\n").collect();
         for line in expanded(&code).lines() {
             for to in named(line, &known) {
                 link(to, line);
@@ -349,36 +339,4 @@ fn a_module_outside_the_writer_folder_in_the_middle_does_not_link_the_writer_to_
     let edge = |from: &str, to: &str| ((from.to_string(), to.to_string()), vec![format!("{from}: {to}")]);
     let edges: BTreeMap<(String, String), Vec<String>> = [edge("write", summary), edge(summary, "panel")].into_iter().collect();
     assert_eq!(reach(&edges).get(&("write", "panel")), None);
-}
-
-/// O item que só existe em teste sai do código de produção, seja qual for a
-/// forma do `cfg` que o marca: `test` sozinho, `all(test, ...)` ou qualquer
-/// outra que exija `test`.
-#[test]
-fn production_code_drops_every_item_that_only_exists_in_a_test_build() {
-    let source = concat!(
-        "use crate::kept;\n",
-        "#[cfg(test)]\nmod plain {\n    use super::*;\n}\n",
-        "#[cfg(all(test, target_os = \"linux\"))]\nmod with_target {\n    use super::*;\n}\n",
-        "#[cfg(any(all(test, unix), all(test, windows)))]\nmod nested {\n    use super::*;\n}\n",
-        "#[cfg( all( unix , test ) )]\nuse crate::only_in_tests;\n",
-        "fn kept() {}\n",
-    );
-    let code = production_code(source);
-    let lines: Vec<&str> = code.lines().filter(|line| !line.trim().is_empty()).collect();
-    assert_eq!(lines, ["use crate::kept;", "fn kept() {}"], "{code}");
-}
-
-/// O item que também compila fora de teste fica no código de produção, mesmo
-/// quando o `cfg` nomeia `test`.
-#[test]
-fn production_code_keeps_every_item_that_also_exists_outside_a_test_build() {
-    let source = concat!(
-        "#[cfg(not(test))]\nfn negated() {}\n",
-        "#[cfg(any(test, unix))]\nfn either() {}\n",
-        "#[cfg(all(unix, any(test, windows)))]\nfn mixed() {}\n",
-        "#[cfg(all(unix, target_os = \"linux\"))]\nfn system() {}\n",
-        "#[cfg(feature = \"test\")]\nfn feature() {}\n",
-    );
-    assert_eq!(production_code(source), source);
 }
