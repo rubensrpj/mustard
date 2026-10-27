@@ -190,8 +190,8 @@ fn a_cited_file_deleted_by_a_commit_creates_the_update_task_without_the_jev() {
     assert!(tasks[0].str_field("agent").unwrap().contains("apagou `src/b.rs`"), "{:?}", tasks[0].fields);
 }
 
-/// Appends `line` to `src/a.rs`, commits it and records the commit of wave 1
-/// as the round records it. Returns the commit.
+/// Acrescenta `line` a `src/a.rs`, comita e grava o commit da onda 1 como a
+/// rodada o grava. Devolve o commit.
 fn cited_change(root: &Path, line: &str) -> String {
     let path = root.join("src/a.rs");
     let before = std::fs::read_to_string(&path).unwrap();
@@ -203,10 +203,10 @@ fn cited_change(root: &Path, line: &str) -> String {
     sha
 }
 
-/// Two commits change the file the skill cites, each read after its own
-/// round: the evaluation that the first one created gets a new version with
-/// both changes, each with its diff and the chance the Jev gave it, and the
-/// registry keeps pointing at it.
+/// Dois commits mudam o arquivo que a skill cita, cada um lido depois da sua
+/// própria rodada: a avaliação que o primeiro criou ganha uma versão nova com
+/// as duas mudanças, cada uma com o seu diff e a chance que o Jev deu, e o
+/// registro continua apontando para ela.
 #[test]
 fn two_changes_to_a_skill_file_make_one_evaluation_with_both() {
     let dir = tempdir().unwrap();
@@ -233,9 +233,9 @@ fn two_changes_to_a_skill_file_make_one_evaluation_with_both() {
     assert_eq!(marked.task, Some(tasks[0].id), "{marked:?}");
 }
 
-/// The evaluation removed from the spec leaves its change to the next one:
-/// the next commit on the cited file creates a new task, which lists every
-/// commit since the last evaluation of the skill, the removed one's included.
+/// A avaliação retirada da spec deixa a mudança dela para a próxima: o
+/// próximo commit no arquivo citado cria uma tarefa nova, que lista todos os
+/// commits desde a última avaliação da skill, inclusive o da retirada.
 #[test]
 fn a_removed_evaluation_leaves_its_change_to_the_next_one() {
     let dir = tempdir().unwrap();
@@ -317,12 +317,12 @@ fn two_discards_in_a_row_retire_the_skill() {
     let _ = std::fs::remove_dir_all(&backup);
 }
 
-/// The wave of the task that updates a skill writes the new version in the
-/// reserved folder of its own copy and records the update with a gain: the
-/// round that takes the return writes it in the place of the skill, the
-/// backup, the registry and the recorded fingerprint follow the new version,
-/// and the reserved folder leaves the copy. No commit carries it, and the task
-/// tells the wave to write it in its copy, not in the skill's folder.
+/// A onda da tarefa que atualiza uma skill escreve a versão nova na pasta
+/// reservada da própria cópia e registra a atualização com um ganho: a rodada
+/// que recebe o retorno a escreve no lugar da skill, o backup, o registro e a
+/// impressão digital gravada acompanham a versão nova, e a pasta reservada
+/// sai da cópia. Nenhum commit a leva, e a tarefa manda a onda escrevê-la na
+/// cópia dela, não na pasta da skill.
 #[test]
 fn a_skill_update_the_wave_delivers_is_installed_by_the_round() {
     let dir = tempdir().unwrap();
@@ -366,12 +366,11 @@ fn a_skill_update_the_wave_delivers_is_installed_by_the_round() {
     let _ = std::fs::remove_dir_all(&backup);
 }
 
-/// The wave of the task that creates a skill writes it in the reserved folder
-/// of its own copy, as an update does, and records the creation with a gain
-/// while the project has no folder for it yet: the record waits without a
-/// backup warning, the round that takes the return writes the skill in the
-/// project with its backup, the reserved folder leaves the copy, and no commit
-/// carries it.
+/// A onda da tarefa que cria uma skill a escreve na pasta reservada da própria
+/// cópia, como faz uma atualização, e registra a criação com um ganho enquanto
+/// o projeto ainda não tem pasta para ela: o registro espera sem aviso de
+/// backup, a rodada que recebe o retorno escreve a skill no projeto com o
+/// backup dela, a pasta reservada sai da cópia, e nenhum commit a leva.
 #[test]
 fn a_skill_creation_the_wave_delivers_is_installed_by_the_round() {
     let dir = tempdir().unwrap();

@@ -205,8 +205,8 @@ mod tests {
     use super::super::tests::{approved, delivered, id_of, round, warning_of, waves_in, write};
     use super::*;
 
-    /// Marks the task `id` of spec `x` in `root` as the evaluation of the
-    /// skill `name`, which cites `src/a.rs`.
+    /// Marca a tarefa `id` da spec `x` em `root` como a avaliação da skill
+    /// `name`, que cita `src/a.rs`.
     fn mark(root: &Path, name: &str, id: u64) {
         registry::change(root, |skills| {
             let skill = MustardSkill {
@@ -221,9 +221,9 @@ mod tests {
         .unwrap();
     }
 
-    /// The evaluation of the skill `name`, citing `src/a.rs`, in the backlog
-    /// of spec `x` in `root` and marked in the registry, depending on
-    /// `depends_on`. Returns its number.
+    /// A avaliação da skill `name`, que cita `src/a.rs`, no backlog da spec
+    /// `x` em `root` e marcada no registro, dependendo de `depends_on`.
+    /// Devolve o número dela.
     fn evaluation(root: &Path, (said, crit): (u64, u64), name: &str, depends_on: &[u64]) -> u64 {
         let id = id_of(&write(
             root,
@@ -237,11 +237,11 @@ mod tests {
         id
     }
 
-    /// Wave 1 changes `src/a.rs`, wave 2 carries the evaluation of a skill
-    /// that cites it, and wave 3, which depends on wave 2, changes the same
-    /// file. Wave 2 does not go out with wave 1: it waits for the task of
-    /// wave 1 only, named in the warning, since the task of wave 3 can only
-    /// go after it. Once wave 1 delivers, wave 2 goes out.
+    /// A onda 1 muda `src/a.rs`, a onda 2 leva a avaliação de uma skill que o
+    /// cita, e a onda 3, que depende da onda 2, muda o mesmo arquivo. A onda 2
+    /// não sai com a onda 1: espera só a tarefa da onda 1, citada no aviso,
+    /// já que a tarefa da onda 3 só pode sair depois dela. Quando a onda 1
+    /// entrega, a onda 2 sai.
     #[test]
     fn a_skill_evaluation_in_a_planned_wave_waits_for_the_open_tasks_on_its_files() {
         let dir = tempdir().unwrap();
@@ -262,10 +262,9 @@ mod tests {
         assert_eq!(waves_in(&back, "dispatch"), vec![2], "{back}");
     }
 
-    /// A task on `src/a.rs` and the evaluation of a skill that cites it are
-    /// both in the backlog: the task goes out alone, and the evaluation stays
-    /// with the reason and the task it waits for. When the task delivers, the
-    /// evaluation goes out.
+    /// Uma tarefa em `src/a.rs` e a avaliação de uma skill que a cita estão
+    /// as duas no backlog: a tarefa sai sozinha, e a avaliação fica com o
+    /// motivo e a tarefa que espera. Quando a tarefa entrega, a avaliação sai.
     #[test]
     fn a_skill_evaluation_waits_for_the_open_tasks_on_its_files() {
         let dir = tempdir().unwrap();
@@ -290,9 +289,9 @@ mod tests {
         assert_eq!(spec_now(root).current(evaluation).and_then(SpecEvent::wave), Some(2), "the evaluation goes out after the task delivers");
     }
 
-    /// Two evaluations of skills that cite the same file, and a task on that
-    /// file that depends on the first: neither evaluation holds the other, and
-    /// the task that waits for the first does not hold it, only the second.
+    /// Duas avaliações de skills que citam o mesmo arquivo, e uma tarefa nesse
+    /// arquivo que depende da primeira: nenhuma avaliação segura a outra, e a
+    /// tarefa que depende da primeira não segura a primeira, só a segunda.
     #[test]
     fn an_evaluation_waits_for_no_other_evaluation_nor_for_a_task_that_waits_for_it() {
         let dir = tempdir().unwrap();
@@ -314,11 +313,11 @@ mod tests {
         assert_eq!(waiting.held, BTreeMap::from([(second, vec![after])]), "the second waits only for the task, and the first for nothing");
     }
 
-    /// In the backlog, a task on `src/a.rs`, the evaluation of a skill that
-    /// cites it, which depends on that task, and a task on the same file that
-    /// depends on the evaluation. The evaluation goes out in the wave of the
-    /// task it depends on, and the task after it does not ride along: it goes
-    /// out once that wave delivers.
+    /// No backlog, uma tarefa em `src/a.rs`, a avaliação de uma skill que a
+    /// cita, que depende dessa tarefa, e uma tarefa no mesmo arquivo que
+    /// depende da avaliação. A avaliação sai na onda da tarefa de que depende,
+    /// e a tarefa que vem depois dela não vai de carona: sai quando essa onda
+    /// entrega.
     #[test]
     fn an_evaluation_goes_with_the_task_it_depends_on_and_without_the_tasks_after_it() {
         let dir = tempdir().unwrap();

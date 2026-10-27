@@ -609,11 +609,11 @@ mod tests {
         BIG_OUTPUT_EXIT_3_POSIX
     }
 
-    /// A command held until a release file the test never writes, so a 1 s
-    /// deadline always fires first, however loaded the machine. It gives up
-    /// only at the safety limit of the test waits; off Windows it then leaves
-    /// `mustard-deadline-test.ended`: the file says the call waited for the
-    /// command instead of cutting it.
+    /// Um comando preso até um arquivo de liberação que o teste nunca escreve,
+    /// de modo que um prazo de 1 s sempre dispara primeiro, por mais carregada
+    /// que esteja a máquina. Ele só desiste no limite de segurança das esperas
+    /// dos testes; fora do Windows, deixa então `mustard-deadline-test.ended`:
+    /// o arquivo diz que a chamada esperou o comando em vez de cortá-lo.
     #[cfg(windows)]
     fn sleeps_seconds() -> String {
         crate::held_command::held_until_released(Path::new("mustard-deadline-test.release"))
@@ -623,8 +623,9 @@ mod tests {
         format!("{}; touch mustard-deadline-test.ended", crate::held_command::held_until_released(Path::new("mustard-deadline-test.release")))
     }
 
-    /// The shell loop held until `release` exists — or the safety limit of
-    /// the test waits, so it never lingers — that then creates `ended`.
+    /// O laço do shell preso até `release` existir — ou até o limite de
+    /// segurança das esperas dos testes, para nunca ficar para trás —, que
+    /// então cria `ended`.
     #[cfg(unix)]
     fn held_until(release: &Path, ended: &Path) -> String {
         format!("{}; touch '{}'", crate::held_command::held_until_released(release), ended.display())
