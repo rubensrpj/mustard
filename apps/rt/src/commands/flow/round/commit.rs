@@ -24,6 +24,7 @@ use super::stops::HeldReturn;
 use super::slots::{reset_committed_slot, sharing_copy};
 use crate::commands::git_settle::{submodule_holding, submodules_of};
 use crate::commands::spec_events::write::record;
+use crate::shared::skill_cycle::in_reserved_skills;
 
 /// A entrega pede commit? Só quando mudou arquivo: a onda que volta sem
 /// arquivo mudado fecha como conferência, sem commit. É a leitura única dessa
@@ -724,7 +725,9 @@ fn merge_texts(dir: &Path, ours: Option<&[u8]>, base: Option<&str>, theirs: Opti
 /// nasceu ([`fork_point`] contra o checkout `root`), com o arquivo de dentro
 /// de um submódulo prefixado pelo caminho dele: é o dono de verdade do que
 /// entra no commit da rodada, e não a lista que a entrega citou, que vira só
-/// conferência.
+/// conferência. A versão nova de uma skill, no caminho reservado da cópia,
+/// não conta: a rodada a grava no lugar da skill, e nunca no commit
+/// ([`super::skill_install`]).
 fn copy_changed(root: &Path, copy: &Path, subs: &[String]) -> Vec<String> {
     let mut changed = repo_changed(root, copy);
     for sub in subs.iter().filter(|sub| copy.join(sub).join(".git").is_file()) {
@@ -732,7 +735,8 @@ fn copy_changed(root: &Path, copy: &Path, subs: &[String]) -> Vec<String> {
         changed.extend(theirs.into_iter().map(|path| format!("{sub}/{path}")));
     }
     let mut seen = BTreeSet::new();
-    changed.into_iter().filter(|file| !file.split('/').any(|part| part == "node_modules") && seen.insert(file.clone())).collect()
+    let kept = |file: &String| !file.split('/').any(|part| part == "node_modules") && !in_reserved_skills(file);
+    changed.into_iter().filter(|file| kept(file) && seen.insert(file.clone())).collect()
 }
 
 /// Os caminhos que o repositório `copy_repo` mudou: os do `git status` e os

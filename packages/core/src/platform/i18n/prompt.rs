@@ -307,7 +307,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              traz os caminhos onde ela vale. Escreva só o que o modelo não sabe: a armadilha, a convenção não óbvia, a ferramenta \
              certa. Nada de visão geral do código. Teste com e sem a skill nas tarefas que a \
              motivaram, pela avaliação do próprio skill-creator, numa pasta fora do projeto. Só \
-             com ganho ela vai para `{skills}/<nome>/SKILL.md`. No fim, grave o resultado: \
+             com ganho ela vai para `{skills}/<nome>/SKILL.md`. A versão nova de uma skill que já existe \
+             vai para o caminho reservado que a tarefa dá, dentro da sua cópia. No fim, grave o resultado: \
              `mustard-rt run write skill --root {root} --spec {spec} --json \
              '{\"name\":\"<nome>\",\"action\":\"created\",\"text\":\"<o ganho medido, numa \
              frase>\",\"files\":[\"<arquivo citado>\"]}'`, com `\"action\":\"updated\"` quando \
@@ -322,7 +323,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              In the header, `paths:` lists the paths where it applies. Write only what the model does not know: the trap, the non-obvious convention, \
              the right tool. No overview of the code. Test with and without the skill on the tasks \
              that motivated it, with the skill-creator's own evaluation, in a folder outside the \
-             project. Only with a gain does it go to `{skills}/<name>/SKILL.md`. At the end, record \
+             project. Only with a gain does it go to `{skills}/<name>/SKILL.md`. The new version of a skill \
+             that exists goes to the reserved path the task gives, inside your copy. At the end, record \
              the result: `mustard-rt run write skill --root {root} --spec {spec} --json \
              '{\"name\":\"<name>\",\"action\":\"created\",\"text\":\"<the measured gain, in one \
              sentence>\",\"files\":[\"<cited file>\"]}'`, with `\"action\":\"updated\"` when it \

@@ -194,6 +194,7 @@ pub(crate) mod review;
 mod sent_tasks;
 mod size_check;
 pub(crate) mod skill_hold;
+mod skill_install;
 mod slots;
 mod stops;
 mod summary_wave;

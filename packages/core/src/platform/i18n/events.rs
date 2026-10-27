@@ -1383,13 +1383,25 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("skills.update_task_text", Locale::EnUs) => "The skill {name} may be out of date. Files: {files}.",
         ("skills.update_task_agent", Locale::PtBr) => {
             "Atualize a skill {name}, de `{path}`, pelo skill-creator do bloco desta tarefa. {why}\n\n\
-             Teste com e sem a mudança na skill, nas tarefas em que ela entra. Com ganho, grave \
-             `\"action\":\"updated\"`; sem ganho, `\"action\":\"discarded\"`, com o motivo em `text`."
+             Teste com e sem a mudança na skill, nas tarefas em que ela entra. Com ganho, escreva a versão \
+             nova inteira em `{reserved}`, a partir da raiz da sua cópia. Depois grave \
+             `\"action\":\"updated\"`. A rodada a grava no lugar da skill quando assumir a volta. O \
+             `SKILL.md` de `{path}` fica como está. Sem ganho, grave `\"action\":\"discarded\"`, com o \
+             motivo em `text`."
         }
         ("skills.update_task_agent", Locale::EnUs) => {
             "Update the skill {name}, from `{path}`, with the skill-creator in this task's block. {why}\n\n\
-             Test with and without the change to the skill, on the tasks it goes with. With a gain, record \
-             `\"action\":\"updated\"`; without one, `\"action\":\"discarded\"`, with the reason in `text`."
+             Test with and without the change to the skill, on the tasks it goes with. With a gain, write the \
+             whole new version at `{reserved}`, from the root of your copy. Then record \
+             `\"action\":\"updated\"`. The round writes it in the place of the skill when it takes the return. \
+             The `SKILL.md` at `{path}` stays as it is. Without one, record `\"action\":\"discarded\"`, with \
+             the reason in `text`."
+        }
+        ("skills.not_installed", Locale::PtBr) => {
+            "A versão nova da skill {name} não foi gravada no lugar dela: {detail}. Ela segue em `{reserved}`."
+        }
+        ("skills.not_installed", Locale::EnUs) => {
+            "The new version of the skill {name} was not written in its place: {detail}. It stays at `{reserved}`."
         }
         ("skills.update_why_change", Locale::PtBr) => {
             "O commit `{sha}` mudou {files}, que a skill cita, e o Jev deu chance de {chance} de a mudança \

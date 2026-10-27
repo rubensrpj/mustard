@@ -388,6 +388,9 @@ fn take_returns(
     // as outras seguem para o commit: o caminho que nunca entra num commit, a
     // volta que não bate com a cópia, a que espera revisão, o resumo do
     // commit que não cabe no modelo e o arquivo que o `.gitignore` ignora.
+    // A versão nova de uma skill, no caminho reservado da cópia, nunca entra
+    // no commit: sai da lista antes de toda conferência.
+    super::skill_install::drop_reserved(&mut report.waves);
     let mut refused = hold_refused(&mut report.waves, |wave| super::review::validate_paths(std::slice::from_ref(wave)));
     let (mut warnings, against_copies) = check_against_copies(root, log, &mut report.waves, lang);
     refused.extend(against_copies);
@@ -563,6 +566,10 @@ fn take_returns(
     let now = head(root);
     refused.extend(held.into_iter().map(|one| HeldReturn { wave: one.wave(), refusal: one.refusal(now.clone()) }));
     let (mut recorded, _proofs) = record_reports(start, spec, checked).map_err(RoundRefusal::Refused)?;
+    // Com a entrega gravada, a versão nova da skill que a onda deixou no
+    // caminho reservado da cópia vai para o lugar da skill, antes de a cópia
+    // voltar limpa.
+    warnings.extend(super::skill_install::install_delivered(root, log, &report.waves, lang));
     // Quem avisa que a tarefa não feita voltou ao backlog é a resposta da
     // rodada: a mudança aceita pode pedir uma decisão nova ou uma tarefa
     // reescrita antes da rodada seguinte.

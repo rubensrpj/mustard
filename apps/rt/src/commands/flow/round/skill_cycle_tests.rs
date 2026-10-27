@@ -317,6 +317,55 @@ fn two_discards_in_a_row_retire_the_skill() {
     let _ = std::fs::remove_dir_all(&backup);
 }
 
+/// The wave of the task that updates a skill writes the new version in the
+/// reserved folder of its own copy and records the update with a gain: the
+/// round that takes the return writes it in the place of the skill, the
+/// backup, the registry and the recorded fingerprint follow the new version,
+/// and the reserved folder leaves the copy. No commit carries it, and the task
+/// tells the wave to write it in its copy, not in the skill's folder.
+#[test]
+fn a_skill_update_the_wave_delivers_is_installed_by_the_round() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    committed_with(root, 0.9);
+    let reserved = ".mustard-skill/falta-teste/SKILL.md";
+    let task = update_tasks(root)[0].clone();
+    let agent = task.str_field("agent").unwrap();
+    assert!(agent.contains(reserved), "the task names the reserved file: {agent}");
+    let log = log_of(root);
+    let criterion = log.visible().into_iter().find(|e| e.event_type == "criterion").map(|e| e.id).expect("the criterion");
+    let covering = super::queue::task_revision(&log, task.id, json!({"covers": [criterion]}).as_object().cloned().unwrap()).unwrap();
+    crate::commands::spec_events::write::record(root, "x", "task", covering, PhaseWriter::Binary).unwrap();
+    let out = round(root, "x", None);
+    assert_eq!(waves_in(&out, "dispatch"), vec![2], "the update task goes out: {out}");
+    let copy = super::commit::copy_of(&log_of(root), 2).expect("the copy of wave 2");
+    let new = "---\nname: falta-teste\ndescription: Does falta-teste.\n---\n\nAlways sum in whole cents in `src/b.rs`.\n";
+    std::fs::create_dir_all(copy.join(".mustard-skill/falta-teste")).unwrap();
+    std::fs::write(copy.join(reserved), new).unwrap();
+    let (main, backup) = folders(root, "falta-teste");
+    let body = json!({"name": "falta-teste", "action": "updated", "text": "Acertou 3 de 3 com a versão nova."});
+    let opts = crate::commands::spec_events::write::WriteOpts { root: root.to_path_buf(), spec: Some("x".into()), event_type: "skill".into(), json: body.to_string() };
+    let wrote = crate::commands::spec_events::write::write_at(&opts);
+    assert_eq!(wrote["ok"], true, "{wrote}");
+    let head = super::commit::head(root);
+
+    let report = delivered(root, 2, "A skill saiu.", &[reserved]);
+    let taken = round(root, "x", Some(&report));
+
+    assert!(log_of(root).last_by_wave("delivered").contains_key(&2), "the round took the return: {taken}");
+    assert_eq!(std::fs::read_to_string(main.join("SKILL.md")).unwrap(), new, "the new version is in the place of the skill: {taken}");
+    assert_eq!(std::fs::read_to_string(backup.join("SKILL.md")).unwrap(), new, "the backup follows it");
+    assert!(!copy.join(".mustard-skill").exists(), "the reserved folder leaves the copy");
+    assert!(!root.join(".mustard-skill").exists(), "nothing of it reaches the main checkout");
+    assert_eq!(super::commit::head(root), head, "no commit carries the reserved file: {taken}");
+    assert_eq!(registry::read(root).skills["falta-teste"].files, vec!["src/b.rs".to_string()], "the registry reads the new version");
+    let mut hash = mustard_core::io::sha256::Sha256::new();
+    hash.update(new.as_bytes());
+    let event = log_of(root).visible().into_iter().rfind(|e| e.event_type == "skill").cloned().expect("the skill event");
+    assert_eq!(event.str_field("sha"), Some(hash.hex_digest().as_str()), "the event fingerprints the new version");
+    let _ = std::fs::remove_dir_all(&backup);
+}
+
 /// The skills recorded in the first block of the last send of wave `wave` of
 /// spec `x` in `root`; nothing when the block went without skills.
 fn sent_skills(root: &Path, wave: u64) -> Value {

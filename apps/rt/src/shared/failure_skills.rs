@@ -489,17 +489,32 @@ pub(crate) fn copy_folder(from: &Path, to: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// A pasta da skill `name` que a onda escreveu fora do projeto principal
-/// `root`: a de `start`, quando o comando roda de dentro da cópia, e a da
-/// cópia de cada onda da spec `spec`, a mais recente primeiro.
-fn written_in_copy(start: &Path, root: &Path, spec: &str, name: &str) -> Option<PathBuf> {
-    let mut places = vec![skill_dir(start, name)];
+/// Onde uma onda escreve fora do projeto principal `root`: `start`, quando o
+/// comando roda de dentro da cópia, e a cópia de cada onda da spec `spec`, a
+/// mais recente primeiro.
+fn copy_places(start: &Path, root: &Path, spec: &str) -> Vec<PathBuf> {
+    let mut places = vec![start.to_path_buf()];
     if let Some(log) = store::spec_file(root, spec).ok().and_then(|file| store::read(&file).ok().flatten()) {
-        places.extend(log.events.iter().rev().filter(|e| e.event_type == "send").filter_map(|e| e.str_field("copy")).map(|copy| skill_dir(Path::new(copy), name)));
+        places.extend(log.events.iter().rev().filter(|e| e.event_type == "send").filter_map(|e| e.str_field("copy")).map(PathBuf::from));
     }
+    places
+}
+
+/// A pasta da skill `name` que a onda escreveu fora do projeto principal
+/// `root`, no primeiro lugar de [`copy_places`] que a tem.
+fn written_in_copy(start: &Path, root: &Path, spec: &str, name: &str) -> Option<PathBuf> {
     let main = skill_dir(root, name);
     let same = |dir: &Path| *dir == main || matches!((dir.canonicalize(), main.canonicalize()), (Ok(a), Ok(b)) if a == b);
-    places.into_iter().find(|dir| !same(dir) && dir.join("SKILL.md").is_file())
+    copy_places(start, root, spec).into_iter().map(|place| skill_dir(&place, name)).find(|dir| !same(dir) && dir.join("SKILL.md").is_file())
+}
+
+/// A pasta com o `SKILL.md` da versão nova da skill `name` que a onda deixou
+/// no caminho reservado da cópia ([`crate::shared::skill_cycle::reserved_skill`]),
+/// no primeiro lugar de [`copy_places`] que a tem. É ela que a rodada grava no
+/// lugar da skill quando assume a volta.
+pub(crate) fn reserved_in_copy(start: &Path, root: &Path, spec: &str, name: &str) -> Option<PathBuf> {
+    let file = crate::shared::skill_cycle::reserved_skill(name);
+    copy_places(start, root, spec).into_iter().map(|place| place.join(&file)).find(|path| path.is_file()).and_then(|path| path.parent().map(Path::to_path_buf))
 }
 
 /// A impressão do `SKILL.md` da pasta `dir`.
@@ -512,15 +527,17 @@ fn skill_sha(dir: &Path) -> Option<String> {
 
 /// Antes de gravar o `skill` criado ou atualizado (`draft`) na spec `spec` de
 /// `start`: a pasta da skill vem da cópia da onda para o projeto principal,
-/// e a impressão do arquivo entra no evento. A recusa, pronta para a
-/// resposta em `lang`, quando o nome não serve de pasta ou a skill não está
-/// em lugar nenhum.
+/// e a impressão do arquivo entra no evento — a da versão nova que a onda
+/// deixou no caminho reservado da cópia, quando a atualização a traz
+/// ([`reserved_in_copy`]). A recusa, pronta para a resposta em `lang`, quando
+/// o nome não serve de pasta ou a skill não está em lugar nenhum.
 pub(crate) fn prepare_skill(start: &Path, spec: &str, draft: &mut Map<String, Value>, lang: Locale) -> Result<(), Value> {
     let name = draft.get("name").and_then(Value::as_str).map(str::trim).unwrap_or_default().to_string();
     if !good_name(&name) {
         return Err(json!({ "ok": false, "reason": "skill-bad-name", "hint": translate("skills.bad_name", lang).replace("{name}", &name) }));
     }
-    if !matches!(draft.get("action").and_then(Value::as_str).map(str::trim), Some("created" | "updated")) {
+    let action = draft.get("action").and_then(Value::as_str).map(str::trim);
+    if !matches!(action, Some("created" | "updated")) {
         return Ok(());
     }
     let root = store::spec_root(start);
@@ -528,7 +545,8 @@ pub(crate) fn prepare_skill(start: &Path, spec: &str, draft: &mut Map<String, Va
     if let Some(written) = written_in_copy(start, &root, spec, &name) {
         copy_folder(&written, &main).map_err(|error| json!({ "ok": false, "reason": "skill-not-copied", "hint": error.to_string() }))?;
     }
-    let Some(sha) = skill_sha(&main) else {
+    let delivered = if action == Some("updated") { reserved_in_copy(start, &root, spec, &name) } else { None };
+    let Some(sha) = skill_sha(delivered.as_deref().unwrap_or(&main)) else {
         return Err(json!({ "ok": false, "reason": "skill-folder-missing", "hint": translate("skills.folder_missing", lang).replace("{name}", &name) }));
     };
     draft.insert("sha".into(), json!(sha));

@@ -34,10 +34,11 @@ skills.cycle_failed	2714ef4da5f446e8
 skills.folder_missing	3c4ab4dea2e3bec5
 skills.not_backed_up	1c4d5b40fbd0ed9d
 skills.not_hidden	ca695d96a209728a
+skills.not_installed	89a9c6edb0486fb9
 skills.retired	4fb447284e81ddb7
 skills.retired_reason.discarded	6a9127fae1c98be4
 skills.retired_reason.idle	98299c1388812c6c
-skills.update_task_agent	e15d89f09107681f
+skills.update_task_agent	ed656c41048f135b
 skills.update_task_text	6a3e31a603270acb
 skills.update_task_title	857ac9fee0d8b152
 skills.update_why_change	2d6c6ccbc2b1bb24

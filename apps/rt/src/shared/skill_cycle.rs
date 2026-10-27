@@ -26,7 +26,10 @@
 //! sai uma vez por obra: a mudança que chega com ela ainda à espera entra numa
 //! versão nova dela, somada às que já tinha, e a fila da rodada a segura
 //! enquanto alguma tarefa aberta da obra mexe num arquivo que a skill cita
-//! (`skill_hold`, na rodada). Nenhuma skill é reescrita sozinha.
+//! (`skill_hold`, na rodada). Nenhuma skill é reescrita sozinha. A onda da
+//! tarefa escreve a versão nova no caminho reservado da cópia dela
+//! ([`RESERVED_SKILLS`]), presa à cópia como toda onda, e a rodada a grava no
+//! lugar da skill quando assume a volta com a atualização gravada.
 //!
 //! A saída: a skill candidata em [`IDLE_CANDIDACIES`] envios sem nunca ir com
 //! uma tarefa, ou descartada sem ganho em dois testes seguidos, sai de
@@ -49,7 +52,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::commands::flow::round::dispatch_jev::{Asker, Outcome, reserved};
-use crate::shared::failure_skills::{copy_folder, runs, skill_dir, skill_task_covers, target_spec, with_covers};
+use crate::shared::failure_skills::{copy_folder, reserved_in_copy, runs, skill_dir, skill_task_covers, target_spec, with_covers};
 use crate::shared::jev::yes_no::{self, YesNo};
 use crate::shared::secret::without_secrets;
 
@@ -341,7 +344,8 @@ fn motivating_groups(root: &Path, spec: &str, log: &SpecLog, wave: Option<u64>) 
 /// Depois de gravado o evento `skill` número `id` na spec `spec` de `start`:
 /// o registro do projeto guarda a criação, a atualização ou o descarte, com
 /// o ganho, os arquivos citados — os do evento ou, sem eles, os que o
-/// `SKILL.md` cita —, a onda que a gravou e os grupos de falha que a
+/// `SKILL.md` cita, o da versão nova no caminho reservado da cópia quando a
+/// atualização a traz —, a onda que a gravou e os grupos de falha que a
 /// motivaram. Devolve os avisos, em `lang`.
 pub(crate) fn skill_recorded(start: &Path, spec: &str, id: u64, lang: Locale) -> Vec<String> {
     let root = store::spec_root(start);
@@ -354,7 +358,8 @@ pub(crate) fn skill_recorded(start: &Path, spec: &str, id: u64, lang: Locale) ->
     };
     let mut files = texts(event.fields.get("files"));
     if files.is_empty() && matches!(action, "created" | "updated") {
-        let text = std::fs::read_to_string(skill_dir(&root, name).join("SKILL.md")).unwrap_or_default();
+        let delivered = if action == "updated" { reserved_in_copy(start, &root, spec, name) } else { None };
+        let text = std::fs::read_to_string(delivered.unwrap_or_else(|| skill_dir(&root, name)).join("SKILL.md")).unwrap_or_default();
         files = mustard_core::domain::project_map::cited_paths(&text);
     }
     let wave = writer_wave(&log, start);
@@ -462,6 +467,24 @@ fn whys_text(root: &Path, whys: &[Why], listed: &[(String, Vec<String>)], lang: 
     parts.join("\n\n")
 }
 
+/// A pasta, na raiz da cópia de uma onda, em que a onda da tarefa de atualizar
+/// uma skill escreve a versão nova dela: a pasta das skills do projeto fica
+/// fora da cópia, e a rodada grava a versão nova no lugar da skill quando
+/// assume a volta. Nada dela entra num commit.
+pub(crate) const RESERVED_SKILLS: &str = ".mustard-skill";
+
+/// O caminho, relativo à raiz da cópia, em que a onda escreve a versão nova da
+/// skill `name` ([`RESERVED_SKILLS`]).
+pub(crate) fn reserved_skill(name: &str) -> String {
+    format!("{RESERVED_SKILLS}/{name}/SKILL.md")
+}
+
+/// `true` quando o caminho `file`, relativo à raiz da cópia, fica na pasta
+/// reservada às versões novas das skills ([`RESERVED_SKILLS`]).
+pub(crate) fn in_reserved_skills(file: &str) -> bool {
+    file.split_once('/').map_or(file, |(first, _)| first) == RESERVED_SKILLS
+}
+
 /// Quantos caracteres do motivo de uma reprovação vão à tarefa.
 const REASON_CHARS: usize = 600;
 
@@ -472,8 +495,9 @@ const TASK_FILES_MAX: usize = 8;
 /// projeto `root`, pelos motivos `whys` e pelos commits `listed` da obra que
 /// mudaram um arquivo citado desde a última avaliação ([`changes_since`]),
 /// no idioma `lang`: o título com o nome, os arquivos pelo caminho no texto,
-/// cada motivo e cada mudança na parte do agente, os motivos guardados em
-/// [`WHYS`] e os arquivos citados que existem.
+/// cada motivo e cada mudança na parte do agente, que manda escrever a versão
+/// nova no caminho reservado da cópia ([`reserved_skill`]), os motivos
+/// guardados em [`WHYS`] e os arquivos citados que existem.
 fn update_draft(root: &Path, name: &str, skill: &MustardSkill, (whys, listed): (&[Why], &[(String, Vec<String>)]), lang: Locale) -> Map<String, Value> {
     let title = translate("skills.update_task_title", lang).replace("{name}", name);
     let title: String = title.chars().take(TASK_TITLE_MAX).collect();
@@ -488,6 +512,7 @@ fn update_draft(root: &Path, name: &str, skill: &MustardSkill, (whys, listed): (
     let agent = translate("skills.update_task_agent", lang)
         .replace("{name}", name)
         .replace("{path}", &mustard_core::io::wave_prompt::shown(&std::path::absolute(&main).unwrap_or(main)))
+        .replace("{reserved}", &reserved_skill(name))
         .replace("{why}", &whys_text(root, whys, listed, lang));
     let files: Vec<Value> = shown.iter().filter(|file| root.join(file).exists()).take(TASK_FILES_MAX).map(|path| json!({ "path": path })).collect();
     let shown: Vec<String> = shown.into_iter().take(TASK_FILES_MAX).collect();
