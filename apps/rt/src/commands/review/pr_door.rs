@@ -1422,7 +1422,7 @@ pub(crate) fn deliver_merged_at(root: &Path, spec: &str, session: Option<&str>) 
     drop(held);
     drop(copies);
     removal.delete_leaving(&repo);
-    let warnings: Vec<Value> = crate::commands::flow::close::removal_warnings(&removal, lang)
+    let warnings: Vec<Value> = crate::shared::build_removal::removal_warnings(&removal, lang)
         .into_iter()
         .map(|(reason, hint)| serde_json::json!({ "reason": reason, "hint": hint }))
         .collect();

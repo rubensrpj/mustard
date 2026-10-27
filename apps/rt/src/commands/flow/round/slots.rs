@@ -667,6 +667,22 @@ impl Removal {
     }
 }
 
+/// Os avisos da remoção leem daqui as cópias que ficaram e o texto de cada
+/// código guardado ([`code_kept_hint`]).
+impl crate::shared::build_removal::CopiesRemoved for Removal {
+    fn left(&self) -> &[(String, String)] {
+        &self.left
+    }
+
+    fn unkept(&self) -> &[(String, String)] {
+        &self.unkept
+    }
+
+    fn kept_hints(&self, lang: Locale) -> Vec<String> {
+        self.kept.iter().map(|kept| code_kept_hint(kept, lang)).collect()
+    }
+}
+
 /// Tira todas as cópias da obra `spec` — cada vaga, com as cópias dos
 /// submódulos dentro dela — e a pasta dela ([`spec_copies_dir`]). Chamado
 /// pelo descarte e por `mustard-rt run clean`, que pegam aqui a trava das

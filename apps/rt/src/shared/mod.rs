@@ -56,6 +56,10 @@ pub(crate) mod tool_observations;
 /// conversa; nunca texto do usuário.
 pub mod agent_said;
 pub mod branch_state;
+/// Os avisos da remoção das cópias da obra e a remoção da pasta de
+/// compilação declarada, que o fechamento, o descarte e a entrega usam sem
+/// chamar o fluxo.
+pub(crate) mod build_removal;
 /// O caminho do código pelo mapa, para as travas da leitura e da busca.
 pub mod code_route;
 /// A chave do Jev no arquivo de configuração, que nenhuma leitura mostra.
