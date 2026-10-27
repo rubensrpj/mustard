@@ -1325,8 +1325,9 @@ fn a_pull_request_body_without_the_mark_is_kept_with_its_own_reason() {
 
 /// A porta de conserto abre a onda numa obra fechada sem critério nenhum. O
 /// pull request da obra volta vermelho do servidor, e `reopen --fix` grava a
-/// onda de conserto e a tarefa dela sobre o que as tarefas da obra cobriam —
-/// o objetivo, aqui —, e a rodada seguinte despacha essa onda, com o objetivo
+/// onda de conserto e a tarefa dela só sobre o item com prova entre os que as
+/// tarefas da obra cobriam — o pedido cujo relato nomeia a prova, e não o
+/// objetivo, aqui —, e a rodada seguinte despacha essa onda, com esse pedido
 /// no pedido dela, sob a tarefa: é a cobertura da tarefa que o leva até lá.
 #[test]
 fn the_fix_door_opens_the_fix_wave_of_a_closed_work_without_criterion() {
@@ -1337,6 +1338,13 @@ fn the_fix_door_opens_the_fix_wave_of_a_closed_work_without_criterion() {
     let goal = project.log().visible().into_iter().find(|e| e.event_type == "context").expect("the goal").id;
     let covered = project.log().visible().into_iter().find(|e| e.event_type == "task").expect("the task of the work").ints("covers");
     assert!(covered.contains(&goal), "{covered:?}");
+    let proven = project
+        .log()
+        .visible()
+        .into_iter()
+        .find(|e| e.event_type == "request" && covered.contains(&e.id))
+        .expect("the request with the proof that the task of the work covered")
+        .id;
     std::fs::write(project.remotes.join("checks"), json!({"statusCheckRollup": []}).to_string()).expect("the checks");
     let opened = project.run(&argv);
     assert_eq!(opened["number"], json!(7), "{opened}");
@@ -1348,18 +1356,18 @@ fn the_fix_door_opens_the_fix_wave_of_a_closed_work_without_criterion() {
     let wave = fix["wave"].as_u64().unwrap_or_else(|| panic!("{fix}"));
     let log = project.log();
     let recorded = log.get(fix["id"].as_u64().unwrap_or_else(|| panic!("{fix}"))).expect("the fix wave");
-    assert_eq!(recorded.ints("criteria"), covered, "the fix wave answers for what the tasks of the work covered");
+    assert_eq!(recorded.ints("criteria"), vec![proven], "the fix wave answers only for the covered item with a proof");
     let task = log
         .visible()
         .into_iter()
         .find(|e| e.event_type == "task" && e.wave() == Some(wave))
         .unwrap_or_else(|| panic!("the fix wave has no task: {fix}"));
-    assert_eq!(task.ints("covers"), covered, "the task of the fix wave covers the same items");
+    assert_eq!(task.ints("covers"), vec![proven], "the task of the fix wave covers the same item");
 
     let round = project.run(&["round", "--dispatch", "--spec", SPEC]);
     let dispatched: Vec<u64> = round["dispatch"].as_array().into_iter().flatten().filter_map(|sent| sent["wave"].as_u64()).collect();
     assert_eq!(dispatched, vec![wave], "the round sends the fix wave: {round}");
-    let code = log.codes().get(&goal).cloned().expect("the code of the goal");
+    let code = log.codes().get(&proven).cloned().expect("the code of the request with the proof");
     let block = format!("request-{wave}");
     let read = project.command(&["run", "read", block.as_str(), "--spec", SPEC], "");
     let request = String::from_utf8_lossy(&read.stdout);
@@ -1367,7 +1375,7 @@ fn the_fix_door_opens_the_fix_wave_of_a_closed_work_without_criterion() {
     let attends = translate("prompt.step.attends", Locale::PtBr).replace("{item}", "");
     assert!(
         request.lines().any(|line| line.contains(attends.trim()) && line.contains(&code)),
-        "the request of the fix wave brings the goal under its task: {request}"
+        "the request of the fix wave brings the request with the proof under its task: {request}"
     );
     assert_eq!(State::from_log(&project.log()).phase, Some("pr_open"), "the work was not reopened");
 }
