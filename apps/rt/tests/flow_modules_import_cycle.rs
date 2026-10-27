@@ -4,11 +4,13 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 //! Os módulos do fluxo — a rodada, a retomada, o fechamento, o painel e a
-//! parte comum que os quatro importam — não se importam em ciclo. A conta lê
-//! o código de produção de cada arquivo deles, com os caminhos relativos
-//! (`super::`, `self::`) escritos por inteiro, e liga um módulo ao outro por
-//! todo caminho que nomeia o outro: na importação, no caminho escrito antes de
-//! uma chamada e na lista entre chaves.
+//! parte comum que os quatro importam — e a gravação de eventos, com a porta
+//! `run write` que a chama, não se importam em ciclo. A rodada e a parte comum
+//! gravam pela gravação de eventos; ela, por isso, não importa nenhum deles. A
+//! conta lê o código de produção de cada arquivo deles, com os caminhos
+//! relativos (`super::`, `self::`) escritos por inteiro, e liga um módulo ao
+//! outro por todo caminho que nomeia o outro: na importação, no caminho
+//! escrito antes de uma chamada e na lista entre chaves.
 
 #[path = "support/sources.rs"]
 mod sources;
@@ -18,17 +20,20 @@ use std::path::{Path, PathBuf};
 
 use sources::{production_code, rust_sources};
 
-/// Cada módulo do fluxo e o caminho dele a partir da raiz do pacote.
-const MODULES: [(&str, &str); 5] = [
+/// Cada módulo do fluxo, a gravação de eventos e a porta dela, com o caminho
+/// de cada um a partir da raiz do pacote.
+const MODULES: [(&str, &str); 7] = [
     ("round", "crate::commands::flow::round"),
     ("resume", "crate::commands::flow::resume"),
     ("close", "crate::commands::flow::close"),
     ("panel", "crate::commands::panel"),
     ("common", "crate::commands::flow::common"),
+    ("write", "crate::commands::spec_events::write"),
+    ("write_door", "crate::commands::spec_events::write_door"),
 ];
 
-/// Os prefixos cuja lista entre chaves pode nomear mais de um módulo do fluxo.
-const LISTED: [&str; 2] = ["crate::commands::flow::{", "crate::commands::{"];
+/// Os prefixos cuja lista entre chaves pode nomear mais de um dos módulos.
+const LISTED: [&str; 3] = ["crate::commands::flow::{", "crate::commands::{", "crate::commands::spec_events::{"];
 
 fn source_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("src")
@@ -174,6 +179,7 @@ fn cycle(graph: &BTreeMap<&'static str, BTreeSet<&'static str>>) -> Option<Vec<&
 fn the_flow_modules_import_in_no_cycle() {
     let edges = edges();
     assert!(edges.contains_key(&("resume", "round")), "the reading finds the imports: {edges:?}");
+    assert!(edges.contains_key(&("round", "write")), "the reading finds the round recording through the event writer: {edges:?}");
     let mut graph: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
     for (from, to) in edges.keys() {
         graph.entry(from).or_default().insert(to);

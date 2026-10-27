@@ -39,7 +39,7 @@ use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Map, Value};
 
-use crate::commands::spec_events::{self, shown, write};
+use crate::commands::spec_events::{self, shown, write, write_door};
 use crate::shared::spec_state::{checkout, session_from_env, DiskSpecState};
 
 /// Options for `mustard-rt run answer`.
@@ -144,7 +144,7 @@ fn answer_in(
         None => DiskSpecState::new(&checkout(&opts.root)).active(session).ok_or(Refusal::NoCurrentSpec)?,
     };
     if let Some((event_type, draft)) = asked.item.as_mut() {
-        write::draft_rules(&opts.root, &spec, event_type, draft, false)?;
+        write_door::draft_rules(&opts.root, &spec, event_type, draft, false)?;
     }
     let path = store::spec_file(&project.root, &spec)?;
     let answered =
