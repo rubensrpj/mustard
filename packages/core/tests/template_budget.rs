@@ -1,6 +1,6 @@
 //! `template_budget` — o tamanho do texto do Mustard que o modelo lê.
 //!
-//! Em cada idioma, todo texto que o modelo lê soma menos de 30.042 bytes, pela
+//! Em cada idioma, todo texto que o modelo lê soma menos de 30.400 bytes, pela
 //! medida que mora em `support/prose_budget.rs`, ao lado deste arquivo — a
 //! mesma que o teste da instalação dos agentes confere. O mapa do início da
 //! sessão, que entra em toda sessão, tem o teto dele de 4.840 bytes.
@@ -35,7 +35,7 @@ const MAP_CAP: u64 = 4_840;
 /// O corte da descrição de um comando na lista do Claude Code, em caracteres.
 const DESCRIPTION_CHAR_CAP: usize = 1_536;
 
-/// Em cada idioma, o texto que o modelo lê soma menos de 30.042 bytes. Não há
+/// Em cada idioma, o texto que o modelo lê soma menos de 30.400 bytes. Não há
 /// teto por arquivo: o que prende um texto de agente é o que ele diz, e a
 /// soma do idioma é que guarda o tamanho do todo.
 #[test]
