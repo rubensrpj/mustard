@@ -1090,6 +1090,11 @@ pub const TYPES: &[TypeSpec] = &[
             // da onda não o tirou do pedido; com tarefa em `undone`, ele entra
             // na versão dela que volta ao backlog.
             opt("agreed", Kind::Objects),
+            // Os lugares da regra de uma tarefa feita que a onda conferiu e
+            // deixou sem mudança, cada um com o lugar, como a tarefa o cita,
+            // e o motivo (`place`, `reason`): a conferência da entrega não os
+            // cobra entre os arquivos mudados.
+            opt("checked_places", Kind::Objects),
             RETURNED,
         ],
     ),

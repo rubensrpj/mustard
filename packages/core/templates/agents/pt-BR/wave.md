@@ -45,5 +45,6 @@ Grave a entrega com `run write delivered --json '<a linha>'`, mesmos --root/--sp
 - Teste de critério com nome novo: `"proofs":[{"criterion":"<código>","proof":"<o comando>"}]`.
 - Item combinado: `"agreed":[{"item":"<código>","met":true}]`, um por item. Sem tarefa da onda para realizá-lo, `met:true` confirma que a mudança preserva a regra. Quebra ou tarefa não feita: `{"item":"<código>","met":false,"text":"<o que falta>"}`; vira tarefa no backlog, salvo cobertura pendente existente.
 - Num conserto: `"fixes":[<as ondas que fecha>]`.
+- Lugar da regra da tarefa feita que não precisa mudar: `"checked_places":[{"place":"<o lugar, como a recusa o cita>","reason":"<por que fica como está>"}]`; a marca sem motivo é recusada.
 - O plano não funciona: `"replan":"<a mudança, numa frase>"`, sempre com `undone` (`[]` se fez todas), e `"changes_decision":"<a decisão do usuário trocada>"`, só quando troca uma.
 - Opcional: `"knowledge":[{"title":"<conclusão>","text":"<descoberta e ressalvas>","sources":[{"file":"a.rs","line":1,"end_line":10,"sha256":"<hash da busca>"}]}]`. Use todos os recibos atuais do gateway; releia após editar. Não invente hashes nem gere relatório.

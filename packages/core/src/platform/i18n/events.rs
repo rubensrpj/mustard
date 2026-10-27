@@ -704,12 +704,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("spec_events.delivery_place_untouched", Locale::PtBr) => {
             "A entrega da onda {wave} dá a tarefa {task} por feita sem mudar os lugares {places} da \
-             regra dela. Mude cada lugar, ou devolva a tarefa em `undone`. Nada foi gravado."
+             regra dela. Mude cada lugar, ou devolva a tarefa em `undone`. O lugar conferido que não \
+             precisa mudar vai em `checked_places`, com `place` e `reason`. Nada foi gravado."
         }
         ("spec_events.delivery_place_untouched", Locale::EnUs) => {
             "The delivery of wave {wave} gives task {task} as done without changing the places \
-             {places} of its rule. Change every place, or return the task in `undone`. Nothing was \
-             written."
+             {places} of its rule. Change every place, or return the task in `undone`. A checked \
+             place that needs no change goes in `checked_places`, with `place` and `reason`. \
+             Nothing was written."
         }
         // O achado que vira tarefa da spec: a regra que ele quebrou, os
         // lugares dela e a linha do achado que entra na tarefa da mesma regra,

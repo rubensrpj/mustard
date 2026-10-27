@@ -264,6 +264,9 @@ const NESTED: &[(&str, &str, &[&str])] = &[
     ("verdict", "leftovers", FINDING_FIELDS),
     ("delivered", "proofs", &["criterion", "proof"]),
     ("delivered", "agreed", &["item", "met"]),
+    // O lugar conferido sem mudança diz por que fica como está: sem o motivo,
+    // a marca só calaria a conferência da entrega.
+    ("delivered", "checked_places", &["place", "reason"]),
     ("verdict", "criteria", &["criterion"]),
     ("verdict", "lessons", &["lesson", "repeated"]),
     ("tracking", "items", &["item", "met"]),

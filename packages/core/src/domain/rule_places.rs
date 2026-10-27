@@ -5,12 +5,15 @@
 //! linha (`apps/a.rs:12`), um arquivo (`apps/a.rs`) ou um nome de código
 //! (`check_return`, `a::b`), que o mapa diz onde é declarado. O lugar que não
 //! leva a arquivo nenhum do projeto — um comando, um nome que o mapa não
-//! conhece — não tem arquivo a mudar e fica fora da conta.
+//! conhece — não tem arquivo a mudar e fica fora da conta. O lugar que a
+//! entrega marca como conferido sem mudança, com o motivo, também.
 //!
 //! A regra mora aqui uma vez, sem disco: quem responde onde o nome é
 //! declarado é o [`CitationWorld`], o mesmo da conferência das citações.
 
 use std::collections::BTreeSet;
+
+use serde_json::Value;
 
 use crate::domain::citation::{file_citation, CitationWorld};
 use crate::domain::clarity::is_file_path;
@@ -36,16 +39,33 @@ pub fn place_files(world: &impl CitationWorld, place: &str) -> Vec<String> {
     files
 }
 
-/// Os lugares de `places` que a entrega deixou de fora: os que levam a algum
-/// arquivo ([`place_files`]) e cujo arquivo nenhum está entre os mudados
-/// (`touched`, relativos à raiz, com barras normais). O nome declarado em mais
-/// de um arquivo conta como mudado quando um deles mudou. Na ordem dada.
+/// Os lugares que a entrega marca como conferidos sem mudança, das marcas
+/// `marks` (`place`, `reason`), sem os espaços das pontas. Só a marca com o
+/// lugar e o motivo conta: a sem motivo deixa o lugar na conta.
 #[must_use]
-pub fn untouched_places<'a>(world: &impl CitationWorld, places: &'a [String], touched: &BTreeSet<String>) -> Vec<&'a str> {
+pub fn checked_places(marks: &[Value]) -> BTreeSet<String> {
+    let filled = |mark: &Value, key: &str| mark.get(key).and_then(Value::as_str).map(str::trim).filter(|text| !text.is_empty()).map(str::to_string);
+    marks.iter().filter(|mark| filled(mark, "reason").is_some()).filter_map(|mark| filled(mark, "place")).collect()
+}
+
+/// Os lugares de `places` que a entrega deixou de fora: os que levam a algum
+/// arquivo ([`place_files`]), cujo arquivo nenhum está entre os mudados
+/// (`touched`, relativos à raiz, com barras normais) e que a entrega não marca
+/// como conferidos sem mudança (`checked`, de [`checked_places`]), pelo texto
+/// do lugar. O nome declarado em mais de um arquivo conta como mudado quando
+/// um deles mudou. Na ordem dada.
+#[must_use]
+pub fn untouched_places<'a>(
+    world: &impl CitationWorld,
+    places: &'a [String],
+    touched: &BTreeSet<String>,
+    checked: &BTreeSet<String>,
+) -> Vec<&'a str> {
     let touched: BTreeSet<String> = touched.iter().map(|path| clean_path(&path.replace('\\', "/"))).collect();
     places
         .iter()
         .map(String::as_str)
+        .filter(|place| !checked.contains(place.trim()))
         .filter(|place| {
             let files = place_files(world, place);
             !files.is_empty() && !files.iter().any(|file| touched.contains(file))
@@ -85,8 +105,9 @@ mod tests {
         let places: Vec<String> =
             ["src/a.rs:12", "./src/d.rs", "check_return", "Report::run()", "cargo test", "unknown_name"].map(String::from).to_vec();
         let touched = BTreeSet::from(["src/c.rs".to_string()]);
-        assert_eq!(untouched_places(&map, &places, &touched), ["src/a.rs:12", "./src/d.rs", "check_return"]);
+        let none = BTreeSet::new();
+        assert_eq!(untouched_places(&map, &places, &touched, &none), ["src/a.rs:12", "./src/d.rs", "check_return"]);
         let all = BTreeSet::from(["src/a.rs".to_string(), "src/b.rs".to_string(), "src/d.rs".to_string()]);
-        assert_eq!(untouched_places(&map, &places, &all), Vec::<&str>::new());
+        assert_eq!(untouched_places(&map, &places, &all, &none), Vec::<&str>::new());
     }
 }

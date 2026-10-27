@@ -6,7 +6,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use mustard_core::domain::rule_places::untouched_places;
+use mustard_core::domain::rule_places::{checked_places, untouched_places};
 use mustard_core::domain::spec_events::{Refusal, SpecLog};
 use mustard_core::domain::wave_prompt as agreed_prompt;
 use mustard_core::io::fs::lock::LockedFile;
@@ -35,8 +35,9 @@ use super::{RoundRefusal, WaveReport, criterion_id, observations, proof_target, 
 /// resposta em `agreed` ([`request_agreed`]); o agente leu o pedido; e a
 /// volta não devolve trabalho começado nem dá tarefa por feita sem o passo
 /// de término dela ([`unfinished_work`]); a tarefa feita muda cada lugar da
-/// regra dela ([`places_left_out`]); e nenhum arquivo entregue mudou
-/// depois do último passo de término, o da prova verde
+/// regra dela, ou o marca como conferido sem mudança ([`places_left_out`]);
+/// e nenhum arquivo entregue mudou depois do último passo de término, o da
+/// prova verde
 /// ([`proof_older_than_files`]). Passando, a volta ganha
 /// `returned` e o autor da onda, e os arquivos ficam relativos ao
 /// repositório. A conferência que depende de
@@ -133,8 +134,9 @@ pub(crate) fn check_return(
     // com a cópia mudada depois do último passo de término, e a tarefa dada
     // como feita sem o passo dela, recusam.
     unfinished_work(&log, sent, &report, draft)?;
-    // E de mudar cada lugar da regra de cada tarefa que dá por feita.
-    places_left_out(start, &project.root, &log, &report)?;
+    // E de mudar cada lugar da regra de cada tarefa que dá por feita, ou de
+    // marcá-lo como conferido sem mudança, com o motivo.
+    places_left_out(start, &project.root, &log, &report, draft)?;
     // E de não levar ao commit arquivo mudado depois da prova verde.
     proof_older_than_files(&log, sent, &report)?;
     // E de não levar ao código comentário que cite código de item da spec.
@@ -150,15 +152,18 @@ pub(crate) fn check_return(
 /// Confere que a entrega `report`, lida na spec `log` do projeto em `root`,
 /// visto de `start`, muda cada lugar da regra de cada tarefa com que a onda
 /// saiu e que ela não devolve em `undone`: o lugar que leva a um arquivo — pela
-/// linha, pelo caminho ou pelo nome que o mapa declara ([`untouched_places`]) —
-/// e cujo arquivo nenhum está entre os entregues recusa, com a tarefa e os
-/// lugares. A mudança de plano não entrega tarefa, e não confere nada aqui.
-fn places_left_out(start: &Path, root: &Path, log: &SpecLog, report: &WaveReport) -> Result<(), RoundRefusal> {
+/// linha, pelo caminho ou pelo nome que o mapa declara ([`untouched_places`]) —,
+/// cujo arquivo nenhum está entre os entregues e que a volta `draft` não marca
+/// em `checked_places` como conferido sem mudança, com o motivo
+/// ([`checked_places`]), recusa, com a tarefa e os lugares. A mudança de plano
+/// não entrega tarefa, e não confere nada aqui.
+fn places_left_out(start: &Path, root: &Path, log: &SpecLog, report: &WaveReport, draft: &Map<String, Value>) -> Result<(), RoundRefusal> {
     if report.replan.is_some() {
         return Ok(());
     }
     let codes = log.codes();
     let touched: BTreeSet<String> = report.files.iter().cloned().collect();
+    let checked = checked_places(draft.get("checked_places").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default());
     let world = mustard_core::io::citation::DiskWorld::new(store::citation_roots(start, root), Some(root));
     for task in sent_tasks(log, report.wave) {
         let code = codes.get(&task.id).cloned().unwrap_or_else(|| task.id.to_string());
@@ -166,7 +171,7 @@ fn places_left_out(start: &Path, root: &Path, log: &SpecLog, report: &WaveReport
             continue;
         }
         let places: Vec<String> = task.fields.get("places").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
-        let left: Vec<String> = untouched_places(&world, &places, &touched).into_iter().map(str::to_string).collect();
+        let left: Vec<String> = untouched_places(&world, &places, &touched, &checked).into_iter().map(str::to_string).collect();
         if !left.is_empty() {
             return Err(RoundRefusal::Refused(Refusal::DeliveryPlaceUntouched { wave: report.wave, task: code, places: left }));
         }

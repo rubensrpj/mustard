@@ -566,14 +566,11 @@ mod tests {
         assert_eq!(wrote["ok"], json!(true), "with the step after the change the delivery goes in: {wrote}");
     }
 
-    /// A segunda tarefa da onda faz valer uma regra de dois lugares, uma linha
-    /// de `src/b.rs` e o arquivo `src/c.rs`. A entrega que a dá por feita sem
-    /// mudar `src/c.rs` é recusada, nomeando a tarefa e só esse lugar, sem
-    /// gravar nada; com `src/c.rs` mudado e provado, a mesma entrega grava.
-    #[test]
-    fn a_delivery_that_leaves_a_place_of_its_rule_untouched_is_refused() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
+    /// A onda 1 despachada com duas tarefas, a segunda com uma regra de dois
+    /// lugares, uma linha de `src/b.rs` e o arquivo `src/c.rs`, e a cópia com
+    /// `src/a.rs` e `src/b.rs` mudados e o passo de término das duas: a
+    /// entrega que sai dela deixa `src/c.rs` sem mudança. Devolve a cópia.
+    fn wave_leaving_a_place_unchanged(root: &Path) -> PathBuf {
         approved_with(root, "x", &[(1, &["src/a.rs"], &[])], |said| {
             let task = json!({"wave": 1, "text": "Segunda tarefa da onda 1.", "files": [{"path": "src/b.rs"}], "depends_on": [],
                 "rule": "A soma arredonda para baixo", "places": ["src/b.rs:1", "src/c.rs"], "origin": said});
@@ -588,6 +585,18 @@ mod tests {
         edit(&copy, "src/b.rs", "o arredondamento saiu");
         step(root, "MSTD-TASK-0001", json!({}));
         step(root, "MSTD-TASK-0002", json!({}));
+        copy
+    }
+
+    /// A segunda tarefa da onda faz valer uma regra de dois lugares, uma linha
+    /// de `src/b.rs` e o arquivo `src/c.rs`. A entrega que a dá por feita sem
+    /// mudar `src/c.rs` é recusada, nomeando a tarefa e só esse lugar, sem
+    /// gravar nada; com `src/c.rs` mudado e provado, a mesma entrega grava.
+    #[test]
+    fn a_delivery_that_leaves_a_place_of_its_rule_untouched_is_refused() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let copy = wave_leaving_a_place_unchanged(root);
 
         let before = spec_lines(root);
         let body = json!({"wave": 1, "text": "A soma e o arredondamento saíram.", "files": ["src/a.rs", "src/b.rs"], "commit": "a soma arredonda"});
@@ -606,6 +615,39 @@ mod tests {
             "commit": "a soma arredonda"});
         let wrote = returned_unread(root, body);
         assert_eq!(wrote["ok"], json!(true), "with every place changed the delivery goes in: {wrote}");
+    }
+
+    /// O lugar `src/c.rs` da regra da segunda tarefa fica sem mudança. Sem
+    /// marca, a entrega segue recusada, e a recusa diz como marcar; marcado
+    /// como conferido sem motivo, ou com o motivo em branco, também. Nas
+    /// recusas, nada é gravado. Marcado com o motivo, a mesma entrega grava.
+    #[test]
+    fn a_place_checked_without_change_passes_with_its_reason() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        wave_leaving_a_place_unchanged(root);
+        let delivery = |checked: Option<Value>| {
+            let mut body =
+                json!({"wave": 1, "text": "A soma e o arredondamento saíram.", "files": ["src/a.rs", "src/b.rs"], "commit": "a soma arredonda"});
+            if let Some(checked) = checked {
+                body["checked_places"] = checked;
+            }
+            body
+        };
+
+        let before = spec_lines(root);
+        let unmarked = returned_unread(root, delivery(None));
+        assert_eq!(unmarked["reason"], json!("delivery-place-untouched"), "{unmarked}");
+        assert!(unmarked["hint"].as_str().is_some_and(|hint| hint.contains("`checked_places`")), "the refusal says how to mark: {unmarked}");
+        for mark in [json!({"place": "src/c.rs"}), json!({"place": "src/c.rs", "reason": "  "})] {
+            let refused = returned_unread(root, delivery(Some(json!([mark]))));
+            assert_eq!(refused["ok"], json!(false), "a mark without a reason does not pass: {refused}");
+            assert_eq!(spec_lines(root), before, "nothing was written: {refused}");
+        }
+
+        let marked = delivery(Some(json!([{"place": "src/c.rs", "reason": "O arquivo já arredonda para baixo e fica como está."}])));
+        let wrote = returned_unread(root, marked);
+        assert_eq!(wrote["ok"], json!(true), "the place checked with its reason passes: {wrote}");
     }
 
     /// A primeira tarefa lista `src/a.rs`; a segunda, devolvida, lista o

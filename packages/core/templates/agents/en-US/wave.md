@@ -45,5 +45,6 @@ Record the delivery with `run write delivered --json '<the line>'`, same --root/
 - A criterion's test got a new name: `"proofs":[{"criterion":"<code>","proof":"<the command>"}]`.
 - Agreed item: `"agreed":[{"item":"<code>","met":true}]`, one per item. Without a wave task implementing it, `met:true` confirms the change preserves the rule. Broken rule or undone task: `{"item":"<code>","met":false,"text":"<what is missing>"}`; becomes backlog work unless already covered by an unfinished task.
 - In a fix: `"fixes":[<waves it closes>]`.
+- A place of a done task's rule that needs no change: `"checked_places":[{"place":"<the place, as the refusal cites it>","reason":"<why it stays as it is>"}]`; a mark without a reason is refused.
 - The plan does not work: `"replan":"<the change, in one sentence>"`, always with `undone` (`[]` if all done), and `"changes_decision":"<the user decision it swaps>"`, only when it swaps one.
 - Optional: `"knowledge":[{"title":"<conclusion>","text":"<discovery and caveats>","sources":[{"file":"a.rs","line":1,"end_line":10,"sha256":"<search hash>"}]}]`. Use every current gateway receipt; reread after edits. Never invent hashes or add a report.
