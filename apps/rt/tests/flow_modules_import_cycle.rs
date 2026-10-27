@@ -5,8 +5,8 @@
 
 //! Os módulos do fluxo — a rodada, a retomada, o fechamento, o painel e a
 //! parte comum que os quatro importam — e a gravação de eventos, com a porta
-//! `run write` que a chama, não se importam em ciclo, nem por outro módulo do
-//! pacote no meio do caminho. A rodada e a parte comum gravam pela
+//! `run write` que a chama, não se importam em ciclo, nem por um módulo da
+//! pasta da gravação no meio do caminho. A rodada e a parte comum gravam pela
 //! gravação de eventos; ela, por isso, não chega a nenhum deles. A conta lê o
 //! código de produção de cada arquivo do pacote, com os caminhos relativos
 //! (`super::`, `self::`) escritos por inteiro, e liga um módulo ao outro por
@@ -14,7 +14,9 @@
 //! de uma chamada e na lista entre chaves. O caminho que começa por um filho
 //! que o módulo declara fora dos testes (`filho::...`) também liga o módulo a
 //! ele. Um módulo da lista chega a outro quando o nomeia, ou quando nomeia um
-//! módulo de fora da lista ([`MIDDLE`]) que chega a ele.
+//! módulo da pasta da gravação ([`MIDDLE`]) que chega a ele. O módulo de fora
+//! dessa pasta não liga um módulo da lista a outro: o ciclo que passa por ele
+//! fica fora desta conta.
 
 #[path = "support/sources.rs"]
 mod sources;
@@ -36,10 +38,10 @@ const MODULES: [(&str, &str); 7] = [
     ("write_door", "crate::commands::spec_events::write_door"),
 ];
 
-/// Os módulos que, no meio do caminho, ligam um módulo da lista a outro: os
-/// do pacote inteiro. O ciclo que passa por um módulo de fora da lista, como
-/// o resumo do projeto ou a observação do anfitrião, é ciclo da lista também.
-const MIDDLE: &str = "crate::";
+/// A pasta cujos módulos, no meio do caminho, ligam um módulo da lista a
+/// outro: a da gravação de eventos, que divide as regras dela pelos módulos
+/// vizinhos. O ciclo que passa por um deles é o da própria gravação.
+const MIDDLE: &str = "crate::commands::spec_events::";
 
 fn source_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("src")
@@ -239,7 +241,7 @@ fn edges() -> BTreeMap<(String, String), Vec<String>> {
 }
 
 /// Cada módulo da lista que outro da lista alcança, com o caminho de nós por
-/// onde chega: direto, ou pelos módulos de fora da lista ([`MIDDLE`]) no
+/// onde chega: direto, ou pelos módulos da pasta da gravação ([`MIDDLE`]) no
 /// meio.
 fn reach(edges: &BTreeMap<(String, String), Vec<String>>) -> BTreeMap<(&'static str, &'static str), Vec<String>> {
     let mut graph: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
@@ -328,15 +330,25 @@ fn the_flow_modules_import_in_no_cycle() {
     }
 }
 
-/// A gravação que chama um módulo de fora da pasta dela que nomeia o painel
-/// chega ao painel, pelo caminho que passa por ele.
+/// A gravação que chama um módulo da pasta dela que nomeia a rodada chega à
+/// rodada, pelo caminho que passa por ele.
 #[test]
-fn a_module_outside_the_writer_folder_in_the_middle_links_the_writer_to_the_panel() {
+fn a_module_of_the_writer_folder_in_the_middle_links_the_writer_to_the_round() {
+    let rule = "crate::commands::spec_events::rule";
+    let edge = |from: &str, to: &str| ((from.to_string(), to.to_string()), vec![format!("{from}: {to}")]);
+    let edges: BTreeMap<(String, String), Vec<String>> = [edge("write", rule), edge(rule, "round")].into_iter().collect();
+    let path = ["write", rule, "round"].map(str::to_string).to_vec();
+    assert_eq!(reach(&edges).get(&("write", "round")), Some(&path));
+}
+
+/// O módulo de fora da pasta da gravação não liga a gravação ao painel: a
+/// conta segue só os módulos dessa pasta.
+#[test]
+fn a_module_outside_the_writer_folder_in_the_middle_does_not_link_the_writer_to_the_panel() {
     let summary = "crate::shared::project_summary";
     let edge = |from: &str, to: &str| ((from.to_string(), to.to_string()), vec![format!("{from}: {to}")]);
     let edges: BTreeMap<(String, String), Vec<String>> = [edge("write", summary), edge(summary, "panel")].into_iter().collect();
-    let path = ["write", summary, "panel"].map(str::to_string).to_vec();
-    assert_eq!(reach(&edges).get(&("write", "panel")), Some(&path));
+    assert_eq!(reach(&edges).get(&("write", "panel")), None);
 }
 
 /// O item que só existe em teste sai do código de produção, seja qual for a
