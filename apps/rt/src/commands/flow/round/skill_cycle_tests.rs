@@ -366,6 +366,49 @@ fn a_skill_update_the_wave_delivers_is_installed_by_the_round() {
     let _ = std::fs::remove_dir_all(&backup);
 }
 
+/// The wave of the task that creates a skill writes it in the reserved folder
+/// of its own copy, as an update does, and records the creation with a gain
+/// while the project has no folder for it yet: the record waits without a
+/// backup warning, the round that takes the return writes the skill in the
+/// project with its backup, the reserved folder leaves the copy, and no commit
+/// carries it.
+#[test]
+fn a_skill_creation_the_wave_delivers_is_installed_by_the_round() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+    let log = log_of(root);
+    let task = log.visible().into_iter().find(|e| e.event_type == "task").map(|e| e.id).expect("the task of wave 1");
+    let creating = super::queue::task_revision(&log, task, json!({"skill": "skill-creator"}).as_object().cloned().unwrap()).unwrap();
+    crate::commands::spec_events::write::record(root, "x", "task", creating, PhaseWriter::Binary).unwrap();
+    assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1], "the creation task goes out");
+    let copy = super::commit::copy_of(&log_of(root), 1).expect("the copy of wave 1");
+    let reserved = ".mustard-skill/falta-teste/SKILL.md";
+    let new = "---\nname: falta-teste\ndescription: Does falta-teste.\n---\n\nAlways test the empty case in `src/a.rs`.\n";
+    std::fs::create_dir_all(copy.join(".mustard-skill/falta-teste")).unwrap();
+    std::fs::write(copy.join(reserved), new).unwrap();
+    let (main, backup) = folders(root, "falta-teste");
+    let _ = std::fs::remove_dir_all(&backup);
+    let body = json!({"name": "falta-teste", "action": "created", "text": "Acertou 3 de 3 com a skill."});
+    let opts = crate::commands::spec_events::write::WriteOpts { root: root.to_path_buf(), spec: Some("x".into()), event_type: "skill".into(), json: body.to_string() };
+    let wrote = crate::commands::spec_events::write::write_at(&opts);
+    assert_eq!(wrote["ok"], true, "{wrote}");
+    assert!(wrote.get("warnings").is_none(), "no backup is due before the skill has a folder: {wrote}");
+    assert!(!main.exists(), "the skill waits for the round");
+    let head = super::commit::head(root);
+
+    let report = delivered(root, 1, "A skill saiu.", &[reserved]);
+    let taken = round(root, "x", Some(&report));
+
+    assert!(log_of(root).last_by_wave("delivered").contains_key(&1), "the round took the return: {taken}");
+    assert_eq!(std::fs::read_to_string(main.join("SKILL.md")).unwrap(), new, "the skill is in the project: {taken}");
+    assert_eq!(std::fs::read_to_string(backup.join("SKILL.md")).unwrap(), new, "the backup follows it");
+    assert!(!copy.join(".mustard-skill").exists(), "the reserved folder leaves the copy");
+    assert_eq!(super::commit::head(root), head, "no commit carries the reserved file: {taken}");
+    assert_eq!(registry::read(root).skills["falta-teste"].files, vec!["src/a.rs".to_string()], "the registry reads the delivered version");
+    let _ = std::fs::remove_dir_all(&backup);
+}
+
 /// The skills recorded in the first block of the last send of wave `wave` of
 /// spec `x` in `root`; nothing when the block went without skills.
 fn sent_skills(root: &Path, wave: u64) -> Value {

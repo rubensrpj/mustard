@@ -16,10 +16,12 @@
 //! dela; sem spec que rode, a tarefa espera no registro.
 //!
 //! A skill que a tarefa cria é gravada pelo `run write skill`
-//! ([`prepare_skill`], [`after_skill_written`]): a pasta vem para o projeto
-//! principal, fica fora do git pela regra local do clone, ganha a cópia de
-//! segurança na pasta do Mustard fora do projeto e entra na linha da spec no
-//! resumo do projeto.
+//! ([`prepare_skill`], [`after_skill_written`]): a impressão sai da versão que
+//! a onda deixou no caminho reservado da cópia, a pasta dela no projeto
+//! principal fica fora do git pela regra local do clone, e a skill entra na
+//! linha da spec no resumo do projeto. A rodada que assume a volta a grava no
+//! lugar, com a cópia de segurança na pasta do Mustard fora do projeto
+//! (`round::skill_install`).
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -500,20 +502,12 @@ fn copy_places(start: &Path, root: &Path, spec: &str) -> Vec<PathBuf> {
     places
 }
 
-/// A pasta da skill `name` que a onda escreveu fora do projeto principal
-/// `root`, no primeiro lugar de [`copy_places`] que a tem.
-fn written_in_copy(start: &Path, root: &Path, spec: &str, name: &str) -> Option<PathBuf> {
-    let main = skill_dir(root, name);
-    let same = |dir: &Path| *dir == main || matches!((dir.canonicalize(), main.canonicalize()), (Ok(a), Ok(b)) if a == b);
-    copy_places(start, root, spec).into_iter().map(|place| skill_dir(&place, name)).find(|dir| !same(dir) && dir.join("SKILL.md").is_file())
-}
-
-/// A pasta com o `SKILL.md` da versão nova da skill `name` que a onda deixou
-/// no caminho reservado da cópia ([`crate::shared::skill_cycle::reserved_skill`]),
+/// A pasta com o `SKILL.md` da skill `name`, nova ou atualizada, que a onda
+/// deixou no caminho reservado da cópia ([`mustard_core::io::wave_prompt::reserved_skill`]),
 /// no primeiro lugar de [`copy_places`] que a tem. É ela que a rodada grava no
 /// lugar da skill quando assume a volta.
 pub(crate) fn reserved_in_copy(start: &Path, root: &Path, spec: &str, name: &str) -> Option<PathBuf> {
-    let file = crate::shared::skill_cycle::reserved_skill(name);
+    let file = mustard_core::io::wave_prompt::reserved_skill(name);
     copy_places(start, root, spec).into_iter().map(|place| place.join(&file)).find(|path| path.is_file()).and_then(|path| path.parent().map(Path::to_path_buf))
 }
 
@@ -526,11 +520,11 @@ fn skill_sha(dir: &Path) -> Option<String> {
 }
 
 /// Antes de gravar o `skill` criado ou atualizado (`draft`) na spec `spec` de
-/// `start`: a pasta da skill vem da cópia da onda para o projeto principal,
-/// e a impressão do arquivo entra no evento — a da versão nova que a onda
-/// deixou no caminho reservado da cópia, quando a atualização a traz
-/// ([`reserved_in_copy`]). A recusa, pronta para a resposta em `lang`, quando
-/// o nome não serve de pasta ou a skill não está em lugar nenhum.
+/// `start`: a impressão do arquivo entra no evento — a da versão que a onda
+/// deixou no caminho reservado da cópia ([`reserved_in_copy`]), que a rodada
+/// grava no lugar da skill, e, sem ela, a da skill do projeto principal. A
+/// recusa, pronta para a resposta em `lang`, quando o nome não serve de pasta
+/// ou a skill não está em lugar nenhum.
 pub(crate) fn prepare_skill(start: &Path, spec: &str, draft: &mut Map<String, Value>, lang: Locale) -> Result<(), Value> {
     let name = draft.get("name").and_then(Value::as_str).map(str::trim).unwrap_or_default().to_string();
     if !good_name(&name) {
@@ -541,13 +535,10 @@ pub(crate) fn prepare_skill(start: &Path, spec: &str, draft: &mut Map<String, Va
         return Ok(());
     }
     let root = store::spec_root(start);
-    let main = skill_dir(&root, &name);
-    if let Some(written) = written_in_copy(start, &root, spec, &name) {
-        copy_folder(&written, &main).map_err(|error| json!({ "ok": false, "reason": "skill-not-copied", "hint": error.to_string() }))?;
-    }
-    let delivered = if action == Some("updated") { reserved_in_copy(start, &root, spec, &name) } else { None };
-    let Some(sha) = skill_sha(delivered.as_deref().unwrap_or(&main)) else {
-        return Err(json!({ "ok": false, "reason": "skill-folder-missing", "hint": translate("skills.folder_missing", lang).replace("{name}", &name) }));
+    let folder = reserved_in_copy(start, &root, spec, &name).unwrap_or_else(|| skill_dir(&root, &name));
+    let Some(sha) = skill_sha(&folder) else {
+        let hint = translate("skills.folder_missing", lang).replace("{name}", &name).replace("{reserved}", &mustard_core::io::wave_prompt::reserved_skill(&name));
+        return Err(json!({ "ok": false, "reason": "skill-folder-missing", "hint": hint }));
     };
     draft.insert("sha".into(), json!(sha));
     Ok(())
@@ -578,9 +569,12 @@ pub(crate) fn skills_of(log: &SpecLog) -> Vec<String> {
 /// spec `spec` de `start`: o registro das skills do Mustard o guarda
 /// ([`crate::shared::skill_cycle::skill_recorded`]); criado ou atualizado, a
 /// pasta dele fica fora do git pela regra local do clone, a cópia de
-/// segurança vai à pasta do Mustard fora do projeto e a linha da spec no
-/// resumo do projeto, quando existe, passa a citá-lo. Só a pasta da skill que
-/// o Mustard criou ganha a regra. Devolve os avisos, em `lang`.
+/// segurança da pasta que o projeto já tem vai à pasta do Mustard fora do
+/// projeto e a linha da spec no resumo do projeto, quando existe, passa a
+/// citá-lo. Só a pasta da skill que o Mustard criou ganha a regra. A skill
+/// criada ainda sem pasta no projeto espera no caminho reservado da cópia, e
+/// a cópia de segurança dela sai com a rodada que a grava no lugar. Devolve
+/// os avisos, em `lang`.
 pub(crate) fn after_skill_written(start: &Path, spec: &str, (id, name, action): (u64, &str, &str), lang: Locale) -> Vec<String> {
     let mut warnings = crate::shared::skill_cycle::skill_recorded(start, spec, id, lang);
     if !matches!(action, "created" | "updated") || !good_name(name) {
@@ -591,8 +585,11 @@ pub(crate) fn after_skill_written(start: &Path, spec: &str, (id, name, action): 
     if let Some(failure) = outcome.unavailable {
         warnings.push(translate("skills.not_hidden", lang).replace("{name}", name).replace("{detail}", failure.reason()));
     }
+    let main = skill_dir(&root, name);
     let backup = mustard_core::io::wave_prompt::skills_backup_dir(&root).join(name);
-    if let Err(error) = copy_folder(&skill_dir(&root, name), &backup) {
+    if main.is_dir()
+        && let Err(error) = copy_folder(&main, &backup)
+    {
         warnings.push(translate("skills.not_backed_up", lang).replace("{name}", name).replace("{detail}", &error.to_string()));
     }
     if let Some(log) = DiskSpecState::new(start).log(spec)
@@ -744,8 +741,12 @@ mod tests {
         Command::new("git").args(["-c", "user.email=t@t", "-c", "user.name=t"]).args(args).current_dir(root).output().unwrap().status.success()
     }
 
+    /// The skill a wave creates waits in the reserved folder of its copy until
+    /// the round installs it: the record from inside the copy fingerprints
+    /// that version, hides the skill's folder of the main project from git,
+    /// leaves the person's own skill alone and names it in the project summary.
     #[test]
-    fn a_created_skill_comes_from_the_wave_copy_hidden_from_git_backed_up_and_in_the_project_summary() {
+    fn a_created_skill_waits_in_the_wave_copy_hidden_from_git_and_in_the_project_summary() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         crate::shared::test_fixture::seeded_repo(root, &[("mustard.json", "{}"), ("src/a.rs", "fn a() {}\n")]);
@@ -755,24 +756,24 @@ mod tests {
         let copy = copies.path().join("a");
         assert!(git(root, &["worktree", "add", "-q", &copy.to_string_lossy(), "-b", "onda-1"]));
         let text = "---\nname: falta-teste\ndescription: Lembra o teste do caso vazio.\npaths:\n  - src/**\n---\n\nCorpo.\n";
-        for (at, name, body) in [(copy.as_path(), "falta-teste", text), (root, "minha", "# Minha\n")] {
-            std::fs::create_dir_all(skill_dir(at, name)).unwrap();
-            std::fs::write(skill_dir(at, name).join("SKILL.md"), body).unwrap();
-        }
+        let reserved = copy.join(mustard_core::io::wave_prompt::reserved_skill("falta-teste"));
+        std::fs::create_dir_all(reserved.parent().unwrap()).unwrap();
+        std::fs::write(&reserved, text).unwrap();
+        std::fs::create_dir_all(skill_dir(root, "minha")).unwrap();
+        std::fs::write(skill_dir(root, "minha").join("SKILL.md"), "# Minha\n").unwrap();
         let body = json!({"name":"falta-teste","action":"created","text":"A onda deixou de esquecer o teste do vazio.","files":["src/a.rs"]});
         let opts = crate::commands::spec_events::write::WriteOpts { root: copy.clone(), spec: Some("x".into()), event_type: "skill".into(), json: body.to_string() };
         let out = crate::commands::spec_events::write::write_at(&opts);
-        let backup = mustard_core::io::wave_prompt::skills_backup_dir(root);
-        let backed_up = backup.join("falta-teste/SKILL.md").is_file();
-        let _ = std::fs::remove_dir_all(&backup);
+        let _ = std::fs::remove_dir_all(mustard_core::io::wave_prompt::skills_backup_dir(root));
         assert_eq!(out["ok"], true, "{out}");
-        assert_eq!(std::fs::read_to_string(skill_dir(root, "falta-teste").join("SKILL.md")).unwrap(), text, "the skill reached the main project");
+        assert!(!skill_dir(root, "falta-teste").exists(), "the round installs it, not the record");
         assert!(git(root, &["check-ignore", "-q", ".claude/skills/falta-teste/SKILL.md"]), "the skill Mustard created is hidden from git");
         assert!(!git(root, &["check-ignore", "-q", ".claude/skills/minha/SKILL.md"]), "the person's own skill is left alone");
-        assert!(backed_up, "the backup copy outside the project");
         let log = DiskSpecState::new(root).log("x").unwrap();
         let skill = log.visible().into_iter().rfind(|e| e.event_type == "skill").cloned().unwrap();
-        assert_eq!(skill.str_field("sha").map(str::len), Some(64), "{:?}", skill.fields);
+        let mut hash = mustard_core::io::sha256::Sha256::new();
+        hash.update(text.as_bytes());
+        assert_eq!(skill.str_field("sha"), Some(hash.hex_digest().as_str()), "{:?}", skill.fields);
         crate::shared::project_summary::record_delivered(root, "x").unwrap();
         assert_eq!(mustard_core::io::project_summary::read(root)[0].skills, ["falta-teste"]);
     }

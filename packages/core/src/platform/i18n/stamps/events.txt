@@ -31,7 +31,7 @@ lessons.unclear	3590e83536341052
 lessons.unknown_lesson	20314a2522d11bda
 skills.bad_name	0de66ad3b3a33ee8
 skills.cycle_failed	2714ef4da5f446e8
-skills.folder_missing	3c4ab4dea2e3bec5
+skills.folder_missing	e6c71ec3ba54fa9a
 skills.not_backed_up	1c4d5b40fbd0ed9d
 skills.not_hidden	ca695d96a209728a
 skills.not_installed	89a9c6edb0486fb9

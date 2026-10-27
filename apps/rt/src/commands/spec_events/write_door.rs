@@ -224,9 +224,9 @@ fn write_triaged(opts: &WriteOpts, copy: bool, session: Option<&str>, ask: &AskJ
         }
         return refusal;
     }
-    // A skill criada ou atualizada vem da cópia da onda para o projeto, com a
-    // impressão do arquivo; depois de gravada, sai do git e ganha a cópia de
-    // segurança.
+    // A skill criada ou atualizada ganha a impressão da versão que a onda
+    // deixou no caminho reservado da cópia, que a rodada grava no lugar dela;
+    // depois de gravada, sai do git e entra no resumo do projeto.
     let skill = if event_type == "skill" {
         if let Err(refusal) = crate::shared::failure_skills::prepare_skill(&opts.root, spec, &mut draft, lang) {
             return refusal;

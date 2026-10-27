@@ -502,6 +502,19 @@ pub fn skills_backup_dir(root: &Path) -> PathBuf {
     project_folder(root, "MUSTARD_SKILLS_DIR", "skills")
 }
 
+/// A pasta, na raiz da cópia de uma onda, em que a onda da tarefa de criar ou
+/// de atualizar uma skill escreve a versão nova dela: a pasta das skills do
+/// projeto fica fora da cópia, e a rodada grava a versão nova no lugar da
+/// skill quando assume a volta. Nada dela entra num commit.
+pub const RESERVED_SKILLS: &str = ".mustard-skill";
+
+/// O caminho, relativo à raiz da cópia, em que a onda escreve a versão nova da
+/// skill `name` ([`RESERVED_SKILLS`]).
+#[must_use]
+pub fn reserved_skill(name: &str) -> String {
+    format!("{RESERVED_SKILLS}/{name}/SKILL.md")
+}
+
 /// A pasta de `leaf` do projeto de `root`: a base que a variável `var`
 /// indicar, ou `.cache/mustard/<leaf>` sob a pasta pessoal, ou a pasta
 /// temporária, e dentro dela `<nome>-<código>`. A chave é uma só para toda
@@ -1010,7 +1023,7 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
     let creator_note = creator.as_deref().zip(creator_file.as_deref()).map(|(folder, file)| {
         let note = crate::platform::i18n::translate("prompt.task.skill_creator", lang)
             .replace("{folder}", &shown(folder))
-            .replace("{skills}", &shown(&root.join(".claude").join("skills")))
+            .replace("{reserved}", RESERVED_SKILLS)
             .replace("{root}", &shown(root))
             .replace("{spec}", spec);
         (file, note)
@@ -1857,6 +1870,8 @@ mod tests {
         assert!(block.contains("# Skill Creator\n\nRun `scripts/run_eval.py`."), "{block}");
         assert!(block.contains(&format!("`{}`", shown(&creator))), "the folder of its scripts: {block}");
         assert!(block.contains("sem pedir aprovação") && block.contains("run write skill"), "{block}");
+        assert!(block.contains("`.mustard-skill/<nome>/SKILL.md`"), "the new skill goes to the reserved folder of the copy: {block}");
+        assert!(!block.contains(&shown(&root.join(".claude").join("skills"))), "never to the skills folder of the main project: {block}");
         assert!(block.find("# Skill Creator").unwrap() < block.find("Body of area.").unwrap(), "{block}");
 
         let bundled = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugin/third-party/skill-creator");

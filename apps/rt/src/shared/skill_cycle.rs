@@ -46,7 +46,7 @@ use mustard_core::domain::wave_prompt::{SkillOption, SkillTie};
 use mustard_core::io::failures::{self, Failure, SkillTask};
 use mustard_core::io::mustard_skills::{self as registry, IDLE_CANDIDACIES, MustardSkill, RETIRED};
 use mustard_core::io::spec_events as store;
-use mustard_core::io::wave_prompt::{Flight, WavePrompt};
+use mustard_core::io::wave_prompt::{Flight, RESERVED_SKILLS, WavePrompt, reserved_skill};
 use mustard_core::platform::i18n::{Locale, translate};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -345,7 +345,7 @@ fn motivating_groups(root: &Path, spec: &str, log: &SpecLog, wave: Option<u64>) 
 /// o registro do projeto guarda a criação, a atualização ou o descarte, com
 /// o ganho, os arquivos citados — os do evento ou, sem eles, os que o
 /// `SKILL.md` cita, o da versão nova no caminho reservado da cópia quando a
-/// atualização a traz —, a onda que a gravou e os grupos de falha que a
+/// criação ou a atualização a traz —, a onda que a gravou e os grupos de falha que a
 /// motivaram. Devolve os avisos, em `lang`.
 pub(crate) fn skill_recorded(start: &Path, spec: &str, id: u64, lang: Locale) -> Vec<String> {
     let root = store::spec_root(start);
@@ -358,8 +358,8 @@ pub(crate) fn skill_recorded(start: &Path, spec: &str, id: u64, lang: Locale) ->
     };
     let mut files = texts(event.fields.get("files"));
     if files.is_empty() && matches!(action, "created" | "updated") {
-        let delivered = if action == "updated" { reserved_in_copy(start, &root, spec, name) } else { None };
-        let text = std::fs::read_to_string(delivered.unwrap_or_else(|| skill_dir(&root, name)).join("SKILL.md")).unwrap_or_default();
+        let delivered = reserved_in_copy(start, &root, spec, name).unwrap_or_else(|| skill_dir(&root, name));
+        let text = std::fs::read_to_string(delivered.join("SKILL.md")).unwrap_or_default();
         files = mustard_core::domain::project_map::cited_paths(&text);
     }
     let wave = writer_wave(&log, start);
@@ -465,18 +465,6 @@ fn whys_text(root: &Path, whys: &[Why], listed: &[(String, Vec<String>)], lang: 
     let unlisted = |why: &&Why| why.sha().is_none_or(|sha| !listed.iter().any(|(had, _)| had == sha));
     parts.extend(whys.iter().filter(unlisted).map(|why| why.text(root, lang)));
     parts.join("\n\n")
-}
-
-/// A pasta, na raiz da cópia de uma onda, em que a onda da tarefa de atualizar
-/// uma skill escreve a versão nova dela: a pasta das skills do projeto fica
-/// fora da cópia, e a rodada grava a versão nova no lugar da skill quando
-/// assume a volta. Nada dela entra num commit.
-pub(crate) const RESERVED_SKILLS: &str = ".mustard-skill";
-
-/// O caminho, relativo à raiz da cópia, em que a onda escreve a versão nova da
-/// skill `name` ([`RESERVED_SKILLS`]).
-pub(crate) fn reserved_skill(name: &str) -> String {
-    format!("{RESERVED_SKILLS}/{name}/SKILL.md")
 }
 
 /// `true` quando o caminho `file`, relativo à raiz da cópia, fica na pasta

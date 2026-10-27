@@ -1361,12 +1361,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The skill name `{name}` cannot be a folder. Use only letters, digits, hyphens and underscores."
         }
         ("skills.folder_missing", Locale::PtBr) => {
-            "A skill {name} não está em `.claude/skills/{name}/SKILL.md`, nem no projeto nem na cópia da \
-             onda. Grave o arquivo antes de dizer que ela foi criada."
+            "A skill {name} não está em `{reserved}`, a partir da raiz da cópia da onda, nem em \
+             `.claude/skills/{name}/SKILL.md` do projeto. Grave o arquivo antes de gravar o resultado."
         }
         ("skills.folder_missing", Locale::EnUs) => {
-            "The skill {name} is not in `.claude/skills/{name}/SKILL.md`, neither in the project nor in \
-             the wave copy. Write the file before saying it was created."
+            "The skill {name} is not at `{reserved}`, from the root of the wave copy, nor at \
+             `.claude/skills/{name}/SKILL.md` in the project. Write the file before recording the result."
         }
         ("skills.not_hidden", Locale::PtBr) => "A skill {name} foi gravada, mas não ficou fora do git: {detail}.",
         ("skills.not_hidden", Locale::EnUs) => "The skill {name} was recorded, but it was not hidden from git: {detail}.",
