@@ -102,7 +102,9 @@
 //! A entrada do comando mora na porta ([`super::write_door`]): a pergunta ao
 //! Jev e as conferências da rodada sobre o passo, a volta da onda, o veredito
 //! e a remoção. Aqui fica a gravação, que a rodada e a parte comum do fluxo
-//! usam; por isso ela não importa nenhum dos dois.
+//! usam; por isso ela não importa nenhum dos dois, nem pelas regras que divide
+//! com os módulos vizinhos desta pasta (a onda da tarefa, a dependência entre
+//! tarefas): o andamento das ondas que essas regras leem vem do núcleo.
 //!
 //! Este comando também não grava a execução de um critério (`criterion_run`),
 //! o envio do pedido (`send`), o commit (`commit`) nem a resposta do

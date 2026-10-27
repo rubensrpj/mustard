@@ -25,7 +25,7 @@ use super::request_route::Route;
 use super::write::{self, Recorded, WriteOpts};
 use crate::commands::flow::round::queue::{files_in, task_files};
 use crate::commands::flow::round::task_release::{Next, after_step};
-use crate::commands::flow::round::{all_ignored, backlog_left, backlog_return, check_return, check_verdict_return, mark_step_copy, waves_left_without_tasks};
+use crate::commands::flow::round::{all_ignored, backlog_left, backlog_return, check_return, check_verdict_return, mark_step_copy};
 use crate::shared::jev::TASK_TRIAGE_CALL;
 use crate::shared::jev::reserve::{self, Asked, RESERVE_FIELD, Reserved};
 use crate::shared::spec_state::{DiskSpecState, checkout, session_from_env};
@@ -420,7 +420,7 @@ fn same_work_open(same: &SameWork, event_type: &str, draft: &Map<String, Value>,
 /// ([`backlog_return`]), gravada pelo programa. Sem isso a tarefa ficaria
 /// presa ao número de uma onda que não existe mais, fora do backlog. A
 /// remoção diz também as ondas com envio aberto que ela tirou do ar
-/// ([`waves_left_without_tasks`]): as que ficaram sem tarefa por ela, e não
+/// ([`SpecLog::waves_left_without_tasks`]): as que ficaram sem tarefa por ela, e não
 /// as que já estavam assim antes. Quem remove a tarefa errada vê que a onda
 /// que queria tirar do ar não está na lista.
 ///
@@ -430,14 +430,14 @@ fn same_work_open(same: &SameWork, event_type: &str, draft: &Map<String, Value>,
 fn record_removal(project: &super::Project, start: &Path, spec: &str, draft: Map<String, Value>, session: Option<&str>) -> Result<Recorded, Refusal> {
     let path = store::spec_file(&project.root, spec)?;
     let held = store::with_locked_writer(&path, |locked| -> Result<Recorded, Refusal> {
-        let before = waves_left_without_tasks(locked.log());
+        let before = locked.log().waves_left_without_tasks();
         let mut removal = write::record_to(project, start, spec, "remove", draft.clone(), None, Some(&mut *locked), session)?;
         let freed: Vec<Map<String, Value>> = locked.log().tasks_of_removed_waves(&removal.written.removed).into_iter().map(backlog_return).collect();
         for task in freed {
             let back = write::record_to(project, start, spec, "task", task, Some(PhaseWriter::Binary), Some(&mut *locked), session)?;
             removal.returned.push(back.written.id);
         }
-        removal.emptied_waves = waves_left_without_tasks(locked.log()).into_keys().filter(|wave| !before.contains_key(wave)).collect();
+        removal.emptied_waves = locked.log().waves_left_without_tasks().into_keys().filter(|wave| !before.contains_key(wave)).collect();
         Ok(removal)
     })?;
     // Sem o arquivo de eventos, a gravação comum dá a recusa de sempre.

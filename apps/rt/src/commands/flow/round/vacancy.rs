@@ -15,7 +15,7 @@ use mustard_core::io::wave_prompt::{shown, slot_path};
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Value, json};
 
-use super::queue::{Holding, backlog_ready, max_parallel, open_sends, orphaned_waves, outgoing, unanswered_sends, waves_in_progress};
+use super::queue::{Holding, backlog_ready, max_parallel, open_sends, orphaned_waves, outgoing, waves_in_progress};
 use super::stops::waves_replanned;
 use crate::shared::paths::same_place;
 
@@ -110,7 +110,7 @@ pub(crate) fn vacancies_with(root: &Path, spec: &str, log: &SpecLog, capacity: u
     let working: BTreeSet<u64> =
         waves_in_progress(log).into_keys().chain(orphaned_waves(log).into_keys()).chain(repairing.iter().copied()).collect();
     let replanned = waves_replanned(log);
-    let holding: BTreeSet<u64> = unanswered_sends(log).into_keys().filter(|n| replanned.contains(n) && !returned.contains(n)).collect();
+    let holding: BTreeSet<u64> = log.unanswered_sends().into_keys().filter(|n| replanned.contains(n) && !returned.contains(n)).collect();
     let waiting: BTreeSet<u64> = returned.difference(&repairing).copied().collect();
     let copies = copy_cap(capacity);
     let held = super::slots::held_slots(root, spec, log);

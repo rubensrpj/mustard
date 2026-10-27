@@ -25,7 +25,7 @@ fn a_wave_emptied_by_a_write_after_its_delivery_leaves_the_air_and_is_not_sent_a
     delivered(root, 1, "Saiu.", &["web/app.ts"]);
     let log = spec_now(root);
     assert!(open_sends(&log).contains_key(&1), "o pedido da onda 1 segue aberto depois da entrega");
-    assert!(waves_returned(&log).contains(&1), "a volta da onda 1 espera a rodada");
+    assert!(log.waves_returned().contains(&1), "a volta da onda 1 espera a rodada");
     let removed = write(root, "x", "remove", json!({"targets": [code], "reason": "Já foi feito fora da onda."}));
     assert_eq!(removed["ok"], json!(true), "depois da entrega o run write remove: {removed}");
     assert_eq!(removed["waves_left_without_tasks"], json!([1]), "a remoção diz que a onda 1 saiu do ar: {removed}");

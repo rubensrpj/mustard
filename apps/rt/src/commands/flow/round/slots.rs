@@ -24,7 +24,7 @@ use serde_json::{Value, json};
 use super::answer::RoundRefusal;
 use super::commit::on_spec_branch;
 use super::keep::{Keeping, Kept};
-use super::queue::{max_parallel, open_review, orphaned_waves, unanswered_sends};
+use super::queue::{max_parallel, open_review, orphaned_waves};
 use crate::commands::git_settle::{enter_unit_branch, submodule_holding, submodules_of};
 use crate::commands::wave::wave_overlap_check::wave_graph;
 use crate::shared::paths::{place_key, same_place};
@@ -36,14 +36,14 @@ use crate::shared::paths::{place_key, same_place};
 type Holders = BTreeMap<String, (String, BTreeSet<u64>)>;
 
 /// Cada cópia gravada por uma onda que ainda a segura, com as ondas que a
-/// seguram: a do envio sem volta oficial ([`unanswered_sends`]) — a órfã
+/// seguram: a do envio sem volta oficial ([`SpecLog::unanswered_sends`]) — a órfã
 /// inclusive, que a rodada reenvia na mesma vaga, a que ganhou plano novo
 /// depois do pedido e a da onda que voltou e espera a rodada, cuja entrega
 /// ainda não é oficial e guarda o código até o commit. A cópia é a gravada no
 /// último envio de cada onda, como o envio a grava.
 fn copy_holders(log: &SpecLog) -> Holders {
     let mut holders: Holders = BTreeMap::new();
-    for wave in unanswered_sends(log).into_keys() {
+    for wave in log.unanswered_sends().into_keys() {
         if let Some(copy) = recorded_copy(log, wave) {
             holders.entry(place_key(&copy.path)).or_insert_with(|| (copy.path, BTreeSet::new())).1.insert(wave);
         }

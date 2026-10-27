@@ -1,6 +1,8 @@
 //! As entregas que esperam a rodada: a leitura única que a rodada assume e
 //! que a retomada e o bloco de retomada contam como voltas à espera.
 
+use std::collections::BTreeSet;
+
 use super::{SpecEvent, SpecLog};
 
 impl SpecLog {
@@ -20,6 +22,16 @@ impl SpecLog {
             .filter(|event| event.event_type == "delivered")
             .filter(|event| event.wave().is_some_and(|n| event.id > dispatched.get(&n).copied().unwrap_or_default()))
             .collect()
+    }
+
+    /// As ondas que voltaram e esperam a rodada: as das entregas depois do
+    /// envio ([`Self::returns_after_dispatch`]) — a que pede novo plano sem o
+    /// clique do usuário, a que uma conferência da própria volta segurou, ou a
+    /// que a junção segurou por conflito. A onda que saiu do plano depois de
+    /// voltar segue aqui: o agente dela terminou.
+    #[must_use]
+    pub fn waves_returned(&self) -> BTreeSet<u64> {
+        self.returns_after_dispatch().into_iter().filter_map(SpecEvent::wave).collect()
     }
 
     /// As entregas que o agente gravou e que esperam a rodada, em ordem de

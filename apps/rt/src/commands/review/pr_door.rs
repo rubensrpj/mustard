@@ -1269,16 +1269,16 @@ pub(crate) fn merged_outside(root: &Path, spec: &str, session: Option<&str>, pha
 
 /// A spec ainda tem trabalho em andamento: onda despachada sem volta
 /// assumida — a órfã, a replanejada e a que voltou e espera a rodada
-/// inclusive ([`unanswered_sends`]) —, a revisão final aberta
+/// inclusive ([`SpecLog::unanswered_sends`]) —, a revisão final aberta
 /// ([`open_review`]) ou o conserto pedido e ainda não entregue
 /// ([`open_fix_wave_of`]). As cópias dessa spec são de quem trabalha nelas, e
 /// nada a entrega.
 ///
-/// [`unanswered_sends`]: crate::commands::flow::round::queue::unanswered_sends
+/// [`SpecLog::unanswered_sends`]: mustard_core::domain::spec_events::SpecLog::unanswered_sends
 /// [`open_review`]: crate::commands::flow::round::open_review
 /// [`open_fix_wave_of`]: crate::commands::flow::reopen::open_fix_wave_of
 fn work_in_flight(log: &mustard_core::domain::spec_events::SpecLog) -> bool {
-    !crate::commands::flow::round::queue::unanswered_sends(log).is_empty()
+    !log.unanswered_sends().is_empty()
         || crate::commands::flow::round::open_review(log).is_some()
         || crate::commands::flow::reopen::open_fix_wave_of(log).is_some()
 }

@@ -44,7 +44,7 @@ use crate::commands::flow::round::queue::{
     waves_with_live_agent,
 };
 use crate::commands::flow::round::following::{self, AFTER};
-use crate::commands::flow::round::{append_agent_line, backlog_return, waves_left_without_tasks};
+use crate::commands::flow::round::{append_agent_line, backlog_return};
 use crate::commands::spec_events::{self, write::record_locked};
 use crate::hooks::session::conversation_size::WAVE_LIMIT;
 use crate::commands::flow::round::dispatch_jev::{Asker, Outcome};
@@ -561,7 +561,7 @@ fn apply(
 ) -> Result<Applied, Refusal> {
     let locked_result = store::with_locked_writer(path, |locked| {
         let before = locked.content().to_string();
-        let in_air = waves_left_without_tasks(locked.log());
+        let in_air = locked.log().waves_left_without_tasks();
         let mut record_all = || -> Result<Applied, Refusal> {
             let mut versions = Vec::new();
             for subject in &order.subjects {
@@ -597,7 +597,7 @@ fn apply(
                     }
                 }
             }
-            let emptied = waves_left_without_tasks(locked.log()).into_keys().filter(|wave| !in_air.contains_key(wave)).collect();
+            let emptied = locked.log().waves_left_without_tasks().into_keys().filter(|wave| !in_air.contains_key(wave)).collect();
             Ok(Applied { versions, emptied })
         };
         let recorded = record_all();
@@ -912,7 +912,7 @@ mod tests {
         assert!(!task_files(kept).contains("web/live.ts"), "the live wave task is not written: {kept:?}");
         assert!(visible.iter().all(|e| e.id != ids[1] && e.id != ids[2] && e.id != ids[5]), "the stopped, agentless and unlaunched tasks leave their waves");
         assert!(visible.iter().any(|e| e.id == ids[3] && e.wave() == Some(3)), "the live wave task stays as it is");
-        assert_eq!(waves_left_without_tasks(&log).into_keys().collect::<Vec<_>>(), vec![1, 2, 5], "the waves without tasks leave the air");
+        assert_eq!(log.waves_left_without_tasks().into_keys().collect::<Vec<_>>(), vec![1, 2, 5], "the waves without tasks leave the air");
     }
 
     /// A rodada forma as ondas só com uma sessão conduzindo. Sem sessão, nada

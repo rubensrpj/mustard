@@ -18,7 +18,6 @@ use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Value, json};
 
 use super::answer::ref_shown;
-use super::queue::unanswered_sends;
 use super::read_check::{opened_at, request_name};
 
 /// O bloco de uma tarefa como o envio o guardou.
@@ -110,7 +109,7 @@ pub(crate) fn held_back(log: &SpecLog, sent: u64, wave: u64) -> BTreeMap<String,
 /// [`held_back`] da onda `wave` pelo pedido dela que ainda não voltou: o
 /// mesmo que a leitura de dentro da cópia acha.
 pub(crate) fn held_in_wave(log: &SpecLog, wave: u64) -> BTreeMap<String, String> {
-    unanswered_sends(log).get(&wave).map(|sent| held_back(log, *sent, wave)).unwrap_or_default()
+    log.unanswered_sends().get(&wave).map(|sent| held_back(log, *sent, wave)).unwrap_or_default()
 }
 
 /// O que a resposta do passo traz depois de gravá-lo.
@@ -133,7 +132,7 @@ pub(crate) fn after_step(root: &Path, spec: &str, session: Option<&str>, json: &
     let step: Value = serde_json::from_str(json).ok()?;
     let wave = step.get("wave").and_then(Value::as_u64)?;
     let log = store::read(&store::spec_file(root, spec).ok()?).ok()??;
-    let sent = unanswered_sends(&log).get(&wave).copied()?;
+    let sent = log.unanswered_sends().get(&wave).copied()?;
     let blocks = sent_blocks(&log, sent)?;
     let item = ref_shown(step.get("item"), &log.codes()).trim().to_string();
     if !blocks.iter().any(|block| block.task == item) {
@@ -266,7 +265,7 @@ mod tests {
         let text = request_at(&out, 0);
         assert!(text.contains("- somar em centavos inteiros"), "the task in progress comes whole: {text}");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let sent = unanswered_sends(&log)[&1];
+        let sent = log.unanswered_sends()[&1];
         assert!(released(&log, sent, 1).contains("MSTD-TASK-0002"), "the task in progress is released");
     }
 }

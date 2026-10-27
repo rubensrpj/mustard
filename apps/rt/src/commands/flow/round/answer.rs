@@ -23,7 +23,6 @@ use super::fixes::sweep_fixes;
 use super::item_choice::choose_items;
 use super::queue::{
     agent_known, backlog_uncovered, max_parallel, open_sends, orphaned_waves, outgoing, sender_fields, sent_items, silent_minutes, waves_in_progress,
-    waves_returned,
 };
 use super::rejection::rejected_message;
 use super::report::Taken;
@@ -367,7 +366,7 @@ fn resend_targets(log: &SpecLog, paused: &[u64]) -> BTreeMap<u64, u64> {
     let last_sends = log.last_by_wave("send");
     let planned = log.planned_waves();
     let open = open_sends(log);
-    let returned = waves_returned(log);
+    let returned = log.waves_returned();
     let mut out = orphaned_waves(log);
     for wave in paused.iter().filter(|wave| planned.contains(wave) && open.contains_key(wave) && !returned.contains(wave)) {
         if let Some(sent) = last_sends.get(wave) {
@@ -1206,7 +1205,7 @@ fn dispatch_round(
 /// envio aberto, sem volta gravada depois dele.
 fn unchanged_since(read: &SpecLog, now: &SpecLog, wave: u64) -> bool {
     let sent = open_sends(read).get(&wave).copied();
-    sent.is_some() && open_sends(now).get(&wave).copied() == sent && !waves_returned(now).contains(&wave)
+    sent.is_some() && open_sends(now).get(&wave).copied() == sent && !now.waves_returned().contains(&wave)
 }
 
 /// O comando que lê o pedido gravado no envio da onda `wave`. A resposta da
