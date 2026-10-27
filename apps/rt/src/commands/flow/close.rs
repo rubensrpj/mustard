@@ -3,9 +3,10 @@
 //! É a porta única do fechamento: grava o que voltou da última rodada,
 //! confere se a obra terminou mesmo, roda os comandos do servidor — a
 //! compilação, o lint e a suíte inteira, o `buildCommand`, o `lintCommand` e
-//! o `testCommand` do `mustard.json` — em ambiente limpo, roda cada critério
-//! uma vez no commit da obra e outra no código de antes dela, grava a
-//! execução de cada um, e então fecha — grava a fase `closed`, que arma a
+//! o `testCommand` do `mustard.json` — em ambiente limpo, roda a prova de cada
+//! critério, e a de cada pedido que uma tarefa entregue cobre, uma vez no
+//! commit da obra e outra no código de antes dela, grava a execução de cada
+//! uma, e então fecha — grava a fase `closed`, que arma a
 //! cobrança das pendências pela mesma porta, solta a spec da sessão e atualiza
 //! o estado local observado pelo painel. A pasta da spec mantém os eventos
 //! e dados locais de validação. Publicação externa é explícita.
@@ -53,7 +54,9 @@
 //! executor diz zero teste, que é o que um nome de teste errado dá, e a
 //! recusa traz o comando e o número que ela leu; e critério cuja prova já
 //! passava, rodando teste, no código de antes da obra — o commit base, com os
-//! arquivos de teste da obra por cima —, que não prova nada novo. Cada recusa
+//! arquivos de teste da obra por cima —, que não prova nada novo. A prova do
+//! pedido que uma tarefa entregue cobre, como o nascido de um achado, trava
+//! pelos mesmos motivos. Cada recusa
 //! diz qual onda refazer — não basta os testes passarem.
 //!
 //! **As pendências da obra.** A resposta traz cada pendência aberta nascida
@@ -74,7 +77,7 @@ use std::path::{Path, PathBuf};
 use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog};
 use mustard_core::domain::spec_index::title_of;
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State, final_approval, review_send};
-use mustard_core::domain::wave_prompt::{count_lines, recorded_choice, unowned};
+use mustard_core::domain::wave_prompt::{count_lines, delivered_request_proofs, recorded_choice, unowned};
 use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Map, Value, json};
@@ -863,10 +866,11 @@ fn hand_pending_to_project(root: &Path, spec: &str, log: &SpecLog, answers: &[St
 
 /// A máquina do fechamento: os comandos que o servidor roda — a compilação,
 /// o lint e a suíte inteira, nessa ordem —, cada um em ambiente limpo
-/// ([`clean_env`]), e depois cada critério, uma vez, na cópia limpa `clean`
-/// do commit da obra, onde a prova tem de passar rodando teste, e uma vez na
-/// cópia do código de antes (`before`, [`proof_runs`]), onde ela tem de cair,
-/// com a execução de cada um gravada. A compilação que falha recusa antes do
+/// ([`clean_env`]), e depois cada prova de [`proof_list`] — a dos critérios e
+/// a dos pedidos que as tarefas entregues cobrem —, uma vez, na cópia limpa
+/// `clean` do commit da obra, onde a prova tem de passar rodando teste, e uma
+/// vez na cópia do código de antes (`before`, [`proof_runs`]), onde ela tem
+/// de cair, com a execução de cada uma gravada. A compilação que falha recusa antes do
 /// resto rodar, porque o resto cairia pelo mesmo erro. Com ela verde, o lint,
 /// a suíte, os critérios e a análise de declarações sem uso rodam todos, e a
 /// recusa lista tudo o que caiu numa resposta só. A
@@ -904,6 +908,9 @@ fn machine(
     let fingerprint = super::validation::fingerprint(root, log);
     let config = mustard_core::ProjectConfig::load(root);
     let declared = config.commands();
+    // O comando de teste reconhece a prova que o relato de um pedido nomeia,
+    // como na formação do lote.
+    let test = declared.test.clone();
     // A cópia limpa nunca recebe os arquivos locais do projeto: a recusa dos
     // comandos os nomeia.
     let local_files = mustard_core::io::wave_prompt::local_files(&config);
@@ -957,22 +964,22 @@ fn machine(
         native_outputs.push(out.evidence);
     }
 
-    // Cada critério roda uma vez, e cada execução é gravada.
-    let criteria = criteria_list(log);
-    let outcomes = crate::commands::review::qa_run::run_criteria_proofs(clean, &criteria);
+    // Cada prova roda uma vez, e cada execução é gravada. A lista e as
+    // execuções andam na mesma ordem: o pedido que nomeia duas provas aparece
+    // duas vezes com o mesmo número, cada vez com o comando dela.
+    let proofs = proof_list(log, test.as_deref());
+    let outcomes = crate::commands::review::qa_run::run_criteria_proofs(clean, &proofs);
     let mut runs: Vec<Value> = Vec::new();
-    for (id, code, out) in &outcomes {
+    for ((id, code, command), (_, _, out)) in proofs.iter().zip(&outcomes) {
         native_outputs.push(out.evidence.clone());
-        if let Some((_, _, command)) = criteria.iter().find(|(criterion, _, _)| criterion == id) {
-            super::validation::record_run(root, spec, "final", &format!("criterion:{code}"), command, out).map_err(CloseRefusal::Refused)?;
-            if let Some(fault) = out.fault() {
-                let (code, command) = (code.clone(), command.clone());
-                failures.push(match fault {
-                    ProofFault::RanNoTest(tests) => CloseRefusal::CriterionRanNoTest { code, command, tests },
-                    ProofFault::MissingTest(name) => CloseRefusal::CriterionMissingTest { code, name },
-                    ProofFault::Failed(output) => CloseRefusal::CriterionFailed { code, output },
-                });
-            }
+        super::validation::record_run(root, spec, "final", &format!("criterion:{code}"), command, out).map_err(CloseRefusal::Refused)?;
+        if let Some(fault) = out.fault() {
+            let (code, command) = (code.clone(), command.clone());
+            failures.push(match fault {
+                ProofFault::RanNoTest(tests) => CloseRefusal::CriterionRanNoTest { code, command, tests },
+                ProofFault::MissingTest(name) => CloseRefusal::CriterionMissingTest { code, name },
+                ProofFault::Failed(output) => CloseRefusal::CriterionFailed { code, output },
+            });
         }
         let mut draft = Map::new();
         draft.insert("criterion".into(), json!(id));
@@ -987,21 +994,20 @@ fn machine(
         record(&opts.root, spec, "criterion_run", draft, PhaseWriter::Binary).map_err(CloseRefusal::Refused)?;
         runs.push(json!({ "criterion": code, "result": out.result, "exit": out.exit, "ms": out.ms,"reused":out.reused }));
     }
-    // Cada critério roda de novo no código de antes da obra, onde a prova
-    // tem de cair; a que passa ali rodando teste não prova nada novo. Sem
-    // commit base, não há código de antes, e a resposta avisa.
+    // Cada prova roda de novo no código de antes da obra, onde tem de cair;
+    // a que passa ali rodando teste não prova nada novo. Sem commit base, não
+    // há código de antes, e a resposta avisa.
     let mut before_unchecked = None;
     match before {
         Some(copy) => {
-            for (id, code, out) in copy.run(&criteria) {
-                let Some((_, _, command)) = criteria.iter().find(|(criterion, _, _)| *criterion == id) else { continue };
+            for ((_, code, command), (_, _, out)) in proofs.iter().zip(copy.run(&proofs)) {
                 super::validation::record_run(root, spec, "final", &format!("criterion-before:{code}"), command, &out).map_err(CloseRefusal::Refused)?;
                 if let Some(tests) = proof_runs::passed_before(&out) {
-                    failures.push(CloseRefusal::CriterionPassedBefore { code, command: command.clone(), tests });
+                    failures.push(CloseRefusal::CriterionPassedBefore { code: code.clone(), command: command.clone(), tests });
                 }
             }
         }
-        None if !criteria.is_empty() => before_unchecked = Some(translate("close.proof_before_unchecked", lang).to_string()),
+        None if !proofs.is_empty() => before_unchecked = Some(translate("close.proof_before_unchecked", lang).to_string()),
         None => {}
     }
     failures.extend(unused::refusal(root, spec, log, lang, &native_outputs));
@@ -1380,18 +1386,21 @@ pub(crate) fn finished_refusal(log: &SpecLog) -> Option<(String, Option<u64>)> {
     })
 }
 
-/// Os critérios vigentes da spec: id, código e a prova de cada um, na ordem
-/// em que a leitura os dá. A máquina roda a prova de cada um daqui.
-fn criteria_list(log: &SpecLog) -> Vec<(u64, String, String)> {
+/// As provas que a máquina roda, cada uma com o número e o código do item e o
+/// comando: a de cada critério vigente da spec, na ordem em que a leitura os
+/// dá, e depois a de cada pedido que uma tarefa entregue cobre e cujo relato
+/// a nomeia — o pedido nascido de um achado —, pela mesma seleção da formação
+/// do lote ([`delivered_request_proofs`]), com o comando de teste do projeto
+/// (`test`). As duas rodam nas mesmas cópias e caem na mesma recusa.
+fn proof_list(log: &SpecLog, test: Option<&str>) -> Vec<(u64, String, String)> {
     let codes = log.codes();
-    log.block(BlockQuery::Block(Block::Criteria))
-        .into_iter()
-        .filter(|e| e.event_type == "criterion")
-        .filter_map(|e| {
-            let proof = e.str_field("proof")?.trim().to_string();
-            Some((e.id, codes.get(&e.id).cloned().unwrap_or_else(|| e.id.to_string()), proof))
-        })
-        .collect()
+    let code = |id: u64| codes.get(&id).cloned().unwrap_or_else(|| id.to_string());
+    let criteria = log.block(BlockQuery::Block(Block::Criteria)).into_iter().filter(|e| e.event_type == "criterion").filter_map(|e| {
+        let proof = e.str_field("proof")?.trim().to_string();
+        Some((e.id, code(e.id), proof))
+    });
+    let requests = delivered_request_proofs(log, test).into_iter().map(|(id, proof)| (id, code(id), proof));
+    criteria.chain(requests).collect()
 }
 
 #[cfg(test)]
@@ -1516,13 +1525,15 @@ mod tests {
     /// das outras, e por isso sem commit.
     fn ready_with_checked(root: &Path, spec: &str, proofs: &[&str], waves: u64, checked: &[u64]) {
         let waves_files: Vec<String> = (1..=waves).map(wave_file).collect();
-        ready_with_files(root, spec, proofs, &waves_files, checked);
+        ready_with_files(root, spec, proofs, &waves_files, checked, &[]);
     }
 
     /// [`ready_with_checked`] em que a onda `n` tem a tarefa no arquivo
     /// `waves_files[n - 1]`. O arquivo `.ts` nasce e é entregue em
-    /// TypeScript; o resto, em Rust.
-    fn ready_with_files(root: &Path, spec: &str, proofs: &[&str], waves_files: &[String], checked: &[u64]) {
+    /// TypeScript; o resto, em Rust. Cada texto de `findings` vira a parte do
+    /// agente de um pedido, como o achado de uma revisão vira, e a tarefa da
+    /// primeira onda cobre esses pedidos.
+    pub(super) fn ready_with_files(root: &Path, spec: &str, proofs: &[&str], waves_files: &[String], checked: &[u64], findings: &[&str]) {
         let waves = waves_files.len() as u64;
         let file_of = |n: u64| waves_files[(n - 1) as usize].clone();
         let typescript = |file: &str| file.ends_with(".ts");
@@ -1561,6 +1572,14 @@ mod tests {
             json!({"when": "a onda roda", "then": "a suíte passa", "proof": "git --version", "form": "ubiquitous",
                 "origin": said}),
         ));
+        let asked: Vec<u64> = (1..)
+            .zip(findings)
+            .map(|(n, agent)| {
+                let request = json!({"title": format!("Achado {n}"), "text": format!("O achado {n} da revisão."), "agent": agent,
+                    "keys": ["achado"], "effect": "adjust_waves", "origin": said});
+                id_of(&write(root, spec, "request", request))
+            })
+            .collect();
         for n in 1..=waves {
             write(
                 root,
@@ -1569,13 +1588,12 @@ mod tests {
                 json!({"n": n, "text": format!("Onda {n}."), "criteria": [gate],
                 "done_when": "A suíte passa.", "origin": said}),
             );
-            write(
-                root,
-                spec,
-                "task",
-                json!({"wave": n, "text": format!("Tarefa da onda {n}."),
-                "files": [{"path": file_of(n)}], "origin": said}),
-            );
+            let mut task = json!({"wave": n, "text": format!("Tarefa da onda {n}."),
+                "files": [{"path": file_of(n)}], "origin": said});
+            if n == 1 && !asked.is_empty() {
+                task["covers"] = json!(asked);
+            }
+            write(root, spec, "task", task);
         }
         crate::shared::spec_state::approve_in(&root.join(".claude").join("spec").join(spec));
         crate::commands::flow::round::copies_leave_with_the_test(root);
@@ -4209,7 +4227,7 @@ exit "${2:-0}"
     fn a_red_build_blocks_the_close_of_a_typescript_project() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        ready_with_files(root, "x", &["git --version"], &["web/one.ts".to_string(), "web/two.ts".to_string()], &[]);
+        ready_with_files(root, "x", &["git --version"], &["web/one.ts".to_string(), "web/two.ts".to_string()], &[], &[]);
         branched_from_dev(root);
         let build = "echo \"web/two.ts(2,10): error TS2304: Cannot find name 'dois'.\"; exit 1";
         let config = json!({"buildCommand": build, "lintCommand": "echo lint >> rodou", "testCommand": "echo suite >> rodou"});

@@ -1,4 +1,5 @@
-//! A prova de cada critério no código de antes da obra. A máquina do
+//! A prova de cada critério, e a de cada pedido que uma tarefa entregue
+//! cobre, no código de antes da obra. A máquina do
 //! fechamento roda a prova na cópia limpa, no commit da obra, onde ela tem de
 //! passar rodando pelo menos um teste; e roda de novo numa segunda cópia, no
 //! commit base da obra, com os arquivos de teste que a obra mudou por cima
@@ -69,15 +70,15 @@ pub(super) fn prepare(root: &Path, spec: &str, log: &SpecLog, _copies: &CopiesLo
 }
 
 impl BeforeCopy {
-    /// Roda a prova de cada critério de `criteria` (id, código, comando) no
-    /// código de antes, com os arquivos de teste da obra por cima, e devolve
-    /// a execução de cada um. O arquivo de teste que não pôde entrar faz a
-    /// execução de todos cair com o motivo, e a vaga volta ao commit base no
-    /// fim, em todo caso.
-    pub(super) fn run(&self, criteria: &[(u64, String, String)]) -> Vec<(u64, String, ProofRun)> {
+    /// Roda cada prova de `proofs` (id, código do item, comando) no código de
+    /// antes, com os arquivos de teste da obra por cima, e devolve a execução
+    /// de cada uma, na ordem de `proofs`. O arquivo de teste que não pôde
+    /// entrar faz a execução de todas cair com o motivo, e a vaga volta ao
+    /// commit base no fim, em todo caso.
+    pub(super) fn run(&self, proofs: &[(u64, String, String)]) -> Vec<(u64, String, ProofRun)> {
         let runs = match self.lay_work_tests() {
-            Ok(()) => run_criteria_proofs(&self.path, criteria),
-            Err(detail) => criteria.iter().map(|(id, code, _)| (*id, code.clone(), not_laid(&detail))).collect(),
+            Ok(()) => run_criteria_proofs(&self.path, proofs),
+            Err(detail) => proofs.iter().map(|(id, code, _)| (*id, code.clone(), not_laid(&detail))).collect(),
         };
         if let Err(detail) = back_to_base(&self.path, &self.base) {
             eprintln!("[Mustard] {}: {detail}", shown(&self.path));
@@ -145,7 +146,7 @@ fn back_to_base(path: &Path, base: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{close, commit_file, git_at, ready_with_waves};
+    use super::super::tests::{close, commit_file, git_at, ready_with_files, ready_with_waves, wave_file};
     use mustard_core::io::spec_events as store;
     use mustard_core::platform::i18n::{Locale, translate};
     use serde_json::json;
@@ -199,5 +200,39 @@ mod tests {
             "a que cai depois e a que não roda teste depois também: {refused}"
         );
         assert!(!hint.contains(&format!("{} ", criteria[0])), "a prova que cai antes e passa depois passa: {hint}");
+    }
+
+    /// Cada achado vira um pedido com a prova no relato, e a tarefa da obra
+    /// o cobre. Entregue a tarefa, o fechamento roda a prova de cada pedido
+    /// nas mesmas duas cópias das provas dos critérios: a que já passa no
+    /// commit base rodando teste é recusada pelo código do pedido, e a que cai
+    /// antes e passa depois passa.
+    #[test]
+    fn a_finding_proof_green_before_the_change_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let green_before = "echo Tests: 2 total";
+        let falls_before = "grep -q dois src/w1.rs && echo Tests: 1 total";
+        let findings = [
+            format!("- A soma de `src/w1.rs` ignora o estouro. Prova: `{green_before}`"),
+            format!("- A soma de `src/w1.rs` não chama dois. Prova: `{falls_before}`"),
+        ];
+        let findings: Vec<&str> = findings.iter().map(String::as_str).collect();
+        ready_with_files(root, "x", &[], &[wave_file(1)], &[], &findings);
+        git_at(root, &["branch", "dev", &first_commit(root)]);
+
+        let refused = close(root, "x");
+        assert_eq!(refused["ok"], json!(false), "{refused}");
+        assert_eq!(refused["reason"], json!("criterion-passed-before"), "só a prova verde antes recusa: {refused}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let codes = log.codes();
+        let requests: Vec<String> = log.visible().into_iter().filter(|e| e.event_type == "request").map(|e| codes[&e.id].clone()).collect();
+        let passed_before = translate("close.criterion_passed_before", Locale::PtBr)
+            .replace("{code}", &requests[0])
+            .replace("{command}", green_before)
+            .replace("{count}", "2");
+        let hint = refused["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains(&passed_before), "a prova do achado verde antes é recusada: {hint}");
+        assert!(!hint.contains(&format!("{} ", requests[1])), "a prova do achado que cai antes e passa depois passa: {hint}");
     }
 }

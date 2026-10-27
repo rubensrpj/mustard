@@ -1286,8 +1286,10 @@ pub fn backlog_fields(log: &SpecLog, tasks: &[&SpecEvent], commands: &Commands, 
 /// que o projeto declara (`test`): a prova gravada nele, a do critério; sem
 /// ela, no pedido, as que o relato nomeia ([`named_proofs`]). Os outros itens
 /// não dão prova. É a seleção única do pronto-quando da onda
-/// ([`backlog_fields`]) e da conferência de que uma tarefa cobre uma regra
-/// com prova: as duas nunca discordam sobre o que a onda roda.
+/// ([`backlog_fields`]), da conferência de que uma tarefa cobre uma regra
+/// com prova e das provas de pedido que o fechamento roda
+/// ([`delivered_request_proofs`]): as três nunca discordam sobre o que a onda
+/// roda.
 #[must_use]
 pub fn item_proofs(item: &SpecEvent, test: Option<&str>) -> Vec<String> {
     match item.str_field("proof").map(str::trim) {
@@ -1296,6 +1298,34 @@ pub fn item_proofs(item: &SpecEvent, test: Option<&str>) -> Vec<String> {
         None if item.event_type == "request" => named_proofs(item, test),
         None => Vec::new(),
     }
+}
+
+/// As provas dos pedidos que as tarefas entregues da obra `log` cobrem, com o
+/// comando de teste que o projeto declara (`test`): a tarefa vigente de onda
+/// planejada que já tem entrega cobre o pedido, e o relato dele nomeia a
+/// prova, pela seleção do pronto-quando ([`item_proofs`]). É o pedido nascido
+/// de um achado, que não tem critério próprio. Cada prova sai com o número da
+/// versão vigente do pedido, na ordem desse número, e o pedido que nomeia
+/// duas sai duas vezes; o pedido que não nomeia prova nenhuma não sai — a
+/// compilação, que a onda dele roda no lugar, já roda no fechamento.
+#[must_use]
+pub fn delivered_request_proofs(log: &SpecLog, test: Option<&str>) -> Vec<(u64, String)> {
+    let planned = log.planned_waves();
+    let delivered: BTreeSet<u64> = log.delivered_waves().into_iter().filter(|wave| planned.contains(wave)).collect();
+    let requests: BTreeSet<u64> = log
+        .visible()
+        .into_iter()
+        .filter(|event| event.event_type == "task" && event.wave().is_some_and(|wave| delivered.contains(&wave)))
+        .flat_map(|task| task.ints("covers"))
+        .filter_map(|id| log.current(id))
+        .filter(|item| item.event_type == "request")
+        .map(|item| item.id)
+        .collect();
+    requests
+        .into_iter()
+        .filter_map(|id| log.get(id))
+        .flat_map(|request| item_proofs(request, test).into_iter().map(|proof| (request.id, proof)))
+        .collect()
 }
 
 /// As marcas com que um relato nomeia a prova dele, nos dois idiomas do
