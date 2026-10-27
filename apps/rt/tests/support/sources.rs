@@ -1,15 +1,20 @@
 //! As fontes de código do Mustard e a leitura única do que, numa fonte Rust,
-//! é código de teste: os arquivos `.rs` das pastas de código, o código sem os
-//! comentários e o conteúdo dos textos ([`code_only`]), os trechos que só
-//! existem em teste ([`test_spans`]) e, de cada arquivo, só o código de
-//! produção ([`production_code`]).
+//! é código de teste: os arquivos `.rs` sob uma pasta ([`rust_files`]) e os
+//! das pastas de código ([`rust_sources`]), o código sem os comentários e o
+//! conteúdo dos textos ([`code_only`]), os trechos que só existem em teste
+//! ([`test_spans`]) e, de cada arquivo, só o código de produção
+//! ([`production_code`]).
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Os arquivos `.rs` de código sob `dir`, em ordem; pastas de teste, de
-/// compilação e de dependências ficam de fora.
-pub fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
+/// As pastas que não são código de produção: as de teste, a de compilação, a
+/// de dependências e a do git.
+const NOT_SOURCE_FOLDERS: &[&str] = &["target", "node_modules", ".git", "tests", "benches"];
+
+/// Os arquivos `.rs` sob `dir`, em ordem; as pastas com um dos nomes de
+/// `skipped` ficam de fora, em qualquer profundidade.
+pub fn rust_files(dir: &Path, skipped: &[&str], out: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
@@ -17,15 +22,20 @@ pub fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
     entries.sort_by_key(fs::DirEntry::file_name);
     for entry in entries {
         let path = entry.path();
-        let name = entry.file_name();
         if path.is_dir() {
-            if !matches!(name.to_str(), Some("target" | "node_modules" | ".git" | "tests" | "benches")) {
-                rust_sources(&path, out);
+            if !entry.file_name().to_str().is_some_and(|name| skipped.contains(&name)) {
+                rust_files(&path, skipped, out);
             }
         } else if path.extension().is_some_and(|e| e == "rs") {
             out.push(path);
         }
     }
+}
+
+/// Os arquivos `.rs` de código sob `dir`, em ordem; pastas de teste, de
+/// compilação e de dependências ficam de fora.
+pub fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
+    rust_files(dir, NOT_SOURCE_FOLDERS, out);
 }
 
 /// O código de produção de um arquivo: o texto sem os trechos que só existem

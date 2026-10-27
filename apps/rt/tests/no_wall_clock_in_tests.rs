@@ -41,7 +41,7 @@ mod manifest_dir;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use crate::sources::{code_only, test_spans};
+use crate::sources::{code_only, rust_files, test_spans};
 
 /// Os arquivos do relógio dos testes, do topo do repositório: o relógio
 /// falso, a espera pelo evento de outro processo, a pausa antes de afirmar
@@ -197,24 +197,6 @@ fn clock_reads(shown: &str, code: &[u8], from: usize, to: usize) -> Vec<Finding>
     found
 }
 
-/// Os arquivos `.rs` de `dir`, as pastas de [`SKIPPED_FOLDERS`] de fora.
-fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let name = entry.file_name();
-        if path.is_dir() {
-            if !SKIPPED_FOLDERS.iter().any(|skipped| name == *skipped) {
-                rust_files(&path, out);
-            }
-        } else if path.extension().is_some_and(|ext| ext == "rs") {
-            out.push(path);
-        }
-    }
-}
-
 /// O arquivo está sob uma pasta `tests`.
 fn in_tests_folder(shown: &str) -> bool {
     shown.split('/').rev().skip(1).any(|part| part == "tests")
@@ -224,7 +206,7 @@ fn in_tests_folder(shown: &str) -> bool {
 fn findings_under(top: &Path) -> Vec<Finding> {
     let mut files = Vec::new();
     for folder in PACKAGE_FOLDERS {
-        rust_files(&top.join(folder), &mut files);
+        rust_files(&top.join(folder), SKIPPED_FOLDERS, &mut files);
     }
     let shown_of = |file: &Path| -> String {
         let canonical = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
