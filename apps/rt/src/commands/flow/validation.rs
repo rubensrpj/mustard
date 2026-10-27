@@ -4,8 +4,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 
-use mustard_core::domain::spec_events::{Refusal, SpecLog};
+use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecLog};
 use mustard_core::domain::spec_state::{PhaseWriter, State, answered_request};
+use mustard_core::domain::wave_prompt::delivered_request_proofs;
 use mustard_core::platform::git;
 use serde_json::{Map, Value, json};
 
@@ -124,12 +125,14 @@ pub(super) fn fingerprint(root: &Path, log: &SpecLog) -> Option<String> {
         }
         digest.update(&[0]);
     }
-    for event in log
-        .block(mustard_core::domain::spec_events::BlockQuery::Block(mustard_core::domain::spec_events::Block::Criteria))
-        .into_iter()
-        .filter(|e| e.event_type == "criterion")
-    {
+    for event in log.block(BlockQuery::Block(Block::Criteria)).into_iter().filter(|e| e.event_type == "criterion") {
         digest.update(&serde_json::to_vec(&event.fields).ok()?);
+    }
+    // As provas que a máquina roda entram também: a de um pedido que a
+    // tarefa de um achado entregou sem mudar arquivo nenhum chega à lista sem
+    // mudar o código nem os critérios, e o recibo de antes dela não vale.
+    for (id, code, command) in proof_list(log, config_inputs.commands().test.as_deref()) {
+        digest.update(&serde_json::to_vec(&(id, code, command)).ok()?);
     }
     let mut env: Vec<_> = std::env::vars_os()
         .filter(|(name, _)| {
@@ -145,6 +148,24 @@ pub(super) fn fingerprint(root: &Path, log: &SpecLog) -> Option<String> {
         digest.update(&[0]);
     }
     Some(digest.hex_digest())
+}
+
+/// As provas que a máquina do fechamento roda, cada uma com o número e o
+/// código do item e o comando: a de cada critério vigente da spec, na ordem
+/// em que a leitura os dá, e depois a de cada pedido que uma tarefa entregue
+/// cobre e cujo relato a nomeia — o pedido nascido de um achado —, pela mesma
+/// seleção da formação do lote ([`delivered_request_proofs`]), com o comando
+/// de teste do projeto (`test`). As duas rodam nas mesmas cópias e caem na
+/// mesma recusa, e a lista entra na impressão da validação ([`fingerprint`]).
+pub(super) fn proof_list(log: &SpecLog, test: Option<&str>) -> Vec<(u64, String, String)> {
+    let codes = log.codes();
+    let code = |id: u64| codes.get(&id).cloned().unwrap_or_else(|| id.to_string());
+    let criteria = log.block(BlockQuery::Block(Block::Criteria)).into_iter().filter(|e| e.event_type == "criterion").filter_map(|e| {
+        let proof = e.str_field("proof")?.trim().to_string();
+        Some((e.id, code(e.id), proof))
+    });
+    let requests = delivered_request_proofs(log, test).into_iter().map(|(id, proof)| (id, code(id), proof));
+    criteria.chain(requests).collect()
 }
 
 /// Os arquivos que o git lista no projeto: os rastreados e os novos que ele

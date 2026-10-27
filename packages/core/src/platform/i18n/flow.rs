@@ -406,6 +406,38 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              passed. It proves nothing new. Write the test that fails without the change, or record the \
              criterion's new version with the right verification, and close again."
         }
+        // As mesmas recusas para a prova de um pedido que uma tarefa entregue
+        // cobre, como o nascido de um achado: a prova mora no relato dele.
+        ("close.request_proof_failed", Locale::PtBr) => "A prova do pedido {code} não passou: {output}",
+        ("close.request_proof_failed", Locale::EnUs) => "The proof of request {code} did not pass: {output}",
+        ("close.request_proof_ran_no_test", Locale::PtBr) => {
+            "A prova do pedido {code} saiu verde sem rodar teste nenhum: `{command}` diz que rodou {count} \
+             testes. Grave a versão nova do pedido com a prova certa no relato e feche de novo."
+        }
+        ("close.request_proof_ran_no_test", Locale::EnUs) => {
+            "The proof of request {code} came out green without running any test: `{command}` says it ran \
+             {count} tests. Record the request's new version with the right proof in its text and close again."
+        }
+        ("close.request_proof_missing_test", Locale::PtBr) => {
+            "A prova do pedido {code} cita o teste {name}, que não aparece em nenhum arquivo do projeto. \
+             Escreva esse teste ou grave a versão nova do pedido com o nome certo, e feche de novo."
+        }
+        ("close.request_proof_missing_test", Locale::EnUs) => {
+            "The proof of request {code} names the test {name}, which appears in no file of the project. \
+             Write that test or record the request's new version with the right name, and close again."
+        }
+        ("close.request_proof_passed_before", Locale::PtBr) => {
+            "A prova do pedido {code} já passava no código de antes da obra. O comando `{command}` rodou \
+             {count} testes no commit base, com os arquivos de teste da obra por cima, e passou. Ela não \
+             prova nada novo. Escreva o teste que cai sem a mudança, ou grave a versão nova do pedido com a \
+             prova certa, e feche de novo."
+        }
+        ("close.request_proof_passed_before", Locale::EnUs) => {
+            "The proof of request {code} already passed on the code from before the work. The command \
+             `{command}` ran {count} tests on the base commit, with the work's test files on top, and passed. \
+             It proves nothing new. Write the test that fails without the change, or record the request's new \
+             version with the right proof, and close again."
+        }
         // A obra sem commit base que o git ache: a prova de cada critério não
         // rodou no código de antes.
         ("close.proof_before_unchecked", Locale::PtBr) => {
@@ -2815,6 +2847,10 @@ mod tests {
             ("close.criterion_ran_no_test", &["{code}", "{command}", "{count}"][..]),
             ("close.criterion_missing_test", &["{code}", "{name}"][..]),
             ("close.criterion_passed_before", &["{code}", "{command}", "{count}"][..]),
+            ("close.request_proof_failed", &["{code}", "{output}"][..]),
+            ("close.request_proof_ran_no_test", &["{code}", "{command}", "{count}"][..]),
+            ("close.request_proof_missing_test", &["{code}", "{name}"][..]),
+            ("close.request_proof_passed_before", &["{code}", "{command}", "{count}"][..]),
             ("close.proof_before_unchecked", &[][..]),
             ("close.build_failed", &["{command}", "{output}"][..]),
             ("close.lint_failed", &["{command}", "{output}"][..]),

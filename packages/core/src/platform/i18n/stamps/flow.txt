@@ -26,6 +26,10 @@ close.proof_before_unchecked	de91cb143d7ca5f4
 close.ran_without_local_files	ff5f0265339b8c77
 close.repair_next	0716483f13579f9c
 close.request_not_delivered	9cde2482412aa450
+close.request_proof_failed	577630a948c06d51
+close.request_proof_missing_test	084f8a88bcaaf932
+close.request_proof_passed_before	109a1e5886abb757
+close.request_proof_ran_no_test	ac83306a231fca1d
 close.review_copy_dirty	2d6b164fa9a1f5bc
 close.review_copy_failed	d3df4ca1d7b660f5
 close.review_copy_kept	98e2550c4c40fef7

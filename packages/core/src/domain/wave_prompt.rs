@@ -1300,29 +1300,39 @@ pub fn item_proofs(item: &SpecEvent, test: Option<&str>) -> Vec<String> {
     }
 }
 
-/// As provas dos pedidos que as tarefas entregues da obra `log` cobrem, com o
-/// comando de teste que o projeto declara (`test`): a tarefa vigente de onda
-/// planejada que já tem entrega cobre o pedido, e o relato dele nomeia a
-/// prova, pela seleção do pronto-quando ([`item_proofs`]). É o pedido nascido
-/// de um achado, que não tem critério próprio. Cada prova sai com o número da
-/// versão vigente do pedido, na ordem desse número, e o pedido que nomeia
-/// duas sai duas vezes; o pedido que não nomeia prova nenhuma não sai — a
-/// compilação, que a onda dele roda no lugar, já roda no fechamento.
+/// Os pedidos que as tarefas entregues da obra `log` cobrem, cada um pelo
+/// número da versão vigente, com as ondas dessas tarefas: a tarefa vigente de
+/// onda planejada que já tem entrega. É a leitura única de quais provas de
+/// pedido o fechamento roda ([`delivered_request_proofs`]) e de quais ondas a
+/// recusa de uma delas reabre.
 #[must_use]
-pub fn delivered_request_proofs(log: &SpecLog, test: Option<&str>) -> Vec<(u64, String)> {
+pub fn delivered_requests(log: &SpecLog) -> BTreeMap<u64, BTreeSet<u64>> {
     let planned = log.planned_waves();
     let delivered: BTreeSet<u64> = log.delivered_waves().into_iter().filter(|wave| planned.contains(wave)).collect();
-    let requests: BTreeSet<u64> = log
-        .visible()
-        .into_iter()
-        .filter(|event| event.event_type == "task" && event.wave().is_some_and(|wave| delivered.contains(&wave)))
-        .flat_map(|task| task.ints("covers"))
-        .filter_map(|id| log.current(id))
-        .filter(|item| item.event_type == "request")
-        .map(|item| item.id)
-        .collect();
-    requests
-        .into_iter()
+    let mut out: BTreeMap<u64, BTreeSet<u64>> = BTreeMap::new();
+    for task in log.visible().into_iter().filter(|event| event.event_type == "task") {
+        let Some(wave) = task.wave().filter(|wave| delivered.contains(wave)) else {
+            continue;
+        };
+        for request in task.ints("covers").into_iter().filter_map(|id| log.current(id)).filter(|item| item.event_type == "request") {
+            out.entry(request.id).or_default().insert(wave);
+        }
+    }
+    out
+}
+
+/// As provas dos pedidos que as tarefas entregues da obra `log` cobrem
+/// ([`delivered_requests`]), com o comando de teste que o projeto declara
+/// (`test`): o relato de cada pedido nomeia a prova, pela seleção do
+/// pronto-quando ([`item_proofs`]). É o pedido nascido de um achado, que não
+/// tem critério próprio. Cada prova sai com o número da versão vigente do
+/// pedido, na ordem desse número, e o pedido que nomeia duas sai duas vezes;
+/// o pedido que não nomeia prova nenhuma não sai — a compilação, que a onda
+/// dele roda no lugar, já roda no fechamento.
+#[must_use]
+pub fn delivered_request_proofs(log: &SpecLog, test: Option<&str>) -> Vec<(u64, String)> {
+    delivered_requests(log)
+        .into_keys()
         .filter_map(|id| log.get(id))
         .flat_map(|request| item_proofs(request, test).into_iter().map(|proof| (request.id, proof)))
         .collect()

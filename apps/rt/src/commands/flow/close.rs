@@ -77,7 +77,7 @@ use std::path::{Path, PathBuf};
 use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, SpecLog};
 use mustard_core::domain::spec_index::title_of;
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State, final_approval, review_send};
-use mustard_core::domain::wave_prompt::{count_lines, delivered_request_proofs, recorded_choice, unowned};
+use mustard_core::domain::wave_prompt::{count_lines, delivered_requests, recorded_choice, unowned};
 use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Map, Value, json};
@@ -182,8 +182,9 @@ enum CloseRefusal {
         copy: String,
         detail: String,
     },
-    /// Um critério cuja prova não passou.
+    /// Um critério, ou um pedido (`of`), cuja prova não passou.
     CriterionFailed {
+        of: ProofOf,
         code: String,
         output: String,
     },
@@ -194,22 +195,27 @@ enum CloseRefusal {
         no_wave: Option<String>,
     },
     ValidationInputsChanged,
-    /// Um critério cuja prova saiu verde sem rodar teste nenhum, com o
-    /// comando dela e o número de testes que a saída dele disse.
+    /// Um critério, ou um pedido (`of`), cuja prova saiu verde sem rodar
+    /// teste nenhum, com o comando dela e o número de testes que a saída
+    /// dele disse.
     CriterionRanNoTest {
+        of: ProofOf,
         code: String,
         command: String,
         tests: u64,
     },
-    /// Um critério cuja prova saiu verde citando um nome de teste que não
-    /// existe no projeto, com o nome que faltou.
+    /// Um critério, ou um pedido (`of`), cuja prova saiu verde citando um
+    /// nome de teste que não existe no projeto, com o nome que faltou.
     CriterionMissingTest {
+        of: ProofOf,
         code: String,
         name: String,
     },
-    /// Um critério cuja prova já passava no código de antes da obra, rodando
-    /// teste, com o comando dela e o número de testes que a saída disse.
+    /// Um critério, ou um pedido (`of`), cuja prova já passava no código de
+    /// antes da obra, rodando teste, com o comando dela e o número de testes
+    /// que a saída disse.
     CriterionPassedBefore {
+        of: ProofOf,
         code: String,
         command: String,
         tests: u64,
@@ -217,6 +223,31 @@ enum CloseRefusal {
     /// Mais de uma recusa achada no mesmo passo, na ordem em que apareceram:
     /// a resposta lista todas de uma vez, e o motivo é o da primeira.
     Many(Vec<CloseRefusal>),
+}
+
+/// De quem é a prova que a máquina do fechamento roda: de um critério, ou de
+/// um pedido que uma tarefa entregue cobre, como o nascido de um achado. A
+/// recusa fala do item certo, e a falha reabre as ondas que o cobrem.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ProofOf {
+    Criterion,
+    Request,
+}
+
+impl ProofOf {
+    /// De quem é a prova do item de número `id` da obra `log`.
+    fn item(log: &SpecLog, id: u64) -> Self {
+        if log.get(id).is_some_and(|item| item.event_type == "request") { Self::Request } else { Self::Criterion }
+    }
+
+    /// A chave do texto da recusa: `criterion`, a do critério, ou `request`,
+    /// a do pedido.
+    fn key(self, criterion: &'static str, request: &'static str) -> &'static str {
+        match self {
+            Self::Criterion => criterion,
+            Self::Request => request,
+        }
+    }
 }
 
 impl CloseRefusal {
@@ -283,14 +314,20 @@ impl CloseRefusal {
             Self::ReviewCopyDirty { copy, files } => fill("close.review_copy_dirty", &[("{copy}", copy.clone()), ("{files}", files.clone())]),
             Self::ReviewCopyFailed { copy, detail } => fill("close.review_copy_failed", &[("{copy}", copy.clone()), ("{detail}", detail.clone())]),
             Self::CleanCopyFailed { copy, detail } => fill("close.clean_copy_failed", &[("{copy}", copy.clone()), ("{detail}", detail.clone())]),
-            Self::CriterionFailed { code, output } => fill("close.criterion_failed", &[("{code}", code.clone()), ("{output}", output.clone())]),
-            Self::CriterionRanNoTest { code, command, tests } => {
-                fill("close.criterion_ran_no_test", &[("{code}", code.clone()), ("{command}", command.clone()), ("{count}", tests.to_string())])
+            Self::CriterionFailed { of, code, output } => {
+                fill(of.key("close.criterion_failed", "close.request_proof_failed"), &[("{code}", code.clone()), ("{output}", output.clone())])
             }
-            Self::CriterionMissingTest { code, name } => fill("close.criterion_missing_test", &[("{code}", code.clone()), ("{name}", name.clone())]),
-            Self::CriterionPassedBefore { code, command, tests } => {
-                fill("close.criterion_passed_before", &[("{code}", code.clone()), ("{command}", command.clone()), ("{count}", tests.to_string())])
+            Self::CriterionRanNoTest { of, code, command, tests } => fill(
+                of.key("close.criterion_ran_no_test", "close.request_proof_ran_no_test"),
+                &[("{code}", code.clone()), ("{command}", command.clone()), ("{count}", tests.to_string())],
+            ),
+            Self::CriterionMissingTest { of, code, name } => {
+                fill(of.key("close.criterion_missing_test", "close.request_proof_missing_test"), &[("{code}", code.clone()), ("{name}", name.clone())])
             }
+            Self::CriterionPassedBefore { of, code, command, tests } => fill(
+                of.key("close.criterion_passed_before", "close.request_proof_passed_before"),
+                &[("{code}", code.clone()), ("{command}", command.clone()), ("{count}", tests.to_string())],
+            ),
         }
     }
 
@@ -866,8 +903,9 @@ fn hand_pending_to_project(root: &Path, spec: &str, log: &SpecLog, answers: &[St
 
 /// A máquina do fechamento: os comandos que o servidor roda — a compilação,
 /// o lint e a suíte inteira, nessa ordem —, cada um em ambiente limpo
-/// ([`clean_env`]), e depois cada prova de [`proof_list`] — a dos critérios e
-/// a dos pedidos que as tarefas entregues cobrem —, uma vez, na cópia limpa
+/// ([`clean_env`]), e depois cada prova de [`super::validation::proof_list`]
+/// — a dos critérios e a dos pedidos que as tarefas entregues cobrem —, uma
+/// vez, na cópia limpa
 /// `clean` do commit da obra, onde a prova tem de passar rodando teste, e uma
 /// vez na cópia do código de antes (`before`, [`proof_runs`]), onde ela tem
 /// de cair, com a execução de cada uma gravada. A compilação que falha recusa antes do
@@ -967,18 +1005,18 @@ fn machine(
     // Cada prova roda uma vez, e cada execução é gravada. A lista e as
     // execuções andam na mesma ordem: o pedido que nomeia duas provas aparece
     // duas vezes com o mesmo número, cada vez com o comando dela.
-    let proofs = proof_list(log, test.as_deref());
+    let proofs = super::validation::proof_list(log, test.as_deref());
     let outcomes = crate::commands::review::qa_run::run_criteria_proofs(clean, &proofs);
     let mut runs: Vec<Value> = Vec::new();
     for ((id, code, command), (_, _, out)) in proofs.iter().zip(&outcomes) {
         native_outputs.push(out.evidence.clone());
         super::validation::record_run(root, spec, "final", &format!("criterion:{code}"), command, out).map_err(CloseRefusal::Refused)?;
         if let Some(fault) = out.fault() {
-            let (code, command) = (code.clone(), command.clone());
+            let (of, code, command) = (ProofOf::item(log, *id), code.clone(), command.clone());
             failures.push(match fault {
-                ProofFault::RanNoTest(tests) => CloseRefusal::CriterionRanNoTest { code, command, tests },
-                ProofFault::MissingTest(name) => CloseRefusal::CriterionMissingTest { code, name },
-                ProofFault::Failed(output) => CloseRefusal::CriterionFailed { code, output },
+                ProofFault::RanNoTest(tests) => CloseRefusal::CriterionRanNoTest { of, code, command, tests },
+                ProofFault::MissingTest(name) => CloseRefusal::CriterionMissingTest { of, code, name },
+                ProofFault::Failed(output) => CloseRefusal::CriterionFailed { of, code, output },
             });
         }
         let mut draft = Map::new();
@@ -1000,10 +1038,11 @@ fn machine(
     let mut before_unchecked = None;
     match before {
         Some(copy) => {
-            for ((_, code, command), (_, _, out)) in proofs.iter().zip(copy.run(&proofs)) {
+            for ((id, code, command), (_, _, out)) in proofs.iter().zip(copy.run(&proofs)) {
                 super::validation::record_run(root, spec, "final", &format!("criterion-before:{code}"), command, &out).map_err(CloseRefusal::Refused)?;
                 if let Some(tests) = proof_runs::passed_before(&out) {
-                    failures.push(CloseRefusal::CriterionPassedBefore { code: code.clone(), command: command.clone(), tests });
+                    let of = ProofOf::item(log, *id);
+                    failures.push(CloseRefusal::CriterionPassedBefore { of, code: code.clone(), command: command.clone(), tests });
                 }
             }
         }
@@ -1072,8 +1111,10 @@ fn already_in_the_base(root: &Path, log: &SpecLog, output: &str) -> Option<Vec<S
 /// texto dos achados que recusam, que cita o arquivo de cada declaração: a
 /// onda de cada achado vem dos commits da obra, e o commit de duas ondas daria
 /// a cada uma os arquivos da outra. O critério que falha reabre as ondas que
-/// o cobrem. Com mais de uma falha, cada onda reabre uma vez só, com o texto
-/// de todas as falhas que a implicam.
+/// o cobrem. A prova de pedido que falha reabre as ondas das tarefas
+/// entregues que cobrem o pedido, pela mesma leitura que pôs a prova dele na
+/// lista ([`delivered_requests`]). Com mais de uma falha, cada onda reabre
+/// uma vez só, com o texto de todas as falhas que a implicam.
 fn authorize_final_repair(root: &Path, spec: &str, log: &SpecLog, failure: CloseRefusal, lang: Locale) -> CloseRefusal {
     let failures = match failure {
         CloseRefusal::Many(all) => all,
@@ -1096,12 +1137,20 @@ fn authorize_final_repair(root: &Path, spec: &str, log: &SpecLog, failure: Close
                 }
                 cited.waves
             }
-            CloseRefusal::CriterionFailed { code, .. }
-            | CloseRefusal::CriterionRanNoTest { code, .. }
-            | CloseRefusal::CriterionMissingTest { code, .. }
-            | CloseRefusal::CriterionPassedBefore { code, .. } => {
-                let criterion = log.codes().into_iter().find(|(_, c)| c == code).map(|(id, _)| id);
-                planned.iter().copied().filter(|w| criterion.is_none_or(|id| log.criteria_for_waves(&[*w]).iter().any(|c| c.id == id))).collect()
+            CloseRefusal::CriterionFailed { of, code, .. }
+            | CloseRefusal::CriterionRanNoTest { of, code, .. }
+            | CloseRefusal::CriterionMissingTest { of, code, .. }
+            | CloseRefusal::CriterionPassedBefore { of, code, .. } => {
+                let item = log.codes().into_iter().find(|(_, c)| c == code).map(|(id, _)| id);
+                match of {
+                    ProofOf::Criterion => {
+                        planned.iter().copied().filter(|w| item.is_none_or(|id| log.criteria_for_waves(&[*w]).iter().any(|c| c.id == id))).collect()
+                    }
+                    ProofOf::Request => {
+                        let current = item.and_then(|id| log.current(id)).map(|request| request.id);
+                        current.and_then(|id| delivered_requests(log).remove(&id)).unwrap_or_default().into_iter().collect()
+                    }
+                }
             }
             _ => {
                 shown.push(failure);
@@ -1384,23 +1433,6 @@ pub(crate) fn finished_refusal(log: &SpecLog) -> Option<(String, Option<u64>)> {
         };
         (refusal.reason(), wave)
     })
-}
-
-/// As provas que a máquina roda, cada uma com o número e o código do item e o
-/// comando: a de cada critério vigente da spec, na ordem em que a leitura os
-/// dá, e depois a de cada pedido que uma tarefa entregue cobre e cujo relato
-/// a nomeia — o pedido nascido de um achado —, pela mesma seleção da formação
-/// do lote ([`delivered_request_proofs`]), com o comando de teste do projeto
-/// (`test`). As duas rodam nas mesmas cópias e caem na mesma recusa.
-fn proof_list(log: &SpecLog, test: Option<&str>) -> Vec<(u64, String, String)> {
-    let codes = log.codes();
-    let code = |id: u64| codes.get(&id).cloned().unwrap_or_else(|| id.to_string());
-    let criteria = log.block(BlockQuery::Block(Block::Criteria)).into_iter().filter(|e| e.event_type == "criterion").filter_map(|e| {
-        let proof = e.str_field("proof")?.trim().to_string();
-        Some((e.id, code(e.id), proof))
-    });
-    let requests = delivered_request_proofs(log, test).into_iter().map(|(id, proof)| (id, code(id), proof));
-    criteria.chain(requests).collect()
 }
 
 #[cfg(test)]

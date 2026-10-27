@@ -146,7 +146,9 @@ fn back_to_base(path: &Path, base: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{close, commit_file, git_at, ready_with_files, ready_with_waves, wave_file};
+    use super::super::tests::{close, close_for, commit_file, git_at, ready_with_files, ready_with_waves, returned, round_for, verdict_written, wave_file};
+    use crate::commands::flow::close::CloseOpts;
+    use crate::commands::flow::round::RoundOpts;
     use mustard_core::io::spec_events as store;
     use mustard_core::platform::i18n::{Locale, translate};
     use serde_json::json;
@@ -205,8 +207,8 @@ mod tests {
     /// Cada achado vira um pedido com a prova no relato, e a tarefa da obra
     /// o cobre. Entregue a tarefa, o fechamento roda a prova de cada pedido
     /// nas mesmas duas cópias das provas dos critérios: a que já passa no
-    /// commit base rodando teste é recusada pelo código do pedido, e a que cai
-    /// antes e passa depois passa.
+    /// commit base rodando teste é recusada pelo código do pedido, com o texto
+    /// do pedido, e a que cai antes e passa depois passa.
     #[test]
     fn a_finding_proof_green_before_the_change_is_refused() {
         let dir = tempfile::tempdir().unwrap();
@@ -227,12 +229,76 @@ mod tests {
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let codes = log.codes();
         let requests: Vec<String> = log.visible().into_iter().filter(|e| e.event_type == "request").map(|e| codes[&e.id].clone()).collect();
-        let passed_before = translate("close.criterion_passed_before", Locale::PtBr)
+        let passed_before = translate("close.request_proof_passed_before", Locale::PtBr)
             .replace("{code}", &requests[0])
             .replace("{command}", green_before)
             .replace("{count}", "2");
         let hint = refused["hint"].as_str().unwrap_or_default();
         assert!(hint.contains(&passed_before), "a prova do achado verde antes é recusada: {hint}");
         assert!(!hint.contains(&format!("{} ", requests[1])), "a prova do achado que cai antes e passa depois passa: {hint}");
+    }
+
+    /// A recusa da prova de um achado reabre a onda da tarefa que cobre o
+    /// pedido dele, e só ela: a outra onda da obra, que não cobre o pedido,
+    /// fica como está. O texto que a onda reaberta recebe é o da recusa do
+    /// pedido.
+    #[test]
+    fn a_refused_finding_proof_reopens_the_wave_whose_task_covers_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let finding = "- A soma de `src/w1.rs` ignora o estouro. Prova: `echo Tests: 2 total`";
+        ready_with_files(root, "x", &[], &[wave_file(1), wave_file(2)], &[], &[finding]);
+        git_at(root, &["branch", "dev", &first_commit(root)]);
+
+        let refused = close(root, "x");
+        assert_eq!(refused["reason"], json!("criterion-passed-before"), "{refused}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        assert_eq!(log.last_rejected().keys().copied().collect::<Vec<_>>(), vec![1], "só a onda que cobre o pedido reabre: {refused}");
+        let codes = log.codes();
+        let request = log.visible().into_iter().find(|e| e.event_type == "request").map(|e| codes[&e.id].clone()).expect("the request");
+        let failure = log.events.iter().rev().find(|e| e.event_type == "validation_failure" && e.wave() == Some(1)).expect("the reopening");
+        let said = translate("close.request_proof_passed_before", Locale::PtBr).replace("{code}", &request);
+        let said = said.split("{command}").next().unwrap_or_default();
+        assert!(failure.str_field("text").unwrap_or_default().contains(said), "a onda reaberta lê a recusa do pedido: {:?}", failure.fields);
+    }
+
+    /// A obra fecha verde e grava o recibo da validação. A revisão final
+    /// aprova com um achado cuja prova já passa no commit base, e a tarefa
+    /// dele volta sem mudar arquivo nenhum. O fechamento seguinte não
+    /// reaproveita o recibo: a prova do achado entrou na lista das provas,
+    /// roda nas duas cópias e recusa.
+    #[test]
+    fn a_finding_delivered_without_change_runs_its_proof_instead_of_reusing_the_receipt() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        ready_with_waves(root, "x", &["git --version"], 1);
+        git_at(root, &["branch", "dev", &first_commit(root)]);
+        let opts = CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), ..Default::default() };
+        let asked = close_for(&opts, None);
+        assert_eq!((asked["review"]["final"].clone(), asked["validation"]["reused"].clone()), (json!(true), json!(false)), "{asked}");
+
+        let finding = json!({"title": "A soma não trata estouro", "detail": "A soma estoura em src/w1.rs. Prova: `echo Tests: 2 total`",
+            "files": [wave_file(1)], "rule": "MSTD-CRIT-0001", "places": [wave_file(1)]});
+        verdict_written(root, "x", json!({"final": true, "result": "approved", "text": "Pronta, com um achado.", "leftovers": [finding]}));
+        let recorded = close_for(&opts, None);
+        assert_eq!(recorded["phase"], json!("running"), "{recorded}");
+        let round = || round_for(&RoundOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None }, None);
+        let dispatched = round();
+        assert_eq!(dispatched["ok"], json!(true), "{dispatched}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let wave = log.planned_waves().into_iter().max().expect("the wave of the finding");
+        assert!(wave > 1, "o achado saiu numa onda própria: {dispatched}");
+        returned(
+            root,
+            "x",
+            json!({"wave": wave, "text": "Nada a mudar: a soma já estava assim. Rodei a prova e passou.",
+                "checked_places": [{"place": wave_file(1), "reason": "A soma já trata o estouro."}]}),
+        );
+        let back = round();
+        assert_eq!(back["ok"], json!(true), "{back}");
+        assert!(back.get("commit").is_none(), "a tarefa do achado voltou sem mudança: {back}");
+
+        let refused = close_for(&opts, None);
+        assert_eq!(refused["reason"], json!("criterion-passed-before"), "a prova do achado rodou e recusou: {refused}");
     }
 }

@@ -14,7 +14,7 @@ mod tests {
     use serde_json::{Value, json};
     use tempfile::tempdir;
 
-    use super::super::CloseRefusal;
+    use super::super::{CloseRefusal, ProofOf};
     use super::super::tests::{branched_from_dev, close_for, git_at, ready_with_waves, round_for, wave_file};
     use crate::commands::flow::close::CloseOpts;
     use crate::commands::flow::round::RoundOpts;
@@ -36,7 +36,7 @@ mod tests {
             "suite-failed" => CloseRefusal::SuiteFailed { command, output, local_files: Vec::new(), no_wave: None },
             "lint-failed" => CloseRefusal::LintFailed { command, output, local_files: Vec::new(), no_wave: None },
             "final-new-unused" => CloseRefusal::NewUnused { text: output, no_wave: None },
-            _ => CloseRefusal::CriterionFailed { code: "MSTD-CRIT-0001".into(), output },
+            _ => CloseRefusal::CriterionFailed { of: ProofOf::Criterion, code: "MSTD-CRIT-0001".into(), output },
         };
         let text = format!("{}\n{}", failure.message(Locale::PtBr), translate("close.repair_next", Locale::PtBr));
         let draft = json!({"wave": wave, "final": true, "result": "rejected", "text": text, "reason": reason,
