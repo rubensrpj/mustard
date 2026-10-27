@@ -338,3 +338,35 @@ fn a_module_outside_the_writer_folder_in_the_middle_links_the_writer_to_the_pane
     let path = ["write", summary, "panel"].map(str::to_string).to_vec();
     assert_eq!(reach(&edges).get(&("write", "panel")), Some(&path));
 }
+
+/// O item que só existe em teste sai do código de produção, seja qual for a
+/// forma do `cfg` que o marca: `test` sozinho, `all(test, ...)` ou qualquer
+/// outra que exija `test`.
+#[test]
+fn production_code_drops_every_item_that_only_exists_in_a_test_build() {
+    let source = concat!(
+        "use crate::kept;\n",
+        "#[cfg(test)]\nmod plain {\n    use super::*;\n}\n",
+        "#[cfg(all(test, target_os = \"linux\"))]\nmod with_target {\n    use super::*;\n}\n",
+        "#[cfg(any(all(test, unix), all(test, windows)))]\nmod nested {\n    use super::*;\n}\n",
+        "#[cfg( all( unix , test ) )]\nuse crate::only_in_tests;\n",
+        "fn kept() {}\n",
+    );
+    let code = production_code(source);
+    let lines: Vec<&str> = code.lines().filter(|line| !line.trim().is_empty()).collect();
+    assert_eq!(lines, ["use crate::kept;", "fn kept() {}"], "{code}");
+}
+
+/// O item que também compila fora de teste fica no código de produção, mesmo
+/// quando o `cfg` nomeia `test`.
+#[test]
+fn production_code_keeps_every_item_that_also_exists_outside_a_test_build() {
+    let source = concat!(
+        "#[cfg(not(test))]\nfn negated() {}\n",
+        "#[cfg(any(test, unix))]\nfn either() {}\n",
+        "#[cfg(all(unix, any(test, windows)))]\nfn mixed() {}\n",
+        "#[cfg(all(unix, target_os = \"linux\"))]\nfn system() {}\n",
+        "#[cfg(feature = \"test\")]\nfn feature() {}\n",
+    );
+    assert_eq!(production_code(source), source);
+}
