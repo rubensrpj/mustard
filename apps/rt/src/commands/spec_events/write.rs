@@ -1410,7 +1410,7 @@ pub(crate) fn record_phase(start: &Path, spec: &str, phase: &str, session: Optio
     // A entrega deixa ao projeto a linha da spec no resumo e as regras dela;
     // a falha só avisa, e a entrega fica gravada.
     if phase == "delivered"
-        && let Err(detail) = crate::shared::project_summary::record_delivered(start, spec.trim())
+        && let Err(detail) = crate::shared::summary_entry::record_delivered(start, spec.trim())
     {
         let lang = mustard_core::ProjectConfig::load(&store::spec_root(start)).language().text_or_default();
         eprintln!("{}", translate("spec_index.summary_failed", lang).replace("{spec}", spec.trim()).replace("{detail}", &detail));

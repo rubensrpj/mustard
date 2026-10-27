@@ -84,6 +84,9 @@ pub(crate) mod integration_health;
 pub(crate) mod host_installation;
 pub(crate) mod return_triage;
 pub(crate) mod project_summary;
+/// A linha da spec entregue no resumo do projeto, que a entrega grava; só
+/// depende do núcleo.
+pub(crate) mod summary_entry;
 pub(crate) mod failure_skills;
 pub(crate) mod skill_cycle;
 pub mod jev;

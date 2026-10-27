@@ -26,7 +26,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use mustard_core::domain::project_summary::SURE;
+use mustard_core::domain::project_summary::{SURE, skills_of};
 use mustard_core::domain::spec_events::{SpecEvent, SpecLog, TASK_TITLE_MAX};
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState as _, can_run};
 use mustard_core::domain::text::cut_line;
@@ -551,20 +551,6 @@ fn skill_rule(root: &Path, name: &str) -> String {
     format!("{}.claude/skills/{name}/", prefix.trim())
 }
 
-/// As skills que a spec criou ou atualizou e não descartou depois, em
-/// `log`, na ordem.
-pub(crate) fn skills_of(log: &SpecLog) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for skill in log.visible().into_iter().filter(|e| e.event_type == "skill") {
-        let Some(name) = skill.str_field("name").map(str::trim) else { continue };
-        out.retain(|had| had != name);
-        if matches!(skill.str_field("action"), Some("created" | "updated")) {
-            out.push(name.to_string());
-        }
-    }
-    out
-}
-
 /// Depois de gravar o `skill` número `id`, de nome `name` e ação `action`, na
 /// spec `spec` de `start`: o registro das skills do Mustard o guarda
 /// ([`crate::shared::skill_cycle::skill_recorded`]); criado ou atualizado, a
@@ -774,7 +760,7 @@ mod tests {
         let mut hash = mustard_core::io::sha256::Sha256::new();
         hash.update(text.as_bytes());
         assert_eq!(skill.str_field("sha"), Some(hash.hex_digest().as_str()), "{:?}", skill.fields);
-        crate::shared::project_summary::record_delivered(root, "x").unwrap();
+        crate::shared::summary_entry::record_delivered(root, "x").unwrap();
         assert_eq!(mustard_core::io::project_summary::read(root)[0].skills, ["falta-teste"]);
     }
 }
