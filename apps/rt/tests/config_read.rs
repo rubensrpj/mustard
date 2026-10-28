@@ -221,6 +221,30 @@ fn rtk_readers_of_the_config_are_refused() {
     }
 }
 
+/// O programa escrito na linha que cita a configuração com a chave é
+/// recusado por qualquer nome que a gramática do interpretador reconhece: o
+/// lançador do Python no Windows, o Python rodado pelo `uv run`, o nome com
+/// `.exe` e o PHP. A recusa aponta a leitura mascarada, não troca o comando e
+/// não traz a chave.
+#[test]
+fn an_inline_program_of_any_interpreter_name_is_refused_on_the_config() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("mustard.json"), CONFIG).unwrap();
+    for original in [
+        r#"py -c "print(open('mustard.json').read())""#,
+        r#"uv run python -c "print(open('mustard.json').read())""#,
+        r#"python.exe -c "print(open('mustard.json').read())""#,
+        r#"php -r 'echo file_get_contents("mustard.json");'"#,
+    ] {
+        let result = hook(dir.path(), original);
+        let specific = &result["hookSpecificOutput"];
+        assert_eq!(specific["permissionDecision"], "deny", "{original}: {result}");
+        assert!(specific.get("updatedInput").is_none(), "{original}: {result}");
+        let reason = specific["permissionDecisionReason"].as_str().unwrap();
+        assert!(reason.contains("run config-read") && !result.to_string().contains(SECRET), "{original}: {reason}");
+    }
+}
+
 fn git(root: &Path, args: &[&str]) {
     let out = Command::new("git")
         .args(["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"])

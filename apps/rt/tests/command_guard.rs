@@ -301,3 +301,24 @@ fn the_round_filter_refusal_says_to_run_it_alone() {
         assert!(!reason.contains("--term"), "the round has no read by term: {reason}");
     }
 }
+
+/// A resposta do Mustard passada a um interpretador é recusada por qualquer
+/// nome que a gramática do interpretador reconhece: o lançador do Python no
+/// Windows, o Python rodado pelo `uv run` e o nome com `.exe`, pelo cano e
+/// por substituição. A recusa diz para rodar o comando sozinho.
+#[test]
+fn a_runtime_answer_fed_to_any_interpreter_name_is_refused() {
+    use mustard_core::platform::i18n::{Locale, translate};
+
+    let alone = translate("runtime_output.alone", Locale::PtBr);
+    for command in [
+        r#"mustard-rt run panel | py -c "import sys; print(sys.stdin.read()[:100])""#,
+        r#"mustard-rt run panel | uv run python -c "import sys; print(sys.stdin.read()[:100])""#,
+        r#"mustard-rt run panel | python.exe -c "import sys; print(sys.stdin.read()[:100])""#,
+        "py summarize.py <(mustard-rt run panel)",
+        "uv run python summarize.py <(mustard-rt run panel)",
+    ] {
+        let reason = filter_refusal(command, "pt-BR");
+        assert!(reason.ends_with(alone), "{command} ends on running it alone: {reason}");
+    }
+}

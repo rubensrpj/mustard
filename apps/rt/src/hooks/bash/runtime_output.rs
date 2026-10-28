@@ -6,10 +6,11 @@
 //! ela diz. A conferência recusa o comando quando:
 //!
 //! - o Mustard manda a resposta, pelo encadeamento de `|` ou `|&`, a um
-//!   programa de [`SCRIPTS`]; o programa que vem depois do `rtk`, do `sudo` e
-//!   dos outros invólucros conta pelo nome dele, e o `xargs` conta como
-//!   programa da lista;
-//! - um programa de [`SCRIPTS`] recebe a resposta por substituição:
+//!   interpretador ou programa de [`SCRIPTS`] ([`runs_a_script`]); o
+//!   programa que vem depois do `rtk`, do `sudo` e dos outros invólucros conta
+//!   pelo nome dele, e o `xargs` conta como programa da lista;
+//! - um interpretador ou programa de [`SCRIPTS`] recebe a resposta por
+//!   substituição:
 //!   `$(mustard-rt …)`, crases, `<(mustard-rt …)`, ou o corpo de um heredoc
 //!   que roda o Mustard.
 //!
@@ -28,14 +29,14 @@ use mustard_core::domain::model::contract::Verdict;
 use mustard_core::domain::spec_events::ReadQuery;
 
 use super::lex::{Segment, truncate};
+use super::shell_edit::is_interpreter;
 use crate::shared::say::say;
 
-/// Os programas que, ao receber a resposta, a passam por script, filtro ou
-/// corte. A lista é fechada: o `fold` e o `cat` ficam de fora.
-const SCRIPTS: &[&str] = &[
-    "python", "python3", "jq", "node", "perl", "ruby", "grep", "rg", "sed", "awk", "head", "tail", "cut", "tr", "sort",
-    "uniq", "wc", "xargs", "tee",
-];
+/// Os programas que, ao receber a resposta, a passam por filtro ou corte. A
+/// lista é fechada: o `fold` e o `cat` ficam de fora. O interpretador, que a
+/// passa por script, se reconhece pela gramática ([`is_interpreter`]).
+const SCRIPTS: &[&str] =
+    &["jq", "grep", "rg", "sed", "awk", "head", "tail", "cut", "tr", "sort", "uniq", "wc", "xargs", "tee"];
 
 /// Se `segment` roda o Mustard. A leitura mascarada da configuração
 /// (`run config-read`) fica de fora: o que sai dela é o arquivo da pessoa,
@@ -45,10 +46,13 @@ fn runs_the_runtime(segment: &Segment) -> bool {
         && !matches!(segment.args.as_slice(), [run, read, ..] if run.text == "run" && read.text == "config-read")
 }
 
-/// Se `segment` roda um programa de [`SCRIPTS`], pelo nome ou pelo `xargs`
-/// que o chama.
+/// Se `segment` roda um interpretador, também pelo `py`, pelo `.exe` e pelo
+/// lançador (`uv run python`), ou um programa de [`SCRIPTS`], pelo nome ou
+/// pelo `xargs` que o chama.
 fn runs_a_script(segment: &Segment) -> bool {
-    SCRIPTS.contains(&segment.name()) || segment.wrappers.iter().any(|wrapper| SCRIPTS.contains(&wrapper.as_str()))
+    is_interpreter(segment)
+        || SCRIPTS.contains(&segment.name())
+        || segment.wrappers.iter().any(|wrapper| SCRIPTS.contains(&wrapper.as_str()))
 }
 
 /// As opções cuja resposta é curta, fixa e sem nada da obra: cortá-la não
@@ -166,9 +170,9 @@ fn reads_whole(segment: &Segment) -> bool {
 }
 
 /// O comando do Mustard cuja resposta passa por script, filtro ou corte: o
-/// que a manda, pelo encadeamento de `|`, a um programa de [`SCRIPTS`], ou o
-/// que um programa de [`SCRIPTS`] recebe por substituição. `None` quando
-/// nenhum passa.
+/// que a manda, pelo encadeamento de `|`, a um interpretador ou programa de
+/// [`SCRIPTS`] ([`runs_a_script`]), ou o que um deles recebe por
+/// substituição. `None` quando nenhum passa.
 fn barred(segments: &[Segment]) -> Option<&Segment> {
     (0..segments.len()).find_map(|at| {
         if reads_whole(&segments[at]) && Segment::fed(segments, at).into_iter().any(|link| runs_a_script(&segments[link])) {

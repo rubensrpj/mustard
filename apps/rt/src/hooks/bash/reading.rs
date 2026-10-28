@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use mustard_core::domain::model::contract::{Ctx, HookInput, Verdict};
 
 use super::lex::{self, Segment, Word};
+use super::shell_edit::is_interpreter;
 use crate::hooks::write::write_gate::say;
 use crate::shared::search_gateway::literal_shell;
 use crate::shared::config_key::{self, CONFIG_FILE, NameFilter, Walk};
@@ -97,10 +98,11 @@ const GIT_GREP_LONG_VALUE: &[&str] = &["max-depth", "threads", "max-count", "aft
 pub(super) fn bash_reading(segments: &[Segment], cmd: &str, input: &HookInput, ctx: &Ctx) -> Option<Verdict> {
     let root = ctx.project_dir_or_cwd(input);
     let lang = ctx.config.language().text_or_default();
-    // An inline interpreter can print a protected file without being one of
-    // the ordinary readers. Never attempt to execute or rewrite its program.
-    if segments.iter().any(|segment|matches!(segment.name(),"python"|"python3"|"node"|"bun"|"perl"|"ruby"|"php")
-        && segment.args.iter().any(|arg|arg.text.contains(CONFIG_FILE)))
+    // O interpretador mostra o arquivo protegido sem ser um dos leitores. Ele
+    // se reconhece pela gramática da recusa de edição, também pelo lançador
+    // (`uv run python`), pelo `py` e pelo `.exe`. Nunca roda nem reescreve o
+    // programa dele.
+    if segments.iter().any(|segment| is_interpreter(segment) && segment.args.iter().any(|arg| arg.text.contains(CONFIG_FILE)))
         && std::fs::read_to_string(mustard_core::io::spec_events::spec_root(Path::new(&root)).join(CONFIG_FILE)).is_ok_and(|text|config_key::masked(&text).is_some()) {
         return Some(Verdict::Deny {reason:format!("{} Use `mustard-rt run config-read`. {}",
             mustard_core::translate("config_key.shell_unsupported",lang).replace("{file}",CONFIG_FILE),

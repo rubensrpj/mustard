@@ -4,7 +4,7 @@
 //! A regra é de sintaxe e não adivinha o que o programa faz. No agente de
 //! onda, ela recusa:
 //!
-//! - o interpretador (`python`, `py`, `node`, `perl`, `ruby`, `bun`), também
+//! - o interpretador (`python`, `py`, `node`, `perl`, `ruby`, `bun`, `php`), também
 //!   o rodado por um lançador (`uv run`, `poetry run`), com o programa na
 //!   própria linha (`-c`, `-e`, heredoc, `<<<` ou o texto que `echo`,
 //!   `printf` ou `cat` lhe passa pelo cano), quando o texto dele cita um
@@ -115,6 +115,22 @@ const RUBY: Grammar = Grammar {
     runner: None,
 };
 
+/// O `-r` traz o programa; o `-B`, o `-R` e o `-E`, o trecho de antes, de
+/// cada linha e de depois da entrada. O arquivo do `-f` e do `-F` é o primeiro
+/// nome fora das opções.
+const PHP: Grammar = Grammar {
+    name: "php",
+    code: "rBRE",
+    glued_code: true,
+    value: "cdtSz",
+    attached: "",
+    module: "",
+    in_place: "",
+    long_code: &["--run", "--process-begin", "--process-code", "--process-end"],
+    long_value: &["--php-ini", "--define", "--docroot", "--server", "--zend-extension"],
+    runner: None,
+};
+
 /// A gramática do interpretador `name`, com ou sem a pasta, ou `None` para
 /// outro programa. `py` é o lançador do Python no Windows, com as mesmas
 /// opções (`py -3 -c …`).
@@ -128,6 +144,7 @@ fn grammar(name: &str) -> Option<&'static Grammar> {
         "bun" => Some(&BUN),
         "perl" => Some(&PERL),
         "ruby" => Some(&RUBY),
+        "php" => Some(&PHP),
         _ => None,
     }
 }
@@ -253,8 +270,8 @@ fn inline_text(redirect: &Redirect) -> Option<&str> {
 }
 
 /// O comando é um interpretador (`python`, `py`, `node`, `bun`, `perl`,
-/// `ruby`), com ou sem a pasta, também o rodado por um lançador
-/// (`uv run python`).
+/// `ruby`, `php`), com ou sem a pasta e o `.exe`, também o rodado por um
+/// lançador (`uv run python`).
 pub(crate) fn is_interpreter(segment: &Segment) -> bool {
     interpreter(segment).is_some()
 }
@@ -598,6 +615,7 @@ mod tests {
             "uv run --with requests python -c \"open('src/lib.rs', 'w').write('')\"".to_string(),
             "poetry run python - <<'EOF'\nopen('src/lib.rs', 'w').write('')\nEOF".to_string(),
             "py -3 -c \"open('src/lib.rs', 'w').write('')\"".to_string(),
+            "php -r 'file_put_contents(\"src/lib.rs\", \"\");'".to_string(),
         ];
         for command in &refused {
             let Verdict::Deny { reason } = guard(&scene, command, true, "claude") else {
