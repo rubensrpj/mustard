@@ -977,16 +977,19 @@ fn changes_the_program(files: &[String]) -> bool {
 /// `packages/`. A compilação vai para a pasta de
 /// `mustard_core::io::wave_prompt::development_build_dir`, e nenhum programa
 /// é instalado em lugar nenhum. Com a compilação vermelha, a sessão segue no
-/// programa compilado anterior, e o aviso traz o fim da saída — é ela que diz o
-/// que consertar —; a rodada nunca recusa por isso, porque o commit já saiu.
-pub(super) fn build_development_version(root: &Path, files: &[String], lang: Locale) -> Option<Value> {
-    build_development_version_with(root, files, lang, &|command, cwd| crate::commands::review::qa_run::run_server_command(command, cwd))
+/// programa compilado anterior, e a execução fica gravada na spec `spec`, com
+/// o fim da saída — é ela que diz o que consertar —; o aviso traz o comando
+/// que a lê, sem repetir a saída. A rodada nunca recusa por isso, porque o
+/// commit já saiu.
+pub(super) fn build_development_version(root: &Path, spec: &str, files: &[String], lang: Locale) -> Option<Value> {
+    build_development_version_with(root, spec, files, lang, &|command, cwd| crate::commands::review::qa_run::run_server_command(command, cwd))
 }
 
 /// [`build_development_version`] com o executor recebido, que é como um teste
 /// prova a regra sem rodar o `cargo` de verdade.
 fn build_development_version_with(
     root: &Path,
+    spec: &str,
     files: &[String],
     lang: Locale,
     exec: &dyn Fn(&str, &Path) -> crate::commands::review::qa_run::ProofRun,
@@ -996,11 +999,18 @@ fn build_development_version_with(
     }
     let main = mustard_core::mustard_checkout(root)?;
     let target = mustard_core::io::wave_prompt::development_build_dir(&main);
-    let built = exec(&crate::shared::development_build::build_changed_command(&target, files), &main);
+    let command = crate::shared::development_build::build_changed_command(&target, files);
+    let built = exec(&command, &main);
     if built.result == "pass" {
         return None;
     }
-    let hint = translate("round.development_build_failed", lang).replace("{output}", &built.output);
+    // A execução que não pôde ser gravada não tem comando que a leia: o aviso
+    // diz o motivo da gravação recusada no lugar dele.
+    let read = match super::super::validation::record_run(root, spec, "delivery", "runtime-build", &command, &built) {
+        Ok(written) => super::read_command(root, spec, &format!("item-{}", written.code.unwrap_or_else(|| written.id.to_string()))),
+        Err(refusal) => refusal.message(lang),
+    };
+    let hint = translate("round.development_build_failed", lang).replace("{read}", &read);
     Some(json!({ "reason": "development-build-failed", "hint": hint }))
 }
 
@@ -2171,11 +2181,11 @@ mod tests {
         let files = |names: &[&str]| names.iter().map(|name| name.to_string()).collect::<Vec<_>>();
 
         for untouched in [files(&[]), files(&["docs/guia.md", "plugin/hooks/hooks.json", "README.md", "scripts/x.sh"])] {
-            assert!(build_development_version_with(root, &untouched, Locale::PtBr, &exec).is_none());
+            assert!(build_development_version_with(root, "x", &untouched, Locale::PtBr, &exec).is_none());
             assert!(commands.borrow().is_empty(), "{untouched:?} não toca o programa: {:?}", commands.borrow());
         }
         for touched in [files(&["apps/rt/src/main.rs"]), files(&["docs/guia.md", "packages/core/src/lib.rs"])] {
-            assert!(build_development_version_with(root, &touched, Locale::PtBr, &exec).is_none(), "compilação verde: sem aviso");
+            assert!(build_development_version_with(root, "x", &touched, Locale::PtBr, &exec).is_none(), "compilação verde: sem aviso");
         }
         let commands = commands.into_inner();
         assert_eq!(commands.len(), 2, "uma compilação por rodada que tocou o programa: {commands:?}");
@@ -2186,24 +2196,33 @@ mod tests {
 
         let other = tempdir().unwrap();
         let counting = |_: &str, _: &Path| -> crate::commands::review::qa_run::ProofRun { panic!("fora do Mustard nada compila") };
-        assert!(build_development_version_with(other.path(), &files(&["apps/rt/src/main.rs"]), Locale::PtBr, &counting).is_none());
+        assert!(build_development_version_with(other.path(), "x", &files(&["apps/rt/src/main.rs"]), Locale::PtBr, &counting).is_none());
     }
 
-    /// A compilação vermelha vira o aviso, com o fim da saída do `cargo`, nos
-    /// dois idiomas, e nunca recusa a rodada.
+    /// A compilação vermelha vira o aviso nos dois idiomas, e nunca recusa a
+    /// rodada. A execução fica gravada na spec com o fim da saída do `cargo`,
+    /// e o aviso traz o comando que a lê, sem repetir a saída.
     #[test]
-    fn a_red_development_build_warns_with_the_end_of_the_output() {
+    fn a_red_development_build_warns_with_the_read_of_its_recorded_run() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         mustard_like_root(root);
-        let exec = |_: &str, _: &Path| proof("fail", "error[E0425]: cannot find value `x`");
+        assert_eq!(crate::commands::spec_events::write::record_open(root, "x", "feature/x", "dev"), Ok(true));
+        let error = "error[E0425]: cannot find value `x`";
+        let exec = |_: &str, _: &Path| proof("fail", error);
         let files = vec!["apps/rt/src/main.rs".to_string()];
         for lang in [Locale::PtBr, Locale::EnUs] {
-            let warning = build_development_version_with(root, &files, lang, &exec).expect("aviso de compilação vermelha");
+            let warning = build_development_version_with(root, "x", &files, lang, &exec).expect("aviso de compilação vermelha");
             assert_eq!(warning["reason"], json!("development-build-failed"), "{warning}");
             let hint = warning["hint"].as_str().unwrap_or_default();
-            assert!(hint.contains("error[E0425]: cannot find value `x`"), "{lang:?}: {warning}");
-            assert!(!hint.contains("{output}"), "{lang:?}: {warning}");
+            assert!(!hint.contains(error), "o aviso não traz a saída: {lang:?}: {warning}");
+            let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+            let run = log.visible().into_iter().rev().find(|e| e.event_type == "stage_run").expect("a execução da compilação gravada");
+            assert_eq!((run.str_field("stage"), run.str_field("output")), (Some("runtime-build"), Some(error)), "{lang:?}: {run:?}");
+            let code = log.codes().get(&run.id).cloned().unwrap_or_else(|| run.id.to_string());
+            let read = crate::commands::flow::round::read_command(root, "x", &format!("item-{code}"));
+            let said = translate("round.development_build_failed", lang).replace("{read}", &read);
+            assert_eq!(hint, said, "o aviso diz como ler a execução gravada: {lang:?}");
         }
     }
 }

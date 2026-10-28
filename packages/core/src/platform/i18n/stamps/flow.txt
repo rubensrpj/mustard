@@ -234,7 +234,7 @@ round.commit_too_long	e1cf916c2348398f
 round.copies_full	2f3c133c569f32ac
 round.copy_failed	2d73921234077590
 round.copy_not_cleaned	0d9c7aea80cec4bf
-round.development_build_failed	c882180a7c000b6b
+round.development_build_failed	a4151ca7a5208eb8
 round.done_without_step	094c6e205282594c
 round.file_unknown	0125b37d9483dc54
 round.files_diverged	47a57f1d4c8bf9bb
@@ -269,7 +269,6 @@ round.leftover_review_marked	4b41ab57dbd7afe9
 round.leftover_review_priority	3772aaffa9e49e62
 round.leftover_without_files	a69dff1f35e6d0b1
 round.line_field	68c72d8a3e6ff874
-round.lint_failed	90d21ad88299c9df
 round.local_file_missing	6f30cc76b7395212
 round.local_file_tracked	6bec4a365c5ecfdd
 round.merge_conflict	f19c9b8b26cbb6f7
@@ -338,7 +337,6 @@ round.started_work_undone	c08c49e6632918a5
 round.task_without_covers	c13fd8daebf05f94
 round.tasks_returned	89e9ec99d9b8278f
 round.terminal_inside_a_copy	2ca458812a7b3417
-round.tests_failed	9b1911ecd39f83ea
 round.undone_not_in_wave	36bc354c266b1758
 round.unmet_covered	4b15392e3fec8ca9
 round.unmet_joined	9cd86fdaaa7de975

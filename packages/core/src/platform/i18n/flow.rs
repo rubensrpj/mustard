@@ -928,24 +928,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              platform records for this session. Its usage did not reach the page, but the delivery \
              was written anyway."
         }
-        // A suíte e o lint que o projeto declara, rodados pela rodada no
-        // repositório principal antes do commit, com o fim da saída.
-        ("round.tests_failed", Locale::PtBr) => {
-            "A suíte do projeto (`{command}`) não passou no repositório principal, e a rodada não \
-             comitou nada: {output}"
-        }
-        ("round.tests_failed", Locale::EnUs) => {
-            "The project suite (`{command}`) did not pass in the main repository, and the round \
-             committed nothing: {output}"
-        }
-        ("round.lint_failed", Locale::PtBr) => {
-            "O lint do projeto (`{command}`) não passou no repositório principal, e a rodada não \
-             comitou nada: {output}"
-        }
-        ("round.lint_failed", Locale::EnUs) => {
-            "The project lint (`{command}`) did not pass in the main repository, and the round \
-             committed nothing: {output}"
-        }
         // A conferência depois da onda, antes do commit: as importações novas
         // contra o padrão do projeto e os restos do que a onda tirou.
         ("round.after_wave", Locale::PtBr) => {
@@ -1075,13 +1057,15 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "`{file}` line {line} is a test that only calls `{name}`, new code with no use outside tests. \
              Remove the test along with it."
         }
+        // `{read}` é o comando que lê a execução gravada da compilação, com a
+        // saída inteira, que o aviso não repete.
         ("round.development_build_failed", Locale::PtBr) => {
-            "O commit saiu, mas a versão em construção do Mustard não compilou, e a sessão segue no \
-             programa compilado anterior: {output}"
+            "O commit saiu, mas a versão em construção do Mustard não compilou. A sessão segue no \
+             programa compilado anterior. A saída da compilação se lê com `{read}`."
         }
         ("round.development_build_failed", Locale::EnUs) => {
-            "The commit landed, but the development build of Mustard did not compile, and the session \
-             stays on the previous compiled program: {output}"
+            "The commit landed, but the development build of Mustard did not compile. The session \
+             stays on the previous compiled program. Read the build output with `{read}`."
         }
         ("round.commit_carried_more", Locale::PtBr) => {
             "O commit levou arquivo que a entrega não listou: {extra}, em {repo}. Isso acontece \
@@ -2947,8 +2931,6 @@ mod tests {
             ("round.commit_carried_more", &["{extra}", "{repo}", "{stash}", "{restore}"][..]),
             ("round.files_diverged", &["{wave}", "{changed}", "{declared}", "{missing}"][..]),
             ("round.usage_missing", &["{wave}"][..]),
-            ("round.tests_failed", &["{command}", "{output}"][..]),
-            ("round.lint_failed", &["{command}", "{output}"][..]),
             ("round.after_wave.limit", &["{waves}", "{max}"][..]),
             ("round.after_wave.question", &["{waves}", "{max}"][..]),
             ("round.after_wave.wave", &["{wave}", "{round}", "{max}"][..]),
@@ -2961,7 +2943,7 @@ mod tests {
             ("round.after_wave.orphan", &["{file}", "{line}", "{name}"][..]),
             ("round.after_wave.unused", &["{file}", "{line}", "{name}"][..]),
             ("round.after_wave.unused_test", &["{file}", "{line}", "{name}"][..]),
-            ("round.development_build_failed", &["{output}"][..]),
+            ("round.development_build_failed", &["{read}"][..]),
             ("round.proof_ran_no_test", &["{code}"][..]),
             ("round.proof_missing_test", &["{code}", "{name}"][..]),
             ("round.size.line", &["{wave}", "{added}", "{removed}", "{files}"][..]),

@@ -260,25 +260,37 @@ fn offers_a_file(reason: &str) -> bool {
     lower.contains("arquivo") || lower.contains("file") || reason.contains(" > ") || reason.contains(" >> ")
 }
 
-/// O corte da resposta de um bloco grande do `read` é recusado nos dois
-/// idiomas, e a recusa termina no resumo pronto do bloco. Ela não manda
-/// gravar a resposta num arquivo nem sugere a leitura por termo.
+/// O filtro da resposta do Mustard é recusado nos dois idiomas, e a recusa
+/// termina no caminho daquele comando: o resumo pronto do bloco grande, a
+/// leitura por termo dos outros blocos, ou o comando sozinho, com ou sem a
+/// razão de resposta curta. Nenhuma das quatro recusas manda gravar a
+/// resposta num arquivo, e a do bloco grande não sugere a leitura por termo.
 #[test]
 fn the_filter_refusal_points_to_the_summary_and_never_to_a_file() {
     use mustard_core::platform::i18n::{Locale, translate};
 
     for (language, locale) in [("pt-BR", Locale::PtBr), ("en-US", Locale::EnUs)] {
-        let reason = filter_refusal("mustard-rt run read metrics --spec x | grep calls", language);
         let summary = translate("runtime_output.summary", locale).replace("{block}", "metrics").replace("{summary}", "calls");
-        assert!(reason.ends_with(&summary), "the refusal points to the summary: {reason}");
-        assert!(!reason.contains("--term"), "the summary is the only way given: {reason}");
-        assert!(!offers_a_file(&reason), "the refusal never offers a file: {reason}");
+        for (command, way) in [
+            ("mustard-rt run read metrics --spec x | grep calls", summary.as_str()),
+            ("mustard-rt run read item-1 --spec x | head -20", translate("runtime_output.term", locale)),
+            ("mustard-rt run round --spec x | grep next", translate("runtime_output.alone_short", locale)),
+            ("mustard-rt run panel | grep waves", translate("runtime_output.alone", locale)),
+        ] {
+            let reason = filter_refusal(command, language);
+            assert!(reason.ends_with(way), "{command} ends on its way in {language}: {reason}");
+            assert!(!offers_a_file(&reason), "the refusal never offers a file: {reason}");
+            if way == summary {
+                assert!(!reason.contains("--term"), "the summary is the only way given: {reason}");
+            }
+        }
     }
 }
 
 /// O filtro da resposta da rodada é recusado nos dois idiomas, e a recusa
 /// diz para rodar o comando sozinho, porque a resposta já vem curta. Ela não
-/// manda gravar a resposta num arquivo nem sugere a leitura por termo.
+/// sugere a leitura por termo; a ausência de arquivo nela e nas outras
+/// recusas do filtro é provada no teste do resumo, acima.
 #[test]
 fn the_round_filter_refusal_says_to_run_it_alone() {
     use mustard_core::platform::i18n::{Locale, translate};
@@ -287,6 +299,5 @@ fn the_round_filter_refusal_says_to_run_it_alone() {
         let reason = filter_refusal("mustard-rt run round --spec x | grep next", language);
         assert!(reason.ends_with(translate("runtime_output.alone_short", locale)), "the refusal says to run it alone: {reason}");
         assert!(!reason.contains("--term"), "the round has no read by term: {reason}");
-        assert!(!offers_a_file(&reason), "the refusal never offers a file: {reason}");
     }
 }

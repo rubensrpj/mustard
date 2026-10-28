@@ -90,6 +90,8 @@ use crate::shared::spec_state::{DiskSpecState, checkout, session_from_env};
 
 mod clean_copy;
 #[cfg(test)]
+mod failure_line_tests;
+#[cfg(test)]
 mod outdated_request_tests;
 mod ownerless_tests;
 mod proof_runs;
@@ -3936,16 +3938,16 @@ exit "${2:-0}"
         let hint = refused["hint"].as_str().unwrap_or_default();
         let lines = refused["failures"].as_array().cloned().unwrap_or_default();
         let reasons: Vec<&str> = lines.iter().filter_map(|line| line["reason"].as_str()).collect();
-        assert_eq!(reasons, ["lint-failed", "suite-failed", "criterion-failed"], "one line per failure: {refused}");
+        assert_eq!(reasons, ["lint-failed", "suite-failed", "criterion-failed"], "uma linha por falha: {refused}");
         assert_eq!((&lines[0]["stage"], &lines[1]["stage"]), (&json!("lintCommand"), &json!("testCommand")), "{refused}");
         assert!(lines[2]["criterion"].as_str().is_some_and(|code| code.starts_with("MSTD-CRIT-")), "{refused}");
         for (line, mark) in lines.iter().zip(["lint-mark", "suite-mark", "nao-existe-esta-opcao"]) {
-            assert!(!hint.contains(mark), "the refusal does not carry the output: {refused}");
+            assert!(!hint.contains(mark), "a recusa não traz a saída: {refused}");
             let read = line["read"].as_str().unwrap_or_default();
-            assert!(hint.contains(read), "the hint says how to read it: {refused}");
-            assert!(read_by(root, read).contains(mark), "the line's command reads the whole output: {line}");
+            assert!(hint.contains(read), "a recusa diz como ler a saída: {refused}");
+            assert!(read_by(root, read).contains(mark), "o comando da linha lê a saída inteira: {line}");
         }
-        assert_eq!(criterion_runs(root), 2, "every criterion ran: {refused}");
+        assert_eq!(criterion_runs(root), 2, "todo critério rodou: {refused}");
     }
 
     /// O fechamento com tarefa no backlog recusa com a razão própria e nomeia a
@@ -4301,16 +4303,16 @@ exit "${2:-0}"
         let refused = close(root, "x");
         assert_eq!(refused["reason"], json!("criterion-failed"), "{refused}");
         let hint = refused["hint"].as_str().unwrap_or_default();
-        assert!(!hint.contains("linha 200"), "the refusal does not carry the output: {hint}");
+        assert!(!hint.contains("linha 200"), "a recusa não traz a saída: {hint}");
 
         let path = store::spec_file(root, "x").unwrap();
         let log = store::read(&path).unwrap().unwrap();
         let run = log.visible().into_iter().find(|e| e.event_type == "criterion_run").unwrap();
         let output = run.str_field("output").unwrap_or_default();
-        assert!(output.ends_with("linha 200") && output.contains("linha 161"), "the run keeps the last 40 lines: {run:?}");
-        assert!(!output.contains("linha 1\n"), "the start of the output stays out: {run:?}");
+        assert!(output.ends_with("linha 200") && output.contains("linha 161"), "a execução guarda as últimas 40 linhas: {run:?}");
+        assert!(!output.contains("linha 1\n"), "o começo da saída fica de fora: {run:?}");
         let read = refused["failures"][0]["read"].as_str().unwrap_or_default();
-        assert!(read_by(root, read).contains("linha 200"), "the line's command reads the run: {refused}");
+        assert!(read_by(root, read).contains("linha 200"), "o comando da linha lê a execução: {refused}");
     }
 
     /// A base `dev` de onde a branch da spec saiu: nasce no commit semente,

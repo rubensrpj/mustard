@@ -616,7 +616,7 @@ fn take_returns(
         // plano: o despacho que vem a seguir passa ao programa novo
         // ([`super::handoff`]), que precisa estar pronto.
         let mut timing = super::super::validation::Stage::new(root, spec, "delivery", "runtime-build", false);
-        let rebuilt = build_development_version(root, &files, lang);
+        let rebuilt = build_development_version(root, spec, &files, lang);
         if mustard_core::mustard_checkout(root).is_none()
             || !files.iter().any(|file| {
                 file.starts_with("apps/")

@@ -33,7 +33,7 @@ fn the_first_close_answer_carries_one_line_per_criterion() {
     let lines = asked["criteria"].as_array().cloned().unwrap_or_default();
     let mut shown: Vec<String> = lines.iter().filter_map(|line| line["criterion"].as_str().map(str::to_string)).collect();
     shown.sort();
-    assert_eq!(shown, expected, "one line per criterion: {asked}");
+    assert_eq!(shown, expected, "uma linha por critério: {asked}");
     for line in &lines {
         assert_eq!(line["result"], json!("pass"), "{line}");
         assert!(line.get("output").is_none() && line.get("exit").is_none() && line.get("ms").is_none(), "{line}");
@@ -71,5 +71,5 @@ fn a_second_close_in_the_session_does_not_repeat_the_fixed_instructions() {
     let second = close(root, verdict_written(root, "x", rejected));
     assert_eq!(second["review"]["final"], json!(true), "{second}");
     assert!(!second["next"].as_str().unwrap_or_default().contains(&fixed), "{second}");
-    assert!(second["review"]["read"].as_str().is_some_and(|read| !read.is_empty()), "the new request still goes: {second}");
+    assert!(second["review"]["read"].as_str().is_some_and(|read| !read.is_empty()), "o pedido novo vai assim mesmo: {second}");
 }
