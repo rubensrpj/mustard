@@ -173,6 +173,18 @@ pub(crate) fn without_secrets(text: &str) -> String {
     out
 }
 
+/// O valor `value` sem segredo, em cada texto que ele traz, de qualquer
+/// fundura ([`without_secrets`]).
+pub(crate) fn value_without_secrets(value: &serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match value {
+        Value::String(text) => Value::String(without_secrets(text)),
+        Value::Array(items) => Value::Array(items.iter().map(value_without_secrets).collect()),
+        Value::Object(fields) => Value::Object(fields.iter().map(|(key, value)| (key.clone(), value_without_secrets(value))).collect()),
+        other => other.clone(),
+    }
+}
+
 /// O texto tem algo com cara de segredo.
 #[cfg(test)]
 fn looks_like_secret(text: &str) -> bool {

@@ -312,7 +312,7 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
 /// como o `run write` a lê.
 #[cfg(test)]
 pub(crate) fn write_at_with(opts: &WriteOpts, copy: bool) -> Value {
-    super::write_door::write_for(opts, copy, session_from_env().as_deref())
+    super::write_door::write_for(opts, copy, session_from_env().as_deref()).0
 }
 
 /// Para os testes: grava como a produção grava. A mensagem do usuário chega
@@ -2767,7 +2767,7 @@ mod tests {
         assert!(missing["hint"].as_str().unwrap().contains("example"));
         let outside_a_conversation = |event_type: &str, json: &str| {
             let opts = WriteOpts { root: dir.path().to_path_buf(), spec: None, event_type: event_type.into(), json: json.into() };
-            super::super::write_door::write_for(&opts, false, None)
+            super::super::write_door::write_for(&opts, false, None).0
         };
         let no_spec = outside_a_conversation("rule", r#"{"text":"t","keys":["k"],"example":"e","origin":1}"#);
         assert_eq!(no_spec["reason"], json!("spec-required"), "{no_spec}");

@@ -48,6 +48,14 @@ use crate::shared::task_triage::{self, Candidate, Classifying, Destination, Item
 /// [`Refusal::FilesIgnoredByGit`], com os arquivos, ou a recusa de
 /// [`write::draft_rules`].
 pub(crate) fn draft_rules(start: &Path, spec: &str, event_type: &str, draft: &mut Map<String, Value>, returns: bool) -> Result<(), Refusal> {
+    // A versão nova de uma tarefa herda o que não mandou antes das
+    // conferências: a prova que a parte herdada nomeia, e os arquivos
+    // herdados, passam por elas como os mandados.
+    if event_type == "task"
+        && let Some(log) = DiskSpecState::new(start).log(spec.trim())
+    {
+        super::task_inherit::inherit_task(&log, true, draft);
+    }
     if event_type == "task" {
         let files = files_in(draft);
         if all_ignored(&checkout(start), &files) {
@@ -57,18 +65,19 @@ pub(crate) fn draft_rules(start: &Path, spec: &str, event_type: &str, draft: &mu
     write::draft_rules(start, spec, event_type, draft, returns)
 }
 
-/// O núcleo testável de [`run`]: o relatório da gravação ou a recusa. Com
+/// O núcleo testável de [`run`]: o relatório da gravação ou a recusa, e o
+/// `--json` como foi gravado, com o rascunho que ele cita já juntado. Com
 /// `copy`, a resposta só avisa que a cópia virou publicação explícita.
 /// A tarefa e o pedido novos passam antes pelo classificador das atividades,
 /// com a pergunta ao Jev da orquestração ([`same_work_open`]); o pedido novo,
 /// ao mesmo tempo, pela pergunta do lugar dele ([`super::request_route`]).
 /// A sessão `session` é a que a entrada passou: ela decide a spec da gravação
 /// sem `--spec` e vai no evento gravado. Nunca entra em pânico.
-pub(crate) fn write_for(opts: &WriteOpts, copy: bool, session: Option<&str>) -> Value {
-    write_triaged(opts, copy, session, &|root, spec, payload| reserve::ask_orchestration(root, spec, TASK_TRIAGE_CALL, payload))
+pub(crate) fn write_for(opts: &WriteOpts, copy: bool, session: Option<&str>) -> (Value, String) {
+    write_joined(opts, copy, session, &|root, spec, payload| reserve::ask_orchestration(root, spec, TASK_TRIAGE_CALL, payload))
 }
 
-/// A pergunta ao Jev que [`write_triaged`] faz: recebe a raiz do projeto, a
+/// A pergunta ao Jev que [`write_joined`] faz: recebe a raiz do projeto, a
 /// spec e o pedido, e diz o que o Jev deu. As perguntas de uma gravação saem
 /// ao mesmo tempo, cada uma na sua linha de execução.
 type AskJev<'a> = dyn Fn(&Path, &str, &str) -> Asked<Value> + Sync + 'a;
@@ -82,14 +91,20 @@ fn ask_together(root: &Path, spec: &str, payloads: &[String], ask: &AskJev<'_>) 
     })
 }
 
+/// Para os testes: o relatório de [`write_joined`], sem o `--json` gravado.
+#[cfg(test)]
+pub(super) fn write_triaged(opts: &WriteOpts, copy: bool, session: Option<&str>, ask: &AskJev<'_>) -> Value {
+    write_joined(opts, copy, session, ask).0
+}
+
 /// [`write_for`] com a pergunta ao classificador e ao lugar do pedido feita
 /// por `ask` ([`AskJev`]).
-fn write_triaged(opts: &WriteOpts, copy: bool, session: Option<&str>, ask: &AskJev<'_>) -> Value {
+fn write_joined(opts: &WriteOpts, copy: bool, session: Option<&str>, ask: &AskJev<'_>) -> (Value, String) {
     // A gravação que cita um rascunho de recusa parte dele, e a recusa desta
     // guarda o rascunho de novo; a que passa o tira.
     let draft = match Resolved::of(&opts.root, opts.spec.as_deref(), session, &opts.event_type, &opts.json) {
         Ok(draft) => draft,
-        Err(report) => return report,
+        Err(report) => return (report, opts.json.clone()),
     };
     let joined = WriteOpts { root: opts.root.clone(), spec: opts.spec.clone(), event_type: opts.event_type.clone(), json: draft.json().to_string() };
     let report = match prepare(&joined, session, ask) {
@@ -99,7 +114,7 @@ fn write_triaged(opts: &WriteOpts, copy: bool, session: Option<&str>, ask: &AskJ
         }
         Err(report) => report,
     };
-    draft.settle(report)
+    (draft.settle(report), joined.json)
 }
 
 /// O rascunho que passou por todas as conferências da porta e só falta
@@ -597,7 +612,7 @@ pub fn run(opts: &WriteOpts, copy: bool) {
     let started = std::time::Instant::now();
     // A entrada lê a sessão uma vez e a passa a tudo o que grava.
     let session = session_from_env();
-    let mut report = write_for(opts, copy, session.as_deref());
+    let (mut report, json) = write_for(opts, copy, session.as_deref());
     // A gravação que veio de outra sessão avisa: duas conversas no mesmo
     // projeto gravam na mesma spec, e quem conduz não via a gravação da
     // outra. O aviso não segura nada — a decisão é de quem lê.
@@ -608,7 +623,10 @@ pub fn run(opts: &WriteOpts, copy: bool) {
             super::pages::push_warning(&mut report, "another-session", &hint);
         }
     }
-    answer_written_step(&mut report, opts, session.as_deref(), started);
+    // O passo corrigido por um rascunho traz só o campo que faltava: a
+    // resposta dele lê os campos como foram gravados, com o rascunho juntado.
+    let written = WriteOpts { root: opts.root.clone(), spec: opts.spec.clone(), event_type: opts.event_type.clone(), json };
+    answer_written_step(&mut report, &written, session.as_deref(), started);
     let _ = super::conversation::record_call_as(&opts.root, session.as_deref(), "write", opts.spec.as_deref(), started, &report);
     println!("{}", serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".into()));
     if report["ok"] != json!(true) {
@@ -692,6 +710,9 @@ fn batch_for(root: &Path, spec: Option<&str>, input: &str, session: Option<&str>
     let lines = batch_lines(input, lang);
     let mut answers: Vec<Value> = Vec::with_capacity(lines.len());
     let mut ids: Vec<Option<u64>> = vec![None; lines.len()];
+    // Os campos de cada linha como ela foi gravada, com o rascunho juntado:
+    // é deles que a resposta do passo lê a onda e o item.
+    let mut written: Vec<Option<String>> = vec![None; lines.len()];
     for at in 0..lines.len() {
         let (event_type, mut fields) = match &lines[at].item {
             Ok(item) => item.clone(),
@@ -716,6 +737,7 @@ fn batch_for(root: &Path, spec: Option<&str>, input: &str, session: Option<&str>
             }
         };
         let opts = WriteOpts { root: root.to_path_buf(), spec: spec.map(str::to_string), event_type, json: draft.json().to_string() };
+        written[at] = Some(opts.json.clone());
         let answer = match prepare(&opts, session, ask) {
             Err(answer) => answer,
             Ok(mut ready) => {
@@ -729,9 +751,10 @@ fn batch_for(root: &Path, spec: Option<&str>, input: &str, session: Option<&str>
     lines
         .iter()
         .zip(answers)
-        .map(|(line, mut answer)| {
-            if let Ok((event_type, fields)) = &line.item {
-                let opts = WriteOpts { root: root.to_path_buf(), spec: spec.map(str::to_string), event_type: event_type.clone(), json: Value::Object(fields.clone()).to_string() };
+        .zip(written)
+        .map(|((line, mut answer), json)| {
+            if let (Ok((event_type, _)), Some(json)) = (&line.item, json) {
+                let opts = WriteOpts { root: root.to_path_buf(), spec: spec.map(str::to_string), event_type: event_type.clone(), json };
                 answer_written_step(&mut answer, &opts, session, std::time::Instant::now());
             }
             (line.number, answer)
@@ -876,7 +899,7 @@ mod tests {
         let said = |text: &str, session: Option<&str>| {
             let json = json!({ "title": "Anotar o pedido", "text": text, "keys": ["pedido"], "origin": asked }).to_string();
             let opts = WriteOpts { root: root.to_path_buf(), spec: Some("marca".into()), event_type: "note".into(), json };
-            let out = write_for(&opts, false, session);
+            let (out, _) = write_for(&opts, false, session);
             assert_eq!(out["ok"], json!(true), "{out}");
             let log = store::read(&store::spec_file(root, "marca").unwrap()).unwrap().unwrap();
             log.get(out["id"].as_u64().unwrap()).and_then(|event| event.str_field("session")).map(str::to_string)
@@ -899,7 +922,7 @@ mod tests {
         let asked = super::super::conversation::record_message(root, Some("s-minha"), "Anote o pedido.").unwrap();
         let note = |title: &str| json!({ "title": title, "text": title, "keys": ["pedido"], "origin": asked });
         let theirs = WriteOpts { root: root.to_path_buf(), spec: Some("marca".into()), event_type: "note".into(), json: note("da outra").to_string() };
-        assert_eq!(write_for(&theirs, false, Some("s-outra"))["ok"], json!(true));
+        assert_eq!(write_for(&theirs, false, Some("s-outra")).0["ok"], json!(true));
 
         let line = |title: &str| {
             let mut line = note(title);
@@ -1383,5 +1406,28 @@ mod tests {
         assert_eq!(batch_line(refused_line[0].0, &refused_line[0].1)["draft"], json!(batch_draft), "a linha curta mantém o número");
         let fixed_line = batch(&line(&json!({"draft": batch_draft, "files": []})));
         assert_eq!(fixed_line[0].1["ok"], json!(true), "{fixed_line:?}");
+    }
+
+    /// A versão nova de uma tarefa que manda só os arquivos herda a parte do
+    /// agente da anterior antes das conferências da porta: a prova que a parte
+    /// herdada nomeia passa pela mesma conferência da prova mandada, e a que
+    /// não roda é recusada sem gravar nada.
+    #[test]
+    fn a_new_task_version_checks_the_proof_named_in_what_it_inherits() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = message(root, "user", "Quero a conferência de cada critério.");
+        let seed = |event_type: &str, fields: Value| crate::shared::spec_state::seed_event(root, "teste", event_type, fields);
+        let crit = seed("criterion", json!({"when": "a obra fecha", "then": "cada critério é conferido", "proof": "git --version", "form": "ubiquitous"}));
+        let old = seed("task", json!({"title": "Fechamento confere cada critério", "text": "Conferir.",
+            "agent": "- conferir cada critério. Prova: `programa-que-nao-existe --rodar`", "files": [], "depends_on": [], "covers": [crit], "origin": said}));
+        let events = || store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap().events.len();
+        let before = events();
+
+        let opts = WriteOpts { root: root.to_path_buf(), spec: Some("teste".into()), event_type: "task".into(),
+            json: json!({"replaces": old, "files": [{"path": "src/b.rs"}]}).to_string() };
+        let refused = write_triaged(&opts, false, None, &|_, _, _| Asked::Off);
+        assert_eq!(refused["reason"], json!("proof-program-unknown"), "the inherited proof is checked: {refused}");
+        assert_eq!(events(), before, "nothing is recorded");
     }
 }

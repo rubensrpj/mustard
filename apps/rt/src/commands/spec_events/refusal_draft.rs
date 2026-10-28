@@ -11,24 +11,38 @@
 //! não volta a ser dado enquanto a spec corre, e o que sobrar sai no
 //! fechamento ([`clear`]).
 //!
-//! Só a spec aberta guarda rascunho: a gravação do modelo nunca faz uma pasta
-//! de spec nascer. A lição tem banco próprio e fica de fora. Guardar é melhor
+//! Só a spec aberta e que ainda não fechou guarda rascunho: a gravação do
+//! modelo nunca faz uma pasta de spec nascer, e o fechamento, que tira os que
+//! sobram, já passou pela fechada. A recusa que campo nenhum conserta — a do
+//! tipo, a do autor e a do lugar de onde se grava ([`NOT_BY_A_FIELD`]) — não
+//! guarda. O rascunho nunca guarda segredo: o trecho com cara de segredo sai
+//! como no expurgo. A lição tem banco próprio e fica de fora. Guardar é melhor
 //! esforço: o disco que falha deixa a recusa sair como era, sem o número.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::lessons::LESSON;
+use mustard_core::domain::spec_state::{State, not_closed_yet};
 use mustard_core::io::fs::lock::LockedFile;
 use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Map, Value, json};
+
+use crate::shared::secret::value_without_secrets;
 
 /// O arquivo dos rascunhos, na pasta da spec.
 const FILE: &str = "drafts.json";
 
 /// O campo da gravação que aponta o rascunho a juntar.
 const FIELD: &str = "draft";
+
+/// As razões das recusas que campo nenhum conserta: vêm do tipo, do autor ou
+/// do lugar de onde se grava, e não do conteúdo do item. O rascunho junta
+/// campos e não troca o tipo nem tira um campo, então a correção por ele
+/// cairia na mesma recusa.
+const NOT_BY_A_FIELD: &[&str] =
+    &["unknown-type", "state-by-flow-only", "work-type-by-grill", "binary-only-type", "wave-by-backlog", "binary-author", "user-message-by-hook"];
 
 /// Os rascunhos guardados de uma spec e o último número dado: tipo e campos
 /// de cada um.
@@ -77,9 +91,11 @@ struct Place {
 
 impl Place {
     /// O lugar dos rascunhos da spec `spec` do projeto em `root`; `None` quando
-    /// a spec não foi aberta.
+    /// a spec não foi aberta ou já fechou.
     fn of(root: &Path, spec: &str) -> Option<Self> {
         let events = store::spec_file(root, spec).ok().filter(|events| events.is_file())?;
+        let log = store::read(&events).ok().flatten()?;
+        State::from_log(&log).phase.is_none_or(not_closed_yet).then_some(())?;
         Some(Self { file: events.parent()?.join(FILE) })
     }
 
@@ -95,7 +111,8 @@ impl Place {
         let mut locked = LockedFile::exclusive(&self.file).ok()?;
         let mut book = Book::parse(&locked.read_to_string().ok()?);
         let number = used.filter(|number| book.drafts.contains_key(number)).unwrap_or_else(|| book.number());
-        book.drafts.insert(number, (event_type.to_string(), fields.clone()));
+        let Value::Object(kept) = value_without_secrets(&Value::Object(fields.clone())) else { return None };
+        book.drafts.insert(number, (event_type.to_string(), kept));
         locked.replace(book.render().as_bytes()).ok()?;
         Some(number)
     }
@@ -111,10 +128,11 @@ impl Place {
     }
 }
 
-/// Tira todos os rascunhos da spec `spec` do projeto em `root`, no fechamento.
+/// Tira todos os rascunhos da spec `spec` do projeto em `root`, no fechamento,
+/// já com a spec fechada.
 pub(crate) fn clear(root: &Path, spec: &str) {
-    if let Some(place) = Place::of(root, spec) {
-        let _ = std::fs::remove_file(place.file);
+    if let Some(folder) = store::spec_file(root, spec).ok().as_deref().and_then(Path::parent) {
+        let _ = std::fs::remove_file(folder.join(FILE));
     }
 }
 
@@ -188,10 +206,87 @@ impl Resolved {
             }
             return report;
         }
+        if report["reason"].as_str().is_some_and(|reason| NOT_BY_A_FIELD.contains(&reason)) {
+            return report;
+        }
         if let Some(number) = place.keep(self.used, &self.event_type, &self.fields) {
             report["draft"] = json!(number);
             report["draft_hint"] = json!(translate("spec_events.draft_kept", self.lang).replace("{draft}", &number.to_string()));
         }
         report
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::spec_events::write::WriteOpts;
+    use crate::commands::spec_events::write_door::write_triaged;
+    use crate::shared::jev::reserve::Asked;
+    use crate::shared::spec_state::seed_event;
+    use tempfile::tempdir;
+
+    /// A gravação do modelo pela porta, vista de `start`, na spec `teste`.
+    fn by_model(start: &Path, event_type: &str, body: &Value) -> Value {
+        let opts = WriteOpts { root: start.to_path_buf(), spec: Some("teste".into()), event_type: event_type.into(), json: body.to_string() };
+        write_triaged(&opts, false, None, &|_, _, _| Asked::Off)
+    }
+
+    /// O arquivo dos rascunhos da spec `teste` do projeto em `root`.
+    fn drafts(root: &Path) -> PathBuf {
+        root.join(".claude").join("spec").join("teste").join(FILE)
+    }
+
+    /// A recusa do tipo, do autor ou do lugar de onde se grava não guarda
+    /// rascunho nem dá a dica dele: corrigir um campo não a tira.
+    #[test]
+    fn a_refusal_no_field_fixes_keeps_no_draft() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), "{}").unwrap();
+        let said = seed_event(root, "teste", "message", json!({"author": "user", "text": "o plano"}));
+        let copy = root.join("copias").join("a");
+        std::fs::create_dir_all(&copy).unwrap();
+        seed_event(root, "teste", "send", json!({"author": "binary", "wave": 1, "role": "wave", "text": "pedido", "lines": 1,
+            "chars": 6, "mustard": "0", "copy": mustard_core::io::wave_prompt::shown(&copy)}));
+        let task = json!({"title": "Entregar o total", "text": "Somar.", "agent": "- somar", "files": [], "depends_on": [], "covers": [said], "origin": said});
+        let cases = [
+            (root, "wave", json!({"n": 2, "text": "Dois.", "done_when": "x", "origin": said}), "wave-by-backlog"),
+            (root, "state", json!({"phase": "running"}), "state-by-flow-only"),
+            (root, "send", json!({"wave": 2, "text": "pedido"}), "binary-only-type"),
+            (root, "note", json!({"author": "binary", "title": "Anotar", "text": "Anotar."}), "binary-author"),
+            (root, "message", json!({"author": "user", "text": "oi"}), "user-message-by-hook"),
+            (root, "inventado", json!({"text": "x"}), "unknown-type"),
+            (copy.as_path(), "task", task, "wave-by-backlog"),
+        ];
+        for (start, event_type, body, reason) in cases {
+            let refused = by_model(start, event_type, &body);
+            assert_eq!(refused["reason"], json!(reason), "{event_type}: {refused}");
+            assert!(refused.get("draft").is_none() && refused.get("draft_hint").is_none(), "{event_type}: {refused}");
+            assert!(!drafts(root).exists(), "{event_type}: nada ficou guardado");
+        }
+    }
+
+    /// O rascunho da recusa guarda o texto sem o segredo, como o expurgo o
+    /// deixaria, e a correção por ele grava o item já sem o segredo.
+    #[test]
+    fn a_kept_draft_never_holds_a_secret() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), "{}").unwrap();
+        let key = format!("ghp_{}", "a1".repeat(18));
+        let said = seed_event(root, "teste", "message", json!({"author": "user", "text": "Quero a conferência de cada critério."}));
+        let crit = seed_event(root, "teste", "criterion", json!({"when": "a obra fecha", "then": "cada critério é conferido", "proof": "git --version", "form": "ubiquitous"}));
+        let refused = by_model(root, "task", &json!({"title": "Fechamento confere cada critério", "text": "Conferir.",
+            "agent": format!("- conferir com o token {key}"), "depends_on": [], "covers": [crit], "origin": said}));
+        let draft = refused["draft"].as_u64().unwrap_or_else(|| panic!("a recusa guarda o rascunho: {refused}"));
+        let kept = std::fs::read_to_string(drafts(root)).unwrap();
+        assert!(!kept.contains(&key) && kept.contains(mustard_core::domain::spec_events::PURGED_MARK), "{kept}");
+
+        let fixed = by_model(root, "task", &json!({"draft": draft, "files": []}));
+        let id = fixed["id"].as_u64().unwrap_or_else(|| panic!("a correção grava: {fixed}"));
+        let log = store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap();
+        let agent = log.get(id).and_then(|task| task.str_field("agent")).unwrap_or_default().to_string();
+        assert!(!agent.contains(&key), "{agent}");
     }
 }
