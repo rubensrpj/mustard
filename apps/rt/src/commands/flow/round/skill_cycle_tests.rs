@@ -13,7 +13,7 @@ use mustard_core::io::spec_events as store;
 use serde_json::{Map, Value, json};
 use tempfile::tempdir;
 
-use super::tests::{approved, delivered, git_at, round, waves_in, write};
+use super::tests::{approved, approved_with, delivered, git_at, id_of, round, waves_in, write};
 
 fn log_of(root: &Path) -> mustard_core::domain::spec_events::SpecLog {
     store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap()
@@ -156,6 +156,54 @@ fn a_failed_jev_sends_the_stale_skill_question_to_the_reserve_and_the_receipt_ap
         assert_eq!(update_tasks(root).len(), 1, "{mode}: {applied}");
         assert!(registry::read(root).commits_read.contains_key("x"), "the receipt reads the commit");
     }
+}
+
+/// A spec opened by the user's messages alone has no request to fall back on.
+/// The update task born from a wave commit that changes a file the skill cites
+/// covers the items the tasks of that wave cover, and the next round puts it
+/// in a wave. A skill task the program recorded without items gets the same
+/// ones, in a new version, on the following round, and the round no longer
+/// names it as a task without covers.
+#[test]
+fn a_skill_task_from_a_wave_commit_covers_the_wave_items() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    let mut item = 0;
+    approved_with(root, "x", &[(1, &["src/a.rs"], &[])], |said| {
+        let body = json!({"text": "A soma arredonda para baixo.", "why": "w", "waves": [1], "keys": ["k"], "origin": said});
+        item = id_of(&write(root, "x", "decision", body));
+        let task = json!({"wave": 1, "text": "Arredondar a soma.", "files": [{"path": "src/a.rs"}], "depends_on": [], "covers": [item], "origin": said});
+        assert_eq!(write(root, "x", "task", task)["ok"], json!(true));
+    });
+    assert!(log_of(root).visible().iter().all(|e| e.event_type != "request"), "the spec holds only the user's messages");
+    write_skill(root, "falta-teste", false);
+    registered(root, &[("falta-teste", made(&["src/a.rs"]))]);
+    assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1]);
+    crate::shared::jev::yes_no::ask_in_test(Some(jev(0.9, &Rc::new(RefCell::new(Vec::new())))));
+    let report = delivered(root, 1, "Saiu.", &["src/a.rs"]);
+    let done = round(root, "x", Some(&report));
+    crate::shared::jev::yes_no::ask_in_test(None);
+    let log = log_of(root);
+    let commit = log.visible().into_iter().find(|e| e.event_type == "commit").cloned().unwrap_or_else(|| panic!("wave 1 was committed: {done}"));
+    assert_eq!(commit.ints("waves"), vec![1]);
+
+    let born = update_tasks(root);
+    assert_eq!(born.len(), 1, "{done}");
+    assert_eq!(born[0].ints("covers"), vec![item], "the task covers the items of the committed wave: {:?}", born[0].fields);
+    let out = round(root, "x", None);
+    assert_eq!(waves_in(&out, "dispatch"), vec![2], "the round puts it in a wave: {out}");
+    assert_eq!(log_of(root).current(born[0].id).and_then(SpecEvent::wave), Some(2));
+
+    let why = json!([{"kind": "change", "sha": commit.str_field("sha").unwrap(), "files": ["src/a.rs"], "chance": 0.9}]);
+    let bare = json!({"title": "Atualizar a skill outra", "text": "Atualizar a skill outra.", "agent": "- atualizar", "skill": "skill-creator",
+        "files": [{"path": "src/a.rs"}], "depends_on": [], "author": "binary", "skill_whys": why});
+    let bare = crate::commands::spec_events::write::record(root, "x", "task", bare.as_object().cloned().unwrap(), PhaseWriter::Binary).unwrap().written.id;
+    let next = round(root, "x", None);
+    let covered = log_of(root).current(bare).cloned().expect("the skill task");
+    assert_ne!(covered.id, bare, "a new version of the task: {next}");
+    assert_eq!(covered.ints("covers"), vec![item], "{next}");
+    let warned = next["warnings"].as_array().into_iter().flatten().any(|warning| warning["reason"] == "task-without-covers");
+    assert!(!warned, "the round does not name it as a task without covers: {next}");
 }
 
 #[test]

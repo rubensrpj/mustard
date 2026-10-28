@@ -141,8 +141,9 @@ pub enum SpecEventsCmd {
     /// JSON: `--text -` or `--agent -` reads that field from standard input,
     /// by heredoc, joined to the other fields of `--json`. Many events go in
     /// one call with `--batch`: one JSON line per item on standard input,
-    /// `{"type":"task", …fields}`, each checked as a write of its own and the
-    /// good ones written in order under one lock of the spec. A line cites an
+    /// `{"type":"task", …fields}`, each checked and written as a write of its
+    /// own, in order, so the checks of a line see the lines the batch already
+    /// wrote. A line cites an
     /// earlier line of the batch by its `label` in a reference field such as
     /// `depends_on`. A refused line writes nothing, and neither does a line
     /// citing one. The answer is one short line per item: the code written,

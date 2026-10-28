@@ -291,16 +291,21 @@ fn skill_task_draft(members: &[&Failure], lang: Locale) -> Map<String, Value> {
 
 /// Os itens que cobre a tarefa de skill que nasce na spec `target` do projeto
 /// de `start`, pelas ondas reprovadas `waves`, cada uma pela spec e pelo
-/// número: os itens que as tarefas dessas ondas cobriam, só das ondas da
-/// própria `target`, na versão vigente. Sem item achado, o pedido do usuário
-/// mais recente da spec, fora os que a revisão ou o programa gravaram. A
-/// rodada segura a tarefa que não cobre nada, e o fechamento não passa.
-pub(crate) fn skill_task_covers(start: &Path, target: &str, waves: &[(&str, u64)]) -> Vec<u64> {
+/// número, e pelos commits `shas` que mudaram ou apagaram um arquivo citado
+/// pela skill: os itens que as tarefas dessas ondas e das ondas que cada um
+/// desses commits comitou cobriam, só das ondas da própria `target`, na
+/// versão vigente. Sem item achado, o pedido do usuário mais recente da spec,
+/// fora os que a revisão ou o programa gravaram. A rodada segura a tarefa que
+/// não cobre nada, e o fechamento não passa.
+pub(crate) fn skill_task_covers(start: &Path, target: &str, waves: &[(&str, u64)], shas: &[&str]) -> Vec<u64> {
     let root = store::spec_root(start);
     let Some(log) = store::spec_file(&root, target).ok().and_then(|file| store::read(&file).ok().flatten()) else { return Vec::new() };
-    let rejected = |task: &SpecEvent| waves.iter().any(|(spec, wave)| *spec == target && task.wave() == Some(*wave));
+    let mut numbers: BTreeSet<u64> = waves.iter().filter(|(spec, _)| *spec == target).map(|(_, wave)| *wave).collect();
+    for commit in log.visible().into_iter().filter(|e| e.event_type == "commit" && e.str_field("sha").is_some_and(|sha| shas.contains(&sha))) {
+        numbers.extend(commit.ints("waves"));
+    }
     let mut covers: Vec<u64> = Vec::new();
-    for task in log.visible().into_iter().filter(|e| e.event_type == "task" && rejected(e)) {
+    for task in log.visible().into_iter().filter(|e| e.event_type == "task" && e.wave().is_some_and(|wave| numbers.contains(&wave))) {
         for id in task.ints("covers").into_iter().filter_map(|id| log.current(id).map(|item| item.id)) {
             if !covers.contains(&id) {
                 covers.push(id);
@@ -351,7 +356,7 @@ fn skill_tasks(start: &Path, lang: Locale) -> Result<Vec<Value>, String> {
         let mark = match target_spec(start, &last.spec) {
             Some(spec) => {
                 let waves: Vec<(&str, u64)> = members.iter().map(|row| (row.spec.as_str(), row.wave)).collect();
-                let draft = with_covers(skill_task_draft(&members, lang), skill_task_covers(start, &spec, &waves));
+                let draft = with_covers(skill_task_draft(&members, lang), skill_task_covers(start, &spec, &waves, &[]));
                 let written = crate::commands::spec_events::write::record(start, &spec, "task", draft, PhaseWriter::Binary)
                     .map_err(|refusal| refusal.message(lang))?;
                 recorded.push(json!({ "type": "task", "spec": spec, "id": written.written.id, "skill": mustard_core::io::skill_creator::NAME, "group": group }));
@@ -719,8 +724,8 @@ mod tests {
         let said = seed("message", json!({"author": "user", "text": "Trocar a saudação."}));
         seed("task", json!({"wave": 1, "title": "Saudação", "text": "Trocar.", "files": [], "depends_on": [], "covers": [criterion], "origin": said}));
 
-        assert_eq!(skill_task_covers(root, "x", &[("x", 1), ("antiga", 2)]), vec![criterion]);
-        assert_eq!(skill_task_covers(root, "x", &[("antiga", 1)]), vec![asked]);
+        assert_eq!(skill_task_covers(root, "x", &[("x", 1), ("antiga", 2)], &[]), vec![criterion]);
+        assert_eq!(skill_task_covers(root, "x", &[("antiga", 1)], &[]), vec![asked]);
     }
 
     fn git(root: &Path, args: &[&str]) -> bool {

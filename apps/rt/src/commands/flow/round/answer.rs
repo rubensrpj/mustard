@@ -751,9 +751,15 @@ fn dispatch_round(
             .map_err(RoundRefusal::Refused)?
             .1
     };
-    // A tarefa do backlog que não cobre item nenhum não forma onda: a rodada
-    // a nomeia, porque ela fica no backlog e segura o fechamento.
-    let uncovered = backlog_uncovered(&locked);
+    // A tarefa do backlog que não cobre item nenhum não forma onda. A tarefa
+    // de skill que o programa gravou ganha a versão com os itens que cobriria
+    // ao nascer, e forma onda na rodada seguinte; a rodada nomeia as outras,
+    // porque ficam no backlog e seguram o fechamento.
+    let mut uncovered = backlog_uncovered(&locked);
+    for (task, written) in crate::shared::skill_cycle::cover_skill_tasks(&opts.root, &spec, &locked, &uncovered) {
+        uncovered.remove(&task);
+        recorded.push(written);
+    }
     if !uncovered.is_empty() {
         let codes = locked.codes();
         let tasks: Vec<String> = uncovered.iter().map(|id| codes.get(id).cloned().unwrap_or_else(|| id.to_string())).collect();

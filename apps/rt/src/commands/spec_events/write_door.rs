@@ -84,7 +84,7 @@ fn write_triaged(opts: &WriteOpts, copy: bool, session: Option<&str>, ask: &AskJ
         Ok(ready) => ready,
         Err(report) => return report,
     };
-    let recorded = record_ready(&mut ready, &opts.root, session, None);
+    let recorded = record_ready(&mut ready, &opts.root, session);
     finish(ready, &opts.root, copy, recorded)
 }
 
@@ -304,17 +304,16 @@ fn prepare(opts: &WriteOpts, session: Option<&str>, ask: &AskJev<'_>) -> Result<
     Ok(Ready { project, spec, event_type, draft, held, warnings: stray_step.into_iter().chain(proof_warnings).chain(route_warning).collect(), skill, next })
 }
 
-/// Grava o rascunho pronto `ready`, visto de `start`: a remoção com a volta
-/// das tarefas da onda que ela tira, e o resto pela gravação comum. Com
-/// `locked`, grava dentro da trava da spec que quem chama já prende.
-fn record_ready(ready: &mut Ready, start: &Path, session: Option<&str>, locked: Option<&mut store::LockedLog>) -> Result<Recorded, Refusal> {
+/// Grava o rascunho pronto `ready`, visto de `start`, sob a trava da spec: a
+/// remoção com a volta das tarefas da onda que ela tira, e o resto pela
+/// gravação comum.
+fn record_ready(ready: &mut Ready, start: &Path, session: Option<&str>) -> Result<Recorded, Refusal> {
     let draft = std::mem::take(&mut ready.draft);
     let (project, spec) = (&ready.project, ready.spec.as_str());
-    match locked {
-        Some(locked) if ready.event_type == "remove" => removal_locked(locked, project, start, spec, draft, session),
-        None if ready.event_type == "remove" => record_removal(project, start, spec, draft, session),
-        locked => write::record_to(project, start, spec, &ready.event_type, draft, None, locked, session),
+    if ready.event_type == "remove" {
+        return record_removal(project, start, spec, draft, session);
     }
+    write::record_in(project, start, spec, &ready.event_type, draft, None, session)
 }
 
 /// O relatório da gravação `recorded` do rascunho pronto `ready`, visto de
@@ -664,54 +663,49 @@ fn batch_lines(input: &str, lang: Locale) -> Vec<BatchLine> {
         .collect()
 }
 
-/// A gravação em lote: cada linha de `input` passa pelas mesmas conferências
-/// da gravação sozinha, na spec `spec` de `root`, e as linhas prontas gravam
-/// juntas sob uma trava só da spec, na ordem. A linha recusada não grava, e a
-/// que cita pelo rótulo uma linha do lote que não gravou também é recusada,
-/// apontando a linha de origem. A volta da onda e a do revisor, que prendem a
-/// trava do passo do git até estarem no arquivo, gravam na hora, sem segurar
-/// a trava enquanto as seguintes se conferem. Devolve, na ordem, o número de
-/// cada linha e a resposta que a gravação sozinha daria.
+/// A gravação em lote: cada linha de `input`, na ordem, passa pelas mesmas
+/// conferências da gravação sozinha, na spec `spec` de `root`, e grava como
+/// ela, sob a trava da spec, antes de a linha seguinte se conferir: a
+/// conferência de cada linha — a do trabalho repetido, a da entrega — enxerga
+/// as que o lote já gravou, e os rótulos que ela cita já chegam a ela como os
+/// números dessas linhas. A linha recusada não grava, e a que cita pelo rótulo
+/// uma linha do lote que não gravou também é recusada, apontando a linha de
+/// origem. Devolve, na ordem, o número de cada linha e a resposta que a
+/// gravação sozinha daria.
 fn batch_for(root: &Path, spec: Option<&str>, input: &str, session: Option<&str>, ask: &AskJev<'_>) -> Vec<(usize, Value)> {
     let lang = super::project(root).lang;
     let lines = batch_lines(input, lang);
-    let mut answers: Vec<Option<Value>> = vec![None; lines.len()];
+    let mut answers: Vec<Value> = Vec::with_capacity(lines.len());
     let mut ids: Vec<Option<u64>> = vec![None; lines.len()];
-    let mut ready: Vec<(usize, Ready)> = Vec::new();
     for at in 0..lines.len() {
-        let (event_type, fields) = match &lines[at].item {
+        let (event_type, mut fields) = match &lines[at].item {
             Ok(item) => item.clone(),
             Err(refusal) => {
-                answers[at] = Some(refusal.clone());
+                answers.push(refusal.clone());
                 continue;
             }
         };
-        // A linha que cita uma já decidida e não gravada é recusada aqui.
-        if let Some(refusal) = cites_unrecorded(&lines, &ids, &answers, at, &event_type, &fields, lang, false) {
-            answers[at] = Some(refusal);
+        if let Some(refusal) = cites_unrecorded(&lines, &ids, at, &event_type, &fields, lang) {
+            answers.push(refusal);
             continue;
         }
+        let by_label = |label: &str| (0..at).rev().find(|before| lines[*before].label.as_deref() == Some(label)).and_then(|before| ids[before]);
+        write::resolve_labels(&event_type, &mut fields, &by_label);
         let opts = WriteOpts { root: root.to_path_buf(), spec: spec.map(str::to_string), event_type, json: Value::Object(fields).to_string() };
-        match prepare(&opts, session, ask) {
-            Err(answer) => answers[at] = Some(answer),
-            Ok(line) => {
-                if ready.first().is_some_and(|(_, first)| first.spec != line.spec) {
-                    record_batch(root, session, &lines, &mut ready, &mut ids, &mut answers);
-                }
-                let holds = line.held.is_some();
-                ready.push((at, line));
-                if holds {
-                    record_batch(root, session, &lines, &mut ready, &mut ids, &mut answers);
-                }
+        let answer = match prepare(&opts, session, ask) {
+            Err(answer) => answer,
+            Ok(mut ready) => {
+                let recorded = record_ready(&mut ready, root, session);
+                ids[at] = recorded.as_ref().ok().map(|done| done.written.id);
+                finish(ready, root, false, recorded)
             }
-        }
+        };
+        answers.push(answer);
     }
-    record_batch(root, session, &lines, &mut ready, &mut ids, &mut answers);
     lines
         .iter()
         .zip(answers)
-        .map(|(line, answer)| {
-            let mut answer = answer.unwrap_or_else(|| json!({ "ok": false }));
+        .map(|(line, mut answer)| {
             if let Ok((event_type, fields)) = &line.item {
                 let opts = WriteOpts { root: root.to_path_buf(), spec: spec.map(str::to_string), event_type: event_type.clone(), json: Value::Object(fields.clone()).to_string() };
                 answer_written_step(&mut answer, &opts, session, std::time::Instant::now());
@@ -722,80 +716,16 @@ fn batch_for(root: &Path, spec: Option<&str>, input: &str, session: Option<&str>
 }
 
 /// A recusa da linha `at` do lote que cita pelo rótulo uma linha anterior que
-/// não gravou: a recusada, ou a que gravou fora da spec. Cada rótulo aponta a
-/// linha mais próxima antes dela com ele. Com `pending`, a linha citada que
-/// ainda não tem resposta também conta como não gravada: dentro da trava, as
-/// anteriores já gravaram ou foram recusadas.
-#[allow(clippy::too_many_arguments)]
-fn cites_unrecorded(
-    lines: &[BatchLine],
-    ids: &[Option<u64>],
-    answers: &[Option<Value>],
-    at: usize,
-    event_type: &str,
-    fields: &Map<String, Value>,
-    lang: Locale,
-    pending: bool,
-) -> Option<Value> {
+/// não gravou, `ids` sem o número dela: a recusada, ou a que gravou fora da
+/// spec. Cada rótulo aponta a linha mais próxima antes dela com ele.
+fn cites_unrecorded(lines: &[BatchLine], ids: &[Option<u64>], at: usize, event_type: &str, fields: &Map<String, Value>, lang: Locale) -> Option<Value> {
     write::cited_labels(event_type, fields).into_iter().find_map(|label| {
         let origin = (0..at).rev().find(|before| lines[*before].label.as_deref() == Some(label.as_str()))?;
-        let decided = pending || answers[origin].is_some();
-        (decided && ids[origin].is_none()).then(|| {
+        ids[origin].is_none().then(|| {
             let hint = translate("spec_events.batch_line_refused", lang).replace("{line}", &lines[origin].number.to_string()).replace("{label}", &label);
             json!({ "ok": false, "reason": "batch-line-refused", "hint": hint, "line": lines[origin].number })
         })
     })
-}
-
-/// Grava as linhas prontas `ready` do lote sob uma trava só da spec delas, na
-/// ordem, com os rótulos já gravados trocados pelos números. A linha que cita
-/// uma recusada não grava. Cada resposta vai para `answers`, e o número de
-/// cada linha gravada, para `ids`.
-fn record_batch(
-    root: &Path,
-    session: Option<&str>,
-    lines: &[BatchLine],
-    ready: &mut Vec<(usize, Ready)>,
-    ids: &mut [Option<u64>],
-    answers: &mut [Option<Value>],
-) {
-    let Some((_, first)) = ready.first() else { return };
-    let lang = first.project.lang;
-    let path = store::spec_file(&first.project.root, &first.spec);
-    let mut record_all = |mut locked: Option<&mut store::LockedLog>| -> Vec<Result<Recorded, Value>> {
-        let mut out = Vec::with_capacity(ready.len());
-        for (at, line) in ready.iter_mut() {
-            if let Some(refusal) = cites_unrecorded(lines, ids, answers, *at, &line.event_type, &line.draft, lang, true) {
-                out.push(Err(refusal));
-                continue;
-            }
-            let recorded_ids: &[Option<u64>] = ids;
-            let by_label = |label: &str| (0..*at).rev().find(|before| lines[*before].label.as_deref() == Some(label)).and_then(|before| recorded_ids[before]);
-            write::resolve_labels(&line.event_type, &mut line.draft, &by_label);
-            let recorded = record_ready(line, root, session, locked.as_deref_mut());
-            if let Ok(done) = &recorded {
-                ids[*at] = Some(done.written.id);
-            }
-            answers[*at] = Some(Value::Null);
-            out.push(recorded.map_err(|refusal| super::refused(&refusal, lang)));
-        }
-        out
-    };
-    let outcomes = match path.and_then(|path| store::with_locked_writer(&path, |locked| record_all(Some(locked)))) {
-        Ok(Some(outcomes)) => outcomes,
-        // Sem o arquivo de eventos, cada linha dá a recusa da gravação sozinha.
-        Ok(None) => record_all(None),
-        Err(refusal) => ready.iter().map(|_| Err(super::refused(&refusal, lang))).collect(),
-    };
-    for ((at, line), outcome) in ready.drain(..).zip(outcomes) {
-        answers[at] = Some(match outcome {
-            Ok(recorded) => finish(line, root, false, Ok(recorded)),
-            Err(refusal) => {
-                drop(line);
-                refusal
-            }
-        });
-    }
 }
 
 /// A linha curta do lote para a linha `number` com a resposta `answer`: o
@@ -816,9 +746,32 @@ fn batch_line(number: usize, answer: &Value) -> Value {
     line
 }
 
+/// As linhas curtas da gravação em lote de `input` ([`batch_for`],
+/// [`batch_line`]), na ordem, pela sessão `session` da entrada. Como na
+/// gravação sozinha, a primeira linha gravada em cada spec avisa quando outra
+/// sessão gravou nela ([`another_session_wrote`]).
+fn batch_report(root: &Path, spec: Option<&str>, input: &str, session: Option<&str>, ask: &AskJev<'_>) -> Vec<Value> {
+    let project = super::project(root);
+    let mut seen: Vec<String> = Vec::new();
+    batch_for(root, spec, input, session, ask)
+        .iter()
+        .map(|(number, answer)| {
+            let mut line = batch_line(*number, answer);
+            let written = spec.or_else(|| answer["spec"].as_str()).filter(|_| answer["ok"] == json!(true)).map(str::trim);
+            if let Some(written) = written.filter(|written| !seen.iter().any(|had| had == written)) {
+                if let Some(hint) = another_session_wrote(&project.root, Some(written), session, project.lang) {
+                    super::pages::push_warning(&mut line, "another-session", &hint);
+                }
+                seen.push(written.to_string());
+            }
+            line
+        })
+        .collect()
+}
+
 /// Run `write --batch`: read the lines of standard input, write them as
-/// [`batch_for`] does and print one short line per item, in order. Exit 1 when
-/// a line was refused.
+/// [`batch_report`] does and print one short line per item, in order. Exit 1
+/// when a line was refused.
 pub fn run_batch(root: &Path, spec: Option<&str>) {
     let started = std::time::Instant::now();
     let session = session_from_env();
@@ -826,7 +779,7 @@ pub fn run_batch(root: &Path, spec: Option<&str>) {
     let ask = |root: &Path, spec: &str, payload: &str| reserve::ask_orchestration(root, spec, TASK_TRIAGE_CALL, payload);
     let lines: Vec<Value> = match std::io::read_to_string(std::io::stdin()) {
         Ok(input) if input.trim().is_empty() => vec![json!({ "ok": false, "reason": "batch-empty", "hint": translate("spec_events.batch_empty", lang) })],
-        Ok(input) => batch_for(root, spec, &input, session.as_deref(), &ask).iter().map(|(number, answer)| batch_line(*number, answer)).collect(),
+        Ok(input) => batch_report(root, spec, &input, session.as_deref(), &ask),
         Err(error) => vec![write::RawRefusal::Stdin { detail: error.to_string() }.to_value(lang)],
     };
     let refused = lines.iter().find(|line| line.get("reason").is_some());
@@ -904,6 +857,67 @@ mod tests {
         };
         assert_eq!(said("com a sessão da entrada", Some("s-recebida")).as_deref(), Some("s-recebida"));
         assert_eq!(said("sem sessão nenhuma", None), None);
+    }
+
+    /// O lote gravado numa spec em que outra sessão ligada a ela já gravou
+    /// avisa como a gravação sozinha: a primeira linha gravada leva o aviso
+    /// com a sessão da outra, e a seguinte, na mesma spec, não o repete.
+    #[test]
+    fn a_batch_after_another_session_wrote_warns_like_a_single_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), "{}").unwrap();
+        write::record_open(root, "marca", "feature/marca", "dev").unwrap();
+        super::super::session_spec::bind(root, Some("s-outra"), "marca");
+        super::super::session_spec::bind(root, Some("s-minha"), "marca");
+        let asked = super::super::conversation::record_message(root, Some("s-minha"), "Anote o pedido.").unwrap();
+        let note = |title: &str| json!({ "title": title, "text": title, "keys": ["pedido"], "origin": asked });
+        let theirs = WriteOpts { root: root.to_path_buf(), spec: Some("marca".into()), event_type: "note".into(), json: note("da outra").to_string() };
+        assert_eq!(write_for(&theirs, false, Some("s-outra"))["ok"], json!(true));
+
+        let line = |title: &str| {
+            let mut line = note(title);
+            line["type"] = json!("note");
+            line
+        };
+        let input = format!("{}\n{}\n", line("primeira"), line("segunda"));
+        let lines = batch_report(root, Some("marca"), &input, Some("s-minha"), &|_, _, _| Asked::Off);
+        assert!(lines.iter().all(|line| line.get("code").is_some()), "{lines:?}");
+        let warnings = |line: &Value| line["warnings"].as_array().cloned().unwrap_or_default();
+        let first = warnings(&lines[0]);
+        assert_eq!(first.len(), 1, "{lines:?}");
+        assert_eq!(first[0]["reason"], json!("another-session"));
+        assert!(first[0]["hint"].as_str().unwrap_or_default().contains("s-outra"), "{first:?}");
+        assert!(warnings(&lines[1]).is_empty(), "one warning per spec: {lines:?}");
+    }
+
+    /// Cada linha do lote se confere depois de as anteriores gravarem: a
+    /// tarefa repetida na linha seguinte vai ao Jev com a primeira entre as
+    /// abertas e volta recusada, nomeando a primeira, como na gravação
+    /// sozinha. Só a primeira grava.
+    #[test]
+    fn a_batch_line_is_checked_after_the_lines_before_it_are_written() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), "{}").unwrap();
+        let asked = write(root, "message", r#"{"author":"user","text":"inclua a subtração"}"#)["id"].as_u64().unwrap();
+        let request = json!({"title": "Subtração", "text": "Incluir a subtração.", "keys": ["subtração"], "effect": "new_waves",
+            "agent": "- conferir pelo teste. Prova: `git --version`", "origin": asked});
+        let request = write(root, "request", &request.to_string())["id"].as_u64().unwrap();
+        let task = json!({"type": "task", "title": "Subtrair", "text": "Subtrair dois números.", "agent": "- subtrair",
+            "files": [{"path": "src/calc.ts"}], "depends_on": [], "covers": [request], "origin": asked});
+        let ask = |root: &Path, spec: &str, _: &str| {
+            let log = store::read(&store::spec_file(root, spec).unwrap()).unwrap().unwrap();
+            let open = backlog_left(&log).into_iter().next().expect("the task of the first line is open");
+            Asked::Answered(triaged(&format!("join:t{open}")))
+        };
+
+        let answers = batch_for(root, Some("teste"), &format!("{task}\n{task}\n"), None, &ask);
+        let first = answers[0].1["code"].as_str().unwrap_or_else(|| panic!("the first line is written: {answers:?}")).to_string();
+        assert_eq!(answers[1].1["reason"], json!("same-work-open"), "{answers:?}");
+        assert_eq!(answers[1].1["task"], json!(first), "the refusal names the first line: {answers:?}");
+        let log = store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap();
+        assert_eq!(log.visible().iter().filter(|e| e.event_type == "task").count(), 1, "only the first line is written");
     }
 
     /// A spec com o pedido da subtração e uma tarefa aberta que o cobre, em
