@@ -5,7 +5,7 @@
 //! Em cada idioma, todo texto que o modelo lê — os comandos e o estilo de
 //! resposta do plugin, os agentes, o mapa do início da sessão que o
 //! instalador grava e os princípios do produto, que chegam ao mapa e aos
-//! pedidos — soma menos de 30.400 bytes. Não há teto por arquivo de agente: o
+//! pedidos — soma menos de 30.500 bytes. Não há teto por arquivo de agente: o
 //! que prende um molde é o que ele diz.
 //!
 //! A conta é a do disco, byte a byte, como `find … -printf '%s'` a faz. Um
@@ -28,9 +28,15 @@ use std::path::{Path, PathBuf};
 /// 196 e 192, e o que os moldes de onda e de revisão ganharam depois além da
 /// sobra de 209 e 210 bytes que o teto tinha, 43 e 31: a soma medida é
 /// 30.042 + 93 + 196 + 43 = 30.374 no `en-US` e 30.042 + 85 + 192 + 31 =
-/// 30.350 no `pt-BR`. O teto sobe a 30.400, e a folga fica em 26 bytes no
+/// 30.350 no `pt-BR`. O teto subiu a 30.400, com folga de 26 bytes no
 /// `en-US` e 50 no `pt-BR`.
-pub const LANGUAGE_BUDGET: u64 = 30_400;
+///
+/// Ao 30.400 somou, no objetivo do molde da onda, a regra de ler o código
+/// pela ferramenta de leitura e mudá-lo só pela de edição: 134 bytes no
+/// `en-US` e 154 no `pt-BR`. Saiu a frase do `Read` sem coordenadas, que ela
+/// tornou repetida, 51 e 46 bytes. A soma medida é 30.457 no `en-US` e
+/// 30.460 no `pt-BR`. O teto sobe a 30.500, e a folga fica em 43 e 40 bytes.
+pub const LANGUAGE_BUDGET: u64 = 30_500;
 
 /// Os dois idiomas do Mustard, como aparecem nos caminhos.
 pub const LANGUAGES: [&str; 2] = ["pt-BR", "en-US"];
@@ -89,7 +95,7 @@ pub fn shown(path: &Path) -> String {
     path.strip_prefix(repo_root()).unwrap_or(path).display().to_string()
 }
 
-/// Em cada idioma, o texto que o modelo lê soma menos de 30.400 bytes; a
+/// Em cada idioma, o texto que o modelo lê soma menos de 30.500 bytes; a
 /// falha lista cada arquivo somado, com o tamanho dele.
 pub fn assert_each_language_under_budget() {
     let files = read_by_the_model();

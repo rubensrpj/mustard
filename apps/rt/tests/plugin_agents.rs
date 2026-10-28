@@ -635,8 +635,7 @@ fn the_wave_agent_template_has_exactly_four_items() {
 /// O objetivo do molde da onda, nos dois idiomas, diz que nem a spec, nem a
 /// cópia, nem o código passam por python, jq ou grep; que o código se lê pela
 /// ferramenta de leitura, com `offset`/`limit`, e muda só pela ferramenta de
-/// edição, várias edições numa resposta; e que nada muda por script, `sed -i`
-/// ou texto redirecionado.
+/// edição, várias edições numa resposta.
 #[test]
 fn both_wave_templates_say_code_changes_only_through_the_edit_tool() {
     for (lang, header, said) in [
@@ -646,7 +645,6 @@ fn both_wave_templates_say_code_changes_only_through_the_edit_tool() {
             [
                 "nunca python/jq/grep da spec, da cópia ou do código",
                 "Código se lê pela ferramenta de leitura, com `offset`/`limit`, e muda só pela ferramenta de edição, várias edições numa resposta",
-                "nunca por script, `sed -i` ou texto redirecionado",
             ],
         ),
         (
@@ -655,7 +653,6 @@ fn both_wave_templates_say_code_changes_only_through_the_edit_tool() {
             [
                 "no python/jq/grep on spec, copy or code",
                 "Code is read with the read tool, using `offset`/`limit`, and changed only with the edit tool, several edits in one response",
-                "never by script, `sed -i` or redirected text",
             ],
         ),
     ] {

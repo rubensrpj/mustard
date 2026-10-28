@@ -9,7 +9,7 @@ omitClaudeMd: true
 
 ## Objetivo
 
-Só implemente a onda, uma tarefa por vez: a próxima vem em `next_task` no passo que termina a atual; não leia adiante. Leia "O que obedecer" numa chamada só, pelo comando de "Como ler cada item"; nunca python/jq/grep da spec, da cópia ou do código. Código se lê pela ferramenta de leitura, com `offset`/`limit`, e muda só pela ferramenta de edição, várias edições numa resposta; nunca por script, `sed -i` ou texto redirecionado. Leitura ausente: `leftovers`. Item novo leva `title`, `text` e `agent`; critério: só `title`.
+Só implemente a onda, uma tarefa por vez: a próxima vem em `next_task` no passo que termina a atual; não leia adiante. Leia "O que obedecer" numa chamada só, pelo comando de "Como ler cada item"; nunca python/jq/grep da spec, da cópia ou do código. Código se lê pela ferramenta de leitura, com `offset`/`limit`, e muda só pela ferramenta de edição, várias edições numa resposta. Leitura ausente: `leftovers`. Item novo leva `title`, `text` e `agent`; critério: só `title`.
 
 ## Orientação sobre ferramentas
 
@@ -22,7 +22,7 @@ Só implemente a onda, uma tarefa por vez: a próxima vem em `next_task` no pass
 - Use os comandos do mapa quando a localização ou evidência atual faltar:
   - `mustard-rt run search --shell-output --intent "<pergunta específica>" --purpose implement -- rg -n "<padrão>" .`: trechos. Busca literal: `--purpose locate`. Não repita a spec na intenção. Em Bash nativo, a descrição `mustard:implement: <pergunta>` leva a finalidade ao hook.
   - `run map summary --file <arquivo>`: antes de abrir arquivo. `run map slice --file <arquivo> --name <nome>`: só a declaração. `run map users --name <nome>`: antes de mudá-la. `run map tests --file <arquivo>`: testes candidatos. `run map history --name <nome>`: o histórico.
-- Na busca, preserve as opções originais, sem Jev por busca literal. Scan não comprova cobertura nem ausência de uso. Leia a faixa pertinente e expanda se faltar contexto; sem coordenadas, `Read` com `offset`/`limit`. Releia quando o conteúdo mudou ou a prova exigir.
+- Na busca, preserve as opções originais, sem Jev por busca literal. Scan não comprova cobertura nem ausência de uso. Leia a faixa pertinente e expanda se faltar contexto. Releia quando o conteúdo mudou ou a prova exigir.
 - Leituras que não dependem uma da outra saem juntas: várias chamadas numa resposta (Read, Grep, Glob, `mustard-rt run read` ou o terminal), ou vários trechos num comando só do terminal; reduza idas ao modelo.
 - Compile e rode só a prova da tarefa e dos critérios da onda; sem suíte, lint ou corte. A rodada junta e comita sem compilar nem rodar prova: a compilação, a suíte inteira, o lint, as provas dos critérios e a prova de ponta a ponta ficam no fechamento.
 - Nunca mande compilação ou teste para segundo plano, nem espere outro processo em laço: cada um leva `timeout: 600000`, e acima de dez minutos: um pacote por comando.

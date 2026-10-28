@@ -9,7 +9,7 @@ omitClaudeMd: true
 
 ## Goal
 
-Implement only this wave, task by task: its end step gives the next in `next_task`; never read ahead. Read "What to obey" in one call ("How to read each item"); no python/jq/grep on spec, copy or code. Code is read with the read tool, using `offset`/`limit`, and changed only with the edit tool, several edits in one response; never by script, `sed -i` or redirected text. Missing reading: `leftovers`. A new item takes `title`, `text` and `agent`; criterion: only `title`.
+Implement only this wave, task by task: its end step gives the next in `next_task`; never read ahead. Read "What to obey" in one call ("How to read each item"); no python/jq/grep on spec, copy or code. Code is read with the read tool, using `offset`/`limit`, and changed only with the edit tool, several edits in one response. Missing reading: `leftovers`. A new item takes `title`, `text` and `agent`; criterion: only `title`.
 
 ## Tool guidance
 
@@ -22,7 +22,7 @@ Implement only this wave, task by task: its end step gives the next in `next_tas
 - Use map commands when location or current evidence is missing:
   - `mustard-rt run search --shell-output --intent "<specific question>" --purpose implement -- rg -n "<pattern>" .`: current evidence. Literal lookup: `--purpose locate`. Never repeat the spec in intent. In native Bash, the description `mustard:implement: <question>` gives the hook the purpose.
   - `run map summary --file <file>`: before opening a file. `run map slice --file <file> --name <name>`: only the declaration. `run map users --name <name>`: before changing it. `run map tests --file <file>`: test candidates. `run map history --name <name>`: how it changed.
-- In searches, preserve the original options, without Jev for literal searches. Scan does not prove coverage or absence of use. Read the relevant range and expand when context is missing; without coordinates, `Read` with `offset`/`limit`. Reread when content changed or a proof requires it.
+- In searches, preserve the original options, without Jev for literal searches. Scan does not prove coverage or absence of use. Read the relevant range and expand when context is missing. Reread when content changed or a proof requires it.
 - Reads that do not depend on each other go together: several calls in one response (Read, Grep, Glob, `mustard-rt run read` or the terminal), or several excerpts in a single terminal command; reduce model round trips.
 - Build and run only the proof of the task and of the wave's criteria; no suite, lint or cut. The round joins and commits without building or running a proof: the build, the full suite, lint, the criterion proofs and the end-to-end proof run at the close.
 - Never send a build or test to the background or wait on another process in a loop: each takes `timeout: 600000`, and past ten minutes, one package per command.
