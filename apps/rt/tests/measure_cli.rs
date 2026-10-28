@@ -348,7 +348,11 @@ fn the_answered_searches_since_the_mark_come_from_the_project_conversations() {
 /// buscou de novo; sem nenhuma, seguiu. A busca com `cd` numa cópia compara
 /// os caminhos pela raiz da cópia. Falha a busca cujo curinga sem aspas o zsh
 /// recusou e a que passa por um cano sem juntar as linhas e não mostra
-/// arquivo; a que passa por um cano que junta as linhas vale.
+/// arquivo; a que passa por um cano que junta as linhas vale, também quando
+/// quem junta é o `python` rodado por um lançador. O programa escrito na linha
+/// abre o arquivo que cita, pela mesma gramática da recusa de edição: o
+/// `python` rodado por lançador (`uv run python -c`), o `py` com o programa no
+/// heredoc, e o `perl -pi`, que edita no lugar.
 #[test]
 fn each_answered_search_ends_by_the_first_next_call_that_opens_or_searches() {
     let dir = tempfile::tempdir().unwrap();
@@ -373,7 +377,10 @@ fn each_answered_search_ends_by_the_first_next_call_that_opens_or_searches() {
     let found = "src/frete.rs:3:fn calcular";
     // Cada caso: a busca, a resposta do gancho, a saída e as chamadas seguintes.
     type Case<'a> = (&'a str, &'a str, &'a String, &'a str, Vec<(&'a str, Value)>);
-    let cases: [Case; 11] = [
+    let python_joins = "grep -rn frete src | uv run python -c 'import sys; print(len(sys.stdin.readlines()))'";
+    let python_opens = "uv run python -c \"print(open('src/frete.rs').read())\"";
+    let py_heredoc = "py -3 - <<'EOF'\nprint(open('src/pedido.rs').read())\nEOF";
+    let cases: [Case; 15] = [
         ("second", "grep -rn frete src", &partial, found, vec![("Read", read(&in_root.to_string_lossy()))]),
         ("map", "grep -rn frete src", &partial, found, vec![("Bash", bash("mustard-rt run map summary --file src/frete.rs"))]),
         ("edit", "grep -rn frete src", &partial, found, vec![("Bash", bash("echo ok")), ("Bash", bash("sed -i s/a/b/ src/pedido.rs"))]),
@@ -385,6 +392,10 @@ fn each_answered_search_ends_by_the_first_next_call_that_opens_or_searches() {
         ("refused", "grep -rn frete src --include=*.rs", &partial, "(eval):1: no matches found: --include=*.rs", vec![]),
         ("counted", "grep -rn frete src | wc -l", &partial, "2", vec![("Read", read("src/frete.rs"))]),
         ("cut", "grep -rn frete src | head -3", &partial, "nada", vec![]),
+        ("joined", python_joins, &partial, "2", vec![("Read", read("src/frete.rs"))]),
+        ("launched", "grep -rn frete src", &partial, found, vec![("Bash", bash(python_opens))]),
+        ("heredoc", "grep -rn frete src", &partial, found, vec![("Bash", bash(py_heredoc))]),
+        ("perl", "grep -rn frete src", &partial, found, vec![("Bash", bash("perl -pi -e 's/a/b/' src/pedido.rs"))]),
     ];
     for (id, command, said, output, next) in &cases {
         let search = (*id, at, "Bash", bash(command), Some((*said).clone()), (*output).to_string(), false);
@@ -407,9 +418,13 @@ fn each_answered_search_ends_by_the_first_next_call_that_opens_or_searches() {
         ["counted", "used", 1, false],
         ["cut", "moved_on", null, true],
         ["edit", "used", 2, false],
+        ["heredoc", "used", 2, false],
+        ["joined", "used", 1, false],
+        ["launched", "used", 1, false],
         ["map", "used", 1, false],
         ["on", "moved_on", null, false],
         ["other", "opened_other", null, false],
+        ["perl", "used", 2, false],
         ["refused", "moved_on", null, true],
         ["second", "used", 2, false],
         ["unlisted", "opened_other", null, false],
@@ -592,4 +607,41 @@ fn the_measure_counts_scripts_around_mustard_and_script_edits() {
         "| edições por script | 1 | 6 | 1 |",
     ];
     assert!(answer["text"].as_str().unwrap().contains(&format!("\n\n{}\n\n", table.join("\n"))), "{answer}");
+}
+
+/// A medição reconhece o `python` pela gramática do interpretador da recusa
+/// de edição, e não por uma lista de nomes: o `python` rodado por lançador
+/// (`uv run python`), o `py` e o `python.exe` leem a resposta do Mustard pelo
+/// cano e montam os dados de uma gravação pela substituição e pelo arquivo do
+/// `--json @arquivo`, como o `python3`. Ficam fora o programa do lançador que
+/// não é interpretador e o `python` sem o Mustard.
+#[test]
+fn the_measure_reads_python_by_the_interpreter_grammar_of_the_edit_refusal() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("config");
+    let root = project(&dir.path().join("loja"));
+    std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"pt-BR"}}"#).unwrap();
+    let scratch = dir.path().join("scratch").display().to_string();
+    let at = "2026-10-02T10:00:00Z";
+    let bash = |id: &'static str, command: String| -> Call<'static> {
+        (id, at, "Bash", json!({ "command": command }), None, String::new(), false)
+    };
+    let print = "-c 'import sys; print(sys.stdin.read())'";
+    let calls: Vec<Call> = vec![
+        bash("launched", format!("mustard-rt run read request-1 | uv run python {print}")),
+        bash("windows", format!("mustard-rt run read request-1 | py -3 {print}")),
+        bash("exe", format!("mustard-rt run read request-1 | python.exe {print}")),
+        bash("substituted", "mustard-rt run write step --json \"$(uv run python -c 'print(1)')\"".into()),
+        bash(
+            "built",
+            format!("uv run python -c \"import json; json.dump({{'wave': 1}}, open('{scratch}/step.json', 'w'))\""),
+        ),
+        bash("consumed", format!("mustard-rt run write step --json @{scratch}/step.json")),
+        bash("other-program", "mustard-rt run read request-1 | uv run pytest".into()),
+        bash("no-mustard", "uv run python -c 'print(1)'".into()),
+    ];
+    calls_conversation(&config, "loja/s1.jsonl", Some(&root), &calls);
+
+    let answer = measure(dir.path(), &config, &root, &["--since", "2026-10-01"]);
+    assert_eq!(answer["scripts"]["main"], json!({"conversations": 1, "around": 5, "edits": 0}), "{answer}");
 }

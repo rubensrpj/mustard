@@ -28,6 +28,7 @@ use serde_json::{json, Value};
 use super::{day_list, fill, grouped};
 use crate::hooks::bash::lex::{segments, Segment};
 use crate::hooks::bash::reading::{text_search, READERS};
+use crate::hooks::bash::shell_edit::{edits_in_place, embedded_programs, is_interpreter, is_python};
 
 /// O trecho com que o Claude Code abre, na primeira linha do resultado, o
 /// texto da recusa de um gancho.
@@ -50,11 +51,9 @@ const STOPPED_HEAD: usize = 400;
 const NO_MATCH: &str = "no matches found: ";
 
 /// Os programas que, ao fim de um cano, juntam as linhas da busca numa saída
-/// sem o nome do arquivo.
-const AGGREGATORS: [&str; 9] = ["wc", "sort", "uniq", "awk", "tr", "paste", "jq", "python3", "xargs"];
-
-/// Os programas que rodam um script escrito na própria linha.
-const SCRIPTERS: [&str; 5] = ["python", "python3", "perl", "node", "ruby"];
+/// sem o nome do arquivo, fora o `python`, que a gramática do interpretador
+/// reconhece ([`is_python`]).
+const AGGREGATORS: [&str; 8] = ["wc", "sort", "uniq", "awk", "tr", "paste", "jq", "xargs"];
 
 /// Quantas buscas na taxa o número pede para valer.
 const MIN_SEARCHES: usize = 200;
@@ -341,7 +340,9 @@ fn failed(call: &Call, output: &str) -> bool {
         return false;
     }
     let rest: Vec<&str> = output.lines().filter(|line| !line.contains(NO_MATCH)).collect();
-    let joins = |at: usize| Segment::fed(&line, at).iter().any(|&index| AGGREGATORS.contains(&line[index].name()));
+    let joins = |at: usize| {
+        Segment::fed(&line, at).iter().any(|&index| AGGREGATORS.contains(&line[index].name()) || is_python(&line[index]))
+    };
     let bare = searches.iter().any(|&at| joins(at) || hides_names(&line[at]));
     !bare || matches!(rest.join("\n").trim(), "" | NO_OUTPUT)
 }
@@ -474,8 +475,10 @@ fn terminal(command: &str, cwd: &str, base: &str) -> Action {
 /// Os arquivos que o comando `segment`, rodado em `dir`, abre (nenhum quando
 /// não abre nem busca); `None` quando busca. Abrem: o programa que mostra
 /// arquivo com arquivo nomeado, a busca de texto só em arquivos, o `sed -i` e
-/// o `perl -i`, o resumo e o trecho do mapa, e o script escrito na linha, por
-/// texto entre aspas que seja um caminho. Buscam: a busca de texto em pasta,
+/// a edição no lugar do interpretador (`perl -i`), o resumo e o trecho do
+/// mapa, e o programa escrito na linha de qualquer interpretador
+/// ([`is_interpreter`], também pelo lançador e pela pasta), por texto entre
+/// aspas que seja um caminho. Buscam: a busca de texto em pasta,
 /// `find`, `fd` e as outras perguntas do mapa.
 fn opens(segment: &Segment, dir: &str) -> Option<Vec<String>> {
     let name = segment.name();
@@ -497,23 +500,13 @@ fn opens(segment: &Segment, dir: &str) -> Option<Vec<String>> {
                 _ => None,
             }
         }
-        _ if READERS.contains(&name) || (name == "perl" && words.iter().any(|word| word.starts_with("-i"))) => {
-            Some(files(&words))
-        }
-        _ if SCRIPTERS.contains(&name) => {
-            let texts = scripts(segment);
+        _ if READERS.contains(&name) || edits_in_place(segment) => Some(files(&words)),
+        _ if is_interpreter(segment) => {
+            let texts = embedded_programs(segment);
             Some(files(&texts.iter().flat_map(|text| quoted(text)).collect::<Vec<_>>()))
         }
         _ => Some(Vec::new()),
     }
-}
-
-/// Os scripts que o comando `segment` traz escritos: o texto depois de `-c`
-/// ou `-e`, e o corpo de cada heredoc dele, como o terminal o leu.
-pub(super) fn scripts(segment: &Segment) -> Vec<String> {
-    let pairs = segment.args.windows(2).filter(|pair| matches!(pair[0].text.as_str(), "-c" | "-e"));
-    let bodies = segment.redirects.iter().filter_map(|redirect| redirect.body.clone());
-    pairs.map(|pair| pair[1].text.clone()).chain(bodies).collect()
 }
 
 /// Os textos entre aspas, simples ou duplas, de `script`.

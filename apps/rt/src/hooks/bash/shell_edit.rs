@@ -21,7 +21,10 @@
 //! redirecionada (`cargo run --bin gen > src/gen.rs`), a leitura e a gravação
 //! fora do projeto. A conversa principal não passa pela recusa; a medição do
 //! uso real conta, pela mesma regra ([`edited_by_shell`]), as edições por
-//! script de toda conversa do projeto.
+//! script de toda conversa do projeto, e reconhece o interpretador, o
+//! `python` e o programa escrito na linha pela mesma gramática
+//! ([`is_interpreter`], [`is_python`], [`embedded_programs`],
+//! [`edits_in_place`]), sem lista própria de nomes.
 
 use super::lex::{Redirect, Segment, Word};
 use crate::hooks::write::wave_copy::Shell;
@@ -32,6 +35,9 @@ use std::path::{Path, PathBuf};
 
 /// Como um interpretador lê as opções da linha de comando.
 struct Grammar {
+    /// O nome da linguagem: o que `python`, `python3`, `python3.12` e `py`
+    /// têm em comum.
+    name: &'static str,
     /// Letras curtas que trazem o programa, na palavra seguinte ou, com
     /// `glued_code`, no resto do grupo.
     code: &'static str,
@@ -56,6 +62,7 @@ struct Grammar {
 }
 
 const PYTHON: Grammar = Grammar {
+    name: "python",
     code: "c",
     glued_code: true,
     value: "WX",
@@ -68,6 +75,7 @@ const PYTHON: Grammar = Grammar {
 };
 
 const NODE: Grammar = Grammar {
+    name: "node",
     code: "ep",
     glued_code: false,
     value: "rC",
@@ -79,9 +87,10 @@ const NODE: Grammar = Grammar {
     runner: None,
 };
 
-const BUN: Grammar = Grammar { runner: Some("run"), ..NODE };
+const BUN: Grammar = Grammar { name: "bun", runner: Some("run"), ..NODE };
 
 const PERL: Grammar = Grammar {
+    name: "perl",
     code: "eE",
     glued_code: true,
     value: "",
@@ -94,6 +103,7 @@ const PERL: Grammar = Grammar {
 };
 
 const RUBY: Grammar = Grammar {
+    name: "ruby",
     code: "e",
     glued_code: true,
     value: "IrCE",
@@ -232,6 +242,48 @@ fn program(grammar: &Grammar, args: &[Word]) -> Program {
     if codes.is_empty() { Program::Stdin } else { Program::Embedded(codes) }
 }
 
+/// O programa que o redirecionamento `redirect` traz na própria linha: o
+/// corpo do heredoc ou o texto do `<<<`.
+fn inline_text(redirect: &Redirect) -> Option<&str> {
+    match (redirect.op.trim_start_matches(|c: char| c.is_ascii_digit()), &redirect.body) {
+        (_, Some(body)) => Some(body),
+        ("<<<", None) => Some(&redirect.target.text),
+        _ => None,
+    }
+}
+
+/// O comando é um interpretador (`python`, `py`, `node`, `bun`, `perl`,
+/// `ruby`), com ou sem a pasta, também o rodado por um lançador
+/// (`uv run python`).
+pub(crate) fn is_interpreter(segment: &Segment) -> bool {
+    interpreter(segment).is_some()
+}
+
+/// O comando roda o `python` (`python3`, `python3.12`, `py`), com ou sem a
+/// pasta, também pelo lançador (`uv run python`).
+pub(crate) fn is_python(segment: &Segment) -> bool {
+    interpreter(segment).is_some_and(|(grammar, _)| grammar.name == PYTHON.name)
+}
+
+/// O interpretador do comando edita os arquivos no lugar (`perl -i`,
+/// `perl -pi`, `ruby -i`).
+pub(crate) fn edits_in_place(segment: &Segment) -> bool {
+    interpreter(segment).is_some_and(|(grammar, args)| matches!(program(grammar, args), Program::InPlace))
+}
+
+/// Os programas que o interpretador do comando traz escritos na própria
+/// linha: o texto de cada `-c`/`-e` ou, quando o programa vem pela entrada
+/// padrão, o corpo de cada heredoc e o texto do `<<<`. O script dado pelo
+/// nome, o módulo instalado e a edição no lugar não trazem nenhum.
+pub(crate) fn embedded_programs(segment: &Segment) -> Vec<String> {
+    let Some((grammar, args)) = interpreter(segment) else { return Vec::new() };
+    match program(grammar, args) {
+        Program::Embedded(codes) => codes,
+        Program::Stdin => segment.redirects.iter().filter_map(inline_text).map(str::to_string).collect(),
+        Program::Script(_) | Program::Module | Program::InPlace => Vec::new(),
+    }
+}
+
 /// `sed` com `-i` ou `--in-place`, também no meio de um grupo (`-ni`).
 fn sed_in_place(args: &[Word]) -> bool {
     let mut words = args.iter().map(|word| word.text.as_str());
@@ -361,11 +413,11 @@ impl Project {
     /// o heredoc ou o `<<<` que cita caminho dele, ou o arquivo do `<`
     /// guardado fora dele.
     fn fed(&self, redirects: &[Redirect], shell: &Shell) -> bool {
-        redirects.iter().any(|redirect| match (redirect.op.trim_start_matches(|c: char| c.is_ascii_digit()), &redirect.body) {
-            (_, Some(body)) => self.cited(body, shell),
-            ("<<<", None) => self.cited(&redirect.target.text, shell),
-            ("<", None) => self.outside(&redirect.target.text, shell),
-            _ => false,
+        redirects.iter().any(|redirect| match inline_text(redirect) {
+            Some(text) => self.cited(text, shell),
+            None => {
+                redirect.op.trim_start_matches(|c: char| c.is_ascii_digit()) == "<" && self.outside(&redirect.target.text, shell)
+            }
         })
     }
 

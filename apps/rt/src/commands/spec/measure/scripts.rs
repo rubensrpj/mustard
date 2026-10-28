@@ -5,10 +5,13 @@
 //!
 //! Script em volta do Mustard é a chamada que passa a resposta do Mustard
 //! por `python`, `jq` ou `grep`, ou que monta com `python` ou `jq` os dados
-//! de `run write` ou `run answer`. Vale no mesmo comando, pelo encadeamento
-//! de `|`, pela substituição (`$(…)`, `<(…)`) ou, na montagem, pela variável
-//! que guarda a saída do script antes do comando do Mustard. Vale também pelo
-//! arquivo: a resposta gravada (`> arquivo`) e lida depois pelo script, e o
+//! de `run write` ou `run answer`. O `python` se reconhece pela gramática do
+//! interpretador da recusa de edição: `python3.12`, `py -3`, o nome com pasta
+//! e o rodado por lançador (`uv run python`). Vale no mesmo comando, pelo
+//! encadeamento de `|`, pela substituição (`$(…)`, `<(…)`) ou, na montagem,
+//! pela variável que guarda a saída do script antes do comando do Mustard.
+//! Vale também pelo arquivo: a resposta gravada (`> arquivo`) e lida depois
+//! pelo script, e o
 //! arquivo que o script grava e o `--json @arquivo` lê depois. O arquivo se
 //! casa pelo caminho nos dois lados, a partir da pasta de cada chamada; o
 //! caminho que começa por variável (`$S/x.json`) se casa pelo texto.
@@ -28,9 +31,9 @@ use serde::Serialize;
 use serde_json::{json, Map, Value};
 
 use super::grouped;
-use super::searches::{joined, moved, quoted, scripts, transcript, Call};
+use super::searches::{joined, moved, quoted, transcript, Call};
 use crate::hooks::bash::lex::{segments, Segment};
-use crate::hooks::bash::shell_edit::edited_by_shell;
+use crate::hooks::bash::shell_edit::{edited_by_shell, embedded_programs, is_python};
 use crate::hooks::write::wave_copy::wave_agent_kind;
 
 /// Os programas que, fora o `python`, leem a resposta do Mustard.
@@ -267,28 +270,22 @@ fn place(text: &str, dir: &str) -> String {
     if text.starts_with(['$', '~']) { joined(text, "") } else { joined(text, dir) }
 }
 
-/// O comando é `python`.
-fn python(segment: &Segment) -> bool {
-    let name = segment.name();
-    matches!(name, "python" | "python3") || name.starts_with("python3.")
-}
-
 /// O comando é um script que lê a resposta do Mustard.
 fn reads(segment: &Segment) -> bool {
-    python(segment) || READERS.contains(&segment.name())
+    is_python(segment) || READERS.contains(&segment.name())
 }
 
 /// O comando é um script que monta dados.
 fn builds(segment: &Segment) -> bool {
-    python(segment) || segment.name() == BUILDER
+    is_python(segment) || segment.name() == BUILDER
 }
 
 /// Os textos entre aspas do programa que o `python` traz na própria linha.
 fn embedded(segment: &Segment) -> Vec<String> {
-    if !python(segment) {
+    if !is_python(segment) {
         return Vec::new();
     }
-    let texts = scripts(segment);
+    let texts = embedded_programs(segment);
     texts.iter().flat_map(|text| quoted(text)).map(str::to_string).collect()
 }
 
