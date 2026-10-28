@@ -116,18 +116,21 @@ pub(super) fn tally(found: &[Counted]) -> Value {
     Value::Object(out)
 }
 
+/// O quanto uma conversa soma numa linha da tabela.
+type RowValue = fn(&Counted) -> usize;
+
 /// A tabela das contas de `found` por papel, em `lang`; sem script em volta
 /// do Mustard nem edição por script, só a frase que diz isso.
 pub(super) fn report(found: &[Counted], lang: Locale) -> String {
     if found.iter().all(|counted| counted.around + counted.edits == 0) {
         return translate("measure.no_scripts", lang).to_string();
     }
-    let rows: [(&str, fn(&Counted) -> usize); 3] = [
+    let rows: [(&str, RowValue); 3] = [
         ("measure.conversations", |_| 1),
         ("measure.around", |counted| counted.around),
         ("measure.script_edits", |counted| counted.edits),
     ];
-    let lines: String = rows
+    let lines: Vec<String> = rows
         .iter()
         .map(|(key, value)| {
             let cells: Vec<String> = ROLES
@@ -137,17 +140,17 @@ pub(super) fn report(found: &[Counted], lang: Locale) -> String {
                     grouped(sum as u64, lang)
                 })
                 .collect();
-            format!("\n| {} | {} |", translate(key, lang), cells.join(" | "))
+            format!("| {} | {} |", translate(key, lang), cells.join(" | "))
         })
         .collect();
     let head: Vec<&str> = ROLES.iter().map(|&(_, _, key)| translate(key, lang)).collect();
-    format!("| | {} |\n|---|---:|---:|---:|{lines}", head.join(" | "))
+    format!("| | {} |\n|---|---:|---:|---:|\n{}", head.join(" | "), lines.join("\n"))
 }
 
 /// O papel da conversa `path`. A de agente mora em `subagents`, com o tipo e
 /// a descrição no `.meta.json` ao lado dela.
 fn role_of(path: &Path) -> (Role, Option<String>) {
-    if !path.parent().and_then(Path::file_name).is_some_and(|name| name == "subagents") {
+    if path.parent().and_then(Path::file_name).is_none_or(|name| name != "subagents") {
         return (Role::Main, None);
     }
     let read = std::fs::read_to_string(path.with_extension("meta.json")).ok();
