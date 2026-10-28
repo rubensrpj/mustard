@@ -730,13 +730,15 @@ fn cites_unrecorded(lines: &[BatchLine], ids: &[Option<u64>], at: usize, event_t
 
 /// A linha curta do lote para a linha `number` com a resposta `answer`: o
 /// código gravado, ou o número do evento sem código; ou a razão e a dica da
-/// recusa. Os campos de ordem ao agente ([`ORDER_FIELDS`]) seguem junto.
+/// recusa. Os avisos da gravação — a citação que o mapa não confirma, a
+/// prova, o passo fora da onda, a dúvida do lugar do pedido — e os campos de
+/// ordem ao agente ([`ORDER_FIELDS`]) seguem junto.
 fn batch_line(number: usize, answer: &Value) -> Value {
     let mut line = json!({ "line": number });
     let kept: &[&str] = if answer["ok"] == json!(true) {
-        if answer.get("code").is_some() { &["code"] } else { &["id"] }
+        if answer.get("code").is_some() { &["code", "warnings"] } else { &["id", "warnings"] }
     } else {
-        &["reason", "hint"]
+        &["reason", "hint", "warnings"]
     };
     for field in kept.iter().chain(ORDER_FIELDS) {
         if let Some(value) = answer.get(*field) {
@@ -1188,6 +1190,22 @@ mod tests {
             let warnings = out["warnings"].to_string();
             assert!(warnings.contains("confirme com o usuário"), "{answer}: {out}");
         }
+    }
+
+    /// A linha do lote leva os avisos da gravação dela, como a gravação
+    /// sozinha os devolve: o pedido cujo lugar o Jev põe em dúvida grava, e a
+    /// linha curta traz o código e o aviso de confirmar com o usuário.
+    #[test]
+    fn a_batch_line_keeps_the_warnings_of_its_write() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let opts = routed_request(root, "Trocar o tema do site para escuro.");
+        let mut line: Value = serde_json::from_str(&opts(&json!({})).json).unwrap();
+        line["type"] = json!("request");
+        let asked = std::sync::Mutex::new(Vec::new());
+        let lines = batch_report(root, Some("teste"), &format!("{line}\n"), None, &route_jev(route_answer("new_spec", 0.55, 0.1), &asked));
+        assert!(lines[0]["code"].is_string(), "the line is written: {lines:?}");
+        assert!(lines[0]["warnings"].to_string().contains("confirme com o usuário"), "{lines:?}");
     }
 
     /// As duas perguntas do pedido novo ao Jev — o lugar dele e a comparação

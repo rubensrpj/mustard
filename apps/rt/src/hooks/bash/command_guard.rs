@@ -53,7 +53,7 @@ enum PlanWrite {
     Batch,
 }
 
-/// A gravação do plano que o segmento faz, se faz: `run write` do Mustard
+/// A gravação do plano que o segmento faz, se faz: `mustard-rt run write`
 /// com tarefa, pedido ou onda em qualquer posição entre as opções, ou com
 /// `--batch`. `None` noutro comando ou noutro tipo.
 fn plan_write(seg: &lex::Segment) -> Option<PlanWrite> {

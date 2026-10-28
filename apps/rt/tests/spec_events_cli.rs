@@ -2177,3 +2177,87 @@ fn an_invalid_json_refusal_points_to_raw_input_and_batch() {
     }
     assert_eq!(event_lines(root), before, "nothing is written");
 }
+
+/// A recusa impressa pela gravação `args`, que sai com 1 sem gravar nada.
+fn refused_write(root: &Path, args: &[&str]) -> Value {
+    let before = event_lines(root);
+    let out = rt(root, args).output().expect("the command runs");
+    let refused = stdout_json(&out);
+    assert_eq!(out.status.code(), Some(1), "{args:?}: {refused}");
+    assert_eq!(event_lines(root), before, "nothing is written: {args:?}");
+    refused
+}
+
+/// O `--text -` e o `--agent -` juntos pedem a entrada padrão, que é uma só:
+/// a gravação recusa antes de ler, e nada se grava.
+#[test]
+fn both_raw_fields_from_standard_input_are_refused() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    open_spec(root);
+    let fields = json!({"title": "Nota"}).to_string();
+    let refused = refused_write(root, &["write", "note", "--spec", "teste", "--json", &fields, "--text", "-", "--agent", "-"]);
+    assert_eq!(refused["reason"], json!("raw-input-twice"), "{refused}");
+}
+
+/// O campo que vem no `--json` e também na opção própria é recusado, com a
+/// dica nomeando o campo, e nada se grava.
+#[test]
+fn a_raw_field_also_given_in_the_json_is_refused() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    open_spec(root);
+    let fields = json!({"title": "Nota", "agent": "no json"}).to_string();
+    let refused = refused_write(root, &["write", "note", "--spec", "teste", "--json", &fields, "--agent", "na opção"]);
+    assert_eq!(refused["reason"], json!("raw-field-twice"), "{refused}");
+    assert!(refused["hint"].as_str().unwrap_or_default().contains("agent"), "the hint names the field: {refused}");
+}
+
+/// O `--json` que não é objeto, com o `--text` dado direto, segue como veio,
+/// e a gravação o recusa pelo motivo de sempre, sem gravar nada.
+#[test]
+fn a_json_that_is_not_an_object_with_a_direct_text_is_refused_as_usual() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    open_spec(root);
+    let refused = refused_write(root, &["write", "note", "--spec", "teste", "--json", "[\"Nota\"]", "--text", "direto"]);
+    assert_eq!(refused["reason"], json!("not-an-object"), "{refused}");
+}
+
+/// As linhas curtas que o lote `input` imprime, com o código de saída.
+fn batch_out(root: &Path, input: &str) -> (Option<i32>, Vec<Value>) {
+    let out = fed(rt(root, &["write", "--batch", "--spec", "teste"]), input);
+    let shown = String::from_utf8_lossy(&out.stdout).to_string();
+    let lines = shown.lines().map(|line| serde_json::from_str(line).unwrap_or_else(|e| panic!("{e}: {line}"))).collect();
+    (out.status.code(), lines)
+}
+
+/// O lote só com linhas em branco é recusado numa linha só, e nada se grava.
+#[test]
+fn an_empty_batch_is_refused() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    open_spec(root);
+    let before = event_lines(root);
+    let (code, lines) = batch_out(root, "\n  \n");
+    assert_eq!(code, Some(1), "{lines:?}");
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(lines[0]["reason"], json!("batch-empty"), "{lines:?}");
+    assert_eq!(event_lines(root), before, "nothing is written");
+}
+
+/// A linha do lote sem o tipo, ou com o tipo em branco, é recusada pelo
+/// motivo próprio, cada uma na sua linha, e nada se grava.
+#[test]
+fn a_batch_line_without_its_type_is_refused() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    open_spec(root);
+    let before = event_lines(root);
+    let input = format!("{}\n{}\n", json!({"title": "Nota"}), json!({"type": " ", "title": "Nota"}));
+    let (code, lines) = batch_out(root, &input);
+    assert_eq!(code, Some(1), "{lines:?}");
+    let refusals: Vec<(Value, Value)> = lines.iter().map(|line| (line["line"].clone(), line["reason"].clone())).collect();
+    assert_eq!(refusals, vec![(json!(1), json!("batch-type-missing")), (json!(2), json!("batch-type-missing"))], "{lines:?}");
+    assert_eq!(event_lines(root), before, "nothing is written");
+}
