@@ -29,9 +29,6 @@ use mustard_core::domain::model::contract::Verdict;
 use super::lex::{Segment, truncate};
 use crate::shared::say::say;
 
-/// Os programas do Mustard cuja resposta se lê inteira.
-const RUNTIME: &[&str] = &["mustard-rt", "mustard-rt.exe", "mustard-boot", "mustard-boot.cmd"];
-
 /// Os programas que, ao receber a resposta, a passam por script, filtro ou
 /// corte. A lista é fechada: o `fold` e o `cat` ficam de fora.
 const SCRIPTS: &[&str] = &[
@@ -43,7 +40,7 @@ const SCRIPTS: &[&str] = &[
 /// (`run config-read`) fica de fora: o que sai dela é o arquivo da pessoa,
 /// com a chave escondida, e não uma resposta do Mustard.
 fn runs_the_runtime(segment: &Segment) -> bool {
-    RUNTIME.contains(&segment.name())
+    segment.runs_mustard()
         && !matches!(segment.args.as_slice(), [run, read, ..] if run.text == "run" && read.text == "config-read")
 }
 
@@ -51,37 +48,6 @@ fn runs_the_runtime(segment: &Segment) -> bool {
 /// que o chama.
 fn runs_a_script(segment: &Segment) -> bool {
     SCRIPTS.contains(&segment.name()) || segment.wrappers.iter().any(|wrapper| SCRIPTS.contains(&wrapper.as_str()))
-}
-
-/// Os comandos que estão dentro de `segments[at]`: os que vêm logo depois
-/// dele, mais fundos que ele.
-fn inside(segments: &[Segment], at: usize) -> &[Segment] {
-    let depth = segments[at].depth;
-    let rest = &segments[at + 1..];
-    let end = rest.iter().position(|segment| segment.depth <= depth).unwrap_or(rest.len());
-    &rest[..end]
-}
-
-/// Se a saída de `segments[at]` chega, pelo encadeamento de `|`, a um
-/// programa de [`SCRIPTS`]. Os comandos de dentro de cada elo não são elos;
-/// o encadeamento acaba no primeiro elo sem `|` ou quando a lista que o
-/// guarda fecha.
-fn feeds_a_script(segments: &[Segment], at: usize) -> bool {
-    let depth = segments[at].depth;
-    let mut piped = segments[at].piped;
-    for segment in &segments[at + 1..] {
-        if segment.depth < depth || !piped {
-            return false;
-        }
-        if segment.depth > depth {
-            continue;
-        }
-        if runs_a_script(segment) {
-            return true;
-        }
-        piped = segment.piped;
-    }
-    false
 }
 
 /// As opções cuja resposta é curta, fixa e sem nada da obra: cortá-la não
@@ -158,13 +124,13 @@ fn reads_whole(segment: &Segment) -> bool {
 /// nenhum passa.
 fn barred(segments: &[Segment]) -> Option<&Segment> {
     (0..segments.len()).find_map(|at| {
-        if reads_whole(&segments[at]) && feeds_a_script(segments, at) {
+        if reads_whole(&segments[at]) && Segment::fed(segments, at).into_iter().any(|link| runs_a_script(&segments[link])) {
             return Some(&segments[at]);
         }
         if !runs_a_script(&segments[at]) {
             return None;
         }
-        inside(segments, at).iter().find(|inner| reads_whole(inner))
+        Segment::inside(segments, at).iter().find(|inner| reads_whole(inner))
     })
 }
 

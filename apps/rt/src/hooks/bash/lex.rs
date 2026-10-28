@@ -100,10 +100,50 @@ pub(crate) struct Segment {
     pub depth: usize,
 }
 
+/// Os programas do Mustard, pelo nome sem a pasta: o `mustard-rt` e o
+/// `mustard-boot`, que o chama, com o nome de cada plataforma.
+const MUSTARD_PROGRAMS: &[&str] = &["mustard-rt", "mustard-rt.exe", "mustard-boot", "mustard-boot.cmd"];
+
 impl Segment {
     /// The program's name without its folder: `/bin/rm` is `rm`.
     pub fn name(&self) -> &str {
         base_name(&self.program.text)
+    }
+
+    /// Se o comando roda o Mustard ([`MUSTARD_PROGRAMS`]), por qualquer pasta
+    /// e depois de qualquer invólucro.
+    pub fn runs_mustard(&self) -> bool {
+        MUSTARD_PROGRAMS.contains(&self.name())
+    }
+
+    /// Os comandos que estão dentro de `line[at]`: os que vêm logo depois
+    /// dele, mais fundos que ele.
+    pub fn inside(line: &[Segment], at: usize) -> &[Segment] {
+        let depth = line[at].depth;
+        let rest = &line[at + 1..];
+        let end = rest.iter().position(|segment| segment.depth <= depth).unwrap_or(rest.len());
+        &rest[..end]
+    }
+
+    /// As posições dos comandos que recebem a saída de `line[at]` pelo
+    /// encadeamento de `|`, no mesmo nível e na ordem. Os comandos de dentro
+    /// de cada elo não são elos; o encadeamento acaba no primeiro elo sem `|`
+    /// ou quando a lista que o guarda fecha.
+    pub fn fed(line: &[Segment], at: usize) -> Vec<usize> {
+        let depth = line[at].depth;
+        let mut piped = line[at].piped;
+        let mut reached = Vec::new();
+        for (index, segment) in line.iter().enumerate().skip(at + 1) {
+            if segment.depth < depth || !piped {
+                break;
+            }
+            if segment.depth > depth {
+                continue;
+            }
+            reached.push(index);
+            piped = segment.piped;
+        }
+        reached
     }
 }
 

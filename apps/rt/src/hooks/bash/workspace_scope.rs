@@ -92,7 +92,7 @@ fn bind_identity(input: &HookInput, verdict: Verdict) -> Verdict {
     let Some(command) = tool_input["command"].as_str() else {
         return verdict;
     };
-    if !lex::segments(command).iter().any(|part| matches!(part.name(), "mustard-rt" | "mustard-rt.exe" | "mustard-boot" | "mustard-boot.cmd")) {
+    if !lex::segments(command).iter().any(lex::Segment::runs_mustard) {
         return verdict;
     }
     if command.starts_with(&prefix) {

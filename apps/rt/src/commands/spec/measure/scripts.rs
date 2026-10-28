@@ -33,9 +33,6 @@ use crate::hooks::bash::lex::{segments, Segment};
 use crate::hooks::bash::shell_edit::edited_by_shell;
 use crate::hooks::write::wave_copy::wave_agent_kind;
 
-/// Os programas do Mustard.
-const RUNTIME: [&str; 4] = ["mustard-rt", "mustard-rt.exe", "mustard-boot", "mustard-boot.cmd"];
-
 /// Os programas que, fora o `python`, leem a resposta do Mustard.
 const READERS: [&str; 2] = ["jq", "grep"];
 
@@ -198,7 +195,7 @@ impl Files {
         for (segment, dir) in line.iter().zip(&dirs) {
             let saved = segment.redirects.iter().filter(|redirect| SAVES.contains(&redirect.op.as_str()));
             let saved: Vec<String> = saved.map(|redirect| place(&redirect.target.text, dir)).collect();
-            if runs(segment) {
+            if segment.runs_mustard() {
                 self.answers.extend(saved);
             } else if builds(segment) {
                 self.built.extend(saved);
@@ -217,9 +214,9 @@ impl Files {
             return false;
         }
         let names = |index: usize| self.names_answer(&line[index], command, &dirs[index]);
-        inside(line, at).iter().any(runs)
+        Segment::inside(line, at).iter().any(Segment::runs_mustard)
             || names(at)
-            || (0..at).any(|index| fed(line, index).contains(&at) && (runs(&line[index]) || names(index)))
+            || (0..at).any(|index| Segment::fed(line, index).contains(&at) && (line[index].runs_mustard() || names(index)))
     }
 
     /// O comando `segment`, rodado em `dir`, nomeia um arquivo de resposta do
@@ -237,15 +234,15 @@ impl Files {
     /// `--json @arquivo` que um script gravou.
     fn feeds_write(&self, line: &[Segment], dirs: &[String], at: usize) -> bool {
         let segment = &line[at];
-        let writes = runs(segment)
+        let writes = segment.runs_mustard()
             && segment.args.first().is_some_and(|arg| arg.text == "run")
             && segment.args.get(1).is_some_and(|arg| WRITES.contains(&arg.text.as_str()));
         if !writes {
             return false;
         }
-        let assigned = |index: usize| line[index].name().is_empty() && inside(line, index).iter().any(builds);
-        inside(line, at).iter().any(builds)
-            || (0..at).any(|index| (builds(&line[index]) && fed(line, index).contains(&at)) || assigned(index))
+        let assigned = |index: usize| line[index].name().is_empty() && Segment::inside(line, index).iter().any(builds);
+        Segment::inside(line, at).iter().any(builds)
+            || (0..at).any(|index| (builds(&line[index]) && Segment::fed(line, index).contains(&at)) || assigned(index))
             || json_file(segment).is_some_and(|file| self.built.contains(&place(file, &dirs[at])))
     }
 }
@@ -268,11 +265,6 @@ fn folders(line: &[Segment], cwd: &str) -> Vec<String> {
 /// começa por variável ou por `~` fica pelo texto.
 fn place(text: &str, dir: &str) -> String {
     if text.starts_with(['$', '~']) { joined(text, "") } else { joined(text, dir) }
-}
-
-/// O comando roda o Mustard.
-fn runs(segment: &Segment) -> bool {
-    RUNTIME.contains(&segment.name())
 }
 
 /// O comando é `python`.
@@ -298,35 +290,6 @@ fn embedded(segment: &Segment, command: &str) -> Vec<String> {
     }
     let texts = scripts(segment, command);
     texts.iter().flat_map(|text| quoted(text)).map(str::to_string).collect()
-}
-
-/// Os comandos de dentro de `line[at]`: os que vêm logo depois dele, mais
-/// fundos que ele.
-fn inside(line: &[Segment], at: usize) -> &[Segment] {
-    let depth = line[at].depth;
-    let rest = &line[at + 1..];
-    let end = rest.iter().position(|segment| segment.depth <= depth).unwrap_or(rest.len());
-    &rest[..end]
-}
-
-/// As posições dos comandos que recebem a saída de `line[at]` pelo
-/// encadeamento de `|`, no mesmo nível; os comandos de dentro de cada elo
-/// não são elos.
-fn fed(line: &[Segment], at: usize) -> Vec<usize> {
-    let depth = line[at].depth;
-    let mut piped = line[at].piped;
-    let mut reached = Vec::new();
-    for (index, segment) in line.iter().enumerate().skip(at + 1) {
-        if segment.depth < depth || !piped {
-            break;
-        }
-        if segment.depth > depth {
-            continue;
-        }
-        reached.push(index);
-        piped = segment.piped;
-    }
-    reached
 }
 
 /// O arquivo que a gravação `segment` lê pelo `--json @arquivo`.

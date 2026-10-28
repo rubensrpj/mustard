@@ -57,7 +57,7 @@ enum PlanWrite {
 /// com tarefa, pedido ou onda em qualquer posição entre as opções, ou com
 /// `--batch`. `None` noutro comando ou noutro tipo.
 fn plan_write(seg: &lex::Segment) -> Option<PlanWrite> {
-    if !matches!(seg.name(), "mustard-rt" | "mustard-rt.exe" | "mustard-boot" | "mustard-boot.cmd") {
+    if !seg.runs_mustard() {
         return None;
     }
     let at = seg.args.windows(2).position(|args| args[0].text == "run" && args[1].text == "write")?;
