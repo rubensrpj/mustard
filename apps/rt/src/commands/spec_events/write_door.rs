@@ -290,9 +290,7 @@ fn prepare(opts: &WriteOpts, session: Option<&str>, ask: &AskJev<'_>) -> Result<
     // deixou no caminho reservado da cópia, que a rodada grava no lugar dela;
     // depois de gravada, sai do git e entra no resumo do projeto.
     let skill = if event_type == "skill" {
-        if let Err(refusal) = crate::shared::failure_skills::prepare_skill(&opts.root, spec, &mut draft, lang) {
-            return Err(refusal);
-        }
+        crate::shared::failure_skills::prepare_skill(&opts.root, spec, &mut draft, lang)?;
         let field = |name: &str| draft.get(name).and_then(Value::as_str).map(str::trim).unwrap_or_default().to_string();
         Some((field("name"), field("action")))
     } else {
@@ -833,7 +831,7 @@ pub fn run_batch(root: &Path, spec: Option<&str>) {
     };
     let refused = lines.iter().find(|line| line.get("reason").is_some());
     let summary = json!({ "ok": refused.is_none(), "reason": refused.map(|line| line["reason"].clone()), "lines": lines.len() });
-    let output: String = lines.iter().map(|line| format!("{line}\n")).collect();
+    let output: String = lines.iter().map(|line| line.to_string() + "\n").collect();
     let _ = super::conversation::record_output_call_as(root, session.as_deref(), "write", spec, started, &summary, &output);
     print!("{output}");
     if refused.is_some() {
