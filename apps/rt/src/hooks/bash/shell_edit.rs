@@ -16,7 +16,9 @@
 //! Passam o programa na linha sem caminho do projeto, o script do projeto
 //! (`python scripts/x.py`, `python -m pytest`), o gerador com a saída
 //! redirecionada (`cargo run --bin gen > src/gen.rs`), a leitura e a gravação
-//! fora do projeto. A conversa principal não passa por aqui.
+//! fora do projeto. A conversa principal não passa pela recusa; a medição do
+//! uso real conta, pela mesma regra ([`edited_by_shell`]), as edições por
+//! script de toda conversa do projeto.
 
 use super::lex::{Redirect, Segment, Word};
 use mustard_core::domain::model::contract::{Ctx, HookInput, Verdict};
@@ -247,6 +249,10 @@ fn suspect(segment: &Segment) -> bool {
 struct Project {
     folders: Vec<PathBuf>,
     home: Option<PathBuf>,
+    /// Na leitura de uma conversa que já passou, o checkout principal e a
+    /// pasta das cópias: o arquivo de uma cópia que já saiu do disco existe
+    /// quando o checkout tem o mesmo caminho, contado a partir da cópia.
+    gone_copies: Option<(PathBuf, PathBuf)>,
 }
 
 impl Project {
@@ -257,7 +263,23 @@ impl Project {
             .filter(|folder| !folder.as_os_str().is_empty())
             .map(real)
             .collect();
-        Self { folders, home }
+        Self { folders, home, gone_copies: None }
+    }
+
+    /// O mesmo projeto, lido numa conversa que já passou, quando a cópia da
+    /// onda pode já ter saído do disco.
+    fn past(self, root: &Path) -> Self {
+        Self { gone_copies: Some((root.to_path_buf(), wave_prompt::copies_dir(root))), ..self }
+    }
+
+    /// `path` existe no disco ou, na conversa que já passou, no checkout
+    /// principal, quando fica numa cópia (`<cópias>/<obra>/<vaga>/…`).
+    fn exists(&self, path: &Path) -> bool {
+        path.exists()
+            || self.gone_copies.as_ref().is_some_and(|(root, copies)| {
+                let inside: PathBuf = path.strip_prefix(copies).map(|rest| rest.components().skip(2).collect()).unwrap_or_default();
+                !inside.as_os_str().is_empty() && root.join(inside).exists()
+            })
     }
 
     /// `path` fica no projeto ou numa cópia, pelo caminho real da pasta mais
@@ -305,7 +327,7 @@ impl Project {
             .filter(|token| token.contains(['/', '.']) && token.chars().any(char::is_alphanumeric))
             .any(|token| {
                 let joined = here.join(token.trim_start_matches('/'));
-                self.resolved(here, token).into_iter().chain([joined]).any(|path| path.exists() && self.holds(&path))
+                self.resolved(here, token).into_iter().chain([joined]).any(|path| self.exists(&path) && self.holds(&path))
             })
     }
 
@@ -347,6 +369,25 @@ impl Project {
             name => grammar(name).is_some_and(|grammar| self.interprets(grammar, segment, here)),
         }
     }
+
+    /// Algum comando de `segments`, rodados a partir de `here` e seguindo os
+    /// `cd` da linha, mexe em arquivo do projeto.
+    fn edited(&self, segments: &[Segment], mut here: PathBuf) -> bool {
+        for segment in segments {
+            if segment.name() == "cd" {
+                let target = match segment.args.iter().find(|arg| !arg.text.starts_with('-')) {
+                    Some(arg) => self.resolved(&here, &arg.text),
+                    None => self.home.clone(),
+                };
+                here = target.unwrap_or(here);
+                continue;
+            }
+            if self.edits(segment, &here) {
+                return true;
+            }
+        }
+        false
+    }
 }
 
 /// A recusa do comando do agente de onda que mexe em arquivo do projeto
@@ -356,23 +397,22 @@ pub(crate) fn bash_shell_edit(segments: &[Segment], input: &HookInput, ctx: &Ctx
         return None;
     }
     let root = Path::new(&ctx.project_dir);
-    let mut here = crate::hooks::write::wave_copy::wave_shell_folder(root, input, ctx)?;
+    let here = crate::hooks::write::wave_copy::wave_shell_folder(root, input, ctx)?;
     let project = Project::new(root, mustard_core::platform::harness::home_dir());
-    for segment in segments {
-        if segment.name() == "cd" {
-            let target = match segment.args.iter().find(|arg| !arg.text.starts_with('-')) {
-                Some(arg) => project.resolved(&here, &arg.text),
-                None => project.home.clone(),
-            };
-            here = target.unwrap_or(here);
-            continue;
-        }
-        if project.edits(segment, &here) {
-            let edit = if input.raw["mustard_host"] == "codex" { "`apply_patch`" } else { "`Edit`/`Write`" };
-            return Some(Verdict::Deny { reason: crate::shared::say::say("command_guard.shell_edit", lang, &[("{edit}", edit)]) });
-        }
+    if !project.edited(segments, here) {
+        return None;
     }
-    None
+    let edit = if input.raw["mustard_host"] == "codex" { "`apply_patch`" } else { "`Edit`/`Write`" };
+    Some(Verdict::Deny { reason: crate::shared::say::say("command_guard.shell_edit", lang, &[("{edit}", edit)]) })
+}
+
+/// A linha `segments`, que rodou em `here` numa conversa do projeto do
+/// checkout principal `root`, mexeu em arquivo do projeto por uma das formas
+/// que o agente de onda tem recusadas, em qualquer conversa. A cópia de onda
+/// que já saiu do disco vale pelo checkout principal.
+pub(crate) fn edited_by_shell(segments: &[Segment], root: &Path, here: &Path) -> bool {
+    segments.iter().any(suspect)
+        && Project::new(root, mustard_core::platform::harness::home_dir()).past(root).edited(segments, here.to_path_buf())
 }
 
 #[cfg(test)]

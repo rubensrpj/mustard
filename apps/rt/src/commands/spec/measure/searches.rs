@@ -13,7 +13,7 @@
 //! de novo; sem nenhuma, seguiu. A busca que falhou e a que seguiu ficam fora
 //! da taxa, que só vale com [`MIN_SEARCHES`] buscas.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::BufRead;
 use std::path::Path;
 use std::time::SystemTime;
@@ -128,12 +128,55 @@ pub(super) struct Answered {
 }
 
 /// Uma chamada de ferramenta da conversa, com o instante e a pasta da linha.
-struct Call {
-    id: String,
-    name: String,
-    input: Value,
-    at: String,
-    cwd: String,
+pub(super) struct Call {
+    pub(super) id: String,
+    pub(super) name: String,
+    pub(super) input: Value,
+    pub(super) at: String,
+    pub(super) cwd: String,
+}
+
+/// As chamadas de ferramenta de uma conversa, na ordem e cada uma uma vez só
+/// (o arquivo pode trazer a mesma linha mais de uma vez), com o resultado de
+/// cada uma e o contexto que o gancho pôs antes dela, pelo código da chamada.
+pub(super) struct Transcript {
+    pub(super) calls: Vec<Call>,
+    results: HashMap<String, (String, bool)>,
+    notes: HashMap<String, Vec<String>>,
+}
+
+/// A conversa `path`, ou `None` quando o arquivo não abre.
+pub(super) fn transcript(path: &Path) -> Option<Transcript> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut read = Transcript { calls: Vec::new(), results: HashMap::new(), notes: HashMap::new() };
+    let mut seen: HashSet<String> = HashSet::new();
+    for line in std::io::BufReader::new(file).split(b'\n').map_while(Result::ok) {
+        let Ok(row) = serde_json::from_slice::<Value>(&line) else { continue };
+        let text = |value: &Value| value.as_str().unwrap_or_default().to_string();
+        for part in row["message"]["content"].as_array().into_iter().flatten() {
+            match part["type"].as_str() {
+                Some("tool_use") if seen.insert(text(&part["id"])) => read.calls.push(Call {
+                    id: text(&part["id"]),
+                    name: text(&part["name"]),
+                    input: part["input"].clone(),
+                    at: text(&row["timestamp"]),
+                    cwd: text(&row["cwd"]),
+                }),
+                Some("tool_result") => {
+                    let said = part["is_error"].as_bool().unwrap_or(false);
+                    read.results.insert(text(&part["tool_use_id"]), (result_text(&part["content"]), said));
+                }
+                _ => {}
+            }
+        }
+        let note = &row["attachment"];
+        let before_call = note["hookName"].as_str().is_some_and(|hook| hook.starts_with("PreToolUse:"));
+        if note["type"] == "hook_additional_context" && before_call {
+            let said = note["content"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string);
+            read.notes.entry(text(&note["toolUseID"])).or_default().extend(said);
+        }
+    }
+    Some(read)
 }
 
 /// As buscas que o Mustard respondeu desde `since` nas conversas do projeto
@@ -215,36 +258,7 @@ pub(super) fn report(found: &[Answered], lang: Locale) -> String {
 /// Põe em `found` as buscas respondidas desde `since` da conversa `path`,
 /// chamada `name`.
 fn read(path: &Path, name: &str, since: DateTime<Utc>, found: &mut Vec<Answered>) {
-    let Ok(file) = std::fs::File::open(path) else { return };
-    let mut calls: Vec<Call> = Vec::new();
-    let mut results: HashMap<String, (String, bool)> = HashMap::new();
-    let mut notes: HashMap<String, Vec<String>> = HashMap::new();
-    for line in std::io::BufReader::new(file).split(b'\n').map_while(Result::ok) {
-        let Ok(row) = serde_json::from_slice::<Value>(&line) else { continue };
-        let text = |value: &Value| value.as_str().unwrap_or_default().to_string();
-        for part in row["message"]["content"].as_array().into_iter().flatten() {
-            match part["type"].as_str() {
-                Some("tool_use") => calls.push(Call {
-                    id: text(&part["id"]),
-                    name: text(&part["name"]),
-                    input: part["input"].clone(),
-                    at: text(&row["timestamp"]),
-                    cwd: text(&row["cwd"]),
-                }),
-                Some("tool_result") => {
-                    let said = part["is_error"].as_bool().unwrap_or(false);
-                    results.insert(text(&part["tool_use_id"]), (result_text(&part["content"]), said));
-                }
-                _ => {}
-            }
-        }
-        let note = &row["attachment"];
-        let before_call = note["hookName"].as_str().is_some_and(|hook| hook.starts_with("PreToolUse:"));
-        if note["type"] == "hook_additional_context" && before_call {
-            let said = note["content"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string);
-            notes.entry(text(&note["toolUseID"])).or_default().extend(said);
-        }
-    }
+    let Some(Transcript { calls, results, notes }) = transcript(path) else { return };
     for (index, call) in calls.iter().enumerate() {
         let after = DateTime::parse_from_rfc3339(&call.at).is_ok_and(|when| when >= since);
         if !after || !is_search(call) {
@@ -397,7 +411,7 @@ fn root_of(call: &Call) -> String {
 
 /// A pasta para onde o comando `segment`, rodado em `dir`, muda, quando é um
 /// `cd` para uma pasta nomeada.
-fn moved(segment: &Segment, dir: &str) -> Option<String> {
+pub(super) fn moved(segment: &Segment, dir: &str) -> Option<String> {
     let to = segment.args.first().filter(|to| segment.name() == "cd" && !to.text.starts_with('-'))?;
     Some(joined(&to.text, dir))
 }
@@ -500,7 +514,7 @@ fn opens(segment: &Segment, command: &str, dir: &str) -> Option<Vec<String>> {
 /// Os scripts que o comando `segment` da linha `command` traz escritos: o
 /// texto depois de `-c` ou `-e`, e o corpo do heredoc, lido do texto cru da
 /// linha.
-fn scripts(segment: &Segment, command: &str) -> Vec<String> {
+pub(super) fn scripts(segment: &Segment, command: &str) -> Vec<String> {
     let pairs = segment.args.windows(2).filter(|pair| matches!(pair[0].text.as_str(), "-c" | "-e"));
     let mut texts: Vec<String> = pairs.map(|pair| pair[1].text.clone()).collect();
     let heredoc = |op: &str| matches!(op.trim_start_matches(|c: char| c.is_ascii_digit()), "<<" | "<<-");
@@ -513,7 +527,7 @@ fn scripts(segment: &Segment, command: &str) -> Vec<String> {
 }
 
 /// Os textos entre aspas, simples ou duplas, de `script`.
-fn quoted(script: &str) -> Vec<&str> {
+pub(super) fn quoted(script: &str) -> Vec<&str> {
     let mut found = Vec::new();
     let mut rest = script;
     while let Some(at) = rest.find(['\'', '"']) {
@@ -527,7 +541,7 @@ fn quoted(script: &str) -> Vec<&str> {
 
 /// `path`, a partir de `dir` quando é relativo, com a barra normal e sem os
 /// trechos `.` e `..`.
-fn joined(path: &str, dir: &str) -> String {
+pub(super) fn joined(path: &str, dir: &str) -> String {
     let path = path.replace('\\', "/");
     let absolute = path.starts_with('/') || path.get(1..3) == Some(":/");
     let full = if absolute || dir.is_empty() { path } else { format!("{}/{path}", dir.replace('\\', "/")) };

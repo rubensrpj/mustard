@@ -44,7 +44,13 @@ pub(crate) fn check(root: &Path, input: &HookInput, ctx: &Ctx) -> Option<Verdict
 /// O agente foi lançado como o agente de onda do Mustard, com ou sem o nome
 /// do plugin na frente.
 pub(crate) fn is_wave_agent(input: &HookInput) -> bool {
-    input.agent_type.as_deref().is_some_and(|kind| kind == "mustard-wave" || kind.ends_with(":mustard-wave"))
+    input.agent_type.as_deref().is_some_and(wave_agent_kind)
+}
+
+/// O tipo de agente `kind` é o agente de onda do Mustard, com ou sem o nome
+/// do plugin na frente.
+pub(crate) fn wave_agent_kind(kind: &str) -> bool {
+    kind == "mustard-wave" || kind.ends_with(":mustard-wave")
 }
 
 /// A pasta onde roda o comando do terminal de um agente de onda, ou `None`

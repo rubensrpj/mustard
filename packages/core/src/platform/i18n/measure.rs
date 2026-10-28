@@ -1,5 +1,6 @@
 //! A medição do uso real: a tabela do gasto antes e depois da marca de uma
-//! versão, a frase do veredito e a tabela de cada 100 buscas que o Mustard
+//! versão, a frase do veredito, a tabela dos scripts em volta do Mustard e
+//! das edições por script, e a tabela de cada 100 buscas que o Mustard
 //! respondeu, com a frase dela, como o comando `measure` as responde.
 //!
 //! Uma parte do catálogo de textos: quem lê chama `translate`, a porta do
@@ -101,6 +102,24 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("measure.no_searches", Locale::PtBr) => "Nenhuma busca respondida desde a marca.",
         ("measure.no_searches", Locale::EnUs) => "No answered searches since the mark.",
+        // A tabela dos scripts em volta do Mustard e das edições por script,
+        // com uma coluna por papel da conversa, e a frase de quando não há.
+        ("measure.role_main", Locale::PtBr) => "condutor",
+        ("measure.role_main", Locale::EnUs) => "conductor",
+        ("measure.role_wave", Locale::PtBr) => "agente de onda",
+        ("measure.role_wave", Locale::EnUs) => "wave agent",
+        ("measure.role_other", Locale::PtBr) => "outros agentes",
+        ("measure.role_other", Locale::EnUs) => "other agents",
+        ("measure.conversations", Locale::PtBr) => "conversas",
+        ("measure.conversations", Locale::EnUs) => "conversations",
+        ("measure.around", Locale::PtBr) => "scripts em volta do Mustard",
+        ("measure.around", Locale::EnUs) => "scripts around Mustard",
+        ("measure.script_edits", Locale::PtBr) => "edições por script",
+        ("measure.script_edits", Locale::EnUs) => "edits by script",
+        ("measure.no_scripts", Locale::PtBr) => {
+            "Nenhum script em volta do Mustard e nenhuma edição por script desde a marca."
+        }
+        ("measure.no_scripts", Locale::EnUs) => "No script around Mustard and no edit by script since the mark.",
         ("measure.and", Locale::PtBr) => "e",
         ("measure.and", Locale::EnUs) => "and",
         _ => return None,

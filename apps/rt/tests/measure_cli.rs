@@ -56,6 +56,7 @@ fn measure(dir: &Path, config: &Path, cwd: &Path, args: &[&str]) -> Value {
         .env("USERPROFILE", &home)
         .env("CLAUDE_CONFIG_DIR", config)
         .env("MUSTARD_SPEND_DIR", dir.join("spend"))
+        .env("MUSTARD_COPIES_DIR", dir.join("copias"))
         .env("MUSTARD_CLAUDE_BIN", home.join("no-claude-here"))
         .env_remove("CLAUDE_PLUGIN_ROOT")
         .env_remove("MUSTARD_ACTIVE_SPEC")
@@ -106,6 +107,10 @@ const DAYS: [(&str, u64, u64); 10] = [
     ("2026-10-03", 4_663, 630_000_000),
 ];
 
+/// A frase de quando nenhuma conversa tem script em volta do Mustard nem
+/// edição por script desde a marca.
+const NO_SCRIPTS: &str = "Nenhum script em volta do Mustard e nenhuma edição por script desde a marca.";
+
 /// A resposta traz a tabela do gasto e a frase do veredito, no idioma do
 /// projeto: dois dias de cada lado, como no modelo aprovado, ainda não dão
 /// para dizer; cinco de cada lado dão; a marca de agora, sem dia depois, diz
@@ -134,6 +139,8 @@ fn the_answer_carries_the_spend_table_and_the_verdict_in_the_project_language() 
         "Ainda não dá para dizer. São 2 dias contados antes e 2 depois, e o mínimo é 5 de cada lado: faltam 3 antes \
          e 3 depois. Até aqui, cada ação custou 14% mais depois da instalação.",
         "",
+        NO_SCRIPTS,
+        "",
         "Nenhuma busca respondida desde a marca. Ainda não dá para dizer: faltam 200 para o mínimo de 200.",
     ];
     let too_early_en = [
@@ -147,6 +154,8 @@ fn the_answer_carries_the_spend_table_and_the_verdict_in_the_project_language() 
         "Too early to tell. There are 2 counted days before and 2 after, and the minimum is 5 on each side: 3 are \
          missing before and 3 after. So far, each action cost 14% more after the installation.",
         "",
+        "No script around Mustard and no edit by script since the mark.",
+        "",
         "No answered searches since the mark. Too early to tell: 200 more are needed to reach the minimum of 200.",
     ];
     let ready = [
@@ -158,6 +167,8 @@ fn the_answer_carries_the_spend_table_and_the_verdict_in_the_project_language() 
         "| **tokens por ação** | **100 mil** | **126 mil** |",
         "",
         "A comparação vale, com 5 dias contados antes e 5 depois: cada ação custou 26% mais depois da instalação.",
+        "",
+        NO_SCRIPTS,
         "",
         "Nenhuma busca respondida desde a marca. Ainda não dá para dizer: faltam 200 para o mínimo de 200.",
     ];
@@ -208,6 +219,8 @@ fn the_answer_carries_the_spend_table_and_the_verdict_in_the_project_language() 
         "| **tokens por ação** | **126 mil** | sem uso |",
         "",
         &verdict,
+        "",
+        NO_SCRIPTS,
         "",
         "Nenhuma busca respondida desde a marca. Ainda não dá para dizer: faltam 200 para o mínimo de 200.",
     ];
@@ -375,7 +388,11 @@ fn each_answered_search_ends_by_the_first_next_call_that_opens_or_searches() {
     ];
     for (id, command, said, output, next) in &cases {
         let search = (*id, at, "Bash", bash(command), Some((*said).clone()), (*output).to_string(), false);
-        let after = next.iter().map(|(name, input)| ("next", at, *name, input.clone(), None, found.to_string(), false));
+        // Cada chamada tem o próprio código, como na conversa de verdade.
+        let ids: Vec<String> = (0..next.len()).map(|n| format!("{id}-next-{n}")).collect();
+        let after = next.iter().zip(&ids).map(|((name, input), next_id)| {
+            (next_id.as_str(), at, *name, input.clone(), None, found.to_string(), false)
+        });
         calls_conversation(&config, &format!("loja/{id}.jsonl"), Some(&root), &[vec![search], after.collect()].concat());
     }
 
@@ -451,4 +468,110 @@ fn the_search_table_counts_each_hundred_and_says_whether_the_number_holds() {
     ];
     let text = searches(&dir.path().join("few"), [1, 2, 0]);
     assert!(text.ends_with(&format!("\n\n{}", few.join("\n"))), "{text}");
+}
+
+/// Desde a marca, a medição conta, por conversa e por papel (condutor,
+/// agente de onda, outro agente), as chamadas que passam a resposta do
+/// Mustard por `python`, `jq` ou `grep`, no mesmo comando ou pelo arquivo em
+/// que ela foi gravada, e as que montam por script os dados de uma gravação,
+/// no mesmo comando, pela variável ou pelo arquivo do `--json @arquivo`.
+/// Conta também as edições por script, pelas formas que o agente de onda tem
+/// recusadas, com a cópia de onda que já saiu do disco lida pelo checkout. A
+/// linha repetida no arquivo conta uma vez; ficam fora a chamada antes da
+/// marca, a resposta lida sem script, a busca num arquivo do código, o
+/// programa sem caminho do projeto, o módulo instalado, a cópia gravada fora
+/// do projeto e a conversa de outro projeto.
+#[test]
+fn the_measure_counts_scripts_around_mustard_and_script_edits() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("config");
+    let (root, other) = (project(&dir.path().join("loja")), project(&dir.path().join("outra")));
+    std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"pt-BR"}}"#).unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/frete.rs"), "fn calcular() {}\n").unwrap();
+    let scratch = dir.path().join("scratch").display().to_string();
+    // A pasta das cópias existe, mas a cópia da onda já saiu do disco.
+    let copies = dir.path().join("copias").join(mustard_core::io::wave_prompt::copies_dir(&root).file_name().unwrap());
+    std::fs::create_dir_all(&copies).unwrap();
+    let gone = copies.join("obra").join("z").display().to_string();
+    let at = "2026-10-02T10:00:00Z";
+    let bash = |id: &'static str, command: String| -> Call<'static> {
+        (id, at, "Bash", json!({ "command": command }), None, String::new(), false)
+    };
+    let piped = bash("piped", "mustard-rt run read request-1 | python3 -c 'import sys; print(sys.stdin.read())'".into());
+    let grep_tool = json!({"pattern": "onda", "path": format!("{scratch}/answer.json")});
+    let looped = format!(
+        "while read -r line; do t=$(printf '%s' \"$line\" | python3 -c 'import json,sys; print(json.dumps({{\"text\": \
+         sys.stdin.read()}}))'); mustard-rt run write task --json \"$t\"; done < {scratch}/lines.txt"
+    );
+    let built = format!("python3 - <<'EOF'\nimport json\njson.dump({{\"wave\": 1}}, open(\"{scratch}/step.json\", \"w\"))\nEOF");
+    let conductor: Vec<Call> = vec![
+        ("early", "2026-09-30T10:00:00Z", "Bash", json!({"command": "mustard-rt run read request-1 | jq ."}), None, String::new(), false),
+        piped.clone(),
+        piped,
+        bash("substituted", "jq -r .text <(mustard-rt run panel)".into()),
+        bash("saved", format!("mustard-rt run read dispatch-1 > {scratch}/answer.json")),
+        bash("grepped", format!("grep -n onda {scratch}/answer.json")),
+        bash("catted", format!("cat {scratch}/answer.json | jq .waves")),
+        ("grep-tool", at, "Grep", grep_tool, None, String::new(), false),
+        bash("built", built),
+        bash("consumed", format!("mustard-rt run write step --json @{scratch}/step.json")),
+        bash("looped", looped),
+        bash("nested", "mustard-rt run write step --json \"$(jq -n '{wave: 1}')\"".into()),
+        bash("plain-read", format!("cat {scratch}/answer.json")),
+        bash("source-grep", "grep -n calcular src/frete.rs".into()),
+        bash("folded", "mustard-rt run read request-1 2>&1 | fold -w 200".into()),
+        bash("conductor-edit", "sed -i 's/a/b/' src/frete.rs".into()),
+    ];
+    let wave: Vec<Call> = vec![
+        bash("gone-copy", format!("cd {gone} && python3 - <<'EOF'\np = \"src/frete.rs\"\nopen(p, \"w\").write(\"x\")\nEOF")),
+        bash("in-place", "perl -i -pe 's/a/b/' src/frete.rs".into()),
+        bash("redirected", "cat > src/novo.rs <<'EOF'\nfn novo() {}\nEOF".into()),
+        bash("outside-script", format!("python3 {scratch}/edit.py")),
+        bash("wave-read", "mustard-rt run read request-3 | grep -n Tarefa".into()),
+        bash("no-path", "python3 -c 'print(1)'".into()),
+        bash("copied-out", format!("cat src/frete.rs > {scratch}/copia.rs")),
+        bash("module", "python3 -m pytest".into()),
+    ];
+    let review: Vec<Call> = vec![
+        bash("review-read", "mustard-rt run panel | jq .".into()),
+        bash("review-edit", "sed -i 's/x/y/' src/frete.rs".into()),
+    ];
+    calls_conversation(&config, "loja/s1.jsonl", Some(&root), &conductor);
+    let agents = config.join("projects").join("loja").join("s1").join("subagents");
+    for (name, calls, meta) in [
+        ("agent-w", &wave, json!({"agentType": "mustard:mustard-wave", "description": "# obra — onda 3"})),
+        ("agent-r", &review, json!({"agentType": "mustard-review", "description": "# obra — revisão final"})),
+    ] {
+        calls_conversation(&config, &format!("loja/s1/subagents/{name}.jsonl"), Some(&root), calls);
+        std::fs::write(agents.join(format!("{name}.meta.json")), meta.to_string()).unwrap();
+    }
+    calls_conversation(&config, "outra/s2.jsonl", Some(&other), &[bash("elsewhere", "mustard-rt run panel | jq .".into())]);
+
+    let answer = measure(dir.path(), &config, &root, &["--since", "2026-10-01"]);
+    let scripts = &answer["scripts"];
+    let role = |around: u64, edits: u64| json!({"conversations": 1, "around": around, "edits": edits});
+    let roles = [scripts["main"].clone(), scripts["wave"].clone(), scripts["other"].clone()];
+    assert_eq!(roles, [role(8, 1), role(1, 4), role(1, 1)], "{answer}");
+    let mut by: Vec<Value> = scripts["by_conversation"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|seen| json!([seen["conversation"], seen["role"], seen["description"], seen["around"], seen["edits"]]))
+        .collect();
+    by.sort_by_key(|seen| seen[0].as_str().unwrap().to_string());
+    let expected = json!([
+        ["loja/s1.jsonl", "main", null, 8, 1],
+        ["loja/s1/subagents/agent-r.jsonl", "other", "# obra — revisão final", 1, 1],
+        ["loja/s1/subagents/agent-w.jsonl", "wave", "# obra — onda 3", 1, 4],
+    ]);
+    assert_eq!(json!(by), expected, "{answer}");
+    let table = [
+        "| | condutor | agente de onda | outros agentes |",
+        "|---|---:|---:|---:|",
+        "| conversas | 1 | 1 | 1 |",
+        "| scripts em volta do Mustard | 8 | 1 | 1 |",
+        "| edições por script | 1 | 4 | 1 |",
+    ];
+    assert!(answer["text"].as_str().unwrap().contains(&format!("\n\n{}\n\n", table.join("\n"))), "{answer}");
 }

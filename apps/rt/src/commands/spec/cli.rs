@@ -80,7 +80,9 @@ pub enum SpecCmd {
     /// gravada pelo início da sessão. Compara os dias contados (fechados, com
     /// 100 ações ou mais) dos dois lados, pela mesma conta da página do gasto,
     /// e diz o veredito numa frase, com quantas buscas o Mustard respondeu
-    /// desde a marca. Só lê: não grava nada e não chama o Jev.
+    /// desde a marca. Conta também, por conversa, os scripts em volta do
+    /// Mustard e as edições por script, separando condutor, agente de onda e
+    /// outros agentes. Só lê: não grava nada e não chama o Jev.
     #[command(name = "measure")]
     #[command(display_order = 24)]
     Measure {
