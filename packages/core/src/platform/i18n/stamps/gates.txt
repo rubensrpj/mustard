@@ -67,10 +67,11 @@ gate.vocabulary.inject.lead	bcdb886594aabbcf
 gate.vocabulary.inject.pattern	0469621ede4cfbc8
 gate.vocabulary.inject.semantic	4b58a1961b1a87e3
 install_lock.not_installed	67d3ceec53a42d55
-runtime_output.ready	b0ab666f2c9c01f2
-runtime_output.ready_shortened	83e02ae6fd83f95e
-runtime_output.scripted	853ae0ec33e4960f
+runtime_output.alone	e78d0a27db31b4bf
+runtime_output.alone_short	609baa681da1d63a
+runtime_output.scripted	f01a2b926ba22e14
 runtime_output.summary	c504980144f84a1e
+runtime_output.term	6a890e368b38f9dc
 search.gateway.route	da5643f3d7c30ab8
 search.gateway.scan_running	cf8e03bcd84badde
 tool_observations.summary_hidden	ad7f2feaff7d8d33

@@ -526,9 +526,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              never end.\nCommand: {command}\nRun the command in the foreground, with its own time \
              limit, and read the result before moving on."
         }
-        // A recusa do comando que passa a resposta do Mustard por script,
-        // filtro ou corte (`apps/rt/src/hooks/bash/runtime_output.rs`).
-        // `{command}` vem do chamador: o comando recusado, encurtado.
         ("command_guard.glued_argument", Locale::PtBr) => {
             "Comando recusado: o terminal entregou a variável inteira, como um argumento só.\nRecebido: `{argument}`\nNão existe argumento parecido a procurar. O shell desta máquina não separa a variável nos espaços dela. Escreva cada opção na linha, uma por uma: `mustard-rt run read backlog --root /projeto --spec obra`. Com a variável, ponha cada parte dela no lugar da opção, e não a variável toda."
         }
@@ -550,45 +547,45 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              `offset` and `limit`. Edit with the host's edit tool, {edit}. Independent edits go \
              together, in one response."
         }
-        ("runtime_output.ready", Locale::PtBr) => {
-            "Rode assim, que é o mesmo comando com a resposta inteira num arquivo:\n{ready}"
-        }
-        ("runtime_output.ready", Locale::EnUs) => {
-            "Run this instead, the same command with the whole answer in a file:\n{ready}"
-        }
-        // O comando pronto longo, que volta sem o meio: `…` marca cada pedaço
-        // tirado, e o arquivo de cada etapa volta inteiro.
-        ("runtime_output.ready_shortened", Locale::PtBr) => {
-            "O comando pronto é longo e volta sem o meio, marcado com `…`. Rode o seu comando sem a \
-             etapa que filtra a resposta, com cada etapa do Mustard gravando no arquivo que ele \
-             mostra:\n{ready}"
-        }
-        ("runtime_output.ready_shortened", Locale::EnUs) => {
-            "The ready command is long and comes back without its middle, marked with `…`. Run your \
-             command without the step that filters the answer, with each Mustard step writing to \
-             the file it shows:\n{ready}"
-        }
+        // A recusa do comando que passa a resposta do Mustard por script,
+        // filtro ou corte (`apps/rt/src/hooks/bash/runtime_output.rs`): a frase
+        // da recusa e, na linha seguinte, o caminho do comando barrado. Nenhuma
+        // delas manda gravar a resposta num arquivo.
         ("runtime_output.summary", Locale::PtBr) => {
             "O bloco `{block}` tem um resumo pronto, que cabe inteiro: `mustard-rt run read {summary}`."
         }
         ("runtime_output.summary", Locale::EnUs) => {
             "Block `{block}` has a ready summary that fits whole: `mustard-rt run read {summary}`."
         }
+        ("runtime_output.term", Locale::PtBr) => {
+            "Para ler só uma parte, use `mustard-rt run read <bloco> --term <termo>`."
+        }
+        ("runtime_output.term", Locale::EnUs) => {
+            "To read only one part, use `mustard-rt run read <block> --term <term>`."
+        }
+        ("runtime_output.alone_short", Locale::PtBr) => {
+            "Rode o comando do Mustard sozinho, sem o filtro: a resposta dele já vem curta e se lê inteira."
+        }
+        ("runtime_output.alone_short", Locale::EnUs) => {
+            "Run the Mustard command alone, without the filter: its answer already comes short and is read whole."
+        }
+        ("runtime_output.alone", Locale::PtBr) => {
+            "Rode o comando do Mustard sozinho, sem o filtro, e leia a resposta inteira."
+        }
+        ("runtime_output.alone", Locale::EnUs) => {
+            "Run the Mustard command alone, without the filter, and read the whole answer."
+        }
+        // `{command}` vem do chamador: o comando recusado, encurtado.
         ("runtime_output.scripted", Locale::PtBr) => {
             "Comando barrado: ele passa a resposta do Mustard por script, filtro ou corte.\nComando: \
              {command}\nA resposta do Mustard se lê inteira, e nada dela passa por script, filtro ou \
-             corte. Rode o comando do Mustard sozinho. Para ler só uma parte, use `mustard-rt run read \
-             <bloco> --term <termo>`. Se a resposta for grande, grave num arquivo na pasta temporária, \
-             fora do repositório, um por etapa, e leia o arquivo por partes. Se o Mustard não traz o recorte de que você precisa, isso vira um \
-             pedido, não um corte."
+             corte. Se o Mustard não traz o recorte de que você precisa, isso vira um pedido, não um \
+             corte."
         }
         ("runtime_output.scripted", Locale::EnUs) => {
             "Command blocked: it runs the Mustard answer through a script, a filter or a cut.\nCommand: \
              {command}\nThe Mustard answer is read whole, and none of it goes through a script, a filter \
-             or a cut. Run the Mustard command alone. To read only one part, use `mustard-rt run read \
-             <block> --term <term>`. When the answer is long, save it to a file in the temporary \
-             folder, one per step. Keep the file outside the repository, and read it in parts. When Mustard does not give the part you need, that becomes a request, \
-             not a cut."
+             or a cut. When Mustard does not give the part you need, that becomes a request, not a cut."
         }
         // O aviso depois do executor de teste ou de compilação cujo resumo o
         // pipe escondeu (`apps/rt/src/shared/tool_observations.rs`). `{command}`
@@ -883,8 +880,9 @@ mod tests {
             ("runtime_output.scripted", &["{command}"][..]),
             ("command_guard.glued_argument", &["{argument}"][..]),
             ("command_guard.shell_edit", &["{edit}"][..]),
-            ("runtime_output.ready", &["{ready}"][..]),
-            ("runtime_output.ready_shortened", &["{ready}"][..]),
+            ("runtime_output.term", &[][..]),
+            ("runtime_output.alone_short", &[][..]),
+            ("runtime_output.alone", &[][..]),
             ("runtime_output.summary", &["{block}", "{summary}"][..]),
             ("tool_observations.summary_hidden", &["{command}"][..]),
         ] {
