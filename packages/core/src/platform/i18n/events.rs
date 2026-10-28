@@ -71,6 +71,31 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "This line cites by the label {label} line {line} of the batch, which was not \
              written. Nothing from this line was written. Fix line {line} and send both again."
         }
+        // O rascunho que a recusa do `run write` guarda para a correção.
+        ("spec_events.draft_kept", Locale::PtBr) => {
+            "O rascunho {draft} guardou o que foi mandado: para corrigir, grave de novo com \
+             {\"draft\": {draft}, …} mandando só o campo corrigido."
+        }
+        ("spec_events.draft_kept", Locale::EnUs) => {
+            "Draft {draft} kept what was sent: to fix it, write again with {\"draft\": {draft}, …} \
+             sending only the corrected field."
+        }
+        ("spec_events.draft_unknown", Locale::PtBr) => {
+            "O rascunho {draft} não existe nesta spec: ele já foi usado, a spec fechou ou o número \
+             está errado. Nada foi gravado. Mande a gravação inteira de novo."
+        }
+        ("spec_events.draft_unknown", Locale::EnUs) => {
+            "Draft {draft} does not exist in this spec: it was already used, the spec closed or \
+             the number is wrong. Nothing was written. Send the whole write again."
+        }
+        ("spec_events.draft_other_type", Locale::PtBr) => {
+            "O rascunho {draft} é de um item do tipo {found}, e esta gravação é do tipo {type}. \
+             Nada foi gravado. Grave com o tipo do rascunho, ou mande a gravação inteira."
+        }
+        ("spec_events.draft_other_type", Locale::EnUs) => {
+            "Draft {draft} is of type {found}, and this write is of type {type}. Nothing was \
+             written. Write with the draft's type, or send the whole write."
+        }
         ("spec_events.unknown_type", Locale::PtBr) => {
             "O tipo {type} não existe no arquivo da spec. Nada foi gravado. Tipos aceitos: {types}."
         }
@@ -1516,6 +1541,9 @@ mod tests {
             ("spec_events.batch_empty", &[][..]),
             ("spec_events.batch_type_missing", &[][..]),
             ("spec_events.batch_line_refused", &["{label}", "{line}"][..]),
+            ("spec_events.draft_kept", &["{draft}"][..]),
+            ("spec_events.draft_unknown", &["{draft}"][..]),
+            ("spec_events.draft_other_type", &["{draft}", "{found}", "{type}"][..]),
             ("spec_events.unknown_type", &["{type}", "{types}"][..]),
             ("spec_events.find_more", &["{shown}", "{total}"][..]),
             ("spec_events.find_none", &[][..]),

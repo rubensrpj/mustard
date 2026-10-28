@@ -857,7 +857,7 @@ fn writing_a_wave_by_hand_is_refused_and_says_to_write_only_the_task() {
 /// entrega. Sem ele, a gravação é recusada sem gravar nada, com o texto que
 /// pede o título de até 70 caracteres; com 71 caracteres também. Com 70 (e
 /// letras acentuadas, que contam uma cada), a tarefa é gravada. A versão
-/// nova que o modelo grava sem título também é recusada.
+/// nova que o modelo grava sem título herda o da versão que substitui.
 #[test]
 fn task_without_a_title_is_refused_and_with_a_title_is_written() {
     use mustard_core::platform::i18n::{Locale, translate};
@@ -903,9 +903,14 @@ fn task_without_a_title_is_refused_and_with_a_title_is_written() {
     let saved = written["events"].as_array().expect("events").iter().find(|e| e["code"] == out["code"]).cloned();
     assert_eq!(saved.map(|e| e["title"].clone()), Some(json!(exact)), "o título fica gravado: {written}");
 
-    // A versão nova pelo modelo, sem título: recusada.
-    refused(&task(None, json!({"replaces": first})), "versão nova sem título");
-    let (code, out) = write_out(root, "task", &task(Some("Fechamento confere cada critério"), json!({"replaces": first})));
+    // A versão nova pelo modelo, sem título: herda o da versão que substitui.
+    let (code, out) = write_out(root, "task", &task(None, json!({"replaces": first})));
+    assert_eq!((code, &out["ok"]), (Some(0), &json!(true)), "a versão nova sem título herda o título: {out}");
+    let second = out["id"].as_u64().expect("o número da versão");
+    let revised = read(root, "waves");
+    let saved = revised["events"].as_array().expect("events").iter().find(|e| e["code"] == out["code"]).cloned();
+    assert_eq!(saved.map(|e| e["title"].clone()), Some(json!(exact)), "o título veio da versão anterior: {revised}");
+    let (code, out) = write_out(root, "task", &task(Some("Fechamento confere cada critério"), json!({"replaces": second})));
     assert_eq!((code, &out["ok"]), (Some(0), &json!(true)), "a versão nova com título passa: {out}");
 }
 

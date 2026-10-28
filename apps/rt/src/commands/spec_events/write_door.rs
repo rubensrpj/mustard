@@ -6,6 +6,10 @@
 //! backlog as tarefas da onda que ela tira, e a resposta do passo traz a
 //! próxima tarefa da onda.
 //!
+//! A gravação recusada, sozinha ou numa linha do lote, guarda o rascunho dela
+//! na pasta da spec e devolve o número em `draft`; a correção que o cita
+//! manda só o campo errado ([`super::refusal_draft`]).
+//!
 //! A gravação em si é a de [`super::write`], a mesma que a rodada e a parte
 //! comum do fluxo usam por dentro do binário. A porta importa a rodada e a
 //! gravação; a gravação não importa nenhuma das duas, e nada se importa em
@@ -22,6 +26,7 @@ use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Map, Value, json};
 
+use super::refusal_draft::Resolved;
 use super::request_route::Route;
 use super::write::{self, Recorded, WriteOpts};
 use crate::commands::flow::round::queue::{files_in, task_files};
@@ -80,12 +85,21 @@ fn ask_together(root: &Path, spec: &str, payloads: &[String], ask: &AskJev<'_>) 
 /// [`write_for`] com a pergunta ao classificador e ao lugar do pedido feita
 /// por `ask` ([`AskJev`]).
 fn write_triaged(opts: &WriteOpts, copy: bool, session: Option<&str>, ask: &AskJev<'_>) -> Value {
-    let mut ready = match prepare(opts, session, ask) {
-        Ok(ready) => ready,
+    // A gravação que cita um rascunho de recusa parte dele, e a recusa desta
+    // guarda o rascunho de novo; a que passa o tira.
+    let draft = match Resolved::of(&opts.root, opts.spec.as_deref(), session, &opts.event_type, &opts.json) {
+        Ok(draft) => draft,
         Err(report) => return report,
     };
-    let recorded = record_ready(&mut ready, &opts.root, session);
-    finish(ready, &opts.root, copy, recorded)
+    let joined = WriteOpts { root: opts.root.clone(), spec: opts.spec.clone(), event_type: opts.event_type.clone(), json: draft.json().to_string() };
+    let report = match prepare(&joined, session, ask) {
+        Ok(mut ready) => {
+            let recorded = record_ready(&mut ready, &joined.root, session);
+            finish(ready, &joined.root, copy, recorded)
+        }
+        Err(report) => report,
+    };
+    draft.settle(report)
 }
 
 /// O rascunho que passou por todas as conferências da porta e só falta
@@ -630,8 +644,9 @@ fn answer_written_step(report: &mut Value, opts: &WriteOpts, session: Option<&st
 
 /// Os campos da resposta de uma gravação que a linha curta do lote mantém:
 /// a ordem ao agente que só a resposta traz — a próxima tarefa liberada, a de
-/// entregar e o pedido que a recusa manda atender antes de gravar de novo.
-const ORDER_FIELDS: &[&str] = &[NEXT_TASK_FIELD, TASKS_FINISHED_FIELD, "reserve", "rewrite", "request"];
+/// entregar, o pedido que a recusa manda atender antes de gravar de novo e o
+/// número do rascunho que a recusa guardou para a correção, com a dica dela.
+const ORDER_FIELDS: &[&str] = &[NEXT_TASK_FIELD, TASKS_FINISHED_FIELD, "reserve", "rewrite", "request", "draft", "draft_hint"];
 
 /// Uma linha do lote, lida da entrada.
 struct BatchLine {
@@ -691,7 +706,16 @@ fn batch_for(root: &Path, spec: Option<&str>, input: &str, session: Option<&str>
         }
         let by_label = |label: &str| (0..at).rev().find(|before| lines[*before].label.as_deref() == Some(label)).and_then(|before| ids[before]);
         write::resolve_labels(&event_type, &mut fields, &by_label);
-        let opts = WriteOpts { root: root.to_path_buf(), spec: spec.map(str::to_string), event_type, json: Value::Object(fields).to_string() };
+        // A linha que cita um rascunho de recusa parte dele; a recusa dela o
+        // guarda de novo, e a que grava o tira.
+        let draft = match Resolved::of(root, spec, session, &event_type, &Value::Object(fields).to_string()) {
+            Ok(draft) => draft,
+            Err(refusal) => {
+                answers.push(refusal);
+                continue;
+            }
+        };
+        let opts = WriteOpts { root: root.to_path_buf(), spec: spec.map(str::to_string), event_type, json: draft.json().to_string() };
         let answer = match prepare(&opts, session, ask) {
             Err(answer) => answer,
             Ok(mut ready) => {
@@ -700,7 +724,7 @@ fn batch_for(root: &Path, spec: Option<&str>, input: &str, session: Option<&str>
                 finish(ready, root, false, recorded)
             }
         };
-        answers.push(answer);
+        answers.push(draft.settle(answer));
     }
     lines
         .iter()
@@ -1296,5 +1320,68 @@ mod tests {
         assert_eq!(out["ok"], json!(true), "{out}");
         assert!(out.get("warnings").is_none(), "{out}");
         assert_eq!(requests(root), 1);
+    }
+
+    /// A tarefa recusada, sozinha ou numa linha do lote, devolve o número do
+    /// rascunho que guardou, e a correção com esse número e só o campo errado
+    /// grava a tarefa inteira, passando pela conferência de sempre: a
+    /// correção que erra de novo mantém o mesmo rascunho, o rascunho usado
+    /// sai, e o número dele não vale mais nem para outro tipo de item.
+    #[test]
+    fn a_refused_task_keeps_a_draft_and_the_fix_sends_only_the_wrong_field() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = message(root, "user", "Quero a conferência de cada critério.");
+        let crit = crate::shared::spec_state::seed_event(
+            root,
+            "teste",
+            "criterion",
+            json!({"when": "a obra fecha", "then": "cada critério é conferido", "proof": "git --version", "form": "ubiquitous"}),
+        );
+        let by_model = |event_type: &str, body: &Value| {
+            let opts = WriteOpts { root: root.to_path_buf(), spec: Some("teste".into()), event_type: event_type.into(), json: body.to_string() };
+            write_triaged(&opts, false, None, &|_, _, _| Asked::Off)
+        };
+        let log = || store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap();
+        let without_files = json!({"title": "Fechamento confere cada critério", "text": "Conferir.", "agent": "- conferir cada critério",
+            "depends_on": [], "covers": [crit], "origin": said});
+
+        let refused = by_model("task", &without_files);
+        assert_eq!(refused["reason"], json!("task-declaration-missing"), "{refused}");
+        let draft = refused["draft"].as_u64().unwrap_or_else(|| panic!("a recusa devolve o número do rascunho: {refused}"));
+        assert!(refused["draft_hint"].as_str().unwrap_or_default().contains(&format!("\"draft\": {draft}")), "a dica ensina a correção: {refused}");
+        let before = log().events.len();
+
+        let other = by_model("note", &json!({"draft": draft}));
+        assert_eq!(other["reason"], json!("draft-other-type"), "o rascunho é de uma tarefa: {other}");
+        let wrong = by_model("task", &json!({"draft": draft, "files": "src/a.rs"}));
+        assert_eq!(wrong["ok"], json!(false), "{wrong}");
+        assert_eq!(wrong["draft"], json!(draft), "a correção errada mantém o rascunho: {wrong}");
+        assert_eq!(log().events.len(), before, "nada foi gravado");
+
+        let fixed = by_model("task", &json!({"draft": draft, "files": []}));
+        let id = fixed["id"].as_u64().unwrap_or_else(|| panic!("a correção só com o campo errado grava: {fixed}"));
+        let log = log();
+        let written = log.get(id).expect("a tarefa gravada");
+        for field in ["title", "text", "agent", "depends_on", "covers"] {
+            assert_eq!(written.fields.get(field), without_files.get(field), "{field} veio do rascunho: {:?}", written.fields);
+        }
+        assert_eq!(written.fields.get("files"), Some(&json!([])));
+        assert!(written.fields.get("draft").is_none(), "o número do rascunho não vai ao evento: {:?}", written.fields);
+        let used = by_model("task", &json!({"draft": draft, "files": []}));
+        assert_eq!(used["reason"], json!("draft-unknown"), "o rascunho usado saiu: {used}");
+
+        let line = |fields: &Value| {
+            let mut line = fields.clone();
+            line["type"] = json!("task");
+            line.to_string()
+        };
+        let batch = |input: &str| batch_for(root, Some("teste"), input, None, &|_, _, _| Asked::Off);
+        let refused_line = batch(&line(&without_files));
+        let batch_draft = refused_line[0].1["draft"].as_u64().unwrap_or_else(|| panic!("a linha recusada devolve o rascunho: {refused_line:?}"));
+        assert!(batch_draft > draft, "o número não volta a ser dado: {batch_draft}");
+        assert_eq!(batch_line(refused_line[0].0, &refused_line[0].1)["draft"], json!(batch_draft), "a linha curta mantém o número");
+        let fixed_line = batch(&line(&json!({"draft": batch_draft, "files": []})));
+        assert_eq!(fixed_line[0].1["ok"], json!(true), "{fixed_line:?}");
     }
 }

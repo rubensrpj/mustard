@@ -70,6 +70,9 @@ spec_events.delivery_place_untouched	74929a4c464da5de
 spec_events.delivery_proof_older_than_file	da872c7b5f0642dd
 spec_events.delivery_read_missing	f5976e1de0924a10
 spec_events.depends_outside_wave	52579decffb55331
+spec_events.draft_kept	e42348033208b221
+spec_events.draft_other_type	fc4dfb04f432991a
+spec_events.draft_unknown	3591dd02c0aa4fdf
 spec_events.duplicate_id	1fb46feeacfb6d24
 spec_events.empty_text	485d75b9c692cb7e
 spec_events.fact_without_source	34fdeae5694c41d5

@@ -92,6 +92,8 @@ mod clean_copy;
 #[cfg(test)]
 mod failure_line_tests;
 #[cfg(test)]
+mod draft_tests;
+#[cfg(test)]
 mod outdated_request_tests;
 mod ownerless_tests;
 mod proof_runs;
@@ -781,6 +783,8 @@ fn run_close(
     // Nenhuma onda volta mais para conserto: os trechos que a conferência
     // depois da onda deixou para o agente saem da pasta da spec.
     crate::commands::flow::round::sweep_fixes(root, &spec, None);
+    // Os rascunhos que as recusas guardaram e ninguém usou também saem.
+    spec_events::refusal_draft::clear(root, &spec);
     // O retrato do mapa da base não serve mais a ninguém: a obra fechou, e a
     // análise de declarações sem uso já rodou contra ele. São dezenas de
     // megabytes por spec, e ninguém os apagava.

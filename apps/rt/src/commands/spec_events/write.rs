@@ -729,9 +729,9 @@ pub fn record(start: &Path, spec: &str, event_type: &str, draft: Map<String, Val
 /// que ela cobre. `files` e `depends_on` contam como declarados só pela chave
 /// estar presente, mesmo com a lista vazia — uma tarefa sem dependência
 /// declara `"depends_on": []`. O título vazio ou com mais de
-/// [`TASK_TITLE_MAX`] caracteres conta como faltando. A versão que o programa
-/// grava não precisa dele: herda o da versão que substitui
-/// ([`inherit_task_title`]).
+/// [`TASK_TITLE_MAX`] caracteres conta como faltando. A versão nova de uma
+/// tarefa não precisa mandar o que não muda: herda da versão que substitui
+/// (`task_inherit::inherit_task`), antes desta conferência.
 ///
 /// Os itens cobertos (`covers`) faltam também com a lista vazia: a onda leva
 /// como critérios os itens que as tarefas dela cobrem, e a tarefa que não
@@ -979,25 +979,6 @@ fn unclear_fields(root: &Path, draft: &Map<String, Value>, known: &[String], lan
         .collect()
 }
 
-/// A versão de tarefa gravada pelo programa sem título leva o título da
-/// versão que ela substitui, quando essa tinha um. O evento gravado não muda
-/// mais, então ler a versão antiga antes da trava não perde nada.
-fn inherit_task_title(source: &Source, draft: &mut Map<String, Value>) -> Result<(), Refusal> {
-    if draft.get("title").and_then(Value::as_str).is_some_and(|t| !t.trim().is_empty()) {
-        return Ok(());
-    }
-    let Some(old) = draft.get("replaces").and_then(Value::as_u64) else {
-        return Ok(());
-    };
-    let Some(log) = source.log()? else {
-        return Ok(());
-    };
-    if let Some(title) = log.get(old).and_then(|e| e.fields.get("title")).filter(|t| t.is_string()) {
-        draft.insert("title".into(), title.clone());
-    }
-    Ok(())
-}
-
 /// Onde uma gravação lê o arquivo de eventos como ele está antes de gravar:
 /// pelo caminho, com a trava compartilhada, ou pelo trecho que já segura a
 /// trava exclusiva dele ([`record_locked`]) — ali dentro, ler pelo caminho
@@ -1090,7 +1071,7 @@ pub(super) fn record_to(
     start: &Path,
     spec: &str,
     event_type: &str,
-    draft: Map<String, Value>,
+    mut draft: Map<String, Value>,
     by: Option<PhaseWriter>,
     locked: Option<&mut store::LockedLog>,
     session: Option<&str>,
@@ -1100,11 +1081,19 @@ pub(super) fn record_to(
     }
     mustard_core::io::legacy_specs::refuse_legacy(&project.root, spec)?;
     let file = store::spec_file(&project.root, spec);
+    // A versão nova de uma tarefa leva da versão que substitui o que não
+    // mandou, antes de a conferência pedir cada declaração. O evento gravado
+    // não muda mais, então ler a versão antiga antes da trava não perde nada.
+    if event_type == "task"
+        && let Ok(path) = file.as_deref()
+        && let Some(log) = Source::of(path, locked.as_deref()).log()?
+    {
+        super::task_inherit::inherit_task(&log, by.is_none(), &mut draft);
+    }
     let declaration_issue = task_declared(event_type, &draft, by.is_none()).err().map(|refusal| {
         let source = file.as_deref().ok().map(|path| Source::of(path, locked.as_deref()));
         with_uncovered_items(source.as_ref(), refusal)
     });
-    let mut draft = draft;
     // De qual sessão veio: o registro diz quem gravou, e o consumo de duas
     // conversas no mesmo projeto deixa de sair somado. Quem já disse a sessão
     // no rascunho manda nela.
@@ -1136,9 +1125,6 @@ pub(super) fn record_to(
         if !unclear.is_empty() {
             issues.push(Refusal::ItemUnclear { fields: unclear });
         }
-    }
-    if event_type == "task" && by.is_some() {
-        inherit_task_title(&Source::of(&path, locked.as_deref()), &mut draft)?;
     }
     // A versão nova que o modelo grava sem `wave` fica na onda da vigente
     // enquanto o agente dela trabalha: a onda é do programa, e a tarefa que
@@ -5517,9 +5503,9 @@ mod tests {
         assert!(index.lines().any(|l| l == line), "the spec line lost its last write: {index}");
     }
 
-    /// A versão de tarefa que o programa grava sem título é aceita e fica com
-    /// o título da versão que ela substitui; a mesma versão pela porta do
-    /// modelo é recusada sem gravar nada.
+    /// A tarefa nova sem título é recusada pela porta do modelo sem gravar
+    /// nada, e com título grava; a versão que o programa grava sem título é
+    /// aceita e fica com o título da versão que ela substitui.
     #[test]
     fn task_without_a_title_is_refused_and_with_a_title_is_written_and_the_program_version_inherits_the_title() {
         let dir = tempdir().unwrap();
@@ -5538,17 +5524,63 @@ mod tests {
             "agent": "- conferir cada critério", "files": [], "depends_on": [], "covers": [crit], "origin": said}));
         let first = first["id"].as_u64().unwrap_or_else(|| panic!("a tarefa com título grava: {first}"));
 
+        let untitled = json!({"text": "Conferir, de outro jeito.", "agent": "- conferir", "files": [], "depends_on": [], "covers": [crit], "origin": said});
+        let refused = by_model(untitled);
+        assert_eq!(refused["ok"], json!(false), "a tarefa nova sem título não grava: {refused}");
+
         let version = json!({"text": "Conferir, revista.", "files": [], "depends_on": [], "covers": [crit],
             "origin": said, "replaces": first});
-        let refused = by_model(version.clone());
-        assert_eq!(refused["reason"], json!("task-declaration-missing"), "{refused}");
-        assert!(!refused["hint"].as_str().unwrap_or_default().contains("covers"), "só falta o título: {refused}");
-
         let draft = version.as_object().cloned().unwrap();
         let recorded = record(root, "teste", "task", draft, PhaseWriter::Binary).expect("o programa grava");
         let log = store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap();
         let written = log.get(recorded.written.id).expect("a versão gravada");
         assert_eq!(written.str_field("title"), Some("Fechamento confere cada critério"), "{:?}", written.fields);
+        assert_eq!(written.str_field("agent"), None, "o programa herda só o título: {:?}", written.fields);
+    }
+
+    /// A versão nova de uma tarefa que manda só um campo mantém os outros da
+    /// versão anterior, pela porta do modelo, e a conferência da gravação
+    /// olha a tarefa inteira. O que o programa decide não se herda: a trava
+    /// `blocked_by` sai com a versão nova, e a onda segue a regra dela.
+    #[test]
+    fn a_new_task_version_inherits_the_fields_it_does_not_send() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        write(root, "message", r#"{"author":"user","text":"o plano"}"#);
+        let by_model =
+            |body: Value| write_at(&WriteOpts { root: root.to_path_buf(), spec: Some("teste".into()), event_type: "task".into(), json: body.to_string() });
+        let crit = crate::shared::spec_state::seed_event(
+            root,
+            "teste",
+            "criterion",
+            json!({"when": "a obra fecha", "then": "cada critério é conferido", "proof": "git --version", "form": "ubiquitous"}),
+        );
+        let first = by_model(json!({"title": "Fechamento confere cada critério", "text": "Conferir.", "agent": "- conferir cada critério",
+            "files": [{"path": "src/a.rs"}], "depends_on": [], "covers": [crit], "skill": "revisar", "must_read": ["README.md"],
+            "blocked_by": "Aguardar o acesso."}));
+        let first = first["id"].as_u64().unwrap_or_else(|| panic!("a tarefa grava: {first}"));
+
+        let revised = by_model(json!({"replaces": first, "files": [{"path": "src/b.rs"}]}));
+        let id = revised["id"].as_u64().unwrap_or_else(|| panic!("a versão só com `files` grava: {revised}"));
+        let log = store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap();
+        let (old, written) = (log.get(first).expect("a versão antiga"), log.get(id).expect("a versão nova"));
+        assert_eq!(written.fields.get("files"), Some(&json!([{"path": "src/b.rs"}])), "o campo mandado vence: {:?}", written.fields);
+        for field in ["title", "text", "agent", "depends_on", "covers", "skill", "must_read"] {
+            assert_eq!(written.fields.get(field), old.fields.get(field), "{field} vem da versão anterior: {:?}", written.fields);
+        }
+        assert_eq!(written.str_field("blocked_by"), None, "a trava do programa não se herda: {:?}", written.fields);
+        assert_eq!(written.wave(), None, "a onda não vem por aqui: {:?}", written.fields);
+
+        let cleared = by_model(json!({"replaces": id, "must_read": []}));
+        let cleared = log_field(root, &cleared, "must_read");
+        assert_eq!(cleared, Some(json!([])), "o campo mandado vazio limpa o herdado");
+    }
+
+    /// O campo `field` da versão que a resposta `report` gravou.
+    fn log_field(root: &std::path::Path, report: &Value, field: &str) -> Option<Value> {
+        let id = report["id"].as_u64()?;
+        let log = store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap();
+        log.get(id)?.fields.get(field).cloned()
     }
 
     /// A tarefa que cobre só uma decisão, sem prova nenhuma, é recusada sem

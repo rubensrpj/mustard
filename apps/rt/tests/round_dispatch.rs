@@ -3096,6 +3096,29 @@ fn a_new_task_version_without_the_wave_stays_in_the_wave_in_progress_and_its_del
     assert!(project.log().events.iter().any(|e| e.event_type == "delivered" && e.wave() == Some(1)), "a entrega do agente foi gravada");
 }
 
+/// A versão nova da tarefa de uma onda já entregue, gravada só com `files`,
+/// herda os outros campos da versão anterior e sai sem onda: a onda não se
+/// herda por aí, e a tarefa volta ao backlog.
+#[test]
+fn a_new_version_of_a_delivered_wave_task_leaves_the_wave() {
+    let (project, task) = wave_in_progress();
+    deliver_in_copy(&project, 1, "hello\n");
+    assert_eq!(wave_of(&project, task), Some(1), "a tarefa entregue segue na onda 1");
+    let log = project.log();
+    let before = log.current(task).expect("the task").clone();
+    let code = log.codes().get(&before.id).cloned().expect("the task code");
+
+    let sent = json!({"replaces": code, "files": [{"path": "src/other.txt"}]});
+    let revised = project.answer(&["write", "task", "--spec", SPEC, "--json", &sent.to_string()]);
+    assert_eq!(revised["ok"], json!(true), "{revised}");
+    assert_eq!(wave_of(&project, task), None, "a versão nova sai sem onda: {revised}");
+    let now = project.log().current(task).expect("the task").clone();
+    assert_eq!(now.fields.get("files"), Some(&json!([{"path": "src/other.txt"}])), "{:?}", now.fields);
+    for field in ["title", "text", "agent", "depends_on", "covers"] {
+        assert_eq!(now.fields.get(field), before.fields.get(field), "{field} vem da versão anterior: {:?}", now.fields);
+    }
+}
+
 /// Mudar a onda de uma tarefa cujo envio está aberto é recusado com o motivo
 /// da onda que nasce do backlog, sem gravar nada, e a entrega do agente
 /// segue aceita.
