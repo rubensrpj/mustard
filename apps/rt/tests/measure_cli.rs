@@ -474,9 +474,12 @@ fn the_search_table_counts_each_hundred_and_says_whether_the_number_holds() {
 /// agente de onda, outro agente), as chamadas que passam a resposta do
 /// Mustard por `python`, `jq` ou `grep`, no mesmo comando ou pelo arquivo em
 /// que ela foi gravada, e as que montam por script os dados de uma gravação,
-/// no mesmo comando, pela variável ou pelo arquivo do `--json @arquivo`.
-/// Conta também as edições por script, pelas formas que o agente de onda tem
-/// recusadas, com a cópia de onda que já saiu do disco lida pelo checkout. A
+/// no mesmo comando, pela variável ou pelo arquivo do `--json @arquivo`; o
+/// script num heredoc vale pelo corpo dele, também depois de outro heredoc
+/// com o mesmo delimitador. Conta também as edições por script, pelas formas
+/// que o agente de onda tem recusadas, com o programa passado pelo cano, o
+/// interpretador rodado por um lançador e a cópia de onda que já saiu do
+/// disco lida pelo checkout. A
 /// linha repetida no arquivo conta uma vez; ficam fora a chamada antes da
 /// marca, a resposta lida sem script, a busca num arquivo do código, o
 /// programa sem caminho do projeto, o módulo instalado, a cópia gravada fora
@@ -504,7 +507,9 @@ fn the_measure_counts_scripts_around_mustard_and_script_edits() {
         "while read -r line; do t=$(printf '%s' \"$line\" | python3 -c 'import json,sys; print(json.dumps({{\"text\": \
          sys.stdin.read()}}))'); mustard-rt run write task --json \"$t\"; done < {scratch}/lines.txt"
     );
-    let built = format!("python3 - <<'EOF'\nimport json\njson.dump({{\"wave\": 1}}, open(\"{scratch}/step.json\", \"w\"))\nEOF");
+    let built = format!(
+        "cat > {scratch}/nota.txt <<'EOF'\nnota\nEOF\npython3 - <<'EOF'\nimport json\njson.dump({{\"wave\": 1}}, open(\"{scratch}/step.json\", \"w\"))\nEOF"
+    );
     let conductor: Vec<Call> = vec![
         ("early", "2026-09-30T10:00:00Z", "Bash", json!({"command": "mustard-rt run read request-1 | jq ."}), None, String::new(), false),
         piped.clone(),
@@ -528,6 +533,8 @@ fn the_measure_counts_scripts_around_mustard_and_script_edits() {
         bash("in-place", "perl -i -pe 's/a/b/' src/frete.rs".into()),
         bash("redirected", "cat > src/novo.rs <<'EOF'\nfn novo() {}\nEOF".into()),
         bash("outside-script", format!("python3 {scratch}/edit.py")),
+        bash("piped-program", "echo \"open('src/frete.rs', 'w').write('')\" | python3".into()),
+        bash("launched", "uv run python -c \"open('src/frete.rs', 'w').write('')\"".into()),
         bash("wave-read", "mustard-rt run read request-3 | grep -n Tarefa".into()),
         bash("no-path", "python3 -c 'print(1)'".into()),
         bash("copied-out", format!("cat src/frete.rs > {scratch}/copia.rs")),
@@ -552,7 +559,7 @@ fn the_measure_counts_scripts_around_mustard_and_script_edits() {
     let scripts = &answer["scripts"];
     let role = |around: u64, edits: u64| json!({"conversations": 1, "around": around, "edits": edits});
     let roles = [scripts["main"].clone(), scripts["wave"].clone(), scripts["other"].clone()];
-    assert_eq!(roles, [role(8, 1), role(1, 4), role(1, 1)], "{answer}");
+    assert_eq!(roles, [role(8, 1), role(1, 6), role(1, 1)], "{answer}");
     let mut by: Vec<Value> = scripts["by_conversation"]
         .as_array()
         .unwrap()
@@ -563,7 +570,7 @@ fn the_measure_counts_scripts_around_mustard_and_script_edits() {
     let expected = json!([
         ["loja/s1.jsonl", "main", null, 8, 1],
         ["loja/s1/subagents/agent-r.jsonl", "other", "# obra — revisão final", 1, 1],
-        ["loja/s1/subagents/agent-w.jsonl", "wave", "# obra — onda 3", 1, 4],
+        ["loja/s1/subagents/agent-w.jsonl", "wave", "# obra — onda 3", 1, 6],
     ]);
     assert_eq!(json!(by), expected, "{answer}");
     let table = [
@@ -571,7 +578,7 @@ fn the_measure_counts_scripts_around_mustard_and_script_edits() {
         "|---|---:|---:|---:|",
         "| conversas | 1 | 1 | 1 |",
         "| scripts em volta do Mustard | 8 | 1 | 1 |",
-        "| edições por script | 1 | 4 | 1 |",
+        "| edições por script | 1 | 6 | 1 |",
     ];
     assert!(answer["text"].as_str().unwrap().contains(&format!("\n\n{}\n\n", table.join("\n"))), "{answer}");
 }

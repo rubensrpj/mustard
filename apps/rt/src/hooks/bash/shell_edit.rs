@@ -4,11 +4,14 @@
 //! A regra é de sintaxe e não adivinha o que o programa faz. No agente de
 //! onda, ela recusa:
 //!
-//! - o interpretador (`python`, `node`, `perl`, `ruby`, `bun`) com o programa
-//!   na própria linha (`-c`, `-e`, heredoc ou `<<<`), quando o texto dele cita
-//!   um caminho que existe no projeto ou na pasta das cópias;
+//! - o interpretador (`python`, `py`, `node`, `perl`, `ruby`, `bun`), também
+//!   o rodado por um lançador (`uv run`, `poetry run`), com o programa na
+//!   própria linha (`-c`, `-e`, heredoc, `<<<` ou o texto que `echo`,
+//!   `printf` ou `cat` lhe passa pelo cano), quando o texto dele cita um
+//!   caminho que existe no projeto ou na pasta das cópias;
 //! - o interpretador que roda um programa guardado fora do projeto, como o da
-//!   pasta temporária;
+//!   pasta temporária, pelo nome, pelo `<` ou pelo `cat` que o passa pelo
+//!   cano;
 //! - a edição no lugar (`sed -i`, `perl -i`, `ruby -i`);
 //! - `cat`, `echo`, `printf` e `tee` gravando no projeto ou numa cópia (`>`,
 //!   `>>` ou o arquivo do `tee`).
@@ -21,6 +24,7 @@
 //! script de toda conversa do projeto.
 
 use super::lex::{Redirect, Segment, Word};
+use crate::hooks::write::wave_copy::Shell;
 use mustard_core::domain::model::contract::{Ctx, HookInput, Verdict};
 use mustard_core::io::wave_prompt;
 use mustard_core::platform::i18n::Locale;
@@ -101,11 +105,14 @@ const RUBY: Grammar = Grammar {
     runner: None,
 };
 
-/// A gramática do interpretador `name`, ou `None` para outro programa.
+/// A gramática do interpretador `name`, com ou sem a pasta, ou `None` para
+/// outro programa. `py` é o lançador do Python no Windows, com as mesmas
+/// opções (`py -3 -c …`).
 fn grammar(name: &str) -> Option<&'static Grammar> {
+    let name = name.rsplit(['/', '\\']).next().unwrap_or(name);
     let name = name.strip_suffix(".exe").unwrap_or(name);
     match name {
-        "python" | "python3" => Some(&PYTHON),
+        "python" | "python3" | "py" => Some(&PYTHON),
         _ if name.starts_with("python3.") => Some(&PYTHON),
         "node" | "nodejs" => Some(&NODE),
         "bun" => Some(&BUN),
@@ -113,6 +120,31 @@ fn grammar(name: &str) -> Option<&'static Grammar> {
         "ruby" => Some(&RUBY),
         _ => None,
     }
+}
+
+/// Os lançadores que rodam, depois de `run` e das opções deles, outro
+/// programa (`uv run --with x python -c …`).
+const LAUNCHERS: &[&str] = &["uv", "poetry", "pipenv", "pdm", "hatch", "rye", "conda"];
+
+/// O interpretador que `segment` roda, com os argumentos dele: o próprio
+/// programa ou, num lançador, o primeiro interpretador depois do `run`.
+fn interpreter(segment: &Segment) -> Option<(&'static Grammar, &[Word])> {
+    if let Some(grammar) = grammar(segment.name()) {
+        return Some((grammar, &segment.args));
+    }
+    let (run, rest) = segment.args.split_first().filter(|_| LAUNCHERS.contains(&segment.name()))?;
+    if run.text != "run" {
+        return None;
+    }
+    rest.iter().enumerate().find_map(|(at, word)| Some((grammar(&word.text)?, &rest[at + 1..])))
+}
+
+/// O comando que passa a saída pelo cano a `line[at]`: o anterior no mesmo
+/// nível, quando encadeado a ele. Os comandos de dentro dele (`$(…)`) vêm
+/// logo depois dele, mais fundos, e ficam de fora.
+fn feeder(line: &[Segment], at: usize) -> Option<&Segment> {
+    let depth = line[at].depth;
+    line[..at].iter().rev().find(|segment| segment.depth <= depth).filter(|segment| segment.depth == depth && segment.piped)
 }
 
 /// O programa que o interpretador vai rodar, lido das opções.
@@ -242,13 +274,12 @@ const WRITERS: &[&str] = &["cat", "echo", "printf", "tee"];
 /// O comando pode mexer em arquivo por uma das quatro formas da regra.
 fn suspect(segment: &Segment) -> bool {
     let name = segment.name();
-    name == "sed" || WRITERS.contains(&name) || grammar(name).is_some()
+    name == "sed" || WRITERS.contains(&name) || interpreter(segment).is_some()
 }
 
 /// As pastas do projeto: o checkout principal e a pasta das cópias.
 struct Project {
     folders: Vec<PathBuf>,
-    home: Option<PathBuf>,
     /// Na leitura de uma conversa que já passou, o checkout principal e a
     /// pasta das cópias: o arquivo de uma cópia que já saiu do disco existe
     /// quando o checkout tem o mesmo caminho, contado a partir da cópia.
@@ -256,14 +287,14 @@ struct Project {
 }
 
 impl Project {
-    fn new(root: &Path, home: Option<PathBuf>) -> Self {
+    fn new(root: &Path) -> Self {
         let real = |path: PathBuf| path.canonicalize().unwrap_or(path);
         let folders = [root.to_path_buf(), wave_prompt::copies_dir(root)]
             .into_iter()
             .filter(|folder| !folder.as_os_str().is_empty())
             .map(real)
             .collect();
-        Self { folders, home, gone_copies: None }
+        Self { folders, gone_copies: None }
     }
 
     /// O mesmo projeto, lido numa conversa que já passou, quando a cópia da
@@ -289,100 +320,100 @@ impl Project {
         real.is_some_and(|real| self.folders.iter().any(|folder| real.starts_with(folder)))
     }
 
-    /// O caminho que `text` nomeia a partir de `here`, ou `None` quando ele
-    /// depende do que só o terminal sabe (`$(…)`, variável sem valor aqui).
-    fn resolved(&self, here: &Path, text: &str) -> Option<PathBuf> {
-        if text.is_empty() {
-            return None;
-        }
-        let path = if text == "~" {
-            self.home.clone()?
-        } else if let Some(rest) = text.strip_prefix("~/") {
-            self.home.as_ref()?.join(rest)
-        } else if let Some(variable) = text.strip_prefix('$') {
-            let braced = variable.strip_prefix('{').and_then(|inner| inner.split_once('}'));
-            let (name, rest) = braced.unwrap_or_else(|| {
-                let end = variable.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(variable.len());
-                variable.split_at(end)
-            });
-            let value = match name {
-                "" => return None,
-                "PWD" => here.to_path_buf(),
-                "HOME" => self.home.clone()?,
-                _ => PathBuf::from(std::env::var_os(name)?),
-            };
-            PathBuf::from(format!("{}{rest}", value.to_string_lossy()))
-        } else {
-            PathBuf::from(text)
-        };
-        Some(crate::hooks::write::wave_copy::lexical(&if path.is_absolute() { path } else { here.join(path) }))
+    /// `text` nomeia, a partir da pasta atual de `shell`, um caminho fora do
+    /// projeto.
+    fn outside(&self, text: &str, shell: &Shell) -> bool {
+        shell.path(text).is_some_and(|path| !self.holds(&path))
     }
 
     /// O texto de um programa cita um caminho que existe no projeto: a palavra
-    /// com `/` ou `.`, lida a partir de `here` ou, quando começa em `/`, também
-    /// como o resto de um caminho montado (`f"{root}/src/x.rs"`).
-    fn cited(&self, text: &str, here: &Path) -> bool {
+    /// com `/` ou `.`, lida a partir da pasta atual de `shell` ou, quando
+    /// começa em `/`, também como o resto de um caminho montado
+    /// (`f"{root}/src/x.rs"`).
+    fn cited(&self, text: &str, shell: &Shell) -> bool {
         text.split(|c: char| !(c.is_alphanumeric() || "_-./~+@".contains(c)))
             .map(|token| token.trim_end_matches('.'))
             .filter(|token| token.contains(['/', '.']) && token.chars().any(char::is_alphanumeric))
             .any(|token| {
-                let joined = here.join(token.trim_start_matches('/'));
-                self.resolved(here, token).into_iter().chain([joined]).any(|path| self.exists(&path) && self.holds(&path))
+                let joined = shell.here().join(token.trim_start_matches('/'));
+                shell.path(token).into_iter().chain([joined]).any(|path| self.exists(&path) && self.holds(&path))
             })
     }
 
-    /// O interpretador mexe em arquivo do projeto por uma das três formas
-    /// dele: edição no lugar, programa na linha que cita caminho do projeto
-    /// ou programa guardado fora do projeto.
-    fn interprets(&self, grammar: &Grammar, segment: &Segment, here: &Path) -> bool {
-        let outside = |text: &str| self.resolved(here, text).is_some_and(|path| !self.holds(&path));
-        match program(grammar, &segment.args) {
+    /// O interpretador de gramática `grammar`, com os argumentos `args`,
+    /// rodado por `line[at]`, mexe em arquivo do projeto por uma das três
+    /// formas dele: edição no lugar, programa na linha que cita caminho do
+    /// projeto ou programa guardado fora do projeto. O programa da entrada
+    /// padrão vem do redirecionamento ou do comando que o passa pelo cano.
+    fn interprets(&self, grammar: &Grammar, args: &[Word], line: &[Segment], at: usize, shell: &Shell) -> bool {
+        match program(grammar, args) {
             Program::InPlace => true,
             Program::Module => false,
-            Program::Embedded(codes) => codes.iter().any(|code| self.cited(code, here)),
-            Program::Script(script) => outside(&script),
-            Program::Stdin => segment.redirects.iter().any(|redirect| {
-                match (redirect.op.trim_start_matches(|c: char| c.is_ascii_digit()), &redirect.body) {
-                    (_, Some(body)) => self.cited(body, here),
-                    ("<<<", None) => self.cited(&redirect.target.text, here),
-                    ("<", None) => outside(&redirect.target.text),
-                    _ => false,
-                }
-            }),
+            Program::Embedded(codes) => codes.iter().any(|code| self.cited(code, shell)),
+            Program::Script(script) => self.outside(&script, shell),
+            Program::Stdin => {
+                self.fed(&line[at].redirects, shell) || feeder(line, at).is_some_and(|feeder| self.piped(feeder, shell))
+            }
+        }
+    }
+
+    /// A entrada `redirects` traz um programa que mexe em arquivo do projeto:
+    /// o heredoc ou o `<<<` que cita caminho dele, ou o arquivo do `<`
+    /// guardado fora dele.
+    fn fed(&self, redirects: &[Redirect], shell: &Shell) -> bool {
+        redirects.iter().any(|redirect| match (redirect.op.trim_start_matches(|c: char| c.is_ascii_digit()), &redirect.body) {
+            (_, Some(body)) => self.cited(body, shell),
+            ("<<<", None) => self.cited(&redirect.target.text, shell),
+            ("<", None) => self.outside(&redirect.target.text, shell),
+            _ => false,
+        })
+    }
+
+    /// O comando `feeder`, que passa pelo cano o programa ao interpretador,
+    /// traz um programa que mexe em arquivo do projeto: o texto de `echo` ou
+    /// `printf` que cita caminho dele, ou o que o `cat` passa adiante (a
+    /// entrada dele, ou um arquivo guardado fora do projeto).
+    fn piped(&self, feeder: &Segment, shell: &Shell) -> bool {
+        match feeder.name() {
+            "echo" | "printf" => feeder.args.iter().any(|arg| self.cited(&arg.text, shell)),
+            "cat" => {
+                self.fed(&feeder.redirects, shell)
+                    || feeder.args.iter().filter(|arg| !arg.text.starts_with('-')).any(|file| self.outside(&file.text, shell))
+            }
+            _ => false,
         }
     }
 
     /// `cat`, `echo`, `printf` ou `tee` grava num arquivo do projeto, pelo
     /// redirecionamento ou pelo arquivo do `tee`.
-    fn written(&self, segment: &Segment, here: &Path) -> bool {
+    fn written(&self, segment: &Segment, shell: &Shell) -> bool {
         let teed = segment.args.iter().filter(|_| segment.name() == "tee").filter(|arg| !arg.text.starts_with('-'));
         let redirected = segment.redirects.iter().filter(|redirect| writes(redirect)).map(|redirect| &redirect.target);
         teed.chain(redirected)
             .filter(|target| !target.text.starts_with('&'))
-            .any(|target| self.resolved(here, &target.text).is_some_and(|path| self.holds(&path)))
+            .any(|target| shell.path(&target.text).is_some_and(|path| self.holds(&path)))
     }
 
-    fn edits(&self, segment: &Segment, here: &Path) -> bool {
+    /// O comando `line[at]`, rodado na pasta atual de `shell`, mexe em
+    /// arquivo do projeto.
+    fn edits(&self, line: &[Segment], at: usize, shell: &Shell) -> bool {
+        let segment = &line[at];
         match segment.name() {
             "sed" => sed_in_place(&segment.args),
-            name if WRITERS.contains(&name) => self.written(segment, here),
-            name => grammar(name).is_some_and(|grammar| self.interprets(grammar, segment, here)),
+            name if WRITERS.contains(&name) => self.written(segment, shell),
+            _ => interpreter(segment).is_some_and(|(grammar, args)| self.interprets(grammar, args, line, at, shell)),
         }
     }
 
-    /// Algum comando de `segments`, rodados a partir de `here` e seguindo os
+    /// Algum comando de `segments`, rodados a partir de `shell` e seguindo os
     /// `cd` da linha, mexe em arquivo do projeto.
-    fn edited(&self, segments: &[Segment], mut here: PathBuf) -> bool {
-        for segment in segments {
+    fn edited(&self, segments: &[Segment], mut shell: Shell) -> bool {
+        for (at, segment) in segments.iter().enumerate() {
             if segment.name() == "cd" {
-                let target = match segment.args.iter().find(|arg| !arg.text.starts_with('-')) {
-                    Some(arg) => self.resolved(&here, &arg.text),
-                    None => self.home.clone(),
-                };
-                here = target.unwrap_or(here);
+                shell.cd(segment);
                 continue;
             }
-            if self.edits(segment, &here) {
+            if self.edits(segments, at, &shell) {
                 return true;
             }
         }
@@ -398,8 +429,11 @@ pub(crate) fn bash_shell_edit(segments: &[Segment], input: &HookInput, ctx: &Ctx
     }
     let root = Path::new(&ctx.project_dir);
     let here = crate::hooks::write::wave_copy::wave_shell_folder(root, input, ctx)?;
-    let project = Project::new(root, mustard_core::platform::harness::home_dir());
-    if !project.edited(segments, here) {
+    // A pasta anterior, destino de `cd -`, é a de onde o comando parte, também
+    // quando a troca do fim o leva à cópia.
+    let cwd = Path::new(input.cwd.as_deref().unwrap_or(&ctx.project_dir)).to_path_buf();
+    let shell = Shell::new(here, cwd, mustard_core::platform::harness::home_dir());
+    if !Project::new(root).edited(segments, shell) {
         return None;
     }
     let edit = if input.raw["mustard_host"] == "codex" { "`apply_patch`" } else { "`Edit`/`Write`" };
@@ -411,8 +445,8 @@ pub(crate) fn bash_shell_edit(segments: &[Segment], input: &HookInput, ctx: &Ctx
 /// que o agente de onda tem recusadas, em qualquer conversa. A cópia de onda
 /// que já saiu do disco vale pelo checkout principal.
 pub(crate) fn edited_by_shell(segments: &[Segment], root: &Path, here: &Path) -> bool {
-    segments.iter().any(suspect)
-        && Project::new(root, mustard_core::platform::harness::home_dir()).past(root).edited(segments, here.to_path_buf())
+    let shell = || Shell::new(here.to_path_buf(), here.to_path_buf(), mustard_core::platform::harness::home_dir());
+    segments.iter().any(suspect) && Project::new(root).past(root).edited(segments, shell())
 }
 
 #[cfg(test)]
@@ -478,7 +512,9 @@ mod tests {
     /// As quatro formas de mexer em arquivo do projeto pelo terminal são
     /// recusadas no agente de onda: o programa na linha que cita caminho do
     /// projeto ou da cópia, o programa guardado fora do projeto, a edição no
-    /// lugar e o texto gravado por `cat`, `echo`, `printf` ou `tee`. A recusa
+    /// lugar e o texto gravado por `cat`, `echo`, `printf` ou `tee`. Valem
+    /// também o programa passado pelo cano, o interpretador rodado por um
+    /// lançador e a gravação depois do `cd -` que volta à cópia. A recusa
     /// manda ler o trecho e editar pela ferramenta do hospedeiro que pediu. A
     /// conversa principal segue sem essa recusa.
     #[test]
@@ -503,6 +539,13 @@ mod tests {
             format!("printf 'x\\n' > {root}/src/lib.rs"),
             "printf 'x\\n' | tee -a src/lib.rs".to_string(),
             format!("cd {outside} && echo x > {copy}/src/lib.rs"),
+            format!("cd {outside} && cd - && echo x > src/lib.rs"),
+            "echo \"open('src/lib.rs', 'w').write('')\" | python3".to_string(),
+            "cat <<'EOF' | python3 -\nopen('src/lib.rs', 'w').write('')\nEOF".to_string(),
+            format!("cat {outside}/edit.py | python3"),
+            "uv run --with requests python -c \"open('src/lib.rs', 'w').write('')\"".to_string(),
+            "poetry run python - <<'EOF'\nopen('src/lib.rs', 'w').write('')\nEOF".to_string(),
+            "py -3 -c \"open('src/lib.rs', 'w').write('')\"".to_string(),
         ];
         for command in &refused {
             let Verdict::Deny { reason } = guard(&scene, command, true, "claude") else {
@@ -521,7 +564,8 @@ mod tests {
     /// No agente de onda passam o programa na linha sem caminho do projeto, o
     /// script do projeto, o módulo instalado, o gerador com a saída
     /// redirecionada, a leitura e a gravação fora do projeto, também depois de
-    /// um `cd` para fora dele.
+    /// um `cd` para fora dele. O programa passado pelo cano e o rodado por um
+    /// lançador passam pelas mesmas regras.
     #[test]
     fn a_wave_agent_one_line_check_and_reads_pass() {
         let scene = scene();
@@ -541,6 +585,10 @@ mod tests {
             format!("printf 'x\\n' | tee {outside}/log.txt"),
             format!("cat src/lib.rs > {outside}/lib.rs"),
             format!("cd {outside} && echo x > note.txt"),
+            "echo 'print(sum(range(10)))' | python3".to_string(),
+            "cat scripts/check.py | python3".to_string(),
+            "uv run python -m pytest -q".to_string(),
+            "poetry run python scripts/check.py".to_string(),
         ];
         for command in &free {
             let verdict = guard(&scene, command, true, "claude");

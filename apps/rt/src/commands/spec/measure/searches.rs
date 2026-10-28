@@ -464,7 +464,7 @@ fn terminal(command: &str, cwd: &str, base: &str) -> Action {
             dir = moved(&segment, &dir).unwrap_or(dir);
             continue;
         }
-        match opens(&segment, command, &dir) {
+        match opens(&segment, &dir) {
             Some(files) => opened.extend(files.iter().map(|file| relative(file, &dir, base))),
             None if opened.is_empty() => return Action::Search,
             None => break,
@@ -473,14 +473,13 @@ fn terminal(command: &str, cwd: &str, base: &str) -> Action {
     if opened.is_empty() { Action::Neutral } else { Action::Open(opened) }
 }
 
-/// Os arquivos que o comando `segment` da linha `command`, rodado em `dir`,
-/// abre (nenhum quando não abre nem busca); `None` quando busca. Abrem: o
-/// programa que mostra arquivo com arquivo nomeado, a busca de texto só em
-/// arquivos, o `sed -i` e o `perl -i`, o resumo e o trecho do mapa, e o
-/// script escrito na linha, por texto entre aspas que seja um caminho.
-/// Buscam: a busca de texto em pasta, `find`, `fd` e as outras perguntas do
-/// mapa.
-fn opens(segment: &Segment, command: &str, dir: &str) -> Option<Vec<String>> {
+/// Os arquivos que o comando `segment`, rodado em `dir`, abre (nenhum quando
+/// não abre nem busca); `None` quando busca. Abrem: o programa que mostra
+/// arquivo com arquivo nomeado, a busca de texto só em arquivos, o `sed -i` e
+/// o `perl -i`, o resumo e o trecho do mapa, e o script escrito na linha, por
+/// texto entre aspas que seja um caminho. Buscam: a busca de texto em pasta,
+/// `find`, `fd` e as outras perguntas do mapa.
+fn opens(segment: &Segment, dir: &str) -> Option<Vec<String>> {
     let name = segment.name();
     let words: Vec<&str> = segment.args.iter().map(|word| word.text.as_str()).collect();
     let files = |texts: &[&str]| -> Vec<String> {
@@ -504,26 +503,19 @@ fn opens(segment: &Segment, command: &str, dir: &str) -> Option<Vec<String>> {
             Some(files(&words))
         }
         _ if SCRIPTERS.contains(&name) => {
-            let texts = scripts(segment, command);
+            let texts = scripts(segment);
             Some(files(&texts.iter().flat_map(|text| quoted(text)).collect::<Vec<_>>()))
         }
         _ => Some(Vec::new()),
     }
 }
 
-/// Os scripts que o comando `segment` da linha `command` traz escritos: o
-/// texto depois de `-c` ou `-e`, e o corpo do heredoc, lido do texto cru da
-/// linha.
-pub(super) fn scripts(segment: &Segment, command: &str) -> Vec<String> {
+/// Os scripts que o comando `segment` traz escritos: o texto depois de `-c`
+/// ou `-e`, e o corpo de cada heredoc dele, como o terminal o leu.
+pub(super) fn scripts(segment: &Segment) -> Vec<String> {
     let pairs = segment.args.windows(2).filter(|pair| matches!(pair[0].text.as_str(), "-c" | "-e"));
-    let mut texts: Vec<String> = pairs.map(|pair| pair[1].text.clone()).collect();
-    let heredoc = |op: &str| matches!(op.trim_start_matches(|c: char| c.is_ascii_digit()), "<<" | "<<-");
-    for redirect in segment.redirects.iter().filter(|redirect| heredoc(&redirect.op)) {
-        let delimiter = redirect.target.text.as_str();
-        let body = command.lines().skip_while(|line| !line.contains("<<")).skip(1);
-        texts.push(body.take_while(|line| line.trim() != delimiter).collect::<Vec<_>>().join("\n"));
-    }
-    texts
+    let bodies = segment.redirects.iter().filter_map(|redirect| redirect.body.clone());
+    pairs.map(|pair| pair[1].text.clone()).chain(bodies).collect()
 }
 
 /// Os textos entre aspas, simples ou duplas, de `script`.

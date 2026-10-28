@@ -165,7 +165,7 @@ fn scripted(calls: &[Call], main: &Path) -> (usize, usize) {
             "Bash" => {
                 let command = call.input["command"].as_str().unwrap_or_default();
                 let line = segments(command);
-                around += usize::from(files.around(&line, command, &cwd));
+                around += usize::from(files.around(&line, &cwd));
                 edits += usize::from(edited_by_shell(&line, main, Path::new(&cwd)));
             }
             "Grep" => {
@@ -187,10 +187,10 @@ struct Files {
 }
 
 impl Files {
-    /// Guarda os arquivos que a linha `line`, o comando `command` rodado em
-    /// `cwd`, grava, e diz se ela passa a resposta do Mustard por script ou
-    /// monta por script os dados dele.
-    fn around(&mut self, line: &[Segment], command: &str, cwd: &str) -> bool {
+    /// Guarda os arquivos que a linha `line`, rodada em `cwd`, grava, e diz se
+    /// ela passa a resposta do Mustard por script ou monta por script os
+    /// dados dele.
+    fn around(&mut self, line: &[Segment], cwd: &str) -> bool {
         let dirs = folders(line, cwd);
         for (segment, dir) in line.iter().zip(&dirs) {
             let saved = segment.redirects.iter().filter(|redirect| SAVES.contains(&redirect.op.as_str()));
@@ -199,21 +199,21 @@ impl Files {
                 self.answers.extend(saved);
             } else if builds(segment) {
                 self.built.extend(saved);
-                let written = embedded(segment, command).into_iter().map(|text| place(&text, dir));
+                let written = embedded(segment).into_iter().map(|text| place(&text, dir));
                 self.built.extend(written);
             }
         }
-        (0..line.len()).any(|at| self.reads_answer(line, command, &dirs, at) || self.feeds_write(line, &dirs, at))
+        (0..line.len()).any(|at| self.reads_answer(line, &dirs, at) || self.feeds_write(line, &dirs, at))
     }
 
     /// O comando `line[at]` é um script que lê a resposta do Mustard: pela
     /// substituição, pelo encadeamento ou por um arquivo de resposta, nomeado
     /// nele ou num comando que o encadeia até ele.
-    fn reads_answer(&self, line: &[Segment], command: &str, dirs: &[String], at: usize) -> bool {
+    fn reads_answer(&self, line: &[Segment], dirs: &[String], at: usize) -> bool {
         if !reads(&line[at]) {
             return false;
         }
-        let names = |index: usize| self.names_answer(&line[index], command, &dirs[index]);
+        let names = |index: usize| self.names_answer(&line[index], &dirs[index]);
         Segment::inside(line, at).iter().any(Segment::runs_mustard)
             || names(at)
             || (0..at).any(|index| Segment::fed(line, index).contains(&at) && (line[index].runs_mustard() || names(index)))
@@ -221,10 +221,10 @@ impl Files {
 
     /// O comando `segment`, rodado em `dir`, nomeia um arquivo de resposta do
     /// Mustard: num argumento, na entrada (`<`) ou no texto do script.
-    fn names_answer(&self, segment: &Segment, command: &str, dir: &str) -> bool {
+    fn names_answer(&self, segment: &Segment, dir: &str) -> bool {
         let args = segment.args.iter().map(|arg| arg.text.clone()).filter(|text| !text.starts_with('-'));
         let input = segment.redirects.iter().filter(|redirect| redirect.op == "<").map(|redirect| redirect.target.text.clone());
-        let mut named = args.chain(input).chain(embedded(segment, command));
+        let mut named = args.chain(input).chain(embedded(segment));
         named.any(|text| self.answers.contains(&place(&text, dir)))
     }
 
@@ -284,11 +284,11 @@ fn builds(segment: &Segment) -> bool {
 }
 
 /// Os textos entre aspas do programa que o `python` traz na própria linha.
-fn embedded(segment: &Segment, command: &str) -> Vec<String> {
+fn embedded(segment: &Segment) -> Vec<String> {
     if !python(segment) {
         return Vec::new();
     }
-    let texts = scripts(segment, command);
+    let texts = scripts(segment);
     texts.iter().flat_map(|text| quoted(text)).map(str::to_string).collect()
 }
 

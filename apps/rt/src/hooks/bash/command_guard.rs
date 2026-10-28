@@ -227,7 +227,7 @@ mod tests {
         }
     }
 
-    /// Comando comum passa: a trava tem só as cinco conferências, e ler ou
+    /// Comando comum passa: a trava tem só as seis conferências, e ler ou
     /// buscar pelo terminal não é uma delas.
     #[test]
     fn ordinary_commands_pass_the_chain() {
