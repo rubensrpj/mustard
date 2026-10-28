@@ -40,6 +40,22 @@ fn the_first_close_answer_carries_one_line_per_criterion() {
     }
 }
 
+/// O primeiro fechamento traz uma linha por comando do servidor que rodou, na
+/// ordem em que rodaram e com o resultado; o que o projeto não declara não
+/// ganha linha.
+#[test]
+fn the_first_close_answer_carries_one_line_per_command_that_ran() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    ready_with_waves(root, "x", &["git --version"], 1);
+    std::fs::write(root.join("mustard.json"), json!({"buildCommand": "git --version", "testCommand": "git --version"}).to_string()).unwrap();
+    let asked = close(root, None);
+    assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+    let stages = asked["stages"].as_array().cloned().unwrap_or_default();
+    let shown: Vec<(&str, &str)> = stages.iter().map(|line| (line["stage"].as_str().unwrap_or_default(), line["result"].as_str().unwrap_or_default())).collect();
+    assert_eq!(shown, [("buildCommand", "pass"), ("testCommand", "pass")], "{asked}");
+}
+
 /// O segundo fechamento da sessão que pede a revisão final de novo não repete
 /// as instruções de despachar o revisor: só o pedido novo e o que mudou.
 #[test]

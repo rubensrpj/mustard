@@ -1094,11 +1094,12 @@ fn machine(
         }
         let written = record(&opts.root, spec, "criterion_run", draft, PhaseWriter::Binary).map_err(CloseRefusal::Refused)?;
         let read = run_read(root, spec, &written.written);
-        // Uma linha por critério, com o resultado e o motivo; a saída inteira
-        // fica gravada na execução, e a linha diz como lê-la.
+        // Uma linha por critério que passou, com o resultado; a saída inteira
+        // fica gravada na execução, e a linha diz como lê-la. O critério que
+        // falha não chega à resposta por aqui: vira recusa, que traz o motivo
+        // e a linha dele ([`CloseRefusal::line`]).
         let mut line = json!({ "criterion": code, "result": out.result });
         if let Some(fault) = out.fault() {
-            line["reason"] = json!(fault_reason(&fault));
             let (of, code, command, read) = (ProofOf::item(log, *id), code.clone(), command.clone(), read.clone());
             failures.push(match fault {
                 ProofFault::RanNoTest(tests) => CloseRefusal::CriterionRanNoTest { of, code, command, tests, read },
@@ -1151,16 +1152,6 @@ fn machine(
 fn run_read(root: &Path, spec: &str, written: &mustard_core::io::spec_events::Written) -> String {
     let item = written.code.clone().unwrap_or_else(|| written.id.to_string());
     crate::commands::flow::round::read_command(root, spec, &format!("item-{item}"))
-}
-
-/// O motivo curto de a prova não ter passado, o mesmo da recusa do
-/// fechamento.
-fn fault_reason(fault: &ProofFault) -> &'static str {
-    match fault {
-        ProofFault::RanNoTest(_) => "criterion-ran-no-test",
-        ProofFault::MissingTest(_) => "criterion-missing-test",
-        ProofFault::Failed(_) => "criterion-failed",
-    }
 }
 
 /// A falha da máquina do fechamento (`failure`) reabre, por um evento próprio
