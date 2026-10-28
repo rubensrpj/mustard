@@ -321,7 +321,8 @@ fn greps(segment: &Segment) -> bool {
 /// roda); ou nenhuma linha da saída é de arquivo, mesmo com texto de outros
 /// comandos. A busca que passa a saída por um cano a um programa que junta
 /// as linhas ([`AGGREGATORS`]) ou não mostra o nome do arquivo vale com
-/// qualquer texto. Na linha com várias buscas, a respondida
+/// qualquer texto; os comandos de dentro de um elo do cano, como os de uma
+/// substituição, não são elos. Na linha com várias buscas, a respondida
 /// é a última busca em pasta, porque a nota do gancho que fica é a dela.
 fn failed(call: &Call, output: &str) -> bool {
     let line = if call.name == "Bash" { segments(call.input["command"].as_str().unwrap_or_default()) } else { Vec::new() };
@@ -340,10 +341,7 @@ fn failed(call: &Call, output: &str) -> bool {
         return false;
     }
     let rest: Vec<&str> = output.lines().filter(|line| !line.contains(NO_MATCH)).collect();
-    let joins = |at: usize| {
-        let mut fed = line[at + 1..].iter().scan(line[at].piped, |piped, next| std::mem::replace(piped, next.piped).then(|| next.name()));
-        fed.any(|name| AGGREGATORS.contains(&name))
-    };
+    let joins = |at: usize| Segment::fed(&line, at).iter().any(|&index| AGGREGATORS.contains(&line[index].name()));
     let bare = searches.iter().any(|&at| joins(at) || hides_names(&line[at]));
     !bare || matches!(rest.join("\n").trim(), "" | NO_OUTPUT)
 }
@@ -606,4 +604,25 @@ fn listed(said: &str) -> Vec<String> {
         }
     }
     files
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// O cano da busca conta só os elos do mesmo nível: o `wc` que vem depois
+    /// de um elo com substituição junta as linhas, e o `jq` de dentro da
+    /// substituição não é elo.
+    #[test]
+    fn the_pipe_chain_of_a_search_skips_the_commands_inside_a_link() {
+        let bash = |command: &str| Call {
+            id: String::new(),
+            name: "Bash".to_string(),
+            input: json!({ "command": command }),
+            at: String::new(),
+            cwd: String::new(),
+        };
+        assert!(!failed(&bash("grep -rn frete src | grep -v $(echo teste) | wc -l"), "2"));
+        assert!(failed(&bash("grep -rn frete src | grep -v $(jq -r .skip cfg.json) | head -3"), "nada"));
+    }
 }
