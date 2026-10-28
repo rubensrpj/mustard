@@ -287,7 +287,9 @@ pub enum FlowCmd {
     /// juntas, sob a trava da spec: o item recusado não fecha o ponto, e o
     /// fechamento recusado tira o item. No levantamento condensado, `points`
     /// traz o código, o número e a lacuna de cada ponto aberto, e `point`
-    /// traz o próximo inteiro.
+    /// traz o próximo inteiro. O texto longo do item entra cru, sem virar
+    /// JSON: `--text -` ou `--agent -` lê esse campo da entrada padrão, por
+    /// heredoc, junto dos outros campos do `--json`.
     #[command(display_order = 25)]
     Answer {
         /// A spec do levantamento. Sem ela, a spec atual.
@@ -305,6 +307,15 @@ pub enum FlowCmd {
         /// do `write`. Vem junto com `--type`.
         #[arg(long)]
         json: Option<String>,
+        /// O campo `text` do item, cru: `-` lê a entrada padrão inteira como
+        /// foi escrita; outro valor entra como veio. Vem junto com `--type`, e
+        /// o campo não vem também no `--json`.
+        #[arg(long, value_name = "TEXT")]
+        text: Option<String>,
+        /// O campo `agent` do item, cru, como o `--text`. Só um dos dois lê
+        /// a entrada padrão.
+        #[arg(long, value_name = "AGENT")]
+        agent: Option<String>,
         /// Fatos conferidos no código ou na conversa, como uma lista JSON
         /// de {"text":"...","source":"..."}. Gravados com o fechamento.
         #[arg(long)]
@@ -411,20 +422,29 @@ pub fn dispatch(cmd: FlowCmd) {
             let opts = flow::triage::TriageOpts { root, spec, apply };
             flow::answer("triage", &opts.root, opts.spec.as_deref(), started, &flow::triage::triage_at(&opts), false);
         }
-        FlowCmd::Answer { spec, point, event_type, json, facts, result, not_applicable, reason, root } => {
+        FlowCmd::Answer { spec, point, event_type, json, text, agent, facts, result, not_applicable, reason, root } => {
+            use crate::commands::spec_events::{project, refused, write::with_raw_fields};
             use crate::shared::json_arg::resolve_opt;
-            match resolve_opt(json).and_then(|json| Ok((json, resolve_opt(facts)?))) {
+            let lang = project(&root).lang;
+            // O arquivo do `--json` ou do `--facts` que não se lê recusa sem
+            // gravar nada, e os campos crus do item entram no `--json`.
+            let read = resolve_opt(json)
+                .and_then(|json| Ok((json, resolve_opt(facts)?)))
+                .map_err(|detail| refused(&mustard_core::domain::spec_events::Refusal::Io { detail }, lang))
+                .and_then(|(json, facts)| {
+                    if text.is_none() && agent.is_none() {
+                        return Ok((json, facts));
+                    }
+                    let stdin = || std::io::read_to_string(std::io::stdin());
+                    let joined = with_raw_fields(json.unwrap_or_else(|| "{}".into()), [("text", text), ("agent", agent)], stdin);
+                    joined.map(|json| (Some(json), facts)).map_err(|refusal| refusal.to_value(lang))
+                });
+            match read {
                 Ok((json, facts)) => {
                     let opts = flow::answer::AnswerOpts { root, spec, point, event_type, json, facts, result, not_applicable, reason };
                     flow::answer("answer", &opts.root, opts.spec.as_deref(), started, &flow::answer::answer_at(&opts), false);
                 }
-                // O arquivo do `--json` ou do `--facts` que não se lê recusa
-                // sem gravar nada.
-                Err(detail) => {
-                    let refusal = mustard_core::domain::spec_events::Refusal::Io { detail };
-                    let refused = crate::commands::spec_events::refused(&refusal, crate::commands::spec_events::project(&root).lang);
-                    flow::answer("answer", &root, spec.as_deref(), started, &refused, false);
-                }
+                Err(refused) => flow::answer("answer", &root, spec.as_deref(), started, &refused, false),
             }
         }
     }

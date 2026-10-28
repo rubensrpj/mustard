@@ -48,6 +48,9 @@ skills.update_why_listed	660b0bdbdfbc999e
 spec_events.agreed_items_missing	a00b69f02c1dcbc2
 spec_events.another_session	9946838ec8cc59c1
 spec_events.bad_spec_name	5cc2cd4157459f71
+spec_events.batch_empty	ea169a04a17e099a
+spec_events.batch_line_refused	9099cef8b0486674
+spec_events.batch_type_missing	33fb0a982065737f
 spec_events.binary_author	69e11088da7d2bc0
 spec_events.binary_only_field	2800f4eb813904a7
 spec_events.binary_only_type	53547c5e70aa35ed
@@ -127,7 +130,7 @@ spec_events.no_open_send	64a25a67c89e30b2
 spec_events.no_review_request	69e0397ed3b2c138
 spec_events.no_spec_file	2ede2786afd0facf
 spec_events.no_wave_request	5f30722063fb1afb
-spec_events.not_an_object	39a4600720a243cf
+spec_events.not_an_object	bdc47f858cc3bff8
 spec_events.not_applicable_reason	a4f1a912e4030f67
 spec_events.old_format_spec	8ec3a41ca062d235
 spec_events.open_point_removed	497f001343622bfc
@@ -145,6 +148,8 @@ spec_events.proof_search_not_negated	46ff9aba5ec4e252
 spec_events.proof_test_target_missing	d2fa8b96a0d136b5
 spec_events.proof_test_target_missing_none	e4c0366e9f22b29d
 spec_events.purge_excerpt_not_found	5437449d50069e05
+spec_events.raw_field_twice	13391a06d01aab50
+spec_events.raw_input_twice	efdf0e47efa67976
 spec_events.read_more	b58263fc23ddee2f
 spec_events.read_open_waves	eb1a4f27fe404f33
 spec_events.read_summary	771fe4d44ab702ed

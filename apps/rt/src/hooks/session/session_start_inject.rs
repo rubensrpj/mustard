@@ -988,6 +988,45 @@ mod tests {
         }
     }
 
+    /// O que o gancho recusa ao agente não passa por outra forma do comando:
+    /// o lote, cujas linhas levam tarefa, pedido ou onda na entrada padrão, e
+    /// o tipo escrito depois das opções são recusados. O passo do agente
+    /// segue livre, e o lote da conversa principal também.
+    #[test]
+    fn the_hook_refuses_an_agent_the_plan_through_a_batch_or_after_the_options() {
+        use crate::hooks::bash::command_guard::CommandGuard;
+        let dir = tempdir().unwrap();
+        let ctx = Ctx::for_test(dir.path().to_string_lossy().into_owned(), Some(Trigger::PreToolUse));
+        let verdict = |command: &str, agent: Option<&str>| {
+            let input = HookInput {
+                tool_name: Some("Bash".to_string()),
+                tool_input: json!({ "command": command }),
+                hook_event_name: Some("PreToolUse".to_string()),
+                agent_id: agent.map(str::to_string),
+                ..HookInput::default()
+            };
+            CommandGuard.evaluate(&input, &ctx).unwrap()
+        };
+        let task_batch = "mustard-rt run write --batch --spec uma-spec <<'EOF'\n{\"type\":\"task\",\"title\":\"Uma tarefa\"}\nEOF";
+        for refused in [
+            task_batch,
+            "mustard-rt run write --spec uma-spec --batch < lote.ndjson",
+            "mustard-rt run write --spec uma-spec --json '{}' task",
+            "mustard-rt run write --root . wave --spec uma-spec --json '{}'",
+        ] {
+            let verdict = verdict(refused, Some("wave-agent"));
+            assert!(matches!(verdict, Verdict::Deny { .. }), "the hook lets an agent run {refused:?}: {verdict:?}");
+        }
+        for (allowed, agent) in [
+            ("mustard-rt run write step --spec uma-spec --json '{}'", Some("wave-agent")),
+            ("mustard-rt run write --spec uma-spec --json '{}' delivered", Some("wave-agent")),
+            (task_batch, None),
+        ] {
+            let verdict = verdict(allowed, agent);
+            assert!(!matches!(verdict, Verdict::Deny { .. }), "the hook refuses {allowed:?} to {agent:?}: {verdict:?}");
+        }
+    }
+
     /// O mapa do início da sessão, nos dois idiomas, chega inteiro numa sessão
     /// com spec aberta, pendências, versão velha, branches mergeadas e sobras
     /// no disco: o todo passaria do teto, e são os avisos que saem antes dele.

@@ -2049,3 +2049,131 @@ fn a_spec_search_without_the_jev_says_why_and_which_setting_turns_it_on() {
     }
     assert_eq!(lines.len(), 4, "each case has its own reason: {lines:?}");
 }
+
+/// O comando `cmd` com `input` na entrada padrão, como um heredoc o entrega.
+fn fed(mut cmd: Command, input: &str) -> Output {
+    let mut child = cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().expect("the command runs");
+    let mut pipe = child.stdin.take().expect("the standard input");
+    std::io::Write::write_all(&mut pipe, input.as_bytes()).expect("the command reads its input");
+    drop(pipe);
+    child.wait_with_output().expect("the command ends")
+}
+
+/// O item gravado com o código `code`, como a leitura o devolve.
+fn item_read(root: &Path, code: &str) -> Value {
+    let out = rt(root, &["read", &format!("item-{code}"), "--spec", "teste"]).output().expect("run read");
+    assert!(out.status.success(), "read {code}: {}", String::from_utf8_lossy(&out.stdout));
+    let read = stdout_json(&out);
+    read["events"].as_array().and_then(|events| events.first()).cloned().unwrap_or(read)
+}
+
+/// O texto longo, com título, lista, crase e aspas, como um heredoc o manda.
+const LONG_TEXT: &str = "## O que muda\n\n- A trava fica `presa` até o fim.\n- O lote \"grava\" as boas: e devolve as outras.\n\n```text\nmustard-rt run read state\n```";
+
+/// Um lote de quatro tarefas: a segunda vem sem os arquivos, a terceira
+/// depende dela pelo rótulo e a quarta depende da primeira pelo rótulo. A
+/// primeira e a quarta gravam, e a quarta aponta o número da primeira. A
+/// segunda volta com o motivo, e a terceira volta apontando a linha da
+/// segunda. A resposta tem uma linha curta por item, na ordem.
+#[test]
+fn a_batch_records_the_good_lines_and_returns_the_refused_ones() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    seed_state(root, &json!({"author": "binary", "phase": "plan", "branch": "feature/teste", "base": "dev"}));
+    let msg = seed_binary(root, "message", &json!({"author": "user", "text": "o plano"}));
+    let crit = write(root, "criterion",
+        &json!({"title": "Combinar o item", "when": "a", "then": "b", "proof": "git --version", "form": "ubiquitous", "origin": msg}));
+    let task = |label: &str, depends_on: Value| json!({"type": "task", "label": label, "agent": "- conferir pelo teste",
+        "title": format!("Entregar a {label}"), "text": "Tarefa.", "files": [{"path": "a.rs"}], "depends_on": depends_on,
+        "covers": [crit], "origin": msg});
+    let mut second = task("segunda", json!([]));
+    second.as_object_mut().expect("an object").remove("files");
+    let input = [task("primeira", json!([])), second, task("terceira", json!(["segunda"])), task("quarta", json!(["primeira"]))]
+        .map(|line| line.to_string())
+        .join("\n");
+    let before = event_lines(root);
+
+    let out = fed(rt(root, &["write", "--batch", "--spec", "teste"]), &format!("{input}\n"));
+    let shown = String::from_utf8_lossy(&out.stdout).to_string();
+    assert_eq!(out.status.code(), Some(1), "a refused line makes the batch fail: {shown}");
+    let lines: Vec<Value> = shown.lines().map(|line| serde_json::from_str(line).unwrap_or_else(|e| panic!("{e}: {line}"))).collect();
+    assert_eq!(lines.iter().map(|line| line["line"].clone()).collect::<Vec<_>>(), vec![json!(1), json!(2), json!(3), json!(4)], "{shown}");
+    let first = lines[0]["code"].as_str().unwrap_or_else(|| panic!("the first line is written: {shown}"));
+    assert!(lines[1]["reason"].is_string() && lines[1]["hint"].is_string() && lines[1].get("code").is_none(), "{shown}");
+    assert_eq!(lines[2]["reason"], json!("batch-line-refused"), "{shown}");
+    let hint = lines[2]["hint"].as_str().unwrap_or_default();
+    assert!(hint.contains("segunda") && hint.contains(" 2 "), "the refusal points at the line it cites: {hint}");
+    let fourth = lines[3]["code"].as_str().unwrap_or_else(|| panic!("the fourth line is written: {shown}"));
+
+    assert_eq!(event_lines(root), before + 2, "only the good lines are written");
+    let path = mustard_core::io::spec_events::spec_file(root, "teste").expect("spec file");
+    let log = mustard_core::io::spec_events::read(&path).expect("read").expect("the spec file");
+    let codes = log.codes();
+    let id_of = |code: &str| codes.iter().find(|(_, c)| c.as_str() == code).map(|(id, _)| *id).expect("the code is in the spec");
+    let depends_on = log.get(id_of(fourth)).and_then(|event| event.fields.get("depends_on").cloned());
+    assert_eq!(depends_on, Some(json!([id_of(first)])), "the label becomes the number of the line it names");
+}
+
+/// O texto longo, com título, lista, crase e aspas, entra cru pela entrada
+/// padrão no `--agent -`, com o `--text` dado direto e os outros campos no
+/// `--json`, e a leitura do item devolve os dois como foram escritos, sem a
+/// quebra que fecha a última linha do heredoc.
+#[test]
+fn raw_text_from_standard_input_is_recorded_as_written() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    open_spec(root);
+    let said = write(root, "message", &json!({"text": "Trocar a saudação."}));
+    let text = "Ação “citada” (parênteses): dois-pontos; 'simples' e \"duplas\".";
+    let fields = json!({"title": "Saudação nova", "origin": said}).to_string();
+    let out = fed(rt(root, &["write", "context", "--spec", "teste", "--json", &fields, "--text", text, "--agent", "-"]), &format!("{LONG_TEXT}\n"));
+    let report = stdout_json(&out);
+    assert!(out.status.success(), "{report}");
+    let item = item_read(root, report["code"].as_str().unwrap_or_else(|| panic!("no code: {report}")));
+    assert_eq!(item["agent"], json!(LONG_TEXT), "{item}");
+    assert_eq!(item["text"], json!(text), "{item}");
+}
+
+/// A resposta de um ponto leva o texto longo cru pela entrada padrão no
+/// `--agent -`, e a leitura do item da resposta o devolve como foi escrito.
+#[test]
+fn raw_text_from_standard_input_answers_a_point_as_written() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    open_spec(root);
+    let said = write(root, "message", &json!({"text": "Trocar a saudação."}));
+    let seen = json!([{"text": "A saudação mora na página.", "source": "mensagem 1"}]);
+    seed_binary(root, "point", &json!({"block": "defect", "gap": "Onde a saudação nasce", "from": "gap", "status": "open", "origin": said, "facts": seen}));
+    let fields = json!({"title": "Saudação nova", "keys": ["saudação"], "why": "O usuário pediu.", "origin": said}).to_string();
+    let args = ["answer", "--spec", "teste", "--type", "decision", "--json", &fields, "--text", "Trocar a saudação da página.", "--agent", "-"];
+    let out = fed(rt(root, &args), &format!("{LONG_TEXT}\n"));
+    let report = stdout_json(&out);
+    assert!(out.status.success(), "{report}");
+    assert_eq!(report["closed"]["status"], json!("closed"), "{report}");
+    let item = item_read(root, report["code"].as_str().unwrap_or_else(|| panic!("no code: {report}")));
+    assert_eq!(item["agent"], json!(LONG_TEXT), "{item}");
+}
+
+/// O JSON com uma quebra de linha crua dentro do texto é recusado no `run
+/// write` e no `run answer`, sem gravar nada, e a dica ensina o texto cru pela
+/// entrada padrão e o lote.
+#[test]
+fn an_invalid_json_refusal_points_to_raw_input_and_batch() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    open_spec(root);
+    let broken = "{\"title\": \"Nota\", \"text\": \"primeira linha\nsegunda linha\"}";
+    let before = event_lines(root);
+    for args in [
+        vec!["write", "note", "--spec", "teste", "--json", broken],
+        vec!["answer", "--spec", "teste", "--type", "decision", "--json", broken],
+    ] {
+        let out = rt(root, &args).output().expect("the command runs");
+        let refused = stdout_json(&out);
+        assert_eq!((out.status.code(), refused["reason"].clone()), (Some(1), json!("not-an-object")), "{args:?}: {refused}");
+        let hint = refused["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("`--text -`") && hint.contains("`--agent -`"), "the hint shows the raw input: {hint}");
+        assert!(hint.contains("--batch"), "the hint shows the batch: {hint}");
+    }
+    assert_eq!(event_lines(root), before, "nothing is written");
+}

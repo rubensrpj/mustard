@@ -20,11 +20,56 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // comandos `run write` e `run read`). As vagas vêm do chamador.
         ("spec_events.not_an_object", Locale::PtBr) => {
             "Os campos do evento precisam vir num objeto JSON, como {\"text\": \"…\"}, e o que \
-             veio não serve: {detail}. Nada foi gravado."
+             veio não serve: {detail}. Nada foi gravado. Texto longo vai cru pela entrada padrão, \
+             com `--text -` ou `--agent -`. Várias gravações vão juntas no `run write --batch`, \
+             uma linha JSON por item."
         }
         ("spec_events.not_an_object", Locale::EnUs) => {
             "The event's fields must come as one JSON object, like {\"text\": \"…\"}, and what \
-             came does not parse: {detail}. Nothing was written."
+             came does not parse: {detail}. Nothing was written. Long text goes raw through \
+             standard input, with `--text -` or `--agent -`. Many writes go together through \
+             `run write --batch`, one JSON line per item."
+        }
+        // A entrada crua e o lote do `run write` e do `run answer`.
+        ("spec_events.raw_input_twice", Locale::PtBr) => {
+            "Só um campo lê a entrada padrão: `--text -` ou `--agent -`. Dê o outro direto na \
+             opção ou no `--json`. Nada foi gravado."
+        }
+        ("spec_events.raw_input_twice", Locale::EnUs) => {
+            "Only one field reads standard input: `--text -` or `--agent -`. Give the other one \
+             straight in its option or in `--json`. Nothing was written."
+        }
+        ("spec_events.raw_field_twice", Locale::PtBr) => {
+            "O campo {field} veio no `--json` e na opção própria. Mande só um dos dois. Nada foi \
+             gravado."
+        }
+        ("spec_events.raw_field_twice", Locale::EnUs) => {
+            "The {field} field came both in `--json` and in its own option. Send only one of \
+             them. Nothing was written."
+        }
+        ("spec_events.batch_empty", Locale::PtBr) => {
+            "O lote chegou vazio. Mande pela entrada padrão uma linha JSON por item, cada uma com \
+             o tipo em `type`."
+        }
+        ("spec_events.batch_empty", Locale::EnUs) => {
+            "The batch came empty. Send one JSON line per item through standard input, each with \
+             its type in `type`."
+        }
+        ("spec_events.batch_type_missing", Locale::PtBr) => {
+            "Cada linha do lote traz o tipo do evento em `type`, como {\"type\": \"task\", …}. \
+             Nada desta linha foi gravado."
+        }
+        ("spec_events.batch_type_missing", Locale::EnUs) => {
+            "Each batch line carries the event type in `type`, like {\"type\": \"task\", …}. \
+             Nothing from this line was written."
+        }
+        ("spec_events.batch_line_refused", Locale::PtBr) => {
+            "Esta linha cita pelo rótulo {label} a linha {line} do lote, que não foi gravada. \
+             Nada desta linha foi gravado. Corrija a linha {line} e mande as duas de novo."
+        }
+        ("spec_events.batch_line_refused", Locale::EnUs) => {
+            "This line cites by the label {label} line {line} of the batch, which was not \
+             written. Nothing from this line was written. Fix line {line} and send both again."
         }
         ("spec_events.unknown_type", Locale::PtBr) => {
             "O tipo {type} não existe no arquivo da spec. Nada foi gravado. Tipos aceitos: {types}."
@@ -1466,6 +1511,11 @@ mod tests {
     fn i18n_translates_spec_event_keys() {
         for (key, slots) in [
             ("spec_events.not_an_object", &["{detail}"][..]),
+            ("spec_events.raw_input_twice", &[][..]),
+            ("spec_events.raw_field_twice", &["{field}"][..]),
+            ("spec_events.batch_empty", &[][..]),
+            ("spec_events.batch_type_missing", &[][..]),
+            ("spec_events.batch_line_refused", &["{label}", "{line}"][..]),
             ("spec_events.unknown_type", &["{type}", "{types}"][..]),
             ("spec_events.find_more", &["{shown}", "{total}"][..]),
             ("spec_events.find_none", &[][..]),

@@ -43,6 +43,31 @@ use mustard_core::platform::error::Error;
 
 use super::{lex, reading, runtime_output, safety, shell_edit, waiting, windows_redirect};
 
+/// A gravação do plano que só o condutor faz e o agente tenta pelo terminal.
+#[derive(Clone, Copy)]
+enum PlanWrite {
+    /// `run write` de uma tarefa, um pedido ou uma onda.
+    Kind,
+    /// `run write --batch`: o tipo vem em cada linha da entrada padrão, que o
+    /// gancho não lê, e o lote leva qualquer tipo.
+    Batch,
+}
+
+/// A gravação do plano que o segmento faz, se faz: `run write` do Mustard
+/// com tarefa, pedido ou onda em qualquer posição entre as opções, ou com
+/// `--batch`. `None` noutro comando ou noutro tipo.
+fn plan_write(seg: &lex::Segment) -> Option<PlanWrite> {
+    if !matches!(seg.name(), "mustard-rt" | "mustard-rt.exe" | "mustard-boot" | "mustard-boot.cmd") {
+        return None;
+    }
+    let at = seg.args.windows(2).position(|args| args[0].text == "run" && args[1].text == "write")?;
+    let rest: Vec<&str> = seg.args[at + 2..].iter().map(|word| word.text.as_str()).collect();
+    if rest.contains(&"--batch") {
+        return Some(PlanWrite::Batch);
+    }
+    matches!(crate::commands::spec_events::cli::written_type(&rest), Some("task" | "request" | "wave")).then_some(PlanWrite::Kind)
+}
+
 /// A trava de comandos do Bash.
 pub struct CommandGuard;
 
@@ -73,17 +98,14 @@ impl CommandGuard {
         };
         let segments = lex::segments(&cmd);
         if input.is_subagent()
-            && segments.iter().any(|seg| {
-                matches!(seg.name(), "mustard-rt" | "mustard-rt.exe" | "mustard-boot" | "mustard-boot.cmd")
-                    && seg
-                        .args
-                        .windows(3)
-                        .any(|args| args[0].text == "run" && args[1].text == "write" && matches!(args[2].text.as_str(), "task" | "request" | "wave"))
-            })
+            && let Some(write) = segments.iter().find_map(plan_write)
         {
-            return Ok(Verdict::Deny { reason: match ctx.config.language().text_or_default() {
-                mustard_core::SupportedLocale::PtBr => "O agente não altera o plano diretamente. Relate sobras, obrigações e proposta no retorno da onda; o condutor e o runtime gravam a tarefa autorizada.".into(),
-                mustard_core::SupportedLocale::EnUs => "An agent cannot edit the plan directly. Report leftovers, obligations and proposals in the wave return; the conductor and runtime write authorized tasks.".into(),
+            use mustard_core::platform::i18n::Locale::{EnUs, PtBr};
+            return Ok(Verdict::Deny { reason: match (write, ctx.config.language().text_or_default()) {
+                (PlanWrite::Kind, PtBr) => "O agente não altera o plano diretamente. Relate sobras, obrigações e proposta no retorno da onda; o condutor e o runtime gravam a tarefa autorizada.".into(),
+                (PlanWrite::Kind, EnUs) => "An agent cannot edit the plan directly. Report leftovers, obligations and proposals in the wave return; the conductor and runtime write authorized tasks.".into(),
+                (PlanWrite::Batch, PtBr) => "O agente não grava em lote: o lote leva tarefa, pedido e onda, que só o condutor grava. Grave cada passo ou entrega numa chamada `run write` própria.".into(),
+                (PlanWrite::Batch, EnUs) => "An agent cannot write a batch: a batch carries tasks, requests and waves, which only the conductor writes. Write each step or delivery in its own `run write` call.".into(),
             }});
         }
         if let Some(verdict) = safety::bash_safety(&segments, &cmd, ctx) {

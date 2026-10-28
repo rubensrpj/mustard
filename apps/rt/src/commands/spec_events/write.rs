@@ -379,6 +379,128 @@ pub(crate) fn draft_object(json: &str) -> Result<Map<String, Value>, Refusal> {
     }
 }
 
+/// O valor da opção de um campo cru que pede a entrada padrão inteira.
+pub(crate) const FROM_STDIN: &str = "-";
+
+/// Por que os campos crus de uma gravação não entraram no `--json`.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum RawRefusal {
+    /// Os dois campos pediram a entrada padrão, que é uma só.
+    StdinTwice,
+    /// O campo veio no `--json` e na opção própria.
+    FieldTwice { field: &'static str },
+    /// A entrada padrão não se leu como texto.
+    Stdin { detail: String },
+}
+
+impl RawRefusal {
+    /// A recusa como o comando imprime, no idioma `lang`.
+    pub(crate) fn to_value(&self, lang: Locale) -> Value {
+        match self {
+            Self::StdinTwice => json!({ "ok": false, "reason": "raw-input-twice", "hint": translate("spec_events.raw_input_twice", lang) }),
+            Self::FieldTwice { field } => json!({
+                "ok": false,
+                "reason": "raw-field-twice",
+                "hint": translate("spec_events.raw_field_twice", lang).replace("{field}", field),
+            }),
+            Self::Stdin { detail } => super::refused(&Refusal::Io { detail: format!("stdin: {detail}") }, lang),
+        }
+    }
+}
+
+/// O `--json` de uma gravação com os campos que vieram crus, cada um pela
+/// opção própria (`raw`: o nome do campo e o valor da opção). O valor
+/// [`FROM_STDIN`] é a entrada padrão inteira, lida por `stdin`, sem a quebra
+/// que fecha a última linha; outro valor entra como veio. O texto longo, com
+/// títulos, listas e crases, chega assim sem virar JSON antes. O `--json` que
+/// não é um objeto segue como veio, e a gravação o recusa pelo motivo de
+/// sempre.
+///
+/// # Errors
+///
+/// [`RawRefusal`]: os dois campos pedindo a entrada padrão, o campo que veio
+/// também no `--json` ou a entrada padrão que não se lê.
+pub(crate) fn with_raw_fields(
+    json: String,
+    raw: [(&'static str, Option<String>); 2],
+    stdin: impl FnOnce() -> std::io::Result<String>,
+) -> Result<String, RawRefusal> {
+    let given: Vec<(&'static str, String)> = raw.into_iter().filter_map(|(field, value)| value.map(|value| (field, value))).collect();
+    if given.is_empty() {
+        return Ok(json);
+    }
+    if given.iter().filter(|(_, value)| value == FROM_STDIN).count() > 1 {
+        return Err(RawRefusal::StdinTwice);
+    }
+    let Ok(Value::Object(mut fields)) = serde_json::from_str::<Value>(&json) else {
+        return Ok(json);
+    };
+    let mut stdin = Some(stdin);
+    for (field, value) in given {
+        if fields.contains_key(field) {
+            return Err(RawRefusal::FieldTwice { field });
+        }
+        let value = match (value == FROM_STDIN).then(|| stdin.take()).flatten() {
+            Some(read) => {
+                let text = read().map_err(|error| RawRefusal::Stdin { detail: error.to_string() })?;
+                let open = text.strip_suffix('\n').map_or(text.as_str(), |cut| cut.strip_suffix('\r').unwrap_or(cut));
+                open.to_string()
+            }
+            None => value,
+        };
+        fields.insert(field.to_string(), Value::String(value));
+    }
+    Ok(Value::Object(fields).to_string())
+}
+
+/// Os campos do tipo `event_type` que apontam outro item: os de referência
+/// da tabela, a origem e a versão que o item substitui.
+fn reference_fields(event_type: &str) -> Vec<&'static str> {
+    use mustard_core::domain::spec_events::Kind;
+    let declared = type_spec(event_type).map(|spec| spec.fields).unwrap_or_default();
+    let mut names: Vec<&'static str> = declared.iter().filter(|field| matches!(field.kind, Kind::Ref | Kind::Refs)).map(|field| field.name).collect();
+    for common in ["origin", "replaces"] {
+        if !names.contains(&common) {
+            names.push(common);
+        }
+    }
+    names
+}
+
+/// Os valores dos campos de `draft` que apontam outro item, um a um: o
+/// valor sozinho ou cada um da lista.
+fn reference_values<'a>(event_type: &str, draft: &'a mut Map<String, Value>) -> impl Iterator<Item = &'a mut Value> {
+    let fields = reference_fields(event_type);
+    draft
+        .iter_mut()
+        .filter(move |(name, _)| fields.contains(&name.as_str()))
+        .flat_map(|(_, value)| match value {
+            Value::Array(list) => list.iter_mut().collect::<Vec<_>>(),
+            single => vec![single],
+        })
+}
+
+/// Os rótulos que o rascunho `draft` do tipo `event_type` cita nos campos
+/// que apontam outro item: o texto que não é número nem código de item. É
+/// assim que uma linha do lote aponta outra do mesmo lote, ainda sem número.
+pub(crate) fn cited_labels(event_type: &str, draft: &Map<String, Value>) -> Vec<String> {
+    let mut draft = draft.clone();
+    reference_values(event_type, &mut draft)
+        .filter(|value| mustard_core::domain::spec_events::EventRef::from_value(value).is_none())
+        .filter_map(|value| value.as_str().map(str::trim).filter(|label| !label.is_empty()).map(str::to_string))
+        .collect()
+}
+
+/// Troca, nos campos de `draft` que apontam outro item, cada rótulo que
+/// `recorded` conhece pelo número do item gravado com ele.
+pub(crate) fn resolve_labels(event_type: &str, draft: &mut Map<String, Value>, recorded: &dyn Fn(&str) -> Option<u64>) {
+    for value in reference_values(event_type, draft) {
+        if let Some(id) = value.as_str().map(str::trim).and_then(recorded) {
+            *value = json!(id);
+        }
+    }
+}
+
 /// As recusas do pedido do modelo na spec `spec` que olham só o tipo e os
 /// campos, antes de ler a spec: o autor do programa; o estado e o tipo de
 /// trabalho, que têm porta própria; os tipos que só o binário grava; a onda,
