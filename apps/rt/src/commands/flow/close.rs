@@ -96,6 +96,8 @@ mod proof_runs;
 #[cfg(test)]
 mod review_request_tests;
 #[cfg(test)]
+mod session_answer_tests;
+#[cfg(test)]
 mod stale_marks;
 mod unused;
 
@@ -416,6 +418,10 @@ fn close_in(opts: &CloseOpts, caller: Caller<'_>) -> Value {
             value
         }
     };
+    if value["ok"] == true {
+        let fixed = [translate("close.final_review", lang).replace("{spec}", value["spec"].as_str().unwrap_or_default())];
+        crate::commands::flow::round::once_per_session(&project.root, caller.session, &mut value, &fixed);
+    }
     let (spec, waiting) = asking;
     let reserves = crate::commands::flow::round::ask_after_locks(&opts.root, &project.root, &spec, &waiting, lang);
     crate::shared::jev::reserve::attach(&mut value, reserves, "mustard-rt run close", lang);
@@ -562,7 +568,7 @@ fn run_close(
     // cada critério, uma vez por fechamento. A volta que só
     // confere a aprovação, sem nada mudado desde a máquina verde, não roda
     // nada de novo.
-    let (Machine { runs, undeclared, from_base, before_unchecked }, reused) = {
+    let (Machine { runs, stages, undeclared, from_base, before_unchecked }, reused) = {
         let _held = crate::commands::git_settle::git_step_lock(root)
             .map_err(|detail| CloseRefusal::Report(crate::commands::flow::round::RoundRefusal::Git { detail }))?;
         if super::validation::reusable(root, &log) {
@@ -623,6 +629,7 @@ fn run_close(
             "phase": "running",
             "recorded": recorded,
             "criteria": runs,
+            "stages": stages,
             "validation": {"status":"pass","reused":reused},
             "review": { "final": true, "lines": count_lines(&prompt), "read": read },
             "next": next,
@@ -684,6 +691,7 @@ fn run_close(
         if found.recorded.iter().any(|entry| entry["type"] == json!("task")) {
             let mut out = final_leftovers_answer(&spec, recorded, found, &read(&path)?, lang);
             out["criteria"] = json!(runs);
+            out["stages"] = json!(stages);
             out["validation"] = json!({"status":"pass","reused":reused});
             if let Some(hint) = &stuck_hint {
                 spec_events::pages::push_warning(&mut out, "stuck-found", hint);
@@ -732,6 +740,7 @@ fn run_close(
         "phase": "closed",
         "recorded": recorded,
         "criteria": runs,
+        "stages": stages,
         "validation": {"status":"pass","reused":reused},
     });
     if let Some(hint) = &stuck_hint {
@@ -955,6 +964,7 @@ fn machine(
     let mut undeclared: Vec<String> = Vec::new();
     let mut from_base: Vec<String> = Vec::new();
     let mut native_outputs = Vec::new();
+    let mut stages: Vec<Value> = Vec::new();
     // Tudo o que cai entra numa recusa só. A compilação vermelha é a exceção:
     // o lint, a suíte e os critérios cairiam pelo mesmo erro dela.
     let mut failures: Vec<CloseRefusal> = Vec::new();
@@ -973,6 +983,7 @@ fn machine(
         // projeto pede.
         let out = crate::commands::review::qa_run::run_server_command(&clean_env(&command), clean);
         super::validation::record_run(root, spec, "final", key, &command, &out).map_err(CloseRefusal::Refused)?;
+        stages.push(json!({ "stage": key, "result": out.result }));
         if out.result != "pass" {
             if key == "buildCommand" {
                 return Err(CloseRefusal::BuildFailed { command, output: out.output, local_files, no_wave: None });
@@ -1026,11 +1037,24 @@ fn machine(
         draft.insert("ms".into(), json!(out.ms));
         draft.insert("reused".into(), json!(out.reused));
         draft.insert("author".into(), json!("binary"));
-        if !out.output.trim().is_empty() {
+        let kept_output = !out.output.trim().is_empty();
+        if kept_output {
             draft.insert("output".into(), json!(out.output));
         }
-        record(&opts.root, spec, "criterion_run", draft, PhaseWriter::Binary).map_err(CloseRefusal::Refused)?;
-        runs.push(json!({ "criterion": code, "result": out.result, "exit": out.exit, "ms": out.ms,"reused":out.reused }));
+        let written = record(&opts.root, spec, "criterion_run", draft, PhaseWriter::Binary).map_err(CloseRefusal::Refused)?;
+        // Uma linha por critério, com o resultado e o motivo; a saída inteira
+        // fica gravada na execução, e a linha diz como lê-la.
+        let mut line = json!({ "criterion": code, "result": out.result });
+        if let Some(fault) = out.fault() {
+            line["reason"] = json!(fault_reason(&fault));
+        }
+        if out.reused {
+            line["reused"] = json!(true);
+        }
+        if kept_output && let Some(run) = written.written.code.as_deref() {
+            line["read"] = json!(crate::commands::flow::round::read_command(root, spec, &format!("item-{run}")));
+        }
+        runs.push(line);
     }
     // Cada prova roda de novo no código de antes da obra, onde tem de cair;
     // a que passa ali rodando teste não prova nada novo. Sem commit base, não
@@ -1061,7 +1085,17 @@ fn machine(
         super::validation::receipt(root, spec, &key).map_err(CloseRefusal::Refused)?;
     }
     timing.passed();
-    Ok(Machine { runs, undeclared, from_base, before_unchecked })
+    Ok(Machine { runs, stages, undeclared, from_base, before_unchecked })
+}
+
+/// O motivo curto de a prova não ter passado, o mesmo da recusa do
+/// fechamento.
+fn fault_reason(fault: &ProofFault) -> &'static str {
+    match fault {
+        ProofFault::RanNoTest(_) => "criterion-ran-no-test",
+        ProofFault::MissingTest(_) => "criterion-missing-test",
+        ProofFault::Failed(_) => "criterion-failed",
+    }
 }
 
 /// A falha da máquina do fechamento (`failure`) reabre, por um evento próprio
@@ -1076,6 +1110,8 @@ fn machine(
 #[derive(Default)]
 struct Machine {
     runs: Vec<Value>,
+    /// Uma linha por comando do servidor que rodou, com o resultado.
+    stages: Vec<Value>,
     undeclared: Vec<String>,
     from_base: Vec<String>,
     before_unchecked: Option<String>,

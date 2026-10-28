@@ -274,6 +274,44 @@ fn conductor_mark(input: &HookInput, root: &Path) -> Option<PathBuf> {
     })
 }
 
+/// O que a marca de sessão de quem conduz guarda: na primeira linha, a faixa
+/// de tamanho já avisada; em cada linha seguinte, a impressão de um texto fixo
+/// que a rodada ou o fechamento já deram na sessão. Limpar ou compactar a
+/// regrava como `0`, e as duas coisas voltam juntas. A marca de antes, só com
+/// o número, se lê sem nenhum texto dado.
+struct SessionMark {
+    band: u64,
+    given: std::collections::BTreeSet<String>,
+}
+
+impl SessionMark {
+    fn parse(text: &str) -> Self {
+        let mut lines = text.lines();
+        let band = lines.next().and_then(|line| line.trim().parse::<u64>().ok()).unwrap_or(0);
+        let given = lines.map(str::trim).filter(|line| !line.is_empty()).map(str::to_string).collect();
+        Self { band, given }
+    }
+
+    fn render(&self) -> String {
+        std::iter::once(self.band.to_string()).chain(self.given.iter().cloned()).collect::<Vec<_>>().join("\n")
+    }
+}
+
+/// As impressões de `prints` que a sessão `session` já recebeu desde a última
+/// limpeza ou compactação; todas passam a contar como recebidas. Sem sessão de
+/// verdade, ou sem a marca legível, nenhuma: o texto vai sempre, porque
+/// repetir é melhor que calar.
+pub(crate) fn given_in_session(root: &Path, session: Option<&str>, prints: &[String]) -> std::collections::BTreeSet<String> {
+    let Some(path) = mark_path(root, session, "size-step") else { return std::collections::BTreeSet::new() };
+    let Ok(mut mark) = mustard_core::io::fs::lock::LockedFile::exclusive(&path) else { return std::collections::BTreeSet::new() };
+    let Ok(text) = mark.read_to_string() else { return std::collections::BTreeSet::new() };
+    let mut state = SessionMark::parse(&text);
+    let given = prints.iter().filter(|print| state.given.contains(*print)).cloned().collect();
+    state.given.extend(prints.iter().cloned());
+    let _ = mark.replace(state.render().as_bytes());
+    given
+}
+
 /// Reset only after the host confirms a clear or completed compaction.
 pub(crate) fn reset_conductor_notice(input: &HookInput, root: &Path) {
     if let Some(path) = conductor_mark(input, root)
@@ -297,12 +335,15 @@ fn conductor_text_with(input: &HookInput, root: &Path, line: impl FnOnce() -> Op
     let threshold = tokens / CONDUCTOR_STEP * CONDUCTOR_STEP;
     let path = conductor_mark(input, root)?;
     let mut mark = mustard_core::io::fs::lock::LockedFile::exclusive(&path).ok()?;
-    let warned = mark.read_to_string().ok()?.trim().parse::<u64>().unwrap_or(0);
+    let mut state = SessionMark::parse(&mark.read_to_string().ok()?);
+    let warned = state.band;
     // Older versions stored the number of 200k bands instead of tokens.
     let warned = if warned > 0 && warned < CONDUCTOR_FIRST_NOTICE { warned.saturating_mul(200_000) } else { warned };
     if threshold <= warned { return None; }
     let (line, live) = line()?;
-    mark.replace(threshold.to_string().as_bytes()).ok()?;
+    // A faixa nova não apaga os textos fixos que a sessão já recebeu.
+    state.band = threshold;
+    mark.replace(state.render().as_bytes()).ok()?;
     let lang = crate::commands::spec_events::project(root).lang;
     let key = if live.is_empty() { "conversation_size.notice" } else { "conversation_size.notice_live" };
     let waves: Vec<String> = live.iter().map(u64::to_string).collect();

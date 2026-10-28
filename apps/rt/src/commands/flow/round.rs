@@ -178,6 +178,8 @@ mod skill_cycle_tests;
 #[cfg(test)]
 mod dispatch_jev_tests;
 #[cfg(test)]
+mod session_answer_tests;
+#[cfg(test)]
 mod triage_jev_tests;
 mod planning;
 pub(crate) use planning::needs_planning;
@@ -314,6 +316,43 @@ mod transport_tests {
     }
 }
 
+/// A resposta `out` da rodada ou do fechamento como a sessão `session` a
+/// recebe: cada texto fixo de `fixed` que está no `next` e cada aviso que a
+/// sessão já recebeu desde a última limpeza ou compactação saem; o resto fica,
+/// e passa a contar como recebido. A marca é a mesma do aviso de tamanho de
+/// quem conduz, que volta a zero quando o host confirma `/clear` ou a
+/// compactação. Sem sessão, nada sai.
+pub(crate) fn once_per_session(root: &Path, session: Option<&str>, out: &mut Value, fixed: &[String]) {
+    let print = |text: &str| blake3::hash(text.as_bytes()).to_hex()[..16].to_string();
+    let next = out["next"].as_str().unwrap_or_default().to_string();
+    let present: Vec<&String> = fixed.iter().filter(|text| !text.is_empty() && next.contains(text.as_str())).collect();
+    let warnings: Vec<Value> = out["warnings"].as_array().cloned().unwrap_or_default();
+    let prints: Vec<String> = present.iter().map(|text| print(text)).chain(warnings.iter().map(|w| print(&w.to_string()))).collect();
+    let given = crate::hooks::session::conversation_size::given_in_session(root, session, &prints);
+    if given.is_empty() {
+        return;
+    }
+    let mut left = next;
+    for text in present.into_iter().filter(|text| given.contains(&print(text))) {
+        left = left.replace(text.as_str(), " ");
+    }
+    out["next"] = json!(left.split_whitespace().collect::<Vec<_>>().join(" "));
+    let new: Vec<Value> = warnings.into_iter().filter(|w| !given.contains(&print(&w.to_string()))).collect();
+    if let Some(fields) = out.as_object_mut() {
+        if new.is_empty() {
+            fields.remove("warnings");
+        } else {
+            fields.insert("warnings".into(), json!(new));
+        }
+    }
+}
+
+/// Os textos fixos do `next` da rodada no projeto em `root`: a ordem de
+/// despachar e o que fazer quando os agentes voltarem.
+fn fixed_texts(root: &Path, lang: mustard_core::platform::i18n::Locale) -> Vec<String> {
+    vec![mustard_core::translate("round.next", lang).to_string(), checks::report_back(root, lang)]
+}
+
 /// O passo que a rodada devolve quando todas as ondas estão entregues e
 /// aprovadas.
 pub const DONE_STEP: &str = "close";
@@ -350,6 +389,9 @@ pub(crate) fn round_in(opts: &RoundOpts, caller: Caller<'_>) -> Value {
                 && let Some(reason) = super::validation::record_base_check(&project.root, &spec)
             {
                 spec_events::pages::push_warning(&mut report, "base-check-not-recorded", &reason);
+            }
+            if report["ok"] == true {
+                once_per_session(&project.root, caller.session, &mut report, &fixed_texts(&project.root, lang));
             }
             report
         }
