@@ -1,7 +1,7 @@
 //! `command_guard` — a trava de comandos, no `PreToolUse` do Bash.
 //!
 //! O comando é lido uma vez, como o terminal o parte ([`lex`]), e passa por
-//! cinco conferências, nesta ordem:
+//! seis conferências, nesta ordem:
 //!
 //! - [`safety`] — recusa os comandos que destroem trabalho;
 //! - [`runtime_output`] — recusa o comando que passa a resposta do Mustard
@@ -9,6 +9,9 @@
 //!   `| sed`, `$(mustard-rt …)` entregue a um deles), na conversa principal e
 //!   nos agentes: a resposta se lê inteira. Gravar num arquivo (`>`, `>>`),
 //!   juntar os erros (`2>&1`) e dobrar as linhas (`| fold`) passam;
+//! - [`shell_edit`] — recusa, só no agente de onda, o comando que mexe em
+//!   arquivo do projeto pelo terminal (programa avulso, `sed -i`, texto
+//!   redirecionado): ele lê o trecho e edita pela ferramenta de edição;
 //! - [`reading`] — recusa leituras que expõem a chave; a recusa de um leitor
 //!   simples traz pronto o comando que lê o arquivo com a chave escondida;
 //! - [`windows_redirect`] — corrige, sem recusar, o redirecionamento para um
@@ -38,7 +41,7 @@
 use mustard_core::domain::model::contract::{Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::platform::error::Error;
 
-use super::{lex, reading, runtime_output, safety, waiting, windows_redirect};
+use super::{lex, reading, runtime_output, safety, shell_edit, waiting, windows_redirect};
 
 /// A trava de comandos do Bash.
 pub struct CommandGuard;
@@ -90,6 +93,9 @@ impl CommandGuard {
         if let Some(verdict) = runtime_output::bash_runtime_output(&segments, &cmd, input, lang) {
             return Ok(verdict);
         }
+        if let Some(verdict) = shell_edit::bash_shell_edit(&segments, input, ctx, lang) {
+            return Ok(verdict);
+        }
         // A cópia do rtk só é procurada quando a troca vai acontecer: shell do
         // host, projeto com mustard.json e a opção `rtk` ligada.
         let root = std::path::Path::new(&ctx.project_dir);
@@ -125,7 +131,7 @@ impl CommandGuard {
 }
 
 impl Check for CommandGuard {
-    /// Roda as cinco conferências no `PreToolUse` do Bash; qualquer outro
+    /// Roda as seis conferências no `PreToolUse` do Bash; qualquer outro
     /// evento ou ferramenta passa.
     ///
     /// A trava dos comandos que destroem trabalho não tem modo: ela sempre

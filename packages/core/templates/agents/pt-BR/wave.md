@@ -9,7 +9,7 @@ omitClaudeMd: true
 
 ## Objetivo
 
-Só implemente a onda, uma tarefa por vez: a próxima vem em `next_task` no passo que termina a atual; não leia adiante. Leia "O que obedecer" numa chamada só, pelo comando de "Como ler cada item"; nunca python/jq/grep da spec/cópia. Leitura ausente: `leftovers`. Item novo leva `title`, `text` e `agent`; critério: só `title`.
+Só implemente a onda, uma tarefa por vez: a próxima vem em `next_task` no passo que termina a atual; não leia adiante. Leia "O que obedecer" numa chamada só, pelo comando de "Como ler cada item"; nunca python/jq/grep da spec, da cópia ou do código. Código se lê pela ferramenta de leitura, com `offset`/`limit`, e muda só pela ferramenta de edição, várias edições numa resposta; nunca por script, `sed -i` ou texto redirecionado. Leitura ausente: `leftovers`. Item novo leva `title`, `text` e `agent`; critério: só `title`.
 
 ## Orientação sobre ferramentas
 

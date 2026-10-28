@@ -535,6 +535,21 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("command_guard.glued_argument", Locale::EnUs) => {
             "Command refused: the shell handed the variable over whole, as a single argument.\nReceived: `{argument}`\nThere is no similar argument to look for. This machine's shell does not split the variable on its spaces. Write each option on the line, one by one: `mustard-rt run read backlog --root /project --spec work`. With a variable, put each part of it where the option goes, not the whole variable."
         }
+        // A recusa do agente de onda que mexe em arquivo do projeto pelo
+        // terminal (`apps/rt/src/hooks/bash/shell_edit.rs`). `{edit}` vem do
+        // chamador: a ferramenta de edição do hospedeiro que pediu o comando.
+        ("command_guard.shell_edit", Locale::PtBr) => {
+            "[Mustard] Agente de onda não mexe em arquivo do projeto pelo terminal: nada de programa \
+             avulso, `sed -i`, `perl -i` ou texto redirecionado. Leia só o trecho pela ferramenta de \
+             leitura, com `offset` e `limit`. Edite pela ferramenta de edição do hospedeiro, {edit}. \
+             Trocas independentes saem juntas, numa resposta só."
+        }
+        ("command_guard.shell_edit", Locale::EnUs) => {
+            "[Mustard] A wave agent never changes project files from the shell: no ad hoc program, \
+             `sed -i`, `perl -i` or redirected text. Read only the excerpt with the read tool, using \
+             `offset` and `limit`. Edit with the host's edit tool, {edit}. Independent edits go \
+             together, in one response."
+        }
         ("runtime_output.ready", Locale::PtBr) => {
             "Rode assim, que é o mesmo comando com a resposta inteira num arquivo:\n{ready}"
         }
@@ -867,6 +882,7 @@ mod tests {
             ("command_guard.waiting_loop", &["{command}"][..]),
             ("runtime_output.scripted", &["{command}"][..]),
             ("command_guard.glued_argument", &["{argument}"][..]),
+            ("command_guard.shell_edit", &["{edit}"][..]),
             ("runtime_output.ready", &["{ready}"][..]),
             ("runtime_output.ready_shortened", &["{ready}"][..]),
             ("runtime_output.summary", &["{block}", "{summary}"][..]),

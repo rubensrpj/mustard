@@ -39,6 +39,7 @@ command_guard.reset_hard	dec7bb2484a721d4
 command_guard.restore_all	92085996b821c189
 command_guard.rm_recursive_force	ed4174c94a8f8904
 command_guard.rm_recursive_force_instead	a9caba2c10c328a7
+command_guard.shell_edit	398b12b36bfbb15b
 command_guard.waiting_loop	99d2847363d9e795
 command_guard.windows_path_rewritten	12bd766fbb49dee7
 config_key.hidden	eccb139f52b19c0e

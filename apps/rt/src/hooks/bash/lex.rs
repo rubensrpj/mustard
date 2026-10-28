@@ -62,6 +62,9 @@ impl Word {
 pub(crate) struct Redirect {
     pub op: String,
     pub target: Word,
+    /// O corpo do heredoc (`<<`, `<<-`), como foi escrito, sem a linha do
+    /// delimitador; `None` nos outros redirecionamentos.
+    pub body: Option<String>,
 }
 
 /// One simple command of the line, split the way the terminal splits it.
@@ -320,7 +323,7 @@ impl Reader {
                 expands: target.is_plain(),
             });
         }
-        cur.redirects.push(Redirect { op: format!("{fd}{op}"), target });
+        cur.redirects.push(Redirect { op: format!("{fd}{op}"), target, body: None });
     }
 
     /// Read one word up to the first blank or operator outside quotes. The
@@ -545,6 +548,8 @@ impl Reader {
     /// After a line break: the bodies of the heredocs opened on that line,
     /// each up to the line equal to its delimiter. A body is text; when its
     /// delimiter has no quote, the commands of its substitutions go to `out`.
+    /// Cada corpo fica no redirecionamento que o abriu, o primeiro ainda sem
+    /// corpo com o mesmo delimitador, na ordem em que a linha os abriu.
     fn heredoc_bodies(&mut self, out: &mut Vec<Segment>, depth: usize) {
         for doc in std::mem::take(&mut self.heredocs) {
             let body_start = self.pos;
@@ -563,10 +568,17 @@ impl Reader {
                     break;
                 }
             }
-            if doc.expands {
-                let body: String = self.chars.get(body_start..body_end).unwrap_or(&[]).iter().collect();
-                out.extend(heredoc_commands(&body, depth));
+            let body: String = self.chars.get(body_start..body_end).unwrap_or(&[]).iter().collect();
+            let commands = if doc.expands { heredoc_commands(&body, depth) } else { Vec::new() };
+            let opened = out.iter_mut().flat_map(|segment| segment.redirects.iter_mut()).find(|redirect| {
+                matches!(redirect.op.trim_start_matches(|c: char| c.is_ascii_digit()), "<<" | "<<-")
+                    && redirect.target.text == doc.delimiter
+                    && redirect.body.is_none()
+            });
+            if let Some(redirect) = opened {
+                redirect.body = Some(body);
             }
+            out.extend(commands);
         }
     }
 }

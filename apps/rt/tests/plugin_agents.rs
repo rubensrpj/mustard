@@ -632,6 +632,41 @@ fn the_wave_agent_template_has_exactly_four_items() {
     }
 }
 
+/// O objetivo do molde da onda, nos dois idiomas, diz que nem a spec, nem a
+/// cópia, nem o código passam por python, jq ou grep; que o código se lê pela
+/// ferramenta de leitura, com `offset`/`limit`, e muda só pela ferramenta de
+/// edição, várias edições numa resposta; e que nada muda por script, `sed -i`
+/// ou texto redirecionado.
+#[test]
+fn both_wave_templates_say_code_changes_only_through_the_edit_tool() {
+    for (lang, header, said) in [
+        (
+            "pt-BR",
+            "## Objetivo",
+            [
+                "nunca python/jq/grep da spec, da cópia ou do código",
+                "Código se lê pela ferramenta de leitura, com `offset`/`limit`, e muda só pela ferramenta de edição, várias edições numa resposta",
+                "nunca por script, `sed -i` ou texto redirecionado",
+            ],
+        ),
+        (
+            "en-US",
+            "## Goal",
+            [
+                "no python/jq/grep on spec, copy or code",
+                "Code is read with the read tool, using `offset`/`limit`, and changed only with the edit tool, several edits in one response",
+                "never by script, `sed -i` or redirected text",
+            ],
+        ),
+    ] {
+        let wave = template(lang, "wave");
+        let goal = section(&wave, header);
+        for phrase in said {
+            assert!(goal.contains(phrase), "the {lang} wave goal does not say `{phrase}`: {goal}");
+        }
+    }
+}
+
 /// O texto de uma seção de segundo nível de um molde: da linha `header` até a
 /// próxima seção, sem a própria linha do título.
 fn section<'a>(body: &'a str, header: &str) -> &'a str {

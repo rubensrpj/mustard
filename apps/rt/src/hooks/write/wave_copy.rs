@@ -19,8 +19,7 @@ pub(crate) fn check(root: &Path, input: &HookInput, ctx: &Ctx) -> Option<Verdict
     if !absolute.starts_with(root) && !absolute.starts_with(&copies) {
         return None;
     }
-    let native_wave = input.agent_type.as_deref().is_some_and(|kind| kind == "mustard-wave" || kind.ends_with(":mustard-wave"));
-    if binding.is_none() && !native_wave && !absolute.starts_with(&copies) {
+    if binding.is_none() && !is_wave_agent(input) && !absolute.starts_with(&copies) {
         return None;
     }
     let Some(binding) = binding else {
@@ -40,6 +39,33 @@ pub(crate) fn check(root: &Path, input: &HookInput, ctx: &Ctx) -> Option<Verdict
             wave_prompt::shown(copy)
         ),
     })
+}
+
+/// O agente foi lançado como o agente de onda do Mustard, com ou sem o nome
+/// do plugin na frente.
+pub(crate) fn is_wave_agent(input: &HookInput) -> bool {
+    input.agent_type.as_deref().is_some_and(|kind| kind == "mustard-wave" || kind.ends_with(":mustard-wave"))
+}
+
+/// A pasta onde roda o comando do terminal de um agente de onda, ou `None`
+/// fora dele. O agente de onda é o subagente ligado ao envio de uma onda, o
+/// lançado como agente de onda ou o que trabalha na pasta das cópias. Com a
+/// ligação, o comando roda na cópia do envio: a pasta atual quando está nela,
+/// e a cópia quando a troca do fim o leva até ela.
+pub(crate) fn wave_shell_folder(root: &Path, input: &HookInput, ctx: &Ctx) -> Option<std::path::PathBuf> {
+    if !input.is_subagent() {
+        return None;
+    }
+    let cwd = Path::new(input.cwd.as_deref().unwrap_or(&ctx.project_dir));
+    let host = crate::shared::host_observation::caller_host(root, input.session_id.as_deref());
+    if let Some(binding) = crate::shared::host_observation::tool_binding(root, host, input) {
+        let copy = binding.send.str_field("copy").map(Path::new);
+        let inside = |copy: &Path| cwd.canonicalize().ok().zip(copy.canonicalize().ok()).is_some_and(|(cwd, copy)| cwd.starts_with(copy));
+        return Some(copy.filter(|copy| !inside(copy)).unwrap_or(cwd).to_path_buf());
+    }
+    let copies = wave_prompt::copies_dir(root);
+    let in_copies = cwd.canonicalize().ok().zip(copies.canonicalize().ok()).is_some_and(|(cwd, copies)| cwd.starts_with(copies));
+    (is_wave_agent(input) || in_copies).then(|| cwd.to_path_buf())
 }
 
 /// `path` sem os `.` e com cada `..` tirando a pasta de antes, sem consultar o

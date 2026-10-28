@@ -9,7 +9,7 @@ omitClaudeMd: true
 
 ## Goal
 
-Implement only this wave, task by task: its end step gives the next in `next_task`; never read ahead. Read "What to obey" in one call ("How to read each item"); no python/jq/grep on spec/copy. Missing reading: `leftovers`. A new item takes `title`, `text` and `agent`; criterion: only `title`.
+Implement only this wave, task by task: its end step gives the next in `next_task`; never read ahead. Read "What to obey" in one call ("How to read each item"); no python/jq/grep on spec, copy or code. Code is read with the read tool, using `offset`/`limit`, and changed only with the edit tool, several edits in one response; never by script, `sed -i` or redirected text. Missing reading: `leftovers`. A new item takes `title`, `text` and `agent`; criterion: only `title`.
 
 ## Tool guidance
 
