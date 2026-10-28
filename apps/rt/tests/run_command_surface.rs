@@ -479,18 +479,14 @@ impl PullRequestProject {
 
     /// Roda a pergunta ao mapa e a repete enquanto a resposta diz que o mapa
     /// segue em atualização: a pergunta não espera a passada além do prazo
-    /// dela, e a máquina lenta a acaba em segundo plano. Passados 120 s,
-    /// devolve a última resposta.
+    /// dela, e a máquina lenta a acaba em segundo plano. Devolve a primeira
+    /// resposta com o mapa em dia.
     fn ask_until_refreshed(&self, args: &[&str], path: &str) -> serde_json::Value {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
-        loop {
+        crate::wait_for::wait_for("a resposta da pergunta com o mapa em dia", || {
             let (ok, report) = self.run(args, path);
             assert!(ok, "{report}");
-            if report.get("refreshing").is_none() || std::time::Instant::now() > deadline {
-                return report;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(250));
-        }
+            report.get("refreshing").is_none().then_some(report)
+        })
     }
 
     /// O caminho dos programas com o `gh` falso na frente.

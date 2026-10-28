@@ -72,17 +72,12 @@ mod tests {
 
     use super::*;
     use crate::shared::jev::{JevKey, TASK_TRIAGE_CALL, TRIAGE_CALL};
-    use crate::shared::task_triage::{Candidate, Item, OrderedSubject, classify_with, order_backlog_with};
+    use crate::shared::task_triage::{BACKLOG_WAIT, Candidate, Item, OrderedSubject, classify_with, order_backlog_with};
 
     /// Um serviço em 127.0.0.1 que responde `status` a todo pedido e conta
     /// quantos chegaram.
     fn answering(status: u16) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
-        serving(Duration::ZERO, status, String::new())
-    }
-
-    /// [`crate::shared::test_fixture::jev_service`].
-    fn serving(delay: Duration, status: u16, body: String) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
-        crate::shared::test_fixture::jev_service(delay, status, body)
+        crate::shared::test_fixture::jev_service(status, String::new())
     }
 
     /// As chamadas `command` que o programa observou na spec `x`.
@@ -121,11 +116,12 @@ mod tests {
         assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1, "the oversized question never leaves");
     }
 
-    /// O serviço responde depois do prazo de toda chamada e antes do prazo da
-    /// reorganização da lista aberta (os dois encurtados): a reorganização
-    /// recebe a resposta e junta as duas tarefas; a classificação de uma
-    /// tarefa a gravar, com o prazo de toda chamada, fica sem resposta e grava
-    /// a falha por prazo.
+    /// O serviço segura a resposta até o teste soltá-la, e o teste a solta
+    /// depois que a classificação de uma tarefa a gravar, com o prazo de toda
+    /// chamada (encurtado), já desistiu e gravou a falha por prazo: a
+    /// reorganização da lista aberta, pedida junto e com o prazo dela, ainda
+    /// espera, recebe a resposta e junta as duas tarefas numa chamada só. A
+    /// prova é a ordem dos eventos; a máquina lenta só alonga o teste.
     #[test]
     fn backlog_triage_waits_longer_than_a_hook_call() {
         let dir = tempfile::tempdir().unwrap();
@@ -134,25 +130,30 @@ mod tests {
         assert_eq!(crate::commands::spec_events::write::record_open(root, "x", "feature/x", "dev"), Ok(true));
         let level = |level: f64| json!({ "type": "score", "score": level, "probabilities": { (level as u8).to_string(): 0.8 } });
         let answer = json!({ "answers": { "value_t1": level(1.0), "complexity_t1": level(2.0), "value_t2": level(3.0), "complexity_t2": level(0.0) } });
-        let (url, count) = serving(Duration::from_millis(600), 200, answer.to_string());
+        let (url, gate) = crate::shared::test_fixture::held_jev_service(200, answer.to_string());
         let mut filter = JevFilter::at(JevKey("sk-test".to_string()), &url);
         filter.timeouts.response = Duration::from_millis(150);
         let task = |id: u64, title: &'static str| Candidate { id, title, text: "", files: BTreeSet::from(["src/resume.ts".to_string()]), joinable: true };
         let open = [task(1, "Retomada lista as ondas no ar"), task(2, "Retomada diz se o agente de cada onda vive")];
-
-        let subject = OrderedSubject { name: "Retomada".into(), tasks: vec![(1, vec![]), (2, vec![])] };
-        let backlog = order_backlog_with(&open, vec![subject], &Default::default(), &|payloads| {
-            filter.choose_all_recorded_within(root, "x", TASK_TRIAGE_CALL, payloads, Duration::from_secs(5))
-        }, None);
-        assert_eq!((backlog.subjects[0].tasks.clone(), backlog.unanswered), (vec![(2, vec![]), (1, vec![])], 0));
-
         let item = Item { title: "Retomada avisa a onda sem agente".into(), text: String::new(), files: BTreeSet::from(["src/resume.ts".to_string()]) };
-        let destinations = classify_with(&open, &[item], &[], &|payload| filter.choose_recorded(root, "x", TASK_TRIAGE_CALL, payload));
-        assert_eq!(destinations, vec![None]);
+
+        let backlog = std::thread::scope(|scope| {
+            let backlog = scope.spawn(|| {
+                let subject = OrderedSubject { name: "Retomada".into(), tasks: vec![(1, vec![]), (2, vec![])] };
+                order_backlog_with(&open, vec![subject], &Default::default(), &|payloads| {
+                    filter.choose_all_recorded_within(root, "x", TASK_TRIAGE_CALL, payloads, BACKLOG_WAIT)
+                }, None)
+            });
+            let destinations = classify_with(&open, &[item], &[], &|payload| filter.choose_recorded(root, "x", TASK_TRIAGE_CALL, payload));
+            assert_eq!(destinations, vec![None], "the hook call gives up while the service holds the answer");
+            assert!(!backlog.is_finished(), "the backlog triage still waits after the hook call gave up");
+            gate.open();
+            backlog.join().unwrap()
+        });
+        assert_eq!((backlog.subjects[0].tasks.clone(), backlog.unanswered), (vec![(2, vec![]), (1, vec![])], 0));
 
         let recorded = calls(root, TASK_TRIAGE_CALL);
         let filters: Vec<&Value> = recorded.iter().map(|call| &call["filter"]).collect();
-        assert_eq!(filters, [&json!("jev"), &json!("jev:timeout")], "one call for the subject of two tasks: {recorded:?}");
-        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(filters, [&json!("jev:timeout"), &json!("jev")], "the hook call gave up first, and one call served the subject of two tasks: {recorded:?}");
     }
 }

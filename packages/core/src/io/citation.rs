@@ -25,11 +25,14 @@ pub fn citation_roots(start: &Path, spec_root: &Path) -> Vec<PathBuf> {
 
 /// O disco, como a conferência o pergunta: os arquivos nas raízes e os nomes
 /// no mapa, que só é aberto quando um nome é conferido. Cada nome lê só as
-/// declarações com ele, nunca o mapa inteiro.
+/// declarações com ele, nunca o mapa inteiro. A lista dos arquivos do projeto
+/// só é pedida ao git quando uma citação traz só o nome de um arquivo que não
+/// está nas raízes.
 pub struct DiskWorld {
     roots: Vec<PathBuf>,
     map_root: Option<PathBuf>,
     has_map: OnceCell<bool>,
+    files: OnceCell<Vec<String>>,
 }
 
 impl DiskWorld {
@@ -38,7 +41,7 @@ impl DiskWorld {
     /// não se entende, os nomes ficam sem conferência.
     #[must_use]
     pub fn new(roots: Vec<PathBuf>, map_root: Option<&Path>) -> Self {
-        Self { roots, map_root: map_root.map(Path::to_path_buf), has_map: OnceCell::new() }
+        Self { roots, map_root: map_root.map(Path::to_path_buf), has_map: OnceCell::new(), files: OnceCell::new() }
     }
 
     /// O pedaço do mapa que `need` pede; `None` sem mapa ou com um que não se
@@ -61,6 +64,32 @@ impl CitationWorld for DiskWorld {
     fn has_map(&self) -> bool {
         *self.has_map.get_or_init(|| self.read(Need::Nothing).is_some())
     }
+
+    fn files_named(&self, name: &str) -> Vec<String> {
+        let files = self.files.get_or_init(|| project_files(&self.roots));
+        files
+            .iter()
+            .filter(|path| path.rsplit('/').next() == Some(name))
+            .filter(|path| self.roots.iter().any(|root| root.join(path).is_file()))
+            .cloned()
+            .collect()
+    }
+}
+
+/// Os arquivos do projeto, pelo git da primeira raiz e, sem ele, pelo da
+/// raiz das specs: os guardados e os novos que ele não ignora, com o caminho
+/// a partir do topo do repositório, que é uma das raízes. Sem git, nenhum.
+fn project_files(roots: &[PathBuf]) -> Vec<String> {
+    for root in [roots.first(), roots.last()].into_iter().flatten() {
+        let listed = crate::platform::git::run(root, &["ls-files", "-co", "--exclude-standard", "--full-name", "-z", "--", ":/"]);
+        if listed.ok {
+            let mut files: Vec<String> = listed.stdout.split('\0').filter(|path| !path.is_empty()).map(str::to_string).collect();
+            files.sort();
+            files.dedup();
+            return files;
+        }
+    }
+    Vec::new()
 }
 
 /// Quantas linhas o arquivo tem: a última conta mesmo sem `\n` no fim.

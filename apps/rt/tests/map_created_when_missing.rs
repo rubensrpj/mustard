@@ -115,26 +115,20 @@ impl Setup {
         std::fs::read_to_string(&self.calls).map(|text| text.lines().map(str::to_string).collect()).unwrap_or_default()
     }
 
-    /// As leituras da história que o scan de mentira recebeu, uma por linha.
-    /// O programa não espera por elas: quem pergunta espera o processo em
-    /// segundo plano anotar, até um tempo.
+    /// As leituras da história que o scan de mentira recebeu, uma por linha,
+    /// depois de esperar `at_least` delas: o programa não espera por elas, e
+    /// quem pergunta espera o processo em segundo plano anotar.
     fn reads_after_waiting(&self, at_least: usize) -> Vec<String> {
-        let read = || -> Vec<String> {
-            std::fs::read_to_string(&self.reads).map(|text| text.lines().map(str::to_string).collect()).unwrap_or_default()
-        };
-        for _ in 0..200 {
-            if read().len() >= at_least {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-        read()
+        crate::wait_for::wait_for(&format!("{at_least} leituras da história"), || {
+            let read: Vec<String> = std::fs::read_to_string(&self.reads).map(|text| text.lines().map(str::to_string).collect()).unwrap_or_default();
+            (read.len() >= at_least).then_some(read)
+        })
     }
 
-    /// As leituras da história depois de dar ao processo em segundo plano o
-    /// tempo de anotar uma que não devia existir.
+    /// As leituras da história depois de dar ao processo em segundo plano a
+    /// chance de anotar uma que não devia existir.
     fn reads_after_a_pause(&self) -> Vec<String> {
-        std::thread::sleep(std::time::Duration::from_millis(400));
+        crate::pause::room_for_what_must_not_happen();
         self.reads_after_waiting(0)
     }
 

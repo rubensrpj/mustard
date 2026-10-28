@@ -23,7 +23,10 @@ pub enum Refusal {
     EmptyText { event_type: String, field: String },
     WrongCount { event_type: String, field: String, min: usize, max: usize, count: usize },
     FactWithoutSource { fact: usize },
-    CitedFileMissing { fact: usize, path: String },
+    /// O fato `fact` cita o arquivo `path`, que não existe. `same_name` são os
+    /// arquivos do projeto com o mesmo nome, quando a citação traz só o nome:
+    /// a mensagem os sugere.
+    CitedFileMissing { fact: usize, path: String, same_name: Vec<String> },
     CitedLineMissing { fact: usize, path: String, line: u64, lines: u64 },
     BinaryOnlyField { field: String },
     /// Um campo que o tipo não declara. Ele entraria calado e ficaria gravado
@@ -173,9 +176,30 @@ pub enum Refusal {
     /// ainda trabalha (envio aberto, sem entrega): a onda sairia do ar e a
     /// entrega dele seria recusada. Nada é gravado.
     WaveAgentWorking { wave: u64 },
-    /// Uma sobra da entrega sem título ou sem detalhe: `field` é o campo que
-    /// falta na primeira sobra incompleta. Nada é gravado.
-    LeftoverFieldMissing { field: String },
+    /// Um achado da entrega ou do veredito sem título, detalhe, regra ou
+    /// lugares: `finding` é o número do primeiro achado incompleto na lista
+    /// `leftovers`, a contar de um, e `field`, os campos que faltam nele,
+    /// separados por vírgula. Nada é gravado.
+    LeftoverFieldMissing { finding: usize, field: String },
+    /// O achado número `finding` da lista `leftovers` cita o lugar `place`, de
+    /// um arquivo ou de uma linha que o projeto não tem. `same_name` são os
+    /// arquivos do projeto com o mesmo nome, quando o lugar traz só o nome e
+    /// mais de um o tem: a mensagem os sugere. Nada é gravado.
+    FindingPlaceMissing { finding: usize, place: String, same_name: Vec<String> },
+    /// O achado número `finding` da lista `leftovers`, a contar de um, cujo
+    /// detalhe não nomeia prova nenhuma: a tarefa que ele vira cobre o pedido
+    /// com esse detalhe como relato, e sem prova a onda dela não teria o que
+    /// rodar. Nada é gravado.
+    FindingProofMissing { finding: usize },
+    /// Uma tarefa cujos itens cobertos (`covers`, cada um pelo código) não dão
+    /// à onda prova nenhuma que ela rode: nenhum critério com prova, nenhum
+    /// pedido cujo relato nomeie a prova. Toda tarefa cobre uma regra com a
+    /// prova que a onda roda. Nada é gravado.
+    TaskWithoutProof { covers: Vec<String> },
+    /// A entrega da onda `wave` que dá por feita a tarefa `task` sem mudar
+    /// arquivo nenhum de cada lugar de `places`, os lugares da regra que ela
+    /// faz valer. Nada é gravado.
+    DeliveryPlaceUntouched { wave: u64, task: String, places: Vec<String> },
     /// Um item combinado novo, gravado depois da aprovação, que não tem dono:
     /// nenhuma tarefa o cobre, ele não diz as ondas dele nem vale no projeto
     /// todo.
@@ -432,6 +456,10 @@ impl Refusal {
             Self::NoOpenSend { .. } => "no-open-send",
             Self::WaveAgentWorking { .. } => "wave-agent-working",
             Self::LeftoverFieldMissing { .. } => "leftover-field-missing",
+            Self::FindingPlaceMissing { .. } => "finding-place-missing",
+            Self::FindingProofMissing { .. } => "finding-proof-missing",
+            Self::TaskWithoutProof { .. } => "task-without-proof",
+            Self::DeliveryPlaceUntouched { .. } => "delivery-place-untouched",
             Self::OwnerMissing { .. } => "owner-missing",
             Self::TaskDeclarationMissing { .. } => "task-declaration-missing",
             Self::ItemFormMissing { .. } => "item-form-missing",
@@ -506,9 +534,13 @@ impl Refusal {
             Self::FactWithoutSource { fact } => {
                 fill("spec_events.fact_without_source", &[("{fact}", fact.to_string())])
             }
-            Self::CitedFileMissing { fact, path } => fill(
+            Self::CitedFileMissing { fact, path, same_name } if same_name.is_empty() => fill(
                 "spec_events.cited_file_missing",
                 &[("{fact}", fact.to_string()), ("{path}", path.clone())],
+            ),
+            Self::CitedFileMissing { fact, path, same_name } => fill(
+                "spec_events.cited_file_missing.same_name",
+                &[("{fact}", fact.to_string()), ("{path}", path.clone()), ("{found}", same_name.join(", "))],
             ),
             Self::CitedLineMissing { fact, path, line, lines } => fill(
                 "spec_events.cited_line_missing",
@@ -682,9 +714,24 @@ impl Refusal {
             ),
             Self::NoOpenSend { wave } => fill("spec_events.no_open_send", &[("{wave}", wave.to_string())]),
             Self::WaveAgentWorking { wave } => fill("spec_events.wave_agent_working", &[("{wave}", wave.to_string())]),
-            Self::LeftoverFieldMissing { field } => {
-                fill("spec_events.leftover_field_missing", &[("{field}", field.clone())])
-            }
+            Self::LeftoverFieldMissing { finding, field } => fill(
+                "spec_events.leftover_field_missing",
+                &[("{finding}", finding.to_string()), ("{field}", field.clone())],
+            ),
+            Self::FindingPlaceMissing { finding, place, same_name } if same_name.is_empty() => fill(
+                "spec_events.finding_place_missing",
+                &[("{finding}", finding.to_string()), ("{place}", place.clone())],
+            ),
+            Self::FindingPlaceMissing { finding, place, same_name } => fill(
+                "spec_events.finding_place_missing.same_name",
+                &[("{finding}", finding.to_string()), ("{place}", place.clone()), ("{found}", same_name.join(", "))],
+            ),
+            Self::FindingProofMissing { finding } => fill("spec_events.finding_proof_missing", &[("{finding}", finding.to_string())]),
+            Self::TaskWithoutProof { covers } => fill("spec_events.task_without_proof", &[("{covers}", covers.join(", "))]),
+            Self::DeliveryPlaceUntouched { wave, task, places } => fill(
+                "spec_events.delivery_place_untouched",
+                &[("{wave}", wave.to_string()), ("{task}", task.clone()), ("{places}", places.iter().map(|place| format!("`{place}`")).collect::<Vec<_>>().join(", "))],
+            ),
             Self::OwnerMissing { event_type } => {
                 fill("plan.owner_missing", &[("{type}", event_type.clone())])
             }

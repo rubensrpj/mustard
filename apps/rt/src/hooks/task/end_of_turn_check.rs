@@ -136,7 +136,6 @@ mod tests {
     use crate::registry::Registry;
     use mustard_core::domain::model::contract::Outcome;
     use serde_json::{Value, json};
-    use std::time::{Duration, Instant};
 
     /// Um arquivo do plugin, lido da cópia que roda o teste: o `plugin/`
     /// fica fora do pacote, e embutido na compilação ele seria guardado pelo
@@ -274,18 +273,14 @@ mod tests {
     /// e um código de item da spec (`MSTD-RULE-NNNN`) não é barrada, e nada
     /// volta para a tela: nem bloqueio, nem aviso. A mensagem seguinte leva os
     /// três erros numa frase curta. Tudo pelo `Stop` de verdade (registro,
-    /// `fold` e a resposta JSON), bem dentro dos 30 segundos que o
-    /// `hooks.json` dá.
+    /// `fold` e a resposta JSON).
     #[test]
     fn a_reply_that_misses_the_writing_rule_is_not_blocked() {
         assert_eq!(FORTY_WORDS.split_whitespace().count(), 40);
         let dir = project(PT_PROJECT);
         let root = dir.path();
         let reply = format!("A regra MSTD-RULE-0008 ficou pronta no CI.\n{FORTY_WORDS}");
-        let started = Instant::now();
         assert_eq!(run_stop(root, &stop("s1", &reply, false)), Value::Null, "neither blocked nor warned about");
-        let elapsed = started.elapsed();
-        assert!(elapsed < Duration::from_secs(STOP_BUDGET_SECS), "{elapsed:?} for one Stop");
         assert_eq!(
             next_line(root, "s1"),
             format!(

@@ -18,6 +18,9 @@
 //! The seeding logic that consumes these constants lives in
 //! [`crate::platform::project_seed`].
 
+use std::fmt::Write as _;
+use std::sync::LazyLock;
+
 use crate::domain::config::AgentSettings;
 use crate::platform::i18n::Locale;
 
@@ -36,15 +39,170 @@ pub const SESSION_MAP_NAME: &str = "session-map.md";
 const SESSION_MAP_PT_BR: &str = include_str!("../../templates/mustard/pt-BR/session-map.md");
 const SESSION_MAP_EN_US: &str = include_str!("../../templates/mustard/en-US/session-map.md");
 
+/// A linha do molde do mapa que dá lugar aos princípios do condutor.
+const PRINCIPLES_SLOT: &str = "{principles}";
+
+/// O mapa de cada idioma, montado uma vez: o molde com os princípios do
+/// condutor no lugar de [`PRINCIPLES_SLOT`].
+static SESSION_MAPS: LazyLock<[String; 2]> = LazyLock::new(|| {
+    [Locale::PtBr, Locale::EnUs].map(|text| {
+        let template = match text {
+            Locale::PtBr => SESSION_MAP_PT_BR,
+            Locale::EnUs => SESSION_MAP_EN_US,
+        };
+        template.replacen(PRINCIPLES_SLOT, principles_for(text, Reader::Conductor, 2).trim_end(), 1)
+    })
+});
+
 /// O mapa do início da sessão no idioma `text`: o que o Mustard faz, quando
-/// uma spec abre e onde cada coisa mora. Os dois idiomas são molde do
-/// produto; o projeto recebe só o do `language.text`.
+/// uma spec abre, onde cada coisa mora e os princípios do condutor. Os dois
+/// idiomas são molde do produto; o projeto recebe só o do `language.text`.
 #[must_use]
 pub fn session_map(text: Locale) -> &'static str {
     match text {
-        Locale::PtBr => SESSION_MAP_PT_BR,
-        Locale::EnUs => SESSION_MAP_EN_US,
+        Locale::PtBr => &SESSION_MAPS[0],
+        Locale::EnUs => &SESSION_MAPS[1],
     }
+}
+
+const PRINCIPLES_PT_BR: &str = include_str!("../../templates/mustard/pt-BR/principles.md");
+const PRINCIPLES_EN_US: &str = include_str!("../../templates/mustard/en-US/principles.md");
+
+/// Quem recebe um princípio do produto: quem conduz a sessão, o agente de
+/// onda ou o revisor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reader {
+    Conductor,
+    Wave,
+    Review,
+}
+
+/// Um princípio do produto, como o `principles.md` do idioma o escreve: o
+/// título, o texto de uma frase, quem o recebe e o teste que o cobra, ou
+/// `None` no princípio que é só texto.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Principle {
+    pub title: &'static str,
+    pub text: &'static str,
+    pub readers: Vec<Reader>,
+    pub test: Option<&'static str>,
+}
+
+/// As palavras do `principles.md` de um idioma: os rótulos dos campos, o
+/// nome de cada destinatário e o valor da cobrança que é só texto.
+struct Labels {
+    readers: &'static str,
+    enforcement: &'static str,
+    test: &'static str,
+    text_only: &'static str,
+    names: [(&'static str, Reader); 3],
+}
+
+fn labels(text: Locale) -> Labels {
+    match text {
+        Locale::PtBr => Labels {
+            readers: "Para",
+            enforcement: "Cobrança",
+            test: "Teste",
+            text_only: "só texto",
+            names: [("condutor", Reader::Conductor), ("onda", Reader::Wave), ("revisão", Reader::Review)],
+        },
+        Locale::EnUs => Labels {
+            readers: "For",
+            enforcement: "Enforcement",
+            test: "Test",
+            text_only: "text only",
+            names: [("conductor", Reader::Conductor), ("wave", Reader::Wave), ("review", Reader::Review)],
+        },
+    }
+}
+
+/// O `principles.md` embutido do idioma `text`.
+fn principles_source(text: Locale) -> &'static str {
+    match text {
+        Locale::PtBr => PRINCIPLES_PT_BR,
+        Locale::EnUs => PRINCIPLES_EN_US,
+    }
+}
+
+/// Os princípios de `body`, escrito no idioma `text`: cada `## ` abre um, o
+/// primeiro parágrafo é o texto, e as linhas `- Rótulo: valor` dizem quem o
+/// recebe e como ele é cobrado. Falta de campo, destinatário desconhecido,
+/// cobrança sem teste ou teste no princípio só de texto é erro, com o título.
+fn parse_principles(body: &'static str, text: Locale) -> Result<Vec<Principle>, String> {
+    let words = labels(text);
+    let mut out = Vec::new();
+    for section in body.split("\n## ").skip(1) {
+        let (title, rest) = section.split_once('\n').unwrap_or((section, ""));
+        let title = title.trim();
+        let mut paragraph: Vec<&'static str> = Vec::new();
+        let (mut readers, mut enforcement, mut test) = (None, None, None);
+        for line in rest.lines().map(str::trim).filter(|line| !line.is_empty()) {
+            let Some((label, value)) = line.strip_prefix("- ").and_then(|field| field.split_once(": ")) else {
+                paragraph.push(line);
+                continue;
+            };
+            let value = value.trim();
+            if label == words.readers {
+                let mut named = Vec::new();
+                for name in value.split(',').map(str::trim) {
+                    let reader = words.names.iter().find(|(word, _)| *word == name).map(|(_, reader)| *reader);
+                    named.push(reader.ok_or_else(|| format!("`{title}`: unknown reader `{name}`"))?);
+                }
+                readers = Some(named);
+            } else if label == words.enforcement {
+                enforcement = Some(value);
+            } else if label == words.test {
+                test = Some(value.trim_matches('`'));
+            } else {
+                return Err(format!("`{title}`: unknown field `{label}`"));
+            }
+        }
+        let readers = readers.ok_or_else(|| format!("`{title}`: no `{}` line", words.readers))?;
+        let enforcement = enforcement.ok_or_else(|| format!("`{title}`: no `{}` line", words.enforcement))?;
+        let text_only = enforcement == words.text_only;
+        if text_only == test.is_some() {
+            return Err(format!("`{title}`: `{}: {enforcement}` and the test {test:?} disagree", words.enforcement));
+        }
+        let [text] = paragraph[..] else {
+            return Err(format!("`{title}`: the text is not one paragraph line: {paragraph:?}"));
+        };
+        out.push(Principle { title, text, readers, test });
+    }
+    Ok(out)
+}
+
+/// Os princípios de cada idioma, lidos uma vez. O arquivo embutido que não
+/// se lê não tira a sessão do ar: os testes o recusam antes de ele sair.
+static PRINCIPLES: LazyLock<[Vec<Principle>; 2]> = LazyLock::new(|| {
+    [Locale::PtBr, Locale::EnUs].map(|text| parse_principles(principles_source(text), text).unwrap_or_default())
+});
+
+/// Os princípios do produto no idioma `text`, na ordem do arquivo.
+#[must_use]
+pub fn principles(text: Locale) -> &'static [Principle] {
+    match text {
+        Locale::PtBr => &PRINCIPLES[0],
+        Locale::EnUs => &PRINCIPLES[1],
+    }
+}
+
+/// O bloco dos princípios que `reader` recebe, no idioma `text`: o título do
+/// arquivo num cabeçalho de `level` cerquilhas e um item por princípio. O
+/// condutor recebe o título e a frase; o agente de onda e o revisor recebem
+/// também o teste que cobra o princípio.
+#[must_use]
+pub fn principles_for(text: Locale, reader: Reader, level: usize) -> String {
+    let heading = principles_source(text).lines().next().and_then(|line| line.strip_prefix("# ")).unwrap_or_default();
+    let mut out = format!("{} {heading}\n\n", "#".repeat(level));
+    for principle in principles(text).iter().filter(|principle| principle.readers.contains(&reader)) {
+        let _ = write!(out, "- **{}.** {}", principle.title, principle.text);
+        if let Some(test) = principle.test.filter(|_| reader != Reader::Conductor) {
+            let _ = write!(out, " {}: `{test}`.", labels(text).test);
+        }
+        out.push('\n');
+    }
+    out
 }
 
 /// Os nomes dos dois agentes do Mustard: o de onda, que recebe toda onda,
@@ -418,6 +576,84 @@ mod tests {
             for said in ["Write", temporary, "`--facts`", no_script] {
                 assert!(line.contains(said), "the {text} map does not say `{said}` beside {by_file}: {line}");
             }
+        }
+    }
+
+    /// Os dois idiomas trazem os mesmos princípios, na mesma ordem: cada um
+    /// com título e texto de uma frase, os mesmos destinatários e o mesmo
+    /// teste de cobrança. O condutor recebe todos, e o mapa do início da
+    /// sessão leva cada um com o título e a frase.
+    #[test]
+    fn both_languages_carry_the_same_principles() {
+        let [pt, en] = [Locale::PtBr, Locale::EnUs].map(|text| {
+            parse_principles(principles_source(text), text).unwrap_or_else(|err| panic!("the {text} principles do not read: {err}"))
+        });
+        assert_eq!(pt.len(), en.len(), "the two languages carry different counts of principles");
+        assert!(pt.len() >= 18, "the principles file lost principles: {pt:?}");
+        for (left, right) in pt.iter().zip(&en) {
+            assert_eq!((&left.readers, left.test), (&right.readers, right.test), "`{}` and `{}` differ", left.title, right.title);
+            for principle in [left, right] {
+                assert!(!principle.title.is_empty() && principle.text.ends_with('.'), "{principle:?}");
+                assert!(!principle.text.contains(". "), "the text of `{}` is more than one sentence", principle.title);
+                assert!(principle.readers.contains(&Reader::Conductor), "`{}` does not reach the conductor", principle.title);
+            }
+        }
+        for text in [Locale::PtBr, Locale::EnUs] {
+            let map = session_map(text);
+            assert!(!map.contains(PRINCIPLES_SLOT), "the {text} map kept the slot: {map}");
+            for principle in principles(text) {
+                assert!(map.contains(&format!("- **{}.** {}\n", principle.title, principle.text)), "the {text} map lacks `{}`", principle.title);
+            }
+        }
+    }
+
+    /// Todo `fn` de teste dos fontes do repositório, pelo nome: o que um
+    /// `#[test]` abre nas linhas logo acima.
+    fn workspace_tests() -> std::collections::BTreeSet<String> {
+        let root = crate::manifest_dir::manifest_dir().join("../..");
+        let mut files = Vec::new();
+        for dir in ["apps", "packages"] {
+            files_under(&root, &root.join(dir), &mut files);
+        }
+        let mut names = std::collections::BTreeSet::new();
+        for (_, body) in files.iter().filter(|(label, _)| label.ends_with(".rs") && !label.contains("/target/")) {
+            let lines: Vec<&str> = body.lines().collect();
+            for (at, line) in lines.iter().enumerate() {
+                let Some(name) = line.trim_start().strip_prefix("fn ").and_then(|rest| rest.split('(').next()) else { continue };
+                if lines[at.saturating_sub(3)..at].iter().any(|above| above.trim() == "#[test]") {
+                    names.insert(name.to_string());
+                }
+            }
+        }
+        names
+    }
+
+    /// O princípio que o programa cobra nomeia um teste que existe nos fontes;
+    /// o que não é cobrado diz que é só texto. A leitura recusa o princípio
+    /// sem a linha da cobrança, o cobrado sem teste e o só de texto com teste.
+    #[test]
+    fn an_enforced_principle_names_a_test_that_exists() {
+        let tests = workspace_tests();
+        assert!(tests.contains("an_enforced_principle_names_a_test_that_exists"), "the walk did not find the tests");
+        assert!(!tests.contains("a_test_nobody_wrote"), "the walk finds names that are not tests");
+        for text in [Locale::PtBr, Locale::EnUs] {
+            for principle in principles(text) {
+                if let Some(test) = principle.test {
+                    assert!(tests.contains(test), "the {text} principle `{}` names `{test}`, which is no test", principle.title);
+                }
+            }
+        }
+
+        let head = "# P\n\n## T\n\nUma frase.\n\n- Para: onda\n";
+        assert!(parse_principles(Box::leak(format!("{head}- Cobrança: só texto\n").into_boxed_str()), Locale::PtBr).is_ok_and(|all| all[0].test.is_none()));
+        for broken in [
+            head.to_string(),
+            format!("{head}- Cobrança: o programa recusa\n"),
+            format!("{head}- Cobrança: só texto\n- Teste: `x`\n"),
+            "# P\n\n## T\n\nUma frase.\n\n- Para: ninguém\n- Cobrança: só texto\n".to_string(),
+        ] {
+            let body: &'static str = Box::leak(broken.into_boxed_str());
+            assert!(parse_principles(body, Locale::PtBr).is_err(), "a broken principle was read: {body}");
         }
     }
 

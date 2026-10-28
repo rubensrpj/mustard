@@ -16,7 +16,7 @@ Implement only this wave, task by task: its end step gives the next in `next_tas
 - Follow the request skills; otherwise its example or neighboring file.
 - Consult `mustard-rt run knowledge --query "<question>" --purpose implement`. Already read: the conclusion goes in `knowledge`; never delegate a repeated read.
 - Write a step (`run write step`, same --root/--spec) on proving a criterion and on finishing a task, with the wave number in `wave`, its code in `item` and a summary in `text`. The result says, marked [Mustard], whether you go on or deliver. The signal comes at 200 thousand context tokens, input and inherited summaries included; the model's window is only a cap, at 75% of it. On the signal, finish the current task, minimal tests and summary, and return; start no other task.
-- A criterion that changes behavior gets a test of the rule and agreed numbers; another test's name proves nothing. A criterion with "only after" also gets a test of the case where the "before" fails. A task that only removes code, merges tests or changes configuration is proved by the existing tests of that code and measured effect, no new test and no configuration reader.
+- A criterion with "only after" also gets a test of the case where the "before" fails. A task that only removes code, merges tests or changes configuration is proved by the existing tests of that code and measured effect, no new test and no configuration reader.
 - Removed a protection? Say what replaces it and test the case it used to stop; a step two rounds take together gets a test with both, covering read, merge, write, commit and undo.
 - Run every command from inside the copy. Start from the request's evidence; mandatory rules hold despite `omitClaudeMd`.
 - Use map commands when location or current evidence is missing:
@@ -31,7 +31,7 @@ Implement only this wave, task by task: its end step gives the next in `next_tas
 
 ## Task boundary
 
-Extra files of the same change go in `files`; small failures in the task/neighbors get a fix and a test that fails without it. User decisions or another area become leftovers. Changed criterion or missing spec: stop before exploring and return `replan`. Undone tasks go in `undone` with `met:false`, never only in prose/`leftovers`. New code has a use outside tests; one test per behavior, never repeating another; no measurement-only code. Drop in the same wave code and tests made unused. Do not edit a running wave's files: record `"leftovers":[{"title":"…","detail":"…","files":["…"]}]`: `files` lists the files to change, never the text's examples, and the detail carries `Proof:` and the command in backticks. Comment/documentation/help-only leftovers with no behavior or test expectation changes carry `"cleanup":true`. Leftovers go to the backlog.
+Extra files of the same change go in `files`; small failures in the task/neighbors get a fix and a test that fails without it. User decisions or another area become leftovers. Changed criterion or missing spec: stop before exploring and return `replan`. Undone tasks go in `undone` with `met:false`, never only in prose/`leftovers`. New code has a use outside tests; one test per behavior, never repeating another; no measurement-only code. Do not edit a running wave's files: record `"leftovers":[{"title":"…","detail":"…","rule":"…","places":["…"],"files":["…"]}]`: `rule` is the rule the finding broke (a spec code or a new rule), and `places` its places from the map; `files` lists the files to change, never the text's examples, and the detail carries `Proof:` and the command in backticks. Comment/documentation/help-only leftovers with no behavior or test expectation changes carry `"cleanup":true`. Leftovers go to the backlog.
 
 ## Output format
 
@@ -45,5 +45,6 @@ Record the delivery with `run write delivered --json '<the line>'`, same --root/
 - A criterion's test got a new name: `"proofs":[{"criterion":"<code>","proof":"<the command>"}]`.
 - Agreed item: `"agreed":[{"item":"<code>","met":true}]`, one per item. Without a wave task implementing it, `met:true` confirms the change preserves the rule. Broken rule or undone task: `{"item":"<code>","met":false,"text":"<what is missing>"}`; becomes backlog work unless already covered by an unfinished task.
 - In a fix: `"fixes":[<waves it closes>]`.
+- A place of a done task's rule that needs no change: `"checked_places":[{"place":"<the place, as the refusal cites it>","reason":"<why it stays as it is>"}]`; a mark without a reason is refused.
 - The plan does not work: `"replan":"<the change, in one sentence>"`, always with `undone` (`[]` if all done), and `"changes_decision":"<the user decision it swaps>"`, only when it swaps one.
 - Optional: `"knowledge":[{"title":"<conclusion>","text":"<discovery and caveats>","sources":[{"file":"a.rs","line":1,"end_line":10,"sha256":"<search hash>"}]}]`. Use every current gateway receipt; reread after edits. Never invent hashes or add a report.

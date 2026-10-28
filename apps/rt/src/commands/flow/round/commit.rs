@@ -24,6 +24,7 @@ use super::stops::HeldReturn;
 use super::slots::{reset_committed_slot, sharing_copy};
 use crate::commands::git_settle::{submodule_holding, submodules_of};
 use crate::commands::spec_events::write::record;
+use crate::shared::skill_cycle::in_reserved_skills;
 
 /// A entrega pede commit? Só quando mudou arquivo: a onda que volta sem
 /// arquivo mudado fecha como conferência, sem commit. É a leitura única dessa
@@ -244,11 +245,7 @@ pub(super) fn refresh_map(root: &Path, mine: &dyn Fn(&Path, &Path) -> mustard_co
 /// fica de fora: ela sai dos commits da obra, e o commit de duas ondas daria a
 /// cada uma os arquivos da outra; quem reabre se decide pelo arquivo citado.
 pub(crate) fn final_unused(root: &Path, spec: &str, log: &SpecLog, lang: Locale, outputs: &[String]) -> Vec<(bool, String)> {
-    let base = std::fs::read(mustard_core::io::wave_prompt::validation_base_map(root, spec))
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok());
-    let after = mustard_core::io::project_map::read(root).ok();
-    let (Some(base), Some(after)) = (base, after) else {
+    let Some((base, after)) = work_maps(root, spec) else {
         return vec![(false, translate("round.after_wave.analysis_unknown", lang).to_string())];
     };
     let changed = log
@@ -265,6 +262,15 @@ pub(crate) fn final_unused(root: &Path, spec: &str, log: &SpecLog, lang: Locale,
         })
         .collect();
     super::removed_check::final_findings(root, &AfterWave { base, after, changed }, lang, outputs).into_iter().map(|f| (f.refuses, f.text)).collect()
+}
+
+/// Os dois mapas da obra `spec` inteira: o retrato da base, que a primeira
+/// conferência depois da onda guardou, e o mapa do projeto de agora. `None`
+/// quando falta um dos dois.
+pub(crate) fn work_maps(root: &Path, spec: &str) -> Option<(ProjectMap, ProjectMap)> {
+    let base = std::fs::read(mustard_core::io::wave_prompt::validation_base_map(root, spec)).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok())?;
+    let after = mustard_core::io::project_map::read(root).ok()?;
+    Some((base, after))
 }
 
 /// A conferência do mapa com o conteúdo de agora, antes de toda resposta
@@ -719,7 +725,9 @@ fn merge_texts(dir: &Path, ours: Option<&[u8]>, base: Option<&str>, theirs: Opti
 /// nasceu ([`fork_point`] contra o checkout `root`), com o arquivo de dentro
 /// de um submódulo prefixado pelo caminho dele: é o dono de verdade do que
 /// entra no commit da rodada, e não a lista que a entrega citou, que vira só
-/// conferência.
+/// conferência. A versão nova de uma skill, no caminho reservado da cópia,
+/// não conta: a rodada a grava no lugar da skill, e nunca no commit
+/// ([`super::skill_install`]).
 fn copy_changed(root: &Path, copy: &Path, subs: &[String]) -> Vec<String> {
     let mut changed = repo_changed(root, copy);
     for sub in subs.iter().filter(|sub| copy.join(sub).join(".git").is_file()) {
@@ -727,7 +735,8 @@ fn copy_changed(root: &Path, copy: &Path, subs: &[String]) -> Vec<String> {
         changed.extend(theirs.into_iter().map(|path| format!("{sub}/{path}")));
     }
     let mut seen = BTreeSet::new();
-    changed.into_iter().filter(|file| !file.split('/').any(|part| part == "node_modules") && seen.insert(file.clone())).collect()
+    let kept = |file: &String| !file.split('/').any(|part| part == "node_modules") && !in_reserved_skills(file);
+    changed.into_iter().filter(|file| kept(file) && seen.insert(file.clone())).collect()
 }
 
 /// Os caminhos que o repositório `copy_repo` mudou: os do `git status` e os
@@ -810,7 +819,9 @@ pub(super) struct AfterWave {
 /// com o mapa sem arquivos, ou com o mapeador falhando, não há com que
 /// comparar e a rodada segue.
 ///
-/// Junta aos avisos uma linha de tamanho por onda ([`super::size_check`]),
+/// Junta aos avisos cada teste que as ondas criaram sem critério que o cite
+/// ([`crate::commands::flow::common::ownerless`], a mesma leitura do
+/// fechamento) e uma linha de tamanho por onda ([`super::size_check`]),
 /// que é só dado da onda: vai à resposta da rodada, e nunca ao commit. A onda
 /// cujo código já está num commit (`committed`) fica fora da conferência: não
 /// há mais o que segurar dela.
@@ -870,7 +881,8 @@ pub(super) fn ensure_after_wave(
     let (mut warnings, mut held) = after_wave_answer(waves, &found, lang);
     held.extend(waiting.iter().map(|one| HeldReturn { wave: one.wave, refusal: RoundRefusal::JevPending { wave: one.wave, question: one.question } }));
     let files = maps.changed.iter().flat_map(|(_, files)| files.iter().cloned()).collect::<Vec<_>>();
-    warnings.extend(super::test_warnings::candidates(root, log, &maps.base, &maps.after, &files, lang));
+    let ownerless = crate::commands::flow::common::ownerless::hints(log, &maps.base, &maps.after, &files, lang);
+    warnings.extend(ownerless.iter().map(|hint| json!({ "reason": crate::commands::flow::common::ownerless::REASON, "hint": hint })));
     let sizes = super::size_check::lines(&super::size_check::measure(root, &maps.changed), lang);
     warnings.extend(sizes.iter().filter(|(wave, _)| !out.contains(wave)).map(|(wave, hint)| json!({ "reason": "wave-size", "wave": wave, "hint": hint })));
     (warnings, held, waiting)
@@ -1764,7 +1776,6 @@ mod tests {
     #[test]
     fn a_slow_commit_hook_holds_the_git_step_and_not_the_readers_of_the_spec() {
         use std::sync::mpsc;
-        use std::time::Duration;
 
         let dir = tempdir().unwrap();
         let root = dir.path();
@@ -1774,11 +1785,7 @@ mod tests {
         std::fs::create_dir_all(&hooks).unwrap();
         let (started, release) = (hooks.join("comecou"), hooks.join("solta"));
         let hook = hooks.join("pre-commit");
-        let script = format!(
-            "#!/bin/sh\ntouch '{}'\nn=0\nwhile [ ! -f '{}' ] && [ $n -lt 600 ]; do sleep 0.05; n=$((n+1)); done\n",
-            started.display(),
-            release.display()
-        );
+        let script = format!("#!/bin/sh\ntouch '{}'\n{}\n", started.display(), crate::held_command::held_until_released(&release));
         crate::executable::write_executable(&hook, &script);
         git_at(root, &["config", "core.hooksPath", &hooks.to_string_lossy()]);
         delivered(root, 1, "Saiu.", &["src/a.rs"]);
@@ -1786,28 +1793,25 @@ mod tests {
 
         std::thread::scope(|scope| {
             let going = scope.spawn(|| round(root, "x", None));
-            for _ in 0..3000 {
-                if started.exists() {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            assert!(started.exists(), "the commit hook never started");
+            crate::wait_for::wait_for("o começo do gancho do commit", || started.exists().then_some(()));
 
+            // A leitura acaba com o gancho ainda preso: a que esperasse por
+            // ele nunca voltaria.
             let (read_tx, read_rx) = mpsc::channel();
             let spec = &spec;
             scope.spawn(move || read_tx.send(store::read(spec).is_ok()));
-            let read = read_rx.recv_timeout(Duration::from_secs(5));
+            let read = crate::wait_for::wait_for_message("a leitura da spec com o gancho preso", &read_rx);
 
             let (turn_tx, turn_rx) = mpsc::channel();
             scope.spawn(move || turn_tx.send(git_lock(root).is_ok()));
-            let early = turn_rx.recv_timeout(Duration::from_millis(500));
+            crate::pause::room_for_what_must_not_happen();
+            let early = turn_rx.try_recv();
 
             std::fs::write(&release, b"").unwrap();
             let out = going.join().unwrap();
             assert_eq!(read, Ok(true), "a reader of the spec does not wait for the commit hook");
             assert!(early.is_err(), "another git step waits while the commit runs");
-            assert_eq!(turn_rx.recv_timeout(Duration::from_secs(30)), Ok(true), "its turn comes after the commit");
+            assert_eq!(crate::wait_for::wait_for_message("a vez do outro passo do git", &turn_rx), Ok(true), "its turn comes after the commit");
             assert_eq!(out["ok"], json!(true), "{out}");
         });
     }
@@ -1821,7 +1825,6 @@ mod tests {
     #[test]
     fn a_return_being_written_holds_the_git_step_until_the_write_is_done() {
         use std::sync::mpsc;
-        use std::time::Duration;
 
         let dir = tempdir().unwrap();
         let root = dir.path();
@@ -1840,22 +1843,17 @@ mod tests {
         let index_lock = mustard_core::io::fs::lock::LockedFile::exclusive(&index).unwrap();
         std::thread::scope(|scope| {
             let writing = scope.spawn(|| returned(root, body));
-            for _ in 0..3000 {
-                if in_the_file(&spec) {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            assert!(in_the_file(&spec), "the return never reached the spec file");
+            crate::wait_for::wait_for("a volta gravada no arquivo da spec", || in_the_file(&spec).then_some(()));
 
             let (turn_tx, turn_rx) = mpsc::channel();
             scope.spawn(move || turn_tx.send(git_lock(root).is_ok()));
-            let early = turn_rx.recv_timeout(Duration::from_millis(500));
+            crate::pause::room_for_what_must_not_happen();
+            let early = turn_rx.try_recv();
 
             drop(index_lock);
             let wrote = writing.join().unwrap();
             assert!(early.is_err(), "another git step waits while the return is being written");
-            assert_eq!(turn_rx.recv_timeout(Duration::from_secs(30)), Ok(true), "its turn comes after the write");
+            assert_eq!(crate::wait_for::wait_for_message("a vez do outro passo do git", &turn_rx), Ok(true), "its turn comes after the write");
             assert_eq!(wrote["ok"], json!(true), "{wrote}");
         });
     }
@@ -2152,6 +2150,7 @@ mod tests {
             output: output.to_string(),
             ran_no_test: None,
             missing_test: None,
+            tests: None,
             evidence: String::new(),
         }
     }

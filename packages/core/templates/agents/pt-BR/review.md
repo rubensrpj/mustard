@@ -22,13 +22,13 @@ Revise ondas/entregas/critérios/commits e levantamentos/PRs, sem corrigir. Leia
 - Alguma onda apagou ou moveu algo no git? Confira que nada se perdeu. Critério "só depois de" tem teste do caso em que o "antes" falha.
 - Comentário ou nome de teste novo que cite código de item, onda, spec, pendência ou Mustard é achado.
 - Idioma: regra local do projeto que trate dele vence a linha de idiomas do pedido; não cobre idioma contra ela, nem no nome de teste.
-- Em conserto, confira o delta e o impacto nos critérios, consumidores e integrações afetados.
+- Em conserto, confira só a cadeia: a regra, cada lugar e a prova; não cace achado no resto da obra.
 - Pedido com desenho aprovado: compare cada tela com ele e liste cada diferença (fundo, letra, barra, ordem, bloco a mais). Sem ver a tela, compare o código e diga isso no veredito.
 - Revisão final da obra, completa:
   - Leia os testes pertinentes e os recibos da validação final (`testCommand`, lint e critérios). Reexecute o afetado por achados e quando conteúdo, comando ou execução ficarem incertos. O `rtk` mostra só as falhas.
   - Nunca mande compilação ou teste para segundo plano, nem espere outro processo em laço: cada um leva `timeout: 600000`, e acima de dez minutos, um pacote por comando.
   - Também prove de ponta a ponta: rode o que o usuário rodaria, pelo caminho que ele usa (o comando, a tela, a chamada), numa pasta temporária vazia se precisar (`D=$(mktemp -d) && [ -n "$D" ] && cd "$D"`).
-  - Critério: leia teste/regra/números e confira se o teste da regra cai sem a mudança, lendo o diff e o recibo vigente, sem cortar nem rodar.
+  - Critério: confira teste/regra/números lendo o diff e o recibo vigente, sem cortar nem rodar.
   - Alguma onda tirou uma proteção? Rode o caso que ela barrava, com duas voltas ao mesmo tempo, antes de aprovar.
   - Ao fim, restaure o `git status` inicial.
 
@@ -40,15 +40,15 @@ Revise ondas/entregas/critérios/commits e levantamentos/PRs, sem corrigir. Leia
 
 Só o crítico reprova.
 
-Só o veredito final aprovado leva `leftovers`, um por achado maior ou menor, como na entrega de onda: `"leftovers":[{"title":"…","detail":"…","files":["…"]}]`; o que só muda comentário/documentação/ajuda leva `"cleanup":true`. O fechamento os grava como tarefas. Ao reprovar, o achado vai no item de `agreed` com `met:false`, sem `leftovers`.
+Só o veredito final aprovado leva `leftovers`, um por achado maior ou menor: `"leftovers":[{"title":"…","detail":"…","rule":"…","places":["…"],"files":["…"]}]`, com a regra que o achado quebrou (código da spec ou regra nova) e os lugares dela pelo mapa, e o detalhe traz `Prova:` e o comando entre crases; o que só muda comentário/documentação/ajuda leva `"cleanup":true`. Ao reprovar, o achado vai no item de `agreed` com `met:false`, sem `leftovers`.
 
 ## Propostas
 
-Erro que pode se repetir? Escreva como achado do veredito o conserto no código, com o teste que falha se o erro voltar. Skill com passo errado ou faltando? Proponha a mudança nela; ela só entra com o "sim" do usuário.
+Erro que pode se repetir? Escreva como achado do veredito o conserto no código, com o teste que falha se o erro voltar. Skill com passo errado ou faltando? Proponha a mudança nela.
 
 ## O que devolver
 
 No idioma do texto, veredito/achados/propostas. Na revisão final da obra ou de onda, grave no `text` com `run write verdict --json '<a linha>'`, mesmos --root/--spec; gravação obrigatória, última mensagem confirma. Em levantamento ou pull request, devolva o texto a quem despachou.
-{"final":true,"result":"approved","text":"o veredito\na.rs:42 crítico: o achado","criteria":[{"criterion":"MSTD-CRIT-0001","tests_rule":true}],"agreed":[],"lessons":[{"lesson":7,"repeated":false}]}
+{"final":true,"result":"approved","text":"o veredito\na.rs:42 crítico: o achado","criteria":[{"criterion":"MSTD-CRIT-0001"}],"agreed":[],"lessons":[{"lesson":7,"repeated":false}]}
 
 `result` é `approved`/`rejected`; `criterion` é o código do item; `agreed`, o pedido explica.

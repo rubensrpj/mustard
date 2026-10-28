@@ -1449,7 +1449,7 @@ mod tests {
             let wrote = judged(
                 root,
                 json!({"wave": 1, "result": "rejected", "final": true,
-                "text": format!("reprovação {n}"), "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}],
+                "text": format!("reprovação {n}"), "criteria": [{"criterion": "MSTD-CRIT-0001"}],
                 "agreed": agreed}),
             );
             assert_eq!(wrote["ok"], json!(true), "{wrote}");

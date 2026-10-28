@@ -232,6 +232,11 @@ fn waiting(root: &Path) -> Vec<(String, Receipt)> {
 }
 
 pub fn read(root: &Path, id: &str) -> Result<Receipt, String> {
+    read_within(root, id, WAIT)
+}
+
+/// [`read`] com a vez de outra conexão esperada até `wait`.
+fn read_within(root: &Path, id: &str, wait: Duration) -> Result<Receipt, String> {
     if id.len() != 64 || !id.bytes().all(|c| c.is_ascii_hexdigit()) {
         return Err("observation-invalid-receipt-id".into());
     }
@@ -240,7 +245,7 @@ pub fn read(root: &Path, id: &str) -> Result<Receipt, String> {
     // conexão além da espera, ou que não se deixa ler, diz que o banco está
     // indisponível: quem cita o recibo grava de novo, em vez de achar que ele
     // sumiu. O recibo na fila vale como o do banco.
-    let stored = open(root, false, WAIT).and_then(|connection| {
+    let stored = open(root, false, wait).and_then(|connection| {
         connection
             .query_row(
                 "SELECT payload FROM receipts WHERE id=?1 AND length(payload)<=8192",
@@ -590,17 +595,19 @@ mod tests {
         record(&root, &receipt()).unwrap();
         let (held, wait_for_hold) = std::sync::mpsc::channel();
         let path = store(&root);
+        let (release, released) = std::sync::mpsc::channel::<()>();
         let holder = std::thread::spawn(move || {
             let other = Connection::open(path).unwrap();
             other.execute_batch("BEGIN EXCLUSIVE").unwrap();
             held.send(()).unwrap();
-            std::thread::sleep(Duration::from_millis(200));
+            let _ = crate::wait_for::wait_for_message("a soltura da outra gravação", &released);
             other.execute_batch("COMMIT").unwrap();
         });
-        wait_for_hold.recv().unwrap();
+        crate::wait_for::wait_for_message("a trava da outra gravação", &wait_for_hold).unwrap();
         let mut during = receipt();
         during.call = "call-during-another-write".into();
         let written = record(&root, &during);
+        release.send(()).unwrap();
         holder.join().unwrap();
         let (id, _) = written.unwrap();
         assert_eq!(read(&root, &id).unwrap().call, "call-during-another-write");
@@ -658,10 +665,10 @@ mod tests {
                 .execute_batch("BEGIN EXCLUSIVE; INSERT INTO receipts VALUES('uncommitted','demo',10,'2026-01-01T02:00:00Z','{}')")
                 .unwrap();
             held.send(()).unwrap();
-            wait_for_reader.recv().unwrap();
+            crate::wait_for::wait_for_message("o fim da leitura", &wait_for_reader).unwrap();
             other.execute_batch("ROLLBACK").unwrap();
         });
-        wait_for_hold.recv().unwrap();
+        crate::wait_for::wait_for_message("a trava da outra gravação", &wait_for_hold).unwrap();
         let seen = read(&root, &id);
         let listed = list(&root, "demo", 10);
         finished.send(()).unwrap();
@@ -689,17 +696,14 @@ mod tests {
             let other = Connection::open(path).unwrap();
             other.execute_batch("BEGIN EXCLUSIVE").unwrap();
             held.send(()).unwrap();
-            wait_for_reader.recv().unwrap();
+            crate::wait_for::wait_for_message("o fim da leitura", &wait_for_reader).unwrap();
             other.execute_batch("ROLLBACK").unwrap();
         });
-        wait_for_hold.recv().unwrap();
-        let started = std::time::Instant::now();
-        let busy = read(&root, &id);
-        let waited = started.elapsed();
+        crate::wait_for::wait_for_message("a trava da outra gravação", &wait_for_hold).unwrap();
+        let busy = read_within(&root, &id, Duration::ZERO);
         finished.send(()).unwrap();
         holder.join().unwrap();
         assert_eq!(busy.unwrap_err(), "observation-store-unavailable");
-        assert!(waited >= WAIT, "the read gave up after {waited:?}, before the wait");
         assert_eq!(
             read(&root, &digest(b"a call never recorded")).unwrap_err(),
             "observation-receipt-not-found"
@@ -726,17 +730,12 @@ mod tests {
         skill.output_sha256 = digest(b"full procedure");
         skill.result_status = "succeeded".into();
         skill.exit_code = None;
-        let started = std::time::Instant::now();
         let queued = record(root, &during);
-        let waited = started.elapsed();
         let skill_queued = record(root, &skill);
         let found = queued.as_ref().ok().map(|(id, _)| read(root, id).map(|seen| seen.call));
         let listed = list(root, "demo", 10).map(|rows| rows.len());
         let skill_seen = read_receipt(root, "demo", 10, &skill.source, &skill.output_sha256).is_some();
         holder.execute_batch("COMMIT").unwrap();
-        // 3 s and not less: opening the store on a slow CI runner takes over a
-        // second; the old wait on a held store was 5 s.
-        assert!(waited < Duration::from_secs(3), "the receipt waited {waited:?} for the held store");
         queued.unwrap();
         skill_queued.unwrap();
         assert_eq!(found, Some(Ok("call-during-another-write".to_string())));

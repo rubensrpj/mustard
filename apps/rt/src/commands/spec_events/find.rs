@@ -340,7 +340,8 @@ mod tests {
         let said = put(root, "message", json!({"author": "user", "text": "o painel devolve demais"}));
         put(root, "injection", json!({"author": "hook", "hook": "x", "chars": 20, "text": "painel resumido no terminal"}));
         let rule = put(root, "rule", json!({"text": "A resposta cabe na conversa.", "keys": ["k"], "example": "e", "origin": said}));
-        put(root, "task", json!({"title": "Painel resumido no terminal", "text": "O painel sai curto.", "files": [{"path": "a.rs"}], "depends_on": [], "covers": [rule], "origin": said}));
+        let crit = put(root, "criterion", json!({"when": "a lista sai", "then": "ela cabe na conversa", "proof": "git --version", "form": "ubiquitous", "origin": said}));
+        put(root, "task", json!({"title": "Painel resumido no terminal", "text": "O painel sai curto.", "files": [{"path": "a.rs"}], "depends_on": [], "covers": [rule, crit], "origin": said}));
 
         let got = find(root, "painel resumido", &[], &no_jev);
         assert_eq!(got.lines().count(), 1, "{got}");

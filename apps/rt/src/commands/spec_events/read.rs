@@ -129,7 +129,7 @@ use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::spec_events::{
     Block, BlockQuery, EventRef, Hidden, NOT_SEARCHED, ReadQuery, Refusal, SpecEvent, SpecLog, calls_command, found_by, shown_line,
 };
-use mustard_core::domain::spec_state::SpecState;
+use mustard_core::domain::spec_state::{SpecState, review_send};
 use mustard_core::io::spec_events as store;
 use mustard_core::domain::wave_prompt::{item_body, item_title};
 use mustard_core::io::wave_prompt::{final_review, lesson_bank, request_items};
@@ -541,12 +541,11 @@ fn request_text(log: &SpecLog, wave: u64) -> Option<String> {
     log.send_text(sent).map(str::to_string)
 }
 
-/// O pedido gravado no último envio do revisor final, igual byte a byte, em
-/// texto puro. O envio dele não tem onda, então `request-<n>` não o alcança.
-/// Sem envio de revisão na spec, `None`.
+/// O pedido gravado no último envio do revisor final ([`review_send`]), igual
+/// byte a byte, em texto puro. O envio dele não tem onda, então `request-<n>`
+/// não o alcança. Sem envio de revisão na spec, `None`.
 fn review_request_text(log: &SpecLog) -> Option<String> {
-    let sent = log.visible().into_iter().filter(|event| event.event_type == "send" && event.str_field("role") == Some("review")).max_by_key(|event| event.id)?;
-    log.send_text(sent.id).map(str::to_string)
+    log.send_text(review_send(log, None)?.asked).map(str::to_string)
 }
 
 /// O número da última mensagem do usuário que a leitura mostra, sem o texto:
@@ -929,12 +928,11 @@ fn dispatch_lines(
     (lines, read)
 }
 
-/// A lista que o pedido mais novo do revisor final gravou (`read_items`).
-/// `None` sem pedido do revisor; o pedido sem a lista, de antes dela, lista
-/// nada.
+/// A lista que o pedido mais novo do revisor final ([`review_send`]) gravou
+/// (`read_items`). `None` sem pedido do revisor; o pedido sem a lista, de
+/// antes dela, lista nada.
 fn review_listed(log: &SpecLog) -> Option<Vec<String>> {
-    let sent = log.visible().into_iter().filter(|event| event.event_type == "send" && event.str_field("role") == Some("review")).max_by_key(|event| event.id)?;
-    let listed = log.send_field(sent.id, "read_items").and_then(Value::as_array).into_iter().flatten();
+    let listed = log.send_field(review_send(log, None)?.asked, "read_items").and_then(Value::as_array).into_iter().flatten();
     Some(listed.filter_map(Value::as_str).map(str::to_string).collect())
 }
 
@@ -1732,14 +1730,14 @@ mod tests {
             json!({"author": "binary", "wave": 1, "text": "Assumida.",
             "files": ["a.rs", "b.rs"], "replaces": [own],
             "agreed": [{"item": "MSTD-RULE-0001", "met": true}, {"item": "MSTD-RULE-0002", "met": false, "text": "falta o teste"}],
-            "leftovers": [{"title": "Sobra", "detail": "no `x.rs`"}], "undone": ["MSTD-TASK-0002"]}),
+            "leftovers": [{"title": "Sobra", "detail": "no `x.rs`", "rule": "R", "places": ["x.rs"]}], "undone": ["MSTD-TASK-0002"]}),
         );
         let (report, got) = only_line(root, "delivered-1");
         assert_eq!(got["code"], code_of(root, assumed), "{report}");
         assert_eq!(got["text"], json!("Assumida."), "{report}");
         assert_eq!(got["agreed"], json!([{"item": "MSTD-RULE-0002", "met": false, "text": "falta o teste"}]), "{report}");
         assert_eq!(got["files"], json!(["a.rs", "b.rs"]), "{report}");
-        assert_eq!(got["leftovers"], json!([{"title": "Sobra", "detail": "no `x.rs`"}]), "{report}");
+        assert_eq!(got["leftovers"], json!([{"title": "Sobra", "detail": "no `x.rs`", "rule": "R", "places": ["x.rs"]}]), "{report}");
         assert_eq!(got["undone"], json!(["MSTD-TASK-0002"]), "{report}");
         assert!(events(&read_at(&opts(root, "delivered-2", None)).unwrap()).is_empty(), "a wave with no delivery reads empty");
     }

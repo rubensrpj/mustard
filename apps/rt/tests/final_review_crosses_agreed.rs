@@ -13,10 +13,15 @@
 //! ajuste depois da obra fechada e reaberta é revisado sozinho. A falha do
 //! fechamento numa linha reabre só a onda que a escreveu, e o conserto dela
 //! não toma, no painel, o lugar do commit da onda. Prova de ponta a ponta,
-//! pelo binário de verdade, num repositório temporário.
+//! pelo binário de verdade, num repositório temporário. E só um lugar do
+//! código procura o pedido da revisão final: quem pergunta qual pedido vale
+//! lê de lá, contado pela versão que o gravou.
 
 #[path = "support/binary.rs"]
 mod binary;
+
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -26,6 +31,8 @@ use mustard_core::domain::spec_events::{SpecEvent, SpecLog};
 use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Value, json};
+
+use crate::sources;
 
 #[path = "support/mod.rs"]
 mod support;
@@ -565,9 +572,10 @@ fn all_met_verdict(decisions: &[Value]) -> Value {
 }
 
 /// O veredito final aprovado que traz achados em `leftovers`, no formato da
-/// entrega de onda, não leva a obra ao pull request: o fechamento grava cada
-/// achado como uma tarefa no backlog, que cobre o pedido dele, e manda rodar
-/// a rodada em vez de abrir o pull request. O fechamento seguinte recusa pelo
+/// entrega de onda, cada um com a regra escrita na spec que ele quebra, pelo
+/// código, não leva a obra ao pull request: o fechamento grava cada achado
+/// como uma tarefa no backlog, que cobre o pedido dele, e manda rodar a
+/// rodada em vez de abrir o pull request. O fechamento seguinte recusa pelo
 /// backlog e não grava os achados de novo.
 #[test]
 fn an_approved_final_verdict_with_leftovers_becomes_backlog_tasks_instead_of_the_pull_request() {
@@ -577,9 +585,10 @@ fn an_approved_final_verdict_with_leftovers_becomes_backlog_tasks_instead_of_the
     assert_eq!(asked["review"]["final"], json!(true), "{asked}");
 
     let mut verdict = all_met_verdict(&decisions);
+    let rule = |at: usize| decisions[at]["code"].as_str().expect("the decision code").to_string();
     verdict["leftovers"] = json!([
-        {"title": "A soma não trata estouro", "detail": "A soma de números grandes estoura em src/main.rs.", "files": ["src/main.rs"]},
-        {"title": "O README não cita a soma", "detail": "O README não explica a soma.", "files": ["README.md"], "cleanup": true},
+        {"title": "A soma não trata estouro", "detail": "A soma de números grandes estoura em src/main.rs. Prova: `git --version`", "files": ["src/main.rs"], "rule": rule(0), "places": ["src/main.rs"]},
+        {"title": "O README não cita a soma", "detail": "O README não explica a soma. Prova: `git --version`", "files": ["README.md"], "cleanup": true, "rule": rule(1), "places": ["README.md"]},
     ]);
     project.read_review();
     project.write("verdict", &verdict);
@@ -633,7 +642,7 @@ fn an_approved_final_verdict_with_a_leftover_only_in_a_git_ignored_file_closes_w
 
     let title = "A chave da API falta no ambiente local";
     let mut verdict = all_met_verdict(&decisions);
-    verdict["leftovers"] = json!([{"title": title, "detail": "Falta a chave da API no .env desta máquina.", "files": [".env"]}]);
+    verdict["leftovers"] = json!([{"title": title, "detail": "Falta a chave da API no .env desta máquina. Prova: `git --version`", "files": [".env"], "rule": "A chave da API mora no ambiente", "places": [".env"]}]);
     project.read_review();
     project.write("verdict", &verdict);
     let after = project.run(&["close", "--spec", SPEC]);
@@ -666,7 +675,11 @@ fn a_final_verdict_with_an_untitled_finding_is_refused_without_naming_the_delive
 
     assert_eq!(refused["ok"], json!(false), "{refused}");
     assert_eq!(refused["reason"], json!("leftover-field-missing"), "{refused}");
-    assert_eq!(refused["hint"], json!("Falta o campo title numa sobra (leftovers) da volta. Nada foi gravado."), "{refused}");
+    assert_eq!(
+        refused["hint"],
+        json!("O achado 1 da volta (leftovers) não traz title, rule, places. Todo achado diz o título, o detalhe, a regra que quebrou (rule) e os lugares dela (places). Nada foi gravado."),
+        "{refused}"
+    );
     assert_eq!(recorded_kinds(&project), before, "nada foi gravado: {refused}");
     let still_open = project.answer(&["close", "--spec", SPEC]);
     assert_eq!(still_open["reason"], json!("review-verdict-missing"), "{still_open}");
@@ -682,7 +695,7 @@ fn verdicts_and_tasks(project: &Project) -> usize {
 /// `leftovers`: nada lê o campo nesse veredito, e eles se perderiam em
 /// silêncio.
 fn findings() -> Value {
-    json!([{"title": "A soma não trata estouro", "detail": "A soma de números grandes estoura em src/main.rs.", "files": ["src/main.rs"]}])
+    json!([{"title": "A soma não trata estouro", "detail": "A soma de números grandes estoura em src/main.rs. Prova: `git --version`", "files": ["src/main.rs"], "rule": "A soma trata estouro", "places": ["src/main.rs"]}])
 }
 
 /// A recusa que manda o achado para onde alguém o lê.
@@ -1050,4 +1063,33 @@ fn a_closing_lint_failure_spares_a_wave_that_joined_the_commit_without_change() 
     let refused = project.answer(&["close", "--spec", SPEC]);
     assert_eq!(refused["ok"], json!(false), "{refused}");
     assert_eq!(reopened(&project), [sum], "só a onda que escreveu a linha reabre: {refused}");
+}
+
+/// O que, no código de produção sem espaços, procura o envio da revisão final
+/// pelo papel dele.
+const REVIEW_SEND_LOOKUP: &str = "str_field(\"role\")==Some(\"review\")";
+
+/// Só um lugar do código de produção procura o pedido da revisão final pelo
+/// papel do envio: a leitura única do estado da spec, que conta cada pedido
+/// pela versão que o gravou. Outro lugar que procurasse por conta própria
+/// voltaria a contar pela versão mais nova, que o lançamento do revisor grava
+/// depois do pedido.
+#[test]
+fn only_one_place_looks_up_the_review_send() {
+    let root = manifest_dir::manifest_dir().join("../..");
+    let mut files = Vec::new();
+    for top in ["apps", "packages"] {
+        sources::rust_sources(&root.join(top), &mut files);
+    }
+    assert!(files.len() > 100, "the scan found only {} files", files.len());
+    let looking: Vec<String> = files
+        .iter()
+        .filter(|file| {
+            let source = std::fs::read_to_string(file).unwrap_or_default();
+            let code: String = sources::production_code(&source).chars().filter(|c| !c.is_whitespace()).collect();
+            code.contains(REVIEW_SEND_LOOKUP)
+        })
+        .map(|file| file.strip_prefix(&root).unwrap_or(file).to_string_lossy().replace('\\', "/"))
+        .collect();
+    assert_eq!(looking, ["packages/core/src/domain/spec_state.rs"], "the review send is looked up outside the single reading");
 }

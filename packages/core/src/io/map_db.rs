@@ -751,8 +751,6 @@ mod tests {
                     start.wait();
                     db.write(|tx| {
                         tx.execute("INSERT INTO notes VALUES (?1, 'first')", params![path])?;
-                        // Segura a trava para a outra gravação chegar no meio.
-                        std::thread::sleep(Duration::from_millis(200));
                         tx.execute("INSERT INTO notes VALUES (?1, 'second')", params![path])?;
                         Ok(())
                     })

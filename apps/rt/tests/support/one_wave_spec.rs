@@ -185,10 +185,17 @@ impl Project {
     /// Devolve o texto que o gancho pôs na sessão.
     #[cfg(unix)]
     pub fn session_start(&self, session: &str) -> String {
+        self.session_start_from(session, "startup")
+    }
+
+    /// O início da sessão `session` vindo de `source` (`startup`, `clear`,
+    /// `compact`, `resume`), como [`Project::session_start`].
+    #[cfg(unix)]
+    pub fn session_start_from(&self, session: &str, source: &str) -> String {
         let temp = self.temp();
         let env = [("TMPDIR", temp.as_path()), ("TMP", temp.as_path()), ("TEMP", temp.as_path())];
         let payload =
-            json!({"hook_event_name": "SessionStart", "session_id": session, "source": "startup", "cwd": self.root.to_string_lossy()});
+            json!({"hook_event_name": "SessionStart", "session_id": session, "source": source, "cwd": self.root.to_string_lossy()});
         let out = self.command_with(None, &self.root, &["on", "SessionStart"], &payload.to_string(), &env);
         assert_eq!(out.status.code(), Some(0), "a hook always exits 0: {}", String::from_utf8_lossy(&out.stderr));
         serde_json::from_slice::<Value>(&out.stdout)
@@ -310,6 +317,13 @@ impl Project {
     /// passo e a entrega, e a rodada seguinte a assume e comita. Devolve a
     /// resposta dessa rodada.
     pub fn deliver_the_first_wave(&self) -> Value {
+        self.return_the_first_wave();
+        self.run(&["round", "--dispatch", "--spec", self.spec])
+    }
+
+    /// A onda 1, já despachada, muda `src/main.rs` na cópia dela e grava cada
+    /// passo e a entrega, sem a rodada que a assume.
+    pub fn return_the_first_wave(&self) {
         let copy = self.read_send(|sent| sent.wave() == Some(1) && sent.str_field("role") != Some("review"));
         std::fs::write(copy.join("src/main.rs"), "fn main() {\n    println!(\"{}\", 3);\n}\n").expect("the change");
         let log = self.log();
@@ -321,6 +335,5 @@ impl Project {
         let agreed: Vec<Value> =
             mustard_core::domain::wave_prompt::all_agreed(&log).iter().map(|item| json!({"item": item.id, "met": true})).collect();
         self.write("delivered", &json!({"wave": 1, "text": "A soma apareceu.", "files": ["src/main.rs"], "commit": "a soma aparece", "agreed": agreed}));
-        self.run(&["round", "--dispatch", "--spec", self.spec])
     }
 }

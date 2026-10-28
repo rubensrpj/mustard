@@ -53,6 +53,26 @@ mod util;
 #[cfg(test)]
 #[path = "../tests/support/manifest_dir.rs"]
 mod manifest_dir;
+// O relógio falso dos testes de dentro de `src/`.
+#[cfg(test)]
+#[path = "../../../packages/core/tests/support/fake_clock.rs"]
+mod fake_clock;
+// A espera dos testes de dentro de `src/` pelo evento de outro processo.
+#[cfg(test)]
+#[path = "../../../packages/core/tests/support/wait_for.rs"]
+mod wait_for;
+// O comando que os testes de dentro de `src/` seguram até soltá-lo.
+#[cfg(test)]
+#[path = "../../../packages/core/tests/support/held_command.rs"]
+mod held_command;
+// A pausa dos testes de dentro de `src/` antes de afirmar que nada aconteceu.
+#[cfg(all(test, unix))]
+#[path = "../../../packages/core/tests/support/pause.rs"]
+mod pause;
+// O cronômetro das medições de dentro de `src/`, que só vai ao relato delas.
+#[cfg(test)]
+#[path = "../../../packages/core/tests/support/stopwatch.rs"]
+mod stopwatch;
 // O programa falso que os testes de dentro de `src/` gravam e depois rodam.
 #[cfg(test)]
 #[path = "../tests/support/executable.rs"]

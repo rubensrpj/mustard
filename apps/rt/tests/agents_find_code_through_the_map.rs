@@ -20,11 +20,12 @@ mod binary;
 use mustard_core::platform::i18n::{translate, Locale};
 
 /// As chaves do catálogo que citam os comandos do mapa: a citação que a onda
-/// deixou, a sobra juntada a uma tarefa aberta e os dois textos que mandam
-/// gravar as tarefas de um pedido.
-const CATALOG_KEYS: [&str; 4] = [
+/// deixou, a linha do achado (da onda ou da revisão final) juntado à tarefa da
+/// mesma regra e os dois textos que mandam gravar as tarefas de um pedido.
+const CATALOG_KEYS: [&str; 5] = [
     "round.after_wave.leftover",
-    "round.leftover_joined",
+    "finding.joined_by_rule",
+    "finding.review_joined_by_rule",
     "request.new_waves",
     "request.adjust_waves",
 ];
@@ -133,7 +134,7 @@ fn not_accepted(text: &str, accepted: &Accepted) -> Vec<String> {
 }
 
 /// Os textos que têm de citar os comandos, com o nome de cada um: os quatro
-/// moldes e as cinco chaves do catálogo nos dois idiomas.
+/// moldes e as chaves de [`CATALOG_KEYS`] nos dois idiomas.
 fn cited_texts() -> Vec<(String, String)> {
     let mut texts = Vec::new();
     for (lang, locale) in [("pt-BR", Locale::PtBr), ("en-US", Locale::EnUs)] {

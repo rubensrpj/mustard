@@ -177,6 +177,9 @@ fn check(name:&str,ready:bool,remedy:&str)->Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// O orçamento que sobra para a conclusão inteira: nenhum passo dela
+    /// espera por ele nestes testes.
+    const AMPLE:Duration=Duration::from_secs(60);
     struct MissingPrograms;
     impl ToolRunner for MissingPrograms {
         fn on_path(&self,_:&str)->bool {false}
@@ -264,7 +267,7 @@ mod tests {
         let cached=tempfile::tempdir().unwrap();
         let plugin=shipped_plugin_copy(cached.path());
         let plugin_version=|plugin| {
-            let receipt=finish_with_install(project.path(),&report,&MissingPrograms,Duration::from_secs(1),Some(plugin),"http://127.0.0.1:9/v1/systemone",KEY_CHECK_WAIT);
+            let receipt=finish_with_install(project.path(),&report,&MissingPrograms,AMPLE,Some(plugin),"http://127.0.0.1:9/v1/systemone",KEY_CHECK_WAIT);
             component(&receipt,"plugin-version")
         };
         let current=plugin_version(plugin.clone());
@@ -290,7 +293,7 @@ mod tests {
         let expected=mustard_core::harness_version();
         let newer=format!("{expected}.1");
         let remedy=|plugin:Option<mustard_core::platform::harness::InstalledPlugin>| {
-            let receipt=finish_with_install(project.path(),&report,&MissingPrograms,Duration::from_secs(1),plugin,"http://127.0.0.1:9/v1/systemone",KEY_CHECK_WAIT);
+            let receipt=finish_with_install(project.path(),&report,&MissingPrograms,AMPLE,plugin,"http://127.0.0.1:9/v1/systemone",KEY_CHECK_WAIT);
             let version=component(&receipt,"plugin-version");
             assert_eq!(version["ready"],false,"{version}");
             version["remedy"].as_str().unwrap().to_string()
@@ -317,7 +320,7 @@ mod tests {
         let report=installed_project(project.path());
         let cached=tempfile::tempdir().unwrap();
         let plugin=shipped_plugin_copy(cached.path());
-        let receipt_for=|plugin| finish_with_install(project.path(),&report,&MissingPrograms,Duration::from_secs(1),Some(plugin),"http://127.0.0.1:9/v1/systemone",KEY_CHECK_WAIT);
+        let receipt_for=|plugin| finish_with_install(project.path(),&report,&MissingPrograms,AMPLE,Some(plugin),"http://127.0.0.1:9/v1/systemone",KEY_CHECK_WAIT);
         let current=receipt_for(plugin.clone());
         assert_eq!(component(&current,"plugin-version")["ready"],true,"{current}");
         assert!(component(&current,"plugin-binaries")["remedy"].as_str().is_some_and(|remedy|remedy.contains("mustard-boot")),"{current}");
@@ -336,7 +339,7 @@ mod tests {
     fn files_written_without_a_working_scan_and_host_are_not_a_complete_installation() {
         let dir=tempfile::tempdir().unwrap();let root=dir.path();
         let report=Report{scan:Some(json!({"ok":false,"reason":"missing-scan"})),..installed_project(root)};
-        let result=finish_with_install(root,&report,&MissingPrograms,Duration::from_secs(1),None,"http://127.0.0.1:9/v1/systemone",KEY_CHECK_WAIT);
+        let result=finish_with_install(root,&report,&MissingPrograms,AMPLE,None,"http://127.0.0.1:9/v1/systemone",KEY_CHECK_WAIT);
         assert_eq!(result["complete"],false);
         assert_eq!(result["host_ready"],false);
         assert!(result["checks"].as_array().unwrap().iter().any(|check|check["component"]=="scan" && check["ready"]==false));
@@ -424,8 +427,8 @@ mod tests {
         let report=keyed_install(root);
 
         let (url,seen)=models_service(401);
-        let refused=finish_with_install(root,&report,&MissingPrograms,Duration::from_secs(5),None,&url,KEY_CHECK_WAIT);
-        let (request,body)=seen.recv_timeout(Duration::from_secs(10)).expect("the installation lists the models with the key");
+        let refused=finish_with_install(root,&report,&MissingPrograms,AMPLE,None,&url,KEY_CHECK_WAIT);
+        let (request,body)=crate::wait_for::wait_for_message("o pedido da lista de modelos",&seen).expect("the installation lists the models with the key");
         assert_eq!(request,"GET /v1/models HTTP/1.1");
         assert!(!body,"the check sends no text");
         assert_eq!(refused["provider_verified"],false,"{refused}");
@@ -435,7 +438,7 @@ mod tests {
         assert_eq!(saved["provider_refusal"],"key_refused");
 
         let (url,_seen)=models_service(402);
-        let broke=finish_with_install(root,&report,&MissingPrograms,Duration::from_secs(5),None,&url,KEY_CHECK_WAIT);
+        let broke=finish_with_install(root,&report,&MissingPrograms,AMPLE,None,&url,KEY_CHECK_WAIT);
         assert_eq!(broke["provider_refusal"],"no_credit","{broke}");
         assert_eq!(jev(&broke)["ready"],false,"{broke}");
         let remedy=jev(&broke)["remedy"].as_str().unwrap_or_default().to_string();
@@ -443,39 +446,35 @@ mod tests {
         assert!(!remedy.contains("configure a valid"),"no credit is not a key to change: {broke}");
 
         let (url,_seen)=models_service(503);
-        let failing=finish_with_install(root,&report,&MissingPrograms,Duration::from_secs(5),None,&url,KEY_CHECK_WAIT);
+        let failing=finish_with_install(root,&report,&MissingPrograms,AMPLE,None,&url,KEY_CHECK_WAIT);
         assert_eq!(failing["provider_verified"],false,"{failing}");
         assert_eq!(failing["provider_unchecked"],"service_error","{failing}");
         assert_eq!(failing.get("provider_refusal"),None,"{failing}");
         assert_eq!(jev(&failing)["ready"],true,"a failing service does not refuse a present key: {failing}");
 
         let (url,_seen)=models_service(200);
-        let verified=finish_with_install(root,&report,&MissingPrograms,Duration::from_secs(5),None,&url,KEY_CHECK_WAIT);
+        let verified=finish_with_install(root,&report,&MissingPrograms,AMPLE,None,&url,KEY_CHECK_WAIT);
         assert_eq!(verified["provider_verified"],true,"{verified}");
         assert_eq!(jev(&verified)["ready"],true,"{verified}");
 
         let url=held_url(false);
-        let unchecked=finish_with_install(root,&report,&MissingPrograms,Duration::from_secs(5),None,&url,KEY_CHECK_WAIT);
+        let unchecked=finish_with_install(root,&report,&MissingPrograms,AMPLE,None,&url,KEY_CHECK_WAIT);
         assert_eq!(unchecked["provider_verified"],false,"{unchecked}");
         assert_eq!(unchecked["provider_unchecked"],"network","{unchecked}");
         assert_eq!(jev(&unchecked)["ready"],true,"an unanswered check does not refuse a present key: {unchecked}");
     }
 
     /// O serviço que aceita a conexão e nunca responde não prende a
-    /// instalação: com orçamento de sobra (60 s), ela volta no prazo da
-    /// conferência, com a chave sem conferência por tempo esgotado. O prazo do
-    /// teste é curto; sem ele valer, a espera seria a do orçamento inteiro.
+    /// instalação: com orçamento de uma hora, ela volta no prazo da
+    /// conferência, com a chave sem conferência por tempo esgotado. Sem o
+    /// prazo da conferência valer, a espera seria a do orçamento inteiro.
     #[test]
     fn a_silent_provider_does_not_hold_the_installation_past_the_check_wait() {
         let wait=Duration::from_millis(300);
         let url=held_url(true);
-        let (tx,rx)=std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let dir=tempfile::tempdir().unwrap();
-            let report=keyed_install(dir.path());
-            let _=tx.send(finish_with_install(dir.path(),&report,&MissingPrograms,Duration::from_secs(60),None,&url,wait));
-        });
-        let receipt=rx.recv_timeout(Duration::from_secs(30)).expect("the installation returns within the check wait, not the budget");
+        let dir=tempfile::tempdir().unwrap();
+        let report=keyed_install(dir.path());
+        let receipt=finish_with_install(dir.path(),&report,&MissingPrograms,Duration::from_secs(3600),None,&url,wait);
         assert_eq!(receipt["provider_verified"],false,"{receipt}");
         assert_eq!(receipt["provider_unchecked"],"timeout","{receipt}");
         assert_eq!(jev(&receipt)["ready"],true,"{receipt}");

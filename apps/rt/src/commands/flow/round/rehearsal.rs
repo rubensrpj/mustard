@@ -90,7 +90,7 @@ mod tests {
 
     /// Uma resposta gravada na spec entre o ensaio e a gravação de verdade,
     /// depois do commit, faz o número de cada evento andar. A volta que deixa
-    /// a tarefa por fazer e acha uma sobra no mesmo arquivo dela é assumida
+    /// a tarefa por fazer e acha uma sobra da regra dela é assumida
     /// mesmo assim: a versão da tarefa com a sobra aponta a versão que a
     /// devolveu ao backlog e cobre o pedido da sobra, e o pedido aponta a
     /// entrega, pelos números gravados, e não a resposta que tomou o número
@@ -100,6 +100,11 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        // A tarefa da onda faz valer a regra do achado que a volta traz.
+        let planned = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let mut ruled = planned.visible().into_iter().find(|e| e.event_type == "task").map(super::super::report::backlog_return).unwrap();
+        ruled.extend([("rule".into(), json!("A soma guarda o sinal")), ("wave".into(), json!(1))]);
+        crate::commands::spec_events::write::record(root, "x", "task", ruled, mustard_core::domain::spec_state::PhaseWriter::Binary).unwrap();
         round(root, "x", None);
         let map = json!({"modules": [{"path": "src/a.rs", "language": "rust", "deps": []}]});
         project_map::write_text(root, &map.to_string()).unwrap();
@@ -110,8 +115,9 @@ mod tests {
         std::fs::write(root.join("src/a.rs"), "fn one() {}\n// A soma saiu pela metade.\n").unwrap();
         let body = json!({"wave": 1, "text": "A soma saiu pela metade.", "files": ["src/a.rs"],
             "commit": "a soma sai pela metade", "undone": [code],
-            "leftovers": [{"title": "A soma perde o sinal", "detail": "Em `src/a.rs`, o sinal some."}]});
-        assert_eq!(returned(root, body)["ok"], json!(true));
+            "leftovers": [{"title": "A soma perde o sinal", "detail": "Em `src/a.rs`, o sinal some. Prova: `git --version`", "rule": "A soma guarda o sinal", "places": ["src/a.rs"]}]});
+        let wrote = returned(root, body);
+        assert_eq!(wrote["ok"], json!(true), "{wrote}");
 
         let said = "Uma resposta no meio da rodada.";
         let mine = |root: &Path, out: &Path| {

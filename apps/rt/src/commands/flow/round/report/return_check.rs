@@ -6,6 +6,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
+use mustard_core::domain::rule_places::{checked_places, untouched_places};
 use mustard_core::domain::spec_events::{Refusal, SpecLog};
 use mustard_core::domain::wave_prompt as agreed_prompt;
 use mustard_core::io::fs::lock::LockedFile;
@@ -21,8 +22,9 @@ use super::super::finish_check::{proof_older_than_files, unfinished_work};
 use super::super::leftovers::leftovers_of;
 use super::super::queue::{open_review, open_sends};
 use super::super::read_check::{request_name, unread_items, without_undone};
+use super::super::sent_tasks::sent_tasks;
 use super::super::task_release::held_back;
-use super::{RoundRefusal, criterion_id, observations, proof_target, wave_report_of};
+use super::{RoundRefusal, WaveReport, criterion_id, observations, proof_target, wave_report_of};
 
 /// As conferências da volta que só leem a própria volta, feitas na gravação
 /// dela (`run write delivered`), antes de gravar: há envio aberto para a
@@ -32,8 +34,10 @@ use super::{RoundRefusal, criterion_id, observations, proof_target, wave_report_
 /// linha de comando; cada item combinado que o pedido da onda levou tem
 /// resposta em `agreed` ([`request_agreed`]); o agente leu o pedido; e a
 /// volta não devolve trabalho começado nem dá tarefa por feita sem o passo
-/// de término dela ([`unfinished_work`]); e nenhum arquivo entregue mudou
-/// depois do último passo de término, o da prova verde
+/// de término dela ([`unfinished_work`]); a tarefa feita muda cada lugar da
+/// regra dela, ou o marca como conferido sem mudança ([`places_left_out`]);
+/// e nenhum arquivo entregue mudou depois do último passo de término, o da
+/// prova verde
 /// ([`proof_older_than_files`]). Passando, a volta ganha
 /// `returned` e o autor da onda, e os arquivos ficam relativos ao
 /// repositório. A conferência que depende de
@@ -130,6 +134,9 @@ pub(crate) fn check_return(
     // com a cópia mudada depois do último passo de término, e a tarefa dada
     // como feita sem o passo dela, recusam.
     unfinished_work(&log, sent, &report, draft)?;
+    // E de mudar cada lugar da regra de cada tarefa que dá por feita, ou de
+    // marcá-lo como conferido sem mudança, com o motivo.
+    places_left_out(start, &project.root, &log, &report, draft)?;
     // E de não levar ao commit arquivo mudado depois da prova verde.
     proof_older_than_files(&log, sent, &report)?;
     // E de não levar ao código comentário que cite código de item da spec.
@@ -142,13 +149,44 @@ pub(crate) fn check_return(
     Ok((held, warnings))
 }
 
+/// Confere que a entrega `report`, lida na spec `log` do projeto em `root`,
+/// visto de `start`, muda cada lugar da regra de cada tarefa com que a onda
+/// saiu e que ela não devolve em `undone`: o lugar que leva a um arquivo — pela
+/// linha, pelo caminho ou pelo nome que o mapa declara ([`untouched_places`]) —,
+/// cujo arquivo nenhum está entre os entregues e que a volta `draft` não marca
+/// em `checked_places` como conferido sem mudança, com o motivo
+/// ([`checked_places`]), recusa, com a tarefa e os lugares. A mudança de plano
+/// não entrega tarefa, e não confere nada aqui.
+fn places_left_out(start: &Path, root: &Path, log: &SpecLog, report: &WaveReport, draft: &Map<String, Value>) -> Result<(), RoundRefusal> {
+    if report.replan.is_some() {
+        return Ok(());
+    }
+    let codes = log.codes();
+    let touched: BTreeSet<String> = report.files.iter().cloned().collect();
+    let checked = checked_places(draft.get("checked_places").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default());
+    let world = mustard_core::io::citation::DiskWorld::new(store::citation_roots(start, root), Some(root));
+    for task in sent_tasks(log, report.wave) {
+        let code = codes.get(&task.id).cloned().unwrap_or_else(|| task.id.to_string());
+        if report.undone.iter().any(|(_, undone)| *undone == code) {
+            continue;
+        }
+        let places: Vec<String> = task.fields.get("places").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
+        let left: Vec<String> = untouched_places(&world, &places, &touched, &checked).into_iter().map(str::to_string).collect();
+        if !left.is_empty() {
+            return Err(RoundRefusal::Refused(Refusal::DeliveryPlaceUntouched { wave: report.wave, task: code, places: left }));
+        }
+    }
+    Ok(())
+}
+
 /// As conferências do veredito que o revisor grava (`run write verdict`),
 /// feitas antes de gravar, como as da entrega, com a trava do passo do git
 /// que [`check_return`] prendeu: há pedido de revisão aberto;
 /// cada critério e cada item do combinado citado existe; o veredito final
 /// responde pelo combinado que lhe cabe ([`agreed_prompt::review_agreed`]); os achados dele em `leftovers`, que o
-/// fechamento grava como tarefas, têm a marca de limpeza e os arquivos legíveis
-/// ([`leftovers_of`]) — e só o veredito final aprovado os leva: em outro
+/// fechamento grava como tarefas — ou leva ao usuário como pergunta, os de
+/// regra não escrita na spec —, têm a marca de limpeza, a regra, os lugares
+/// e os arquivos legíveis ([`leftovers_of`]) — e só o veredito final aprovado os leva: em outro
 /// veredito, o da revisão de uma onda ou o final reprovado, nada lê o campo, e
 /// a gravação o recusa ([`refuse_unread_leftovers`]); e o revisor leu, de dentro da cópia
 /// dele, cada item que o pedido da revisão lista. Passando, o veredito ganha
@@ -191,7 +229,8 @@ pub(crate) fn check_verdict_return(start: &Path, spec: &str, draft: &mut Map<Str
 
 /// Recusa o veredito `settled` — como a rodada o grava ([`settle_verdict`]) —
 /// que traz achados em `leftovers` sem ser o veredito final aprovado. Só esse
-/// veredito é lido pelo fechamento, que grava os achados como tarefas
+/// veredito é lido pelo fechamento, que grava os achados como tarefas ou os
+/// leva ao usuário como pergunta
 /// ([`record_final_leftovers`](super::super::record_final_leftovers)); no da
 /// revisão de uma onda e no final reprovado — também o que um item
 /// combinado sem atender força a reprovado — o campo não teria leitor, e os

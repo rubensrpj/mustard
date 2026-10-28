@@ -7,7 +7,9 @@
 //! de importações, só avisam. O pai que declara o módulo filho dentro de si
 //! (`mod filho;`) e o filho que usa o que é do pai (`use super::Coisa`) não
 //! fecham ciclo: é o arranjo normal da língua, e o ciclo entre dois irmãos
-//! continua avisado. A importação que já existia na base nunca conta: o
+//! continua avisado. A importação feita por repasse conta: o arquivo que
+//! importa o pai e usa a declaração que o pai repassa de um filho importa o
+//! filho, e é essa ligação que fecha o ciclo. A importação que já existia na base nunca conta: o
 //! projeto segue como está no código. A tarefa da onda que leva o
 //! par de papéis (`role_pair`) libera a importação entre os dois, só nos
 //! arquivos dela.
@@ -31,7 +33,8 @@ pub(super) fn findings(root: &Path, maps: &AfterWave, log: &SpecLog, lang: Local
     let after = learn(&maps.after);
     let role = |path: &str| base.roles.get(path).or_else(|| after.roles.get(path)).map(String::as_str);
     let (before, now) = (graph(&maps.base), graph(&maps.after));
-    let (before_cycles, now_cycles) = (cycle_graph(&maps.base), cycle_graph(&maps.after));
+    let (before_links, now_links) = (Links::of(&maps.base), Links::of(&maps.after));
+    let (before_cycles, now_cycles) = (cycle_graph(&maps.base, &before_links), cycle_graph(&maps.after, &now_links));
     let mut out = Vec::new();
     for (wave, files) in &maps.changed {
         let released = released_pairs(log, *wave);
@@ -61,11 +64,9 @@ pub(super) fn findings(root: &Path, maps: &AfterWave, log: &SpecLog, lang: Local
                     && !free {
                         out.push(Finding { wave: *wave, refuses: true, text: at("round.after_wave.import", Some(rule)) });
                 }
-                let declared = maps.after.module(file).is_some_and(|m| is_declared_child(file, target, &m.language));
-                if !declared
-                    && reaches(&now_cycles, target, file)
-                    && !(reaches(&before_cycles, file, target) && reaches(&before_cycles, target, file))
-                {
+                let declared = now_links.declares(file, target);
+                let mut reached = (!declared).then_some(target).into_iter().chain(now_links.passed_through(file, target));
+                if reached.any(|to| reaches(&now_cycles, to, file) && !(reaches(&before_cycles, file, to) && reaches(&before_cycles, to, file))) {
                     out.push(Finding { wave: *wave, refuses: false, text: at("round.after_wave.cycle", None) });
                 }
             }
@@ -85,19 +86,57 @@ fn graph(map: &ProjectMap) -> BTreeMap<&str, BTreeSet<&str>> {
 }
 
 /// O grafo dos ciclos: o de [`graph`] sem a aresta do arquivo para o módulo
-/// filho que ele declara dentro de si. O pai só diz que o filho existe, e o
-/// filho que usa o pai é o arranjo normal da língua; contadas, as duas
-/// arestas formariam um ciclo em todo módulo com filho.
-fn cycle_graph(map: &ProjectMap) -> BTreeMap<&str, BTreeSet<&str>> {
+/// filho que ele declara dentro de si, e com a importação feita por repasse
+/// ([`Links::passed_through`]). O pai só diz que o filho existe, e o filho
+/// que usa o pai é o arranjo normal da língua; contadas, as duas arestas
+/// formariam um ciclo em todo módulo com filho. Já quem importa o pai para
+/// usar o que ele repassa de um filho depende do filho, e essa aresta conta.
+fn cycle_graph<'a>(map: &'a ProjectMap, links: &Links<'a>) -> BTreeMap<&'a str, BTreeSet<&'a str>> {
     map.modules
         .iter()
         .filter(|m| !is_test_path(&m.path))
         .map(|m| {
             let deps = m.deps.iter().map(String::as_str);
-            let counted = deps.filter(|d| !is_test_path(d) && !is_declared_child(&m.path, d, &m.language));
-            (m.path.as_str(), counted.collect())
+            let mut counted: BTreeSet<&str> = deps.clone().filter(|d| !is_test_path(d) && !links.declares(&m.path, d)).collect();
+            counted.extend(deps.flat_map(|via| links.passed_through(&m.path, via)));
+            (m.path.as_str(), counted)
         })
         .collect()
+}
+
+/// O que o mapa diz de cada arquivo para os ciclos: a língua dele e os
+/// arquivos das declarações que ele usa, pelas ligações provadas.
+struct Links<'a> {
+    languages: BTreeMap<&'a str, &'a str>,
+    uses: BTreeMap<&'a str, BTreeSet<&'a str>>,
+}
+
+impl<'a> Links<'a> {
+    fn of(map: &'a ProjectMap) -> Self {
+        let languages = map.modules.iter().map(|m| (m.path.as_str(), m.language.as_str())).collect();
+        let mut uses: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+        for module in &map.modules {
+            for site in module.declarations.iter().flat_map(|d| &d.used_by).filter(|site| site.is_proven()) {
+                uses.entry(site.file.as_str()).or_default().insert(module.path.as_str());
+            }
+        }
+        Self { languages, uses }
+    }
+
+    /// `parent` declara `child` dentro de si, na língua de `parent`.
+    fn declares(&self, parent: &str, child: &str) -> bool {
+        self.languages.get(parent).is_some_and(|language| is_declared_child(parent, child, language))
+    }
+
+    /// O repasse: os arquivos que `file` alcança importando `via`, os filhos
+    /// que `via` declara e cujas declarações `file` usa, sem que `file` os
+    /// declare. O caminho escrito até o pai (`crate::pai::nome()`) liga o
+    /// arquivo só ao pai no mapa, mas a ligação da chamada chega à declaração
+    /// no filho que o pai repassa.
+    fn passed_through(&self, file: &str, via: &'a str) -> Vec<&'a str> {
+        let used = self.uses.get(file).into_iter().flatten().copied();
+        used.filter(|child| *child != file && !is_test_path(child) && self.declares(via, child) && !self.declares(file, child)).collect()
+    }
 }
 
 /// `from` chega a `to` seguindo as importações de `graph`?
@@ -194,7 +233,7 @@ pub(super) mod tests {
 
     /// Quem relê o mapa depois da onda num teste: grava `after` como o mapa
     /// de depois, no lugar que a rodada pede.
-    pub(in super::super) fn mine_giving(
+    pub(crate) fn mine_giving(
         after: Value,
     ) -> impl Fn(&Path, &Path) -> mustard_core::platform::error::Result<mustard_core::domain::scan::ScanReport> {
         move |_root, out| {
@@ -654,6 +693,49 @@ pub(super) mod tests {
             let out = back_of(root, files, after);
             assert_eq!(out["ok"], json!(true), "{case}: {out}");
             assert!(!warned(&out).contains(CYCLE), "{case}: {out}");
+        }
+    }
+
+    /// [`small_map`] de Rust em que a declaração `name` do arquivo `declared`
+    /// é usada, pela ligação provada da chamada, em cada arquivo de `users`.
+    fn map_with_use(deps: &[(&str, &[&str])], declared: &str, users: &[&str]) -> Value {
+        let mut map = small_map("rust", deps);
+        let used_by: Vec<String> = users.iter().map(|user| format!("{user}:1:f")).collect();
+        for module in map["modules"].as_array_mut().unwrap().iter_mut().filter(|m| m["path"] == json!(declared)) {
+            module["declarations"] = json!([{"kind": "function", "name": "name", "line": 1, "end_line": 1, "used_by": used_by}]);
+        }
+        map
+    }
+
+    /// O arquivo que importa o pai e usa a declaração que o pai repassa de um
+    /// filho importa o filho: a importação feita por repasse fecha o ciclo com
+    /// o filho que importa o arquivo, venha a importação nova de quem passa a
+    /// chamar pelo pai ou do filho que passa a importar quem já chamava.
+    #[test]
+    fn an_import_through_a_pass_through_counts_toward_a_cycle() {
+        let (user, parent, child) = ("src/comandos/uso.rs", "src/comandos/pai.rs", "src/comandos/pai/filho.rs");
+        let cases: [(&str, &str, Value, Value); 2] = [
+            (
+                "the user starts calling through the parent",
+                user,
+                map_with_use(&[(user, &[]), (parent, &[child]), (child, &[user])], child, &[]),
+                map_with_use(&[(user, &[parent]), (parent, &[child]), (child, &[user])], child, &[user]),
+            ),
+            (
+                "the child starts importing the user that calls through the parent",
+                child,
+                map_with_use(&[(user, &[parent]), (parent, &[child]), (child, &[])], child, &[user]),
+                map_with_use(&[(user, &[parent]), (parent, &[child]), (child, &[user])], child, &[user]),
+            ),
+        ];
+        for (case, changed, base, after) in cases {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            project_of(root, &[changed], None, &base);
+            let out = back_of(root, &[changed], after);
+            assert_eq!(out["ok"], json!(true), "{case}: {out}");
+            assert!(warned(&out).contains(CYCLE), "{case}: {out}");
+            assert!(warned(&out).contains(&format!("`{changed}` linha")), "{case}: {out}");
         }
     }
 

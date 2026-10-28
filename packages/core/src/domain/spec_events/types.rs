@@ -834,6 +834,11 @@ pub const TYPES: &[TypeSpec] = &[
             // `depends_on`.
             opt("files", Kind::Objects),
             opt("skill", Kind::Text),
+            // Os motivos que a avaliação de uma skill do Mustard soma, cada um
+            // com o commit e os arquivos, e a chance que o Jev deu à mudança:
+            // a mudança que chega com a avaliação à espera entra numa versão
+            // nova dela. Ausente é tarefa comum.
+            opt("skill_whys", Kind::Objects),
             // An unresolved external condition or a returned plan that must
             // be revised. A new task version removes this explicit hold.
             opt("blocked_by", Kind::Text),
@@ -862,6 +867,15 @@ pub const TYPES: &[TypeSpec] = &[
             // tarefa aberta, e a onda de um resumo leva de carona as tarefas
             // prontas do grupo dele. Ausente é tarefa sem grupo.
             opt("group", Kind::Object),
+            // A regra que a tarefa faz valer: a que o achado que a fez nascer
+            // quebrou, pelo código de uma regra da spec ou pelo texto de uma
+            // regra nova. O achado de outra volta com a mesma regra entra
+            // nela enquanto ela espera no backlog. Ausente é tarefa sem regra.
+            opt("rule", Kind::Text),
+            // Os lugares da regra que a tarefa faz valer, achados pelo mapa:
+            // o arquivo com linha, o arquivo ou o nome de código. A entrega
+            // que dá a tarefa por feita muda cada um deles.
+            opt("places", Kind::Texts),
             // O motivo de quem grava uma tarefa nova que o classificador das
             // atividades daria como o mesmo trabalho de uma aberta: com ele,
             // a gravação passa sem perguntar e o motivo fica no evento.
@@ -1060,10 +1074,14 @@ pub const TYPES: &[TypeSpec] = &[
             // As ondas que um conserto fecha.
             opt("fixes", Kind::Ints),
             // O que o agente achou fora da tarefa e não é dele consertar, cada
-            // sobra com título e detalhe (`title`, `detail`): vira tarefa da
-            // spec quando a rodada assume a volta. A sobra que só muda
-            // comentário, documentação ou texto de ajuda leva a marca
-            // `cleanup`, que a tarefa herda.
+            // sobra com título e detalhe (`title`, `detail`), a regra que ela
+            // quebrou (`rule`, o código de uma regra da spec ou o texto de uma
+            // regra nova) e os lugares dessa regra (`places`), os quatro
+            // obrigatórios ([`super::check`]): vira tarefa da spec quando a
+            // rodada assume a volta, e os achados da mesma regra viram uma
+            // tarefa só. A sobra que só muda comentário,
+            // documentação ou texto de ajuda leva a marca `cleanup`, que a
+            // tarefa herda.
             opt("leftovers", Kind::Objects),
             // A resposta por cada item combinado que o pedido da onda levou,
             // como a do veredito final (`item`, `met`): o item que não vem
@@ -1072,6 +1090,11 @@ pub const TYPES: &[TypeSpec] = &[
             // da onda não o tirou do pedido; com tarefa em `undone`, ele entra
             // na versão dela que volta ao backlog.
             opt("agreed", Kind::Objects),
+            // Os lugares da regra de uma tarefa feita que a onda conferiu e
+            // deixou sem mudança, cada um com o lugar, como a tarefa o cita,
+            // e o motivo (`place`, `reason`): a conferência da entrega não os
+            // cobra entre os arquivos mudados.
+            opt("checked_places", Kind::Objects),
             RETURNED,
         ],
     ),
@@ -1109,10 +1132,11 @@ pub const TYPES: &[TypeSpec] = &[
             opt("final", Kind::Bool),
             opt("agreed", Kind::Objects),
             // Os achados maiores e menores da revisão final, no formato das
-            // sobras da entrega de onda (`title`, `detail`, `files`,
-            // `cleanup`): com o veredito aprovado, o fechamento os grava
+            // sobras da entrega de onda (`title`, `detail`, `rule` e `places`,
+            // obrigatórios, e `files` e `cleanup`): com o veredito aprovado, o fechamento os grava
             // como tarefas no backlog e manda rodar a rodada antes do pull
-            // request. Em outro veredito nada lê o campo, e a gravação o
+            // request; o achado sem regra escrita na spec vai ao usuário como
+            // pergunta. Em outro veredito nada lê o campo, e a gravação o
             // recusa.
             opt("leftovers", Kind::Objects),
             // O veredito curto do revisor de uma onda, que a gravação marca:

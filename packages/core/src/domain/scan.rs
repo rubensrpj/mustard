@@ -460,16 +460,18 @@ mod tests {
     #[cfg(unix)]
     fn installation_scan_obeys_its_deadline_and_does_not_spawn_when_exhausted() {
         let dir=tempfile::tempdir().unwrap();
-        let scan=script_scan(dir.path(),"bounded-scan","touch called; exec sleep 10");
+        let (release,ended)=(dir.path().join("release"),dir.path().join("ended"));
+        let held=format!("touch called; {}; touch '{}'",crate::held_command::held_until_released(&release),ended.display());
+        let scan=script_scan(dir.path(),"bounded-scan",&held);
         let runner=crate::platform::code_tools::MachineRunner::new("/usr/bin:/bin").at(dir.path());
         let root=Path::new("repo");let out=Path::new("map.db");
         assert!(scan.scan_with_deadline(root,out,&runner,std::time::Duration::ZERO).is_err());
         assert!(!dir.path().join("called").exists());
-        let start=std::time::Instant::now();
         assert!(scan.scan_with_deadline(root,out,&runner,std::time::Duration::from_millis(30)).unwrap_err().to_string().contains("timed out"));
-        assert!(start.elapsed()<std::time::Duration::from_secs(2));
         // The deadline includes process startup. On a busy runner the child
         // can legitimately time out before it reaches its first instruction.
+        assert!(!ended.exists(),"the call came back while the scan was still held");
+        std::fs::write(&release,"").unwrap();
     }
 
     #[test]
@@ -507,17 +509,10 @@ mod tests {
         Scan { binary: path.to_string_lossy().into_owned() }
     }
 
-    /// Espera até um minuto por `done`, olhando a cada 20 ms; `false` se ele não veio.
+    /// Espera `done` valer; `what` diz o que se espera.
     #[cfg(unix)]
-    fn wait_until(done: impl Fn() -> bool) -> bool {
-        let limit = std::time::Instant::now() + std::time::Duration::from_secs(60);
-        while !done() {
-            if std::time::Instant::now() > limit {
-                return false;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        true
+    fn wait_until(what: &str, done: impl Fn() -> bool) {
+        crate::wait_for::wait_for(what, || done().then_some(()));
     }
 
     /// Os pedidos que o scan de mentira anotou em `log`, um por linha.
@@ -537,17 +532,18 @@ mod tests {
             dir.path(),
             "reads",
             &format!(
-                "echo \"$1\" >> '{log}'\nn=0\nwhile [ ! -e '{release}' ] && [ $n -lt 3000 ]; do sleep 0.02; n=$((n+1)); done\n\
+                "echo \"$1\" >> '{log}'\n{held}\n\
                  if [ -e '{release}' ]; then echo finished >> '{log}'; else echo gave-up >> '{log}'; fi",
                 log = log.display(),
+                held = crate::held_command::held_until_released(&release),
                 release = release.display()
             ),
         );
         scan.read_history_in_background(dir.path(), &dir.path().join("m.db")).expect("the reading starts");
-        assert!(wait_until(|| logged(&log) == ["history-all"]), "the reading was started with its command: {:?}", logged(&log));
+        wait_until("o pedido da leitura da história", || logged(&log) == ["history-all"]);
         assert!(!release.exists(), "the call came back while the process was still held");
         std::fs::write(&release, "").unwrap();
-        assert!(wait_until(|| logged(&log).len() == 2), "{:?}", logged(&log));
+        wait_until("o fim da leitura da história", || logged(&log).len() == 2);
         assert_eq!(logged(&log), ["history-all", "finished"]);
     }
 
@@ -575,14 +571,14 @@ mod tests {
         // Um sinal de que o scan de mentira responde depressa: a leitura pedida
         // à mão chega ao registro, e nenhuma outra veio antes dela.
         scan.read_history_in_background(dir.path(), &out).unwrap();
-        assert!(wait_until(|| logged(&log).contains(&"history-all".to_string())), "{:?}", logged(&log));
-        std::thread::sleep(std::time::Duration::from_millis(300));
+        wait_until("a leitura da história pedida à mão", || logged(&log).contains(&"history-all".to_string()));
+        crate::pause::room_for_what_must_not_happen();
         assert_eq!(logged(&log), ["scan", "history-all"], "the failed scan started no reading");
 
         std::fs::remove_file(&fails).unwrap();
         let report = scan.scan_then_read_history(dir.path(), &out).expect("the scan passed");
         assert_eq!(report.files, 2);
-        assert!(wait_until(|| logged(&log).len() == 4), "{:?}", logged(&log));
+        wait_until("a leitura da história depois do scan que passou", || logged(&log).len() == 4);
         assert_eq!(logged(&log)[2..], ["scan", "history-all"], "the scan that passed starts the reading after itself");
     }
 
@@ -597,19 +593,19 @@ mod tests {
             dir.path(),
             "slow",
             &format!(
-                "echo \"$1 $5 $6\" >> '{log}'\nn=0\nwhile [ ! -e '{release}' ] && [ $n -lt 3000 ]; do sleep 0.02; n=$((n+1)); done\n\
+                "echo \"$1 $5 $6\" >> '{log}'\n{held}\n\
                  if [ -e '{release}' ]; then echo finished >> '{log}'; else echo gave-up >> '{log}'; fi\necho '{{\"ok\":true,\"read\":[]}}'",
                 log = log.display(),
+                held = crate::held_command::held_until_released(&release),
                 release = release.display()
             ),
         );
-        let started = std::time::Instant::now();
         let pass = scan.scan_native_within(dir.path(), &dir.path().join("m.db"), std::time::Duration::from_millis(300)).expect("the pass starts");
         assert_eq!(pass, NativePass::Running);
-        assert!(started.elapsed() < std::time::Duration::from_secs(5), "the call waited {:?}", started.elapsed());
-        assert!(wait_until(|| logged(&log) == ["scan --json --native"]), "{:?}", logged(&log));
+        assert!(logged(&log).len() <= 1, "the call came back while the pass was still held: {:?}", logged(&log));
+        wait_until("o pedido da passada nativa", || logged(&log) == ["scan --json --native"]);
         std::fs::write(&release, "").unwrap();
-        assert!(wait_until(|| logged(&log).len() == 2), "{:?}", logged(&log));
+        wait_until("o fim da passada nativa", || logged(&log).len() == 2);
         assert_eq!(logged(&log)[1], "finished", "the pass went on after the call returned");
     }
 

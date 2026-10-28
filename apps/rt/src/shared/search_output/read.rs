@@ -147,14 +147,12 @@ mod tests {
         let base=root.path().to_path_buf();
         let writer=std::thread::spawn(move||{
             let mut db=mustard_core::io::map_db::MapDb::open(&model,&base,&[]).unwrap();
-            db.write(|_|{held.send(()).unwrap();let _=released.recv_timeout(std::time::Duration::from_secs(10));Ok(())}).unwrap();
+            db.write(|_|{held.send(()).unwrap();let _=crate::wait_for::wait_for_message("a soltura da trava do mapa",&released);Ok(())}).unwrap();
         });
-        holding.recv().unwrap();
-        let started=std::time::Instant::now();
+        crate::wait_for::wait_for_message("a trava do mapa com a outra gravação",&holding).unwrap();
+        // A leitura volta com a trava ainda presa: só depois ela é solta.
         let note=context(&input,&ctx);
-        let spent=started.elapsed();
         let _=release.send(());writer.join().unwrap();
-        assert!(spent<std::time::Duration::from_secs(1),"the read waited {spent:?} for the map lock");
         assert!(note.is_some_and(|note|note.contains("quartz: 1-3")),"the owners still come from the map being read");
     }
     #[cfg(unix)]

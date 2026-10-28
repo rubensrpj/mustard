@@ -19,6 +19,7 @@
 pub mod cli;
 pub(crate) mod conversation;
 pub mod find;
+mod finding_proof;
 pub mod index;
 pub(crate) mod lean;
 pub(crate) mod pages;
@@ -31,6 +32,7 @@ pub(crate) mod task_dependents;
 mod task_wave;
 pub(crate) mod unrouted;
 pub mod write;
+pub(crate) mod write_door;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

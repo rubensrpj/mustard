@@ -120,12 +120,19 @@
   ] @test_block
   (#match? @_marker "(?s)^#\\[\\s*cfg\\(\\s*(test|(all|any)\\(\\s*(.*,\\s*)?test\\s*[,)].*)\\s*\\)\\s*\\]$"))
 
-; A função com `#[test]` solta, fora de um módulo de teste: é teste, e não
-; programa, com os atributos colados a ela e o mesmo trecho do item solto de
-; cima. A chamada que ela faz não é uso do que chama, e a declaração dela não
-; é código sem uso. No arquivo que é ele mesmo de teste (`@test_unit`, e não
-; `@test_block`) a chamada segue sendo uso: é ela que mostra quem testa cada
-; declaração.
+; A função de teste, dentro ou fora de um módulo de teste: a marca é o
+; atributo cujo último trecho do caminho é `test` (`#[test]`,
+; `#[tokio::test]`, `#[tokio::test(flavor = "multi_thread")]`,
+; `#[async_std::test]`) ou o de um framework de teste que roda a função
+; sozinho (`#[bench]`, `#[rstest]`, `#[test_case(..)]`, `#[test_matrix(..)]`,
+; `#[proptest]`, `#[property_test]`, `#[quickcheck]`,
+; `#[wasm_bindgen_test]`), em qualquer ponto da fila de atributos colada a
+; ela. A declaração dela sai marcada como teste. Solta, fora de um módulo de
+; teste, ela é teste, e não programa, com os atributos colados a ela e o
+; mesmo trecho do item solto de cima: a chamada que ela faz não é uso do que
+; chama, e a declaração dela não é código sem uso. No arquivo que é ele mesmo
+; de teste (`@test_unit`, e não `@test_block`) a chamada segue sendo uso: é
+; ela que mostra quem testa cada declaração.
 ((attribute_item)* @test_unit
   .
   (attribute_item) @_marker @test_unit
@@ -133,7 +140,77 @@
   (attribute_item)* @test_unit
   .
   (function_item) @test_unit
-  (#match? @_marker "^#\\[\\s*test\\s*\\]$"))
+  (#match? @_marker "(?s)^#\\[\\s*([A-Za-z_][A-Za-z0-9_]*\\s*::\\s*)*(test|bench|rstest|test_case|test_matrix|proptest|property_test|quickcheck|wasm_bindgen_test)\\s*(\\(.*\\))?\\s*\\]$"))
+
+; A função de teste escrita dentro do bloco do `proptest!`
+; (`proptest! { #[test] fn x(a in 0..10) {} }`): a gramática não lê o corpo
+; da macro como código e o deixa em pedaços soltos, sem nó de função. A
+; sequência `#[test]`, `fn`, o nome, os parâmetros e o corpo é a função: ela
+; entra no mapa com o nome escrito depois do `fn`, marcada como teste, e vai
+; do `#[test]` ao fim do corpo, com os atributos escritos entre os dois
+; (`#[should_panic]`). O atributo escrito antes do `#[test]` fica fora do
+; trecho. A função do bloco sem `#[test]` não é teste e não entra.
+((macro_invocation
+   macro: [(identifier) (scoped_identifier name: (identifier))] @_macro
+   (token_tree
+     "#"
+     .
+     (token_tree . (identifier) @_attribute .) @decoration @test_unit
+     .
+     ("#" . (token_tree) @decoration @test_unit)*
+     .
+     "fn"
+     .
+     (identifier) @name @definition.function @test_unit
+     .
+     (token_tree) @test_unit
+     .
+     (token_tree) @body @test_unit))
+  (#match? @_macro "^(.*::)?proptest$")
+  (#eq? @_attribute "test"))
+
+; A função escrita dentro do bloco do `quickcheck!`
+; (`quickcheck! { fn x(a: u32) -> bool {} }`): toda função do bloco é teste,
+; sem atributo de teste, e a gramática a deixa em pedaços soltos, como a do
+; bloco do `proptest!`. Ela entra no mapa com o nome escrito depois do `fn`,
+; marcada como teste, e vai do primeiro atributo dela ao fim do corpo: todo
+; atributo escrito no bloco é de uma função dele. O bloco sempre escreve o
+; tipo de volta entre os parâmetros e o corpo, numa fila de pedaços de
+; tamanho livre (`bool`, `Result<(), String>`), e o tree-sitter 0.26 não casa
+; essa fila com quantificador: `(_)*` entre os parâmetros e o corpo só casa o
+; tipo de um pedaço. Cada tamanho, até oito pedaços, é um ramo, e nenhum
+; pedaço do tipo é um bloco entre chaves: o corpo é o primeiro bloco depois
+; da seta, e não o de uma função seguinte.
+((macro_invocation
+   macro: [(identifier) (scoped_identifier name: (identifier))] @_macro
+   (token_tree
+     "#"
+     .
+     (token_tree "[") @decoration @test_unit))
+  (#match? @_macro "^(.*::)?quickcheck$"))
+((macro_invocation
+   macro: [(identifier) (scoped_identifier name: (identifier))] @_macro
+   (token_tree
+     "fn"
+     .
+     (identifier) @name @definition.function @test_unit
+     .
+     (token_tree) @test_unit
+     .
+     "->"
+     .
+     [
+       ((_) @test_unit . (token_tree "{") @body @test_unit)
+       ((_) @test_unit . (_) @_type @test_unit . (token_tree "{") @body @test_unit)
+       ((_) @test_unit . (_) @_type @test_unit . (_) @_type @test_unit . (token_tree "{") @body @test_unit)
+       ((_) @test_unit . (_) @_type @test_unit . (_) @_type @test_unit . (_) @_type @test_unit . (token_tree "{") @body @test_unit)
+       ((_) @test_unit . (_) @_type @test_unit . (_) @_type @test_unit . (_) @_type @test_unit . (_) @_type @test_unit . (token_tree "{") @body @test_unit)
+       ((_) @test_unit . (_) @_type @test_unit . (_) @_type @test_unit . (_) @_type @test_unit . (_) @_type @test_unit . (_) @_type @test_unit . (token_tree "{") @body @test_unit)
+       ((_) @test_unit . (_) @_type @test_unit . (_) @_type @test_unit . (_) @_type @test_unit . (_) @_type @test_unit . (_) @_type @test_unit . (_) @_type @test_unit . (token_tree "{") @body @test_unit)
+       ((_) @test_unit . (_) @_type @test_unit . (_) @_type @test_unit . (_) @_type @test_unit . (_) @_type @test_unit . (_) @_type @test_unit . (_) @_type @test_unit . (_) @_type @test_unit . (token_tree "{") @body @test_unit)
+     ]))
+  (#match? @_macro "^(.*::)?quickcheck$")
+  (#not-match? @_type "^[{]"))
 
 ; Todo módulo com corpo escrito dentro do arquivo, o de teste incluído: o
 ; `super` escrito dentro de N deles sai primeiro desses N módulos, e só depois
@@ -249,14 +326,55 @@
 ; em `use std::fs::{self}`).
 (use_list (self) @imported)
 
-; Os nomes que o corpo de uma função liga: da linha seguinte até o fim da
-; declaração, o mesmo nome escrito sozinho é deles.
+; Os nomes que o corpo de uma função liga: no alcance que a língua dá a cada
+; um, marcado mais abaixo, o mesmo nome escrito sozinho é deles.
 (let_declaration pattern: (identifier) @local)
-(let_declaration pattern: (tuple_pattern (identifier) @local))
 (parameter pattern: (identifier) @local)
 (closure_parameters (identifier) @local)
 (closure_parameters (parameter pattern: (identifier) @local))
 (for_expression pattern: (identifier) @local)
+
+; O nome que um padrão liga, em todo lugar que aceita padrão: o `if let` e o
+; `while let` (também na cadeia de `let`), o braço do `match`, com a guarda ou
+; sem ela, o `let ... else`, o `for`, o parâmetro da função e o da closure. Cada
+; padrão de dentro liga os nomes escritos nele, em qualquer profundidade: a
+; tupla, a variante com campos (`Some(x)`, depois do tipo), a fatia, o `|`, a
+; referência, o campo da struct (o atalho `{ x }` e o `campo: x`), o `ref`, o
+; `mut` e o nome antes do `@`. O nome que começa por maiúscula, no padrão, é a
+; constante, a variante ou a struct sem campos que ele compara (`None`,
+; `LIMITE`), e não nome novo: a língua avisa quando o nome ligado não é
+; minúsculo. Depois do `ref`, do `mut` e antes do `@`, o nome é sempre novo.
+((let_condition pattern: (identifier) @local) (#not-match? @local "^\\p{Lu}"))
+((match_pattern !condition (identifier) @local) (#not-match? @local "^\\p{Lu}"))
+((match_pattern (identifier) @local . condition: (_)) (#not-match? @local "^\\p{Lu}"))
+((tuple_pattern (identifier) @local) (#not-match? @local "^\\p{Lu}"))
+((tuple_struct_pattern type: (_) (identifier) @local) (#not-match? @local "^\\p{Lu}"))
+((slice_pattern (identifier) @local) (#not-match? @local "^\\p{Lu}"))
+((or_pattern (identifier) @local) (#not-match? @local "^\\p{Lu}"))
+((reference_pattern (identifier) @local) (#not-match? @local "^\\p{Lu}"))
+((field_pattern pattern: (identifier) @local) (#not-match? @local "^\\p{Lu}"))
+(field_pattern name: (shorthand_field_identifier) @local)
+(ref_pattern (identifier) @local)
+(mut_pattern (identifier) @local)
+(captured_pattern . (identifier) @local)
+
+; Até onde vale cada nome ligado: o bloco, a função, a closure, o braço do
+; `match`, o `for`, o `if` e o `while` fecham o alcance dos nomes ligados
+; dentro deles, da ligação em diante. O valor que o `let`, o `if let`, o
+; `while let` e o `for` leem antes de ligar o nome, o `else` do `let ... else`
+; e o do `if let` ficam fora do alcance dos nomes que o padrão liga.
+(block) @local.scope
+(function_item) @local.scope
+(closure_expression) @local.scope
+(match_arm) @local.scope
+(for_expression) @local.scope
+(if_expression) @local.scope
+(while_expression) @local.scope
+(let_declaration value: (_) @local.outside)
+(let_declaration alternative: (_) @local.outside)
+(let_condition value: (_) @local.outside)
+(for_expression value: (_) @local.outside)
+(if_expression alternative: (_) @local.outside)
 
 ; O tipo que a assinatura ou a variável escreve para um nome local
 ; (`pedido: &Pedido`, `let pedido: Pedido = ...;`): o campo lido depois do nome

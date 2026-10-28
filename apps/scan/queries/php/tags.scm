@@ -36,16 +36,65 @@
 (property_declaration (property_element name: (variable_name (name) @name))) @definition.property
 (enum_case name: (name) @name) @definition.enum_member
 
+; Os testes. No PHPUnit, o método `test*` da classe de teste (a de nome
+; `*Test` ou a que herda de um `TestCase`), o método com `@test` no comentário
+; de documentação colado a ele e o com o atributo `#[Test]`, com o caminho ou
+; sem ele. A declaração sai marcada como teste. No Pest, a chamada
+; `test('...', fn)` e `it('...', fn)` entra no mapa como declaração de teste,
+; com o texto do primeiro argumento sem as aspas; o grupo (`describe`) não é
+; teste.
+((class_declaration name: (name) @_class body: (declaration_list (method_declaration name: (name) @_name) @test_unit))
+  (#match? @_class "Test$")
+  (#match? @_name "^test"))
+((class_declaration (base_clause (_) @_base) body: (declaration_list (method_declaration name: (name) @_name) @test_unit))
+  (#match? @_base "TestCase$")
+  (#match? @_name "^test"))
+((comment) @_doc . (method_declaration) @test_unit
+  (#match? @_doc "(?s)^/\\*\\*.*@test\\b"))
+((method_declaration attributes: (attribute_list (attribute_group (attribute [(name) (qualified_name)] @_attr)))) @test_unit
+  (#match? @_attr "(^|\\\\)Test$"))
+((function_call_expression
+  function: (name) @_callee
+  arguments: (arguments . (argument [(string) (encapsed_string)] @name.text) (argument [(anonymous_function) (arrow_function)]))) @definition.test @test_unit
+  (#match? @_callee "^(test|it)$"))
+
 ; Decorations — an attribute list (`#[Route('/lista')]`) is not code of the
 ; declaration it adorns: the engine starts the header after it and reads no
 ; call out of it.
 (attribute_list) @decoration
 
-; Os nomes que o corpo de uma função liga: da linha seguinte até o fim da
-; declaração, o mesmo nome escrito sozinho é deles.
+; Os nomes que o corpo de uma função liga: no alcance que a língua dá a cada
+; um, marcado mais abaixo, o mesmo nome escrito sozinho é deles.
 (assignment_expression left: (variable_name (name) @local))
 (simple_parameter name: (variable_name (name) @local))
 (anonymous_function_use_clause (variable_name (name) @local))
+; Os outros jeitos de ligar variável: o valor e a chave do `foreach`, também
+; por referência e desmontados; a exceção do `catch`; o `list(...)` e o
+; `[...]` à esquerda da atribuição, em qualquer profundidade; o `global` e o
+; `static`; o parâmetro variádico e o promovido a propriedade; a atribuição
+; por referência e a composta (`$x ??= ...`).
+(foreach_statement (_) . (variable_name (name) @local))
+(foreach_statement (pair (variable_name (name) @local)))
+(by_ref (variable_name (name) @local))
+(list_literal (variable_name (name) @local))
+(catch_clause name: (variable_name (name) @local))
+(global_declaration (variable_name (name) @local))
+(static_variable_declaration name: (variable_name (name) @local))
+(variadic_parameter name: (variable_name (name) @local))
+(property_promotion_parameter name: (variable_name (name) @local))
+(reference_assignment_expression left: (variable_name (name) @local))
+(augmented_assignment_expression left: (variable_name (name) @local))
+
+; Até onde vale cada variável ligada: a função, o método, a closure e a função
+; de seta fecham o alcance; o bloco não, porque a língua dá alcance de função.
+; A variável se escreve com `$`, e a língua a separa da função e da classe de
+; mesmo nome: a variável local alcança só a variável, e `config()` segue
+; sendo a função mesmo depois de `$config`.
+(function_definition) @local.scope
+(method_declaration) @local.scope
+(anonymous_function) @local.scope
+(arrow_function) @local.scope
+(variable_name (name) @variable)
 
 ; A propriedade escrita depois do objeto, sem chamada ali: a lida ou escrita
 ; (`$this->total`). O motor liga o nome só a uma propriedade, como liga a

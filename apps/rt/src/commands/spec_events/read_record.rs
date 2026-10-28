@@ -18,7 +18,6 @@ use std::time::Instant;
 use mustard_core::domain::spec_events::SpecLog;
 
 use super::conversation::record_receipt;
-use crate::commands::flow::round::queue::unanswered_sends;
 use crate::commands::flow::round::{open_review, request_name};
 
 /// O pedido aberto a que uma pasta pertence.
@@ -32,7 +31,7 @@ pub(super) struct Request {
 
 /// O pedido aberto cuja cópia contém `from`: a vaga ou uma pasta dentro
 /// dela. O envio da onda sem volta vale primeiro, também o da onda cujo plano
-/// mudou depois dele ([`unanswered_sends`]): o agente segue trabalhando na
+/// mudou depois dele ([`SpecLog::unanswered_sends`]): o agente segue trabalhando na
 /// cópia, e a entrega dele confere as leituras. Sem ele, o da revisão final.
 /// Pasta fora de toda cópia de pedido aberto não é de pedido nenhum.
 pub(super) fn request_of(log: &SpecLog, from: &Path) -> Option<Request> {
@@ -43,7 +42,7 @@ pub(super) fn request_of(log: &SpecLog, from: &Path) -> Option<Request> {
             .filter(|copy| !copy.trim().is_empty())
             .is_some_and(|copy| here.starts_with(settled(Path::new(copy))))
     };
-    if let Some((wave, _)) = unanswered_sends(log).into_iter().find(|(_, sent)| inside(*sent)) {
+    if let Some((wave, _)) = log.unanswered_sends().into_iter().find(|(_, sent)| inside(*sent)) {
         return Some(Request { name: request_name(Some(wave)), wave: Some(wave) });
     }
     open_review(log).filter(|sent| inside(*sent)).map(|_| Request { name: request_name(None), wave: None })

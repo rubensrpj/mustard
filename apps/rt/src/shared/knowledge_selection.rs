@@ -32,11 +32,18 @@ pub(crate) struct Budgeted {
     selector: KnowledgeSelector,
     deadline: Instant,
     spent: Cell<Duration>,
+    /// O relógio com que a escolha confere o prazo e conta o tempo dela.
+    clock: Box<dyn Fn() -> Instant>,
 }
 
 impl Budgeted {
     pub(crate) fn new(selector: KnowledgeSelector, deadline: Instant) -> Self {
-        Self { selector, deadline, spent: Cell::new(Duration::ZERO) }
+        Self::with_clock(selector, deadline, Box::new(Instant::now))
+    }
+
+    /// [`Self::new`] com o relógio `clock`, o que o teste troca pelo falso.
+    fn with_clock(selector: KnowledgeSelector, deadline: Instant, clock: Box<dyn Fn() -> Instant>) -> Self {
+        Self { selector, deadline, spent: Cell::new(Duration::ZERO), clock }
     }
 
     /// O seletor do projeto em `root`, cujo pedido acaba em `deadline`.
@@ -57,12 +64,12 @@ impl Budgeted {
 
 impl SymbolSelector for Budgeted {
     fn select(&self, query: &str, groups: &[Ambiguity]) -> Decisions {
-        if Instant::now() >= self.deadline {
+        if (self.clock)() >= self.deadline {
             return Decisions { usage: json!({"status":"native; search-budget-spent","remote_model_calls":0}), ..Decisions::default() };
         }
-        let started = Instant::now();
+        let started = (self.clock)();
         let decisions = self.selector.select(query, groups);
-        self.spent.set(self.spent.get() + started.elapsed());
+        self.spent.set(self.spent.get() + (self.clock)().saturating_duration_since(started));
         decisions
     }
 }
@@ -282,26 +289,27 @@ mod tests {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
         let asked = Arc::new(AtomicUsize::new(0));
+        let clock = Arc::new(crate::fake_clock::FakeClock::default());
         let selector = |deadline: Instant| {
-            let asked = asked.clone();
-            Budgeted::new(KnowledgeSelector { languages: Languages::new(["en-US"]), invoke: Box::new(move |_| {
+            let (asked, ticking, reading) = (asked.clone(), Arc::clone(&clock), Arc::clone(&clock));
+            Budgeted::with_clock(KnowledgeSelector { languages: Languages::new(["en-US"]), invoke: Box::new(move |_| {
                 asked.fetch_add(1, Ordering::SeqCst);
-                std::thread::sleep(Duration::from_millis(30));
+                ticking.advance(Duration::from_millis(30));
                 Ok(json!({"answers":{}}))
-            })}, deadline)
+            })}, deadline, Box::new(move || reading.now()))
         };
 
-        let late = selector(Instant::now());
+        let late = selector(clock.now());
         let decision = late.select("quartz beacon", &[group()]);
         assert_eq!(asked.load(Ordering::SeqCst), 0, "no request after the search budget");
         assert_eq!(decision.usage["remote_model_calls"], 0);
         assert_eq!(decision.usage["status"], "native; search-budget-spent");
         assert_eq!(late.spent(), Duration::ZERO);
 
-        let timely = selector(Instant::now() + Duration::from_secs(2));
+        let timely = selector(clock.now() + Duration::from_secs(2));
         timely.select("quartz beacon", &[group()]);
         assert_eq!(asked.load(Ordering::SeqCst), 1);
-        assert!(timely.spent() >= Duration::from_millis(30), "{:?}", timely.spent());
+        assert_eq!(timely.spent(), Duration::from_millis(30), "the time of the request counts");
     }
 
     #[test]

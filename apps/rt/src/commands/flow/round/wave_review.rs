@@ -125,9 +125,9 @@ pub(super) fn ask(root: &Path, spec: &str, log: &SpecLog, wave: &WaveReport, see
     Ok(Asked { title, read, hint })
 }
 
-/// O texto do pedido: o que a onda devia fazer, o que valia para ela e o diff
-/// dela, que corta por arquivo para o pedido caber no teto, com a lista do
-/// que ficou de fora.
+/// O texto do pedido: o que a onda devia fazer, o que valia para ela, os
+/// princípios do produto que o revisor recebe e o diff dela, que corta por
+/// arquivo para o pedido caber no teto, com a lista do que ficou de fora.
 fn request(root: &Path, spec: &str, log: &SpecLog, wave: &WaveReport, seen: &Snapshot, title: &str, lang: Locale) -> String {
     let n = wave.wave;
     let codes = log.codes();
@@ -164,6 +164,7 @@ fn request(root: &Path, spec: &str, log: &SpecLog, wave: &WaveReport, seen: &Sna
     let items = sent.and_then(|sent| log.send_field(sent, "items")).and_then(Value::as_array).cloned().unwrap_or_default();
     let rules = items.iter().filter_map(Value::as_u64).filter_map(|id| log.get(id)).filter(|e| matches!(e.event_type.as_str(), "rule" | "decision"));
     section(&mut out, "round.wave_review.rules", rules.map(line).collect());
+    let _ = write!(out, "\n{}", mustard_core::platform::seeds::principles_for(lang, mustard_core::platform::seeds::Reader::Review, 2));
     let files: Vec<String> = seen.changes.iter().map(|(file, _, _)| file.clone()).collect();
     if let Some(rules) = project_rules_section(&mustard_core::io::wave_prompt::project_rules(root, &files), lang) {
         let _ = write!(out, "\n{}\n", rules.trim_end());

@@ -34,16 +34,73 @@
   name: (field_identifier) @name) @definition.method
 (field_declaration name: (field_identifier) @name) @definition.field
 
+; Os testes que o `go test` roda, só no arquivo `_test.go`: `func TestX(t
+; *testing.T)`, `func BenchmarkX(b *testing.B)`, `func FuzzX(f *testing.F)`,
+; o exemplo sem parâmetro (`func ExampleX()`) e o método `TestX` de uma suíte
+; (testify). O `TestMain(m *testing.M)` prepara os testes, e não é teste. A
+; declaração sai marcada como teste.
+((function_declaration
+  name: (identifier) @_name
+  parameters: (parameter_list . (parameter_declaration type: (pointer_type (qualified_type package: (package_identifier) @_pkg name: (type_identifier) @_type))) .)) @test_unit.in_test_file
+  (#match? @_name "^Test([^a-z]|$)")
+  (#eq? @_pkg "testing")
+  (#eq? @_type "T"))
+((function_declaration
+  name: (identifier) @_name
+  parameters: (parameter_list . (parameter_declaration type: (pointer_type (qualified_type package: (package_identifier) @_pkg name: (type_identifier) @_type))) .)) @test_unit.in_test_file
+  (#match? @_name "^Benchmark([^a-z]|$)")
+  (#eq? @_pkg "testing")
+  (#eq? @_type "B"))
+((function_declaration
+  name: (identifier) @_name
+  parameters: (parameter_list . (parameter_declaration type: (pointer_type (qualified_type package: (package_identifier) @_pkg name: (type_identifier) @_type))) .)) @test_unit.in_test_file
+  (#match? @_name "^Fuzz([^a-z]|$)")
+  (#eq? @_pkg "testing")
+  (#eq? @_type "F"))
+((function_declaration name: (identifier) @_name parameters: (parameter_list) @_params) @test_unit.in_test_file
+  (#match? @_name "^Example([^a-z]|$)")
+  (#match? @_params "^\\(\\s*\\)$"))
+((method_declaration name: (field_identifier) @_name) @test_unit.in_test_file
+  (#match? @_name "^Test([^a-z]|$)"))
+
 ; An interface method is a member like a receiver method; left uncaptured, its
 ; header was read as a call.
 (method_elem name: (field_identifier) @name) @definition.method
 
-; Os nomes que o corpo de uma função liga: da linha seguinte até o fim da
-; declaração, o mesmo nome escrito sozinho é deles.
+; Os nomes que o corpo de uma função liga: no alcance que a língua dá a cada
+; um, marcado mais abaixo, o mesmo nome escrito sozinho é deles.
 (short_var_declaration left: (expression_list (identifier) @local))
 (var_spec name: (identifier) @local)
 (parameter_declaration name: (identifier) @local)
 (range_clause left: (expression_list (identifier) @local))
+; O nome do `switch v := x.(type)`, o do `case v := <-ch` do `select` e o
+; parâmetro variádico (`xs ...int`). O resultado com nome já é
+; `parameter_declaration`.
+(type_switch_statement alias: (expression_list (identifier) @local))
+(receive_statement left: (expression_list (identifier) @local))
+(variadic_parameter_declaration name: (identifier) @local)
+
+; Até onde vale cada nome ligado: o bloco, o `if`, o `for`, o `switch`, cada
+; caso dele e do `select`, e as funções fecham o alcance. O valor que a
+; declaração curta, o `var`, o `range`, o `switch` de tipo e o recebimento
+; leem antes de ligar o nome fica fora do alcance dos nomes que eles ligam.
+(block) @local.scope
+(if_statement) @local.scope
+(for_statement) @local.scope
+(expression_switch_statement) @local.scope
+(type_switch_statement) @local.scope
+(expression_case) @local.scope
+(type_case) @local.scope
+(default_case) @local.scope
+(communication_case) @local.scope
+(function_declaration) @local.scope
+(method_declaration) @local.scope
+(func_literal) @local.scope
+(short_var_declaration right: (_) @local.outside)
+(var_spec value: (_) @local.outside)
+(range_clause right: (_) @local.outside)
+(type_switch_statement value: (_) @local.outside)
+(receive_statement right: (_) @local.outside)
 
 ; A função entregue como valor, sem ser chamada ali: o nome escrito como
 ; argumento (`sort.Slice(xs, menor)`, `http.HandleFunc("/", rotas.Inicio)`),

@@ -27,8 +27,7 @@ mod binary;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::process::{Command, Stdio};
 
 use serde_json::{json, Value};
 
@@ -250,18 +249,6 @@ fn a_real_block_is_the_json_and_the_exit_code_stays_zero() {
     assert_eq!(answer.pointer("/hookSpecificOutput/hookEventName").and_then(Value::as_str), Some("PreToolUse"), "{answer}");
 }
 
-/// Espera o filho terminar por até `limit`; devolve `None` se ele segue vivo.
-fn wait_up_to(child: &mut Child, limit: Duration) -> Option<std::process::ExitStatus> {
-    let started = Instant::now();
-    while started.elapsed() < limit {
-        if let Some(status) = child.try_wait().unwrap() {
-            return Some(status);
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    None
-}
-
 /// Um comando `run` não lê o stdin: com o stdin aberto e sem nenhum byte, ele
 /// termina sozinho. O `on` é que lê o JSON do evento.
 #[test]
@@ -278,13 +265,10 @@ fn a_run_command_never_waits_for_the_stdin() {
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn mustard-rt");
-    // O cano fica aberto até o fim do teste: só um comando que espera o stdin
-    // ficaria preso.
-    let _open_stdin = child.stdin.take();
-    let finished = wait_up_to(&mut child, Duration::from_secs(20));
-    if finished.is_none() {
-        let _ = child.kill();
-        let _ = child.wait();
-    }
-    assert!(finished.is_some(), "o comando `run` ficou esperando o stdin");
+    // O cano fica aberto até o comando acabar: só um comando que espera o
+    // stdin ficaria preso, e o teste com ele.
+    let open_stdin = child.stdin.take();
+    let finished = child.wait().expect("the command ends on its own");
+    drop(open_stdin);
+    assert!(finished.code().is_some(), "o comando `run` acabou sozinho, sem esperar o stdin");
 }

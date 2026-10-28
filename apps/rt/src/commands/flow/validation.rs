@@ -4,8 +4,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 
-use mustard_core::domain::spec_events::{Refusal, SpecLog};
-use mustard_core::domain::spec_state::{PhaseWriter, State};
+use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecLog};
+use mustard_core::domain::spec_state::{PhaseWriter, State, answered_request};
+use mustard_core::domain::wave_prompt::delivered_request_proofs;
 use mustard_core::platform::git;
 use serde_json::{Map, Value, json};
 
@@ -124,12 +125,14 @@ pub(super) fn fingerprint(root: &Path, log: &SpecLog) -> Option<String> {
         }
         digest.update(&[0]);
     }
-    for event in log
-        .block(mustard_core::domain::spec_events::BlockQuery::Block(mustard_core::domain::spec_events::Block::Criteria))
-        .into_iter()
-        .filter(|e| e.event_type == "criterion")
-    {
+    for event in log.block(BlockQuery::Block(Block::Criteria)).into_iter().filter(|e| e.event_type == "criterion") {
         digest.update(&serde_json::to_vec(&event.fields).ok()?);
+    }
+    // As provas que a máquina roda entram também: a de um pedido que a
+    // tarefa de um achado entregou sem mudar arquivo nenhum chega à lista sem
+    // mudar o código nem os critérios, e o recibo de antes dela não vale.
+    for (id, code, command) in proof_list(log, config_inputs.commands().test.as_deref()) {
+        digest.update(&serde_json::to_vec(&(id, code, command)).ok()?);
     }
     let mut env: Vec<_> = std::env::vars_os()
         .filter(|(name, _)| {
@@ -145,6 +148,24 @@ pub(super) fn fingerprint(root: &Path, log: &SpecLog) -> Option<String> {
         digest.update(&[0]);
     }
     Some(digest.hex_digest())
+}
+
+/// As provas que a máquina do fechamento roda, cada uma com o número e o
+/// código do item e o comando: a de cada critério vigente da spec, na ordem
+/// em que a leitura os dá, e depois a de cada pedido que uma tarefa entregue
+/// cobre e cujo relato a nomeia — o pedido nascido de um achado —, pela mesma
+/// seleção da formação do lote ([`delivered_request_proofs`]), com o comando
+/// de teste do projeto (`test`). As duas rodam nas mesmas cópias e caem na
+/// mesma recusa, e a lista entra na impressão da validação ([`fingerprint`]).
+pub(super) fn proof_list(log: &SpecLog, test: Option<&str>) -> Vec<(u64, String, String)> {
+    let codes = log.codes();
+    let code = |id: u64| codes.get(&id).cloned().unwrap_or_else(|| id.to_string());
+    let criteria = log.block(BlockQuery::Block(Block::Criteria)).into_iter().filter(|e| e.event_type == "criterion").filter_map(|e| {
+        let proof = e.str_field("proof")?.trim().to_string();
+        Some((e.id, code(e.id), proof))
+    });
+    let requests = delivered_request_proofs(log, test).into_iter().map(|(id, proof)| (id, code(id), proof));
+    criteria.chain(requests).collect()
 }
 
 /// Os arquivos que o git lista no projeto: os rastreados e os novos que ele
@@ -293,14 +314,31 @@ fn push_path(files: &mut Vec<String>, file: &str) {
 /// Os arquivos que a branch do checkout em `root` mudou desde a base gravada
 /// no `state` da spec: o que [`Work::of`] conta como obra.
 fn branch_files(root: &Path, log: &SpecLog) -> BTreeSet<String> {
-    let Some(base) = State::from_log(log).base else {
+    let Some(base) = base_ref(root, log) else {
         return BTreeSet::new();
     };
-    let resolves = git::run(root, &["rev-parse", "--verify", "-q", &format!("{base}^{{commit}}")]).ok;
-    let base = if resolves { base } else { format!("origin/{base}") };
     let range = format!("{base}...HEAD");
     let listed = git::run(root, &["diff", "--name-only", "-z", "--no-renames", "--relative", &range]).out().unwrap_or_default();
     listed.split('\0').filter_map(project_path).collect()
+}
+
+/// A base gravada no `state` da spec como o git do checkout em `root` a
+/// acha: a branch local e, sem ela, a do `origin`. `None` sem base gravada.
+fn base_ref(root: &Path, log: &SpecLog) -> Option<String> {
+    let base = State::from_log(log).base?;
+    let resolves = git::run(root, &["rev-parse", "--verify", "-q", &format!("{base}^{{commit}}")]).ok;
+    Some(if resolves { base } else { format!("origin/{base}") })
+}
+
+/// O commit base da obra: onde a branch do checkout em `root` se separou da
+/// base gravada no `state` da spec, o mesmo ponto de que [`Work::of`] conta
+/// os arquivos mudados. É nele que o fechamento roda a prova de cada critério
+/// no código de antes da obra. `None` sem base gravada, ou quando o git não
+/// acha a base nem o ponto em que a branch saiu dela.
+pub(super) fn base_commit(root: &Path, log: &SpecLog) -> Option<String> {
+    let base = base_ref(root, log)?;
+    let sha = git::run(root, &["merge-base", &base, "HEAD"]).out()?;
+    Some(sha.trim().to_string()).filter(|sha| !sha.is_empty())
 }
 
 /// O que a saída de um comando que caiu cita, lida contra a obra.
@@ -787,8 +825,11 @@ fn record_run_fields(root: &Path, spec: &str, phase: &str, stage: &str, command:
     record(root, spec, "stage_run", draft, PhaseWriter::Binary).map(|_| ())
 }
 
-/// Review elapsed wall time includes the host's dispatch and waiting time;
-/// it is observational and must not be added to machine stage durations.
+/// O tempo de relógio da revisão final inclui o despacho e a espera do
+/// hospedeiro; é observação, e não soma às durações das etapas da máquina.
+/// Ele conta do pedido que o veredito responde ([`answered_request`]), na
+/// versão que o gravou: a versão que o lançamento do revisor grava depois
+/// deixaria a espera do despacho de fora.
 pub(super) fn review_elapsed(root: &Path, spec: &str, log: &mustard_core::domain::spec_events::SpecLog) -> Result<(), Refusal> {
     let verdict = log.visible().into_iter().rev().find(|e| e.event_type == "verdict" && e.fields.get("final") == Some(&Value::Bool(true)));
     let Some(verdict) = verdict else {
@@ -798,7 +839,7 @@ pub(super) fn review_elapsed(root: &Path, spec: &str, log: &mustard_core::domain
     if log.events.iter().any(|e| e.event_type == "stage_run" && e.str_field("fingerprint") == Some(&key)) {
         return Ok(());
     }
-    let Some(sent) = log.visible().into_iter().rev().find(|e| e.event_type == "send" && e.str_field("role") == Some("review") && e.id < verdict.id) else {
+    let Some(sent) = answered_request(log, verdict.id).and_then(|asked| log.get(asked)) else {
         return Ok(());
     };
     let Some(ms) = chrono::DateTime::parse_from_rfc3339(sent.at())

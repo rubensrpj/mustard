@@ -51,7 +51,7 @@
 //! última: o ponto de partida da medição do uso. Falha ao gravar não muda a
 //! sessão.
 //!
-//! ## Até 3 kB
+//! ## Até 5.440 bytes
 //!
 //! Tudo junto cabe em [`MAX_BYTES`]. Quando o todo passa do teto, os avisos
 //! cedem o lugar um a um, na vez de cada um, com uma linha no stderr dizendo
@@ -94,9 +94,15 @@ use crate::hooks::session::injectables;
 use crate::shared::branch_state::merged_by_another;
 use crate::shared::development_build::{Gap, Launch, gap, start_in_background};
 
-/// O teto do texto que o início da sessão coloca: 3 kB. O bloco de retomada
-/// cabe nele sozinho.
-pub(crate) const MAX_BYTES: usize = 3_000;
+/// O teto do texto que o início da sessão coloca. O bloco de retomada cabe
+/// nele sozinho, e ao lado do mapa sobram 600 bytes para a retomada.
+///
+/// A conta: o teto era 3.000, e sobe o mesmo que o mapa do início da sessão,
+/// o que os princípios do condutor ocupam nele no idioma em que ocupam mais,
+/// o `en-US`: o bloco com a linha em branco que o separa, 2.621 bytes, menos
+/// os 181 das frases do mapa que repetiam um princípio. 3.000 + 2.621 − 181 =
+/// 5.440.
+pub(crate) const MAX_BYTES: usize = 5_440;
 
 /// Os bytes que separam dois avisos: a linha em branco entre eles.
 const SEPARATOR_BYTES: usize = 2;
@@ -929,7 +935,7 @@ mod tests {
         let kept = texts_within_cap(with_landing);
         assert!(kept.contains(&map) && kept.contains(&landed), "the landing report fits beside the real map: {kept:?}");
 
-        let too_big = vec![(notice("declared"), "d".repeat(2_950)), resume.clone(), pending, merged, disk, version];
+        let too_big = vec![(notice("declared"), "d".repeat(MAX_BYTES - 50)), resume.clone(), pending, merged, disk, version];
         let kept = texts_within_cap(too_big);
         assert_eq!(kept, vec![resume.1], "every ceding notice went, the declared text last, and the resume stays");
     }
@@ -985,7 +991,7 @@ mod tests {
     /// O mapa do início da sessão, nos dois idiomas, chega inteiro numa sessão
     /// com spec aberta, pendências, versão velha, branches mergeadas e sobras
     /// no disco: o todo passaria do teto, e são os avisos que saem antes dele.
-    /// A retomada fica, e o todo cabe nos 3 kB.
+    /// A retomada fica, e o todo cabe no teto.
     #[test]
     fn the_real_session_map_is_never_the_first_to_go() {
         use mustard_core::platform::i18n::Locale;
@@ -1070,7 +1076,7 @@ mod tests {
             let resume = crate::commands::flow::resume::current_line(root, Some("s-mapa")).expect("an open spec");
             assert!(context.contains(&resume), "{lang:?}: the resume stays: {context}");
 
-            // Sem o teto, o todo passaria dos 3 kB: o teste mede a situação em
+            // Sem o teto, o todo passaria dele: o teste mede a situação em
             // que alguém tem de sair.
             let declared = injectables::collect(&root.to_string_lossy(), Some("s-mapa"), true);
             let merged = merged_branches(root, &[]);
@@ -1097,7 +1103,9 @@ mod tests {
                 "work branches omit integration maintenance: {lang:?}: {all:?}"
             );
             assert!(all.iter().any(|text| text.contains("mustard-rt run clean")), "{lang:?}: {all:?}");
-            assert!(declared.as_ref().unwrap().len() < map.len()/2, "the refreshed guide is compact");
+            let refreshed = declared.as_deref().unwrap_or_default();
+            let principles = mustard_core::platform::seeds::principles_for(lang, mustard_core::platform::seeds::Reader::Conductor, 2);
+            assert!(refreshed.len() < map.len() && refreshed.contains(principles.trim_end()), "the refreshed guide is the principles, shorter than the map");
             let gone = all.iter().filter(|text| !context.contains(text.as_str())).count();
             assert!(gone <= all.len(), "notice projection remains bounded");
         }
@@ -1568,7 +1576,7 @@ mod tests {
     fn a_declared_text_that_cannot_stay_beside_the_smallest_block_goes_and_the_block_keeps_its_lists() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        let huge = "d".repeat(2_900);
+        let huge = "d".repeat(MAX_BYTES - 100);
         compacted_project(root, Locale::PtBr, &huge, 30);
         let full = crate::commands::flow::resume::current_block(root, Some("s-room")).expect("the block");
         let smallest = crate::commands::flow::resume::current_block_within(root, Some("s-room"), 0).expect("the block");

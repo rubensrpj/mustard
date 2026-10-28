@@ -296,26 +296,19 @@ pub(crate) fn process_alive(_pid: u32, _started: u64) -> bool {
     true
 }
 
-/// Espera até 2s `/proc/<pid>/cmdline` mostrar `needle`. O processo que um
-/// teste acabou de criar volta do `spawn` antes de o kernel terminar de
-/// montar a linha de comando dele: por alguns instantes ela vem vazia — ou
-/// ainda é a do pai —, e a leitura dos processos do sistema ([`system_processes`])
-/// ignora o processo sem linha de comando. É nessa janela, que o relógio de
-/// uma máquina ocupada alarga, que um teste que procura o processo logo em
-/// seguida não o acha. Todo teste que cria um processo para a busca de
-/// processo preso espera por aqui antes de procurar.
+/// Espera `/proc/<pid>/cmdline` mostrar `needle`. O processo que um teste
+/// acabou de criar volta do `spawn` antes de o kernel terminar de montar a
+/// linha de comando dele: por alguns instantes ela vem vazia — ou ainda é a
+/// do pai —, e a leitura dos processos do sistema ([`system_processes`])
+/// ignora o processo sem linha de comando. É nessa janela, que uma máquina
+/// ocupada alarga, que um teste que procura o processo logo em seguida não o
+/// acha. Todo teste que cria um processo para a busca de processo preso
+/// espera por aqui antes de procurar.
 #[cfg(all(test, target_os = "linux"))]
 pub(crate) fn wait_until_spawned(pid: u32, needle: &str) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    loop {
-        if let Ok(raw) = std::fs::read(format!("/proc/{pid}/cmdline"))
-            && String::from_utf8_lossy(&raw).contains(needle)
-        {
-            return;
-        }
-        assert!(std::time::Instant::now() < deadline, "pid {pid} never showed its own command line");
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    crate::wait_for::wait_for(&format!("a linha de comando do processo {pid} com {needle}"), || {
+        std::fs::read(format!("/proc/{pid}/cmdline")).ok().filter(|raw| String::from_utf8_lossy(raw).contains(needle)).map(|_| ())
+    });
 }
 
 #[cfg(all(test, target_os = "linux"))]

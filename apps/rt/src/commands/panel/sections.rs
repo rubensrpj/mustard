@@ -158,7 +158,7 @@ pub(super) fn overview(start: &Path, root: &Path, name: Option<&str>, log: Optio
         if OPEN_PHASES.contains(&phase) && !pr["merged_at"].is_null() {
             warnings.push(json!({"kind":"pr-merged","pr":pr["number"],"at":pr["merged_at"],"phase":phase}));
         }
-        let review = progress::review(log);
+        let review = crate::commands::flow::common::progress::review(log);
         if !review["reopened_at"].is_null() {
             warnings.push(json!({"kind":"review-reopened","approved_at":review["approved_at"],"reopened_at":review["reopened_at"]}));
         }
@@ -235,7 +235,7 @@ pub(super) fn spec(start: &Path, root: &Path, name: &str, log: &SpecLog) -> Valu
         "last_commit":commits.last().map(|e|json!({"at":e.at(),"sha":e.str_field("sha")})),"commits":commits.len(),
         "counts":{"tasks":progress::tasks(log,&states),"criteria":progress::criteria(log),
             "questions":{"total":questions,"open":open_questions},"decisions":count("decision"),"rules":count("rule"),"waves":states.len()},
-        "waves":progress::waves(&states),"review":progress::review(log),"pr":pull_request(log,&state,&merges)},
+        "waves":progress::waves(&states),"review":crate::commands::flow::common::progress::review(log),"pr":pull_request(log,&state,&merges)},
         "specs":specs,"discarded":discarded})
 }
 

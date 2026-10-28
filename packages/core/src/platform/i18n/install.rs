@@ -165,16 +165,11 @@ mod tests {
     use crate::platform::i18n::translate;
 
     /// Esta parte guarda as mesmas chaves, com os mesmos textos nos dois
-    /// idiomas. Quem muda um texto de propósito grava aqui os dois números
-    /// novos que a falha mostra.
+    /// idiomas, como o arquivo de impressões dela em `stamps/` guarda. Quem muda
+    /// um texto de propósito regrava o arquivo pelo comando que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(
-            include_str!("install.rs"),
-            super::PREFIXES,
-            16,
-            0x983f_5b07_480b_44d6,
-        );
+        crate::platform::i18n::tests::assert_part_unchanged("install", include_str!("install.rs"), super::PREFIXES);
     }
 
     /// As mensagens do diagnóstico das chaves do projeto e das sobras saem

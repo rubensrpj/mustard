@@ -596,9 +596,12 @@ fn from_program(map: &ProjectMap, site: &UseSite) -> bool {
 }
 
 /// A linha `line` cai dentro de um trecho de teste do arquivo `module`, pelas
-/// linhas que o mapa guarda de cada um.
+/// linhas que o mapa guarda de cada um, ou dentro de uma declaração que o mapa
+/// marca como teste ([`MapDecl::is_test`]), em qualquer pasta e fora de
+/// qualquer trecho.
 fn in_test_lines(module: &MapModule, line: u64) -> bool {
     module.test_lines.iter().any(|&(first, last)| (first..=last).contains(&line))
+        || module.declarations.iter().any(|decl| decl.is_test() && (decl.line..=decl.end_line.max(decl.line)).contains(&line))
 }
 
 /// A linha `text` de `file` cita o nome `name` de uma declaração tirada
@@ -2066,6 +2069,24 @@ mod tests {
         project(root, &[("src/a.rs", LOOSE_TEST_ITEMS)], &base_with_run_sum_only());
         let (refused, _) = final_after_delivery(root, "src/a.rs", after);
         assert!(refused.contains("`seed_value` em `src/a.rs` linha 3 é código novo sem uso fora de teste"), "{refused}");
+    }
+
+    #[test]
+    fn a_marked_test_outside_the_test_folders_is_not_reported_unused() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        // O teste escrito no bloco de uma macro de teste (linhas 3 a 6), num
+        // arquivo do programa, leva a marca de teste do mapa sem trecho de
+        // teste em volta: ele é do teste, e a função nova que só ele chama
+        // segue sem uso fora de teste.
+        let text = "fn run_sum() {}\nfn compute_total() -> u32 { 3 }\nproptest! {\n    #[test]\n    fn checks_the_total(x in 0..3u32) {\n        compute_total();\n    }\n}\n";
+        let mut file = module("src/a.rs", &[("run_sum", 1, &[]), ("compute_total", 2, &["src/a.rs:6:checks_the_total"]), ("checks_the_total", 4, &[])]);
+        file["declarations"][1]["end_line"] = json!(2);
+        file["declarations"][2]["syntax"] = json!({"test": true});
+        project(root, &[("src/a.rs", text)], &base_with_run_sum_only());
+        let (refused, warned) = final_after_delivery(root, "src/a.rs", json!({"modules": [file]}));
+        assert!(!format!("{refused}\n{warned}").contains("`checks_the_total` em"), "the marked test is test code: {refused}\n{warned}");
+        assert!(refused.contains("`compute_total` em `src/a.rs` linha 2 é código novo sem uso fora de teste"), "{refused}");
     }
 
     #[test]

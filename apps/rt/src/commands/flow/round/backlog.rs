@@ -6,7 +6,9 @@
 //! Nenhuma tarefa espera por arquivo: cada onda trabalha na própria cópia, e
 //! a rodada junta no commit. Seguram a tarefa só a dependência declarada, as
 //! vagas e a onda em andamento do mesmo sentido, que a formação apontou
-//! ([`super::following`]); a limpeza forma lote como as outras tarefas.
+//! ([`super::following`]); a limpeza forma lote como as outras tarefas. A
+//! avaliação de uma skill é a exceção: espera as tarefas abertas que mexem
+//! nos arquivos que a skill cita ([`super::skill_hold`]).
 //! O Jev responde decisões tipadas não atendidas pelo cache, antes das
 //! travas da rodada ([`super::dispatch_jev`]): com elas presas, a montagem só
 //! lê a decisão gravada, e a tarefa sem decisão espera a rodada seguinte, só
@@ -72,6 +74,9 @@ pub(crate) enum Hold {
     /// Vai no mesmo sentido da onda em andamento deste número e espera a
     /// volta dela ([`super::following`]).
     Following(u64),
+    /// Avalia uma skill e espera estas tarefas abertas, pelo código, que
+    /// citam arquivos que a skill cita ([`super::skill_hold`]).
+    OpenTasks(Vec<String>),
 }
 
 /// Monta as ondas que saem nesta rodada, olhando o backlog inteiro
@@ -382,7 +387,13 @@ fn assemble(
     // não sai por caminho nenhum até a volta dela, nem de carona.
     let candidates: Vec<u64> = order.iter().chain(&waiting).chain(&arrived).copied().collect();
     let following = super::following::waiting_for_wave(log, &candidates, &arrived);
-    let free_of = |ids: Vec<u64>| -> Vec<u64> { ids.into_iter().filter(|id| !following.contains_key(id)).collect() };
+    // A avaliação de uma skill espera as tarefas abertas que mexem nos
+    // arquivos que ela cita, para sair uma vez, com todas as mudanças; a
+    // tarefa que depende dela e mexe nesses arquivos não vai na onda dela.
+    let evaluations = super::skill_hold::waiting_for_tasks(&project.root, spec, log, &candidates, &population);
+    let free_of = |ids: Vec<u64>| -> Vec<u64> {
+        ids.into_iter().filter(|id| !following.contains_key(id) && !evaluations.held.contains_key(id) && !evaluations.after.contains(id)).collect()
+    };
     let (order, waiting, arrived) = (free_of(order), free_of(waiting), free_of(arrived));
     // As ondas do plano que ainda não terminaram: em andamento, por sair,
     // mantidas ou com conserto pendente. Elas vão ao Jev, e nunca seguram uma
@@ -392,7 +403,10 @@ fn assemble(
     // recusado pela escolha das ondas prontas, logo depois: aqui só não sobra
     // vaga para onda nova.
     let vacancies = super::vacancy::vacancies_with(&project.root, spec, log, limit);
-    let (free, alone) = outgoing(log, &vacancies, &waves_stuck(log), &undone).map_or((0, false), |out| (out.free, out.alone));
+    // A onda do plano que espera tarefas abertas pela avaliação de skill que
+    // leva não sai, e não toma vaga.
+    let evaluating = super::skill_hold::waves_waiting(&project.root, spec, log);
+    let (free, alone) = outgoing(log, &vacancies, (&waves_stuck(log), &evaluating), &undone).map_or((0, false), |out| (out.free, out.alone));
 
     let code_of = |id: &u64| -> u64 { codes.get(id).and_then(|code| code.rsplit('-').next()).and_then(|number| number.parse().ok()).unwrap_or(*id) };
     // Cada resumo que ainda vale vira a base de uma onda, antes de qualquer outra;
@@ -510,6 +524,10 @@ fn assemble(
     }
     for (id, wave) in &following {
         held.insert(codes.get(id).cloned().unwrap_or_else(|| id.to_string()), Hold::Following(*wave));
+    }
+    for (id, tasks) in &evaluations.held {
+        let code = |id: &u64| codes.get(id).cloned().unwrap_or_else(|| id.to_string());
+        held.insert(code(id), Hold::OpenTasks(tasks.iter().map(code).collect()));
     }
 
     let mut writes: Vec<(&str, Map<String, Value>)> = Vec::new();
@@ -727,7 +745,7 @@ mod tests {
         let wrote = returned(
             root,
             json!({"wave": 1, "text": "Saiu.", "files": ["src/a.ts"], "commit": "sai",
-                "leftovers": [{"title": "A soma perde o sinal", "files": ["src/soma.ts"],
+                "leftovers": [{"title": "A soma perde o sinal", "files": ["src/soma.ts"], "rule": "A soma guarda o sinal", "places": ["src/soma.ts"],
                     "detail": "Com número negativo, a soma perde o sinal. Prova: `npm test -- soma`."}]}),
         );
         assert_eq!(wrote["ok"], json!(true), "{wrote}");

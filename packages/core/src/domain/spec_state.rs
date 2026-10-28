@@ -178,6 +178,14 @@ pub fn returns_to_running(phase: &str) -> bool {
     matches!(phase.trim(), "closed" | "pr_open")
 }
 
+/// A spec na fase `phase` pode ter ondas despachadas: está aprovada, ou já em
+/// execução. É a mesma pergunta para a rodada, para a fila que ela mostra e
+/// para quem aponta a spec que recebe a tarefa nascida das falhas do projeto.
+#[must_use]
+pub fn can_run(phase: &str) -> bool {
+    matches!(phase, "approved" | "running")
+}
+
 /// Quem grava uma mudança de fase no `spec.ndjson`. O modelo não está aqui:
 /// o `run write` nunca grava o estado, que é dos comandos do fluxo e da
 /// testemunha da aprovação.
@@ -665,15 +673,57 @@ pub fn final_approval(log: &SpecLog) -> Option<&SpecEvent> {
         .filter(|verdict| answered_request(log, verdict.id).is_some_and(|asked| asked > since))
 }
 
-/// O pedido de revisão final que o veredito de número `verdict` responde: o
-/// envio de revisão final (papel `review`) mais novo antes dele. `None` sem
-/// envio assim — o veredito sem pedido gravado não responde a pedido nenhum.
-pub(crate) fn answered_request(log: &SpecLog, verdict: u64) -> Option<u64> {
-    log.visible()
+/// Um pedido da revisão final: o envio de papel `review` que o fechamento
+/// grava, nas duas versões que importam dele.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReviewSend {
+    /// O número da versão que gravou o pedido ([`SpecLog::dispatch_position`]):
+    /// é com ele que todo número da spec se compara — a última mudança da
+    /// obra, o veredito, o envio de onda e o item gravado depois. O lançamento
+    /// do revisor grava uma versão nova do envio, com o modelo que valeu, e
+    /// ela não refaz o pedido: o que veio entre o pedido e o lançamento ficou
+    /// fora do que o revisor recebeu.
+    pub asked: u64,
+    /// A versão vigente do envio, a que a leitura mostra: a que ganha a versão
+    /// seguinte quando o lançamento grava o que valeu nele.
+    pub current: u64,
+}
+
+/// Os pedidos da revisão final que a leitura mostra, do mais velho ao mais
+/// novo, na ordem em que saíram ([`ReviewSend::asked`]). É a única procura do
+/// pedido da revisão final: quem pergunta qual pedido vale — o aberto, o que
+/// um veredito responde, o texto e a lista dele, o tempo da revisão — parte
+/// daqui ou de [`review_send`].
+#[must_use]
+pub fn review_sends(log: &SpecLog) -> Vec<ReviewSend> {
+    let mut sends: Vec<ReviewSend> = log
+        .visible()
         .into_iter()
-        .filter(|e| e.event_type == "send" && e.str_field("role") == Some("review") && e.id < verdict)
-        .map(|e| e.id)
-        .max()
+        .filter(|e| e.event_type == "send" && e.str_field("role") == Some("review"))
+        .map(|e| ReviewSend { asked: log.dispatch_position(e.id), current: e.id })
+        .collect();
+    sends.sort_by_key(|send| (send.asked, send.current));
+    sends
+}
+
+/// O pedido da revisão final mais novo ([`review_sends`]) que saiu antes do
+/// evento de número `before` — com `None`, o mais novo de todos. A conta é
+/// pela versão que gravou o pedido: a versão do lançamento gravada depois de
+/// `before` não esconde o pedido que saiu antes dele. `None` sem pedido assim.
+#[must_use]
+pub fn review_send(log: &SpecLog, before: Option<u64>) -> Option<ReviewSend> {
+    review_sends(log).into_iter().rfind(|send| before.is_none_or(|before| send.asked < before))
+}
+
+/// O pedido de revisão final que o veredito de número `verdict` responde: o
+/// pedido mais novo que saiu antes dele ([`review_send`]), pelo número da
+/// versão que o gravou. O item gravado entre o pedido e o lançamento do
+/// revisor ficou fora do que ele recebeu, e a aprovação não responde por ele.
+/// `None` sem pedido assim — o veredito sem pedido gravado não responde a
+/// pedido nenhum.
+#[must_use]
+pub fn answered_request(log: &SpecLog, verdict: u64) -> Option<u64> {
+    review_send(log, Some(verdict)).map(|send| send.asked)
 }
 
 /// O veredito de uma spec, pelos eventos `verdict` que a leitura mostra: o
@@ -956,6 +1006,28 @@ mod tests {
         assert_eq!(final_approval(&log(&without_request)), None, "a verdict with no recorded request");
     }
 
+    /// O pedido que o veredito responde fica na versão que o gravou: a versão
+    /// que o lançamento do revisor grava depois, com o modelo que valeu, não
+    /// refaz o pedido, e o critério gravado entre as duas fica depois do
+    /// pedido respondido. A aprovação segue valendo: o pedido é mais novo que
+    /// a última mudança da obra.
+    #[test]
+    fn a_verdict_answers_the_request_at_the_version_that_recorded_it() {
+        let lines = [
+            json!({"v":1,"id":1,"type":"state","phase":"survey","branch":"feature/x","base":"dev"}),
+            json!({"v":1,"id":2,"type":"state","phase":"approved","witness":{"question":"q","answer":"a"}}),
+            json!({"v":1,"id":3,"type":"state","phase":"running"}),
+            json!({"v":1,"id":4,"type":"delivered","wave":1,"text":"A onda 1 entregou.","files":["src/a.rs"]}),
+            send(5, "review"),
+            json!({"v":1,"id":6,"type":"criterion","when":"a busca roda","then":"a citação sai com a pasta","proof":"git --version","form":"ubiquitous"}),
+            json!({"v":1,"id":7,"type":"send","role":"review","replaces":5,"model_used":"opus"}),
+            final_verdict(8),
+        ];
+        let log = log(&lines);
+        assert_eq!(answered_request(&log, 8), Some(5), "o pedido respondido é a versão que o gravou, antes do critério");
+        assert_eq!(final_approval(&log).map(|e| e.id), Some(8), "a aprovação do pedido gravado depois da entrega vale");
+    }
+
     #[test]
     fn the_ladder_takes_the_environment_then_the_branch_then_the_session() {
         let branch = || Some("da-branch".to_string());
@@ -1144,7 +1216,7 @@ mod tests {
     fn the_review_takes_the_last_verdict_of_each_wave() {
         let verdict = |id: u64, wave: u64, result: &str| {
             json!({"v":1,"id":id,"type":"verdict","wave":wave,"result":result,"text":"t",
-                   "criteria":[{"criterion":1,"tests_rule":"r"}]})
+                   "criteria":[{"criterion":1}]})
         };
         assert_eq!(review(&log(&[])), Review::default());
         assert_eq!(review(&log(&[])).word(), None);

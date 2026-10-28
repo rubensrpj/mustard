@@ -640,8 +640,13 @@ fn resolve_declaration_links(
                 || (same_family && declared[mi].iter().any(|ns| in_sight[src].contains(ns)))
                 || (everyones[mi] == Some(project) && same_family)
         };
-        // E, com isso, o que ele importa.
-        let sees = |mi: usize| sees_here(mi) || imported.contains(modules[mi].path.as_str());
+        // E, com isso, o que ele importa e o que os repasses do que ele
+        // importa alcançam pelos nomes que ele escreve.
+        let passed_sight = reach::passed_sight(&resolver, m);
+        let sees = |mi: usize| {
+            let path = modules[mi].path.as_str();
+            sees_here(mi) || imported.contains(path) || passed_sight.contains(path)
+        };
         // O arquivo da mesma língua que o qualificador nomeia.
         let named_by = |mi: usize, q: &str| modules[mi].language == m.language && own_names[mi].iter().any(|n| n == q);
         // Cada chamada escrita por um caminho do projeto, com os caminhos.
@@ -724,7 +729,38 @@ fn resolve_declaration_links(
                 Before::Nothing => renamed(&brought_from, &site.name).unwrap_or(&site.name),
                 _ => site.name.as_str(),
             };
-            let Some(named) = by_name.get(looked) else { continue };
+            // O caminho escrito antes do nome nomeia arquivos do projeto; o
+            // nome de um pacote do projeto escrito sozinho antes da chamada
+            // (`mustard_core::translate(`), que nenhuma peça do arquivo traz,
+            // é um caminho de uma parte só. O arquivo que só repassa o nome
+            // vale pelo que ele repassa, e o repasse que troca o nome leva à
+            // declaração pelo nome de origem.
+            let path = match written {
+                Written::Call | Written::Value => {
+                    through.get(written_site).and_then(|paths| path_files(&resolver, m, site.line, paths)).or_else(|| {
+                        match before {
+                            Before::Name(q) if is_call && package_root(q, m, (&brought, &declared_names)) => {
+                                path_files(&resolver, m, site.line, &[q])
+                            }
+                            _ => None,
+                        }
+                    })
+                }
+                Written::Cite | Written::Member => None,
+            };
+            // O qualificador que um import do projeto trouxe como o próprio
+            // arquivo (`u` em `import * as u`) nomeia os arquivos desse import
+            // e os que declaram o nome a partir deles, seguidos os repasses.
+            let object = match before {
+                Before::Name(q) if objects.contains(q) => brought_from.get(q),
+                _ => None,
+            };
+            let passed = reach::Passed::of(&resolver, looked, &passing, object.into_iter().flat_map(HashMap::keys), path);
+            let named: Vec<DeclId> =
+                by_name.get(looked).into_iter().flatten().copied().chain(passed.renamed(modules, by_name, looked)).collect();
+            if named.is_empty() {
+                continue;
+            }
             // A named local declaration is visible only within its enclosing
             // callable. Indexing it must not manufacture cross-scope edges.
             let visible:Vec<_>=named.iter().copied().filter(|&(mi,di)| {
@@ -774,27 +810,7 @@ fn resolve_declaration_links(
                 .filter(|&(mi, di)| !(member_out && MEMBER_KINDS.contains(&modules[mi].declarations[di].kind.as_str())))
                 .filter(|&d| !names_its_type(d))
                 .collect();
-            let reached: Vec<String> =
-                passing.iter().flat_map(|module| resolver.declaring(module, looked)).map(|(file, _)| file).collect();
-            // O qualificador que um import do projeto trouxe como o próprio
-            // arquivo (`u` em `import * as u`) nomeia os arquivos desse import
-            // e os que declaram o nome a partir deles, seguidos os repasses.
-            let named_files: Vec<String> = match before {
-                Before::Name(q) if objects.contains(q) => {
-                    let files = brought_from.get(q).into_iter().flat_map(HashMap::keys);
-                    files
-                        .clone()
-                        .cloned()
-                        .chain(
-                            files
-                                .filter_map(|file| resolver.by_path.get(file.as_str()))
-                                .flat_map(|&module| resolver.declaring(module, looked))
-                                .map(|(file, _)| file),
-                        )
-                        .collect()
-                }
-                _ => Vec::new(),
-            };
+            let (reached, named_files) = (&passed.reached, &passed.named_files);
             let at_hand = |mi: usize| reached.contains(&modules[mi].path) || named_files.contains(&modules[mi].path);
             let sees = |mi: usize| sees(mi) || at_hand(mi);
             // O nome escrito sozinho só vê o arquivo que um import que diz o
@@ -874,34 +890,14 @@ fn resolve_declaration_links(
             let verdict = if !own.is_empty() {
                 Verdict::of(own.into_iter().filter(|&d| !own_body(d)).collect(), true, max_same_name)
             } else if by_value {
-                let named = through
-                    .get(written_site)
-                    .and_then(|paths| path_files(&resolver, m, site.line, paths))
-                    .map(|files| reach::declared_in(&resolver, files, looked))
-                    .map(|files| {
-                        all.iter().copied().filter(|&(mi, _)| files.contains(modules[mi].path.as_str())).collect()
-                    });
+                let named = passed.path.as_ref().map(|files| {
+                    all.iter().copied().filter(|&(mi, _)| files.contains(modules[mi].path.as_str())).collect()
+                });
                 value::verdict(named, not_ours, &before, seen, || narrowed(&all), max_same_name)
             } else if matches!(written, Written::Member) {
                 member::verdict(not_ours, &before, seen, || narrowed(&all), path_only, destructured, max_same_name)
             } else if is_call {
-                // O caminho escrito antes do nome nomeia arquivos do projeto;
-                // o nome de um pacote do projeto escrito sozinho antes dele
-                // (`mustard_core::translate(`), que nenhuma peça do arquivo
-                // traz, é um caminho de uma parte só. O arquivo que só repassa
-                // o nome vale pelo que ele repassa.
-                let package = match before {
-                    Before::Name(q) if package_root(q, m, (&brought, &declared_names)) => {
-                        path_files(&resolver, m, site.line, &[q])
-                    }
-                    _ => None,
-                };
-                let named = through
-                    .get(written_site)
-                    .and_then(|paths| path_files(&resolver, m, site.line, paths))
-                    .or(package)
-                    .map(|files| reach::declared_in(&resolver, files, looked));
-                match (named, &before) {
+                match (passed.path.as_ref(), &before) {
                     (Some(files), _) => Verdict::of(
                         all.iter().copied().filter(|&(mi, _)| files.contains(modules[mi].path.as_str())).collect(),
                         true,
@@ -997,6 +993,9 @@ fn resolve_declaration_links(
                     continue;
                 }
             };
+            // Quem chama guarda o nome que a declaração alcançada tem, que o
+            // repasse que troca o nome não é o escrito.
+            let called: Vec<String> = targets.iter().map(|&(mi, di)| modules[mi].declarations[di].name.clone()).collect();
             for (dst_mi, dst_di) in targets {
                 links.uses[dst_mi][dst_di].push(UseSite {
                     file: m.path.clone(),
@@ -1006,7 +1005,7 @@ fn resolve_declaration_links(
                 });
             }
             if (is_call || by_value) && let Some(di) = from {
-                links.calls[src][di].insert(looked.to_string());
+                links.calls[src][di].extend(called);
             }
         }
     }

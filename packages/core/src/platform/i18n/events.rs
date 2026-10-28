@@ -1,15 +1,17 @@
 //! O arquivo de eventos da spec: as recusas e os avisos da gravação e da
-//! leitura, o banco de lições e o índice das specs.
+//! leitura, o banco de lições, o índice das specs e o achado que vira tarefa
+//! da spec.
 //!
 //! Uma parte do catálogo de textos: quem lê chama `translate`, a porta do
 //! catálogo, e nunca esta parte direto. Chave nova com um começo que esta
 //! parte ainda não responde entra também em `PREFIXES`.
 
+use super::flow::{map_commands_en, map_commands_pt};
 use super::Locale;
 
 /// Os começos de chave (o trecho antes do primeiro ponto) que esta parte
 /// responde. Nenhum deles é de outra parte.
-pub(super) const PREFIXES: &[&str] = &["spec_events", "lessons", "spec_index", "failures", "skills"];
+pub(super) const PREFIXES: &[&str] = &["spec_events", "lessons", "spec_index", "failures", "skills", "finding"];
 
 /// O texto de `key` em `lang`, ou `None` quando a chave não está aqui.
 pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
@@ -404,6 +406,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Fact {fact} cites {path}, and that file does not exist. Check the path before stating \
              it. Nothing was written."
         }
+        ("spec_events.cited_file_missing.same_name", Locale::PtBr) => {
+            "O fato {fact} cita {path}, e esse arquivo não existe. Com esse nome, o projeto tem \
+             {found}: cite o caminho inteiro. Nada foi gravado."
+        }
+        ("spec_events.cited_file_missing.same_name", Locale::EnUs) => {
+            "Fact {fact} cites {path}, and that file does not exist. With that name, the project \
+             has {found}: cite the whole path. Nothing was written."
+        }
         ("spec_events.cited_line_missing", Locale::PtBr) => {
             "O fato {fact} cita a linha {line} de {path}, mas o arquivo tem {lines} linhas. Confira \
              a linha antes de afirmar. Nada foi gravado."
@@ -646,10 +656,99 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              new review request was opened."
         }
         ("spec_events.leftover_field_missing", Locale::PtBr) => {
-            "Falta o campo {field} numa sobra (leftovers) da volta. Nada foi gravado."
+            "O achado {finding} da volta (leftovers) não traz {field}. Todo achado diz o título, o \
+             detalhe, a regra que quebrou (rule) e os lugares dela (places). Nada foi gravado."
         }
         ("spec_events.leftover_field_missing", Locale::EnUs) => {
-            "A leftover (leftovers) of the return lacks the field {field}. Nothing was written."
+            "Finding {finding} of the return (leftovers) lacks {field}: every finding states the \
+             title, the detail, the rule it broke (rule) and its places (places). Nothing was \
+             written."
+        }
+        ("spec_events.finding_place_missing", Locale::PtBr) => {
+            "O achado {finding} cita o lugar {place}, que o projeto não tem. Confira o caminho e a \
+             linha pelo mapa. Nada foi gravado."
+        }
+        ("spec_events.finding_place_missing", Locale::EnUs) => {
+            "Finding {finding} cites the place {place}, which the project does not have. Check the \
+             path and the line through the map. Nothing was written."
+        }
+        ("spec_events.finding_place_missing.same_name", Locale::PtBr) => {
+            "O achado {finding} cita o lugar {place}, que o projeto não tem. Com esse nome, o \
+             projeto tem {found}: cite o caminho inteiro. Nada foi gravado."
+        }
+        ("spec_events.finding_place_missing.same_name", Locale::EnUs) => {
+            "Finding {finding} cites the place {place}, which the project does not have. With that \
+             name, the project has {found}: cite the whole path. Nothing was written."
+        }
+        ("spec_events.finding_proof_missing", Locale::PtBr) => {
+            "O achado {finding} não nomeia a prova no detalhe. A tarefa que ele vira cobre a regra \
+             com a prova que a onda roda: o detalhe traz `Prova:` e o comando entre crases. Nada \
+             foi gravado."
+        }
+        ("spec_events.finding_proof_missing", Locale::EnUs) => {
+            "Finding {finding} names no proof in its detail. The task it becomes covers the rule \
+             with the proof the wave runs: the detail carries `Proof:` and the command in \
+             backticks. Nothing was written."
+        }
+        ("spec_events.task_without_proof", Locale::PtBr) => {
+            "A tarefa cobre {covers}, e nenhum deles dá à onda uma prova que ela rode. Toda tarefa \
+             cobre uma regra com prova. Vale o critério com a prova dele, ou o pedido cujo relato \
+             traga `Prova:` e o comando entre crases. Grave antes o critério e cubra-o. Nada foi \
+             gravado."
+        }
+        ("spec_events.task_without_proof", Locale::EnUs) => {
+            "The task covers {covers}, and none of them gives the wave a proof it runs. Every task \
+             covers a rule with a proof. That is a criterion with its proof, or a request whose \
+             account carries `Proof:` and the command in backticks. Record the criterion first and \
+             cover it. Nothing was written."
+        }
+        ("spec_events.delivery_place_untouched", Locale::PtBr) => {
+            "A entrega da onda {wave} dá a tarefa {task} por feita sem mudar os lugares {places} da \
+             regra dela. Mude cada lugar, ou devolva a tarefa em `undone`. O lugar conferido que não \
+             precisa mudar vai em `checked_places`, com `place` e `reason`. Nada foi gravado."
+        }
+        ("spec_events.delivery_place_untouched", Locale::EnUs) => {
+            "The delivery of wave {wave} gives task {task} as done without changing the places \
+             {places} of its rule. Change every place, or return the task in `undone`. A checked \
+             place that needs no change goes in `checked_places`, with `place` and `reason`. \
+             Nothing was written."
+        }
+        // O achado que vira tarefa da spec: a regra que ele quebrou, os
+        // lugares dela e a linha do achado que entra na tarefa da mesma regra,
+        // com os comandos do mapa que acham os lugares da regra.
+        ("finding.rule", Locale::PtBr) => "Regra que o achado quebrou: {rule}.",
+        ("finding.rule", Locale::EnUs) => "Rule the finding broke: {rule}.",
+        ("finding.places", Locale::PtBr) => "Lugares dela: {places}.",
+        ("finding.places", Locale::EnUs) => "Its places: {places}.",
+        ("finding.joined_by_rule", Locale::PtBr) => {
+            concat!("Sobra da onda {wave}, da mesma regra — {title}: {detail} (Pelo mapa: ", map_commands_pt!(), ".)")
+        }
+        ("finding.joined_by_rule", Locale::EnUs) => {
+            concat!("Leftover from wave {wave}, of the same rule — {title}: {detail} (By the map: ", map_commands_en!(), ".)")
+        }
+        ("finding.review_joined_by_rule", Locale::PtBr) => {
+            concat!("Achado da revisão final, da mesma regra — {title}: {detail} (Pelo mapa: ", map_commands_pt!(), ".)")
+        }
+        ("finding.review_joined_by_rule", Locale::EnUs) => {
+            concat!("Finding from the final review, of the same rule — {title}: {detail} (By the map: ", map_commands_en!(), ".)")
+        }
+        // O achado da revisão final sem regra escrita na spec, que vai ao
+        // usuário como pergunta, e o aviso que manda fazê-la.
+        ("finding.question", Locale::PtBr) => {
+            "A revisão final achou: {title}. A regra que o achado diz, {rule}, não está escrita na spec. \
+             Ela passa a valer nesta obra?"
+        }
+        ("finding.question", Locale::EnUs) => {
+            "The final review found: {title}. The rule the finding names, {rule}, is not written in the \
+             spec. Should it hold in this work?"
+        }
+        ("finding.questions_hint", Locale::PtBr) => {
+            "A revisão final trouxe achados sem regra escrita na spec, e eles não viraram tarefa. Antes do \
+             pull request, faça ao usuário a pergunta de cada um, em `questions`."
+        }
+        ("finding.questions_hint", Locale::EnUs) => {
+            "The final review brought findings without a rule written in the spec, and they did not become \
+             tasks. Before the pull request, ask the user the question of each one, in `questions`."
         }
         ("spec_events.report_carries_return_line", Locale::PtBr) => {
             "A entrega e o veredito moram na spec: o agente os grava com mustard-rt run write. O \
@@ -1264,12 +1363,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The skill name `{name}` cannot be a folder. Use only letters, digits, hyphens and underscores."
         }
         ("skills.folder_missing", Locale::PtBr) => {
-            "A skill {name} não está em `.claude/skills/{name}/SKILL.md`, nem no projeto nem na cópia da \
-             onda. Grave o arquivo antes de dizer que ela foi criada."
+            "A skill {name} não está em `{reserved}`, a partir da raiz da cópia da onda, nem em \
+             `.claude/skills/{name}/SKILL.md` do projeto. Grave o arquivo antes de gravar o resultado."
         }
         ("skills.folder_missing", Locale::EnUs) => {
-            "The skill {name} is not in `.claude/skills/{name}/SKILL.md`, neither in the project nor in \
-             the wave copy. Write the file before saying it was created."
+            "The skill {name} is not at `{reserved}`, from the root of the wave copy, nor at \
+             `.claude/skills/{name}/SKILL.md` in the project. Write the file before recording the result."
         }
         ("skills.not_hidden", Locale::PtBr) => "A skill {name} foi gravada, mas não ficou fora do git: {detail}.",
         ("skills.not_hidden", Locale::EnUs) => "The skill {name} was recorded, but it was not hidden from git: {detail}.",
@@ -1286,13 +1385,25 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("skills.update_task_text", Locale::EnUs) => "The skill {name} may be out of date. Files: {files}.",
         ("skills.update_task_agent", Locale::PtBr) => {
             "Atualize a skill {name}, de `{path}`, pelo skill-creator do bloco desta tarefa. {why}\n\n\
-             Teste com e sem a mudança na skill, nas tarefas em que ela entra. Com ganho, grave \
-             `\"action\":\"updated\"`; sem ganho, `\"action\":\"discarded\"`, com o motivo em `text`."
+             Teste com e sem a mudança na skill, nas tarefas em que ela entra. Com ganho, escreva a versão \
+             nova inteira em `{reserved}`, a partir da raiz da sua cópia. Depois grave \
+             `\"action\":\"updated\"`. A rodada a grava no lugar da skill quando assumir a volta. O \
+             `SKILL.md` de `{path}` fica como está. Sem ganho, grave `\"action\":\"discarded\"`, com o \
+             motivo em `text`."
         }
         ("skills.update_task_agent", Locale::EnUs) => {
             "Update the skill {name}, from `{path}`, with the skill-creator in this task's block. {why}\n\n\
-             Test with and without the change to the skill, on the tasks it goes with. With a gain, record \
-             `\"action\":\"updated\"`; without one, `\"action\":\"discarded\"`, with the reason in `text`."
+             Test with and without the change to the skill, on the tasks it goes with. With a gain, write the \
+             whole new version at `{reserved}`, from the root of your copy. Then record \
+             `\"action\":\"updated\"`. The round writes it in the place of the skill when it takes the return. \
+             The `SKILL.md` at `{path}` stays as it is. Without one, record `\"action\":\"discarded\"`, with \
+             the reason in `text`."
+        }
+        ("skills.not_installed", Locale::PtBr) => {
+            "A versão nova da skill {name} não foi gravada no lugar dela: {detail}. Ela segue em `{reserved}`."
+        }
+        ("skills.not_installed", Locale::EnUs) => {
+            "The new version of the skill {name} was not written in its place: {detail}. It stays at `{reserved}`."
         }
         ("skills.update_why_change", Locale::PtBr) => {
             "O commit `{sha}` mudou {files}, que a skill cita, e o Jev deu chance de {chance} de a mudança \
@@ -1304,6 +1415,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("skills.update_why_gone", Locale::PtBr) => "O commit `{sha}` apagou {files}, que a skill cita.",
         ("skills.update_why_gone", Locale::EnUs) => "The commit `{sha}` deleted {files}, which the skill cites.",
+        ("skills.update_why_listed", Locale::PtBr) => {
+            "O commit `{sha}` mudou {files}, que a skill cita, desde a última avaliação dela. A mudança:\n\n```diff\n{diff}\n```"
+        }
+        ("skills.update_why_listed", Locale::EnUs) => {
+            "The commit `{sha}` changed {files}, which the skill cites, since its last evaluation. The change:\n\n```diff\n{diff}\n```"
+        }
         ("skills.update_why_failure", Locale::PtBr) => {
             "A onda {wave} da spec {spec} recebeu a skill e foi reprovada pela mesma falha que a motivou: {reason}"
         }
@@ -1336,16 +1453,11 @@ mod tests {
     use crate::platform::i18n::translate;
 
     /// Esta parte guarda as mesmas chaves, com os mesmos textos nos dois
-    /// idiomas. Quem muda um texto de propósito grava aqui os dois números
-    /// novos que a falha mostra.
+    /// idiomas, como o arquivo de impressões dela em `stamps/` guarda. Quem muda
+    /// um texto de propósito regrava o arquivo pelo comando que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(
-            include_str!("events.rs"),
-            super::PREFIXES,
-            187,
-            0x6300_12cd_2d8a_f420,
-        );
+        crate::platform::i18n::tests::assert_part_unchanged("events", include_str!("events.rs"), super::PREFIXES);
     }
 
     /// As recusas e os avisos do arquivo de eventos da spec saem do catálogo
@@ -1412,6 +1524,7 @@ mod tests {
             ("spec_events.wrong_count", &["{type}", "{field}", "{min}", "{max}", "{count}"][..]),
             ("spec_events.fact_without_source", &["{fact}"][..]),
             ("spec_events.cited_file_missing", &["{fact}", "{path}"][..]),
+            ("spec_events.cited_file_missing.same_name", &["{fact}", "{path}", "{found}"][..]),
             ("spec_events.cited_line_missing", &["{fact}", "{path}", "{line}", "{lines}"][..]),
             ("spec_events.name_elsewhere", &["{fact}", "{name}", "{path}", "{found}"][..]),
             ("spec_events.name_unknown", &["{fact}", "{name}"][..]),
@@ -1437,7 +1550,17 @@ mod tests {
             ("spec_events.wave_agent_working", &["{wave}"][..]),
             ("spec_events.no_open_review", &[][..]),
             ("spec_events.verdict_missing", &[][..]),
-            ("spec_events.leftover_field_missing", &["{field}"][..]),
+            ("spec_events.leftover_field_missing", &["{finding}", "{field}"][..]),
+            ("spec_events.finding_place_missing", &["{finding}", "{place}"][..]),
+            ("spec_events.finding_place_missing.same_name", &["{finding}", "{place}", "{found}"][..]),
+            ("spec_events.finding_proof_missing", &["{finding}"][..]),
+            ("spec_events.task_without_proof", &["{covers}"][..]),
+            ("spec_events.delivery_place_untouched", &["{wave}", "{task}", "{places}"][..]),
+            ("finding.rule", &["{rule}"][..]),
+            ("finding.places", &["{places}"][..]),
+            ("finding.joined_by_rule", &["{wave}", "{title}", "{detail}"][..]),
+            ("finding.review_joined_by_rule", &["{title}", "{detail}"][..]),
+            ("finding.question", &["{title}", "{rule}"][..]),
             ("spec_events.report_carries_return_line", &[][..]),
             ("spec_events.return_missing", &["{wave}"][..]),
             ("spec_events.return_needs_commit", &["{wave}"][..]),

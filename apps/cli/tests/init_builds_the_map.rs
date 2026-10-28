@@ -15,6 +15,13 @@
 
 #[path = "support/executable.rs"]
 mod executable;
+#[path = "../../../packages/core/tests/support/pause.rs"]
+mod pause;
+// Estes testes esperam arquivos, não mensagens de canal: a espera pela
+// mensagem, que o arquivo de espera também traz, fica sem uso aqui.
+#[allow(dead_code)]
+#[path = "../../../packages/core/tests/support/wait_for.rs"]
+mod wait_for;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -102,27 +109,21 @@ impl Setup {
         std::fs::read_to_string(&self.calls).map(|text| text.lines().map(str::to_string).collect()).unwrap_or_default()
     }
 
-    /// Se nenhuma leitura da história foi anotada, dando um instante ao
-    /// processo em segundo plano que a anotaria.
+    /// Se nenhuma leitura da história foi anotada, dando ao processo em
+    /// segundo plano que a anotaria a chance de aparecer.
     fn no_reading_started(&self) -> bool {
-        std::thread::sleep(std::time::Duration::from_millis(400));
+        pause::room_for_what_must_not_happen();
         !self.reads.exists()
     }
 
     /// As leituras da história que o scan de mentira recebeu, uma por linha:
-    /// a instalação não espera por elas, então se espera até um tempo que o
-    /// processo em segundo plano anote a primeira.
+    /// a instalação não espera por elas, então se espera o processo em
+    /// segundo plano anotar a primeira.
     fn reads_after_waiting(&self) -> Vec<String> {
-        let read = || -> Vec<String> {
-            std::fs::read_to_string(&self.reads).map(|text| text.lines().map(str::to_string).collect()).unwrap_or_default()
-        };
-        for _ in 0..200 {
-            if !read().is_empty() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-        read()
+        wait_for::wait_for("a primeira leitura da história", || {
+            let read: Vec<String> = std::fs::read_to_string(&self.reads).map(|text| text.lines().map(str::to_string).collect()).unwrap_or_default();
+            (!read.is_empty()).then_some(read)
+        })
     }
 }
 
@@ -180,7 +181,6 @@ fn init_installs_and_warns_when_the_scan_fails() {
     assert_ok(&out);
 
     assert_eq!(setup.passes().len(), 1, "the scan was asked");
-    std::thread::sleep(std::time::Duration::from_millis(400));
     assert!(setup.no_reading_started(), "no map was built: no reading of the history starts");
     assert!(!model_of(&setup.project).exists(), "the scan wrote nothing");
     assert!(setup.project.join(".claude").join("settings.local.json").is_file(), "the install is on disk");

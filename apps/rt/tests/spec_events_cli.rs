@@ -380,7 +380,7 @@ fn the_copies_a_test_makes_leave_when_it_ends_even_when_it_fails() {
             assert!(!fails, "the test fails on purpose");
         });
         assert_eq!(test.join().is_err(), fails);
-        let copies = made.recv().expect("the copies folder");
+        let copies = made.try_recv().expect("the copies folder");
         assert!(!copies.exists(), "fails={fails}: the copies folder stayed at {}", copies.display());
     }
 }
@@ -403,7 +403,7 @@ fn a_spec_written_by_the_cli_is_read_block_by_block_and_wave_2_is_only_wave_2() 
     seed_binary(root, "wave", &json!({"author": "binary", "n": 2, "text": "Dois.", "criteria": [c2], "done_when": "y", "origin": msg}));
     seed_binary(root, "task", &json!({"author": "binary", "wave": 2, "text": "T2.", "files": [{"path": "b.rs"}], "depends_on": [], "origin": msg}));
     seed_binary(root, "delivered", &json!({"author": "wave", "wave": 2, "text": "Feito.", "files": ["b.rs"]}));
-    seed_binary(root, "verdict", &json!({"author": "review", "wave": 2, "result": "approved", "text": "Sem achados.", "criteria": [{"criterion": c2, "tests_rule": true}]}));
+    seed_binary(root, "verdict", &json!({"author": "review", "wave": 2, "result": "approved", "text": "Sem achados.", "criteria": [{"criterion": c2}]}));
 
     let wave2 = read(root, "wave-2");
     let events = wave2["events"].as_array().expect("events");
@@ -424,7 +424,7 @@ fn a_spec_written_by_the_cli_is_read_block_by_block_and_wave_2_is_only_wave_2() 
     assert_eq!(stdout_json(&unknown)["reason"], json!("unknown-type"));
     // O veredito entra só como a volta do revisor com o pedido de revisão
     // aberto: nenhum foi pedido, e a gravação é recusada.
-    let verdict = json!({"author": "review", "wave": 2, "result": "rejected", "text": "t", "criteria": [{"criterion": c2, "tests_rule": false}]});
+    let verdict = json!({"author": "review", "wave": 2, "result": "rejected", "text": "t", "criteria": [{"criterion": c2}]});
     let unasked =
         rt(root, &["write", "verdict", "--spec", "teste", "--json", &verdict.to_string()]).output().expect("run");
     assert_eq!(unasked.status.code(), Some(1));
@@ -611,7 +611,7 @@ fn the_dispatch_reading_returns_every_item_the_wave_request_lists() {
     // O conserto: a revisão reprovou a entrega, e o pedido novo cita a
     // reprovação e a entrega que ela julgou; a leitura as traz junto.
     let rejected = seed_binary(root, "verdict", &json!({"author": "review", "wave": 2, "result": "rejected", "text": "Falta o arredondamento.",
-        "criteria": [{"criterion": c2, "tests_rule": false}]}));
+        "criteria": [{"criterion": c2}]}));
     seed_binary(root, "send", &json!({"author": "binary", "wave": 2, "role": "wave", "agent": "wave",
         "text": "o conserto", "lines": 1, "chars": 10, "mustard": "0", "analysis": analysis}));
     let (request, listed, _) = request_of(root, 2);

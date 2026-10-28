@@ -1,17 +1,20 @@
-//! O resumo do projeto e as regras que cada spec entregue deixa, feitos pelo
-//! programa: a linha da spec no resumo, com o texto que ela já tem, e um
-//! arquivo de regras do Claude Code para as decisões e regras dela que valem
-//! para o projeto inteiro. O Jev só responde sim ou não a cada item; nenhum
-//! modelo escreve texto.
+//! As regras que cada spec entregue deixa ao projeto e as entregas que o
+//! condutor recebe na abertura, decididas pelo programa: um arquivo de regras
+//! do Claude Code para as decisões e regras da spec que valem para o projeto
+//! inteiro, e a linha dela no resumo, com o texto que ela já tem. O Jev só
+//! responde sim ou não a cada item; nenhum modelo escreve texto.
 //!
 //! A entrega grava só a linha, sem regra e sem chamar o Jev, e deixa as
-//! regras da spec pendentes ([`record_delivered`]): ela roda na porta da
-//! entrega, às vezes com as travas das cópias e do git presas. A decisão das
-//! regras vem depois, na passagem das pendências ([`run_pending`]), que roda
-//! no `run open` e no `run upsert`, fora de qualquer trava da rodada. A
-//! pendência só sai com a resposta do Jev, ou com ele desligado; a falha da
-//! chamada a deixa para a passagem seguinte e manda a decisão à reserva do
-//! Jev ([`crate::shared::jev::reserve`]), cujo recibo decide no lugar dele.
+//! regras da spec pendentes ([`crate::shared::summary_entry::record_delivered`]):
+//! ela roda na porta da entrega, às vezes com as travas das cópias e do git
+//! presas. A decisão das regras vem depois, na passagem das pendências
+//! ([`run_pending`]), que roda no `run open` e no `run upsert`, fora de
+//! qualquer trava da rodada. A pendência só sai com a resposta do Jev, ou com
+//! ele desligado; a falha da chamada a deixa para a passagem seguinte e manda
+//! a decisão à reserva do Jev ([`crate::shared::jev::reserve`]), cujo recibo
+//! decide no lugar dele. A mesma passagem cuida das falhas do projeto, que
+//! chegam à rodada; por isso a entrega grava a linha pelo módulo dela, que só
+//! depende do núcleo, e não por este.
 //!
 //! As specs de antes desta versão entram uma vez, na mesma passagem: ganham
 //! a linha e ficam com as regras pendentes.
@@ -22,9 +25,8 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use mustard_core::domain::project_summary::{self as summary, Agreed, Entry, GOAL_CHARS, SURE};
+use mustard_core::domain::project_summary::{self as summary, Agreed, GOAL_CHARS, SURE};
 use mustard_core::domain::spec_events::SpecLog;
-use mustard_core::domain::spec_state::SpecState as _;
 use mustard_core::domain::text::cut_line;
 use mustard_core::io::project_summary as disk;
 use mustard_core::io::spec_events as store;
@@ -34,7 +36,8 @@ use serde_json::{Map, Value, json};
 use crate::shared::jev::yes_no::{self, YesNo};
 use crate::shared::jev::{RULES_CALL, SUMMARY_CALL};
 use crate::shared::secret::without_secrets;
-use crate::shared::spec_state::DiskSpecState;
+use crate::shared::session_costs;
+use crate::shared::summary_entry::write_entry;
 
 /// Quantos caracteres do texto de um item vão ao Jev.
 const ITEM_CHARS: usize = 1_000;
@@ -86,52 +89,9 @@ fn by_item(items: &[Agreed], chances: Option<&BTreeMap<String, f64>>) -> BTreeMa
     items.iter().filter_map(|item| chances.get(&item_key(item.id)).map(|chance| (item.id, *chance))).collect()
 }
 
-/// O custo de cada spec que os recibos do projeto `root` conhecem.
-fn costs(root: &Path) -> BTreeMap<String, u64> {
-    crate::commands::panel::spec_costs(root)
-}
-
-/// Grava as regras da spec `spec` e a linha dela no resumo do projeto `root`,
-/// a partir do arquivo de eventos `log`, com a chance de sim de cada item em
-/// `chances` e o custo conhecido em `costs`.
-fn write_entry(root: &Path, spec: &str, log: &SpecLog, items: &[Agreed], chances: &BTreeMap<u64, f64>, costs: &BTreeMap<String, u64>) -> mustard_core::platform::error::Result<Entry> {
-    let lang = mustard_core::ProjectConfig::load(root).language().text_or_default();
-    let groups = summary::group_rules(items, chances);
-    let rules = disk::write_rules(root, spec, &groups, lang)?;
-    let (title, delivered) = summary::title_and_delivered(log, spec, lang);
-    let entry = Entry {
-        spec: spec.to_string(),
-        delivered_at: summary::delivered_at(log),
-        pr: summary::pr_of(log),
-        title,
-        delivered,
-        rules,
-        skills: crate::shared::failure_skills::skills_of(log),
-        cost: costs.get(spec).map(|micro| json!({ "micro_usd": micro, "basis": "host-api-equivalent-estimate" })),
-    };
-    disk::upsert(root, &entry)?;
-    Ok(entry)
-}
-
 /// O objetivo da spec, para o estado da pergunta das regras.
 fn goal(log: &SpecLog) -> String {
     mustard_core::domain::spec_index::goal_of(log).unwrap_or_default()
-}
-
-/// Grava o que a spec `spec`, vista de `start`, deixa ao projeto na entrega:
-/// a linha dela no resumo, sem regra — as que ela deixou antes saem —, e a
-/// marca de que as regras dela esperam a decisão do Jev. Não chama o Jev.
-///
-/// # Errors
-///
-/// A spec que não se lê e a falha de gravação, com o motivo; quem chama avisa
-/// e a entrega segue.
-pub(crate) fn record_delivered(start: &Path, spec: &str) -> Result<(), String> {
-    let root = store::spec_root(start);
-    let log = DiskSpecState::new(start).log(spec).ok_or_else(|| format!("spec-unreadable: {spec}"))?;
-    let items = summary::agreed_items(&log);
-    write_entry(&root, spec, &log, &items, &BTreeMap::new(), &costs(&root)).map_err(|error| error.to_string())?;
-    disk::add_pending_rules(&root, spec).map_err(|error| error.to_string())
 }
 
 /// A passagem única das specs antigas do projeto de `start`: cada uma
@@ -150,7 +110,7 @@ fn legacy_pass(start: &Path) -> Result<bool, String> {
         return Ok(false);
     }
     let legacy = mustard_core::io::legacy_specs::LegacySpecs::read(&root);
-    let known = costs(&root);
+    let known = session_costs::by_spec(&root);
     let mut summarized = 0;
     for name in legacy.names() {
         let Some(log) = store::spec_file(&root, name).ok().and_then(|file| store::read(&file).ok().flatten()) else { continue };
@@ -232,7 +192,7 @@ fn pending_rules_by(root: &Path, decide: &Decide<'_>) -> Result<usize, String> {
     let entries: Vec<Vec<(String, Value)>> = items.iter().map(|items| item_entries(items)).collect();
     let groups: Vec<(&YesNo<'_>, &[(String, Value)])> = questions.iter().zip(&entries).map(|(question, entries)| (question, entries.as_slice())).collect();
     let answers = if groups.is_empty() { Vec::new() } else { decide(&groups) };
-    let known = costs(root);
+    let known = session_costs::by_spec(root);
     for (((spec, log), items), chances) in specs.iter().zip(&items).zip(&answers) {
         let Some(chances) = chances else { continue };
         write_entry(root, spec, log, items, &by_item(items, Some(chances)), &known).map_err(|error| error.to_string())?;
@@ -330,8 +290,11 @@ fn for_goal_with(root: &Path, spec: &str, goal: &str, lang: Locale, jev: Option<
 
 #[cfg(test)]
 mod tests {
+    use mustard_core::domain::project_summary::Entry;
+
     use super::*;
     use crate::commands::spec_events::write::record_phase;
+    use crate::shared::summary_entry::record_delivered;
 
     /// A resposta a cada pedido, com a chance de cada chave dada por `chance`.
     fn answering(chance: impl Fn(&str, &Value) -> f64) -> impl Fn(&[String]) -> Option<Vec<Value>> {

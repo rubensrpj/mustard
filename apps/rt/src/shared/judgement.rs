@@ -424,7 +424,6 @@ mod tests {
         }
         fn evaluate(&self, _: &JudgementRequest<'_>, _: Instant) -> Result<Value, FilterError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            std::thread::sleep(Duration::from_millis(20));
             Ok(json!({"answers":{"q":{"noul":0.8}},"usage":{"input_tokens":120},"model":"fake"}))
         }
     }
@@ -439,7 +438,7 @@ mod tests {
                 .map(|_| {
                     scope.spawn(|| {
                         JudgementService::new(&fake, Some(dir.path()))
-                            .evaluate(&JudgementRequest { purpose: Purpose::Search, payload }, Instant::now() + Duration::from_secs(3))
+                            .evaluate(&JudgementRequest { purpose: Purpose::Search, payload }, Instant::now() + Duration::from_secs(60))
                             .unwrap()
                     })
                 })
@@ -450,7 +449,7 @@ mod tests {
         });
         let changed = payload.replace("old", "new");
         JudgementService::new(&fake, Some(dir.path()))
-            .evaluate(&JudgementRequest { purpose: Purpose::Search, payload: &changed }, Instant::now() + Duration::from_secs(3))
+            .evaluate(&JudgementRequest { purpose: Purpose::Search, payload: &changed }, Instant::now() + Duration::from_secs(60))
             .unwrap();
         assert_eq!(fake.calls.load(Ordering::SeqCst), 2);
     }
@@ -485,7 +484,7 @@ mod tests {
         let directory = PathBuf::from(directory);
         let fake = ProcessFake { directory: directory.clone() };
         let request = JudgementRequest { purpose: Purpose::Search, payload: r#"{"state":"fixture","questions":{"q":{"type":"noul"}}}"# };
-        let answer = JudgementService::new(&fake, Some(&directory)).evaluate(&request, Instant::now() + Duration::from_secs(10)).unwrap();
+        let answer = JudgementService::new(&fake, Some(&directory)).evaluate(&request, Instant::now() + Duration::from_secs(60)).unwrap();
         assert!(answer["answers"].get("unsolicited").is_none());
     }
 

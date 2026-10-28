@@ -24,6 +24,14 @@ fn on_disk(folder: &Path) -> (Vec<u8>, SystemTime) {
     (std::fs::read(&db).unwrap(), std::fs::metadata(&db).unwrap().modified().unwrap())
 }
 
+/// Põe a data do mapa em `folder` uma hora à frente: a passada que o
+/// regravasse daria a ele a data de agora, sem esperar o relógio andar.
+fn dated_ahead(folder: &Path) {
+    let db = model::path_in(folder);
+    let ahead = SystemTime::now() + std::time::Duration::from_secs(3600);
+    std::fs::File::options().write(true).open(&db).unwrap().set_modified(ahead).unwrap();
+}
+
 /// Um projeto pequeno, com o mapa em JSON de antes do banco na pasta onde o
 /// banco vai morar.
 fn small_project(dir: &Path) {
@@ -71,10 +79,9 @@ fn a_pass_that_finds_nothing_changed_rewrites_nothing() {
     small_project(dir);
     let folder = dir.join(".claude");
     model::scan(dir, &folder, &[]);
+    dated_ahead(&folder);
     let before = on_disk(&folder);
 
-    // A data do arquivo tem de poder mudar entre as passadas.
-    std::thread::sleep(std::time::Duration::from_millis(1100));
     for extra in [&[][..], &["--all"][..]] {
         model::scan(dir, &folder, extra);
         let after = on_disk(&folder);
@@ -146,7 +153,7 @@ fn the_scan_pass_writes_a_vector_for_each_declaration_and_each_word() {
     assert_eq!(declarations, 1);
     assert!(words > 0, "the words of the project have vectors");
 
-    std::thread::sleep(std::time::Duration::from_millis(1100));
+    dated_ahead(&folder);
     let before = on_disk(&folder);
     model::scan(dir, &folder, &[]);
     let after = on_disk(&folder);

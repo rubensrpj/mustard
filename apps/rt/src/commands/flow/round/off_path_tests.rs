@@ -41,7 +41,7 @@ struct SlowJudge {
 impl WaveJudge for SlowJudge {
     fn judge_backlog(&self, _: &Board) -> Result<Judged, FilterError> {
         let _ = self.asked.lock().unwrap().send(());
-        let _ = self.release.lock().unwrap().recv();
+        let _ = crate::wait_for::wait_for_message("a soltura do Jev", &self.release.lock().unwrap());
         Err(FilterError::Network("slow judge".into()))
     }
     fn judge_items(&self, _: &ItemsBoard) -> Result<ItemsJudged, FilterError> {
@@ -166,7 +166,7 @@ fn a_delivery_never_waits_for_a_round_asking_jev() {
             crate::shared::jev::judge_in_test(Some(judge));
             round(root, "x", None)
         });
-        asked.recv().expect("the round asked the Jev");
+        crate::wait_for::wait_for_message("a pergunta da rodada ao Jev", &asked).expect("the round asked the Jev");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let task = log.visible().into_iter().find(|e| e.event_type == "task" && e.wave() == Some(wave)).cloned().expect("the task of the wave");
         let file = task.fields["files"][0]["path"].as_str().unwrap().to_string();

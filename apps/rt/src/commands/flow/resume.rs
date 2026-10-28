@@ -28,6 +28,7 @@ use mustard_core::io::spec_index::later;
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Value, json};
 
+use super::common::step_command;
 use crate::commands::maint::work_copies;
 use crate::commands::spec_events;
 use crate::commands::spec_events::conversation::observed;
@@ -140,7 +141,7 @@ pub(crate) fn resume_for(opts: &ResumeOpts, session: Option<&str>) -> Value {
 /// foi tentado, ou quando ainda há onda ou tarefa a rodar.
 ///
 /// O motivo vem da marca que o próprio fechamento grava quando recusa
-/// ([`super::close::REFUSED_STAGE`]). A retomada não repete a mensagem
+/// ([`super::common::REFUSED_STAGE`]). A retomada não repete a mensagem
 /// inteira: ela manda rodar o fechamento de novo, que a diz com a saída do
 /// comando que caiu.
 fn refused_close(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Option<String> {
@@ -153,7 +154,7 @@ fn refused_close(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Option
     let last = log
         .events
         .iter()
-        .rfind(|event| event.event_type == "stage_run" && event.str_field("stage") == Some(super::close::REFUSED_STAGE))?;
+        .rfind(|event| event.event_type == "stage_run" && event.str_field("stage") == Some(super::common::REFUSED_STAGE))?;
     // A marca velha não vale: um fechamento depois dela, que pediu a revisão
     // ou fechou, apaga o que a de antes dizia.
     let newer = log.events.iter().any(|event| {
@@ -357,14 +358,14 @@ pub(crate) fn resume_block(spec: &str, log: &SpecLog, observed: &[SpecEvent], la
     let none = translate("resume.none", lang);
 
     // As mesmas contas da barra de status e do painel.
-    let states = crate::commands::panel::progress::wave_states(log);
+    let states = crate::commands::flow::round::wave_states(log);
     let delivered = states.values().filter(|state| state.finished()).count();
     let returns = log.returns_awaiting_round();
     let returned: BTreeSet<u64> = returns.iter().filter_map(|e| e.wave()).collect();
     let running: BTreeSet<u64> =
         waves_in_progress(log).into_keys().filter(|n| !returned.contains(n)).collect();
     let stuck: Vec<String> = waves_stuck(log).into_keys().map(|n| n.to_string()).collect();
-    let missing: Vec<String> = crate::commands::panel::progress::missing_waves(&states, &running, &returned)
+    let missing: Vec<String> = super::common::progress::missing_waves(&states, &running, &returned)
         .into_iter()
         .map(|n| n.to_string())
         .collect();
@@ -568,12 +569,13 @@ pub(crate) fn next_command_now(root: &Path, phase: &str, spec: &str, state: &Sta
 /// mesma responde: a onda parada no limite de consertos, as que saem agora —
 /// as prontas do plano, as reprovadas e as que ficaram sem agente —, as
 /// tarefas prontas do backlog com vaga livre, as que estão no ar, a onda que
-/// não tem como sair, o backlog preso, a revisão final aberta e, sem nada
-/// disso, o fechamento, que refaz a revisão final quando a reabertura anulou
-/// a aprovação.
+/// não tem como sair, o backlog preso, a revisão final aberta que ainda espera
+/// veredito e, sem nada disso, o fechamento, que refaz a revisão final quando
+/// a reabertura anulou a aprovação.
 fn step_of(root: &Path, phase: &str, spec: &str, log: &SpecLog, lang: Locale) -> (&'static str, String) {
-    use crate::commands::flow::round::queue::{backlog_ready, next_waves};
-    use crate::commands::flow::round::{awaited_review, backlog_left, waves_stuck};
+    use super::common::outdated_request::awaits_verdict;
+    use crate::commands::flow::round::queue::{awaited_review, backlog_ready, next_waves};
+    use crate::commands::flow::round::{backlog_left, waves_stuck};
     use mustard_core::view::document::WaveState;
 
     let said = |key: &str| ("close", translate(key, lang).to_string());
@@ -594,7 +596,7 @@ fn step_of(root: &Path, phase: &str, spec: &str, log: &SpecLog, lang: Locale) ->
     if log.planned_waves().is_empty() {
         return round("resume.step.backlog");
     }
-    let states = crate::commands::panel::progress::wave_states(log);
+    let states = crate::commands::flow::round::wave_states(log);
     let in_state = |wanted: WaveState| states.iter().filter(|(_, state)| **state == wanted).map(|(n, _)| *n).collect::<Vec<u64>>();
     let stuck = waves_stuck(log);
     if !stuck.is_empty() {
@@ -603,7 +605,10 @@ fn step_of(root: &Path, phase: &str, spec: &str, log: &SpecLog, lang: Locale) ->
     // As vagas pela conta única da rodada: a onda que voltou guarda a cópia
     // sem ocupar vaga.
     let vacancies = crate::commands::flow::round::vacancy::vacancies(root, spec, log);
-    let mut going = match next_waves(log, &vacancies, &stuck) {
+    // A onda que leva a avaliação de uma skill e espera tarefas abertas nos
+    // arquivos que a skill cita não sai, como na rodada.
+    let evaluating = crate::commands::flow::round::skill_hold::waves_waiting(root, spec, log);
+    let mut going = match next_waves(log, &vacancies, (&stuck, &evaluating)) {
         Ok(going) => going,
         Err(cycle) => return waves("resume.step.cycle", "resume.step.cycle", &cycle),
     };
@@ -626,34 +631,20 @@ fn step_of(root: &Path, phase: &str, spec: &str, log: &SpecLog, lang: Locale) ->
     if !backlog_left(log).is_empty() {
         return round("resume.step.backlog_held");
     }
-    // O pedido aberto mais velho que a última mudança não espera veredito:
-    // o passo é o fechamento, que abre o pedido novo.
-    if awaited_review(log).is_some() {
+    // O pedido aberto mais velho que a última mudança não espera veredito,
+    // nem o que ficou para trás de um item gravado depois dele, pela mesma
+    // conferência da rodada e do fechamento: o passo é o fechamento, que
+    // grava o pedido novo.
+    if awaits_verdict(log, awaited_review(log)) {
         return ("close", translate("resume.step.review_open", lang).to_string());
     }
-    let review = crate::commands::panel::progress::review(log);
+    let review = super::common::progress::review(log);
     if review["valid"] == true {
         said("resume.step.close_approved")
     } else if review["reopened_at"].is_null() {
         said("resume.step.close")
     } else {
         said("resume.step.close_again")
-    }
-}
-
-/// A linha inteira do passo `name` da spec `spec`, com as opções que o passo
-/// exige tiradas do estado: o pull request sai da branch da spec para a base
-/// dela. `None` quando o estado não traz o que o passo exige — uma linha sem
-/// uma opção obrigatória é recusada pelo binário antes de fazer qualquer coisa.
-pub fn step_command(name: &str, spec: &str, state: &State) -> Option<String> {
-    match name {
-        "round" => Some(format!("mustard-rt run round --dispatch --spec {spec}")),
-        "pr-open" => {
-            let base = state.base.as_deref().map(str::trim).filter(|b| !b.is_empty())?;
-            let head = state.branch.as_deref().map(str::trim).filter(|b| !b.is_empty())?;
-            Some(format!("mustard-rt run pr-open --base {base} --head {head} --spec {spec}"))
-        }
-        _ => Some(format!("mustard-rt run {name} --spec {spec}")),
     }
 }
 
@@ -1075,5 +1066,51 @@ mod tests {
         let refused = resume(root, "nao-existe");
         assert_eq!(refused["ok"], json!(false), "{refused}");
         assert_eq!(refused["reason"], json!("no-spec-file"), "{refused}");
+    }
+
+    /// O próximo passo que o painel mostra da spec `x` gravada em `root`, na
+    /// fase de execução.
+    fn panel_step(root: &Path) -> Value {
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        next_step(root, "running", "x", &State::from_log(&log), &log, Locale::PtBr)
+    }
+
+    /// Com a única onda entregue e comitada e a revisão final pedida depois
+    /// dela, o painel manda esperar o veredito. O critério gravado depois do
+    /// pedido deixa o pedido para trás: o veredito dele já não aprovaria a
+    /// obra, e o painel manda fechar, que grava o pedido novo.
+    #[test]
+    fn a_criterion_recorded_after_the_review_request_turns_the_panel_wait_into_close() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
+        let folder = root.join(".claude/spec/x");
+        std::fs::create_dir_all(&folder).unwrap();
+        let rows = [
+            json!({"v":1,"id":1,"at":"2026-10-01T10:00:00Z","type":"state","author":"binary","phase":"survey","branch":"fix/x","base":"dev"}),
+            json!({"v":1,"id":2,"at":"2026-10-01T10:01:00Z","type":"message","text":"Pedido do usuário."}),
+            json!({"v":1,"id":3,"at":"2026-10-01T10:02:00Z","type":"criterion","when":"Ao abrir o painel","then":"Os números batem","proof":"echo ok"}),
+            json!({"v":1,"id":4,"at":"2026-10-01T10:03:00Z","type":"wave","n":1,"text":"Primeira onda.","criteria":[3],"done_when":"Conferido.","origin":2}),
+            json!({"v":1,"id":5,"at":"2026-10-01T10:04:00Z","type":"task","wave":1,"title":"Primeira","text":"Fazer a primeira.","files":[{"path":"src/alpha.rs"}],"covers":[3]}),
+            json!({"v":1,"id":6,"at":"2026-10-01T10:05:00Z","type":"state","author":"user","phase":"approved"}),
+            json!({"v":1,"id":7,"at":"2026-10-01T10:06:00Z","type":"state","author":"binary","phase":"running"}),
+            json!({"v":1,"id":8,"at":"2026-10-02T09:00:00Z","type":"send","wave":1,"role":"wave","text":"Pedido da onda 1.","agent_launched":true}),
+            json!({"v":1,"id":9,"at":"2026-10-02T11:00:00Z","type":"delivered","wave":1,"text":"Feito.","files":["src/alpha.rs"],"agreed":[{"item":3,"met":true}]}),
+            json!({"v":1,"id":10,"at":"2026-10-02T11:05:00Z","type":"commit","sha":"abc123","title":"Primeira","waves":[1],"files":["src/alpha.rs"],"repo":"."}),
+            json!({"v":1,"id":11,"at":"2026-10-02T11:06:00Z","type":"criterion_run","criterion":3,"result":"pass","command":"echo ok"}),
+            json!({"v":1,"id":12,"at":"2026-10-02T12:00:00Z","type":"send","role":"review","text":"Revise a obra."}),
+        ];
+        let text = rows.iter().map(Value::to_string).collect::<Vec<_>>().join("\n") + "\n";
+        std::fs::write(folder.join("spec.ndjson"), &text).unwrap();
+
+        let waiting = panel_step(root);
+        assert_eq!(waiting["text"], json!(translate("resume.step.review_open", Locale::PtBr)), "o pedido de agora espera o veredito: {waiting}");
+
+        let criterion = json!({"v":1,"id":13,"at":"2026-10-02T13:00:00Z","type":"criterion","when":"A busca roda",
+            "then":"A citação sai com a pasta","proof":"git --version","origin":2});
+        std::fs::write(folder.join("spec.ndjson"), format!("{text}{criterion}\n")).unwrap();
+        let past = panel_step(root);
+        assert_eq!(past["command"], json!("mustard-rt run close --spec x"), "o painel manda fechar: {past}");
+        assert_eq!(past["text"], json!(translate("resume.step.close", Locale::PtBr)), "o painel não espera o veredito do pedido para trás: {past}");
     }
 }

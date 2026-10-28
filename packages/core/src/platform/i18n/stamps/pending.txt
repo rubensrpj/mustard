@@ -1,0 +1,16 @@
+pending.bad_date	3a604b6b79e923bb
+pending.confirm_mismatch	9c7021f040bcf229
+pending.count.many	17c8f4680d3b5613
+pending.count.one	98b7ad371d69998b
+pending.count.stale	c7d2759012b83f09
+pending.duplicate	9e567621d62b4c4f
+pending.expired_reason	da2282294bb043a5
+pending.gate.block	554ce8cc7af66b06
+pending.list.closed_hidden	bab78770635cfacd
+pending.not_dropped	2f1c4ea29c8ba8e8
+pending.nothing_matches	8dcc3442c4e1243a
+pending.reason_required	fa3b3f40e54e2419
+pending.remove.preview	693f02ae4cc13802
+pending.search.found	6cbe5b3867ae6762
+pending.selector_required	90c0775d1becab4f
+pending.stale.question	2edb4077b1d0bf1f

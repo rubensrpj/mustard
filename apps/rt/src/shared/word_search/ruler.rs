@@ -57,7 +57,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use chrono::DateTime;
 
@@ -426,9 +426,9 @@ fn hear(root: &Path, row: &Row, session: &str, scratch: &Path) -> Heard {
     LAST_ORDER.with(|last| *last.borrow_mut() = None);
     LAST_HITS.with(|last| last.borrow_mut().clear());
     jev::forget();
-    let started = Instant::now();
+    let watch = crate::stopwatch::Stopwatch::start();
     let verdict = crate::dispatch::run_event(Some(Trigger::PreToolUse), &input).verdict;
-    let took = started.elapsed();
+    let took = watch.read();
     if let Some(file) = &conversation {
         let _ = std::fs::remove_file(file);
     }

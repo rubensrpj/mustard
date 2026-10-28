@@ -24,70 +24,13 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+use crate::sources::{production_code, rust_sources};
+
 /// O que só o motor de página escreve.
 const ENGINE_ONLY: &[&str] = &["<!doctype", "<style", "<code>", "<strong>", "<em>"];
 
 fn repo_root() -> PathBuf {
     manifest_dir::manifest_dir().join("../..")
-}
-
-/// Os arquivos `.rs` de código sob `dir`, em ordem; pastas de teste, de
-/// compilação e de dependências ficam de fora.
-fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    let mut entries: Vec<_> = entries.flatten().collect();
-    entries.sort_by_key(fs::DirEntry::file_name);
-    for entry in entries {
-        let path = entry.path();
-        let name = entry.file_name();
-        if path.is_dir() {
-            if !matches!(name.to_str(), Some("target" | "node_modules" | ".git" | "tests" | "benches")) {
-                rust_sources(&path, out);
-            }
-        } else if path.extension().is_some_and(|e| e == "rs") {
-            out.push(path);
-        }
-    }
-}
-
-/// O código de produção de um arquivo: cada item marcado com `#[cfg(test)]`
-/// sai, do atributo até o `;` ou até o fim do bloco de chaves dele.
-fn production_code(source: &str) -> String {
-    let mut out = String::new();
-    let mut rest = source;
-    while let Some(at) = rest.find("#[cfg(test)]") {
-        out.push_str(&rest[..at]);
-        let item = &rest[at + "#[cfg(test)]".len()..];
-        let semicolon = item.find(';');
-        let brace = item.find('{');
-        rest = match (brace, semicolon) {
-            (Some(open), Some(end)) if end < open => &item[end + 1..],
-            (Some(open), _) => {
-                let mut depth = 0usize;
-                let mut close = item.len();
-                for (i, c) in item[open..].char_indices() {
-                    match c {
-                        '{' => depth += 1,
-                        '}' => {
-                            depth = depth.saturating_sub(1);
-                            if depth == 0 {
-                                close = open + i + 1;
-                                break;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                &item[close..]
-            }
-            (None, Some(end)) => &item[end + 1..],
-            (None, None) => "",
-        };
-    }
-    out.push_str(rest);
-    out
 }
 
 fn violations(path: &Path) -> Vec<&'static str> {
@@ -236,12 +179,4 @@ fn each_draft_item_becomes_an_event_of_its_type_and_lands_in_its_block() {
             assert_eq!(event[field], fields[field], "the {kind} {field} changed on the way: {event}");
         }
     }
-}
-
-#[test]
-fn test_items_are_left_out_of_the_scan() {
-    let source = "fn a() {}\n#[cfg(test)]\nuse x::y;\nfn b() {}\n#[cfg(test)]\nmod tests {\n    fn t() { let _ = \"<style>\"; }\n}\n";
-    let code = production_code(source);
-    assert!(code.contains("fn a()") && code.contains("fn b()"), "{code}");
-    assert!(!code.contains("<style>") && !code.contains("use x::y"), "{code}");
 }

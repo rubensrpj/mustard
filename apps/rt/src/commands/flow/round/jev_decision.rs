@@ -13,8 +13,8 @@
 //! desligado, nada espera: vale a regra de sempre.
 //!
 //! O mesmo vale para a triagem das atividades que a rodada grava — o alvo da
-//! mudança de plano, o item que a onda ou a revisão final não cumpriu e a
-//! sobra ([`super::triage_questions`]): a pergunta só sai depois de soltas a
+//! mudança de plano e o item que a onda ou a revisão final não cumpriu
+//! ([`super::triage_questions`]): a pergunta só sai depois de soltas a
 //! trava do passo do git e a das cópias. A resposta da triagem não se perde
 //! quando a fila de tarefas muda no meio-tempo: as tarefas abertas são só as
 //! opções do pedido, e a decisão é das atividades. O recibo da reserva também
@@ -55,8 +55,6 @@ pub(crate) enum Question {
     ChangeTarget,
     /// Para onde vai cada item combinado que a onda não cumpriu?
     UnmetItems,
-    /// Para onde vai cada sobra da volta?
-    Leftovers,
     /// Para onde vai cada item combinado que a revisão final não cumpriu?
     ReviewUnmet,
 }
@@ -71,7 +69,7 @@ impl Question {
         match self {
             Self::RemovedName => super::removed_check::CITED_CALL,
             Self::NoChange => crate::shared::jev::TRIAGE_CALL,
-            Self::ChangeTarget | Self::UnmetItems | Self::Leftovers | Self::ReviewUnmet => crate::shared::jev::TASK_TRIAGE_CALL,
+            Self::ChangeTarget | Self::UnmetItems | Self::ReviewUnmet => crate::shared::jev::TASK_TRIAGE_CALL,
         }
     }
 
@@ -99,7 +97,6 @@ impl Question {
             Self::NoChange => "round.jev_pending.no_change",
             Self::ChangeTarget => "round.jev_pending.change_target",
             Self::UnmetItems => "round.jev_pending.unmet_items",
-            Self::Leftovers => "round.jev_pending.leftovers",
             Self::ReviewUnmet => "round.jev_pending.review_unmet",
         };
         translate(key, lang).replace("{wave}", &wave.to_string())
@@ -123,7 +120,6 @@ impl Question {
             Self::NoChange => "no-change",
             Self::ChangeTarget => "change-target",
             Self::UnmetItems => "unmet-items",
-            Self::Leftovers => "leftovers",
             Self::ReviewUnmet => "review-unmet",
         }
     }
@@ -171,7 +167,7 @@ impl JevOn {
         Self {
             removed_name: Question::RemovedName.jev(root, spec).is_some(),
             no_change: Question::NoChange.jev(root, spec).is_some(),
-            task_triage: Question::Leftovers.jev(root, spec).is_some(),
+            task_triage: Question::UnmetItems.jev(root, spec).is_some(),
         }
     }
 

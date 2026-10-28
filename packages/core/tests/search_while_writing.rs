@@ -4,9 +4,11 @@
 //! história do projeto em lotes enquanto o Claude busca, e a busca dele não
 //! pode falhar nesse meio tempo.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
-use std::time::{Duration, Instant};
+#[path = "support/wait_for.rs"]
+mod wait_for;
+
+use std::sync::mpsc;
+use std::time::Duration;
 
 use mustard_core::domain::normalize::Languages;
 use mustard_core::io::map_search::{any_path, candidates_at};
@@ -38,9 +40,10 @@ fn search(model: &std::path::Path, languages: &Languages) -> usize {
 }
 
 /// A gravação de uma conexão que pega a trava de escrita inteira (a mais
-/// forte que o SQLite dá) e só a solta quando `released` diz que sim ou
-/// passados `hold`. Diz se soltou porque `released` disse.
-fn hold_the_write(model: std::path::PathBuf, hold: Duration, released: impl Fn() -> bool, held: mpsc::Sender<()>) -> bool {
+/// forte que o SQLite dá), avisa por `held` e só a solta quando `release`
+/// manda ou some, ou quando a espera chega ao limite de segurança e derruba
+/// a linha de execução: nunca por um prazo que a máquina carregada estoura.
+fn hold_the_write(model: std::path::PathBuf, release: mpsc::Receiver<()>, held: mpsc::Sender<()>) {
     let mut writer = Connection::open(model).unwrap();
     writer.busy_timeout(Duration::from_secs(5)).unwrap();
     let tx = writer.transaction_with_behavior(rusqlite::TransactionBehavior::Exclusive).unwrap();
@@ -48,35 +51,35 @@ fn hold_the_write(model: std::path::PathBuf, hold: Duration, released: impl Fn()
     tx.execute("INSERT INTO held VALUES (1)", []).unwrap();
     // Quem não espera o aviso deixa o outro lado do canal fechar.
     let _ = held.send(());
-    let until = Instant::now() + hold;
-    while !released() && Instant::now() < until {
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    let released_in_time = released();
+    let _ = wait_for::wait_for_message("a soltura da gravação", &release);
     tx.commit().unwrap();
-    released_in_time
 }
 
+/// A conexão que segura a gravação, na linha de execução dela, já com a
+/// trava: o canal que a solta e a linha de execução.
+fn holding_the_write(model: &std::path::Path) -> (mpsc::Sender<()>, std::thread::JoinHandle<()>) {
+    let (release, released) = mpsc::channel();
+    let (held, holding) = mpsc::channel();
+    let model = model.to_path_buf();
+    let writer = std::thread::spawn(move || hold_the_write(model, released, held));
+    wait_for::wait_for_message("a trava da gravação", &holding).unwrap();
+    (release, writer)
+}
+
+/// A busca responde com a gravação de outra conexão presa: a gravação só
+/// solta depois que a busca voltou, então a busca que esperasse por ela
+/// nunca voltaria com a resposta.
 #[test]
 fn a_search_answers_while_another_connection_holds_the_write_and_does_not_wait_for_it() {
     let (_dir, model, languages) = saved_map();
     assert_eq!(search(&model, &languages), 1, "the search finds the file before any write");
 
-    let searched = Arc::new(AtomicBool::new(false));
-    let (held, holding) = mpsc::channel();
-    let writer = {
-        let (model, searched) = (model.clone(), Arc::clone(&searched));
-        std::thread::spawn(move || hold_the_write(model, Duration::from_secs(4), || searched.load(Ordering::SeqCst), held))
-    };
-    holding.recv().unwrap();
-    let started = Instant::now();
+    let (release, writer) = holding_the_write(&model);
     let files = search(&model, &languages);
-    let took = started.elapsed();
-    searched.store(true, Ordering::SeqCst);
+    release.send(()).unwrap();
+    writer.join().unwrap();
 
     assert_eq!(files, 1, "the search sees what was stored, as before the write");
-    assert!(writer.join().unwrap(), "the search ended while the write was still held: it took {took:?}");
-    assert!(took < Duration::from_secs(2), "the search did not wait for the write: {took:?}");
 }
 
 /// Gravações uma atrás da outra, e a busca perguntando sem parar no meio
@@ -91,11 +94,11 @@ fn a_search_never_fails_across_writes_that_hold_the_lock_back_to_back() {
     let (_dir, model, languages) = saved_map();
     let ask = || assert_eq!(search(&model, &languages), 1);
     for _ in 0..WRITES {
-        let searched = Arc::new(AtomicBool::new(false));
+        let (release, released) = mpsc::channel();
         let (held, holding) = mpsc::channel();
         let writer = {
-            let (model, searched) = (model.clone(), Arc::clone(&searched));
-            std::thread::spawn(move || hold_the_write(model, Duration::from_secs(4), || searched.load(Ordering::SeqCst), held))
+            let model = model.clone();
+            std::thread::spawn(move || hold_the_write(model, released, held))
         };
         while matches!(holding.try_recv(), Err(mpsc::TryRecvError::Empty)) {
             ask();
@@ -103,30 +106,28 @@ fn a_search_never_fails_across_writes_that_hold_the_lock_back_to_back() {
         for _ in 0..ANSWERS_PER_WRITE {
             ask();
         }
-        searched.store(true, Ordering::SeqCst);
+        release.send(()).unwrap();
         while !writer.is_finished() {
             ask();
         }
-        assert!(writer.join().unwrap(), "the answers came while the write still held the lock");
+        writer.join().unwrap();
     }
 }
 
 /// A busca que precisa refazer o índice, porque ele foi feito em outras
-/// línguas, também grava: essa gravação espera a vez pela outra que segura a
-/// trava, em vez de falhar, e a busca responde depois.
+/// línguas, também grava: com a trava presa por outra gravação quando a
+/// busca começa, essa gravação espera a vez em vez de falhar, e a busca
+/// responde depois que a outra solta.
 #[test]
 fn a_search_that_has_to_redo_the_index_waits_for_the_write_that_holds_the_lock() {
     let (_dir, model, _) = saved_map();
     let other_languages = Languages::new(["pt-BR"]);
-    let (held, holding) = mpsc::channel();
-    let writer = {
+    let (release, writer) = holding_the_write(&model);
+    let searching = std::thread::spawn({
         let model = model.clone();
-        std::thread::spawn(move || hold_the_write(model, Duration::from_millis(200), || false, held))
-    };
-    holding.recv().unwrap();
-    let started = Instant::now();
-    candidates_at(&model, "cobrar pedido", "", &other_languages, any_path).expect("the search waits for the write instead of failing");
-    let took = started.elapsed();
-    assert!(!writer.join().unwrap(), "nobody told the write to let go: it held for its own 200 ms");
-    assert!(took >= Duration::from_millis(100), "the redo of the index waited for the write that held the lock: {took:?}");
+        move || candidates_at(&model, "cobrar pedido", "", &other_languages, any_path).map(|_| ())
+    });
+    release.send(()).unwrap();
+    writer.join().unwrap();
+    searching.join().unwrap().expect("the search waits for the write instead of failing");
 }

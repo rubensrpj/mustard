@@ -151,7 +151,7 @@ pub(crate) use scheduling::snapshot as scheduling_snapshot;
 mod commit;
 mod commit_title;
 mod unused_evidence;
-pub(crate) use commit::final_unused;
+pub(crate) use commit::{final_unused, work_maps};
 mod copy_check;
 mod dependencies;
 pub(crate) use dependencies::prepare as prepare_copy_dependencies;
@@ -193,11 +193,12 @@ mod running;
 pub(crate) mod review;
 mod sent_tasks;
 mod size_check;
+pub(crate) mod skill_hold;
+mod skill_install;
 mod slots;
 mod stops;
 mod summary_wave;
 pub(crate) mod task_release;
-mod test_warnings;
 mod triage_questions;
 mod usage;
 pub(crate) mod vacancy;
@@ -232,13 +233,13 @@ use crate::shared::spec_state::{DiskSpecState, checkout, session_from_env};
 
 pub(crate) use answer::{RoundRefusal, agents_refreshed, minutes_since, read_command, wave_dispatch};
 pub(crate) use jev_decision::{FINAL_REVIEW, Waiting};
-pub(crate) use leftovers::record_final_leftovers;
+pub(crate) use leftovers::{FinalFindings, record_final_leftovers};
 pub(crate) use triage_questions::ask_after_locks;
 pub(crate) use fixes::{fix_file, sweep_fixes};
 pub(crate) use keep::{Kept, landed_kept};
 pub(crate) use queue::{
     awaited_review, backlog_left, new_agent_escalation, open_review, send_revision, sender_fields, tasks_left, waves_awaiting_new_agent, waves_in_progress,
-    waves_left_without_tasks, waves_pending_fix,
+    waves_pending_fix,
 };
 pub(crate) use read_check::request_name;
 pub(crate) use rejection::{replaced_by_rejection, replaced_in_file};
@@ -250,7 +251,9 @@ pub(crate) use slots::{
     standing_in_a_copy,
 };
 #[cfg(test)]
-pub(crate) use tests::{deliver_after_refusals, finish_tasks, read_request, read_review, seed_read, shipped_agent};
+pub(crate) use tests::{deliver_after_refusals, finish_tasks, read_request, read_review, round_with_mine, seed_read, shipped_agent};
+#[cfg(test)]
+pub(crate) use imports_check::tests::mine_giving;
 pub(crate) use usage::snapshot as usage_snapshot;
 // Fora da rodada, só os testes do gancho do despacho leem o processo fechado,
 // e eles rodam só no Linux.
@@ -366,12 +369,6 @@ fn spec_without_base_check(opts: &RoundOpts, root: &Path, session: Option<&str>)
     };
     let log = mustard_core::io::spec_events::read(&mustard_core::io::spec_events::spec_file(root, &spec).ok()?).ok()??;
     super::validation::base_check_due(&log).then_some(spec)
-}
-
-/// A spec na fase `phase` pode ter ondas despachadas: está aprovada, ou já em
-/// execução. É a mesma pergunta para a rodada e para a fila que ela mostra.
-pub(crate) fn can_run(phase: &str) -> bool {
-    matches!(phase, "approved" | "running")
 }
 
 /// O que os testes das partes da rodada dividem: a spec aprovada com o plano
@@ -593,7 +590,7 @@ mod tests {
 
     /// [`round`] com quem relê o mapa depois do commit da rodada (`mine`),
     /// que um teste escolhe sem instalar a ferramenta do scan de verdade.
-    pub(super) fn round_with_mine(
+    pub(crate) fn round_with_mine(
         root: &Path,
         spec: &str,
         report: Option<&str>,
@@ -744,7 +741,7 @@ mod tests {
     pub(super) fn verdict(root: &Path, wave: u64, result: &str, text: &str) -> String {
         seed_review(root);
         let body = json!({"wave": wave, "result": result, "final": true, "text": text,
-            "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}]});
+            "criteria": [{"criterion": "MSTD-CRIT-0001"}]});
         let wrote = judged(root, body);
         assert_eq!(wrote["ok"], json!(true), "o veredito da onda {wave} não foi gravado: {wrote}");
         String::new()
