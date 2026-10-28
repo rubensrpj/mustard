@@ -1,7 +1,7 @@
 approve_spec.open_points	1dde0ddbd8a0e25a
 banner.close.success	011fa3aca635db83
 close.backlog_not_empty	b271a71a539dfc99
-close.build_failed	dc9505e0742cab7a
+close.build_failed	22d8999c523afb87
 close.build_output_failed	d3b29e8dbf1426cf
 close.build_output_not_ignored	ffb53d081f640e69
 close.build_output_retained	d3dd1ac6e842e703
@@ -11,14 +11,14 @@ close.cited_outside	db33e70216df214b
 close.cited_unowned	93a92f9430f624f5
 close.clean_copy_failed	57951d3413dc7539
 close.code_not_kept	ad9ae216b05c4bdb
-close.criterion_failed	4fd04eed16bd5b0b
+close.criterion_failed	07bb60cf5aac78e2
 close.criterion_missing_test	7b2450ce65a4d437
 close.criterion_passed_before	8bd755b0bd37b373
 close.criterion_ran_no_test	85dbe3fa733455c5
 close.final_leftovers	53da05bc50d9d5cd
 close.final_review	4617d017c397a322
-close.lint_failed	df748ed9601b5e41
-close.lint_from_the_base	ada60b046bf4d5b6
+close.lint_failed	7efaa205b52c5860
+close.lint_from_the_base	6dda488b38fa8e7b
 close.next	6097bb1601bacc6d
 close.not_running	f6d26f8b1dea8f70
 close.pending_destination	57a579a02563465d
@@ -26,7 +26,7 @@ close.proof_before_unchecked	de91cb143d7ca5f4
 close.ran_without_local_files	ff5f0265339b8c77
 close.repair_next	0716483f13579f9c
 close.request_not_delivered	9cde2482412aa450
-close.request_proof_failed	577630a948c06d51
+close.request_proof_failed	7722229f1181ce6e
 close.request_proof_missing_test	084f8a88bcaaf932
 close.request_proof_passed_before	109a1e5886abb757
 close.request_proof_ran_no_test	ac83306a231fca1d
@@ -36,7 +36,7 @@ close.review_copy_kept	98e2550c4c40fef7
 close.review_request_renewed	e3dd69d0f4fb40c8
 close.server_command_not_declared	5be032b5d67b101d
 close.stale_mark_released	e5d3875004cb330f
-close.suite_failed	6f858adb358f6083
+close.suite_failed	ba305cb5c2574922
 close.unowned_item	63fbbd10f60d94e1
 close.unowned_test	fb4a598f7bfa2b87
 close.validation_inputs_changed	37fc68afed6f88c0

@@ -802,12 +802,22 @@ pub(super) fn receipt(root: &Path, spec: &str, key: &str) -> Result<(), Refusal>
     record(root, spec, "stage_run", draft, PhaseWriter::Binary).map(|_| ())
 }
 
-pub(super) fn record_run(root: &Path, spec: &str, phase: &str, stage: &str, command: &str, out: &ProofRun) -> Result<(), Refusal> {
+/// Grava a execução `out` da etapa `stage` e devolve o evento gravado: é ele
+/// que a resposta cita para quem quer ler a saída inteira.
+pub(super) fn record_run(root: &Path, spec: &str, phase: &str, stage: &str, command: &str, out: &ProofRun) -> Result<mustard_core::io::spec_events::Written, Refusal> {
     record_run_fields(root, spec, phase, stage, command, out, Map::new())
 }
 
 #[allow(clippy::too_many_arguments)]
-fn record_run_fields(root: &Path, spec: &str, phase: &str, stage: &str, command: &str, out: &ProofRun, mut draft: Map<String, Value>) -> Result<(), Refusal> {
+fn record_run_fields(
+    root: &Path,
+    spec: &str,
+    phase: &str,
+    stage: &str,
+    command: &str,
+    out: &ProofRun,
+    mut draft: Map<String, Value>,
+) -> Result<mustard_core::io::spec_events::Written, Refusal> {
     draft.insert("phase".into(), json!(phase));
     draft.insert("stage".into(), json!(stage));
     draft.insert("command".into(), json!(crate::commands::review::qa_run::canonical_test_command(command)));
@@ -822,7 +832,7 @@ fn record_run_fields(root: &Path, spec: &str, phase: &str, stage: &str, command:
     if !out.output.is_empty() {
         draft.insert("output".into(), json!(out.output));
     }
-    record(root, spec, "stage_run", draft, PhaseWriter::Binary).map(|_| ())
+    record(root, spec, "stage_run", draft, PhaseWriter::Binary).map(|recorded| recorded.written)
 }
 
 /// O tempo de relógio da revisão final inclui o despacho e a espera do

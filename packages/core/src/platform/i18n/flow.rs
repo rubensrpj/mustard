@@ -374,8 +374,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The backlog still holds tasks {tasks}, which no wave delivered. Run the round again to \
              form their batch before closing, or remove from the spec the one that will no longer be done."
         }
-        ("close.criterion_failed", Locale::PtBr) => "A verificação do critério {code} não passou: {output}",
-        ("close.criterion_failed", Locale::EnUs) => "The verification of criterion {code} did not pass: {output}",
+        ("close.criterion_failed", Locale::PtBr) => "A verificação do critério {code} não passou. A saída inteira se lê por `{read}`.",
+        ("close.criterion_failed", Locale::EnUs) => "The verification of criterion {code} did not pass. Its whole output reads with `{read}`.",
         ("close.criterion_ran_no_test", Locale::PtBr) => {
             "A verificação do critério {code} saiu verde sem rodar teste nenhum: `{command}` diz que rodou \
              {count} testes. Grave a versão nova do critério com a verificação certa e feche de novo."
@@ -408,8 +408,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         // As mesmas recusas para a prova de um pedido que uma tarefa entregue
         // cobre, como o nascido de um achado: a prova mora no relato dele.
-        ("close.request_proof_failed", Locale::PtBr) => "A prova do pedido {code} não passou: {output}",
-        ("close.request_proof_failed", Locale::EnUs) => "The proof of request {code} did not pass: {output}",
+        ("close.request_proof_failed", Locale::PtBr) => "A prova do pedido {code} não passou. A saída inteira se lê por `{read}`.",
+        ("close.request_proof_failed", Locale::EnUs) => "The proof of request {code} did not pass. Its whole output reads with `{read}`.",
         ("close.request_proof_ran_no_test", Locale::PtBr) => {
             "A prova do pedido {code} saiu verde sem rodar teste nenhum: `{command}` diz que rodou {count} \
              testes. Grave a versão nova do pedido com a prova certa no relato e feche de novo."
@@ -452,27 +452,27 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("close.build_failed", Locale::PtBr) => {
             "A compilação do projeto (`{command}`), rodada em ambiente limpo como o servidor a roda, \
-             não passou, e a spec não fechou: {output}"
+             não passou, e a spec não fechou. A saída inteira se lê por `{read}`."
         }
         ("close.build_failed", Locale::EnUs) => {
             "The project build (`{command}`), run in a clean environment the way the server runs it, \
-             did not pass, and the spec did not close: {output}"
+             did not pass, and the spec did not close. Its whole output reads with `{read}`."
         }
         ("close.lint_from_the_base", Locale::PtBr) => {
-            "O `{command}` do projeto falhou, e só em arquivos que esta obra não tocou: {files}. A base já os acusava na abertura da spec, então o erro não é da obra e não trava o fechamento. Foi isto que o comando disse:\n{output}"
+            "O `{command}` do projeto falhou, e só em arquivos que esta obra não tocou: {files}. A base já os acusava na abertura da spec, então o erro não é da obra e não trava o fechamento. O que o comando disse se lê por `{read}`."
         }
         ("close.lint_from_the_base", Locale::EnUs) => {
-            "The project's `{command}` failed, and only in files this work never touched: {files}. The base already flagged them when the spec opened, so the error is not the work's and does not block the close. This is what the command said:\n{output}"
+            "The project's `{command}` failed, and only in files this work never touched: {files}. The base already flagged them when the spec opened, so the error is not the work's and does not block the close. What the command said reads with `{read}`."
         }
-        ("close.lint_failed", Locale::PtBr) => "O lint do projeto (`{command}`) não passou, e a spec não fechou: {output}",
-        ("close.lint_failed", Locale::EnUs) => "The project lint (`{command}`) did not pass, and the spec did not close: {output}",
+        ("close.lint_failed", Locale::PtBr) => "O lint do projeto (`{command}`) não passou, e a spec não fechou. A saída inteira se lê por `{read}`.",
+        ("close.lint_failed", Locale::EnUs) => "The project lint (`{command}`) did not pass, and the spec did not close. Its whole output reads with `{read}`.",
         ("close.suite_failed", Locale::PtBr) => {
             "A suíte do projeto (`{command}`), rodada em ambiente limpo como o servidor a roda, não \
-             passou, e a spec não fechou: {output}"
+             passou, e a spec não fechou. A saída inteira se lê por `{read}`."
         }
         ("close.suite_failed", Locale::EnUs) => {
             "The project suite (`{command}`), run in a clean environment the way the server runs it, \
-             did not pass, and the spec did not close: {output}"
+             did not pass, and the spec did not close. Its whole output reads with `{read}`."
         }
         // A compilação, o lint ou a suíte do fechamento que caiu num projeto
         // que declara arquivos locais: a cópia limpa nunca os recebe.
@@ -2843,19 +2843,19 @@ mod tests {
             ("close.wave_rejected", &["{wave}"][..]),
             ("close.request_not_delivered", &["{code}"][..]),
             ("close.backlog_not_empty", &["{tasks}"][..]),
-            ("close.criterion_failed", &["{code}", "{output}"][..]),
+            ("close.criterion_failed", &["{code}", "{read}"][..]),
             ("close.criterion_ran_no_test", &["{code}", "{command}", "{count}"][..]),
             ("close.criterion_missing_test", &["{code}", "{name}"][..]),
             ("close.criterion_passed_before", &["{code}", "{command}", "{count}"][..]),
-            ("close.request_proof_failed", &["{code}", "{output}"][..]),
+            ("close.request_proof_failed", &["{code}", "{read}"][..]),
             ("close.request_proof_ran_no_test", &["{code}", "{command}", "{count}"][..]),
             ("close.request_proof_missing_test", &["{code}", "{name}"][..]),
             ("close.request_proof_passed_before", &["{code}", "{command}", "{count}"][..]),
             ("close.proof_before_unchecked", &[][..]),
-            ("close.build_failed", &["{command}", "{output}"][..]),
-            ("close.lint_failed", &["{command}", "{output}"][..]),
-            ("close.lint_from_the_base", &["{command}", "{files}", "{output}"][..]),
-            ("close.suite_failed", &["{command}", "{output}"][..]),
+            ("close.build_failed", &["{command}", "{read}"][..]),
+            ("close.lint_failed", &["{command}", "{read}"][..]),
+            ("close.lint_from_the_base", &["{command}", "{files}", "{read}"][..]),
+            ("close.suite_failed", &["{command}", "{read}"][..]),
             ("close.ran_without_local_files", &["{files}"][..]),
             ("close.cited_outside", &["{files}"][..]),
             ("close.cited_nothing", &[][..]),

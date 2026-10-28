@@ -145,26 +145,30 @@ enum CloseRefusal {
     /// A compilação declarada do projeto falhou. `local_files` são os
     /// arquivos locais que o `mustard.json` declara e que a cópia limpa não
     /// tem. `no_wave` diz por que nenhuma onda reabriu, quando a saída não
-    /// cita arquivo que uma onda da obra mudou.
+    /// cita arquivo que uma onda da obra mudou. `read` é o comando que lê a
+    /// execução gravada, com a saída inteira, que a recusa não repete.
     BuildFailed {
         command: String,
         output: String,
+        read: String,
         local_files: Vec<String>,
         no_wave: Option<String>,
     },
-    /// O lint do projeto falhou, com os mesmos `local_files` e `no_wave` da
-    /// compilação.
+    /// O lint do projeto falhou, com os mesmos `read`, `local_files` e
+    /// `no_wave` da compilação.
     LintFailed {
         command: String,
         output: String,
+        read: String,
         local_files: Vec<String>,
         no_wave: Option<String>,
     },
-    /// A suíte inteira do projeto falhou, com os mesmos `local_files` e
-    /// `no_wave` do lint.
+    /// A suíte inteira do projeto falhou, com os mesmos `read`, `local_files`
+    /// e `no_wave` do lint.
     SuiteFailed {
         command: String,
         output: String,
+        read: String,
         local_files: Vec<String>,
         no_wave: Option<String>,
     },
@@ -184,11 +188,13 @@ enum CloseRefusal {
         copy: String,
         detail: String,
     },
-    /// Um critério, ou um pedido (`of`), cuja prova não passou.
+    /// Um critério, ou um pedido (`of`), cuja prova não passou, com o comando
+    /// que lê a execução gravada (`read`).
     CriterionFailed {
         of: ProofOf,
         code: String,
         output: String,
+        read: String,
     },
     /// A análise de declarações sem uso recusou, com o texto dos achados que
     /// recusam e o mesmo `no_wave` do lint.
@@ -198,29 +204,33 @@ enum CloseRefusal {
     },
     ValidationInputsChanged,
     /// Um critério, ou um pedido (`of`), cuja prova saiu verde sem rodar
-    /// teste nenhum, com o comando dela e o número de testes que a saída
-    /// dele disse.
+    /// teste nenhum, com o comando dela, o número de testes que a saída
+    /// dele disse e o comando que lê a execução gravada (`read`).
     CriterionRanNoTest {
         of: ProofOf,
         code: String,
         command: String,
         tests: u64,
+        read: String,
     },
     /// Um critério, ou um pedido (`of`), cuja prova saiu verde citando um
-    /// nome de teste que não existe no projeto, com o nome que faltou.
+    /// nome de teste que não existe no projeto, com o nome que faltou e o
+    /// comando que lê a execução gravada (`read`).
     CriterionMissingTest {
         of: ProofOf,
         code: String,
         name: String,
+        read: String,
     },
     /// Um critério, ou um pedido (`of`), cuja prova já passava no código de
-    /// antes da obra, rodando teste, com o comando dela e o número de testes
-    /// que a saída disse.
+    /// antes da obra, rodando teste, com o comando dela, o número de testes
+    /// que a saída disse e o comando que lê essa execução gravada (`read`).
     CriterionPassedBefore {
         of: ProofOf,
         code: String,
         command: String,
         tests: u64,
+        read: String,
     },
     /// Mais de uma recusa achada no mesmo passo, na ordem em que apareceram:
     /// a resposta lista todas de uma vez, e o motivo é o da primeira.
@@ -293,10 +303,11 @@ impl CloseRefusal {
             slots.iter().fold(translate(key, lang).to_string(), |text, (slot, value)| text.replace(slot, value))
         };
         // A compilação, o lint ou a suíte que caiu: a recusa da chave `key`,
-        // os arquivos locais que a cópia limpa não tem e por que nenhuma onda
-        // reabriu, cada um numa linha.
-        let command_failed = |key: &str, command: &str, output: &str, local_files: &[String], no_wave: Option<&str>| {
-            let refusal = fill(key, &[("{command}", command.to_string()), ("{output}", output.to_string())]);
+        // com o comando que lê a saída inteira, os arquivos locais que a
+        // cópia limpa não tem e por que nenhuma onda reabriu, cada um numa
+        // linha.
+        let command_failed = |key: &str, command: &str, read: &str, local_files: &[String], no_wave: Option<&str>| {
+            let refusal = fill(key, &[("{command}", command.to_string()), ("{read}", read.to_string())]);
             with_no_wave(without_local_files(refusal, local_files, lang), no_wave)
         };
         match self {
@@ -310,27 +321,65 @@ impl CloseRefusal {
             Self::WaveRejected { wave } => fill("close.wave_rejected", &[("{wave}", wave.to_string())]),
             Self::RequestNotDelivered { code } => fill("close.request_not_delivered", &[("{code}", code.clone())]),
             Self::BacklogNotEmpty { tasks } => fill("close.backlog_not_empty", &[("{tasks}", tasks.clone())]),
-            Self::BuildFailed { command, output, local_files, no_wave } => command_failed("close.build_failed", command, output, local_files, no_wave.as_deref()),
-            Self::LintFailed { command, output, local_files, no_wave } => command_failed("close.lint_failed", command, output, local_files, no_wave.as_deref()),
-            Self::SuiteFailed { command, output, local_files, no_wave } => command_failed("close.suite_failed", command, output, local_files, no_wave.as_deref()),
+            Self::BuildFailed { command, read, local_files, no_wave, .. } => command_failed("close.build_failed", command, read, local_files, no_wave.as_deref()),
+            Self::LintFailed { command, read, local_files, no_wave, .. } => command_failed("close.lint_failed", command, read, local_files, no_wave.as_deref()),
+            Self::SuiteFailed { command, read, local_files, no_wave, .. } => command_failed("close.suite_failed", command, read, local_files, no_wave.as_deref()),
             Self::ReviewCopyDirty { copy, files } => fill("close.review_copy_dirty", &[("{copy}", copy.clone()), ("{files}", files.clone())]),
             Self::ReviewCopyFailed { copy, detail } => fill("close.review_copy_failed", &[("{copy}", copy.clone()), ("{detail}", detail.clone())]),
             Self::CleanCopyFailed { copy, detail } => fill("close.clean_copy_failed", &[("{copy}", copy.clone()), ("{detail}", detail.clone())]),
-            Self::CriterionFailed { of, code, output } => {
-                fill(of.key("close.criterion_failed", "close.request_proof_failed"), &[("{code}", code.clone()), ("{output}", output.clone())])
+            Self::CriterionFailed { of, code, read, .. } => {
+                fill(of.key("close.criterion_failed", "close.request_proof_failed"), &[("{code}", code.clone()), ("{read}", read.clone())])
             }
-            Self::CriterionRanNoTest { of, code, command, tests } => fill(
+            Self::CriterionRanNoTest { of, code, command, tests, .. } => fill(
                 of.key("close.criterion_ran_no_test", "close.request_proof_ran_no_test"),
                 &[("{code}", code.clone()), ("{command}", command.clone()), ("{count}", tests.to_string())],
             ),
-            Self::CriterionMissingTest { of, code, name } => {
+            Self::CriterionMissingTest { of, code, name, .. } => {
                 fill(of.key("close.criterion_missing_test", "close.request_proof_missing_test"), &[("{code}", code.clone()), ("{name}", name.clone())])
             }
-            Self::CriterionPassedBefore { of, code, command, tests } => fill(
+            Self::CriterionPassedBefore { of, code, command, tests, .. } => fill(
                 of.key("close.criterion_passed_before", "close.request_proof_passed_before"),
                 &[("{code}", code.clone()), ("{command}", command.clone()), ("{count}", tests.to_string())],
             ),
         }
+    }
+
+    /// O texto que a marca de conserto de uma onda grava: a recusa e, embaixo,
+    /// a saída que caiu. O agente do conserto a lê no pedido dele, e a soltura
+    /// das marcas sem prova confere nela o arquivo citado
+    /// ([`super::common::stale_marks::release`]). A resposta de quem conduz
+    /// leva só a recusa, com o comando que lê a saída.
+    fn repair_text(&self, lang: Locale) -> String {
+        let message = self.message(lang);
+        match self {
+            Self::BuildFailed { output, .. } | Self::LintFailed { output, .. } | Self::SuiteFailed { output, .. } | Self::CriterionFailed { output, .. }
+                if !output.trim().is_empty() =>
+            {
+                format!("{message}\n{output}")
+            }
+            _ => message,
+        }
+    }
+
+    /// A linha desta falha na resposta: o motivo, a etapa ou o critério que
+    /// caiu e o comando que lê a execução gravada, com a saída inteira. A
+    /// recusa que não vem de uma execução não tem linha.
+    fn line(&self) -> Option<Value> {
+        let (key, name, read) = match self {
+            Self::BuildFailed { read, .. } => ("stage", "buildCommand", read),
+            Self::LintFailed { read, .. } => ("stage", "lintCommand", read),
+            Self::SuiteFailed { read, .. } => ("stage", "testCommand", read),
+            Self::CriterionFailed { code, read, .. }
+            | Self::CriterionRanNoTest { code, read, .. }
+            | Self::CriterionMissingTest { code, read, .. }
+            | Self::CriterionPassedBefore { code, read, .. } => ("criterion", code.as_str(), read),
+            _ => return None,
+        };
+        let mut line = Map::new();
+        line.insert("reason".into(), json!(self.reason()));
+        line.insert(key.into(), json!(name));
+        line.insert("read".into(), json!(read));
+        Some(Value::Object(line))
     }
 
     fn to_value(&self, lang: Locale) -> Value {
@@ -338,16 +387,25 @@ impl CloseRefusal {
             return refusal.to_value(lang);
         }
         // A lista leva os campos da primeira recusa — a pergunta de uma onda
-        // parada, por exemplo —, com o texto de todas e o motivo de cada uma.
+        // parada, por exemplo —, com o texto de todas, o motivo de cada uma e
+        // uma linha por falha de execução.
         if let Self::Many(all) = self {
             let mut out = all.first().map_or_else(|| json!({}), |first| first.to_value(lang));
             out["ok"] = json!(false);
             out["reason"] = json!(self.reason());
             out["hint"] = json!(self.message(lang));
             out["reasons"] = json!(all.iter().map(Self::reason).collect::<Vec<_>>());
+            let lines: Vec<Value> = all.iter().filter_map(Self::line).collect();
+            if !lines.is_empty() {
+                out["failures"] = json!(lines);
+            }
             return out;
         }
-        json!({ "ok": false, "reason": self.reason(), "hint": self.message(lang) })
+        let mut out = json!({ "ok": false, "reason": self.reason(), "hint": self.message(lang) });
+        if let Some(line) = self.line() {
+            out["failures"] = json!([line]);
+        }
+        out
     }
 }
 
@@ -982,11 +1040,12 @@ fn machine(
         // o de um critério: a compilação e a suíte inteira levam o tempo que o
         // projeto pede.
         let out = crate::commands::review::qa_run::run_server_command(&clean_env(&command), clean);
-        super::validation::record_run(root, spec, "final", key, &command, &out).map_err(CloseRefusal::Refused)?;
+        let written = super::validation::record_run(root, spec, "final", key, &command, &out).map_err(CloseRefusal::Refused)?;
         stages.push(json!({ "stage": key, "result": out.result }));
         if out.result != "pass" {
+            let read = run_read(root, spec, &written);
             if key == "buildCommand" {
-                return Err(CloseRefusal::BuildFailed { command, output: out.output, local_files, no_wave: None });
+                return Err(CloseRefusal::BuildFailed { command, output: out.output, read, local_files, no_wave: None });
             }
             // O lint que só acusa arquivo que a obra não tocou e que a base
             // já acusava não é erro da obra: ele vira aviso, e o fechamento
@@ -999,14 +1058,14 @@ fn machine(
                 let hint = translate("close.lint_from_the_base", lang)
                     .replace("{command}", &command)
                     .replace("{files}", &files)
-                    .replace("{output}", &out.output);
+                    .replace("{read}", &read);
                 from_base.push(hint);
                 native_outputs.push(out.evidence);
                 continue;
             }
             failures.push(match key {
-                "lintCommand" => CloseRefusal::LintFailed { command, output: out.output, local_files: local_files.clone(), no_wave: None },
-                _ => CloseRefusal::SuiteFailed { command, output: out.output, local_files: local_files.clone(), no_wave: None },
+                "lintCommand" => CloseRefusal::LintFailed { command, output: out.output, read, local_files: local_files.clone(), no_wave: None },
+                _ => CloseRefusal::SuiteFailed { command, output: out.output, read, local_files: local_files.clone(), no_wave: None },
             });
             continue;
         }
@@ -1022,14 +1081,6 @@ fn machine(
     for ((id, code, command), (_, _, out)) in proofs.iter().zip(&outcomes) {
         native_outputs.push(out.evidence.clone());
         super::validation::record_run(root, spec, "final", &format!("criterion:{code}"), command, out).map_err(CloseRefusal::Refused)?;
-        if let Some(fault) = out.fault() {
-            let (of, code, command) = (ProofOf::item(log, *id), code.clone(), command.clone());
-            failures.push(match fault {
-                ProofFault::RanNoTest(tests) => CloseRefusal::CriterionRanNoTest { of, code, command, tests },
-                ProofFault::MissingTest(name) => CloseRefusal::CriterionMissingTest { of, code, name },
-                ProofFault::Failed(output) => CloseRefusal::CriterionFailed { of, code, output },
-            });
-        }
         let mut draft = Map::new();
         draft.insert("criterion".into(), json!(id));
         draft.insert("result".into(), json!(out.result));
@@ -1042,17 +1093,24 @@ fn machine(
             draft.insert("output".into(), json!(out.output));
         }
         let written = record(&opts.root, spec, "criterion_run", draft, PhaseWriter::Binary).map_err(CloseRefusal::Refused)?;
+        let read = run_read(root, spec, &written.written);
         // Uma linha por critério, com o resultado e o motivo; a saída inteira
         // fica gravada na execução, e a linha diz como lê-la.
         let mut line = json!({ "criterion": code, "result": out.result });
         if let Some(fault) = out.fault() {
             line["reason"] = json!(fault_reason(&fault));
+            let (of, code, command, read) = (ProofOf::item(log, *id), code.clone(), command.clone(), read.clone());
+            failures.push(match fault {
+                ProofFault::RanNoTest(tests) => CloseRefusal::CriterionRanNoTest { of, code, command, tests, read },
+                ProofFault::MissingTest(name) => CloseRefusal::CriterionMissingTest { of, code, name, read },
+                ProofFault::Failed(output) => CloseRefusal::CriterionFailed { of, code, output, read },
+            });
         }
         if out.reused {
             line["reused"] = json!(true);
         }
-        if kept_output && let Some(run) = written.written.code.as_deref() {
-            line["read"] = json!(crate::commands::flow::round::read_command(root, spec, &format!("item-{run}")));
+        if kept_output {
+            line["read"] = json!(read);
         }
         runs.push(line);
     }
@@ -1063,10 +1121,10 @@ fn machine(
     match before {
         Some(copy) => {
             for ((id, code, command), (_, _, out)) in proofs.iter().zip(copy.run(&proofs)) {
-                super::validation::record_run(root, spec, "final", &format!("criterion-before:{code}"), command, &out).map_err(CloseRefusal::Refused)?;
+                let written = super::validation::record_run(root, spec, "final", &format!("criterion-before:{code}"), command, &out).map_err(CloseRefusal::Refused)?;
                 if let Some(tests) = proof_runs::passed_before(&out) {
-                    let of = ProofOf::item(log, *id);
-                    failures.push(CloseRefusal::CriterionPassedBefore { of, code: code.clone(), command: command.clone(), tests });
+                    let (of, read) = (ProofOf::item(log, *id), run_read(root, spec, &written));
+                    failures.push(CloseRefusal::CriterionPassedBefore { of, code: code.clone(), command: command.clone(), tests, read });
                 }
             }
         }
@@ -1086,6 +1144,13 @@ fn machine(
     }
     timing.passed();
     Ok(Machine { runs, stages, undeclared, from_base, before_unchecked })
+}
+
+/// O comando que lê a execução gravada `written` pelo código dela, ou pelo
+/// número, sem código: é por ele que a resposta entrega a saída inteira.
+fn run_read(root: &Path, spec: &str, written: &mustard_core::io::spec_events::Written) -> String {
+    let item = written.code.clone().unwrap_or_else(|| written.id.to_string());
+    crate::commands::flow::round::read_command(root, spec, &format!("item-{item}"))
 }
 
 /// O motivo curto de a prova não ter passado, o mesmo da recusa do
@@ -1208,7 +1273,7 @@ fn authorize_final_repair(root: &Path, spec: &str, log: &SpecLog, failure: Close
         }) {
             continue;
         }
-        let messages = implicating.iter().map(|at| shown[*at].message(lang));
+        let messages = implicating.iter().map(|at| shown[*at].repair_text(lang));
         let text = messages.chain([translate("close.repair_next", lang).to_string()]).collect::<Vec<_>>().join("\n");
         let reason = shown[implicating[0]].reason();
         let files = mustard_core::domain::wave_prompt::wave_files(log, wave);
@@ -1236,13 +1301,15 @@ fn no_wave_reopened(failure: CloseRefusal, cited: &super::validation::Cited, lan
         let files = cited.outside.iter().map(|file| format!("`{file}`")).collect::<Vec<_>>().join(", ");
         translate("close.cited_outside", lang).replace("{files}", &files)
     };
-    match failure {
-        CloseRefusal::BuildFailed { command, output, local_files, .. } => CloseRefusal::BuildFailed { command, output, local_files, no_wave: Some(why) },
-        CloseRefusal::LintFailed { command, output, local_files, .. } => CloseRefusal::LintFailed { command, output, local_files, no_wave: Some(why) },
-        CloseRefusal::SuiteFailed { command, output, local_files, .. } => CloseRefusal::SuiteFailed { command, output, local_files, no_wave: Some(why) },
-        CloseRefusal::NewUnused { text, .. } => CloseRefusal::NewUnused { text, no_wave: Some(why) },
-        other => other,
+    let mut failure = failure;
+    if let CloseRefusal::BuildFailed { no_wave, .. }
+    | CloseRefusal::LintFailed { no_wave, .. }
+    | CloseRefusal::SuiteFailed { no_wave, .. }
+    | CloseRefusal::NewUnused { no_wave, .. } = &mut failure
+    {
+        *no_wave = Some(why);
     }
+    failure
 }
 
 /// `command` embrulhado para rodar como o servidor o roda, e não como a
@@ -2354,6 +2421,22 @@ mod tests {
         out["warnings"].as_array().into_iter().flatten().filter(|w| w["reason"] == json!(reason)).filter_map(|w| w["hint"].as_str()).collect()
     }
 
+    /// O que o condutor lê ao rodar o comando `read` que a resposta entrega:
+    /// a leitura de verdade, do bloco e da spec que o comando nomeia.
+    pub(super) fn read_by(root: &Path, command: &str) -> String {
+        let words: Vec<&str> = command.split_whitespace().collect();
+        assert_eq!(words.get(..3), Some(&["mustard-rt", "run", "read"][..]), "{command}");
+        let spec = words.iter().skip_while(|word| **word != "--spec").nth(1).copied().unwrap_or_default();
+        let opts = crate::commands::spec_events::read::ReadOpts {
+            root: root.to_path_buf(),
+            spec: Some(spec.to_string()),
+            block: words.get(3).copied().unwrap_or_default().to_string(),
+            term: None,
+            session: None,
+        };
+        crate::commands::spec_events::read::read_for(&opts, None, root).unwrap_or_else(|refusal| panic!("{command}: {refusal}"))
+    }
+
     /// A vaga da última onda, zerada para o revisor, guarda antes o que a
     /// onda deixou nela além do commit, e a resposta nomeia a onda, a ref e o
     /// comando para trazer o código de volta: a que pede a revisão e também a
@@ -2759,7 +2842,9 @@ exit "${2:-0}"
         let said = hints(&out, "lint-from-the-base");
         assert_eq!(said.len(), 1, "{out}");
         assert!(said[0].contains("`src/outro.rs`"), "o aviso nomeia o arquivo da base: {}", said[0]);
-        assert!(said[0].contains("erro de formatação"), "e repassa o que o comando disse: {}", said[0]);
+        assert!(!said[0].contains("erro de formatação"), "o aviso não repete o que o comando disse: {}", said[0]);
+        let read = said[0].split('`').find(|part| part.starts_with("mustard-rt run read ")).unwrap_or_default();
+        assert!(read_by(root, read).contains("erro de formatação"), "o comando do aviso lê o que o comando disse: {}", said[0]);
         assert!(hints(&out, "lint-failed").is_empty(), "{out}");
     }
 
@@ -3292,15 +3377,18 @@ exit "${2:-0}"
         let lint = "git init -q lint-rodou";
         let ran = |root: &Path| check_copy(root).join("lint-rodou").is_dir();
 
-        // O lint que falha recusa com a saída dele, e os critérios rodam
-        // assim mesmo: a recusa lista tudo o que caiu de uma vez.
+        // O lint que falha recusa com o comando que lê a saída dele, e os
+        // critérios rodam assim mesmo: a recusa lista tudo o que caiu de uma
+        // vez.
         let dir = tempdir().unwrap();
         let root = dir.path();
         ready_with_waves(root, "x", &["git --version"], 2);
         let refused = close_with_lint(root, "git lint-que-nao-existe", None);
         assert_eq!(refused["reason"], json!("lint-failed"), "{refused}");
         let hint = refused["hint"].as_str().unwrap_or_default();
-        assert!(hint.contains("git lint-que-nao-existe") && hint.contains("lint-que-nao-existe' is not a git command"), "{hint}");
+        assert!(hint.contains("git lint-que-nao-existe"), "{hint}");
+        let read = refused["failures"][0]["read"].as_str().unwrap_or_default();
+        assert!(read_by(root, read).contains("lint-que-nao-existe' is not a git command"), "{refused}");
         assert_eq!(criterion_runs(root), 2, "os critérios rodam com o lint vermelho");
 
         // O lint que passa roda no projeto, e a máquina verde pede o agente
@@ -3838,21 +3926,34 @@ exit "${2:-0}"
 
     /// Com a compilação verde, o fechamento roda o lint, a suíte e cada
     /// critério mesmo depois de um deles cair, e a recusa lista todas as
-    /// falhas numa resposta só.
+    /// falhas numa resposta só: uma linha por falha, com o motivo, a etapa ou
+    /// o critério e o comando que lê a execução gravada. A saída de nenhuma
+    /// vem na recusa; ela se lê pelo comando da linha.
     #[test]
     fn closing_lists_every_machine_failure_in_one_answer() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         ready_to_close(root, "x", &["git --nao-existe-esta-opcao"]);
-        let config = json!({"lintCommand": "echo lint-mark; exit 1", "testCommand": "echo suite-mark; exit 1"});
+        // Cada comando escreve uma marca que o texto dele não traz: a marca
+        // na recusa só pode ter vindo da saída.
+        let config = json!({"lintCommand": "printf 'lint-%s' mark; exit 1", "testCommand": "printf 'suite-%s' mark; exit 1"});
         std::fs::write(root.join("mustard.json"), config.to_string()).unwrap();
 
         let refused = close(root, "x");
         assert_eq!(refused["reason"], json!("lint-failed"), "{refused}");
         assert_eq!(refused["reasons"], json!(["lint-failed", "suite-failed", "criterion-failed"]), "{refused}");
         let hint = refused["hint"].as_str().unwrap_or_default();
-        assert!(hint.contains("lint-mark") && hint.contains("suite-mark"), "{refused}");
-        assert!(hint.contains("nao-existe-esta-opcao"), "{refused}");
+        let lines = refused["failures"].as_array().cloned().unwrap_or_default();
+        let reasons: Vec<&str> = lines.iter().filter_map(|line| line["reason"].as_str()).collect();
+        assert_eq!(reasons, ["lint-failed", "suite-failed", "criterion-failed"], "one line per failure: {refused}");
+        assert_eq!((&lines[0]["stage"], &lines[1]["stage"]), (&json!("lintCommand"), &json!("testCommand")), "{refused}");
+        assert!(lines[2]["criterion"].as_str().is_some_and(|code| code.starts_with("MSTD-CRIT-")), "{refused}");
+        for (line, mark) in lines.iter().zip(["lint-mark", "suite-mark", "nao-existe-esta-opcao"]) {
+            assert!(!hint.contains(mark), "the refusal does not carry the output: {refused}");
+            let read = line["read"].as_str().unwrap_or_default();
+            assert!(hint.contains(read), "the hint says how to read it: {refused}");
+            assert!(read_by(root, read).contains(mark), "the line's command reads the whole output: {line}");
+        }
         assert_eq!(criterion_runs(root), 2, "every criterion ran: {refused}");
     }
 
@@ -4197,12 +4298,11 @@ exit "${2:-0}"
         assert_eq!(State::from_log(&log).phase, Some("running"), "a spec não fechou");
     }
 
-    /// A recusa de um critério cuja prova falha mostra o fim da saída dela,
-    /// onde o motivo aparece: uma prova que escreve 200 linhas e falha na
-    /// última recusa o fechamento com a última linha, e não com o começo. O
-    /// que fica gravado na execução é o mesmo trecho.
+    /// Uma prova que escreve 200 linhas e falha na última: a execução gravada
+    /// guarda o fim da saída, onde o motivo aparece, e não o começo. A recusa
+    /// não repete a saída; a linha da falha traz o comando que a lê.
     #[test]
-    fn the_refusal_of_a_failing_proof_shows_the_end_of_its_output() {
+    fn a_failing_proof_keeps_the_end_of_its_output_in_its_run_and_out_of_the_refusal() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         ready_to_close(root, "x", &["sh -c 'i=1; while [ $i -le 200 ]; do echo \"linha $i\"; i=$((i+1)); done; exit 3'"]);
@@ -4210,14 +4310,16 @@ exit "${2:-0}"
         let refused = close(root, "x");
         assert_eq!(refused["reason"], json!("criterion-failed"), "{refused}");
         let hint = refused["hint"].as_str().unwrap_or_default();
-        assert!(hint.ends_with("linha 200"), "a recusa termina no fim da saída: {hint}");
-        assert!(hint.contains("linha 161"), "e traz as últimas 40 linhas: {hint}");
-        assert!(!hint.contains("linha 1\n"), "o começo da saída fica de fora: {hint}");
+        assert!(!hint.contains("linha 200"), "the refusal does not carry the output: {hint}");
 
         let path = store::spec_file(root, "x").unwrap();
         let log = store::read(&path).unwrap().unwrap();
         let run = log.visible().into_iter().find(|e| e.event_type == "criterion_run").unwrap();
-        assert!(run.str_field("output").is_some_and(|out| out.ends_with("linha 200")), "{run:?}");
+        let output = run.str_field("output").unwrap_or_default();
+        assert!(output.ends_with("linha 200") && output.contains("linha 161"), "the run keeps the last 40 lines: {run:?}");
+        assert!(!output.contains("linha 1\n"), "the start of the output stays out: {run:?}");
+        let read = refused["failures"][0]["read"].as_str().unwrap_or_default();
+        assert!(read_by(root, read).contains("linha 200"), "the line's command reads the run: {refused}");
     }
 
     /// A base `dev` de onde a branch da spec saiu: nasce no commit semente,
@@ -4263,7 +4365,9 @@ exit "${2:-0}"
     /// O lint do fechamento cai citando um arquivo de fora da obra e outro
     /// que a branch mudou e só a onda 2 declarou e entregou: só a onda 2
     /// reabre, com a saída no trecho de conserto dela, e a onda 1 segue
-    /// entregue. A rodada seguinte despacha só a onda 2.
+    /// entregue. A rodada seguinte despacha só a onda 2. Só a saída cita os
+    /// arquivos, e não o comando: é dela, guardada no trecho de conserto, que
+    /// a rodada sabe que a onda 2 segue reprovada.
     #[test]
     fn a_cited_wave_file_reopens_only_that_wave() {
         let dir = tempdir().unwrap();
@@ -4271,8 +4375,9 @@ exit "${2:-0}"
         ready_with_waves(root, "x", &["git --version"], 2);
         branched_from_dev(root);
 
-        let lint = format!("echo error: lib/fora.rs:1:4 and {}:2:5 fail-mark; exit 1", wave_file(2));
-        let refused = close_with_lint(root, &lint, None);
+        std::fs::write(root.join("lint.sh"), format!("echo error: lib/fora.rs:1:4 and {}:2:5 fail-mark\nexit 1\n", wave_file(2))).unwrap();
+        commit_file(root, "lint.sh");
+        let refused = close_with_lint(root, "sh lint.sh", None);
         assert_eq!(refused["reason"], json!("lint-failed"), "{refused}");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         assert_eq!(log.last_rejected().keys().copied().collect::<Vec<_>>(), vec![2], "{refused}");
@@ -4304,7 +4409,9 @@ exit "${2:-0}"
         let refused = close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), ..Default::default() }, None);
         assert_eq!(refused["reason"], json!("build-failed"), "{refused}");
         let hint = refused["hint"].as_str().unwrap_or_default();
-        assert!(hint.contains(&format!("`{build}`")) && hint.contains("error TS2304"), "{refused}");
+        assert!(hint.contains(&format!("`{build}`")), "{refused}");
+        assert_eq!(refused["failures"][0]["stage"], json!("buildCommand"), "{refused}");
+        assert!(read_by(root, refused["failures"][0]["read"].as_str().unwrap_or_default()).contains("error TS2304"), "{refused}");
         assert!(!check_copy(root).join("rodou").exists(), "com a compilação vermelha, o lint e a suíte nem rodam: {refused}");
         assert_eq!(criterion_runs(root), 0, "{refused}");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();

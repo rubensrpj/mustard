@@ -30,15 +30,15 @@ mod tests {
     /// A marca que o fechamento gravava na onda `wave` quando o comando caía:
     /// o texto da recusa, com a saída `output`, e a linha do conserto.
     fn old_mark(root: &Path, wave: u64, reason: &str, output: &str) {
-        let (command, output) = ("cargo clippy".to_string(), output.to_string());
+        let (command, output, read) = ("cargo clippy".to_string(), output.to_string(), "mustard-rt run read item-1".to_string());
         let failure = match reason {
-            "build-failed" => CloseRefusal::BuildFailed { command, output, local_files: Vec::new(), no_wave: None },
-            "suite-failed" => CloseRefusal::SuiteFailed { command, output, local_files: Vec::new(), no_wave: None },
-            "lint-failed" => CloseRefusal::LintFailed { command, output, local_files: Vec::new(), no_wave: None },
+            "build-failed" => CloseRefusal::BuildFailed { command, output, read, local_files: Vec::new(), no_wave: None },
+            "suite-failed" => CloseRefusal::SuiteFailed { command, output, read, local_files: Vec::new(), no_wave: None },
+            "lint-failed" => CloseRefusal::LintFailed { command, output, read, local_files: Vec::new(), no_wave: None },
             "final-new-unused" => CloseRefusal::NewUnused { text: output, no_wave: None },
-            _ => CloseRefusal::CriterionFailed { of: ProofOf::Criterion, code: "MSTD-CRIT-0001".into(), output },
+            _ => CloseRefusal::CriterionFailed { of: ProofOf::Criterion, code: "MSTD-CRIT-0001".into(), output, read },
         };
-        let text = format!("{}\n{}", failure.message(Locale::PtBr), translate("close.repair_next", Locale::PtBr));
+        let text = format!("{}\n{}", failure.repair_text(Locale::PtBr), translate("close.repair_next", Locale::PtBr));
         let draft = json!({"wave": wave, "final": true, "result": "rejected", "text": text, "reason": reason,
             "fingerprint": BEFORE, "files": [wave_file(wave)], "author": "binary"});
         record(root, "x", "validation_failure", draft.as_object().cloned().unwrap(), PhaseWriter::Binary).unwrap();
