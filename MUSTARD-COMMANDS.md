@@ -150,11 +150,13 @@ Devolve um bloco da spec: `state`, `specification`, `agreed`, `waves`, `wave-<n>
 
 Grava um evento: `mustard-rt run write point --spec <spec> --json '{…}'`. `lesson` grava no banco de lições. `--copy` é compatibilidade: informa que a publicação automática foi retirada. Links/recibos históricos continuam legíveis. Quando obrigatório, `origin` recebe a última mensagem do usuário se estiver ausente.
 
+Texto longo vai cru, sem escapar em JSON: `--text -` ou `--agent -` lê esse campo da entrada padrão, por heredoc, junto dos outros campos do `--json`; só um dos dois lê a entrada. Vários eventos vão numa chamada só com `--batch`: uma linha JSON por item na entrada padrão, com o tipo em `type` (`{"type":"task", …}`), cada uma conferida e gravada como uma gravação própria, na ordem. Uma linha cita outra do lote pelo `label` dela num campo de referência, como `depends_on`; a linha recusada não grava nada, nem a que a cita. A resposta traz uma linha curta por item: o código gravado, ou o `reason` e o `hint`.
+
 A `task` e o `request` novos passam antes pelo classificador das atividades: com o Jev confiante de que uma tarefa aberta já cobre a atividade ou tem o mesmo sentido, a gravação recusa (`same-work-open`), nomeia a tarefa e manda gravar a versão nova dela (`replaces`); na junção, `rewrite` traz o pedido ao agente de análise da sessão (Haiku no Claude, Luna no Codex), cujo recibo, por `run knowledge --complete-session`, devolve o título, o texto e a parte do agente da versão nova. `"distinct":"<motivo>"` grava assim mesmo e guarda o motivo. Sem Jev, grava como sempre. O `request` novo passa antes pelo lugar dele (veja "O Jev nos pontos de escolha" em [`docs/mustard-por-dentro.md`](docs/mustard-por-dentro.md)).
 
 ### `answer`
 
-Grava a resposta de um ponto do levantamento e fecha o ponto numa chamada só: `mustard-rt run answer --point <número ou código> --type <tipo> --json '{…}'`. Sem `--point`, vale o primeiro ponto aberto.
+Grava a resposta de um ponto do levantamento e fecha o ponto numa chamada só: `mustard-rt run answer --point <número ou código> --type <tipo> --json '{…}'`. Sem `--point`, vale o primeiro ponto aberto. Como no `write`, `--text -` ou `--agent -` lê esse campo do item cru da entrada padrão.
 
 `--facts '[{"text":"…","source":"…"}]'` inclui evidências verificadas no fechamento, sem versão manual do ponto. `--result <itens>` aponta itens já gravados, junto do item novo ou sozinhos; `--not-applicable --reason "…"` fecha o ponto sem item. O item passa pelas mesmas recusas do `write`, e o item recusado não fecha o ponto; sem `origin`, ele e o fechamento apontam a última mensagem do usuário. Devolve o item, o fechamento e o próximo ponto.
 

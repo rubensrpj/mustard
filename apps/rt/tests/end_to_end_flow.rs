@@ -2381,10 +2381,11 @@ fn a_round_outside_the_mustard_repository_never_builds() {
     assert!(project.cargo_calls().is_empty(), "outro projeto: {:?}", project.cargo_calls());
 }
 
-/// A compilação vermelha vira um aviso com o fim da saída do `cargo`, e o
-/// commit sai do mesmo jeito: a rodada nunca recusa por causa dela.
+/// A compilação vermelha vira um aviso com o comando que lê a saída do
+/// `cargo`, gravada na spec, sem repeti-la, e o commit sai do mesmo jeito: a
+/// rodada nunca recusa por causa dela.
 #[test]
-fn a_red_development_build_warns_with_the_output_and_the_round_still_commits() {
+fn a_red_development_build_warns_with_the_read_of_its_output_and_the_round_still_commits() {
     let project = Project::as_mustard_source();
     deliver_the_first_wave_changing(&project, "apps/rt/src/main.rs");
     std::fs::write(project.home.join("cargo-falha"), "").expect("the build is red");
@@ -2401,8 +2402,22 @@ fn a_red_development_build_warns_with_the_output_and_the_round_still_commits() {
         .unwrap_or_else(|| panic!("o aviso da compilação vermelha: {second}"));
     let hint = warning["hint"].as_str().unwrap_or_default();
     let head = translate("round.development_build_failed", Locale::PtBr);
-    assert!(hint.starts_with(head.split("{output}").next().unwrap_or_default()), "{warning}");
-    assert!(hint.contains("error[E0425]: cannot find value `x`"), "{warning}");
+    assert!(hint.starts_with(head.split("{read}").next().unwrap_or_default()), "{warning}");
+    let error = "error[E0425]: cannot find value `x`";
+    assert!(!hint.contains(error), "o aviso não repete a saída: {warning}");
+    let block = hint
+        .split_whitespace()
+        .find(|word| word.starts_with("item-"))
+        .unwrap_or_else(|| panic!("o aviso cita o item da execução gravada: {warning}"));
+    let read = project.run(&["read", block, "--spec", SPEC]);
+    let run = read["events"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|event| event["type"] == json!("stage_run"))
+        .unwrap_or_else(|| panic!("a execução da compilação gravada: {read}"));
+    assert_eq!(run["stage"], json!("runtime-build"), "{run}");
+    assert!(run["output"].as_str().unwrap_or_default().contains(error), "a leitura traz a saída do cargo: {run}");
 }
 
 /// O texto que o início da sessão põe no contexto, ou nada.
