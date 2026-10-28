@@ -262,7 +262,7 @@ fn offers_a_file(reason: &str) -> bool {
 
 /// O filtro da resposta do Mustard é recusado nos dois idiomas, e a recusa
 /// termina no caminho daquele comando: o resumo pronto do bloco grande, a
-/// leitura por termo dos outros blocos, ou o comando sozinho, com ou sem a
+/// leitura por termo dos blocos que a aceitam, ou o comando sozinho, com ou sem a
 /// razão de resposta curta. Nenhuma das quatro recusas manda gravar a
 /// resposta num arquivo, e a do bloco grande não sugere a leitura por termo.
 #[test]
@@ -273,7 +273,7 @@ fn the_filter_refusal_points_to_the_summary_and_never_to_a_file() {
         let summary = translate("runtime_output.summary", locale).replace("{block}", "metrics").replace("{summary}", "calls");
         for (command, way) in [
             ("mustard-rt run read metrics --spec x | grep calls", summary.as_str()),
-            ("mustard-rt run read item-1 --spec x | head -20", translate("runtime_output.term", locale)),
+            ("mustard-rt run read notes --spec x | head -20", translate("runtime_output.term", locale)),
             ("mustard-rt run round --spec x | grep next", translate("runtime_output.alone_short", locale)),
             ("mustard-rt run panel | grep waves", translate("runtime_output.alone", locale)),
         ] {

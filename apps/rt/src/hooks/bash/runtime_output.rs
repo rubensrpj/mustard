@@ -18,13 +18,14 @@
 //! passa.
 //!
 //! A recusa diz o caminho do comando barrado ([`Way`]): o resumo do bloco
-//! grande, a leitura por termo ou o comando sozinho. Ela nunca manda gravar a
-//! resposta num arquivo. A conferência lê os comandos que
+//! grande, a leitura por termo onde o `--term` vale, ou o comando sozinho.
+//! Ela nunca manda gravar a resposta num arquivo. A conferência lê os comandos que
 //! [`super::lex::segments`] achou, nunca o texto cru: `echo mustard-rt | wc -c`
 //! cita o nome sem rodar o Mustard e passa.
 
 use mustard_core::SupportedLocale;
 use mustard_core::domain::model::contract::Verdict;
+use mustard_core::domain::spec_events::ReadQuery;
 
 use super::lex::{Segment, truncate};
 use crate::shared::say::say;
@@ -69,6 +70,47 @@ const SUMMARY_OF: &[(&str, &str)] = &[("metrics", "calls"), ("waves", "wave-list
 /// leitura, e a recusa manda rodar o comando sozinho.
 const SHORT_ANSWER: &[&str] = &["round", "close", "map"];
 
+/// As opções do `run read` cujo valor vem na palavra seguinte.
+const READ_VALUES: &[&str] = &["--spec", "--term", "--session", "--root"];
+
+/// A leitura que o `run read` pede, pelas palavras `words` depois do `read`:
+/// a primeira que não é opção nem valor de opção, com o apelido trocado pelo
+/// nome aceito ([`ReadQuery::alias_of`]). `None` quando nenhuma palavra diz a
+/// leitura.
+fn read_block<'a>(mut words: impl Iterator<Item = &'a str>) -> Option<&'a str> {
+    while let Some(word) = words.next() {
+        if READ_VALUES.contains(&word) {
+            words.next();
+        } else if !word.starts_with('-') {
+            return Some(ReadQuery::alias_of(word).unwrap_or(word));
+        }
+    }
+    None
+}
+
+/// Se a leitura `block` do `run read` aceita o `--term`: os blocos da spec,
+/// o que o pedido de uma onda lista, a soma das chamadas e o banco de lições.
+/// A lista das ondas, o item, a entrega, o backlog e os pedidos gravados não
+/// aceitam, nem o nome que não é leitura nenhuma.
+fn takes_term(block: &str) -> bool {
+    match ReadQuery::parse(block) {
+        Some(ReadQuery::Block(_) | ReadQuery::Dispatch(_) | ReadQuery::ReviewDispatch | ReadQuery::Calls) => true,
+        Some(
+            ReadQuery::WaveList
+            | ReadQuery::Item(_)
+            | ReadQuery::Delivered(_)
+            | ReadQuery::Backlog
+            | ReadQuery::Request(_)
+            | ReadQuery::ReviewRequest
+            | ReadQuery::ReviewPreview
+            | ReadQuery::WaveReviewRequest(_),
+        ) => false,
+        // O banco de lições fica fora da spec, e o termo nele é o número da
+        // lição.
+        None => block == "lessons",
+    }
+}
+
 /// O caminho que a recusa aponta para o comando do Mustard barrado. Nenhum
 /// deles passa por arquivo: a resposta se lê inteira, na conversa.
 #[derive(Debug)]
@@ -76,13 +118,14 @@ enum Way {
     /// `run read` de um bloco grande de [`SUMMARY_OF`]: o bloco e o resumo
     /// pronto dele.
     Summary(&'static str, &'static str),
-    /// Outro `run read`: a leitura por termo.
+    /// `run read` de uma leitura que aceita o `--term` ([`takes_term`]): a
+    /// leitura por termo.
     Term,
     /// Um comando de [`SHORT_ANSWER`]: rodar sozinho, que a resposta já vem
     /// curta.
     ShortAlone,
-    /// Qualquer outro comando do Mustard: rodar sozinho e ler a resposta
-    /// inteira.
+    /// Qualquer outro comando do Mustard, e o `run read` de uma leitura em
+    /// que o `--term` não vale: rodar sozinho e ler a resposta inteira.
     Alone,
 }
 
@@ -93,8 +136,12 @@ impl Way {
         let mut words = segment.args.iter().map(|arg| arg.text.as_str()).skip_while(|word| *word != "run").skip(1);
         match words.next() {
             Some("read") => {
-                let block = words.next();
-                SUMMARY_OF.iter().find(|(big, _)| Some(*big) == block).map_or(Way::Term, |&(big, summary)| Way::Summary(big, summary))
+                let block = read_block(words);
+                match SUMMARY_OF.iter().find(|(big, _)| Some(*big) == block) {
+                    Some(&(big, summary)) => Way::Summary(big, summary),
+                    None if block.is_some_and(takes_term) => Way::Term,
+                    None => Way::Alone,
+                }
             }
             Some(command) if SHORT_ANSWER.contains(&command) => Way::ShortAlone,
             _ => Way::Alone,
@@ -176,9 +223,9 @@ mod tests {
     /// e as mesmas formas por substituição, pelo `xargs`, depois do `rtk`, por
     /// um caminho e dentro de `bash -c`, são recusados na conversa principal e
     /// nos agentes. A recusa mostra o comando e termina no caminho do comando
-    /// barrado: o resumo do bloco grande, a leitura por termo nos outros
-    /// blocos, ou o comando sozinho, com a razão de resposta curta na rodada,
-    /// no fechamento e no mapa.
+    /// barrado: o resumo do bloco grande, a leitura por termo nos blocos que
+    /// a aceitam, ou o comando sozinho, com a razão de resposta curta na
+    /// rodada, no fechamento e no mapa.
     #[test]
     fn a_runtime_answer_piped_into_a_script_is_refused() {
         let lang = Ctx::for_test(".", None).config.language().text_or_default();
@@ -188,8 +235,8 @@ mod tests {
             (r#"mustard-rt run read metrics --spec falha-fora-da-obra | python3 -c "import sys; print(sys.stdin.read()[:4000])""#, Way::Summary("metrics", "calls")),
             (r#"mustard-rt run write step --spec falha-fora-da-obra --json '{"wave":3}' | grep -E '"(ok|id|code)"'"#, Way::Alone),
             ("mustard-rt run resume | head -80", Way::Alone),
-            ("mustard-rt run read item-2384 --spec falha-fora-da-obra | cut -c1-900", Way::Term),
-            ("mustard-rt run read request-57 --spec falha-fora-da-obra | sed -n '1,30p'", Way::Term),
+            ("mustard-rt run read item-2384 --spec falha-fora-da-obra | cut -c1-900", Way::Alone),
+            ("mustard-rt run read request-57 --spec falha-fora-da-obra | sed -n '1,30p'", Way::Alone),
             ("mustard-rt run read conversation --spec falha-fora-da-obra | head -c 6000", Way::Term),
             ("mustard-rt run read waves --spec x | head -40", Way::Summary("waves", "wave-list")),
             ("mustard-rt run close --spec x | tail -3", Way::ShortAlone),
@@ -197,10 +244,10 @@ mod tests {
             (r#"jq '.waves' <<< "$(mustard-rt run panel)""#, Way::Alone),
             ("python3 summarize.py <(mustard-rt run read metrics)", Way::Summary("metrics", "calls")),
             ("python3 - <<EOF\nprint(len('''$(mustard-rt run panel)'''))\nEOF", Way::Alone),
-            ("mustard-rt run read wave-list | xargs -n1 echo", Way::Term),
+            ("mustard-rt run read wave-list | xargs -n1 echo", Way::Alone),
             (r#"mustard-rt run panel | node -e "process.stdin.on('data', d => console.log(String(d).length))""#, Way::Alone),
             ("rtk mustard-rt run resume | rtk tail -5", Way::Alone),
-            ("~/.local/bin/mustard-boot run read request-1 | fold -w 3000 | head", Way::Term),
+            ("~/.local/bin/mustard-boot run read request-1 | fold -w 3000 | head", Way::Alone),
             (r#"mustard-rt run write delivered --json "$(cat /tmp/entrega.json)" | grep ok"#, Way::Alone),
             (r#"bash -c "mustard-rt run panel | jq .""#, Way::Alone),
         ] {
@@ -212,6 +259,39 @@ mod tests {
                     }
                     other => panic!("{cmd} (agent: {agent}) must be refused, got {other:?}"),
                 }
+            }
+        }
+    }
+
+    /// A recusa do filtro no `run read` de uma leitura em que o `--term` não
+    /// vale manda rodar o comando sozinho: a lista das ondas, o item, a
+    /// entrega, o backlog e os pedidos gravados, também pelo apelido e com as
+    /// opções antes do bloco. Os blocos que aceitam o termo seguem apontando
+    /// a leitura por termo, e o bloco grande, o resumo, com as opções antes.
+    #[test]
+    fn a_read_where_the_term_does_not_apply_says_to_run_it_alone() {
+        let lang = Ctx::for_test(".", None).config.language().text_or_default();
+        for (cmd, way) in [
+            ("mustard-rt run read wave-list --spec x | grep aberta", Way::Alone),
+            ("mustard-rt run read item-MSTD-TASK-0003 --spec x | head -5", Way::Alone),
+            ("mustard-rt run read delivered-3 --spec x | grep agreed", Way::Alone),
+            ("mustard-rt run read backlog | wc -l", Way::Alone),
+            ("mustard-rt run read tarefas | wc -l", Way::Alone),
+            ("mustard-rt run read request-review | tail -20", Way::Alone),
+            ("mustard-rt run read request-review-preview | head", Way::Alone),
+            ("mustard-rt run read review-request-2 | head", Way::Alone),
+            ("mustard-rt run read --spec x request-57 | sed -n '1,30p'", Way::Alone),
+            ("mustard-rt run read notes --spec x | grep onda", Way::Term),
+            ("mustard-rt run read wave-2 | head", Way::Term),
+            ("mustard-rt run read dispatch-2 | head", Way::Term),
+            ("mustard-rt run read calls | grep map", Way::Term),
+            ("mustard-rt run read lessons | head", Way::Term),
+            ("mustard-rt run read --root . --spec x metrics | head", Way::Summary("metrics", "calls")),
+            ("mustard-rt run read ondas | head", Way::Summary("waves", "wave-list")),
+        ] {
+            match guard(cmd, true) {
+                Verdict::Deny { reason } => assert!(reason.ends_with(&way.said(lang)), "{cmd} ends on {way:?}: {reason}"),
+                other => panic!("{cmd} must be refused, got {other:?}"),
             }
         }
     }
