@@ -104,13 +104,15 @@ fn a_fresh_install_delivers_the_map_once_and_short_guidance_after_context_reset(
 /// a melhoria e o ajuste do mesmo assunto, pelo `write request`, sem virar
 /// pendência. Na mesma linha, em ordem: quem identifica é o assistente; com
 /// certeza, ele grava e avisa; na dúvida, sugere e pergunta uma vez; e só o
-/// assunto diferente passa pela porta da pendência, a única do mapa. A linha
-/// seguinte deixa o "sim" do usuário para as outras mudanças.
+/// assunto diferente passa pela porta da pendência, a única do mapa. O
+/// princípio da decisão do usuário, no mesmo começo, deixa o "sim" dele para
+/// as outras mudanças.
 #[test]
 fn the_session_start_keeps_a_same_subject_defect_in_the_open_spec() {
-    for (lang, same_spec, yes) in [
+    for (lang, text, same_spec) in [
         (
             "pt-BR",
+            Locale::PtBr,
             [
                 "Mesmo assunto: `write request`, não pendência.",
                 "Registre o autorizado;",
@@ -118,10 +120,10 @@ fn the_session_start_keeps_a_same_subject_defect_in_the_open_spec() {
                 "Outro assunto:",
                 "",
             ],
-            "- Mudança não autorizada exige aceite; corrija o Mustard no produto.",
         ),
         (
             "en-US",
+            Locale::EnUs,
             [
                 "Same subject: `write request`, not a pending item.",
                 "Record authorized changes;",
@@ -129,7 +131,6 @@ fn the_session_start_keeps_a_same_subject_defect_in_the_open_spec() {
                 "Another subject uses",
                 "",
             ],
-            "- Unauthorized changes require acceptance; fix Mustard in the product.",
         ),
     ] {
         let dir = tempfile::tempdir().unwrap();
@@ -147,7 +148,12 @@ fn the_session_start_keeps_a_same_subject_defect_in_the_open_spec() {
                 .unwrap_or_else(|| panic!("the {lang} session start misses `{piece}`, or has it out of order, before the pending door: {line}"));
             rest = &rest[at + piece.len()..];
         }
-        assert_eq!(lines.next(), Some(yes), "the {lang} session start does not leave the user's yes to the other changes: {context}");
+        let yes = mustard_core::platform::seeds::principles(text)
+            .iter()
+            .find(|principle| principle.test == Some("a_negation_or_another_questions_option_never_approves"))
+            .map(|principle| format!("- **{}.** {}", principle.title, principle.text))
+            .expect("the principle of the user's decision");
+        assert!(context.contains(&yes), "the {lang} session start does not leave the user's yes to the other changes: {context}");
     }
 }
 

@@ -1272,9 +1272,8 @@ mod tests {
     fn a_call_records_its_result() {
         let dir = project_on("chamada");
         let root = dir.path();
-        let started = Instant::now();
-        record_call_as(root, Some(SESSION), "plan", None, started, &json!({"ok": true, "spec": "chamada"})).expect("ok call");
-        record_call_as(root, Some(SESSION), "round", Some("chamada"), started, &json!({"ok": false, "reason": "not-approved"})).expect("refused call");
+        record_call_as(root, Some(SESSION), "plan", None, Instant::now(), &json!({"ok": true, "spec": "chamada"})).expect("ok call");
+        record_call_as(root, Some(SESSION), "round", Some("chamada"), Instant::now(), &json!({"ok": false, "reason": "not-approved"})).expect("refused call");
         let calls: Vec<Map<String, Value>> = recorded_operations(root, "chamada").events.into_iter().map(|e| e.fields).collect();
         assert_eq!(calls.len(), 2);
         assert_eq!((calls[0]["command"].as_str(), calls[0]["result"].as_str()), (Some("plan"), Some("ok")));
@@ -1283,7 +1282,7 @@ mod tests {
         assert_eq!(calls[1]["refusal"], json!("not-approved"));
 
         // Uma spec que não existe não ganha arquivo.
-        assert_eq!(record_call_as(root, Some(SESSION), "plan", Some("outra"), started, &json!({"ok": true})), None);
+        assert_eq!(record_call_as(root, Some(SESSION), "plan", Some("outra"), Instant::now(), &json!({"ok": true})), None);
         assert!(mustard_core::io::spec_events::operations_file(root, "outra").is_some_and(|path| !path.exists()));
     }
 }

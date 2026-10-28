@@ -884,6 +884,16 @@ pub struct MapDecl {
     pub implemented_by: Vec<DeclAt>,
 }
 
+impl MapDecl {
+    /// A declaração é um teste: a marca de teste que o scan põe em toda
+    /// unidade de teste de cada língua, nas formas dos frameworks de teste
+    /// dela (`syntax.test`), em qualquer pasta. A leitura é de sintaxe: ela
+    /// não prova cobertura nenhuma.
+    pub fn is_test(&self) -> bool {
+        self.syntax.get("test").and_then(serde_json::Value::as_bool).unwrap_or(false)
+    }
+}
+
 /// Uma declaração apontada por uma ligação do mapa: o arquivo, a linha em que
 /// ela começa e o nome dela. O scan a grava num texto só,
 /// `arquivo:linha:nome`, como grava o uso.

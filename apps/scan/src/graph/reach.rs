@@ -5,9 +5,11 @@
 //!
 //! - **Repasse.** O caminho escrito antes do nome (`mustard_core::translate(`)
 //!   nomeia um arquivo que só repassa o nome (`pub use`, `export { x } from`);
-//!   a declaração mora no arquivo que o repasse alcança. O nome de um pacote do
-//!   projeto escrito sozinho antes do nome chamado é esse caminho, de uma parte
-//!   só.
+//!   a declaração mora no arquivo que o repasse alcança, com o nome que tem lá
+//!   quando o repasse o troca (`find as outdated_review`). O nome de um pacote
+//!   do projeto escrito sozinho antes do nome chamado é esse caminho, de uma
+//!   parte só. O arquivo que o repasse alcança fica à vista de quem chama,
+//!   como o que um import alcança ([`passed_sight`]).
 //! - **Tipo do receptor.** O objeto com tipo escrito (`ctx: &Ctx`) e a cadeia
 //!   de campos depois dele (`ctx.config.language()`) dão o tipo do receptor:
 //!   o tipo do objeto vem da assinatura, o de cada campo, da assinatura do
@@ -45,19 +47,115 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::{DeclId, Resolver, TYPE_KINDS};
+use super::{DeclId, Declaring, Resolver, TYPE_KINDS, WHOLE_FILE};
 use crate::model::{Decl, Module};
 
-/// Os arquivos de `files` e, para cada um que repassa `name`, os arquivos que
-/// o declaram, seguidos os repasses ([`Resolver::declaring`]).
-pub(super) fn declared_in(resolver: &Resolver, files: HashSet<String>, name: &str) -> HashSet<String> {
-    let mut reached = files.clone();
-    for file in &files {
-        if let Some(&module) = resolver.by_path.get(file.as_str()) {
-            reached.extend(resolver.declaring(module, name).into_iter().map(|(declaring, _)| declaring));
+/// O que um nome escrito alcança pelos repasses, por cada um dos três
+/// caminhos que levam a eles: o import que não diz o que traz, o módulo
+/// trazido escrito antes do nome (`u` em `u.soma()`) e o caminho do projeto
+/// escrito antes dele (`crate::a::soma()`). De cada arquivo de um deles, os
+/// que declaram o nome, seguidos os repasses ([`Resolver::declaring`]), cada
+/// um com o nome que a declaração tem nele: o repasse que troca o nome
+/// (`pub use a::{find as outdated_review}`) chega ao arquivo de origem com o
+/// nome de lá.
+pub(super) struct Passed {
+    /// Os arquivos que declaram o nome a partir dos imports que não dizem o
+    /// que trazem.
+    pub(super) reached: Vec<String>,
+    /// Os arquivos do módulo trazido escrito antes do nome, com os que
+    /// declaram o nome a partir deles.
+    pub(super) named_files: Vec<String>,
+    /// Os arquivos que o caminho escrito antes do nome nomeia, com os que
+    /// declaram o nome a partir deles. `None` sem caminho do projeto.
+    pub(super) path: Option<HashSet<String>>,
+    /// Cada arquivo a que um dos três chegou, com o nome que a declaração tem
+    /// nele.
+    found: Declaring,
+}
+
+impl Passed {
+    /// O que o nome `looked` alcança a partir de `passing` (os arquivos com
+    /// repasse dos imports que não dizem o que trazem), dos arquivos de
+    /// `object` (os do módulo trazido escrito antes do nome) e dos arquivos
+    /// de `path` (os que o caminho escrito antes do nome nomeia).
+    pub(super) fn of<'a, 'f>(
+        resolver: &Resolver<'a>,
+        looked: &str,
+        passing: &[&'a Module],
+        object: impl IntoIterator<Item = &'f String>,
+        path: Option<HashSet<String>>,
+    ) -> Self {
+        let declaring = |files: &mut dyn Iterator<Item = &String>| -> Declaring {
+            files
+                .filter_map(|file| resolver.by_path.get(file.as_str()))
+                .flat_map(|&module| resolver.declaring(module, looked))
+                .collect()
+        };
+        let through_passing: Declaring = passing.iter().flat_map(|&module| resolver.declaring(module, looked)).collect();
+        let object: Vec<String> = object.into_iter().cloned().collect();
+        let through_object = declaring(&mut object.iter());
+        let through_path = path.as_ref().map(|files| declaring(&mut files.iter())).unwrap_or_default();
+        let files = |found: &Declaring| found.iter().map(|(file, _)| file.clone()).collect::<Vec<_>>();
+        let reached = files(&through_passing);
+        let named_files = object.into_iter().chain(files(&through_object)).collect();
+        let path = path.map(|mut named| {
+            named.extend(files(&through_path));
+            named
+        });
+        let found = through_passing.into_iter().chain(through_object).chain(through_path).collect();
+        Self { reached, named_files, path, found }
+    }
+
+    /// As declarações que os repasses alcançam por outro nome que `looked`:
+    /// em cada arquivo a que um repasse chegou trocando o nome, a de `by_name`
+    /// com o nome de lá, fora de todo tipo, como o repasse a acha.
+    pub(super) fn renamed(&self, modules: &[Module], by_name: &HashMap<&str, Vec<DeclId>>, looked: &str) -> Vec<DeclId> {
+        let mut out: Vec<DeclId> = self
+            .found
+            .iter()
+            .filter(|(_, name)| name != looked && name != WHOLE_FILE)
+            .flat_map(|(file, name)| {
+                by_name.get(name.as_str()).into_iter().flatten().copied().filter(move |&(mi, di)| {
+                    modules[mi].path == *file && modules[mi].declarations[di].owner.is_empty()
+                })
+            })
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+}
+
+/// Os arquivos que `m` alcança pelos repasses dos arquivos que ele importa:
+/// de cada um que repassa, os que declaram, seguidos os repasses, cada nome
+/// que ele oferece e que `m` escreve. Ficam à vista de `m` como o arquivo
+/// que um import do nome alcança: o valor que a função repassada devolve
+/// (`crate::round::outdated_review()`) chega ao método do tipo dela
+/// (`outdated.hint()`). O nome que o arquivo escreve vale pelas letras, onde
+/// quer que esteja escrito, e o arquivo que o repasse alcança por ele fica à
+/// vista ainda que o nome escrito seja outra coisa.
+pub(super) fn passed_sight(resolver: &Resolver, m: &Module) -> HashSet<String> {
+    let mut sight = HashSet::new();
+    let mut written: Option<HashSet<&str>> = None;
+    for dep in &m.deps {
+        let Some(&module) = resolver.by_path.get(dep.as_str()).filter(|module| !module.reexports.is_empty()) else {
+            continue;
+        };
+        let written = written.get_or_insert_with(|| {
+            m.calls.iter().chain(&m.cites).chain(&m.value_uses).chain(&m.member_reads).map(|site| site.name.as_str()).collect()
+        });
+        // O repasse que oferece todos (`*`) pode trazer qualquer nome escrito.
+        let all = module.reexports.values().any(|offered| offered.contains_key("*"));
+        let offered: HashSet<&str> = if all {
+            written.clone()
+        } else {
+            module.reexports.values().flat_map(|offered| offered.keys().map(String::as_str)).filter(|name| written.contains(name)).collect()
+        };
+        for name in offered {
+            sight.extend(resolver.declaring(module, name).into_iter().map(|(file, _)| file));
         }
     }
-    reached
+    sight
 }
 
 /// Os tipos de declaração que têm campos.

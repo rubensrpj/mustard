@@ -16,6 +16,10 @@
 //! o mapa acha em outro arquivo, o nome que ele não conhece e a falta do mapa
 //! só avisam: o mapa pode estar atrás do código, e um aviso não prende o
 //! assistente num laço de repetição.
+//!
+//! A citação que traz só o nome do arquivo, sem a pasta, ganha o caminho
+//! certo: [`resolve`] põe a pasta quando um arquivo só do projeto tem esse
+//! nome, e a recusa do arquivo que não existe diz os arquivos com o nome dele.
 
 use crate::domain::clarity::is_file_path;
 use crate::domain::project_map::clean_path;
@@ -150,8 +154,10 @@ fn is_identifier(word: &str) -> bool {
 /// O que a conferência achou numa fonte e no texto que ela sustenta.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Finding {
-    /// O arquivo citado não existe.
-    MissingFile { path: String },
+    /// O arquivo citado não existe. Quando a citação traz só o nome, sem a
+    /// pasta, `same_name` são os arquivos do projeto que têm esse nome, em
+    /// ordem de caminho; senão, fica vazio.
+    MissingFile { path: String, same_name: Vec<String> },
     /// O arquivo existe, e a linha citada é a zero ou passa do fim dele.
     MissingLine { path: String, line: u64, lines: u64 },
     /// O nome citado não é declarado no arquivo citado, e sim nestes lugares
@@ -175,7 +181,9 @@ impl Finding {
     #[must_use]
     pub fn refusal(&self, fact: usize) -> Option<Refusal> {
         match self {
-            Self::MissingFile { path } => Some(Refusal::CitedFileMissing { fact, path: path.clone() }),
+            Self::MissingFile { path, same_name } => {
+                Some(Refusal::CitedFileMissing { fact, path: path.clone(), same_name: same_name.clone() })
+            }
             Self::MissingLine { path, line, lines } => {
                 Some(Refusal::CitedLineMissing { fact, path: path.clone(), line: *line, lines: *lines })
             }
@@ -221,6 +229,74 @@ pub trait CitationWorld {
     fn declared(&self, name: &str) -> Vec<(String, u64)>;
     /// `true` quando há mapa para conferir os nomes.
     fn has_map(&self) -> bool;
+    /// Os arquivos do projeto cujo nome, sem a pasta, é `name`: o caminho de
+    /// cada um, em ordem de caminho.
+    fn files_named(&self, name: &str) -> Vec<String>;
+}
+
+/// O achado do arquivo citado em `path` que não existe. Quando a citação traz
+/// só o nome do arquivo, sem a pasta, ele leva os arquivos do projeto que têm
+/// esse nome: é o caminho que a recusa sugere.
+#[must_use]
+pub fn missing_file(world: &impl CitationWorld, path: &str) -> Finding {
+    let same_name = if path.contains('/') { Vec::new() } else { world.files_named(path) };
+    Finding::MissingFile { path: path.to_string(), same_name }
+}
+
+/// A fonte `source` com o caminho certo, pela conferência que recusaria a
+/// gravação dela.
+///
+/// A fonte que se confere volta como veio, e a que não cita arquivo também.
+/// A que cita só o nome de um arquivo que não está ali volta com a pasta,
+/// quando um arquivo só do projeto tem esse nome e a linha citada cabe nele.
+/// As outras voltam com o achado que recusaria: o arquivo que não existe, com
+/// os arquivos que têm o nome dele quando são dois ou mais, ou a linha que
+/// passa do fim.
+///
+/// # Errors
+///
+/// O achado que recusa, quando a fonte não se confere nem com a pasta.
+pub fn resolve(world: &impl CitationWorld, source: &str) -> Result<String, Finding> {
+    let refused = |source: &str| check(world, source, "").into_iter().find(Finding::is_refusal);
+    match refused(source) {
+        None => Ok(source.to_string()),
+        Some(Finding::MissingFile { same_name, .. }) if same_name.len() == 1 => {
+            let lines = source.trim().rsplit_once(':').map_or("", |(_, lines)| lines);
+            let found = format!("{}:{lines}", same_name[0]);
+            match refused(&found) {
+                None => Ok(found),
+                Some(finding) => Err(finding),
+            }
+        }
+        Some(finding) => Err(finding),
+    }
+}
+
+/// O lugar `place` que um achado cita, com o caminho certo, pela mesma
+/// conferência das fontes ([`resolve`]).
+///
+/// O lugar com linha se confere como a fonte de um fato. O que é só um
+/// caminho de arquivo (`apps/a.rs`, `a.rs`) tem de existir, e o que traz só o
+/// nome ganha a pasta quando um arquivo só do projeto tem esse nome. O lugar
+/// que não cita arquivo — um nome de código, um comando — volta como veio.
+///
+/// # Errors
+///
+/// O achado que recusa: o arquivo que não existe, com os arquivos que têm o
+/// nome dele quando são dois ou mais, ou a linha que passa do fim.
+pub fn resolve_place(world: &impl CitationWorld, place: &str) -> Result<String, Finding> {
+    let place = place.trim();
+    if file_citation(place).is_some() || !is_file_path(place) {
+        return resolve(world, place);
+    }
+    let path = clean_path(&place.replace('\\', "/"));
+    if world.file_lines(&path).is_some() {
+        return Ok(path);
+    }
+    match missing_file(world, &path) {
+        Finding::MissingFile { same_name, .. } if same_name.len() == 1 => Ok(same_name[0].clone()),
+        finding => Err(finding),
+    }
 }
 
 /// Confere uma fonte e o texto que ela sustenta.
@@ -237,7 +313,7 @@ pub fn check(world: &impl CitationWorld, source: &str, text: &str) -> Vec<Findin
     let cited = file_citation(source);
     if let Some((path, line)) = &cited {
         let Some(lines) = world.file_lines(path) else {
-            return vec![Finding::MissingFile { path: path.clone() }];
+            return vec![missing_file(world, path)];
         };
         if *line == 0 || *line > lines {
             return vec![Finding::MissingLine { path: path.clone(), line: *line, lines }];
@@ -298,6 +374,9 @@ mod tests {
         fn has_map(&self) -> bool {
             self.map
         }
+        fn files_named(&self, name: &str) -> Vec<String> {
+            self.files.keys().filter(|path| path.rsplit('/').next() == Some(name)).map(|path| (*path).to_string()).collect()
+        }
     }
 
     fn world() -> World {
@@ -329,6 +408,27 @@ mod tests {
         assert_eq!(
             cited_files("Veja src/App.svelte, prisma/schema.prisma, docs/guia.markdown e docs/LEIA.MD."),
             ["src/App.svelte", "prisma/schema.prisma", "docs/guia.markdown"]
+        );
+    }
+
+    /// O lugar de um achado se confere com e sem a linha: o que cita só o
+    /// nome de um arquivo que um arquivo só do projeto tem ganha a pasta; o
+    /// arquivo que não existe, o nome que dois arquivos têm e a linha depois
+    /// do fim recusam; o lugar que não cita arquivo volta como veio.
+    #[test]
+    fn a_finding_place_gets_its_folder_and_a_missing_one_is_refused() {
+        let mut two = world();
+        two.files.insert("lib/a.rs", 5);
+        assert_eq!(resolve_place(&world(), "src/a.rs:12"), Ok("src/a.rs:12".into()));
+        assert_eq!(resolve_place(&world(), " a.rs:12 "), Ok("src/a.rs:12".into()));
+        assert_eq!(resolve_place(&world(), "b.rs"), Ok("src/b.rs".into()));
+        assert_eq!(resolve_place(&world(), "./src/b.rs"), Ok("src/b.rs".into()));
+        assert_eq!(resolve_place(&world(), "SpecLog::read"), Ok("SpecLog::read".into()));
+        assert_eq!(resolve_place(&world(), "src/c.rs"), Err(Finding::MissingFile { path: "src/c.rs".into(), same_name: Vec::new() }));
+        assert_eq!(resolve_place(&world(), "src/b.rs:11"), Err(Finding::MissingLine { path: "src/b.rs".into(), line: 11, lines: 10 }));
+        assert_eq!(
+            resolve_place(&two, "a.rs"),
+            Err(Finding::MissingFile { path: "a.rs".into(), same_name: vec!["lib/a.rs".into(), "src/a.rs".into()] })
         );
     }
 
@@ -390,8 +490,11 @@ mod tests {
     #[test]
     fn a_missing_file_or_line_refuses_and_the_names_are_not_looked_at() {
         let missing = check(&world(), "src/nao-existe.rs:10", "o `Inexistente`");
-        assert_eq!(missing, vec![Finding::MissingFile { path: "src/nao-existe.rs".into() }]);
-        assert_eq!(missing[0].refusal(1), Some(Refusal::CitedFileMissing { fact: 1, path: "src/nao-existe.rs".into() }));
+        assert_eq!(missing, vec![Finding::MissingFile { path: "src/nao-existe.rs".into(), same_name: Vec::new() }]);
+        assert_eq!(
+            missing[0].refusal(1),
+            Some(Refusal::CitedFileMissing { fact: 1, path: "src/nao-existe.rs".into(), same_name: Vec::new() })
+        );
         let past_end = check(&world(), "src/b.rs:3-11", "");
         assert_eq!(past_end, vec![Finding::MissingLine { path: "src/b.rs".into(), line: 11, lines: 10 }]);
         assert!(past_end[0].is_refusal() && past_end[0].warning(1, Locale::PtBr).is_none());

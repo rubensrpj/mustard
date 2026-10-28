@@ -1,6 +1,6 @@
-//! A triagem das atividades que a rodada grava — a sobra, o alvo da mudança
-//! de plano, o item que a onda não cumpriu e o item que a revisão final não
-//! cumpriu — nunca pergunta ao Jev com a trava do passo do git ou a das
+//! A triagem das atividades que a rodada grava — o alvo da mudança de plano,
+//! o item que a onda não cumpriu e o item que a revisão final não cumpriu —
+//! nunca pergunta ao Jev com a trava do passo do git ou a das
 //! cópias presa: a volta espera fora do commit, a pergunta sai depois de as
 //! travas soltarem, e a rodada seguinte aplica a resposta gravada. O Jev que
 //! falha manda a pergunta à reserva, e a volta espera o recibo. Com o Jev
@@ -150,7 +150,7 @@ fn sent_with_an_open_task(root: &Path) {
         let decision = json!({"text": "A soma arredonda para baixo.", "why": "w", "waves": [1], "keys": ["k"], "origin": said});
         assert_eq!(write(root, "x", "decision", decision)["ok"], json!(true));
         let other = id_of(&write(root, "x", "decision", json!({"text": "O log gira por dia.", "why": "w", "keys": ["log"], "origin": said})));
-        let task = json!({"text": OPEN_TASK, "files": [{"path": "src/b.rs"}], "depends_on": [], "covers": [other], "origin": said});
+        let task = json!({"text": OPEN_TASK, "files": [{"path": "src/b.rs"}], "depends_on": [], "covers": [other, "MSTD-CRIT-0001"], "origin": said});
         assert_eq!(write(root, "x", "task", task)["ok"], json!(true));
     });
     std::fs::write(root.join("src/b.rs"), "fn two() {}\n").unwrap();
@@ -223,20 +223,6 @@ fn scenario(root: &Path, mode: Mode, take: &dyn Fn() -> Value, applied: &dyn Fn(
     assert!(applied() && !rule(), "the receipt decides like the Jev: {applied_now}");
 }
 
-/// A leftover of the return: the Jev puts it in the open task, which covers
-/// it; today's rule, without the Jev, makes a task of its own.
-#[test]
-fn a_leftover_is_triaged_outside_the_locks_and_the_next_round_applies_the_decision() {
-    for mode in MODES {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        sent_with_an_open_task(root);
-        let leftover = json!({"leftovers": [{"title": "O log não gira", "detail": "O arquivo de log cresce sem limite."}]});
-        return_wave_one(root, false, leftover);
-        scenario(root, mode, &|| round(root, "x", None), &|| notes_on_the_open_task(root) == 1, &|| tasks_saying(root, "O log não gira") == 1);
-    }
-}
-
 /// An agreed item the return did not meet: the Jev says the open task
 /// covers it; today's rule makes a task for it.
 #[test]
@@ -264,7 +250,7 @@ fn an_unmet_item_of_the_final_review_is_triaged_outside_the_locks_and_the_next_r
         seed_review(root);
         let agreed = json!([{"item": "MSTD-DEC-0001", "met": false, "text": "Falta arredondar."}, {"item": "MSTD-DEC-0002", "met": true}]);
         let verdict = json!({"result": "approved", "final": true, "text": "passou", "agreed": agreed,
-            "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}]});
+            "criteria": [{"criterion": "MSTD-CRIT-0001"}]});
         let wrote = judged(root, verdict);
         assert_eq!(wrote["ok"], json!(true), "{wrote}");
         let official = || log_of(root).visible().into_iter().any(|e| e.event_type == "verdict" && e.str_field("author") == Some("review"));

@@ -31,7 +31,7 @@ use super::commit::{
 use super::wave_commit::{commit_waves, made_drafts, record_made, removed_warnings};
 use super::commit_title::{check_summary, wave_commits};
 use super::copy_check::check_against_copies;
-use super::leftovers::{Leftover, LeftoverEvent, MeaningJoin, ask_rewrites, cover_asks, leftover_destinations, leftover_events, leftovers_of, meaning_joins};
+use super::leftovers::{Leftover, LeftoverEvent, MeaningJoin, ask_rewrites, cover_asks, leftover_events, leftovers_of};
 use super::queue::{backlog_wave, open_review, open_sends, waves_in_progress};
 use super::rehearsal::{Recording, Rehearsed, rehearse};
 use super::rejection::{held_rejection, keep_rejections, record_rejections, rejected_lines, release_unstarted};
@@ -388,6 +388,9 @@ fn take_returns(
     // as outras seguem para o commit: o caminho que nunca entra num commit, a
     // volta que não bate com a cópia, a que espera revisão, o resumo do
     // commit que não cabe no modelo e o arquivo que o `.gitignore` ignora.
+    // A versão nova de uma skill, no caminho reservado da cópia, nunca entra
+    // no commit: sai da lista antes de toda conferência.
+    super::skill_install::drop_reserved(&mut report.waves);
     let mut refused = hold_refused(&mut report.waves, |wave| super::review::validate_paths(std::slice::from_ref(wave)));
     let (mut warnings, against_copies) = check_against_copies(root, log, &mut report.waves, lang);
     refused.extend(against_copies);
@@ -563,6 +566,10 @@ fn take_returns(
     let now = head(root);
     refused.extend(held.into_iter().map(|one| HeldReturn { wave: one.wave(), refusal: one.refusal(now.clone()) }));
     let (mut recorded, _proofs) = record_reports(start, spec, checked).map_err(RoundRefusal::Refused)?;
+    // Com a entrega gravada, a versão nova da skill que a onda deixou no
+    // caminho reservado da cópia vai para o lugar da skill, antes de a cópia
+    // voltar limpa.
+    warnings.extend(super::skill_install::install_delivered(root, log, &report.waves, lang));
     // Quem avisa que a tarefa não feita voltou ao backlog é a resposta da
     // rodada: a mudança aceita pode pedir uma decisão nova ou uma tarefa
     // reescrita antes da rodada seguinte.
@@ -915,10 +922,9 @@ struct CheckedReport {
     /// lote. O item ou a sobra que uma tarefa ainda por entregar já cobre vem
     /// como nota, e o de mesmo sentido, como versão nova dessa tarefa.
     wave_tasks: Vec<(u64, &'static str, Rehearsed)>,
-    /// Cada tarefa que uma sobra ou um item não cumprido ganhou pelo sentido,
-    /// pela posição entre as entradas que a rodada grava, com as dos pedidos
-    /// dessas sobras e os números desses itens: a resposta da rodada leva o
-    /// pedido de reescrita de cada uma.
+    /// Cada tarefa que um item não cumprido ganhou pelo sentido, pela posição
+    /// entre as entradas que a rodada grava, com os números desses itens: a
+    /// resposta da rodada leva o pedido de reescrita de cada uma.
     meaning_joins: Vec<MeaningJoin>,
 }
 
@@ -943,9 +949,8 @@ pub(super) fn own_copy_relative(log: &SpecLog, wave: u64, file: &str) -> String 
 /// nunca deixa gravada a que veio antes dela, e nada é recusado depois do
 /// commit. O entregou vai também em cada onda que o conserto fecha, e o item
 /// combinado que a entrega não cumpriu e cada sobra viram tarefa no backlog,
-/// pela mesma conferência das tarefas que nascem do veredito — a sobra cujos
-/// arquivos já estão numa tarefa aberta vira uma linha nela, e a que repete
-/// uma tarefa ainda por entregar vira nota que a aponta ([`leftover_events`]). A tarefa que a
+/// pela mesma conferência das tarefas que nascem do veredito — o achado entra
+/// na tarefa da mesma regra, quando ela existe ([`leftover_events`]). A tarefa que a
 /// onda não fez volta ao backlog antes das entregas, com a mudança aceita
 /// anotada no idioma `lang`, e leva o item combinado que a onda não cumpriu
 /// ([`join_unmet`]), que então não vira tarefa nova.
@@ -965,9 +970,12 @@ fn check_reports(
     // A triagem de cada atividade lê só a decisão já tomada: o Jev nunca é
     // chamado daqui, com a trava do passo do git presa.
     let ask = |payload: &str| triage.decisions.answer(payload);
+    // A tarefa nova de um item não cumprido cobre também os itens com prova
+    // por que a volta responde, lidos pelo comando de teste do projeto.
+    let test = mustard_core::ProjectConfig::load(root).commands().test;
     // O item que a revisão final não cumpriu passa pelo classificador, como o
     // da volta de uma onda: a nota, a versão nova de uma tarefa ou a tarefa nova.
-    let (review_events, review_joins) = place_review_unmet(check.log(), review_unmet, lang, &ask);
+    let (review_events, review_joins) = place_review_unmet(check.log(), review_unmet, (lang, test.as_deref()), &ask);
     let agreed_tasks =
         review_events.into_iter().map(|(kind, draft)| Ok((kind, rehearse(&mut check, kind, draft)?))).collect::<Result<Vec<_>, Refusal>>()?;
     let mut meaning = unmet_meaning_joins(review_joins, verdicts.len(), verdicts.len());
@@ -977,7 +985,7 @@ fn check_reports(
     // item que a onda não cumpriu entra nessa mesma versão, e também não
     // vira tarefa nova.
     let mut returned = undone_returns(check.log(), &report.waves, lang, &ask);
-    let (unmet, unmet_joins) = join_unmet((triage.log, &triage.returning), check.log(), &report.waves, &mut returned, lang, &ask)?;
+    let (unmet, unmet_joins) = join_unmet((triage.log, &triage.returning), check.log(), &report.waves, &mut returned, (lang, test.as_deref()), &ask)?;
     let mut undone_tasks = Vec::new();
     for (wave, task) in returned {
         undone_tasks.push((wave, rehearse(&mut check, "task", task)?));
@@ -1058,22 +1066,17 @@ fn check_reports(
         }
     }
     let found: Vec<(u64, &Leftover)> = report.waves.iter().flat_map(|wave| wave.leftovers.iter().map(move |leftover| (wave.wave, leftover))).collect();
-    // A sobra que entra numa tarefa que voltou ao backlog nesta rodada aponta
-    // o número que o ensaio deu à volta, e o pedido da sobra aponta o da
+    // O achado que entra numa tarefa que voltou ao backlog nesta rodada aponta
+    // o número que o ensaio deu à volta, e o pedido do achado aponta o da
     // entrega e é coberto pelo número que o ensaio deu a ele: a gravação de
     // verdade troca cada um pelo dela.
-    let returning: BTreeSet<u64> = report.waves.iter().flat_map(|wave| std::iter::once(wave.wave).chain(wave.fixes.iter().copied())).collect();
-    // O destino de cada sobra sai da pergunta da volta dela, feita sobre a
-    // spec gravada, com o resumo da volta que deixou tarefa por fazer.
-    let destinations = leftover_destinations(root, (triage.log, &triage.returning), &report.waves, &ask);
-    let leftovers = leftover_events(root, check.log(), &found, &returning, &reported, &destinations, lang);
+    let leftovers = leftover_events(root, check.log(), &found, &reported, lang);
     // As posições das junções pelo sentido entre as entradas que a rodada
     // grava, na ordem de [`record_reports`]: vereditos, o que a revisão final
-    // deu, as tarefas devolvidas, as entregas e o que os itens e as sobras viram.
+    // deu, as tarefas devolvidas, as entregas e o que os itens viram.
     let returned_from = verdicts.len() + agreed_tasks.len();
     let work_from = returned_from + undone_tasks.len() + deliveries.len();
     meaning.extend(unmet_meaning_joins(unmet_joins, returned_from, work_from));
-    meaning.extend(meaning_joins(&leftovers, work_from + wave_tasks.len()));
     let mut rehearsed: Vec<u64> = Vec::new();
     for LeftoverEvent { wave, kind, mut draft, asks, .. } in leftovers {
         cover_asks(&mut draft, &asks, &rehearsed);
@@ -1145,11 +1148,13 @@ struct CriterionVersion {
     draft: Map<String, Value>,
 }
 
-/// A versão nova do critério `id`, com a prova `proof` e o mesmo resto da
-/// versão mais nova dele no arquivo `log`. `None` quando o critério saiu da
-/// leitura.
+/// A versão nova do critério `id`, com a prova `proof` somada à que a versão
+/// mais nova dele no arquivo `log` já tinha ([`joined_proof`]), e o mesmo
+/// resto dela. `None` quando o critério saiu da leitura ou quando a prova
+/// dele já tem cada comando de `proof`: nada muda, e não há versão nova.
 fn criterion_version(log: &SpecLog, id: u64, proof: &str) -> Option<CriterionVersion> {
     let criterion = log.current(id)?;
+    let proof = joined_proof(criterion.str_field("proof").unwrap_or_default(), proof)?;
     let mut draft: Map<String, Value> = criterion
         .fields
         .iter()
@@ -1161,6 +1166,22 @@ fn criterion_version(log: &SpecLog, id: u64, proof: &str) -> Option<CriterionVer
     draft.insert("author".into(), json!("wave"));
     let code = log.codes().get(&criterion.id).cloned().unwrap_or_else(|| criterion.id.to_string());
     Some(CriterionVersion { code, replaces: criterion.id, draft })
+}
+
+/// A prova `had` de um critério com cada comando de `new`, partido em `&&`,
+/// que ela ainda não tem, na ordem e depois dos dela: a prova da onda soma à
+/// do critério, e nenhum comando que ele tinha sai. `None` quando `had` já
+/// tem todos.
+fn joined_proof(had: &str, new: &str) -> Option<String> {
+    let parts = |proof: &str| proof.split(" && ").map(str::trim).filter(|part| !part.is_empty()).map(str::to_string).collect::<Vec<_>>();
+    let mut joined = parts(had);
+    let before = joined.len();
+    for part in parts(new) {
+        if !joined.contains(&part) {
+            joined.push(part);
+        }
+    }
+    (joined.len() > before).then(|| joined.join(" && "))
 }
 
 /// Grava o que [`check_reports`] conferiu, pela mesma porta de gravação das
@@ -1175,8 +1196,8 @@ fn criterion_version(log: &SpecLog, id: u64, proof: &str) -> Option<CriterionVer
 /// andar. Devolve o que foi gravado e, de cada prova nova, o código do critério e o
 /// comando. A entrada de cada entregou leva o texto, os arquivos e as provas
 /// que a própria onda mandou: quem conduz a obra confere a entrega pela
-/// resposta da rodada, sem ir ler a spec. A entrada da tarefa que uma sobra
-/// ganhou pelo sentido leva o pedido de reescrita dela ([`ask_rewrites`]).
+/// resposta da rodada, sem ir ler a spec. A entrada da tarefa que um item não
+/// cumprido deu pelo sentido leva o pedido de reescrita dela ([`ask_rewrites`]).
 fn record_reports(start: &Path, spec: &str, checked: CheckedReport) -> Result<RecordedReport, Refusal> {
     let CheckedReport { verdicts, deliveries, proofs, sent_proofs, sends, agreed_tasks, undone_tasks, wave_tasks, meaning_joins } = checked;
     let root = crate::commands::spec_events::project(start).root;
@@ -1523,7 +1544,42 @@ mod tests {
 
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let current = log.visible().into_iter().find(|e| e.event_type == "criterion").expect("the criterion");
-        assert_eq!(current.str_field("proof"), Some("echo a && echo b && echo c"), "{raw}");
+        assert_eq!(current.str_field("proof"), Some("git --version && echo a && echo b && echo c"), "{raw}");
+    }
+
+    /// O critério nasce provado por `git --version`. A onda 1 grava a prova
+    /// `git --help`: o critério fica com as duas, a dele primeiro, numa
+    /// versão nova. A onda 2 grava `git --version`, que ele já tinha: nenhum
+    /// comando sai, e não há versão nova.
+    #[test]
+    fn a_wave_proof_joins_the_criterion_proof_instead_of_replacing_it() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[1])]);
+        assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1], "a onda 2 espera a 1");
+        let criterion = || {
+            let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+            let versions = log.events.iter().filter(|e| e.event_type == "criterion").count();
+            let current = log.visible().into_iter().find(|e| e.event_type == "criterion").expect("o critério");
+            (current.str_field("proof").map(str::to_string), versions)
+        };
+        assert_eq!(criterion(), (Some("git --version".to_string()), 1));
+
+        std::fs::write(root.join("src/a.rs"), "fn one() {}\n// A soma saiu.\n").unwrap();
+        let one = json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": "a soma sai",
+            "proofs": [{"criterion": "MSTD-CRIT-0001", "proof": "git --help"}]});
+        assert_eq!(returned(root, one)["ok"], json!(true));
+        let out = round(root, "x", None);
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!(criterion(), (Some("git --version && git --help".to_string()), 2), "{out}");
+
+        std::fs::write(root.join("src/b.rs"), "fn two() {}\n// A dobra saiu.\n").unwrap();
+        let two = json!({"wave": 2, "text": "A dobra saiu.", "files": ["src/b.rs"], "commit": "a dobra sai",
+            "proofs": [{"criterion": "MSTD-CRIT-0001", "proof": "git --version"}]});
+        assert_eq!(returned(root, two)["ok"], json!(true));
+        let out = round(root, "x", None);
+        assert_eq!(out["ok"], json!(true), "{out}");
+        assert_eq!(criterion(), (Some("git --version && git --help".to_string()), 2), "{out}");
     }
 
     /// A onda que só foi conferir volta sem arquivo nenhum: a rodada grava a
@@ -1734,7 +1790,7 @@ mod tests {
         assert_eq!(judged(root, no_wave)["reason"], json!("missing-field"));
 
         let unknown = json!({"wave": 1, "result": "approved", "text": "passou",
-            "criteria": [{"criterion": "MSTD-CRIT-0099", "tests_rule": true}]});
+            "criteria": [{"criterion": "MSTD-CRIT-0099"}]});
         let refused = judged(root, unknown);
         assert_eq!(refused["ok"], json!(false), "{refused}");
 
@@ -2051,7 +2107,7 @@ mod tests {
         seed_review(root);
         let before = spec_lines();
         let no_result = json!({"wave": 1, "text": "sem resultado",
-            "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}]});
+            "criteria": [{"criterion": "MSTD-CRIT-0001"}]});
         let refused = judged(root, no_result);
         assert_eq!(refused["reason"], json!("missing-field"), "{refused}");
         assert_eq!(spec_lines(), before, "the verdict without a result was not recorded");
@@ -2680,7 +2736,7 @@ mod tests {
             judged(
                 root,
                 json!({"result": "approved", "final": true, "text": "passou", "agreed": agreed,
-                "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}]}),
+                "criteria": [{"criterion": "MSTD-CRIT-0001"}]}),
             )
         };
         assert_eq!(judged_with(json!([]))["ok"], json!(true), "sem item combinado, o veredito entra");
@@ -2783,7 +2839,8 @@ mod tests {
         assert_eq!(took["ok"], json!(true), "{took}");
         let tasks = backlog();
         assert_eq!(tasks.len(), 1, "one task, for the item not met: {tasks:?}");
-        assert_eq!(tasks[0]["covers"], json!([edge]), "{tasks:?}");
+        let crit = read().visible().into_iter().find(|e| e.event_type == "criterion").map(|e| e.id).expect("the criterion");
+        assert_eq!(tasks[0]["covers"], json!([edge, crit]), "the item and the criterion with proof of the wave: {tasks:?}");
         assert_eq!(tasks[0]["author"], json!("wave"), "{tasks:?}");
         assert_eq!(tasks[0]["text"], json!("Falta a lista vazia somar zero."), "{tasks:?}");
         let log = read();
@@ -3061,7 +3118,7 @@ mod tests {
     fn final_verdict() -> Value {
         json!({"result": "approved", "final": true, "text": "passou",
             "agreed": [{"item": "MSTD-DEC-0001", "met": true}],
-            "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}]})
+            "criteria": [{"criterion": "MSTD-CRIT-0001"}]})
     }
 
     /// O veredito do revisor só grava depois de ele ler cada item que o
@@ -3090,7 +3147,7 @@ mod tests {
 
         let before = spec_lines(root);
         let unanswered = json!({"result": "approved", "final": true, "text": "passou",
-            "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}]});
+            "criteria": [{"criterion": "MSTD-CRIT-0001"}]});
         let refused = judged(root, unanswered);
         assert_eq!(refused["reason"], json!("agreed-items-missing"), "the agreed answer comes first: {refused}");
 
@@ -3132,7 +3189,7 @@ mod tests {
         std::fs::create_dir_all(&copy).unwrap();
         seed_review_reading(root, &[], &copy);
         let verdict = json!({"result": "approved", "final": true, "text": "passou", "agreed": [],
-            "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}]});
+            "criteria": [{"criterion": "MSTD-CRIT-0001"}]});
         let wrote = judged(root, verdict);
         assert_eq!(wrote["ok"], json!(true), "{wrote}");
     }
@@ -3172,7 +3229,7 @@ mod tests {
     /// Uma tarefa no backlog da spec `x`, sem onda, cobrindo o item `item`.
     fn backlog_task_covering(root: &Path, item: u64, origin: u64) {
         let body = json!({"text": "A tarefa do backlog que já cobre a decisão.", "files": [{"path": "src/b.rs"}],
-            "depends_on": [], "covers": [item], "origin": origin});
+            "depends_on": [], "covers": [item, "MSTD-CRIT-0001"], "origin": origin});
         assert_eq!(write(root, "x", "task", body)["ok"], json!(true));
     }
 
@@ -3513,7 +3570,7 @@ mod tests {
         let wrote = judged(
             root,
             json!({"result": "approved", "final": true, "text": "passou", "agreed": agreed,
-            "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}]}),
+            "criteria": [{"criterion": "MSTD-CRIT-0001"}]}),
         );
         assert_eq!(wrote["ok"], json!(true), "{wrote}");
         let took = round(root, "x", None);
@@ -3660,9 +3717,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
-        // O envio sai pelo menos um segundo depois do começo da spec: a conversa
+        // O envio sai depois do começo da spec, nas horas gravadas: a conversa
         // principal conta desde o começo, e não desde o envio.
-        std::thread::sleep(std::time::Duration::from_millis(1_100));
         let out = round(root, "x", None);
         assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
         let prompt = request_at(&out, 0);
@@ -3879,8 +3935,8 @@ fn main() { sum_comes_out_right(); double_comes_out_right(); }
         let current = log.visible().into_iter().find(|e| e.event_type == "criterion").expect("o critério");
         assert_eq!(
             current.str_field("proof"),
-            Some("echo running 1 test sum_comes_out_right && echo running 1 test double_comes_out_right"),
-            "as duas provas viram um comando só"
+            Some("git --version && echo running 1 test sum_comes_out_right && echo running 1 test double_comes_out_right"),
+            "as duas provas viram um comando só, depois da que o critério tinha"
         );
     }
 
@@ -3970,7 +4026,7 @@ fn main() { sum_comes_out_right(); double_comes_out_right(); }
         assert!(warning_of(&out, "proof-rerouted")["hint"].as_str().unwrap_or_default().contains(&criterion_code), "{out}");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
         let current = log.visible().into_iter().find(|e| e.event_type == "criterion").expect("o critério");
-        assert_eq!(current.str_field("proof"), Some("git --help"), "the criterion took the proof");
+        assert_eq!(current.str_field("proof"), Some("git --version && git --help"), "the criterion took the proof");
     }
     /// As linhas do arquivo da spec `x`: a gravação recusada não escreve
     /// nenhuma.
@@ -4024,7 +4080,6 @@ fn main() { sum_comes_out_right(); double_comes_out_right(); }
     #[test]
     fn return_written_during_the_round_does_not_produce_a_second_delivery() {
         use std::sync::mpsc;
-        use std::time::Duration;
 
         let dir = tempdir().unwrap();
         let root = dir.path();
@@ -4042,30 +4097,21 @@ fn main() { sum_comes_out_right(); double_comes_out_right(); }
         std::fs::create_dir_all(&hooks).unwrap();
         let (started, release) = (hooks.join("comecou"), hooks.join("solta"));
         let hook = hooks.join("pre-commit");
-        let script = format!(
-            "#!/bin/sh\ntouch '{}'\nn=0\nwhile [ ! -f '{}' ] && [ $n -lt 600 ]; do sleep 0.05; n=$((n+1)); done\n",
-            started.display(),
-            release.display()
-        );
+        let script = format!("#!/bin/sh\ntouch '{}'\n{}\n", started.display(), crate::held_command::held_until_released(&release));
         crate::executable::write_executable(&hook, &script);
         git_at(root, &["config", "core.hooksPath", &hooks.to_string_lossy()]);
 
         let (out, late, written_while_held) = std::thread::scope(|scope| {
             let going = scope.spawn(|| round(root, "x", None));
-            for _ in 0..3000 {
-                if started.exists() {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            assert!(started.exists(), "o gancho do commit não começou");
+            crate::wait_for::wait_for("o começo do gancho do commit", || started.exists().then_some(()));
             let (wrote_tx, wrote_rx) = mpsc::channel();
             let late = scope.spawn(move || {
                 let wrote = returned(root, json!({"wave": 1, "text": "Conferi de novo.", "commit": "a soma sai"}));
                 let _ = wrote_tx.send(());
                 wrote
             });
-            let written_while_held = wrote_rx.recv_timeout(Duration::from_millis(1500)).is_ok();
+            crate::pause::room_for_what_must_not_happen();
+            let written_while_held = wrote_rx.try_recv().is_ok();
             std::fs::write(&release, b"").unwrap();
             (going.join().unwrap(), late.join().unwrap(), written_while_held)
         });
@@ -4370,18 +4416,20 @@ fn main() { sum_comes_out_right(); double_comes_out_right(); }
             "commit": "a soma sai", "leftovers": [{"detail": "Sem título."}]}),
         );
         assert_eq!(untitled["reason"], json!("leftover-field-missing"), "{untitled}");
-        assert_eq!(untitled["hint"], json!("Falta o campo title numa sobra (leftovers) da volta. Nada foi gravado."), "{untitled}");
+        let hint = untitled["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("O achado 1") && hint.contains("title, rule, places"), "{untitled}");
         assert_eq!(spec_lines(root), before, "nada foi gravado: {untitled}");
 
-        let cites = "Sem o índice, `src/commit.rs` para de ler o arquivo; `src/nao_existe.rs` também.";
+        let cites = "Sem o índice, `src/commit.rs` para de ler o arquivo; `src/nao_existe.rs` também. Prova: `git --version`";
         let wrote = returned(
             root,
             json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"],
             "commit": "a soma sai", "leftovers": [
-                {"title": "O log não gira", "detail": "O arquivo de log cresce sem limite."},
-                {"title": "O nome da variável confunde", "detail": "Um nome mais claro.", "kind": "cosmetic"},
-                {"title": "A leitura para sem o índice", "detail": cites, "kind": "breaks"},
-                {"title": "a busca ignora ACENTO", "detail": "Achei de novo.", "kind": "later"},
+                {"title": "O log não gira", "detail": "O arquivo de log cresce sem limite. Prova: `git --version`", "rule": "O log gira por dia", "places": ["src/a.rs"]},
+                {"title": "O nome da variável confunde", "detail": "Um nome mais claro. Prova: `git --version`", "kind": "cosmetic",
+                    "rule": "Cada nome diz o que guarda", "places": ["src/a.rs"]},
+                {"title": "A leitura para sem o índice", "detail": cites, "kind": "breaks", "rule": "A leitura tem índice", "places": ["src/commit.rs"]},
+                {"title": "a busca ignora ACENTO", "detail": "Achei de novo. Prova: `git --version`", "kind": "later", "rule": "A busca vê acento", "places": ["src/a.rs"]},
             ]}),
         );
         assert_eq!(wrote["ok"], json!(true), "a volta com `kind` de qualquer valor é aceita: {wrote}");
@@ -4408,7 +4456,7 @@ fn main() { sum_comes_out_right(); double_comes_out_right(); }
             assert!(!task.fields.contains_key("kind"), "o `kind` da volta fica de fora: {:?}", task.fields);
             assert_eq!(task.fields.get("priority"), Some(&json!(priority)), "a sobra vai à frente da fila: {:?}", task.fields);
         }
-        assert_eq!(tasks[1].fields["text"], json!("Um nome mais claro."), "{:?}", tasks[1].fields);
+        assert_eq!(tasks[1].fields["text"], json!("Um nome mais claro. Prova: `git --version`"), "{:?}", tasks[1].fields);
         assert_eq!(tasks[2].fields["text"], json!(cites), "{:?}", tasks[2].fields);
         assert_eq!(tasks[2].fields["files"], json!([{"path": "src/commit.rs"}]), "{:?}", tasks[2].fields);
         assert_eq!(tasks[0].fields["files"], json!([]), "{:?}", tasks[0].fields);
@@ -4430,8 +4478,9 @@ fn main() { sum_comes_out_right(); double_comes_out_right(); }
             root,
             json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"],
             "commit": "a soma sai", "leftovers": [
-                {"title": "O comentário da soma diz dois", "detail": "A soma é de três.", "cleanup": true},
-                {"title": "O log não gira", "detail": "O arquivo de log cresce sem limite."},
+                {"title": "O comentário da soma diz dois", "detail": "A soma é de três. Prova: `git --version`", "cleanup": true,
+                    "rule": "O comentário diz o que o código faz", "places": ["src/a.rs"]},
+                {"title": "O log não gira", "detail": "O arquivo de log cresce sem limite. Prova: `git --version`", "rule": "O log gira por dia", "places": ["src/a.rs"]},
             ]}),
         );
         assert_eq!(wrote["ok"], json!(true), "{wrote}");
@@ -4466,7 +4515,8 @@ fn main() { sum_comes_out_right(); double_comes_out_right(); }
         let before = spec_lines(root);
 
         for (field, wrong) in [("cleanup", json!("sim")), ("files", json!("src/a.rs")), ("files", json!([1]))] {
-            let mut leftover = json!({"title": "O comentário da soma diz dois", "detail": "A soma é de três."});
+            let mut leftover = json!({"title": "O comentário da soma diz dois", "detail": "A soma é de três.",
+                "rule": "O comentário diz o que o código faz", "places": ["src/a.rs"]});
             leftover[field] = wrong;
             let refused = returned(
                 root,

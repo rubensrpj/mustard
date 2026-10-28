@@ -3962,21 +3962,17 @@ mod tests {
         /// que a busca aprendeu só se dá por lido numa busca que viu a passada
         /// acabar. Quem decide é a resposta da busca, e não um relógio: entre
         /// uma tentativa e outra, só se espera a trava da passada ficar livre.
-        /// 60 s de limite para nunca prender a suíte.
         fn asked_and_settled(root: &Path, grep: &GrepSearch) -> Value {
             let model = mustard_core::io::project_map::model_path(&root.canonicalize().unwrap());
             let lock = mustard_core::domain::scan::native_pass_lock_path(&model);
-            let limit = std::time::Instant::now() + std::time::Duration::from_secs(60);
-            loop {
+            crate::wait_for::wait_for("a busca que viu a passada acabar", || {
                 let report = asked(root, grep.clone());
                 if report["learning"]["scan"]["status"] != "in-progress" {
-                    return report;
+                    return Some(report);
                 }
-                assert!(std::time::Instant::now() < limit, "a busca ainda deixava a passada do mapa por trás depois de 60 s: {report}");
-                while mustard_core::io::fs::lock::LockedFile::exclusive_if_free(&lock).ok().flatten().is_none() && std::time::Instant::now() < limit {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                }
-            }
+                crate::wait_for::wait_for("a trava da passada livre", || mustard_core::io::fs::lock::LockedFile::exclusive_if_free(&lock).ok().flatten().map(drop));
+                None
+            })
         }
         #[test]
         fn repeated_searches_keep_results_and_reuse_verified_facts() {

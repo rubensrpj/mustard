@@ -3,9 +3,10 @@
 //! do repositório fica duas pastas acima do pacote que compila o teste.
 //!
 //! Em cada idioma, todo texto que o modelo lê — os comandos e o estilo de
-//! resposta do plugin, os agentes e o mapa do início da sessão que o
-//! instalador grava — soma menos de 25.600 bytes. Não há teto por arquivo de
-//! agente: o que prende um molde é o que ele diz.
+//! resposta do plugin, os agentes, o mapa do início da sessão que o
+//! instalador grava e os princípios do produto, que chegam ao mapa e aos
+//! pedidos — soma menos de 30.400 bytes. Não há teto por arquivo de agente: o
+//! que prende um molde é o que ele diz.
 //!
 //! A conta é a do disco, byte a byte, como `find … -printf '%s'` a faz. Um
 //! arquivo pertence a um idioma quando o caminho dele diz o idioma (uma pasta
@@ -15,7 +16,21 @@
 use std::path::{Path, PathBuf};
 
 /// O teto da soma de um idioma, em bytes.
-pub const LANGUAGE_BUDGET: u64 = 25_600;
+///
+/// A conta: o teto era 25.600, e subiu o que os princípios ocupam no idioma em
+/// que ocupam mais, o `en-US`. O `principles.md` tinha 4.871 bytes e o lugar
+/// dele no molde do mapa, 14; saíram 443 bytes das frases que repetiam um
+/// princípio, 181 do mapa, 164 do molde de onda e 98 do de revisão:
+/// 25.600 + 4.871 + 14 − 443 = 30.042.
+///
+/// Ao 30.042 somaram a cobrança nova do primeiro princípio, 93 bytes no
+/// `en-US` e 85 no `pt-BR`, a linha dos lugares conferidos no molde da onda,
+/// 196 e 192, e o que os moldes de onda e de revisão ganharam depois além da
+/// sobra de 209 e 210 bytes que o teto tinha, 43 e 31: a soma medida é
+/// 30.042 + 93 + 196 + 43 = 30.374 no `en-US` e 30.042 + 85 + 192 + 31 =
+/// 30.350 no `pt-BR`. O teto sobe a 30.400, e a folga fica em 26 bytes no
+/// `en-US` e 50 no `pt-BR`.
+pub const LANGUAGE_BUDGET: u64 = 30_400;
 
 /// Os dois idiomas do Mustard, como aparecem nos caminhos.
 pub const LANGUAGES: [&str; 2] = ["pt-BR", "en-US"];
@@ -74,7 +89,7 @@ pub fn shown(path: &Path) -> String {
     path.strip_prefix(repo_root()).unwrap_or(path).display().to_string()
 }
 
-/// Em cada idioma, o texto que o modelo lê soma menos de 25.600 bytes; a
+/// Em cada idioma, o texto que o modelo lê soma menos de 30.400 bytes; a
 /// falha lista cada arquivo somado, com o tamanho dele.
 pub fn assert_each_language_under_budget() {
     let files = read_by_the_model();

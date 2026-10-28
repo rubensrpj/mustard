@@ -56,6 +56,10 @@ pub(crate) mod tool_observations;
 /// conversa; nunca texto do usuário.
 pub mod agent_said;
 pub mod branch_state;
+/// Os avisos da remoção das cópias da obra e a remoção da pasta de
+/// compilação declarada, que o fechamento, o descarte e a entrega usam sem
+/// chamar o fluxo.
+pub(crate) mod build_removal;
 /// O caminho do código pelo mapa, para as travas da leitura e da busca.
 pub mod code_route;
 /// A chave do Jev no arquivo de configuração, que nenhuma leitura mostra.
@@ -84,6 +88,9 @@ pub(crate) mod integration_health;
 pub(crate) mod host_installation;
 pub(crate) mod return_triage;
 pub(crate) mod project_summary;
+/// A linha da spec entregue no resumo do projeto, que a entrega grava; só
+/// depende do núcleo.
+pub(crate) mod summary_entry;
 pub(crate) mod failure_skills;
 pub(crate) mod skill_cycle;
 pub mod jev;
@@ -110,8 +117,13 @@ pub mod pr_history;
 pub mod pr_provider;
 pub mod proc;
 pub mod prompt;
+/// Os itens que dão à onda a prova que ela roda: os critérios da obra e os
+/// que a tarefa gravada pelo programa cobre.
+pub(crate) mod rule_proof;
 /// O texto do catálogo com as vagas preenchidas.
 pub mod say;
+/// Os recibos de custo das sessões do anfitrião e a soma deles por spec.
+pub(crate) mod session_costs;
 pub mod spec_state;
 /// O classificador das atividades que a rodada grava: coberta, junta a uma
 /// tarefa aberta de mesmo sentido ou nova, perto do assunto dela.

@@ -232,6 +232,17 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "[Mustard] The Claude Code plugin is on Mustard {plugin}, and the running binary is \
              {running}. Suggest `/mustard:upsert` and reopening Claude Code."
         }
+        // A linha que abre a janela renovada, depois de `/clear` e da
+        // compactação, antes dos princípios do condutor: o caminho da busca,
+        // a retomada e onde mora o mapa inteiro.
+        ("session.guide", Locale::PtBr) => {
+            "Mustard: busque código com `mcp__mustard__search` ou `run search`, e `mustard-rt run \
+             resume` retoma a spec. O mapa inteiro está em `.claude/mustard/session-map.md`."
+        }
+        ("session.guide", Locale::EnUs) => {
+            "Mustard: search code with `mcp__mustard__search` or `run search`, and `mustard-rt run \
+             resume` restores the spec. The full map is in `.claude/mustard/session-map.md`."
+        }
         // O programa compilado da branch do Mustard, só no código-fonte dele,
         // quando falta ou está atrás do commit: `{running}` é o programa que
         // roda a sessão até a compilação acabar, `{compiled}` e `{head}` são
@@ -302,16 +313,11 @@ mod tests {
     use crate::platform::i18n::translate;
 
     /// Esta parte guarda as mesmas chaves, com os mesmos textos nos dois
-    /// idiomas. Quem muda um texto de propósito grava aqui os dois números
-    /// novos que a falha mostra.
+    /// idiomas, como o arquivo de impressões dela em `stamps/` guarda. Quem muda
+    /// um texto de propósito regrava o arquivo pelo comando que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(
-            include_str!("session.rs"),
-            super::PREFIXES,
-            39,
-            0xf790_2c9f_e42d_96cf,
-        );
+        crate::platform::i18n::tests::assert_part_unchanged("session", include_str!("session.rs"), super::PREFIXES);
     }
 
     /// Work-unit surfacing copy is catalogue-driven in BOTH locales: the

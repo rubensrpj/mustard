@@ -1368,7 +1368,7 @@ mod tests {
         let flow = crate::shared::work_kind::BaseFlow::of_at(&config.git, root);
         assert_eq!(flow.base_of("hotfix/urgente").known(), None, "the flow alone cannot say");
 
-        let line = crate::commands::flow::resume::step_command("pr-open", "urgente", &now)
+        let line = crate::commands::flow::common::step_command("pr-open", "urgente", &now)
             .expect("the record carries branch and base");
         assert!(line.contains("--base main --head hotfix/urgente"), "{line}");
     }

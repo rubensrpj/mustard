@@ -229,7 +229,7 @@ pub(crate) fn seed_verdict(root: &Path, spec: &str, wave: u64, result: &str, cri
         "result": result,
         "final": true,
         "text": "revisão da onda",
-        "criteria": [{ "criterion": criterion, "tests_rule": "confere a regra" }],
+        "criteria": [{ "criterion": criterion }],
     });
     seed_event(root, spec, "verdict", verdict)
 }

@@ -502,6 +502,19 @@ pub fn skills_backup_dir(root: &Path) -> PathBuf {
     project_folder(root, "MUSTARD_SKILLS_DIR", "skills")
 }
 
+/// A pasta, na raiz da cópia de uma onda, em que a onda da tarefa de criar ou
+/// de atualizar uma skill escreve a versão nova dela: a pasta das skills do
+/// projeto fica fora da cópia, e a rodada grava a versão nova no lugar da
+/// skill quando assume a volta. Nada dela entra num commit.
+pub const RESERVED_SKILLS: &str = ".mustard-skill";
+
+/// O caminho, relativo à raiz da cópia, em que a onda escreve a versão nova da
+/// skill `name` ([`RESERVED_SKILLS`]).
+#[must_use]
+pub fn reserved_skill(name: &str) -> String {
+    format!("{RESERVED_SKILLS}/{name}/SKILL.md")
+}
+
 /// A pasta de `leaf` do projeto de `root`: a base que a variável `var`
 /// indicar, ou `.cache/mustard/<leaf>` sob a pasta pessoal, ou a pasta
 /// temporária, e dentro dela `<nome>-<código>`. A chave é uma só para toda
@@ -600,7 +613,9 @@ pub fn final_review_commit(root: &Path, log: &SpecLog) -> Option<String> {
 ///
 /// Depois de um veredito final, o pedido é o da revisão de volta: ele lista
 /// o que mudou desde esse veredito ([`wave_prompt::since_last_verdict`]), e o
-/// revisor confere isso e o encaixe no resto, sem repetir o que o veredito já
+/// revisor confere só a cadeia de cada conserto — a regra, os lugares e a
+/// prova, que a linha de cada tarefa traz ([`wave_prompt::task_chains`]) —,
+/// sem caçar achado no resto da obra nem repetir o que o veredito já
 /// concluiu. Depois de uma aprovação — a obra fechada e reaberta para um
 /// ajuste —, o que ela conferiu e não mudou sai também das outras partes
 /// ([`wave_prompt::Proven`]), e o pedido traz só o ajuste. Depois de uma
@@ -617,20 +632,52 @@ pub fn final_review_commit(root: &Path, log: &SpecLog) -> Option<String> {
 /// veredito responde por cada um.
 ///
 /// Junto do texto vem a lista dos itens que ele lista ([`FinalReview::listed`]),
-/// para o fechamento gravá-la no envio e o veredito conferir a leitura.
+/// para o fechamento gravá-la no envio e o veredito conferir a leitura. Os
+/// itens saem só da spec ([`final_review_items`]); o disco dá a cópia, o
+/// commit, as regras da execução e as do projeto, que o texto leva e a lista
+/// não.
 ///
 /// Só lê o disco, nunca grava: o fechamento grava o envio com o que ela
 /// devolve, e a leitura `request-review-preview` imprime o mesmo texto sem
 /// gravar nada, para o usuário ver o pedido real antes de ele valer.
 #[must_use]
 pub fn final_review(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> FinalReview {
+    let commit = final_review_commit(root, log);
+    let copy = final_copy_path(root, spec, log);
+    let prepared = crate::io::workspace::checkout_git_dir(&copy).is_some_and(|admin| admin.join("mustard-dependencies.sha256").is_file());
+    let execution = Execution { commit, prepared, copy: Some(WaveCopy { path: shown(&copy), reused: None }), ..project_execution(root) };
+    let mut material = Material {
+        spec: spec.to_string(),
+        execution,
+        project_rules: project_rules(root, &touched_files(root, Some(log))),
+        ..final_review_items(log)
+    };
+    let tasks = material.since_verdict.iter().chain(&material.block).copied();
+    material.chains = wave_prompt::task_chains(log, tasks, material.execution.test.as_deref());
+    FinalReview { text: wave_prompt::write_final_review(&material, lang), listed: wave_prompt::listed_final_review(&material) }
+}
+
+/// O que o pedido da revisão final lista ([`FinalReview::listed`]), tirado só
+/// da spec, sem montar o pedido: nem texto, nem cópia, nem git, nem regras do
+/// projeto. O painel, a rodada e o fechamento perguntam daqui se o pedido
+/// gravado ficou para trás de um item novo; a lista é a mesma que
+/// [`final_review`] grava no envio, porque as duas saem dos mesmos itens.
+#[must_use]
+pub fn final_review_listed(log: &SpecLog) -> Vec<String> {
+    wave_prompt::listed_final_review(&final_review_items(log))
+}
+
+/// Os itens do pedido da revisão final, só da spec. Só o que nenhuma prova
+/// verde cobre: a tarefa sem passo de término — da onda reprovada, no
+/// conserto, ou de todo o plano —, o combinado que nenhuma onda cobre e o
+/// critério sem execução que passou. A onda, a entrega, o commit e o recibo
+/// da máquina já são prova, e o revisor os acha na cópia. Depois de um
+/// veredito final, também o que mudou desde ele
+/// ([`wave_prompt::since_last_verdict`]).
+fn final_review_items(log: &SpecLog) -> Material<'_> {
     let planned = log.planned_waves();
     let fixing: BTreeSet<u64> = wave_prompt::last_final_rejection(log).and_then(SpecEvent::wave).filter(|n| planned.contains(n)).into_iter().collect();
     let scope: &BTreeSet<u64> = if fixing.is_empty() { &planned } else { &fixing };
-    // Só o que nenhuma prova verde cobre: a tarefa sem passo de término, o
-    // combinado que nenhuma onda cobre e o critério sem execução que passou.
-    // A onda, a entrega, o commit e o recibo da máquina já são prova, e o
-    // revisor os acha na cópia.
     let proven = wave_prompt::Proven::of(log);
     let visible = log.block(BlockQuery::Block(Block::Waves));
     let block: Vec<&SpecEvent> = visible
@@ -643,22 +690,7 @@ pub fn final_review(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Fin
         log.block(BlockQuery::Block(Block::Criteria)).into_iter().filter(|e| e.event_type == "criterion" && !proven.covers(e)).collect();
     let mut agreed: Vec<&SpecEvent> = wave_prompt::all_agreed(log).into_iter().filter(|e| !proven.covers(e)).collect();
     agreed.sort_by_key(|e| e.id);
-    let commit = final_review_commit(root, log);
-    let copy = final_copy_path(root, spec, log);
-    let prepared = crate::io::workspace::checkout_git_dir(&copy).is_some_and(|admin| admin.join("mustard-dependencies.sha256").is_file());
-    let execution = Execution { commit, prepared, copy: Some(WaveCopy { path: shown(&copy), reused: None }), ..project_execution(root) };
-    let material = Material {
-        spec: spec.to_string(),
-        block,
-        criteria,
-        agreed,
-        since_verdict: wave_prompt::since_last_verdict(log),
-        execution,
-        codes: log.codes(),
-        project_rules: project_rules(root, &touched_files(root, Some(log))),
-        ..Material::default()
-    };
-    FinalReview { text: wave_prompt::write_final_review(&material, lang), listed: wave_prompt::listed_final_review(&material) }
+    Material { block, criteria, agreed, since_verdict: wave_prompt::since_last_verdict(log), codes: log.codes(), ..Material::default() }
 }
 
 /// A cópia gravada no envio mais novo da onda `wave`. `None` quando esse
@@ -991,7 +1023,7 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
     let creator_note = creator.as_deref().zip(creator_file.as_deref()).map(|(folder, file)| {
         let note = crate::platform::i18n::translate("prompt.task.skill_creator", lang)
             .replace("{folder}", &shown(folder))
-            .replace("{skills}", &shown(&root.join(".claude").join("skills")))
+            .replace("{reserved}", RESERVED_SKILLS)
             .replace("{root}", &shown(root))
             .replace("{spec}", spec);
         (file, note)
@@ -1021,6 +1053,7 @@ fn one(context: &Context, wave: u64) -> WavePrompt {
         changes: Vec::new(),
         validation: Vec::new(),
         since_verdict: Vec::new(),
+        chains: BTreeMap::new(),
         codes,
         task_patterns,
         task_changes,
@@ -1837,6 +1870,8 @@ mod tests {
         assert!(block.contains("# Skill Creator\n\nRun `scripts/run_eval.py`."), "{block}");
         assert!(block.contains(&format!("`{}`", shown(&creator))), "the folder of its scripts: {block}");
         assert!(block.contains("sem pedir aprovação") && block.contains("run write skill"), "{block}");
+        assert!(block.contains("`.mustard-skill/<nome>/SKILL.md`"), "the new skill goes to the reserved folder of the copy: {block}");
+        assert!(!block.contains(&shown(&root.join(".claude").join("skills"))), "never to the skills folder of the main project: {block}");
         assert!(block.find("# Skill Creator").unwrap() < block.find("Body of area.").unwrap(), "{block}");
 
         let bundled = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugin/third-party/skill-creator");
@@ -3726,6 +3761,23 @@ mod tests {
         }
     }
 
+    /// O que o pedido da revisão lista sai só da spec, sem montar o pedido: a
+    /// lista que o painel, a rodada e o fechamento conferem é a mesma que o
+    /// pedido montado no projeto grava, com as regras do projeto e a cópia do
+    /// revisor no disco, na primeira revisão e na de volta.
+    #[test]
+    fn the_items_the_final_review_lists_come_from_the_spec_alone() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("CLAUDE.md"), "Nunca duplicar tipos.\n").unwrap();
+        for log in [reviewed_again(root, None), reviewed_again(root, Some("rejected"))] {
+            let request = final_review(root, "teste", &log, Locale::PtBr);
+            assert!(request.text.contains("Nunca duplicar tipos."), "{}", request.text);
+            assert!(request.listed.len() > 3, "{}", request.text);
+            assert_eq!(final_review_listed(&log), request.listed, "{}", request.text);
+        }
+    }
+
     /// O que o fechamento grava no envio da revisão como leitura obrigatória
     /// é o que o pedido imprime: o código de cada linha de item, na ordem, uma
     /// vez só mesmo quando o requisito sai em duas partes — o novo depois do
@@ -3868,6 +3920,71 @@ mod tests {
             let after = final_review(root, "teste", &log, lang).text;
             assert!(after.contains(t("prompt.final.look_since_approval")) && !after.contains(scope_phrase), "{lang:?}: {after}");
             assert_eq!(wave_codes(&log, &after), [false, false], "a aprovação já conferiu as duas ondas: {after}");
+        }
+    }
+
+    /// A revisão que volta depois de um conserto confere só a cadeia dele. O
+    /// pedido manda conferir a regra, cada lugar e a prova, e não manda olhar
+    /// o encaixe no resto da obra. A parte do que mudou traz a tarefa do
+    /// conserto, que tem passo depois do veredito, com a cadeia logo abaixo:
+    /// a regra pelo código e título, os lugares e a prova do critério que ela
+    /// cobre. A tarefa terminada antes do veredito não entra em parte
+    /// nenhuma. Depois de uma aprovação, o ajuste traz a cadeia dele, com a
+    /// regra nova pelo texto, e o conserto que ela aprovou fica de fora. Nos
+    /// dois idiomas.
+    #[test]
+    fn the_review_after_a_fix_checks_the_rule_its_places_and_its_proof_only() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let commit = |sha: &str, wave: u64| ("commit", json!({"sha": sha, "title": "t", "waves": [wave], "files": ["src/a.rs"]}));
+        let mut events = vec![
+            ("rule", json!({"title": "A soma guarda o sinal", "text": "A soma guarda o sinal.", "keys": ["a"], "example": "e", "applies_to": {"files": ["**"]}})),
+            ("criterion", json!({"when": "a soma roda", "then": "o sinal fica", "proof": "cargo test soma_keeps_sign", "form": "ubiquitous"})),
+            ("wave", json!({"n": 1, "text": "A onda", "criteria": [2], "done_when": "passa"})),
+            ("task", json!({"wave": 1, "text": "Somar", "files": [{"path": "src/a.rs"}], "covers": [2]})),
+            ("step", json!({"wave": 1, "item": 4, "text": "Pronta."})),
+            commit("aaa1111", 1),
+            ("verdict", json!({"final": true, "result": "rejected", "text": "O sinal some.", "agreed": [{"item": 1, "met": false, "text": "falta"}]})),
+            ("wave", json!({"n": 2, "text": "O conserto", "criteria": [2], "done_when": "passa"})),
+            ("task", json!({"wave": 2, "text": "Guardar o sinal", "files": [{"path": "src/a.rs"}], "rule": "MSTD-RULE-0001",
+                "places": ["src/a.rs:3", "soma"], "covers": [1, 2]})),
+            ("step", json!({"wave": 2, "item": 9, "text": "Pronta."})),
+            commit("bbb2222", 2),
+        ];
+        let fixed = log_of(&events);
+        events.push(("verdict", json!({"final": true, "result": "approved", "text": "Pronta.", "agreed": [{"item": 1, "met": true}]})));
+        events.push(("task", json!({"wave": 2, "text": "Mostrar o total", "files": [{"path": "src/b.rs"}], "rule": "O total cabe no visor.",
+            "places": ["src/b.rs"]})));
+        events.push(("step", json!({"wave": 2, "item": 13, "text": "Pronta."})));
+        let adjusted = log_of(&events);
+        let codes = fixed.codes();
+        let code = |id: u64| codes[&id].clone();
+        // A linha logo abaixo da primeira linha de item que cita `code`.
+        let below = |text: &str, code: &str| -> String {
+            let mut lines = text.lines();
+            lines.find(|line| line.starts_with("- ") && line.contains(code));
+            lines.next().unwrap_or_default().to_string()
+        };
+        for (lang, old) in [(Locale::PtBr, "se encaixa no resto da obra"), (Locale::EnUs, "fits the rest of the work")] {
+            let t = |key: &str| crate::platform::i18n::translate(key, lang);
+
+            let again = final_review(root, "teste", &fixed, lang).text;
+            assert!(again.contains(t("prompt.final.look_again")) && !again.contains(old), "{lang:?}: {again}");
+            assert_eq!(line_codes(part_lines(&again, t("prompt.part.since_verdict"))), [code(7), code(11), code(1), code(9)], "{lang:?}: {again}");
+            let chain = format!(
+                "  {} {} {}",
+                t("prompt.final.chain.rule").replace("{rule}", &format!("{} — A soma guarda o sinal", code(1))),
+                t("prompt.final.chain.places").replace("{places}", "`src/a.rs:3`, `soma`"),
+                t("prompt.final.chain.proof").replace("{proofs}", "`cargo test soma_keeps_sign`"),
+            );
+            assert_eq!(below(&again, &code(9)), chain, "{lang:?}: {again}");
+            assert!(!again.contains(&code(4)), "a tarefa terminada antes do veredito fica fora: {again}");
+
+            let after = final_review(root, "teste", &adjusted, lang).text;
+            assert!(after.contains(t("prompt.final.look_since_approval")) && !after.contains(old), "{lang:?}: {after}");
+            let rule = t("prompt.final.chain.rule").replace("{rule}", "O total cabe no visor");
+            assert_eq!(below(&after, &adjusted.codes()[&13]), format!("  {rule} {}", t("prompt.final.chain.places").replace("{places}", "`src/b.rs`")), "{after}");
+            assert!(!after.contains(&code(9)), "o conserto que a aprovação conferiu fica fora: {after}");
         }
     }
 

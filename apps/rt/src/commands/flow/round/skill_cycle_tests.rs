@@ -13,7 +13,7 @@ use mustard_core::io::spec_events as store;
 use serde_json::{Map, Value, json};
 use tempfile::tempdir;
 
-use super::tests::{approved, delivered, git_at, round, waves_in};
+use super::tests::{approved, delivered, git_at, round, waves_in, write};
 
 fn log_of(root: &Path) -> mustard_core::domain::spec_events::SpecLog {
     store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap()
@@ -190,6 +190,76 @@ fn a_cited_file_deleted_by_a_commit_creates_the_update_task_without_the_jev() {
     assert!(tasks[0].str_field("agent").unwrap().contains("apagou `src/b.rs`"), "{:?}", tasks[0].fields);
 }
 
+/// Acrescenta `line` a `src/a.rs`, comita e grava o commit da onda 1 como a
+/// rodada o grava. Devolve o commit.
+fn cited_change(root: &Path, line: &str) -> String {
+    let path = root.join("src/a.rs");
+    let before = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, format!("{before}{line}\n")).unwrap();
+    git_at(root, &["commit", "-q", "-am", line]);
+    let sha = super::commit::head(root);
+    let draft = json!({"sha": sha, "title": line, "waves": [1], "files": ["src/a.rs"], "repo": "x", "author": "binary"});
+    crate::commands::spec_events::write::record(root, "x", "commit", draft.as_object().cloned().unwrap(), PhaseWriter::Binary).unwrap();
+    sha
+}
+
+/// Dois commits mudam o arquivo que a skill cita, cada um lido depois da sua
+/// própria rodada: a avaliação que o primeiro criou ganha uma versão nova com
+/// as duas mudanças, cada uma com o seu diff e a chance que o Jev deu, e o
+/// registro continua apontando para ela.
+#[test]
+fn two_changes_to_a_skill_file_make_one_evaluation_with_both() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+    write_skill(root, "falta-teste", false);
+    registered(root, &[("falta-teste", made(&["src/a.rs"]))]);
+    let asked = Rc::new(RefCell::new(Vec::new()));
+    crate::shared::jev::yes_no::ask_in_test(Some(jev(0.9, &asked)));
+    let first = cited_change(root, "// soma em centavos");
+    let (created, _, _) = crate::shared::skill_cycle::after_round(root, "x", mustard_core::platform::i18n::Locale::PtBr);
+    let second = cited_change(root, "// arredonda no fim");
+    let (revised, _, _) = crate::shared::skill_cycle::after_round(root, "x", mustard_core::platform::i18n::Locale::PtBr);
+    crate::shared::jev::yes_no::ask_in_test(None);
+    assert_eq!((created.len(), revised.len()), (1, 1), "{created:?} {revised:?}");
+    let tasks = update_tasks(root);
+    assert_eq!(tasks.len(), 1, "one evaluation for the two changes: {tasks:?}");
+    let agent = tasks[0].str_field("agent").unwrap();
+    for (sha, added) in [(&first, "+// soma em centavos"), (&second, "+// arredonda no fim")] {
+        assert!(agent.contains(&sha[..12]) && agent.contains(added), "each change with its diff: {agent}");
+    }
+    assert_eq!(agent.matches("chance de 0.90").count(), 2, "the chance of each change: {agent}");
+    let marked = registry::read(root).skills["falta-teste"].update_task.clone().expect("the registry marks the task");
+    assert_eq!(marked.task, Some(tasks[0].id), "{marked:?}");
+}
+
+/// A avaliação retirada da spec deixa a mudança dela para a próxima: o
+/// próximo commit no arquivo citado cria uma tarefa nova, que lista todos os
+/// commits desde a última avaliação da skill, inclusive o da retirada.
+#[test]
+fn a_removed_evaluation_leaves_its_change_to_the_next_one() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+    write_skill(root, "falta-teste", false);
+    registered(root, &[("falta-teste", made(&["src/a.rs"]))]);
+    crate::shared::jev::yes_no::ask_in_test(Some(jev(0.9, &Rc::new(RefCell::new(Vec::new())))));
+    let first = cited_change(root, "// soma em centavos");
+    crate::shared::skill_cycle::after_round(root, "x", mustard_core::platform::i18n::Locale::PtBr);
+    let removed = update_tasks(root)[0].id;
+    assert_eq!(write(root, "x", "remove", json!({"targets": [removed], "reason": "Não é agora."}))["ok"], json!(true));
+    let second = cited_change(root, "// arredonda no fim");
+    let (recorded, _, _) = crate::shared::skill_cycle::after_round(root, "x", mustard_core::platform::i18n::Locale::PtBr);
+    crate::shared::jev::yes_no::ask_in_test(None);
+    assert_eq!(recorded.len(), 1, "the next change makes a new evaluation: {recorded:?}");
+    let tasks = update_tasks(root);
+    assert_eq!(tasks.len(), 1, "{tasks:?}");
+    let agent = tasks[0].str_field("agent").unwrap();
+    for (sha, added) in [(&first, "+// soma em centavos"), (&second, "+// arredonda no fim")] {
+        assert!(agent.contains(&sha[..12]) && agent.contains(added), "every change since the last evaluation: {agent}");
+    }
+}
+
 /// The skill-folder and backup of `name` in `root`.
 fn folders(root: &Path, name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
     (root.join(".claude/skills").join(name), mustard_core::io::wave_prompt::skills_backup_dir(root).join(name))
@@ -244,6 +314,97 @@ fn two_discards_in_a_row_retire_the_skill() {
     }
     assert_eq!(registry::read(root).skills["falta-teste"].state, registry::RETIRED);
     assert!(!main.exists() && backup.join("SKILL.md").is_file());
+    let _ = std::fs::remove_dir_all(&backup);
+}
+
+/// A onda da tarefa que atualiza uma skill escreve a versão nova na pasta
+/// reservada da própria cópia e registra a atualização com um ganho: a rodada
+/// que recebe o retorno a escreve no lugar da skill, o backup, o registro e a
+/// impressão digital gravada acompanham a versão nova, e a pasta reservada
+/// sai da cópia. Nenhum commit a leva, e a tarefa manda a onda escrevê-la na
+/// cópia dela, não na pasta da skill.
+#[test]
+fn a_skill_update_the_wave_delivers_is_installed_by_the_round() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    committed_with(root, 0.9);
+    let reserved = ".mustard-skill/falta-teste/SKILL.md";
+    let task = update_tasks(root)[0].clone();
+    let agent = task.str_field("agent").unwrap();
+    assert!(agent.contains(reserved), "the task names the reserved file: {agent}");
+    let log = log_of(root);
+    let criterion = log.visible().into_iter().find(|e| e.event_type == "criterion").map(|e| e.id).expect("the criterion");
+    let covering = super::queue::task_revision(&log, task.id, json!({"covers": [criterion]}).as_object().cloned().unwrap()).unwrap();
+    crate::commands::spec_events::write::record(root, "x", "task", covering, PhaseWriter::Binary).unwrap();
+    let out = round(root, "x", None);
+    assert_eq!(waves_in(&out, "dispatch"), vec![2], "the update task goes out: {out}");
+    let copy = super::commit::copy_of(&log_of(root), 2).expect("the copy of wave 2");
+    let new = "---\nname: falta-teste\ndescription: Does falta-teste.\n---\n\nAlways sum in whole cents in `src/b.rs`.\n";
+    std::fs::create_dir_all(copy.join(".mustard-skill/falta-teste")).unwrap();
+    std::fs::write(copy.join(reserved), new).unwrap();
+    let (main, backup) = folders(root, "falta-teste");
+    let body = json!({"name": "falta-teste", "action": "updated", "text": "Acertou 3 de 3 com a versão nova."});
+    let opts = crate::commands::spec_events::write::WriteOpts { root: root.to_path_buf(), spec: Some("x".into()), event_type: "skill".into(), json: body.to_string() };
+    let wrote = crate::commands::spec_events::write::write_at(&opts);
+    assert_eq!(wrote["ok"], true, "{wrote}");
+    let head = super::commit::head(root);
+
+    let report = delivered(root, 2, "A skill saiu.", &[reserved]);
+    let taken = round(root, "x", Some(&report));
+
+    assert!(log_of(root).last_by_wave("delivered").contains_key(&2), "the round took the return: {taken}");
+    assert_eq!(std::fs::read_to_string(main.join("SKILL.md")).unwrap(), new, "the new version is in the place of the skill: {taken}");
+    assert_eq!(std::fs::read_to_string(backup.join("SKILL.md")).unwrap(), new, "the backup follows it");
+    assert!(!copy.join(".mustard-skill").exists(), "the reserved folder leaves the copy");
+    assert!(!root.join(".mustard-skill").exists(), "nothing of it reaches the main checkout");
+    assert_eq!(super::commit::head(root), head, "no commit carries the reserved file: {taken}");
+    assert_eq!(registry::read(root).skills["falta-teste"].files, vec!["src/b.rs".to_string()], "the registry reads the new version");
+    let mut hash = mustard_core::io::sha256::Sha256::new();
+    hash.update(new.as_bytes());
+    let event = log_of(root).visible().into_iter().rfind(|e| e.event_type == "skill").cloned().expect("the skill event");
+    assert_eq!(event.str_field("sha"), Some(hash.hex_digest().as_str()), "the event fingerprints the new version");
+    let _ = std::fs::remove_dir_all(&backup);
+}
+
+/// A onda da tarefa que cria uma skill a escreve na pasta reservada da própria
+/// cópia, como faz uma atualização, e registra a criação com um ganho enquanto
+/// o projeto ainda não tem pasta para ela: o registro espera sem aviso de
+/// backup, a rodada que recebe o retorno escreve a skill no projeto com o
+/// backup dela, a pasta reservada sai da cópia, e nenhum commit a leva.
+#[test]
+fn a_skill_creation_the_wave_delivers_is_installed_by_the_round() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+    let log = log_of(root);
+    let task = log.visible().into_iter().find(|e| e.event_type == "task").map(|e| e.id).expect("the task of wave 1");
+    let creating = super::queue::task_revision(&log, task, json!({"skill": "skill-creator"}).as_object().cloned().unwrap()).unwrap();
+    crate::commands::spec_events::write::record(root, "x", "task", creating, PhaseWriter::Binary).unwrap();
+    assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1], "the creation task goes out");
+    let copy = super::commit::copy_of(&log_of(root), 1).expect("the copy of wave 1");
+    let reserved = ".mustard-skill/falta-teste/SKILL.md";
+    let new = "---\nname: falta-teste\ndescription: Does falta-teste.\n---\n\nAlways test the empty case in `src/a.rs`.\n";
+    std::fs::create_dir_all(copy.join(".mustard-skill/falta-teste")).unwrap();
+    std::fs::write(copy.join(reserved), new).unwrap();
+    let (main, backup) = folders(root, "falta-teste");
+    let _ = std::fs::remove_dir_all(&backup);
+    let body = json!({"name": "falta-teste", "action": "created", "text": "Acertou 3 de 3 com a skill."});
+    let opts = crate::commands::spec_events::write::WriteOpts { root: root.to_path_buf(), spec: Some("x".into()), event_type: "skill".into(), json: body.to_string() };
+    let wrote = crate::commands::spec_events::write::write_at(&opts);
+    assert_eq!(wrote["ok"], true, "{wrote}");
+    assert!(wrote.get("warnings").is_none(), "no backup is due before the skill has a folder: {wrote}");
+    assert!(!main.exists(), "the skill waits for the round");
+    let head = super::commit::head(root);
+
+    let report = delivered(root, 1, "A skill saiu.", &[reserved]);
+    let taken = round(root, "x", Some(&report));
+
+    assert!(log_of(root).last_by_wave("delivered").contains_key(&1), "the round took the return: {taken}");
+    assert_eq!(std::fs::read_to_string(main.join("SKILL.md")).unwrap(), new, "the skill is in the project: {taken}");
+    assert_eq!(std::fs::read_to_string(backup.join("SKILL.md")).unwrap(), new, "the backup follows it");
+    assert!(!copy.join(".mustard-skill").exists(), "the reserved folder leaves the copy");
+    assert_eq!(super::commit::head(root), head, "no commit carries the reserved file: {taken}");
+    assert_eq!(registry::read(root).skills["falta-teste"].files, vec!["src/a.rs".to_string()], "the registry reads the delivered version");
     let _ = std::fs::remove_dir_all(&backup);
 }
 

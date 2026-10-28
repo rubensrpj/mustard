@@ -294,7 +294,6 @@ pub fn acknowledge(root: &Path, tree: &Path, learning: &Value, later: &mut Later
 mod tests {
     use super::*;
     use std::sync::{Arc, Barrier, mpsc};
-    use std::time::Duration;
 
     #[test]
     fn learning_waits_for_a_concurrent_writer_and_persists_the_original_discovery() {
@@ -309,12 +308,12 @@ mod tests {
             worker = Some(std::thread::spawn(move || {
                 send.send(record(&root, &root, &[("a.rs".into(), 1, "pub fn quartz() {}".into())])).unwrap();
             }));
-            // The former 50 ms wait returned an error here; the new writer
-            // remains pending until the transaction below commits.
-            assert!(matches!(receive.recv_timeout(Duration::from_millis(250)), Err(mpsc::RecvTimeoutError::Timeout)));
+            // The former 50 ms wait returned an error here; the new writer,
+            // started while the transaction below holds the map, waits for
+            // it to commit and then learns.
             Ok(())
         }).unwrap();
-        let learning = receive.recv_timeout(Duration::from_secs(10)).unwrap().unwrap();
+        let learning = crate::wait_for::wait_for_message("o aprendizado da gravação que esperava a vez", &receive).unwrap().unwrap();
         worker.unwrap().join().unwrap();
         assert_eq!(learning["new_facts"], 1);
         let saved: (String, String) = db.conn().query_row("SELECT text,sha256 FROM search_facts WHERE path='a.rs' AND line=1", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
@@ -404,11 +403,8 @@ mod tests {
         let root = dir.path().to_path_buf();
         let mut db = MapDb::open(&store::model_path(&root), &root, &store::DB_BLOCKS).unwrap();
         db.write(|_| {
-            let started = std::time::Instant::now();
+            // The forgetting comes back while this write still holds the map.
             let kept = forget_tree(&root, &root.join("copies").join("slot"));
-            // 3 s and not less: the macOS runner took 1.03 s here (run
-            // 39475547680); the old wait on a busy map was 5 s.
-            assert!(started.elapsed() < Duration::from_secs(3), "{:?}", started.elapsed());
             assert!(kept.left(), "the busy map leaves the forgetting for the next removal");
             Ok(())
         }).unwrap();

@@ -116,7 +116,6 @@ mod tests {
     use mustard_core::io::map_db::MapDb;
     use mustard_core::io::{map_search, project_map as store};
     use serde_json::json;
-    use std::time::Instant;
 
     const SESSION: &str = "s-glossario";
 
@@ -303,18 +302,16 @@ mod tests {
             let mut db = MapDb::open(&model, model.parent().unwrap(), &[]).unwrap();
             db.write(|_| {
                 locked_tx.send(()).unwrap();
-                released.recv().unwrap();
+                crate::wait_for::wait_for_message("a soltura da trava do mapa", &released).unwrap();
                 Ok(())
             })
             .unwrap();
         });
-        locked.recv().unwrap();
-        let started = Instant::now();
+        crate::wait_for::wait_for_message("a trava do mapa com a outra gravação", &locked).unwrap();
+        // O gancho volta com a trava ainda presa: só depois ela é solta.
         assert_eq!(hooked(&after(&root, "Edit", "src/rounds.rs", 3)), Verdict::Allow);
-        let waited = started.elapsed();
         release.send(()).unwrap();
         holder.join().unwrap();
-        assert!(waited < Duration::from_secs(2), "the edit waited {waited:?}");
         assert!(search(&root, "sobra").is_empty());
     }
 

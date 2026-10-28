@@ -11,8 +11,55 @@ use std::fmt::Write as _;
 
 use serde_json::Value;
 
-use super::{code_of, language_line, project_rules_section, Material, Writer};
+use super::{code_of, item_proofs, item_title, language_line, project_rules_section, Material, Writer};
 use crate::domain::spec_events::{SpecEvent, SpecLog};
+
+/// A cadeia de uma tarefa, que o revisor confere no conserto: a regra que ela
+/// faz valer, os lugares dessa regra, achados pelo mapa, e as provas dos
+/// itens que ela cobre, que a onda roda.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Chain {
+    /// A regra: o código e o título da regra da spec que a tarefa cita, ou o
+    /// texto da regra nova. `None` na tarefa sem regra.
+    pub rule: Option<String>,
+    /// Os lugares da regra, como a tarefa os grava.
+    pub places: Vec<String>,
+    /// As provas dos itens cobertos ([`item_proofs`]), sem repetir.
+    pub proofs: Vec<String>,
+}
+
+/// A cadeia de cada tarefa de `tasks`, lida em `log`, pelo número dela, com o
+/// comando de teste que o projeto declara (`test`). A regra citada pelo
+/// código sai com o título da versão vigente; a citada pelo texto sai como
+/// está. A tarefa sem regra, sem lugar e sem prova fica de fora.
+#[must_use]
+pub fn task_chains<'a>(log: &SpecLog, tasks: impl IntoIterator<Item = &'a SpecEvent>, test: Option<&str>) -> BTreeMap<u64, Chain> {
+    let codes = log.codes();
+    let named = |said: &str| -> String {
+        let rule = codes.iter().filter(|(_, code)| code.as_str() == said).map(|(id, _)| *id).max().and_then(|id| log.current(id));
+        match rule.and_then(item_title) {
+            Some(title) => format!("{said} — {title}"),
+            None => said.to_string(),
+        }
+    };
+    let mut out = BTreeMap::new();
+    for task in tasks.into_iter().filter(|e| e.event_type == "task") {
+        let rule = task.str_field("rule").map(str::trim).filter(|said| !said.is_empty()).map(named);
+        let places: Vec<String> =
+            task.fields.get("places").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::trim).filter(|place| !place.is_empty()).map(str::to_string).collect();
+        let mut proofs: Vec<String> = Vec::new();
+        for proof in task.ints("covers").into_iter().filter_map(|id| log.current(id)).flat_map(|item| item_proofs(item, test)) {
+            if !proofs.contains(&proof) {
+                proofs.push(proof);
+            }
+        }
+        let chain = Chain { rule, places, proofs };
+        if chain != Chain::default() {
+            out.insert(task.id, chain);
+        }
+    }
+    out
+}
 
 /// O que já tem prova verde na spec, para a revisão final ler só o resto: o
 /// critério cuja execução mais nova no fechamento passou, a tarefa com passo
@@ -134,8 +181,10 @@ pub fn listed_final_review(material: &Material) -> Vec<String> {
 impl Writer<'_> {
     /// O pedido do agente de teste dedicado, que o fechamento pede a toda
     /// obra: as instruções fixas dele, o que olhar — a obra inteira na
-    /// primeira revisão; na de volta, o que mudou desde o veredito que
-    /// reprovou ou aprovou e o encaixe disso no resto —, como ler cada item e, em
+    /// primeira revisão; na de volta, só a cadeia de cada conserto feito
+    /// desde o veredito que reprovou ou aprovou: a regra, os lugares e a
+    /// prova, sem caçar achado no resto da obra —, os princípios do
+    /// produto que o revisor recebe, como ler cada item e, em
     /// seguida, uma linha por item: o que mudou, as ondas com as tarefas, as
     /// emendas gravadas para elas, o que cada uma entregou, os critérios e os
     /// commits que já entraram na branch. Por fim, como revisar numa cópia
@@ -158,6 +207,7 @@ impl Writer<'_> {
         };
         out.push_str(self.t(look));
         out.push_str("\n\n");
+        let _ = writeln!(out, "{}", crate::platform::seeds::principles_for(self.lang, crate::platform::seeds::Reader::Review, 3));
         let _ = writeln!(out, "## {}\n", self.t("prompt.part.read"));
         self.read_example(&mut out, "prompt.read.final", true);
         for (key, items) in &listing.parts {
@@ -175,7 +225,8 @@ impl Writer<'_> {
     }
 
     /// Uma parte do pedido: o título e uma linha por item, na ordem da spec.
-    /// A parte sem nenhum item não aparece.
+    /// A tarefa com cadeia ([`Chain`]) a traz logo abaixo da linha dela. A
+    /// parte sem nenhum item não aparece.
     fn part(&self, out: &mut String, key: &str, items: &[&SpecEvent]) {
         if items.is_empty() {
             return;
@@ -183,7 +234,27 @@ impl Writer<'_> {
         let _ = writeln!(out, "## {}\n", self.t(key));
         for item in items {
             let _ = writeln!(out, "- {}", self.item_text(item));
+            if let Some(chain) = self.material.chains.get(&item.id) {
+                let _ = writeln!(out, "  {}", self.chain_text(chain));
+            }
         }
         out.push('\n');
+    }
+
+    /// A cadeia de uma tarefa numa linha: a regra, os lugares e as provas,
+    /// cada parte só quando a tarefa a tem; o lugar e a prova entre crases.
+    fn chain_text(&self, chain: &Chain) -> String {
+        let quoted = |all: &[String]| all.iter().map(|one| format!("`{one}`")).collect::<Vec<_>>().join(", ");
+        let mut said: Vec<String> = Vec::new();
+        if let Some(rule) = &chain.rule {
+            said.push(self.t("prompt.final.chain.rule").replace("{rule}", rule.trim_end_matches('.')));
+        }
+        if !chain.places.is_empty() {
+            said.push(self.t("prompt.final.chain.places").replace("{places}", &quoted(&chain.places)));
+        }
+        if !chain.proofs.is_empty() {
+            said.push(self.t("prompt.final.chain.proof").replace("{proofs}", &quoted(&chain.proofs)));
+        }
+        said.join(" ")
     }
 }

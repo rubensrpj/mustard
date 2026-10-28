@@ -22,8 +22,14 @@
 //! mudou vai ao Jev com a mudança, e o sim ou a dúvida viram a tarefa de
 //! atualizá-la, com o skill-creator inteiro no bloco, como a de criar; o
 //! arquivo citado que sumiu vira a tarefa sem pergunta. A onda que recebeu a
-//! skill e foi reprovada pela mesma falha que a motivou também. Nenhuma skill
-//! é reescrita sozinha.
+//! skill e foi reprovada pela mesma falha que a motivou também. A avaliação
+//! sai uma vez por obra: a mudança que chega com ela ainda à espera entra numa
+//! versão nova dela, somada às que já tinha, e a fila da rodada a segura
+//! enquanto alguma tarefa aberta da obra mexe num arquivo que a skill cita
+//! (`skill_hold`, na rodada). Nenhuma skill é reescrita sozinha. A onda da
+//! tarefa escreve a versão nova no caminho reservado da cópia dela
+//! ([`RESERVED_SKILLS`]), presa à cópia como toda onda, e a rodada a grava no
+//! lugar da skill quando assume a volta com a atualização gravada.
 //!
 //! A saída: a skill candidata em [`IDLE_CANDIDACIES`] envios sem nunca ir com
 //! uma tarefa, ou descartada sem ganho em dois testes seguidos, sai de
@@ -40,12 +46,13 @@ use mustard_core::domain::wave_prompt::{SkillOption, SkillTie};
 use mustard_core::io::failures::{self, Failure, SkillTask};
 use mustard_core::io::mustard_skills::{self as registry, IDLE_CANDIDACIES, MustardSkill, RETIRED};
 use mustard_core::io::spec_events as store;
-use mustard_core::io::wave_prompt::{Flight, WavePrompt};
+use mustard_core::io::wave_prompt::{Flight, RESERVED_SKILLS, WavePrompt, reserved_skill};
 use mustard_core::platform::i18n::{Locale, translate};
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::commands::flow::round::dispatch_jev::{Asker, Outcome, reserved};
-use crate::shared::failure_skills::{copy_folder, runs, skill_dir, skill_task_covers, target_spec, with_covers};
+use crate::shared::failure_skills::{copy_folder, reserved_in_copy, runs, skill_dir, skill_task_covers, target_spec, with_covers};
 use crate::shared::jev::yes_no::{self, YesNo};
 use crate::shared::secret::without_secrets;
 
@@ -337,7 +344,8 @@ fn motivating_groups(root: &Path, spec: &str, log: &SpecLog, wave: Option<u64>) 
 /// Depois de gravado o evento `skill` número `id` na spec `spec` de `start`:
 /// o registro do projeto guarda a criação, a atualização ou o descarte, com
 /// o ganho, os arquivos citados — os do evento ou, sem eles, os que o
-/// `SKILL.md` cita —, a onda que a gravou e os grupos de falha que a
+/// `SKILL.md` cita, o da versão nova no caminho reservado da cópia quando a
+/// criação ou a atualização a traz —, a onda que a gravou e os grupos de falha que a
 /// motivaram. Devolve os avisos, em `lang`.
 pub(crate) fn skill_recorded(start: &Path, spec: &str, id: u64, lang: Locale) -> Vec<String> {
     let root = store::spec_root(start);
@@ -350,7 +358,8 @@ pub(crate) fn skill_recorded(start: &Path, spec: &str, id: u64, lang: Locale) ->
     };
     let mut files = texts(event.fields.get("files"));
     if files.is_empty() && matches!(action, "created" | "updated") {
-        let text = std::fs::read_to_string(skill_dir(&root, name).join("SKILL.md")).unwrap_or_default();
+        let delivered = reserved_in_copy(start, &root, spec, name).unwrap_or_else(|| skill_dir(&root, name));
+        let text = std::fs::read_to_string(delivered.join("SKILL.md")).unwrap_or_default();
         files = mustard_core::domain::project_map::cited_paths(&text);
     }
     let wave = writer_wave(&log, start);
@@ -362,16 +371,33 @@ pub(crate) fn skill_recorded(start: &Path, spec: &str, id: u64, lang: Locale) ->
     }
 }
 
-/// Por que a skill precisa de atualização.
+/// Por que a skill precisa de atualização. A avaliação à espera guarda os
+/// seus no campo [`WHYS`], e a chance que o Jev deu a cada mudança fica ali.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 enum Why {
     /// O commit `sha` mudou os arquivos citados `files`, e o Jev deu
-    /// `chance` de a mudança `diff` contradizer a skill.
-    Change { sha: String, files: Vec<String>, chance: f64, diff: String },
+    /// `chance` de a mudança contradizer a skill.
+    Change { sha: String, files: Vec<String>, chance: f64 },
     /// O commit `sha` apagou os arquivos citados `files`.
     Gone { sha: String, files: Vec<String> },
     /// A onda `wave` da spec `spec` recebeu a skill e foi reprovada pela
     /// mesma falha que a motivou, pelo motivo `reason`, nos arquivos `files`.
     Failure { spec: String, wave: u64, reason: String, files: Vec<String> },
+}
+
+/// O campo da tarefa de atualizar uma skill com os motivos que ela soma
+/// ([`Why`]).
+const WHYS: &str = "skill_whys";
+
+/// Os arquivos `files`, cada um entre crases, separados por vírgula.
+fn quoted(files: &[String]) -> String {
+    files.iter().map(|file| format!("`{file}`")).collect::<Vec<_>>().join(", ")
+}
+
+/// Os doze primeiros caracteres do commit `sha`.
+fn short(sha: &str) -> String {
+    sha.chars().take(12).collect()
 }
 
 impl Why {
@@ -382,18 +408,34 @@ impl Why {
         }
     }
 
-    /// O motivo, no idioma `lang`, para a parte do agente.
-    fn text(&self, lang: Locale) -> String {
-        let listed = |files: &[String]| files.iter().map(|file| format!("`{file}`")).collect::<Vec<_>>().join(", ");
+    /// O commit do motivo, quando ele vem de um.
+    fn sha(&self) -> Option<&str> {
         match self {
-            Self::Change { sha, files, chance, diff } => translate("skills.update_why_change", lang)
-                .replace("{sha}", &sha.chars().take(12).collect::<String>())
-                .replace("{files}", &listed(files))
+            Self::Change { sha, .. } | Self::Gone { sha, .. } => Some(sha),
+            Self::Failure { .. } => None,
+        }
+    }
+
+    /// `true` quando `other` é o mesmo motivo: o mesmo commit, ou a mesma
+    /// reprovação.
+    fn same(&self, other: &Self) -> bool {
+        match (self.sha(), other.sha()) {
+            (Some(one), Some(two)) => one == two,
+            (None, None) => self == other,
+            _ => false,
+        }
+    }
+
+    /// O motivo, no idioma `lang`, para a parte do agente, com a mudança do
+    /// commit lida no projeto `root`.
+    fn text(&self, root: &Path, lang: Locale) -> String {
+        match self {
+            Self::Change { sha, files, chance } => translate("skills.update_why_change", lang)
+                .replace("{sha}", &short(sha))
+                .replace("{files}", &quoted(files))
                 .replace("{chance}", &format!("{chance:.2}"))
-                .replace("{diff}", diff),
-            Self::Gone { sha, files } => {
-                translate("skills.update_why_gone", lang).replace("{sha}", &sha.chars().take(12).collect::<String>()).replace("{files}", &listed(files))
-            }
+                .replace("{diff}", &diff_of(root, sha, files)),
+            Self::Gone { sha, files } => translate("skills.update_why_gone", lang).replace("{sha}", &short(sha)).replace("{files}", &quoted(files)),
             Self::Failure { spec, wave, reason, .. } => translate("skills.update_why_failure", lang)
                 .replace("{spec}", spec)
                 .replace("{wave}", &wave.to_string())
@@ -402,61 +444,153 @@ impl Why {
     }
 }
 
+/// Os motivos `whys` e os commits `listed`, cada um com os arquivos citados
+/// que mudou, para a parte do agente, no idioma `lang`: cada commit na ordem
+/// da spec, pelo motivo dele quando há um, e senão pela mudança, ou pelo
+/// apagamento quando os arquivos sumiram; depois, os motivos que nenhum
+/// commit listado traz.
+fn whys_text(root: &Path, whys: &[Why], listed: &[(String, Vec<String>)], lang: Locale) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for (sha, files) in listed {
+        let text = match whys.iter().find(|why| why.sha() == Some(sha.as_str())) {
+            Some(why) => why.text(root, lang),
+            None if files.iter().any(|file| !root.join(file).exists()) => Why::Gone { sha: sha.clone(), files: files.clone() }.text(root, lang),
+            None => translate("skills.update_why_listed", lang)
+                .replace("{sha}", &short(sha))
+                .replace("{files}", &quoted(files))
+                .replace("{diff}", &diff_of(root, sha, files)),
+        };
+        parts.push(text);
+    }
+    let unlisted = |why: &&Why| why.sha().is_none_or(|sha| !listed.iter().any(|(had, _)| had == sha));
+    parts.extend(whys.iter().filter(unlisted).map(|why| why.text(root, lang)));
+    parts.join("\n\n")
+}
+
+/// `true` quando o caminho `file`, relativo à raiz da cópia, fica na pasta
+/// reservada às versões novas das skills ([`RESERVED_SKILLS`]).
+pub(crate) fn in_reserved_skills(file: &str) -> bool {
+    file.split_once('/').map_or(file, |(first, _)| first) == RESERVED_SKILLS
+}
+
 /// Quantos caracteres do motivo de uma reprovação vão à tarefa.
 const REASON_CHARS: usize = 600;
 
 /// Quantos arquivos a tarefa de atualizar declara.
 const TASK_FILES_MAX: usize = 8;
 
-/// A tarefa de atualizar a skill `skill`, de nome `name`, no projeto `root`,
-/// pelo motivo `why`, no idioma `lang`: o título com o nome, os arquivos pelo
-/// caminho no texto, o motivo e a mudança na parte do agente, o skill-creator
-/// nomeado e os arquivos citados que existem.
-fn update_draft(root: &Path, name: &str, skill: &MustardSkill, why: &Why, lang: Locale) -> Map<String, Value> {
+/// O conteúdo da tarefa de atualizar a skill `skill`, de nome `name`, no
+/// projeto `root`, pelos motivos `whys` e pelos commits `listed` da obra que
+/// mudaram um arquivo citado desde a última avaliação ([`changes_since`]),
+/// no idioma `lang`: o título com o nome, os arquivos pelo caminho no texto,
+/// cada motivo e cada mudança na parte do agente, que manda escrever a versão
+/// nova no caminho reservado da cópia ([`reserved_skill`]), os motivos
+/// guardados em [`WHYS`] e os arquivos citados que existem.
+fn update_draft(root: &Path, name: &str, skill: &MustardSkill, (whys, listed): (&[Why], &[(String, Vec<String>)]), lang: Locale) -> Map<String, Value> {
     let title = translate("skills.update_task_title", lang).replace("{name}", name);
     let title: String = title.chars().take(TASK_TITLE_MAX).collect();
-    let mut shown: Vec<String> = why.files().to_vec();
-    shown.extend(skill.files.iter().filter(|file| !why.files().contains(file)).cloned());
-    let listed = shown.iter().take(TASK_FILES_MAX).map(|file| format!("`{file}`")).collect::<Vec<_>>().join(", ");
+    let mut shown: Vec<String> = Vec::new();
+    let named = whys.iter().flat_map(Why::files).chain(listed.iter().flat_map(|(_, files)| files)).chain(&skill.files);
+    for file in named {
+        if !shown.contains(file) {
+            shown.push(file.clone());
+        }
+    }
     let main = skill_dir(root, name).join("SKILL.md");
     let agent = translate("skills.update_task_agent", lang)
         .replace("{name}", name)
         .replace("{path}", &mustard_core::io::wave_prompt::shown(&std::path::absolute(&main).unwrap_or(main)))
-        .replace("{why}", &why.text(lang));
+        .replace("{reserved}", &reserved_skill(name))
+        .replace("{why}", &whys_text(root, whys, listed, lang));
     let files: Vec<Value> = shown.iter().filter(|file| root.join(file).exists()).take(TASK_FILES_MAX).map(|path| json!({ "path": path })).collect();
+    let shown: Vec<String> = shown.into_iter().take(TASK_FILES_MAX).collect();
     let draft = json!({
         "title": title,
-        "text": translate("skills.update_task_text", lang).replace("{name}", name).replace("{files}", &listed),
+        "text": translate("skills.update_task_text", lang).replace("{name}", name).replace("{files}", &quoted(&shown)),
         "agent": agent,
-        "skill": mustard_core::io::skill_creator::NAME,
         "files": files,
-        "depends_on": [],
-        "author": "binary",
+        WHYS: whys,
     });
     draft.as_object().cloned().unwrap_or_default()
 }
 
-/// Cria, na spec aberta a partir de `spec` ([`target_spec`]), a tarefa de
-/// atualizar a skill `name` do projeto de `start` pelo motivo `why`, uma por
-/// skill enquanto a anterior espera numa spec que roda, e a marca no
-/// registro. Devolve a tarefa gravada; nenhuma para a skill retirada, a que
-/// já tem tarefa à espera ou sem spec que rode.
+/// A spec `spec` do projeto `root`, lida do arquivo.
+fn spec_log(root: &Path, spec: &str) -> Option<SpecLog> {
+    store::spec_file(root, spec).ok().and_then(|file| store::read(&file).ok().flatten())
+}
+
+/// A avaliação que a marca `mark` do registro aponta, quando ainda espera: a
+/// spec dela, que roda, lida de `start`, e a versão vigente da tarefa, ainda
+/// por entregar. A tarefa tirada ou entregue não espera mais.
+fn waiting_task(start: &Path, mark: &SkillTask) -> Option<(SpecLog, u64)> {
+    if !runs(start, &mark.spec) {
+        return None;
+    }
+    let log = spec_log(&store::spec_root(start), &mark.spec)?;
+    let id = log.current(mark.task?)?.id;
+    crate::commands::flow::round::queue::tasks_not_delivered(&log, &BTreeSet::new()).contains(&id).then_some((log, id))
+}
+
+/// Grava a tarefa de atualizar a skill `name` do projeto de `start` pelos
+/// motivos `whys`, e a marca no registro. Com a avaliação dela ainda à espera
+/// ([`waiting_task`]), a tarefa ganha uma versão nova, com os motivos novos
+/// somados aos que já tinha; senão, nasce na spec aberta a partir de `spec`
+/// ([`target_spec`]). Nas duas, a parte do agente lista também cada commit da
+/// obra que mudou um arquivo citado desde a última avaliação da skill
+/// ([`changes_since`]): a mudança de uma avaliação tirada ou recusada não se
+/// perde. Devolve a tarefa gravada; nenhuma para a skill retirada ou sem spec
+/// que rode.
 ///
 /// # Errors
 ///
 /// A recusa da gravação ou a falha do registro, com o motivo.
-fn update_task(start: &Path, spec: &str, name: &str, why: &Why, lang: Locale) -> Result<Option<Value>, String> {
+fn update_task(start: &Path, spec: &str, name: &str, whys: Vec<Why>, lang: Locale) -> Result<Option<Value>, String> {
     let root = store::spec_root(start);
     let Some(skill) = registry::read(&root).skills.get(name).cloned() else { return Ok(None) };
-    if skill.state == RETIRED || skill.update_task.as_ref().is_some_and(|task| runs(start, &task.spec)) {
+    if skill.state == RETIRED || whys.is_empty() {
         return Ok(None);
     }
-    let Some(target) = target_spec(start, spec) else { return Ok(None) };
-    let waves: Vec<(&str, u64)> = match why {
-        Why::Failure { spec, wave, .. } => vec![(spec.as_str(), *wave)],
-        Why::Change { .. } | Why::Gone { .. } => Vec::new(),
+    let waiting = skill.update_task.as_ref().and_then(|mark| Some((mark.spec.clone(), waiting_task(start, mark)?)));
+    let (target, log, previous) = match waiting {
+        Some((target, (log, id))) => (target, log, Some(id)),
+        None => {
+            let Some(target) = target_spec(start, spec) else { return Ok(None) };
+            let Some(log) = spec_log(&root, &target) else { return Ok(None) };
+            (target, log, None)
+        }
     };
-    let draft = with_covers(update_draft(&root, name, &skill, why, lang), skill_task_covers(start, &target, &waves));
+    let before = previous.and_then(|id| log.get(id));
+    let mut all: Vec<Why> = before.and_then(|task| task.fields.get(WHYS)).and_then(|had| serde_json::from_value(had.clone()).ok()).unwrap_or_default();
+    for why in whys {
+        if !all.iter().any(|had| had.same(&why)) {
+            all.push(why);
+        }
+    }
+    let waves: Vec<(&str, u64)> = all
+        .iter()
+        .filter_map(|why| match why {
+            Why::Failure { spec, wave, .. } => Some((spec.as_str(), *wave)),
+            Why::Change { .. } | Why::Gone { .. } => None,
+        })
+        .collect();
+    let mut covers: Vec<u64> = before.map(|task| task.ints("covers")).unwrap_or_default();
+    for id in skill_task_covers(start, &target, &waves) {
+        if !covers.contains(&id) {
+            covers.push(id);
+        }
+    }
+    let listed = changes_since(&log, &target, &skill);
+    let content = with_covers(update_draft(&root, name, &skill, (&all, &listed), lang), covers);
+    let draft = match previous {
+        Some(id) => crate::commands::flow::round::queue::task_revision(&log, id, content).ok_or_else(|| format!("task {id}"))?,
+        None => {
+            let mut draft = content;
+            draft.insert("skill".into(), json!(mustard_core::io::skill_creator::NAME));
+            draft.insert("depends_on".into(), json!([]));
+            draft.insert("author".into(), json!("binary"));
+            draft
+        }
+    };
     let written = crate::commands::spec_events::write::record(start, &target, "task", draft, PhaseWriter::Binary).map_err(|refusal| refusal.message(lang))?;
     let id = written.written.id;
     let mark = SkillTask { spec: target.clone(), task: Some(id) };
@@ -495,7 +629,7 @@ fn stale_question(body: &str) -> YesNo<'static> {
 }
 
 /// `true` quando o arquivo `file` é o citado `cited` ou fica na pasta dele.
-fn cites(cited: &str, file: &str) -> bool {
+pub(crate) fn cites(cited: &str, file: &str) -> bool {
     let cited = cited.trim_start_matches("./").trim_end_matches('/');
     !cited.is_empty() && (file == cited || file.strip_prefix(cited).is_some_and(|rest| rest.starts_with('/')))
 }
@@ -526,23 +660,42 @@ struct Touched {
     gone: Vec<String>,
 }
 
+/// Os arquivos que o commit `commit` da spec `spec` mudou e a skill `skill`
+/// cita. Nenhum no commit da onda que criou a skill nem no de antes da última
+/// criação ou atualização dela.
+fn cited_in(commit: &mustard_core::domain::spec_events::SpecEvent, spec: &str, skill: &MustardSkill) -> Vec<String> {
+    let waves = commit.ints("waves");
+    if skill.spec == spec && skill.wave.is_some_and(|wave| waves.contains(&wave)) || !not_before(commit.at(), &skill.since) {
+        return Vec::new();
+    }
+    texts(commit.fields.get("files")).into_iter().filter(|file| skill.files.iter().any(|cited| cites(cited, file))).collect()
+}
+
+/// Cada commit da spec `spec`, lida em `log`, que mudou um arquivo citado
+/// pela skill `skill` desde a última avaliação dela ([`cited_in`]), na ordem
+/// da spec, com os arquivos citados que ele mudou.
+fn changes_since(log: &SpecLog, spec: &str, skill: &MustardSkill) -> Vec<(String, Vec<String>)> {
+    log.visible()
+        .into_iter()
+        .filter(|e| e.event_type == "commit")
+        .filter_map(|commit| {
+            let files = cited_in(commit, spec, skill);
+            Some((commit.str_field("sha")?.to_string(), files)).filter(|(_, files)| !files.is_empty())
+        })
+        .collect()
+}
+
 /// As skills do Mustard cujos arquivos citados os commits novos da spec
-/// `spec` em `log` mudaram, no projeto `root`, e o último evento de commit
-/// lido. O commit da onda que criou a skill e o de antes da última criação ou
-/// atualização dela não contam.
+/// `spec` em `log` mudaram ([`cited_in`]), no projeto `root`, e o último
+/// evento de commit lido.
 fn touched_by_commits(root: &Path, spec: &str, log: &SpecLog, skills: &registry::Registry) -> (Vec<Touched>, Option<u64>) {
     let read = skills.commits_read.get(spec).copied().unwrap_or(0);
     let commits: Vec<_> = log.visible().into_iter().filter(|e| e.event_type == "commit" && e.id > read).collect();
     let mut out: Vec<Touched> = Vec::new();
     for commit in &commits {
         let Some(sha) = commit.str_field("sha") else { continue };
-        let changed = texts(commit.fields.get("files"));
-        let waves = commit.ints("waves");
         for (name, skill) in skills.skills.iter().filter(|(_, skill)| skill.made && skill.state != RETIRED) {
-            if skill.spec == spec && skill.wave.is_some_and(|wave| waves.contains(&wave)) || !not_before(commit.at(), &skill.since) {
-                continue;
-            }
-            let files: Vec<String> = changed.iter().filter(|file| skill.files.iter().any(|cited| cites(cited, file))).cloned().collect();
+            let files = cited_in(commit, spec, skill);
             if files.is_empty() {
                 continue;
             }
@@ -596,10 +749,9 @@ fn stale_with(start: &Path, spec: &str, jev: Option<&yes_no::AskFn<'_>>, lang: L
             }
         };
         read = reserve.is_none() && answers.iter().all(Option::is_some);
-        for ((change, _, diff), answer) in asked.iter().zip(answers) {
+        for ((change, _, _), answer) in asked.iter().zip(answers) {
             let Some(chance) = answer.and_then(|chances| chances.get("c1").copied()).filter(|chance| *chance >= STALE_AT_LEAST) else { continue };
-            let diff = diff.as_str().unwrap_or_default().to_string();
-            whys.push((change.name.clone(), Why::Change { sha: change.sha.clone(), files: change.files.clone(), chance, diff }));
+            whys.push((change.name.clone(), Why::Change { sha: change.sha.clone(), files: change.files.clone(), chance }));
         }
     }
     if read {
@@ -608,12 +760,18 @@ fn stale_with(start: &Path, spec: &str, jev: Option<&yes_no::AskFn<'_>>, lang: L
         })
         .map_err(|error| error.to_string())?;
     }
-    let mut recorded = Vec::new();
-    let mut done: BTreeSet<String> = BTreeSet::new();
-    for (name, why) in &whys {
-        if done.insert(name.clone()) {
-            recorded.extend(update_task(start, spec, name, why, lang)?);
+    // Os motivos de cada skill vão juntos à avaliação dela: dois commits
+    // lidos na mesma rodada não viram duas tarefas, nem um some.
+    let mut by_skill: Vec<(String, Vec<Why>)> = Vec::new();
+    for (name, why) in whys {
+        match by_skill.iter_mut().find(|(had, _)| *had == name) {
+            Some((_, listed)) => listed.push(why),
+            None => by_skill.push((name, vec![why])),
         }
+    }
+    let mut recorded = Vec::new();
+    for (name, whys) in by_skill {
+        recorded.extend(update_task(start, spec, &name, whys, lang)?);
     }
     Ok((recorded, reserve))
 }
@@ -648,7 +806,7 @@ pub(crate) fn after_failures(start: &Path, grouped: &[String], lang: Locale) -> 
         for (name, _) in skills.skills.iter().filter(|(_, skill)| skill.made && skill.state != RETIRED && skill.groups.iter().any(|group| group == row.group_id())) {
             if received(&root, row, name) {
                 let why = Why::Failure { spec: row.spec.clone(), wave: row.wave, reason: row.reason.clone(), files: row.files.clone() };
-                recorded.extend(update_task(start, &row.spec, name, &why, lang)?);
+                recorded.extend(update_task(start, &row.spec, name, vec![why], lang)?);
             }
         }
     }

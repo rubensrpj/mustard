@@ -107,6 +107,37 @@
         name: (identifier) @name
         body: (block . (expression_statement (string (string_content) @doc)))) @definition.method)))
 
+; Os testes. O método `test*` de uma classe do `unittest` (a que herda de um
+; `TestCase`: `unittest.TestCase`, o `TestCase` do Django, o
+; `IsolatedAsyncioTestCase`) é teste em qualquer arquivo. A função `test*` do
+; topo do módulo e o método `test*` de uma classe `Test*`, que o pytest roda
+; só no arquivo de teste, são teste só nele. Com decorador ou sem, e também a
+; função `async`. A declaração sai marcada como teste.
+((class_definition
+  superclasses: (argument_list [(identifier) (attribute)] @_base)
+  body: (block (function_definition name: (identifier) @_name) @test_unit))
+  (#match? @_base "TestCase$")
+  (#match? @_name "^test"))
+((class_definition
+  superclasses: (argument_list [(identifier) (attribute)] @_base)
+  body: (block (decorated_definition definition: (function_definition name: (identifier) @_name) @test_unit) @test_unit))
+  (#match? @_base "TestCase$")
+  (#match? @_name "^test"))
+((module (function_definition name: (identifier) @_name) @test_unit.in_test_file)
+  (#match? @_name "^test"))
+((module (decorated_definition definition: (function_definition name: (identifier) @_name) @test_unit.in_test_file))
+  (#match? @_name "^test"))
+((class_definition
+  name: (identifier) @_class
+  body: (block (function_definition name: (identifier) @_name) @test_unit.in_test_file))
+  (#match? @_class "^Test")
+  (#match? @_name "^test"))
+((class_definition
+  name: (identifier) @_class
+  body: (block (decorated_definition definition: (function_definition name: (identifier) @_name) @test_unit.in_test_file)))
+  (#match? @_class "^Test")
+  (#match? @_name "^test"))
+
 ; Decorations — a decorator (`@app.get("/")`, `@dataclass`) is not code of the
 ; declaration it adorns: the engine passes over it to find the comment above
 ; and reads no call out of it.
@@ -120,16 +151,53 @@
   name: (identifier) @name
   body: (block . (expression_statement (string (string_content) @doc)))) @definition.function
 
-; Os nomes que o corpo de uma função liga: da linha seguinte até o fim da
-; declaração, o mesmo nome escrito sozinho é deles.
+; Os nomes que o corpo de uma função liga: no alcance que a língua dá a cada
+; um, marcado mais abaixo, o mesmo nome escrito sozinho é deles.
 (assignment left: (identifier) @local)
-(assignment left: (pattern_list (identifier) @local))
 (parameters (identifier) @local)
 (default_parameter name: (identifier) @local)
 (typed_parameter (identifier) @local)
 (typed_default_parameter name: (identifier) @local)
 (lambda_parameters (identifier) @local)
 (for_statement left: (identifier) @local)
+
+; Os outros jeitos de ligar nome: o alvo desmontado, em qualquer profundidade
+; (`a, (b, c) = ...`, `[a, b] = ...`, `for i, x in ...`), também com `*` e,
+; no parâmetro, com `**`; o alvo da compreensão; o `:=`; o `as` do `with` e do
+; `except`, também com tupla; e o `case`, onde o nome sozinho, sem ponto, é
+; sempre captura (`case x:`, `case [a, x]:`, `case P(campo=x):`, `case {"k":
+; x}:`), como o nome depois do `as` e o do `*` e do `**`.
+(pattern_list (identifier) @local)
+(tuple_pattern (identifier) @local)
+(list_pattern (identifier) @local)
+(list_splat_pattern (identifier) @local)
+(dictionary_splat_pattern (identifier) @local)
+(for_in_clause left: (identifier) @local)
+(named_expression name: (identifier) @local)
+(with_item value: (as_pattern alias: (as_pattern_target (identifier) @local)))
+(with_item value: (as_pattern alias: (as_pattern_target [(tuple (identifier) @local) (list (identifier) @local)])))
+(except_clause value: (as_pattern alias: (as_pattern_target (identifier) @local))) @local.scope
+(except_clause value: (as_pattern alias: (as_pattern_target [(tuple (identifier) @local) (list (identifier) @local)]))) @local.scope
+(case_pattern (dotted_name . (identifier) @local .))
+(keyword_pattern (dotted_name . (identifier) @local .))
+(case_pattern (as_pattern (identifier) @local))
+(splat_pattern (identifier) @local)
+
+; Até onde vale cada nome ligado: a função, a lambda e a classe fecham o
+; alcance; o bloco não, porque a língua dá alcance de função. A compreensão é
+; o alcance inteiro dos nomes que ela liga, também o valor escrito antes do
+; `for`; o iterável que cada `for` dela lê e o valor padrão do parâmetro ficam
+; fora. O nome do `except ... as` vale só até o fim do `except` (acima).
+(function_definition) @local.scope
+(lambda) @local.scope
+(class_definition) @local.scope
+(list_comprehension) @local.scope.whole
+(set_comprehension) @local.scope.whole
+(dictionary_comprehension) @local.scope.whole
+(generator_expression) @local.scope.whole
+(for_in_clause right: (_) @local.outside)
+(default_parameter value: (_) @local.outside)
+(typed_default_parameter value: (_) @local.outside)
 
 ; A função entregue como valor, sem ser chamada ali: o nome escrito como
 ; argumento (`map(dobro, xs)`, `sorted(xs, key=chave)`,

@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SEND_REQUEST_FIELDS, SpecEvent, SpecLog};
-use mustard_core::domain::spec_state::{PhaseWriter, last_change};
+use mustard_core::domain::spec_state::{PhaseWriter, last_change, review_send};
 use mustard_core::domain::wave_prompt::{Choice, dispatch_items};
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Map, Value, json};
@@ -41,7 +41,11 @@ pub(crate) fn max_parallel(root: &Path) -> usize {
 /// processo que a mandou — não conta como vaga ocupada para as outras
 /// entrarem, porque ela não está compilando nada; a cópia dela é limpa à
 /// parte, em [`open_copies`]. A onda parada pelo limite de consertos
-/// (`stuck`) não sai, nem a que depende dela, direta ou por outra onda.
+/// (`stuck`) não sai, nem a que depende dela, direta ou por outra onda. A
+/// onda que leva a avaliação de uma skill e espera tarefas abertas nos
+/// arquivos que a skill cita (`evaluating`,
+/// [`waves_waiting`](super::skill_hold::waves_waiting)) também não sai, nem
+/// toma vaga.
 ///
 /// A onda de lote nasce sem dependência entre ondas, então uma dependência em
 /// círculo não tem de onde vir pelo backlog, e o plano não a procura. O ciclo
@@ -49,9 +53,14 @@ pub(crate) fn max_parallel(root: &Path) -> usize {
 /// nunca uma conta própria à parte —, e, se uma onda gravada antes do backlog
 /// trouxer um, a rodada devolve os números do ciclo em vez de escolher uma
 /// ordem às cegas.
-pub(crate) fn next_waves(log: &SpecLog, vacancies: &Vacancies, stuck: &BTreeMap<u64, Vec<&SpecEvent>>) -> Result<Vec<u64>, Vec<u64>> {
-    outgoing(log, vacancies, stuck, &BTreeSet::new()).map(|out| out.go)
+pub(crate) fn next_waves(log: &SpecLog, vacancies: &Vacancies, (stuck, evaluating): Holding<'_, '_>) -> Result<Vec<u64>, Vec<u64>> {
+    outgoing(log, vacancies, (stuck, evaluating), &BTreeSet::new()).map(|out| out.go)
 }
+
+/// O que segura uma onda pronta na fila: a parada pelo limite de consertos,
+/// com os eventos que a pararam, e a que espera, pela avaliação de skill que
+/// leva, estas tarefas abertas.
+pub(crate) type Holding<'a, 'b> = (&'a BTreeMap<u64, Vec<&'b SpecEvent>>, &'a BTreeMap<u64, Vec<u64>>);
 
 /// As ondas que saem nesta rodada ([`next_waves`]) e o que sobra para a
 /// montagem do backlog: quantas vagas seguem livres depois delas e se há
@@ -66,6 +75,9 @@ pub(super) struct Outgoing {
     /// Nada em andamento e nada saindo: só então uma onda com o curinga da
     /// árvore inteira pode sair, e sozinha.
     pub alone: bool,
+    /// As ondas prontas, com vaga, que a avaliação de skill que levam segura:
+    /// sem ela, sairiam agora.
+    pub evaluating: Vec<u64>,
 }
 
 /// [`next_waves`] com mais um dado: as ondas de `skip` são tratadas como se
@@ -74,7 +86,7 @@ pub(super) struct Outgoing {
 pub(super) fn outgoing(
     log: &SpecLog,
     vacancies: &Vacancies,
-    stuck: &BTreeMap<u64, Vec<&SpecEvent>>,
+    (stuck, evaluating): Holding<'_, '_>,
     skip: &BTreeSet<u64>,
 ) -> Result<Outgoing, Vec<u64>> {
     let running = &vacancies.open;
@@ -106,7 +118,7 @@ pub(super) fn outgoing(
         // A onda cuja volta espera a rodada já saiu, mesmo replanejada depois
         // do envio: despachá-la de novo deixaria a volta sem ser assumida, e
         // a cópia dela, com o código entregue, seria a de uma onda nova.
-        .chain(waves_returned(log))
+        .chain(log.waves_returned())
         .chain(skip.iter().copied())
         .collect();
     // Só a onda do plano é candidata: a de lote que ficou sem tarefa saiu
@@ -138,6 +150,7 @@ pub(super) fn outgoing(
     let mut busy = !running.is_empty();
     let mut whole_tree_out = running.keys().any(|n| graph.files.get(n).is_some_and(touches_whole_tree));
     let mut go = Vec::new();
+    let mut held = Vec::new();
     let mut fresh = 0;
     let (own, rest): (Vec<u64>, Vec<u64>) = ready_in_order(&depends, &graph, &already_out, &delivered, &done)?.into_iter().partition(|n| holding.contains(n));
     for n in own.into_iter().chain(rest) {
@@ -146,6 +159,10 @@ pub(super) fn outgoing(
         }
         if stuck.contains_key(&n) || blocked.contains(&n)
             || dependencies_of(n, &depends).iter().any(|d| stuck.contains_key(d) || blocked.contains(d)) {
+            continue;
+        }
+        if evaluating.contains_key(&n) {
+            held.push(n);
             continue;
         }
         let whole_tree = touches_whole_tree(graph.files.get(&n).into_iter().flatten());
@@ -158,7 +175,7 @@ pub(super) fn outgoing(
         go.push(n);
     }
     let free = if whole_tree_out { 0 } else { slots.saturating_sub(fresh) };
-    Ok(Outgoing { go, free, alone: !busy })
+    Ok(Outgoing { go, free, alone: !busy, evaluating: held })
 }
 
 /// As ondas com pedido aberto, cada uma com o número do pedido dela: a onda
@@ -172,82 +189,15 @@ pub(super) fn outgoing(
 /// o seu lado.
 pub(crate) fn open_sends(log: &SpecLog) -> BTreeMap<u64, u64> {
     let replanned = waves_replanned(log);
-    unanswered_sends(log).into_iter().filter(|(n, _)| !replanned.contains(n)).collect()
-}
-
-/// As ondas do plano com pedido despachado e sem volta ([`open_sends`]),
-/// inclusive a que ganhou versão nova do plano depois do pedido: a onda que o
-/// agente ainda trabalha continua dona da cópia dela, mesmo com o plano
-/// mudado, até sair de novo ou voltar.
-pub(crate) fn unanswered_sends(log: &SpecLog) -> BTreeMap<u64, u64> {
-    let planned = log.planned_waves();
-    sends_without_return(log).into_iter().filter(|(n, _)| planned.contains(n)).collect()
-}
-
-/// `true` quando o agente da onda `wave` ainda pode entregar: ela tem envio
-/// sem volta ([`unanswered_sends`]), mesmo com o plano mudado depois dele, e
-/// nenhuma entrega esperando a rodada ([`waves_returned`]). As duas leituras
-/// ficam: a volta que o agente grava sai da leitura até a rodada assumi-la, e
-/// até lá o envio segue sem volta, guardando a vaga e a cópia da onda (a
-/// volta que a junção segurou por conflito ainda precisa dela). É a leitura
-/// da gravação de uma tarefa, que não pode tirar da onda o que o agente entrega.
-/// Ao contrário de [`waves_in_progress`], não olha se o Claude Code que mandou
-/// o pedido segue aberto: a onda cujo agente caiu sem voltar segue dona das
-/// tarefas dela até sair de novo ou voltar.
-pub(crate) fn agent_working(log: &SpecLog, wave: u64) -> bool {
-    unanswered_sends(log).contains_key(&wave) && !waves_returned(log).contains(&wave)
-}
-
-/// As ondas com pedido despachado e sem volta, cada uma com o número do
-/// pedido, estejam ou não no plano: a leitura que [`unanswered_sends`]
-/// restringe às do plano e que [`waves_left_without_tasks`] restringe às que
-/// saíram dele.
-fn sends_without_return(log: &SpecLog) -> BTreeMap<u64, u64> {
-    let verdicts = log.verdicts_by_wave();
-    let dispatches=log.last_dispatch_by_wave();
-    let mut deliveries: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
-    for delivered in log.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|e| e.event_type == "delivered") {
-        if let Some(n) = delivered.wave() {
-            deliveries.entry(n).or_default().push(delivered.id);
-        }
-    }
-    log.last_by_wave("send")
-        .into_iter()
-        .filter(|(n, sent)| {
-            // A entrega e o veredito se comparam com o lugar em que o envio
-            // despachou a onda, e não com a versão mais nova dele: a versão
-            // que só traz o consumo, gravada depois de uma entrega ou de uma
-            // reprovação, não reabre a onda.
-            let sent = dispatches.get(n).copied().unwrap_or(*sent);
-            let ids = deliveries.get(n).map(Vec::as_slice).unwrap_or_default();
-            if ids.iter().any(|id| *id > sent) {
-                return false;
-            }
-            let judged_before = verdicts.get(n).and_then(|list| list.iter().rev().find(|v| v.id < sent)).and_then(|v| v.str_field("result"));
-            !ids.iter().any(|id| *id < sent) || judged_before == Some("rejected")
-        })
-        .collect()
-}
-
-/// As ondas que saíram do ar por ficar sem tarefa, cada uma com o número do
-/// pedido dela: a onda tem pedido sem volta, continua gravada, e nenhuma
-/// tarefa viva aponta mais o número dela — a tarefa foi removida, ou regravada
-/// fora da onda. Sem tarefa ela sai do plano ([`SpecLog::planned_waves`]) e,
-/// pela mesma leitura, do andamento ([`waves_in_progress`]) em toda chamada:
-/// rodada com relatório ou com despacho, retomada e fila.
-pub(crate) fn waves_left_without_tasks(log: &SpecLog) -> BTreeMap<u64, u64> {
-    let planned = log.planned_waves();
-    let recorded: BTreeSet<u64> =
-        log.block(BlockQuery::Block(Block::Waves)).into_iter().filter(|e| e.event_type == "wave").filter_map(SpecEvent::wave).collect();
-    sends_without_return(log).into_iter().filter(|(n, _)| recorded.contains(n) && !planned.contains(n)).collect()
+    log.unanswered_sends().into_iter().filter(|(n, _)| !replanned.contains(n)).collect()
 }
 
 /// Grava, uma vez por onda, a nota do binário dizendo que a onda saiu do ar
-/// por ficar sem tarefa ([`waves_left_without_tasks`]), no idioma `lang`, e
+/// por ficar sem tarefa ([`SpecLog::waves_left_without_tasks`]), no idioma `lang`, e
 /// devolve o que gravou. A nota leva o código da onda nas chaves: a onda que
 /// já tem a sua não ganha outra.
 pub(super) fn record_waves_left_without_tasks(start: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Result<Vec<Value>, Refusal> {
-    let left = waves_left_without_tasks(log);
+    let left = log.waves_left_without_tasks();
     if left.is_empty() {
         return Ok(Vec::new());
     }
@@ -264,7 +214,7 @@ pub(super) fn record_waves_left_without_tasks(start: &Path, spec: &str, log: &Sp
         .flatten()
         .collect();
     let waves = log.block(BlockQuery::Block(Block::Waves));
-    let returned = waves_returned(log);
+    let returned = log.waves_returned();
     let mut recorded = Vec::new();
     for (wave, sent) in left {
         let Some(event) = waves.iter().rfind(|e| e.event_type == "wave" && e.wave() == Some(wave)) else {
@@ -292,22 +242,23 @@ pub(super) fn record_waves_left_without_tasks(start: &Path, spec: &str, log: &Sp
 /// A chave que marca a nota de onda que saiu do ar por ficar sem tarefa.
 const WAVE_LEFT_KEY: &str = "wave-left-without-tasks";
 
-/// O pedido de revisão aberto, pelo número dele: o último envio de revisão,
-/// que o fechamento grava, sem veredito oficial depois dele. A volta que o
-/// revisor gravou e ninguém assumiu ainda não fecha o pedido: só o veredito
-/// que a rodada ou o fechamento grava ao assumi-la. O veredito do revisor de
-/// uma onda nunca o fecha.
+/// O pedido de revisão aberto, pelo número da versão que o gravou: o pedido
+/// mais novo da revisão final, que o fechamento grava ([`review_send`]), sem
+/// veredito oficial depois dele. A volta que o revisor gravou e ninguém
+/// assumiu ainda não fecha o pedido: só o veredito que a rodada ou o
+/// fechamento grava ao assumi-la. O veredito do revisor de uma onda nunca o
+/// fecha.
 pub(crate) fn open_review(log: &SpecLog) -> Option<u64> {
-    let visible = log.visible();
-    let asked = visible.iter().filter(|e| e.event_type == "send" && e.str_field("role") == Some("review")).map(|e| e.id).max()?;
-    (!visible.iter().any(|e| e.event_type == "verdict" && !super::wave_review::is_wave_verdict(e) && e.id > asked)).then_some(asked)
+    let asked = review_send(log, None)?.asked;
+    (!log.visible().iter().any(|e| e.event_type == "verdict" && !super::wave_review::is_wave_verdict(e) && e.id > asked)).then_some(asked)
 }
 
 /// O pedido de revisão final aberto ([`open_review`]) cujo veredito ainda
 /// pode aprovar a obra: o mais novo que a última mudança dela
-/// ([`last_change`]). O pedido aberto mais velho que ela não espera veredito:
-/// o revisor não recebeu o que mudou depois dele, e o fechamento abre um
-/// pedido novo.
+/// ([`last_change`]), pelo número da versão que gravou o pedido. O pedido
+/// aberto mais velho que ela não espera veredito: o revisor não recebeu o que
+/// mudou depois dele, e o fechamento abre um pedido novo — também quando o
+/// lançamento do revisor gravou uma versão do envio depois da mudança.
 pub(crate) fn awaited_review(log: &SpecLog) -> Option<u64> {
     open_review(log).filter(|asked| *asked > last_change(log))
 }
@@ -429,14 +380,14 @@ fn host_still_here(log: &SpecLog, sent: u64) -> bool {
 
 /// As ondas em andamento, cada uma com o número do pedido dela: as com pedido
 /// aberto ([`open_sends`]) cujo Claude Code ainda está aberto e que ainda não
-/// voltaram ([`waves_returned`]). A onda que voltou e espera — o clique do
+/// voltaram ([`SpecLog::waves_returned`]). A onda que voltou e espera — o clique do
 /// usuário na mudança de plano, ou a volta regravada que uma conferência
 /// dela pediu — já tem o agente terminado: o envio aberto segue guardando a
 /// vaga, os arquivos e a cópia dela, mas ela não está em andamento para
 /// ninguém. A resposta da rodada, o bloco de retomada, a página e o pedido
 /// de cada onda leem o andamento daqui, e só daqui.
 pub(crate) fn waves_in_progress(log: &SpecLog) -> BTreeMap<u64, u64> {
-    let returned = waves_returned(log);
+    let returned = log.waves_returned();
     open_sends(log).into_iter().filter(|(n, sent)| !returned.contains(n) && host_still_here(log, *sent)).collect()
 }
 
@@ -521,10 +472,10 @@ pub(crate) fn waves_with_live_agent(root: &Path, spec: &str, log: &SpecLog) -> B
 /// As ondas órfãs, cada uma com o número do pedido dela: as com pedido aberto
 /// ([`open_sends`]) cujo Claude Code já fechou. A rodada as reenvia com o
 /// mesmo pedido de antes, na cópia que volta limpa ao commit atual. A onda
-/// que já voltou ([`waves_returned`]) nunca é órfã: o agente dela terminou, e
+/// que já voltou ([`SpecLog::waves_returned`]) nunca é órfã: o agente dela terminou, e
 /// a cópia guarda o que ele entregou até a rodada o assumir.
 pub(crate) fn orphaned_waves(log: &SpecLog) -> BTreeMap<u64, u64> {
-    let returned = waves_returned(log);
+    let returned = log.waves_returned();
     open_sends(log).into_iter().filter(|(n, sent)| !returned.contains(n) && !host_still_here(log, *sent)).collect()
 }
 
@@ -546,7 +497,7 @@ pub(crate) fn orphaned_waves(log: &SpecLog) -> BTreeMap<u64, u64> {
 /// daqui.
 pub(crate) fn waves_awaiting_new_agent(root: &Path, spec: &str, log: &SpecLog) -> BTreeMap<u64, PathBuf> {
     let sends = log.last_by_wave("send");
-    waves_returned(log)
+    log.waves_returned()
         .into_iter()
         .filter(|n| sends.get(n).is_some_and(|sent| rejected_unclaimed(log, *n, *sent) || !host_still_here(log, *sent)))
         .filter_map(|n| super::fixes::fix_file(root, spec, log, n).filter(|file| file.is_file()).map(|file| (n, file)))
@@ -580,17 +531,7 @@ pub(crate) fn without_agent(draft: &mut Map<String, Value>) {
     }
 }
 
-/// As ondas que voltaram e esperam a rodada: a entrega que o agente gravou
-/// depois do envio que a despachou e que nenhuma rodada assumiu ainda
-/// ([`SpecLog::returns_after_dispatch`]) — a que pede novo plano sem o
-/// clique do usuário, a que uma conferência da própria volta segurou, ou a
-/// que a junção segurou por conflito. A onda que saiu do plano depois de
-/// voltar segue aqui: o agente dela terminou.
-pub(crate) fn waves_returned(log: &SpecLog) -> BTreeSet<u64> {
-    log.returns_after_dispatch().into_iter().filter_map(SpecEvent::wave).collect()
-}
-
-/// As ondas que voltaram ([`waves_returned`]) sem pedir mudança de plano: o
+/// As ondas que voltaram ([`SpecLog::waves_returned`]) sem pedir mudança de plano: o
 /// trabalho delas está entregue e só espera a rodada assumi-lo. A que pede
 /// mudança espera a resposta do usuário, e as tarefas dela seguem por fazer.
 pub(crate) fn waves_returned_without_replan(log: &SpecLog) -> BTreeSet<u64> {
@@ -698,7 +639,7 @@ fn dependencies_of(n: u64, depends: &BTreeMap<u64, Vec<u64>>) -> BTreeSet<u64> {
 /// não existisse: a onda volta para a fila e sai com o pedido do plano
 /// atual. A reprovação do fechamento que não cita arquivo da onda já saiu
 /// antes desta leitura, na soltura que a rodada chama
-/// ([`crate::commands::flow::close::stale_marks::release`]), e não traz a
+/// ([`crate::commands::flow::common::stale_marks::release`]), e não traz a
 /// onda de volta.
 pub(crate) fn waves_to_redo(log: &SpecLog) -> BTreeSet<u64> {
     let last_send = log.last_dispatch_by_wave();
@@ -818,7 +759,7 @@ pub(crate) fn files_in(fields: &Map<String, Value>) -> BTreeSet<String> {
 /// depois desta leitura continua recusando esta como substituída, e o texto
 /// dela não se perde. O evento sem código, e o que não é tarefa, vão pelo
 /// número, como antes.
-pub(super) fn task_revision(log: &SpecLog, id: u64, extra: Map<String, Value>) -> Option<Map<String, Value>> {
+pub(crate) fn task_revision(log: &SpecLog, id: u64, extra: Map<String, Value>) -> Option<Map<String, Value>> {
     let event = log.get(id)?;
     let mut draft: Map<String, Value> = event
         .fields
@@ -1057,6 +998,7 @@ mod tests {
     use crate::commands::flow::round::tests::*;
     use crate::commands::spec_events::write::record;
 
+    mod rejected_wave_new_agent;
     mod removal_after_delivery;
 
     /// A cópia gravada no envio da onda `wave`.
@@ -3014,14 +2956,14 @@ mod tests {
             "x",
             "task",
             json!({"title": "Gravar a versao nova de uma decisao", "text": "A decisao ja foi feita fora da onda.",
-                "files": [{"path": "src/b.rs"}], "depends_on": [], "covers": [item1], "origin": said}),
+                "files": [{"path": "src/b.rs"}], "depends_on": [], "covers": [item1, "MSTD-CRIT-0001"], "origin": said}),
         ));
         id_of(&write(
             root,
             "x",
             "task",
             json!({"title": "Trocar a mensagem de erro do campo vazio", "text": "Hoje a mensagem nao diz o campo.",
-                "files": [{"path": "src/b.rs"}], "depends_on": [], "covers": [item2], "origin": said}),
+                "files": [{"path": "src/b.rs"}], "depends_on": [], "covers": [item2, "MSTD-CRIT-0001"], "origin": said}),
         ));
 
         let log = store::read(&path).unwrap().unwrap();
@@ -4244,8 +4186,8 @@ mod tests {
         assert_eq!(refused["reason"], json!("wave-agent-working"), "o run write recusa enquanto o agente trabalha: {refused}");
         record(root, "x", "remove", removal.as_object().cloned().unwrap(), PhaseWriter::Binary).unwrap();
         let log = spec_now(root);
-        assert!(!waves_returned(&log).contains(&1), "o agente da onda 1 não voltou");
-        assert_eq!(waves_left_without_tasks(&log).into_keys().collect::<Vec<_>>(), vec![1], "a remoção tirou a onda 1 do ar");
+        assert!(!log.waves_returned().contains(&1), "o agente da onda 1 não voltou");
+        assert_eq!(log.waves_left_without_tasks().into_keys().collect::<Vec<_>>(), vec![1], "a remoção tirou a onda 1 do ar");
 
         let notes = || -> Vec<String> {
             spec_now(root)

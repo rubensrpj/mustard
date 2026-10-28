@@ -139,7 +139,7 @@ pub(crate) fn discard_for(opts: &DiscardOpts, session: Option<&str>) -> Value {
     };
     // Depois das cópias, a pasta de compilação que o projeto declarou
     // descartável sai da pasta principal, como no fechamento.
-    let build_output = phase_written.then(|| crate::commands::flow::close::remove_build_output(&project.root, lang));
+    let build_output = phase_written.then(|| crate::shared::build_removal::remove_build_output(&project.root, lang));
 
     // O descarte é um marco, como o fechamento: a cópia para o banco da
     // página sai aqui, com a fase descartada na linha da spec da página do
@@ -168,7 +168,7 @@ pub(crate) fn discard_for(opts: &DiscardOpts, session: Option<&str>) -> Value {
         out["reason"] = json!("discard-incomplete");
         out["hint"] = json!(translate("discard.incomplete", lang));
     }
-    for (reason, hint) in crate::commands::flow::close::removal_warnings(&copies_left, lang) {
+    for (reason, hint) in crate::shared::build_removal::removal_warnings(&copies_left, lang) {
         spec_events::pages::push_warning(&mut out, reason, &hint);
     }
     if let Some(swept) = &build_output {

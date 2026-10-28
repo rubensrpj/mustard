@@ -36,6 +36,22 @@ pub mod platform;
 #[cfg(test)]
 #[path = "../tests/support/manifest_dir.rs"]
 pub(crate) mod manifest_dir;
+// A espera dos testes de dentro de `src/` pelo evento de outro processo.
+#[cfg(test)]
+#[path = "../tests/support/wait_for.rs"]
+pub(crate) mod wait_for;
+// O comando que os testes de dentro de `src/` seguram até soltá-lo.
+#[cfg(all(test, unix))]
+#[path = "../tests/support/held_command.rs"]
+pub(crate) mod held_command;
+// A pausa dos testes de dentro de `src/` antes de afirmar que nada aconteceu.
+#[cfg(all(test, unix))]
+#[path = "../tests/support/pause.rs"]
+pub(crate) mod pause;
+// O relógio falso dos testes de dentro de `src/`.
+#[cfg(test)]
+#[path = "../tests/support/fake_clock.rs"]
+pub(crate) mod fake_clock;
 // Project seeding — the compiled-in seed payload (`seeds`) and the
 // install/update engine (`project_seed`) shared by `mustard init` and
 // `mustard-rt run upsert`. See `platform/seeds.rs` + `platform/project_seed/`.

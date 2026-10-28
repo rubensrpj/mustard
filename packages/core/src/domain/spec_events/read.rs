@@ -509,17 +509,12 @@ impl SpecLog {
     }
 
     /// Os números que uma remoção tira da leitura, cada um com a primeira
-    /// remoção que o aponta: os alvos dela e, com o filtro, cada evento do
-    /// tipo e do intervalo gravado antes dela.
+    /// remoção que o aponta ([`Self::removal_targets`]).
     fn removals(&self) -> BTreeMap<u64, Removal> {
         let mut removed = BTreeMap::new();
         for event in self.events.iter().filter(|e| e.event_type == "remove") {
-            let mut targets = event.ints("targets");
-            if let Some(filter) = event.fields.get("filter").and_then(TimeFilter::from_value) {
-                targets.extend(self.filter_matches(&filter, event.id));
-            }
             let gives_back = event.fields.get(GIVES_BACK_FIELD) == Some(&Value::Bool(true));
-            for id in targets {
+            for id in self.removal_targets(event) {
                 removed.entry(id).or_insert(Removal { by: event.id, gives_back });
             }
         }

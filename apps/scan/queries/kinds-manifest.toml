@@ -46,6 +46,7 @@ kinds = [
   "property",
   "field",
   "enum_member",
+  "test",
 ]
 
 [go]
@@ -92,6 +93,7 @@ kinds = [
   "property",
   "enum_member",
   "const",
+  "test",
 ]
 
 [dart]
@@ -106,6 +108,7 @@ kinds = [
   "field",
   "property",
   "enum_member",
+  "test",
 ]
 
 [prisma]

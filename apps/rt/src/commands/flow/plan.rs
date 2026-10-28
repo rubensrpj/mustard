@@ -62,6 +62,7 @@ use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecEvent, S
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State};
 use mustard_core::domain::survey::{open_points, open_refusal};
 use mustard_core::domain::wave_prompt::{self, Owner};
+use mustard_core::domain::wave_times::{WaveTimes, wave_times};
 use mustard_core::io::citation::DiskWorld;
 use mustard_core::io::spec_events as store;
 use mustard_core::io::wave_prompt::{Flight, WavePrompt, prompts};
@@ -247,6 +248,28 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>) -> Value {
         return report;
     }
 
+    // A formação das ondas sai antes da aprovação, pela mesma leitura que a
+    // rodada pede: com o pedido ao agente de análise ainda sem recibo, o
+    // plano para aqui, sem gravar a fase nem fazer a pergunta, e roda de novo
+    // depois do recibo. Com a formação gravada, a spec é relida.
+    let forming = crate::commands::flow::triage::form_for_plan(&opts.root, &spec, session);
+    if let Some(pending) = forming.pending {
+        return json!({
+            "ok": true, "spec": spec, "waves": waves, "tasks": tasks, "warnings": warnings,
+            "formation": pending["grouping"], "next": translate("plan.formation_pending", lang),
+        });
+    }
+    let log = if forming.applied {
+        match store::read(&path) {
+            Ok(Some(log)) => log,
+            Ok(None) => return refuse(&Refusal::NoSpecFile { spec }),
+            Err(refusal) => return refuse(&refusal),
+        }
+    } else {
+        log
+    };
+    let tasks = task_sizes(&log);
+
     // A fase passa pela mesma porta de gravação de fase das outras, e ela já
     // refaz a linha da spec no índice. Uma spec que já está em plano, com o
     // último plano passado e nada do plano gravado depois dele, não grava
@@ -282,6 +305,10 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>) -> Value {
     if let Some(id) = recorded {
         report["id"] = json!(id);
     }
+    // O bloco que vai antes da pergunta: as ondas e as etapas pela formação,
+    // e o tempo das ondas pela história das specs do próprio projeto.
+    let specs = mustard_core::io::spec_index::read_specs(&project.root);
+    report["forecast"] = forecast(&log, wave_times(specs.iter().map(|(_, log)| log)), lang);
     // A pergunta vai com o texto exato do catálogo: a testemunha da aprovação
     // só reconhece essa pergunta, e outro texto não aprova nada.
     let ask = translate("plan.next", lang).replace("{question}", translate("approval.question", lang)).replace("{option}", translate("approval.option", lang));
@@ -389,7 +416,8 @@ fn check(start: &Path, root: &Path, spec: &str, log: &SpecLog, built: &[WaveProm
 
     // As citações de cada tarefa, pela mesma conferência que o ponto do
     // levantamento usa: o arquivo citado existe ou está marcado como novo, e
-    // os nomes citados existem no mapa.
+    // os nomes citados existem no mapa. O arquivo citado só pelo nome, que
+    // não existe, sai com os arquivos do projeto que têm esse nome.
     let roots = store::citation_roots(start, root);
     let world = DiskWorld::new(roots, Some(root));
     let tasks: Vec<&SpecEvent> = tasks_of(log);
@@ -415,7 +443,7 @@ fn check(start: &Path, root: &Path, spec: &str, log: &SpecLog, built: &[WaveProm
         }
         for (path, new) in &files {
             if !new && !by_another(path) && world.file_lines(path).is_none() {
-                out.push(PlanFinding::Cited { task: code.clone(), finding: Finding::MissingFile { path: path.clone() } });
+                out.push(PlanFinding::Cited { task: code.clone(), finding: citation::missing_file(&world, path) });
             }
             if !cited.contains(path) {
                 cited.push(path.clone());
@@ -531,6 +559,102 @@ fn task_sizes(log: &SpecLog) -> Vec<Value> {
             row
         })
         .collect()
+}
+
+/// Onde a rodada põe uma tarefa: na onda que ela já tem, no assunto que a
+/// formação deu, ou sozinha, que a tarefa sem assunto já é a própria onda.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum Slot {
+    Wave(u64),
+    Subject(String),
+    Alone(u64),
+}
+
+/// As ondas que as tarefas ainda por entregar de `log` vão formar e as
+/// etapas, a cadeia mais longa de ondas em que cada uma espera uma tarefa da
+/// anterior.
+struct WaveCount {
+    waves: usize,
+    stages: usize,
+    /// Toda tarefa já tem onda ou assunto da formação. Com uma tarefa sem
+    /// nenhum dos dois, ela conta como uma onda sozinha, e o número de ondas
+    /// é um teto: a formação ainda pode juntá-la a outras.
+    formed: bool,
+}
+
+/// O [`WaveCount`] de `log`, pela formação gravada nas tarefas.
+fn waves_and_stages(log: &SpecLog) -> WaveCount {
+    use crate::commands::flow::round::queue::{backlog_population, tasks_not_delivered, waves_returned_without_replan};
+    use std::collections::BTreeMap;
+    let returned = waves_returned_without_replan(log);
+    let left: BTreeSet<u64> =
+        tasks_not_delivered(log, &BTreeSet::new()).into_iter().filter(|id| log.get(*id).and_then(SpecEvent::wave).is_none_or(|w| !returned.contains(&w))).collect();
+    let slot_of = |task: &SpecEvent| {
+        let subject = task.fields.get("group").filter(|group| group.get("formed") == Some(&json!(true))).and_then(|group| group.get("name")?.as_str());
+        match (task.wave(), subject) {
+            (Some(wave), _) => Slot::Wave(wave),
+            (None, Some(name)) => Slot::Subject(name.to_string()),
+            (None, None) => Slot::Alone(task.id),
+        }
+    };
+    let slots: BTreeMap<u64, Slot> = left.iter().filter_map(|id| log.get(*id).map(|task| (*id, slot_of(task)))).collect();
+    let mut waits: BTreeMap<&Slot, BTreeSet<&Slot>> = slots.values().map(|slot| (slot, BTreeSet::new())).collect();
+    for task in backlog_population(log, &BTreeSet::new()) {
+        let Some(mine) = slots.get(&task.id) else { continue };
+        for other in task.depends_on.iter().filter_map(|id| slots.get(id)).filter(|other| *other != mine) {
+            waits.entry(mine).or_default().insert(other);
+        }
+    }
+    fn chain<'a>(slot: &'a Slot, waits: &BTreeMap<&'a Slot, BTreeSet<&'a Slot>>, known: &mut BTreeMap<&'a Slot, usize>, open: &mut BTreeSet<&'a Slot>) -> usize {
+        if let Some(length) = known.get(slot) {
+            return *length;
+        }
+        // Um círculo de esperas não se conta duas vezes: a conferência das
+        // dependências o recusa noutro passo.
+        if !open.insert(slot) {
+            return 0;
+        }
+        let length = 1 + waits.get(slot).into_iter().flatten().map(|other| chain(other, waits, known, open)).max().unwrap_or(0);
+        open.remove(slot);
+        known.insert(slot, length);
+        length
+    }
+    let mut known = BTreeMap::new();
+    let stages = waits.keys().map(|slot| chain(slot, &waits, &mut known, &mut BTreeSet::new())).max().unwrap_or(0);
+    WaveCount { waves: waits.len(), stages, formed: !slots.values().any(|slot| matches!(slot, Slot::Alone(_))) }
+}
+
+/// O bloco que o plano diz antes da pergunta de aprovação, no idioma `lang`:
+/// primeiro cada regra da obra de `log` numa linha
+/// ([`wave_prompt::rule_lines`]), e depois as ondas e as etapas dela, e a
+/// medida `times` das ondas do projeto, com o total estimado pela onda do
+/// meio vezes as etapas. Sem a formação de alguma tarefa, o número de ondas
+/// sai dito como teto, uma onda por tarefa sem assunto. Sem onda medida, o
+/// texto diz que ainda não há medida, sem número nenhum.
+fn forecast(log: &SpecLog, times: Option<WaveTimes>, lang: Locale) -> Value {
+    let rules = wave_prompt::rule_lines(log, lang);
+    let WaveCount { waves, stages, formed } = waves_and_stages(log);
+    let key = if formed { "plan.forecast.waves" } else { "plan.forecast.ceiling" };
+    let mut text = translate(key, lang).replace("{waves}", &waves.to_string()).replace("{stages}", &stages.to_string());
+    let mut block = json!({ "rules": rules, "waves": waves, "stages": stages, "formed": formed, "wave_minutes": times });
+    match times {
+        Some(times) => {
+            let estimate = times.median * stages as u64;
+            block["estimate_minutes"] = json!(estimate);
+            let said = translate("plan.forecast.times", lang)
+                .replace("{measured}", &times.measured.to_string())
+                .replace("{shortest}", &times.shortest.to_string())
+                .replace("{median}", &times.median.to_string())
+                .replace("{longest}", &times.longest.to_string())
+                .replace("{estimate}", &estimate.to_string());
+            text = format!("{text} {said}");
+        }
+        None => text = format!("{text} {}", translate("plan.forecast.no_measure", lang)),
+    }
+    let listed: String = rules.iter().flat_map(|rule| ["- ", rule.as_str(), "\n"]).collect();
+    let text = if listed.is_empty() { text } else { format!("{listed}\n{text}") };
+    block["text"] = json!(text);
+    block
 }
 
 /// As frases com que uma tarefa declara, no texto, que não mexe em arquivo
@@ -1039,6 +1163,31 @@ mod tests {
         let blocking = reasons(&report, "blocking");
         assert_eq!(blocking.iter().filter(|r| *r == "cited-file-missing").count(), 1, "{report}");
         assert!(reasons(&report, "warnings").contains(&"names-unchecked".to_string()), "{report}");
+    }
+
+    /// O fato de um ponto e o arquivo de uma tarefa citam `a.rs` só pelo
+    /// nome, e um arquivo só do projeto tem esse nome, em `src`: a gravação do
+    /// ponto recusa, a conferência do plano trava, e as duas mensagens dizem o
+    /// caminho inteiro dele.
+    #[test]
+    fn a_refused_citation_names_the_only_file_with_that_name() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+
+        let fact = json!({"block": "limits", "gap": "tamanho", "from": "gap", "status": "open",
+            "facts": [{"text": "o defeito mora aqui", "source": "a.rs:1"}], "origin": said});
+        let refused = write(root, Some("x"), "point", fact);
+        assert_eq!(refused["reason"], json!("cited-file-missing"), "{refused}");
+        assert!(refused["hint"].as_str().unwrap_or_default().contains("src/a.rs"), "{refused}");
+
+        let crit = criterion(root, "x", said);
+        write(root, Some("x"), "wave", json!({"n": 1, "text": "Somar.", "criteria": [crit], "done_when": "passa", "origin": said}));
+        write(root, Some("x"), "task", json!({"wave": 1, "text": "Somar.", "files": [{"path": "a.rs"}], "origin": said}));
+        let report = plan(root, "x");
+        let hints = hints_of(&report, "blocking", "cited-file-missing");
+        assert_eq!(hints.len(), 1, "{report}");
+        assert!(hints[0].contains("a.rs") && hints[0].contains("src/a.rs"), "{hints:?}");
     }
 
     /// Só avisam, e a pergunta segue: arquivo fora do git, item de uma onda
@@ -1552,5 +1701,190 @@ mod tests {
         let report = plan(root, "x");
         assert_eq!(report["ok"], json!(false), "{report}");
         assert!(reasons(&report, "blocking").contains(&"plan-without-task".to_string()), "{report}");
+    }
+
+    /// Uma tarefa sem onda que cobre o critério `crit`, com o assunto
+    /// `subject` que a formação deu, quando há, e as dependências `depends_on`.
+    fn backlog_task(root: &Path, said: u64, crit: u64, title: &str, subject: Option<&str>, depends_on: &[u64]) -> u64 {
+        let mut task = json!({"title": title, "text": "Escrever a soma.", "files": [{"path": "src/a.rs"}], "depends_on": depends_on,
+            "covers": [crit], "origin": said});
+        if let Some(name) = subject {
+            task["group"] = json!({"name": name, "position": 1, "formed": true});
+        }
+        id_of(&write(root, Some("x"), "task", task))
+    }
+
+    /// Outra spec do mesmo projeto, gravada crua com as horas: a onda 1 saiu,
+    /// saiu de novo e entrou no commit 30 minutos depois da primeira saída; a
+    /// 2 levou 10 minutos; a 3, 50; e a 4 saiu e ainda não tem commit.
+    fn measured_spec(root: &Path) {
+        let lines = [
+            r#"{"v":1,"id":1,"at":"2026-10-01T10:00:00-03:00","type":"send","wave":1,"role":"wave","text":"Pedido."}"#,
+            r#"{"v":1,"id":2,"at":"2026-10-01T10:20:00-03:00","type":"send","wave":1,"role":"wave","text":"Reenvio."}"#,
+            r#"{"v":1,"id":3,"at":"2026-10-01T10:30:00-03:00","type":"commit","waves":[1],"sha":"a1"}"#,
+            r#"{"v":1,"id":4,"at":"2026-10-01T11:00:00-03:00","type":"send","wave":2,"role":"wave","text":"Pedido."}"#,
+            r#"{"v":1,"id":5,"at":"2026-10-01T11:00:00-03:00","type":"send","wave":3,"role":"wave","text":"Pedido."}"#,
+            r#"{"v":1,"id":6,"at":"2026-10-01T11:10:00-03:00","type":"commit","waves":[2],"sha":"b2"}"#,
+            r#"{"v":1,"id":7,"at":"2026-10-01T11:50:00-03:00","type":"commit","waves":[3],"sha":"c3"}"#,
+            r#"{"v":1,"id":8,"at":"2026-10-01T12:00:00-03:00","type":"send","wave":4,"role":"wave","text":"Pedido."}"#,
+        ];
+        let folder = root.join(".claude/spec/antiga");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("spec.ndjson"), lines.join("\n") + "\n").unwrap();
+    }
+
+    /// Antes da pergunta, a resposta do plano diz quantas ondas a formação
+    /// deu, quantas etapas a espera entre elas faz e quanto cada onda levou
+    /// neste projeto, da saída ao commit, com o total como estimativa.
+    #[test]
+    fn the_plan_shows_how_many_waves_and_how_long_each_wave_took_here() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        let crit = criterion(root, "x", said);
+        let first = backlog_task(root, said, crit, "Somar os inteiros", Some("A soma"), &[]);
+        backlog_task(root, said, crit, "Somar os decimais", Some("A soma"), &[]);
+        backlog_task(root, said, crit, "Mostrar a soma", Some("A tela"), &[first]);
+        measured_spec(root);
+
+        let report = plan(root, "x");
+
+        assert_eq!(report["ok"], json!(true), "{report}");
+        let forecast = &report["forecast"];
+        assert_eq!((&forecast["waves"], &forecast["stages"], &forecast["formed"]), (&json!(2), &json!(2), &json!(true)), "{report}");
+        assert_eq!(forecast["wave_minutes"], json!({"measured": 3, "shortest": 10, "median": 30, "longest": 50}), "{report}");
+        assert_eq!(forecast["estimate_minutes"], json!(60), "{report}");
+        let text = forecast["text"].as_str().unwrap_or_default();
+        for said in ["formação: 2", "elas: 2", "commit: 3", "10 min", "30 min", "50 min", "etapas: 60 min"] {
+            assert!(text.contains(said), "{said}: {text}");
+        }
+        assert!(report["next"].as_str().is_some_and(|next| next.contains("`forecast`")), "{report}");
+    }
+
+    /// Sem a formação, cada tarefa sem assunto conta como uma onda sozinha, e
+    /// o bloco diz o número de ondas como teto, sem dizer que ele veio da
+    /// formação.
+    #[test]
+    fn without_the_formation_the_plan_says_the_waves_are_a_ceiling_of_one_per_task() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        let crit = criterion(root, "x", said);
+        let first = backlog_task(root, said, crit, "Somar os inteiros", None, &[]);
+        backlog_task(root, said, crit, "Mostrar a soma", None, &[first]);
+
+        let report = plan(root, "x");
+
+        let forecast = &report["forecast"];
+        assert_eq!((&forecast["waves"], &forecast["stages"], &forecast["formed"]), (&json!(2), &json!(2), &json!(false)), "{report}");
+        let text = forecast["text"].as_str().unwrap_or_default();
+        assert!(text.contains("no máximo: 2, uma por tarefa sem assunto") && text.contains("teto"), "{text}");
+        assert!(!text.contains("pela formação"), "{text}");
+    }
+
+    /// A retomada da spec no plano, na resposta e no bloco do começo da
+    /// sessão, manda conferir o plano pelo próximo comando e dizer o bloco
+    /// das ondas e do tempo antes da pergunta de aprovação; o comando que ela
+    /// dá é o do plano, que traz esse bloco.
+    #[test]
+    fn resuming_in_the_plan_phase_says_the_forecast_before_the_approval_question() {
+        use crate::commands::flow::resume::{ResumeOpts, resume_block, resume_for};
+        use crate::hooks::session::session_start_inject::MAX_BYTES;
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        sound_plan(root, "x", said);
+        assert_eq!(plan(root, "x")["phase"], json!("plan"));
+
+        let resumed = resume_for(&ResumeOpts { root: root.to_path_buf(), spec: Some("x".into()) }, None);
+        assert_eq!(resumed["command"], json!("mustard-rt run plan --spec x"), "{resumed}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let block = resume_block("x", &log, &crate::commands::spec_events::conversation::observed(root, "x", &log), Locale::PtBr, MAX_BYTES);
+        let question = translate("approval.question", Locale::PtBr);
+        for told in [resumed["next"].as_str().unwrap_or_default(), block.as_str()] {
+            let before = told.find("`forecast`").zip(told.find(question)).is_some_and(|(forecast, asked)| forecast < asked);
+            assert!(before, "{told}");
+        }
+        let again = plan(root, "x");
+        assert!(again["forecast"]["text"].as_str().is_some_and(|text| !text.is_empty()), "{again}");
+    }
+
+    /// Sem onda medida no projeto, o bloco diz que ainda não há medida, sem
+    /// número de tempo nenhum.
+    #[test]
+    fn a_project_without_a_measured_wave_says_there_is_no_measure_yet() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        sound_plan(root, "x", said);
+
+        let report = plan(root, "x");
+
+        let forecast = &report["forecast"];
+        assert_eq!((&forecast["waves"], &forecast["stages"]), (&json!(1), &json!(1)), "{report}");
+        assert!(forecast["wave_minutes"].is_null() && forecast.get("estimate_minutes").is_none(), "{report}");
+        let text = forecast["text"].as_str().unwrap_or_default();
+        assert!(text.contains(translate("plan.forecast.no_measure", Locale::PtBr)) && !text.contains("min"), "{text}");
+    }
+
+    /// Pronto para a aprovação, o bloco que o plano diz abre com cada regra
+    /// da obra numa linha — o tipo, o código e o título da versão vigente —,
+    /// antes da frase das ondas. A versão substituída e o item combinado que
+    /// não é regra ficam de fora.
+    #[test]
+    fn the_plan_answer_lists_every_rule_in_one_line_before_the_waves() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        sound_plan(root, "x", said);
+        let rule = |title: &str, replaces: Option<u64>| {
+            let mut body = json!({"title": title, "text": format!("{title}, em todo arquivo."), "keys": ["soma"], "example": "e",
+                "applies_to": {"files": ["**"]}, "origin": said});
+            if let Some(old) = replaces {
+                body["replaces"] = json!(old);
+            }
+            id_of(&write(root, Some("x"), "rule", body))
+        };
+        let old = rule("A soma perde o sinal", None);
+        let sign = rule("A soma guarda o sinal", Some(old));
+        let carry = rule("A soma leva o vai-um", None);
+        let decision =
+            id_of(&write(root, Some("x"), "decision", json!({"title": "Somar em inteiros", "text": "Só inteiros.", "keys": ["soma"], "why": "w", "origin": said})));
+
+        let report = plan(root, "x");
+
+        assert_eq!(report["ok"], json!(true), "{report}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let codes = log.codes();
+        let line = |id: u64, title: &str| format!("Regra {} — {title}", codes[&id]);
+        let expected = [line(sign, "A soma guarda o sinal"), line(carry, "A soma leva o vai-um")];
+        assert_eq!(report["forecast"]["rules"], json!(expected), "{report}");
+        let text = report["forecast"]["text"].as_str().unwrap_or_default();
+        let head = format!("- {}\n- {}\n\n", expected[0], expected[1]);
+        let rest = text.strip_prefix(&head).unwrap_or_else(|| panic!("cada regra numa linha, antes de tudo: {text}"));
+        let waves = translate("plan.forecast.waves", Locale::PtBr).replace("{waves}", "1").replace("{stages}", "1");
+        assert!(rest.starts_with(&waves), "as ondas vêm logo depois das regras: {text}");
+        assert!(!text.contains("perde o sinal") && !text.contains(&codes[&decision]), "{text}");
+    }
+
+    /// Com uma sessão conduzindo e a lista ainda sem formação, o plano pede a
+    /// leitura ao agente de análise e para antes da pergunta, sem gravar a
+    /// fase do plano.
+    #[test]
+    fn the_plan_asks_for_the_wave_formation_before_the_approval_question() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        let crit = criterion(root, "x", said);
+        backlog_task(root, said, crit, "Somar os inteiros", None, &[]);
+        backlog_task(root, said, crit, "Mostrar a soma", None, &[]);
+
+        let report = plan_for(&PlanOpts { root: root.to_path_buf(), spec: Some("x".into()) }, Some("session"));
+
+        assert!(report["formation"]["delegation"]["request"]["prompt"].as_str().is_some_and(|prompt| prompt.contains("Mostrar a soma")), "{report}");
+        assert_eq!(report["next"], json!(translate("plan.formation_pending", Locale::PtBr)), "{report}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        assert_eq!(State::from_log(&log).phase, Some("survey"), "{report}");
     }
 }

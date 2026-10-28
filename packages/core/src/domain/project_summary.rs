@@ -120,6 +120,21 @@ pub fn pr_of(log: &SpecLog) -> Option<Pr> {
     })
 }
 
+/// As skills que a spec criou ou atualizou e não descartou depois, em
+/// `log`, na ordem.
+#[must_use]
+pub fn skills_of(log: &SpecLog) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for skill in log.visible().into_iter().filter(|e| e.event_type == "skill") {
+        let Some(name) = skill.str_field("name").map(str::trim) else { continue };
+        out.retain(|had| had != name);
+        if matches!(skill.str_field("action"), Some("created" | "updated")) {
+            out.push(name.to_string());
+        }
+    }
+    out
+}
+
 /// A spec tem linha no resumo: entregue, ou fechada com o pull request
 /// gravado.
 #[must_use]

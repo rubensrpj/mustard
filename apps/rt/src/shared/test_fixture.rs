@@ -195,9 +195,48 @@ pub(crate) fn pass_plan(root: &Path, spec: &str) {
 }
 
 /// Um serviço do Jev falso em 127.0.0.1 que responde `status` com `body` a
-/// todo pedido, `delay` depois de lê-lo, um pedido por vez, e conta quantos
-/// chegaram. Devolve o endereço e a contagem.
-pub(crate) fn jev_service(delay: std::time::Duration, status: u16, body: String) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+/// todo pedido assim que o lê, e conta quantos chegaram. Devolve o endereço
+/// e a contagem.
+pub(crate) fn jev_service(status: u16, body: String) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+    serve_jev(status, body, None)
+}
+
+/// [`jev_service`] que segura a resposta de cada pedido até o teste abrir a
+/// porta ([`Gate::open`]): a espera do programa acaba pelo prazo dele, e
+/// nunca pela demora de um serviço que um relógio mede. Devolve o endereço e
+/// a porta.
+pub(crate) fn held_jev_service(status: u16, body: String) -> (String, Gate) {
+    let gate = Gate::default();
+    let (url, _) = serve_jev(status, body, Some(gate.clone()));
+    (url, gate)
+}
+
+/// A porta de um serviço falso: fechada, segura as respostas; aberta, solta
+/// as que esperam e as que vierem depois.
+#[derive(Clone, Default)]
+pub(crate) struct Gate(Arc<(Mutex<bool>, std::sync::Condvar)>);
+
+impl Gate {
+    /// Abre a porta.
+    pub(crate) fn open(&self) {
+        let (opened, changed) = &*self.0;
+        *opened.lock().unwrap() = true;
+        changed.notify_all();
+    }
+
+    /// Espera a porta abrir.
+    pub(crate) fn pass(&self) {
+        let (opened, changed) = &*self.0;
+        let mut open = opened.lock().unwrap();
+        while !*open {
+            open = changed.wait(open).unwrap();
+        }
+    }
+}
+
+/// O serviço do Jev falso: cada pedido na sua linha de execução, contado ao
+/// chegar e respondido depois de passar a porta `gate`, quando há uma.
+fn serve_jev(status: u16, body: String, gate: Option<Gate>) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
     use std::io::{BufRead, BufReader, Write};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}/v1/systemone", listener.local_addr().unwrap());
@@ -206,22 +245,27 @@ pub(crate) fn jev_service(delay: std::time::Duration, status: u16, body: String)
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            let mut reader = BufReader::new(&stream);
-            let mut length = 0usize;
-            loop {
-                let mut line = String::new();
-                if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
-                    break;
+            let (body, gate) = (body.clone(), gate.clone());
+            std::thread::spawn(move || {
+                let mut reader = BufReader::new(&stream);
+                let mut length = 0usize;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                        break;
+                    }
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = value.trim().parse().unwrap_or(0);
+                    }
                 }
-                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-                    length = value.trim().parse().unwrap_or(0);
+                let mut request = vec![0; length];
+                let _ = std::io::Read::read_exact(&mut reader, &mut request);
+                if let Some(gate) = &gate {
+                    gate.pass();
                 }
-            }
-            let mut request = vec![0; length];
-            let _ = std::io::Read::read_exact(&mut reader, &mut request);
-            std::thread::sleep(delay);
-            let mut stream = &stream;
-            let _ = write!(stream, "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                let mut stream = &stream;
+                let _ = write!(stream, "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+            });
         }
     });
     (url, count)

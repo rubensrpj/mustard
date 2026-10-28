@@ -3135,10 +3135,11 @@ fn native_defaults_ignore_legacy_jev_in_search_wave_planning_and_context() {
 // A decisão do classificador das atividades, de ponta a ponta
 // ---------------------------------------------------------------------------
 
-/// O título da tarefa aberta que o classificador de mentira diz cobrir a sobra.
+/// O título da tarefa aberta que o classificador de mentira diz cobrir a
+/// atividade.
 const OPEN_TASK: &str = "A tarefa aberta que já cobre o trabalho.";
-/// O título da sobra que a volta da onda 1 relata.
-const LEFTOVER: &str = "O log não gira por dia";
+/// O que falta à decisão que a volta da onda 1 não cumpriu.
+const UNMET: &str = "O log não gira por dia.";
 
 /// A chave, entre as tarefas do estado `state` de um pedido da triagem, da
 /// tarefa aberta [`OPEN_TASK`].
@@ -3309,35 +3310,57 @@ fn waiting_for_the_jev(out: &Value) -> Vec<u64> {
 /// A linha de uso da onda 1 que as rodadas desta seção mandam.
 const USAGE_OF_WAVE_ONE: &str = r#"<USAGE>{"wave":1}</USAGE>"#;
 
-/// A spec com a onda 1 devolvida com a sobra [`LEFTOVER`].
-struct WaitingLeftover {
+/// A spec com a onda 1 devolvida sem cumprir a decisão que levou: falta
+/// [`UNMET`].
+struct WaitingUnmet {
     project: Project,
     jev: FakeJev,
     criterion: u64,
     said: u64,
     /// A tarefa aberta [`OPEN_TASK`], à espera da onda 1.
     open: u64,
+    /// A decisão que a onda 1 levou e não cumpriu.
+    carried: u64,
     /// A resposta da rodada que deixou a volta esperando.
     asked: Value,
 }
 
-/// A spec com a onda 1 devolvida com a sobra [`LEFTOVER`], a tarefa aberta
-/// [`OPEN_TASK`] à espera dela e o classificador de mentira ligado, com a
-/// rodada que deixa a volta esperando já feita: ele foi perguntado uma vez,
-/// fora das travas.
-fn leftover_waiting_for_the_classifier() -> WaitingLeftover {
-    leftover_waiting_for(classifying())
+/// A resposta da volta da onda 1 por todo o combinado da spec: cada item
+/// cumprido, menos a decisão `decision`, à qual falta `missing`.
+fn unmet_decision(project: &Project, decision: u64, missing: &str) -> Value {
+    let log = project.log();
+    let codes = log.codes();
+    let agreed: Vec<Value> = mustard_core::domain::wave_prompt::all_agreed(&log)
+        .iter()
+        .map(|item| {
+            if codes.get(&item.id) == codes.get(&decision) {
+                json!({"item": item.id, "met": false, "text": missing})
+            } else {
+                json!({"item": item.id, "met": true})
+            }
+        })
+        .collect();
+    json!({"agreed": agreed})
 }
 
-/// [`leftover_waiting_for_the_classifier`] com o classificador `jev`.
-fn leftover_waiting_for(jev: FakeJev) -> WaitingLeftover {
+/// A spec com a onda 1 devolvida sem cumprir a decisão que levou, a tarefa aberta
+/// [`OPEN_TASK`] à espera dela, cobrindo outra decisão, e o classificador de
+/// mentira ligado, com a rodada que deixa a volta esperando já feita: ele foi
+/// perguntado uma vez, fora das travas.
+fn unmet_waiting_for_the_classifier() -> WaitingUnmet {
+    unmet_waiting_for(classifying())
+}
+
+/// [`unmet_waiting_for_the_classifier`] com o classificador `jev`.
+fn unmet_waiting_for(jev: FakeJev) -> WaitingUnmet {
     let (mut project, criterion, said, tasks) = backlog_project(&[&[GREETING]]);
-    let open = seed_task_with(&project, criterion, said, &["src/open.rs"], &json!({"title": OPEN_TASK, "depends_on": [tasks[0]]}));
+    let carried = project.seed("decision", &json!({"text": "A saudação muda de tom.", "why": "w", "waves": [1], "keys": ["k"], "origin": said}));
+    let other = project.seed("decision", &json!({"text": "O log gira por dia.", "why": "w", "keys": ["log"], "origin": said}));
+    let open = seed_task_with(&project, criterion, said, &["src/open.rs"], &json!({"title": OPEN_TASK, "depends_on": [tasks[0]], "covers": [other]}));
     let sent = project.run(&["round", "--dispatch", "--spec", SPEC]);
     assert_eq!(waves_in(&sent, "dispatch"), vec![1], "{sent}");
     sent_by(&project, &[1], closed_process::closed_process());
-    let leftovers = json!({"leftovers": [{"title": LEFTOVER, "detail": "O arquivo de log cresce sem limite."}]});
-    deliver_file_with(&project, 1, GREETING, "hello\n", &leftovers);
+    deliver_file_with(&project, 1, GREETING, "hello\n", &unmet_decision(&project, carried, UNMET));
     project.jev = Some(jev.url.clone());
 
     let asked = project.run(&["round", "--dispatch", "--spec", SPEC, "--report", USAGE_OF_WAVE_ONE]);
@@ -3345,70 +3368,70 @@ fn leftover_waiting_for(jev: FakeJev) -> WaitingLeftover {
     assert_eq!(waiting_for_the_jev(&asked), vec![1], "the return waits for the decision: {asked}");
     assert_eq!(asked.get("commit"), None, "{asked}");
     assert_eq!(triage_requests(&jev), 1, "the classifier is asked once, outside the locks: {asked}");
-    WaitingLeftover { project, jev, criterion, said, open, asked }
+    WaitingUnmet { project, jev, criterion, said, open, carried, asked }
 }
 
-/// A sobra [`LEFTOVER`] foi para a tarefa aberta `open` como nota, e não
-/// virou tarefa própria.
-fn assert_leftover_noted_on(project: &Project, open: u64) {
+/// O que falta à decisão, [`UNMET`], foi para a tarefa aberta `open` como
+/// nota, e não virou tarefa própria.
+fn assert_unmet_noted_on(project: &Project, open: u64) {
     let log = project.log();
     let code = log.codes().get(&open).cloned().expect("the open task code");
     let notes = log.visible().into_iter().filter(|e| e.event_type == "note" && e.str_field("label") == Some(code.as_str())).count();
-    assert_eq!(notes, 1, "the leftover became a note on the task the classifier chose");
-    let own = log.visible().into_iter().filter(|e| e.event_type != "note" && e.str_field("title") == Some(LEFTOVER)).count();
+    assert_eq!(notes, 1, "the unmet item became a note on the task the classifier chose");
+    let own = log.visible().into_iter().filter(|e| e.event_type == "task" && e.str_field("text") == Some(UNMET)).count();
     assert_eq!(own, 0, "the rule that makes a task of its own did not apply");
 }
 
-/// A sobra da volta da onda 1 vai ao classificador, que a manda para a tarefa
-/// aberta; a rodada deixa a volta esperando, e quem conduz grava, no
-/// meio-tempo, uma tarefa que nada tem a ver com a sobra. A rodada seguinte
-/// aplica a decisão já tomada, sem perguntar de novo: a tarefa nova muda as
-/// opções do pedido, e não as atividades que ele decide.
+/// A decisão que a volta da onda 1 não cumpriu vai ao classificador, que a
+/// manda para a tarefa aberta; a rodada deixa a volta esperando, e quem
+/// conduz grava, no meio-tempo, uma tarefa que nada tem a ver com ele. A
+/// rodada seguinte aplica a decisão já tomada, sem perguntar de novo: a
+/// tarefa nova muda as opções do pedido, e não as atividades que ele decide.
 #[test]
 fn a_classifier_decision_survives_a_task_written_while_the_return_waits() {
-    let WaitingLeftover { project, jev, criterion, said, open, .. } = leftover_waiting_for_the_classifier();
+    let WaitingUnmet { project, jev, criterion, said, open, .. } = unmet_waiting_for_the_classifier();
 
     seed_backlog_task(&project, criterion, said, &["src/unrelated.rs"]);
     let applied = project.run(&["round", "--dispatch", "--spec", SPEC, "--report", USAGE_OF_WAVE_ONE]);
 
     assert!(waiting_for_the_jev(&applied).is_empty(), "the recorded decision answers although the queue changed: {applied}");
     assert!(applied.get("commit").is_some(), "{applied}");
-    assert_eq!(triage_requests(&jev), 1, "no new question for the same leftover: {applied}");
-    assert_leftover_noted_on(&project, open);
+    assert_eq!(triage_requests(&jev), 1, "no new question for the same unmet item: {applied}");
+    assert_unmet_noted_on(&project, open);
 }
 
-/// O classificador volta ilegível, e a sobra da volta da onda 1 vai à
-/// reserva. Quem conduz grava, no meio-tempo, uma tarefa que nada tem a ver
-/// com a sobra, e só depois manda o recibo da reserva pedida antes dela. A
-/// rodada seguinte aplica o recibo, sem perguntar ao classificador de novo
-/// nem pedir outra reserva: a tarefa nova muda as opções do pedido, e não as
-/// atividades que ele decide.
+/// O classificador volta ilegível, e a decisão que a volta da onda 1 não
+/// cumpriu vai à reserva. Quem conduz grava, no meio-tempo, uma tarefa que
+/// nada tem a ver com ele, e só depois manda o recibo da reserva pedida antes
+/// dela. A rodada seguinte aplica o recibo, sem perguntar ao classificador de
+/// novo nem pedir outra reserva: a tarefa nova muda as opções do pedido, e
+/// não as atividades que ele decide.
 #[test]
 fn a_reserve_receipt_survives_a_task_written_between_the_request_and_the_receipt() {
-    let WaitingLeftover { project, jev, criterion, said, open, asked } = leftover_waiting_for(failing_classifier());
+    let WaitingUnmet { project, jev, criterion, said, open, asked, .. } = unmet_waiting_for(failing_classifier());
     let reserves = asked["reserves"].as_array().cloned().unwrap_or_default();
-    assert_eq!(reserves.len(), 1, "the unreadable classifier hands the leftover to the reserve: {asked}");
+    assert_eq!(reserves.len(), 1, "the unreadable classifier hands the unmet item to the reserve: {asked}");
 
     seed_backlog_task(&project, criterion, said, &["src/unrelated.rs"]);
     answer_triage_reserve(&project, &reserves[0]);
     let applied = project.run(&["round", "--dispatch", "--spec", SPEC, "--report", USAGE_OF_WAVE_ONE]);
 
     assert!(waiting_for_the_jev(&applied).is_empty(), "the receipt answers although the queue changed: {applied}");
-    assert!(applied.get("reserves").is_none(), "no new reserve for the same leftover: {applied}");
+    assert!(applied.get("reserves").is_none(), "no new reserve for the same unmet item: {applied}");
     assert_eq!(triage_requests(&jev), 1, "the classifier is not asked again: {applied}");
     assert!(applied.get("commit").is_some(), "{applied}");
-    assert_leftover_noted_on(&project, open);
+    assert_unmet_noted_on(&project, open);
 }
 
-/// O classificador volta ilegível duas rodadas seguidas e a reserva da sobra
-/// segue sem recibo: a segunda rodada pergunta de novo e devolve o mesmo
-/// pedido de reserva a quem conduz, mas a spec guarda uma etapa só dele, e
-/// essa etapa não tem o resultado de uma falha.
+/// O classificador volta ilegível duas rodadas seguidas e a reserva do item
+/// não cumprido segue sem recibo: a segunda rodada pergunta de novo e devolve
+/// o mesmo pedido de reserva a quem conduz, mas a spec guarda uma etapa só
+/// dele, e essa etapa não tem o resultado de uma falha.
 #[test]
 fn a_pending_reserve_asked_again_is_recorded_once_and_not_as_a_failure() {
-    let WaitingLeftover { project, jev, asked, .. } = leftover_waiting_for(failing_classifier());
+    let WaitingUnmet { project, jev, asked, .. } = unmet_waiting_for(failing_classifier());
     let first = asked["reserves"].as_array().cloned().unwrap_or_default();
-    assert_eq!(first.len(), 1, "the unreadable classifier hands the leftover to the reserve: {asked}");
+    assert_eq!(first.len(), 1, "the unreadable classifier hands the unmet item to the reserve: {asked}");
 
     let again = project.run(&["round", "--dispatch", "--spec", SPEC, "--report", USAGE_OF_WAVE_ONE]);
 
@@ -3426,18 +3449,18 @@ fn a_pending_reserve_asked_again_is_recorded_once_and_not_as_a_failure() {
     assert_eq!(recorded, vec![Some("skipped")], "one stage for the pending reserve, and not a failing one");
 }
 
-/// A decisão é das atividades: a volta que muda a sobra enquanto espera não
-/// tem decisão nenhuma, e o classificador é perguntado de novo.
+/// A decisão é das atividades: a volta que muda o que falta à decisão
+/// enquanto espera não tem decisão nenhuma, e o classificador é perguntado de
+/// novo.
 #[test]
-fn a_classifier_decision_is_asked_again_when_the_leftover_changes() {
-    let WaitingLeftover { project, jev, .. } = leftover_waiting_for_the_classifier();
+fn a_classifier_decision_is_asked_again_when_the_unmet_item_changes() {
+    let WaitingUnmet { project, jev, carried, .. } = unmet_waiting_for_the_classifier();
 
-    let leftovers = json!({"leftovers": [{"title": "A cache não expira", "detail": "A entrada fica para sempre."}]});
-    deliver_file_with(&project, 1, GREETING, "hello\n", &leftovers);
+    deliver_file_with(&project, 1, GREETING, "hello\n", &unmet_decision(&project, carried, "A cache não expira."));
     let again = project.run(&["round", "--dispatch", "--spec", SPEC, "--report", USAGE_OF_WAVE_ONE]);
 
-    assert_eq!(waiting_for_the_jev(&again), vec![1], "the new leftover has no decision yet: {again}");
-    assert_eq!(triage_requests(&jev), 2, "the classifier is asked about the new leftover: {again}");
+    assert_eq!(waiting_for_the_jev(&again), vec![1], "the changed unmet item has no decision yet: {again}");
+    assert_eq!(triage_requests(&jev), 2, "the classifier is asked about the changed unmet item: {again}");
 }
 
 /// A volta da onda 1 deixa uma sobra de limpeza, que vira tarefa, e quem
@@ -3449,8 +3472,8 @@ fn a_cleanup_leftover_leaves_with_the_task_of_its_direction() {
     let (mut project, crit, said, _) = backlog_project(&[&[GREETING]]);
     let first = project.run(&ROUND);
     assert_eq!(waves_in(&first, "dispatch"), vec![1], "{first}");
-    let leftovers = json!({"leftovers": [{"title": "O comentário da saudação ainda diz olá", "detail": "A saudação mudou.",
-        "files": ["src/greeting-notes.txt"], "cleanup": true}]});
+    let leftovers = json!({"leftovers": [{"title": "O comentário da saudação ainda diz olá", "detail": "A saudação mudou. Prova: `git --version`",
+        "files": ["src/greeting-notes.txt"], "cleanup": true, "rule": "O comentário diz o que a saudação diz", "places": ["src/greeting-notes.txt"]}]});
     deliver_file_with(&project, 1, GREETING, "hello\n", &leftovers);
     let back = round_taking_back(&project, 1);
     assert!(back.get("commit").is_some(), "the round commits the wave 1: {back}");
@@ -3496,8 +3519,8 @@ fn a_leftover_only_in_a_git_ignored_file_leaves_a_note_and_no_task() {
     let local = "A chave da API falta no ambiente local";
     let versioned = "O README não cita a saudação";
     let leftovers = json!({"leftovers": [
-        {"title": local, "detail": "Falta a chave da API no .env desta máquina.", "files": [".env"]},
-        {"title": versioned, "detail": "O README não explica a saudação.", "files": ["README.md"]}]});
+        {"title": local, "detail": "Falta a chave da API no .env desta máquina. Prova: `git --version`", "files": [".env"], "rule": "A chave da API mora no ambiente", "places": [".env"]},
+        {"title": versioned, "detail": "O README não explica a saudação. Prova: `git --version`", "files": ["README.md"], "rule": "O README explica a saudação", "places": ["README.md"]}]});
     deliver_file_with(&project, 1, GREETING, "hello\n", &leftovers);
 
     let back = round_taking_back(&project, 1);
@@ -3557,8 +3580,8 @@ fn a_round_that_commits_the_program_hands_the_dispatch_over_and_answers_once() {
     assert_eq!(waves_in(&second, "dispatch"), vec![2], "{second}");
     keep_sent(&project, &[2]);
     let leftovers = json!({"leftovers": [
-        {"title": "Limpar o primeiro", "detail": "Sobrou um arquivo.", "files": ["apps/rt/c.txt"], "cleanup": true},
-        {"title": "Limpar o segundo", "detail": "Sobrou outro.", "files": ["apps/rt/d.txt"], "cleanup": true}]});
+        {"title": "Limpar o primeiro", "detail": "Sobrou um arquivo. Prova: `git --version`", "files": ["apps/rt/c.txt"], "cleanup": true, "rule": "Nenhum arquivo sobra", "places": ["apps/rt/c.txt"]},
+        {"title": "Limpar o segundo", "detail": "Sobrou outro. Prova: `git --version`", "files": ["apps/rt/d.txt"], "cleanup": true, "rule": "Nenhum texto velho sobra", "places": ["apps/rt/d.txt"]}]});
     deliver_file_with(&project, 1, "apps/rt/a.txt", "um\n", &leftovers);
     let copy = deliver_file_in_copy(&project, 2, "apps/rt/b.txt", "dois\n");
     std::fs::write(copy.join("apps/rt/fora.txt"), "fora do escopo\n").expect("a file outside the scope");

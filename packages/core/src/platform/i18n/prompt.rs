@@ -307,7 +307,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              traz os caminhos onde ela vale. Escreva só o que o modelo não sabe: a armadilha, a convenção não óbvia, a ferramenta \
              certa. Nada de visão geral do código. Teste com e sem a skill nas tarefas que a \
              motivaram, pela avaliação do próprio skill-creator, numa pasta fora do projeto. Só \
-             com ganho ela vai para `{skills}/<nome>/SKILL.md`. No fim, grave o resultado: \
+             com ganho ela vai para `{reserved}/<nome>/SKILL.md`, a partir da raiz da sua cópia, nova ou \
+             atualizada. A rodada a grava no lugar da skill quando assumir a volta. No fim, grave o resultado: \
              `mustard-rt run write skill --root {root} --spec {spec} --json \
              '{\"name\":\"<nome>\",\"action\":\"created\",\"text\":\"<o ganho medido, numa \
              frase>\",\"files\":[\"<arquivo citado>\"]}'`, com `\"action\":\"updated\"` quando \
@@ -322,8 +323,9 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              In the header, `paths:` lists the paths where it applies. Write only what the model does not know: the trap, the non-obvious convention, \
              the right tool. No overview of the code. Test with and without the skill on the tasks \
              that motivated it, with the skill-creator's own evaluation, in a folder outside the \
-             project. Only with a gain does it go to `{skills}/<name>/SKILL.md`. At the end, record \
-             the result: `mustard-rt run write skill --root {root} --spec {spec} --json \
+             project. Only with a gain does it go to `{reserved}/<name>/SKILL.md`, from the root of your \
+             copy, new or updated. The round writes it in the place of the skill when it takes the return. \
+             At the end, record the result: `mustard-rt run write skill --root {root} --spec {spec} --json \
              '{\"name\":\"<name>\",\"action\":\"created\",\"text\":\"<the measured gain, in one \
              sentence>\",\"files\":[\"<cited file>\"]}'`, with `\"action\":\"updated\"` when it \
              updates a skill that exists. Without a gain, record `\"action\":\"discarded\"` with the \
@@ -463,47 +465,67 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              together: code repeated across them, a decision of one that contradicts another's, a \
              verification one erased from another. Point it out only; do not fix it."
         }
-        // A revisão que volta depois de uma reprovação confere só o que mudou
-        // e o encaixe disso no resto. Para o que não mudou, vale a conclusão
-        // anterior; o veredito continua respondendo por todo o combinado. É o
-        // único lugar que diz o recorte: quando o veredito reprovou uma onda,
-        // a parte das ondas traz só as tarefas dela.
+        // A revisão que volta depois de uma reprovação confere só a cadeia de
+        // cada conserto: a regra que ele faz valer, cada lugar dela e a prova,
+        // que a linha da tarefa traz. Não caça achado no resto da obra. Para o
+        // que não mudou, vale a conclusão anterior; o veredito continua
+        // respondendo por todo o combinado. É o único lugar que diz o recorte:
+        // quando o veredito reprovou uma onda, a parte das ondas traz só as
+        // tarefas dela.
         ("prompt.final.look_again", Locale::PtBr) => {
             "**O que olhar.** Esta revisão volta depois de um veredito que reprovou. A parte do que \
              mudou lista esse veredito, os commits e os itens gravados ou regravados depois dele. Ela \
-             lista também os itens que ele deu como não atendidos. Se ele reprovou uma onda, a parte \
-             das ondas traz só as tarefas dessa onda; senão, traz as de todas as ondas. Confira essa \
-             parte e como ela se encaixa no resto da obra. Para os outros requisitos acordados, repita \
-             a conclusão do veredito anterior. Aponte só; não conserte."
+             lista também os itens que ele deu como não atendidos e as tarefas com passo gravado \
+             depois dele. Se ele reprovou uma onda, a parte das ondas traz só as tarefas dessa onda; \
+             senão, traz as de todas as ondas. Confira só a cadeia de cada conserto: a regra que ele \
+             faz valer, cada lugar dela e a prova que a confere. A cadeia vem sob a linha da tarefa \
+             que a grava. Não procure achado no resto da obra. Para os outros requisitos acordados, \
+             repita a conclusão do veredito anterior. Aponte só; não conserte."
         }
         ("prompt.final.look_again", Locale::EnUs) => {
             "**What to look at.** This review comes back after a verdict that rejected the work. The \
              part on what changed lists that verdict, the commits and the items recorded or \
-             re-recorded after it. It also lists the items that verdict marked as not met. If it \
-             rejected one wave, the waves part carries only that wave's tasks; otherwise, it \
-             carries every wave's. Check that part and how it fits the rest of the work. For the other \
-             agreed requirements, repeat the previous verdict's conclusion. Point it out only; do not \
-             fix it."
+             re-recorded after it. It also lists the items that verdict marked as not met and the \
+             tasks with a step recorded after it. If it rejected one wave, the waves part carries \
+             only that wave's tasks; otherwise, it carries every wave's. Check only the chain of each \
+             fix: the rule it enforces, each place of that rule and the proof that checks it. The \
+             chain comes under the line of the task that records it. Do not look for findings in the \
+             rest of the work. For the other agreed requirements, repeat the previous verdict's \
+             conclusion. Point it out only; do not fix it."
         }
         // A revisão que volta depois de uma aprovação, para o ajuste feito
-        // com a obra reaberta, confere só esse ajuste: o que a aprovação
-        // conferiu e não mudou fica fora do pedido e do veredito.
+        // com a obra reaberta, confere só a cadeia desse ajuste: o que a
+        // aprovação conferiu e não mudou fica fora do pedido e do veredito.
         ("prompt.final.look_since_approval", Locale::PtBr) => {
             "**O que olhar.** Esta revisão volta depois de um veredito que aprovou a obra, para um \
              ajuste feito depois dele. A parte do que mudou lista esse veredito e os commits e os \
-             itens gravados ou regravados depois do pedido que ele respondeu. Confira essa parte e \
-             como ela se encaixa no resto da obra. O que ele aprovou e não mudou fica fora do pedido \
-             e do veredito. Aponte só; não conserte."
+             itens gravados ou regravados depois do pedido que ele respondeu. Ela lista também as \
+             tarefas com passo gravado depois desse pedido. Confira só a cadeia do ajuste: a regra \
+             que ele faz valer, cada lugar dela e a prova que a confere. A cadeia vem sob a linha da \
+             tarefa que a grava. Não procure achado no resto da obra. O que ele aprovou e não mudou \
+             fica fora do pedido e do veredito. Aponte só; não conserte."
         }
         ("prompt.final.look_since_approval", Locale::EnUs) => {
             "**What to look at.** This review comes back after a verdict that approved the work, for \
              an adjustment made after it. The part on what changed lists that verdict and the commits \
-             and items recorded or re-recorded after the request it answered. Check that part and how \
-             it fits the rest of the work. What it approved and did not change stays out of the \
-             request and of the verdict. Point it out only; do not fix it."
+             and items recorded or re-recorded after the request it answered. It also lists the tasks \
+             with a step recorded after that request. Check only the chain of the adjustment: the rule \
+             it enforces, each place of that rule and the proof that checks it. The chain comes under \
+             the line of the task that records it. Do not look for findings in the rest of the work. \
+             What it approved and did not change stays out of the request and of the verdict. Point it \
+             out only; do not fix it."
         }
         ("prompt.part.since_verdict", Locale::PtBr) => "O que mudou desde o veredito anterior",
         ("prompt.part.since_verdict", Locale::EnUs) => "What changed since the previous verdict",
+        // A cadeia de uma tarefa no pedido da revisão final, sob a linha
+        // dela: a regra que ela faz valer, os lugares e as provas. Cada parte
+        // sai só quando a tarefa a tem.
+        ("prompt.final.chain.rule", Locale::PtBr) => "Regra: {rule}.",
+        ("prompt.final.chain.rule", Locale::EnUs) => "Rule: {rule}.",
+        ("prompt.final.chain.places", Locale::PtBr) => "Lugares: {places}.",
+        ("prompt.final.chain.places", Locale::EnUs) => "Places: {places}.",
+        ("prompt.final.chain.proof", Locale::PtBr) => "Prova: {proofs}.",
+        ("prompt.final.chain.proof", Locale::EnUs) => "Proof: {proofs}.",
         // Como ler os itens do pedido da onda. `{root}` é `--root <caminho> `
         // quando o agente trabalha numa cópia, e nada quando não trabalha. O
         // pedido traz só o tipo, o código e o título de cada item; o texto
@@ -790,11 +812,11 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     /// Esta parte guarda as mesmas chaves, com os mesmos textos nos dois
-    /// idiomas. Quem muda um texto de propósito grava aqui os dois números
-    /// novos que a falha mostra.
+    /// idiomas, como o arquivo de impressões dela em `stamps/` guarda. Quem muda
+    /// um texto de propósito regrava o arquivo pelo comando que a falha mostra.
     #[test]
     fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged(include_str!("prompt.rs"), super::PREFIXES, 116, 0x8b42_fe0c_6e0f_dbea);
+        crate::platform::i18n::tests::assert_part_unchanged("prompt", include_str!("prompt.rs"), super::PREFIXES);
     }
 
     /// O bloco do padrão sob a tarefa passa na conferência de escrita nos

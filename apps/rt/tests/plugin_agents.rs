@@ -711,23 +711,20 @@ fn wave_template_puts_in_the_task_the_file_the_change_requires() {
     }
 }
 
-/// A fronteira do molde de onda, nos dois idiomas, manda tirar na
-/// mesma onda o que a própria mudança deixou sem uso, com o teste que só
-/// existia para ele; num arquivo de outra onda em andamento, o agente não
+/// A fronteira do molde de onda, nos dois idiomas: tirar o que a própria
+/// mudança deixou sem uso é princípio do produto, que chega pelo pedido da
+/// onda. Num arquivo de outra onda em andamento, o agente não
 /// edita e deixa a sobra em `leftovers`, o campo da entrega que a rodada
 /// grava, com o título, o detalhe e os arquivos a mudar: toda sobra vai ao backlog, e o
 /// molde não pede mais que o agente diga se ela quebra algo ou é cosmética. A
 /// sobra que só de comentário/documentação/ajuda leva a marca
 /// de limpeza, e sai na onda do mesmo sentido, como as outras tarefas.
 #[test]
-fn boundary_says_to_remove_what_the_change_left_unused() {
+fn boundary_sends_a_running_waves_file_to_leftovers_and_the_backlog() {
     for (lang, said) in [
         (
             "pt-BR",
             [
-                "tornados inúteis",
-                "código e testes",
-                "na mesma onda",
                 "Não edite arquivo de onda em andamento",
                 "backlog",
                 "só de comentário/documentação/ajuda",
@@ -737,9 +734,6 @@ fn boundary_says_to_remove_what_the_change_left_unused() {
         (
             "en-US",
             [
-                "made unused",
-                "code and tests",
-                "in the same wave",
                 "Do not edit a running wave's files",
                 "backlog",
                 "Comment/documentation/help-only",
@@ -750,12 +744,33 @@ fn boundary_says_to_remove_what_the_change_left_unused() {
         let name = "wave";
         let body = template(lang, name);
         let boundary = section(&body, wave_headers(lang).0);
-        let field = "`\"leftovers\":[{\"title\":\"…\",\"detail\":\"…\",\"files\":[\"…\"]}]`";
+        let field = "`\"leftovers\":[{\"title\":\"…\",\"detail\":\"…\",\"rule\":\"…\",\"places\":[\"…\"],\"files\":[\"…\"]}]`";
         for phrase in said.iter().chain(std::iter::once(&field)) {
             assert!(boundary.contains(phrase), "the {lang} `{name}` boundary does not say `{phrase}`:{boundary}");
         }
         for gone in ["\"kind\"", "`kind`", "breaks", "cosmetic"] {
             assert!(!body.contains(gone), "the {lang} `{name}` agent still sorts the leftover by `{gone}`:{boundary}");
+        }
+    }
+}
+
+/// O agente de onda e o revisor pedem, em cada achado que gravam em
+/// `leftovers`, a regra que ele quebrou — o código de uma regra da spec ou o
+/// texto de uma regra nova —, os lugares dela, achados pelo mapa, e a prova
+/// no detalhe: é pela regra que os achados se juntam numa tarefa, e a prova
+/// do detalhe é a que a onda dela roda.
+#[test]
+fn both_agent_texts_ask_each_finding_for_its_rule_places_and_proof() {
+    let fields = "\"rule\":\"…\",\"places\":[\"…\"]";
+    for (lang, rule, places, proof) in [
+        ("pt-BR", "a regra que o achado quebrou (código da spec ou regra nova)", "lugares dela pelo mapa", "o detalhe traz `Prova:` e o comando entre crases"),
+        ("en-US", "the rule the finding broke (a spec code or a new rule)", "places from the map", "the detail carries `Proof:` and the command in backticks"),
+    ] {
+        for name in ["wave", "review"] {
+            let body = template(lang, name);
+            for said in [fields, rule, places, proof] {
+                assert!(body.contains(said), "the {lang} `{name}` agent does not ask each finding for `{said}`");
+            }
         }
     }
 }
@@ -775,7 +790,6 @@ fn templates_state_the_size_limit_and_when_no_new_test_is_needed() {
             "## Fronteira da tarefa",
             "## Gravidade",
             [
-                "Critério que muda comportamento ganha um teste",
                 "Tarefa que só tira código, junta testes ou muda configuração prova pelos testes existentes do trecho",
                 "sem teste novo nem leitor de configuração",
                 "tem uso fora de teste; um teste por comportamento, sem repetir outro",
@@ -792,7 +806,6 @@ fn templates_state_the_size_limit_and_when_no_new_test_is_needed() {
             "## Task boundary",
             "## Severity",
             [
-                "A criterion that changes behavior gets a test",
                 "A task that only removes code, merges tests or changes configuration is proved by the existing tests of that code",
                 "no new test and no configuration reader",
                 "has a use outside tests; one test per behavior, never repeating another",
@@ -1207,23 +1220,24 @@ fn only_the_final_review_runs_checks_and_the_wave_review_reads_the_diff_and_rece
     }
 }
 
-/// No critério, o revisor confere se o teste da regra cai sem a mudança lendo
-/// o diff e o recibo vigente, sem cortar o caminho do usuário nem rodar nada
-/// para ver o vermelho. O molde não manda mais cortar em parte alguma, nos
+/// No critério, o revisor confere lendo o diff e o recibo vigente, sem cortar
+/// o caminho do usuário nem rodar nada para ver o vermelho; que o teste da
+/// regra cai antes e passa depois é princípio do produto, que chega pelos
+/// pedidos de revisão. O molde não manda mais cortar em parte alguma, nos
 /// dois idiomas.
 #[test]
-fn the_reviewer_checks_the_rule_test_fails_without_the_change_by_reading_the_diff_and_receipt() {
+fn the_reviewer_checks_a_criterion_by_reading_the_diff_and_receipt() {
     for (lang, criterion, said, banned) in [
         (
             "pt-BR",
             "  - Critério:",
-            ["confira se o teste da regra cai sem a mudança", "lendo o diff e o recibo vigente", "sem cortar nem rodar"],
+            ["lendo o diff e o recibo vigente", "sem cortar nem rodar"],
             "cortando",
         ),
         (
             "en-US",
             "  - Criterion:",
-            ["check whether the rule's test fails without the change", "reading the diff and the current receipt", "cut nothing and run nothing"],
+            ["reading the diff and the current receipt", "cut nothing and run nothing"],
             "cutting",
         ),
     ] {

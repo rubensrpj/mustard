@@ -19,6 +19,20 @@
 #[path = "support/one_wave_spec.rs"]
 mod one_wave_spec;
 
+// O relógio dos testes entra uma vez só, aqui: a espera pelo evento de outro
+// processo e a pausa antes de afirmar que uma coisa não aconteceu (os testes
+// que a usam são todos do Unix).
+#[cfg(unix)]
+#[path = "../../../packages/core/tests/support/pause.rs"]
+mod pause;
+#[path = "../../../packages/core/tests/support/wait_for.rs"]
+mod wait_for;
+
+// A leitura das fontes de código entra uma vez só, aqui: cada arquivo que a
+// usa só usa parte dela, e os testes dela rodam uma vez.
+#[path = "support/sources.rs"]
+mod sources;
+
 mod agents_find_code_through_the_map;
 mod approval_refusal_explains;
 mod clean_exit;
@@ -33,6 +47,7 @@ mod doctor_follows_config_dir;
 mod doctor_known_events;
 mod end_to_end_flow;
 mod final_review_crosses_agreed;
+mod flow_modules_import_cycle;
 mod hooks_never_break_the_session;
 mod installer_switches;
 mod upsert_installation;
@@ -40,6 +55,7 @@ mod installs_nothing;
 mod map_created_when_missing;
 mod map_of_another_scan;
 mod measure_cli;
+mod no_wall_clock_in_tests;
 mod one_page_engine;
 mod open_cli;
 mod pending_ledger_cli;
@@ -49,6 +65,7 @@ mod plugin_agents;
 mod plugin_pointer_parity;
 mod plugin_prose_matches_shipped_behaviour;
 mod pr_prose_door;
+mod principles_reach_their_texts;
 mod pr_review_verdict_refuses;
 mod private_scan;
 mod private_surface;

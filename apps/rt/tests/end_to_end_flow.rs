@@ -333,16 +333,10 @@ impl Project {
         executable::write_executable(&program, &format!("#!/bin/sh\necho '{says}'\n"));
     }
 
-    /// As chamadas ao `cargo` depois de esperar até `at_least` delas, por um
-    /// tempo: a compilação do início da sessão roda em segundo plano.
+    /// As chamadas ao `cargo` depois de esperar `at_least` delas chegarem: a
+    /// compilação do início da sessão roda em segundo plano.
     fn cargo_calls_after_waiting(&self, at_least: usize) -> Vec<String> {
-        for _ in 0..200 {
-            if self.cargo_calls().len() >= at_least {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-        self.cargo_calls()
+        crate::wait_for::wait_for(&format!("{at_least} chamadas ao cargo"), || Some(self.cargo_calls()).filter(|calls| calls.len() >= at_least))
     }
 
     fn scan_log(&self) -> PathBuf {
@@ -364,31 +358,16 @@ impl Project {
         std::fs::read_to_string(self.history_log()).unwrap_or_default().lines().map(str::to_string).collect()
     }
 
-    /// As leituras da história depois de o processo em segundo plano parar de
-    /// anotar: a lista só vale quando não muda por meio segundo.
+    /// As leituras da história depois de dar à leitura que não devia vir a
+    /// chance de aparecer.
     fn settled_history_reads(&self) -> Vec<String> {
-        let mut last = self.history_reads();
-        for _ in 0..100 {
-            std::thread::sleep(std::time::Duration::from_millis(500));
-            let now = self.history_reads();
-            if now == last {
-                return now;
-            }
-            last = now;
-        }
-        panic!("the reads of the history never stopped: {last:?}");
+        crate::pause::room_for_what_must_not_happen();
+        self.history_reads()
     }
 
-    /// As leituras da história depois de esperar até `at_least` delas
-    /// chegarem, por um tempo.
+    /// As leituras da história depois de esperar `at_least` delas chegarem.
     fn history_reads_after_waiting(&self, at_least: usize) -> Vec<String> {
-        for _ in 0..200 {
-            if self.history_reads().len() >= at_least {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-        self.history_reads()
+        crate::wait_for::wait_for(&format!("{at_least} leituras da história"), || Some(self.history_reads()).filter(|reads| reads.len() >= at_least))
     }
 
     /// A linha que a leitura da história do mapa do projeto deixa no registro.
@@ -720,10 +699,18 @@ fn plan_files(project: &Project, files: &[&str]) {
 fn plan_covering_the_goal(project: &Project) {
     let said = user_says(project, "O plano é uma tarefa só, que muda a saudação.");
     let goal = project.log().visible().into_iter().find(|e| e.event_type == "context").expect("the goal of the survey").id;
+    // Sem critério, a regra com prova que a tarefa cobre é o pedido cujo
+    // relato nomeia a prova.
+    project.write(
+        "request",
+        &json!({"title": "Saudação nova", "text": "Trocar a saudação.", "agent": "- Prova: `git --version`", "keys": ["saudação"],
+            "effect": "new_waves", "origin": said}),
+    );
+    let asked = project.log().visible().into_iter().rfind(|e| e.event_type == "request").expect("the request").id;
     project.write(
         "task",
         &json!({"agent": "- conferir pelo teste", "title": "Entregar a tarefa", "text": "Trocar a saudação no programa.",
-            "files": [{"path": "src/main.rs"}], "depends_on": [], "covers": [goal], "origin": said}),
+            "files": [{"path": "src/main.rs"}], "depends_on": [], "covers": [goal, asked], "origin": said}),
     );
     let planned = project.run(&["plan", "--spec", SPEC]);
     assert_eq!(State::from_log(&project.log()).phase, Some("plan"), "{planned}");
@@ -995,6 +982,67 @@ fn the_final_reviewer_keeps_the_model_the_call_asks_and_the_send_records_it() {
     project.run(&["write", "verdict", "--spec", SPEC, "--json", &verdict.to_string()]);
     let closed = project.run(&["close", "--spec", SPEC]);
     assert_eq!(closed["phase"], json!("closed"), "{closed}");
+}
+
+/// O critério gravado entre o pedido da revisão final e o lançamento do
+/// revisor chega ao revisor, mesmo com o gancho do lançamento gravando a
+/// versão nova do envio depois dele: o pedido para trás se mede pela versão
+/// que gravou o pedido, e não pela mais nova. A aprovação do pedido antigo
+/// não fecha a obra, e o fechamento grava o pedido novo, que lista o critério.
+#[test]
+fn a_criterion_recorded_before_the_reviewer_launch_is_listed_by_the_next_close() {
+    let project = Project::new();
+    deliver_the_first_wave(&project);
+    project.run(&["round", "--dispatch", "--spec", SPEC]);
+    let asked = project.run(&["close", "--spec", SPEC]);
+    assert_eq!(asked["review"]["final"], json!(true), "o fechamento pede a revisão final: {asked}");
+    let read = asked["review"]["read"].as_str().expect("o comando que lê o pedido").to_string();
+
+    // O critério nasce de uma fala que o pedido já trazia: o único item novo
+    // da obra é ele.
+    let said = project
+        .log()
+        .visible()
+        .into_iter()
+        .rfind(|e| e.event_type == "message" && e.str_field("author") == Some("user"))
+        .expect("a fala do usuário")
+        .id;
+    let criterion = project.write(
+        "criterion",
+        &json!({"title": "Citar a pasta", "when": "a busca roda", "then": "a citação sai com a pasta", "proof": "git --version",
+            "form": "ubiquitous", "origin": said}),
+    );
+    let recorded = criterion["id"].as_u64().unwrap_or_else(|| panic!("o critério não gravou: {criterion}"));
+    let code = project.log().codes().get(&recorded).cloned().expect("o código do critério");
+
+    let input = json!({"subagent_type": "mustard-review", "description": "revisão final", "prompt": read});
+    let payload = json!({"hook_event_name": "PreToolUse", "tool_name": "Agent", "session_id": SESSION,
+        "cwd": project.root.to_string_lossy(), "tool_input": input});
+    project.hook("PreToolUse", &payload);
+    let log = project.log();
+    let launched = log.visible().into_iter().rfind(|e| e.event_type == "send" && e.str_field("role") == Some("review")).expect("o envio da revisão");
+    assert!(
+        launched.id > recorded && launched.fields.contains_key("model_used"),
+        "o gancho do lançamento grava a versão do envio depois do critério: {launched:?}"
+    );
+    let waiting = project.run(&["round", "--dispatch", "--spec", SPEC]);
+    assert_eq!(
+        waiting["command"],
+        json!(format!("mustard-rt run close --spec {SPEC}")),
+        "a rodada manda fechar em vez de esperar o veredito do pedido para trás: {waiting}"
+    );
+
+    let verdict = json!({"final": true, "result": "approved", "text": "A saudação mudou.", "agreed": agreed_all_met(&project)});
+    project.read_review();
+    project.run(&["write", "verdict", "--spec", SPEC, "--json", &verdict.to_string()]);
+    let renewed = project.run(&["close", "--spec", SPEC]);
+    assert_eq!(renewed["phase"], json!("running"), "a aprovação do pedido antigo não fecha a obra: {renewed}");
+    assert_eq!(renewed["review"]["final"], json!(true), "o fechamento pede a revisão final de novo: {renewed}");
+    let log = project.log();
+    let request = log.visible().into_iter().rfind(|e| e.event_type == "send" && e.str_field("role") == Some("review")).expect("o envio da revisão");
+    assert!(request.id > launched.id, "o fechamento grava um pedido novo: {renewed}");
+    let text = log.send_text(request.id).unwrap_or_default();
+    assert!(text.contains(&code), "o pedido novo lista o critério {code}: {text}");
 }
 
 /// O pedido da onda e o do revisor final, lidos pelo comando que o agente
@@ -1277,8 +1325,9 @@ fn a_pull_request_body_without_the_mark_is_kept_with_its_own_reason() {
 
 /// A porta de conserto abre a onda numa obra fechada sem critério nenhum. O
 /// pull request da obra volta vermelho do servidor, e `reopen --fix` grava a
-/// onda de conserto e a tarefa dela sobre o que as tarefas da obra cobriam —
-/// o objetivo, aqui —, e a rodada seguinte despacha essa onda, com o objetivo
+/// onda de conserto e a tarefa dela só sobre o item com prova entre os que as
+/// tarefas da obra cobriam — o pedido cujo relato nomeia a prova, e não o
+/// objetivo, aqui —, e a rodada seguinte despacha essa onda, com esse pedido
 /// no pedido dela, sob a tarefa: é a cobertura da tarefa que o leva até lá.
 #[test]
 fn the_fix_door_opens_the_fix_wave_of_a_closed_work_without_criterion() {
@@ -1287,6 +1336,15 @@ fn the_fix_door_opens_the_fix_wave_of_a_closed_work_without_criterion() {
     let line = closed_planned(&project, "Combinar o item", GOAL, &plan_covering_the_goal, &|args| project.run(args));
     let argv: Vec<&str> = line.iter().map(String::as_str).collect();
     let goal = project.log().visible().into_iter().find(|e| e.event_type == "context").expect("the goal").id;
+    let covered = project.log().visible().into_iter().find(|e| e.event_type == "task").expect("the task of the work").ints("covers");
+    assert!(covered.contains(&goal), "{covered:?}");
+    let proven = project
+        .log()
+        .visible()
+        .into_iter()
+        .find(|e| e.event_type == "request" && covered.contains(&e.id))
+        .expect("the request with the proof that the task of the work covered")
+        .id;
     std::fs::write(project.remotes.join("checks"), json!({"statusCheckRollup": []}).to_string()).expect("the checks");
     let opened = project.run(&argv);
     assert_eq!(opened["number"], json!(7), "{opened}");
@@ -1298,18 +1356,18 @@ fn the_fix_door_opens_the_fix_wave_of_a_closed_work_without_criterion() {
     let wave = fix["wave"].as_u64().unwrap_or_else(|| panic!("{fix}"));
     let log = project.log();
     let recorded = log.get(fix["id"].as_u64().unwrap_or_else(|| panic!("{fix}"))).expect("the fix wave");
-    assert_eq!(recorded.ints("criteria"), vec![goal], "the fix wave answers for what the tasks of the work covered");
+    assert_eq!(recorded.ints("criteria"), vec![proven], "the fix wave answers only for the covered item with a proof");
     let task = log
         .visible()
         .into_iter()
         .find(|e| e.event_type == "task" && e.wave() == Some(wave))
         .unwrap_or_else(|| panic!("the fix wave has no task: {fix}"));
-    assert_eq!(task.ints("covers"), vec![goal], "the task of the fix wave covers the same items");
+    assert_eq!(task.ints("covers"), vec![proven], "the task of the fix wave covers the same item");
 
     let round = project.run(&["round", "--dispatch", "--spec", SPEC]);
     let dispatched: Vec<u64> = round["dispatch"].as_array().into_iter().flatten().filter_map(|sent| sent["wave"].as_u64()).collect();
     assert_eq!(dispatched, vec![wave], "the round sends the fix wave: {round}");
-    let code = log.codes().get(&goal).cloned().expect("the code of the goal");
+    let code = log.codes().get(&proven).cloned().expect("the code of the request with the proof");
     let block = format!("request-{wave}");
     let read = project.command(&["run", "read", block.as_str(), "--spec", SPEC], "");
     let request = String::from_utf8_lossy(&read.stdout);
@@ -1317,7 +1375,7 @@ fn the_fix_door_opens_the_fix_wave_of_a_closed_work_without_criterion() {
     let attends = translate("prompt.step.attends", Locale::PtBr).replace("{item}", "");
     assert!(
         request.lines().any(|line| line.contains(attends.trim()) && line.contains(&code)),
-        "the request of the fix wave brings the goal under its task: {request}"
+        "the request of the fix wave brings the request with the proof under its task: {request}"
     );
     assert_eq!(State::from_log(&project.log()).phase, Some("pr_open"), "the work was not reopened");
 }
@@ -2213,9 +2271,9 @@ fn deliver_the_first_wave_changing(project: &Project, file: &str) {
 
 /// As passadas e as leituras da história que uma chamada trouxe, contadas
 /// desde o ponto `(passes, reads)` anterior a ela; a lista de leituras só
-/// vale depois de o processo em segundo plano parar de anotar. A primeira
-/// leitura nova é esperada antes, por um tempo: na máquina carregada, o
-/// processo em segundo plano demora mais que a pausa da conferência a começar.
+/// vale depois de a leitura que não devia vir ganhar a chance de aparecer. A
+/// primeira leitura nova é esperada antes: na máquina carregada, o processo em
+/// segundo plano demora a começar.
 fn since(project: &Project, before: &(usize, usize)) -> (Vec<String>, Vec<String>) {
     project.history_reads_after_waiting(before.1 + 1);
     let reads = project.settled_history_reads();
@@ -2371,13 +2429,7 @@ fn build_notice_head(project: &Project, key: &str, compiled: &str, progress: &st
 /// Espera a compilação em segundo plano acabar: a trava dela passa a dizer
 /// como terminou (`built` ou `failed`).
 fn wait_for_the_background_build(project: &Project) {
-    for _ in 0..200 {
-        if std::fs::read_to_string(project.build_marker()).is_ok_and(|said| !said.trim().is_empty()) {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-    panic!("a compilação em segundo plano nunca escreveu na trava como terminou");
+    crate::wait_for::wait_for("o fim da compilação em segundo plano, escrito na trava dela", || std::fs::read_to_string(project.build_marker()).is_ok_and(|said| !said.trim().is_empty()).then_some(()));
 }
 
 /// No repositório do Mustard sem o programa compilado, o início da sessão
@@ -2418,7 +2470,7 @@ fn a_session_with_the_compiled_program_at_the_head_stays_silent_and_builds_nothi
         let said = session_notices(&project);
         assert!(!said.contains("compilado da branch"), "{stamp}: {said}");
     }
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    crate::pause::room_for_what_must_not_happen();
     assert!(project.cargo_calls().is_empty(), "em dia: nada compila: {:?}", project.cargo_calls());
 }
 
@@ -2432,7 +2484,7 @@ fn a_session_while_another_build_runs_does_not_start_a_second_one() {
 
     let said = session_notices(&project);
     assert!(said.contains(&build_notice_head(&project, "session.build.missing", "", "session.build.in_progress")), "{said}");
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    crate::pause::room_for_what_must_not_happen();
     assert!(project.cargo_calls().is_empty(), "a trava vale: {:?}", project.cargo_calls());
 }
 
@@ -2445,7 +2497,7 @@ fn a_session_in_another_project_says_nothing_about_the_compiled_program() {
 
     let said = session_notices(&project);
     assert!(!said.contains("compilado da branch"), "{said}");
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    crate::pause::room_for_what_must_not_happen();
     assert!(project.cargo_calls().is_empty(), "{:?}", project.cargo_calls());
     assert!(!project.home.join("build").exists(), "nenhuma pasta de compilação nasce");
 }

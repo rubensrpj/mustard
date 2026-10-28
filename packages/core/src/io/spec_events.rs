@@ -780,8 +780,9 @@ pub use crate::io::citation::citation_roots;
 /// Confere as fontes dos fatos de um ponto pela conferência única das
 /// citações, a mesma que o plano chama: o arquivo citado é procurado em
 /// `roots`, e os nomes, no mapa do projeto da última delas. O arquivo ou a
-/// linha que não existe recusa o ponto. Os achados dos nomes voltam como
-/// avisos, com o número do fato, e a falta do mapa, uma vez só.
+/// linha que não existe recusa o ponto, e a recusa do arquivo citado só pelo
+/// nome sugere os arquivos do projeto que têm esse nome. Os achados dos nomes
+/// voltam como avisos, com o número do fato, e a falta do mapa, uma vez só.
 fn check_citations(roots: &[PathBuf], event: &Map<String, Value>) -> Result<Vec<(usize, Finding)>, Refusal> {
     let mut warnings: Vec<(usize, Finding)> = Vec::new();
     if event.get("type").and_then(Value::as_str) != Some("point") {
@@ -956,7 +957,7 @@ mod tests {
             "verdict",
             "verdict",
             "09:03",
-            json!({"author": "review", "wave": 2, "result": "approved", "text": "Sem achados.", "criteria": [{"criterion": c2, "tests_rule": true}]}),
+            json!({"author": "review", "wave": 2, "result": "approved", "text": "Sem achados.", "criteria": [{"criterion": c2}]}),
         );
         add(
             "tracking",
@@ -1442,7 +1443,7 @@ mod tests {
         assert_eq!(write(point("tamanho", Value::Null)).unwrap_err(), Refusal::FactWithoutSource { fact: 1 });
         assert_eq!(
             write(point("tamanho", json!("src/nao-existe.rs:10"))).unwrap_err(),
-            Refusal::CitedFileMissing { fact: 1, path: "src/nao-existe.rs".into() }
+            Refusal::CitedFileMissing { fact: 1, path: "src/nao-existe.rs".into(), same_name: Vec::new() }
         );
         assert_eq!(
             write(point("tamanho", json!("src/real.rs:9"))).unwrap_err(),
@@ -1486,9 +1487,9 @@ mod tests {
         assert!(without.message(crate::platform::i18n::Locale::PtBr).contains("não tem fonte"));
 
         let missing = write(Some("src/nao-existe.rs:10"), "o pedido não tem teto").unwrap_err();
-        assert_eq!(missing, Refusal::CitedFileMissing { fact: 1, path: "src/nao-existe.rs".into() });
+        assert_eq!(missing, Refusal::CitedFileMissing { fact: 1, path: "src/nao-existe.rs".into(), same_name: Vec::new() });
         assert!(missing.message(crate::platform::i18n::Locale::PtBr).contains("src/nao-existe.rs"));
-        assert_eq!(plan("src/nao-existe.rs:10", ""), vec![Finding::MissingFile { path: "src/nao-existe.rs".into() }]);
+        assert_eq!(plan("src/nao-existe.rs:10", ""), vec![Finding::MissingFile { path: "src/nao-existe.rs".into(), same_name: Vec::new() }]);
         assert_eq!(std::fs::read(&path).unwrap(), before, "the refusals wrote nothing");
 
         let real = write(Some("src/real.rs:2"), "quem lê é `ler_linha`").unwrap();
@@ -1527,7 +1528,7 @@ mod tests {
                 citation::check(&DiskWorld::new(roots.clone(), Some(&root)), source, "").into_iter().filter(Finding::is_refusal).collect();
             let door = match write_at(&path, "point", one_fact_point(&gap, Some(source), "t"), &roots, &at("10:00")) {
                 Ok(_) => Vec::new(),
-                Err(Refusal::CitedFileMissing { path, .. }) => vec![Finding::MissingFile { path }],
+                Err(Refusal::CitedFileMissing { path, same_name, .. }) => vec![Finding::MissingFile { path, same_name }],
                 Err(Refusal::CitedLineMissing { path, line, lines, .. }) => vec![Finding::MissingLine { path, line, lines }],
                 Err(Refusal::FactWithoutSource { .. }) if source.is_empty() => Vec::new(),
                 Err(other) => panic!("{source:?} was refused for another reason: {other:?}"),
@@ -1811,7 +1812,7 @@ mod tests {
             "commit": "a onda saiu",
             "proofs": [{"criterion": "MSTD-CRIT-0001", "proof": "cargo test a"}],
             "fixes": [1],
-            "leftovers": [{"title": "Comentário velho", "detail": "src/b.rs:3 cita um comando que saiu."}],
+            "leftovers": [{"title": "Comentário velho", "detail": "src/b.rs:3 cita um comando que saiu.", "rule": "O comentário cita só comando que existe", "places": ["src/b.rs:3"]}],
             "returned": true,
         })
     }
@@ -1822,8 +1823,7 @@ mod tests {
     /// oficial com `replaces` para ela. O leitor de voltas devolve só a última
     /// de cada onda; depois da versão oficial, nenhuma volta anterior da onda
     /// espera, nem a que ela não apontou, e a gravada depois volta a esperar.
-    /// A sobra sem título ou sem detalhe é recusada sem gravar nada, e a que
-    /// traz os dois passa.
+    /// O achado incompleto é recusado sem gravar nada, e o completo passa.
     #[test]
     fn the_wave_return_stays_out_of_the_read_until_the_round_assumes_it() {
         let dir = tempfile::tempdir().unwrap();
@@ -1835,7 +1835,7 @@ mod tests {
         let mut missing = wave_return(2, "Sobra pela metade.");
         missing["leftovers"] = json!([{"title": "  ", "detail": "d"}, {"title": "Outra sobra"}]);
         let refused = write_at(&path, "delivered", obj(missing), &[], &at("10:01")).unwrap_err();
-        assert_eq!(refused, Refusal::LeftoverFieldMissing { field: "title".into() });
+        assert_eq!(refused, Refusal::LeftoverFieldMissing { finding: 1, field: "title, rule, places".into() });
         assert_eq!(std::fs::read(&path).unwrap(), before, "nada foi gravado");
 
         let first = put(&path, &[], "delivered", &at("10:02"), wave_return(2, "Primeira volta.")).id;

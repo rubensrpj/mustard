@@ -13,11 +13,9 @@
 use mustard_core::domain::spec_events::{Refusal, SpecEvent, SpecLog, referenced_id};
 use serde_json::{Map, Value, json};
 
-use crate::commands::flow::round::queue::{agent_working, waves_left_without_tasks};
-
 /// A versão nova de uma tarefa que não traz `wave` herda a da versão que ela
 /// substitui, quando o agente dessa onda trabalha: a onda tem envio sem volta
-/// ([`agent_working`]). Com um número de onda no rascunho, ele fica como
+/// ([`SpecLog::agent_working`]). Com um número de onda no rascunho, ele fica como
 /// veio: a conferência da gravação recusa o que muda a onda da tarefa. A
 /// versão que não substitui nada, ou que substitui uma tarefa do backlog, de
 /// lote que não saiu ou de onda que já voltou, segue sem onda.
@@ -28,14 +26,14 @@ pub(super) fn inherit_wave(log: &SpecLog, draft: &mut Map<String, Value>) {
     // O `replaces` chega pelo código do item, e a gravação só o troca pelo
     // número da versão mais nova depois desta leitura.
     let replaced_wave = referenced_id(log, "task", draft, "replaces").and_then(|old| log.get(old)).and_then(SpecEvent::wave);
-    if let Some(wave) = replaced_wave.filter(|wave| agent_working(log, *wave)) {
+    if let Some(wave) = replaced_wave.filter(|wave| log.agent_working(*wave)) {
         draft.insert("wave".into(), json!(wave));
     }
 }
 
 /// A gravação do modelo que deixaria sem tarefa a onda cujo agente trabalha,
 /// lida no arquivo antes dela (`before`) e depois (`after`): a onda sairia do
-/// ar ([`waves_left_without_tasks`]) e a entrega do agente seria recusada,
+/// ar ([`SpecLog::waves_left_without_tasks`]) e a entrega do agente seria recusada,
 /// sem onda aberta para recebê-la. É recusada, com a onda na recusa. A que
 /// tira só uma das tarefas, a que tira a própria onda (o cancelamento de
 /// propósito, que devolve as tarefas ao backlog), a de onda que o agente já
@@ -54,7 +52,7 @@ pub(super) fn working_wave_rule(event_type: &str, before: &SpecLog, after: &Spec
     if !matches!(event_type, "remove" | "task") {
         return Ok(());
     }
-    match waves_left_without_tasks(after).into_keys().find(|wave| agent_working(before, *wave)) {
+    match after.waves_left_without_tasks().into_keys().find(|wave| before.agent_working(*wave)) {
         Some(wave) => Err(Refusal::WaveAgentWorking { wave }),
         None => Ok(()),
     }

@@ -1068,8 +1068,7 @@ mod tests {
         budget: Duration,
         command_deadline: Duration,
         limits: std::cell::RefCell<Vec<Duration>>,
-        started: Instant,
-        spent: std::cell::Cell<Duration>,
+        clock: crate::fake_clock::FakeClock,
     }
 
     impl FakeRunner {
@@ -1087,8 +1086,7 @@ mod tests {
                 budget: STEP_BUDGET,
                 command_deadline: COMMAND_DEADLINE,
                 limits: std::cell::RefCell::new(Vec::new()),
-                started: Instant::now(),
-                spent: std::cell::Cell::new(Duration::ZERO),
+                clock: crate::fake_clock::FakeClock::default(),
             }
         }
 
@@ -1155,11 +1153,11 @@ mod tests {
                 self.taking.iter().find(|(t, _)| line.contains(t)).map_or(Duration::ZERO, |(_, cost)| *cost)
             };
             if cost > limit {
-                self.spent.set(self.spent.get() + limit);
+                self.clock.advance(limit);
                 self.log.borrow_mut().push(line);
                 return RunOutcome::TimedOut { after: limit };
             }
-            self.spent.set(self.spent.get() + cost);
+            self.clock.advance(cost);
             if self.run(program, args) {
                 RunOutcome::Succeeded
             } else {
@@ -1192,7 +1190,7 @@ mod tests {
         }
 
         fn now(&self) -> Instant {
-            self.started + self.spent.get()
+            self.clock.now()
         }
     }
 
@@ -1599,24 +1597,35 @@ mod tests {
         }
     }
 
-    /// O executor da máquina corta o comando que passa do prazo e volta na
-    /// hora, em vez de esperar o fim dele; o que acaba antes disso volta com o
-    /// resultado de sempre.
+    /// O comando de shell que fica preso até `release` existir — ou até o
+    /// limite de segurança das esperas dos testes, para nunca sobrar — e
+    /// então cria `ended`.
+    #[cfg(unix)]
+    fn held_until(release: &Path, ended: &Path) -> String {
+        format!("{}; touch '{}'", crate::held_command::held_until_released(release), ended.display())
+    }
+
+    /// O executor da máquina corta o comando que passa do prazo e volta
+    /// enquanto ele ainda está preso, em vez de esperar o fim dele; o que
+    /// acaba antes disso volta com o resultado de sempre.
     #[test]
     #[cfg(unix)]
     fn the_machine_runner_cuts_the_command_that_passes_its_deadline() {
         let path = std::env::var("PATH").unwrap_or_default();
         let runner = MachineRunner::new(&path);
+        let dir = tempfile::tempdir().unwrap();
+        let (release, ended) = (dir.path().join("release"), dir.path().join("ended"));
 
         let limit = Duration::from_millis(300);
-        let started = Instant::now();
-        let outcome = runner.run_outcome("sh", &["-c", "sleep 8"], limit);
+        let outcome = runner.run_outcome("sh", &["-c", &held_until(&release, &ended)], limit);
         assert_eq!(outcome, RunOutcome::TimedOut { after: Duration::from_millis(300) });
-        assert!(started.elapsed() < Duration::from_secs(4), "voltou depois de {:?}", started.elapsed());
+        assert!(!ended.exists(), "the call came back while the command was still held");
+        std::fs::write(&release, "").unwrap();
 
-        assert_eq!(runner.run_outcome("sh", &["-c", "exit 0"], limit), RunOutcome::Succeeded);
-        assert_eq!(runner.run_outcome("sh", &["-c", "exit 3"], limit), RunOutcome::Failed);
-        assert_eq!(runner.run_outcome("no-such-program-here", &[], limit), RunOutcome::Failed);
+        let ample = Duration::from_secs(60);
+        assert_eq!(runner.run_outcome("sh", &["-c", "exit 0"], ample), RunOutcome::Succeeded);
+        assert_eq!(runner.run_outcome("sh", &["-c", "exit 3"], ample), RunOutcome::Failed);
+        assert_eq!(runner.run_outcome("no-such-program-here", &[], ample), RunOutcome::Failed);
     }
 
     /// O executor que a instalação e a atualização criam já nasce com o
@@ -1896,11 +1905,16 @@ mod tests {
         assert_eq!(outcome, RunOutcome::Failed);
         assert_eq!(text.len(), 300_000, "a saída grande foi lida inteira");
 
-        let started = Instant::now();
-        let (outcome, text) = runner.output("sh", &["-c", "echo partial; sleep 8"], Duration::from_millis(300));
+        // Quem segura a saída é um processo que o comando abriu, e que fica
+        // vivo depois de o comando ser morto.
+        let dir = tempfile::tempdir().unwrap();
+        let (release, ended) = (dir.path().join("release"), dir.path().join("ended"));
+        let held = format!("echo partial; ({})", held_until(&release, &ended));
+        let (outcome, text) = runner.output("sh", &["-c", &held], Duration::from_millis(300));
         assert_eq!(outcome, RunOutcome::TimedOut { after: Duration::from_millis(300) });
         assert_eq!(text, "");
-        assert!(started.elapsed() < Duration::from_secs(4), "voltou depois de {:?}", started.elapsed());
+        assert!(!ended.exists(), "the call came back while the output was still held");
+        std::fs::write(&release, "").unwrap();
     }
 
     /// O `csharp-ls` instalado em outra versão e fora do `PATH` não vai para a
@@ -2026,7 +2040,7 @@ mod tests {
         let mut spent = FakeRunner::new(&["gopls", "claude"]);
         spent.taking.push(("claude plugin install", Duration::from_secs(6)));
         let outer = Budget::start(&spent, whole);
-        spent.spent.set(Duration::from_secs(90));
+        spent.clock.advance(Duration::from_secs(90));
         let warnings = ensure_code_tools_in(project.path(), &model_path, &outer);
         assert_eq!(*spent.limits.borrow(), vec![Duration::from_secs(10), Duration::from_secs(4)]);
         assert_eq!(warnings, Vec::new());
@@ -2045,11 +2059,11 @@ mod tests {
         let runner = FakeRunner::new(&[]);
         let budget = Budget::start(&runner, Duration::from_secs(10));
         assert_eq!(budget.within(Duration::from_secs(45), |limit| limit), Some(Duration::from_secs(10)));
-        runner.spent.set(Duration::from_secs(7));
+        runner.clock.advance(Duration::from_secs(7));
         assert_eq!(budget.within(Duration::from_secs(2), |limit| limit), Some(Duration::from_secs(2)));
         assert_eq!(budget.slice(Duration::from_secs(60)).total(), Duration::from_secs(3));
         assert_eq!(budget.slice(Duration::from_secs(1)).total(), Duration::from_secs(1));
-        runner.spent.set(Duration::from_secs(10));
+        runner.clock.advance(Duration::from_secs(3));
         let mut ran = false;
         assert_eq!(
             budget.within(Duration::from_secs(45), |_| {

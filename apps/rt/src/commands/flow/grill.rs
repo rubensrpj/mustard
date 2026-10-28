@@ -23,7 +23,10 @@
 //! O `grill` grava cada item da lista que ainda não tem ponto como ponto
 //! aberto, com o autor `binary`, os fatos que a lista já traz e os lembretes;
 //! o fato do mapa que cita um arquivo que não existe mais fica de fora, e o
-//! ponto é gravado assim mesmo. O ponto pode nascer sem fato; o assistente
+//! ponto é gravado assim mesmo. Na obra de conserto, os pontos do defeito sem
+//! fato recebem as citações de arquivo e linha do pedido; a que traz só o
+//! nome de um arquivo entra com a pasta quando um arquivo só do projeto tem
+//! esse nome, e a que não se confere fica fora, com o motivo em `warnings`. O ponto pode nascer sem fato; o assistente
 //! soma os fatos que conferiu no próprio `answer --facts`, que grava a
 //! resposta e o fechamento numa transação. Cada item da resposta traz o número, o código e a situação do
 //! ponto que o registra. A resposta devolve em `next` o primeiro ponto aberto
@@ -119,6 +122,35 @@ pub(crate) fn grill_at(opts: &GrillOpts) -> Value {
     grill_for(opts, session_from_env().as_deref())
 }
 
+/// A lista do levantamento antes da limpeza dos fatos: as lacunas dos tipos,
+/// com os fatos do banco de lições, do índice, das specs e do mapa do checkout
+/// principal. É a montagem que o `grill` usa, e quem confere o que ela traz
+/// chama esta função em vez de refazê-la.
+fn survey_list(project: &spec_events::Project, spec: &str, kinds: &[&str], goal: &str, goal_agent: &str, condensed: bool) -> Vec<survey::Proposed> {
+    let lessons_path = ClaudePaths::for_project(&project.root).ok().map(|paths| paths.lessons_path());
+    let bank = lessons_path.as_deref().and_then(|path| lessons::read(path).ok().flatten());
+    let lessons_file = lessons_path
+        .as_deref()
+        .and_then(|path| path.strip_prefix(&project.root).ok())
+        .map_or_else(|| ".claude/spec/lessons.ndjson".to_string(), |rel| rel.to_string_lossy().replace('\\', "/"));
+    let (index, prior) = earlier_specs(&project.root);
+    let map = |need: project_map::Need<'_>| project_map::read_for(&project.root, need);
+    survey::build(&Sources {
+        kinds,
+        goal,
+        goal_agent,
+        current: spec,
+        bank: bank.as_ref(),
+        lessons_file: &lessons_file,
+        index: &index,
+        prior: &prior,
+        map: Some(&map),
+        condensed,
+        lang: project.lang,
+        languages: &project.languages,
+    })
+}
+
 /// [`grill_at`] com a sessão recebida, que é como um teste a escolhe.
 pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
     let project = spec_events::project(&opts.root);
@@ -185,36 +217,18 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
         Err(refusal) => return refuse(GrillRefusal::Spec(refusal)),
     };
 
-    // A lista, do banco, do índice, das specs e do mapa do checkout
-    // principal.
-    let lessons_path = ClaudePaths::for_project(&project.root).ok().map(|paths| paths.lessons_path());
-    let bank = lessons_path.as_deref().and_then(|path| lessons::read(path).ok().flatten());
-    let lessons_file = lessons_path
-        .as_deref()
-        .and_then(|path| path.strip_prefix(&project.root).ok())
-        .map_or_else(|| ".claude/spec/lessons.ndjson".to_string(), |rel| rel.to_string_lossy().replace('\\', "/"));
-    let (index, prior) = earlier_specs(&project.root);
-    let map = |need: project_map::Need<'_>| project_map::read_for(&project.root, need);
     let condensed = opts.condensed || survey::condensed(&log);
-    let mut list = survey::build(&Sources {
-        kinds: &kinds,
-        goal: &goal_text,
-        goal_agent: &goal_agent,
-        current: &spec,
-        bank: bank.as_ref(),
-        lessons_file: &lessons_file,
-        index: &index,
-        prior: &prior,
-        map: Some(&map),
-        condensed,
-        lang,
-        languages: &project.languages,
-    });
-    drop_stale_facts(&mut list, &opts.root, &project.root);
-    // O pedido que já traz o diagnóstico não é refeito do zero: cada arquivo
-    // e linha que as mensagens do usuário citam entra como fato dos pontos do
-    // defeito, dito como vindo do documento dele e marcado a conferir.
-    prefill_from_the_request(&mut list, &log, lang);
+    let mut list = survey_list(&project, &spec, &kinds, &goal_text, &goal_agent, condensed);
+    // Toda citação passa pela conferência que recusaria a gravação do ponto
+    // antes de virar fato. O fato velho do mapa sai primeiro, e o ponto do
+    // defeito que ficou vazio recebe as citações do pedido que se conferem:
+    // cada arquivo e linha que as mensagens do usuário citam entra dito como
+    // vindo do documento dele e marcado a conferir, e o arquivo dito só pelo
+    // nome entra com a pasta do único arquivo do projeto que tem esse nome. A
+    // citação do pedido que não se confere fica fora, não recusa a gravação
+    // dos pontos, e a resposta diz por quê.
+    let world = DiskWorld::new(store::citation_roots(&opts.root, &project.root), None);
+    let left_out = settle_facts(&mut list, &log, &world, lang);
 
     // Os pontos que faltam são gravados aqui, abertos, com os fatos que a
     // lista traz e os lembretes; o assistente soma os fatos que conferiu antes
@@ -294,6 +308,9 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
         }
     }
     spec_events::pages::note_withheld(&mut report, &spec, &withheld, lang);
+    for (source, finding) in &left_out {
+        spec_events::pages::push_warning(&mut report, "citation-left-out", &left_out_hint(source, finding, lang));
+    }
     let open = survey::open_points(&log);
     if let Some(first) = open.first() {
         let present = if condensed {
@@ -435,48 +452,98 @@ fn record_work_type(start: &Path, spec: &str, kinds: &[&str], origin: Option<u64
     record(start, spec, "work_type", draft, PhaseWriter::Binary).map(|recorded| recorded.written.id)
 }
 
-/// Tira da lista o fato que cita um arquivo que não existe, ou uma linha que
-/// passa do fim dele, pela mesma conferência que recusaria a gravação do
-/// ponto: o mapa velho, que ainda cita o arquivo apagado, não para o
-/// levantamento. O ponto pode ficar sem fato nenhum, e os outros fatos ficam.
 /// As lacunas do defeito, que o diagnóstico do pedido responde: o sintoma, a
 /// reprodução, o esperado contra o obtido e a causa.
 const DEFECT_GAPS: [survey::GapKey; 4] =
     [survey::GapKey::Symptom, survey::GapKey::Reproduction, survey::GapKey::ExpectedVsActual, survey::GapKey::Cause];
 
-/// Põe nos pontos do defeito que nasceram sem fato as citações de arquivo e
+/// Uma citação do pedido que ficou fora dos fatos do defeito: a fonte, como
+/// o pedido a escreveu, e o achado da conferência que a tirou.
+type LeftOut = (String, Finding);
+
+/// Põe nos pontos do defeito que estão sem fato as citações de arquivo e
 /// linha que as mensagens do usuário trazem, cada uma com a marca de conferir.
+/// Cada citação passa pela conferência que recusaria a gravação do ponto: a
+/// que se confere entra como veio, e a que traz só o nome de um arquivo entra
+/// com a pasta quando um arquivo só do projeto tem esse nome. A que não se
+/// confere fica fora e volta com o achado, para a resposta dizer por quê.
+/// Sem ponto do defeito a preencher, nenhuma citação é usada nem volta.
 ///
 /// O levantamento junta os fatos antes de planejar. Num caso real o pedido já
 /// trazia o diagnóstico inteiro, com arquivos e linhas, e o levantamento
 /// perguntou sintoma, causa e reprodução de novo: foram uma hora e dezenove
 /// minutos até a aprovação, para duas tarefas. O fato pré-preenchido não
 /// fecha o ponto: ele entra a conferir, e quem confere soma ou tira.
-fn prefill_from_the_request(list: &mut [survey::Proposed], log: &SpecLog, lang: Locale) {
+fn prefill_from_the_request(list: &mut [survey::Proposed], log: &SpecLog, world: &DiskWorld, lang: Locale) -> Vec<LeftOut> {
     use mustard_core::domain::citation::file_citations;
 
+    let empty = |item: &survey::Proposed| item.facts.is_empty() && item.key.is_some_and(|key| DEFECT_GAPS.contains(&key));
+    if !list.iter().any(empty) {
+        return Vec::new();
+    }
     let said: Vec<String> = log
         .visible()
         .into_iter()
         .filter(|event| event.event_type == "message" && event.str_field("author") == Some("user"))
         .filter_map(|event| event.str_field("text").map(str::to_string))
         .collect();
-    let cited: Vec<String> = said.iter().flat_map(|text| file_citations(text)).collect();
-    if cited.is_empty() {
-        return;
+    let mut cited: Vec<String> = Vec::new();
+    let mut left_out: Vec<LeftOut> = Vec::new();
+    for source in said.iter().flat_map(|text| file_citations(text)) {
+        match citation::resolve(world, &source) {
+            Ok(found) if !cited.contains(&found) => cited.push(found),
+            Ok(_) => {}
+            Err(finding) if !left_out.iter().any(|(seen, _)| *seen == source) => left_out.push((source, finding)),
+            Err(_) => {}
+        }
     }
-    for item in list.iter_mut().filter(|item| item.facts.is_empty() && item.key.is_some_and(|key| DEFECT_GAPS.contains(&key))) {
-        item.facts = cited
-            .iter()
-            .map(|source| survey::Fact { text: translate("grill.cited_in_the_request", lang).to_string(), source: source.clone() })
-            .collect();
+    if !cited.is_empty() {
+        for item in list.iter_mut().filter(|item| empty(item)) {
+            item.facts = cited
+                .iter()
+                .map(|source| survey::Fact { text: translate("grill.cited_in_the_request", lang).to_string(), source: source.clone() })
+                .collect();
+        }
+    }
+    left_out
+}
+
+/// Tira da lista o fato que não se confere: o mapa velho, que ainda cita o
+/// arquivo apagado, não para o levantamento. O ponto pode ficar sem fato
+/// nenhum, e os outros fatos ficam, cada um com o caminho que a conferência
+/// achou.
+fn drop_stale_facts(list: &mut [survey::Proposed], world: &DiskWorld) {
+    for item in list {
+        item.facts.retain_mut(|fact| match citation::resolve(world, &fact.source) {
+            Ok(found) => {
+                fact.source = found;
+                true
+            }
+            Err(_) => false,
+        });
     }
 }
 
-fn drop_stale_facts(list: &mut [survey::Proposed], start: &Path, root: &Path) {
-    let world = DiskWorld::new(store::citation_roots(start, root), None);
-    for item in list {
-        item.facts.retain(|fact| !citation::check(&world, &fact.source, "").iter().any(Finding::is_refusal));
+/// Deixa na lista só os fatos que se conferem: o fato velho do mapa sai
+/// primeiro, e só depois o ponto do defeito que ficou vazio recebe as
+/// citações do pedido. Na ordem inversa, o ponto que só tinha o fato velho
+/// ainda não está vazio quando as citações chegam, e é gravado sem fato.
+/// Devolve as citações do pedido que ficaram fora.
+fn settle_facts(list: &mut [survey::Proposed], log: &SpecLog, world: &DiskWorld, lang: Locale) -> Vec<LeftOut> {
+    drop_stale_facts(list, world);
+    prefill_from_the_request(list, log, world, lang)
+}
+
+/// Por que a citação `source` do pedido ficou fora dos fatos: o nome que
+/// dois ou mais arquivos do projeto têm sai com cada um deles; o resto, com
+/// o que a conferência não achou.
+fn left_out_hint(source: &str, finding: &Finding, lang: Locale) -> String {
+    match finding {
+        Finding::MissingFile { same_name, .. } if same_name.len() > 1 => translate("grill.citation_left_out.same_name", lang)
+            .replace("{source}", source)
+            .replace("{count}", &same_name.len().to_string())
+            .replace("{found}", &same_name.join(", ")),
+        _ => translate("grill.citation_left_out", lang).replace("{source}", source),
     }
 }
 
@@ -827,6 +894,208 @@ mod tests {
         surveyed(bare, "y");
         assert_eq!(grill(bare, "y", Some("fix"), false)["ok"], json!(true));
         assert!(recorded_points(bare, "y").iter().all(|point| point.fields.get("facts").is_none()), "sem citação, nenhum fato");
+    }
+
+    /// As fontes dos fatos de todos os pontos gravados, na ordem do arquivo.
+    fn recorded_sources(root: &Path, spec: &str) -> Vec<String> {
+        recorded_points(root, spec)
+            .iter()
+            .flat_map(|point| point.fields.get("facts").and_then(Value::as_array).cloned().unwrap_or_default())
+            .filter_map(|fact| fact["source"].as_str().map(str::to_string))
+            .collect()
+    }
+
+    /// Os motivos que a resposta do `grill` dá para cada citação do pedido
+    /// que ficou fora dos fatos.
+    fn left_out_hints(report: &Value) -> Vec<String> {
+        report["warnings"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|warning| warning["reason"] == json!("citation-left-out"))
+            .filter_map(|warning| warning["hint"].as_str().map(str::to_string))
+            .collect()
+    }
+
+    /// A citação do pedido que não se confere, a de um arquivo que nenhum
+    /// arquivo do projeto é, fica fora dos fatos do defeito, o levantamento
+    /// grava os pontos com a citação que se confere, e a resposta diz qual
+    /// ficou fora e por quê. Sem essa conferência, a citação chegava à
+    /// gravação e derrubava o levantamento inteiro.
+    #[test]
+    fn a_request_citation_that_does_not_check_is_left_out_and_the_survey_records() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        crate::shared::test_fixture::seeded_repo(root, &[("mustard.json", "{}"), ("src/a.rs", "fn one() {}\n")]);
+        let said = surveyed(root, "x");
+        id_of(&write(
+            root,
+            Some("x"),
+            "message",
+            json!({"author": "user", "text": "O defeito está em `nada.rs:1`, ou seja, em `src/a.rs:1`.", "origin": said}),
+        ));
+
+        let report = grill(root, "x", Some("fix"), false);
+        assert_eq!(report["ok"], json!(true), "{report}");
+        assert!(!recorded_points(root, "x").is_empty(), "os pontos do defeito são gravados: {report}");
+        let sources = recorded_sources(root, "x");
+        assert!(!sources.iter().any(|source| source.contains("nada.rs")), "a citação que não se confere fica fora: {sources:?}");
+        assert!(sources.iter().any(|source| source == "src/a.rs:1"), "a citação que se confere entra: {sources:?}");
+        let hints = left_out_hints(&report);
+        assert_eq!(hints.len(), 1, "{report}");
+        assert!(hints[0].contains("nada.rs:1") && hints[0].contains("não se confere"), "{hints:?}");
+    }
+
+    /// O pedido cita um arquivo só pelo nome, e um arquivo só do projeto tem
+    /// esse nome, numa pasta: a citação entra nos fatos do defeito com a
+    /// pasta, uma vez só ao lado da mesma citação dita com o caminho inteiro,
+    /// e a resposta não dá motivo de fora. Antes, a citação sem a pasta era
+    /// descartada.
+    #[test]
+    fn a_bare_file_name_in_the_request_reaches_the_survey_with_its_folder() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        crate::shared::test_fixture::seeded_repo(
+            root,
+            &[("mustard.json", "{}"), ("src/a.rs", "fn one() {}\n"), ("src/b.rs", "fn two() {}\nfn three() {}\n")],
+        );
+        let said = surveyed(root, "x");
+        id_of(&write(
+            root,
+            Some("x"),
+            "message",
+            json!({"author": "user", "text": "O defeito está em `a.rs:1`, ou seja, em `src/a.rs:1`, e a chamada em b.rs:2.", "origin": said}),
+        ));
+
+        let report = grill(root, "x", Some("fix"), false);
+        assert_eq!(report["ok"], json!(true), "{report}");
+        let points = recorded_points(root, "x");
+        let filled: Vec<Vec<&str>> = points
+            .iter()
+            .filter_map(|point| point.fields.get("facts").and_then(Value::as_array))
+            .filter(|facts| !facts.is_empty())
+            .map(|facts| facts.iter().filter_map(|fact| fact["source"].as_str()).collect())
+            .collect();
+        assert!(!filled.is_empty(), "os pontos do defeito nascem com os fatos do pedido: {points:?}");
+        for sources in &filled {
+            assert_eq!(sources, &["src/a.rs:1", "src/b.rs:2"], "{points:?}");
+        }
+        assert!(left_out_hints(&report).is_empty(), "{report}");
+    }
+
+    /// O pedido cita só pelo nome um arquivo que dois arquivos do projeto
+    /// têm: a citação fica fora dos fatos do defeito, nenhum dos dois entra
+    /// no lugar dela, e a resposta diz que o nome é dos dois, com o caminho de
+    /// cada um. A citação com o caminho inteiro entra.
+    #[test]
+    fn a_bare_name_two_files_share_is_left_out_and_the_answer_says_why() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        crate::shared::test_fixture::seeded_repo(
+            root,
+            &[("mustard.json", "{}"), ("src/a.rs", "fn one() {}\n"), ("lib/a.rs", "fn one() {}\n"), ("src/b.rs", "fn two() {}\n")],
+        );
+        let said = surveyed(root, "x");
+        id_of(&write(
+            root,
+            Some("x"),
+            "message",
+            json!({"author": "user", "text": "O defeito está em `a.rs:1`, e a chamada em `src/b.rs:1`.", "origin": said}),
+        ));
+
+        let report = grill(root, "x", Some("fix"), false);
+        assert_eq!(report["ok"], json!(true), "{report}");
+        let sources = recorded_sources(root, "x");
+        assert!(sources.iter().any(|source| source == "src/b.rs:1"), "{sources:?}");
+        assert!(!sources.iter().any(|source| source.ends_with("a.rs:1")), "nenhum dos dois entra no lugar da citação: {sources:?}");
+        let hints = left_out_hints(&report);
+        assert_eq!(hints.len(), 1, "{report}");
+        assert!(hints[0].contains("a.rs:1") && hints[0].contains("lib/a.rs, src/a.rs") && hints[0].contains("2 arquivos"), "{hints:?}");
+    }
+
+    /// O mapa velho dá à reprodução um fato que cita um arquivo apagado, e o
+    /// pedido cita um arquivo que existe: o fato velho sai, e o ponto da
+    /// reprodução é gravado com a citação do pedido, em vez de ficar sem fato.
+    /// O teste confere antes que a lista do mapa traz o fato velho para a
+    /// reprodução: sem isso, ele passaria também quando o mapa deixasse de
+    /// dar o fato, e não guardaria a ligação do `grill` com a limpeza.
+    #[test]
+    fn a_stale_map_fact_gives_way_to_the_request_citation_in_the_reproduction_point() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), b"{}").unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src").join("a.rs"), "fn one() {}\n").unwrap();
+        let map = r#"{"modules": [{"path": "src/gone.rs", "declarations": [{"kind": "function", "name": "drop_birth", "line": 2}]}]}"#;
+        mustard_core::io::project_map::write_text(root, map).unwrap();
+        assert_eq!(record_open(root, "x", "feature/x", "dev"), Ok(true));
+        let goal = "Consertar o registro de nascimento.";
+        let said = id_of(&write(root, Some("x"), "message", json!({"author": "user", "text": "O defeito está em `src/a.rs:1`."})));
+        let agent = "- Consertar `drop_birth`.";
+        let context = json!({"title": "Consertar o registro", "text": goal, "agent": agent, "origin": said});
+        id_of(&write(root, Some("x"), "context", context));
+
+        // A lista do mapa, montada pela mesma função que o `grill` usa antes da
+        // limpeza, dá à reprodução o fato velho que cita o arquivo apagado.
+        let project = spec_events::project(root);
+        let before_settling = survey_list(&project, "x", &["fix"], goal, agent, false);
+        let stale: Vec<&str> = before_settling
+            .iter()
+            .find(|item| item.key == Some(survey::GapKey::Reproduction))
+            .expect("a lacuna da reprodução está na lista")
+            .facts
+            .iter()
+            .map(|fact| fact.source.as_str())
+            .collect();
+        assert_eq!(stale, ["src/gone.rs:2"], "a lista do mapa chega à limpeza com o fato velho: {before_settling:?}");
+
+        let report = grill(root, "x", Some("fix"), false);
+        assert_eq!(report["ok"], json!(true), "{report}");
+        let points = recorded_points(root, "x");
+        let reproduction = points
+            .iter()
+            .find(|p| p.str_field("gap") == Some(survey::GapKey::Reproduction.label(Locale::PtBr)))
+            .expect("o ponto da reprodução é gravado");
+        let sources: Vec<&str> =
+            reproduction.fields.get("facts").and_then(Value::as_array).into_iter().flatten().filter_map(|fact| fact["source"].as_str()).collect();
+        assert_eq!(sources, ["src/a.rs:1"], "{reproduction:?}");
+    }
+
+    /// O ponto da reprodução chega à limpeza com o fato velho do mapa, que
+    /// cita um arquivo apagado, e o pedido cita um arquivo que existe: o fato
+    /// velho sai antes do preenchimento, e o ponto fica com a citação do
+    /// pedido. Na ordem inversa, o mesmo ponto termina sem fato nenhum.
+    #[test]
+    fn the_stale_fact_leaves_before_the_request_citation_fills_the_reproduction_point() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src").join("a.rs"), "fn one() {}\n").unwrap();
+        let world = DiskWorld::new(vec![root.to_path_buf()], None);
+        let said = json!({"v": 1, "id": 1, "at": "t", "type": "message", "author": "user", "text": "O defeito está em `src/a.rs:1`."});
+        let log = mustard_core::domain::spec_events::parse_log(&said.to_string());
+        let key = survey::GapKey::Reproduction;
+        let stale = survey::Fact { text: "drop_birth".to_string(), source: "src/gone.rs:2".to_string() };
+        let reproduction = survey::Proposed {
+            block: key.block().to_string(),
+            gap: key.label(Locale::PtBr).to_string(),
+            from: "gap",
+            key: Some(key),
+            facts: vec![stale],
+            reminders: Vec::new(),
+        };
+        let sources = |list: &[survey::Proposed]| list[0].facts.iter().map(|fact| fact.source.clone()).collect::<Vec<_>>();
+
+        let mut list = vec![reproduction.clone()];
+        assert_eq!(sources(&list), ["src/gone.rs:2"], "o ponto chega à limpeza com o fato velho");
+        assert!(citation::resolve(&world, "src/gone.rs:2").is_err(), "o fato velho cita um arquivo que não existe");
+        settle_facts(&mut list, &log, &world, Locale::PtBr);
+        assert_eq!(sources(&list), ["src/a.rs:1"], "{list:?}");
+
+        let mut inverted = vec![reproduction];
+        prefill_from_the_request(&mut inverted, &log, &world, Locale::PtBr);
+        drop_stale_facts(&mut inverted, &world);
+        assert!(sources(&inverted).is_empty(), "na ordem inversa o ponto fica sem fato: {inverted:?}");
     }
 
     /// O `grill` numa spec nova grava o tipo de trabalho, com o autor e a

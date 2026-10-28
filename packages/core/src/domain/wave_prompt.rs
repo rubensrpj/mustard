@@ -58,7 +58,7 @@ mod summary;
 pub use changed::TaskChange;
 pub use dispatch::ReadDispatch;
 pub use request::listed;
-pub use review::{Proven, listed_final_review};
+pub use review::{Chain, Proven, listed_final_review, task_chains};
 pub use rules::{ROOT_RULES_FILE, RulesFile, carries_project_rules, project_rules_section, touched_by};
 pub use summary::summary_of;
 
@@ -332,6 +332,10 @@ pub struct Material<'a> {
     /// ([`since_last_verdict`]): com ele, o pedido da revisão final é o da
     /// revisão de volta. Vazio na primeira revisão.
     pub since_verdict: Vec<&'a SpecEvent>,
+    /// A cadeia de cada tarefa que o pedido da revisão final lista, pelo
+    /// número dela ([`task_chains`]): a linha da tarefa a traz logo abaixo. A
+    /// tarefa sem regra, sem lugar e sem prova fica de fora.
+    pub chains: BTreeMap<u64, Chain>,
     /// O código de cada evento, para o pedido citar item por código.
     pub codes: BTreeMap<u64, String>,
     /// O padrão do projeto que vale para cada tarefa, pelo código dela: as
@@ -782,6 +786,20 @@ impl Writer<'_> {
     }
 }
 
+/// Cada regra combinada da spec numa linha, na ordem em que foi gravada, no
+/// idioma `lang`: o tipo por extenso, o código e o título, como o pedido da
+/// onda a cita ([`Writer::item_text`]). Só a versão vigente de cada uma; os
+/// outros itens combinados ficam de fora. É a lista que o plano mostra antes
+/// das ondas, na aprovação.
+#[must_use]
+pub fn rule_lines(log: &SpecLog, lang: Locale) -> Vec<String> {
+    let material = Material { codes: log.codes(), ..Material::default() };
+    let writer = Writer { material: &material, lang };
+    let mut rules: Vec<&SpecEvent> = all_agreed(log).into_iter().filter(|item| item.event_type == "rule").collect();
+    rules.sort_by_key(|rule| rule.id);
+    rules.into_iter().map(|rule| writer.item_text(rule)).collect()
+}
+
 /// Quantas linhas um texto tem; a última conta mesmo sem quebra no fim.
 #[must_use]
 pub fn count_lines(text: &str) -> usize {
@@ -936,16 +954,15 @@ pub fn all_agreed(log: &SpecLog) -> Vec<&SpecEvent> {
 }
 
 /// O combinado que o veredito final responde: o que o pedido mais novo da
-/// revisão listou (`read_items`) e o que nem uma tarefa terminada nem a última
-/// aprovação final cobrem agora ([`Proven`]) — o item gravado depois do pedido
-/// também. O combinado que uma delas cobre e o pedido não listou já tem
-/// prova. O pedido sem a lista, de antes dela, responde por todo o combinado
-/// ([`all_agreed`]).
+/// revisão ([`crate::domain::spec_state::review_send`]) listou (`read_items`)
+/// e o que nem uma tarefa terminada nem a última aprovação final cobrem agora
+/// ([`Proven`]) — o item gravado depois do pedido também. O combinado que uma
+/// delas cobre e o pedido não listou já tem prova. O pedido sem a lista, de
+/// antes dela, responde por todo o combinado ([`all_agreed`]).
 #[must_use]
 pub fn review_agreed(log: &SpecLog) -> Vec<&SpecEvent> {
-    let visible = log.visible();
-    let sent = visible.iter().filter(|e| e.event_type == "send" && e.str_field("role") == Some("review")).max_by_key(|e| e.id);
-    let Some(listed) = sent.and_then(|e| log.send_field(e.id, "read_items")).and_then(Value::as_array) else {
+    let sent = crate::domain::spec_state::review_send(log, None);
+    let Some(listed) = sent.and_then(|send| log.send_field(send.asked, "read_items")).and_then(Value::as_array) else {
         return all_agreed(log);
     };
     let listed: BTreeSet<&str> = listed.iter().filter_map(Value::as_str).collect();
@@ -1250,14 +1267,10 @@ pub fn backlog_fields(log: &SpecLog, tasks: &[&SpecEvent], commands: &Commands, 
     let waits = |id: u64| waiting.contains(&id) || codes.get(&id).is_some_and(|code| waiting_codes.contains(code));
     let mut proofs: Vec<String> = Vec::new();
     for item in criteria.iter().filter(|id| !waits(**id)).filter_map(|id| log.get(*id)) {
-        let own: Vec<String> = match item.str_field("proof") {
-            Some(proof) => vec![proof.trim().to_string()],
-            None if item.event_type == "request" => {
-                let named = named_proofs(item, commands.test.as_deref());
-                if named.is_empty() { commands.build.iter().cloned().collect() } else { named }
-            }
-            None => Vec::new(),
-        };
+        let mut own = item_proofs(item, commands.test.as_deref());
+        if own.is_empty() && item.event_type == "request" {
+            own = commands.build.iter().cloned().collect();
+        }
         for proof in own {
             if !proof.is_empty() && !proofs.contains(&proof) {
                 proofs.push(proof);
@@ -1267,6 +1280,62 @@ pub fn backlog_fields(log: &SpecLog, tasks: &[&SpecEvent], commands: &Commands, 
     let text = titles.join("; ");
     let done_when = if proofs.is_empty() { text.clone() } else { proofs.join(" && ") };
     BacklogFields { criteria, text, done_when }
+}
+
+/// As provas que a onda roda pelo item coberto `item`, com o comando de teste
+/// que o projeto declara (`test`): a prova gravada nele, a do critério; sem
+/// ela, no pedido, as que o relato nomeia ([`named_proofs`]). Os outros itens
+/// não dão prova. É a seleção única do pronto-quando da onda
+/// ([`backlog_fields`]), da conferência de que uma tarefa cobre uma regra
+/// com prova e das provas de pedido que o fechamento roda
+/// ([`delivered_request_proofs`]): as três nunca discordam sobre o que a onda
+/// roda.
+#[must_use]
+pub fn item_proofs(item: &SpecEvent, test: Option<&str>) -> Vec<String> {
+    match item.str_field("proof").map(str::trim) {
+        Some(proof) if !proof.is_empty() => vec![proof.to_string()],
+        Some(_) => Vec::new(),
+        None if item.event_type == "request" => named_proofs(item, test),
+        None => Vec::new(),
+    }
+}
+
+/// Os pedidos que as tarefas entregues da obra `log` cobrem, cada um pelo
+/// número da versão vigente, com as ondas dessas tarefas: a tarefa vigente de
+/// onda planejada que já tem entrega. É a leitura única de quais provas de
+/// pedido o fechamento roda ([`delivered_request_proofs`]) e de quais ondas a
+/// recusa de uma delas reabre.
+#[must_use]
+pub fn delivered_requests(log: &SpecLog) -> BTreeMap<u64, BTreeSet<u64>> {
+    let planned = log.planned_waves();
+    let delivered: BTreeSet<u64> = log.delivered_waves().into_iter().filter(|wave| planned.contains(wave)).collect();
+    let mut out: BTreeMap<u64, BTreeSet<u64>> = BTreeMap::new();
+    for task in log.visible().into_iter().filter(|event| event.event_type == "task") {
+        let Some(wave) = task.wave().filter(|wave| delivered.contains(wave)) else {
+            continue;
+        };
+        for request in task.ints("covers").into_iter().filter_map(|id| log.current(id)).filter(|item| item.event_type == "request") {
+            out.entry(request.id).or_default().insert(wave);
+        }
+    }
+    out
+}
+
+/// As provas dos pedidos que as tarefas entregues da obra `log` cobrem
+/// ([`delivered_requests`]), com o comando de teste que o projeto declara
+/// (`test`): o relato de cada pedido nomeia a prova, pela seleção do
+/// pronto-quando ([`item_proofs`]). É o pedido nascido de um achado, que não
+/// tem critério próprio. Cada prova sai com o número da versão vigente do
+/// pedido, na ordem desse número, e o pedido que nomeia duas sai duas vezes;
+/// o pedido que não nomeia prova nenhuma não sai — a compilação, que a onda
+/// dele roda no lugar, já roda no fechamento.
+#[must_use]
+pub fn delivered_request_proofs(log: &SpecLog, test: Option<&str>) -> Vec<(u64, String)> {
+    delivered_requests(log)
+        .into_keys()
+        .filter_map(|id| log.get(id))
+        .flat_map(|request| item_proofs(request, test).into_iter().map(|proof| (request.id, proof)))
+        .collect()
 }
 
 /// As marcas com que um relato nomeia a prova dele, nos dois idiomas do
@@ -1561,8 +1630,12 @@ pub fn last_final_approval(log: &SpecLog) -> Option<(&SpecEvent, u64)> {
 /// ordem em que o pedido da revisão de volta o lista: o próprio veredito, os
 /// commits gravados depois dele, os requisitos acordados gravados ou
 /// regravados depois dele, junto com os que ele deu como não atendidos — na
-/// versão vigente de cada um —, e os critérios gravados ou regravados depois
-/// dele. Depois de uma aprovação, o ponto de partida é o pedido que ela
+/// versão vigente de cada um —, as tarefas do conserto — as gravadas ou
+/// regravadas depois dele e as que têm passo gravado depois dele, cada uma
+/// com a regra e os lugares dela — e os critérios gravados ou regravados
+/// depois dele. Na ordem da cadeia: a regra, os lugares, a prova. A tarefa
+/// terminada antes dele fica de fora, mesmo com o passo verde. Depois de uma
+/// aprovação, o ponto de partida é o pedido que ela
 /// respondeu ([`last_final_approval`]): o ajuste pequeno feito com a obra
 /// fechada e reaberta é revisado sozinho. O que veio antes fica de fora: a
 /// conclusão do veredito vale para o que não mudou. Vazio sem veredito final.
@@ -1601,6 +1674,14 @@ pub fn since_last_verdict(log: &SpecLog) -> Vec<&SpecEvent> {
     let mut agreed: Vec<&SpecEvent> = all_agreed(log).into_iter().filter(|e| e.id > since || unmet.contains(&e.id)).collect();
     agreed.sort_by_key(|e| e.id);
     out.extend(agreed);
+    let worked = log.block(BlockQuery::Block(Block::Waves));
+    let stepped: BTreeSet<u64> = worked
+        .iter()
+        .filter(|e| e.event_type == "step" && e.id > since)
+        .filter_map(|step| step.fields.get("item").and_then(item_id))
+        .filter_map(|id| log.current(id).map(|e| e.id))
+        .collect();
+    out.extend(worked.iter().copied().filter(|e| e.event_type == "task" && (e.id > since || stepped.contains(&e.id))));
     out.extend(log.block(BlockQuery::Block(Block::Criteria)).into_iter().filter(|e| e.event_type == "criterion" && e.id > since));
     out
 }

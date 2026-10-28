@@ -44,8 +44,10 @@ mod message;
 mod purge;
 mod read;
 mod refusal;
+mod removal;
 mod search;
 mod types;
+mod unanswered;
 
 pub use against::{carry_closed_identity, carry_open_point, check_against, referenced_id, resolve_codes, Effects};
 pub use check::{normalize, validate, validation_issues, COPY_FILES_FIELD, COPY_STATE_FIELD};

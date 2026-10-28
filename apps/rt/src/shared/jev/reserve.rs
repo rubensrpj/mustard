@@ -363,12 +363,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         opened(root);
-        let (url, _) = crate::shared::test_fixture::jev_service(Duration::from_millis(600), 200, json!({ "answers": {} }).to_string());
+        // O serviço lento nunca responde: a espera acaba pelo prazo do filtro.
+        let (url, _held) = crate::shared::test_fixture::held_jev_service(200, json!({ "answers": {} }).to_string());
         let mut late = JevFilter::at(JevKey("sk-test".to_string()), &url);
         late.timeouts.response = Duration::from_millis(150);
         let asked_payload = payload("Somar dois números na calculadora.");
         assert_eq!(asked(Some(&late), root, "x", TASK_TRIAGE_CALL, &asked_payload), Asked::Failed);
-        let (refusing, _) = crate::shared::test_fixture::jev_service(Duration::ZERO, 402, String::new());
+        let (refusing, _) = crate::shared::test_fixture::jev_service(402, String::new());
         let failing = JevFilter::at(JevKey("sk-test".to_string()), &refusing);
         assert_eq!(asked(Some(&failing), root, "x", TASK_TRIAGE_CALL, &asked_payload), Asked::Failed);
 

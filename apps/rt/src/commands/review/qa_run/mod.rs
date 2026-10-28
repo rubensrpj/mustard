@@ -66,6 +66,11 @@ pub(crate) struct ProofRun {
     /// prova passou, quando ela falhou por outro motivo, e em todo comando
     /// que não é prova de critério.
     pub missing_test: Option<String>,
+    /// Quantos testes a saída do executor disse ter rodado, passando ou não;
+    /// `None` quando a saída não responde à pergunta. É por ele que o
+    /// fechamento sabe se a prova que passou no código de antes da obra rodou
+    /// teste de verdade.
+    pub tests: Option<u64>,
     /// A saída inteira do verde, até um teto alto, que não é gravada na spec:
     /// o fechamento a entrega à análise final de código sem uso, onde o aviso
     /// de código morto do compilador só acrescenta. Vazia quando não passou.
@@ -199,6 +204,7 @@ fn graded(out: AcResult, proof: Option<(&str, &Path)>) -> ProofRun {
         ms: u64::try_from(out.duration_ms).unwrap_or(u64::MAX),
         ran_no_test,
         missing_test,
+        tests: out.tests_run,
         output: out.stderr_excerpt,
         evidence: out.evidence,
     }

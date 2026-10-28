@@ -95,13 +95,12 @@ pub fn validate(event: &Map<String, Value>) -> Result<(), Refusal> {
         .map(|field| field.name.to_string())
         .collect();
     absent.extend(nested_absent(event, spec.name));
-    // A sobra sem título ou sem detalhe tem recusa própria, com o campo que
-    // falta na primeira sobra incompleta: a rodada grava cada sobra como
-    // tarefa da spec, pelo título e pelo detalhe, e a mensagem diz qual dos
-    // dois falta. Faltando também outro campo, a recusa de sempre cita todos
-    // de uma vez.
-    if let Some(field) = leftover_field_missing(&absent) {
-        return Err(Refusal::LeftoverFieldMissing { field });
+    // O achado incompleto tem recusa própria, com o número do primeiro achado
+    // incompleto e os campos que faltam nele: a rodada grava cada achado como
+    // tarefa da spec, pela regra dele, e a mensagem diz o que falta. Faltando
+    // também outro campo, a recusa de sempre cita todos de uma vez.
+    if let Some((finding, field)) = leftover_field_missing(&absent) {
+        return Err(Refusal::LeftoverFieldMissing { finding, field });
     }
     if !absent.is_empty() {
         return Err(missing(spec.name, &absent.join(", ")));
@@ -243,6 +242,11 @@ pub(super) fn missing(event_type: &str, field: &str) -> Refusal {
     Refusal::MissingField { event_type: event_type.to_string(), field: field.to_string() }
 }
 
+/// Os campos que todo achado da lista `leftovers` traz, na entrega da onda e
+/// no veredito: o título, o detalhe, a regra que ele quebrou e os lugares
+/// dela.
+pub const FINDING_FIELDS: &[&str] = &["title", "detail", "rule", "places"];
+
 /// Os objetos com campos obrigatórios próprios, dentro de uma lista ou de um
 /// campo: o tipo, o campo e os campos de dentro. A fonte de cada fato do ponto
 /// tem recusa própria e não entra aqui. O que falta sai na mesma recusa dos
@@ -252,14 +256,18 @@ const NESTED: &[(&str, &str, &[&str])] = &[
     ("task", "files", &["path"]),
     ("send", "skills", &["name", "sha"]),
     ("send", "rejected", &["delivered", "reason"]),
-    // A sobra que a onda relata, e o achado que a revisão final traz no
-    // mesmo formato, vira tarefa da spec: sem título ou sem detalhe, não há o
-    // que abrir.
-    ("delivered", "leftovers", &["title", "detail"]),
-    ("verdict", "leftovers", &["title", "detail"]),
+    // O achado que a onda relata, e o que a revisão final traz no mesmo
+    // formato, vira tarefa da spec: sem título ou sem detalhe, não há o que
+    // abrir; sem a regra que quebrou e os lugares dela, não há por onde
+    // juntá-lo aos da mesma regra nem onde conferir o conserto.
+    ("delivered", "leftovers", FINDING_FIELDS),
+    ("verdict", "leftovers", FINDING_FIELDS),
     ("delivered", "proofs", &["criterion", "proof"]),
     ("delivered", "agreed", &["item", "met"]),
-    ("verdict", "criteria", &["criterion", "tests_rule"]),
+    // O lugar conferido sem mudança diz por que fica como está: sem o motivo,
+    // a marca só calaria a conferência da entrega.
+    ("delivered", "checked_places", &["place", "reason"]),
+    ("verdict", "criteria", &["criterion"]),
     ("verdict", "lessons", &["lesson", "repeated"]),
     ("tracking", "items", &["item", "met"]),
     ("state", "witness", &["question", "answer"]),
@@ -267,19 +275,19 @@ const NESTED: &[(&str, &str, &[&str])] = &[
     ("remove", "filter", &["type", "from", "to"]),
 ];
 
-/// O campo que falta na primeira sobra incompleta da entrega (`title` ou
-/// `detail`), lido do caminho que [`nested_absent`] devolve
-/// (`leftovers[2].detail`); `None` quando toda sobra está completa, e também
-/// quando falta outro campo além das sobras.
-fn leftover_field_missing(absent: &[String]) -> Option<String> {
-    let field = |path: &String| {
-        let rest = path.strip_prefix("leftovers[")?;
-        rest.split_once("].").map(|(_, field)| field.to_string())
+/// O número do primeiro achado incompleto da lista `leftovers`, a contar de
+/// um, com os campos que faltam nele separados por vírgula, lidos dos caminhos
+/// que [`nested_absent`] devolve (`leftovers[2].rule`); `None` quando todo
+/// achado está completo, e também quando falta outro campo além dos achados.
+fn leftover_field_missing(absent: &[String]) -> Option<(usize, String)> {
+    let finding = |path: &String| {
+        let (at, field) = path.strip_prefix("leftovers[")?.split_once("].")?;
+        Some((at.parse::<usize>().ok()?, field.to_string()))
     };
-    if absent.iter().any(|path| field(path).is_none()) {
-        return None;
-    }
-    absent.iter().find_map(field)
+    let found: Vec<(usize, String)> = absent.iter().map(finding).collect::<Option<_>>()?;
+    let first = found.first()?.0;
+    let fields: Vec<String> = found.into_iter().filter(|(at, _)| *at == first).map(|(_, field)| field).collect();
+    Some((first, fields.join(", ")))
 }
 
 /// Os campos de dentro que faltam, todos, com o caminho de cada um, como
@@ -652,7 +660,7 @@ mod tests {
             Refusal::MissingField { event_type: "verdict".into(), field: "criteria".into() }
         );
         let mut judged = wave.clone();
-        judged["criteria"] = json!([{"criterion": 7, "tests_rule": true}]);
+        judged["criteria"] = json!([{"criterion": 7}]);
         assert_eq!(checked("verdict", judged), Ok(()));
 
         for result in ["approved", "rejected"] {
@@ -663,10 +671,10 @@ mod tests {
         }
         let mut half = wave;
         half["final"] = json!(true);
-        half["criteria"] = json!([{"criterion": 7}]);
+        half["criteria"] = json!([{}]);
         assert_eq!(
             checked("verdict", half).unwrap_err(),
-            Refusal::MissingField { event_type: "verdict".into(), field: "criteria[1].tests_rule".into() }
+            Refusal::MissingField { event_type: "verdict".into(), field: "criteria[1].criterion".into() }
         );
     }
 
@@ -685,7 +693,7 @@ mod tests {
         assert_eq!(checked("verdict", rejected), Ok(()));
 
         let no_wave = json!({"author": "review", "result": "approved", "text": "passou",
-            "criteria": [{"criterion": 7, "tests_rule": true}]});
+            "criteria": [{"criterion": 7}]});
         assert_eq!(
             checked("verdict", no_wave).unwrap_err(),
             Refusal::MissingField { event_type: "verdict".into(), field: "wave".into() }
@@ -744,5 +752,54 @@ mod tests {
         by_code["result"] = json!([1]);
         by_code["closes"] = json!("MSTD-POINT-0001");
         assert_eq!(checked("point", by_code), Ok(()), "the code the page shows is accepted");
+    }
+
+    /// Todo achado que a onda grava na entrega, e a revisão final no
+    /// veredito, diz a regra que quebrou e os lugares dela. O achado sem a
+    /// regra, com a regra em branco, sem os lugares ou com a lista de lugares
+    /// vazia é recusado pelo número dele, com os campos que faltam nele, nos
+    /// dois idiomas; o achado que traz os dois passa.
+    #[test]
+    fn a_finding_without_its_rule_or_its_places_is_refused() {
+        let complete = json!({"title": "A leitura abre o arquivo", "detail": "Abre.", "rule": "Toda leitura passa pelo mapa",
+            "places": ["src/a.rs:3"]});
+        let returns = |findings: Value| {
+            [
+                ("delivered", json!({"author": "wave", "wave": 1, "text": "Feito.", "leftovers": findings.clone()})),
+                ("verdict", json!({"author": "review", "final": true, "result": "approved", "text": "Pronta.", "leftovers": findings})),
+            ]
+        };
+        for (event_type, draft) in returns(json!([complete.clone()])) {
+            assert_eq!(checked(event_type, draft), Ok(()), "{event_type}");
+        }
+        let without = |fields: &[&str]| {
+            let mut finding = complete.clone();
+            if let Some(own) = finding.as_object_mut() {
+                own.retain(|key, _| !fields.contains(&key.as_str()));
+            }
+            finding
+        };
+        let with = |field: &str, value: Value| {
+            let mut finding = complete.clone();
+            finding[field] = value;
+            finding
+        };
+        let incomplete = [
+            (without(&["rule"]), "rule"),
+            (with("rule", json!("  ")), "rule"),
+            (without(&["places"]), "places"),
+            (with("places", json!([])), "places"),
+            (without(&["rule", "places"]), "rule, places"),
+        ];
+        for (finding, missing) in incomplete {
+            for (event_type, draft) in returns(json!([complete.clone(), finding.clone()])) {
+                let refused = checked(event_type, draft).unwrap_err();
+                assert_eq!(refused, Refusal::LeftoverFieldMissing { finding: 2, field: missing.into() }, "{event_type}: {finding}");
+                for lang in [Locale::PtBr, Locale::EnUs] {
+                    let message = refused.message(lang);
+                    assert!(message.contains('2') && message.contains(missing), "{message}");
+                }
+            }
+        }
     }
 }

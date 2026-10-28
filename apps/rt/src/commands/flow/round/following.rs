@@ -11,7 +11,7 @@ use mustard_core::domain::spec_events::{BlockQuery, SpecEvent, SpecLog};
 use serde_json::Value;
 
 use super::leftovers::GROUP;
-use super::queue::{open_sends, waves_pending_fix, waves_returned};
+use super::queue::{open_sends, waves_pending_fix};
 
 /// O campo do grupo da tarefa com o número da onda em andamento que ela
 /// segue.
@@ -23,7 +23,7 @@ pub(crate) const AFTER: &str = "after";
 /// não conta como voltada: a tarefa que a segue espera o conserto, e não só a
 /// volta que a reprovou.
 pub(crate) fn running_waves(log: &SpecLog) -> BTreeSet<u64> {
-    let returned = waves_returned(log);
+    let returned = log.waves_returned();
     let mut running: BTreeSet<u64> = open_sends(log).into_keys().filter(|wave| !returned.contains(wave)).collect();
     running.extend(waves_pending_fix(log).into_keys());
     running

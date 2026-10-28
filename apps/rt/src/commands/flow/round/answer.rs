@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::spec_events::{Block, BlockQuery, Refusal, SpecLog};
-use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State, not_closed_yet, returns_to_running};
+use mustard_core::domain::spec_state::{PhaseWriter, SpecState, State, can_run, not_closed_yet, returns_to_running};
 use mustard_core::domain::wave_prompt::{WaveCopy, summary_of, token_cap_message, wave_files, wave_title};
 use mustard_core::io::spec_events as store;
 use mustard_core::io::wave_prompt::{Flight, recorded_copy};
@@ -22,8 +22,7 @@ use super::commit::git_lock;
 use super::fixes::sweep_fixes;
 use super::item_choice::choose_items;
 use super::queue::{
-    agent_known, backlog_uncovered, max_parallel, next_waves, open_sends, orphaned_waves, sender_fields, sent_items, silent_minutes, waves_in_progress,
-    waves_returned,
+    agent_known, backlog_uncovered, max_parallel, open_sends, orphaned_waves, outgoing, sender_fields, sent_items, silent_minutes, waves_in_progress,
 };
 use super::rejection::rejected_message;
 use super::report::Taken;
@@ -31,7 +30,7 @@ use super::slots::{open_copies, sharing_copy, without_live_copy};
 use super::stops::{HeldReturn, stopped_waves, waves_stuck};
 use super::task_release;
 use super::usage::Caller;
-use super::{RoundOpts, can_run};
+use super::RoundOpts;
 use crate::commands::git_settle::CopiesLock;
 use crate::commands::spec_events::write::record;
 use crate::shared::judgement::Board;
@@ -367,7 +366,7 @@ fn resend_targets(log: &SpecLog, paused: &[u64]) -> BTreeMap<u64, u64> {
     let last_sends = log.last_by_wave("send");
     let planned = log.planned_waves();
     let open = open_sends(log);
-    let returned = waves_returned(log);
+    let returned = log.waves_returned();
     let mut out = orphaned_waves(log);
     for wave in paused.iter().filter(|wave| planned.contains(wave) && open.contains_key(wave) && !returned.contains(wave)) {
         if let Some(sent) = last_sends.get(wave) {
@@ -696,7 +695,8 @@ fn dispatch_round(
     // de a rodada escolher quem volta ao conserto, pela mesma soltura do
     // fechamento: a onda solta não é despachada de novo por uma marca sem
     // prova.
-    let locked = if crate::commands::flow::close::stale_marks::release(root, &spec, &locked, lang).map_err(RoundRefusal::Refused)?.is_empty() {
+    let pending = super::queue::waves_pending_fix(&locked);
+    let locked = if crate::commands::flow::common::stale_marks::release(root, &spec, &locked, pending, lang).map_err(RoundRefusal::Refused)?.is_empty() {
         locked
     } else {
         store::read(path).map_err(RoundRefusal::Refused)?.ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.clone() }))?
@@ -788,8 +788,12 @@ fn dispatch_round(
     // já ter sido juntado, comitado e gravado: a recusa sai com o que a
     // rodada fez até agora, e a página, que o relatório mudou, é copiada do
     // mesmo jeito que numa rodada que despacha.
-    let ready = match next_waves(&log, &vacancies, &stuck) {
-        Ok(ready) => ready,
+    // A onda que leva a avaliação de uma skill espera as tarefas abertas, fora
+    // dela, que mexem nos arquivos que a skill cita: não sai, e o aviso diz
+    // quais ela espera.
+    let evaluating = super::skill_hold::waves_waiting(root, &spec, &log);
+    let (ready, kept) = match outgoing(&log, &vacancies, (&stuck, &evaluating), &BTreeSet::new()) {
+        Ok(out) => (out.go, out.evaluating),
         Err(cycle) => {
             let mut answered = json!({ "spec": spec, "recorded": recorded, "formatted": formatted });
             if let Some(commit) = commit {
@@ -885,12 +889,13 @@ fn dispatch_round(
     let (built, picks_held) = crate::shared::skill_cycle::prompts_with_picks(root, &spec, (&log, lang), &mut flight, (&mut next, &mut outgoing), picks_jev, &asker);
     let mut picks_lines = crate::shared::skill_cycle::held_notes(picks_held, warnings, lang);
     picks_lines.extend(items_lines);
+    picks_lines.extend(super::skill_hold::waiting_notes(&log, &evaluating, &kept, warnings, lang));
     // O teto de cópias que segura o despacho vai no aviso e no próximo passo,
     // contado com as ondas que saem de fato: a que a escolha dos itens, a
     // cópia que não saiu ou a escolha das skills seguram não toma cópia, e a
     // reenviada em cópia nova toma.
     let leaving: Vec<&str> = next.iter().filter_map(|wave| flight.copies.get(wave)).chain(renewed_copies.values()).map(|copy| copy.path.as_str()).collect();
-    let copies_full = super::vacancy::copies_full_warning(&log, &vacancies, (allowed, &leaving), &stuck, lang);
+    let copies_full = super::vacancy::copies_full_warning(&log, &vacancies, (allowed, &leaving), (&stuck, &evaluating), lang);
     let copies_line = copies_full.as_ref().and_then(|warning| warning["hint"].as_str().map(str::to_string));
     warnings.extend(copies_full);
     // A onda cujo pedido passa do teto de tokens sai com as tarefas que
@@ -1200,7 +1205,7 @@ fn dispatch_round(
 /// envio aberto, sem volta gravada depois dele.
 fn unchanged_since(read: &SpecLog, now: &SpecLog, wave: u64) -> bool {
     let sent = open_sends(read).get(&wave).copied();
-    sent.is_some() && open_sends(now).get(&wave).copied() == sent && !waves_returned(now).contains(&wave)
+    sent.is_some() && open_sends(now).get(&wave).copied() == sent && !now.waves_returned().contains(&wave)
 }
 
 /// O comando que lê o pedido gravado no envio da onda `wave`. A resposta da
@@ -2548,7 +2553,7 @@ mod tests {
         let rejected_with_agreed = judged(
             root,
             json!({"wave": 1, "result": "rejected", "final": true,
-            "text": "faltou o teste", "criteria": [{"criterion": "MSTD-CRIT-0001", "tests_rule": true}],
+            "text": "faltou o teste", "criteria": [{"criterion": "MSTD-CRIT-0001"}],
             "agreed": [{"item": "MSTD-DEC-0001", "met": true}]}),
         );
         assert_eq!(rejected_with_agreed["ok"], json!(true), "{rejected_with_agreed}");

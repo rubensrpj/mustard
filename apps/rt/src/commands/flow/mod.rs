@@ -13,6 +13,7 @@
 pub mod answer;
 pub mod cli;
 pub mod close;
+pub mod common;
 pub mod discard;
 pub(crate) mod evidence;
 pub(crate) mod goal;

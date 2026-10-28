@@ -184,8 +184,9 @@ impl Writer<'_> {
     /// passos numerados — ler o que obedecer, fazer as tarefas uma por vez e
     /// gravar a entrega. As tarefas vêm só pelo código e pelo título, na
     /// ordem, com a primeira marcada; o bloco inteiro dela vem logo depois
-    /// dos passos. A suíte inteira do projeto não é passo do agente: quem a
-    /// roda, com o lint, é a rodada, antes do commit.
+    /// dos passos, e depois dele os princípios do produto que o agente de onda
+    /// recebe. A suíte inteira do projeto não é passo do agente: quem a roda,
+    /// com o lint, é a rodada, antes do commit.
     fn to_do(&self, out: &mut String, listing: &Listing) {
         let _ = writeln!(out, "## {}\n", self.t("prompt.part.do"));
         if !listing.fix.is_empty() {
@@ -218,6 +219,7 @@ impl Writer<'_> {
         if let Some(first) = listing.steps.first() {
             let _ = writeln!(out, "{}\n", self.task_block(first, 1, listing.steps.len()).text);
         }
+        let _ = writeln!(out, "{}", crate::platform::seeds::principles_for(self.lang, crate::platform::seeds::Reader::Wave, 3));
     }
 
     /// O bloco de cada tarefa, na ordem de execução ([`super::task_blocks`]).

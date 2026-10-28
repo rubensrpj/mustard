@@ -950,11 +950,12 @@ mod tests {
         BIG_OUTPUT_EXIT_3_POSIX
     }
 
-    /// A command that stays alive ~3 s, so a 1 s deadline always fires first.
-    #[cfg(windows)]
-    const SLEEPS_SECONDS: &str = "powershell -NoProfile -Command \"while (-not (Test-Path mustard-deadline-test.release)) { Start-Sleep -Milliseconds 25 }\"";
-    #[cfg(not(windows))]
-    const SLEEPS_SECONDS: &str = "sleep 3";
+    /// A command held until a release file the test never writes, so a 1 s
+    /// deadline always fires first, however loaded the machine. It gives up
+    /// only at the safety limit of the test waits, so it never lingers.
+    fn sleeps_seconds() -> String {
+        crate::held_command::held_until_released(std::path::Path::new("mustard-deadline-test.release"))
+    }
 
     /// THE regression that must never come back: an AC printing far more than
     /// the OS pipe buffer still completes and is judged by its EXIT CODE. Under
@@ -1043,7 +1044,7 @@ mod tests {
     #[test]
     fn ac_command_killed_by_deadline_reports_timeout_not_skip() {
         let dir = tempdir().unwrap();
-        let res = run_ac_command_with_timeout(SLEEPS_SECONDS, None, dir.path(), Duration::from_secs(1));
+        let res = run_ac_command_with_timeout(&sleeps_seconds(), None, dir.path(), Duration::from_secs(1));
         assert_eq!(res.status, "timeout", "stderr: {}", res.stderr_excerpt);
         assert_eq!(res.exit, None, "a killed command has no exit code");
         assert_eq!(res.stderr_excerpt, "timeout after 1000ms");

@@ -53,7 +53,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 #[cfg(test)]
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 #[cfg(test)]
 use mustard_core::ClaudePaths;
@@ -107,10 +107,6 @@ const SNIPPET_BUDGET: usize = 5000;
 /// dos 10 mil que o gancho aceita de uma vez.
 const ANSWER_LIMIT: usize = 9000;
 
-/// Historical engine used only by tests. Do not confuse the loaded runner's
-/// git startup time with a ranking failure; production uses the current
-/// gateway and retains its own latency policy.
-const BUDGET: Duration = Duration::from_secs(10);
 
 /// O maior arquivo lido, em bytes; o maior que isso é dado, não código.
 const MAX_FILE_BYTES: u64 = 1_000_000;
@@ -600,7 +596,6 @@ fn judge(
     warnings: &mut Vec<String>,
 ) -> Judged {
     let (root, session, lang) = (scene.root, scene.session, scene.lang);
-    let started = Instant::now();
     let Some(assembled) = door::chosen_filter(root, session, lang, scene.config, scene.assemble, warnings) else {
         return Judged::Triage;
     };
@@ -635,7 +630,7 @@ fn judge(
         Outcome::Classified { pieces, .. } if pieces.is_empty() => Judged::Triage,
         Outcome::Classified { pieces, .. } => Judged::Pieces(pieces),
     };
-    let _ = (scene.record)(root, "word search", None, session, started, &json!({ "ok": true }), classified.measured);
+    let _ = (scene.record)(root, "word search", None, session, Instant::now(), &json!({ "ok": true }), classified.measured);
     judged
 }
 
@@ -784,9 +779,9 @@ fn skipped(rel: &str) -> bool {
 
 /// Onde o padrão casa nos arquivos que o git conhece (os do índice e os novos
 /// que ele não ignora) sob as pastas `rels` da árvore `tree`. `None` quando o
-/// git falha, um filtro não se entende ou o tempo acaba.
+/// git falha ou um filtro não se entende. O motor histórico só roda nos
+/// testes e lê tudo, sem prazo: a máquina carregada não muda o que ele acha.
 fn scan(tree: &Path, rels: &[String], search: &Search<'_>, regex: &Regex) -> Option<Vec<FileHits>> {
-    let started = Instant::now();
     let mut args = vec!["-c", "core.quotePath=false", "ls-files", "-co", "--exclude-standard", "-z", "--"];
     args.extend(rels.iter().map(|rel| if rel.is_empty() { "." } else { rel.as_str() }));
     let listed = git::run(tree, &args);
@@ -798,9 +793,6 @@ fn scan(tree: &Path, rels: &[String], search: &Search<'_>, regex: &Regex) -> Opt
     for rel in listed.stdout.split('\0').filter(|rel| !rel.is_empty()) {
         if !seen.insert(rel) {
             continue;
-        }
-        if started.elapsed() > BUDGET {
-            return None;
         }
         let hidden = matches!(search.walk, Walk::Rg { .. }) && rel.split('/').any(|part| part.starts_with('.'));
         if hidden || skipped(rel) || !admitted(rel, search.filters, search.walk, rels)? {
@@ -2703,9 +2695,9 @@ mod tests {
                 writeln!(out, "{row}").expect("write");
                 continue;
             }
-            let started = Instant::now();
+            let watch = crate::stopwatch::Stopwatch::start();
             let got = reply(&scene, &search);
-            row["ms"] = serde_json::json!(started.elapsed().as_millis());
+            row["ms"] = serde_json::json!(watch.read().as_millis());
             let rels: Vec<String> = folders.iter().map(|folder| folder.rel.clone()).collect();
             if let Some(regex) = pattern_of(&search)
                 && let Some(hits) = scan(&tree, &rels, &search, &regex)

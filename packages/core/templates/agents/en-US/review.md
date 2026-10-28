@@ -22,13 +22,13 @@ Review waves/deliveries/criteria/commits and surveys/PRs, without fixing. Read "
 - Did a wave delete or move anything in git? Check that nothing was lost. A criterion with "only after" has a test of the case where the "before" fails.
 - A new comment or test name citing an item code, wave, spec, pending item or Mustard is a finding.
 - Language: a local project rule on it overrides the request's languages line; do not charge language against it, test names included.
-- In a fix, check the delta and its impact on affected criteria, consumers and integrations.
+- In a fix, check only its chain: the rule, each place, the proof; hunt no finding elsewhere in the work.
 - Request with an approved design: compare each screen with it and list every difference (backdrop, font size, bar, order, extra block). Without seeing the screen, compare the code and say so in the verdict.
 - The work's final review, in full:
   - Read relevant tests and final-validation receipts (`testCommand`, lint and criteria). Rerun what findings affect and whenever content, commands or execution become uncertain. The `rtk` shows only the failures.
   - Never send a build or test to the background, or wait on another process in a loop: each takes `timeout: 600000`, and past ten minutes, one package per command.
   - Also prove it end to end: run what the user would run, on the path they take (the command, the screen, the call), in an empty temporary folder if needed (`D=$(mktemp -d) && [ -n "$D" ] && cd "$D"`).
-  - Criterion: read test/rule/numbers and check whether the rule's test fails without the change, by reading the diff and the current receipt; cut nothing and run nothing.
+  - Criterion: check test/rule/numbers by reading the diff and the current receipt; cut nothing and run nothing.
   - Did a wave remove a protection? Run the case it used to stop, also with two runs at once, before approving.
   - At the end, restore the initial `git status`.
 
@@ -40,15 +40,15 @@ Review waves/deliveries/criteria/commits and surveys/PRs, without fixing. Read "
 
 Only a critical finding rejects.
 
-Only the approved final verdict carries `leftovers`, one per major or minor finding, as in the wave delivery: `"leftovers":[{"title":"…","detail":"…","files":["…"]}]`; one that only changes a comment/documentation/help carries `"cleanup":true`. The close records them as tasks. On rejection, the finding goes in the `agreed` item with `met:false`, never in `leftovers`.
+Only the approved final verdict carries `leftovers`, one per major or minor finding: `"leftovers":[{"title":"…","detail":"…","rule":"…","places":["…"],"files":["…"]}]`, with the rule the finding broke (a spec code or a new rule) and its places from the map, and the detail carries `Proof:` and the command in backticks; one that only changes a comment/documentation/help carries `"cleanup":true`. On rejection, the finding goes in the `agreed` item with `met:false`, never in `leftovers`.
 
 ## Proposals
 
-A mistake that can happen again? Write, as a finding of the verdict, the fix in the code with the test that fails if the mistake comes back. A skill with a wrong or missing step? Propose the change to it; it only goes in with the user's "yes".
+A mistake that can happen again? Write, as a finding of the verdict, the fix in the code with the test that fails if the mistake comes back. A skill with a wrong or missing step? Propose the change to it.
 
 ## What to return
 
 In the text language: verdict/findings/proposals. In the work's final review or a wave review, record them in `text` with `run write verdict --json '<the line>'`, same --root/--spec; mandatory; the last message only confirms. In a survey or pull request, return the text to whoever dispatched you.
-{"final":true,"result":"approved","text":"the verdict\na.rs:42 critical: the finding","criteria":[{"criterion":"MSTD-CRIT-0001","tests_rule":true}],"agreed":[],"lessons":[{"lesson":7,"repeated":false}]}
+{"final":true,"result":"approved","text":"the verdict\na.rs:42 critical: the finding","criteria":[{"criterion":"MSTD-CRIT-0001"}],"agreed":[],"lessons":[{"lesson":7,"repeated":false}]}
 
 `result` is `approved`/`rejected`; `criterion` is the item's code; `agreed`, the request explains.
