@@ -51,8 +51,8 @@ fn a_proof_that_ran_no_test_gives_its_line_with_the_read_of_its_run() {
 }
 
 /// A prova verde que cita um teste que não existe no projeto ganha a linha
-/// dela na recusa, e o comando da linha lê a execução reprovada dela; a do
-/// critério que cobre a onda, ao lado, passou.
+/// dela na recusa, e o comando da linha lê a execução reprovada dela, com o
+/// que o executor escreveu; a do critério que cobre a onda, ao lado, passou.
 #[test]
 fn a_proof_citing_a_missing_test_gives_its_line_with_the_read_of_its_run() {
     let dir = tempdir().unwrap();
@@ -64,6 +64,7 @@ fn a_proof_citing_a_missing_test_gives_its_line_with_the_read_of_its_run() {
     let refused = close(root, "x");
     let read = read_of_the_line(root, &refused, "criterion-missing-test", &codes_of(root, "criterion")[0]);
     assert!(read.contains(r#""type":"criterion_run""#) && read.contains(r#""result":"fail""#), "o comando da linha lê a execução da prova: {read}");
+    assert!(read.contains(r#""output":"sum_of_two sum_of_four""#), "a execução guarda o que o executor escreveu: {read}");
 }
 
 /// A prova que já passava no código de antes da obra ganha a linha dela na

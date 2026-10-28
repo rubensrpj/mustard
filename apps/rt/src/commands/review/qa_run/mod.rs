@@ -52,7 +52,8 @@ pub(crate) struct ProofRun {
     /// Quanto demorou, em milissegundos.
     pub ms: u64,
     /// O que a prova escreveu, quando ela não passou — a saída do executor, e
-    /// não uma frase montada sobre ela: o fim dela, onde a falha aparece, ou o
+    /// não uma frase montada sobre ela: o fim dela, onde a falha aparece e
+    /// onde o verde que cita um teste ausente diz quais testes rodou, ou o
     /// começo, quando o verde disse ter rodado zero teste.
     pub output: String,
     /// A prova de critério saiu verde sem rodar teste nenhum, e por isso não
@@ -189,7 +190,9 @@ pub(crate) fn run_criteria_proofs(root: &Path, criteria: &[(u64, String, String)
 /// montada aqui: quem lê o evento gravado precisa ver a saída do executor. O
 /// número lido vai pelo `ran_no_test`, e o nome que faltou pelo
 /// `missing_test`: é deles que [`ProofRun::fault`] tira o motivo que cada
-/// recusa e cada aviso mostram.
+/// recusa e cada aviso mostram. O verde comum chega sem trecho, e por isso o
+/// verde recusado pelo nome ausente leva o fim da saída inteira que o verde
+/// guardou, como uma falha leva o fim da dela.
 fn graded(out: AcResult, proof: Option<(&str, &Path)>) -> ProofRun {
     let green = out.status == "pass";
     let ran_no_test = out.tests_run.filter(|count| *count == 0 && proof.is_some() && green);
@@ -197,6 +200,7 @@ fn graded(out: AcResult, proof: Option<(&str, &Path)>) -> ProofRun {
         Some((command, root)) if green && ran_no_test.is_none() => missing_test_name(command, root),
         _ => None,
     };
+    let output = if missing_test.is_some() { runner::tail_excerpt(&out.evidence) } else { out.stderr_excerpt };
     ProofRun {
         reused: false,
         result: if green && ran_no_test.is_none() && missing_test.is_none() { "pass" } else { "fail" },
@@ -205,7 +209,7 @@ fn graded(out: AcResult, proof: Option<(&str, &Path)>) -> ProofRun {
         ran_no_test,
         missing_test,
         tests: out.tests_run,
-        output: out.stderr_excerpt,
+        output,
         evidence: out.evidence,
     }
 }

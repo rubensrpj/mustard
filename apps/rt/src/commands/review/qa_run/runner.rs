@@ -350,11 +350,12 @@ const FAILURE_TAIL_CHARS: usize = 2000;
 /// O fim de `s`: as últimas [`FAILURE_TAIL_LINES`] linhas, cortadas ainda aos
 /// últimos [`FAILURE_TAIL_CHARS`] caracteres, o que restringir mais.
 ///
-/// É o trecho que uma falha leva em `stderr_excerpt`: quem roda a prova de um
-/// critério, o lint ou a suíte escreve o motivo da falha no fim — o teste que
-/// quebrou, o erro que interrompeu a compilação —, e o começo da saída é só o
-/// andamento do que ainda passava.
-fn tail_excerpt(s: &str) -> String {
+/// É o trecho que uma falha leva em `stderr_excerpt`, e o que a prova verde
+/// que cita um teste ausente grava: quem roda a prova de um critério, o lint
+/// ou a suíte escreve o motivo da falha e o resumo dos testes no fim — o teste
+/// que quebrou, o erro que interrompeu a compilação, quantos passaram —, e o
+/// começo da saída é só o andamento do que ainda passava.
+pub(super) fn tail_excerpt(s: &str) -> String {
     let lines: Vec<&str> = s.lines().collect();
     let kept = lines[lines.len().saturating_sub(FAILURE_TAIL_LINES)..].join("\n");
     let skipped = kept.chars().count().saturating_sub(FAILURE_TAIL_CHARS);
