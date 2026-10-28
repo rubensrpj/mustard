@@ -2225,4 +2225,34 @@ mod tests {
             assert_eq!(hint, said, "o aviso diz como ler a execução gravada: {lang:?}");
         }
     }
+
+    /// A compilação vermelha fica gravada na spec, com a saída, e o cronômetro
+    /// da rodada a grava de novo no arquivo de operações: o painel lista a
+    /// etapa uma vez só.
+    #[test]
+    fn a_red_development_build_is_one_stage_in_the_panel() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        mustard_like_root(root);
+        std::fs::write(root.join("mustard.json"), "{}").unwrap();
+        assert_eq!(crate::commands::spec_events::write::record_open(root, "x", "feature/x", "dev"), Ok(true));
+        let exec = |_: &str, _: &Path| proof("fail", "error[E0425]: cannot find value `x`");
+        let files = vec!["apps/rt/src/main.rs".to_string()];
+
+        let timing = crate::commands::flow::validation::Stage::new(root, "x", "delivery", "runtime-build", false);
+        assert!(build_development_version_with(root, "x", &files, Locale::PtBr, &exec).is_some(), "compilação vermelha: com aviso");
+        drop(timing);
+
+        let builds = |log: &mustard_core::domain::spec_events::SpecLog| {
+            log.visible().iter().filter(|e| e.event_type == "stage_run" && e.str_field("stage") == Some("runtime-build")).count()
+        };
+        let in_spec = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let observed = crate::commands::spec_events::conversation::recorded_operations(root, "x");
+        assert_eq!((builds(&in_spec), builds(&observed)), (1, 1), "a compilação vermelha fica gravada nas duas fontes");
+
+        let view = crate::commands::panel::snapshot_of(root, "x");
+        let listed: Vec<&Value> = view["specs"][0]["stages"].as_array().unwrap().iter().filter(|stage| stage["stage"] == json!("runtime-build")).collect();
+        assert_eq!(listed.len(), 1, "o painel lista a compilação uma vez só: {listed:?}");
+        assert_eq!(listed[0]["result"], json!("fail"));
+    }
 }

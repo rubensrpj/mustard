@@ -11,6 +11,7 @@ pub(crate) mod progress;
 mod publication;
 mod sections;
 mod settings;
+mod stage_runs;
 mod wave_usage;
 #[cfg(test)]
 pub(crate) use publication::prepare as prepare_publication;
@@ -173,12 +174,10 @@ fn spec_view(root: &Path, name: &str, log: &SpecLog, selected: bool, jev: &jev_u
             usage["caller_tokens"].as_u64().zip(usage.get("caller_usage_breakdown"))
         })).max_by_key(|(tokens,_)|*tokens).map(|(_,detail)|detail);
     // As etapas da rodada moram no arquivo de operações; as specs antigas as
-    // gravaram no próprio arquivo. As duas fontes, na ordem da hora.
+    // gravaram no próprio arquivo. As duas fontes, na ordem da hora, e a
+    // execução que as duas guardam conta uma vez.
     let recorded = super::spec_events::conversation::recorded_operations(root, name);
-    let mut stage_runs: Vec<&mustard_core::domain::spec_events::SpecEvent> =
-        visible.iter().copied().chain(recorded.visible()).filter(|e| e.event_type == "stage_run").collect();
-    stage_runs.sort_by_key(|e| super::spec_events::conversation::time_of(e));
-    let stages: Vec<Value> = stage_runs
+    let stages: Vec<Value> = stage_runs::listed(&visible, &recorded.visible())
         .iter()
         .map(|e| {
             json!({
