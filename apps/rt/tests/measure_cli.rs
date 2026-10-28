@@ -476,10 +476,12 @@ fn the_search_table_counts_each_hundred_and_says_whether_the_number_holds() {
 /// que ela foi gravada, e as que montam por script os dados de uma gravação,
 /// no mesmo comando, pela variável ou pelo arquivo do `--json @arquivo`; o
 /// script num heredoc vale pelo corpo dele, também depois de outro heredoc
-/// com o mesmo delimitador. Conta também as edições por script, pelas formas
-/// que o agente de onda tem recusadas, com o programa passado pelo cano, o
-/// interpretador rodado por um lançador e a cópia de onda que já saiu do
-/// disco lida pelo checkout. A
+/// com o mesmo delimitador. O arquivo se casa pelo caminho nos dois lados: o
+/// relativo, a partir da pasta a que o `cd` da chamada levou; o que começa por
+/// variável, pelo texto; e o `--json=@arquivo`, com o igual. Conta também as
+/// edições por script, pelas formas que o agente de onda tem recusadas, com o
+/// programa passado pelo cano, o interpretador rodado por um lançador e a
+/// cópia de onda que já saiu do disco lida pelo checkout. A
 /// linha repetida no arquivo conta uma vez; ficam fora a chamada antes da
 /// marca, a resposta lida sem script, a busca num arquivo do código, o
 /// programa sem caminho do projeto, o módulo instalado, a cópia gravada fora
@@ -523,6 +525,15 @@ fn the_measure_counts_scripts_around_mustard_and_script_edits() {
         bash("consumed", format!("mustard-rt run write step --json @{scratch}/step.json")),
         bash("looped", looped),
         bash("nested", "mustard-rt run write step --json \"$(jq -n '{wave: 1}')\"".into()),
+        // O arquivo gravado com caminho relativo depois de `cd` e lido por outro caminho relativo, de outra pasta.
+        bash("relative-saved", format!("cd {scratch} && mustard-rt run read dispatch-2 > rel.json")),
+        bash("relative-read", format!("cd {scratch}/sub && grep -n onda ../rel.json")),
+        // O arquivo com caminho que começa por variável, gravado e lido de pastas diferentes.
+        bash("variable-built", format!("S={scratch}; jq -n '{{wave: 2}}' > $S/x.json")),
+        bash("variable-consumed", format!("S={scratch}; cd {scratch}/other && mustard-rt run write step --json @$S/x.json")),
+        // O arquivo lido pelo `--json=@arquivo`, com o igual.
+        bash("equals-built", format!("jq -n '{{wave: 3}}' > {scratch}/eq.json")),
+        bash("equals-consumed", format!("mustard-rt run write step --json=@{scratch}/eq.json")),
         bash("plain-read", format!("cat {scratch}/answer.json")),
         bash("source-grep", "grep -n calcular src/frete.rs".into()),
         bash("folded", "mustard-rt run read request-1 2>&1 | fold -w 200".into()),
@@ -559,7 +570,7 @@ fn the_measure_counts_scripts_around_mustard_and_script_edits() {
     let scripts = &answer["scripts"];
     let role = |around: u64, edits: u64| json!({"conversations": 1, "around": around, "edits": edits});
     let roles = [scripts["main"].clone(), scripts["wave"].clone(), scripts["other"].clone()];
-    assert_eq!(roles, [role(8, 1), role(1, 6), role(1, 1)], "{answer}");
+    assert_eq!(roles, [role(11, 1), role(1, 6), role(1, 1)], "{answer}");
     let mut by: Vec<Value> = scripts["by_conversation"]
         .as_array()
         .unwrap()
@@ -568,7 +579,7 @@ fn the_measure_counts_scripts_around_mustard_and_script_edits() {
         .collect();
     by.sort_by_key(|seen| seen[0].as_str().unwrap().to_string());
     let expected = json!([
-        ["loja/s1.jsonl", "main", null, 8, 1],
+        ["loja/s1.jsonl", "main", null, 11, 1],
         ["loja/s1/subagents/agent-r.jsonl", "other", "# obra — revisão final", 1, 1],
         ["loja/s1/subagents/agent-w.jsonl", "wave", "# obra — onda 3", 1, 6],
     ]);
@@ -577,7 +588,7 @@ fn the_measure_counts_scripts_around_mustard_and_script_edits() {
         "| | condutor | agente de onda | outros agentes |",
         "|---|---:|---:|---:|",
         "| conversas | 1 | 1 | 1 |",
-        "| scripts em volta do Mustard | 8 | 1 | 1 |",
+        "| scripts em volta do Mustard | 11 | 1 | 1 |",
         "| edições por script | 1 | 6 | 1 |",
     ];
     assert!(answer["text"].as_str().unwrap().contains(&format!("\n\n{}\n\n", table.join("\n"))), "{answer}");
