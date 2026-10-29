@@ -523,7 +523,6 @@ const KEPT_HOOKS: &[&str] = &[
 /// Os ganchos que saíram, pelo nome com que estavam registrados. Nenhum deles
 /// volta ao registro.
 const REMOVED_HOOKS: &[&str] = &[
-    "copy_witness",
     "glossary_witness",
     "precompact_notice",
     "active_spec_limit_gate",
@@ -552,7 +551,6 @@ const REMOVED_HOOKS: &[&str] = &[
     "tool_use_counter",
     "user_prompt_observer",
     "wave_complete_observer",
-    "wave_pause_check",
     "wave_start_observer",
     "wikilink_footer_observer",
     "worktree_create",

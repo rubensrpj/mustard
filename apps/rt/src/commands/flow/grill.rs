@@ -354,8 +354,7 @@ pub(crate) fn projection(full: &Value) -> Value {
         *knowledge=json!({"cards":cards,"role":"static navigation; confirm behavior in source or measured evidence"});
     }
     out["expand"]=json!({"point":"mustard-rt run read item-<item-id>","all_points":"mustard-rt run read agreed --all",
-        "source":"mustard-rt run knowledge --query <local-question> --purpose spec",
-        "measurements":"mustard-rt run evidence --spec <spec>"});
+        "source":"mustard-rt run knowledge --query <local-question> --purpose spec"});
     out
 }
 

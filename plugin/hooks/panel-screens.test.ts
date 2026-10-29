@@ -160,7 +160,7 @@ async function open($,on,surface,{theme='dark',conflict=false,review,task,column
       during.push({publishing:await mounted?.find({text:/Publicando/})});
       value={ok:true,scope:'project',published:false,transport_required:true,reason:'publication-token-missing',hint:NO_TOKEN,
         snapshot_id:'project-snapshot',page:'/fixture/.claude/mustard/publications/project/index.html',database:'/fixture/.claude/mustard/publications/project/snapshot.json'};
-    } else if(['usage-record','panel-diagnostics'].includes(e.argv[2]))value={ok:true};
+    } else if(e.argv[2]==='usage-record')value={ok:true};
     else throw new Error('unexpected command '+e.argv.join(' '));
     return {value:{exitCode:0,stdout:JSON.stringify(value),stderr:''}};
   });

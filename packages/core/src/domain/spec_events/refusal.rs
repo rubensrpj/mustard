@@ -89,6 +89,10 @@ pub enum Refusal {
     /// critério e o veredito da revisão), ou uma gravação dele que tiraria ou
     /// reveria um desses eventos.
     BinaryOnlyType { event_type: String, spec: String },
+    /// O `run write` com um tipo que a gravação nova não aceita mais: a spec
+    /// antiga que o tem continua se lendo, e o item novo vai como regra ou
+    /// decisão.
+    TypeNotWritten { event_type: String },
     /// O `run write` com o autor `binary`, que fica só para as gravações de
     /// dentro do binário.
     BinaryAuthor,
@@ -436,6 +440,7 @@ impl Refusal {
             Self::PhaseChangeRefused { .. } => "phase-change-refused",
             Self::StateByFlowOnly { .. } => "state-by-flow-only",
             Self::BinaryOnlyType { .. } => "binary-only-type",
+            Self::TypeNotWritten { .. } => "type-not-written",
             Self::BinaryAuthor => "binary-author",
             Self::WaveByBacklog => "wave-by-backlog",
             Self::FilesIgnoredByGit { .. } => "files-ignored-by-git",
@@ -657,6 +662,7 @@ impl Refusal {
                 "spec_events.binary_only_type",
                 &[("{type}", event_type.clone()), ("{spec}", spec.clone())],
             ),
+            Self::TypeNotWritten { event_type } => fill("spec_events.type_not_written", &[("{type}", event_type.clone())]),
             Self::BinaryAuthor => fill("spec_events.binary_author", &[]),
             Self::WaveByBacklog => fill("spec_events.wave_by_backlog", &[]),
             Self::FilesIgnoredByGit { files } => fill("spec_events.files_ignored_by_git", &[("{files}", files.clone())]),

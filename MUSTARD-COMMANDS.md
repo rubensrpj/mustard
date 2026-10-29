@@ -175,7 +175,6 @@ Os outros comandos não estão no caminho do trabalho: você os chama quando pre
 | `page` | Gera HTML local no layout do Mustard a partir de markdown: `--body <pagina.md> --out <pagina.html>`, com `--title`, `--subtitle`, `--kind`. Não publica remotamente. |
 | `doctor` | Diagnóstico só de leitura. `--check <nome>` roda uma conferência; `--residue` procura também referências mortas; `--format json` ou `--json` responde em JSON. |
 | `discard` | Descarta a spec em duas chamadas: a primeira mostra o que sai e devolve um código; a segunda, com `--confirm <código>`, faz. `--remote` apaga também a branch do servidor; `--delete` apaga a pasta da spec em vez de guardá-la. |
-| `panel-diagnostics` | `--record` recebe no stdin os metadados de uma falha do painel ou da medição (componente, operação, motivo e causa curta) e os guarda no diagnóstico local. Nunca envia o diagnóstico nem guarda resultados de ferramentas, conversas ou chaves. |
 | `statusline` | Projeção compacta de spec/ondas, comandos do painel, validação e métricas conhecidas; preserva links históricos. Só consulta estado, sem scan, Jev ou publicação. `--preview` mostra os temas. |
 
 ### `map <pergunta>`
@@ -305,8 +304,6 @@ O painel lê o binário ao abrir, ao trocar de tela e no fim de cada turno: o `t
 
 ---
 
-## Evidências e aprovação do objetivo
-
-`mustard-rt run evidence [--root <projeto>] [--spec <spec>] [--wave <n>]` lista até 32 recibos nativos. Sem onda, lista as observações do condutor, inclusive durante o levantamento. `--point <código-ou-id> --receipt <recibo> --text "<medida, entrada e limites>"` anexa ao ponto, preservando seu código e situação; repetir a mesma associação não grava outra versão. O recibo prova qual resultado a ferramenta devolveu, não a interpretação do modelo. Comentários e relações estáticas continuam candidatos para investigação.
+## Aprovação do objetivo
 
 O objetivo nasce de uma mensagem do usuário e não tem confirmação própria: ele é aprovado junto com o plano, no clique em "Aprovar esta spec?". O `grill` entrega todos os pontos, com o dono de cada um, e até três referências com coordenadas exatas. Os comandos `expand` recuperam o material completo.

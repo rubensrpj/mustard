@@ -42,7 +42,7 @@ const FIELD: &str = "draft";
 /// campos e não troca o tipo nem tira um campo, então a correção por ele
 /// cairia na mesma recusa.
 const NOT_BY_A_FIELD: &[&str] =
-    &["unknown-type", "state-by-flow-only", "work-type-by-grill", "binary-only-type", "wave-by-backlog", "binary-author", "user-message-by-hook"];
+    &["unknown-type", "state-by-flow-only", "work-type-by-grill", "binary-only-type", "type-not-written", "wave-by-backlog", "binary-author", "user-message-by-hook"];
 
 /// Os rascunhos guardados de uma spec e o último número dado: tipo e campos
 /// de cada um.

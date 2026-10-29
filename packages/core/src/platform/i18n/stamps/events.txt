@@ -187,6 +187,7 @@ spec_events.task_not_released	096202ba661763e0
 spec_events.task_uncovered_items	88940f2bb80ea2ff
 spec_events.task_uncovered_more	82957a0ebe5e6411
 spec_events.task_without_proof	cf54ab78c5e092c5
+spec_events.type_not_written	6136483abc58df46
 spec_events.unknown_block	884e095212b5ede0
 spec_events.unknown_code	636975ee85918f81
 spec_events.unknown_field	1c7720048bbfd2c0

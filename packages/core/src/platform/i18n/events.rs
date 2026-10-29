@@ -1025,6 +1025,14 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              writes only its own verdict, with `run write verdict`, while the review request is \
              open. Otherwise, the round or the close takes the return over."
         }
+        ("spec_events.type_not_written", Locale::PtBr) => {
+            "O tipo {type} não é mais gravado, e nada foi gravado. Grave o item como regra \
+             (`rule`) ou decisão (`decision`). A spec antiga com esse tipo continua se lendo."
+        }
+        ("spec_events.type_not_written", Locale::EnUs) => {
+            "The type {type} is no longer written, and nothing was written. Write the item as a \
+             rule (`rule`) or a decision (`decision`). An old spec with this type still reads."
+        }
         ("spec_events.user_message_by_hook", Locale::PtBr) => {
             "Na spec {spec}, o `run write` não grava, não tira e não revê dois tipos de mensagem. Um \
              é a resposta a uma pergunta com opções: a mensagem com `witness`, de qualquer autor. O \
@@ -1690,6 +1698,7 @@ mod tests {
             ("spec_events.phase_change_refused", &["{spec}", "{from}", "{to}"][..]),
             ("spec_events.state_by_flow_only", &["{spec}"][..]),
             ("spec_events.binary_only_type", &["{type}", "{spec}"][..]),
+            ("spec_events.type_not_written", &["{type}"][..]),
             ("spec_events.binary_author", &[][..]),
             ("spec_events.wave_by_backlog", &[][..]),
             ("spec_events.files_ignored_by_git", &["{files}"][..]),

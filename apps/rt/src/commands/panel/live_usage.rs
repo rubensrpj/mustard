@@ -116,13 +116,13 @@ fn record_within(start:&Path,session:&str,input:&Value,patience:std::time::Durat
     })();
     let diagnose=|reason:&str,detail:&str|{
         let event=json!({"component":"usage","operation":"record","reason":reason,"detail":detail,"session":session});
-        super::diagnostics::record(&root,&event)["ok"]==true
+        super::diagnostics::record(&root,&event);
     };
     result.map_or_else(|(reason,detail)|{
         // The failure enters the diagnostics with its cause whoever sent the
-        // measurement; `diagnosed` tells the caller not to record it again.
-        let diagnosed=diagnose(reason,&detail);
-        json!({"ok":false,"reason":reason,"detail":detail,"diagnosed":diagnosed})
+        // measurement.
+        diagnose(reason,&detail);
+        json!({"ok":false,"reason":reason,"detail":detail})
     },|restarted|{
         // O recomeço não é falha desta medição, mas a visão perdida e o lugar
         // onde o texto dela ficou entram no diagnóstico.
@@ -185,7 +185,7 @@ mod tests {
         let step=|tokens:u64|json!({"kind":"step","agent_id":"a","turn_id":"t","index":0,"usage":{"input_tokens":tokens},"cost":{"usd":0.5},"model":"fixture"});
         assert_eq!(record(root,"s",&step(20))["ok"],true);
         let answer=super::super::consumption::record(root,"s",&step(30));
-        assert_eq!((answer["ok"].clone(),answer["live"]["reason"].clone(),answer["live"]["diagnosed"].clone()),(json!(true),json!("usage-step-conflict"),json!(true)),"{answer}");
+        assert_eq!((answer["ok"].clone(),answer["live"]["reason"].clone()),(json!(true),json!("usage-step-conflict")),"{answer}");
         let detail=answer["live"]["detail"].as_str().unwrap();
         assert_eq!(detail,"step t:0 already recorded with other tokens");
         let events:Vec<Value>=serde_json::from_str(&std::fs::read_to_string(root.join(".claude/mustard/panel/diagnostics.json")).unwrap()).unwrap();

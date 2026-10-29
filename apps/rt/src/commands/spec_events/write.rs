@@ -234,6 +234,10 @@ use crate::shared::spec_state::{DiskSpecState, checkout, session_from_env};
 /// rodada ou o fechamento assumi-las.
 const BINARY_ONLY: &[&str] = &["stage_run", "validation_failure", "criterion_run", "verdict", "send", "delivered", "commit", "tracking", "response"];
 
+/// Os tipos que a gravação nova não aceita mais e que nenhum texto do produto
+/// manda gravar. A spec antiga que os tem continua se lendo.
+const NOT_WRITTEN: &[&str] = &["concern"];
+
 /// A razão curta da recusa da lição de defeito: ela vira a tarefa do
 /// conserto, com o teste que falha se o defeito voltar.
 const DEFECT_BY_TASK: &str = "defect-by-task";
@@ -522,6 +526,9 @@ pub(crate) fn draft_rules(start: &Path, spec: &str, event_type: &str, draft: &mu
     let a_return = returns && ["delivered", "verdict"].contains(&event_type);
     if BINARY_ONLY.contains(&event_type) && !a_return {
         return Err(Refusal::BinaryOnlyType { event_type: event_type.to_string(), spec });
+    }
+    if NOT_WRITTEN.contains(&event_type) {
+        return Err(Refusal::TypeNotWritten { event_type: event_type.to_string() });
     }
     // A onda nasce do backlog, e a recusa vem antes da conferência dos campos:
     // uma onda sem pronto-quando não pode mandar completar o que nunca passa.
@@ -850,7 +857,7 @@ fn uncovered_items(log: &SpecLog) -> Vec<String> {
 /// exigem título e parte do usuário, e a parte do agente fica opcional.
 fn item_form(event_type: &str) -> Option<(bool, bool)> {
     match event_type {
-        "rule" | "limit" | "contract" | "error" | "edge_case" | "out_of_scope" | "decision" | "context" | "concern" | "task" => Some((true, true)),
+        "rule" | "limit" | "contract" | "error" | "edge_case" | "out_of_scope" | "decision" | "context" | "task" => Some((true, true)),
         "request" | "note" => Some((true, false)),
         "criterion" => Some((false, false)),
         _ => None,
@@ -4382,6 +4389,36 @@ mod tests {
         std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"en-US"}}"#).unwrap();
         let english = write(root, "work_type", &draft);
         assert!(english["hint"].as_str().unwrap().contains("is written by `mustard-rt run grill`"), "{english}");
+    }
+
+    /// A preocupação não é mais gravada: a recusa manda gravar como regra ou
+    /// decisão e nada entra. A spec antiga que a tem continua se lendo.
+    #[test]
+    fn a_concern_is_refused_and_an_old_one_still_reads() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        surveyed(root);
+        let said = message(root, "user", "Travar o merge.");
+        let mut old = Map::new();
+        old.insert("text".to_string(), json!("Testes prendem frases."));
+        old.insert("origin".to_string(), json!(said));
+        record(root, "teste", "concern", old, PhaseWriter::Binary).unwrap();
+        let before = lines(root);
+        let draft = json!({ "text": "Outra.", "title": "Outra", "agent": "- nada", "origin": said }).to_string();
+        let refused = write(root, "concern", &draft);
+        assert_eq!(refused["reason"], json!("type-not-written"), "{refused}");
+        let hint = refused["hint"].as_str().unwrap();
+        assert!(hint.contains("`rule`") && hint.contains("`decision`"), "{refused}");
+        assert_eq!(lines(root), before, "a refusal writes nothing");
+        let read = super::super::read::read_at(&super::super::read::ReadOpts {
+            root: root.to_path_buf(),
+            spec: Some("teste".into()),
+            block: "specification".into(),
+            term: None,
+            session: None,
+        })
+        .expect("the old spec reads");
+        assert!(read.contains("Testes prendem frases."), "{read}");
     }
 
     const GOAL: &str = "Travar o merge com pendência aberta.";

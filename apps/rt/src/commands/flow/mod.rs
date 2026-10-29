@@ -15,7 +15,6 @@ pub mod cli;
 pub mod close;
 pub mod common;
 pub mod discard;
-pub(crate) mod evidence;
 pub mod grill;
 pub mod open;
 pub mod plan;
@@ -38,7 +37,6 @@ use crate::commands::spec_events::conversation::record_output_call;
 /// retomada diz o último passo, sem a retomada mesma, que só lê; a procura, a
 /// leitura, as buscas e o mapa não são passo.
 pub(crate) const STEPS: &[&str] = &[
-    "evidence",
     "open",
     "grill",
     "answer",
