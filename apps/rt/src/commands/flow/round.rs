@@ -227,11 +227,10 @@ pub(crate) use map_pass::map_after_rounds;
 
 use std::path::{Path, PathBuf};
 
-use mustard_core::domain::spec_state::SpecState as _;
 use serde_json::{Value, json};
 
 use crate::commands::spec_events;
-use crate::shared::spec_state::{DiskSpecState, checkout, session_from_env};
+use crate::shared::spec_state::session_from_env;
 
 pub(crate) use answer::{RoundRefusal, agents_refreshed, minutes_since, read_command, wave_dispatch};
 pub(crate) use jev_decision::{FINAL_REVIEW, Waiting};
@@ -348,19 +347,8 @@ pub(crate) fn round_for(opts: &RoundOpts, session: Option<&str>) -> Value {
 pub(crate) fn round_in(opts: &RoundOpts, caller: Caller<'_>) -> Value {
     let project = spec_events::project(&opts.root);
     let lang = project.lang;
-    let unchecked = spec_without_base_check(opts, &project.root, caller.session);
     match answer::run_round(opts, &project.root, lang, caller) {
         Ok(mut report) => {
-            // O lint do projeto na base roda no primeiro despacho de onda,
-            // uma vez só: a rodada já passou por todas as conferências dela,
-            // e a onda que acabou de sair ainda não tem commit na branch,
-            // então o disco é a base. Só avisa quando não pôde gravar.
-            let dispatched = report["dispatch"].as_array().is_some_and(|waves| !waves.is_empty());
-            if let Some(spec) = unchecked.filter(|_| dispatched)
-                && let Some(reason) = super::validation::record_base_check(&project.root, &spec)
-            {
-                spec_events::pages::push_warning(&mut report, "base-check-not-recorded", &reason);
-            }
             if report["ok"] == true {
                 once_per_session(&project.root, caller.session, &mut report, &fixed_texts(&project.root, lang));
             }
@@ -368,20 +356,6 @@ pub(crate) fn round_in(opts: &RoundOpts, caller: Caller<'_>) -> Value {
         }
         Err(refusal) => refusal.to_value(lang),
     }
-}
-
-/// A spec desta rodada, quando ela ainda não teve onda enviada nem a
-/// conferência da base gravada ([`super::validation::base_check_due`]). Lida
-/// antes da rodada: depois dela, o envio que ela grava já esconde que este
-/// foi o primeiro. A spec é a do pedido ou, sem ela, a atual da sessão,
-/// como a rodada a acha.
-fn spec_without_base_check(opts: &RoundOpts, root: &Path, session: Option<&str>) -> Option<String> {
-    let spec = match opts.spec.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        Some(spec) => spec.to_string(),
-        None => DiskSpecState::new(&checkout(&opts.root)).active(session)?,
-    };
-    let log = mustard_core::io::spec_events::read(&mustard_core::io::spec_events::spec_file(root, &spec).ok()?).ok()??;
-    super::validation::base_check_due(&log).then_some(spec)
 }
 
 /// O que os testes das partes da rodada dividem: a spec aprovada com o plano

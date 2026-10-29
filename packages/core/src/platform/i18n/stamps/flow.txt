@@ -15,10 +15,10 @@ close.criterion_failed	07bb60cf5aac78e2
 close.criterion_missing_test	7b2450ce65a4d437
 close.criterion_passed_before	8bd755b0bd37b373
 close.criterion_ran_no_test	85dbe3fa733455c5
+close.failure_from_the_base	fb0bc173c7cff35a
 close.final_leftovers	53da05bc50d9d5cd
 close.final_review	4617d017c397a322
 close.lint_failed	7efaa205b52c5860
-close.lint_from_the_base	6dda488b38fa8e7b
 close.next	6097bb1601bacc6d
 close.not_running	f6d26f8b1dea8f70
 close.pending_destination	57a579a02563465d

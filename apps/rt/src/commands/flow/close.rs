@@ -47,7 +47,8 @@
 //! **O que trava.** Onda sem commit; onda cuja última revisão reprovou e
 //! ainda não recebeu o conserto; pedido do usuário que nenhuma onda entregou;
 //! a cópia do revisor com mudança, ou que não pôde ser criada; a
-//! compilação, o lint ou a suíte que falham, com a saída e, quando o projeto
+//! compilação, o lint ou a suíte que falham com linha que o código de antes
+//! da obra não tinha, com a saída e, quando o projeto
 //! declara arquivos locais, o nome de cada um, que a cópia limpa não tem; critério cuja prova
 //! não passou;
 //! critério cuja prova saiu verde sem rodar teste nenhum — a saída do
@@ -706,7 +707,7 @@ fn run_close(
             spec_events::pages::push_warning(&mut out, "server-command-not-declared", hint);
         }
         for hint in &from_base {
-            spec_events::pages::push_warning(&mut out, "lint-from-the-base", hint);
+            spec_events::pages::push_warning(&mut out, "failure-from-the-base", hint);
         }
         if let Some(hint) = &before_unchecked {
             spec_events::pages::push_warning(&mut out, "proof-before-unchecked", hint);
@@ -830,7 +831,7 @@ fn run_close(
         spec_events::pages::push_warning(&mut out, "server-command-not-declared", hint);
     }
     for hint in &from_base {
-        spec_events::pages::push_warning(&mut out, "lint-from-the-base", hint);
+        spec_events::pages::push_warning(&mut out, "failure-from-the-base", hint);
     }
     if let Some(hint) = &before_unchecked {
         spec_events::pages::push_warning(&mut out, "proof-before-unchecked", hint);
@@ -1050,24 +1051,19 @@ fn machine(
         stages.push(json!({ "stage": key, "result": out.result }));
         if out.result != "pass" {
             let read = run_read(root, spec, &written);
+            // O mesmo comando roda no código de antes da obra, e só quando
+            // caiu aqui. A falha cujas linhas a base já tinha não é da obra:
+            // vira aviso, e o fechamento segue.
+            if let Some(copy) = before {
+                let (base_run, from_the_base) = copy.rerun(&command, clean, &out);
+                super::validation::record_run(root, spec, "final", &format!("{key}-before"), &command, &base_run).map_err(CloseRefusal::Refused)?;
+                if from_the_base {
+                    from_base.push(translate("close.failure_from_the_base", lang).replace("{command}", &command).replace("{read}", &read));
+                    continue;
+                }
+            }
             if key == "buildCommand" {
                 return Err(CloseRefusal::BuildFailed { command, output: out.output, read, local_files, no_wave: None });
-            }
-            // O lint que só acusa arquivo que a obra não tocou e que a base
-            // já acusava não é erro da obra: ele vira aviso, e o fechamento
-            // segue. A suíte não entra nesta conta: um teste que cai fala de
-            // código de qualquer lugar, e não do arquivo em que ele mora.
-            if key == "lintCommand"
-                && let Some(base_files) = already_in_the_base(root, log, &out.output)
-            {
-                let files = base_files.iter().map(|file| format!("`{file}`")).collect::<Vec<_>>().join(", ");
-                let hint = translate("close.lint_from_the_base", lang)
-                    .replace("{command}", &command)
-                    .replace("{files}", &files)
-                    .replace("{read}", &read);
-                from_base.push(hint);
-                native_outputs.push(out.evidence);
-                continue;
             }
             failures.push(match key {
                 "lintCommand" => CloseRefusal::LintFailed { command, output: out.output, read, local_files: local_files.clone(), no_wave: None },
@@ -1166,9 +1162,9 @@ fn run_read(root: &Path, spec: &str, written: &mustard_core::io::spec_events::Wr
 /// ninguém pediu. Devolve a recusa que o fechamento mostra.
 ///
 /// O que a máquina do fechamento rodou e tem a dizer: a execução de cada
-/// critério, os avisos dos comandos que o projeto não declara, os do lint que
-/// só caiu no que já era da base e o de que as provas não rodaram no código
-/// de antes da obra, por falta de commit base.
+/// critério, os avisos dos comandos que o projeto não declara, os do comando
+/// que só caiu no que já era da base e o de que as provas não rodaram no
+/// código de antes da obra, por falta de commit base.
 #[derive(Default)]
 struct Machine {
     runs: Vec<Value>,
@@ -1177,26 +1173,6 @@ struct Machine {
     undeclared: Vec<String>,
     from_base: Vec<String>,
     before_unchecked: Option<String>,
-}
-
-/// Os arquivos que a saída `output` acusa e que já eram da base: a saída não
-/// cita arquivo nenhum da obra, cita ao menos um de fora, e todos os de fora
-/// já apareciam na conferência que o primeiro despacho de onda gravou. `None`
-/// quando a falha é da obra, e é ela que trava o fechamento.
-///
-/// Sem a marca do primeiro despacho, nada é da base: o fechamento cobra tudo,
-/// como antes dela. Na correção do usuário o fechamento caiu num arquivo de
-/// outro time, mudado na base seis dias antes, que a obra não toca; o projeto
-/// dele já tinha cinco exceções para contornar isso.
-fn already_in_the_base(root: &Path, log: &SpecLog, output: &str) -> Option<Vec<String>> {
-    let planned: Vec<u64> = log.planned_waves().into_iter().collect();
-    let work = super::validation::Work::of(root, log, &planned);
-    let cited = super::validation::cited(root, output, &work);
-    if cited.none || !cited.mine.is_empty() || cited.outside.is_empty() {
-        return None;
-    }
-    let base = super::validation::base_findings(root, log, &work);
-    cited.outside.iter().all(|file| base.contains(file)).then_some(cited.outside)
 }
 
 /// A compilação, o lint e a suíte reabrem só as ondas que declararam ou
@@ -2790,59 +2766,57 @@ exit "${2:-0}"
         assert_eq!(std::fs::read_to_string(root.join("source.txt")).unwrap(), "original");
     }
 
-    /// O lint que só acusa arquivo que a obra não tocou e que a base já
-    /// acusava no primeiro despacho de onda não trava o fechamento: ele vira
-    /// aviso, com os arquivos e com o que o comando disse. O mesmo lint
-    /// acusando um arquivo da obra segue recusando. Sem a marca do primeiro
-    /// despacho, o fechamento cobra tudo, como antes dela.
+    /// A compilação, o lint ou a suíte que caem no fechamento rodam de novo
+    /// no código de antes da obra, e só quando caem. A falha cujas linhas a
+    /// base já tinha não trava: vira aviso, com o comando que lê o que ele
+    /// disse. A linha que a base não tinha recusa. Sem código de antes, o
+    /// fechamento cobra tudo.
     ///
     /// Em campo (21/10/2026) o fechamento caiu num arquivo de outro time,
     /// mudado na base seis dias antes, que a obra não toca; o projeto do
     /// usuário já tinha cinco exceções escritas para contornar isso.
-    #[cfg(unix)]
     #[test]
-    fn the_close_does_not_block_on_a_lint_error_the_base_already_had() {
-        use std::os::unix::fs::PermissionsExt;
+    fn only_a_failure_line_the_base_did_not_have_blocks_the_close() {
         let dir = tempdir().unwrap();
         let root = dir.path();
+        // O arquivo do outro time nasce na base, e a obra não o toca.
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src").join("outro.rs"), "fn ruim() {}\n").unwrap();
         ready_to_close(root, "x", &["git --version"]);
-        // O arquivo do outro time: o projeto o tem, e a obra não o toca.
-        std::fs::write(root.join("src").join("outro.rs"), "fn outro() {}\n").unwrap();
-        let lint = |named: &str| {
-            let script = root.join("lint");
-            std::fs::write(&script, format!("#!/bin/sh\necho '{named}:1:1 erro de formatação'\nexit 1\n")).unwrap();
-            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-            commit_file(root, "lint");
-            std::fs::write(root.join("mustard.json"), json!({"lintCommand":"./lint", "testCommand":"git --version"}).to_string()).unwrap();
-            "./lint"
+        let lint = |word: &str| {
+            let config = json!({"lintCommand": format!("! grep -Hn {word} src/*.rs"), "testCommand": "git --version"});
+            std::fs::write(root.join("mustard.json"), config.to_string()).unwrap();
         };
         let closing = || close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), ..Default::default() }, None);
-        let hints = |out: &Value, reason: &str| hints_of(out, reason).into_iter().map(str::to_string).collect::<Vec<_>>();
+        let ran = |stage: &str| {
+            let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+            log.events.iter().filter(|e| e.event_type == "stage_run" && e.str_field("stage") == Some(stage)).count()
+        };
 
-        // Sem a marca do primeiro despacho, o lint que cai trava o fechamento.
-        lint("src/outro.rs");
+        // Sem código de antes, o lint que cai trava o fechamento.
+        lint("ruim");
         let strict = closing();
-        assert_eq!(strict["reason"], json!("lint-failed"), "sem a marca da base, cobra tudo: {strict}");
+        assert_eq!(strict["reason"], json!("lint-failed"), "sem a base, cobra tudo: {strict}");
 
-        // A marca da base fica gravada com esse mesmo erro.
-        assert_eq!(crate::commands::flow::validation::record_base_check(root, "x"), None, "a conferência da base ficou gravada");
-
-        // O lint que acusa um arquivo da obra recusa, marca ou não.
-        lint(&wave_file(1));
+        // Com a base, a linha que só a obra tem recusa.
+        let first = Command::new("git").args(["rev-list", "--max-parents=0", "HEAD"]).current_dir(root).output().unwrap();
+        git_at(root, &["branch", "dev", String::from_utf8_lossy(&first.stdout).trim()]);
+        lint("dois");
         let mine = closing();
-        assert_eq!(mine["reason"], json!("lint-failed"), "o erro no arquivo da obra recusa: {mine}");
+        assert_eq!(mine["reason"], json!("lint-failed"), "o erro novo recusa: {mine}");
+        assert_eq!(ran("lintCommand-before"), 1, "o lint caiu e rodou no código de antes: {mine}");
+        repair_machine_failure(root, "x");
 
-        // O mesmo erro do começo, agora reconhecido como da base, não trava.
-        lint("src/outro.rs");
+        // O erro que a base já tinha não trava, e a suíte verde não roda na base.
+        lint("ruim");
         let out = closing();
-        assert_eq!(out["ok"], json!(true), "{out}");
-        let said = hints(&out, "lint-from-the-base");
+        assert_eq!(out["review"]["final"], json!(true), "{out}");
+        let said = hints_of(&out, "failure-from-the-base");
         assert_eq!(said.len(), 1, "{out}");
-        assert!(said[0].contains("`src/outro.rs`"), "o aviso nomeia o arquivo da base: {}", said[0]);
-        assert!(!said[0].contains("erro de formatação"), "o aviso não repete o que o comando disse: {}", said[0]);
         let read = said[0].split('`').find(|part| part.starts_with("mustard-rt run read ")).unwrap_or_default();
-        assert!(read_by(root, read).contains("erro de formatação"), "o comando do aviso lê o que o comando disse: {}", said[0]);
-        assert!(hints(&out, "lint-failed").is_empty(), "{out}");
+        assert!(read_by(root, read).contains("src/outro.rs:1:fn ruim"), "o comando do aviso lê o que o comando disse: {}", said[0]);
+        assert!(hints_of(&out, "lint-failed").is_empty(), "{out}");
+        assert_eq!(ran("testCommand-before"), 0, "a suíte verde não roda no código de antes");
     }
 
     /// Depois de um fechamento recusado, com todas as ondas entregues e o
@@ -4347,7 +4321,9 @@ exit "${2:-0}"
         ready_with_waves(root, "x", &["git --version"], 2);
         branched_from_dev(root);
 
-        let refused = close_with_lint(root, "echo error: unused variable at lib/fora.rs:1:4; exit 1", None);
+        // Só o código da obra chama `dois`: a base cai sem dizer nada, e a
+        // linha é nova.
+        let refused = close_with_lint(root, "grep -q dois src/w1.rs && echo error: unused variable at lib/fora.rs:1:4; exit 1", None);
         assert_eq!(refused["reason"], json!("lint-failed"), "{refused}");
         let said = translate("close.cited_outside", Locale::PtBr).replace("{files}", "`lib/fora.rs`");
         assert!(refused["hint"].as_str().unwrap_or_default().contains(&said), "{refused}");
@@ -4399,7 +4375,7 @@ exit "${2:-0}"
         let root = dir.path();
         ready_with_files(root, "x", &["git --version"], &["web/one.ts".to_string(), "web/two.ts".to_string()], &[], &[]);
         branched_from_dev(root);
-        let build = "echo \"web/two.ts(2,10): error TS2304: Cannot find name 'dois'.\"; exit 1";
+        let build = "grep -q dois web/two.ts && echo \"web/two.ts(2,10): error TS2304: Cannot find name 'dois'.\"; exit 1";
         let config = json!({"buildCommand": build, "lintCommand": "echo lint >> rodou", "testCommand": "echo suite >> rodou"});
         std::fs::write(root.join("mustard.json"), config.to_string()).unwrap();
 

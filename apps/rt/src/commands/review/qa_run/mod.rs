@@ -36,8 +36,9 @@ pub(crate) struct AcResult {
     /// e não veredito: quem julga esse número é a prova de um critério, em
     /// [`run_proof`], e nunca o lint nem outro comando do fluxo.
     tests_run: Option<u64>,
-    /// A saída inteira de um verde, até um teto alto; vazia em todo outro
-    /// desfecho, que leva o trecho de [`AcResult::stderr_excerpt`].
+    /// A saída inteira do verde e da falha, até um teto alto; vazia no comando
+    /// que não chegou a terminar, que leva o trecho de
+    /// [`AcResult::stderr_excerpt`].
     evidence: String,
 }
 
@@ -72,9 +73,10 @@ pub(crate) struct ProofRun {
     /// fechamento sabe se a prova que passou no código de antes da obra rodou
     /// teste de verdade.
     pub tests: Option<u64>,
-    /// A saída inteira do verde, até um teto alto, que não é gravada na spec:
-    /// o fechamento a entrega à análise final de código sem uso, onde o aviso
-    /// de código morto do compilador só acrescenta. Vazia quando não passou.
+    /// A saída inteira, até um teto alto, que não é gravada na spec. A do
+    /// verde vai à análise final de código sem uso, onde o aviso de código
+    /// morto do compilador só acrescenta; a da falha, à comparação com o
+    /// código de antes da obra.
     pub evidence: String,
 }
 

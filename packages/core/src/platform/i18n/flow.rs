@@ -458,11 +458,11 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The project build (`{command}`), run in a clean environment the way the server runs it, \
              did not pass, and the spec did not close. Its whole output reads with `{read}`."
         }
-        ("close.lint_from_the_base", Locale::PtBr) => {
-            "O `{command}` do projeto falhou, e só em arquivos que esta obra não tocou: {files}. A base já os acusava na abertura da spec, então o erro não é da obra e não trava o fechamento. O que o comando disse se lê por `{read}`."
+        ("close.failure_from_the_base", Locale::PtBr) => {
+            "O `{command}` do projeto falhou, mas o código de antes da obra falha com as mesmas linhas. O erro não é da obra e não trava o fechamento. O que o comando disse se lê por `{read}`."
         }
-        ("close.lint_from_the_base", Locale::EnUs) => {
-            "The project's `{command}` failed, and only in files this work never touched: {files}. The base already flagged them when the spec opened, so the error is not the work's and does not block the close. What the command said reads with `{read}`."
+        ("close.failure_from_the_base", Locale::EnUs) => {
+            "The project's `{command}` failed, but the code before the work fails with the same lines. The error is not the work's and does not block the close. What the command said reads with `{read}`."
         }
         ("close.lint_failed", Locale::PtBr) => "O lint do projeto (`{command}`) não passou, e a spec não fechou. A saída inteira se lê por `{read}`.",
         ("close.lint_failed", Locale::EnUs) => "The project lint (`{command}`) did not pass, and the spec did not close. Its whole output reads with `{read}`.",
@@ -2790,7 +2790,7 @@ mod tests {
             ("close.proof_before_unchecked", &[][..]),
             ("close.build_failed", &["{command}", "{read}"][..]),
             ("close.lint_failed", &["{command}", "{read}"][..]),
-            ("close.lint_from_the_base", &["{command}", "{files}", "{read}"][..]),
+            ("close.failure_from_the_base", &["{command}", "{read}"][..]),
             ("close.suite_failed", &["{command}", "{read}"][..]),
             ("close.ran_without_local_files", &["{files}"][..]),
             ("close.cited_outside", &["{files}"][..]),

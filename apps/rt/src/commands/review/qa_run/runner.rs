@@ -322,18 +322,18 @@ fn excerpt(s: &str) -> String {
     s.chars().take(100).collect()
 }
 
-/// Quantos bytes da saída de um verde a evidência guarda: o bastante para a
-/// saída inteira do lint ou da suíte de um projeto, sem deixar uma saída sem
-/// fim tomar a memória.
-const GREEN_EVIDENCE_BYTES: usize = 1024 * 1024;
+/// Quantos bytes da saída a evidência guarda: o bastante para a saída
+/// inteira do lint ou da suíte de um projeto, sem deixar uma saída sem fim
+/// tomar a memória.
+const WHOLE_OUTPUT_BYTES: usize = 1024 * 1024;
 
-/// A saída de um verde, inteira até [`GREEN_EVIDENCE_BYTES`], cortada no
-/// último fim de linha que cabe: a linha cortada ao meio não se lê.
-fn green_evidence(s: &str) -> String {
-    if s.len() <= GREEN_EVIDENCE_BYTES {
+/// A saída do comando, inteira até [`WHOLE_OUTPUT_BYTES`], cortada no último
+/// fim de linha que cabe: a linha cortada ao meio não se lê.
+fn whole_output(s: &str) -> String {
+    if s.len() <= WHOLE_OUTPUT_BYTES {
         return s.to_string();
     }
-    let mut end = GREEN_EVIDENCE_BYTES;
+    let mut end = WHOLE_OUTPUT_BYTES;
     while !s.is_char_boundary(end) {
         end -= 1;
     }
@@ -543,7 +543,7 @@ fn run_ac_command_inner(command: &str, expect: Option<&str>, cwd: &Path, timeout
                 // O verde guarda a saída inteira, até o teto: o aviso de
                 // código morto que o compilador escreveu nela é evidência a
                 // mais da análise final, e nunca condição.
-                evidence: green_evidence(combined_full),
+                evidence: whole_output(combined_full),
             },
             ExpectVerdict::Missed => AcResult {
                 status: "fail".to_string(),
@@ -606,7 +606,9 @@ fn run_ac_command_inner(command: &str, expect: Option<&str>, cwd: &Path, timeout
         duration_ms,
         stderr_excerpt: tail_excerpt(combined_full),
         tests_run: counted,
-        evidence: String::new(),
+        // A falha guarda a saída inteira também: o fechamento a compara,
+        // linha por linha, com a do mesmo comando no código de antes da obra.
+        evidence: whole_output(combined_full),
     }
 }
 
@@ -976,10 +978,11 @@ mod tests {
     const PRINTS_LINES_THEN_FAILS: &str = "i=1; while [ $i -le 200 ]; do echo \"linha $i\"; i=$((i+1)); done; exit 3";
 
     /// O verde guarda a saída inteira, do começo ao fim, como evidência, e
-    /// segue sem trecho; a falha não guarda evidência, só o fim da saída. A
-    /// saída maior que o teto fica nele, cortada no último fim de linha.
+    /// segue sem trecho; a falha guarda a saída inteira e, no trecho, só o
+    /// fim dela. A saída maior que o teto fica nele, cortada no último fim de
+    /// linha.
     #[test]
-    fn a_green_run_keeps_its_whole_output_as_evidence() {
+    fn a_run_keeps_its_whole_output_as_evidence() {
         let dir = tempdir().unwrap();
         let green = run_ac_command("i=1; while [ $i -le 200 ]; do echo \"linha $i\"; i=$((i+1)); done", None, dir.path());
         assert_eq!(green.status, "pass", "{}", green.stderr_excerpt);
@@ -987,12 +990,13 @@ mod tests {
         assert_eq!(green.evidence.lines().count(), 200, "{}", green.evidence);
         assert!(green.evidence.starts_with("linha 1\n") && green.evidence.ends_with("linha 200"), "{}", green.evidence);
         let red = run_ac_command(PRINTS_LINES_THEN_FAILS, None, dir.path());
-        assert!(red.evidence.is_empty(), "{}", red.evidence);
+        assert_eq!(red.evidence.lines().count(), 200, "{}", red.evidence);
+        assert!(!red.stderr_excerpt.contains("linha 1\n"), "{}", red.stderr_excerpt);
 
         let line = "x".repeat(99);
-        let huge = format!("{line}\n").repeat(GREEN_EVIDENCE_BYTES / 100 + 10);
-        let kept = green_evidence(&huge);
-        assert!(kept.len() <= GREEN_EVIDENCE_BYTES && kept.len() > GREEN_EVIDENCE_BYTES - 100, "{}", kept.len());
+        let huge = format!("{line}\n").repeat(WHOLE_OUTPUT_BYTES / 100 + 10);
+        let kept = whole_output(&huge);
+        assert!(kept.len() <= WHOLE_OUTPUT_BYTES && kept.len() > WHOLE_OUTPUT_BYTES - 100, "{}", kept.len());
         assert!(kept.ends_with(&line), "cut at the end of a line");
     }
 

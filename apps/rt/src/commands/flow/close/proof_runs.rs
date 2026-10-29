@@ -20,6 +20,11 @@
 //! seguinte, como a cópia limpa. Os arquivos de teste entram nela só durante
 //! as provas e saem logo depois: a vaga fica sempre no commit base, e nada
 //! dela é guardado como código de alguém quando a obra fecha.
+//!
+//! **O erro que a base já tinha.** A compilação, o lint ou a suíte que caem
+//! na cópia limpa rodam de novo aqui, no código de antes. Só reprova a linha
+//! de diagnóstico que a saída daqui não tem ([`new_lines`]): o erro que o
+//! projeto já tinha antes da obra não é dela.
 
 use std::path::{Path, PathBuf};
 
@@ -30,7 +35,7 @@ use mustard_core::platform::git;
 
 use super::CloseRefusal;
 use crate::commands::git_settle::CopiesLock;
-use crate::commands::review::qa_run::{ProofRun, run_criteria_proofs};
+use crate::commands::review::qa_run::{ProofRun, run_criteria_proofs, run_server_command};
 
 /// O nome da pasta da cópia do código de antes dentro da pasta das cópias da
 /// obra, ao lado da cópia limpa (`check`).
@@ -86,6 +91,19 @@ impl BeforeCopy {
         runs
     }
 
+    /// Roda `command`, o comando do servidor que caiu na cópia limpa `clean`
+    /// com a execução `after`, aqui, no código de antes, sem os testes da
+    /// obra. Devolve a execução daqui e se a falha já era da base: o comando
+    /// caiu aqui também, e cada linha de diagnóstico de `after` aparece na
+    /// saída daqui ([`new_lines`]). A falha sem linha de diagnóstico nenhuma
+    /// não se compara, e é da obra.
+    pub(super) fn rerun(&self, command: &str, clean: &Path, after: &ProofRun) -> (ProofRun, bool) {
+        let before = run_server_command(&super::clean_env(command), &self.path);
+        let (lines, new) = new_lines(&after.evidence, &before.evidence, &[clean, &self.path]);
+        let from_base = before.result != "pass" && lines > 0 && new.is_empty();
+        (before, from_base)
+    }
+
     /// Põe na vaga os arquivos de teste que a obra mudou do commit base ao
     /// commit da obra, como o commit da obra os tem; o que a obra apagou sai
     /// da vaga.
@@ -118,6 +136,61 @@ impl BeforeCopy {
 /// rodaram, e não há como afirmar que um teste passou.
 pub(super) fn passed_before(out: &ProofRun) -> Option<u64> {
     out.tests.filter(|count| out.result == "pass" && *count > 0)
+}
+
+/// Quantas linhas de diagnóstico a saída `after` tem e, delas, as que a
+/// saída `before` não tinha, como `after` as escreveu. A linha é de
+/// diagnóstico quando cita um lugar — dois-pontos ou parêntese seguidos de
+/// número, como `src/a.rs:3:5` e `a.ts(3,5)` — ou fala de erro, aviso, falha
+/// ou pânico. As duas se comparam sem a pasta de cada cópia (`copies`) e sem
+/// número nenhum: a linha e a coluna andam quando a obra mexe acima do erro,
+/// e o tempo e a contagem do resumo mudam a cada execução. Cada linha conta
+/// quantas vezes aparece: o mesmo erro num arquivo a mais é novo.
+pub(super) fn new_lines(after: &str, before: &str, copies: &[&Path]) -> (usize, Vec<String>) {
+    // A pasta mais longa sai primeiro: a da cópia limpa é o começo da pasta
+    // da cópia do código de antes.
+    let mut folders: Vec<String> = copies
+        .iter()
+        .flat_map(|copy| [copy.to_path_buf(), copy.canonicalize().unwrap_or_default()])
+        .map(|copy| copy.to_string_lossy().into_owned())
+        .filter(|copy| !copy.is_empty())
+        .collect();
+    folders.sort_by_key(|copy| std::cmp::Reverse(copy.len()));
+    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for line in before.lines().filter_map(|line| diagnostic(line, &folders)) {
+        *seen.entry(line).or_default() += 1;
+    }
+    let mut lines = 0;
+    let mut new = Vec::new();
+    for line in after.lines() {
+        let Some(key) = diagnostic(line, &folders) else {
+            continue;
+        };
+        lines += 1;
+        match seen.get_mut(&key) {
+            Some(count) if *count > 0 => *count -= 1,
+            _ => new.push(line.trim_end().to_string()),
+        }
+    }
+    (lines, new)
+}
+
+/// A linha `line` como [`new_lines`] a compara, sem as pastas `folders`, sem
+/// número e com um espaço só entre as palavras; `None` quando ela não é de
+/// diagnóstico.
+fn diagnostic(line: &str, folders: &[String]) -> Option<String> {
+    let mut text = line.to_string();
+    for folder in folders {
+        text = text.replace(folder.as_str(), "");
+    }
+    let lower = text.to_lowercase();
+    let located = text.as_bytes().windows(2).any(|pair| matches!(pair[0], b':' | b'(') && pair[1].is_ascii_digit());
+    let said = ["erro", "warn", "fail", "panic", "✕", "✗", "×", "✖"].iter().any(|word| lower.contains(word));
+    if !located && !said {
+        return None;
+    }
+    let bare: String = text.chars().filter(|c| !c.is_ascii_digit()).collect();
+    Some(bare.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
 /// A execução de uma prova que não rodou porque os arquivos de teste da obra
@@ -153,6 +226,25 @@ mod tests {
     use mustard_core::platform::i18n::{Locale, translate};
     use serde_json::json;
     use std::path::Path;
+
+    /// A comparação com o código de antes ignora a linha e a coluna, a pasta
+    /// de cada cópia, o tempo e a contagem do resumo, e a linha que não é de
+    /// diagnóstico. O mesmo erro num arquivo a mais, ou repetido, é novo.
+    #[test]
+    fn a_failure_line_is_new_only_when_the_base_output_lacks_it() {
+        let (clean, base) = (Path::new("/c/x/check"), Path::new("/c/x/check-base"));
+        let before = "   Compiling a v0.1.0 (/c/x/check-base)\n\
+            error: unused variable `x`\n  --> /c/x/check-base/src/old.rs:3:9\n\
+            test result: FAILED. 3 passed; 1 failed; finished in 0.20s\n";
+        let after = "   Compiling a v0.1.0 (/c/x/check)\n   Compiling b v1.0.0\n\
+            error: unused variable `x`\n  --> /c/x/check/src/old.rs:7:9\n\
+            test result: FAILED. 4 passed; 1 failed; finished in 0.31s\n";
+        assert_eq!(super::new_lines(after, before, &[clean, base]), (3, Vec::<String>::new()), "só o que andou");
+
+        let again = format!("{after}error: unused variable `x`\n  --> /c/x/check/src/new.rs:1:1\n");
+        let (lines, new) = super::new_lines(&again, before, &[clean, base]);
+        assert_eq!((lines, new), (5, vec!["error: unused variable `x`".to_string(), "  --> /c/x/check/src/new.rs:1:1".to_string()]));
+    }
 
     /// O commit em que o repositório de `root` nasceu.
     fn first_commit(root: &Path) -> String {

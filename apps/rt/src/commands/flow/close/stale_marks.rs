@@ -77,7 +77,7 @@ mod tests {
         old_mark(root, 2, "suite-failed", "error: unused variable at lib/fora.rs:1:4");
         assert_eq!(crate::commands::flow::round::waves_pending_fix(&log_of(root)).into_keys().collect::<Vec<_>>(), vec![1, 2]);
 
-        let config = json!({"lintCommand": "echo lint >> rodou", "testCommand": "echo suite >> rodou; echo error: lib/fora.rs:1:4; exit 1"});
+        let config = json!({"lintCommand": "echo lint >> rodou", "testCommand": "echo suite >> rodou; grep -q dois src/w1.rs && echo error: lib/fora.rs:1:4; exit 1"});
         let refused = close_with(root, &config);
         assert_eq!(refused["reason"], json!("suite-failed"), "{refused}");
         assert_eq!(std::fs::read_to_string(mustard_core::io::wave_prompt::spec_copies_dir(root, "x").join("check").join("rodou")).unwrap_or_default(), "lint\nsuite\n", "{refused}");
