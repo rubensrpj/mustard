@@ -544,10 +544,16 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
             repository_branches(&root)
         }
     };
+    // Sem `git.flow`, a base que seguiu sozinha leva o aviso de que nenhuma
+    // branch fica protegida para a abertura, que a pergunta não deu.
+    let mut unprotected = false;
     let base = match given(&opts.base) {
         Some(base) => base,
         None => match candidates().as_slice() {
-            [only] => only.clone(),
+            [only] => {
+                unprotected = !declared;
+                only.clone()
+            }
             listed => {
                 let mut report = json!({
                     "ok": true,
@@ -615,6 +621,9 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
     // A nota da pendência, e o mapa, só no que mudou; a falha de cada um só
     // avisa.
     let mut warnings: Vec<String> = note_pending(&project.root, pending.as_deref(), &name, lang).into_iter().collect();
+    if unprotected {
+        warnings.push(translate("open.no_flow", lang).to_string());
+    }
     let map = match refresh(&project.root) {
         Ok(report) => Some(json!({ "full": report.full, "read": report.read.len() })),
         Err(detail) => {
@@ -902,6 +911,16 @@ mod tests {
         assert_eq!(report["ok"], json!(true), "{report}");
         assert_eq!(report["base"], json!("main"), "{report}");
         assert_eq!(head(root), "feature/x");
+        assert!(report.get("warnings").is_none(), "a declared base is protected: {report}");
+
+        // Sem `git.flow` e com uma branch só, ela segue sozinha, com o aviso
+        // de que nenhuma fica protegida.
+        let bare = repo("{}");
+        let root = bare.path();
+        git(root, &["branch", "-D", "main"]);
+        let report = open(root, Some("feature"), Some("x"), None);
+        assert_eq!(report["base"], json!("dev"), "{report}");
+        assert_eq!(report["warnings"], json!([translate("open.no_flow", Locale::PtBr)]), "{report}");
     }
 
     /// Sem `git.flow`, as candidatas são as branches do repositório, com o
