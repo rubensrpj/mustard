@@ -134,7 +134,7 @@ fn a_missing_rtk_refuses_the_install_and_writes_nothing() {
 }
 
 /// With `rtk` present the install completes AND still reaches the best-effort
-/// ripgrep installer, which moved to the dispatch arm together with the gate —
+/// ripgrep hint, which moved to the dispatch arm together with the gate —
 /// and nothing of rtk's own configuration is written: its hook lives in the
 /// project's local settings, never under `~/.claude/`.
 ///
@@ -178,11 +178,11 @@ fn the_binary_still_runs_the_tool_installers_after_a_successful_install() {
         .expect("the permissions land in the project's local settings");
     assert!(local.contains("\"permissions\""), "{local}");
     let spawned = fs::read_to_string(&log).unwrap_or_default();
-    // `rg --version`, the probe only `ensure_ripgrep` issues: deleting the call
+    // `rg --version`, the probe only `ripgrep_hint` issues: deleting the call
     // from dispatch makes this line disappear.
     assert!(
         spawned.lines().any(|l| l.starts_with("rg --version")),
-        "the binary must still reach the ripgrep installer; log was:\n{spawned}"
+        "the binary must still reach the ripgrep hint; log was:\n{spawned}"
     );
     assert!(
         !spawned.lines().any(|l| l.starts_with("rtk init")),
@@ -196,10 +196,11 @@ fn the_binary_still_runs_the_tool_installers_after_a_successful_install() {
     );
 }
 
-/// The install never installs a code tool: through the REAL binary, in a Rust
-/// and TypeScript project with `rustup`, `npm`, `claude` and a TypeScript
-/// server that does not answer shimmed, no install command runs, nothing runs
-/// with `-g`, and the output names the command of each tool for the person.
+/// A instalação nunca instala ferramenta de código: pelo binário de verdade,
+/// num projeto Rust e TypeScript com `rustup`, `npm`, `claude` e um servidor
+/// de TypeScript que não responde, todos falsos, nenhum comando de instalação
+/// roda, nada roda com `-g`, e a saída traz o comando de cada ferramenta para
+/// a pessoa.
 #[test]
 #[cfg_attr(not(unix), ignore = "the shims are shell scripts")]
 fn the_binary_names_the_code_tool_commands_without_running_them() {
@@ -272,7 +273,7 @@ fn a_dry_run_changes_neither_the_project_nor_the_machine() {
     );
     assert_eq!(home_entries(&home), Vec::<String>::new(), "a dry run wrote into $HOME");
     let spawned = fs::read_to_string(&log).unwrap_or_default();
-    // `rg --version` is the probe only `ensure_ripgrep` issues, and that call runs
+    // `rg --version` is the probe only `ripgrep_hint` issues, and that call runs
     // only for a run that installed: a dry run reaching it means the arm is no
     // longer gated on what the run DID.
     assert!(
@@ -340,7 +341,7 @@ fn answering_cancel_leaves_the_machine_untouched() {
     assert_eq!(home_entries(&home), Vec::<String>::new(), "a cancelled run wrote into $HOME");
     let spawned = fs::read_to_string(&log).unwrap_or_default();
     // The installer is gated on what the run DID, never on "no error": `Ok` also
-    // covers Cancel, and `rg --version` — the probe only `ensure_ripgrep` issues —
+    // covers Cancel, and `rg --version` — the probe only `ripgrep_hint` issues —
     // is what an arm that acted on the refusal leaves in the log.
     assert!(
         !spawned

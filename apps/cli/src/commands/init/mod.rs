@@ -63,14 +63,14 @@
 //! Everything laid down is compiled into the binary: `init` looks up no folder
 //! of molds, so it runs in an empty project with no extra setting.
 //!
-//! What is NOT a step of `init`, though it still happens on a `mustard init`
-//! run: the rtk gate and the ripgrep installer ([`tools`]). They act on the
-//! MACHINE, so they live in `cli::dispatch`, and a library call never takes
-//! them on its caller's behalf. `apps/cli/tests/library_is_pure.rs` measures
-//! it. The code tools are never installed: the native update names the
-//! command of each missing one
-//! (`mustard_core::platform::code_tools::code_tool_hints`), and [`tools`]
-//! prints it.
+//! O que NÃO é passo do `init`, embora aconteça numa chamada de
+//! `mustard init`: o portão do rtk e o aviso do ripgrep ([`tools`]). Os dois
+//! olham a MÁQUINA, por isso moram em `cli::dispatch`, e uma chamada de
+//! biblioteca nunca os faz por quem a chama; `apps/cli/tests/library_is_pure.rs`
+//! mede isso. Nada é instalado: o ripgrep e as ferramentas de código que
+//! faltam saem como comando pronto
+//! (`mustard_core::platform::code_tools::code_tool_hints`), e [`tools`] os
+//! imprime.
 //!
 //! ## The parts
 //!
@@ -79,8 +79,8 @@
 //! - [`seeding`] — the guard, the footprint and the narration;
 //! - [`map`] — the project map, created at the end of the install;
 //! - [`project_config`] — the one write of `mustard.json`;
-//! - [`tools`] — the rtk gate, the ripgrep installer and the native update
-//!   that finishes the installation.
+//! - [`tools`] — o portão do rtk, o aviso do ripgrep e a atualização nativa
+//!   que termina a instalação.
 
 use std::io::Write;
 use std::path::Path;
@@ -95,7 +95,7 @@ mod questions;
 mod seeding;
 mod tools;
 
-pub(crate) use tools::{complete_installation, ensure_ripgrep, probe_rtk};
+pub(crate) use tools::{complete_installation, probe_rtk, ripgrep_hint};
 
 use questions::ExistingAction;
 

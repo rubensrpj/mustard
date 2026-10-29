@@ -92,9 +92,10 @@ fn dispatch(cli: Cli) -> Result<()> {
                 init::probe_rtk();
             }
             let outcome = init::init(&cwd, &InitOptions { force, yes, dry_run })?;
-            // Environment acts live HERE, never in the library: putting software
-            // on the operator's machine is something a library call must never
-            // take on its caller's behalf. The native door reports plugin updates.
+            // O que olha o ambiente mora AQUI, nunca na biblioteca: uma chamada
+            // de biblioteca não age sobre a máquina de quem a chama. Nada se
+            // instala: o ripgrep que falta vira comando pronto, e a porta
+            // nativa relata a atualização do plugin.
             //
             // The condition is `Installed`, not "no error". `Ok` used to cover
             // the operator answering Cancel to an existing `.claude/` — and on
@@ -102,7 +103,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             // refusal. Measured through a pty in review. `InitOutcome` exists so
             // the caller can tell the two apart.
             if outcome == init::InitOutcome::Installed {
-                init::ensure_ripgrep();
+                init::ripgrep_hint();
                 init::complete_installation(&cwd)?;
             }
             Ok(())
