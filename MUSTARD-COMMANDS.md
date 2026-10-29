@@ -146,7 +146,7 @@ Devolve um bloco da spec: `state`, `specification`, `agreed`, `waves`, `wave-<n>
 
 ### `write <tipo>`
 
-Grava um evento: `mustard-rt run write point --spec <spec> --json '{…}'`. `lesson` grava no banco de lições. `--copy` é compatibilidade: informa que a publicação automática foi retirada. Links/recibos históricos continuam legíveis. Quando obrigatório, `origin` recebe a última mensagem do usuário se estiver ausente.
+Grava um evento: `mustard-rt run write point --spec <spec> --json '{…}'`. `lesson` grava no banco de lições. `--copy` é compatibilidade: informa que a publicação automática foi retirada. Links/recibos históricos continuam legíveis. Quando obrigatório, `origin` recebe a última mensagem do usuário se estiver ausente, menos no que diz que o usuário decidiu: o pedido, a regra, a decisão e o fechamento de um ponto do usuário apontam uma mensagem dele, e a falta é recusada.
 
 Texto longo vai cru, sem escapar em JSON: `--text -` ou `--agent -` lê esse campo da entrada padrão, por heredoc, junto dos outros campos do `--json`; só um dos dois lê a entrada. Vários eventos vão numa chamada só com `--batch`: uma linha JSON por item na entrada padrão, com o tipo em `type` (`{"type":"task", …}`), cada uma conferida e gravada como uma gravação própria, na ordem. Uma linha cita outra do lote pelo `label` dela num campo de referência, como `depends_on`; a linha recusada não grava nada, nem a que a cita. A resposta traz uma linha curta por item: o código gravado, ou o `reason` e o `hint`.
 
@@ -154,9 +154,9 @@ A `task` e o `request` novos passam antes pelo classificador das atividades: com
 
 ### `answer`
 
-Grava a resposta de um ponto do levantamento e fecha o ponto numa chamada só: `mustard-rt run answer --point <número ou código> --type <tipo> --json '{…}'`. Sem `--point`, vale o primeiro ponto aberto. Como no `write`, `--text -` ou `--agent -` lê esse campo do item cru da entrada padrão.
+Grava a resposta de um ponto do levantamento e fecha o ponto numa chamada só: `mustard-rt run answer --point <número ou código> --type <tipo> --json '{…}'`. Sem `--point`, vale o primeiro ponto aberto. Como no `write`, `--text -` ou `--agent -` lê esse campo do item cru da entrada padrão. `--origin <mensagem>` diz a mensagem do usuário de onde veio a resposta: o item sem `origin` e o fechamento a apontam. O pedido, a regra, a decisão e o fechamento de um ponto do usuário pedem essa mensagem; sem ela, a recusa lista as últimas mensagens do usuário.
 
-`--facts '[{"text":"…","source":"…"}]'` inclui evidências verificadas no fechamento, sem versão manual do ponto. `--result <itens>` aponta itens já gravados, junto do item novo ou sozinhos; `--not-applicable --reason "…"` fecha o ponto sem item. O item passa pelas mesmas recusas do `write`, e o item recusado não fecha o ponto; sem `origin`, ele e o fechamento apontam a última mensagem do usuário. Devolve o item, o fechamento e o próximo ponto.
+`--facts '[{"text":"…","source":"…"}]'` inclui evidências verificadas no fechamento, sem versão manual do ponto. `--result <itens>` aponta itens já gravados, junto do item novo ou sozinhos; `--not-applicable --reason "…"` fecha o ponto sem item. O item passa pelas mesmas recusas do `write`, e o item recusado não fecha o ponto; sem `origin` nem `--origin`, o item que não diz que o usuário decidiu e o fechamento apontam a última mensagem do usuário. Devolve o item, o fechamento e o próximo ponto.
 
 ### `resume`
 

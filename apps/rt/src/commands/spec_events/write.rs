@@ -212,7 +212,8 @@ use mustard_core::domain::spec_events::{
 };
 use mustard_core::domain::spec_index;
 use mustard_core::domain::spec_state::{
-    PhaseWriter, SpecState, State, birth_event, goal_rule, last_user_message, not_closed_yet, phase_write_allowed, reply_rule, returns_to_running, survey_rule,
+    PhaseWriter, SpecState, State, birth_event, decided_by_user, goal_rule, last_user_message, not_closed_yet, origin_not_user, phase_write_allowed, reply_rule,
+    returns_to_running, survey_rule,
 };
 use mustard_core::domain::survey::{self, SurveyStep};
 use mustard_core::domain::wave_prompt::{item_proofs, owner_rule, proofs_named_in};
@@ -1141,14 +1142,20 @@ pub(super) fn record_to(
         carry_open_point(&log, &mut draft);
     }
     // O item que o modelo grava a partir da conversa sem dizer de onde veio
-    // vem da última mensagem do usuário. Sem mensagem do usuário na spec, a
-    // conferência do tipo recusa a falta do campo.
+    // vem da última mensagem do usuário. O que diz que o usuário decidiu não:
+    // ele aponta a mensagem dele, e a falta é recusada com as últimas. Sem
+    // mensagem do usuário na spec, a conferência do tipo recusa a falta do
+    // campo.
     if by.is_none()
         && origin_missing(event_type, &draft)
         && let Some(log) = Source::of(&path, locked.as_deref()).log()?
-        && let Some(said) = last_user_message(&log)
     {
-        draft.insert("origin".to_string(), json!(said.id));
+        if decided_by_user(&log, event_type, &draft) {
+            return Err(origin_not_user(&log, event_type, None));
+        }
+        if let Some(said) = last_user_message(&log) {
+            draft.insert("origin".to_string(), json!(said.id));
+        }
     }
     if by_model {
         let normalized = mustard_core::domain::spec_events::normalize(draft.clone(), event_type);
@@ -4098,6 +4105,38 @@ mod tests {
         assert_eq!(log.get(id).and_then(|event| event.int("origin")), Some(said));
     }
 
+    /// O que diz que o usuário decidiu não recebe a última mensagem por conta
+    /// própria: a regra sem `origin`, ou com a mensagem do assistente, é
+    /// recusada, a recusa lista as últimas mensagens do usuário, e nada é
+    /// gravado. Com a mensagem dele, passa; a nota sem `origin` segue com a
+    /// última.
+    #[test]
+    fn a_rule_points_to_a_user_message_and_never_gets_the_last_one_by_itself() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = message(root, "user", "Trave o merge com pendência aberta.");
+        let replied = message(root, "assistant", "Anotado.");
+        let rule = |origin: Option<u64>| {
+            let mut rule = json!({"text": "A trava confere o merge.", "keys": ["trava"], "example": "merge com pendência é barrado."});
+            if let Some(origin) = origin {
+                rule["origin"] = json!(origin);
+            }
+            rule.to_string()
+        };
+        let before = lines(root);
+        for origin in [None, Some(replied)] {
+            let refused = write(root, "rule", &rule(origin));
+            assert_eq!(refused["reason"], json!("origin-not-user"), "{refused}");
+            let hint = refused["hint"].as_str().unwrap();
+            assert!(hint.contains(&format!("{said}: “Trave o merge com pendência aberta.”")) && !hint.contains("Anotado"), "{hint}");
+        }
+        assert_eq!(lines(root), before, "a refusal writes nothing");
+        assert_eq!(write(root, "rule", &rule(Some(said)))["ok"], json!(true));
+        let note = write(root, "note", &json!({"title": "Nota", "text": "Uma nota.", "keys": ["n"]}).to_string());
+        let log = store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap();
+        assert_eq!(log.get(note["id"].as_u64().unwrap()).and_then(|event| event.int("origin")), Some(said), "{note}");
+    }
+
     /// A resposta do assistente, gravada pelo binário como o despachante a
     /// grava no fim do turno, ligada à mensagem `reply_to`.
     fn response(root: &std::path::Path, text: &str, reply_to: u64) -> u64 {
@@ -4592,7 +4631,8 @@ mod tests {
     fn after_approval_a_write_returns_no_survey_step() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        let (said, points) = listed(root, &["fix"], false);
+        let (_, points) = listed(root, &["fix"], false);
+        let said = message(root, "user", "Pode seguir.");
         for point in &points {
             settle(root, point, said);
         }
@@ -4739,7 +4779,8 @@ mod tests {
     fn leaving_the_survey_with_every_point_closed_passes() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        let (said, points) = listed(root, &["fix"], false);
+        let (_, points) = listed(root, &["fix"], false);
+        let said = message(root, "user", "Pode seguir.");
         for point in &points {
             settle(root, point, said);
         }
@@ -4911,6 +4952,7 @@ mod tests {
                 result: None,
                 not_applicable: true,
                 reason: Some("Não vale para este pedido.".into()),
+                origin: None,
             },
             None,
         );

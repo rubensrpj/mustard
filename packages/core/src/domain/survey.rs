@@ -560,6 +560,9 @@ pub enum SurveyGap<'a> {
     Unrecorded(Vec<GapKey>),
     /// Os pontos abertos, na ordem dos blocos.
     Open(Vec<&'a SpecEvent>),
+    /// Os pontos do usuário que o assistente fechou com uma origem anterior
+    /// ao ponto: a resposta não veio depois da pergunta.
+    AnsweredEarly(Vec<&'a SpecEvent>),
 }
 
 impl SurveyGap<'_> {
@@ -570,17 +573,20 @@ impl SurveyGap<'_> {
             Self::NotStarted => Refusal::SurveyNotStarted { spec: spec.trim().to_string() },
             Self::Unrecorded(gaps) => Refusal::SurveyGapsUnrecorded { spec: spec.trim().to_string(), gaps: gaps.clone() },
             Self::Open(points) => open_refusal(spec, log, points),
+            Self::AnsweredEarly(points) => Refusal::SurveyAnsweredEarly { spec: spec.trim().to_string(), points: describe(log, points) },
         }
     }
 }
 
 /// O levantamento está feito, e a spec pode passar para o plano: o tipo de
-/// trabalho gravado, um ponto para cada lacuna dele e nenhum ponto aberto.
+/// trabalho gravado, um ponto para cada lacuna dele, nenhum ponto aberto e
+/// cada ponto do usuário respondido depois de perguntado.
 ///
 /// # Errors
 ///
 /// O que falta, na ordem em que o levantamento anda: o tipo de trabalho, as
-/// lacunas sem ponto e os pontos abertos.
+/// lacunas sem ponto, os pontos abertos e os pontos do usuário respondidos
+/// antes da pergunta.
 pub fn leave_survey(log: &SpecLog) -> Result<(), SurveyGap<'_>> {
     if work_type(log).is_none() {
         return Err(SurveyGap::NotStarted);
@@ -590,7 +596,27 @@ pub fn leave_survey(log: &SpecLog) -> Result<(), SurveyGap<'_>> {
         return Err(SurveyGap::Unrecorded(unrecorded));
     }
     let open = open_points(log);
-    if open.is_empty() { Ok(()) } else { Err(SurveyGap::Open(open)) }
+    if !open.is_empty() {
+        return Err(SurveyGap::Open(open));
+    }
+    let early = answered_early(log);
+    if early.is_empty() { Ok(()) } else { Err(SurveyGap::AnsweredEarly(early)) }
+}
+
+/// Os pontos do usuário que o assistente fechou apontando, em `origin`, uma
+/// mensagem anterior ao ponto. O fechamento do programa não entra.
+fn answered_early(log: &SpecLog) -> Vec<&SpecEvent> {
+    points(log)
+        .into_iter()
+        .filter(|point| owner_of(point.shown()) == Owner::User)
+        .filter(|point| {
+            point.closing().is_some_and(|closing| {
+                closing.str_field("author").map(str::trim) == Some(crate::domain::spec_events::DEFAULT_AUTHOR)
+                    && closing.int("origin").is_some_and(|origin| origin < point.first())
+            })
+        })
+        .map(|point| point.shown())
+        .collect()
 }
 
 /// Um passo do levantamento, que o `write` devolve depois de uma gravação.
@@ -1829,6 +1855,37 @@ mod tests {
         )
     }
 
+    /// O ponto do usuário fechado com a mensagem de antes dele segura a saída
+    /// do levantamento; o do assistente, não. Fechado com uma mensagem
+    /// posterior ao ponto, a saída passa.
+    #[test]
+    fn a_user_point_answered_before_it_was_asked_holds_the_survey() {
+        let mut lines = vec![
+            ev(1, "state", json!({"phase": "survey", "author": "binary"})),
+            ev(2, "message", json!({"author": "user", "text": GOAL})),
+            ev(3, "work_type", json!({"kinds": ["fix"], "origin": 2})),
+        ];
+        for (id, key) in (4u64..).zip(gaps(&["fix"])) {
+            lines.push(open_point(id, key.block(), key.name()));
+        }
+        let closed = |lines: &[String], origin: u64| -> Vec<String> {
+            let mut all = lines.to_vec();
+            for (id, closes) in (10u64..).zip(4u64..=8) {
+                all.push(ev(id, "point", json!({"block": "b", "gap": "g", "from": "gap", "status": "closed", "closes": closes,
+                    "result": [2], "origin": origin})));
+            }
+            all
+        };
+        let early = log_of(&closed(&lines, 2));
+        let Err(SurveyGap::AnsweredEarly(held)) = leave_survey(&early) else {
+            panic!("the user point answered before it was asked holds the survey");
+        };
+        assert_eq!(held.iter().map(|p| p.id).collect::<Vec<_>>(), [6], "only the expected against the actual is the user's");
+        assert_eq!(SurveyGap::AnsweredEarly(held).refusal("x", &early).reason(), "survey-answered-early");
+        lines.push(ev(9, "message", json!({"author": "user", "text": "Sim, pode seguir."})));
+        assert_eq!(leave_survey(&log_of(&closed(&lines, 9))), Ok(()));
+    }
+
     /// O levantamento só sai com o tipo de trabalho gravado, um ponto para
     /// cada lacuna dele e nenhum ponto aberto, e diz o que falta nessa ordem.
     #[test]
@@ -1845,8 +1902,10 @@ mod tests {
             panic!("the open points hold the survey");
         };
         assert_eq!(open.iter().map(|p| p.id).collect::<Vec<_>>(), [4, 5, 6, 7, 8]);
-        for (id, closes) in (9u64..).zip(4u64..=8) {
-            lines.push(closing(id, closes));
+        lines.push(ev(9, "message", json!({"author": "user", "text": "Sim."})));
+        for (id, closes) in (10u64..).zip(4u64..=8) {
+            lines.push(ev(id, "point", json!({"block": "b", "gap": "g", "from": "gap", "status": "closed", "closes": closes,
+                "result": [2], "origin": 9})));
         }
         assert_eq!(leave_survey(&log_of(&lines)), Ok(()));
     }

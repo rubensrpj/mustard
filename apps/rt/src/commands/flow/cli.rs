@@ -329,6 +329,11 @@ pub enum FlowCmd {
         /// O motivo do fechamento. Obrigatório com `--not-applicable`.
         #[arg(long)]
         reason: Option<String>,
+        /// A mensagem do usuário de onde veio a resposta, pelo número ou pelo
+        /// código. O item sem `origin` e o fechamento a apontam. O ponto do
+        /// usuário fecha só com ela.
+        #[arg(long)]
+        origin: Option<String>,
         /// Qualquer pasta dentro do repositório. Por padrão, a pasta atual.
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -421,7 +426,7 @@ pub fn dispatch(cmd: FlowCmd) {
             let opts = flow::triage::TriageOpts { root, spec, apply };
             flow::answer("triage", &opts.root, opts.spec.as_deref(), started, &flow::triage::triage_at(&opts), false);
         }
-        FlowCmd::Answer { spec, point, event_type, json, text, agent, facts, result, not_applicable, reason, root } => {
+        FlowCmd::Answer { spec, point, event_type, json, text, agent, facts, result, not_applicable, reason, origin, root } => {
             use crate::commands::spec_events::{project, refused, write::with_raw_fields};
             use crate::shared::json_arg::resolve_opt;
             let lang = project(&root).lang;
@@ -440,7 +445,7 @@ pub fn dispatch(cmd: FlowCmd) {
                 });
             match read {
                 Ok((json, facts)) => {
-                    let opts = flow::answer::AnswerOpts { root, spec, point, event_type, json, facts, result, not_applicable, reason };
+                    let opts = flow::answer::AnswerOpts { root, spec, point, event_type, json, facts, result, not_applicable, reason, origin };
                     flow::answer("answer", &opts.root, opts.spec.as_deref(), started, &flow::answer::answer_at(&opts), false);
                 }
                 Err(refused) => flow::answer("answer", &root, spec.as_deref(), started, &refused, false),

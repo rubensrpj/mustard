@@ -116,6 +116,14 @@ pub enum Refusal {
     /// O primeiro `context` de uma spec em levantamento, o objetivo, não
     /// aponta em `origin` uma mensagem do usuário.
     GoalOriginNotUser { spec: String, origin: String },
+    /// O item do assistente que diz que o usuário decidiu (o pedido, a regra,
+    /// a decisão, o fechamento de um ponto do usuário) não aponta em `origin`
+    /// uma mensagem do usuário. `recent` traz as últimas dele, com o número e
+    /// o começo do texto.
+    OriginNotUser { event_type: String, origin: String, recent: String },
+    /// Um ponto do usuário fechou com uma origem anterior a ele: a resposta
+    /// não veio depois da pergunta. `points` lista cada um, pelo código.
+    SurveyAnsweredEarly { spec: String, points: String },
     /// O objetivo gravado cujo título — o `title` dele ou, sem `title`, a
     /// primeira frase, o que vira o título do pull request — passa do teto do
     /// título. Recusado na gravação, e não lá na abertura do pull request,
@@ -437,6 +445,8 @@ impl Refusal {
             Self::DeferredUnknownPending { .. } => "deferred-unknown-pending",
             Self::DeferredClosedPending { .. } => "deferred-closed-pending",
             Self::GoalOriginNotUser { .. } => "goal-origin-not-user",
+            Self::OriginNotUser { .. } => "origin-not-user",
+            Self::SurveyAnsweredEarly { .. } => "survey-answered-early",
             Self::GoalTitleTooLong { .. } => "goal-title-too-long",
             Self::WorkTypeByGrill => "work-type-by-grill",
             Self::SurveyOpen { .. } => "survey-open",
@@ -663,6 +673,13 @@ impl Refusal {
                 "spec_events.goal_origin_not_user",
                 &[("{spec}", spec.clone()), ("{origin}", origin.clone())],
             ),
+            Self::OriginNotUser { event_type, origin, recent } => fill(
+                "spec_events.origin_not_user",
+                &[("{type}", event_type.clone()), ("{origin}", origin.clone()), ("{recent}", recent.clone())],
+            ),
+            Self::SurveyAnsweredEarly { spec, points } => {
+                fill("spec_events.survey_answered_early", &[("{spec}", spec.clone()), ("{points}", points.clone())])
+            }
             // O teto é o do título do pull request, e a recusa o explica com
             // as mesmas palavras da abertura dele. O que ela não empresta é o
             // nome da parte: a recusa nomeia a parte que foi medida, o `title`

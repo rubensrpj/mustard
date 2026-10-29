@@ -117,7 +117,7 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              entrar antes numa versão do ponto. Os do usuário estão em `ask_user`. Mostre só eles, \
              numa mensagem só, cada um com a proposta e a fonte. Apresente-os na ordem de explicar \
              do estilo de resposta e peça um sim só. Com o sim, grave a resposta de cada um pelo \
-             mesmo comando, que fecha o ponto. A resposta devolve em `points` o código, o número e \
+             mesmo comando, com `--origin` no número da mensagem do sim. A resposta devolve em `points` o código, o número e \
              a lacuna de cada ponto ainda aberto, e em `point` o próximo inteiro."
         }
         ("survey.present_all", Locale::EnUs) => {
@@ -128,7 +128,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              first into a version of the point. The user's are in `ask_user`. Show only those, in a \
              single message, each with the proposal and its source. Present them in the order of \
              explaining from the response style and ask for a single yes. With the yes, record the \
-             answer to each one with the same command, which closes the point. The answer returns in \
+             answer to each one with the same command, with `--origin` set to the yes message's \
+             number. The answer returns in \
              `points` the code, the number and the gap of each point still open, and in `point` the \
              next one in full."
         }

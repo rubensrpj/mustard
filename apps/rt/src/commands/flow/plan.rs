@@ -738,12 +738,14 @@ mod tests {
         let said = id_of(&write(root, Some(spec), "message", json!({"author": "user", "text": GOAL})));
         id_of(&write(root, Some(spec), "context", json!({"text": GOAL, "origin": said})));
         let opts = GrillOpts { root: root.to_path_buf(), spec: Some(spec.into()), kinds: Some("fix".into()) };
-        // O `grill` grava os pontos abertos; cada um é fechado pelo número.
+        // O `grill` grava os pontos abertos; cada um é fechado pelo número,
+        // com a resposta do usuário, que vem depois deles.
         let listed = grill_for(&opts, None);
+        let answered = id_of(&write(root, Some(spec), "message", json!({"author": "user", "text": "Já respondi tudo no pedido."})));
         for item in listed["points"].as_array().cloned().unwrap_or_default() {
             let closing = json!({"block": item["block"], "gap": item["gap"], "from": "gap",
                 "status": "not_applicable", "closes": id_of(&item),
-                "reason": "Já respondido.", "origin": said});
+                "reason": "Já respondido.", "origin": answered});
             assert_eq!(write(root, Some(spec), "point", closing)["ok"], json!(true));
         }
         said

@@ -1892,7 +1892,7 @@ fn a_json_argument_read_from_a_file_writes_the_same_as_the_direct_text() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     open_spec(root);
-    let said = write(root, "message", &json!({"text": "Trocar a saudação."}));
+    let said = seed_binary(root, "message", &json!({"author": "user", "text": "Trocar a saudação."}));
     for gap in ["Onde a saudação nasce", "Onde a saudação aparece"] {
         let seen = json!([{"text": "A saudação mora na página.", "source": "mensagem 1"}]);
         seed_binary(root, "point", &json!({"block": "defect", "gap": gap, "from": "gap", "status": "open", "origin": said, "facts": seen}));
@@ -2146,7 +2146,7 @@ fn raw_text_from_standard_input_answers_a_point_as_written() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     open_spec(root);
-    let said = write(root, "message", &json!({"text": "Trocar a saudação."}));
+    let said = seed_binary(root, "message", &json!({"author": "user", "text": "Trocar a saudação."}));
     let seen = json!([{"text": "A saudação mora na página.", "source": "mensagem 1"}]);
     seed_binary(root, "point", &json!({"block": "defect", "gap": "Onde a saudação nasce", "from": "gap", "status": "open", "origin": said, "facts": seen}));
     let fields = json!({"title": "Saudação nova", "keys": ["saudação"], "why": "O usuário pediu.", "origin": said}).to_string();

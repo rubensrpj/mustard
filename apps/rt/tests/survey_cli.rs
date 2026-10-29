@@ -330,6 +330,8 @@ fn a_test_survey_goes_through_every_point_and_the_plan_is_refused_while_one_is_o
     }
     let mut current = last["point"].clone();
     assert_eq!(current["gap"], items[0]["gap"], "{last}");
+    // A resposta do usuário vem depois dos pontos que ela fecha.
+    let answered = user_says(root, "Respondi todos os pontos.");
 
     for (i, item) in items.iter().enumerate() {
         assert!(current["id"].is_u64(), "the next point: {current}");
@@ -339,7 +341,7 @@ fn a_test_survey_goes_through_every_point_and_the_plan_is_refused_while_one_is_o
             root,
             "decision",
             &json!({"title": "Combinar o item", "agent": format!("- ponto {code}"), "text": "O usuário respondeu ao ponto.", "keys": ["levantamento"], "why": "o usuário respondeu",
-                "origin": said}),
+                "origin": answered}),
         );
         assert!(answer.get("point").is_none(), "an answer that closes no point does not repeat the open one: {answer}");
 
@@ -355,7 +357,7 @@ fn a_test_survey_goes_through_every_point_and_the_plan_is_refused_while_one_is_o
             root,
             "point",
             &json!({"block": item["block"], "gap": item["gap"], "from": "gap", "status": "closed", "closes": code,
-                "result": [id(&answer)], "origin": said}),
+                "result": [id(&answer)], "origin": answered}),
         );
         assert!(closed.get("review").is_none(), "no review per block: {closed}");
         match items.get(i + 1) {
@@ -379,8 +381,8 @@ fn a_test_survey_goes_through_every_point_and_the_plan_is_refused_while_one_is_o
 }
 
 /// O levantamento inteiro sai com uma chamada de `run answer` por ponto: a
-/// resposta num item novo, sem `--point` e sem `origin`, fecha o primeiro
-/// ponto aberto e aponta a última fala do usuário; a resposta pelo item já
+/// resposta num item novo, sem `--point` e com `--origin` na fala do usuário,
+/// fecha o primeiro ponto aberto e aponta essa fala; a resposta pelo item já
 /// gravado e o "não se aplica" com o motivo fecham o ponto apontado; cada
 /// chamada devolve o próximo ponto. O ponto que já fechou é recusado com
 /// saída 1, e nada além da chamada é gravado.
@@ -419,12 +421,15 @@ fn a_survey_is_answered_with_one_answer_call_per_point() {
         let code = current["code"].as_str().expect("the point's code").to_string();
         assert_eq!(current["gap"], item["gap"], "{current}");
         let shown = point.to_string();
-        let args: Vec<&str> = match i {
+        let origin = reply.to_string();
+        let mut args: Vec<&str> = match i {
             0 => vec!["answer", "--spec", SPEC, "--type", "decision", "--json", &decision],
             1 => vec!["answer", "--spec", SPEC, "--point", &code, "--result", &first_item],
             2 => vec!["answer", "--spec", SPEC, "--point", &shown, "--not-applicable", "--reason", "Não se aplica."],
             _ => vec!["answer", "--spec", SPEC, "--point", &code, "--type", "decision", "--json", &decision],
         };
+        // A resposta vem da fala do usuário depois dos pontos.
+        args.extend(["--origin", &origin]);
         let out = rt(root, &args);
         let answered = report(&out);
         assert_eq!(out.status.code(), Some(0), "answer {i}: {answered}");
@@ -604,7 +609,7 @@ fn the_end_of_the_survey_shows_each_unrouted_message_once_as_a_short_line() {
     // aponta como origem.
     let pasted = format!("{}{TAIL}", "Linha colada do registro, com bastante detalhe sobre o merge.\n".repeat(60));
     let long = [hook_says(root, home.path(), &pasted), hook_says(root, home.path(), &pasted)];
-    hook_says(root, home.path(), "Pode seguir.");
+    let go = hook_says(root, home.path(), "Pode seguir.").to_string();
 
     let items = report(&rt(root, &["grill", "--kinds", "feature", "--spec", SPEC, "--full"]))["points"]
         .as_array()
@@ -621,7 +626,7 @@ fn the_end_of_the_survey_shows_each_unrouted_message_once_as_a_short_line() {
     let mut ended = None;
     for (i, _) in items.iter().enumerate() {
         let code = current["code"].as_str().expect("the point's code").to_string();
-        let out = rt(root, &["answer", "--spec", SPEC, "--point", &code, "--type", "decision", "--json", &decision]);
+        let out = rt(root, &["answer", "--spec", SPEC, "--point", &code, "--type", "decision", "--json", &decision, "--origin", &go]);
         let answered = report(&out);
         assert_eq!(out.status.code(), Some(0), "answer {i}: {answered}");
         current = answered["point"].clone();
@@ -646,8 +651,10 @@ fn the_end_of_the_survey_shows_each_unrouted_message_once_as_a_short_line() {
     // A fala que chega depois do último ponto fica sem destino, e a decisão
     // seguinte a aponta: as duas colagens já foram mostradas, e a gravação
     // não as repete.
-    hook_says(root, home.path(), "E o painel?");
-    let out = rt(root, &["write", "decision", "--spec", SPEC, "--json", &decision]);
+    let late = hook_says(root, home.path(), "E o painel?");
+    let mut pointed: Value = serde_json::from_str(&decision).expect("the decision");
+    pointed["origin"] = json!(late);
+    let out = rt(root, &["write", "decision", "--spec", SPEC, "--json", &pointed.to_string()]);
     let decided = report(&out);
     assert_eq!(out.status.code(), Some(0), "{decided}");
     assert!(decided.get("unrouted").is_none(), "the end of the survey is shown once: {decided}");
@@ -719,10 +726,12 @@ fn the_survey_asks_for_the_approved_design_copy_when_it_opens_the_points_and_nev
     let target = root.join(&design);
     let html = "<html><body><main>tela aprovada</main></body></html>\n";
     let mut ended = Value::Null;
+    // O sim do usuário vem depois dos pontos, e cada resposta o aponta.
+    let yes = hook_says(root, home.path(), "Sim, pode seguir.").to_string();
     for i in 0..items.len() {
         let code = current["code"].as_str().expect("the point's code").to_string();
         let text = if i == APPROVED_AT { "O usuário aprovou o modelo da tela." } else { "O usuário respondeu ao ponto." };
-        let out = rt(root, &["answer", "--spec", SPEC, "--point", &code, "--type", "decision", "--json", &decision(text)]);
+        let out = rt(root, &["answer", "--spec", SPEC, "--point", &code, "--type", "decision", "--json", &decision(text), "--origin", &yes]);
         let answered = report(&out);
         assert_eq!(out.status.code(), Some(0), "answer {i}: {answered}");
         later.push((format!("answer {i}"), mentions(&out)));

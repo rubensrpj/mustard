@@ -268,18 +268,20 @@ fn survey(project: &Project) -> Vec<Value> {
         current = project.write("point", &json!({"replaces": point["id"], "facts": facts}))["point"].clone();
     }
     let mut decisions = Vec::new();
+    // A resposta do usuário vem depois dos pontos que ela fecha.
+    let answered = user_says(project, "Respondi todos os pontos.");
     for point in &points {
         let code = current["code"].as_str().expect("the open point").to_string();
         let answer = project.write(
             "decision",
             &json!({"title": "Combinar o item", "agent": format!("- ponto {code}"), "text": "O usuário respondeu ao ponto.", "keys": ["levantamento"],
-                "why": "o usuário respondeu", "origin": said, "applies_to": {"files": ["**"]}}),
+                "why": "o usuário respondeu", "origin": answered, "applies_to": {"files": ["**"]}}),
         );
         decisions.push(answer.clone());
         let closed = project.write(
             "point",
             &json!({"block": point["block"], "gap": point["gap"], "from": "gap", "status": "closed",
-                "closes": code, "result": [answer["id"]], "origin": said}),
+                "closes": code, "result": [answer["id"]], "origin": answered}),
         );
         current = closed["point"].clone();
     }

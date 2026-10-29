@@ -1376,6 +1376,7 @@ mod tests {
                 result: None,
                 not_applicable: false,
                 reason: None,
+                origin: None,
             },
             None,
         );
@@ -1683,8 +1684,9 @@ mod tests {
     fn a_point_closed_and_then_purged_still_covers_its_gap() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        let said = surveyed(root, "x");
+        surveyed(root, "x");
         let listed = grill(root, "x", Some("fix"));
+        let said = id_of(&write(root, Some("x"), "message", json!({"author": "user", "text": "Nada disso se aplica."})));
         let ids: Vec<u64> = items(&listed).iter().map(|item| item["id"].as_u64().unwrap()).collect();
         // O fato com o segredo vem na versão em que o assistente o soma.
         let fact = json!({"text": GOAL, "source": format!("mensagem {said}")});
@@ -1725,8 +1727,9 @@ mod tests {
             let case = format!("reworded: {reworded}, original: {leaves:?}");
             let dir = tempdir().unwrap();
             let root = dir.path();
-            let said = surveyed(root, "x");
+            surveyed(root, "x");
             let listed = grill(root, "x", Some("fix"));
+            let said = id_of(&write(root, Some("x"), "message", json!({"author": "user", "text": "Nada disso se aplica."})));
             let ids: Vec<u64> = items(&listed).iter().map(|item| item["id"].as_u64().unwrap()).collect();
             let close = |item: &Value, closes: u64, gap: &str| {
                 let closing = json!({"block": item["block"], "gap": gap, "from": "gap", "status": "not_applicable",
@@ -1803,8 +1806,9 @@ mod tests {
         for leaves in ["remove"] {
             let dir = tempdir().unwrap();
             let root = dir.path();
-            let said = surveyed(root, "x");
+            surveyed(root, "x");
             let listed = grill(root, "x", Some("fix"));
+            let said = id_of(&write(root, Some("x"), "message", json!({"author": "user", "text": "Nada disso se aplica."})));
             let ids: Vec<u64> = items(&listed).iter().map(|item| item["id"].as_u64().unwrap()).collect();
             let close = |item: &Value, closes: u64| {
                 let closing = json!({"block": item["block"], "gap": item["gap"], "from": "gap", "status": "not_applicable",

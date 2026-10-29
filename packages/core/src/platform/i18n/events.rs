@@ -538,6 +538,26 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              message that defines it. Put the goal in `text` and that message's number in `origin`; \
              {origin} is not a user message. Nothing was written."
         }
+        ("spec_events.origin_not_user", Locale::PtBr) => {
+            "O item `{type}` diz que o usuário decidiu, e por isso aponta em `origin` a mensagem em \
+             que ele decidiu. {origin} não é uma mensagem do usuário. Ponha em `origin` o número da \
+             mensagem certa. As últimas dele: {recent}. Nada foi gravado."
+        }
+        ("spec_events.origin_not_user", Locale::EnUs) => {
+            "Item `{type}` says the user decided, so it points in `origin` to the message where the \
+             user decided. {origin} is not a user message. Put the number of the right message in \
+             `origin`. The user's latest: {recent}. Nothing was written."
+        }
+        ("spec_events.survey_answered_early", Locale::PtBr) => {
+            "Na spec {spec}, um ponto do usuário fechou com uma mensagem anterior a ele: {points}. A \
+             resposta vem depois da pergunta. Mostre o ponto ao usuário e grave a resposta com a \
+             mensagem dele em `origin`. A spec segue no levantamento."
+        }
+        ("spec_events.survey_answered_early", Locale::EnUs) => {
+            "In spec {spec}, a user point closed with a message older than the point: {points}. The \
+             answer comes after the question. Show the point to the user and record the answer with \
+             the user's message in `origin`. The spec stays in the survey."
+        }
         ("spec_events.goal_title_too_long", Locale::PtBr) => {
             "O objetivo não tem `title`, e a primeira frase dele é o título do pull request: ela tem \
              {chars} caracteres e o limite é {max}. A frase: \"{sentence}\". Dê ao objetivo um \
@@ -1608,6 +1628,8 @@ mod tests {
             ("spec_events.name_unknown", &["{fact}", "{name}"][..]),
             ("spec_events.names_unchecked", &[][..]),
             ("spec_events.goal_origin_not_user", &["{spec}", "{origin}"][..]),
+            ("spec_events.origin_not_user", &["{type}", "{origin}", "{recent}"][..]),
+            ("spec_events.survey_answered_early", &["{spec}", "{points}"][..]),
             ("spec_events.goal_title_too_long", &["{chars}", "{max}", "{sentence}"][..]),
             ("spec_events.goal_title_field_too_long", &["{chars}", "{max}", "{title}"][..]),
             ("spec_events.survey_open", &["{spec}", "{count}", "{points}"][..]),

@@ -353,13 +353,20 @@ impl GoalProject {
             let written = self.run(&["write", "point", "--spec", GOAL_SPEC, "--json", &json!({"replaces": point["id"], "facts": facts}).to_string()]);
             current = written["point"].clone();
         }
+        // A resposta do usuário vem depois dos pontos que ela fecha.
+        self.hook(
+            "UserPromptSubmit",
+            &json!({"hook_event_name": "UserPromptSubmit", "prompt": "Respondi todos os pontos.",
+                "session_id": GOAL_SESSION, "cwd": self.root.to_string_lossy()}),
+        );
+        let answered = self.last("message").expect("the entry hook recorded the answer")["id"].clone();
         for point in &points {
             let code = current["code"].as_str().expect("the open point").to_string();
             let decision = json!({"title": "Combinar o item", "agent": format!("- ponto {code}"), "text": "O usuário respondeu ao ponto.",
-                "keys": ["levantamento"], "why": "o usuário respondeu", "origin": said, "applies_to": {"files": ["**"]}});
+                "keys": ["levantamento"], "why": "o usuário respondeu", "origin": answered, "applies_to": {"files": ["**"]}});
             let answer = self.run(&["write", "decision", "--spec", GOAL_SPEC, "--json", &decision.to_string()]);
             let closed = json!({"block": point["block"], "gap": point["gap"], "from": "gap", "status": "closed",
-                "closes": code, "result": [answer["id"]], "origin": said});
+                "closes": code, "result": [answer["id"]], "origin": answered});
             current = self.run(&["write", "point", "--spec", GOAL_SPEC, "--json", &closed.to_string()])["point"].clone();
         }
         let criterion = json!({"title": "Combinar o item", "when": "a leitura roda", "then": "o custo cai", "proof": "git --version",
