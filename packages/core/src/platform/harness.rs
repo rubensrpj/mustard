@@ -560,7 +560,7 @@ mod tests {
     /// com a pasta pessoal que ele escolhe. Rodado pela suíte, só passa.
     /// Imprime o que cada leitora da pasta pessoal respondeu — o ajudante, a
     /// pasta de configuração do Claude Code, a pasta das cópias das ondas, a
-    /// pasta do programa compilado, as pastas de ferramenta do executor da máquina e as pastas de fonte —, com
+    /// pasta do programa compilado e as pastas de ferramenta do executor da máquina —, com
     /// `-` no lugar da resposta vazia. Uma lista de pastas sai no formato do
     /// `PATH` do sistema.
     #[test]
@@ -576,7 +576,6 @@ mod tests {
         println!("{HOME_MARK} build={}", shown(Some(crate::io::wave_prompt::development_build_dir(root.path()))));
         let runner = crate::platform::code_tools::MachineRunner::new("");
         println!("{HOME_MARK} tools={}", listed(runner.user_tool_dirs()));
-        println!("{HOME_MARK} fonts={}", listed(crate::platform::fonts::font_dirs()));
     }
 
     /// Roda o [`home_readers`] num processo próprio, com `HOME` e
@@ -605,11 +604,9 @@ mod tests {
     /// A pasta pessoal vazia vale como ausente em todas as leitoras: o
     /// ajudante não responde nada, a pasta de configuração do Claude Code
     /// também não, a pasta das cópias e a do programa compilado caem na pasta
-    /// temporária do sistema, o
-    /// executor da máquina fica sem pasta de ferramenta e as pastas de fonte
-    /// ficam só as do sistema — nenhuma monta um caminho relativo à pasta em
-    /// que o comando roda. Com a pasta pessoal preenchida, todas partem dela;
-    /// só a pasta de fontes do usuário no Windows sai de outra variável.
+    /// temporária do sistema e o executor da máquina fica sem pasta de
+    /// ferramenta — nenhuma monta um caminho relativo à pasta em que o comando
+    /// roda. Com a pasta pessoal preenchida, todas partem dela.
     #[test]
     fn an_empty_home_counts_as_absent_for_every_reader() {
         let temp = std::env::temp_dir().join("mustard").join("copias");
@@ -638,9 +635,7 @@ mod tests {
         expect("preenchida", &filled, "build", &|answer| std::path::Path::new(answer).starts_with(&build));
         let paths = |answer: &str| std::env::split_paths(answer).collect::<Vec<_>>();
         expect("vazia", &empty, "tools", &|answer| answer == "-");
-        expect("vazia", &empty, "fonts", &|answer| answer != "-" && paths(answer).iter().all(|dir| dir.is_absolute()));
         expect("preenchida", &filled, "tools", &|answer| answer != "-" && paths(answer).iter().all(|dir| dir.starts_with(fake_home.path())));
-        expect("preenchida", &filled, "fonts", &|answer| answer != "-" && (cfg!(windows) || paths(answer).iter().any(|dir| dir.starts_with(fake_home.path()))));
         assert!(wrong.is_empty(), "cada leitora responde pela mesma pasta pessoal: {wrong:?}");
     }
 }

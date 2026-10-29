@@ -28,10 +28,6 @@
 //! - **state health** — orphan `.pipeline-states/` files (no matching active
 //!   spec), expired `closed-followup` state files, missing
 //!   `grain.db`. WARN per anomaly.
-//! - **nerd-font** — at least one Nerd Font detected in the OS font
-//!   directories. WARN with install hint (`mustard install-nerd-font`) when
-//!   absent. Powerline statusline themes require this; without it the
-//!   transition glyphs render as tofu.
 //! - **branch-protection** — which branches this repository REALLY refuses a
 //!   direct commit on, measured through `mustard_core::protected_branches`
 //!   (`origin/HEAD` ∪ `mustard.json#git.protected`). WARN only when
@@ -78,7 +74,7 @@ use std::path::PathBuf;
 
 use binaries::check_binaries;
 use drift::check_drift;
-use host::{check_claude_cli, check_effort_env, check_nerd_font, check_rtk, lsp_check};
+use host::{check_claude_cli, check_effort_env, check_rtk, lsp_check};
 use project::{check_claude_md, check_merged_branches, check_project_version, check_scan_output, check_switches};
 use protection::check_branch_protection;
 use report::{render_report, render_report_json};
@@ -255,7 +251,6 @@ const CHECKS: &[Check] = &[
     Check { runs: Runs::Round, check: |_| check_claude_cli() },
     Check { runs: Runs::Round, check: |place| lsp_check(&place.cwd) },
     Check { runs: Runs::Round, check: |_| check_rtk() },
-    Check { runs: Runs::Round, check: |_| check_nerd_font() },
     Check { runs: Runs::Round, check: |_| check_effort_env() },
     Check { runs: Runs::Named("wave-integrity"), check: |place| check_wave_integrity(&place.claude_dir) },
     // O que o provedor realmente protege: uma base que só este binário recusa

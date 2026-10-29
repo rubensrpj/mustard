@@ -141,7 +141,7 @@ No **Desktop conectado por SSH**, confira o Mustard no gerenciador de plugins da
 
 **Consumo** mostra até quando o histórico foi medido, o total do projeto e o da máquina (com o último dia comparado à média da semana), o custo estimado por spec, os tokens dos últimos 14 dias, o gasto desta spec, RTK, Jev por finalidade, buscas de código, a sessão e o disco das cópias. RTK mostra a compressão estimada da saída no diretório do projeto; não representa economia da fatura ou do contexto inteiro. Jev mostra chamadas e custo estimado, sem chamadas pagas ao abrir o painel. Medições ausentes não viram percentuais nem custos fictícios. A publicação externa fica no `/mustard:pages`.
 
-A statusline usa uma linha com spec/fase/andamento, modelo e percentual de contexto. Sem spec, mostra projeto e branch. Versão, duração e medições detalhadas ficam no painel. A paleta padrão `mustard` usa amarelo e texto neutro, sem exigir Nerd Font; os temas alternativos continuam disponíveis por `MUSTARD_STATUSLINE_THEME`.
+A statusline usa uma linha com spec/fase/andamento, modelo e percentual de contexto. Sem spec, mostra projeto e branch. Versão, duração e medições detalhadas ficam no painel. A paleta `mustard` usa amarelo e texto neutro, sem exigir fonte especial.
 
 ---
 

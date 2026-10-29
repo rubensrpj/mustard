@@ -1,13 +1,11 @@
 //! O que a máquina tem instalado: o programa `claude` no PATH, o servidor de
 //! linguagem de cada pilha que o projeto usa (pela mesma lista que a
-//! instalação mostra, sem instalar nada), a cópia certa de `rtk` no PATH e uma
-//! Nerd Font para os temas da barra de status. Nenhuma dessas faltas trava:
-//! cada uma vira aviso com o comando que instala.
+//! instalação mostra, sem instalar nada) e a cópia certa de `rtk` no PATH.
+//! Nenhuma dessas faltas trava: cada uma vira aviso com o comando que instala.
 
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::config::DEFAULT_AGENT_EFFORT;
-use mustard_core::io::fs;
 use mustard_core::io::sha256::Sha256;
 use mustard_core::platform::code_tools::{
     code_tool_for_language, code_tool_hints, read_pinned_version, CodeTool, MachineRunner, PinState, ToolRunner,
@@ -249,42 +247,6 @@ fn rtk_check(
     rtk_verdict(bundled.as_deref(), first.as_deref(), version_of)
 }
 
-/// Probe OS font directories for *any* Nerd Font (filename containing both a
-/// font-family-ish token and "nerd" or "nf-"). WARN when none is found, since
-/// the powerline statusline themes need one.
-///
-/// Fail-open: read errors degrade to "not detected" (WARN) rather than
-/// blocking the doctor run.
-pub(super) fn check_nerd_font() -> CheckResult {
-    // A mesma lista de pastas que o instalador de fonte confere.
-    let dirs = mustard_core::platform::fonts::font_dirs();
-    if dirs.iter().any(|d| scan_for_any_nerd_font(d)) {
-        return CheckResult::ok("nerd-font");
-    }
-    // Linux: fontconfig is authoritative if the binary is on PATH.
-    #[cfg(target_os = "linux")]
-    {
-        if let Ok(output) = std::process::Command::new("fc-list").output()
-            && output.status.success() {
-                let listing = String::from_utf8_lossy(&output.stdout).to_ascii_lowercase();
-                if listing.contains("nerd") {
-                    return CheckResult::ok("nerd-font");
-                }
-            }
-    }
-    CheckResult::warn(
-        "nerd-font",
-        vec![
-            "no Nerd Font detected on this host — powerline statusline themes will render \
-             tofu (□) instead of separator arrows."
-                .to_string(),
-            "fix: run `mustard install-nerd-font` (default JetBrainsMono)".to_string(),
-            "or set MUSTARD_STATUSLINE_THEME=default (pipe-only, no Nerd Font needed)"
-                .to_string(),
-        ],
-    )
-}
-
 /// The effort `CLAUDE_CODE_EFFORT_LEVEL` pins beats the one in the agent's
 /// header and the one in the launch: set below the highest, every Mustard
 /// agent runs at it. WARN then; unset or at the highest is OK.
@@ -306,30 +268,6 @@ fn effort_env_verdict(value: Option<&str>) -> CheckResult {
         ),
         _ => CheckResult::ok("effort-env"),
     }
-}
-
-/// One level + immediate subdirectories. Match any file whose lowercased
-/// name contains "nerd" or "nf-".
-fn scan_for_any_nerd_font(dir: &Path) -> bool {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return false;
-    };
-    for entry in entries {
-        let name = entry.file_name.to_ascii_lowercase();
-        if name.contains("nerd") || name.contains("nf-") {
-            return true;
-        }
-        if entry.is_dir
-            && let Ok(sub) = fs::read_dir(&entry.path) {
-                for s in sub {
-                    let sn = s.file_name.to_ascii_lowercase();
-                    if sn.contains("nerd") || sn.contains("nf-") {
-                        return true;
-                    }
-                }
-            }
-    }
-    false
 }
 
 #[cfg(test)]

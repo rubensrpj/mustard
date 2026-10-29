@@ -1,8 +1,8 @@
 //! Argument parsing and subcommand dispatch.
 //!
 //! The `mustard` binary exposes a small set of subcommands: `init` (the thin
-//! 2.0 bootstrap), `config` (git-flow) and the opt-in `install-nerd-font`
-//! helper. `clap`'s derive API builds the parser from the types below.
+//! 2.0 bootstrap) and `config` (git-flow). `clap`'s derive API builds the
+//! parser from the types below.
 //!
 //! Retired: `update` (versioned refreshes come from the plugin marketplace; a
 //! re-run of `init` re-stamps `mustard.json#version`), `review` (the
@@ -17,7 +17,6 @@ use clap::{Parser, Subcommand};
 
 use crate::commands::config::{self, ConfigOptions};
 use crate::commands::init::{self, InitOptions};
-use crate::commands::install_nerd_font::{self, InstallNerdFontOptions};
 
 /// Framework-agnostic command line for Claude Code project setup.
 #[derive(Debug, Parser)]
@@ -47,20 +46,6 @@ enum Commands {
         /// Accept defaults without prompting.
         #[arg(short = 'y', long)]
         yes: bool,
-    },
-    /// Install a Nerd Font on the host (required for powerline statusline themes).
-    #[command(name = "install-nerd-font")]
-    InstallNerdFont {
-        /// Font family. Default: JetBrainsMono.
-        /// One of: JetBrainsMono, CaskaydiaCove, FiraCode, Hack.
-        #[arg(long)]
-        font: Option<String>,
-        /// Reinstall even if the font is already detected.
-        #[arg(short, long)]
-        force: bool,
-        /// Print intended actions without invoking any package manager.
-        #[arg(long = "dry-run")]
-        dry_run: bool,
     },
 }
 
@@ -109,12 +94,6 @@ fn dispatch(cli: Cli) -> Result<()> {
             Ok(())
         }
         Commands::Config { yes } => config::config(&cwd, &ConfigOptions { yes }),
-        Commands::InstallNerdFont { font, force, dry_run } => {
-            install_nerd_font::install_nerd_font(
-                &cwd,
-                &InstallNerdFontOptions { font, force, dry_run },
-            )
-        }
     }
 }
 
