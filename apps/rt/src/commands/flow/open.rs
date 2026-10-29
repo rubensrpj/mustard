@@ -12,7 +12,8 @@
 //! ajustado (`confirm_name`) e a base (`choose_base`, com as candidatas).
 //! As candidatas são as bases que o `git.flow` declara, na ordem do fluxo;
 //! sem `git.flow`, as branches do repositório, com o aviso de que nenhuma
-//! fica protegida. Nada é criado antes de os três serem conhecidos.
+//! fica protegida. A base só se pergunta com duas candidatas ou mais: a
+//! única segue sem pergunta. Nada é criado antes de os três serem conhecidos.
 //!
 //! Depois vêm as conferências, todas antes de mexer no git: a base existe no
 //! repositório (quando o git não responde, nenhuma existe), nenhuma branch e
@@ -533,7 +534,8 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
         return report;
     }
 
-    // A base: as candidatas quando falta; a que não existe é recusada.
+    // A base: quando falta, a única candidata segue sozinha, e mais de uma
+    // volta para o usuário escolher; a que não existe é recusada.
     let declared = !config.git.declared_bases().is_empty();
     let candidates = || -> Vec<String> {
         if declared {
@@ -542,19 +544,25 @@ fn open_with(opts: &OpenOpts, refresh: impl FnOnce(&Path) -> Result<ScanReport, 
             repository_branches(&root)
         }
     };
-    let Some(base) = given(&opts.base) else {
-        let mut report = json!({
-            "ok": true,
-            "step": "choose_base",
-            "kind": kind.token(),
-            "name": name,
-            "candidates": candidates(),
-            "hint": translate("open.choose_base", lang),
-        });
-        if !declared {
-            report["warnings"] = json!([translate("open.no_flow", lang)]);
-        }
-        return report;
+    let base = match given(&opts.base) {
+        Some(base) => base,
+        None => match candidates().as_slice() {
+            [only] => only.clone(),
+            listed => {
+                let mut report = json!({
+                    "ok": true,
+                    "step": "choose_base",
+                    "kind": kind.token(),
+                    "name": name,
+                    "candidates": listed,
+                    "hint": translate("open.choose_base", lang),
+                });
+                if !declared {
+                    report["warnings"] = json!([translate("open.no_flow", lang)]);
+                }
+                return report;
+            }
+        },
     };
     if !branch_exists(&root, &base) {
         return refuse(OpenRefusal::BaseNotFound { base, candidates: candidates() });
@@ -881,6 +889,19 @@ mod tests {
         assert!(report.get("warnings").is_none());
         assert_eq!(branches(root), vec!["dev".to_string(), "main".to_string()]);
         assert!(!root.join(".claude").join("spec").exists());
+    }
+
+    /// Com uma base só, o `open` sem a base usa essa e abre a spec, sem
+    /// perguntar.
+    #[test]
+    fn with_a_single_base_open_uses_it_without_asking() {
+        let dir = repo(r#"{"git":{"flow":{"*":"main"}}}"#);
+        let root = dir.path();
+        let report = open(root, Some("feature"), Some("x"), None);
+        assert_ne!(report["step"], json!("choose_base"), "{report}");
+        assert_eq!(report["ok"], json!(true), "{report}");
+        assert_eq!(report["base"], json!("main"), "{report}");
+        assert_eq!(head(root), "feature/x");
     }
 
     /// Sem `git.flow`, as candidatas são as branches do repositório, com o
