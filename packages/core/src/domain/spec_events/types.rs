@@ -113,7 +113,6 @@ impl BlockQuery {
                 "request-<n>",
                 "request-review",
                 "request-review-preview",
-                "review-request-<n>",
                 "delivered-<n>",
                 "backlog",
                 "calls",
@@ -147,8 +146,6 @@ pub enum ReadQuery {
     Request(u64),
     ReviewRequest,
     ReviewPreview,
-    /// `review-request-2`: o pedido gravado do revisor da onda `2`.
-    WaveReviewRequest(u64),
     Delivered(u64),
     Backlog,
     Calls,
@@ -180,9 +177,6 @@ impl ReadQuery {
         }
         if let Some(rest) = name.strip_prefix("request-") {
             return number(rest).map(Self::Request);
-        }
-        if let Some(rest) = name.strip_prefix("review-request-") {
-            return number(rest).map(Self::WaveReviewRequest);
         }
         if let Some(rest) = name.strip_prefix("delivered-") {
             return number(rest).map(Self::Delivered);
@@ -1247,7 +1241,7 @@ mod tests {
         assert_eq!(BlockQuery::parse("wave-x"), None);
         assert_eq!(BlockQuery::parse("everything"), None);
         assert!(BlockQuery::accepted_names().contains(
-            "waves, wave-list, wave-<n>, dispatch-<n>, dispatch-review, request-<n>, request-review, request-review-preview, review-request-<n>, delivered-<n>, backlog, calls, item-<code|n>, review"
+            "waves, wave-list, wave-<n>, dispatch-<n>, dispatch-review, request-<n>, request-review, request-review-preview, delivered-<n>, backlog, calls, item-<code|n>, review"
         ));
     }
 
@@ -1265,8 +1259,7 @@ mod tests {
         assert_eq!(ReadQuery::parse("request-3"), Some(ReadQuery::Request(3)));
         assert_eq!(ReadQuery::parse(" request-review "), Some(ReadQuery::ReviewRequest));
         assert_eq!(ReadQuery::parse("request-review-preview"), Some(ReadQuery::ReviewPreview));
-        assert_eq!(ReadQuery::parse(" review-request-3 "), Some(ReadQuery::WaveReviewRequest(3)));
-        assert_eq!(ReadQuery::parse("review-request-x"), None);
+        assert_eq!(ReadQuery::parse(" review-request-3 "), None, "the wave reviewer is gone");
         assert_eq!(ReadQuery::parse(" delivered-3 "), Some(ReadQuery::Delivered(3)));
         assert_eq!(ReadQuery::parse("backlog"), Some(ReadQuery::Backlog));
         assert_eq!(ReadQuery::parse("calls"), Some(ReadQuery::Calls));

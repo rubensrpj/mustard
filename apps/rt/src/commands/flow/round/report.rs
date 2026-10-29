@@ -280,12 +280,7 @@ pub(crate) fn take_report_with_mine(
     // A reprovação de quem conduz a obra é gravada antes de tudo, presa à
     // volta que ela reprova, e a spec é lida de novo: a volta reprovada passa
     // a ser segurada pela mesma leitura que a segura nas rodadas seguintes.
-    // O veredito do revisor de cada onda é assumido antes: o reprovado entra
-    // pela mesma reprovação, com o motivo e os arquivos que ele apontou.
-    let (reviewed, by_reviewer) = super::wave_review::take_verdicts(start, spec, &path, &mut fresh)?;
-    report.rejected.extend(by_reviewer);
     let (mut rejections, unmeasured) = record_rejections(start, spec, &path, &mut fresh, &report.rejected, caller, lang)?;
-    rejections.splice(0..0, reviewed);
     rejections.extend(release_unstarted(start, spec, &path, &mut fresh, log)?);
     // O falso positivo de quem conduz também é gravado antes, preso à volta
     // pendente da onda: a conferência depois da onda o lê da spec.
@@ -705,7 +700,7 @@ pub(super) fn returned_verdict(log: &SpecLog) -> Vec<VerdictReport> {
     };
     let hidden = log.hidden();
     let returns: Vec<&SpecEvent> = log.events.iter()
-        .filter(|e| e.event_type == "verdict" && !super::wave_review::is_wave_verdict(e) && e.id > asked && hidden.get(&e.id) == Some(&Hidden::Returned))
+        .filter(|e| e.event_type == "verdict" && !super::is_wave_verdict(e) && e.id > asked && hidden.get(&e.id) == Some(&Hidden::Returned))
         .collect();
     let Some(last) = returns.last() else {
         return Vec::new();

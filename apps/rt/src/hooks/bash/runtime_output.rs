@@ -106,8 +106,7 @@ fn takes_term(block: &str) -> bool {
             | ReadQuery::Backlog
             | ReadQuery::Request(_)
             | ReadQuery::ReviewRequest
-            | ReadQuery::ReviewPreview
-            | ReadQuery::WaveReviewRequest(_),
+            | ReadQuery::ReviewPreview,
         ) => false,
         // O banco de lições fica fora da spec, e o termo nele é o número da
         // lição.
@@ -283,7 +282,6 @@ mod tests {
             ("mustard-rt run read tarefas | wc -l", Way::Alone),
             ("mustard-rt run read request-review | tail -20", Way::Alone),
             ("mustard-rt run read request-review-preview | head", Way::Alone),
-            ("mustard-rt run read review-request-2 | head", Way::Alone),
             ("mustard-rt run read --spec x request-57 | sed -n '1,30p'", Way::Alone),
             ("mustard-rt run read notes --spec x | grep onda", Way::Term),
             ("mustard-rt run read wave-2 | head", Way::Term),

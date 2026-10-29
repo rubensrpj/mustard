@@ -500,14 +500,6 @@ pub const REVIEW_AGENT: &str = "review";
 /// valha: o Opus, sem herdar o de `agents.model`.
 pub const FINAL_REVIEW_MODEL: &str = "opus";
 
-/// A chave de `agents` com o modelo do revisor de cada onda e o interruptor
-/// dele (`enabled`).
-pub const WAVE_REVIEW_AGENT: &str = "wave_review";
-
-/// O modelo do revisor de onda quando `agents.wave_review.model` não declara
-/// um que valha.
-pub const DEFAULT_WAVE_REVIEW_MODEL: &str = "sonnet";
-
 /// A chave de `agents` que liga o modelo de cada onda pela dificuldade das
 /// tarefas dela ([`ProjectConfig::by_difficulty`]).
 pub const BY_DIFFICULTY: &str = "by_difficulty";
@@ -1181,24 +1173,6 @@ impl ProjectConfig {
         let model = field("model").filter(|model| is_model_name(model)).unwrap_or(FINAL_REVIEW_MODEL);
         let effort = field("effort").and_then(|effort| AGENT_EFFORTS.into_iter().find(|known| known.eq_ignore_ascii_case(effort))).unwrap_or_else(|| self.agent_effort());
         AgentSettings { model, effort }
-    }
-
-    /// O modelo e o esforço do revisor de cada onda: o modelo de
-    /// `agents.wave_review.model`, conferido como o dos agentes, ou
-    /// [`DEFAULT_WAVE_REVIEW_MODEL`]; o esforço é sempre o
-    /// [`DEFAULT_AGENT_EFFORT`], que o lançamento impõe a todo agente.
-    #[must_use]
-    pub fn wave_review_settings(&self) -> AgentSettings<'_> {
-        let model = self.agents.extra.get(WAVE_REVIEW_AGENT).and_then(|review| review.get("model")).and_then(Value::as_str).map(str::trim);
-        AgentSettings { model: model.filter(|model| is_model_name(model)).unwrap_or(DEFAULT_WAVE_REVIEW_MODEL), effort: DEFAULT_AGENT_EFFORT }
-    }
-
-    /// Se a volta de cada onda vai ao revisor de onda antes do commit:
-    /// ligado, salvo quando `agents.wave_review.enabled` é `false`. Desligado,
-    /// quem conduz aceita a volta com a linha `REVIEWED`.
-    #[must_use]
-    pub fn wave_review_enabled(&self) -> bool {
-        self.agents.extra.get(WAVE_REVIEW_AGENT).and_then(|review| review.get("enabled")).and_then(Value::as_bool).unwrap_or(true)
     }
 }
 
@@ -2081,23 +2055,18 @@ mod tests {
         assert_eq!(invalid.agent_effort(), DEFAULT_AGENT_EFFORT, "the agent falls back to the default");
     }
 
-    /// The wave reviewer has its own model, Sonnet by default whatever the
-    /// wave agents use, always at effort xhigh, and is on unless
-    /// `agents.wave_review.enabled` is `false`.
+    /// A `mustard.json` from before the wave reviewer left still opens: its
+    /// `agents.wave_review` section is kept as it came, and nothing reads it.
     #[test]
-    fn the_wave_reviewer_defaults_to_sonnet_at_xhigh_and_is_on_unless_turned_off() {
+    fn an_older_config_with_the_wave_reviewer_still_opens_and_keeps_the_section() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("mustard.json");
-        for (agents, model, on) in [
-            (r#"{"model":"opus"}"#, "sonnet", true),
-            (r#"{"wave_review":{"model":"haiku","effort":"low"}}"#, "haiku", true),
-            (r#"{"wave_review":{"model":"bad name","enabled":false}}"#, "sonnet", false),
-            (r#"{"wave_review":{"enabled":"no"}}"#, "sonnet", true),
-        ] {
-            std::fs::write(&path, format!(r#"{{"agents":{agents}}}"#)).unwrap();
-            let cfg = ProjectConfig::load(dir.path());
-            assert_eq!(cfg.wave_review_settings(), AgentSettings { model, effort: DEFAULT_AGENT_EFFORT }, "{agents}");
-            assert_eq!(cfg.wave_review_enabled(), on, "{agents}");
-        }
+        std::fs::write(&path, r#"{"agents":{"model":"opus","wave_review":{"model":"haiku","enabled":false}}}"#).unwrap();
+        let cfg = ProjectConfig::load(dir.path());
+        assert!(!cfg.unreadable, "the old section must not make the file unreadable");
+        assert_eq!(cfg.agent_model(), "opus");
+        cfg.write(dir.path()).unwrap();
+        let written: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(written["agents"]["wave_review"], serde_json::json!({"model": "haiku", "enabled": false}));
     }
 }

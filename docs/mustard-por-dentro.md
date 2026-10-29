@@ -29,7 +29,7 @@ Uma instalação antiga que declarava as três partes do roteador (`orchestrator
 
 ### As skills que o Mustard cria
 
-- Registro de falhas: cada reprovação de onda com motivo (revisor da onda, `REJECTED` de quem conduz, revisão final que aponta onda) vira uma linha em `.claude/mustard/failures.ndjson`, depois da rodada, fora das travas. As anteriores que dividem arquivo ou pasta vão ao Jev, um sim ou não por candidata ("é a mesma falha?"); de 0,8 para cima, a linha entra no grupo dela.
+- Registro de falhas: cada reprovação de onda com motivo (`REJECTED` de quem conduz, revisão final que aponta onda) vira uma linha em `.claude/mustard/failures.ndjson`, depois da rodada, fora das travas. As anteriores que dividem arquivo ou pasta vão ao Jev, um sim ou não por candidata ("é a mesma falha?"); de 0,8 para cima, a linha entra no grupo dela.
 - Gatilho de 2: o grupo com duas ocorrências ganha, na spec aberta, a tarefa "Criar a skill: …", com as ocorrências na parte do agente e o skill-creator nomeado. O bloco dela leva o skill-creator inteiro: o plugin oficial da máquina e, sem ele, a cópia em `plugin/third-party/skill-creator`.
 - Teste com e sem: a onda testa a skill nas tarefas que a motivaram, pela avaliação do skill-creator, fora do projeto, e grava `run write skill` com `created`, `updated` ou `discarded` e o ganho em `text`. Só com ganho a skill vai a `.claude/skills/<nome>/`.
 - Fora do git e cópia: a pasta da skill fica fora do git pela regra local do clone, ganha a cópia de segurança fora do projeto (`MUSTARD_SKILLS_DIR`, ou `~/.cache/mustard/skills`) e entra na linha da spec no resumo do projeto. As contas ficam em `.claude/mustard/skills.json`, nunca na spec.

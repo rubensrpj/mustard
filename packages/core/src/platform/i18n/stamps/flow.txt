@@ -312,7 +312,7 @@ round.rejected_without_return	70d2024d9cf266c0
 round.rejected_working	4a8dfdca3cfbf113
 round.replan	c566f0f4e4e4a18e
 round.replan_needs_undone	d24a8cc248bbc33d
-round.report	71be49b2b6d67f9e
+round.report	df0de0888665b9c9
 round.report.checks	37740c67b36cc37a
 round.request_split	c5987925cf0d5b17
 round.resend_gone	6b39117ed0c14274
@@ -347,16 +347,6 @@ round.usage_missing	dd661a041f4edcfb
 round.waiting	a4772f6a7195dc06
 round.wave_left_after_return	71d1918259f16e3c
 round.wave_left_without_tasks	212d889df28fc145
-round.wave_review.covered	78fa1d2d731a555d
-round.wave_review.diff	2109b8af69c9e0fa
-round.wave_review.left_out	f468e91a7744f0a6
-round.wave_review.proofs	11de2a1a1efee944
-round.wave_review.request	dbd18e29d3a4a6db
-round.wave_review.required	fdff0e46b803c61a
-round.wave_review.rules	7d32babc55a286be
-round.wave_review.skills	668fbafb65b95fec
-round.wave_review.tasks	9b053e78c17208f8
-round.wave_review.title	825fb873c0644a8f
 round.wrong_branch	06c6a4798e938ea5
 stuck.found	2b06b9f0345522a5
 stuck.reason.deleted_copy	8090f0a26ec0e614

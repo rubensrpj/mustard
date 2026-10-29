@@ -246,11 +246,11 @@ const WAVE_LEFT_KEY: &str = "wave-left-without-tasks";
 /// mais novo da revisão final, que o fechamento grava ([`review_send`]), sem
 /// veredito oficial depois dele. A volta que o revisor gravou e ninguém
 /// assumiu ainda não fecha o pedido: só o veredito que a rodada ou o
-/// fechamento grava ao assumi-la. O veredito do revisor de uma onda nunca o
-/// fecha.
+/// fechamento grava ao assumi-la. O veredito do revisor de onda de uma spec
+/// antiga nunca o fecha.
 pub(crate) fn open_review(log: &SpecLog) -> Option<u64> {
     let asked = review_send(log, None)?.asked;
-    (!log.visible().iter().any(|e| e.event_type == "verdict" && !super::wave_review::is_wave_verdict(e) && e.id > asked)).then_some(asked)
+    (!log.visible().iter().any(|e| e.event_type == "verdict" && !super::is_wave_verdict(e) && e.id > asked)).then_some(asked)
 }
 
 /// O pedido de revisão final aberto ([`open_review`]) cujo veredito ainda

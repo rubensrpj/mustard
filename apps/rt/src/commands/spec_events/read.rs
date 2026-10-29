@@ -247,7 +247,6 @@ fn read_reach(opts: &ReadOpts, session: Option<&str>, from: &Path, reach: Reach)
     let events: Vec<String> = match reading {
         ReadQuery::Request(wave) => return request_text(&log, wave).ok_or_else(|| no_request(Some(wave), lang)),
         ReadQuery::ReviewRequest => return review_request_text(&log).ok_or_else(|| no_request(None, lang)),
-        ReadQuery::WaveReviewRequest(wave) => return crate::commands::flow::round::wave_review_text(&log, wave).ok_or_else(|| no_request(Some(wave), lang)),
         ReadQuery::ReviewPreview => return Ok(final_review(&project.root, &spec, &log, lang).text),
         ReadQuery::ReviewDispatch => {
             let mut listed = review_listed(&log).ok_or_else(|| no_request(None, lang))?;
@@ -1211,14 +1210,14 @@ pub fn run(opts: &ReadOpts, full: bool, all: bool) {
         Ok(text) => serde_json::from_str(text).unwrap_or_else(|_| json!({"ok":true,"spec":opts.spec})),
         Err(refusal) => refusal.clone(),
     };
-    let exact=matches!(ReadQuery::parse(&opts.block), Some(ReadQuery::Request(_) | ReadQuery::ReviewRequest | ReadQuery::WaveReviewRequest(_) | ReadQuery::ReviewPreview));
+    let exact=matches!(ReadQuery::parse(&opts.block), Some(ReadQuery::Request(_) | ReadQuery::ReviewRequest | ReadQuery::ReviewPreview));
     let output=match &result {
         Ok(text) => if exact {text.clone()} else {format!("{text}\n")},
         Err(refusal) => serde_json::to_string_pretty(refusal).unwrap_or_default()+"\n",
     };
     let _ = super::conversation::record_output_call(&opts.root, "read", opts.spec.as_deref(), started, &report,&output);
     match result {
-        Ok(text) if matches!(ReadQuery::parse(&opts.block), Some(ReadQuery::Request(_) | ReadQuery::ReviewRequest | ReadQuery::WaveReviewRequest(_) | ReadQuery::ReviewPreview)) => {
+        Ok(text) if matches!(ReadQuery::parse(&opts.block), Some(ReadQuery::Request(_) | ReadQuery::ReviewRequest | ReadQuery::ReviewPreview)) => {
             print!("{text}");
         }
         Ok(report) => println!("{report}"),

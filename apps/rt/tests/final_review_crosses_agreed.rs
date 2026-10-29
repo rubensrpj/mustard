@@ -706,31 +706,6 @@ fn assert_leftovers_refused(refused: &Value) {
     assert!(hint.contains("leftovers") && hint.contains("agreed"), "a recusa diz onde o achado vai: {hint}");
 }
 
-/// O veredito do revisor de uma onda não é lido por quem grava tarefas dos
-/// achados: a gravação recusa o campo `leftovers` nele, sem gravar nada, e o
-/// mesmo veredito sem o campo é gravado — a recusa é pelo campo.
-#[test]
-fn a_wave_review_verdict_refuses_leftovers_instead_of_losing_them() {
-    let project = Project::new();
-    project.open();
-    survey(&project);
-    plan(&project);
-    approve(&project);
-    dispatch_wave(&project, 1);
-    record_delivery(&project, 1, "A soma apareceu.", &[("src/main.rs", "fn main() {\n    println!(\"{}\", 3);\n}\n")]);
-    let out = project.command(&["run", "round", "--dispatch", "--spec", SPEC], "");
-    let held: Value = serde_json::from_slice(&out.stdout).expect("the round answers JSON");
-    assert_eq!(held["warnings"][0]["reason"], json!("wave-review-required"), "a rodada pede o revisor da onda: {held}");
-    let before = verdicts_and_tasks(&project);
-
-    let with_findings = json!({"wave": 1, "result": "approved", "text": "Conferi o diff.", "leftovers": findings()});
-    assert_leftovers_refused(&project.answer(&["write", "verdict", "--spec", SPEC, "--json", &with_findings.to_string()]));
-    assert_eq!(verdicts_and_tasks(&project), before, "nada foi gravado com os achados no veredito da onda");
-
-    project.write("verdict", &json!({"wave": 1, "result": "approved", "text": "Conferi o diff."}));
-    assert_eq!(verdicts_and_tasks(&project), before + 1, "o veredito da onda sem o campo é gravado");
-}
-
 /// Só o veredito final aprovado transforma `leftovers` em tarefas: o final
 /// reprovado, também o aprovado que um item combinado sem atender força a
 /// reprovado, recusa o campo sem gravar nada, e o pedido da revisão segue

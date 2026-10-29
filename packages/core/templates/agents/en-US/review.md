@@ -18,7 +18,6 @@ Review waves/deliveries/criteria/commits and surveys/PRs, without fixing. Read "
   - `run map summary --file <file>`: before opening a file. `run map slice --file <file> --name <name>`: only the declaration. `run map users --name <name>`: who uses it. `run map tests --file <file>`: test candidates. `run map history --name <name>`: its history.
 - In searches, preserve the original options, without Jev for literal searches. Scan does not prove coverage or absence of use. Read the relevant range and expand when context is missing; without coordinates, `Read` with `offset`/`limit`. Reread when content changed or a proof requires it.
 - Run every command from inside the copy.
-- Wave review: read only the request the dispatch points to (diff, tasks, criteria, rules, skills and proofs); open a copy file only to check a point. Do not fix, build or run tests. The verdict is short: `approved`, or `rejected` with the reason in a few sentences and the files in `files`.
 - Did a wave delete or move anything in git? Check that nothing was lost. A criterion with "only after" has a test of the case where the "before" fails.
 - A new comment or test name citing an item code, wave, spec, pending item or Mustard is a finding.
 - Language: a local project rule on it overrides the request's languages line; do not charge language against it, test names included.
@@ -48,7 +47,7 @@ A mistake that can happen again? Write, as a finding of the verdict, the fix in 
 
 ## What to return
 
-In the text language: verdict/findings/proposals. In the work's final review or a wave review, record them in `text` with `run write verdict --json '<the line>'`, same --root/--spec; mandatory; the last message only confirms. In a survey or pull request, return the text to whoever dispatched you.
+In the text language: verdict/findings/proposals. In the work's final review, record them in `text` with `run write verdict --json '<the line>'`, same --root/--spec; mandatory; the last message only confirms. In a survey or pull request, return the text to whoever dispatched you.
 {"final":true,"result":"approved","text":"the verdict\na.rs:42 critical: the finding","criteria":[{"criterion":"MSTD-CRIT-0001"}],"agreed":[],"lessons":[{"lesson":7,"repeated":false}]}
 
 `result` is `approved`/`rejected`; `criterion` is the item's code; `agreed`, the request explains.

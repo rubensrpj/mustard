@@ -1028,8 +1028,6 @@ fn the_reviewer_dispatch_points_to_the_approved_design_only_when_the_spec_has_on
 
     let shown = mustard_core::io::wave_prompt::shown(&root);
     let final_review = format!("mustard-rt run read request-review --root {shown} --spec tela");
-    let title = translate("round.wave_review.title", Locale::PtBr).replace("{spec}", "tela").replace("{wave}", "1");
-    let wave_review = format!("# {title}\n\nmustard-rt run read review-request-1 --root {shown} --spec tela");
     let survey_review = "Revise o levantamento da spec tela: os pontos, as regras e as decisões.".to_string();
     let dispatch = |prompt: &str| -> String {
         let payload = json!({"hook_event_name": "PreToolUse", "tool_name": "Agent", "session_id": "sessao-revisor",
@@ -1040,12 +1038,12 @@ fn the_reviewer_dispatch_points_to_the_approved_design_only_when_the_spec_has_on
         sent.to_string()
     };
 
-    for prompt in [&final_review, &wave_review, &survey_review] {
+    for prompt in [&final_review, &survey_review] {
         let sent = dispatch(prompt);
         assert!(!sent.contains("desenho.html"), "a spec without the approved design got a design: {sent}");
     }
     std::fs::write(&design, "<html><body><main>tela aprovada</main></body></html>\n").unwrap();
-    for prompt in [&final_review, &wave_review, &survey_review] {
+    for prompt in [&final_review, &survey_review] {
         let sent = dispatch(prompt);
         assert!(sent.contains(".claude/spec/tela/desenho.html`"), "the reviewer was not pointed to the approved design: {sent}");
         assert_eq!(sent.matches("desenho.html").count(), 1, "{sent}");
@@ -1175,9 +1173,7 @@ fn the_wave_and_review_agents_carry_the_project_wide_execution_rules() {
     }
 }
 
-/// A revisão de onda lê só o pedido que o despacho manda ler, não corrige,
-/// não compila nem roda teste, e dá um veredito curto: aprovado, ou reprovado
-/// com o motivo e os arquivos. Tudo o que roda — reler os
+/// O molde do revisor não traz mais a revisão de cada onda. Tudo o que roda — reler os
 /// recibos do fechamento e reexecutar o que ficou incerto, a prova de ponta a
 /// ponta pelo caminho do usuário e o caso da proteção tirada com duas voltas
 /// ao mesmo tempo — mora só no bloco da revisão final da obra,
@@ -1186,16 +1182,11 @@ fn the_wave_and_review_agents_carry_the_project_wide_execution_rules() {
 /// todo projeto: instalar o Mustard é a prova deste repositório, e mora no
 /// CLAUDE.md da raiz dele. Nos dois idiomas.
 #[test]
-fn only_the_final_review_runs_checks_and_the_wave_review_reads_the_diff_and_receipts() {
-    for (lang, severity, wave_review, final_review, runs, critical) in [
+fn only_the_final_review_runs_checks() {
+    for (lang, severity, final_review, runs, critical) in [
         (
             "pt-BR",
             "## Gravidade",
-            ("- Revisão de onda:", [
-                "leia só o pedido que o despacho manda ler (diff, tarefas, critérios, regras, skills e provas)",
-                "Não corrija, não compile nem rode teste",
-                "`rejected` com o motivo em poucas frases e os arquivos em `files`",
-            ]),
             "- Revisão final da obra, completa:",
             [
                 "`testCommand`",
@@ -1212,11 +1203,6 @@ fn only_the_final_review_runs_checks_and_the_wave_review_reads_the_diff_and_rece
         (
             "en-US",
             "## Severity",
-            ("- Wave review:", [
-                "read only the request the dispatch points to (diff, tasks, criteria, rules, skills and proofs)",
-                "Do not fix, build or run tests",
-                "`rejected` with the reason in a few sentences and the files in `files`",
-            ]),
             "- The work's final review, in full:",
             [
                 "`testCommand`",
@@ -1232,11 +1218,7 @@ fn only_the_final_review_runs_checks_and_the_wave_review_reads_the_diff_and_rece
         ),
     ] {
         let review = template(lang, "review");
-        let (head, said) = wave_review;
-        let line = review.lines().find(|l| l.starts_with(head)).unwrap_or_else(|| panic!("the {lang} reviewer has no `{head}` line:{review}"));
-        for phrase in said {
-            assert!(line.contains(phrase), "the {lang} wave review does not say `{phrase}`: {line}");
-        }
+        assert!(!review.contains("Revisão de onda") && !review.contains("Wave review"), "the {lang} reviewer still reviews each wave");
         let mut after = review.lines().skip_while(|l| !l.starts_with(final_review));
         assert!(after.next().is_some(), "the {lang} reviewer has no `{final_review}` block:{review}");
         let block: Vec<&str> = after.take_while(|l| l.starts_with("  - ")).collect();

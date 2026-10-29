@@ -1631,8 +1631,7 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.report", Locale::PtBr) => {
             "Ao terminar, o agente grava com `mustard-rt run write delivered`; o revisor, com \
              `mustard-rt run write verdict`. Sem volta, mande o agente gravá-la de novo pela ferramenta. Nunca a monte a partir da prosa dele. \
-             Com a volta gravada, a rodada pede o `mustard-review` da onda. Lance-o com o título e o comando devolvidos; \
-             leia só o veredito e os arquivos apontados. Sem ele, veja o resumo com `mustard-rt run review-wave --wave <n>` e rode a rodada com \
+             Com a volta gravada, veja o resumo com `mustard-rt run review-wave --wave <n>` e rode a rodada com \
              `--report '<REVIEWED>{\"wave\":1,\"note\":\"…\"}</REVIEWED>'`, sem impressão nem linha de uso. O binário sabe qual volta \
              você viu e mede o consumo nas conversas. Para recusar, use `<REJECTED>{\"wave\":1,\"reason\":\"…\"}</REJECTED>`. \
              A recusa preserva a cópia e passa o motivo a um agente novo. Commit usa `commit` da entrega."
@@ -1640,8 +1639,7 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.report", Locale::EnUs) => {
             "On finishing, the agent records with `mustard-rt run write delivered`; the reviewer, with \
              `mustard-rt run write verdict`. Missing return: have the agent record it again through the tool. Never assemble it from its prose. \
-             With the return recorded, the round asks for the wave's `mustard-review`. Launch it with the title and command it returns; \
-             read only the verdict and the files it points at. Without it, see the summary with `mustard-rt run review-wave --wave <n>` and run the round with \
+             With the return recorded, see the summary with `mustard-rt run review-wave --wave <n>` and run the round with \
              `--report '<REVIEWED>{\"wave\":1,\"note\":\"…\"}</REVIEWED>'`, with no fingerprint or usage line. The binary knows which \
              return you saw and measures usage from the conversations. To reject, use `<REJECTED>{\"wave\":1,\"reason\":\"…\"}</REJECTED>`. \
              Rejection preserves the copy and sends the reason to a new agent. Commits use the delivery’s `commit`."
@@ -1671,50 +1669,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Wave {wave} awaits review before commit. Run `mustard-rt run review-wave --wave {wave} --spec {spec}`, \
              read the summary and accept in the round with `<REVIEWED>{\"wave\":{wave},\"note\":\"…\"}</REVIEWED>` or reject with `REJECTED`. \
              Acceptance holds for the diff seen: if it changed since, view it again. A recorded delivery does not approve code."
-        }
-        ("round.wave_review.required", Locale::PtBr) => {
-            "A onda {wave} passou nas conferências e espera o revisor dela antes do commit. Lance o `mustard-review` \
-             com o despacho de duas linhas: `{title}` e `{read}`. Ele grava um veredito curto; rode a rodada de novo \
-             e leia só o resultado, o motivo e os arquivos apontados. O diff inteiro fica com `run review-wave --wave {wave}`, a pedido."
-        }
-        ("round.wave_review.required", Locale::EnUs) => {
-            "Wave {wave} passed the checks and awaits its reviewer before commit. Launch `mustard-review` \
-             with the two-line dispatch: `{title}` and `{read}`. It records a short verdict; run the round again \
-             and read only the result, the reason and the files it points at. The whole diff stays in `run review-wave --wave {wave}`, on request."
-        }
-        ("round.wave_review.title", Locale::PtBr) => "{spec} — revisão da onda {wave}",
-        ("round.wave_review.title", Locale::EnUs) => "{spec} — review of wave {wave}",
-        ("round.wave_review.request", Locale::PtBr) => {
-            "Revise a volta da onda {wave} sem corrigir nada. Leia só o que este pedido traz; abra um arquivo da cópia `{copy}` \
-             só para conferir um ponto do diff. Responda com um veredito curto, gravado por `{command}`: \
-             `{\"wave\":{wave},\"result\":\"approved\",\"text\":\"…\"}` aprova; \
-             `{\"wave\":{wave},\"result\":\"rejected\",\"text\":\"o motivo em poucas frases\",\"files\":[\"…\"]}` reprova e aponta os arquivos. \
-             Só o defeito crítico reprova. O arquivo marcado com `*` saiu do plano."
-        }
-        ("round.wave_review.request", Locale::EnUs) => {
-            "Review wave {wave}'s return without fixing anything. Read only what this request brings; open a file of the copy `{copy}` \
-             only to check a point of the diff. Answer with a short verdict, recorded by `{command}`: \
-             `{\"wave\":{wave},\"result\":\"approved\",\"text\":\"…\"}` approves; \
-             `{\"wave\":{wave},\"result\":\"rejected\",\"text\":\"the reason in a few sentences\",\"files\":[\"…\"]}` rejects and points at the files. \
-             Only a critical defect rejects. A file marked `*` left the plan."
-        }
-        ("round.wave_review.tasks", Locale::PtBr) => "Tarefas da onda",
-        ("round.wave_review.tasks", Locale::EnUs) => "Tasks of the wave",
-        ("round.wave_review.covered", Locale::PtBr) => "Critérios e pedidos que elas cobrem",
-        ("round.wave_review.covered", Locale::EnUs) => "Criteria and requests they cover",
-        ("round.wave_review.rules", Locale::PtBr) => "Regras e decisões da onda",
-        ("round.wave_review.rules", Locale::EnUs) => "Rules and decisions of the wave",
-        ("round.wave_review.skills", Locale::PtBr) => "Skills que foram com as tarefas",
-        ("round.wave_review.skills", Locale::EnUs) => "Skills sent with the tasks",
-        ("round.wave_review.proofs", Locale::PtBr) => "Provas e passos que passaram",
-        ("round.wave_review.proofs", Locale::EnUs) => "Proofs and steps that passed",
-        ("round.wave_review.diff", Locale::PtBr) => "Diff da onda contra a base dela",
-        ("round.wave_review.diff", Locale::EnUs) => "The wave's diff against its base",
-        ("round.wave_review.left_out", Locale::PtBr) => {
-            "Ficaram de fora do diff, pelo tamanho: {files}. Leia-os na cópia só se o veredito depender deles."
-        }
-        ("round.wave_review.left_out", Locale::EnUs) => {
-            "Left out of the diff for size: {files}. Read them in the copy only if the verdict depends on them."
         }
         ("round.report.checks", Locale::PtBr) => {
             "A rodada junta e comita sem compilar nem rodar prova. O fechamento compila e valida \
@@ -3031,16 +2985,6 @@ mod tests {
             ("round.report.checks", &[][..]),
             ("round.review.hint", &["{wave}"][..]),
             ("round.review.required", &["{wave}", "{spec}"][..]),
-            ("round.wave_review.required", &["{wave}", "{title}", "{read}"][..]),
-            ("round.wave_review.title", &["{spec}", "{wave}"][..]),
-            ("round.wave_review.request", &["{wave}", "{copy}", "{command}"][..]),
-            ("round.wave_review.tasks", &[][..]),
-            ("round.wave_review.covered", &[][..]),
-            ("round.wave_review.rules", &[][..]),
-            ("round.wave_review.skills", &[][..]),
-            ("round.wave_review.proofs", &[][..]),
-            ("round.wave_review.diff", &[][..]),
-            ("round.wave_review.left_out", &["{files}"][..]),
             ("round.waiting", &["{waves}"][..]),
             ("round.close", &["{command}"][..]),
             ("round.review_open", &[][..]),

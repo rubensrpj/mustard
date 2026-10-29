@@ -186,26 +186,15 @@ fn places_left_out(start: &Path, root: &Path, log: &SpecLog, report: &WaveReport
 /// responde pelo combinado que lhe cabe ([`agreed_prompt::review_agreed`]); os achados dele em `leftovers`, que o
 /// fechamento grava como tarefas — ou leva ao usuário como pergunta, os de
 /// regra não escrita na spec —, têm a marca de limpeza, a regra, os lugares
-/// e os arquivos legíveis ([`leftovers_of`]) — e só o veredito final aprovado os leva: em outro
-/// veredito, o da revisão de uma onda ou o final reprovado, nada lê o campo, e
-/// a gravação o recusa ([`refuse_unread_leftovers`]); e o revisor leu, de dentro da cópia
+/// e os arquivos legíveis ([`leftovers_of`]) — e só o veredito final aprovado os leva: no
+/// final reprovado, nada lê o campo, e a gravação o recusa ([`refuse_unread_leftovers`]); e o revisor leu, de dentro da cópia
 /// dele, cada item que o pedido da revisão lista. Passando, o veredito ganha
 /// `returned` e o autor da revisão, e fica como o revisor o escreveu: a
 /// rodada o resolve de novo ao assumi-lo.
 pub(crate) fn check_verdict_return(start: &Path, spec: &str, draft: &mut Map<String, Value>) -> Result<(), RoundRefusal> {
     let (_, log) = spec_log(start, spec)?;
-    // O veredito com a onda de um pedido de revisão de onda aberto responde a
-    // ele, e nunca à revisão final: a gravação o marca, e só ele leva a marca.
-    let wave = draft.get("wave").and_then(Value::as_u64);
-    if draft.get("final") != Some(&Value::Bool(true)) && wave.is_some_and(|wave| super::super::wave_review::open_requests(&log).contains_key(&wave)) {
-        let mut settled = draft.clone();
-        settle_verdict(&log, &mut settled).map_err(RoundRefusal::Refused)?;
-        refuse_unread_leftovers(&settled)?;
-        draft.insert("wave_review".into(), json!(true));
-        draft.insert("returned".into(), json!(true));
-        draft.insert("author".into(), json!("review"));
-        return Ok(());
-    }
+    // A marca do revisor de onda, que uma spec antiga pode trazer, nunca vem
+    // de um veredito novo.
     draft.remove("wave_review");
     let Some(asked) = open_review(&log) else {
         return Err(RoundRefusal::NoOpenReview);
@@ -231,8 +220,8 @@ pub(crate) fn check_verdict_return(start: &Path, spec: &str, draft: &mut Map<Str
 /// que traz achados em `leftovers` sem ser o veredito final aprovado. Só esse
 /// veredito é lido pelo fechamento, que grava os achados como tarefas ou os
 /// leva ao usuário como pergunta
-/// ([`record_final_leftovers`](super::super::record_final_leftovers)); no da
-/// revisão de uma onda e no final reprovado — também o que um item
+/// ([`record_final_leftovers`](super::super::record_final_leftovers)); no
+/// final reprovado — também o que um item
 /// combinado sem atender força a reprovado — o campo não teria leitor, e os
 /// achados se perderiam em silêncio. A lista vazia não perde nada e passa.
 fn refuse_unread_leftovers(settled: &Map<String, Value>) -> Result<(), RoundRefusal> {

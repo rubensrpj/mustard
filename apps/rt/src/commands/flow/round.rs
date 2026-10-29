@@ -205,8 +205,12 @@ mod triage_questions;
 mod usage;
 pub(crate) mod vacancy;
 mod wave_commit;
-mod wave_review;
-pub(crate) use wave_review::{is_dispatch as is_wave_review_dispatch, is_wave_verdict, wave_review_text};
+
+/// O veredito do revisor de onda que uma spec antiga pode trazer, marcado com
+/// `wave_review`: nunca é o da revisão final nem o de quem conduz.
+pub(crate) fn is_wave_verdict(event: &mustard_core::domain::spec_events::SpecEvent) -> bool {
+    event.event_type == "verdict" && event.fields.get("wave_review") == Some(&Value::Bool(true))
+}
 
 // O processo que já fechou, que os testes da rodada, os do gancho do despacho
 // e os da pasta `tests/` dividem: um arquivo só, trazido pelo caminho.

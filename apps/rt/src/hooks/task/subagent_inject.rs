@@ -373,13 +373,11 @@ fn dispatched(input: &HookInput, ctx: &Ctx) -> Verdict {
 /// único caminho delas. São os arquivos de regras da raiz e das pastas dos
 /// arquivos que a obra da spec atual mexe ([`touched_files`]), a mesma
 /// leitura da revisão final. Nada ao agente de onda, ao texto que já traz a
-/// seção e ao que manda ler o pedido gravado da revisão final ou o de uma
-/// onda, que já as trazem;
-/// nada também sem arquivo de regras com texto.
+/// seção e ao que manda ler o pedido gravado da revisão final, que já as
+/// traz; nada também sem arquivo de regras com texto.
 fn review_rules(input: &HookInput, root: &Path, prompt: &str, lang: Locale) -> Option<String> {
     let to_reviewer = input.tool_input.get("subagent_type").and_then(Value::as_str) == Some("mustard-review");
-    let recorded = reads_final_request(prompt) || crate::commands::flow::round::is_wave_review_dispatch(prompt);
-    if !to_reviewer || recorded || carries_project_rules(prompt, lang) {
+    if !to_reviewer || reads_final_request(prompt) || carries_project_rules(prompt, lang) {
         return None;
     }
     let disk = DiskSpecState::new(root);
@@ -470,9 +468,8 @@ fn launch_settings(verdict: Verdict, input: &HookInput, ctx: &Ctx) -> Verdict {
 /// O lançamento do agente de onda ou do revisor com o modelo que o Mustard
 /// escolheu para ele — o da onda, o do último envio dela, que sai da
 /// dificuldade das tarefas e sobe na reprovação; o do revisor final, o que a
-/// chamada pede e, sem pedido, o de `agents.review` ou o Opus; o do revisor
-/// de uma onda, o de `agents.wave_review`; o do texto que o orquestrador
-/// escreve para o revisor, o mesmo do revisor final; o da onda sem envio
+/// chamada pede e, sem pedido, o de `agents.review` ou o Opus; o do texto
+/// que o orquestrador escreve para o revisor, o mesmo do revisor final; o da onda sem envio
 /// legível, o Sonnet, ou o de `agents.model` com a escolha pela dificuldade
 /// desligada — e sempre com o esforço `xhigh`, no lugar do que a chamada
 /// pede: o `model` da chamada vence o cabeçalho do agente, então o escolhido
@@ -497,7 +494,6 @@ fn launch_settings_with(verdict: Verdict, input: &HookInput, ctx: &Ctx, effort_e
     }
     let configured = match agent {
         "mustard-wave" => ctx.config.wave_agent_model(),
-        "mustard-review" if crate::commands::flow::round::is_wave_review_dispatch(dispatch_prompt(input)) => ctx.config.wave_review_settings().model,
         "mustard-review" => ctx.config.review_settings().model,
         _ => return verdict,
     };
@@ -517,7 +513,7 @@ fn launch_settings_with(verdict: Verdict, input: &HookInput, ctx: &Ctx, effort_e
     // escolha é de quem a fez, e o Mustard não a troca pelo do `mustard.json`.
     // A onda segue o modelo da rodada, e o texto do orquestrador, o da
     // configuração.
-    let final_review = agent == "mustard-review" && reads_final_request(dispatch_prompt(input)) && !crate::commands::flow::round::is_wave_review_dispatch(dispatch_prompt(input));
+    let final_review = agent == "mustard-review" && reads_final_request(dispatch_prompt(input));
     let kept = asked("model").filter(|_| final_review);
     let declared = AgentSettings { model: kept.or(sent_model.as_deref()).unwrap_or(configured), effort: DEFAULT_AGENT_EFFORT };
     let lower = |text: &str| text.to_ascii_lowercase();
@@ -859,19 +855,15 @@ mod tests {
         assert_eq!(review["model"].as_str(), Some("haiku"), "{review}");
     }
 
-    /// The wave reviewer, dispatched with the title and the command that
-    /// reads its request, goes out on `agents.wave_review` (Sonnet by
-    /// default) at effort xhigh, while the final reviewer goes on the model
-    /// its call asked for, and on `agents.review` when the call asks for
-    /// none; the wave review request already carries the project rules, so
-    /// the dispatch gains none.
+    /// The final reviewer goes on the model its call asked for, and on
+    /// `agents.review` when the call asks for none, always at effort xhigh.
     #[test]
-    fn the_wave_reviewer_launches_on_its_own_settings_and_the_final_one_on_the_model_it_was_asked() {
+    fn the_final_reviewer_launches_on_the_model_it_was_asked() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        std::fs::write(root.join("CLAUDE.md"), "Never duplicate types.\n").unwrap();
-        let launch = |prompt: &str, model: Option<&str>| {
-            let mut input = task_input("mustard-review", prompt);
+        std::fs::write(root.join("mustard.json"), json!({"agents": {"review": {"model": "opus"}}}).to_string()).unwrap();
+        let launch = |model: Option<&str>| {
+            let mut input = task_input("mustard-review", "# x — agente de teste dedicado\n\nmustard-rt run read request-review --root /r --spec x");
             if let Some(model) = model {
                 input.tool_input["model"] = json!(model);
             }
@@ -881,21 +873,10 @@ mod tests {
                 other => panic!("the launch is rewritten, got {other:?}"),
             }
         };
-        let wave = "# x — revisão da onda 2\n\nmustard-rt run read review-request-2 --root /r --spec x";
-        let last = "# x — agente de teste dedicado\n\nmustard-rt run read request-review --root /r --spec x";
-        for (agents, wave_model, final_model) in [
-            (json!({"review": {"model": "opus"}}), "sonnet", "opus"),
-            (json!({"review": {"model": "opus"}, "wave_review": {"model": "haiku"}}), "haiku", "opus"),
-        ] {
-            std::fs::write(root.join("mustard.json"), json!({ "agents": agents }).to_string()).unwrap();
-            let sent = launch(wave, Some("haiku"));
-            assert_eq!((sent["model"].as_str(), sent["effort"].as_str()), (Some(wave_model), Some("xhigh")), "{agents}: {sent}");
-            assert!(!sent["prompt"].as_str().unwrap().contains("Never duplicate types."), "{sent}");
-            let sent = launch(last, Some("haiku"));
-            assert_eq!((sent["model"].as_str(), sent["effort"].as_str()), (Some("haiku"), Some("xhigh")), "{agents}: the call's model stays: {sent}");
-            let sent = launch(last, None);
-            assert_eq!((sent["model"].as_str(), sent["effort"].as_str()), (Some(final_model), Some("xhigh")), "{agents}: {sent}");
-        }
+        let sent = launch(Some("haiku"));
+        assert_eq!((sent["model"].as_str(), sent["effort"].as_str()), (Some("haiku"), Some("xhigh")), "the call's model stays: {sent}");
+        let sent = launch(None);
+        assert_eq!((sent["model"].as_str(), sent["effort"].as_str()), (Some("opus"), Some("xhigh")), "{sent}");
     }
 
     /// The model the user asked for the final reviewer stays, at the usual
