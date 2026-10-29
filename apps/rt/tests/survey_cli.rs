@@ -5,9 +5,8 @@
 
 //! O levantamento de ponta a ponta pelo binário, num projeto com `git.flow` e
 //! um arquivo de código: o `open`, o objetivo, o `grill`, uma resposta e o
-//! fechamento de cada ponto, com o passo que cada `write` devolve, a revisão
-//! de cada bloco, a ordem de rodar o revisor de fora e o fim com as mensagens
-//! do usuário sem destino. No meio, com
+//! fechamento de cada ponto, com o passo que cada `write` devolve e o fim com
+//! as mensagens do usuário sem destino. No meio, com
 //! um ponto aberto, a gravação do plano pela porta do binário é recusada com a
 //! lista; com todos fechados, ela passa.
 
@@ -763,12 +762,12 @@ fn the_survey_asks_for_the_approved_design_copy_when_it_opens_the_points_and_nev
     let repeated: Vec<&(String, usize)> = later.iter().filter(|(_, count)| *count > 0).collect();
     assert!(repeated.is_empty(), "no response after the grill repeats the copy: {repeated:?}");
 
-    let prompt = format!("Revise o levantamento da spec {SPEC}: os pontos, as regras e as decisões.");
+    let prompt = format!("Revise a obra da spec {SPEC}: o diff, as regras e as decisões.");
     let dispatch = json!({"hook_event_name": "PreToolUse", "tool_name": "Agent", "session_id": SESSION,
         "cwd": root.to_string_lossy(), "tool_input": {"subagent_type": "mustard-review", "description": "revisão", "prompt": prompt}});
     let answer: Value = serde_json::from_str(&on(root, home.path(), "PreToolUse", &dispatch)).expect("the hook answers JSON");
     let sent = answer["hookSpecificOutput"]["updatedInput"]["prompt"].as_str().unwrap_or_else(|| panic!("no rewritten prompt: {answer}"));
-    assert!(sent.contains(&format!("{design}`")), "the outside reviewer is pointed to the saved copy: {sent}");
+    assert!(sent.contains(&format!("{design}`")), "the reviewer is pointed to the saved copy: {sent}");
 }
 
 /// Num projeto em inglês, o `grill` curto que abre os pontos diz o mesmo, na

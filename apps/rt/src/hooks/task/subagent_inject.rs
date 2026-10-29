@@ -34,7 +34,7 @@
 //! consertos e as revisões cujo texto o orquestrador escreve recebem o idioma
 //! dos nomes. O texto que já traz a linha, como o pedido da rodada,
 //! passa como veio. O despacho ao `mustard-review` que o orquestrador
-//! escreve — a revisão do levantamento e a do pull request — ganha no fim as
+//! escreve — a revisão do pull request — ganha no fim as
 //! regras do projeto, os arquivos de regras da raiz e das pastas onde a obra
 //! mexe, porque o revisor é instalado sem eles; o que manda ler o pedido da
 //! revisão final não ganha, porque esse pedido já as traz. Todo despacho ao
@@ -368,7 +368,7 @@ fn dispatched(input: &HookInput, ctx: &Ctx) -> Verdict {
 }
 
 /// As regras do projeto que o despacho ao revisor ganha no fim, quando o
-/// texto é do orquestrador — a revisão do levantamento e a do pull request:
+/// texto é do orquestrador — a revisão do pull request:
 /// o revisor é instalado sem os `CLAUDE.md`, e o pedido que ele recebe é o
 /// único caminho delas. São os arquivos de regras da raiz e das pastas dos
 /// arquivos que a obra da spec atual mexe ([`touched_files`]), a mesma
@@ -387,8 +387,7 @@ fn review_rules(input: &HookInput, root: &Path, prompt: &str, lang: Locale) -> O
 
 /// Se o despacho manda ler o pedido gravado da revisão final
 /// (`mustard-rt run read request-review`): é o que distingue o revisor final
-/// do texto que o orquestrador escreve para a revisão do levantamento ou do
-/// pull request.
+/// do texto que o orquestrador escreve para a revisão do pull request.
 fn reads_final_request(prompt: &str) -> bool {
     prompt.contains("run read request-review")
 }
@@ -858,8 +857,8 @@ mod tests {
 
     /// O revisor final sai no modelo que a chamada pediu e, sem pedido, no de
     /// `agents.review`, sempre com o esforço xhigh. O outro revisor — o do
-    /// levantamento ou o do pull request de colega — segue o `agents.model`,
-    /// sem o Opus do revisor final.
+    /// pull request de colega — segue o `agents.model`, sem o Opus do revisor
+    /// final.
     #[test]
     fn the_final_reviewer_launches_on_the_model_it_was_asked() {
         let dir = tempdir().unwrap();
@@ -881,8 +880,8 @@ mod tests {
         assert_eq!((sent["model"].as_str(), sent["effort"].as_str()), (Some("haiku"), Some("xhigh")), "the call's model stays: {sent}");
         let sent = launch(None);
         assert_eq!((sent["model"].as_str(), sent["effort"].as_str()), (Some("opus"), Some("xhigh")), "{sent}");
-        let survey = launch_with("Revise o levantamento da spec x: os pontos, as regras e as decisões.", None);
-        assert_eq!((survey["model"].as_str(), survey["effort"].as_str()), (Some("sonnet"), Some("xhigh")), "the survey reviewer is not the final one: {survey}");
+        let colleague = launch_with("Revise o pull request 12 do colega: o diff e as regras.", None);
+        assert_eq!((colleague["model"].as_str(), colleague["effort"].as_str()), (Some("sonnet"), Some("xhigh")), "the colleague reviewer is not the final one: {colleague}");
     }
 
     /// The model the user asked for the final reviewer stays, at the usual
@@ -925,8 +924,8 @@ mod tests {
         assert_eq!((review["model"].as_str(), review["effort"].as_str()), (Some("opus"), Some("xhigh")), "{review}");
         assert!(note.contains("low") && note.contains("xhigh") && !note.contains("sonnet"), "only the effort is said to be swapped: {note}");
 
-        let (survey, _) = launch("mustard-review", "Confira a obra.", json!({"model": "opus"}));
-        assert_eq!(survey["model"].as_str(), Some("sonnet"), "the conductor's own text keeps the configured model: {survey}");
+        let (own, _) = launch("mustard-review", "Confira a obra.", json!({"model": "opus"}));
+        assert_eq!(own["model"].as_str(), Some("sonnet"), "the conductor's own text keeps the configured model: {own}");
     }
 
     /// The wave agent goes out on the model its last send recorded, not the
@@ -1097,8 +1096,8 @@ mod tests {
         assert_eq!(dispatch_to(root, "general-purpose", "Investigue o gancho."), Verdict::Allow);
     }
 
-    /// O despacho que o orquestrador escreve ao revisor — a revisão do
-    /// levantamento, a do pull request — ganha no fim as regras do projeto: o
+    /// O despacho que o orquestrador escreve ao revisor — a revisão do pull
+    /// request — ganha no fim as regras do projeto: o
     /// texto do `CLAUDE.md` da raiz e, quando a pasta de um arquivo das
     /// tarefas da spec da branch tem regras, também as dela, cada uma sob o
     /// caminho; sem arquivo de regras, sai como antes, só com a linha dos
@@ -1116,22 +1115,22 @@ mod tests {
         assert!(init.status.success(), "{init:?}");
         std::fs::write(root.join("mustard.json"), r#"{"language":{"code":"pt-BR"}}"#).unwrap();
         let line = translate("prompt.languages", Locale::PtBr).replace("{text}", "pt-BR").replace("{code}", "pt-BR");
-        let survey = "Confira o levantamento inteiro da spec x.";
-        assert_eq!(rewritten(dispatch_to(root, "mustard-review", survey)), format!("{line}\n\n{survey}"), "no file");
+        let request = "Confira o pull request 12 do colega.";
+        assert_eq!(rewritten(dispatch_to(root, "mustard-review", request)), format!("{line}\n\n{request}"), "no file");
 
         let rules = "# Regras\n\n- O instalador nunca grava na configuração do git.";
         std::fs::write(root.join("CLAUDE.md"), format!("{rules}\n")).unwrap();
-        let review = rewritten(dispatch_to(root, "mustard-review", survey));
+        let review = rewritten(dispatch_to(root, "mustard-review", request));
         let section = format!("## Regras do projeto\n\n{}\n\n{rules}", translate("prompt.project_rules.source", Locale::PtBr));
-        assert_eq!(review, format!("{line}\n\n{survey}\n\n{section}"));
+        assert_eq!(review, format!("{line}\n\n{request}\n\n{section}"));
         assert_eq!(rewritten(dispatch_to(root, "mustard-review", &review)), review, "the section is never repeated");
 
         std::fs::create_dir_all(root.join("lib/sub")).unwrap();
         std::fs::write(root.join("lib/sub/CLAUDE.md"), "- A biblioteca não lê o disco.\n").unwrap();
-        let nested = rewritten(dispatch_to(root, "mustard-review", survey));
+        let nested = rewritten(dispatch_to(root, "mustard-review", request));
         let sources = translate("prompt.project_rules.sources", Locale::PtBr);
         let both = format!("## Regras do projeto\n\n{sources}\n\n### `CLAUDE.md`\n\n{rules}\n\n### `lib/sub/CLAUDE.md`\n\n- A biblioteca não lê o disco.");
-        assert_eq!(nested, format!("{line}\n\n{survey}\n\n{both}"));
+        assert_eq!(nested, format!("{line}\n\n{request}\n\n{both}"));
 
         let final_review = format!("{line}\n\nmustard-rt run read request-review --root /r --spec x");
         assert_eq!(rewritten(dispatch_to(root, "mustard-review", &final_review)), final_review, "the recorded request has them");

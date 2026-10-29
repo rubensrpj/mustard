@@ -1007,7 +1007,7 @@ fn reviewer_template_states_the_two_paths() {
 /// O despacho ao revisor, pelo gancho com o JSON do Claude Code, leva o
 /// caminho da cópia do desenho aprovado quando a pasta da spec tem uma: no
 /// pedido gravado da revisão final, no da revisão de uma onda e no texto que
-/// quem conduz escreve para a revisão do levantamento, cuja spec é a da
+/// quem conduz escreve para a revisão do pull request, cuja spec é a da
 /// branch. Sem a cópia, nenhum deles fala de desenho.
 #[test]
 fn the_reviewer_dispatch_points_to_the_approved_design_only_when_the_spec_has_one() {
@@ -1026,7 +1026,7 @@ fn the_reviewer_dispatch_points_to_the_approved_design_only_when_the_spec_has_on
 
     let shown = mustard_core::io::wave_prompt::shown(&root);
     let final_review = format!("mustard-rt run read request-review --root {shown} --spec tela");
-    let survey_review = "Revise o levantamento da spec tela: os pontos, as regras e as decisões.".to_string();
+    let pull_request_review = "Revise o pull request da spec tela: o diff, as regras e as decisões.".to_string();
     let dispatch = |prompt: &str| -> String {
         let payload = json!({"hook_event_name": "PreToolUse", "tool_name": "Agent", "session_id": "sessao-revisor",
             "cwd": root.to_string_lossy(), "tool_input": {"subagent_type": "mustard-review", "description": "revisão", "prompt": prompt}});
@@ -1036,12 +1036,12 @@ fn the_reviewer_dispatch_points_to_the_approved_design_only_when_the_spec_has_on
         sent.to_string()
     };
 
-    for prompt in [&final_review, &survey_review] {
+    for prompt in [&final_review, &pull_request_review] {
         let sent = dispatch(prompt);
         assert!(!sent.contains("desenho.html"), "a spec without the approved design got a design: {sent}");
     }
     std::fs::write(&design, "<html><body><main>tela aprovada</main></body></html>\n").unwrap();
-    for prompt in [&final_review, &survey_review] {
+    for prompt in [&final_review, &pull_request_review] {
         let sent = dispatch(prompt);
         assert!(sent.contains(".claude/spec/tela/desenho.html`"), "the reviewer was not pointed to the approved design: {sent}");
         assert_eq!(sent.matches("desenho.html").count(), 1, "{sent}");
