@@ -247,24 +247,38 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
     };
 
     let codes = log.codes();
-    let points: Vec<Value> = list
+    let mut points: Vec<Value> = list
         .iter()
         .map(|item| {
             let mut value = item.to_value(origin);
             // Quem fecha o ponto sai da lacuna, e não vai ao registro.
             value["owner"] = json!(item.key.owner().token());
-            // O número e a situação saem da leitura única dos pontos, a mesma
-            // da página e da passagem para o plano.
+            // O número, a situação e o bloco saem da leitura única dos pontos,
+            // a mesma da página e da passagem para o plano: a spec antiga
+            // guarda os blocos de antes.
             if let Some((point, status)) = item.standing(&log) {
                 value["id"] = json!(point.id);
                 if let Some(code) = codes.get(&point.id) {
                     value["code"] = json!(code);
                 }
                 value["status"] = json!(status);
+                if let Some(block) = point.str_field("block") {
+                    value["block"] = json!(block);
+                }
             }
             value
         })
         .collect();
+    // O ponto aberto que nenhum item da lista casa, como o de uma lição, de
+    // uma spec anterior ou do revisor de fora numa spec antiga, entra como
+    // está gravado: ele segura a saída do levantamento e tem de ser mostrado.
+    let listed: std::collections::BTreeSet<u64> = points.iter().filter_map(|point| point["id"].as_u64()).collect();
+    for point in survey::open_points(&log).into_iter().filter(|point| !listed.contains(&point.id)) {
+        let mut value = spec_events::shown(point, &codes);
+        value["id"] = json!(point.id);
+        value["owner"] = json!(survey::owner_of(point).token());
+        points.push(value);
+    }
     let reminders: usize = list.iter().map(|item| item.reminders.len()).sum();
     // O levantamento não é marco: não escreve página nem manda copiar nada
     // para o banco dela. O item que ainda guarda um trecho com cara de
@@ -1383,6 +1397,31 @@ mod tests {
         let now = items(&again).iter().find(|item| item["code"] == contract["code"]).unwrap();
         assert_eq!(now["status"], json!("closed"), "{again}");
         assert_eq!(again["ask_user"], report["ask_user"], "{again}");
+    }
+
+    /// Numa spec antiga, o ponto de lacuna sai com o bloco dele, e o ponto
+    /// aberto que nenhum item da lista casa, como o de uma lição, entra em
+    /// `points`, em `open` e em `ask_user`: é ele que segura a saída.
+    #[test]
+    fn an_old_spec_shows_its_blocks_and_the_open_points_the_list_does_not_have() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = surveyed(root, "x");
+        assert!(record_work_type(root, "x", &["fix"], Some(said), None).is_ok());
+        let fact = json!([{"text": GOAL, "source": format!("mensagem {said}")}]);
+        for key in survey::gaps(&["fix"]) {
+            let point = json!({"block": key.block(), "gap": key.label(Locale::PtBr), "from": "gap", "status": "open", "origin": said, "facts": fact});
+            assert_eq!(write(root, Some("x"), "point", point)["ok"], json!(true));
+        }
+        let lesson = json!({"block": "lessons", "gap": "Merge com pendência.", "from": "lesson", "status": "open", "origin": said, "facts": fact});
+        let lesson = id_of(&write(root, Some("x"), "point", lesson));
+        let report = grill(root, "x", Some("fix"));
+        let symptom = items(&report).iter().find(|item| item["gap"] == json!("O sintoma")).expect("the symptom");
+        assert_eq!(symptom["block"], json!("defect"), "{report}");
+        let old = items(&report).iter().find(|item| item["id"] == json!(lesson)).expect("the old lesson point");
+        assert_eq!((&old["status"], &old["owner"], &old["block"]), (&json!("open"), &json!("user"), &json!("lessons")), "{report}");
+        assert!(report["ask_user"].as_array().unwrap().contains(&old["code"]), "{report}");
+        assert!(short(&projection(&report))["open"].as_array().unwrap().contains(&old["code"]), "{report}");
     }
 
     /// Sem pedir, o `grill` grava todas as lacunas de uma vez, num bloco só,
