@@ -112,21 +112,23 @@ fn ndjson_lines(root: &Path) -> Vec<String> {
     lines
 }
 
-/// A commit message and a pending-item title that only name a dangerous
-/// command pass; the real command is refused.
+/// A commit message and a pending-item title that only name a base deletion
+/// pass; the real command is refused. A forced folder delete is left to the
+/// native deny list of the settings.
 #[test]
-fn quoted_text_passes_and_a_real_delete_is_blocked() {
-    let dir = TempDir::new().expect("tempdir");
+fn quoted_text_passes_and_a_real_base_delete_is_blocked() {
+    let dir = project_with(r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#);
     for command in [
-        r#"git commit -m "limpa: rm -rf build antigo""#,
-        r#"mustard-rt run pending --add --title "rodar rm -rf target antes do build""#,
+        r#"git commit -m "limpa: git branch -D dev""#,
+        r#"mustard-rt run pending --add --title "rodar git branch -D dev depois""#,
+        "rm -rf pasta",
     ] {
         let out = run_guard(dir.path(), command);
         assert!(refusal(&out).is_none(), "{command} must pass: {out}");
     }
-    let out = run_guard(dir.path(), "rm -rf pasta");
-    let reason = refusal(&out).unwrap_or_else(|| panic!("rm -rf pasta must be refused: {out}"));
-    assert!(reason.starts_with("Comando barrado: apagar pasta à força"), "{reason}");
+    let out = run_guard(dir.path(), "git branch -D dev");
+    let reason = refusal(&out).unwrap_or_else(|| panic!("git branch -D dev must be refused: {out}"));
+    assert!(reason.starts_with("Comando barrado: apagar a branch de integração `dev`"), "{reason}");
 }
 
 /// Outside a Mustard project the guard hands the command back untouched:
@@ -213,8 +215,7 @@ fn a_wave_agent_cargo_test_runs_once_in_its_copy_through_the_bundled_rtk() {
         format!("cd -- '{}' && (\n'{}' cargo test\n)", wave_prompt::shown(&copy), rtk.display()),
         "{out}"
     );
-    assert_eq!(updated["timeout"], 600_000);
-    assert!(updated.get("run_in_background").is_none(), "{out}");
+    assert_eq!(updated["run_in_background"], true, "the request keeps the agent's own fields: {out}");
     std::fs::remove_dir_all(wave_prompt::copies_dir(root)).unwrap();
 }
 
@@ -241,10 +242,10 @@ fn a_flow_base_is_protected_and_other_branches_are_not() {
 
 #[test]
 fn the_refusal_follows_the_project_language() {
-    let dir = project_with(r#"{"language":{"text":"en-US"}}"#);
-    let out = run_guard(dir.path(), "rm -rf pasta");
-    let reason = refusal(&out).unwrap_or_else(|| panic!("rm -rf pasta must be refused: {out}"));
-    assert!(reason.starts_with("Command blocked: deleting a folder by force"), "{reason}");
+    let dir = project_with(r#"{"language":{"text":"en-US"},"git":{"flow":{"*":"dev","dev":"main"}}}"#);
+    let out = run_guard(dir.path(), "git branch -D dev");
+    let reason = refusal(&out).unwrap_or_else(|| panic!("git branch -D dev must be refused: {out}"));
+    assert!(reason.starts_with("Command blocked: deleting the integration branch `dev`"), "{reason}");
 }
 
 /// A recusa do filtro no projeto de idioma `language`, pelo binário.

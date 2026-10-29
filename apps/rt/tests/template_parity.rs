@@ -515,8 +515,6 @@ const KEPT_HOOKS: &[&str] = &[
     "approval_witness",
     "command_guard",
     "end_of_turn_check",
-    "glossary_witness",
-    "precompact_notice",
     "prompt_entry",
     "session_cleanup_observer",
     "session_start_inject",
@@ -531,6 +529,8 @@ const KEPT_HOOKS: &[&str] = &[
 /// volta ao registro.
 const REMOVED_HOOKS: &[&str] = &[
     "copy_witness",
+    "glossary_witness",
+    "precompact_notice",
     "active_spec_limit_gate",
     "amend_window_inject",
     "bash_command_gate",

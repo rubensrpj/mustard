@@ -207,38 +207,10 @@ fn leftovers_of_the_old_economy_no_longer_exist() {
         );
     }
 
-    // 3) O registro do gancho de compactação tem catraca. O manifesto é lido
-    // aqui pelo nome do evento, não pela lista que o doutor deriva dele: a
-    // entrada precisa existir, chamar `on PreCompact` e cobrir as duas formas
-    // de compactar, a manual e a automática.
+    // 3) Antes de compactar, nenhum gancho: o início da sessão depois do
+    // resumo traz o bloco de retomada, e o manifesto não chama o evento.
     let path = shipped_manifest_path().expect("plugin/hooks/hooks.json must be reachable");
     let text = std::fs::read_to_string(&path).expect("hooks.json must be readable");
     let manifest: serde_json::Value = serde_json::from_str(&text).expect("hooks.json must be valid JSON");
-    let entries = manifest["hooks"]["PreCompact"]
-        .as_array()
-        .expect("o manifesto tem de registrar `PreCompact` — sem ele o aviso de compactar nunca chega");
-    assert!(
-        entries.iter().any(|entry| {
-            entry["hooks"]
-                .as_array()
-                .is_some_and(|hooks| hooks.iter().any(|h| {
-                    h.get("command")
-                        .and_then(serde_json::Value::as_str)
-                        .is_some_and(|c| c.contains("on PreCompact"))
-                }))
-        }),
-        "`PreCompact` está registrado sem chamar `mustard-rt on PreCompact`: {entries:?}"
-    );
-    let matchers: Vec<String> = entries
-        .iter()
-        .filter_map(|e| e.get("matcher").and_then(serde_json::Value::as_str))
-        .map(str::to_string)
-        .collect();
-    for source_name in ["manual", "auto"] {
-        assert!(
-            matchers.iter().any(|m| m.split('|').any(|alt| alt.trim() == source_name)),
-            "nenhum matcher de `PreCompact` cobre `{source_name}` — compactar assim não avisa nada. \
-             Registrados: {matchers:?}",
-        );
-    }
+    assert!(manifest["hooks"].get("PreCompact").is_none(), "o manifesto voltou a chamar `PreCompact`");
 }

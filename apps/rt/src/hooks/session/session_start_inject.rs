@@ -505,16 +505,15 @@ mod tests {
     }
 
     /// O início da sessão de um projeto recém-semeado, nos dois idiomas, diz
-    /// o que o gancho faz com o agente: o pedido e a tarefa quem grava é o
-    /// condutor. A frase velha, que mandava todo agente gravar na spec, não
-    /// volta, e cada gravação que o texto reserva ao condutor é mesmo recusada
-    /// pela trava do terminal quando vem de um agente.
+    /// o que o comando de gravação recusa ao agente: o pedido e a tarefa quem
+    /// grava é o condutor. A frase velha, que mandava todo agente gravar na
+    /// spec, não volta. A recusa mesma mora na porta de gravação, que tem o
+    /// teste dela.
     #[test]
-    fn the_session_start_says_the_conductor_records_what_the_hook_refuses_to_an_agent() {
-        use crate::hooks::bash::command_guard::CommandGuard;
-        for (lang, old, hook, conductor) in [
-            (Locale::PtBr, "todo agente grava na spec", "o gancho", "o condutor grava"),
-            (Locale::EnUs, "every agent records in the spec", "the hook", "the conductor records"),
+    fn the_session_start_says_the_conductor_records_what_the_write_command_refuses_to_an_agent() {
+        for (lang, old, door, conductor) in [
+            (Locale::PtBr, "todo agente grava na spec", "o comando de gravação", "o condutor grava"),
+            (Locale::EnUs, "every agent records in the spec", "the write command", "the conductor records"),
         ] {
             let dir = tempdir().unwrap();
             let root = dir.path();
@@ -533,61 +532,12 @@ mod tests {
                 .find(|line| line.contains(conductor))
                 .unwrap_or_else(|| panic!("{lang:?}: the session start does not say the conductor records: {context}"));
             let refused = line
-                .find(hook)
+                .find(door)
                 .and_then(|from| line[from..].find(conductor).map(|to| &line[from..from + to]))
-                .unwrap_or_else(|| panic!("{lang:?}: the line does not say what the hook refuses before the conductor records: {line}"));
+                .unwrap_or_else(|| panic!("{lang:?}: the line does not say what the write command refuses before the conductor records: {line}"));
             for kind in ["request", "task"] {
-                assert!(refused.contains(kind), "{lang:?}: the hook's refusal does not name `run write {kind}`: {line}");
-                let input = HookInput {
-                    tool_name: Some("Bash".to_string()),
-                    tool_input: json!({ "command": format!("mustard-rt run write {kind} --spec uma-spec --json '{{}}'") }),
-                    hook_event_name: Some("PreToolUse".to_string()),
-                    agent_id: Some("wave-agent".to_string()),
-                    ..HookInput::default()
-                };
-                let guard = Ctx::for_test(root.to_string_lossy().into_owned(), Some(Trigger::PreToolUse));
-                let verdict = CommandGuard.evaluate(&input, &guard).unwrap();
-                assert!(matches!(verdict, Verdict::Deny { .. }), "{lang:?}: the hook lets an agent run `run write {kind}`: {verdict:?}");
+                assert!(refused.contains(kind), "{lang:?}: the refusal does not name `run write {kind}`: {line}");
             }
-        }
-    }
-
-    /// O que o gancho recusa ao agente não passa por outra forma do comando:
-    /// o lote, cujas linhas levam tarefa, pedido ou onda na entrada padrão, e
-    /// o tipo escrito depois das opções são recusados. O passo do agente
-    /// segue livre, e o lote da conversa principal também.
-    #[test]
-    fn the_hook_refuses_an_agent_the_plan_through_a_batch_or_after_the_options() {
-        use crate::hooks::bash::command_guard::CommandGuard;
-        let dir = tempdir().unwrap();
-        let ctx = Ctx::for_test(dir.path().to_string_lossy().into_owned(), Some(Trigger::PreToolUse));
-        let verdict = |command: &str, agent: Option<&str>| {
-            let input = HookInput {
-                tool_name: Some("Bash".to_string()),
-                tool_input: json!({ "command": command }),
-                hook_event_name: Some("PreToolUse".to_string()),
-                agent_id: agent.map(str::to_string),
-                ..HookInput::default()
-            };
-            CommandGuard.evaluate(&input, &ctx).unwrap()
-        };
-        let task_batch = "mustard-rt run write --batch --spec uma-spec <<'EOF'\n{\"type\":\"task\",\"title\":\"Uma tarefa\"}\nEOF";
-        for refused in [
-            task_batch,
-            "mustard-rt run write --spec uma-spec --batch < lote.ndjson",
-            "mustard-rt run write --spec uma-spec --json '{}' task",
-            "mustard-rt run write --root . wave --spec uma-spec --json '{}'",
-        ] {
-            let verdict = verdict(refused, Some("wave-agent"));
-            assert!(matches!(verdict, Verdict::Deny { .. }), "the hook lets an agent run {refused:?}: {verdict:?}");
-        }
-        for (allowed, agent) in [
-            ("mustard-rt run write step --spec uma-spec --json '{}'", Some("wave-agent")),
-            ("mustard-rt run write --spec uma-spec --json '{}' delivered", Some("wave-agent")),
-            (task_batch, None),
-        ] {
-            let verdict = verdict(allowed, agent);
-            assert!(!matches!(verdict, Verdict::Deny { .. }), "the hook refuses {allowed:?} to {agent:?}: {verdict:?}");
         }
     }
 

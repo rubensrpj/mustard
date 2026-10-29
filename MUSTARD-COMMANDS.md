@@ -282,7 +282,7 @@ A onda reprovada (pela linha `REJECTED`, pelo veredito ou pela volta recusada qu
 
 O esforço é sempre `xhigh`, em todo agente e modelo, imposto no lançamento sobre o que a chamada pedir; `agents.effort` e `agents.review.effort` só vão ao cabeçalho do agente instalado. O envio da onda grava o modelo e o esforço pedidos, o modelo usado (`model_used`, medido na conversa do agente) e o esforço que valeu no lançamento (`effort_used`: o de `CLAUDE_CODE_EFFORT_LEVEL` quando a variável está definida, ou o imposto). Sem `agents.model` nem `agents.effort`, a instalação os grava com `sonnet` e `xhigh`. O `analysis` roda no modelo pequeno da sessão, sempre no esforço `xhigh`, que o lançamento impõe sobre o que a chamada pedir.
 
-Quem conduz recebe um aviso curto aos 200 mil tokens e em cada faixa seguinte de 100 mil, uma vez por faixa. Limpar ou compactar a sessão reinicia essa contagem. Para o agente, o sinal chega aos 200 mil tokens de contexto, contando a entrada e os resumos herdados, ou antes, aos 75% da janela do modelo que o atende, quando ela é menor. O próprio passo de término da tarefa responde se o agente segue ou entrega. Com agente vivo, o aviso de quem conduz manda esperar a volta dele antes de `/clear`, e a retomada depois de limpar lista as ondas cujo agente parou. Ao sinal, ele conclui a tarefa atual, os testes mínimos e o resumo, sem iniciar outra tarefa após a ordem de entrega.
+Quem conduz não recebe aviso de tamanho. Para o agente, o sinal chega aos 200 mil tokens de contexto, contando a entrada e os resumos herdados, ou antes, aos 75% da janela do modelo que o atende, quando ela é menor. O próprio passo de término da tarefa responde se o agente segue ou entrega. A retomada depois de limpar lista as ondas cujo agente parou. Ao sinal, ele conclui a tarefa atual, os testes mínimos e o resumo, sem iniciar outra tarefa após a ordem de entrega.
 
 ---
 
@@ -294,7 +294,7 @@ Quem conduz recebe um aviso curto aos 200 mil tokens e em cada faixa seguinte de
 | `statusline_heal_observer` | início da sessão | Conserta a barra de status. |
 | `prompt_entry` | cada mensagem | Grava a mensagem na spec atual, sem colocar texto na conversa. |
 | `write_gate` | antes de arquivos e depois de buscas | Conserva as proteções de escrita, segredo e leitura. Grep/rg executam com seus argumentos originais; compactação posterior só usa resultados executados verificáveis, sem Jev de rotina e sem transformar resultado em instrução. |
-| `command_guard` | antes de um comando | Recusa comando que apaga trabalho. |
+| `command_guard` | antes de um comando | Recusa apagar uma branch de integração; os outros perigos fixos ficam no bloqueio nativo das configurações. |
 | `subagent_inject` | antes de despachar um agente | Troca o texto do despacho que abre com o título de uma onda em andamento pelo título e pelo comando que lê o pedido gravado dela. |
 | `approval_witness` | depois de uma pergunta com opções | Grava o clique em "Aprovar" ou "Aceitar". |
 | `end_of_turn_check` | fim da resposta | Barra quando a resposta sai noutro idioma que não o do projeto, para o assistente escrevê-la de novo, e quando a spec fecha ou entra no merge e a resposta não cita uma pendência aberta nascida nela. A regra de escrita mora no estilo de resposta. |

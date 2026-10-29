@@ -458,9 +458,9 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "[Mustard] Nothing was recorded for the change {code}: this session has no current spec."
         }
 
-        // Recusas da trava de comandos (`apps/rt/src/hooks/bash/safety.rs` e
-        // `windows_redirect.rs`). A recusa geral recebe o motivo de uma das
-        // chaves seguintes; as vagas vêm do chamador.
+        // Recusa da trava de comandos (`apps/rt/src/hooks/bash/base_delete.rs`).
+        // A recusa geral recebe o motivo da chave seguinte; as vagas vêm do
+        // chamador.
         ("command_guard.deny", Locale::PtBr) => {
             "Comando barrado: {reason}. Isso apaga trabalho sem volta.\nComando: {command}\nSe for \
              isso mesmo, peça ao usuário para rodar o comando no terminal dele."
@@ -469,63 +469,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Command blocked: {reason}. This destroys work with no way back.\nCommand: {command}\nIf \
              this is really what you want, ask the user to run the command in their own terminal."
         }
-        ("command_guard.rm_recursive_force", Locale::PtBr) => "apagar pasta à força (`rm` com `-r` e `-f`)",
-        ("command_guard.rm_recursive_force", Locale::EnUs) => {
-            "deleting a folder by force (`rm` with `-r` and `-f`)"
-        }
-        // O caminho permitido, na linha seguinte à do comando: só a pasta ou o
-        // arquivo do temporário do sistema que é do usuário e fica fora de
-        // qualquer checkout, que o `clean --path` confere antes de apagar.
-        ("command_guard.rm_recursive_force_instead", Locale::PtBr) => {
-            "Para apagar uma pasta ou um arquivo do temporário do sistema, rode `mustard-rt run clean \
-             --path <caminho>`. O caminho tem de ser seu e ficar fora de qualquer checkout do git. O \
-             comando confere isso antes de apagar. Vale também dentro do scratchpad da sessão."
-        }
-        ("command_guard.rm_recursive_force_instead", Locale::EnUs) => {
-            "To delete a folder or a file of the system temp directory, run `mustard-rt run clean \
-             --path <path>`. The path must be yours and lie outside any git checkout. The command \
-             checks this before deleting. It also works inside the session scratchpad."
-        }
-        ("command_guard.force_push", Locale::PtBr) => {
-            "forçar o envio ao servidor (`git push --force`); `--force-with-lease` continua liberado"
-        }
-        ("command_guard.force_push", Locale::EnUs) => {
-            "force-pushing to the server (`git push --force`); `--force-with-lease` is still allowed"
-        }
-        ("command_guard.reset_hard", Locale::PtBr) => "descartar as mudanças com `git reset --hard`",
-        ("command_guard.reset_hard", Locale::EnUs) => "discarding changes with `git reset --hard`",
-        ("command_guard.clean_force", Locale::PtBr) => {
-            "apagar os arquivos que estão fora do git com `git clean -f`"
-        }
-        ("command_guard.clean_force", Locale::EnUs) => "deleting untracked files with `git clean -f`",
-        ("command_guard.checkout_all", Locale::PtBr) => {
-            "descartar todas as mudanças com `git checkout -- .`"
-        }
-        ("command_guard.checkout_all", Locale::EnUs) => "discarding every change with `git checkout -- .`",
-        ("command_guard.restore_all", Locale::PtBr) => "descartar todas as mudanças com `git restore .`",
-        ("command_guard.restore_all", Locale::EnUs) => "discarding every change with `git restore .`",
         ("command_guard.delete_base", Locale::PtBr) => "apagar a branch de integração `{branch}`",
         ("command_guard.delete_base", Locale::EnUs) => "deleting the integration branch `{branch}`",
-        ("command_guard.windows_path_rewritten", Locale::PtBr) => {
-            "O destino `{original}` é um caminho do Windows, e o terminal do Bash não entende esse \
-             formato. O comando segue com `{posix}`, a forma que o shell entende."
-        }
-        ("command_guard.windows_path_rewritten", Locale::EnUs) => {
-            "The target `{original}` is a Windows path, and the Bash terminal does not understand \
-             that form. The command continues with `{posix}`, the form the shell understands."
-        }
-        ("command_guard.waiting_loop", Locale::PtBr) => {
-            "Comando barrado: espera outro processo num laço, checando com `pgrep`, `pidof` ou `ps`. \
-             O laço e o processo que ele espera podem citar o texto de busca um do outro e nunca \
-             terminar.\nComando: {command}\nRode o comando em primeiro plano, com o teto de tempo \
-             dele, e leia o resultado antes de seguir."
-        }
-        ("command_guard.waiting_loop", Locale::EnUs) => {
-            "Command blocked: it waits for another process in a loop, checking with `pgrep`, `pidof` \
-             or `ps`. The loop and the process it waits for can name each other's own search text and \
-             never end.\nCommand: {command}\nRun the command in the foreground, with its own time \
-             limit, and read the result before moving on."
-        }
         ("command_guard.glued_argument", Locale::PtBr) => {
             "Comando recusado: o terminal entregou a variável inteira, como um argumento só.\nRecebido: `{argument}`\nNão existe argumento parecido a procurar. O shell desta máquina não separa a variável nos espaços dela. Escreva cada opção na linha, uma por uma: `mustard-rt run read backlog --root /projeto --spec obra`. Com a variável, ponha cada parte dela no lugar da opção, e não a variável toda."
         }
@@ -833,16 +778,7 @@ mod tests {
     fn i18n_translates_command_guard_keys() {
         for (key, slots) in [
             ("command_guard.deny", &["{reason}", "{command}"][..]),
-            ("command_guard.rm_recursive_force", &[][..]),
-            ("command_guard.rm_recursive_force_instead", &[][..]),
-            ("command_guard.force_push", &[][..]),
-            ("command_guard.reset_hard", &[][..]),
-            ("command_guard.clean_force", &[][..]),
-            ("command_guard.checkout_all", &[][..]),
-            ("command_guard.restore_all", &[][..]),
             ("command_guard.delete_base", &["{branch}"][..]),
-            ("command_guard.windows_path_rewritten", &["{original}", "{posix}"][..]),
-            ("command_guard.waiting_loop", &["{command}"][..]),
             ("runtime_output.scripted", &["{command}"][..]),
             ("command_guard.glued_argument", &["{argument}"][..]),
             ("command_guard.shell_edit", &["{edit}"][..]),

@@ -279,16 +279,6 @@ pub(crate) fn current_line(root: &Path, session: Option<&str>) -> Option<String>
     Some(resume_line(&spec, &log, &observed, lang))
 }
 
-/// A linha de retomada da spec atual, como [`current_line`], e as ondas com
-/// agente vivo ([`waves_with_live_agent`](crate::commands::flow::round::queue::waves_with_live_agent)),
-/// numa leitura só da spec: o aviso de tamanho de quem conduz manda esperar a
-/// volta delas antes de limpar a conversa.
-pub(crate) fn current_line_and_live(root: &Path, session: Option<&str>) -> Option<(String, Vec<u64>)> {
-    let (spec, log, lang, observed) = current_log(root, session)?;
-    let live = crate::commands::flow::round::queue::waves_with_live_agent(&spec_events::project(root).root, &spec, &log);
-    Some((resume_line(&spec, &log, &observed, lang), live.into_keys().collect()))
-}
-
 /// O que a retomada depois de `/clear` diz das ondas cujo agente a limpeza
 /// parou: as que tinham agente vivo quando a conversa foi limpa, e o que
 /// fazer com cada uma, mandar a linha `PAUSED` dela na próxima rodada, que a

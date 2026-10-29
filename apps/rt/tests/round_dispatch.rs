@@ -837,21 +837,23 @@ fn a_task_of_an_unsent_wave_that_lost_a_dependency_returns_to_the_backlog_and_th
     assert!(!detail.contains(&open_code), "o motivo não nomeia a tarefa aberta e válida: {out}");
 }
 
-/// O bloco de retomada que o aviso antes de compactar traz, pelo gancho
-/// `PreCompact` da sessão que conduz a obra, como o Claude Code o chama.
-fn precompact_block(project: &Project) -> String {
-    let payload = json!({"hook_event_name": "PreCompact", "trigger": "auto", "session_id": SESSION,
+/// O bloco de retomada que o início da sessão depois da compactação traz,
+/// pelo gancho `SessionStart` da sessão que conduz a obra, como o Claude Code
+/// o chama.
+fn compaction_block(project: &Project) -> String {
+    let payload = json!({"hook_event_name": "SessionStart", "source": "compact", "session_id": SESSION,
         "cwd": project.root.to_string_lossy()});
-    let out = project.command(&["on", "PreCompact"], &payload.to_string());
+    let out = project.command(&["on", "SessionStart"], &payload.to_string());
     assert_eq!(out.status.code(), Some(0), "a hook always exits 0: {}", String::from_utf8_lossy(&out.stderr));
     let answer: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("the hook answers JSON ({e}): {}", String::from_utf8_lossy(&out.stdout)));
-    answer["systemMessage"].as_str().unwrap_or_else(|| panic!("the hook brings the resume block: {answer}")).to_string()
+    answer["hookSpecificOutput"]["additionalContext"].as_str().unwrap_or_else(|| panic!("the hook brings the resume block: {answer}")).to_string()
 }
 
 /// A volta gravada de uma onda que saiu do ar depois dela — a remoção tirou a
 /// última tarefa da onda depois da entrega — não espera a rodada, que nunca a
 /// assume: a retomada não a lista entre as voltas à espera, e o bloco de
-/// retomada do aviso antes de compactar diz que nenhuma volta espera. Antes
+/// retomada do início da sessão depois de compactar diz que nenhuma volta
+/// espera. Antes
 /// da remoção, as duas leituras a mostram.
 #[test]
 fn the_return_of_a_wave_that_left_the_air_does_not_wait_in_the_resume() {
@@ -867,7 +869,7 @@ fn the_return_of_a_wave_that_left_the_air_does_not_wait_in_the_resume() {
     let label = block.split("{returned}").next().and_then(|before| before.rsplit(". ").next()).expect("the label of the returns");
     let waiting = |list: &str| format!("{label}{list}.");
     assert_eq!(awaiting(), vec![1], "a volta da onda no plano espera a rodada");
-    let before = precompact_block(&project);
+    let before = compaction_block(&project);
     assert!(before.contains(&waiting("1")), "o bloco lista a volta da onda no plano: {before}");
 
     let removal = json!({"targets": [tasks[0]], "reason": "Já foi feito fora da onda."});
@@ -875,7 +877,7 @@ fn the_return_of_a_wave_that_left_the_air_does_not_wait_in_the_resume() {
     assert_eq!(removed["waves_left_without_tasks"], json!([1]), "a remoção tira a onda 1 do ar: {removed}");
 
     assert_eq!(awaiting(), Vec::<u64>::new(), "a volta da onda fora do ar não espera a rodada");
-    let after = precompact_block(&project);
+    let after = compaction_block(&project);
     assert!(after.contains(&waiting(translate("resume.none", Locale::PtBr))), "o bloco não lista a volta da onda fora do ar: {after}");
 }
 

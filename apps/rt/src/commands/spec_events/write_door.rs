@@ -610,6 +610,11 @@ pub fn run(opts: &WriteOpts, copy: bool) {
     let started = std::time::Instant::now();
     // A entrada lê a sessão uma vez e a passa a tudo o que grava.
     let session = session_from_env();
+    let agent = crate::shared::search_gateway::agent_from_env();
+    if let Some(refusal) = agent_plan_refusal(Some(&opts.event_type), agent.as_deref(), super::project(&opts.root).lang) {
+        println!("{}", serde_json::to_string_pretty(&refusal).unwrap_or_else(|_| "{}".into()));
+        std::process::exit(1);
+    }
     let (mut report, json) = write_for(opts, copy, session.as_deref());
     // A gravação que veio de outra sessão avisa: duas conversas no mesmo
     // projeto gravam na mesma spec, e quem conduz não via a gravação da
@@ -630,6 +635,28 @@ pub fn run(opts: &WriteOpts, copy: bool) {
     if report["ok"] != json!(true) {
         std::process::exit(1);
     }
+}
+
+/// A recusa ao agente de onda `agent`, que o gancho do terminal nomeia ao
+/// comando, da gravação que só o condutor faz: tarefa, pedido e onda, e o lote
+/// (`event_type` ausente), que leva qualquer tipo. O agente relata sobras e
+/// propostas no retorno da onda. `None` para quem conduz e para outro tipo.
+fn agent_plan_refusal(event_type: Option<&str>, agent: Option<&str>, lang: Locale) -> Option<Value> {
+    agent?;
+    let (reason, pt, en) = match event_type.map(str::trim) {
+        Some("task" | "request" | "wave") => (
+            "agent-plan-write",
+            "O agente não altera o plano diretamente. Relate sobras, obrigações e proposta no retorno da onda; o condutor e o runtime gravam a tarefa autorizada.",
+            "An agent cannot edit the plan directly. Report leftovers, obligations and proposals in the wave return; the conductor and runtime write authorized tasks.",
+        ),
+        Some(_) => return None,
+        None => (
+            "agent-batch-write",
+            "O agente não grava em lote: o lote leva tarefa, pedido e onda, que só o condutor grava. Grave cada passo ou entrega numa chamada `run write` própria.",
+            "An agent cannot write a batch: a batch carries tasks, requests and waves, which only the conductor writes. Write each step or delivery in its own `run write` call.",
+        ),
+    };
+    Some(json!({ "ok": false, "reason": reason, "hint": if lang == Locale::PtBr { pt } else { en } }))
 }
 
 /// O passo `opts` gravado, com o relatório `report`, responde ele mesmo a
@@ -823,6 +850,10 @@ pub fn run_batch(root: &Path, spec: Option<&str>) {
     let started = std::time::Instant::now();
     let session = session_from_env();
     let lang = super::project(root).lang;
+    if let Some(refusal) = agent_plan_refusal(None, crate::shared::search_gateway::agent_from_env().as_deref(), lang) {
+        println!("{refusal}");
+        std::process::exit(1);
+    }
     let ask = |root: &Path, spec: &str, payload: &str| reserve::ask_orchestration(root, spec, TASK_TRIAGE_CALL, payload);
     let lines: Vec<Value> = match std::io::read_to_string(std::io::stdin()) {
         Ok(input) if input.trim().is_empty() => vec![json!({ "ok": false, "reason": "batch-empty", "hint": translate("spec_events.batch_empty", lang) })],
@@ -844,6 +875,24 @@ mod tests {
     use super::*;
     use mustard_core::domain::spec_events::parse_log;
     use tempfile::tempdir;
+
+    /// O agente de onda recebe a recusa do próprio comando de gravação na
+    /// tarefa, no pedido, na onda e no lote; o passo dele e tudo o que o
+    /// condutor grava passam.
+    #[test]
+    fn the_wave_agent_is_refused_plan_writes_with_and_without_a_batch() {
+        for kind in ["task", "request", "wave"] {
+            let refusal = agent_plan_refusal(Some(kind), Some("agent-a"), Locale::PtBr).expect("the agent is refused");
+            assert_eq!(refusal["reason"], "agent-plan-write", "{kind}");
+            assert!(refusal["hint"].as_str().unwrap().contains("retorno da onda"), "{refusal}");
+            assert!(agent_plan_refusal(Some(kind), None, Locale::PtBr).is_none(), "the conductor writes {kind}");
+        }
+        let batch = agent_plan_refusal(None, Some("agent-a"), Locale::EnUs).expect("the agent batch is refused");
+        assert_eq!(batch["reason"], "agent-batch-write");
+        assert!(batch["hint"].as_str().unwrap().contains("own `run write` call"), "{batch}");
+        assert!(agent_plan_refusal(None, None, Locale::EnUs).is_none(), "the conductor writes a batch");
+        assert!(agent_plan_refusal(Some("step"), Some("agent-a"), Locale::PtBr).is_none(), "the agent writes its step");
+    }
 
     /// Grava na spec `teste`, aberta antes como o comando que abre uma spec a
     /// deixa, como a produção grava ([`write::seed_at`]).

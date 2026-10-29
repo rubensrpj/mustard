@@ -43,9 +43,6 @@ close.wave_without_commit	83ea47d0811ab932
 conversation_size.block	4b31a0c19b026249
 conversation_size.copy	2208ec28b1d43cb2
 conversation_size.more	86027ccc07b78b91
-conversation_size.notice	e4b64c0cd969527e
-conversation_size.notice_live	a5d3f0810e99b909
-conversation_size.precompact	23883dac7029c13c
 conversation_size.replan	7a9ff7e7b5e626b6
 conversation_size.tasks_finished	603b05de6cdee867
 conversation_size.wave_continue	6fc258042c1c42d6

@@ -64,7 +64,7 @@ pub fn install(root: &Path) -> Result<Value, String> {
     let mut hooks = read_object(&hook_path)?;
     if hooks.get("hooks").is_none() { hooks["hooks"] = json!({}); }
     if !hooks["hooks"].is_object() { return Err("codex-install-invalid-hook-map".into()); }
-    for event in ["SessionStart", "PreToolUse", "PostToolUse", "PreCompact", "PostCompact", "UserPromptSubmit", "SubagentStart", "SubagentStop", "Stop", "SessionEnd"] {
+    for event in ["SessionStart", "PreToolUse", "PostToolUse", "PostCompact", "UserPromptSubmit", "SubagentStart", "SubagentStop", "Stop", "SessionEnd"] {
         let command = format!("mustard-rt on {event} --host codex");
         if hooks["hooks"].get(event).is_none() { hooks["hooks"][event] = json!([]); }
         let entries = hooks["hooks"][event].as_array_mut().ok_or("codex-install-invalid-hook-list")?;
@@ -165,7 +165,8 @@ mod tests {
         let text = std::fs::read_to_string(root.join(".codex/config.toml")).unwrap(); assert!(text.starts_with("# keep this comment"));
         let hooks: Value = serde_json::from_str(&std::fs::read_to_string(root.join(".codex/hooks.json")).unwrap()).unwrap();
         assert_eq!(hooks["other"], 17); assert_eq!(hooks["hooks"]["PreToolUse"].as_array().unwrap().len(), 2);
-        for event in ["PreCompact", "PostCompact"] {
+        assert!(hooks["hooks"].get("PreCompact").is_none(), "nothing runs before compaction");
+        for event in ["PostCompact"] {
             assert_eq!(hooks["hooks"][event].as_array().unwrap().len(),1);
             assert_eq!(hooks["hooks"][event][0]["hooks"][0]["command"],format!("mustard-rt on {event} --host codex"));
         }

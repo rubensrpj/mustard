@@ -133,7 +133,6 @@ fn unsupported_or_mixed_reads_do_not_execute_any_suffix_or_dump_the_config() {
         "cat mustard.json; bash -c 'cat mustard.json'; touch wrong",
         "cat=unexpected cat mustard.json; touch wrong",
         "grep * mustard.json; touch wrong",
-        "cat mustard.json; rm -rf work",
     ] {
         let result = hook(dir.path(), original);
         let specific = &result["hookSpecificOutput"];

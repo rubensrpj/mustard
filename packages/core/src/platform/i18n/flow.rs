@@ -782,31 +782,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("conversation_size.replan", Locale::EnUs) => "{wave} (asks for a plan change, still without the user's click)",
         ("conversation_size.more", Locale::PtBr) => "e mais {count}",
         ("conversation_size.more", Locale::EnUs) => "and {count} more",
-        ("conversation_size.precompact", Locale::PtBr) => {
-            "Esta conversa vai ser compactada agora; depois do resumo, o início da sessão traz de \
-             volta, sozinho, o bloco de retomada. {block}"
-        }
-        ("conversation_size.precompact", Locale::EnUs) => {
-            "This conversation is about to be compacted; after the summary, the session start \
-             brings the resume block back on its own. {block}"
-        }
-        // O aviso a quem conduz, quando a conversa principal passa de um
-        // degrau de tamanho: limpar ou compactar, com o bloco de retomada
-        // pronto para colar numa janela limpa.
-        ("conversation_size.notice", Locale::PtBr) => {
-            "[Mustard] Contexto atingiu {tokens} mil tokens. Termine o passo atual e use `/compact` ou `/clear`. {line}"
-        }
-        ("conversation_size.notice", Locale::EnUs) => {
-            "[Mustard] Context reached {tokens} thousand tokens. Finish the current step and use `/compact` or `/clear`. {line}"
-        }
-        // O mesmo aviso com onda de agente vivo: limpar a conversa para os
-        // agentes, e a volta delas vem antes.
-        ("conversation_size.notice_live", Locale::PtBr) => {
-            "[Mustard] Contexto atingiu {tokens} mil tokens. Há {count} onda(s) com agente vivo ({waves}): espere a volta delas antes de `/clear`, que para esses agentes. Depois, termine o passo atual e use `/compact` ou `/clear`. {line}"
-        }
-        ("conversation_size.notice_live", Locale::EnUs) => {
-            "[Mustard] Context reached {tokens} thousand tokens. There are {count} wave(s) with a live agent ({waves}): wait for them to return before `/clear`, which stops those agents. Then finish the current step and use `/compact` or `/clear`. {line}"
-        }
         // A retomada depois de `/clear`: as ondas cujo agente a limpeza parou
         // e a linha que as reenvia.
         ("resume.lost_by_clear", Locale::PtBr) => {
@@ -2853,9 +2828,6 @@ mod tests {
             ("conversation_size.copy", &["{wave}", "{copy}"][..]),
             ("conversation_size.replan", &["{wave}"][..]),
             ("conversation_size.more", &["{count}"][..]),
-            ("conversation_size.precompact", &["{block}"][..]),
-            ("conversation_size.notice", &["{tokens}", "{line}"][..]),
-            ("conversation_size.notice_live", &["{tokens}", "{count}", "{waves}", "{line}"][..]),
             ("resume.lost_by_clear", &["{waves}", "{paused}"][..]),
             ("conversation_size.wave_signal", &["{now}", "{baseline}", "{counted}", "{basis}", "{total_limit}"][..]),
             ("conversation_size.window_known", &["{model}", "{window}", "{share}"][..]),
