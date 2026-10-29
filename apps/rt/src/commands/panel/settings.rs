@@ -208,7 +208,7 @@ mod tests {
         std::fs::create_dir_all(dir.path().join(".claude/mustard")).unwrap();
         std::fs::create_dir_all(dir.path().join(".claude/agents/mustard")).unwrap();
         std::fs::write(dir.path().join("mustard.json"),json!({"jev":{"key":SECRET},"future":{"keep":17},"ai":{"extra":"keep"},
-            "agents":{"model":"custom-model-1","extra":"keep"},"judgement":{"context":{"extra":"keep"}}}).to_string()).unwrap();
+            "agents":{"model":"custom-model-1","by_difficulty":false,"extra":"keep"},"judgement":{"context":{"extra":"keep"}}}).to_string()).unwrap();
         std::fs::write(dir.path().join(".claude/settings.local.json"),json!({"env":{"TYPESAFE_API_KEY":SECRET},"permissions":{"deny":["keep"]},
             "hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"other hook"}]}]}}).to_string()).unwrap();
         std::fs::write(dir.path().join(".claude/mustard/installation.json"),r#"{"complete":true,"checks":[]}"#).unwrap();
