@@ -276,7 +276,7 @@ mod tests {
         ("out_of_scope", &["waves"]),
         ("decision", &["waves"]),
         ("criterion_run", &["exit", "ms"]),
-        ("stage_run", &["ms", "exit", "attempt", "waves"]),
+        ("stage_run", &["ms", "exit", "attempt", "waves", "tests"]),
         ("validation_failure", &["wave"]),
         ("wave", &["n", "depends_on"]),
         ("task", &["wave"]),

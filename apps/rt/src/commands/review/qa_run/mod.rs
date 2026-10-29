@@ -114,10 +114,6 @@ pub(crate) fn run_command(command: &str, cwd: &Path) -> ProofRun {
 /// executor e mesma leitura de [`run_command`], com um teto só deles, de uma
 /// hora: a suíte inteira de um projeto não cabe no teto de uma prova de
 /// critério, e a variável `MUSTARD_QA_AC_TIMEOUT_SECS` vale só para a prova.
-pub(crate) fn run_build_command(command: &str, cwd: &Path) -> ProofRun {
-    graded(runner::run_build_command(command, cwd), None)
-}
-
 pub(crate) fn run_server_command(command: &str, cwd: &Path) -> ProofRun {
     graded(runner::run_server_command(command, cwd), None)
 }

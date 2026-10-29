@@ -43,8 +43,6 @@ pub(crate) enum Ceiling {
     /// da variável `MUSTARD_QA_AC_TIMEOUT_SECS` ou, sem ela, da chave
     /// `proofTimeoutSecs` do `mustard.json`.
     Criterion,
-    /// Declared build, irrespective of language/tool.
-    Build,
     /// O lint ou a suíte que o servidor roda: [`SERVER_COMMAND_TIMEOUT_SECS`],
     /// sempre.
     ServerCommand,
@@ -239,7 +237,6 @@ pub(crate) fn with_timeout_variable<T>(value: &str, f: impl FnOnce() -> T) -> T 
 pub(crate) fn ceiling_secs(ceiling: Ceiling, command: &str, env_override: Option<&str>, compiling: &[String]) -> u64 {
     match ceiling {
         Ceiling::ServerCommand => SERVER_COMMAND_TIMEOUT_SECS,
-        Ceiling::Build => env_override.and_then(|s| s.trim().parse().ok()).unwrap_or(AC_TIMEOUT_CARGO_SECS),
         Ceiling::Criterion => ac_timeout_secs_with_override(command, env_override, compiling),
     }
 }
@@ -381,10 +378,6 @@ pub(super) fn run_ac_command(command: &str, expect: Option<&str>, cwd: &Path) ->
 /// classificação da prova de um critério.
 pub(super) fn run_server_command(command: &str, cwd: &Path) -> AcResult {
     run_with_ceiling(command, None, cwd, Ceiling::ServerCommand)
-}
-
-pub(super) fn run_build_command(command: &str, cwd: &Path) -> AcResult {
-    run_with_ceiling(command, None, cwd, Ceiling::Build)
 }
 
 /// O executor com o teto que `ceiling` escolhe.

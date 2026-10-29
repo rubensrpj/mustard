@@ -257,9 +257,9 @@ Conta localmente conversas por dia/projeto, sem spec aberta. Deduplica mensagens
 
 ### `upsert`
 
-Instala ou atualiza. Na mesma chamada, tira as sobras do Mustard antigo nos `CLAUDE.md` e no `settings.json` da equipe, com as regras das Guards indo antes para um item só da lista de pendências, troca no lugar as regras de bloqueio da equipe escritas errado, e diz o que saiu e o que mudou; o arquivo sem marca só aparece na lista.
+Instala ou atualiza. Na mesma chamada, tira as sobras do Mustard antigo nos `CLAUDE.md`, com as regras das Guards indo antes para um item só da lista de pendências, e diz o que saiu. O arquivo sem marca e o `settings.json` da equipe só aparecem na lista: as linhas do molde antigo e as regras de bloqueio escritas errado, com a escrita certa, ficam para a pessoa mudar.
 
-Enquanto o `mustard.json` não tem `localFiles`, responde `localFilesFound`, os arquivos que o git ignora fora das pastas ignoradas; `--local-files <a,b>` grava a lista confirmada e `--prepare <comando>` o comando que prepara cada cópia, e o valor vazio grava que não há.
+Enquanto o `mustard.json` não tem `localFiles`, responde `localFilesFound`, os arquivos que o git ignora fora das pastas ignoradas. Enquanto não tem `prepareCommand`, responde `prepareSuggested`, a linha de preparo que o arquivo de lock pede, com ele como gatilho, sem rodar nada. `--local-files <a,b>` grava a lista confirmada, `--prepare <comando>` o comando que prepara cada cópia e `--prepare-files <a,b>` os arquivos que pedem o preparo de novo; o valor vazio grava que não há.
 
 ### `measure`
 

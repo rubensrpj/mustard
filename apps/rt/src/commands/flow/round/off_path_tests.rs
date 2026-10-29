@@ -339,3 +339,47 @@ fn a_round_and_the_removal_of_the_copies_never_touch_the_same_copy() {
     assert!(super::spec_copies(root, "x").is_empty(), "the copies left after the round");
 }
 
+
+/// Num projeto Node pequeno, com a linha de preparo declarada e o arquivo de
+/// lock como gatilho, a rodada prepara a cópia da onda: o preparo roda na
+/// cópia, uma vez, e a pasta principal fica como estava, pelo `git status`. A
+/// volta da onda muda a pasta principal só pelo commit.
+#[test]
+fn a_node_project_prepares_its_copy_and_leaves_the_main_folder_as_it_was() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args(["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .current_dir(root)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    std::fs::write(root.join("package.json"), r#"{"name":"web","version":"1.0.0"}"#).unwrap();
+    std::fs::write(root.join("package-lock.json"), r#"{"lockfileVersion":3}"#).unwrap();
+    git(&["add", "package.json", "package-lock.json"]);
+    git(&["commit", "-q", "-m", "projeto node"]);
+    let prepare = "mkdir -p node_modules && echo pronto >> node_modules/.preparado";
+    std::fs::write(root.join("mustard.json"), json!({"prepareCommand": prepare, "prepareFiles": ["package-lock.json"]}).to_string()).unwrap();
+    // O que a spec grava mora em `.claude`, fora do que se compara.
+    let status = || git(&["status", "--porcelain", "--untracked-files=all"]).lines().filter(|line| !line.contains(".claude/")).map(str::to_string).collect::<Vec<_>>();
+    let before = status();
+
+    let out = round(root, "x", None);
+    assert_eq!(waves_in(&out, "dispatch"), vec![1], "{out}");
+    let copy = mustard_core::io::wave_prompt::slot_path(root, "x", 0);
+    assert_eq!(std::fs::read_to_string(copy.join("node_modules/.preparado")).unwrap(), "pronto\n", "o preparo rodou na cópia, uma vez");
+    assert!(!root.join("node_modules").exists(), "nada do preparo na pasta principal");
+    assert_eq!(status(), before, "a pasta principal ficou como estava: {out}");
+
+    std::fs::write(copy.join("src/a.rs"), "fn one() {}\n// Saiu.\n").unwrap();
+    assert_eq!(returned(root, json!({"wave": 1, "text": "Saiu.", "files": ["src/a.rs"], "commit": "a onda sai"}))["ok"], true);
+    let back = round(root, "x", None);
+    assert_eq!(back["ok"], true, "{back}");
+    assert_eq!(status(), before, "só o commit mudou a pasta principal: {back}");
+    assert!(git(&["log", "-1", "--format=%s"]).contains("a onda sai") || git(&["log", "-1", "--name-only", "--format="]).contains("src/a.rs"), "{back}");
+}

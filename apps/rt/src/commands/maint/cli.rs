@@ -111,8 +111,9 @@ pub enum MaintCmd {
     /// copies, which live outside the project. While `mustard.json` has no
     /// `localFiles`, the answer carries `localFilesFound`: the files git
     /// ignores outside an ignored folder (such as `.env`), for the person to
-    /// confirm once. `--local-files` records the confirmed list and
-    /// `--prepare` the command that prepares each copy before it compiles.
+    /// confirm once. `--local-files` records the confirmed list, `--prepare`
+    /// the command that prepares each copy before it compiles and
+    /// `--prepare-files` the files that ask for it again.
     #[command(display_order = 19)]
     Upsert {
         /// The local files each copy receives, comma-separated and relative
@@ -124,6 +125,10 @@ pub enum MaintCmd {
         /// `npm ci`; an empty value records that the project has none.
         #[arg(long, value_name = "command")]
         prepare: Option<String>,
+        /// The files whose content asks for the preparation again, such as
+        /// the lock file, comma-separated and relative to the project root.
+        #[arg(long, value_name = "a,b")]
+        prepare_files: Option<String>,
     },
 }
 
@@ -151,8 +156,8 @@ pub fn dispatch(cmd: MaintCmd) {
             let _ = dry_run;
             maint::scratch_gc::run(maint::scratch_gc::ScratchGcOpts { apply, path });
         }
-        MaintCmd::Upsert { local_files, prepare } => {
-            maint::upsert::run(&maint::upsert::UpsertOpts { local_files, prepare });
+        MaintCmd::Upsert { local_files, prepare, prepare_files } => {
+            maint::upsert::run(&maint::upsert::UpsertOpts { local_files, prepare, prepare_files });
         }
     }
 }
@@ -206,20 +211,23 @@ mod tests {
     /// vazio chega como resposta, não como falta dela.
     #[test]
     fn upsert_takes_the_local_files_and_the_prepare_command() {
-        let Ok(Probe { cmd: MaintCmd::Upsert { local_files, prepare } }) = Probe::try_parse_from([
+        let Ok(Probe { cmd: MaintCmd::Upsert { local_files, prepare, prepare_files } }) = Probe::try_parse_from([
             "probe",
             "upsert",
             "--local-files",
             ".env,apps/api/.env.local",
             "--prepare",
             "pnpm install --frozen-lockfile",
+            "--prepare-files",
+            "pnpm-lock.yaml",
         ]) else {
-            panic!("both options must parse");
+            panic!("the options must parse");
         };
         assert_eq!(local_files.as_deref(), Some(".env,apps/api/.env.local"));
         assert_eq!(prepare.as_deref(), Some("pnpm install --frozen-lockfile"));
+        assert_eq!(prepare_files.as_deref(), Some("pnpm-lock.yaml"));
 
-        let Ok(Probe { cmd: MaintCmd::Upsert { local_files, prepare } }) =
+        let Ok(Probe { cmd: MaintCmd::Upsert { local_files, prepare, .. } }) =
             Probe::try_parse_from(["probe", "upsert", "--local-files", "", "--prepare", ""])
         else {
             panic!("empty answers must parse");

@@ -248,7 +248,8 @@ impl UpsertReport {
 /// 6. the cleanup ([`cleanup::plan`], then [`cleanup::apply`]) — what an older
 ///    Mustard left between its marks is taken out in this same call, with no
 ///    question: the rules of the Guards go first to the project's pending list
-///    (see [`upsert_project_with`]), and a file without a mark is only listed.
+///    (see [`upsert_project_with`]); a file without a mark and the team's
+///    `.claude/settings.json` are only listed.
 ///
 /// Nothing is staged or committed, whatever git tracks: the stamp in a
 /// versioned `mustard.json` stays a change for the person to commit.
@@ -345,12 +346,12 @@ pub fn upsert_project_with(root: &Path, version: Option<&str>, mode: InstallMode
     report.record(MUSTARD_JSON, outcome);
 
     // 6. What an older Mustard left in files that are not its own is its own
-    //    leftover, and leaves now. A shared install writes the seed into
-    //    `.claude/settings.json` itself, so there that file is the install's
-    //    and not the team's.
+    //    leftover, and leaves now; the team's settings are only listed. A
+    //    shared install writes the seed into `.claude/settings.json` itself,
+    //    so there that file is the install's and not the team's.
     let mut plan = cleanup::plan(root);
     if !mode.is_private() {
-        plan.files.retain(|change| change.path != SETTINGS_JSON);
+        plan.team = None;
     }
     if plan.has_changes() {
         report.cleaned = Some(cleanup::apply(root, &plan, pending)?);
@@ -870,16 +871,14 @@ mod tests {
         let report = upsert_project_with(root, None, InstallMode::Private, &list).unwrap();
         let plan = report.cleanup.clone().expect("what left is listed");
         let listed: Vec<(&str, &cleanup::Action)> = plan.files.iter().map(|f| (f.path.as_str(), &f.action)).collect();
-        assert_eq!(
-            listed,
-            [("apps/api/CLAUDE.md", &cleanup::Action::Edit), ("apps/web/CLAUDE.md", &cleanup::Action::Delete), (SETTINGS_JSON, &cleanup::Action::Edit),],
-        );
+        assert_eq!(listed, [("apps/api/CLAUDE.md", &cleanup::Action::Edit), ("apps/web/CLAUDE.md", &cleanup::Action::Delete)]);
+        assert_eq!(plan.team.as_ref().map(|team| team.path.as_str()), Some(SETTINGS_JSON), "the team file is only listed");
         assert_eq!(plan.unmarked, ["apps/cli/CLAUDE.md"], "the file without a mark is only listed");
         let rules: Vec<&str> = plan.rules.iter().map(|r| r.text.as_str()).collect();
         assert_eq!(rules, ["Reuse the shared client.", "Never block the render."]);
         let done = report.cleaned.clone().expect("the report says what the cleanup did");
         assert!(done.failed.is_empty(), "{done:?}");
-        assert_eq!(done.edited, ["apps/api/CLAUDE.md", SETTINGS_JSON]);
+        assert_eq!(done.edited, ["apps/api/CLAUDE.md"]);
         assert_eq!(done.deleted, ["apps/web/CLAUDE.md"]);
         assert_eq!(done.pending.as_deref(), Some("P-1"), "{done:?}");
         let detail = list.0.borrow()[0].1.clone();
@@ -900,8 +899,7 @@ mod tests {
         assert!(!root.join("apps/web/CLAUDE.md").exists(), "the file that was only Mustard's goes");
         assert_eq!(read(root, "apps/cli/CLAUDE.md"), unmarked.as_bytes(), "the unmarked file is never touched");
         assert_eq!(read(root, "CLAUDE.md"), root_md.as_bytes(), "a file with nothing of Mustard's is never touched");
-        let settings: Value = serde_json::from_slice(&read(root, SETTINGS_JSON)).unwrap();
-        assert_eq!(settings, json!({ "teamKey": 1 }), "only the seed's line leaves the team's settings");
+        assert_eq!(read(root, SETTINGS_JSON), team_settings.as_bytes(), "the team's settings are never written");
 
         assert!(!root.join(".claude/spec/lessons.ndjson").exists(), "nothing goes to the lesson bank");
         let again = upsert_project_with(root, None, InstallMode::Private, &list).unwrap();

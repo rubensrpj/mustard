@@ -9,8 +9,8 @@ argument-hint: [--doctor]
 1. Run `mustard-rt run upsert` (never commits).
 2. Relay `created`, `updated`, `preserved`, `migrated`. Settings and config preserve personal choices. For `session-map.md` and agents, every run lays the shipped text down again in `language.text`; equal copies are `preserved`.
 3. Relay `installation.complete` (false: incomplete), failures, `pluginRefresh` version/restart or skip and `codeToolWarnings` with commands.
-4. Relay `cleanup`/`cleaned` by file: obsolete `CLAUDE.md`/team settings entries removed, `cleaned.swapped` deny rules to commit, `cleaned.pending` Guards to test or drop. `unmarked` files are untouched; the person decides.
-5. `localFilesFound`, while `mustard.json` lacks `localFiles`: ignored files outside ignored folders (`.env`) a wave copy lacks. Show it once with the prepare command its lockfile/manifest suggests (`npm ci`, `dotnet restore`, none if nothing installs; Prisma adds `&& npx prisma generate`) and record the reply: `mustard-rt run upsert --local-files <a,b> --prepare "<command>"`; empty records none.
+4. Relay `cleanup`/`cleaned` by file: obsolete `CLAUDE.md` entries removed, `cleaned.pending` Guards to test or drop. `cleanup.team` (team settings lines and deny rules to swap) and `unmarked` files are untouched; the person decides.
+5. `localFilesFound`, while `mustard.json` lacks `localFiles`: ignored files outside ignored folders (`.env`) a wave copy lacks. `prepareSuggested`, while it lacks `prepareCommand`: the prepare line its lock file asks for, with that file as trigger; nothing ran. Show both once and record the reply: `mustard-rt run upsert --local-files <a,b> --prepare "<command>" --prepare-files <a,b>`; empty records none.
 6. After a first install, say `mustard.json` takes `git.flow`, `git.protected`, `language.text`, `language.code` (names in code; English without it), `enabled` (off disables Mustard's hooks here) and `rtk` (off drops its local hook on the next upsert).
 7. Say `proofTimeoutSecs` caps a criterion proof in seconds; `MUSTARD_QA_AC_TIMEOUT_SECS` wins.
 

@@ -38,9 +38,9 @@
 //! revisor deixou nela fica guardado quando ela volta ao commit. Quem prova
 //! que cada prova caía antes da obra é a máquina, e não o revisor.
 //!
-//! **A pasta de compilação.** No fim, a obra fechada apaga da pasta principal
-//! as pastas descartáveis declaradas em `buildOutput` que ultrapassam 15 GB;
-//! as menores são preservadas para reutilizar o cache. A resposta informa o resultado.
+//! **A pasta principal.** O fechamento nunca mexe nela: a pasta de
+//! compilação declarada em `buildOutput` fica, e tudo o que ele roda roda nas
+//! cópias da obra.
 //!
 //! **O que trava.** Onda sem commit; onda cuja última revisão reprovou e
 //! ainda não recebeu o conserto; pedido do usuário que nenhuma onda entregou;
@@ -84,7 +84,7 @@ use serde_json::{Map, Value, json};
 use crate::commands::flow::round::Caller;
 use crate::commands::review::qa_run::ProofFault;
 use crate::commands::spec_events::{self, write::record};
-use crate::shared::build_removal::{remove_build_output, removal_warnings};
+use crate::shared::build_removal::removal_warnings;
 use crate::shared::spec_state::{DiskSpecState, checkout, session_from_env};
 
 mod clean_copy;
@@ -765,9 +765,6 @@ fn run_close(
     // análise de declarações sem uso já rodou contra ele. São dezenas de
     // megabytes por spec, e ninguém os apagava.
     let _ = std::fs::remove_file(mustard_core::io::wave_prompt::validation_base_map(root, &spec));
-    // Por último, a pasta de compilação que o projeto declarou descartável
-    // sai da pasta principal: ela só cresce, e a próxima obra a refaz uma vez.
-    let build_output = remove_build_output(root, lang);
     // Closing updates local state only; external pages require an explicit request.
 
     // O pull request é o passo seguinte, e a linha dele sai pronta, com a base
@@ -801,7 +798,6 @@ fn run_close(
         out["copies_left"] = json!(orphans);
         spec_events::pages::push_warning(&mut out, "copies-left", &hint);
     }
-    build_output.tell(&mut out);
     for hint in &undeclared {
         spec_events::pages::push_warning(&mut out, "server-command-not-declared", hint);
     }
@@ -2476,63 +2472,23 @@ mod tests {
         file
     }
 
-    /// O fechamento apaga da pasta principal a pasta de compilação que o
-    /// projeto declarou, só quando fecha — o pedido da revisão não apaga — e
-    /// a resposta diz o que saiu. O resto fica: o código, o `.git` e a pasta
-    /// ignorada que ninguém declarou. A pasta que não sai do disco vira aviso,
-    /// e a obra fecha assim mesmo.
+    /// O fechamento nunca mexe na pasta principal além do que a obra comitou:
+    /// a pasta de compilação que o projeto declarou descartável fica, como a
+    /// pasta ignorada que ninguém declarou, o código e o `.git`.
     #[test]
-    fn closing_retains_small_declared_build_outputs_and_keeps_the_rest() {
+    fn closing_never_removes_the_declared_build_output_of_the_main_folder() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         ready_to_close(root, "x", &["git --version"]);
         let built = main_build(root);
         let other = ignored_folder(root, "outra");
-        // A pasta com uma pasta sem escrita dentro não sai do disco.
-        #[cfg(unix)]
-        let stuck = {
-            use std::os::unix::fs::PermissionsExt;
-            let file = ignored_folder(root, "presa");
-            let inner = root.join("presa").join("trava");
-            std::fs::create_dir_all(&inner).unwrap();
-            std::fs::write(inner.join("arquivo"), "x").unwrap();
-            std::fs::set_permissions(&inner, std::fs::Permissions::from_mode(0o555)).unwrap();
-            (file, inner)
-        };
-        let declared = if cfg!(unix) { vec!["target", "presa"] } else { vec!["target"] };
-        std::fs::write(root.join("mustard.json"), json!({"buildOutput": declared}).to_string()).unwrap();
-
-        let asked = close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), ..Default::default() }, None);
-        assert_eq!(asked["review"]["final"], json!(true), "{asked}");
-        assert!(built.is_file(), "the review request removes nothing: {asked}");
+        std::fs::write(root.join("mustard.json"), json!({"buildOutput": ["target", "outra"]}).to_string()).unwrap();
 
         let closed = close(root, "x");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&stuck.1, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
-        assert_eq!(closed["ok"], json!(true), "{closed}");
-        assert_eq!(closed["phase"], json!("closed"), "{closed}");
-        assert!(closed.get("build_output_removed").is_none(), "{closed}");
-        assert!(built.is_file(), "the small build is retained: {closed}");
-        assert!(other.is_file(), "an ignored folder nobody declared stays");
+        assert_eq!((closed["ok"].clone(), closed["phase"].clone()), (json!(true), json!("closed")), "{closed}");
+        assert!(built.is_file() && other.is_file(), "the declared build output stays: {closed}");
+        assert!(hints_of(&closed, "build-output-kept").is_empty(), "{closed}");
         assert!(root.join(wave_file(1)).is_file() && root.join(".git").is_dir(), "the main folder stays");
-        let kept: Vec<String> = closed["warnings"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|w| w["reason"] == json!("build-output-kept"))
-            .filter_map(|w| w["hint"].as_str().map(str::to_string))
-            .collect();
-        #[cfg(unix)]
-        {
-            assert_eq!(kept.len(), 2, "{closed}");
-            assert!(kept.iter().any(|hint| hint.contains("`presa`")), "{kept:?}");
-            assert!(stuck.0.is_file() || root.join("presa").exists(), "the folder that failed stays on disk");
-        }
-        #[cfg(not(unix))]
-        assert_eq!(kept.len(), 1, "{closed}");
     }
 
     /// O fechamento procura processo preso só com a trava das cópias presa.

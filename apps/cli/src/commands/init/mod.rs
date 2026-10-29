@@ -43,10 +43,9 @@
 //!    marcas nos arquivos `CLAUDE.md`, as linhas do molde no
 //!    `.claude/settings.json` da equipe, um `.claude/CLAUDE.md` plantado) e
 //!    dizer como tirar, com uma linha, no idioma do texto, para cada regra de
-//!    bloqueio do arquivo da equipe que o `/mustard:upsert` vai trocar no
-//!    lugar e deixar para a pessoa comitar. Nada disso sai nem é trocado aqui:
-//!    isso acontece pelo `/mustard:upsert`, depois que a pessoa diz sim à
-//!    lista.
+//!    bloqueio do arquivo da equipe que a pessoa pode trocar no lugar. Nada
+//!    disso sai nem é trocado aqui; o arquivo da equipe, nem pelo
+//!    `/mustard:upsert`.
 //!
 //! This library entry stages or commits nothing and writes only in the project:
 //! `~/.claude/` is never touched. A re-run re-stamps `mustard.json#version`,
@@ -57,22 +56,21 @@
 //! arquivo acima vai para o disco, porque o harness precisa dele lá, mas
 //! nenhum fica visível ao git do repositório hospedeiro, e nada se grava fora
 //! de `.claude/` além do `mustard.json`. Não há opção nem pergunta para isso.
-//! O `init` nunca grava o `.claude/settings.json` da equipe: só a limpeza do
-//! `/mustard:upsert` mexe nele, para tirar as linhas do molde e, como única
-//! exceção entre as regras de bloqueio dele, trocar no lugar cada uma das três
-//! que um molde antigo escreveu com as duas formas de asterisco; essas linhas
-//! mudadas são da pessoa para comitar.
+//! Nada do Mustard grava o `.claude/settings.json` da equipe: a limpeza só
+//! lista as linhas do molde antigo e as regras de bloqueio escritas com as
+//! duas formas de asterisco, e quem as muda é a pessoa.
 //!
 //! Everything laid down is compiled into the binary: `init` looks up no folder
 //! of molds, so it runs in an empty project with no extra setting.
 //!
 //! What is NOT a step of `init`, though it still happens on a `mustard init`
-//! run: the rtk gate, the ripgrep installer and the code-tool step ([`tools`]).
-//! They act on the MACHINE, so they live in `cli::dispatch`, and a library call
-//! never takes them on its caller's behalf. `apps/cli/tests/library_is_pure.rs`
-//! measures it. The code-tool step itself is
-//! `mustard_core::platform::code_tools::ensure_code_tools`, the one the project
-//! update runs too; [`tools`] only hands it the machine.
+//! run: the rtk gate and the ripgrep installer ([`tools`]). They act on the
+//! MACHINE, so they live in `cli::dispatch`, and a library call never takes
+//! them on its caller's behalf. `apps/cli/tests/library_is_pure.rs` measures
+//! it. The code tools are never installed: the native update names the
+//! command of each missing one
+//! (`mustard_core::platform::code_tools::code_tool_hints`), and [`tools`]
+//! prints it.
 //!
 //! ## The parts
 //!
@@ -81,8 +79,8 @@
 //! - [`seeding`] — the guard, the footprint and the narration;
 //! - [`map`] — the project map, created at the end of the install;
 //! - [`project_config`] — the one write of `mustard.json`;
-//! - [`tools`] — the rtk gate, the ripgrep installer and the call into the
-//!   code-tool step.
+//! - [`tools`] — the rtk gate, the ripgrep installer and the native update
+//!   that finishes the installation.
 
 use std::io::Write;
 use std::path::Path;

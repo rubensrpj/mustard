@@ -626,6 +626,12 @@ pub struct ProjectConfig {
     /// instalação ainda não perguntou; vazio, o projeto não tem preparo.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prepare_command: Option<String>,
+    /// Os arquivos cujo conteúdo pede o preparo de novo (`prepareFiles`),
+    /// como o arquivo de lock, relativos à raiz. O selo do preparo leva o
+    /// comando e o conteúdo deles; sem nenhum, o preparo roda uma vez por
+    /// cópia nova.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prepare_files: Option<Vec<String>>,
     /// As pastas de compilação da pasta principal que só crescem e podem ser
     /// apagadas no fim do fechamento e do descarte, relativas à raiz. A
     /// instalação as grava pela detecção dos comandos. Ausente, a instalação
@@ -903,6 +909,13 @@ impl ProjectConfig {
             prepare: non_blank(self.prepare_command.as_deref()),
             build_output: self.build_output.iter().flatten().filter_map(|folder| non_blank(Some(folder.as_str()))).collect(),
         }
+    }
+
+    /// Os arquivos de `prepareFiles`, sem as pontas em branco e sem as
+    /// entradas vazias.
+    #[must_use]
+    pub fn prepare_files(&self) -> Vec<String> {
+        self.prepare_files.iter().flatten().filter_map(|file| non_blank(Some(file.as_str()))).collect()
     }
 
     /// VCS binary policy: `Some("git")` by default, `Some(bin)` when pinned,

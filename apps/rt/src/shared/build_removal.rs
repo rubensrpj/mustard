@@ -76,7 +76,7 @@ impl BuildOutputSwept {
 
 /// Apaga da pasta principal `root` cada pasta de compilação que o projeto
 /// declarou descartável (`buildOutput`, no `mustard.json`), no fim do
-/// fechamento e do descarte, depois que as cópias da obra saíram. Nada mais
+/// descarte, depois que as cópias da obra saíram. O fechamento não a chama. Nada mais
 /// da pasta principal é apagado, e sem a declaração nada sai.
 ///
 /// A pasta só sai quando é um caminho relativo que fica dentro da raiz, que

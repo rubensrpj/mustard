@@ -131,29 +131,21 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("doctor.claude_md.leftovers", Locale::PtBr) => {
             "Sobras do Mustard em arquivos que não são dele: {paths}. Rode `mustard-rt run upsert`: \
-             ele as tira e troca no lugar as regras de bloqueio escritas errado."
+             ele tira as dele e lista o que você pode tirar do arquivo da equipe."
         }
         ("doctor.claude_md.leftovers", Locale::EnUs) => {
             "Mustard leftovers in files that are not its own: {paths}. Run `mustard-rt run upsert`: \
-             it takes them out and swaps in place the deny rules written wrong."
+             it takes out its own and lists what you can take out of the team file."
         }
         ("cleanup.deny_rule_to_swap", Locale::PtBr) => {
-            "{file}: o /mustard:upsert troca a regra de bloqueio `{from}` por `{to}`, no mesmo lugar. \
-             Ela segue bloqueando o mesmo comando, e o Claude Code para de avisar; a linha mudada é \
-             sua para comitar."
+            "{file}: a regra de bloqueio `{from}` pode virar `{to}`, no mesmo lugar. Ela segue \
+             bloqueando o mesmo comando, e o Claude Code para de avisar. O arquivo é da equipe, e o \
+             Mustard não o grava."
         }
         ("cleanup.deny_rule_to_swap", Locale::EnUs) => {
-            "{file}: /mustard:upsert swaps the deny rule `{from}` for `{to}`, in the same place. It \
-             still blocks the same command, and Claude Code stops warning; the changed line is yours \
-             to commit."
-        }
-        ("cleanup.deny_rule_swapped", Locale::PtBr) => {
-            "{file}: a regra de bloqueio `{from}` virou `{to}`, no mesmo lugar. Ela bloqueia o mesmo \
-             comando, e o Claude Code para de avisar; a linha mudada é sua para comitar."
-        }
-        ("cleanup.deny_rule_swapped", Locale::EnUs) => {
-            "{file}: the deny rule `{from}` became `{to}`, in the same place. It blocks the same \
-             command, and Claude Code stops warning; the changed line is yours to commit."
+            "{file}: the deny rule `{from}` can become `{to}`, in the same place. It still blocks the \
+             same command, and Claude Code stops warning. The file is the team's, and Mustard does not \
+             write it."
         }
         _ => return None,
     })
@@ -186,7 +178,6 @@ mod tests {
             ("doctor.binaries.unstamped", &["{programs}"][..]),
             ("doctor.binaries.diverge", &["{stamps}"][..]),
             ("cleanup.deny_rule_to_swap", &["{file}", "{from}", "{to}"][..]),
-            ("cleanup.deny_rule_swapped", &["{file}", "{from}", "{to}"][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
             assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");

@@ -153,10 +153,10 @@ fn unread_languages(root: &Path, lang: Locale) -> Vec<String> {
 pub(super) fn check_claude_md(root: &Path, lang: Locale) -> CheckResult {
     const NAME: &str = "claude-md";
     let plan = mustard_core::platform::project_seed::cleanup::plan(root);
-    if plan.files.is_empty() {
+    if plan.files.is_empty() && plan.team.is_none() {
         return CheckResult::ok(NAME);
     }
-    let paths: Vec<&str> = plan.files.iter().map(|change| change.path.as_str()).collect();
+    let paths: Vec<&str> = plan.files.iter().chain(&plan.team).map(|change| change.path.as_str()).collect();
     CheckResult::warn(NAME, vec![translate("doctor.claude_md.leftovers", lang).replace("{paths}", &paths.join(", "))])
 }
 

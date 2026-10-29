@@ -1,6 +1,6 @@
 //! O que a máquina tem instalado: o programa `claude` no PATH, o servidor de
-//! linguagem de cada pilha que o projeto usa (pela mesma tabela que
-//! `mustard init` usa para instalar), a cópia certa de `rtk` no PATH e uma
+//! linguagem de cada pilha que o projeto usa (pela mesma lista que a
+//! instalação mostra, sem instalar nada), a cópia certa de `rtk` no PATH e uma
 //! Nerd Font para os temas da barra de status. Nenhuma dessas faltas trava:
 //! cada uma vira aviso com o comando que instala.
 
@@ -10,7 +10,7 @@ use mustard_core::domain::config::DEFAULT_AGENT_EFFORT;
 use mustard_core::io::fs;
 use mustard_core::io::sha256::Sha256;
 use mustard_core::platform::code_tools::{
-    code_tool_for_language, read_pinned_version, CodeTool, MachineRunner, PinState, ToolRunner,
+    code_tool_for_language, code_tool_hints, read_pinned_version, CodeTool, MachineRunner, PinState, ToolRunner,
 };
 
 use super::{CheckResult, Status};
@@ -84,19 +84,14 @@ fn lsp_verdict(project_dir: &Path, runner: &impl ToolRunner) -> CheckResult {
     }
 
     let mut seen_bins: Vec<&str> = Vec::new();
-    let mut missing: Vec<String> = Vec::new();
+    let mut missing = code_tool_hints(&languages, runner);
 
     for (_, tool) in &mapped {
-        let (bin, hint) = (tool.program, tool.install_cmd);
+        let bin = tool.program;
         if seen_bins.contains(&bin) {
             continue;
         }
         seen_bins.push(bin);
-        if !runner.on_path(bin) {
-            missing.push(format!("missing: {bin} (install: {hint})"));
-        } else if !tool.answers(runner) {
-            missing.push(format!("not answering: {bin} (install: {hint})"));
-        }
         if let (PinState::Wrong { installed }, Some(pin)) = (read_pinned_version(tool, runner), &tool.pin) {
             missing.push(format!(
                 "wrong version: {bin} {installed}, {} is the one that works (update: {})",

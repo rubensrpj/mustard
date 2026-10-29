@@ -475,23 +475,14 @@ fn take_returns(
             .iter()
             .map(|name| json!({ "reason": "formatter-not-found", "hint": translate("round.formatter_missing", lang).replace("{name}", name) }))
             .collect();
-        // A rodada junta e comita sem compilar nem rodar prova: a prova é de
-        // cada onda, e a compilação, o lint, a suíte e os critérios são do
-        // fechamento. Antes do commit ficam o preparo do cliente gerado, no
-        // projeto que declara compilação, e a conferência depois da onda
-        // (importações contra a regra, restos e órfãos), que lê o mapa e não
-        // roda comando do projeto. A onda recusada volta o disco ao que era e
+        // A rodada junta e comita sem compilar nem rodar prova nem comando do
+        // projeto: a prova é de cada onda, e a compilação, o lint, a suíte e
+        // os critérios são do fechamento, na cópia limpa. Antes do commit fica
+        // a conferência depois da onda (importações contra a regra, restos e
+        // órfãos), que lê o mapa. A onda recusada volta o disco ao que era e
         // fica de fora; o que só avisa segue nos avisos.
         if !commits.is_empty() {
             let mut timing = super::super::validation::Stage::new(root, spec, "delivery", "validation-and-gates", true);
-            if mustard_core::ProjectConfig::load(root).commands().build.is_some() {
-                let stale = super::environment::prepare_or_hold(root, spec, &mut report.waves, &earlier, lang);
-                if !stale.as_ref().is_ok_and(Vec::is_empty) {
-                    drop(write_joined(root, &join.joined, false));
-                    refused.extend(stale?);
-                    continue;
-                }
-            }
             let mut gates = super::super::validation::Stage::new(root, spec, "delivery", "structural-gates", false);
             let skipped: BTreeSet<u64> = earlier.union(&after_checked).copied().collect();
             let (after, after_held, after_asking) = ensure_after_wave(root, spec, log, &report.waves, &skipped, mine, lang, jev_on);

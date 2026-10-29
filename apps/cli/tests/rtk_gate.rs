@@ -196,71 +196,22 @@ fn the_binary_still_runs_the_tool_installers_after_a_successful_install() {
     );
 }
 
-/// The end-to-end proof for the code-tool install: a Rust project driven
-/// through the REAL binary, with `rustup` and `claude` shimmed alongside the
-/// rest of `shim_dir`. The step is `mustard_core::platform::code_tools::ensure_code_tools`,
-/// reached through `init::ensure_code_tools(...)` in `cli::dispatch`. Deleting
-/// that call — or the wrapper's call into the core — makes every one of these
-/// log lines vanish: this drives the actual command that goes out.
+/// The install never installs a code tool: through the REAL binary, in a Rust
+/// and TypeScript project with `rustup`, `npm`, `claude` and a TypeScript
+/// server that does not answer shimmed, no install command runs, nothing runs
+/// with `-g`, and the output names the command of each tool for the person.
 #[test]
 #[cfg_attr(not(unix), ignore = "the shims are shell scripts")]
-fn the_binary_installs_the_code_tool_of_a_detected_language() {
+fn the_binary_names_the_code_tool_commands_without_running_them() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let log = tmp.path().join("spawn.log");
     let bin = shim_dir(&log, true);
-    for tool in ["rustup", "claude"] {
-        let script = format!("#!/bin/sh\necho \"{tool} $*\" >> \"{}\"\nexit 0\n", log.display());
-        executable::write_executable(&bin.join(tool), &script);
-    }
-    let project = fresh_repo(tmp.path());
-    fs::write(project.join("Cargo.toml"), "[package]\nname = \"x\"\n").expect("write Cargo.toml");
-    let home = tmp.path().join("home");
-    fs::create_dir_all(&home).expect("mkdir home");
-
-    let out = run_init(&project, &bin, &home);
-
-    assert!(
-        out.status.success(),
-        "the install must still succeed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let spawned = fs::read_to_string(&log).unwrap_or_default();
-    assert!(
-        spawned.lines().any(|l| l.starts_with("rustup component add rust-analyzer")),
-        "the install must run the code-tool program's install command; log was:\n{spawned}"
-    );
-    assert!(
-        spawned
-            .lines()
-            .any(|l| l.starts_with("claude plugin install rust-analyzer-lsp@claude-plugins-official")),
-        "the install must install the catalog plugin; log was:\n{spawned}"
-    );
-    assert!(
-        spawned
-            .lines()
-            .any(|l| l.starts_with("claude plugin enable rust-analyzer-lsp@claude-plugins-official")),
-        "the install must enable the catalog plugin; log was:\n{spawned}"
-    );
-}
-
-/// The TypeScript server on PATH whose check fails — the TypeScript it finds
-/// ships no `tsserver.js`, so it opens and answers nothing — counts as
-/// missing: through the REAL binary, with `npm`, `claude` and the server
-/// shimmed and a `node` that fails the check, the install puts the server
-/// back and brings `typescript@6` into the server's own folder, never
-/// installing `typescript` globally, and prints the warning with the command
-/// because the check still fails afterwards.
-#[test]
-#[cfg_attr(not(unix), ignore = "the shims are shell scripts")]
-fn the_binary_brings_typescript_6_into_the_servers_folder() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let log = tmp.path().join("spawn.log");
-    let bin = shim_dir(&log, true);
-    for (tool, exit) in [("npm", 0), ("claude", 0), ("typescript-language-server", 0), ("node", 1)] {
+    for (tool, exit) in [("rustup", 0), ("npm", 0), ("claude", 0), ("typescript-language-server", 0), ("node", 1)] {
         let script = format!("#!/bin/sh\necho \"{tool} $*\" >> \"{}\"\nexit {exit}\n", log.display());
         executable::write_executable(&bin.join(tool), &script);
     }
     let project = fresh_repo(tmp.path());
+    fs::write(project.join("Cargo.toml"), "[package]\nname = \"x\"\n").expect("write Cargo.toml");
     fs::write(project.join("package.json"), r#"{"devDependencies":{"typescript":"7.0.2"}}"#).expect("package.json");
     fs::write(project.join("tsconfig.json"), "{}\n").expect("tsconfig.json");
     let home = tmp.path().join("home");
@@ -270,77 +221,13 @@ fn the_binary_brings_typescript_6_into_the_servers_folder() {
 
     assert!(out.status.success(), "the install must still succeed: {}", String::from_utf8_lossy(&out.stderr));
     let spawned = fs::read_to_string(&log).unwrap_or_default();
-    let npm: Vec<&str> = spawned.lines().filter(|l| l.starts_with("npm ")).collect();
-    assert_eq!(
-        npm,
-        vec![
-            "npm install -g typescript-language-server",
-            "npm explore -g typescript-language-server -- npm install --global=false --prefix lib --no-save typescript@6",
-        ],
-        "log was:\n{spawned}"
-    );
-    assert_eq!(spawned.lines().filter(|l| l.starts_with("node -e ")).count(), 2, "checked before and after: {spawned}");
+    for installer in ["rustup ", "npm ", "claude plugin "] {
+        assert!(!spawned.lines().any(|l| l.starts_with(installer)), "the install ran {installer}; log was:\n{spawned}");
+    }
+    assert!(!spawned.lines().any(|l| l.contains(" -g ") || l.contains("--global") || l.contains("@latest")), "{spawned}");
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        stdout.contains("typescript-language-server is on PATH but does not answer - install manually: npm install -g"),
-        "the install must say the server does not answer: {stdout}"
-    );
-}
-
-/// No Windows, o `npm` e o `claude` instalados pelo npm são `npm.cmd` e
-/// `claude.cmd`: o sistema os acha pelo nome, e o `Command` do Rust, dado só
-/// o nome, completa apenas o `.exe`. Pelo binário de verdade, com os falsos
-/// escritos como `.cmd` e um `node` que falha a conferência do servidor, a
-/// instalação chega a rodar `npm install -g typescript-language-server`.
-#[cfg(windows)]
-#[test]
-fn on_windows_the_binary_runs_npm_by_its_cmd_file() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let log = tmp.path().join("spawn.log");
-    let bin = tmp.path().join("bin");
-    fs::create_dir_all(&bin).expect("mkdir bin");
-    // O portão só pede que `rtk --version` responda: o próprio binário do
-    // Mustard responde.
-    fs::copy(env!("CARGO_BIN_EXE_mustard"), bin.join("rtk.exe")).expect("copy rtk");
-    for (tool, exit) in [("npm", 0), ("claude", 0), ("typescript-language-server", 0), ("node", 1)] {
-        let script = format!("@echo {tool} %* >> \"{}\"\r\n@exit /b {exit}\r\n", log.display());
-        fs::write(bin.join(format!("{tool}.cmd")), script).expect("write shim");
-    }
-    let project = fresh_repo(tmp.path());
-    fs::write(project.join("package.json"), r#"{"devDependencies":{"typescript":"7.0.2"}}"#).expect("package.json");
-    fs::write(project.join("tsconfig.json"), "{}\n").expect("tsconfig.json");
-    let home = tmp.path().join("home");
-    fs::create_dir_all(&home).expect("mkdir home");
-
-    // O `git` de verdade vem da pasta dele no `PATH` do teste, como no
-    // `shim_dir` dos outros sistemas.
-    let git_dir = std::env::var_os("PATH")
-        .map(|path| std::env::split_paths(&path).collect::<Vec<PathBuf>>())
-        .unwrap_or_default()
-        .into_iter()
-        .find(|dir| dir.join("git.exe").is_file())
-        .expect("git on PATH");
-    let path = std::env::join_paths([bin.clone(), git_dir]).expect("join PATH");
-    let mut init = Command::new(env!("CARGO_BIN_EXE_mustard"));
-    init.args(["init", "--yes"])
-        .current_dir(&project)
-        .env_clear()
-        .env("PATH", &path)
-        .env("HOME", &home)
-        .env("USERPROFILE", &home);
-    for key in ["SystemRoot", "TEMP", "TMP"] {
-        if let Some(value) = std::env::var_os(key) {
-            init.env(key, value);
-        }
-    }
-    let out = init.output().expect("the mustard binary runs");
-
-    assert!(out.status.success(), "the install must still succeed: {}", String::from_utf8_lossy(&out.stderr));
-    let spawned = fs::read_to_string(&log).unwrap_or_default();
-    assert!(
-        spawned.lines().any(|l| l.starts_with("npm install -g typescript-language-server")),
-        "the install must run npm through npm.cmd; log was:\n{spawned}"
-    );
+    assert!(stdout.contains("missing: rust-analyzer (install: rustup component add rust-analyzer)"), "{stdout}");
+    assert!(stdout.contains("not answering: typescript-language-server (install: npm install -g"), "{stdout}");
 }
 
 /// What is in `home`, by name. The install may leave nothing there.

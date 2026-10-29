@@ -97,7 +97,7 @@
 //! cópia; só quando não sobra outra volta a recusa é a resposta. Do mesmo
 //! jeito fica de fora só a onda que uma conferência da volta recusa: o
 //! caminho que nunca entra num commit, a cópia que o git não lê, a gravação
-//! que a spec recusaria, o cliente gerado atrás do schema que ela mudou e a
+//! que a spec recusaria e a
 //! conferência depois da onda — a importação nova contra uma regra forte do
 //! padrão do projeto e o resto do que a onda tirou, que a onda conserta na
 //! mesma cópia, até a pergunta ao usuário depois da segunda rodada de
@@ -152,7 +152,6 @@ pub(crate) use commit::{final_unused, work_maps};
 mod copy_check;
 mod dependencies;
 pub(crate) use dependencies::prepare as prepare_copy_dependencies;
-mod environment;
 mod finish_check;
 mod fixes;
 mod git_ignored;

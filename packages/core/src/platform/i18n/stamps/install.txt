@@ -1,8 +1,7 @@
-cleanup.deny_rule_swapped	08638c9c9e455d65
-cleanup.deny_rule_to_swap	c428be464870350c
+cleanup.deny_rule_to_swap	714ba17aa6f6a272
 doctor.binaries.diverge	6ffbd74e12bdaca7
 doctor.binaries.unstamped	568d2d8b1a9ba0c5
-doctor.claude_md.leftovers	09e5fd2833efc91a
+doctor.claude_md.leftovers	eec1ce065128d62b
 doctor.protection.fix	681aac3b863805da
 doctor.protection.flow_missing	a0498bd8b2e7a879
 doctor.protection.open	aa1f729a1a1294df

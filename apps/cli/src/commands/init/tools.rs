@@ -1,8 +1,8 @@
-//! The tools `mustard init` needs on the machine: the rtk gate, the
-//! best-effort ripgrep install, and the best-effort code-tool install (one
-//! language-server program + Claude Code plugin per detected language). All
-//! three are acts on the MACHINE, so they run from `cli::dispatch`, never
-//! from the library half of `init`.
+//! The tools `mustard init` needs on the machine: the rtk gate and the
+//! best-effort ripgrep install. Both are acts on the MACHINE, so they run from
+//! `cli::dispatch`, never from the library half of `init`. The code tools of
+//! each detected language are never installed: the native update names the
+//! command of each missing one, and this half prints it.
 //!
 //! rtk itself comes with the installers, in a fixed version checked against
 //! `checksums.txt`; `mustard init` only refuses to go on without it. Nothing
