@@ -281,8 +281,10 @@ pub enum FlowCmd {
     /// Grava numa chamada só a resposta de um ponto do levantamento: o item
     /// da resposta, pela mesma porta e com as mesmas recusas do `write`; o
     /// ponto que fecha o aberto; e o passo seguinte, como o `write` o
-    /// devolve. O item sem `origin` recebe o número da última mensagem do
-    /// usuário, e o fechamento aponta a mesma mensagem. As duas gravações vão
+    /// devolve. O ponto do usuário fecha só com a mensagem dele, em `--origin`
+    /// ou no `origin` do item. No ponto do assistente, o item sem `origin`
+    /// recebe a última mensagem do usuário, e o fechamento aponta a mesma;
+    /// o pedido, a regra e a decisão pedem a mensagem. As duas gravações vão
     /// juntas, sob a trava da spec: o item recusado não fecha o ponto, e o
     /// fechamento recusado tira o item. `points` traz o código, o número e a
     /// lacuna de cada ponto aberto, e `point`
