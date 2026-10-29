@@ -332,7 +332,7 @@ round.skill_waits_open_tasks	89926f7a746d3330
 round.spend.line	3917a853165829dc
 round.started_work_undone	c08c49e6632918a5
 round.task_without_covers	c13fd8daebf05f94
-round.tasks_returned	89e9ec99d9b8278f
+round.tasks_returned	8f858ee1331adfa2
 round.terminal_inside_a_copy	2ca458812a7b3417
 round.undone_not_in_wave	36bc354c266b1758
 round.unmet_covered	4b15392e3fec8ca9

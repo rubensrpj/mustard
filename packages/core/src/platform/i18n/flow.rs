@@ -1470,13 +1470,15 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("round.tasks_returned", Locale::PtBr) => {
             "A onda {wave} não fez as tarefas {tasks}, e elas voltaram ao backlog, com a mudança \
-             de plano anotada quando houve. Se a mudança altera uma decisão ou o que a tarefa pede, \
-             grave a decisão e reescreva a tarefa antes da próxima rodada."
+             de plano anotada quando houve. Se a mudança troca uma decisão do usuário, pergunte a ele \
+             e grave a decisão com a mensagem dele em `origin`. O resto vai como `note`. Reescreva a \
+             tarefa antes da próxima rodada."
         }
         ("round.tasks_returned", Locale::EnUs) => {
             "Wave {wave} did not do tasks {tasks}, and they went back to the backlog, with the plan \
-             change noted when there was one. If the change alters a decision or what the task asks, \
-             record the decision and rewrite the task before the next round."
+             change noted when there was one. If the change alters a decision of the user, ask the \
+             user and record the decision with the user's message in `origin`. The rest goes as a \
+             `note`. Rewrite the task before the next round."
         }
         // A prova que cita outro item que não um critério entra assim mesmo:
         // vale para o único critério que a tarefa citada cobre, ou fica como

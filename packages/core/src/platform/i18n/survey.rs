@@ -112,26 +112,28 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("survey.present_all", Locale::PtBr) => {
             "Os pontos abertos estão em `points`, cada um com o dono em `owner`. Feche sozinho os do \
              assistente, sem perguntar ao usuário: responda do código com `mustard-rt run answer \
-             --point <número> --type <tipo> --json '{…}'` e os fatos em `--facts` (lista JSON de \
-             `{\"text\":\"…\",\"source\":\"arquivo:linha\"}`), citando a fonte. Os fatos também podem \
-             entrar antes numa versão do ponto. Os do usuário estão em `ask_user`. Mostre só eles, \
-             numa mensagem só, cada um com a proposta e a fonte. Apresente-os na ordem de explicar \
-             do estilo de resposta e peça um sim só. Com o sim, grave a resposta de cada um pelo \
-             mesmo comando, com `--origin` no número da mensagem do sim. A resposta devolve em `points` o código, o número e \
-             a lacuna de cada ponto ainda aberto, e em `point` o próximo inteiro."
+             --point <número> --type context --json '{…}'` e os fatos em `--facts` (lista JSON de \
+             `{\"text\":\"…\",\"source\":\"arquivo:linha\"}`), citando a fonte. O item deles é \
+             `context`, `contract` ou `note`, nunca `rule` nem `decision`, que são do usuário. Os \
+             fatos também podem entrar antes numa versão do ponto. Os do usuário estão em \
+             `ask_user`. Mostre só eles, numa mensagem só, cada um com a proposta e a fonte. \
+             Apresente-os na ordem de explicar do estilo de resposta e peça um sim só. Com o sim, \
+             grave a resposta de cada um pelo `answer`, com o tipo que ela pede e `--origin` no \
+             número da mensagem do sim. A resposta devolve em `points` o código, o número e a \
+             lacuna de cada ponto ainda aberto, e em `point` o próximo inteiro."
         }
         ("survey.present_all", Locale::EnUs) => {
             "The open points are in `points`, each with its owner in `owner`. Close the assistant's \
              on your own, without asking the user: answer from the code with `mustard-rt run answer \
-             --point <number> --type <type> --json '{…}'` and the facts in `--facts` (JSON array of \
-             `{\"text\":\"…\",\"source\":\"file:line\"}`), citing the source. The facts can also go \
-             first into a version of the point. The user's are in `ask_user`. Show only those, in a \
-             single message, each with the proposal and its source. Present them in the order of \
-             explaining from the response style and ask for a single yes. With the yes, record the \
-             answer to each one with the same command, with `--origin` set to the yes message's \
-             number. The answer returns in \
-             `points` the code, the number and the gap of each point still open, and in `point` the \
-             next one in full."
+             --point <number> --type context --json '{…}'` and the facts in `--facts` (JSON array of \
+             `{\"text\":\"…\",\"source\":\"file:line\"}`), citing the source. Their item is \
+             `context`, `contract` or `note`, never `rule` or `decision`, which belong to the user. \
+             The facts can also go first into a version of the point. The user's are in `ask_user`. \
+             Show only those, in a single message, each with the proposal and its source. Present \
+             them in the order of explaining from the response style and ask for a single yes. With \
+             the yes, record the answer to each one with `answer`, with the type it needs and \
+             `--origin` set to the yes message's number. The answer returns in `points` the code, \
+             the number and the gap of each point still open, and in `point` the next one in full."
         }
         ("survey.touched", Locale::PtBr) => {
             "A spec voltou ao levantamento por: {reason}. {count} itens já gravados são tocados por \
