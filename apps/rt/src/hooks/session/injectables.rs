@@ -17,10 +17,10 @@
 //!
 //! ## Uma vez por contagem
 //!
-//! Os avisos do início da sessão que contam alguma coisa — as pendências, as
-//! branches mergeadas — guardam no projeto, e não na sessão, a última
-//! contagem que deram ([`told_in_project`]): a sessão seguinte, com a mesma
-//! contagem, não os repete, e a contagem nova os traz de volta.
+//! O aviso do início da sessão que conta alguma coisa — as pendências —
+//! guarda no projeto, e não na sessão, a última contagem que deu
+//! ([`told_in_project`]): a sessão seguinte, com a mesma contagem, não o
+//! repete, e a contagem nova o traz de volta.
 //!
 //! ## Nunca barra
 //!
@@ -85,8 +85,16 @@ pub fn collect(project_dir: &str, session_id: Option<&str>, ignore_markers: bool
             );
             continue;
         }
-        let owned_map=entry.file==".claude/mustard/session-map.md" && [mustard_core::SupportedLocale::PtBr,mustard_core::SupportedLocale::EnUs]
-            .into_iter().any(|lang|mustard_core::platform::seeds::session_map(lang).trim()==trimmed);
+        let is_map = entry.file == ".claude/mustard/session-map.md";
+        // O mapa que outra versão do Mustard instalou sai como o desta: a
+        // atualização o troca de qualquer jeito, e o antigo, com os
+        // princípios, passava do teto da abertura e saía inteiro dela.
+        let trimmed = if is_map && older_map(trimmed) {
+            mustard_core::platform::seeds::session_map(config.language().text_or_default()).trim()
+        } else {
+            trimmed
+        };
+        let owned_map = is_map && current_maps().any(|map| map.trim() == trimmed);
         if owned_map {
             let hash=mustard_core::io::observations::digest(trimmed.as_bytes());
             if !ignore_markers && notice_seen(root,session_id,"session-map-content",&hash) {continue;}
@@ -113,6 +121,19 @@ pub fn collect(project_dir: &str, session_id: Option<&str>, ignore_markers: bool
         write_marker(project_dir, session_id, name);
     }
     Some(blocks.join("\n\n"))
+}
+
+/// O mapa do início da sessão desta versão, nos dois idiomas.
+fn current_maps() -> impl Iterator<Item = &'static str> {
+    [mustard_core::SupportedLocale::PtBr, mustard_core::SupportedLocale::EnUs].into_iter().map(mustard_core::platform::seeds::session_map)
+}
+
+/// Se `text` é o mapa do início da sessão de outra versão do Mustard: abre
+/// com o título do mapa de um dos idiomas e não é o desta versão. O texto que
+/// a pessoa escreveu no lugar do mapa não abre com esse título e sai como
+/// está.
+fn older_map(text: &str) -> bool {
+    current_maps().all(|map| map.trim() != text) && current_maps().any(|map| map.lines().next().is_some_and(|title| text.starts_with(title)))
 }
 
 /// `injected-<basename>` for a declared file path (either separator accepted).

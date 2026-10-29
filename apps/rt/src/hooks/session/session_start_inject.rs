@@ -652,6 +652,31 @@ mod tests {
         }
     }
 
+    /// O mapa que uma versão anterior instalou, com os princípios por extenso
+    /// e acima do teto, não some da abertura: ela leva o mapa desta versão,
+    /// abaixo de 2.560 bytes. O texto que a pessoa escreveu no lugar do mapa
+    /// sai como está.
+    #[test]
+    fn an_older_installed_map_opens_as_the_current_one_under_the_cap() {
+        for lang in [Locale::PtBr, Locale::EnUs] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            let config = json!({"language": {"text": lang.as_str()}, "inject": mustard_core::platform::project_seed::default_inject_entries()});
+            std::fs::write(root.join("mustard.json"), config.to_string()).unwrap();
+            let map = mustard_core::session_map(lang);
+            let older = format!("{}\n\n## Princípios do Mustard\n\n{}\n", map.trim(), "- **Um princípio.** Uma frase longa.\n".repeat(80));
+            assert!(older.len() > MAX_BYTES, "the older map is over the cap");
+            std::fs::create_dir_all(root.join(".claude/mustard")).unwrap();
+            std::fs::write(root.join(".claude/mustard/session-map.md"), &older).unwrap();
+            let context = context_of(root, &session_input("s-antigo", "startup"));
+            assert_eq!(context, map.trim(), "{lang:?}: the opening carries the current map");
+            assert!(context.len() < MAX_BYTES, "{lang:?}: {} bytes", context.len());
+
+            std::fs::write(root.join(".claude/mustard/session-map.md"), "Minha regra do projeto.\n").unwrap();
+            assert_eq!(context_of(root, &session_input("s-pessoa", "startup")), "Minha regra do projeto.");
+        }
+    }
+
     /// O texto declarado sai uma vez por sessão e volta depois de `/clear` e
     /// da compactação.
     #[test]
