@@ -633,7 +633,8 @@ pub struct ProjectConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prepare_files: Option<Vec<String>>,
     /// As pastas de compilação da pasta principal que só crescem e podem ser
-    /// apagadas no fim do fechamento e do descarte, relativas à raiz. A
+    /// apagadas no fim do descarte, relativas à raiz; o fechamento nunca as
+    /// apaga. A
     /// instalação as grava pela detecção dos comandos. Ausente, a instalação
     /// ainda não detectou; vazia, o projeto não tem nenhuma. Nas duas, nada é
     /// apagado.

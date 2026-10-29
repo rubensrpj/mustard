@@ -264,11 +264,9 @@ impl UpsertReport {
 /// repositório, nem por um instante. Quando essa gravação não pode acontecer
 /// dentro de um repositório que existe, o passo 0 RECUSA, e nenhum passo
 /// depois dele roda. O passo 2 então mira a camada local das configurações, e
-/// o `.claude/settings.json` da equipe só é alcançado pelo passo 6: ele tira
-/// as linhas do molde e, como única exceção entre as regras de bloqueio dele,
-/// troca no lugar cada uma das três que um molde antigo escreveu com as duas
-/// formas de asterisco. Essas linhas mudadas ficam visíveis ao git, para a
-/// pessoa comitar.
+/// o `.claude/settings.json` da equipe nunca é gravado: o passo 6 só lista as
+/// linhas do molde antigo e as regras de bloqueio escritas com as duas formas
+/// de asterisco, para a pessoa mudar.
 ///
 /// # Errors
 ///

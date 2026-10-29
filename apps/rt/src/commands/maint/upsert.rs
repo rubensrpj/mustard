@@ -8,10 +8,9 @@
 //! `mustard_core::upsert_project`, de forma idempotente.
 //! O arquivo de configurações é o LOCAL porque a instalação é sempre no modo
 //! privado (veja [`run`]); o `.claude/settings.json` compartilhado nunca é
-//! semeado aqui, e só a limpeza mais abaixo grava nele: ela tira as linhas do
-//! molde e, como única exceção entre as regras de bloqueio dele, troca no
-//! lugar cada uma das três que um molde antigo escreveu com as duas formas de
-//! asterisco (a que não está lá nunca entra). O que é da PESSOA só ganha o que
+//! semeado nem gravado aqui: a limpeza mais abaixo só lista as linhas do
+//! molde antigo e as regras de bloqueio escritas com as duas formas de
+//! asterisco, para a pessoa mudar. O que é da PESSOA só ganha o que
 //! falta: um `.claude/settings.local.json`, um `.claude/.gitignore` ou um
 //! `mustard.json` que já existe fica como está, e só o que falta é criado ou
 //! acrescentado. Os textos do próprio Mustard (`.claude/mustard/session-map.md`,
@@ -42,12 +41,12 @@
 //! tocados. `cleaned` diz o que foi feito, com o número do item de pendência.
 //! Nada vai para o stage nem é comitado.
 //!
-//! Once the files are written, `codeToolWarnings` names, for every language
-//! the project involves, the language-server program that is missing or does
-//! not answer, each with the ready command a person runs
-//! (`mustard_core::platform::code_tools::code_tool_hints`, the same list the
-//! doctor shows). Nothing is installed: no command runs with `-g`, `--global`
-//! or `@latest`.
+//! Gravados os arquivos, `codeToolWarnings` diz, para cada linguagem do
+//! projeto, o servidor de linguagem que falta ou não responde, cada um com o
+//! comando pronto que a pessoa roda
+//! (`mustard_core::platform::code_tools::code_tool_hints`, a mesma lista do
+//! doctor). Nada é instalado: nenhum comando roda com `-g`, `--global` ou
+//! `@latest`, e a falta não deixa a instalação incompleta.
 //!
 //! O comando inteiro tem um orçamento de tempo só, [`UPSERT_BUDGET`] (100 s),
 //! para tudo o que ele roda fora do processo: os dois passos do plugin (cada
@@ -406,18 +405,18 @@ fn upsert_with_index<R: ToolRunner>(
     let reserves_hint = (!passed.reserves.is_empty()).then(|| crate::shared::jev::reserve::hint("mustard-rt run upsert", lang));
     let reserves = passed.reserves;
 
-    // Both steps below run only on the path where the project was really
-    // seeded: a run that wrote nothing has no installation to finish. They come
-    // after the files, so a step that fails or stalls leaves the project
-    // already updated, and each failure is a sentence in the report, never an
-    // abort. The two draw from ONE budget: the plugin refresh goes first, and
-    // the index gets what it leaves.
+    // Os dois passos abaixo só rodam quando o projeto foi semeado de verdade:
+    // a chamada que não gravou nada não tem instalação para terminar. Eles
+    // vêm depois dos arquivos, então o passo que falha ou para deixa o projeto
+    // já atualizado, e cada falha é uma frase na resposta, nunca um aborto. Os
+    // dois tiram de UM orçamento: a atualização do plugin vai antes, e o
+    // índice fica com o que ela deixa.
     let budget = Budget::start(runner, UPSERT_BUDGET);
     let plugin_refresh = refresh(root, &budget);
-    // Discover every subproject before naming its language tools. A root
-    // manifest alone misses nested backends on the first installation. The
-    // tools are never installed here: the report names the command of each
-    // one that is missing, for the person to run.
+    // O índice acha cada subprojeto antes de nomear as ferramentas de
+    // linguagem: o manifesto da raiz sozinho perde o backend aninhado na
+    // primeira instalação. Nada é instalado aqui: a resposta traz o comando
+    // de cada ferramenta que falta, para a pessoa rodar.
     let scan=Some(index(root,&budget));
     let languages = code_tools::detect_code_languages(root, &mustard_core::io::project_map::model_path(root));
     let code_tool_warnings = code_tools::code_tool_hints(&languages, runner);
