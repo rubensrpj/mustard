@@ -3057,7 +3057,7 @@ mod tests {
     }
 
     /// As dicas que mandam perguntar ou responder (a de apresentar os pontos
-    /// do levantamento, a de revisar um bloco, a do plano e a da retomada)
+    /// do levantamento, a do plano e a da retomada)
     /// apontam para a ordem de explicar do estilo de resposta, sem pedir a forma antiga: o fato com a fonte, o que já está
     /// decidido, o que falta decidir e uma recomendação. O estilo de cada
     /// idioma tem essa ordem, os quatro passos em sequência, e deixou de dizer
@@ -3111,7 +3111,7 @@ mod tests {
             }
             assert!(!style.contains(old_example), "the {lang} style still says the page waits for a milestone");
 
-            let hints = ["survey.present_all", "survey.review_step", "plan.next", "resume.next.plan"];
+            let hints = ["survey.present_all", "plan.next", "resume.next.plan"];
             for (key, text) in hints.map(|key| (key, translate(key, lang))) {
                 assert!(text.contains(pointer), "{key} in {lang} does not point to the answer style: {text}");
                 for old in old_shape {

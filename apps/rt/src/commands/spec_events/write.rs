@@ -186,13 +186,9 @@
 //!
 //! Numa spec em levantamento com o tipo de trabalho ou algum ponto gravado,
 //! a saída traz o passo seguinte (`mustard_core::domain::survey::next_step`):
-//! em `next`, o que fazer; em `points`, enquanto alguma lacuna do tipo não
-//! tem ponto, os pontos que faltam gravar; em `point`, o próximo ponto
-//! aberto, quando a gravação muda os pontos abertos (a que não os muda não o
-//! repete); em `review`, o bloco cujo último ponto a gravação fechou, com a
-//! pergunta da revisão e as opções; no último bloco, `next` manda rodar o
-//! revisor de fora antes do fim, enquanto nenhum ponto veio dele;
-//! em `unrouted`, no fim, uma linha (o código e o começo do texto) por mensagem
+//! em `next`, o que fazer; em `points`, os pontos abertos, e em `point`, o
+//! próximo deles, quando a gravação muda os pontos abertos (a que não os
+//! muda não o repete); em `unrouted`, no fim, uma linha (o código e o começo do texto) por mensagem
 //! do usuário que nenhum registro aponta, uma vez só (o texto inteiro sai por
 //! `run read item-<código>`).
 //! O ponto aberto só sai fechado, por um `point` que o aponta em `closes`: o
@@ -1342,80 +1338,47 @@ impl RecordCheck {
 /// arquivo antes e depois dela, como o relatório o mostra: em `next`, o que
 /// fazer, no idioma do projeto, e, quando falta ponto de lacuna, a ordem de
 /// rodar o `grill` de novo; em `points`, os pontos abertos, mostrados de uma
-/// vez, e em `point` o próximo deles, inteiro; em
-/// `review`, o bloco que fechou, com os pontos, os registros que os fecharam,
-/// a pergunta e as opções, "Seguir" por último; em `unrouted`, uma linha com o
-/// código e o começo de cada mensagem do usuário sem destino. Com a revisão e outro passo juntos, `next` traz os
-/// dois, na ordem; no fim do levantamento, entre a revisão e o fim, a ordem
-/// de rodar o revisor de fora. `None` quando não há passo.
+/// vez, e em `point` o próximo deles, inteiro; em `unrouted`, uma linha com o
+/// código e o começo de cada mensagem do usuário sem destino. `None` quando
+/// não há passo.
 ///
 /// Nenhum passo daqui pede a cópia do modelo visual aprovado: quem a pede é
 /// o `grill`, com os pontos que abre, para ela ser salva logo depois do sim.
-/// O fim, o revisor de fora e o fechamento do ponto que ele achou não a
-/// repetem.
+/// O fim não a repete.
 ///
 /// Com `brief`, o relatório não repete o texto dos pontos abertos: `points`
-/// traz o código, o número e a lacuna de cada um. Em qualquer relatório, cada fato do ponto vem só
-/// com `text` e `source` ([`shown_point`]).
+/// traz o código, o número e a lacuna de cada um. Em qualquer relatório,
+/// cada fato do ponto vem só com `text` e `source` ([`shown_point`]).
 ///
 /// A gravação que não muda os pontos abertos e deixa como próximo o ponto que
 /// o relatório de antes já apresentou ([`already_presented`]) não o repete:
-/// sem outro passo, não há relatório do levantamento.
+/// não há relatório do levantamento.
 pub(crate) fn survey_report(spec: &str, before: &SpecLog, after: &SpecLog, lang: Locale, brief: bool) -> Option<Map<String, Value>> {
-    let mut steps = survey::next_step(before, after);
-    steps.retain(|step| !matches!(step, SurveyStep::Point(point) if already_presented(before, after, point)));
-    if steps.is_empty() {
-        return None;
-    }
+    let step = survey::next_step(before, after).filter(|step| !matches!(step, SurveyStep::Point(point) if already_presented(before, after, point)))?;
     let codes = after.codes();
-    let code_of = |id: &u64| codes.get(id).cloned().unwrap_or_else(|| id.to_string());
     let mut out = Map::new();
-    let mut next: Vec<String> = Vec::new();
-    for step in steps {
-        match step {
-            SurveyStep::ReviewBlock { block, closed, records, outside_review } => {
-                let go_on = translate("survey.continue_option", lang);
-                next.push(translate("survey.review_step", lang).replace("{block}", &block).replace("{continue}", go_on));
-                if outside_review {
-                    next.push(translate("survey.outside_review_step", lang).replace("{spec}", spec));
-                }
-                out.insert(
-                    "review".to_string(),
-                    json!({
-                        "block": block,
-                        "points": closed.iter().map(code_of).collect::<Vec<_>>(),
-                        "records": records.iter().map(code_of).collect::<Vec<_>>(),
-                        "question": translate("survey.review_question", lang),
-                        "options": [go_on],
-                    }),
-                );
+    let next = match step {
+        // A spec antiga, com os pontos nos blocos de antes, também mostra
+        // todos os abertos de uma vez.
+        SurveyStep::Point(point) => {
+            let open = survey::open_points(after);
+            if brief {
+                out.insert("points".to_string(), json!(survey::describe(after, &open)));
+            } else {
+                let open: Vec<Value> = open.into_iter().map(|p| shown_point(p, &codes)).collect();
+                out.insert("points".to_string(), json!(open));
             }
-            SurveyStep::OutsideReview => {
-                next.push(translate("survey.outside_review_step", lang).replace("{spec}", spec));
-            }
-            // A spec antiga, com os pontos nos blocos de antes, também mostra
-            // todos os abertos de uma vez.
-            SurveyStep::Point(point) => {
-                next.push(translate("survey.present_all", lang).to_string());
-                let open = survey::open_points(after);
-                if brief {
-                    out.insert("points".to_string(), json!(survey::describe(after, &open)));
-                } else {
-                    let open: Vec<Value> = open.into_iter().map(|p| shown_point(p, &codes)).collect();
-                    out.insert("points".to_string(), json!(open));
-                }
-                out.insert("point".to_string(), shown_point(point, &codes));
-            }
-            SurveyStep::Done { unrouted } => {
-                next.push(translate("survey.done", lang).replace("{scale}", translate("plan.points_scale", lang)));
-                out.insert("unrouted".to_string(), json!(super::unrouted::lines(unrouted, &codes)));
-            }
-            SurveyStep::Record(_) => {
-                next.push(translate("survey.rerun_grill", lang).replace("{spec}", spec));
-            }
+            out.insert("point".to_string(), shown_point(point, &codes));
+            translate("survey.present_all", lang).to_string()
         }
-    }
-    out.insert("next".to_string(), json!(next.join(" ")));
+        SurveyStep::Done { unrouted } => {
+            let hint = survey::done_hint(&unrouted, lang).to_string();
+            out.insert("unrouted".to_string(), json!(super::unrouted::lines(unrouted, &codes)));
+            hint
+        }
+        SurveyStep::Record(_) => translate("survey.rerun_grill", lang).replace("{spec}", spec),
+    };
+    out.insert("next".to_string(), json!(next));
     Some(out)
 }
 
@@ -1425,7 +1388,7 @@ pub(crate) fn survey_report(spec: &str, before: &SpecLog, after: &SpecLog, lang:
 /// nenhum. Um ponto que ganhou versão, ou que o relatório de antes ainda não
 /// apresentava (faltava ponto de lacuna por gravar), não entra aqui.
 fn already_presented(before: &SpecLog, after: &SpecLog, point: &SpecEvent) -> bool {
-    let presented = survey::next_step(before, before).into_iter().any(|step| matches!(step, SurveyStep::Point(p) if p.id == point.id));
+    let presented = survey::next_step(before, before).is_some_and(|step| matches!(step, SurveyStep::Point(p) if p.id == point.id));
     presented && survey::open_points(before).iter().map(|p| p.id).eq(survey::open_points(after).iter().map(|p| p.id))
 }
 
@@ -4536,102 +4499,6 @@ mod tests {
         }
     }
 
-    /// Fechar o último ponto de um bloco devolve a revisão dele: a pergunta,
-    /// "Seguir" por último, os pontos do bloco e as respostas que os
-    /// fecharam; o próximo ponto vem junto, para depois da revisão.
-    #[test]
-    fn closing_the_last_point_of_a_block_returns_the_block_review_question() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let (said, points) = listed(root, &["fix"], false);
-        for point in &points[..3] {
-            let report = settle(root, point, said);
-            assert!(report.get("review").is_none(), "{report}");
-        }
-        let report = settle(root, &points[3], said);
-        let review = &report["review"];
-        assert_eq!(review["block"], json!("defect"), "{report}");
-        assert_eq!(review["question"], json!("Quer ver mais algum ponto ou aprofundar algum?"));
-        assert_eq!(review["options"], json!(["Seguir"]));
-        let codes: Vec<&str> = points[..4].iter().map(|p| p.code.as_str()).collect();
-        assert_eq!(review["points"], json!(codes));
-        assert_eq!(review["records"], json!(["MSTD-DEC-0001", "MSTD-DEC-0002", "MSTD-DEC-0003", "MSTD-DEC-0004"]));
-        assert_eq!(report["point"]["id"], json!(points[4].id), "{report}");
-        let next = report["next"].as_str().unwrap();
-        assert!(next.starts_with("O bloco defect fechou.") && next.ends_with(translate("survey.present_all", Locale::PtBr)), "{next}");
-    }
-
-    /// No fim do levantamento, o próximo passo manda rodar o revisor de fora,
-    /// entre a revisão do último bloco e o fim, nos dois idiomas; a revisão
-    /// fica só com "Seguir", sem oferecê-lo como opção. Fechar o penúltimo
-    /// ponto, com um ainda aberto, não manda rodá-lo.
-    #[test]
-    fn the_end_of_the_survey_orders_the_outside_reviewer() {
-        for (config, lang, go_on, run) in [
-            (None, Locale::PtBr, "Seguir", "rode o revisor de fora"),
-            (Some(r#"{"language":{"text":"en-US"}}"#), Locale::EnUs, "Continue", "run the outside reviewer"),
-        ] {
-            let dir = tempdir().unwrap();
-            let root = dir.path();
-            let (said, points) = listed(root, &["fix"], false);
-            if let Some(config) = config {
-                std::fs::write(root.join("mustard.json"), config).unwrap();
-            }
-            let outside = translate("survey.outside_review_step", lang).replace("{spec}", "teste");
-            assert!(outside.contains(run) && outside.contains("`mustard-review`") && outside.contains("teste"), "{outside}");
-            let (last_one, before) = points.split_last().unwrap();
-            let mut report = Value::Null;
-            for point in before {
-                report = settle(root, point, said);
-            }
-            assert!(!report["next"].as_str().unwrap().contains(run), "one point still open: {report}");
-            let last = settle(root, last_one, said);
-            assert_eq!(last["review"]["block"], json!("proof"), "{last}");
-            assert_eq!(last["review"]["options"], json!([go_on]), "the reviewer is not an option: {last}");
-            assert!(last.get("point").is_none(), "{last}");
-            let review = translate("survey.review_step", lang).replace("{block}", "proof").replace("{continue}", go_on);
-            let done = translate("survey.done", lang).replace("{scale}", translate("plan.points_scale", lang));
-            assert_eq!(last["next"], json!(format!("{review} {outside} {done}")), "review, reviewer, then the end, with no design copy");
-            assert!(last["unrouted"].is_array(), "{last}");
-        }
-    }
-
-    /// O revisor de fora é mandado rodar uma vez: fechado o último ponto que
-    /// veio dele, a revisão do bloco dele fica só com "Seguir", o fim vem
-    /// junto, e o passo não manda rodá-lo de novo.
-    #[test]
-    fn closing_the_outside_reviewers_last_point_does_not_order_the_reviewer_again() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let (said, points) = listed(root, &["fix"], false);
-        let mut last = Value::Null;
-        for point in &points {
-            last = settle(root, point, said);
-        }
-        let outside = translate("survey.outside_review_step", Locale::PtBr).replace("{spec}", "teste");
-        assert!(last["next"].as_str().unwrap().contains(&outside), "{last}");
-        assert_eq!(last["review"]["options"], json!(["Seguir"]), "{last}");
-        let gap = "O merge pela interface web";
-        let found = json!({"block": "outside_review", "gap": gap, "from": "outside_review", "status": "open",
-            "origin": said, "facts": [{"text": "O revisor achou.", "source": format!("mensagem {said}")}]});
-        let added = write(root, "point", &found.to_string());
-        assert_eq!(added["point"]["id"], added["id"], "the reviewer's point is the next one: {added}");
-        let reviewer = Opened {
-            id: added["id"].as_u64().unwrap(),
-            code: added["code"].as_str().unwrap().to_string(),
-            block: "outside_review".to_string(),
-            gap: gap.to_string(),
-        };
-        let closed = settle(root, &reviewer, said);
-        assert_eq!(closed["review"]["block"], json!("outside_review"), "{closed}");
-        assert_eq!(closed["review"]["options"], json!(["Seguir"]), "{closed}");
-        let next = closed["next"].as_str().unwrap();
-        assert!(!next.contains(&outside), "ordered once: {closed}");
-        let done = translate("survey.done", Locale::PtBr).replace("{scale}", translate("plan.points_scale", Locale::PtBr));
-        assert!(next.ends_with(&done), "{closed}");
-        assert!(closed["unrouted"].is_array(), "{closed}");
-    }
-
     /// O fim do levantamento lista as mensagens do usuário que nenhum
     /// registro aponta: as duas soltas entram; a que virou decisão, a do
     /// objetivo e a do assistente ficam fora.
@@ -4692,55 +4559,29 @@ mod tests {
         assert!(unrelated.get("next").is_none(), "a write that changes nothing brings no step: {unrelated}");
     }
 
-    /// No bloco único, fechar os pontos não pede revisão de
-    /// bloco: cada fechamento devolve os que faltam, de uma vez, e o último
-    /// devolve o fim.
+    /// Fechar os pontos não pede revisão de bloco nem revisor de fora, no
+    /// bloco único e nos blocos das specs antigas: cada fechamento devolve os
+    /// que faltam, de uma vez, e o último devolve o fim. Sem mensagem sem
+    /// destino, o fim não pede para mostrá-las.
     #[test]
-    fn a_condensed_survey_skips_the_block_review_and_goes_to_the_end() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let (said, points) = listed(root, &["fix"], true);
-        for (i, point) in points.iter().enumerate() {
-            let report = settle(root, point, said);
-            assert!(report.get("review").is_none(), "{report}");
-            let left = points.len() - i - 1;
-            if left > 0 {
-                assert_eq!(report["points"].as_array().map(Vec::len), Some(left), "{report}");
-                assert_eq!(report["next"], json!(translate("survey.present_all", Locale::PtBr)));
-            } else {
-                assert!(report["unrouted"].is_array(), "{report}");
-                let done = translate("survey.done", Locale::PtBr).replace("{scale}", translate("plan.points_scale", Locale::PtBr));
-                assert_eq!(report["next"], json!(done), "the end does not ask for the design copy");
+    fn closing_the_points_asks_no_review_and_the_last_one_ends_the_survey() {
+        for condensed in [true, false] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            let (said, points) = listed(root, &["fix"], condensed);
+            for (i, point) in points.iter().enumerate() {
+                let report = settle(root, point, said);
+                assert!(report.get("review").is_none(), "{report}");
+                let left = points.len() - i - 1;
+                if left > 0 {
+                    assert_eq!(report["points"].as_array().map(Vec::len), Some(left), "{report}");
+                    assert_eq!(report["next"], json!(translate("survey.present_all", Locale::PtBr)));
+                } else {
+                    assert_eq!(report["unrouted"], json!([]), "{report}");
+                    assert_eq!(report["next"], json!(translate("survey.done", Locale::PtBr)), "the end does not ask for the design copy");
+                }
             }
         }
-    }
-
-    /// Um ponto novo no bloco já revisto reabre o bloco: ele é o próximo
-    /// ponto, e o fechamento dele pede a revisão de novo.
-    #[test]
-    fn a_point_added_after_the_review_reopens_the_block_and_its_closing_asks_again() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let (said, points) = listed(root, &["fix"], false);
-        let mut report = Value::Null;
-        for point in &points[..4] {
-            report = settle(root, point, said);
-        }
-        assert_eq!(report["review"]["block"], json!("defect"), "{report}");
-        let deeper = json!({"block": "defect", "gap": "O sintoma no Windows", "from": "gap", "status": "open",
-            "origin": said, "facts": [{"text": "Pedido na revisão.", "source": format!("mensagem {said}")}]});
-        let added = write(root, "point", &deeper.to_string());
-        assert_eq!(added["point"]["id"], added["id"], "the new point is the next one: {added}");
-        let added = Opened {
-            id: added["id"].as_u64().unwrap(),
-            code: added["code"].as_str().unwrap().to_string(),
-            block: "defect".to_string(),
-            gap: "O sintoma no Windows".to_string(),
-        };
-        let again = settle(root, &added, said);
-        assert_eq!(again["review"]["block"], json!("defect"), "{again}");
-        assert_eq!(again["review"]["points"].as_array().map(Vec::len), Some(5), "{again}");
-        assert_eq!(again["point"]["id"], json!(points[4].id), "{again}");
     }
 
     /// Depois da aprovação, nenhuma gravação traz passo do levantamento.
@@ -4849,8 +4690,7 @@ mod tests {
 
     /// Uma lacuna que ficou sem ponto faz a gravação seguinte mandar rodar o
     /// `grill` de novo, no lugar do próximo ponto; fechar os outros pontos não
-    /// traz o fim nem manda rodar o revisor de fora. Gravado o ponto que
-    /// faltava, ele é o próximo.
+    /// traz o fim. Gravado o ponto que faltava, ele é o próximo.
     #[test]
     fn a_gap_left_without_a_point_is_asked_again_by_the_next_write() {
         let dir = tempdir().unwrap();
@@ -4884,14 +4724,9 @@ mod tests {
             assert!(report.get("point").is_none() && report.get("unrouted").is_none(), "{report}");
         };
         asks_again(&answer(root, said));
-        let mut last = Value::Null;
         for point in &points {
-            last = settle(root, point, said);
-            asks_again(&last);
+            asks_again(&settle(root, point, said));
         }
-        assert_eq!(last["review"]["block"], json!("proof"), "{last}");
-        let outside = translate("survey.outside_review_step", Locale::PtBr).replace("{spec}", "teste");
-        assert!(!last["next"].as_str().unwrap().contains(&outside), "the survey is not over: {last}");
         let recorded = write(root, "point", &point_of(forgotten).to_string());
         assert_eq!(recorded["point"]["id"], recorded["id"], "the forgotten point is the next one: {recorded}");
     }

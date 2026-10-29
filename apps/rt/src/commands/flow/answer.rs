@@ -200,7 +200,6 @@ fn answer_locked(
         None => *open.first().ok_or_else(|| AnswerRefusal::NoOpenPoint { spec: spec.to_string() })?,
     };
     let mut result = asked.result.iter().map(|raw| recorded(&before, raw)).collect::<Result<Vec<u64>, _>>()?;
-    let reused = result.clone();
     let saved = locked.content().to_string();
     let mut report = json!({ "ok": true, "spec": spec });
     let mut origin = None;
@@ -215,7 +214,6 @@ fn answer_locked(
         result.insert(0, item.id);
     }
     let mut draft = closing(point, &result, asked.reason, asked.not_applicable, origin);
-    if !reused.is_empty() { draft.insert("reused_results".into(), json!(reused)); }
     if let Some(facts) = asked.facts {
         draft.insert("facts".into(), facts);
     }
@@ -537,21 +535,6 @@ mod tests {
             let report=answer(&AnswerOpts {facts:Some(facts.to_string()),..with_item(root,DECISION)});
             assert_eq!(report["ok"],false,"{report}");
             assert_eq!(snapshot(root),before,"a bad fact cannot leave an orphan answer");
-        }
-    }
-
-    #[test]
-    fn reusing_a_record_across_three_single_point_blocks_does_not_repeat_block_review() {
-        let dir=tempdir().unwrap();let root=dir.path();
-        let mut points=surveyed(root,"rules",1);
-        for block in ["limits","contracts"] {
-            points.push(id_of(&write(root,"point",json!({"block":block,"gap":format!("Lacuna {block}"),"from":"gap","status":"open",
-                "facts":[{"text":GOAL,"source":"mensagem 2"}]}))));
-        }
-        let decided=decided(root);
-        for point in points {
-            let report=answer(&AnswerOpts {point:Some(point.to_string()),..with_result(root,&decided.to_string())});
-            assert_eq!(report["ok"],true,"{report}");assert!(report.get("review").is_none(),"no new result in this block: {report}");
         }
     }
 

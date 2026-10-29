@@ -963,27 +963,27 @@ fn the_installed_agents_let_a_project_language_rule_win_over_the_languages_line(
 }
 
 /// O revisor diz os dois caminhos da volta: na revisão final da obra, grava o
-/// veredito pela ferramenta, com a linha de exemplo que a gravação aceita; na
-/// revisão de um levantamento e no pull request de um colega, devolve o texto
-/// a quem despachou. O pedido de cada uso diz qual vale: o do fechamento manda
-/// gravar, o do levantamento e o da porta do pull request dizem que o texto
-/// volta sem gravar nada.
+/// veredito pela ferramenta, com a linha de exemplo que a gravação aceita; no
+/// pull request de um colega, devolve o texto a quem despachou. O pedido de
+/// cada uso diz qual vale: o do fechamento manda gravar, o da porta do pull
+/// request diz que o texto volta sem gravar nada. O levantamento não tem
+/// revisor próprio.
 #[test]
 fn reviewer_template_states_the_two_paths() {
-    for (lang, locale, header, said, survey_said) in [
+    for (lang, locale, header, said, survey) in [
         (
             "pt-BR",
             Locale::PtBr,
             "## O que devolver",
-            ["revisão final da obra", "`run write verdict", "levantamento", "pull request", "devolva o texto a quem despachou"],
-            "devolve o texto a você, sem gravar veredito",
+            ["revisão final da obra", "`run write verdict", "pull request", "devolva o texto a quem despachou"],
+            "levantamento",
         ),
         (
             "en-US",
             Locale::EnUs,
             "## What to return",
-            ["final review", "`run write verdict", "survey", "pull request", "return the text to whoever dispatched you"],
-            "returns its text to you, recording no verdict",
+            ["final review", "`run write verdict", "pull request", "return the text to whoever dispatched you"],
+            "survey",
         ),
     ] {
         let review = template(lang, "review");
@@ -998,8 +998,7 @@ fn reviewer_template_states_the_two_paths() {
 
         let close = translate("close.final_review", locale);
         assert!(close.contains("run write verdict") && !close.contains("<VERDICT>"), "{close}");
-        let survey = translate("survey.outside_review_step", locale);
-        assert!(survey.contains(survey_said), "{survey}");
+        assert!(!back.contains(survey), "the {lang} reviewer still returns a survey review:{back}");
     }
     let pr = std::fs::read_to_string(repo_root().join("plugin/commands/pr.md")).unwrap();
     assert!(pr.contains("`mustard-review` agent, from that brief: it returns its text to you and records nothing"), "{pr}");

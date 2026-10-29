@@ -9,8 +9,8 @@ grill.work_type_by_grill	108926c44adc3a1a
 survey.answer_no_open_point	1aea52d068f46db1
 survey.answer_not_applicable_mixed	f16154e215724a25
 survey.answer_options	41522a7af66146de
-survey.continue_option	82708bda9640a01a
-survey.done	55a8a99824f8be23
+survey.done	5923dbcbbd224bc4
+survey.done_unrouted	9da5e1baeb2a7871
 survey.fact_declared	ca5a636ee1ea2b10
 survey.fact_importers	79913f4b1edcadd1
 survey.fact_test_candidates	1e4b9ad19e6534f3
@@ -34,13 +34,10 @@ survey.gap.reproduction	8f8dc9074fdaf72b
 survey.gap.rules	525d231d04d102f7
 survey.gap.symptom	5fccf6703f510558
 survey.gap.who_uses	1d071c5294e7c61c
-survey.outside_review_step	18007866c7c8c352
 survey.present_all	01f0973f38569b32
 survey.project_summary	b7c737a81e4da78b
 survey.project_summary.recent	39d9693f02d93ac2
 survey.project_summary.reserve	69317ccaf3122b29
 survey.rerun_grill	90ad086cec6a8529
-survey.review_question	fdde0baf925131ac
-survey.review_step	519bfa4d2f3e37cd
 survey.save_design	e896e6e73c089a7a
 survey.touched	ccc9d66cc7817e59

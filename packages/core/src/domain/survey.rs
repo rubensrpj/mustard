@@ -25,10 +25,10 @@
 //! [`BLOCKS`], continua lida na ordem deles ([`block_rank`]).
 //!
 //! Depois de cada gravação, [`next_step`] diz o passo seguinte: gravar os
-//! pontos das lacunas que ainda não têm, o próximo ponto aberto, a revisão do
-//! bloco cujo último ponto fechou e, sem ponto aberto, o fim, com as
-//! mensagens do usuário sem destino. [`leave_survey`] diz
-//! se a spec pode passar para o plano.
+//! pontos das lacunas que ainda não têm, o próximo ponto aberto e, sem ponto
+//! aberto, o fim, com as mensagens do usuário sem destino. Nenhum bloco tem
+//! revisão própria: a segunda leitura é a do revisor final, no fechamento.
+//! [`leave_survey`] diz se a spec pode passar para o plano.
 //!
 //! Função pura: sem disco e sem relógio. Quem lê o banco, o índice, as specs
 //! anteriores e o mapa é o comando.
@@ -67,7 +67,6 @@ pub const BLOCKS: &[&str] = &[
     "lessons",
     "prior_specs",
     "code",
-    "outside_review",
 ];
 
 /// Quantos lembretes o levantamento traz no total.
@@ -97,7 +96,6 @@ const PRIOR_FACT_TYPES: &[&str] = &["rule", "decision", "error"];
 const FROM_GAP: &str = "gap";
 const FROM_LESSON: &str = "lesson";
 const FROM_PRIOR_SPEC: &str = "prior_spec";
-const FROM_OUTSIDE_REVIEW: &str = "outside_review";
 
 /// Uma lacuna do tipo de trabalho: o que o levantamento precisa responder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -538,132 +536,56 @@ pub enum SurveyStep<'a> {
     Record(Vec<GapKey>),
     /// O próximo ponto aberto: o mesmo, enquanto ele não fecha.
     Point(&'a SpecEvent),
-    /// A gravação fechou o último ponto aberto do bloco `block`: a revisão
-    /// dele, com os pontos do bloco (`closed`) e os registros que os
-    /// fechamentos apontam em `result` (`records`). Sem ponto aberto em bloco
-    /// nenhum, a revisão manda rodar o revisor de fora (`outside_review`),
-    /// uma vez: com algum ponto vindo dele, não manda de novo.
-    ReviewBlock { block: String, closed: Vec<u64>, records: Vec<u64>, outside_review: bool },
-    /// Final independent review is still required when a block reuses
-    /// confirmed material and needs no repeated user question.
-    OutsideReview,
     /// Não sobra ponto aberto: as mensagens do usuário que nenhum registro
     /// aponta.
     Done { unrouted: Vec<&'a SpecEvent> },
 }
 
-/// Os passos do levantamento depois de uma gravação, lidos do arquivo antes
-/// (`before`) e depois (`after`) dela, em ordem:
+/// O passo do levantamento depois de uma gravação, lido do arquivo antes
+/// (`before`) e depois (`after`) dela:
 ///
 /// - nenhum fora do levantamento e do plano, e numa spec sem nenhum ponto e
 ///   sem lacuna por gravar (as specs antigas);
-/// - a revisão do bloco, quando a gravação fechou o último ponto aberto de um
-///   bloco que não é o bloco único; o revisor de fora só é
-///   mandado rodar quando o levantamento acabou e nenhum ponto veio dele ainda;
-/// - depois dela, ou sozinho: enquanto alguma lacuna do tipo de trabalho não
-///   tem ponto (a gravação do `grill` parou no meio, ou um ponto saiu), rodar
-///   o `grill` de novo, que grava os que faltam; senão, o próximo ponto aberto,
-///   o primeiro na ordem dos blocos; sem ponto aberto, o fim, com as
-///   mensagens do usuário sem destino. O fim sai, com todas elas, na gravação
-///   que fecha o último ponto e, depois dela, só na gravação que deixa uma
-///   mensagem de novo sem destino (o registro que a apontava foi tirado), e
-///   com essa mensagem: cada mensagem sem destino sai uma vez.
+/// - enquanto alguma lacuna do tipo de trabalho não tem ponto (a gravação do
+///   `grill` parou no meio, ou um ponto saiu), rodar o `grill` de novo, que
+///   grava os que faltam; senão, o próximo ponto aberto, o primeiro na ordem
+///   dos blocos; sem ponto aberto, o fim, com as mensagens do usuário sem
+///   destino. O fim sai, com todas elas, na gravação que fecha o último ponto
+///   e, depois dela, só na gravação que deixa uma mensagem de novo sem
+///   destino (o registro que a apontava foi tirado), e com essa mensagem:
+///   cada mensagem sem destino sai uma vez.
 #[must_use]
-pub fn next_step<'a>(before: &SpecLog, after: &'a SpecLog) -> Vec<SurveyStep<'a>> {
+pub fn next_step<'a>(before: &SpecLog, after: &'a SpecLog) -> Option<SurveyStep<'a>> {
     if !matches!(State::from_log(after).phase, Some("survey" | "plan")) {
-        return Vec::new();
+        return None;
     }
     let unrecorded = missing_gaps(after);
-    if unrecorded.is_empty() && !after.visible().iter().any(|e| e.event_type == "point") {
-        return Vec::new();
-    }
-    let (was, now) = (open_points(before), open_points(after));
-    let blocks = |open: &[&SpecEvent]| -> BTreeSet<String> { open.iter().map(|p| p.str_field("block").unwrap_or_default().trim().to_string()).collect() };
-    let still = blocks(&now);
-    let mut emptied: Vec<String> = blocks(&was).into_iter().filter(|block| block != CONDENSED && !still.contains(block)).collect();
-    emptied.sort_by_key(|block| block_rank(block));
-    let mut steps = Vec::new();
-    if let Some(block) = emptied.into_iter().next() {
-        let (closed, records) = block_review(after, &block);
-        let over = now.is_empty() && unrecorded.is_empty();
-        let outside_review = over && !outside_reviewed(after);
-        if review_changed(after, &block) {
-            steps.push(SurveyStep::ReviewBlock { block, closed, records, outside_review });
-        } else if outside_review {
-            steps.push(SurveyStep::OutsideReview);
-        }
-    }
     if !unrecorded.is_empty() {
-        steps.push(SurveyStep::Record(unrecorded));
-        return steps;
+        return Some(SurveyStep::Record(unrecorded));
     }
-    match now.first() {
-        Some(point) => steps.push(SurveyStep::Point(point)),
-        None => {
-            let mut unrouted = unrouted_messages(after);
-            // Depois da gravação que fecha o último ponto, o fim só volta com
-            // a mensagem que esta gravação deixou sem destino; a que já
-            // estava na lista, ou saiu dela, não se mostra de novo.
-            if was.is_empty() {
-                let listed: BTreeSet<u64> = unrouted_messages(before).iter().map(|m| m.id).collect();
-                unrouted.retain(|m| !listed.contains(&m.id));
-            }
-            if !was.is_empty() || !unrouted.is_empty() {
-                steps.push(SurveyStep::Done { unrouted });
-            }
-        }
+    if !after.visible().iter().any(|e| e.event_type == "point") {
+        return None;
     }
-    steps
+    if let Some(point) = open_points(after).first().copied() {
+        return Some(SurveyStep::Point(point));
+    }
+    let was = open_points(before);
+    let mut unrouted = unrouted_messages(after);
+    // Depois da gravação que fecha o último ponto, o fim só volta com a
+    // mensagem que esta gravação deixou sem destino; a que já estava na
+    // lista, ou saiu dela, não se mostra de novo.
+    if was.is_empty() {
+        let listed: BTreeSet<u64> = unrouted_messages(before).iter().map(|m| m.id).collect();
+        unrouted.retain(|m| !listed.contains(&m.id));
+    }
+    (!was.is_empty() || !unrouted.is_empty()).then_some(SurveyStep::Done { unrouted })
 }
 
-/// Os pontos do bloco `block` que nasceram abertos e já fecharam, na versão
-/// vigente, e os registros que os fechamentos deles apontam em `result`, sem
-/// repetir, em ordem de número.
-fn block_review(log: &SpecLog, block: &str) -> (Vec<u64>, Vec<u64>) {
-    let closed: Vec<SurveyPoint<'_>> = points(log).into_iter().filter(|p| !p.is_open() && p.block() == block).collect();
-    let mut ids: Vec<u64> = closed.iter().map(|p| p.shown().id).collect();
-    ids.sort_unstable();
-    let records: BTreeSet<u64> = closed.iter().filter_map(SurveyPoint::closing).flat_map(|c| c.ints("result")).collect();
-    (ids, records.into_iter().collect())
-}
-
-/// A real witnessed answer to the block review is the checkpoint. Its
-/// prefix retains the exact record versions seen then, including removals.
-fn review_checkpoint(log: &SpecLog, block: &str) -> Option<SpecLog> {
-    log.events.iter().rev().filter(|event| event.event_type == "message").find_map(|message| {
-        let witness = message.fields.get("witness")?;
-        let question = witness.get("question")?.as_str()?;
-        let answer = witness.get("answer")?.as_str()?;
-        let accepted = [crate::platform::i18n::Locale::PtBr, crate::platform::i18n::Locale::EnUs].iter().any(|lang| {
-            question == crate::translate("survey.review_question", *lang) && answer == crate::translate("survey.continue_option", *lang)
-        });
-        if !accepted { return None; }
-        let prefix = SpecLog::with_events(log.events.iter().take_while(|event| event.id < message.id).cloned().collect());
-        let latest = prefix.events.iter().rev().find(|event| event.event_type == "point" && event.int("closes").is_some())?;
-        if latest.str_field("block") != Some(block) || open_points(&prefix).iter().any(|point| point.str_field("block") == Some(block)) { return None; }
-        Some(prefix)
-    })
-}
-
-fn review_changed(log: &SpecLog, block: &str) -> bool {
-    let checkpoint = review_checkpoint(log, block);
-    points(log).into_iter().filter(|point| !point.is_open() && point.block() == block)
-        .filter_map(|point| point.closing()).any(|closing| {
-            closing.ints("result").into_iter().any(|id| {
-                let current = log.current(id);
-                if let Some(checkpoint) = &checkpoint {
-                    return current.map(|event| event.id) != checkpoint.current(id).map(|event| event.id);
-                }
-                !closing.ints("reused_results").contains(&id) || current.is_none_or(|event| event.id != id)
-            })
-        })
-}
-
-/// Algum ponto veio do revisor de fora, pela leitura dos pares: ele já
-/// conferiu o levantamento, e a revisão do último bloco não manda rodá-lo de
-/// novo.
-fn outside_reviewed(log: &SpecLog) -> bool {
-    points(log).iter().any(|p| p.from() == Some(FROM_OUTSIDE_REVIEW))
+/// A dica do fim do levantamento: com mensagens do usuário sem destino, a de
+/// mostrá-las antes de seguir; sem nenhuma, só a de seguir para o plano.
+#[must_use]
+pub fn done_hint(unrouted: &[&SpecEvent], lang: Locale) -> &'static str {
+    translate(if unrouted.is_empty() { "survey.done" } else { "survey.done_unrouted" }, lang)
 }
 
 /// O objetivo da spec: o primeiro `context` gravado, na versão vigente dele.
@@ -1845,10 +1767,9 @@ mod tests {
         assert_eq!(leave_survey(&log_of(&lines)), Ok(()));
     }
 
-    /// O passo depois de cada gravação segue os pontos abertos: fechar o
-    /// último ponto de um bloco traz a revisão dele e o próximo ponto;
-    /// fechar o último de todos traz a revisão com o revisor de fora e o fim.
-    /// Depois da aprovação, nenhum passo.
+    /// O passo depois de cada gravação segue os pontos abertos: fechar um
+    /// ponto traz o próximo, sem revisão do bloco; fechar o último traz o fim,
+    /// sem revisor de fora. Depois da aprovação, nenhum passo.
     #[test]
     fn the_step_after_each_write_follows_the_open_points() {
         let mut lines = vec![
@@ -1860,92 +1781,60 @@ mod tests {
         let before = log_of(&lines);
         lines.push(ev(5, "decision", json!({"text": "d", "keys": ["k"], "why": "w", "origin": 2})));
         let after = log_of(&lines);
-        let steps = next_step(&before, &after);
-        assert!(matches!(&steps[..], [SurveyStep::Point(p)] if p.id == 3), "{steps:?}");
+        let step = next_step(&before, &after);
+        assert!(matches!(step, Some(SurveyStep::Point(p)) if p.id == 3), "{step:?}");
 
         lines.push(closing(6, 3));
         let before = log_of(&lines[..lines.len() - 1]);
         let after = log_of(&lines);
-        let steps = next_step(&before, &after);
-        assert!(
-            matches!(&steps[..], [SurveyStep::ReviewBlock { block, closed, records, outside_review: false }, SurveyStep::Point(p)]
-                if block.as_str() == "rules" && closed == &[3] && records == &[2] && p.id == 4),
-            "{steps:?}"
-        );
+        let step = next_step(&before, &after);
+        assert!(matches!(step, Some(SurveyStep::Point(p)) if p.id == 4), "the block that closed asks no review: {step:?}");
 
         lines.push(closing(7, 4));
         let before = log_of(&lines[..lines.len() - 1]);
         let after = log_of(&lines);
-        let steps = next_step(&before, &after);
-        assert!(
-            matches!(&steps[..], [SurveyStep::ReviewBlock { block, outside_review: true, .. }, SurveyStep::Done { unrouted }]
-                if block.as_str() == "proof" && unrouted.is_empty()),
-            "{steps:?}"
-        );
-
-        lines.push(ev(8, "state", json!({"phase": "approved", "author": "user"})));
-        let before = log_of(&lines);
-        lines.push(ev(9, "message", json!({"author": "user", "text": "Mais uma."})));
-        assert!(next_step(&before, &log_of(&lines)).is_empty(), "no step after the approval");
-    }
-
-    /// A revisão do último bloco manda rodar o revisor de fora, pela marca
-    /// `outside_review`: com um ponto aberto ainda, fechar o bloco dele traz
-    /// a revisão sem a marca e o ponto; fechar o último ponto traz a revisão
-    /// com a marca e o fim; com uma lacuna ainda sem ponto, o levantamento
-    /// não acabou e a marca não vem. Depois que um ponto veio do revisor de
-    /// fora, fechar o último de novo traz a revisão sem a marca e o fim.
-    #[test]
-    fn the_end_of_the_survey_orders_the_outside_reviewer_once() {
-        let mut lines = vec![
-            ev(1, "state", json!({"phase": "survey", "author": "binary"})),
-            ev(2, "message", json!({"author": "user", "text": GOAL})),
-            open_point(3, "rules", "Cada regra"),
-            open_point(4, "proof", "Como provar"),
-        ];
-        // Os passos da última gravação de `lines`, pelo nome.
-        let step_of = |lines: &[String]| -> Vec<&'static str> {
-            let (before, after) = (log_of(&lines[..lines.len() - 1]), log_of(lines));
-            next_step(&before, &after)
-                .iter()
-                .map(|step| match step {
-                    SurveyStep::Record(_) => "Record",
-                    SurveyStep::OutsideReview => "OutsideReview",
-                    SurveyStep::Point(_) => "Point",
-                    SurveyStep::ReviewBlock { outside_review: true, .. } => "ReviewBlock+OutsideReview",
-                    SurveyStep::ReviewBlock { .. } => "ReviewBlock",
-                    SurveyStep::Done { .. } => "Done",
-                })
-                .collect()
-        };
-
-        lines.push(closing(5, 3));
-        assert_eq!(step_of(&lines), ["ReviewBlock", "Point"], "one point still open: the survey is not over");
-
-        lines.push(closing(6, 4));
-        assert_eq!(step_of(&lines), ["ReviewBlock+OutsideReview", "Done"], "the last point closed");
+        let step = next_step(&before, &after);
+        assert!(matches!(&step, Some(SurveyStep::Done { unrouted }) if unrouted.is_empty()), "the end, with no reviewer: {step:?}");
 
         // Uma lacuna do tipo de trabalho ainda sem ponto: fechar o último
         // ponto aberto não acaba o levantamento.
         let mut unrecorded = lines[..4].to_vec();
-        unrecorded.push(ev(7, "work_type", json!({"kinds": ["fix"], "origin": 2})));
-        unrecorded.push(closing(8, 3));
-        unrecorded.push(closing(9, 4));
-        assert_eq!(step_of(&unrecorded), ["ReviewBlock", "Record"], "a gap without a point holds the end");
+        unrecorded.push(ev(8, "work_type", json!({"kinds": ["fix"], "origin": 2})));
+        unrecorded.push(closing(9, 3));
+        unrecorded.push(closing(10, 4));
+        let after = log_of(&unrecorded);
+        let step = next_step(&log_of(&unrecorded[..unrecorded.len() - 1]), &after);
+        assert!(matches!(step, Some(SurveyStep::Record(_))), "a gap without a point holds the end: {step:?}");
 
-        lines.push(ev(
-            7,
-            "point",
-            json!({"block": "outside_review", "gap": "O merge pela web", "from": "outside_review",
-            "status": "open", "origin": 2, "facts": [{"text": "f", "source": "mensagem 2"}]}),
-        ));
-        assert_eq!(step_of(&lines), ["Point"], "the reviewer's point is presented like the others");
-        lines.push(ev(
-            8,
-            "point",
-            json!({"block": "outside_review", "gap": "O merge pela web", "from": "outside_review",
-            "status": "closed", "closes": 7, "result": [2], "origin": 2}),
-        ));
-        assert_eq!(step_of(&lines), ["ReviewBlock", "Done"], "the reviewer already ran: it is not ordered again");
+        lines.push(ev(8, "state", json!({"phase": "approved", "author": "user"})));
+        let before = log_of(&lines);
+        lines.push(ev(9, "message", json!({"author": "user", "text": "Mais uma."})));
+        assert!(next_step(&before, &log_of(&lines)).is_none(), "no step after the approval");
+    }
+
+    /// O ponto que o revisor de fora deixou numa spec antiga ainda é lido:
+    /// aberto, ele é o próximo, depois dos blocos de antes; fechado, o
+    /// levantamento chega ao fim.
+    #[test]
+    fn an_old_outside_review_point_is_still_read() {
+        let mut lines = vec![
+            ev(1, "state", json!({"phase": "survey", "author": "binary"})),
+            ev(2, "message", json!({"author": "user", "text": GOAL})),
+            ev(3, "point", json!({"block": "outside_review", "gap": "O merge pela web", "from": "outside_review",
+                "status": "open", "origin": 2, "facts": [{"text": "f", "source": "mensagem 2"}]})),
+            open_point(4, "rules", "Cada regra"),
+        ];
+        let log = log_of(&lines);
+        assert_eq!(open_points(&log).iter().map(|p| p.id).collect::<Vec<_>>(), [4, 3], "the old block comes last");
+        lines.push(closing(5, 4));
+        let after = log_of(&lines);
+        let step = next_step(&log_of(&lines[..lines.len() - 1]), &after);
+        assert!(matches!(step, Some(SurveyStep::Point(p)) if p.id == 3), "{step:?}");
+        lines.push(ev(6, "point", json!({"block": "outside_review", "gap": "O merge pela web", "from": "outside_review",
+            "status": "closed", "closes": 3, "result": [2], "origin": 2})));
+        let after = log_of(&lines);
+        let step = next_step(&log_of(&lines[..lines.len() - 1]), &after);
+        assert!(matches!(step, Some(SurveyStep::Done { .. })), "{step:?}");
+        assert!(open_points(&after).is_empty());
     }
 }

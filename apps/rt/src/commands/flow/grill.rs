@@ -315,8 +315,9 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
         let design = translate("survey.save_design", lang).replace("{spec}", &spec);
         report["hint"] = json!(format!("{present} {design}"));
     } else {
-        report["unrouted"] = json!(spec_events::unrouted::lines(survey::unrouted_messages(&log), &codes));
-        report["hint"] = json!(translate("survey.done", lang).replace("{scale}", translate("plan.points_scale", lang)));
+        let unrouted = survey::unrouted_messages(&log);
+        report["hint"] = json!(survey::done_hint(&unrouted, lang));
+        report["unrouted"] = json!(spec_events::unrouted::lines(unrouted, &codes));
     }
     report
 }
@@ -1543,8 +1544,7 @@ mod tests {
         let loose = id_of(&write(root, Some("x"), "message", json!({"author": "user", "text": "E o painel?"})));
         let done = grill(root, "x", Some("fix"));
         assert!(done.get("next").is_none(), "{done}");
-        let scale = translate("plan.points_scale", Locale::PtBr);
-        assert_eq!(done["hint"], json!(translate("survey.done", Locale::PtBr).replace("{scale}", scale)), "the end does not ask for the design copy");
+        assert_eq!(done["hint"], json!(translate("survey.done_unrouted", Locale::PtBr)), "the end does not ask for the design copy");
         let path = store::spec_file(&store::spec_root(root), "x").expect("spec file");
         let code = store::read(&path).unwrap().unwrap().codes()[&loose].clone();
         assert_eq!(done["unrouted"], json!([format!("{code}: E o painel?")]), "{done}");

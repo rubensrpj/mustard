@@ -150,46 +150,19 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Some gap of the work type has no point. Run `mustard-rt run grill --spec {spec}`, which \
              records the missing points and returns the open ones."
         }
-        ("survey.done", Locale::PtBr) => {
+        ("survey.done", Locale::PtBr) => "O levantamento não tem ponto aberto. Grave a especificação e as tarefas.",
+        ("survey.done", Locale::EnUs) => "The survey has no open point. Record the specification and the tasks.",
+        ("survey.done_unrouted", Locale::PtBr) => {
             "O levantamento não tem ponto aberto. Mostre ao usuário as mensagens de `unrouted`, que \
              nenhum registro aponta (cada linha traz o código e o começo da mensagem; o texto \
              inteiro sai por `mustard-rt run read item-<código>`), e pergunte o que fazer com cada \
              uma. Depois grave a especificação e as tarefas."
         }
-        ("survey.done", Locale::EnUs) => {
+        ("survey.done_unrouted", Locale::EnUs) => {
             "The survey has no open point. Show the user the messages in `unrouted`, which no record \
              points to (each line has the code and the start of the message; the whole text comes \
              from `mustard-rt run read item-<item-code>`), and ask what to do with each one. Then record \
              the specification and the tasks."
-        }
-        ("survey.review_step", Locale::PtBr) => {
-            "O bloco {block} fechou. Releia só as decisões dele e ache o que pode ter ficado de fora \
-             ou se contradiz. Apresente os achados na ordem de explicar do estilo de resposta e faça \
-             a pergunta de `question`, com os achados como opções e \"{continue}\" por último."
-        }
-        ("survey.review_step", Locale::EnUs) => {
-            "Block {block} is closed. Reread only its decisions and find what may have been left out \
-             or contradicts itself. Present the findings in the order of explaining from the response \
-             style and ask the question in `question`, with the findings as options and \
-             \"{continue}\" last."
-        }
-        ("survey.review_question", Locale::PtBr) => "Quer ver mais algum ponto ou aprofundar algum?",
-        ("survey.review_question", Locale::EnUs) => "Would you like to see another point or go deeper into one?",
-        ("survey.continue_option", Locale::PtBr) => "Seguir",
-        ("survey.continue_option", Locale::EnUs) => "Continue",
-        ("survey.outside_review_step", Locale::PtBr) => {
-            "Depois, antes do fim, rode o revisor de fora. Despache ao agente `mustard-review` a \
-             conferência do levantamento inteiro da spec {spec}. Ele aponta o que ficou de fora ou \
-             se contradiz e devolve o texto a você, sem gravar veredito. Grave cada achado dele como \
-             ponto aberto, com `block` e `from` outside_review, e apresente-o como os outros. Sem \
-             achado, siga."
-        }
-        ("survey.outside_review_step", Locale::EnUs) => {
-            "Then, before the end, run the outside reviewer. Dispatch to the `mustard-review` agent \
-             the check of the whole survey of spec {spec}. It points out what was left out or \
-             contradicts itself and returns its text to you, recording no verdict. Record each of \
-             its findings as an open point, with `block` and `from` outside_review, and present it \
-             like the others. With no finding, go on."
         }
         // O nome do arquivo é o mesmo nos dois idiomas: é ele que o gancho do
         // despacho procura na pasta da spec para apontar o desenho ao revisor.
@@ -337,10 +310,7 @@ mod tests {
             ("survey.rerun_grill".into(), &["{spec}"][..]),
             ("survey.touched".into(), &["{count}", "{reason}"][..]),
             ("survey.done".into(), &[][..]),
-            ("survey.review_step".into(), &["{block}", "{continue}"][..]),
-            ("survey.review_question".into(), &[][..]),
-            ("survey.continue_option".into(), &[][..]),
-            ("survey.outside_review_step".into(), &["{spec}"][..]),
+            ("survey.done_unrouted".into(), &[][..]),
             ("survey.save_design".into(), &["{spec}"][..]),
             ("survey.fact_declared".into(), &["{name}", "{path}", "{line}"][..]),
             ("survey.fact_importers".into(), &["{path}", "{importers}"][..]),
