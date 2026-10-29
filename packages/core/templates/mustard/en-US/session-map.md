@@ -1,6 +1,6 @@
 # Mustard in this project
 
-- Queries open no spec. Changes: `mustard-rt run open`; then record the goal with `mustard-rt run write context`, `origin` on the user's message; confirm a suggested goal via `goal_approval`. Then suggest `/clear`; the resume line keeps state.
+- Queries open no spec. Changes: `mustard-rt run open`; then record the goal with `mustard-rt run write context`, `origin` on the user's message; it is approved together with the plan. Then suggest `/clear`; the resume line keeps state.
 - Code: `mcp__mustard__search`, with local intent and purpose; preserve arguments and scope. CLI: `mustard-rt run search --shell-output` with the original search. Bash description: `mustard:spec: <question>`.
 - Reuse current excerpts; the hook crosses Read with offset/limit. No range: `run map summary --file <file>`. Reread changed sources. Comments are not runtime proof.
 - Dossier: `mustard-rt run knowledge`; else `run knowledge --prepare-session claude --query "<question>"`. Delegate only useful bounded investigation; wave agent: `write delivered`, errors in `leftovers`, two lines back; the hook refuses it `write request`/`task`: the conductor records.

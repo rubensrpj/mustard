@@ -16,7 +16,6 @@ pub mod close;
 pub mod common;
 pub mod discard;
 pub(crate) mod evidence;
-pub(crate) mod goal;
 pub mod grill;
 pub mod open;
 pub mod plan;
@@ -136,7 +135,8 @@ mod tests {
         let grill = json!({"ok":true,"spec":"x","work_type":4,"kinds":["fix"],"points":[
             {"block":"condensed","gap":"Who uses it","from":"gap","origin":2,"id":5,"code":"MSTD-POINT-0001","status":"open","facts":["a.ts:1"],"reminders":[]},
             {"block":"condensed","gap":"Where it runs","from":"gap","origin":2,"id":6,"code":"MSTD-POINT-0002","status":"closed","facts":[]}],
-            "reminders":0,"goal_approval":{"confirmed":true},"hint":"Present the open points."});
+            "reminders":0,"hint":"Present the open points.",
+            "knowledge":{"cards":[{"id":"c1","file":"a.ts","name":"save","line":1,"signature":"function save(point: Point): void"}]}});
         let round = json!({"ok":true,"spec":"x","dispatch":[],"running":[],"held":[
             {"task":"MSTD-TASK-0002","reason":"capacity","detail":"No free slot."},
             {"task":"MSTD-TASK-0003","reason":"capacity","detail":"No free slot."}],

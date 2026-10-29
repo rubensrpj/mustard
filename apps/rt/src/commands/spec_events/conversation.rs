@@ -260,15 +260,6 @@ pub(crate) fn record_response(root: &Path, session: Option<&str>, text: &str) ->
     reply(root, session, text, |after| !after.is_empty() && after.iter().all(|message| message.fields.contains_key("witness")))
 }
 
-/// A fala do assistente no turno de uma pergunta com opções, lida da conversa
-/// antes de gravar o clique: ela só viraria resposta no fim do turno, e quem
-/// lê a última resposta antes do clique precisa dela já gravada. Nada é
-/// gravado quando a última resposta já tem o mesmo texto, sem diferença de
-/// espaços.
-pub(crate) fn record_said_before_click(root: &Path, session: Option<&str>, text: &str) -> Option<u64> {
-    reply(root, session, text, |_| true)
-}
-
 /// Grava a resposta `text`, ligada à última mensagem do usuário, a menos que
 /// a última resposta gravada tenha o mesmo texto, sem diferença de espaços,
 /// e `repeated` diga, pelas mensagens gravadas depois dela, que é a mesma

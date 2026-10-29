@@ -277,7 +277,6 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
         "kinds": kinds,
         "points": points,
         "reminders": reminders,
-        "goal_approval": super::goal::status(&log, lang),
     });
     // As entregas do projeto ligadas ao objetivo, para o condutor: contexto,
     // nunca ponto da lista, e nunca no pedido de uma onda.
@@ -348,9 +347,9 @@ pub(crate) fn projection(full: &Value) -> Value {
 
 /// A resposta curta do levantamento, tirada de [`projection`]: primeiro a
 /// dica e os códigos dos pontos abertos; depois os pontos, que a dica manda
-/// mostrar de uma vez, e só o que ela manda usar — as mensagens sem destino,
-/// os itens que a volta ao levantamento toca, os itens retidos e o objetivo
-/// ainda sem aceite. O resto, com `--full`.
+/// mostrar de uma vez, e só o que ela manda usar — os pontos do usuário, as
+/// mensagens sem destino, os itens que a volta ao levantamento toca e os
+/// itens retidos. O resto, com `--full`.
 pub(crate) fn short(projected: &Value) -> Value {
     let points = projected["points"].as_array().map_or(&[][..], Vec::as_slice);
     let open: Vec<&Value> = points.iter().filter(|point| point["status"] == "open").map(|point| &point["code"]).collect();
@@ -362,9 +361,6 @@ pub(crate) fn short(projected: &Value) -> Value {
         if let Some(value) = projected.get(key) {
             out[key] = value.clone();
         }
-    }
-    if projected["goal_approval"]["confirmed"] == false {
-        out["goal_approval"] = projected["goal_approval"].clone();
     }
     let mut expand = projected["expand"].clone();
     expand["full"] = json!("mustard-rt run grill --full");
@@ -1403,6 +1399,9 @@ mod tests {
         assert!(recorded_points(root, "x").iter().all(|p| p.str_field("block") == Some(survey::CONDENSED)));
         let all = grill(root, "x", Some("feature,fix"));
         assert!(all.get("next").is_none(), "{all}");
+        // O objetivo não tem confirmação própria: ele é aprovado com o plano.
+        let resumed = crate::commands::flow::resume::resume_for(&crate::commands::flow::resume::ResumeOpts { root: root.to_path_buf(), spec: Some("x".into()) }, None);
+        assert!(all.get("goal_approval").is_none() && resumed.get("goal_approval").is_none(), "{all} {resumed}");
         let design = translate("survey.save_design", Locale::PtBr).replace("{spec}", "x");
         assert_eq!(all["hint"], json!(format!("{} {design}", translate("survey.present_all", Locale::PtBr))));
         assert!(items(&all).iter().all(|item| item["status"] == json!("open")));

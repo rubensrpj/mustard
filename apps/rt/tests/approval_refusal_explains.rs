@@ -174,18 +174,17 @@ fn a_dismissed_dialog_explains_nothing() {
 }
 
 // ---------------------------------------------------------------------------
-// O clique do objetivo
+// O clique pela conversa ligada à spec
 // ---------------------------------------------------------------------------
 
 const GOAL_SPEC: &str = "objetivo";
 const GOAL_SESSION: &str = "s-objetivo";
 const GOAL: &str = "Reduzir o custo da leitura do mapa.";
-const SHORT: &str = "Confirma?";
 
 /// Um projeto em pt-BR, num repositório parado em `dev`, com a spec
 /// `objetivo` aberta pelo `run open`, a fala do usuário gravada pelo gancho
 /// da entrada e o objetivo [`GOAL`] gravado pelo `run write`, com a origem
-/// nessa fala, que não começa por ele: só o clique confirma.
+/// nessa fala. O objetivo não tem clique próprio: ele é aprovado com o plano.
 struct GoalProject {
     _dir: tempfile::TempDir,
     root: PathBuf,
@@ -313,12 +312,6 @@ impl GoalProject {
         )
     }
 
-    /// A pergunta curta do objetivo, depois da fala `shown`, respondida com
-    /// "Confirmar objetivo".
-    fn confirm_after(&self, shown: &str) -> String {
-        self.ask(shown, SHORT, "MustardGoal", &["Confirmar objetivo", "Ajustar objetivo"], "Confirmar objetivo")
-    }
-
     /// Os eventos da spec, como estão no arquivo.
     fn events(&self) -> Vec<Value> {
         let file = store::spec_file(&self.root, GOAL_SPEC).unwrap();
@@ -328,11 +321,6 @@ impl GoalProject {
     /// O último evento do tipo `event_type`.
     fn last(&self, event_type: &str) -> Option<Value> {
         self.events().into_iter().rfind(|event| event["type"] == event_type)
-    }
-
-    /// A confirmação do objetivo como a retomada a lê.
-    fn goal_approval(&self) -> Value {
-        self.run(&["resume", "--spec", GOAL_SPEC])["goal_approval"].clone()
     }
 
     /// O levantamento inteiro e o plano de uma tarefa só, passado, pelos
@@ -479,90 +467,6 @@ fn a_click_approves_the_bound_spec_and_never_the_branch_spec() {
 
     assert_eq!(project.phase().as_deref(), Some("approved"), "the bound spec is approved:\n{said}");
     assert_eq!(project.other_events(), other, "the branch spec is untouched");
-}
-
-/// A conversa ligada a uma spec, com o checkout parado na branch de outra,
-/// confirma o objetivo da spec dela: o clique é gravado ali, e é ali que a
-/// testemunha lê se ele confirmou — nunca na spec da branch.
-#[test]
-fn a_goal_click_is_judged_on_the_spec_bound_to_the_session() {
-    let project = GoalProject::new();
-    project.open_other();
-
-    let said = project.confirm_after(&format!("O objetivo é: {GOAL}"));
-
-    assert!(said.contains("Objetivo confirmado"), "the click is judged on the bound spec:\n{said}");
-    assert_eq!(project.goal_approval()["confirmed"], json!(true));
-}
-
-/// O objetivo mostrado numa fala e depois a pergunta curta: o clique confirma
-/// e a testemunha diz isso na hora. A mensagem do usuário tem só a opção que
-/// ele clicou, a pergunta fica no clique, como do assistente, e a fala do
-/// objetivo é a última resposta antes do clique — a pergunta não vira
-/// resposta no meio.
-#[test]
-fn a_short_question_after_the_goal_confirms_and_keeps_each_author() {
-    let project = GoalProject::new();
-    let shown = format!("O objetivo é: {GOAL}");
-
-    let said = project.confirm_after(&shown);
-
-    assert!(said.contains("Objetivo confirmado"), "the witness says the click counted:\n{said}");
-    assert_eq!(project.goal_approval()["confirmed"], json!(true));
-    let events = project.events();
-    let click = events.iter().rposition(|e| e["type"] == "message").expect("the click");
-    assert_eq!(events[click]["author"], json!("user"));
-    assert_eq!(events[click]["text"], json!("Confirmar objetivo"), "the user said only the option");
-    assert_eq!(events[click]["witness"]["question"], json!(SHORT), "the question stays in the click");
-    let goal = events.iter().position(|e| e["type"] == "context").expect("the goal");
-    let responses: Vec<&Value> = events[goal..click].iter().filter(|e| e["type"] == "response").collect();
-    assert_eq!(responses.len(), 1, "only the speech goes between the goal and the click: {responses:?}");
-    assert_eq!(responses[0]["text"], json!(shown));
-}
-
-/// O objetivo em negrito, com crase e uma vírgula a mais na fala é o mesmo
-/// objetivo: o clique confirma.
-#[test]
-fn a_goal_shown_in_bold_with_backticks_and_an_extra_comma_still_confirms() {
-    let project = GoalProject::new();
-
-    let said = project.confirm_after("O objetivo é: **Reduzir o custo, da `leitura` do mapa**.");
-
-    assert!(said.contains("Objetivo confirmado"), "{said}");
-    assert_eq!(project.goal_approval()["confirmed"], json!(true));
-}
-
-/// Sem o objetivo na fala antes da pergunta curta, o clique não vale, e a
-/// testemunha diz isso no próprio clique, com o objetivo como está gravado —
-/// sem esperar o comando seguinte.
-#[test]
-fn a_click_without_the_goal_in_sight_is_refused_on_the_spot() {
-    let project = GoalProject::new();
-
-    let said = project.confirm_after("Vou confirmar com você.");
-
-    assert!(said.contains("o clique não valeu"), "the refusal is said at the click:\n{said}");
-    assert!(said.contains(GOAL), "the recorded goal goes with it:\n{said}");
-    assert!(said.contains("MustardGoal"), "and how to ask again:\n{said}");
-    let approval = project.goal_approval();
-    assert_eq!(approval["confirmed"], json!(false), "{approval}");
-    assert_eq!(approval["reason"], json!("goal-text-differs"), "{approval}");
-}
-
-/// O objetivo já confirmado por um clique que valeu não leva aviso num
-/// segundo clique cuja fala anterior não traz o objetivo: o aviso de clique
-/// recusado é só de quem ainda não tem o objetivo confirmado.
-#[test]
-fn a_click_after_the_goal_is_confirmed_brings_no_refusal() {
-    let project = GoalProject::new();
-    let first = project.confirm_after(&format!("O objetivo é: {GOAL}"));
-    assert!(first.contains("Objetivo confirmado"), "the first click confirms:\n{first}");
-
-    let second = project.confirm_after("Vou confirmar com você.");
-
-    assert!(!second.contains("o clique não valeu"), "a confirmed goal is not refused again:\n{second}");
-    assert!(!second.contains("MustardGoal"), "and nothing asks again how to confirm:\n{second}");
-    assert_eq!(project.goal_approval()["confirmed"], json!(true));
 }
 
 /// A pergunta comum, sem testemunha, também separa os autores: a mensagem do

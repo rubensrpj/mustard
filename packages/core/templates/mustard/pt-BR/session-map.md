@@ -1,6 +1,6 @@
 # Mustard neste projeto
 
-- Consulta não abre spec. Mudança: `mustard-rt run open`; depois grave o objetivo por `mustard-rt run write context`, `origin` na mensagem do usuário; se sugerido, confirme por `goal_approval`. Só então sugira `/clear`; a linha de retomada guarda o estado.
+- Consulta não abre spec. Mudança: `mustard-rt run open`; depois grave o objetivo por `mustard-rt run write context`, `origin` na mensagem do usuário; ele é aprovado junto com o plano. Só então sugira `/clear`; a linha de retomada guarda o estado.
 - Código: `mcp__mustard__search`, com intenção local e finalidade; preserve argumentos e escopo. CLI: `mustard-rt run search --shell-output` com a busca original. Bash: descrição `mustard:spec: <pergunta>`.
 - Reuse trechos atuais; o gancho cruza o Read com offset/limit. Sem faixa: `run map summary --file <arquivo>`. Fonte alterada: releia. Comentário não prova comportamento.
 - Dossiê: `mustard-rt run knowledge`; sem ele, `run knowledge --prepare-session claude --query "<dúvida>"`. Delegue só se compensar; agente de onda: `write delivered`, erro/sobra em `leftovers`, volta em duas linhas; o gancho lhe recusa `write request`/`task`: o condutor grava.

@@ -130,7 +130,6 @@ pub(crate) fn resume_for(opts: &ResumeOpts, session: Option<&str>) -> Value {
     if let Some(hint) = work_copies::orphans_hint(&orphans, lang) {
         out["copies_left"] = json!({"hint": hint, "copies": orphans});
     }
-    out["goal_approval"] = super::goal::status(&log, lang);
     out["since_last_message"] = since_last_message(&project.root, &spec, &log);
     out
 }
