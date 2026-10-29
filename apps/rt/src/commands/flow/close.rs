@@ -982,7 +982,8 @@ fn hand_pending_to_project(root: &Path, spec: &str, log: &SpecLog, answers: &[St
 /// vez, na cópia limpa
 /// `clean` do commit da obra, onde a prova tem de passar rodando teste, e uma
 /// vez na cópia do código de antes (`before`, [`proof_runs`]), onde ela tem
-/// de cair, com a execução de cada uma gravada. A compilação que falha recusa antes do
+/// de cair, com a execução de cada uma gravada. A prova que já rodou no
+/// código de antes com a mesma chave não roda de novo. A compilação que falha recusa antes do
 /// resto rodar, porque o resto cairia pelo mesmo erro. Com ela verde, o lint,
 /// a suíte, os critérios e a análise de declarações sem uso rodam todos, e a
 /// recusa lista tudo o que caiu numa resposta só. A
@@ -1055,7 +1056,7 @@ fn machine(
             // caiu aqui. A falha cujas linhas a base já tinha não é da obra:
             // vira aviso, e o fechamento segue.
             if let Some(copy) = before {
-                let (base_run, from_the_base) = copy.rerun(&command, clean, &out);
+                let (base_run, from_the_base) = copy.rerun(&command, clean, &out)?;
                 super::validation::record_run(root, spec, "final", &format!("{key}-before"), &command, &base_run).map_err(CloseRefusal::Refused)?;
                 if from_the_base {
                     from_base.push(translate("close.failure_from_the_base", lang).replace("{command}", &command).replace("{read}", &read));
@@ -1123,8 +1124,18 @@ fn machine(
     let mut before_unchecked = None;
     match before {
         Some(copy) => {
-            for ((id, code, command), (_, _, out)) in proofs.iter().zip(copy.run(&proofs)) {
-                let written = super::validation::record_run(root, spec, "final", &format!("criterion-before:{code}"), command, &out).map_err(CloseRefusal::Refused)?;
+            for ((id, code, command), (out, key)) in proofs.iter().zip(copy.run(log, &proofs)?) {
+                // A chave e a contagem de testes ficam com a execução: é por
+                // elas que o fechamento seguinte reaproveita a prova.
+                let mut kept = Map::new();
+                if let Some(key) = key {
+                    kept.insert("fingerprint".into(), json!(key));
+                }
+                if let Some(tests) = out.tests {
+                    kept.insert("tests".into(), json!(tests));
+                }
+                let stage = format!("criterion-before:{code}");
+                let written = super::validation::record_run_fields(root, spec, "final", &stage, command, &out, kept).map_err(CloseRefusal::Refused)?;
                 if let Some(tests) = proof_runs::passed_before(&out) {
                     let (of, read) = (ProofOf::item(log, *id), run_read(root, spec, &written));
                     failures.push(CloseRefusal::CriterionPassedBefore { of, code: code.clone(), command: command.clone(), tests, read });

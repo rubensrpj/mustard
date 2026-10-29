@@ -237,7 +237,7 @@ pub(crate) use jev_decision::{FINAL_REVIEW, Waiting};
 pub(crate) use leftovers::{FinalFindings, record_final_leftovers};
 pub(crate) use triage_questions::ask_after_locks;
 pub(crate) use fixes::{fix_file, sweep_fixes};
-pub(crate) use keep::{Kept, landed_kept};
+pub(crate) use keep::{Keeping, Kept, landed_kept};
 pub(crate) use queue::{
     awaited_review, backlog_left, new_agent_escalation, open_review, send_revision, sender_fields, tasks_left, waves_awaiting_new_agent, waves_in_progress,
     waves_pending_fix,

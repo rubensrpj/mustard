@@ -131,23 +131,45 @@ pub(super) fn fingerprint(root: &Path, log: &SpecLog) -> Option<String> {
     // As provas que a máquina roda entram também: a de um pedido que a
     // tarefa de um achado entregou sem mudar arquivo nenhum chega à lista sem
     // mudar o código nem os critérios, e o recibo de antes dela não vale.
-    for (id, code, command) in proof_list(log, config_inputs.commands().test.as_deref()) {
+    let declared = config_inputs.commands();
+    let proofs = proof_list(log, declared.test.as_deref());
+    for (id, code, command) in &proofs {
         digest.update(&serde_json::to_vec(&(id, code, command)).ok()?);
     }
-    let mut env: Vec<_> = std::env::vars_os()
-        .filter(|(name, _)| {
-            let name = name.to_string_lossy();
-            !matches!(name.as_ref(), "_" | "SHLVL" | "PWD" | "OLDPWD") && !name.starts_with("CLAUDE_") && !name.contains("SESSION")
-        })
+    let commands: Vec<&str> = [&declared.build, &declared.lint, &declared.test]
+        .into_iter()
+        .flatten()
+        .map(String::as_str)
+        .chain(proofs.iter().map(|(_, _, command)| command.as_str()))
         .collect();
-    env.sort();
-    for (name, value) in env {
+    for (name, value) in cited_env(std::env::vars_os(), &commands) {
         digest.update(name.to_str()?.as_bytes());
         digest.update(&[0]);
         digest.update(value.to_str()?.as_bytes());
         digest.update(&[0]);
     }
     Some(digest.hex_digest())
+}
+
+/// As variáveis de `env` que a impressão da validação leva, em ordem: o
+/// `PATH`, que escolhe os programas, e as que um dos `commands` cita pelo
+/// nome, como `$TOKEN` ou `TOKEN=1 cargo test`. A variável sem relação com o
+/// que a máquina roda não a faz rodar de novo.
+fn cited_env(env: impl Iterator<Item = (std::ffi::OsString, std::ffi::OsString)>, commands: &[&str]) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let cites = |command: &str, name: &str| {
+        command.match_indices(name).any(|(at, _)| {
+            !command[..at].chars().next_back().is_some_and(word) && !command[at + name.len()..].chars().next().is_some_and(word)
+        })
+    };
+    let mut kept: Vec<_> = env
+        .filter(|(name, _)| {
+            let name = name.to_string_lossy();
+            !name.is_empty() && (name == "PATH" || commands.iter().any(|command| cites(command, &name)))
+        })
+        .collect();
+    kept.sort();
+    kept
 }
 
 /// As provas que a máquina do fechamento roda, cada uma com o número e o
@@ -745,8 +767,9 @@ pub(super) fn record_run(root: &Path, spec: &str, phase: &str, stage: &str, comm
     record_run_fields(root, spec, phase, stage, command, out, Map::new())
 }
 
+/// [`record_run`] com os campos de `draft` a mais na execução gravada.
 #[allow(clippy::too_many_arguments)]
-fn record_run_fields(
+pub(super) fn record_run_fields(
     root: &Path,
     spec: &str,
     phase: &str,
@@ -1398,6 +1421,17 @@ src/a.ts(1,10): error TS6133: 'lonelyTotal' is declared but its value is never r
             waves: vec![(1, vec![api]), (2, vec![web, manifest])],
             commits: Default::default(),
         }
+    }
+
+    /// A impressão leva o `PATH` e só as variáveis que um comando cita pelo
+    /// nome: a que nenhum comando cita fica de fora, e o pedaço de outro nome
+    /// não conta como citação.
+    #[test]
+    fn the_fingerprint_keeps_only_the_path_and_the_variables_a_command_names() {
+        let env = ["PATH", "TOKEN", "TOKEN_OLD", "EDITOR", "DB_URL"].map(|name| (name.into(), "v".into()));
+        let kept = super::cited_env(env.into_iter(), &["TOKEN=1 cargo test", "psql ${DB_URL}"]);
+        let names: Vec<String> = kept.into_iter().map(|(name, _)| name.to_string_lossy().into_owned()).collect();
+        assert_eq!(names, ["DB_URL", "PATH", "TOKEN"]);
     }
 
     /// O tempo de cada etapa da rodada vai para o arquivo de operações da

@@ -21,40 +21,56 @@
 //! as provas e saem logo depois: a vaga fica sempre no commit base, e nada
 //! dela é guardado como código de alguém quando a obra fecha.
 //!
+//! **A prova que já rodou.** A execução de cada prova aqui fica gravada com
+//! a chave dela: o comando, o commit base e o conteúdo dos arquivos de teste
+//! da obra. O fechamento seguinte com a mesma chave não roda a prova de novo,
+//! e a vaga só é preparada quando algo tem de rodar nela.
+//!
 //! **O erro que a base já tinha.** A compilação, o lint ou a suíte que caem
 //! na cópia limpa rodam de novo aqui, no código de antes. Só reprova a linha
 //! de diagnóstico que a saída daqui não tem ([`new_lines`]): o erro que o
 //! projeto já tinha antes da obra não é dela.
 
+use std::cell::OnceCell;
 use std::path::{Path, PathBuf};
 
 use mustard_core::domain::ast::is_test_path;
 use mustard_core::domain::spec_events::SpecLog;
+use mustard_core::io::sha256::Sha256;
 use mustard_core::io::wave_prompt::{shown, spec_copies_dir};
 use mustard_core::platform::git;
+use serde_json::Value;
 
 use super::CloseRefusal;
+use crate::commands::flow::round::Keeping;
 use crate::commands::git_settle::CopiesLock;
-use crate::commands::review::qa_run::{ProofRun, run_criteria_proofs, run_server_command};
+use crate::commands::review::qa_run::{ProofRun, canonical_test_command, run_criteria_proofs, run_server_command};
 
 /// O nome da pasta da cópia do código de antes dentro da pasta das cópias da
 /// obra, ao lado da cópia limpa (`check`).
 const FOLDER: &str = "check-base";
 
-/// A cópia do código de antes, pronta: a pasta, o commit base em que ela
-/// está e o commit da obra de onde vêm os arquivos de teste.
+/// A cópia do código de antes: a pasta, o commit base em que ela fica, o
+/// commit da obra de onde vêm os arquivos de teste e a impressão deles. A
+/// vaga só é preparada quando algo tem de rodar nela.
 pub(super) struct BeforeCopy {
+    root: PathBuf,
     path: PathBuf,
     base: String,
     head: String,
+    owner: Keeping,
+    /// A impressão dos arquivos de teste que a obra põe por cima do commit
+    /// base ([`work_tests`]).
+    tests: String,
+    /// A vaga pronta, ou por que não ficou; vazio enquanto nada rodou nela.
+    ready: OnceCell<Result<(), String>>,
 }
 
-/// Prepara a cópia do código de antes da obra `spec`, com a trava das cópias
-/// presa por quem chama (`_copies`): a vaga no commit base da obra
-/// ([`super::super::validation::base_commit`]), sem arquivo local, e as
-/// dependências declaradas instaladas como na cópia limpa. `None` quando a
-/// obra não tem commit base que o git ache: não há código de antes onde
-/// rodar a prova.
+/// A cópia do código de antes da obra `spec`, com a trava das cópias presa
+/// por quem chama (`_copies`): a vaga no commit base da obra
+/// ([`super::super::validation::base_commit`]), ainda sem preparar. `None`
+/// quando a obra não tem commit base que o git ache: não há código de antes
+/// onde rodar a prova.
 pub(super) fn prepare(root: &Path, spec: &str, log: &SpecLog, _copies: &CopiesLock) -> Result<Option<BeforeCopy>, CloseRefusal> {
     let Some(base) = super::super::validation::base_commit(root, log) else {
         return Ok(None);
@@ -62,33 +78,109 @@ pub(super) fn prepare(root: &Path, spec: &str, log: &SpecLog, _copies: &CopiesLo
     let path = spec_copies_dir(root, spec).join(FOLDER);
     let failed = |detail: String| CloseRefusal::CleanCopyFailed { copy: shown(&path), detail };
     let head = git::run(root, &["rev-parse", "HEAD"]).result().map_err(&failed)?;
-    // Os arquivos de teste que um fechamento interrompido deixou na vaga não
-    // são código de ninguém: saem antes de a vaga voltar ao commit base, que
-    // guardaria o que ela tem e o commit não tem.
-    if path.join(".git").is_file() {
-        back_to_base(&path, &base).map_err(&failed)?;
-    }
+    let tests = work_tests(root, &base, &head).map_err(&failed)?;
     let owner = crate::commands::flow::round::slot_owner(spec, log, &path);
-    crate::commands::flow::round::clean_copy(root, &path, &base, &owner).map_err(&failed)?;
-    crate::commands::flow::round::prepare_copy_dependencies(root, &path).map_err(&failed)?;
-    Ok(Some(BeforeCopy { path, base, head }))
+    Ok(Some(BeforeCopy { root: root.to_path_buf(), path, base, head, owner, tests, ready: OnceCell::new() }))
+}
+
+/// A impressão dos arquivos de teste que a obra mudou do commit `base` ao
+/// commit `head`, pelo conteúdo que `head` tem de cada um, ou pela falta dele.
+fn work_tests(root: &Path, base: &str, head: &str) -> Result<String, String> {
+    let listed = git::run(root, &["diff", "--raw", "-z", "--no-renames", "--no-abbrev", base, head]).result()?;
+    let mut digest = Sha256::new();
+    let mut fields = listed.split('\0');
+    while let (Some(meta), Some(file)) = (fields.next(), fields.next()) {
+        if is_test_path(file) {
+            digest.update(meta.as_bytes());
+            digest.update(file.as_bytes());
+            digest.update(&[0]);
+        }
+    }
+    Ok(digest.hex_digest())
+}
+
+/// A execução gravada em `log` da prova cuja chave é `key`, como volta
+/// quando ela não roda de novo.
+fn recorded(log: &SpecLog, key: &str) -> Option<ProofRun> {
+    let run = log.events.iter().rev().find(|e| e.event_type == "stage_run" && e.str_field("fingerprint") == Some(key))?;
+    Some(ProofRun {
+        reused: true,
+        result: if run.str_field("result") == Some("pass") { "pass" } else { "fail" },
+        exit: run.fields.get("exit").and_then(Value::as_i64).unwrap_or(1),
+        ms: 0,
+        output: run.str_field("output").unwrap_or_default().to_string(),
+        ran_no_test: None,
+        missing_test: None,
+        tests: run.fields.get("tests").and_then(Value::as_u64),
+        evidence: String::new(),
+    })
 }
 
 impl BeforeCopy {
+    /// Prepara a vaga uma vez, na primeira coisa que roda nela: zerada no
+    /// commit base, sem arquivo local, e com as dependências declaradas
+    /// instaladas como na cópia limpa.
+    fn ready(&self) -> Result<(), CloseRefusal> {
+        let ready = self.ready.get_or_init(|| {
+            // Os arquivos de teste que um fechamento interrompido deixou na
+            // vaga não são código de ninguém: saem antes de a vaga voltar ao
+            // commit base, que guardaria o que ela tem e o commit não tem.
+            if self.path.join(".git").is_file() {
+                back_to_base(&self.path, &self.base)?;
+            }
+            crate::commands::flow::round::clean_copy(&self.root, &self.path, &self.base, &self.owner)?;
+            crate::commands::flow::round::prepare_copy_dependencies(&self.root, &self.path)
+        });
+        ready.clone().map_err(|detail| CloseRefusal::CleanCopyFailed { copy: shown(&self.path), detail })
+    }
+
+    /// A chave de `command` no código de antes: o commit base, a impressão
+    /// dos arquivos de teste da obra e o comando. A mesma chave dá a mesma
+    /// execução, e a prova não roda de novo.
+    fn key(&self, command: &str) -> String {
+        let mut digest = Sha256::new();
+        for part in ["mustard-proof-before-v1", &self.base, &self.tests, &canonical_test_command(command)] {
+            digest.update(part.as_bytes());
+            digest.update(&[0]);
+        }
+        digest.hex_digest()
+    }
+
     /// Roda cada prova de `proofs` (id, código do item, comando) no código de
     /// antes, com os arquivos de teste da obra por cima, e devolve a execução
-    /// de cada uma, na ordem de `proofs`. O arquivo de teste que não pôde
-    /// entrar faz a execução de todas cair com o motivo, e a vaga volta ao
+    /// de cada uma, na ordem de `proofs`, com a chave dela ([`BeforeCopy::key`]).
+    /// A prova cuja chave já tem execução gravada em `log` não roda: volta a
+    /// gravada, como reaproveitada. O arquivo de teste que não pôde entrar faz
+    /// a execução das outras cair com o motivo, sem chave, e a vaga volta ao
     /// commit base no fim, em todo caso.
-    pub(super) fn run(&self, proofs: &[(u64, String, String)]) -> Vec<(u64, String, ProofRun)> {
-        let runs = match self.lay_work_tests() {
-            Ok(()) => run_criteria_proofs(&self.path, proofs),
-            Err(detail) => proofs.iter().map(|(id, code, _)| (*id, code.clone(), not_laid(&detail))).collect(),
-        };
-        if let Err(detail) = back_to_base(&self.path, &self.base) {
-            eprintln!("[Mustard] {}: {detail}", shown(&self.path));
+    pub(super) fn run(&self, log: &SpecLog, proofs: &[(u64, String, String)]) -> Result<Vec<(ProofRun, Option<String>)>, CloseRefusal> {
+        let mut runs: Vec<(Option<ProofRun>, Option<String>)> = proofs
+            .iter()
+            .map(|(_, _, command)| {
+                let key = self.key(command);
+                (recorded(log, &key), Some(key))
+            })
+            .collect();
+        let missing: Vec<(u64, String, String)> = proofs.iter().zip(&runs).filter(|(_, (run, _))| run.is_none()).map(|(proof, _)| proof.clone()).collect();
+        if !missing.is_empty() {
+            self.ready()?;
+            let mut fresh = match self.lay_work_tests() {
+                Ok(()) => run_criteria_proofs(&self.path, &missing).into_iter().map(|(_, _, run)| (run, true)).collect::<Vec<_>>(),
+                Err(detail) => missing.iter().map(|_| (not_laid(&detail), false)).collect(),
+            }
+            .into_iter();
+            if let Err(detail) = back_to_base(&self.path, &self.base) {
+                eprintln!("[Mustard] {}: {detail}", shown(&self.path));
+            }
+            for (run, key) in runs.iter_mut().filter(|(run, _)| run.is_none()) {
+                let (ran, laid) = fresh.next().unwrap_or_else(|| (not_laid(""), false));
+                *run = Some(ran);
+                if !laid {
+                    *key = None;
+                }
+            }
         }
-        runs
+        Ok(runs.into_iter().map(|(run, key)| (run.unwrap_or_else(|| not_laid("")), key)).collect())
     }
 
     /// Roda `command`, o comando do servidor que caiu na cópia limpa `clean`
@@ -97,11 +189,12 @@ impl BeforeCopy {
     /// caiu aqui também, e cada linha de diagnóstico de `after` aparece na
     /// saída daqui ([`new_lines`]). A falha sem linha de diagnóstico nenhuma
     /// não se compara, e é da obra.
-    pub(super) fn rerun(&self, command: &str, clean: &Path, after: &ProofRun) -> (ProofRun, bool) {
+    pub(super) fn rerun(&self, command: &str, clean: &Path, after: &ProofRun) -> Result<(ProofRun, bool), CloseRefusal> {
+        self.ready()?;
         let before = run_server_command(&super::clean_env(command), &self.path);
         let (lines, new) = new_lines(&after.evidence, &before.evidence, &[clean, &self.path]);
         let from_base = before.result != "pass" && lines > 0 && new.is_empty();
-        (before, from_base)
+        Ok((before, from_base))
     }
 
     /// Põe na vaga os arquivos de teste que a obra mudou do commit base ao
@@ -219,13 +312,41 @@ fn back_to_base(path: &Path, base: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{close, close_for, commit_file, git_at, ready_with_files, ready_with_waves, returned, round_for, verdict_written, wave_file};
+    use super::super::tests::{approve, close, close_for, commit_file, git_at, ready_with_files, ready_with_waves, returned, round_for, verdict_written, wave_file};
     use crate::commands::flow::close::CloseOpts;
     use crate::commands::flow::round::RoundOpts;
     use mustard_core::io::spec_events as store;
     use mustard_core::platform::i18n::{Locale, translate};
     use serde_json::json;
     use std::path::Path;
+
+    /// O segundo fechamento no mesmo commit base, com os mesmos arquivos de
+    /// teste da obra, não roda de novo as provas no código de antes: volta a
+    /// execução gravada de cada uma, reaproveitada.
+    #[test]
+    fn a_second_close_on_the_same_base_does_not_rerun_the_proofs_before() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        ready_with_waves(root, "x", &["grep -q dois src/w1.rs && echo Tests: 1 total"], 1);
+        git_at(root, &["branch", "dev", &first_commit(root)]);
+        let opts = CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), ..Default::default() };
+        let runs_before = |reused: bool| {
+            let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+            let before = |e: &&mustard_core::domain::spec_events::SpecEvent| e.str_field("stage").is_some_and(|stage| stage.starts_with("criterion-before:"));
+            log.events.iter().filter(|e| e.event_type == "stage_run").filter(before).filter(|e| e.fields.get("reused") == Some(&json!(reused))).count()
+        };
+        let asked = close_for(&opts, None);
+        assert_eq!(asked["review"]["final"], json!(true), "{asked}");
+        let proofs = runs_before(false);
+        assert_eq!((proofs, runs_before(true)), (2, 0), "o primeiro fechamento roda cada prova no código de antes: {asked}");
+
+        // A configuração muda, e a máquina roda de novo no mesmo commit base.
+        std::fs::write(root.join("mustard.json"), json!({"lintCommand": "git --version"}).to_string()).unwrap();
+        approve(root, "x");
+        let closed = close_for(&opts, None);
+        assert_eq!((closed["phase"].clone(), closed["validation"]["reused"].clone()), (json!("closed"), json!(false)), "{closed}");
+        assert_eq!((runs_before(false), runs_before(true)), (proofs, proofs), "o segundo fechamento não roda a prova de antes de novo: {closed}");
+    }
 
     /// A comparação com o código de antes ignora a linha e a coluna, a pasta
     /// de cada cópia, o tempo e a contagem do resumo, e a linha que não é de

@@ -770,6 +770,9 @@ pub const TYPES: &[TypeSpec] = &[
             opt("criterion", Kind::Int),
             opt("waves", Kind::Ints),
             opt("reused", Kind::Bool),
+            // Quantos testes a saída disse ter rodado: a prova no código de
+            // antes reaproveitada lê daqui se passou rodando teste.
+            opt("tests", Kind::Int),
         ],
     ),
     ty(
