@@ -75,13 +75,14 @@ pub enum FlowCmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
-    /// O passo do plano, depois que a especificação, as ondas e as tarefas
-    /// estão gravadas: monta o pedido de cada onda com as lições e as skills;
-    /// confere que não há ponto do levantamento aberto, que o plano não tem
-    /// erro de montagem, que os arquivos e os nomes citados existem, que o arquivo citado está no git e
-    /// que ondas da mesma rodada não dividem arquivo; avisa os itens sem
-    /// tarefa; refaz o índice e prepara a pergunta de aprovação. Grava a
-    /// fase do plano. O acompanhamento é local; não prepara publicação.
+    /// O passo do plano, depois que a especificação e as tarefas estão
+    /// gravadas: forma as ondas e monta o pedido de cada uma com as lições e
+    /// as skills; confere que não há ponto do levantamento aberto, que os
+    /// arquivos citados existem e que a prova de cada critério é um comando de
+    /// verdade; avisa o arquivo citado fora do git, o nome que o mapa não acha
+    /// e os itens sem tarefa. Não confere se ondas dividem arquivo: essa trava
+    /// mora na rodada. Refaz o índice e prepara a pergunta de aprovação. Grava
+    /// a fase do plano. O acompanhamento é local; não prepara publicação.
     #[command(display_order = 2)]
     Plan {
         /// A spec cujo plano é conferido. Sem ela, a spec atual.

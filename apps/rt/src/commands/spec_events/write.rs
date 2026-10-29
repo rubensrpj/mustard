@@ -236,7 +236,7 @@ const BINARY_ONLY: &[&str] = &["stage_run", "validation_failure", "criterion_run
 
 /// Os tipos que a gravação nova não aceita mais e que nenhum texto do produto
 /// manda gravar. A spec antiga que os tem continua se lendo.
-const NOT_WRITTEN: &[&str] = &["concern"];
+pub(crate) const NOT_WRITTEN: &[&str] = &["concern"];
 
 /// A razão curta da recusa da lição de defeito: ela vira a tarefa do
 /// conserto, com o teste que falha se o defeito voltar.

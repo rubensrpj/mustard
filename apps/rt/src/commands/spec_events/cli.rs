@@ -166,7 +166,10 @@ pub enum SpecEventsCmd {
         /// sets `v`, `id`, `code`, `at` and `search`; a `code` sent here is
         /// refused. An item of a type that needs `origin` and comes without
         /// it takes the number of the user's latest message; with no user
-        /// message in the spec, the missing field is refused.
+        /// message in the spec, the missing field is refused. A `request`, a
+        /// `rule`, a `decision` and the closing of a user's survey point say
+        /// the user decided: they name the user's message, and without it are
+        /// refused.
         #[arg(long, default_value = "{}")]
         json: String,
         /// The `text` field, raw: `-` reads the whole standard input as
@@ -235,16 +238,21 @@ pub enum SpecEventsCmd {
 /// tabela que a conferência da gravação usa, então a ajuda nunca diverge do
 /// que a gravação recusa. Os obrigatórios vêm primeiro, com o `origin` nos
 /// tipos que o assistente grava a partir da conversa, e os que podem faltar
-/// vêm entre parênteses.
+/// vêm entre parênteses. O tipo que a gravação não aceita mais fica de fora.
 fn fields_of_each_type() -> String {
     let mut help = String::from(
         "Fields of each type, the required ones first and the optional ones in parentheses. Every \
          type also takes `author`, `label` and `replaces`, and `text` and `keys` where not listed:",
     );
-    for spec in TYPES {
+    for spec in TYPES.iter().filter(|spec| written(spec)) {
         help.push_str(&fields_line(spec));
     }
     help
+}
+
+/// O tipo `spec` ainda é aceito na gravação.
+fn written(spec: &TypeSpec) -> bool {
+    !spec_events::write::NOT_WRITTEN.contains(&spec.name)
 }
 
 /// A linha de um tipo no fim da ajuda: `\n  <tipo>: ` e os obrigatórios,
@@ -298,7 +306,7 @@ pub fn write_help_for_type(args: &[String]) -> Option<String> {
     if !rest.iter().any(|arg| arg == "--help" || arg == "-h") {
         return None;
     }
-    let spec = type_spec(written_type(rest)?)?;
+    let spec = type_spec(written_type(rest)?).filter(|spec| written(spec))?;
     Some(format!(
         "Usage: mustard-rt run write {name} [--spec <SPEC>] [--json <JSON>] [--text <TEXT>] [--agent <AGENT>] [--root <ROOT>]\n\n\
          Fields of `{name}`, the required ones first and the optional ones in parentheses. It also \
@@ -415,8 +423,10 @@ mod tests {
         let write = tree.find_subcommand_mut("write").expect("the write command is registered");
         let help = write.render_long_help().to_string();
         for spec in TYPES {
-            assert!(help.contains(&format!("\n  {}: ", spec.name)), "the help has no line for {}:\n{help}", spec.name);
+            let listed = help.contains(&format!("\n  {}: ", spec.name));
+            assert_eq!(listed, written(spec), "the line of {} in the help:\n{help}", spec.name);
         }
+        assert!(!help.contains("\n  concern: "), "a type the write refuses is not in the help:\n{help}");
         assert!(help.contains("\n  decision: text, keys, why, origin (applies_to, waves, every_wave, no_code, title, agent)"), "{help}");
         assert!(help.contains("\n  message: text (witness, during, question)"), "{help}");
         assert!(
