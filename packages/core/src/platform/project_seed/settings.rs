@@ -406,10 +406,11 @@ pub fn retire_planted_plugin_enablement(settings: &mut Map<String, Value>) {
 ///   and this is a default: an operator who denied a Mustard command is not
 ///   asking for it back, and one who allowed a command the seed denies chose so.
 ///
-/// Nothing happens when the file declares no `permissions` object. With
-/// `team`, the team's file of a shared install, the rules go to the local
-/// file instead: the lists are created when absent, and a rule the team's
-/// file holds in any list is already decided there.
+/// Nothing happens when the file declares no `permissions` object.
+///
+/// Com `team`, o arquivo da equipe de uma instalação compartilhada, as regras
+/// vão ao arquivo local: as listas nascem quando faltam, e a regra que o
+/// arquivo da equipe tem em qualquer lista já está decidida ali.
 fn backfill_own_permission_rules(settings: &mut Map<String, Value>, seed: &Map<String, Value>, team: Option<&Map<String, Value>>) {
     let seed_list = |list: &str| -> Vec<String> {
         seed.get("permissions")

@@ -145,8 +145,8 @@ impl CheckResult {
 /// doutor ler o mesmo artefato que o Claude Code lê, como a conferência da
 /// fiação lê, em `known_run_subcommands`, a mesma árvore do clap em que o
 /// binário despacha. O conjunto de eventos vem dele e não de uma lista à mão,
-/// que sairia de sincronia: `PreCompact`, `Stop` e `WorktreeCreate` entram
-/// porque o manifesto os registra.
+/// que sairia de sincronia: `Stop` e `SessionEnd` entram porque o manifesto
+/// os registra, e o evento que sai do manifesto sai do conjunto.
 ///
 /// O script de build o copia antes para `OUT_DIR`: embutido de `plugin/`,
 /// fora deste crate, o cargo o guardava pelo caminho absoluto da cópia que o

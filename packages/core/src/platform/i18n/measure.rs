@@ -1,7 +1,6 @@
 //! A medição do uso real: a tabela do gasto antes e depois da marca de uma
-//! versão, a frase do veredito, a tabela dos scripts em volta do Mustard e
-//! das edições por script, e a tabela de cada 100 buscas que o Mustard
-//! respondeu, com a frase dela, como o comando `measure` as responde.
+//! versão, a frase do veredito e a tabela dos scripts em volta do Mustard e
+//! das edições por script, como o comando `measure` as responde.
 //!
 //! Uma parte do catálogo de textos: quem lê chama `translate`, a porta do
 //! catálogo, e nunca esta parte direto. Chave nova com um começo que esta

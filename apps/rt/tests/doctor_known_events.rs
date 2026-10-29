@@ -7,8 +7,7 @@
 //! `plugin/hooks/hooks.json` manifest.
 //!
 //! A conferência da fiação valida os comandos `mustard-rt on <evento>` contra
-//! o conjunto de eventos que o manifesto registra, inclusive `PreCompact` e
-//! `Stop`. `doctor::known_hook_events` deriva o conjunto do manifesto; este
+//! o conjunto de eventos que o manifesto registra, inclusive `Stop`. `doctor::known_hook_events` deriva o conjunto do manifesto; este
 //! teste lê o manifesto uma segunda vez, de forma independente, direto do
 //! disco, e falha se os dois discordam para qualquer lado — assim uma
 //! derivação desfeita, ou um leitor que deixa de enxergar uma forma que o
@@ -136,10 +135,9 @@ fn source(rel: &str) -> String {
 /// leitura da onda da cópia pelo tamanho da conversa saíram do código em obras
 /// anteriores. Esta prova fecha as três portas por onde elas voltam a aparecer
 /// para quem lê: um comentário que ainda descreva a regra que saiu; um teste
-/// composto que repita prova já existente em teste próprio; e o registro do
-/// gancho de compactação, hoje conferido só contra si mesmo — quem tira a
-/// entrada `PreCompact` do manifesto tira junto a lista derivada dele, e o
-/// aviso de compactar some sem nenhum teste cair.
+/// composto que repita prova já existente em teste próprio; e a entrada
+/// `PreCompact` do manifesto, que saiu com o aviso antes de compactar: o
+/// início da sessão depois do resumo traz o bloco de retomada.
 #[test]
 fn leftovers_of_the_old_economy_no_longer_exist() {
     // 1) Nenhum comentário descreve regra que já saiu do código. Cada frase
@@ -198,7 +196,7 @@ fn leftovers_of_the_old_economy_no_longer_exist() {
         ),
         (
             "apps/rt/src/hooks/session/conversation_size.rs",
-            "fn compaction_warning_arrives_in_the_hook_and_nobody_else_is_blocked_by_size",
+            "fn nothing_runs_before_compaction_and_nobody_is_blocked_by_size",
         ),
     ] {
         assert!(

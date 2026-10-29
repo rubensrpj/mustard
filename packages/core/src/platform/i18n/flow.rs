@@ -762,8 +762,7 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("copies.branch_missing", Locale::EnUs) => {
             "This work is marked as running, and branch {branch} no longer exists. Nobody can resume it: close the work or cut the branch again. Its copy already counts as leftover."
         }
-        // O bloco de retomada, no aviso antes de compactar (`PreCompact`) e
-        // no início da sessão depois do resumo.
+        // O bloco de retomada, no início da sessão depois do resumo.
         ("conversation_size.block", Locale::PtBr) => {
             "Retomada da obra: spec {spec}, fase {phase}. Ondas entregues: {delivered} no total. Em andamento: \
              {running}. Voltas gravadas à espera da rodada: {returned}. Paradas no limite de \

@@ -1888,14 +1888,13 @@ mod tests {
         assert!(calls().iter().all(Option::is_some), "the new delivery closes the lock again");
     }
 
-    /// O aviso de compactar chega pelo gancho de `PreCompact`, com o bloco de
-    /// retomada — spec, fase e o próximo passo —, com onda rodando ou sem: a
-    /// linha das ondas em andamento é uma parte do bloco, não um substituto.
-    /// E nenhuma chamada de ferramenta é mais recusada por tamanho: o mesmo
-    /// registro inteiro, com uma transcrição de 200 mil tokens (o antigo
-    /// degrau), deixa passar um `PreToolUse` comum.
+    /// Antes de compactar, o despachante não injeta nada: o início da sessão
+    /// depois do resumo traz o bloco de retomada. E nenhuma chamada de
+    /// ferramenta de quem conduz é recusada por tamanho: o mesmo registro
+    /// inteiro, com uma transcrição de 200 mil tokens, deixa passar um
+    /// `PreToolUse` comum.
     #[test]
-    fn compaction_warning_arrives_in_the_hook_and_nobody_else_is_blocked_by_size() {
+    fn nothing_runs_before_compaction_and_nobody_is_blocked_by_size() {
         let dir = open_project("x");
         let root = dir.path();
 

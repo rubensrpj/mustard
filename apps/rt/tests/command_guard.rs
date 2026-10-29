@@ -112,9 +112,9 @@ fn ndjson_lines(root: &Path) -> Vec<String> {
     lines
 }
 
-/// A commit message and a pending-item title that only name a base deletion
-/// pass; the real command is refused. A forced folder delete is left to the
-/// native deny list of the settings.
+/// A mensagem de commit e o título de pendência que só citam apagar a base
+/// passam; o comando de verdade é recusado. Apagar pasta à força fica com o
+/// bloqueio nativo das configurações.
 #[test]
 fn quoted_text_passes_and_a_real_base_delete_is_blocked() {
     let dir = project_with(r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#);
