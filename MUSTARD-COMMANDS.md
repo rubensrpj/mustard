@@ -127,7 +127,7 @@ A linha de consumo identifica a onda que voltou; a de uma onda de lote com envio
 |---|---|
 | `/mustard:continue` | Retoma a spec pelo `resume` e repassa o próximo passo. É o botão de reserva: a retomada já acontece no início da sessão. |
 | `/mustard:measure` | Roda o `measure` e repassa a frase do veredito: o gasto do Claude no projeto antes e depois da marca da versão. |
-| `/mustard:pr` | Abre o pull request, revisa o de um colega ou faz o merge, só a pedido. |
+| `/mustard:pr` | Abre o pull request ou faz o merge, só a pedido. |
 | `/mustard:mods` | Abre o painel nos Mods: visão geral, spec, tarefas e demais itens, uma tarefa, consumo e configurações. Relê a tela visível no fim de cada turno do condutor ou de agente; parado, não consulta. Sem turno de modelo. |
 | `/mustard:pages` | `project` publica a visão geral sem exigir spec aberta; `spec` usa a spec da branch atual; `spec <nome>` escolhe outra; `report <arquivo.md>` publica análise/resumo pronto no mesmo layout. Sem destino configurado, entrega arquivos locais. Não inicia turno do modelo. |
 | `/mustard:upsert` | Instala ou atualiza o Mustard no projeto, e diagnostica a instalação. |
@@ -174,7 +174,6 @@ Os outros comandos não estão no caminho do trabalho: você os chama quando pre
 | `scan` | Atualiza o mapa do projeto, lendo só o que mudou; nunca escreve no git. `--full` refaz o mapa de cada subprojeto; `--out <caminho>` grava o modelo em outro lugar. |
 | `page` | Gera HTML local no layout do Mustard a partir de markdown: `--body <pagina.md> --out <pagina.html>`, com `--title`, `--subtitle`, `--kind`. Não publica remotamente. |
 | `doctor` | Diagnóstico só de leitura. `--check <nome>` roda uma conferência; `--residue` procura também referências mortas; `--format json` ou `--json` responde em JSON. |
-| `pr-review` | Sem número, lista os pull requests abertos da base; `--pr <n>` mostra o pedido de revisão. Não grava veredito: `--verdict` recusa na entrada, porque o veredito de cada onda é gravado pela rodada. |
 | `discard` | Descarta a spec em duas chamadas: a primeira mostra o que sai e devolve um código; a segunda, com `--confirm <código>`, faz. `--remote` apaga também a branch do servidor; `--delete` apaga a pasta da spec em vez de guardá-la. |
 | `panel-diagnostics` | `--record` recebe no stdin os metadados de uma falha do painel ou da medição (componente, operação, motivo e causa curta) e os guarda no diagnóstico local. Nunca envia o diagnóstico nem guarda resultados de ferramentas, conversas ou chaves. |
 | `statusline` | Projeção compacta de spec/ondas, comandos do painel, validação e métricas conhecidas; preserva links históricos. Só consulta estado, sem scan, Jev ou publicação. `--preview` mostra os temas. |
@@ -272,7 +271,7 @@ Responde `project`, `mark`, `before`, `after`, `verdict` e o veredito numa frase
 - **O mapa do início da sessão** (`.claude/mustard/session-map.md`, menos de 2,5 kB): o fluxo, quando uma spec abre e onde cada coisa mora. Entra uma vez por conteúdo na sessão. Após `/clear` e compactação, o guia gerenciado volta em uma versão curta com a retomada; instruções pessoais são preservadas.
 - **A linha de cada mensagem** (até 100 caracteres): o idioma do texto e "texto simples". Depois de uma resposta com erro de escrita, ela leva mais uma frase curta com o erro, como "Na última resposta: frase com 29 palavras.", uma vez só.
 - **O estilo de resposta** do plugin, um por idioma (`mustard:mustard-pt-BR`, `mustard:mustard-en-US`), escolhido pelo instalador na chave `outputStyle` do `.claude/settings.local.json`.
-- **Os três agentes**, em `.claude/agents/mustard/`, no idioma do texto: `analysis` enriquece evidências delimitadas, `wave` implementa uma onda, e `review` confere a obra integrada no final, um levantamento ou o pull request de um colega. Resumos orientam a investigação; as conclusões são conferidas no código.
+- **Os três agentes**, em `.claude/agents/mustard/`, no idioma do texto: `analysis` enriquece evidências delimitadas, `wave` implementa uma onda, e `review` confere a obra integrada no final ou um levantamento. Resumos orientam a investigação; as conclusões são conferidas no código.
 
 O modelo de cada onda sai da dificuldade das tarefas dela: na formação das ondas, o Jev dá a cada tarefa uma nota de complexidade de quatro níveis, gravada em `group.difficulty`; os níveis 0, 1 e 2 vão ao `sonnet` e o 3 ao `opus` — a implementação nunca vai ao `haiku` —, e a nota com confiança abaixo de 0,5 sobe um degrau. A onda leva o maior modelo das tarefas dela, e a tarefa sem nota — sem Jev, ou sem resposta dele nem da reserva — vai ao `sonnet`.
 

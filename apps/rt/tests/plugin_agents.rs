@@ -964,10 +964,8 @@ fn the_installed_agents_let_a_project_language_rule_win_over_the_languages_line(
 
 /// O revisor diz os dois caminhos da volta: na revisão final da obra, grava o
 /// veredito pela ferramenta, com a linha de exemplo que a gravação aceita; no
-/// pull request de um colega, devolve o texto a quem despachou. O pedido de
-/// cada uso diz qual vale: o do fechamento manda gravar, o da porta do pull
-/// request diz que o texto volta sem gravar nada. O levantamento não tem
-/// revisor próprio.
+/// pull request de um colega, devolve o texto a quem despachou. O pedido do
+/// fechamento manda gravar. O levantamento não tem revisor próprio.
 #[test]
 fn reviewer_template_states_the_two_paths() {
     for (lang, locale, header, said, survey) in [
@@ -1000,8 +998,6 @@ fn reviewer_template_states_the_two_paths() {
         assert!(close.contains("run write verdict") && !close.contains("<VERDICT>"), "{close}");
         assert!(!back.contains(survey), "the {lang} reviewer still returns a survey review:{back}");
     }
-    let pr = std::fs::read_to_string(repo_root().join("plugin/commands/pr.md")).unwrap();
-    assert!(pr.contains("`mustard-review` agent, from that brief: it returns its text to you and records nothing"), "{pr}");
 }
 
 /// O despacho ao revisor, pelo gancho com o JSON do Claude Code, leva o

@@ -2129,14 +2129,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("open.pending_project.list_page", Locale::EnUs) => "The whole list is on the project page: {url}.",
         ("open.pending_project.list_command", Locale::PtBr) => "As abertas saem com `mustard-rt run pending`.",
         ("open.pending_project.list_command", Locale::EnUs) => "The open ones come from `mustard-rt run pending`.",
-        ("retired.wait_round", Locale::PtBr) => {
-            "O `{command}` não grava mais o veredito na spec: o veredito de cada onda é gravado \
-             pelo `mustard-rt run round`. Nada foi gravado."
-        }
-        ("retired.wait_round", Locale::EnUs) => {
-            "`{command}` no longer records the verdict in the spec: each wave's verdict is \
-             recorded by `mustard-rt run round`. Nothing was written."
-        }
         ("pr.qa_pending", Locale::PtBr) => {
             "Nem todo critério de `{spec}` tem uma execução aprovada: {passed} de {criteria} \
              passaram. A ordem do fluxo roda os critérios antes da integração, e integrar agora \
@@ -2289,24 +2281,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              merged, and the provider was not even asked. A new request about it is new work, through \
              `mustard-rt run open`."
         }
-        // As dicas e os avisos do merge do Mustard e da lista de pull requests
-        // abertos: cada um sai no idioma do texto do projeto.
-        ("pr.list_from_unit", Locale::PtBr) => {
-            "A lista de pull requests abertos se pede de uma base, não de dentro de uma unidade. Vá \
-             para `{base}` (`git checkout {base}`) e rode `mustard-rt run pr-review` de novo."
-        }
-        ("pr.list_from_unit", Locale::EnUs) => {
-            "The list of open pull requests is asked from a base, not from inside a unit. Switch to \
-             `{base}` (`git checkout {base}`) and run `mustard-rt run pr-review` again."
-        }
-        ("pr.list_from_unit_no_base", Locale::PtBr) => {
-            "A lista de pull requests abertos se pede de uma base, não de dentro de uma unidade. Vá \
-             para a branch em que esta unidade entra e rode `mustard-rt run pr-review` de novo."
-        }
-        ("pr.list_from_unit_no_base", Locale::EnUs) => {
-            "The list of open pull requests is asked from a base, not from inside a unit. Switch to \
-             the branch this unit integrates into and run `mustard-rt run pr-review` again."
-        }
+        // As dicas e os avisos do merge do Mustard: cada um sai no idioma do
+        // texto do projeto.
         ("pr.confirm_running", Locale::PtBr) => {
             "As verificações do próprio provedor para `{unit}` ainda estão rodando. Nada foi juntado, \
              então o resultado delas ainda tem o que barrar."
@@ -2663,23 +2639,6 @@ mod tests {
         }
     }
 
-    /// As recusas das portas antigas que ainda respondem saem do catálogo nos
-    /// dois idiomas, cada uma com as vagas que o chamador preenche, e todas
-    /// dizem por qual comando esperar.
-    #[test]
-    fn i18n_translates_retired_keys() {
-        for (key, slots, points_to) in [("retired.wait_round", &["{command}"][..], "mustard-rt run round")] {
-            let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
-            assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");
-            assert_ne!(en, "<missing-key>", "{key} missing in en-US");
-            assert_ne!(pt, en, "{key} must differ per locale");
-            for slot in slots {
-                assert!(pt.contains(slot) && en.contains(slot), "{key} lost {slot}");
-            }
-            assert!(pt.contains(points_to) && en.contains(points_to), "{key} does not name {points_to}");
-        }
-    }
-
     /// Os títulos e as instruções fixas do pedido de uma onda, e o que a
     /// conferência do plano acha, saem do catálogo nos dois idiomas, com as
     /// vagas que o montador preenche.
@@ -2791,8 +2750,6 @@ mod tests {
             ("pr.merge_reopened", &["{spec}", "{phase}", "{pr}"][..]),
             ("pr.merge_not_closed", &["{spec}", "{phase}", "{pr}", "{command}"][..]),
             ("pr.merge_settled", &["{spec}", "{phase}", "{pr}"][..]),
-            ("pr.list_from_unit", &["{base}"][..]),
-            ("pr.list_from_unit_no_base", &[][..]),
             ("pr.confirm_running", &["{unit}"][..]),
             ("pr.confirm_failed", &["{unit}"][..]),
             ("pr.confirm_unreadable", &["{unit}", "{checks}"][..]),

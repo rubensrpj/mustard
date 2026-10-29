@@ -11,6 +11,9 @@
 #[path = "support/binary.rs"]
 mod binary;
 
+#[path = "support/manifest_dir.rs"]
+mod manifest_dir;
+
 /// `mustard-rt run round --help`, como o orquestrador o veria.
 fn round_help() -> String {
     let out = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
@@ -75,4 +78,43 @@ fn write_help_says_copy_only_points_to_explicit_publishing() {
     let copy = help.split("--copy").nth(1).unwrap_or_default().split("--root").next().unwrap_or_default();
     assert!(copy.contains("/mustard:pages"), "{copy}");
     assert!(!copy.contains("prepare the copy") && !copy.contains("answer the order to copy"), "{copy}");
+}
+
+/// A linha ensina o relatório da rodada como um objeto agregado, que o binário
+/// não lê: a chave `waves` com a entrega ou o veredito aninhados. Quem mandar
+/// o objeto recebe `round-line-missing` e não grava nada.
+fn teaches_an_aggregate_round_report(line: &str) -> bool {
+    line.contains("\"waves\"") && (line.contains("\"delivered\"") || line.contains("\"verdict\""))
+}
+
+/// Os arquivos de extensão `ext` sob `dir`, em qualquer profundidade.
+fn collect(dir: &std::path::Path, ext: &str, out: &mut Vec<std::path::PathBuf>) {
+    for path in std::fs::read_dir(dir).into_iter().flatten().flatten().map(|entry| entry.path()) {
+        if path.is_dir() {
+            collect(&path, ext, out);
+        } else if path.extension().and_then(|e| e.to_str()) == Some(ext) {
+            out.push(path);
+        }
+    }
+}
+
+/// Nenhum texto publicado ensina o relatório da rodada como objeto agregado:
+/// nem a ajuda da rodada, nem a prosa do plugin, nem o catálogo, nem os READMEs.
+#[test]
+fn no_published_text_teaches_an_aggregate_round_report() {
+    let root = manifest_dir::manifest_dir().join("../..");
+    let mut files = vec![root.join("README.md"), root.join("README.en.md")];
+    for (dir, ext) in [("plugin", "md"), ("packages/core/src/platform/i18n", "rs")] {
+        let before = files.len();
+        collect(&root.join(dir), ext, &mut files);
+        assert!(files.len() > before, "a superfície publicada `{dir}` não rendeu arquivo");
+    }
+    let mut offenders: Vec<String> = round_help().lines().filter(|l| teaches_an_aggregate_round_report(l)).map(str::to_string).collect();
+    for path in files {
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{} não abriu: {e}", path.display()));
+        for (n, line) in text.lines().enumerate().filter(|(_, l)| teaches_an_aggregate_round_report(l)) {
+            offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+        }
+    }
+    assert!(offenders.is_empty(), "texto publicado ensina o relatório agregado, que a rodada recusa:\n{}", offenders.join("\n"));
 }

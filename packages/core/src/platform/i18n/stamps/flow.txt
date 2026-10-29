@@ -126,8 +126,6 @@ pr.confirm_no_verdict	5700bb1e4b3f643c
 pr.confirm_running	5e243901ae8a542e
 pr.confirm_unreadable	8cfb9f86237bc73b
 pr.confirm_verdict	dddd3091e7883877
-pr.list_from_unit	448e489a2743d6a9
-pr.list_from_unit_no_base	0c620e0cd7f8ffe5
 pr.merge_checks_failed	944b2320aa8511d1
 pr.merge_checks_unreadable	0de62fa8ef042936
 pr.merge_no_verdict	a04962677a06227d
@@ -191,7 +189,6 @@ resume.step.wait_many	703bef213efe44cd
 resume.step.wait_one	9342d3e6ee63397c
 resume.unbound	eeb9f7782350ad93
 resume.wave	bfdd0cc3ca16125d
-retired.wait_round	e0a112314a8c2179
 round.after_wave	087baea56a1e193a
 round.after_wave.analysis_unknown	89d4ad42c28bd3f0
 round.after_wave.cycle	67b6753faf6398ae

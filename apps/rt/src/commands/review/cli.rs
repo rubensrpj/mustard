@@ -21,29 +21,6 @@ use crate::commands::{review};
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)] // CLI parser enum - clap-Subcommand; boxing breaks derive
 pub enum ReviewCmd {
-    /// The `review` step of the `/mustard:pr` door: resolve a pull request to
-    /// its work unit and print the review brief. The brief names the spec of
-    /// the unit, the subproject its tasks name files under, and that
-    /// subproject's skill shelf. Those are the same molds the implementer was
-    /// dispatched with. With `--verdict` it refuses and records nothing: the
-    /// verdict of each wave is recorded by the round.
-    #[command(name = "pr-review")]
-    #[command(display_order = 7)]
-    Review {
-        /// The pull request number. Without it, the open pull requests are
-        /// listed, so the reviewer picks the colleague's one instead of being
-        /// handed their own branch's.
-        #[arg(long)]
-        pr: Option<u64>,
-        /// O comando recusa e não grava nada com ele: o veredito de cada onda
-        /// é gravado pela rodada, da linha do agente de revisão. Lista
-        /// fechada: `approved` ou `rejected`; sem ele, o pedido é impresso.
-        #[arg(long, value_parser = ["approved", "rejected"])]
-        verdict: Option<String>,
-        /// Any directory inside the repo. Defaults to the current dir.
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
-    },
     /// The `merge` step of the `/mustard:pr` door: merge the pull request, then
     /// prune the unit. It goes back to the base, pulls it, removes the
     /// worktree and deletes the local and the remote branch. A unit whose
@@ -53,9 +30,8 @@ pub enum ReviewCmd {
     #[command(name = "pr-merge")]
     #[command(display_order = 6)]
     Merge {
-        /// The pull request number. Without it, the open pull requests are
-        /// listed, so the reviewer picks the colleague's one instead of being
-        /// handed their own branch's.
+        /// The pull request number. Without it, the pull request of the
+        /// current branch.
         #[arg(long)]
         pr: Option<u64>,
         /// The operator's answer to the unreviewed-merge question. Without it
@@ -124,9 +100,6 @@ pub enum ReviewCmd {
 /// Dispatch one `review`-family `run` subcommand.
 pub fn dispatch(cmd: ReviewCmd) {
     match cmd {
-        ReviewCmd::Review { pr, verdict, root } => {
-            review::pr_door::run_review(&root, pr, verdict.as_deref());
-        }
         ReviewCmd::Merge { pr, confirm, root } => {
             review::pr_door::run_merge(&root, pr, confirm);
         }

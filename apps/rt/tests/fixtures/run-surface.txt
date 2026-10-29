@@ -21,7 +21,6 @@ pending
 plan
 pr-merge
 pr-open
-pr-review
 publish
 read
 reopen

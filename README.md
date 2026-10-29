@@ -125,7 +125,7 @@ O plugin fornece comandos de fluxo `/mustard:*` e comandos imediatos de Mods par
 | Comando | Papel |
 |---|---|
 | `/mustard:continue` | Retoma a spec de onde parou. É o botão de reserva: a retomada já acontece no início da sessão. |
-| `/mustard:pr` | Abre o pull request, revisa o de um colega ou faz o merge, só a pedido. |
+| `/mustard:pr` | Abre o pull request ou faz o merge, só a pedido. |
 | `/mustard:mods [spec]` | Visão geral, spec, tarefas e demais itens, uma tarefa, consumo e configurações, lidos do binário local. Requer suporte a Mods (CLI 2.1.287+; Code do Desktop 2.1.286+). |
 | `/mustard:mods --diagnose` | Mostra versão do host, plugin carregado, interfaces reconhecidas e registro do painel, sem ler conversas ou chamar IA. |
 | `/mustard:pages` | Publicação explícita de `project`, `spec [nome]` ou `report <arquivo.md>` pelo adaptador nativo Cloudflare Pages, com o token em `publication.apiToken` do `mustard.json`. Sem configuração, entrega arquivos locais; sem turno do modelo. |

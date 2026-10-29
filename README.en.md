@@ -119,7 +119,7 @@ The plugin provides `/mustard:*` workflow commands and immediate Mods commands f
 | Command | Role |
 |---|---|
 | `/mustard:continue` | Picks the spec back up where it stopped. It is the reserve button: resuming already happens at the start of a session. |
-| `/mustard:pr` | Opens the pull request, reviews a colleague's, or merges one, only when asked. |
+| `/mustard:pr` | Opens the pull request or merges one, only when asked. |
 | `/mustard:mods` | Overview, spec, items, one task, usage and settings, read from the local binary without a model turn. Requires Mods support (CLI 2.1.287+). |
 | `/mustard:pages` | Explicit `project`, `spec [name]` or `report <file.md>` publication using the native Cloudflare Pages adapter, with the token in `publication.apiToken` of `mustard.json`. Unconfigured projects keep local files; no model turn. |
 | `/mustard:upsert` | Installs or updates Mustard in the project and diagnoses the installation. To turn Mustard off in a project, set `"enabled": false` in `mustard.json`. |
