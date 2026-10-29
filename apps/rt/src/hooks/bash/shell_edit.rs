@@ -23,8 +23,8 @@
 //! uso real conta, pela mesma regra ([`edited_by_shell`]), as edições por
 //! script de toda conversa do projeto, e reconhece o interpretador, o
 //! `python` e o programa escrito na linha pela mesma gramática
-//! ([`is_interpreter`], [`is_python`], [`embedded_programs`],
-//! [`edits_in_place`]), sem lista própria de nomes.
+//! ([`is_interpreter`], [`is_python`], [`embedded_programs`]), sem lista
+//! própria de nomes.
 
 use super::lex::{Redirect, Segment, Word};
 use crate::hooks::write::wave_copy::Shell;
@@ -280,12 +280,6 @@ pub(crate) fn is_interpreter(segment: &Segment) -> bool {
 /// pasta, também pelo lançador (`uv run python`).
 pub(crate) fn is_python(segment: &Segment) -> bool {
     interpreter(segment).is_some_and(|(grammar, _)| grammar.name == PYTHON.name)
-}
-
-/// O interpretador do comando edita os arquivos no lugar (`perl -i`,
-/// `perl -pi`, `ruby -i`).
-pub(crate) fn edits_in_place(segment: &Segment) -> bool {
-    interpreter(segment).is_some_and(|(grammar, args)| matches!(program(grammar, args), Program::InPlace))
 }
 
 /// Os programas que o interpretador do comando traz escritos na própria

@@ -31,7 +31,7 @@ use serde::Serialize;
 use serde_json::{json, Map, Value};
 
 use super::grouped;
-use super::searches::{joined, moved, quoted, transcript, Call};
+use super::transcript::{joined, moved, quoted, transcript, Call};
 use crate::hooks::bash::lex::{segments, Segment};
 use crate::hooks::bash::shell_edit::{edited_by_shell, embedded_programs, is_python};
 use crate::hooks::write::wave_copy::wave_agent_kind;

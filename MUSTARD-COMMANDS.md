@@ -191,9 +191,7 @@ Recupera evidência atual por capacidade/fluxo: `mustard-rt run knowledge --quer
 
 `--file <arquivo>` restringe os pontos de partida; `--detail` expande a evidência. `--symbol <id> --direction callers` investiga consumidores da declaração exata; `outgoing` segue chamadas e `both` os dois sentidos, com fontes conferidas. `--refresh` lista interpretações antigas e fontes afetadas para revisão explícita.
 
-`--all --markdown --out <relatorio.md>` exporta levantamento local; `--record <recibo.json>` registra interpretação com várias fontes/hashes. `--coverage` explica cobertura/exclusões; `--topics <plano.json>` compõe relatório por assuntos; `--evaluate <perguntas.json>` mede arquivos/símbolos e bytes, sem executar spec. Anotações são declarações do autor.
-
-Nativo por padrão; `--responsibility` habilita seleção experimental arquivo→símbolo, que não é padrão por regressão observada. Choice opcional nesse modo exige `ai.fallback:true` e `judgement.search.filter:"jev"`, somente para candidatos ambíguos.
+`--all --markdown --out <relatorio.md>` exporta levantamento local; `--record <recibo.json>` registra interpretação com várias fontes/hashes. `--coverage` explica cobertura/exclusões. Anotações são declarações do autor.
 
 ### `triage`
 

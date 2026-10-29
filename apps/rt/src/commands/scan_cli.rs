@@ -54,15 +54,15 @@ pub enum ScanCmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
         /// Read the persisted native project profile; --file scopes conventions.
-        #[arg(long, conflicts_with_all=["query","intent","purpose","symbol","direction","refresh","record","prepare_session","session_model","complete_session","cancel_session","coverage","topics","evaluate","responsibility","all","detail","markdown","out"])]
+        #[arg(long, conflicts_with_all=["query","intent","purpose","symbol","direction","refresh","record","prepare_session","session_model","complete_session","cancel_session","coverage","all","detail","markdown","out"])]
         profile: bool,
         #[arg(long, default_value = "")]
         query: String,
         /// What the current task is trying to establish; never rewrites a literal pattern.
-        #[arg(long, conflicts_with_all = ["symbol", "coverage", "record", "refresh", "topics", "evaluate", "responsibility"])]
+        #[arg(long, conflicts_with_all = ["symbol", "coverage", "record", "refresh"])]
         intent: Option<String>,
         /// Shape current evidence for discovery, planning, editing or verification.
-        #[arg(long, value_parser = ["locate", "understand", "spec", "implement", "validate"], conflicts_with_all = ["coverage", "record", "refresh", "topics", "evaluate", "responsibility"])]
+        #[arg(long, value_parser = ["locate", "understand", "spec", "implement", "validate"], conflicts_with_all = ["coverage", "record", "refresh"])]
         purpose: Option<String>,
         #[arg(long)]
         file: Option<String>,
@@ -93,31 +93,21 @@ pub enum ScanCmd {
         record: Option<PathBuf>,
         /// Prepare bounded code evidence for a native subagent of the current
         /// session. Does not launch a model or require a generation `API` key.
-        #[arg(long, value_parser = ["claude", "codex"], conflicts_with_all = ["complete_session", "record", "coverage", "topics", "evaluate", "responsibility", "refresh", "symbol", "direction", "markdown", "out", "all", "detail", "intent", "purpose"])]
+        #[arg(long, value_parser = ["claude", "codex"], conflicts_with_all = ["complete_session", "record", "coverage", "refresh", "symbol", "direction", "markdown", "out", "all", "detail", "intent", "purpose"])]
         prepare_session: Option<String>,
         /// Preferred model of that host; unavailable models use native
         /// retrieval, never another process or family.
         #[arg(long, requires = "prepare_session")]
         session_model: Option<String>,
         /// Validate a session receipt and store its source-bound interpretation.
-        #[arg(long, conflicts_with_all = ["prepare_session", "record", "coverage", "topics", "evaluate", "responsibility", "refresh", "symbol", "direction", "markdown", "out", "all", "detail", "intent", "purpose", "query", "file"])]
+        #[arg(long, conflicts_with_all = ["prepare_session", "record", "coverage", "refresh", "symbol", "direction", "markdown", "out", "all", "detail", "intent", "purpose", "query", "file"])]
         complete_session: Option<PathBuf>,
         /// Release an abandoned native-session preparation, without deleting knowledge.
-        #[arg(long, conflicts_with_all = ["prepare_session", "complete_session", "record", "coverage", "topics", "evaluate", "responsibility", "refresh", "symbol", "direction", "markdown", "out", "all", "detail", "intent", "purpose", "query", "file"])]
+        #[arg(long, conflicts_with_all = ["prepare_session", "complete_session", "record", "coverage", "refresh", "symbol", "direction", "markdown", "out", "all", "detail", "intent", "purpose", "query", "file"])]
         cancel_session: Option<String>,
         /// Report indexed scope, parser gaps and exclusions without inference.
-        #[arg(long, conflicts_with_all = ["query", "file", "symbol", "refresh", "record", "topics", "evaluate", "markdown", "all", "detail"])]
-        coverage: bool,
-        /// Compose current evidence from a JSON topic plan, or `auto` for scan areas.
-        #[arg(long, conflicts_with_all = ["query", "file", "symbol", "refresh", "record", "evaluate"])]
-        topics: Option<PathBuf>,
-        /// Measure retrieval against an explicit JSON manifest, without a host model.
         #[arg(long, conflicts_with_all = ["query", "file", "symbol", "refresh", "record", "markdown", "all", "detail"])]
-        evaluate: Option<PathBuf>,
-        /// Experimental file-to-symbol selection; may regress relevance.
-        /// Optional configured Jev only resolves its remaining ambiguities.
-        #[arg(long, conflicts_with_all = ["coverage", "record", "refresh"])]
-        responsibility: bool,
+        coverage: bool,
     },
     /// Mine the workspace into the SQLite map `grain.db` with the bundled `scan`
     /// tool; only the blocks that changed are written again.
@@ -229,7 +219,7 @@ pub fn dispatch(cmd: ScanCmd) {
         ScanCmd::Search{root,request,intent,purpose,choose,raw,shell_output,args,
         }=>super::search::run(&root,request.as_deref(),&args,intent.as_deref(),purpose.as_deref(),choose,raw,shell_output,
         ),
-        ScanCmd::Knowledge { root, profile, query, intent, purpose, file, symbol, direction, refresh, limit, depth, all, markdown, detail, out, record, coverage, topics, evaluate, responsibility,
+        ScanCmd::Knowledge { root, profile, query, intent, purpose, file, symbol, direction, refresh, limit, depth, all, markdown, detail, out, record, coverage,
             prepare_session, session_model, complete_session, cancel_session,
         } => {
             super::knowledge::run(
@@ -256,7 +246,7 @@ pub fn dispatch(cmd: ScanCmd) {
                     profile,
                     prepare_session: prepare_session.as_deref(), session_model: session_model.as_deref(), complete_session: complete_session.as_deref(),
                     cancel_session: cancel_session.as_deref(),
-                    coverage, topics: topics.as_deref(), evaluate: evaluate.as_deref(), responsibility,
+                    coverage,
                     task: mustard_core::domain::knowledge::investigation::Task {
                         intent: intent.as_deref().unwrap_or_default(),
                         purpose: purpose.as_deref().and_then(mustard_core::domain::knowledge::investigation::Purpose::parse,
@@ -331,9 +321,7 @@ mod tests {
 
     #[test]
     fn knowledge_modes_cannot_combine_or_silently_ignore_a_query() {
-        for args in [vec!["--coverage","--topics","topics.json"],vec!["--evaluate","eval.json","--query","quartz"],
-            vec!["--topics","topics.json","--symbol","a.rs:1:run"],vec!["--coverage","--markdown"],
-            vec!["--purpose","implement","--topics","topics.json"],vec!["--intent","quartz","--responsibility"],
+        for args in [vec!["--coverage","--markdown"],vec!["--coverage","--symbol","a.rs:1:run"],
             vec!["--purpose","guess"],vec!["--symbol","a.rs:1:run","--intent","quartz"],
         ] {
             let mut line=vec!["probe","knowledge"];line.extend(args);

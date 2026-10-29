@@ -11,14 +11,11 @@
 //! dele. O comando só lê: não grava nada e não chama o Jev. Em `text`, no
 //! idioma do projeto, saem a tabela do gasto, a frase do veredito, a tabela
 //! dos scripts em volta do Mustard e das edições por script desde a marca,
-//! por papel da conversa ([`scripts`]), e a tabela do que o Claude fez com
-//! cada 100 buscas que o Mustard respondeu desde a marca ([`searches`]), com
-//! a frase de quantas buscas são e se o número vale. Em `scripts`, as mesmas
-//! contas, por papel e por conversa. Com `--lines`, sai uma linha JSON por
-//! busca respondida no lugar da resposta.
+//! por papel da conversa ([`scripts`]). Em `scripts`, as mesmas contas, por
+//! papel e por conversa.
 
 mod scripts;
-mod searches;
+mod transcript;
 
 use std::path::{Path, PathBuf};
 
@@ -39,8 +36,6 @@ pub struct MeasureOpts {
     /// O instante da marca, no lugar da última marca do projeto, como veio
     /// na linha de comando.
     pub since: Option<String>,
-    /// Uma linha JSON por busca respondida, no lugar da resposta.
-    pub lines: bool,
 }
 
 /// O instante de `--since`: um carimbo RFC 3339, ou um dia `AAAA-MM-DD`, que
@@ -55,15 +50,15 @@ fn since(text: &str) -> Result<DateTime<Utc>, String> {
 }
 
 /// A resposta do comando, com as conversas do Claude Code em `config` e hoje
-/// em `today`, e as buscas respondidas desde a marca. Sem marca e sem
+/// em `today`. Sem marca e sem
 /// `--since`, só a frase de que a medição começa na próxima sessão. O
 /// `--since` que não é instante nem dia é recusado, sem ler nada.
-fn measure_at(opts: &MeasureOpts, config: Option<&Path>, today: &str) -> (Value, Vec<searches::Answered>) {
+fn measure_at(opts: &MeasureOpts, config: Option<&Path>, today: &str) -> Value {
     let lang = project(&opts.root).lang;
     let place = store::project_place(&opts.root);
     let name = place.as_deref().and_then(Path::file_name).map(|name| name.to_string_lossy().into_owned());
     let mark = match opts.since.as_deref().map(since) {
-        Some(Err(hint)) => return (json!({ "ok": false, "reason": "not-an-instant", "hint": hint }), Vec::new()),
+        Some(Err(hint)) => return json!({ "ok": false, "reason": "not-an-instant", "hint": hint }),
         Some(Ok(at)) => Some((json!({ "version": null, "at": at.to_rfc3339() }), at)),
         None => counted_mark(&marks::marks(&opts.root)).and_then(|mark| {
             let at = DateTime::parse_from_rfc3339(&mark.at).ok()?.with_timezone(&Utc);
@@ -72,31 +67,27 @@ fn measure_at(opts: &MeasureOpts, config: Option<&Path>, today: &str) -> (Value,
     };
     let Some((shown, at)) = mark else {
         let said = translate("measure.no_mark", lang);
-        return (json!({ "ok": true, "project": name, "mark": null, "text": said }), Vec::new());
+        return json!({ "ok": true, "project": name, "mark": null, "text": said });
     };
     let range = Range { first: None, last: today.to_string() };
     let rows = config.map(|config| store::project_days(config, &opts.root, &range)).unwrap_or_default();
     let measured = measure(&rows, at, today);
-    let found = config.map(|config| searches::answered(config, &opts.root, at)).unwrap_or_default();
     let counted = config.map(|config| scripts::counted(config, &opts.root, at)).unwrap_or_default();
-    let report = json!({
+    json!({
         "ok": true,
         "project": name,
         "mark": shown,
         "before": measured.before,
         "after": measured.after,
         "verdict": measured.verdict,
-        "searches": searches::tally(&found),
         "scripts": scripts::tally(&counted),
         "text": format!(
-            "{}\n\n{}\n\n{}\n\n{}",
+            "{}\n\n{}\n\n{}",
             table(&measured, lang),
             sentence(&measured, at, lang),
-            scripts::report(&counted, lang),
-            searches::report(&found, lang)
+            scripts::report(&counted, lang)
         ),
-    });
-    (report, found)
+    })
 }
 
 /// O texto de `key` em `lang`, com cada lacuna de `slots` trocada.
@@ -223,14 +214,8 @@ fn sentence(measured: &Measurement, mark: DateTime<Utc>, lang: Locale) -> String
 
 /// CLI entry — `mustard-rt run measure`.
 pub fn run(opts: &MeasureOpts) {
-    let (report, found) = measure_at(opts, claude_config_dir().as_deref(), &store::today());
-    if opts.lines && report["ok"] == json!(true) {
-        for search in &found {
-            println!("{}", serde_json::to_string(search).unwrap_or_else(|_| "{}".to_string()));
-        }
-    } else {
-        println!("{}", serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string()));
-    }
+    let report = measure_at(opts, claude_config_dir().as_deref(), &store::today());
+    println!("{}", serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string()));
     let _ = std::io::Write::flush(&mut std::io::stdout());
     if report["ok"] != json!(true) {
         std::process::exit(1);

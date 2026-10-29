@@ -31,7 +31,7 @@ flowchart LR
 
 `--intent "<tarefa>" --purpose implement` cruza candidatos com código atual e fornece trechos para edição; `spec`, `understand`, `validate` e `locate` ajustam o tamanho da evidência. Arquivos novos/alterados aparecem como ocorrências sem identidade antiga. Alternativas exigem conferência; trechos truncados precisam de expansão. O caminho comum é inteiramente nativo, mesmo com IA configurada. Nos hooks, o cruzamento usa ocorrências já executadas, preservando a busca literal.
 
-`run knowledge --coverage` mostra lacunas de gramática, arquivos não lidos e exclusões. `--topics plano.json --markdown --out relatorio.md` compõe evidências e interpretações revisadas por assunto; `--evaluate perguntas.json` compara recuperação compacta/detalhada e Choice configurado, sem executar uma spec. `--responsibility` experimenta seleção dentro dos arquivos encontrados; a regressão na avaliação externa impediu promovê-la a padrão. Jev é opcional nesse modo, somente nas ambiguidades com pistas próprias, usando a mesma interface, cache e registro de tentativas do restante do Mustard. Consulte os formatos e limites em [Scan como oráculo](docs/2026-10-08-scan-oraculo.md).
+`run knowledge --coverage` mostra lacunas de gramática, arquivos não lidos e exclusões. Consulte os formatos e limites em [Scan como oráculo](docs/2026-10-08-scan-oraculo.md).
 
 A busca também usa identificadores dentro das funções e textos fixos completos. A resposta inicial mostra pequenos trechos correspondentes; `--detail` recupera a evidência completa. Bancos anteriores à versão 3 dos pacotes precisam de novo scan.
 

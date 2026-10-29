@@ -208,7 +208,7 @@ Independent intent, source-field and native-pattern rankings are fused by recipr
 
 An `intent` consisting entirely of two to eight `- ` or `* ` bullet lines supplies explicit independent questions. Preserve each question's constraints; ordinary prose is not split. Selection and source excerpts use each question individually. Optional Jev `knowledge-choice-v6` shares repeated candidates, excerpts and hashes across groups; missing source or conflicting snapshots defer without a paid call. It retains `none`, insufficient evidence, configured acceptance thresholds and caching. Shared state does not guarantee fewer tokens for a single question.
 
-For explicit diagnostics, `MUSTARD_SEARCH_TRACE=1` adds metadata for hydrated candidates, source validity, reading rank and retention before the decision cut. It adds no source to the provider or the routine agent view. An absent rank does not prove source absence or semantic irrelevance. Choice v5 asks for source support of inputs, outputs and distinguishing constraints, and permits `none` or `insufficient`; its probability thresholds remain a measured pilot policy, not a calibrated guarantee. `gateway-project.mjs` tests fixed task probes in a disposable checkout with no provider calls; `gateway-audit.mjs` grades saved public retrieval outputs offline. Whole-host validation uses `gateway-session.mjs --dry-run` for preflight or `--execute` with explicit authenticated model configuration.
+For explicit diagnostics, `MUSTARD_SEARCH_TRACE=1` adds metadata for hydrated candidates, source validity, reading rank and retention before the decision cut. It adds no source to the provider or the routine agent view. An absent rank does not prove source absence or semantic irrelevance. Choice v5 asks for source support of inputs, outputs and distinguishing constraints, and permits `none` or `insufficient`; its probability thresholds remain a measured pilot policy, not a calibrated guarantee.
 
 An investigation with an explicit non-literal intent can follow callers as well as outgoing static relations from discovery seeds. It reserves response slots for those relations; `grill` uses both directions. Cards distinguish selection by name from selection through a static relation and expose the current source hashes and relation locations. These are evidence categories, not calibrated confidence percentages. Dynamic dispatch, unresolved interfaces and unindexed calls can leave gaps; a reference alone does not establish behavior or prove that a completion hook is the correct implementation point.
 
@@ -218,17 +218,6 @@ Investigations follow current unique static dependencies from exact-name/accepte
 
 Unresolved task investigations also follow a bounded set of primary evidence seeds. Stored members, contracts/implementations and current unique caller associations contribute expandable references, with at most two additional bodies when they add written question evidence. Parser associations remain labelled candidates. Out-of-scope, ambiguous or unavailable destinations remain partial and never enlarge the original inventory.
 
-Reproducible follow-up evaluation (from the repository checkout):
-
-The native acceptance benchmark requires Node 22+ with `node:sqlite`. This is a benchmark dependency, not a runtime dependency of the binary. The warm LSP benchmark prepares each arm's own native index before starting the timer.
-
-```sh
-node apps/scan/benchmarks/gateway-acceptance.mjs
-node apps/scan/benchmarks/gateway-heldout.mjs --dataset /path/to/repoqa-2024-06-23.json --selection apps/scan/benchmarks/repoqa-selection-followups-20261009.json --baseline /path/to/baseline-bin --current /path/to/current-bin --out target/heldout
-node apps/scan/benchmarks/gateway-warm-lsp.mjs --root /path/to/target/backend-snapshot --baseline /path/to/old/mustard-rt --current /path/to/new/mustard-rt --out target/warm-lsp
-node apps/scan/benchmarks/gateway-session.mjs --dry-run --out target/session-pair
-```
-
-The paid responsibility pilot requires an explicit `--jev`, a key in `TYPESAFE_API_KEY` or `--config /path/to/local/mustard.json`, and `--out`; optional `--bin` selects the comparison binary directory. Secrets are passed only through the child environment. The whole-task runner requires `--execute --model <full-model-id> --plugin <review-plugin> --out <new-output-folder>` and `ANTHROPIC_API_KEY` because the official bare CLI ignores subscription OAuth. It alternates baseline/Mustard order on two authored tasks, checks external behavior graders, records actual usage/cache categories and estimated cost, and rejects a Mustard session that never used its gateway. Dry-run is free. These samples do not establish general correctness or whole-session savings. Detailed results: [gateway continuation](2026-10-09-gateway-de-busca.md).
+Detailed results: [gateway continuation](2026-10-09-gateway-de-busca.md).
 
 

@@ -29,7 +29,7 @@ flowchart LR
 
 `mustard-rt run knowledge --query "<subject>"` remains an analytical query for symbols/documentation/configuration with lines and hashes; `--detail` expands and `--all --markdown --out inventory.md` exports. Explicit references can connect documents to code; a mention does not validate a rule. `mustard-rt run map audit` checks database/index consistency without an auxiliary model.
 
-`run knowledge --coverage` explains grammar gaps, unreadable files and exclusions. `--topics plan.json --markdown --out report.md` composes current evidence and reviewed interpretations by topic. `--evaluate questions.json` compares compact/detailed retrieval and configured Choice without executing a spec. `--responsibility` enables experimental selection inside discovered files; an external regression prevented promotion to the default. Optional Jev in that mode only handles ambiguities with multiple written clues, sharing the judgement interface, cache and physical attempt ledger. Formats and limits are documented in [Scan as an oracle](docs/2026-10-08-scan-oraculo.md).
+`run knowledge --coverage` explains grammar gaps, unreadable files and exclusions. Formats and limits are documented in [Scan as an oracle](docs/2026-10-08-scan-oraculo.md).
 
 Search also uses identifiers inside functions and complete fixed text values. Initial responses show short matching witnesses; `--detail` retrieves the full evidence. Banks with evidence packs older than version 3 need a new scan.
 

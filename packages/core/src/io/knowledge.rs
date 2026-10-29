@@ -17,7 +17,6 @@ use crate::io::sha256::Sha256;
 pub mod enrichment;
 pub mod audit;
 pub mod coverage;
-pub mod dossier;
 pub mod investigation;
 pub mod observations;
 pub mod relations;
@@ -316,12 +315,6 @@ pub(crate) fn cards_for_ids(root: &Path, ids: &BTreeSet<String>) -> Result<Vec<C
 
 pub(crate) fn query_for_scope(root: &Path, tree: &Path, opts: &Query<'_>, task: knowledge::investigation::Task<'_>, scope: &EvidenceScope<'_>) -> Result<(Value, ProjectMap), MapRefusal> {
     consistent_scoped_query(root, tree, opts, true, None, false, Some(task), Some(scope))
-}
-
-/// Explicit experimental responsibility ranking, optionally judged. Ordinary
-/// queries retain the established ranking until independent relevance improves.
-pub fn query_with_selector(root:&Path,tree:&Path,opts:&Query<'_>,selector:Option<&dyn knowledge::selection::SymbolSelector>)->Result<(Value,ProjectMap),MapRefusal> {
-    consistent_query(root,tree,opts,true,selector,true,None)
 }
 
 /// Compare read generations without exposing the database connection publicly.
@@ -936,64 +929,9 @@ use super::*;
             sha256: hash.hex_digest(),
         }
     }
-    struct Probe(std::cell::Cell<usize>);
-    impl knowledge::selection::SymbolSelector for Probe {
-        fn select(&self,_:&str,groups:&[knowledge::selection::Ambiguity])->knowledge::selection::Decisions {
-            self.0.set(self.0.get()+1);
-            knowledge::selection::Decisions{choices:groups.iter().map(|g|(g.key.clone(),g.candidates.iter().find(|c|c.name=="second").unwrap().id.clone())).collect(),
-                usage:json!({"remote_model_calls":1}),..Default::default()}
-        }
-    }
-    #[test]
-    fn selection_is_optional_and_never_runs_for_exact_missing_or_stale_evidence() {
-        let dir=tempfile::tempdir().unwrap();let root=dir.path();
-        std::fs::write(root.join("a.rs"),"one\ntwo\nthree\nfour\n").unwrap();
-        let mut raw=json!({"modules":[{"path":"a.rs","analysis":{"content_sha256":source(root,"a.rs").sha256,"parse_complete":true},"declarations":[
-            {"name":"first","kind":"function","line":1,"end_line":2,"body_names":"quartz beacon"},
-            {"name":"second","kind":"function","line":3,"end_line":4,"body_names":"quartz beacon"}]}]});
-        knowledge::enrich(&mut raw);store::write_text(root,&raw.to_string()).unwrap();
-        let probe=Probe(std::cell::Cell::new(0));
-        let opts=|text|Query{text,file:None,limit:1,depth:0,all:false,detail:false,symbol:None,direction:Direction::Outgoing,refresh:false};
-        let answer=query_with_selector(root,root,&opts("quartz beacon"),Some(&probe)).unwrap().0;
-        assert_eq!(probe.0.get(),1);assert_eq!(answer["cards"][0]["name"],"second");
-        assert_eq!(answer["remote_model_calls"],1);
-        assert_eq!(answer["cards"][0]["retrieval"],"optional-responsibility-choice");
-        for query in ["first","missingUnicorn"] {query_with_selector(root,root,&opts(query),Some(&probe)).unwrap();}
-        query_with_selector(root,root,&Query{all:true,..opts("quartz beacon")},Some(&probe)).unwrap();
-        assert_eq!(probe.0.get(),1);
-        std::fs::write(root.join("a.rs"),"changed\n").unwrap();
-        assert!(query_with_selector(root,root,&opts("quartz beacon"),Some(&probe)).unwrap().0["cards"].as_array().unwrap().is_empty());
-        assert_eq!(probe.0.get(),1);
-    }
 
     #[test]
-    fn a_writer_during_selection_discards_the_choice_without_repeating_payment() {
-        struct Writer<'a>{root:&'a Path,calls:std::cell::Cell<usize>,change_file:bool}
-        impl knowledge::selection::SymbolSelector for Writer<'_> {
-            fn select(&self,_:&str,groups:&[knowledge::selection::Ambiguity])->knowledge::selection::Decisions {
-                self.calls.set(self.calls.get()+1);
-                if self.change_file {std::fs::write(self.root.join("a.rs"),"changed\n").unwrap();}
-                else {let mut db=open_existing(&store::model_path(self.root)).unwrap();db.write(|tx|crate::io::map_revision::bump(tx)).unwrap();}
-                knowledge::selection::Decisions{choices:groups.iter().map(|g|(g.key.clone(),g.candidates.last().unwrap().id.clone())).collect(),usage:json!({"remote_model_calls":1}),..Default::default()}
-            }
-        }
-        let dir=tempfile::tempdir().unwrap();let root=dir.path();
-        std::fs::write(root.join("a.rs"),"one\ntwo\nthree\nfour\n").unwrap();
-        let mut raw=json!({"modules":[{"path":"a.rs","analysis":{"content_sha256":source(root,"a.rs").sha256},"declarations":[
-            {"name":"first","kind":"function","line":1,"end_line":2,"body_names":"quartz beacon"},
-            {"name":"second","kind":"function","line":3,"end_line":4,"body_names":"quartz beacon"}]}]});
-        knowledge::enrich(&mut raw);store::write_text(root,&raw.to_string()).unwrap();
-        let opts=Query{text:"quartz beacon",file:None,limit:1,depth:0,all:false,detail:false,symbol:None,direction:Direction::Outgoing,refresh:false};
-        let writer=Writer{root,calls:std::cell::Cell::new(0),change_file:false};
-        let report=query_with_selector(root,root,&opts,Some(&writer)).unwrap().0;
-        assert_eq!(writer.calls.get(),1);assert_eq!(report["remote_model_calls"],1);
-        assert_eq!(report["responsibility_selection"]["discarded_generation_usage"][0]["remote_model_calls"],1);
-        let writer=Writer{change_file:true,..writer};
-        assert!(query_with_selector(root,root,&opts,Some(&writer)).is_err());
-    }
-
-    #[test]
-    fn reviewed_notes_lead_wave_context_and_topic_reports_invalidate_all_sources() {
+    fn reviewed_notes_lead_wave_context() {
         let dir=tempfile::tempdir().unwrap();let root=dir.path();
         for file in ["a.rs","b.rs"] {std::fs::write(root.join(file),"fn run() {}\n").unwrap();}
         let mut raw=json!({"modules":[{"path":"a.rs","analysis":{"content_sha256":source(root,"a.rs").sha256},
@@ -1003,13 +941,6 @@ use super::*;
             record(root,&Interpretation{id:id.into(),title:"quartz beacon".into(),text:"Quarzt archive handles the beacon.".into(),status:status.into(),origin:"review-fixture".into(),sources:vec![source(root,"a.rs"),source(root,"b.rs")],rule_context:None}).unwrap();
         }
         assert_eq!(for_source(root,root,"a.rs","")["interpretations"][0]["status"],"reviewed");
-        let plan=dossier::Plan{title:"Project".into(),topics:vec![dossier::Topic{id:"archive".into(),title:"Archive".into(),query:"quartz beacon".into(),file:None}]};
-        let opts=Query{text:"",file:None,limit:8,depth:0,all:false,detail:true,symbol:None,direction:Direction::Outgoing,refresh:false};
-        let report=dossier::assemble(root,root,&plan,&opts,None,false).unwrap().0;
-        assert_eq!(report["topics"][0]["reviewed_interpretations"],json!(["z-reviewed"]));
-        std::fs::write(root.join("b.rs"),"fn changed() {}\n").unwrap();
-        let report=dossier::assemble(root,root,&plan,&opts,None,false).unwrap().0;
-        assert_eq!(report["topics"][0]["reviewed_interpretations"],json!([]));
     }
     #[test]
     fn changing_any_source_invalidates_the_whole_interpretation() {
