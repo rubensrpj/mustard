@@ -93,6 +93,36 @@ fn repeated_options_return_one_json_error_before_any_item_is_written() {
     assert_eq!(panel["specs"][0]["operations"]["refusals"],2);
 }
 
+/// O agente de onda, que o gancho do terminal nomeia ao comando, recebe a
+/// recusa do próprio comando de gravação na tarefa e no lote, que sai com o
+/// código 1 sem gravar nada; o passo dele não leva essa recusa.
+#[test]
+fn the_wave_agent_is_refused_a_task_and_a_batch_by_the_write_command() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    open_spec(dir.path());
+    let task = rt(dir.path(), &["write", "task", "--spec", "teste", "--json", r#"{"title":"Uma tarefa","text":"Faz a coisa."}"#])
+        .env("MUSTARD_AGENT_ID", "a")
+        .output()
+        .expect("run write task");
+    assert_eq!(task.status.code(), Some(1), "{}", String::from_utf8_lossy(&task.stdout));
+    assert_eq!(stdout_json(&task)["reason"], "agent-plan-write");
+    let batch = rt(dir.path(), &["write", "--batch", "--spec", "teste"])
+        .env("MUSTARD_AGENT_ID", "a")
+        .stdin(Stdio::null())
+        .output()
+        .expect("run write --batch");
+    assert_eq!(batch.status.code(), Some(1), "{}", String::from_utf8_lossy(&batch.stdout));
+    assert_eq!(stdout_json(&batch)["reason"], "agent-batch-write");
+    let log = mustard_core::io::spec_events::read(&dir.path().join(".claude/spec/teste/spec.ndjson")).expect("read").expect("spec");
+    assert!(log.events.is_empty(), "nothing is recorded");
+    let step = rt(dir.path(), &["write", "step", "--spec", "teste", "--json", r#"{"wave":1,"item":"1","text":"Passo."}"#])
+        .env("MUSTARD_AGENT_ID", "a")
+        .output()
+        .expect("run write step");
+    let said = String::from_utf8_lossy(&step.stdout);
+    assert!(!said.contains("agent-plan-write") && !said.contains("agent-batch-write"), "{said}");
+}
+
 fn write(root: &Path, event_type: &str, fields: &Value) -> u64 {
     let out = rt(root, &["write", event_type, "--spec", "teste", "--json", &fields.to_string()])
         .output()
