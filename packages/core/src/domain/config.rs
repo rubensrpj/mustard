@@ -376,22 +376,6 @@ impl Subprojects {
     }
 }
 
-/// The `amend` block. Note the field is `drift_threshold` (snake_case) on disk
-/// — this sub-struct keeps Rust's natural snake naming so it matches existing
-/// files; only the top-level `ProjectConfig` keys are camelCase.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct Amend {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub drift_threshold: Option<u64>,
-}
-
-impl Amend {
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.drift_threshold.is_none()
-    }
-}
-
 /// The `language` block of `mustard.json`: the two languages a project writes
 /// in, each declared on its own key.
 ///
@@ -588,16 +572,17 @@ pub struct Commands {
 ///
 /// `#[serde(rename_all = "camelCase")]` applies to the **top-level** keys only
 /// (`buildCommand`, `maxActiveSpecs`, …). The nested structs keep
-/// snake/lowercase naming (`amend.drift_threshold`, `git.provider`,
-/// `language.text`, `subprojects.exclude`) to match the on-disk shape. Legacy
-/// snake_case command keys are still accepted on read via `alias`.
+/// snake/lowercase naming (`git.provider`, `language.text`,
+/// `subprojects.exclude`) to match the on-disk shape. Legacy snake_case
+/// command keys are still accepted on read via `alias`.
 ///
 /// The language keys that came before `language` (`specLang`, `lang`) and the
 /// `tone` key are no longer part of the schema, nor are the three keys that
 /// described the architecture in words (`architecture`, `rolePatterns`,
 /// `waveLayerOrder`): the rules come from the import graph of the code as it
-/// is, never from a declared text. A file that still carries any of them keeps
-/// loading: they land in [`ProjectConfig::extra`] like any unknown key,
+/// is, never from a declared text. Nor are the keys nothing read (`amend`,
+/// `sourceExtensions`, `primaryExt`). A file that still carries any of them
+/// keeps loading: they land in [`ProjectConfig::extra`] like any unknown key,
 /// preserved on write and read by nobody.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -667,10 +652,6 @@ pub struct ProjectConfig {
     #[serde(skip_serializing_if = "AgentsConfig::is_empty")]
     pub agents: AgentsConfig,
 
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub source_extensions: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub primary_ext: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_active_specs: Option<u64>,
     /// Quantas ondas saem na mesma rodada, que é quantas compilam ao mesmo
@@ -725,8 +706,6 @@ pub struct ProjectConfig {
 
     #[serde(skip_serializing_if = "Subprojects::is_empty")]
     pub subprojects: Subprojects,
-    #[serde(skip_serializing_if = "Amend::is_empty")]
-    pub amend: Amend,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub runtime: Option<Runtime>,
@@ -1054,12 +1033,6 @@ impl ProjectConfig {
     #[must_use]
     pub fn rtk(&self) -> bool {
         self.rtk != Some(false)
-    }
-
-    /// `amend.drift_threshold` as a `u32`; `None` when absent or out of range.
-    #[must_use]
-    pub fn drift_threshold(&self) -> Option<u32> {
-        self.amend.drift_threshold.and_then(|n| u32::try_from(n).ok())
     }
 
     /// Declared injectables, normalised fail-open: entries with a blank `on`
@@ -1831,10 +1804,11 @@ mod tests {
     }
 
     /// Os três campos que descreviam a arquitetura em texto saíram do esquema:
-    /// a regra vem do grafo de importações do código. Um `mustard.json` antigo
-    /// que ainda os traga continua sendo lido sem erro, o resto da
-    /// configuração vem igual e os três ficam guardados como chave
-    /// desconhecida, lidos por ninguém e mantidos na gravação.
+    /// a regra vem do grafo de importações do código. Saíram também as chaves
+    /// que nada lia. Um `mustard.json` antigo que ainda as traga continua
+    /// sendo lido sem erro, o resto da configuração vem igual e elas ficam
+    /// guardadas como chave desconhecida, lidas por ninguém e mantidas na
+    /// gravação.
     #[test]
     fn the_old_architecture_keys_are_kept_but_never_read() {
         let dir = tempdir().unwrap();
@@ -1842,14 +1816,15 @@ mod tests {
             dir.path().join("mustard.json"),
             r#"{"buildCommand":"make","maxActiveSpecs":3,"architecture":"Clean",
                 "rolePatterns":[{"pattern":"Controllers","role":"api"}],
-                "waveLayerOrder":["domain","api"]}"#,
+                "waveLayerOrder":["domain","api"],"amend":{"drift_threshold":3},
+                "sourceExtensions":["rs"],"primaryExt":"rs"}"#,
         )
         .unwrap();
         let cfg = ProjectConfig::load(dir.path());
         assert!(!cfg.unreadable, "the old keys never make the file unreadable");
         assert_eq!(cfg.build_command.as_deref(), Some("make"), "the rest of the config still loads");
         assert_eq!(cfg.max_active_specs(), Some(3), "the rest of the config still loads");
-        for key in ["architecture", "rolePatterns", "waveLayerOrder"] {
+        for key in ["architecture", "rolePatterns", "waveLayerOrder", "amend", "sourceExtensions", "primaryExt"] {
             assert!(cfg.extra.contains_key(key), "{key} survives as an unknown key");
         }
         cfg.write(dir.path()).unwrap();

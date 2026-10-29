@@ -93,7 +93,7 @@ pub use platform::seeds::{
 // runtime accessors, the CLI writer, one reader per feature). See
 // `domain/config.rs`.
 pub use domain::config::{
-    glob_matches, Amend, Commands, GitConfig, Injectable, Language, LanguageConfig,
+    glob_matches, Commands, GitConfig, Injectable, Language, LanguageConfig,
     FilterSetting, MapConfig, ProjectConfig, Runtime, SearchConfig, Setting, Subprojects, BUILD_COMMAND_FALLBACK,
 };
 // Agnostic build/test/lint/type-check command detection (`detect_commands` for
