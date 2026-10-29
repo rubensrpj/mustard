@@ -283,7 +283,7 @@ mod tests {
         let cap = conversation_cap(true, "current-task-evidence");
         assert_eq!(cap, 4_096);
         assert_eq!(conversation_cap(true, "grouped-matches"), super::super::knowledge::CONVERSATION_BYTES);
-        let evidence: String = (0..400).map(|at| format!("{at} | let value_{at} = compute({at});\n")).collect();
+        let evidence = "7 | let value = compute(7);\n".repeat(400);
         let fitted = conversation_output(evidence.into_bytes(), Some("token"), cap, || "# Rest: x\n".into());
         assert!(fitted.len() <= 4_096, "{} bytes", fitted.len());
         assert!(!String::from_utf8(fitted).unwrap().contains("# mustard-delivery:"));

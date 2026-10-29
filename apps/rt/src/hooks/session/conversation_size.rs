@@ -2087,7 +2087,7 @@ mod tests {
                 .replace("{wave}", "1")
                 .replace("{copy}", &copy_of(root, 1));
             let replan = translate("conversation_size.replan", lang).replace("{wave}", "2");
-            for (moment, context) in [("session start", &started)] {
+            for (moment, context) in std::iter::once(("session start", &started)) {
                 assert_eq!(slot_value(context, lang, "{delivered}"), "2", "{lang:?} {moment}: how many waves were delivered");
                 assert_eq!(slot_value(context, lang, "{running}"), running, "{lang:?} {moment}: the wave in flight");
                 assert_eq!(
@@ -2132,7 +2132,7 @@ mod tests {
         }
 
         let started = hook_contexts(root, lang);
-        for (moment, context) in [("session start", &started)] {
+        for (moment, context) in std::iter::once(("session start", &started)) {
             assert_eq!(slot_value(context, lang, "{delivered}"), "11", "{moment}: the count: {context}");
             assert!(!context.contains("2, 3, 4"), "{moment}: the delivered waves are listed: {context}");
         }

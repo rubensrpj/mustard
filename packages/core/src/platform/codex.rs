@@ -166,10 +166,8 @@ mod tests {
         let hooks: Value = serde_json::from_str(&std::fs::read_to_string(root.join(".codex/hooks.json")).unwrap()).unwrap();
         assert_eq!(hooks["other"], 17); assert_eq!(hooks["hooks"]["PreToolUse"].as_array().unwrap().len(), 2);
         assert!(hooks["hooks"].get("PreCompact").is_none(), "nothing runs before compaction");
-        for event in ["PostCompact"] {
-            assert_eq!(hooks["hooks"][event].as_array().unwrap().len(),1);
-            assert_eq!(hooks["hooks"][event][0]["hooks"][0]["command"],format!("mustard-rt on {event} --host codex"));
-        }
+        assert_eq!(hooks["hooks"]["PostCompact"].as_array().unwrap().len(),1);
+        assert_eq!(hooks["hooks"]["PostCompact"][0]["hooks"][0]["command"],"mustard-rt on PostCompact --host codex");
         assert!(!root.join(".claude/settings.local.json").exists());
         std::fs::write(root.join(".agents/skills/mustard/SKILL.md"), "manual changed skill").unwrap();
         assert!(install(root).unwrap_err().contains("manual-file-preserved"));
