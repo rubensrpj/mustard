@@ -1017,10 +1017,8 @@ fn the_pr_door_publishes_and_stops() {
 /// this table.
 const REWRITE_CONTRACT_SURFACES: &[(&str, &[&str])] = &[
     (
-        // The install section moved out of MUSTARD-COMMANDS.md, which now holds
-        // the path and the day-to-day commands, into the internals file beside
-        // it. The surface that describes the install is the one that owes the
-        // contract.
+        // The install section lives in the internals file. The surface that
+        // describes the install is the one that owes the contract.
         "docs/mustard-por-dentro.md",
         &["toda execução regrava o texto embarcado", "`updated`", "`preserved`"],
     ),
@@ -1073,7 +1071,7 @@ const REWRITE_CONTRACT_SURFACES: &[(&str, &[&str])] = &[
 /// What it does NOT reach is the reviewer's own sentence, because its subject is
 /// the generic noun `cópia`. Adding `copy`/`cópia` to [`INJECTABLE_NOUNS`] was
 /// measured before being rejected: it catches that paraphrase and flags THREE
-/// true sentences on a clean tree — `MUSTARD-COMMANDS.md`'s *"uma idêntica volta
+/// true sentences on a clean tree — the old command reference's *"uma idêntica volta
 /// em `preserved`, porque não havia o que escrever"*, which is the convergence
 /// case and is simply true, and two dated cadavers in `project_seed.rs` (*"The
 /// pair used to carry a catalog of fingerprints…"*, *"The guess errs on the

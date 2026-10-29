@@ -1,10 +1,10 @@
 # Mustard por dentro
 
 O que o Mustard faz sozinho, para quem precisa do detalhe: a instalação e os
-arquivos que ela grava, as regras e as skills que nascem das specs, os pontos em
-que o Jev decide, a publicação externa e a busca de código. O caminho do
-trabalho e os comandos do dia estão em
-[`MUSTARD-COMMANDS.md`](../MUSTARD-COMMANDS.md).
+arquivos que ela grava, a configuração do `mustard.json`, as regras e as skills
+que nascem das specs, os pontos em que o Jev decide, a publicação externa e a
+busca de código. O caminho do trabalho está no README, e cada comando diz o que
+faz em `mustard-rt run <comando> --help`.
 
 ---
 
@@ -57,6 +57,33 @@ Cada pergunta sai numa chamada só, sem segredo. Só a certeza alta age: chance 
 - Entregas ligadas ao objetivo (`run grill`): `project_summary` vem com `chosen: "reserve"` e o pedido em `reserve`, em vez das recentes; com o recibo, o `run grill` seguinte traz as entregas escolhidas.
 - Na formação das ondas, a leitura do modelo pequeno já leva a nota de cada tarefa, o valor de cada onda e o assunto da tarefa nova, sem outro agente; a dificuldade incerta sobe um modelo. A leitura vê também as ondas em andamento: a onda formada no mesmo sentido de uma delas a segue, e as tarefas dela ficam na rodada em `held`, motivo `following-running-wave`, até a volta da onda seguida. Saem na montagem seguinte à volta, com o resumo que ela deixou como base e junto das tarefas que ele deixou por fazer; a onda que concluiu tudo não deixa resumo, e elas saem numa onda nova.
 - Quando não entra: com o Jev desligado (interruptor geral fora ou sem chave), vale o fluxo sem Jev: as regras saem sem regra, a falha fica no grupo dela, as entregas são as recentes, o bloco leva as 3 primeiras skills, a linha de código com o nome tirado segura e o comentário ou documento só avisa, a volta sem mudança pede a conferência de quem conduz, e a sobra e o item não cumprido seguem a regra dos mesmos arquivos e da tarefa devolvida, sem espera; o despacho monta as ondas pelos arquivos e leva o pedido padrão. Na busca de código e no `run find`, o Jev ligado que falha ou passa do prazo não vai à reserva — a pergunta é do próprio agente —: a resposta diz, numa linha, que a escolha entre os candidatos listados é dele.
+
+## A configuração
+
+O `mustard.json` na raiz é a **fonte única** de configuração do projeto:
+
+Leituras simples de `mustard.json` por `cat`, `grep`, `egrep`, `fgrep`, `head` e `tail` são recusadas, e a recusa traz pronto, na última linha, o mesmo comando com essa leitura trocada pela que devolve os bytes com a chave mascarada, preservando o filtro, as linhas e o resultado do comando. A recusa vale contra qualquer outro hook que troque o comando, como o do rtk, cujos leitores (`rtk read`, `rtk json`) também são recusados. No comando pronto, pipes, `&&`, `||`, consultas ao Git e testes continuam no shell, sob as permissões normais. Nenhuma chave é copiada para arquivo temporário e essa operação não usa IA. Para consultar diretamente: `mustard-rt run config-read --file mustard.json --reader grep --args-json '["-n","-E","flow|protected"]'`. Sem `--reader` e `--args-json`, o comando mostra a configuração mascarada inteira. Formatos que exigem scripts, expansão ou vários arquivos permanecem bloqueados com uma mensagem curta, sem despejar a configuração.
+
+```jsonc
+{
+  // "flow" é OPCIONAL e não restringe nada: ele apenas pré-seleciona a base
+  // no seletor. De onde uma unidade pode sair vem do git;
+  // onde o commit direto é recusado vem do branch padrão do remoto, mais o que
+  // "protected" acrescentar. Uma instalação nova não grava "flow".
+  "git":  { "provider": "github" },
+  "buildCommand": "cargo build",
+  "testCommand":  "cargo test",
+  "lintCommand":  "cargo clippy",
+  "typeCheckCommand": "cargo check",
+  "proofTimeoutSecs": 900,  // opcional: teto, em segundos, da prova de cada critério
+  "language": {             // os dois idiomas, cada um na sua chave
+    "text": "pt-BR",        // conversa, specs, páginas, comentários e commits
+    "code": "en-US"         // nomes no código: variáveis, funções, testes, arquivos, comandos e tabelas; sem a chave, inglês
+  }
+}
+```
+
+O Mustard é **agnóstico** de linguagem e de arquitetura: o texto gerado segue `language.text`; os nomes no código (variáveis, funções, testes, arquivos, comandos e tabelas do banco) seguem `language.code`. A instalação pergunta os dois idiomas e grava só o que você escolher; sem escolha, os nomes no código ficam em inglês. Os comandos de build/test/lint são lidos daqui. A prova de cada critério tem 120 s, ou 600 s quando compila: `cargo`, uma checagem de tipos ou o `buildCommand`, o `typeCheckCommand` ou o `testCommand` declarado. `proofTimeoutSecs` troca os dois pelo número inteiro de segundos que você escrever; um valor que não é inteiro positivo é ignorado. A variável de ambiente `MUSTARD_QA_AC_TIMEOUT_SECS` vence a chave. O lint e a suíte que o servidor roda têm o teto de uma hora, que nenhuma das duas alcança. Regras de monorepo: todo o estado vive na **raiz** do repositório git; um subprojeto só é um projeto Mustard próprio quando é um repositório git independente (submódulo).
 
 ## Publicação externa nativa
 

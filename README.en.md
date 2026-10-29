@@ -10,33 +10,6 @@ The project's thesis is **minimum AI, maximum determinism**: everything statisti
 
 ---
 
-## Core principle
-
-> Search starts with local evidence; the model expands code reading when needed.
-
-```mermaid
-flowchart LR
-    repo[("Repository")] -->|"census when a spec opens and after each round commit (Rust, no AI)"| model[("grain.db")]
-    model -->|map| anchors["files it points at"]
-    anchors -->|"AI reads only these"| work["feature/bugfix pipeline"]
-```
-
-1. The **census** mines the repository into a durable model (`grain.db`, a SQLite database in blocks that rewrites only the block that changed) — **deterministic, AI-free, language- and architecture-agnostic**: modules, declarations, dependency graph, roles, slices, and contracts. It runs at initialization, when a spec opens and after round commits; `mustard-rt run scan` refreshes it explicitly. Parsing limits and relation origins remain visible.
-2. The **search gateway** (`mustard-rt run search`) searches source with the received arguments, records verified discoveries and crosses the result with the scan. New/changed sources refresh the structural index without AI. The map provides expansion and references; relations and candidate tests do not prove behavior or coverage.
-3. Goal: **context economy** — the map finds *where to look*, and the model checks the necessary excerpts. Billed token savings must be measured in the actual workflow.
-
-`mustard-rt run search --shell-output --intent "<task>" --purpose implement -- rg -n --with-filename "<pattern>" src` returns the original search or a smaller lossless representation, with current ranges when they fit. Mods register `mcp__mustard__search`; hooks route supported inputs. Intent never replaces the pattern. Contracts and limits: [search gateway](docs/2026-10-09-gateway-de-busca.md).
-
-`mustard-rt run knowledge --query "<subject>"` remains an analytical query for symbols/documentation/configuration with lines and hashes; `--detail` expands and `--all --markdown --out inventory.md` exports. Explicit references can connect documents to code; a mention does not validate a rule. `mustard-rt run map audit` checks database/index consistency without an auxiliary model.
-
-`run knowledge --coverage` explains grammar gaps, unreadable files and exclusions. Formats and limits are documented in [Scan as an oracle](docs/2026-10-08-scan-oraculo.md).
-
-Search also uses identifiers inside functions and complete fixed text values. Initial responses show short matching witnesses; `--detail` retrieves the full evidence. Banks with evidence packs older than version 3 need a new scan.
-
-> The binary handles state, retrieval, context, orchestration, validation, calculations and page generation. The model reasons and implements. Auxiliary operations work without AI by default. Jev requires `ai.fallback: true` and an explicit purpose-specific filter; vectors require `ai.vectors: true`. Credentials and legacy settings do not enable inference. The provider interface and versioned cache remain available for an evaluated exception. Literal Grep/rg preserve their arguments and do not call Jev routinely.
-
----
-
 ## Installation
 
 Single prerequisite on every OS: **[Claude Code](https://docs.claude.com/claude-code)** installed and logged in (`claude --version` answers). You do **not** need Rust, Node, or any development tooling — the installers ship everything pre-compiled.
@@ -108,13 +81,7 @@ flowchart LR
 
 Every command names the next step. `open` starts the spec; `grill` surveys open points; `plan` checks the plan for user approval. `round` dispatches waves in separate copies, integrates authorized deliveries, runs build and targeted proofs, commits and releases dependent tasks. `close` runs the configured lint, general suite and criteria on integrated code, reusing only current validation. A final reviewer uses wave summaries to guide code/diff verification, including a single-wave spec. Failures open traceable repairs. `pr-open` opens the pull request; merge requires a user request.
 
-The close refuses while any criterion lacks an approved run in `spec.ndjson`, while the project lint or suite fails, or while the final review of the whole has not been approved.
-
----
-
-## Commands
-
-The plugin provides `/mustard:*` workflow commands and immediate Mods commands for local tracking. A request that changes files starts a spec; each native command reports the next step.
+The plugin provides the `/mustard:*` commands:
 
 | Command | Role |
 |---|---|
@@ -124,96 +91,18 @@ The plugin provides `/mustard:*` workflow commands and immediate Mods commands f
 | `/mustard:pages` | Explicit `project`, `spec [name]` or `report <file.md>` publication using the native Cloudflare Pages adapter, with the token in `publication.apiToken` of `mustard.json`. Unconfigured projects keep local files; no model turn. |
 | `/mustard:upsert` | Installs or updates Mustard in the project and diagnoses the installation. To turn Mustard off in a project, set `"enabled": false` in `mustard.json`. |
 
-The full reference — the flow, the hooks and every `mustard-rt run` command — is in [`MUSTARD-COMMANDS.md`](MUSTARD-COMMANDS.md).
-
 ---
 
-## Spec-Driven Development
+## Help
 
-Specs live under `.claude/spec/{name}/`. `spec.ndjson` is the canonical event log: requirements, decisions, tasks, waves, reads, deliveries, validation and review. The binary creates and queries projections through `mustard-rt run write` and `mustard-rt run read`. Mid-flight requests join this same history.
-
-The Mods panel has six screens: Overview, Spec, Tasks (search, filter, the ones needing attention first and eight more at a time), one task, Usage and Settings. The terminal shows the keys in the footer (s spec, t tasks, c usage, b search, f filter, h history, m measure now, o other spec, v back, q quit); the Desktop shows tabs on top and draws tokens per day in SVG. The panel follows the Claude Code theme, with no fixed background. It reads the binary when it opens, when the screen changes and when a turn of the conductor or an agent ends, rereading only the visible screen; idle, it reads nothing. Conversation history and the wave copies' disk are measured only by **Measure now**. Settings choose the wave agent and the final reviewer, Jev by purpose, the local search model, RTK and Cloudflare Pages publication; the token is write-only and saved only while `mustard.json` is kept out of git. Project publication requires no active spec; the default spec is resolved from the current branch. Requested Markdown analyses and management reports share the existing layout. External pages are generated only on explicit request, as dated snapshots. `run publish` generates HTML/JSON/manifest and uploads through the configured native Cloudflare Pages adapter. Only a ready deployment reports `published:true` and a confirmed URL; unconfigured projects keep local files. Starting a session or completing a wave does not synchronize remote pages. `run spend` measures locally; `--publish`/`--republish` explicitly generate/publish a complete static expense snapshot. Setup is documented in `docs/mustard-por-dentro.md`; the API token stays in a `mustard.json` kept out of git or in the environment.
-
----
-
-## Architecture (monorepo)
-
-| Path | Crate/App | Stack | Role |
-|---|---|---|---|
-| `apps/rt` | `mustard-rt` | Rust | **Deterministic core** — scan, map, events, gates, hooks, pipeline commands. The engine. |
-| `apps/scan` | `scan` | Rust | Repository miner → `grain.db` (SQLite). |
-| `apps/cli` | `mustard` | Rust | Installation, project configuration and optional fonts. |
-| `packages/core` | `core` | Rust | Shared types and logic (e.g. `ProjectConfig`). |
-| `plugin/` | — | — | The Claude Code plugin: commands, hooks, agents and the `mustard-boot` bootstrap (downloads the binaries from the Release on the first session). |
-
-`cargo build --workspace` covers every Rust crate.
-
----
-
-## Build & tests
+Each command says what it does, the options it takes and what it answers:
 
 ```bash
-cargo build --workspace --locked
-cargo build --profile mustard-dev --locked  # incremental development
-cargo test --workspace --locked
-cargo clippy --workspace --all-targets --locked -- -D warnings
+mustard-rt run --help            # the list of commands
+mustard-rt run <command> --help  # one command, with its options
 ```
 
-**Official release:** a `vX.Y.Z` tag triggers the workflow that builds one complete installer per OS + the `mustard-bins-*` packages (consumed by the plugin bootstrap) and publishes everything as a GitHub Release. The tag version **must** match `plugin/.claude-plugin/plugin.json` — the workflow refuses a desynchronized tag. Manual dispatch (Actions → Release → Run workflow) is a **rehearsal**: builds everything without publishing.
-
----
-
-## Configuration
-
-`mustard.json` at the root is the project's **single source** of configuration:
-
-```jsonc
-{
-  // "flow" is OPTIONAL and restricts nothing: it only PRE-SELECTS a base in the
-  // picker. Where a unit may be cut from comes from git;
-  // where a direct commit is refused comes from the remote's default branch plus
-  // whatever "protected" adds. A fresh install writes no "flow".
-  "git":  { "provider": "github" },
-  "buildCommand": "cargo build",
-  "testCommand":  "cargo test",
-  "lintCommand":  "cargo clippy",
-  "typeCheckCommand": "cargo check",
-  "language": {             // the two languages, each on its own key
-    "text": "en-US",        // conversation, specs, pages, comments and commits
-    "code": "en-US"         // names in the code: variables, functions, tests, files, commands and tables; without the key, English
-  }
-}
-```
-
-Mustard is language- and architecture-**agnostic**: generated text follows `language.text`; names in the code (variables, functions, tests, files, commands and database tables) follow `language.code`. The install asks for both languages and writes only what you choose; with no choice, names in the code stay in English. Build/test/lint commands are read from here. Monorepo rule: all state lives at the git repository **root**; a subproject is its own Mustard project only when it is an independent git repository (submodule).
-
----
-
-## Repository layout
-
-```
-apps/
-  rt/         mustard-rt — deterministic core (Rust)
-  scan/       repository miner (Rust)
-  cli/        mustard — installer/scaffold (Rust)
-packages/
-  core/       shared types/logic (Rust)
-plugin/       Claude Code plugin (commands, hooks, agents, bootstrap)
-packaging/    Win/macOS/Linux installers + tutorials
-docs/         architecture analyses and redesigns
-.claude/      harness config (hooks, skills, refs, specs, grain.db)
-install.ps1   development installer (build + scaffold)
-mustard.json  project configuration
-```
-
----
-
-## Documentation
-
-- **[MUSTARD-COMMANDS.md](MUSTARD-COMMANDS.md)** — visual reference for each command and its flow (Mermaid diagrams).
-- **[docs/mustard-por-dentro.md](docs/mustard-por-dentro.md)** — what Mustard does on its own: the install, the rules and skills it generates, the Jev decision points, publishing and code search.
-- **Install tutorials** — `packaging/installer/TUTORIAL-{WINDOWS,MACOS,LINUX}.md` (also attached to every release).
-- **[docs/](docs/)** — architecture redesigns (agnostic index, multi-signal stack detection, plugin validation).
+What Mustard does on its own — the installation, the `mustard.json` configuration, the rules and skills it generates, the points where it asks Jev, publishing and code search — is in [docs/mustard-por-dentro.md](docs/mustard-por-dentro.md) (Portuguese). The installation tutorials for each system are in `packaging/installer/TUTORIAL-{WINDOWS,MACOS,LINUX}.md` and in each release's *Assets*.
 
 ---
 
