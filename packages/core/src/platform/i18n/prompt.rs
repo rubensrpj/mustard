@@ -735,21 +735,9 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Review in the separate copy `{copy}`, never in the main repository `{root}`: the close \
              already created it at commit `{commit}`; run everything inside it and never create another."
         }
-        // Os arquivos locais que o git ignora não vêm com a cópia: o
-        // fechamento os copia para ela, e o revisor copia de novo, pelo
-        // conteúdo, o que faltar — nunca por link, que deixaria a cópia
-        // escrever no repositório principal.
-        ("prompt.review.local_files", Locale::PtBr) => {
-            "Os arquivos locais que o git ignora e a cópia precisa são {files}. O que faltar nela, \
-             copie do repositório principal `{root}` pelo conteúdo, nunca por link ou atalho."
-        }
-        ("prompt.review.local_files", Locale::EnUs) => {
-            "The local files git ignores and the copy needs are {files}. Whatever is missing from \
-             it, copy from the main repository `{root}` by content, never by link or shortcut."
-        }
         // O fechamento roda a suíte e os critérios antes de pedir a revisão,
-        // no mesmo commit em que a cópia do revisor nasce. O revisor não a
-        // repete: roda só o que cerca os cortes que ele faz.
+        // na mesma cópia limpa e no mesmo commit em que o revisor confere. O
+        // revisor não a repete: roda só o que cerca os cortes que ele faz.
         ("prompt.review.suite", Locale::PtBr) => {
             "A suíte `{command}` e os critérios já passaram no fechamento, no commit `{commit}` desta \
              cópia. Não rode a suíte inteira de novo: rode só os testes em volta de cada corte, com \

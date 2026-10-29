@@ -11,6 +11,7 @@ close.cited_outside	db33e70216df214b
 close.cited_unowned	93a92f9430f624f5
 close.clean_copy_failed	57951d3413dc7539
 close.code_not_kept	ad9ae216b05c4bdb
+close.copies_kept	a2f5f41f7fb1e4df
 close.criterion_failed	07bb60cf5aac78e2
 close.criterion_missing_test	7b2450ce65a4d437
 close.criterion_passed_before	8bd755b0bd37b373
@@ -30,9 +31,6 @@ close.request_proof_failed	7722229f1181ce6e
 close.request_proof_missing_test	084f8a88bcaaf932
 close.request_proof_passed_before	109a1e5886abb757
 close.request_proof_ran_no_test	ac83306a231fca1d
-close.review_copy_dirty	2d6b164fa9a1f5bc
-close.review_copy_failed	d3df4ca1d7b660f5
-close.review_copy_kept	98e2550c4c40fef7
 close.review_request_renewed	e3dd69d0f4fb40c8
 close.server_command_not_declared	5be032b5d67b101d
 close.stale_mark_released	e5d3875004cb330f

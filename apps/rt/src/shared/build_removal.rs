@@ -32,7 +32,7 @@ fn copies_kept_hint(left: &[(String, String)], lang: Locale) -> Option<String> {
     }
     let copies: Vec<String> = left.iter().map(|(copy, _)| format!("`{copy}`")).collect();
     let details: Vec<&str> = left.iter().map(|(_, detail)| detail.as_str()).collect();
-    Some(translate("close.review_copy_kept", lang).replace("{copies}", &copies.join(", ")).replace("{detail}", &details.join("; ")))
+    Some(translate("close.copies_kept", lang).replace("{copies}", &copies.join(", ")).replace("{detail}", &details.join("; ")))
 }
 
 /// Os avisos do que a remoção das cópias da obra fez, cada um com o motivo da

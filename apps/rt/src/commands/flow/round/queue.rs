@@ -1110,15 +1110,14 @@ mod tests {
 
     /// A rodada abre a cópia da onda fora da pasta do projeto, na pasta das
     /// cópias dele — o nome do projeto e um código curto que não muda —, sob
-    /// a pasta da spec, e o envio grava esse caminho, que o pedido cita. O
-    /// revisor final usa a vaga da última onda; nada nasce em
-    /// `.claude/worktrees`. A entrega que cita o arquivo pelo caminho absoluto
+    /// a pasta da spec, e o envio grava esse caminho, que o pedido cita. Nada
+    /// nasce em `.claude/worktrees`. A entrega que cita o arquivo pelo caminho absoluto
     /// da cópia gravada no envio volta relativa ao repositório, mesmo quando
     /// essa cópia não é a que a pasta das cópias daria hoje, como a da onda
     /// que saiu antes de a pasta mudar.
     #[test]
     fn a_wave_copy_is_born_outside_the_project_folder() {
-        use mustard_core::io::wave_prompt::{copies_dir, final_copy_path};
+        use mustard_core::io::wave_prompt::copies_dir;
 
         let dir = tempdir().unwrap();
         let root = dir.path();
@@ -1140,8 +1139,6 @@ mod tests {
         assert!(Path::new(&copy).join(".git").is_file(), "the copy is a linked checkout");
         let prompt = &request_at(&out, 0);
         assert!(prompt.contains(&format!("`{copy}`")), "{prompt}");
-        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        assert_eq!(final_copy_path(root, "x", &log), copies.join("x").join("a"), "the review uses the wave's slot");
         assert!(!root.join(".claude").join("worktrees").exists(), "nothing is born inside the project");
 
         // Um envio mais novo da onda grava a cópia noutro lugar.
@@ -1675,7 +1672,7 @@ mod tests {
         let head = git_text(root, &["rev-parse", "HEAD"]);
 
         let owner = super::super::keep::Keeping { label: "x/1-7".to_string(), wave: Some(1) };
-        let prepared = crate::commands::flow::round::ensure_copy(root, &slot, &head, &owner).unwrap();
+        let prepared = super::super::slots::ensure_copy(root, &slot, &head, &owner).unwrap();
         assert_eq!(prepared.kept.len(), 1);
         let kept = &prepared.kept[0];
         assert_eq!(kept.wave, Some(1));

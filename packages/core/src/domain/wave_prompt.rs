@@ -222,21 +222,17 @@ pub struct Execution {
     pub prepare: Option<String>,
     /// The native dispatcher prepared dependencies before this wave.
     pub prepared: bool,
-    /// Os arquivos locais que o git ignora e a cópia precisa (`localFiles`),
-    /// relativos à raiz e já sem o caminho que sairia do projeto: o pedido
-    /// do revisor os lista, a copiar pelo conteúdo. Vazia, ele não fala deles.
-    pub local_files: Vec<String>,
     /// As outras ondas em andamento, cada uma com os arquivos das tarefas
     /// dela: o arquivo dividido com elas é juntado na volta.
     pub running: Vec<(u64, Vec<String>)>,
-    /// O commit em que o fechamento cria a cópia do revisor final; sem ele, o
-    /// pedido do revisor diz que ela sai do commit atual. O pedido da onda
-    /// não o cita.
+    /// O commit da cópia limpa em que o revisor final confere a obra; sem
+    /// ele, o pedido do revisor diz que ela sai do commit atual. O pedido da
+    /// onda não o cita.
     pub commit: Option<String>,
     /// O repositório principal: onde a spec mora e onde nada é editado.
     pub root: String,
     /// A cópia separada em que o agente trabalha: a que a rodada criou para
-    /// a onda, ou a do revisor final, que o fechamento cria. Sem ela, o
+    /// a onda, ou a cópia limpa do fechamento, a do revisor final. Sem ela, o
     /// pedido da onda não fala de cópia.
     pub copy: Option<WaveCopy>,
     /// Os idiomas que o projeto declara, lidos do `mustard.json`: o pedido
@@ -1713,9 +1709,9 @@ impl Writer<'_> {
         if in_copy && !root.is_empty() { format!("--root {root} ") } else { String::new() }
     }
 
-    /// As regras da execução do revisor: a cópia que o fechamento já criou no
-    /// commit da obra, o preparo que o projeto declara, os arquivos locais
-    /// que a cópia recebe pelo conteúdo, o comando de compilar, a suíte que o
+    /// As regras da execução do revisor: a cópia limpa em que a máquina do
+    /// fechamento já rodou, no commit da obra e sem os arquivos locais, o
+    /// preparo que o projeto declara, o comando de compilar, a suíte que o
     /// fechamento já rodou nesse commit — no lugar da ordem de rodá-la, só os
     /// testes em volta de cada corte —, menos processos, e desfazer cada corte
     /// antes de gravar o veredito — quem apaga a cópia é o fechamento. De onde
@@ -1728,11 +1724,6 @@ impl Writer<'_> {
         let line = self.t("prompt.review.copy").replace("{copy}", &copy.path).replace("{root}", root);
         let _ = writeln!(out, "- {}", line.replace("{commit}", commit));
         self.prepare(out, None);
-        if !execution.local_files.is_empty() {
-            let files: Vec<String> = execution.local_files.iter().map(|file| format!("`{file}`")).collect();
-            let line = self.t("prompt.review.local_files").replace("{files}", &files.join(", ")).replace("{root}", root);
-            let _ = writeln!(out, "- {line}");
-        }
         self.build_line(out);
         if let Some(command) = &execution.test {
             let line = self.t("prompt.review.suite").replace("{command}", command).replace("{commit}", commit);

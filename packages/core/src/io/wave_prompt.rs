@@ -282,8 +282,8 @@ fn prompts_reading(
 const MOVES_KEY: &str = "historyMoves";
 
 /// O que os dois pedidos leem do `mustard.json` do projeto `root`: os
-/// comandos de compilar e de testar, o de preparo, os arquivos locais e os
-/// idiomas, com o repositório principal.
+/// comandos de compilar e de testar, o de preparo e os idiomas, com o
+/// repositório principal.
 fn project_execution(root: &Path) -> Execution {
     let config = crate::ProjectConfig::load(root);
     let commands = config.commands();
@@ -291,7 +291,6 @@ fn project_execution(root: &Path) -> Execution {
         build: commands.build,
         test: commands.test,
         prepare: commands.prepare,
-        local_files: local_files(&config),
         root: shown(root),
         language: config.language(),
         model: config.wave_agent_model().to_string(),
@@ -567,21 +566,13 @@ pub fn is_slot_of(root: &Path, spec: &str, copy: &str) -> bool {
     parent.as_deref() == Some(shown(&spec_copies_dir(root, spec)).as_str())
 }
 
-/// A pasta da cópia do revisor final da spec `spec`: a vaga do último envio
-/// de onda que gravou uma vaga desta spec, que já tem a compilação da obra.
-/// Sem envio assim — a spec sem nenhum envio de onda, ou só com envios de
-/// endereço antigo —, a vaga `a`. Quem a prepara, no commit de [`final_review_commit`], é o
-/// fechamento (`mustard-rt run close`); o pedido do revisor só diz onde ela
-/// está.
+/// A cópia limpa da spec `spec`, fora das vagas das ondas: a máquina do
+/// fechamento roda nela, e o revisor final confere a obra nela, no mesmo
+/// commit. Quem a prepara é o fechamento (`mustard-rt run close`); o pedido
+/// do revisor só diz onde ela está.
 #[must_use]
-pub fn final_copy_path(root: &Path, spec: &str, log: &SpecLog) -> PathBuf {
-    log.visible()
-        .into_iter()
-        .rev()
-        .filter(|e| e.event_type == "send" && e.str_field("role") != Some("review"))
-        .filter_map(|e| e.str_field("copy"))
-        .find(|copy| is_slot_of(root, spec, copy))
-        .map_or_else(|| slot_path(root, spec, 0), PathBuf::from)
+pub fn check_copy_path(root: &Path, spec: &str) -> PathBuf {
+    spec_copies_dir(root, spec).join("check")
 }
 
 /// O commit em que o revisor final confere a obra: o mais novo que a spec
@@ -606,8 +597,8 @@ pub fn final_review_commit(root: &Path, log: &SpecLog) -> Option<String> {
 /// a toda obra, mesmo a de uma onda só, no lugar da revisão de cada onda: só
 /// o que nenhuma prova verde cobre ([`wave_prompt::Proven`]) — as tarefas sem
 /// passo de término, o combinado sem onda que o cubra e os critérios sem
-/// execução que passou — e a cópia do revisor, no commit mais novo da spec e
-/// na pasta de compilação que a última onda enviada usou. No fim vêm as regras do projeto: os
+/// execução que passou — e a cópia limpa em que a máquina do fechamento
+/// rodou ([`check_copy_path`]), no commit mais novo da spec. No fim vêm as regras do projeto: os
 /// arquivos de regras da raiz e das pastas dos arquivos que a obra mexe
 /// ([`project_rules`], [`touched_files`]), quando algum existe com texto.
 ///
@@ -643,7 +634,7 @@ pub fn final_review_commit(root: &Path, log: &SpecLog) -> Option<String> {
 #[must_use]
 pub fn final_review(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> FinalReview {
     let commit = final_review_commit(root, log);
-    let copy = final_copy_path(root, spec, log);
+    let copy = check_copy_path(root, spec);
     let prepared = crate::io::workspace::checkout_git_dir(&copy).is_some_and(|admin| admin.join("mustard-dependencies.sha256").is_file());
     let execution = Execution { commit, prepared, copy: Some(WaveCopy { path: shown(&copy), reused: None }), ..project_execution(root) };
     let mut material = Material {
@@ -3525,8 +3516,8 @@ mod tests {
     /// Os pedidos que a rodada monta — o da onda e o da revisão final — num
     /// projeto sem mapa, num só com parte Node, num com uma parte Node e uma
     /// Rust e num só Rust: nenhum cita pasta de compilação à parte, o Cargo
-    /// ou a variável dele. A compilação mora dentro da cópia, e a cópia
-    /// aparece em todos. O envio antigo com a pasta gravada não a traz de
+    /// ou a variável dele. A compilação mora dentro da cópia, e a cópia — a
+    /// da onda ou a limpa, do revisor — aparece em todos. O envio antigo com a pasta gravada não a traz de
     /// volta.
     #[test]
     fn no_request_names_a_build_folder_in_any_project() {
@@ -3553,7 +3544,8 @@ mod tests {
             for lang in [Locale::PtBr, Locale::EnUs] {
                 let built = prompts(root, "teste", &log, lang, &flight, &log.planned_waves());
                 let last = final_review(root, "teste", &log, lang).text;
-                for (what, text) in [("wave", &built[0].text), ("final", &last)] {
+                let clean = shown(&check_copy_path(root, "teste"));
+                for (what, text, copy) in [("wave", &built[0].text, &copy), ("final", &last, &clean)] {
                     assert!(text.contains(&format!("`{copy}`")), "{map:?} {lang:?} {what}: {text}");
                     for word in ["CARGO_TARGET_DIR", "Cargo", "target/copias", &folder] {
                         assert!(!text.contains(word), "{map:?} {lang:?} {what} cita {word}: {text}");
@@ -3563,42 +3555,19 @@ mod tests {
         }
     }
 
-    /// O revisor final trabalha na vaga do último envio de onda que gravou
-    /// uma vaga desta spec, a que já tem a compilação da obra. O envio de
-    /// revisão e o envio com o endereço antigo (`<spec>-<onda>`) não contam.
-    /// Sem envio de onda com vaga — a spec sem nenhum envio —, a vaga `a`.
+    /// O revisor final trabalha na cópia limpa da spec, fora das vagas das
+    /// ondas, qualquer que seja a vaga do último envio. As vagas das ondas
+    /// têm nome de letra e, depois da última, de número.
     #[test]
-    fn the_final_review_uses_the_slot_of_the_last_wave() {
+    fn the_final_review_uses_the_clean_copy() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        let slot = |n: usize| shown(&slot_path(root, "teste", n));
-        let send = |wave: u64, copy: &str| {
-            (
-                "send",
-                json!({"wave": wave, "role": "wave", "text": "p", "lines": 1, "chars": 1, "items": [1],
-                            "mustard": "0", "author": "binary", "copy": copy}),
-            )
-        };
-        let old = shown(&copies_dir(root).join("teste-3"));
-        let review = (
-            "send",
-            json!({"role": "review", "text": "p", "lines": 1, "chars": 1, "mustard": "0",
-                                      "author": "binary", "copy": slot(2)}),
-        );
-        let log = log_of(&[
-            ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
-            send(1, &slot(0)),
-            send(2, &slot(1)),
-            send(3, &old),
-            review,
-        ]);
-        assert_eq!(shown(&final_copy_path(root, "teste", &log)), slot(1));
-        assert!(final_review(root, "teste", &log, Locale::PtBr).text.contains(&format!("`{}`", slot(1))));
-
-        let unsent = log_of(&[("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"}))]);
-        assert_eq!(shown(&final_copy_path(root, "teste", &unsent)), slot(0));
-        let other_spec = log_of(&[send(1, &shown(&slot_path(root, "outra", 3)))]);
-        assert_eq!(shown(&final_copy_path(root, "teste", &other_spec)), slot(0));
+        let send = json!({"wave": 1, "role": "wave", "text": "p", "lines": 1, "chars": 1, "items": [1],
+            "mustard": "0", "author": "binary", "copy": shown(&slot_path(root, "teste", 1))});
+        let log = log_of(&[("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})), ("send", send)]);
+        let clean = check_copy_path(root, "teste");
+        assert_eq!(clean, copies_dir(root).join("teste").join("check"));
+        assert!(final_review(root, "teste", &log, Locale::PtBr).text.contains(&format!("`{}`", shown(&clean))));
         assert_eq!(slot_name(0), "a");
         assert_eq!(slot_name(25), "z");
         assert_eq!(slot_name(26), "27");
@@ -3980,12 +3949,12 @@ mod tests {
     /// pedido da onda e o do revisor mandam rodar o preparo dentro da cópia
     /// antes de compilar — a linha vem antes da de compilar — e devolver ao
     /// commit, pelo `git checkout`, o arquivo versionado que ele mudar, salvo
-    /// o que a tarefa declara. Só o pedido do revisor lista os arquivos
-    /// locais, a copiar pelo conteúdo do repositório principal, sem o item
-    /// que sairia do projeto. Sem os dois — chaves ausentes, ou comando vazio
-    /// e lista vazia —, nenhum pedido traz essas linhas. Nos dois idiomas.
+    /// o que a tarefa declara. Nenhum dos dois lista os arquivos locais: a
+    /// cópia da onda os recebe da rodada, e a do revisor é a cópia limpa.
+    /// Sem comando — chave ausente ou vazia —, nenhum pedido traz essas
+    /// linhas. Nos dois idiomas.
     #[test]
-    fn the_wave_requests_cite_the_prepare_command_and_the_local_files() {
+    fn the_wave_requests_cite_the_prepare_command_and_no_local_file() {
         let log = log_of(&[
             ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
             ("task", json!({"wave": 1, "text": "Somar", "files": [{"path": "src/a.rs"}]})),
@@ -4005,7 +3974,6 @@ mod tests {
                 let new_copy = t("prompt.execution.prepare_new").replace("{command}", "npm ci");
                 let review = t("prompt.execution.prepare").replace("{command}", "npm ci");
                 let build = t("prompt.execution.build").replace("{command}", "npm run build");
-                let local = t("prompt.review.local_files").replace("{files}", "`.env`, `apps/api/.env.local`").replace("{root}", &shown(root));
                 let wave = prompts(root, "teste", &log, lang, &flight, &log.planned_waves()).remove(0).text;
                 let last = final_review(root, "teste", &log, lang).text;
                 for (what, text, prepare) in [("wave", &wave, &new_copy), ("final", &last, &review)] {
@@ -4018,7 +3986,7 @@ mod tests {
                     }
                     assert!(!text.contains("fora.env"), "{lang:?} {what}: {text}");
                 }
-                assert_eq!(last.contains(&local), cites, "{config} {lang:?}: {last}");
+                assert!(!last.contains(".env"), "a cópia limpa do revisor nunca recebe os arquivos locais: {lang:?}: {last}");
                 assert!(!wave.contains(".env"), "a cópia da onda já recebe os arquivos da rodada: {lang:?}: {wave}");
             }
         }

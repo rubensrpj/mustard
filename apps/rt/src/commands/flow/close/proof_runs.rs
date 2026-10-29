@@ -340,6 +340,19 @@ mod tests {
         let proofs = runs_before(false);
         assert_eq!((proofs, runs_before(true)), (2, 0), "o primeiro fechamento roda cada prova no código de antes: {asked}");
 
+        // Com toda prova já gravada, a cópia do código de antes nem é
+        // preparada: a que sai do disco não volta.
+        let folder = mustard_core::io::wave_prompt::spec_copies_dir(root, "x").join(super::FOLDER);
+        git_at(root, &["worktree", "remove", "--force", &folder.to_string_lossy()]);
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let lock = crate::commands::git_settle::copies_lock(root).expect("the copies lock");
+        let copy = super::prepare(root, "x", &log, &lock).ok().flatten().expect("the code before the work");
+        let listed = crate::commands::flow::validation::proof_list(&log, None);
+        let Ok(reran) = copy.run(&log, &listed) else { panic!("the proofs before did not run") };
+        assert!(reran.iter().all(|(run, key)| run.reused && key.is_some()), "toda prova volta gravada");
+        assert!(!folder.exists(), "nada a rodar, nada preparado");
+        drop(lock);
+
         // A configuração muda, e a máquina roda de novo no mesmo commit base.
         std::fs::write(root.join("mustard.json"), json!({"lintCommand": "git --version"}).to_string()).unwrap();
         approve(root, "x");

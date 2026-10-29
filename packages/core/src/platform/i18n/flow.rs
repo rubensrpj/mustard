@@ -497,27 +497,15 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "`mustard.json` does not declare `{key}`: the close did not run that command, and does not \
              promise the server passes. Declare there the command the server runs, word for word."
         }
-        ("close.review_copy_dirty", Locale::PtBr) => {
-            "A cópia do revisor `{copy}` tem mudança ({files}), que um revisor anterior deixou, e o \
-             fechamento não revisa por cima dela. Confira o que é e descarte com \
-             `git worktree remove --force {copy}`; depois feche de novo."
-        }
-        ("close.review_copy_dirty", Locale::EnUs) => {
-            "The reviewer's copy `{copy}` has changes ({files}) a previous reviewer left, and the close \
-             does not review on top of them. Check what they are and discard with \
-             `git worktree remove --force {copy}`; then close again."
-        }
-        ("close.review_copy_failed", Locale::PtBr) => "A cópia do revisor `{copy}` não pôde ser criada, e a spec não fechou: {detail}",
-        ("close.review_copy_failed", Locale::EnUs) => "The reviewer's copy `{copy}` could not be created, and the spec did not close: {detail}",
         ("close.clean_copy_failed", Locale::PtBr) => "A cópia limpa `{copy}`, em que a compilação, o lint, a suíte e os critérios rodam, não pôde ser criada, e a spec não fechou: {detail}",
         ("close.clean_copy_failed", Locale::EnUs) => "The clean copy `{copy}`, where the build, the lint, the suite and the criteria run, could not be created, and the spec did not close: {detail}",
         // As cópias da obra que o fechamento ou o descarte não conseguiram
         // tirar. A obra segue: o aviso só diz o que ficou e como tirar.
-        ("close.review_copy_kept", Locale::PtBr) => {
+        ("close.copies_kept", Locale::PtBr) => {
             "Estas cópias da obra ficaram no disco: {copies}. O git disse: {detail}. Apague cada uma \
              com `git worktree remove --force <cópia>` e depois rode `git worktree prune`."
         }
-        ("close.review_copy_kept", Locale::EnUs) => {
+        ("close.copies_kept", Locale::EnUs) => {
             "These copies of the work stayed on disk: {copies}. Git said: {detail}. Delete each one \
              with `git worktree remove --force <copy>`, then run `git worktree prune`."
         }
@@ -2797,10 +2785,8 @@ mod tests {
             ("close.cited_nothing", &[][..]),
             ("close.cited_unowned", &[][..]),
             ("close.server_command_not_declared", &["{key}"][..]),
-            ("close.review_copy_dirty", &["{copy}", "{files}"][..]),
-            ("close.review_copy_failed", &["{copy}", "{detail}"][..]),
             ("close.clean_copy_failed", &["{copy}", "{detail}"][..]),
-            ("close.review_copy_kept", &["{copies}", "{detail}"][..]),
+            ("close.copies_kept", &["{copies}", "{detail}"][..]),
             ("close.code_not_kept", &["{copies}", "{detail}"][..]),
             ("close.build_output_unsafe", &["{folder}"][..]),
             ("close.build_output_not_ignored", &["{folder}"][..]),
@@ -3057,7 +3043,6 @@ mod tests {
             ("prompt.execution.prepare_reused", &["{command}", "{files}"][..]),
             ("prompt.execution.prepare_same", &["{command}"][..]),
             ("prompt.execution.prepare_more", &["{n}", "{diff}"][..]),
-            ("prompt.review.local_files", &["{files}", "{root}"][..]),
             ("page.wave.prompt", &["{n}"][..]),
             ("page.wave.prompt.summary", &["{lines}"][..]),
         ] {

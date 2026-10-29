@@ -10,7 +10,6 @@ use mustard_core::io::spec_events as store;
 use serde_json::{Value, json};
 use tempfile::tempdir;
 
-use super::reviewed_after_last_wave;
 use crate::commands::flow::round::{awaited_review, open_review};
 use crate::commands::flow::validation::review_elapsed;
 
@@ -45,11 +44,10 @@ fn written(root: &Path, lines: &[Value]) -> SpecLog {
     store::read(&path).unwrap().unwrap()
 }
 
-/// O pedido aberto, o que espera veredito, o que o veredito responde, a
-/// cópia do revisor e o tempo da revisão contam o pedido no número 6, que o
-/// gravou, e não no 9, que o lançamento gravou depois da onda 2 e da entrega
-/// dela. Pelo 9, o pedido feito antes da entrega esperaria veredito, a cópia
-/// do revisor seria dada por revisada depois da onda 2 e a revisão duraria
+/// O pedido aberto, o que espera veredito, o que o veredito responde e o
+/// tempo da revisão contam o pedido no número 6, que o gravou, e não no 9,
+/// que o lançamento gravou depois da onda 2 e da entrega dela. Pelo 9, o
+/// pedido feito antes da entrega esperaria veredito e a revisão duraria
 /// meia hora em vez de uma.
 #[test]
 fn every_reading_of_the_final_review_request_counts_the_version_that_recorded_it() {
@@ -60,7 +58,6 @@ fn every_reading_of_the_final_review_request_counts_the_version_that_recorded_it
     assert_eq!(review_send(&launched, None), Some(ReviewSend { asked: 6, current: 9 }));
     assert_eq!(open_review(&launched), Some(6), "the open request is the one that recorded it");
     assert_eq!(awaited_review(&launched), None, "the request went out before the delivery of wave 2");
-    assert!(!reviewed_after_last_wave(&launched), "wave 2 went out after the request");
 
     let judged = written(root, &lines(true));
     assert_eq!(answered_request(&judged, 10), Some(6));

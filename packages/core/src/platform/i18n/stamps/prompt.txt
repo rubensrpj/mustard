@@ -85,7 +85,6 @@ prompt.return.step	74bf774484d3287a
 prompt.review.cleanup	b0da6bd06abb2134
 prompt.review.copy	f5bb4597a551803f
 prompt.review.jobs	35d49cbdf0d29efa
-prompt.review.local_files	76dcd1171ffd2a7c
 prompt.review.suite	f181e9d6e1159a77
 prompt.skill.stale	eaaebe8b74a0afb2
 prompt.step.attends	6f676a4a39298db7
