@@ -324,7 +324,7 @@ mod tests {
             .replace("{origin}", translate("round.queued.origin_config", lang))
             .replace("{occupied}", "1")
             .replace("{waves}", "1");
-        let whole = crate::commands::flow::projection("round", &out, true).unwrap();
+        let whole = &out;
         assert_eq!(whole["held"].to_string().matches(&slots).count(), 16, "{whole}");
         let short = crate::commands::flow::projection("round", &out, false).unwrap();
         let codes = spec_now(root).codes();

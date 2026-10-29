@@ -84,7 +84,6 @@ pub(crate) fn answer(command: &str, root: &Path, named: Option<&str>, started: I
 pub(crate) fn projection(command: &str, report: &Value, full: bool) -> Option<Value> {
     let whole = match command {
         "grill" => Some(grill::projection(report)),
-        "round" => Some(round::projection(report)),
         _ => None,
     };
     if full || report.get("ok").and_then(Value::as_bool) != Some(true) {
@@ -141,7 +140,7 @@ mod tests {
         let round = json!({"ok":true,"spec":"x","dispatch":[],"running":[],"held":[
             {"task":"MSTD-TASK-0002","reason":"capacity","detail":"No free slot."},
             {"task":"MSTD-TASK-0003","reason":"capacity","detail":"No free slot."}],
-            "warnings":[{"reason":"wave-size","wave":1,"hint":"Wave 1 is big."}],"next":"Wait."});
+            "next":"Wait."});
         let review = json!({"ok":true,"spec":"x","wave":1,"fingerprint":"abc","files":["web/app.ts"],
             "project_rules":[{"source":"project","path":"CLAUDE.md","text":"Never duplicate types."}],"diff":"+x","hint":"Read the diff."});
         let backlog = json!({"ok":true,"spec":"x","block":"backlog","count":1,
@@ -150,7 +149,7 @@ mod tests {
             "jev":{"usable_key":false},"rtk":{"own_hook_left":false},"index_present":false,"availability":{"scan":"ok"}});
         let today = [
             ("grill", &grill, Some(grill::projection(&grill))),
-            ("round", &round, Some(round::projection(&round))),
+            ("round", &round, None),
             ("review-wave", &review, None),
             ("backlog", &backlog, None),
             ("settings", &settings, None),

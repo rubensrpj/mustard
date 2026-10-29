@@ -328,7 +328,7 @@ fn two_processes_closing_a_wave_preserve_both_deliveries_without_automatic_publi
                 .cloned()
                 .unwrap_or_default()
                 .into_iter()
-                .filter(|w| !matches!(w["reason"].as_str(), Some("usage-missing" | "wave-size")))
+                .filter(|w| w["reason"] != "usage-missing")
                 .count();
             assert_eq!(warned, 0, "{}", String::from_utf8_lossy(&out.stdout));
         }
@@ -706,7 +706,7 @@ fn the_round_commits_the_undeclared_file_the_wave_changed() {
         .cloned()
         .unwrap_or_default()
         .into_iter()
-        .filter(|w| !matches!(w["reason"].as_str(), Some("usage-missing" | "wave-size")))
+        .filter(|w| w["reason"] != "usage-missing")
         .collect();
     assert_eq!(warned.len(), 2, "{body}");
     assert_eq!(warned[0], json!({"reason": "files-diverged", "wave": 1, "hint": hint}), "{body}");

@@ -912,6 +912,30 @@ pub(crate) fn backlog_ready(log: &SpecLog) -> Vec<u64> {
     backlog_ready_without(log, &BTreeSet::new())
 }
 
+/// `true` quando a obra `spec`, como está gravada agora em `root`, tem onda a
+/// despachar: a órfã, que sai de novo, ou, com vaga livre, a onda pronta do
+/// plano ou a tarefa pronta do backlog. A spec que não se lê, e o plano com
+/// dependência em círculo, contam como tendo: na dúvida, quem pergunta segue
+/// como se a onda fosse sair.
+pub(crate) fn dispatch_waiting(root: &Path, spec: &str) -> bool {
+    use mustard_core::io::spec_events as store;
+    let Some(log) = store::spec_file(root, spec).ok().and_then(|path| store::read(&path).ok().flatten()) else {
+        return true;
+    };
+    if !orphaned_waves(&log).is_empty() {
+        return true;
+    }
+    let vacancies = super::vacancy::vacancies(root, spec, &log);
+    if vacancies.free() == 0 {
+        return false;
+    }
+    if !backlog_ready(&log).is_empty() {
+        return true;
+    }
+    let (stuck, evaluating) = (super::stops::waves_stuck(&log), super::skill_hold::waves_waiting(root, spec, &log));
+    next_waves(&log, &vacancies, (&stuck, &evaluating)).map_or(true, |going| !going.is_empty())
+}
+
 /// [`backlog_ready`] como ficaria sem as ondas de lote `undone`
 /// ([`backlog_left_without`]).
 pub(super) fn backlog_ready_without(log: &SpecLog, undone: &BTreeSet<u64>) -> Vec<u64> {

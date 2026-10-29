@@ -1105,8 +1105,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The new verification of criterion {code} names the test {name}, which appears in no file of the \
              project. Ask for that test or the right verification before closing."
         }
-        ("round.size.line", Locale::PtBr) => "onda {wave}: +{added} -{removed}, {files} arquivos",
-        ("round.size.line", Locale::EnUs) => "wave {wave}: +{added} -{removed}, {files} files",
         ("round.not_approved", Locale::PtBr) => "A spec está na fase {phase} e ainda não foi aprovada: nenhuma onda sai antes do sim do usuário.",
         ("round.not_approved", Locale::EnUs) => {
             "The spec is in the {phase} phase and is not approved yet: no wave goes out before the user says yes."
@@ -2900,7 +2898,6 @@ mod tests {
             ("round.development_build_failed", &["{read}"][..]),
             ("round.proof_ran_no_test", &["{code}"][..]),
             ("round.proof_missing_test", &["{code}", "{name}"][..]),
-            ("round.size.line", &["{wave}", "{added}", "{removed}", "{files}"][..]),
             ("round.not_approved", &["{phase}"][..]),
             ("round.closed", &["{spec}", "{phase}"][..]),
             ("round.finished", &["{spec}", "{phase}"][..]),

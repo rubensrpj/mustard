@@ -605,14 +605,16 @@ fn take_returns(
     if commit.is_some() {
         super::map_pass::start_map_refresh(root);
         // O programa compilado da branch acompanha o commit que tocou o
-        // código do Mustard: a próxima chamada já roda o que acabou de entrar.
-        // A falha só avisa — o commit já saiu — e a sessão segue no programa
-        // compilado anterior. A compilação fica na hora, e não em segundo
-        // plano: o despacho que vem a seguir passa ao programa novo
-        // ([`super::handoff`]), que precisa estar pronto.
+        // código do Mustard quando há onda a despachar: o despacho que vem a
+        // seguir passa ao programa novo ([`super::handoff`]), que precisa
+        // estar pronto. Sem onda a despachar, a rodada não compila. A falha só
+        // avisa — o commit já saiu — e a sessão segue no programa compilado
+        // anterior.
         let mut timing = super::super::validation::Stage::new(root, spec, "delivery", "runtime-build", false);
-        let rebuilt = build_development_version(root, spec, &files, lang);
-        if mustard_core::mustard_checkout(root).is_none()
+        let dispatching = super::queue::dispatch_waiting(root, spec);
+        let rebuilt = if dispatching { build_development_version(root, spec, &files, lang) } else { None };
+        if !dispatching
+            || mustard_core::mustard_checkout(root).is_none()
             || !files.iter().any(|file| {
                 file.starts_with("apps/")
                     || file.starts_with("packages/")
@@ -2202,7 +2204,7 @@ mod tests {
             .cloned()
             .unwrap_or_default()
             .into_iter()
-            .filter(|w| !matches!(w["reason"].as_str(), Some("usage-missing" | "wave-size")))
+            .filter(|w| w["reason"] != "usage-missing")
             .collect();
         assert_eq!(warned.len(), 1, "{went}");
         assert_eq!(warned[0]["reason"], "scope-expanded");
@@ -2434,7 +2436,7 @@ mod tests {
             .cloned()
             .unwrap_or_default()
             .into_iter()
-            .filter(|w| !matches!(w["reason"].as_str(), Some("usage-missing" | "wave-size")))
+            .filter(|w| w["reason"] != "usage-missing")
             .collect();
         assert_eq!(json!(warned), json!([{"reason": "round-merge-conflict", "wave": 1, "hint": expected}]), "{out}");
         // O agente da onda segurada já terminou: ela não está em andamento, e

@@ -111,10 +111,13 @@ pub enum FlowCmd {
     /// escolhe as ondas que podem sair juntas, monta o pedido de cada uma,
     /// grava o envio com o pedido exato e marca a spec como em execução na
     /// primeira rodada. Com a entrega que uma onda gravou na spec, primeiro
-    /// assume a volta e grava o veredito da revisão, formata só os arquivos
-    /// da rodada e faz o commit, sem compilar nem rodar prova, e então
-    /// despacha as dependentes liberadas. A compilação, o lint, a suíte e as
-    /// provas ficam para o fechamento.
+    /// assume a volta e grava o veredito da revisão, confere a leitura do
+    /// pedido, o trabalho dado por feito, as importações novas e os restos
+    /// do que a onda tirou, formata só os arquivos da rodada e faz o commit,
+    /// sem compilar nem rodar prova, e então despacha as dependentes
+    /// liberadas. No repositório do Mustard, o programa da branch só é
+    /// recompilado quando há onda a despachar. A compilação, o lint, a suíte
+    /// e as provas ficam para o fechamento.
     /// Nenhuma etapa da rodada publica uma página externa.
     #[command(display_order = 3)]
     Round {

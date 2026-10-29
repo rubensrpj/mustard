@@ -2269,6 +2269,19 @@ fn deliver_the_first_wave_changing(project: &Project, file: &str) {
     project.run(&["write", "delivered", "--spec", SPEC, "--json", &delivered.to_string()]);
 }
 
+/// Uma tarefa do backlog que depende da tarefa da onda 1 e muda `file`: ela
+/// fica pronta com o commit da onda, e a rodada que comita tem onda a
+/// despachar, que é quando a versão em construção compila.
+fn a_task_after_the_first_wave(project: &Project, file: &str) {
+    let log = project.log();
+    let first = log.visible().into_iter().find(|e| e.event_type == "task" && e.wave() == Some(1)).expect("the wave task");
+    project.write(
+        "task",
+        &json!({"agent": "- conferir pelo teste", "title": "Seguir a saudação", "text": "Mudar de novo a saudação no programa.",
+            "files": [{"path": file}], "depends_on": [first.id], "covers": first.ints("covers"), "origin": first.int("origin")}),
+    );
+}
+
 /// As passadas e as leituras da história que uma chamada trouxe, contadas
 /// desde o ponto `(passes, reads)` anterior a ela; a lista de leituras só
 /// vale depois de a leitura que não devia vir ganhar a chance de aparecer. A
@@ -2338,14 +2351,15 @@ fn the_build_call(project: &Project) -> String {
     )
 }
 
-/// A rodada que levou ao commit uma onda que mexeu no programa do Mustard
-/// compila a versão em construção: uma vez, no checkout principal, com os três
-/// programas, na pasta de compilação do projeto, e sem recusar nem avisar
-/// quando a compilação passa.
+/// A rodada que levou ao commit uma onda que mexeu no programa do Mustard, e
+/// tem onda a despachar depois dele, compila a versão em construção: uma vez,
+/// no checkout principal, com os três programas, na pasta de compilação do
+/// projeto, e sem recusar nem avisar quando a compilação passa.
 #[test]
 fn a_round_that_committed_the_program_builds_the_development_version_once_in_the_main_checkout() {
     let project = Project::as_mustard_source();
     deliver_the_first_wave_changing(&project, "apps/rt/src/main.rs");
+    a_task_after_the_first_wave(&project, "apps/rt/src/main.rs");
     assert!(project.cargo_calls().is_empty(), "nada compila antes da rodada: {:?}", project.cargo_calls());
 
     let second = project.run(&["round", "--dispatch", "--spec", SPEC]);
@@ -2388,6 +2402,7 @@ fn a_round_outside_the_mustard_repository_never_builds() {
 fn a_red_development_build_warns_with_the_read_of_its_output_and_the_round_still_commits() {
     let project = Project::as_mustard_source();
     deliver_the_first_wave_changing(&project, "apps/rt/src/main.rs");
+    a_task_after_the_first_wave(&project, "apps/rt/src/main.rs");
     std::fs::write(project.home.join("cargo-falha"), "").expect("the build is red");
 
     let second = project.run(&["round", "--dispatch", "--spec", SPEC]);
@@ -2546,6 +2561,7 @@ fn building_the_development_version_installs_nothing_and_leaves_the_plugin_folde
     let before = snapshot_of(&config);
 
     deliver_the_first_wave_changing(&project, "apps/rt/src/main.rs");
+    a_task_after_the_first_wave(&project, "apps/rt/src/main.rs");
     session_notices(&project);
     wait_for_the_background_build(&project);
     let second = project.run(&["round", "--dispatch", "--spec", SPEC]);

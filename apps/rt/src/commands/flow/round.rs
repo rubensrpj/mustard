@@ -132,9 +132,6 @@
 //! que sai verde sem rodar teste nenhum sai pelo código do critério; a cópia
 //! que não pôde ser criada, cuja onda fica para a rodada seguinte; e a cópia
 //! com mudança fora da entrega, que fica no disco em vez de ser apagada.
-//! Cada onda que mudou arquivo volta com a linha de tamanho — as linhas
-//! postas e tiradas e os arquivos mudados —, que sai na resposta como aviso
-//! `wave-size`, e nunca no commit. O tamanho nunca recusa a onda.
 //!
 //! O painel local acompanha os eventos. Publicação externa só existe sob
 //! pedido explícito, pela porta de publicação.
@@ -194,7 +191,6 @@ mod resend;
 mod running;
 pub(crate) mod review;
 mod sent_tasks;
-mod size_check;
 pub(crate) mod skill_hold;
 mod skill_install;
 mod slots;
@@ -280,20 +276,7 @@ pub struct RoundOpts {
     pub report: Option<String>,
 }
 
-/// Keep dispatches, reviews, warnings and evidence intact; a wave-size warning
-/// becomes a short change line.
-pub(crate) fn projection(report: &Value) -> Value {
-    let mut out = report.clone();
-    if let Some(warnings) = out.get_mut("warnings").and_then(Value::as_array_mut) {
-        let changes: Vec<_> = warnings.iter().filter(|warning| warning["reason"] == "wave-size")
-            .map(|warning| json!({"wave":warning["wave"],"summary":warning["hint"]})).collect();
-        warnings.retain(|warning| warning["reason"] != "wave-size");
-        if !changes.is_empty() { out["changes"] = json!(changes); }
-    }
-    out
-}
-
-/// A resposta curta da rodada: a de [`projection`], com as tarefas seguradas
+/// A resposta curta da rodada: a inteira, com as tarefas seguradas
 /// agrupadas pelo motivo ([`scheduling::grouped`]) — a frase da vaga cheia
 /// sai uma vez, e não uma por tarefa.
 pub(crate) fn short(projected: &Value) -> Value {
@@ -302,22 +285,6 @@ pub(crate) fn short(projected: &Value) -> Value {
         out["held"] = json!(scheduling::grouped(held));
     }
     out
-}
-
-#[cfg(test)]
-mod transport_tests {
-    use super::*;
-    #[test]
-    fn compact_round_keeps_actions_and_turns_size_warnings_into_changes() {
-        let full = json!({"ok":true,"dispatch":[{"wave":1,"read":"read request-1","agent":"mustard-wave"}],
-            "warnings":[{"reason":"proof-missing"},{"reason":"wave-size","wave":1,"hint":"smaller"}],"stopped":[2],"commit":{"sha":"abc"}});
-        let compact = projection(&full);
-        for field in ["dispatch", "stopped", "commit"] {
-            assert_eq!(compact[field], full[field]);
-        }
-        assert_eq!(compact["warnings"], json!([{"reason":"proof-missing"}]));
-        assert_eq!(compact["changes"], json!([{"wave":1,"summary":"smaller"}]));
-    }
 }
 
 /// A resposta `out` da rodada ou do fechamento como a sessão `session` a

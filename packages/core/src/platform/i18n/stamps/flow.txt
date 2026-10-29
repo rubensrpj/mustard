@@ -329,7 +329,6 @@ round.returned_change	3a07bb61cf39581c
 round.review.hint	b4c27413a40aa220
 round.review.required	08a86dceec7d0d8f
 round.review_open	0b4daf86991bee90
-round.size.line	af5d59d7d6ff8b2e
 round.skill_pick_reserve	cc52df6cc054db50
 round.skill_waits_open_tasks	89926f7a746d3330
 round.spend.line	3917a853165829dc

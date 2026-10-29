@@ -808,8 +808,7 @@ pub(super) struct AfterWave {
 /// A conferência depois da onda, antes do commit da rodada, com o disco já
 /// juntado: as importações novas contra o padrão do projeto
 /// ([`super::imports_check`]) e os restos do que as ondas tiraram
-/// ([`super::removed_check`]). O tamanho da onda nunca a recusa. Tudo
-/// passou: nada, nem texto. Só avisos: os avisos, e a rodada segue. A onda
+/// ([`super::removed_check`]). Tudo passou: nada, nem texto. Só avisos: os avisos, e a rodada segue. A onda
 /// com algum achado que recusa fica de fora, e só ela ([`HeldReturn`]): a
 /// recusa dela traz os achados dela, com a rodada de conserto — a volta que a
 /// onda grava de novo conta como uma, até [`super::stops::MAX_FIX_ROUNDS`]. A
@@ -821,10 +820,8 @@ pub(super) struct AfterWave {
 ///
 /// Junta aos avisos cada teste que as ondas criaram sem critério que o cite
 /// ([`crate::commands::flow::common::ownerless`], a mesma leitura do
-/// fechamento) e uma linha de tamanho por onda ([`super::size_check`]),
-/// que é só dado da onda: vai à resposta da rodada, e nunca ao commit. A onda
-/// cujo código já está num commit (`committed`) fica fora da conferência: não
-/// há mais o que segurar dela.
+/// fechamento). A onda cujo código já está num commit (`committed`) fica fora
+/// da conferência: não há mais o que segurar dela.
 ///
 /// A onda com nome tirado citado cuja decisão do Jev ainda não existe fica
 /// fora do commit nesta rodada, sem achado nenhum na resposta, e volta com os
@@ -883,8 +880,6 @@ pub(super) fn ensure_after_wave(
     let files = maps.changed.iter().flat_map(|(_, files)| files.iter().cloned()).collect::<Vec<_>>();
     let ownerless = crate::commands::flow::common::ownerless::hints(log, &maps.base, &maps.after, &files, lang);
     warnings.extend(ownerless.iter().map(|hint| json!({ "reason": crate::commands::flow::common::ownerless::REASON, "hint": hint })));
-    let sizes = super::size_check::lines(&super::size_check::measure(root, &maps.changed), lang);
-    warnings.extend(sizes.iter().filter(|(wave, _)| !out.contains(wave)).map(|(wave, hint)| json!({ "reason": "wave-size", "wave": wave, "hint": hint })));
     (warnings, held, waiting)
 }
 
@@ -1649,7 +1644,7 @@ mod tests {
             .cloned()
             .unwrap_or_default()
             .into_iter()
-            .filter(|w| !matches!(w["reason"].as_str(), Some("usage-missing" | "wave-size")))
+            .filter(|w| w["reason"] != "usage-missing")
             .collect();
         assert_eq!(warned.len(), 2, "{out}");
         assert_eq!(warned[0], json!({"reason":"files-diverged","wave":2,"hint":hint}));

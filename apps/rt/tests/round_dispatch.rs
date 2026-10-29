@@ -3588,6 +3588,29 @@ fn a_task_whose_files_are_all_git_ignored_is_refused_with_its_own_reason() {
     assert_eq!(tasks(&project), before + 1, "{mixed}");
 }
 
+/// A obra do próprio Mustard: a rodada que comita código do programa sem
+/// onda nenhuma a despachar depois não chama o executor de compilação.
+#[test]
+fn a_round_that_commits_the_program_with_nothing_to_dispatch_does_not_build_it() {
+    let (project, _, _, _) = backlog_in(Project::as_mustard_source(), &[&["apps/rt/a.txt"]], &[]);
+    let first = project.run(&["round", "--dispatch", "--spec", SPEC]);
+    assert_eq!(waves_in(&first, "dispatch"), vec![1], "{first}");
+    keep_sent(&project, &[1]);
+    deliver_file_in_copy(&project, 1, "apps/rt/a.txt", "um\n");
+    let view = project.run(&["review-wave", "--wave", "1", "--spec", SPEC]);
+    assert!(view["fingerprint"].is_string(), "{view}");
+    let reviewed = json!({"wave": 1, "note": "O conferente leu o diff e as regras."});
+    let report = format!("{USAGE_OF_WAVE_ONE}\n<REVIEWED>{reviewed}</REVIEWED>");
+
+    let out = project.command(&["run", "round", "--dispatch", "--spec", SPEC, "--report", &report], "");
+    let out: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stdout)));
+
+    assert!(out.get("commit").is_some(), "the round committed the wave 1: {out}");
+    assert!(waves_in(&out, "dispatch").is_empty(), "{out}");
+    let calls = std::fs::read_to_string(project.home.join("cargo.log")).unwrap_or_default();
+    assert!(!calls.contains("build"), "nothing to dispatch, nothing built: {calls}");
+}
+
 /// A obra do próprio Mustard: a rodada que comita código do programa o
 /// recompila e passa o despacho ao programa novo, que responde numa segunda
 /// passada, e as duas respostas saem juntas. A onda 1 volta com duas sobras de
