@@ -521,7 +521,7 @@ fn refresh_plugin<R: ToolRunner>(root: &Path, budget: &Budget<'_, R>) -> PluginR
         .and_then(|dir| std::fs::read_to_string(dir.join(INSTALLED_PLUGINS)).ok())
         .and_then(|raw| refresh_target(&raw));
     // The version reader is bound to the record this refresh ACTED ON — the
-    // same key and the same scope. `installed_harness_version` answers a
+    // same key and the same scope. `installed_plugin` answers a
     // different question ("what is installed anywhere"), so a leftover copy in
     // another scope would be reported as the result of an update that never
     // touched it.
@@ -745,7 +745,7 @@ fn is_plain_id(value: &str) -> bool {
 ///
 /// The registry keys installs by `{plugin}@{marketplace}` and maps each to an
 /// ARRAY — one record per scope. The highest version wins, matching what
-/// `mustard_core::installed_harness_version_from` calls "installed": a
+/// `mustard_core::platform::harness::installed_plugin` calls "installed": a
 /// lower-scoped leftover must not be the one this command updates.
 ///
 /// `None` when the text is not JSON, carries no `plugins` object, or lists no

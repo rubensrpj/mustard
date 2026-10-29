@@ -12,8 +12,8 @@
 //! manda a pergunta à reserva dele ([`crate::shared::jev::reserve`]): a falha
 //! fica sem grupo até o recibo, que decide no lugar do Jev. O grupo
 //! com duas ocorrências e sem tarefa ganha, na spec aberta da segunda, a
-//! tarefa de criar a skill que a evita, com o skill-creator inteiro no bloco
-//! dela; sem spec que rode, a tarefa espera no registro.
+//! tarefa de criar a skill que a evita, com o skill-creator citado pelo
+//! caminho no bloco dela; sem spec que rode, a tarefa espera no registro.
 //!
 //! A skill que a tarefa cria é gravada pelo `run write skill`
 //! ([`prepare_skill`], [`after_skill_written`]): a impressão sai da versão que

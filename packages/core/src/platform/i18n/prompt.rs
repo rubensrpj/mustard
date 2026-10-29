@@ -297,8 +297,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.task.heading", Locale::EnUs) => "Task {n} of {total}: {item}",
         ("prompt.task.skill", Locale::PtBr) => "Skill {name}, de `{path}`",
         ("prompt.task.skill", Locale::EnUs) => "Skill {name}, from `{path}`",
-        // A tarefa que cria a skill de uma falha repetida, antes do
-        // skill-creator inteiro (`io::wave_prompt`).
+        // A tarefa que cria a skill de uma falha repetida, logo abaixo do
+        // skill-creator citado pelo caminho (`io::wave_prompt`).
         ("prompt.task.skill_creator", Locale::PtBr) => {
             "Esta tarefa cria ou atualiza uma skill. Siga o processo do skill-creator, no `SKILL.md` citado acima, sem \
              pedir aprovação a ninguém. Os scripts e os agentes dele ficam em `{folder}`. Use o formato oficial, com nome \

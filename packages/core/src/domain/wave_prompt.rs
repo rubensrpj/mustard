@@ -349,8 +349,8 @@ pub struct Material<'a> {
     pub project_rules: Vec<RulesFile>,
     /// Current source components; they do not satisfy canonical item reads.
     pub prepared: Vec<PreparedSource>,
-    /// As skills inteiras de cada tarefa, pelo código dela, até
-    /// [`TASK_SKILLS_MAX`], na ordem em que o bloco as traz.
+    /// As skills de cada tarefa, citadas pelo caminho, pelo código dela, até
+    /// [`TASK_SKILLS_MAX`], na ordem em que o bloco as cita.
     pub task_skills: BTreeMap<String, Vec<TaskSkill>>,
 }
 

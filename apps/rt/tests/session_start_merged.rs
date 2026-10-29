@@ -1193,13 +1193,11 @@ fn the_clean_removes_the_merged_branch_of_an_open_spec_and_keeps_the_one_just_cu
     assert!(root.join(".claude/spec").join(OPEN_MERGED).join("spec.ndjson").is_file(), "the clean never touches the open spec");
 }
 
-/// O binário com `args`, de dentro de `root`, com a pasta pessoal `home`, a
-/// pasta temporária `temp` e o limite do aviso de disco em `limit` bytes
-/// (`None` deixa a variável fora do ambiente), sem sessão nem spec forçada.
-/// Devolve o que ele imprimiu.
-fn with_a_disk_limit(root: &Path, home: &Path, temp: &Path, limit: Option<&str>, args: &[&str], stdin: &str) -> String {
-    let mut command = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"));
-    command
+/// O binário com `args`, de dentro de `root`, com a pasta pessoal `home` e a
+/// pasta temporária `temp`, sem sessão nem spec forçada. Devolve o que ele
+/// imprimiu.
+fn in_a_temp_folder(root: &Path, home: &Path, temp: &Path, args: &[&str]) -> String {
+    let out = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
         .args(args)
         .current_dir(root)
         .env("HOME", home)
@@ -1209,57 +1207,19 @@ fn with_a_disk_limit(root: &Path, home: &Path, temp: &Path, limit: Option<&str>,
         .env("MUSTARD_COPIES_DIR", test_copies_base())
         .env_remove("MUSTARD_WORKSPACE_ROOT")
         .env_remove("MUSTARD_ACTIVE_SPEC")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    match limit {
-        Some(bytes) => command.env("MUSTARD_SCRATCH_WARN_BYTES", bytes),
-        None => command.env_remove("MUSTARD_SCRATCH_WARN_BYTES"),
-    };
-    let mut child = command.spawn().expect("spawn mustard-rt");
-    child.stdin.take().unwrap().write_all(stdin.as_bytes()).unwrap();
-    let out = child.wait_with_output().expect("wait mustard-rt");
+        .stdin(Stdio::null())
+        .output()
+        .expect("run mustard-rt");
     assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-/// O limite do aviso de disco vem do ambiente do binário: a limpeza mostra,
-/// no que imprime, o limite com que o aviso do início da sessão compara o
-/// total das sobras. Um número de bytes na variável, alto ou baixo, é o
-/// limite; sem a variável, ou com um valor que não é número, vale o padrão de
-/// 5 GiB.
-#[test]
-fn the_clean_shows_the_disk_limit_the_environment_sets() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let root = dir.path().join("projeto");
-    let home = dir.path().join("casa");
-    let temp = dir.path().join("tmp");
-    for folder in [&root, &home, &temp] {
-        std::fs::create_dir_all(folder).unwrap();
-    }
-    let limit_with = |value: Option<&str>| -> Value {
-        let listed: Value = serde_json::from_str(&with_a_disk_limit(&root, &home, &temp, value, &["run", "clean"], "")).expect("the clean answers JSON");
-        listed["warn_bytes"].clone()
-    };
-
-    let default = json!(5u64 * 1024 * 1024 * 1024);
-    assert_eq!(limit_with(Some("1024")), json!(1024), "a low limit is the number in the variable");
-    assert_eq!(limit_with(Some("0")), json!(0), "zero turns the notice on for any leftover");
-    assert_eq!(limit_with(Some("107374182400")), json!(107_374_182_400u64), "a high limit is the number in the variable");
-    assert_eq!(limit_with(None), default, "without the variable the default stays");
-    assert_eq!(limit_with(Some("muito")), default, "a value that is not a number leaves the default");
-}
-
 /// Uma cópia do projeto recém-feita na pasta temporária, com as datas de dois
-/// dias atrás que o `cp -a` traz da origem, não entra no aviso de disco do
-/// início da sessão, nem com o limite do aviso em zero: o binário lê a pasta
-/// temporária e o limite do ambiente, e a varredura data a cópia pela mudança
-/// do inode, que nenhuma cópia preserva. A limpeza, no mesmo ambiente, mostra
-/// que a varredura viu a cópia e a guardou pela idade, e não por não achá-la.
+/// dias atrás que o `cp -a` traz da origem, não é sobra para a limpeza: a
+/// varredura data a cópia pela mudança do inode, que nenhuma cópia preserva,
+/// e a guarda pela idade, e não por não achá-la.
 #[test]
-fn a_copy_just_made_in_the_temporary_folder_brings_no_disk_notice_even_with_a_zero_limit() {
-    use mustard_core::platform::i18n::{Locale, translate};
-
+fn the_clean_keeps_a_copy_just_made_in_the_temporary_folder() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path().join("projeto");
     let home = dir.path().join("casa");
@@ -1285,23 +1245,12 @@ fn a_copy_just_made_in_the_temporary_folder_brings_no_disk_notice_even_with_a_ze
         std::fs::File::open(&path).unwrap().set_modified(two_days_ago).unwrap();
     }
 
-    let payload = json!({"hook_event_name": "SessionStart", "session_id": "s-disco", "source": "startup", "cwd": root.to_string_lossy()});
-    let said = with_a_disk_limit(&root, &home, &temp, Some("0"), &["on", "SessionStart"], &payload.to_string());
-    let context = serde_json::from_str::<Value>(said.trim())
-        .ok()
-        .and_then(|v| v.pointer("/hookSpecificOutput/additionalContext").and_then(Value::as_str).map(str::to_string))
-        .unwrap_or_default();
-    let notice = translate("scratch.residue.notice", Locale::PtBr);
-    let opening = notice.split("{total}").next().unwrap_or_default();
-    assert!(!opening.is_empty(), "{notice}");
-    assert!(!context.contains(opening), "a copy just made is not residue: {context}");
-
-    let listed: Value = serde_json::from_str(&with_a_disk_limit(&root, &home, &temp, Some("0"), &["run", "clean"], "")).expect("the clean answers JSON");
+    let listed: Value = serde_json::from_str(&in_a_temp_folder(&root, &home, &temp, &["run", "clean"])).expect("the clean answers JSON");
     assert_eq!(listed["candidates"], json!([]), "{listed}");
     let copy_path = copy.display().to_string();
     assert!(
         listed["kept"].as_array().into_iter().flatten().any(|kept| kept["path"] == json!(copy_path) && kept["reason"] == json!("younger than 12h")),
         "the scan saw the copy and kept it for its age: {listed}"
     );
-    assert!(copy.join("apps/rt/big.bin").is_file(), "the notice and the list only read");
+    assert!(copy.join("apps/rt/big.bin").is_file(), "the list only reads");
 }

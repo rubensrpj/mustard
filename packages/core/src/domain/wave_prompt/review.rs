@@ -183,8 +183,7 @@ impl Writer<'_> {
     /// obra: as instruções fixas dele, o que olhar — a obra inteira na
     /// primeira revisão; na de volta, só a cadeia de cada conserto feito
     /// desde o veredito que reprovou ou aprovou: a regra, os lugares e a
-    /// prova, sem caçar achado no resto da obra —, os princípios do
-    /// produto que o revisor recebe, como ler cada item e, em
+    /// prova, sem caçar achado no resto da obra —, como ler cada item e, em
     /// seguida, uma linha por item: o que mudou, as ondas com as tarefas, as
     /// emendas gravadas para elas, o que cada uma entregou, os critérios e os
     /// commits que já entraram na branch. Por fim, como revisar numa cópia

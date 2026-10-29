@@ -742,8 +742,8 @@ fn wave_template_puts_in_the_task_the_file_the_change_requires() {
 }
 
 /// A fronteira do molde de onda, nos dois idiomas: tirar o que a própria
-/// mudança deixou sem uso é princípio do produto, que chega pelo pedido da
-/// onda. Num arquivo de outra onda em andamento, o agente não
+/// mudança deixou sem uso é regra do produto, cobrada pelo teste dela. Num
+/// arquivo de outra onda em andamento, o agente não
 /// edita e deixa a sobra em `leftovers`, o campo da entrega que a rodada
 /// grava, com o título, o detalhe e os arquivos a mudar: toda sobra vai ao backlog, e o
 /// molde não pede mais que o agente diga se ela quebra algo ou é cosmética. A
@@ -1234,9 +1234,9 @@ fn only_the_final_review_runs_checks() {
 
 /// No critério, o revisor confere lendo o diff e o recibo vigente, sem cortar
 /// o caminho do usuário nem rodar nada para ver o vermelho; que o teste da
-/// regra cai antes e passa depois é princípio do produto, que chega pelos
-/// pedidos de revisão. O molde não manda mais cortar em parte alguma, nos
-/// dois idiomas.
+/// regra cai antes e passa depois é regra do produto, cobrada pelo
+/// fechamento. O molde não manda mais cortar em parte alguma, nos dois
+/// idiomas.
 #[test]
 fn the_reviewer_checks_a_criterion_by_reading_the_diff_and_receipt() {
     for (lang, criterion, said, banned) in [

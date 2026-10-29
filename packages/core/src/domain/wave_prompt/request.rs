@@ -184,8 +184,7 @@ impl Writer<'_> {
     /// passos numerados — ler o que obedecer, fazer as tarefas uma por vez e
     /// gravar a entrega. As tarefas vêm só pelo código e pelo título, na
     /// ordem, com a primeira marcada; o bloco inteiro dela vem logo depois
-    /// dos passos, e depois dele os princípios do produto que o agente de onda
-    /// recebe. A suíte inteira do projeto não é passo do agente: quem a roda,
+    /// dos passos. A suíte inteira do projeto não é passo do agente: quem a roda,
     /// com o lint, é a rodada, antes do commit.
     fn to_do(&self, out: &mut String, listing: &Listing) {
         let _ = writeln!(out, "## {}\n", self.t("prompt.part.do"));

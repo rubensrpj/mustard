@@ -20,8 +20,8 @@
 //!
 //! A atualização: depois do commit de cada onda, a skill cujo arquivo citado
 //! mudou vai ao Jev com a mudança, e o sim ou a dúvida viram a tarefa de
-//! atualizá-la, com o skill-creator inteiro no bloco, como a de criar; o
-//! arquivo citado que sumiu vira a tarefa sem pergunta. A onda que recebeu a
+//! atualizá-la, com o skill-creator citado pelo caminho no bloco, como a de
+//! criar; o arquivo citado que sumiu vira a tarefa sem pergunta. A onda que recebeu a
 //! skill e foi reprovada pela mesma falha que a motivou também. A avaliação
 //! sai uma vez por obra: a mudança que chega com ela ainda à espera entra numa
 //! versão nova dela, somada às que já tinha, e a fila da rodada a segura

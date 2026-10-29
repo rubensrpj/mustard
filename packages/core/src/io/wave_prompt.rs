@@ -1111,7 +1111,7 @@ type Chosen = [(String, Option<(String, PathBuf)>)];
 
 /// As skills de cada tarefa, como a montagem as escolhe ([`task_skills`]).
 struct TaskSkills {
-    /// As skills inteiras de cada tarefa, pelo código dela.
+    /// As skills de cada tarefa, citadas pelo caminho, pelo código dela.
     blocks: BTreeMap<String, Vec<TaskSkill>>,
     /// As tarefas com mais candidatas do que cabem, ainda sem escolha.
     ties: Vec<SkillTie>,
@@ -1148,15 +1148,14 @@ fn skill_option(name: &str, text: &str, file: &Path) -> SkillOption {
     }
 }
 
-/// As skills inteiras de cada tarefa, pelo código dela: a que a tarefa nomeia
-/// primeiro, sempre, depois as que casam com os arquivos dela, sem repetir,
+/// As skills de cada tarefa, citadas pelo caminho, pelo código dela: a que
+/// a tarefa nomeia primeiro, sempre, depois as que casam com os arquivos dela, sem repetir,
 /// até [`wave_prompt::TASK_SKILLS_MAX`]. Só entra a skill que a conferência
 /// da onda aceitou (`passed`), com o texto que a escolha da onda leu
 /// (`chosen`). Quando sobram mais candidatas do que cabem, entram as que a
 /// escolha deu para a tarefa em `picks`, na ordem dela; sem escolha, as
 /// primeiras, e a tarefa volta entre as que esperam escolha. O skill-creator
-/// (`creator`, o arquivo dele e a instrução) vem com a instrução antes do
-/// corpo.
+/// (`creator`, o arquivo dele e a instrução) vem citado com a instrução.
 fn task_skills(
     root: &Path,
     log: &SpecLog,
@@ -1843,10 +1842,9 @@ mod tests {
         assert!(built.text.contains(block.as_str()), "the request carries the first block: {}", built.text);
     }
 
-    /// The task that creates a skill cites the skill-creator procedure where
-    /// the machine has it, with the folder of its scripts and the instruction
-    /// to follow it without asking anyone; the procedure's body stays in its
-    /// file.
+    /// A tarefa que cria uma skill cita o processo do skill-creator onde a
+    /// máquina o tem, com a pasta dos scripts dele e a ordem de segui-lo sem
+    /// pedir aprovação a ninguém; o corpo do processo fica no arquivo dele.
     #[test]
     fn a_skill_creation_task_block_cites_the_skill_creator_and_brings_the_instruction() {
         let dir = tempdir().unwrap();

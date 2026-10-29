@@ -204,9 +204,8 @@ mod tests {
         assert_eq!(model(0, LOW_CONFIDENCE), "sonnet", "the floor itself is not low");
     }
 
-    /// The wave takes the largest model of its tasks; a task without a grade
-    /// counts as Sonnet, never as the configured model, so it does not go to
-    /// Opus.
+    /// A onda leva o maior modelo das tarefas dela; a tarefa sem nota conta
+    /// como Sonnet, nunca como o modelo da configuração, e não vai ao Opus.
     #[test]
     fn the_wave_takes_the_largest_model_of_its_tasks() {
         let graded = log(&[task(1, Some((0, 0.9))), task(1, Some((3, 0.9))), task(2, Some((0, 0.9))), task(2, Some((0, 0.95)))]);

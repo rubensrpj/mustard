@@ -100,7 +100,7 @@ fn a_commit_changing_a_cited_file_with_a_yes_or_a_doubt_creates_the_update_task_
         let tasks = update_tasks(root);
         assert_eq!(tasks.len(), 1, "chance {chance}: {tasks:?}");
         assert_eq!(tasks[0].str_field("title"), Some("Atualizar a skill falta-teste"));
-        assert_eq!(tasks[0].str_field("skill"), Some("skill-creator"), "the block carries the whole skill-creator");
+        assert_eq!(tasks[0].str_field("skill"), Some("skill-creator"), "the block cites the skill-creator by its path");
         assert!(tasks[0].str_field("text").unwrap().contains("`src/a.rs`"), "{:?}", tasks[0].fields);
         let agent = tasks[0].str_field("agent").unwrap();
         assert!(agent.contains("```diff") && agent.contains("falta-teste/SKILL.md"), "{agent}");

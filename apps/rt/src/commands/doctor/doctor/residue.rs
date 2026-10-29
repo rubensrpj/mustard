@@ -185,7 +185,6 @@ mod tests {
             temp_root,
             shared_target: Some(shared.clone()),
             cap_bytes: 1024 * 1024,
-            warn_bytes: crate::commands::maint::scratch_gc::DEFAULT_WARN_BYTES,
             current_session: "sess-current".to_string(),
             current_dir: None,
             home: None,
