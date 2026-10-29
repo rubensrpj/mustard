@@ -294,7 +294,7 @@ fn project_execution(root: &Path) -> Execution {
         local_files: local_files(&config),
         root: shown(root),
         language: config.language(),
-        model: config.agent_model().to_string(),
+        model: config.wave_agent_model().to_string(),
         // O esforço é sempre o padrão, em todo agente e modelo: o lançamento
         // o impõe, e o pedido diz o mesmo.
         effort: crate::domain::config::DEFAULT_AGENT_EFFORT.to_string(),
@@ -1265,7 +1265,7 @@ fn execution(context: &Context, wave: u64) -> Execution {
     else if execution.by_difficulty {
         // O modelo da onda sai da dificuldade das tarefas dela, e sobe um
         // degrau quando ela volta reprovada.
-        let chosen = crate::domain::agent_model::wave_model(log, wave, &execution.model);
+        let chosen = crate::domain::agent_model::wave_model(log, wave);
         execution.model = chosen.model;
         execution.escalated_from = chosen.escalated_from;
     }
@@ -1674,6 +1674,8 @@ mod tests {
         assert!(first.text.contains("Modelo desta onda: sonnet. Esforço: xhigh."), "{}", first.text);
         let codex = built(&log_of(&plan), &Flight { host: Some("codex".into()), ..Flight::default() });
         assert_eq!((codex.model.as_str(), codex.effort.as_str()), ("inherit", "inherit"));
+        let ungraded = [plan[0].clone(), ("task", json!({"wave": 1, "text": "Somar", "files": [{"path": "apps/rt/src/a.rs"}]}))];
+        assert_eq!(built(&log_of(&ungraded), &claude).model, "sonnet", "a task without a grade goes to Sonnet, not to the configured Opus");
 
         let mut rejected = plan.to_vec();
         rejected.push(("send", json!({"wave": 1, "role": "wave", "text": "pedido", "lines": 1, "chars": 6, "mustard": "0", "model": "sonnet"})));

@@ -470,10 +470,11 @@ fn launch_settings(verdict: Verdict, input: &HookInput, ctx: &Ctx) -> Verdict {
 /// O lançamento do agente de onda ou do revisor com o modelo que o Mustard
 /// escolheu para ele — o da onda, o do último envio dela, que sai da
 /// dificuldade das tarefas e sobe na reprovação; o do revisor final, o que a
-/// chamada pede e, sem pedido, o de `agents.review`; o do revisor de uma
-/// onda, o de `agents.wave_review`; o do texto que o orquestrador escreve
-/// para o revisor, o de `agents.review`; o da onda sem envio legível, o de
-/// `agents` — e sempre com o esforço `xhigh`, no lugar do que a chamada
+/// chamada pede e, sem pedido, o de `agents.review` ou o Opus; o do revisor
+/// de uma onda, o de `agents.wave_review`; o do texto que o orquestrador
+/// escreve para o revisor, o mesmo do revisor final; o da onda sem envio
+/// legível, o Sonnet, ou o de `agents.model` com a escolha pela dificuldade
+/// desligada — e sempre com o esforço `xhigh`, no lugar do que a chamada
 /// pede: o `model` da chamada vence o cabeçalho do agente, então o escolhido
 /// vai nela. O modelo que o usuário pediu para o revisor final fica: só a
 /// onda segue o da rodada. O nome inteiro do modelo vai pelo apelido que
@@ -495,7 +496,7 @@ fn launch_settings_with(verdict: Verdict, input: &HookInput, ctx: &Ctx, effort_e
         return analysis_effort(verdict, input);
     }
     let configured = match agent {
-        "mustard-wave" => ctx.config.agent_settings().model,
+        "mustard-wave" => ctx.config.wave_agent_model(),
         "mustard-review" if crate::commands::flow::round::is_wave_review_dispatch(dispatch_prompt(input)) => ctx.config.wave_review_settings().model,
         "mustard-review" => ctx.config.review_settings().model,
         _ => return verdict,
@@ -795,7 +796,8 @@ mod tests {
     }
 
     /// O lançamento do agente de onda sem envio, ou do revisor, sai com o
-    /// modelo que o `mustard.json` declara para ele e o esforço `xhigh`, com
+    /// modelo que o `mustard.json` declara para ele — o da onda só com a
+    /// escolha pela dificuldade desligada — e o esforço `xhigh`, com
     /// os outros campos como vieram. O nome inteiro do modelo vira o apelido
     /// que ele contém; sem apelido, o modelo fica como veio e o aviso segue.
     /// Outro agente e outro hospedeiro passam como vieram.
@@ -803,7 +805,7 @@ mod tests {
     fn a_launch_goes_out_with_the_model_and_effort_the_config_declares() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        let agents = json!({"model": "claude-opus-5-5", "effort": "xhigh", "review": {"model": "sonnet", "effort": "max"}});
+        let agents = json!({"model": "claude-opus-5-5", "effort": "xhigh", "by_difficulty": false, "review": {"model": "sonnet", "effort": "max"}});
         std::fs::write(root.join("mustard.json"), json!({ "agents": agents }).to_string()).unwrap();
         let launch = |agent: &str, asked: Value, host: Option<&str>| {
             let mut input = task_input(agent, "Confira a obra.");
@@ -838,7 +840,12 @@ mod tests {
             Verdict::Allow => {}
             other => panic!("another host keeps the model, got {other:?}"),
         }
-        std::fs::write(root.join("mustard.json"), json!({"agents": {"model": "custom-model-1", "effort": "high"}}).to_string()).unwrap();
+        // Com o modelo pela dificuldade, a onda sem envio vai ao Sonnet, por
+        // mais que `agents.model` diga outro.
+        std::fs::write(root.join("mustard.json"), json!({"agents": {"model": "claude-opus-5-5"}}).to_string()).unwrap();
+        let (graded, _) = sent(launch("mustard-wave", json!({"model": "opus"}), None));
+        assert_eq!(graded["model"].as_str(), Some("sonnet"), "{graded}");
+        std::fs::write(root.join("mustard.json"), json!({"agents": {"model": "custom-model-1", "effort": "high", "by_difficulty": false, "review": {"model": "custom-model-1"}}}).to_string()).unwrap();
         // O modelo configurado não tem apelido conhecido, então o pedido da
         // chamada passava como veio — e uma onda pedida no modelo pequeno
         // saía nele. O usuário decidiu em 20/10/2026 que código nunca vai no

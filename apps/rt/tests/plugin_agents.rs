@@ -467,7 +467,7 @@ fn the_agents_state_that_the_marked_line_is_mandatory_and_the_ledger_is_not_thei
 }
 
 /// Os dois moldes — onda e revisão — declaram o modelo e o esforço padrão da
-/// configuração, nos dois idiomas: cada agente sabe o próprio modelo e o
+/// configuração, nos dois idiomas, e o revisor final fica no Opus: cada agente sabe o próprio modelo e o
 /// próprio esforço, sem herdar o da sessão em silêncio. O modelo e o esforço
 /// do molde são os mesmos padrões que a instalação escreve no
 /// `mustard.json`, para o molde copiado sem instalação valer o mesmo. Teto de
@@ -476,10 +476,9 @@ fn the_agents_state_that_the_marked_line_is_mandatory_and_the_ledger_is_not_thei
 /// tamanho em bytes — o que prende o texto é o que ele diz.
 #[test]
 fn each_agent_template_declares_its_own_model_and_effort() {
-    let default = mustard_core::domain::config::DEFAULT_AGENT_MODEL;
     let effort = mustard_core::domain::config::DEFAULT_AGENT_EFFORT;
     for lang in ["pt-BR", "en-US"] {
-        for name in ["wave", "review"] {
+        for (name, default) in [("wave", mustard_core::domain::config::DEFAULT_AGENT_MODEL), ("review", mustard_core::domain::config::FINAL_REVIEW_MODEL)] {
             let text = template(lang, name);
             assert!(
                 text.contains(&format!("\nmodel: {default}\n")),
@@ -490,7 +489,6 @@ fn each_agent_template_declares_its_own_model_and_effort() {
                 "the {lang} `{name}` agent does not declare the default effort {effort}:\n{text}",
             );
             assert!(!text.contains("model: inherit"), "the {lang} `{name}` agent still inherits the session's model");
-            assert!(!text.contains("model: opus"), "the {lang} `{name}` agent still fixes the opus model:\n{text}");
         }
 
         let wave = template(lang, "wave");
@@ -499,9 +497,10 @@ fn each_agent_template_declares_its_own_model_and_effort() {
 }
 
 /// O modelo dos agentes vem do `mustard.json` do projeto, pelo instalador de
-/// verdade: sem o campo, os dois agentes saem no padrão e o arquivo ganha o
-/// campo; com `opus` no arquivo, os dois saem em opus e o campo fica onde
-/// estava; trocada a linha, a instalação seguinte troca os dois agentes.
+/// verdade: sem o campo, o agente de onda sai no padrão, o revisor final no
+/// Opus, e o arquivo ganha o campo; com `opus` no arquivo, os dois saem em
+/// opus e o campo fica onde estava; trocada a linha, a instalação seguinte
+/// troca o agente de onda.
 #[test]
 fn the_installed_agents_use_the_model_of_the_project_config() {
     let model_of = |root: &Path, name: &str| -> String {
@@ -516,8 +515,8 @@ fn the_installed_agents_use_the_model_of_the_project_config() {
         let dir = tempfile::tempdir().unwrap();
         let (root, home) = installed(dir.path(), &format!(r#"{{"version":"1.0.0","language":{{"text":"{lang}"}}}}"#));
         assert_eq!(declared(&root)["model"], json!("sonnet"), "the install did not write the default model");
-        for name in ["wave", "review"] {
-            assert_eq!(model_of(&root, name), "sonnet", "the {lang} `{name}` agent");
+        for (name, default) in [("wave", "sonnet"), ("review", "opus")] {
+            assert_eq!(model_of(&root, name), default, "the {lang} `{name}` agent");
         }
 
         std::fs::write(

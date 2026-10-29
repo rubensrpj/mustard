@@ -482,8 +482,8 @@ mod tests {
     }
 
     /// A instalação nova escreve o modelo padrão em `agents.model` e no
-    /// cabeçalho dos dois agentes; com um modelo já declarado, ela o mantém
-    /// no arquivo e o escreve nos agentes; e a linha do arquivo, trocada, muda
+    /// cabeçalho do agente de onda, e o Opus no do revisor final; com um
+    /// modelo já declarado, ela o mantém no arquivo e o escreve no de onda; e a linha do arquivo, trocada, muda
     /// os dois agentes na instalação seguinte. Um modelo que um cabeçalho não
     /// aceita fica onde está, e os agentes recebem o padrão.
     #[test]
@@ -492,7 +492,7 @@ mod tests {
         let root = dir.path();
         upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
         assert_eq!(written_config(root)["agents"]["model"], json!("sonnet"));
-        assert_eq!(installed_agent_models(root), ["sonnet", "sonnet"]);
+        assert_eq!(installed_agent_models(root), ["sonnet", "opus"]);
 
         std_fs::write(root.join("mustard.json"), r#"{"version":"9.9.9","acronyms":["PI"],"agents":{"model":"opus"}}"#).unwrap();
         upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
@@ -503,11 +503,11 @@ mod tests {
 
         std_fs::write(root.join("mustard.json"), r#"{"version":"9.9.9","agents":{"model":"claude-sonnet-5-5"}}"#).unwrap();
         upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
-        assert_eq!(installed_agent_models(root), ["claude-sonnet-5-5", "claude-sonnet-5-5"]);
+        assert_eq!(installed_agent_models(root), ["claude-sonnet-5-5", "opus"], "the final reviewer does not inherit `agents.model`");
 
         std_fs::write(root.join("mustard.json"), r#"{"version":"9.9.9","agents":{"model":"opus\neffort: low"}}"#).unwrap();
         upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
-        assert_eq!(installed_agent_models(root), ["sonnet", "sonnet"]);
+        assert_eq!(installed_agent_models(root), ["sonnet", "opus"]);
         let text = std_fs::read_to_string(root.join(".claude/agents/mustard/wave.md")).unwrap();
         assert!(!text.contains("effort: low"), "a model with a line break wrote another key: {text}");
         assert_eq!(written_config(root)["agents"]["model"], json!("opus\neffort: low"), "what the person wrote stays");
@@ -534,14 +534,14 @@ mod tests {
             let config = written_config(root);
             assert_eq!(config["agents"], json!({"model": "sonnet", "effort": effort}), "the declared effort is kept");
             assert_eq!(config["acronyms"], json!(["PI"]));
-            assert_eq!(installed_agent_models(root), ["sonnet", "sonnet"], "the model line was touched");
+            assert_eq!(installed_agent_models(root), ["sonnet", "opus"], "the model line was touched");
         }
 
         for invalid in ["ultra", "", "high\nmodel: opus", "high max"] {
             std_fs::write(root.join("mustard.json"), serde_json::to_string(&json!({"version": "9.9.9", "agents": {"effort": invalid}})).unwrap()).unwrap();
             upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
             assert_eq!(installed_agent_efforts(root), ["xhigh", "xhigh"], "`{invalid}` reached the agents");
-            assert_eq!(installed_agent_models(root), ["sonnet", "sonnet"], "`{invalid}` wrote the model line");
+            assert_eq!(installed_agent_models(root), ["sonnet", "opus"], "`{invalid}` wrote the model line");
             assert_eq!(written_config(root)["agents"]["effort"], json!(invalid), "what the person wrote stays");
             let text = std_fs::read_to_string(root.join(".claude/agents/mustard/review.md")).unwrap();
             let header = text.split("\n---\n").next().unwrap();
@@ -590,7 +590,7 @@ mod tests {
         assert_eq!(config["agents"], json!({"model": "sonnet", "effort": "xhigh", "note": "mine"}));
         assert_eq!(config["acronyms"], json!(["PI"]));
         assert_eq!(config["language"], json!({"text": "en-US"}));
-        assert_eq!(installed_agent_models(root), ["sonnet", "sonnet"]);
+        assert_eq!(installed_agent_models(root), ["sonnet", "opus"]);
         assert_eq!(installed_agent_efforts(root), ["xhigh", "xhigh"]);
 
         // A configuração da onda anterior, com o modelo e sem o esforço,

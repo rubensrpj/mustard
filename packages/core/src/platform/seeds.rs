@@ -297,7 +297,7 @@ pub const CLAUDE_GITIGNORE: &str = include_str!("../../templates/.gitignore");
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::config::{DEFAULT_AGENT_EFFORT, DEFAULT_AGENT_MODEL};
+    use crate::domain::config::{DEFAULT_AGENT_EFFORT, DEFAULT_AGENT_MODEL, FINAL_REVIEW_MODEL, REVIEW_AGENT};
 
     /// Os moldes embutidos não estão vazios e cada um abre como deve: um
     /// caminho de `include_str!` quebrado falha a compilação, mas um molde
@@ -659,28 +659,29 @@ mod tests {
 
     /// A troca mexe só nas linhas `model:` e `effort:` do cabeçalho de cada
     /// agente: o resto do cabeçalho e o corpo inteiro passam como estão, e o
-    /// modelo e o esforço do molde são os padrões da configuração, então
-    /// pedir os padrões devolve o molde igual.
+    /// modelo e o esforço do molde são os padrões da configuração — o do
+    /// revisor final é o Opus —, então pedir os padrões devolve o molde igual.
     #[test]
     fn the_agent_settings_replace_only_the_model_and_effort_lines_of_the_header() {
-        let custom = AgentSettings { model: "opus", effort: "medium" };
+        let custom = AgentSettings { model: "haiku", effort: "medium" };
         for text in [Locale::PtBr, Locale::EnUs] {
             for (name, body) in agent_texts(text) {
-                for (key, default) in [("model", DEFAULT_AGENT_MODEL), ("effort", DEFAULT_AGENT_EFFORT)] {
+                let model = if name == REVIEW_AGENT { FINAL_REVIEW_MODEL } else { DEFAULT_AGENT_MODEL };
+                for (key, default) in [("model", model), ("effort", DEFAULT_AGENT_EFFORT)] {
                     assert!(
                         body.contains(&format!("\n{key}: {default}\n")),
                         "the {text} `{name}` mold does not carry the default {key}",
                     );
                 }
                 assert_eq!(
-                    with_agent_settings(body, AgentSettings::default()),
+                    with_agent_settings(body, AgentSettings { model, effort: DEFAULT_AGENT_EFFORT }),
                     body,
                     "the default settings must give the mold back untouched",
                 );
 
                 let changed = with_agent_settings(body, custom);
                 let expected = body
-                    .replacen(&format!("\nmodel: {DEFAULT_AGENT_MODEL}\n"), "\nmodel: opus\n", 1)
+                    .replacen(&format!("\nmodel: {model}\n"), "\nmodel: haiku\n", 1)
                     .replacen(&format!("\neffort: {DEFAULT_AGENT_EFFORT}\n"), "\neffort: medium\n", 1);
                 assert_eq!(changed, expected, "the {text} `{name}` agent changed more than the two lines");
                 assert_eq!(changed.matches("model:").count(), body.matches("model:").count(), "{text} {name}");

@@ -1106,14 +1106,14 @@ fn tasks_of_one_kind_share_a_wave_without_a_file_in_common_and_the_call_is_recor
     assert_eq!((call["requests"].clone(), call["candidates"].clone(), call["returned"].clone()), (json!(3), json!(3), json!(3)));
 }
 
-/// A onda sem nota de dificuldade sai no modelo do projeto, com o Jev ligado
-/// ou não, e ainda que o `mustard.json` traga a chave `light_model` de antes:
-/// o envio grava o modelo do projeto e o esforço `xhigh`, o pedido da onda diz
+/// A onda sem nota de dificuldade sai no Sonnet, com o Jev ligado ou não,
+/// mesmo com `agents.model` em opus e a chave `light_model` de antes no
+/// `mustard.json`: o envio grava o Sonnet e o esforço `xhigh`, o pedido da onda diz
 /// os dois, a resposta do despacho traz o modelo de cada onda, o texto do
 /// próximo passo manda lançar o agente com ele, e o Jev não pergunta mais se a
 /// tarefa é mecânica.
 #[test]
-fn a_wave_without_a_grade_goes_out_on_the_project_model_and_the_dispatch_names_it() {
+fn a_wave_without_a_grade_goes_out_on_sonnet_and_the_dispatch_names_it() {
     let jev = FakeJev::judging(
         |position| {
             if position == 0 { ("defect", 0.9) } else { ("feature", 0.9) }
@@ -1132,13 +1132,13 @@ fn a_wave_without_a_grade_goes_out_on_the_project_model_and_the_dispatch_names_i
     let log = project.log();
     for wave in [1, 2] {
         let send = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(wave)).expect("the send");
-        assert_eq!((send.str_field("model"), send.str_field("effort")), (Some("opus"), Some("xhigh")), "a onda {wave} vai no modelo do projeto: {out}");
+        assert_eq!((send.str_field("model"), send.str_field("effort")), (Some("sonnet"), Some("xhigh")), "a onda {wave} vai no Sonnet: {out}");
         let prompt = send.str_field("text").expect("the request");
-        assert!(prompt.contains("Modelo desta onda: opus. Esforço: xhigh."), "o pedido diz o modelo do projeto: {prompt}");
+        assert!(prompt.contains("Modelo desta onda: sonnet. Esforço: xhigh."), "o pedido diz o modelo da onda: {prompt}");
     }
     let dispatch = out["dispatch"].as_array().expect("the dispatch");
     assert_eq!(dispatch.len(), 2, "{out}");
-    assert!(dispatch.iter().all(|sent| sent["model"] == json!("opus")), "o despacho traz o modelo de cada onda: {out}");
+    assert!(dispatch.iter().all(|sent| sent["model"] == json!("sonnet")), "o despacho traz o modelo de cada onda: {out}");
     let next = out["next"].as_str().expect("the next step");
     assert!(next.contains("`model`"), "o próximo passo manda lançar com o modelo da entrada: {next}");
     for asked in jev.requests() {

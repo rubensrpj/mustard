@@ -496,6 +496,10 @@ impl AgentsConfig {
 /// A chave de `agents` com o modelo e o esforço do revisor final.
 pub const REVIEW_AGENT: &str = "review";
 
+/// O modelo do revisor final quando `agents.review.model` não declara um que
+/// valha: o Opus, sem herdar o de `agents.model`.
+pub const FINAL_REVIEW_MODEL: &str = "opus";
+
 /// A chave de `agents` com o modelo do revisor de cada onda e o interruptor
 /// dele (`enabled`).
 pub const WAVE_REVIEW_AGENT: &str = "wave_review";
@@ -1159,14 +1163,22 @@ impl ProjectConfig {
         AgentSettings { model: self.agent_model(), effort: self.agent_effort() }
     }
 
+    /// O modelo do agente de onda sem envio que o diga: o Sonnet quando o
+    /// modelo sai da dificuldade das tarefas ([`Self::by_difficulty`]); o de
+    /// `agents.model` só com essa escolha desligada.
+    #[must_use]
+    pub fn wave_agent_model(&self) -> &str {
+        if self.by_difficulty() { DEFAULT_AGENT_MODEL } else { self.agent_model() }
+    }
+
     /// O modelo e o esforço do revisor final: os de `agents.review`, cada um
-    /// conferido como os dos agentes; o que falta ou não vale segue o dos
-    /// agentes de onda ([`Self::agent_settings`]).
+    /// conferido como os dos agentes; o modelo que falta ou não vale é o
+    /// [`FINAL_REVIEW_MODEL`], e o esforço segue o dos agentes de onda.
     #[must_use]
     pub fn review_settings(&self) -> AgentSettings<'_> {
         let review = self.agents.extra.get(REVIEW_AGENT);
         let field = |name: &str| review.and_then(|review| review.get(name)).and_then(Value::as_str).map(str::trim);
-        let model = field("model").filter(|model| is_model_name(model)).unwrap_or_else(|| self.agent_model());
+        let model = field("model").filter(|model| is_model_name(model)).unwrap_or(FINAL_REVIEW_MODEL);
         let effort = field("effort").and_then(|effort| AGENT_EFFORTS.into_iter().find(|known| known.eq_ignore_ascii_case(effort))).unwrap_or_else(|| self.agent_effort());
         AgentSettings { model, effort }
     }
@@ -2018,6 +2030,28 @@ mod tests {
         for (agents, on) in [("{}", true), (r#"{"by_difficulty":true}"#, true), (r#"{"by_difficulty":false}"#, false), (r#"{"by_difficulty":"no"}"#, true)] {
             std::fs::write(&path, format!(r#"{{"agents":{agents}}}"#)).unwrap();
             assert_eq!(ProjectConfig::load(dir.path()).by_difficulty(), on, "{agents}");
+        }
+    }
+
+    /// `agents.model` only reaches the wave agent with the choice by
+    /// difficulty turned off; on, the wave without a grade goes to Sonnet.
+    /// The final reviewer runs on Opus unless `agents.review.model` says
+    /// otherwise, never inheriting `agents.model`.
+    #[test]
+    fn the_configured_model_reaches_the_wave_only_without_difficulty_and_the_final_reviewer_is_opus() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("mustard.json");
+        for (agents, wave, review) in [
+            (r#"{"model":"opus"}"#, "sonnet", "opus"),
+            (r#"{"model":"haiku"}"#, "sonnet", "opus"),
+            (r#"{"model":"opus","by_difficulty":false}"#, "opus", "opus"),
+            (r#"{"model":"sonnet","review":{"model":"sonnet"}}"#, "sonnet", "sonnet"),
+            ("{}", "sonnet", "opus"),
+        ] {
+            std::fs::write(&path, format!(r#"{{"agents":{agents}}}"#)).unwrap();
+            let cfg = ProjectConfig::load(dir.path());
+            assert_eq!(cfg.wave_agent_model(), wave, "{agents}");
+            assert_eq!(cfg.review_settings().model, review, "{agents}");
         }
     }
 

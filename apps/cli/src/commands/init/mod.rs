@@ -734,7 +734,7 @@ mod tests {
 
     /// O `init --yes` numa pasta vazia escreve `agents.model` e `agents.effort`
     /// com os padrões no `mustard.json` e os mesmos valores no cabeçalho dos
-    /// dois agentes. Com `opus` e `medium` no arquivo, uma instalação por cima
+    /// dois agentes, salvo o revisor final, que fica no Opus. Com `opus` e `medium` no arquivo, uma instalação por cima
     /// escreve os dois nos agentes e mantém os campos; um esforço fora da
     /// lista do Claude Code fica no arquivo e os agentes recebem o padrão; um
     /// `mustard.json` sem os campos os ganha, sem perder o que já tinha.
@@ -757,7 +757,7 @@ mod tests {
         fs::create_dir_all(&project).unwrap();
         init(&project, &InitOptions { yes: true, ..InitOptions::default() }).unwrap();
         assert_eq!(agents(&project), serde_json::json!({"model": "sonnet", "effort": "xhigh"}));
-        assert_eq!(carried(&project, "model"), both("sonnet"));
+        assert_eq!(carried(&project, "model"), ("sonnet".into(), "opus".into()), "the final reviewer defaults to Opus");
         assert_eq!(carried(&project, "effort"), both("xhigh"));
 
         let mut config = json_object(&project.join("mustard.json"));
@@ -787,7 +787,7 @@ mod tests {
         init(&project, &InitOptions { yes: true, ..InitOptions::default() }).unwrap();
         assert_eq!(agents(&project), serde_json::json!({"model": "sonnet", "effort": "xhigh"}), "the missing fields came back");
         assert_eq!(json_object(&project.join("mustard.json"))["acronyms"], serde_json::json!(["PI"]));
-        assert_eq!(carried(&project, "model"), both("sonnet"));
+        assert_eq!(carried(&project, "model"), ("sonnet".into(), "opus".into()), "the final reviewer defaults to Opus");
         assert_eq!(carried(&project, "effort"), both("xhigh"));
     }
 

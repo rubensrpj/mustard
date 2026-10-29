@@ -1935,7 +1935,7 @@ mod tests {
         let sent = sent.last().unwrap_or_else(|| panic!("nenhum envio gravado"));
         assert_eq!(sent.str_field("role"), Some("review"), "{sent:?}");
         assert_eq!(sent.str_field("text"), Some(prompt.as_str()), "o texto gravado é o pedido inteiro que voltou: {sent:?}");
-        assert_eq!(sent.str_field("model"), Some("sonnet"), "o modelo pedido vai junto, o padrão da instalação: {sent:?}");
+        assert_eq!(sent.str_field("model"), Some("opus"), "o modelo pedido vai junto, o Opus do revisor final: {sent:?}");
         assert_eq!(sent.str_field("effort"), Some("xhigh"), "o esforço pedido vai junto, o padrão da instalação: {sent:?}");
         assert!(sent.wave().is_none(), "a revisão final não é dona de onda nenhuma: {sent:?}");
 

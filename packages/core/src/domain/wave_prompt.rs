@@ -247,7 +247,8 @@ pub struct Execution {
     /// Os idiomas que o projeto declara, lidos do `mustard.json`: o pedido
     /// abre com eles ([`language_line`]).
     pub language: Language,
-    /// O modelo dos agentes que o `mustard.json` declara em `agents.model`;
+    /// O modelo da onda: o Sonnet, ou o de `agents.model` com a escolha pela
+    /// dificuldade desligada ([`crate::ProjectConfig::wave_agent_model`]);
     /// vazio, o padrão da instalação ([`Execution::requested_model`]).
     pub model: String,
     /// O esforço do agente, sempre o padrão da instalação (`xhigh`), que o

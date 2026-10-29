@@ -2,7 +2,7 @@
 name: mustard-review
 description: Revisa ondas e specs, sem corrigir.
 tools: Read, Grep, Glob, Bash
-model: sonnet
+model: opus
 effort: xhigh
 omitClaudeMd: true
 ---

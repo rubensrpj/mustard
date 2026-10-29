@@ -167,8 +167,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // O pedido de uma onda: o texto que o agente dela recebe.
         ("prompt.title", Locale::PtBr) => "{spec} — onda {n}",
         ("prompt.title", Locale::EnUs) => "{spec} — wave {n}",
-        // O modelo e o esforço em que a onda roda — o que o `mustard.json`
-        // declara em `agents.model` e `agents.effort` —, ditos no cabeçalho do
+        // O modelo e o esforço em que a onda roda — o da dificuldade das
+        // tarefas, ou o de `agents.model` com ela desligada —, ditos no cabeçalho do
         // próprio pedido, do mesmo jeito que ele já diz a cópia, porque o
         // molde do agente sozinho não bastou: em 20/09 a onda saiu em Opus por
         // herdar o modelo da sessão.

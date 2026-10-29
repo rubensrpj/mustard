@@ -941,8 +941,8 @@ fn closed_planned(
 
 /// O revisor final, lançado pelo gancho com o JSON do Claude Code, sai no
 /// modelo que a chamada pede e no esforço de sempre, e o envio da revisão
-/// grava o modelo que valeu; sem modelo na chamada, sai o do `mustard.json`,
-/// e o envio grava esse. O veredito aprovado da versão nova do envio ainda
+/// grava o modelo que valeu; sem modelo na chamada, sai o Opus do revisor
+/// final, e o envio grava esse. O veredito aprovado da versão nova do envio ainda
 /// fecha a spec.
 #[test]
 fn the_final_reviewer_keeps_the_model_the_call_asks_and_the_send_records_it() {
@@ -969,13 +969,13 @@ fn the_final_reviewer_keeps_the_model_the_call_asks_and_the_send_records_it() {
         (log.send_field(sent.id, "model_used").and_then(Value::as_str).map(str::to_string), log.send_field(sent.id, "model").and_then(Value::as_str).map(str::to_string))
     };
 
-    let asked_opus = launch(Some("opus"));
-    assert_eq!((asked_opus["model"].as_str(), asked_opus["effort"].as_str()), (Some("opus"), Some("xhigh")), "{asked_opus}");
-    assert_eq!(recorded(), (Some("opus".into()), Some("sonnet".into())), "the send keeps what was configured and records what held");
+    let asked_sonnet = launch(Some("sonnet"));
+    assert_eq!((asked_sonnet["model"].as_str(), asked_sonnet["effort"].as_str()), (Some("sonnet"), Some("xhigh")), "{asked_sonnet}");
+    assert_eq!(recorded(), (Some("sonnet".into()), Some("opus".into())), "the send keeps what was configured and records what held");
 
     let unasked = launch(None);
-    assert_eq!((unasked["model"].as_str(), unasked["effort"].as_str()), (Some("sonnet"), Some("xhigh")), "{unasked}");
-    assert_eq!(recorded(), (Some("sonnet".into()), Some("sonnet".into())), "a call without a model goes on the configured one");
+    assert_eq!((unasked["model"].as_str(), unasked["effort"].as_str()), (Some("opus"), Some("xhigh")), "{unasked}");
+    assert_eq!(recorded(), (Some("opus".into()), Some("opus".into())), "a call without a model goes on Opus");
 
     let verdict = json!({"final": true, "result": "approved", "text": "A saudação mudou.", "agreed": agreed_all_met(&project)});
     project.read_review();

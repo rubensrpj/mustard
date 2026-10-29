@@ -3605,21 +3605,22 @@ mod tests {
         assert_eq!(refused["hint"], json!(expected), "the path stays as it came: {refused}");
     }
 
-    /// Sem nota de dificuldade nas tarefas, o modelo do agente vem do
-    /// `mustard.json` do projeto, e o esforço é sempre xhigh: a onda de várias
-    /// tarefas e a de uma só saem com o modelo de `agents.model` e o esforço
-    /// xhigh nos campos `model` e `effort` do envio gravado, seja qual for o
-    /// `agents.effort`, e o pedido que o agente recebe diz o mesmo na linha do
-    /// modelo, nos dois idiomas. Sem os campos, o padrão é o Sonnet, e nem o
-    /// envio nem o pedido falam do Opus.
+    /// Sem nota de dificuldade nas tarefas, a onda vai ao Sonnet, e o modelo
+    /// de `agents.model` só vale com a escolha pela dificuldade desligada; o
+    /// esforço é sempre xhigh: a onda de várias tarefas e a de uma só saem
+    /// com esse modelo e o esforço xhigh nos campos `model` e `effort` do
+    /// envio gravado, seja qual for o `agents.effort`, e o pedido que o agente
+    /// recebe diz o mesmo na linha do modelo, nos dois idiomas. Sem os campos,
+    /// nem o envio nem o pedido falam do Opus.
     #[test]
     fn the_wave_request_and_send_carry_the_configured_model_at_effort_xhigh() {
         for (lang, declared, model, effort) in [
             (Locale::PtBr, None, "sonnet", "xhigh"),
             (Locale::EnUs, None, "sonnet", "xhigh"),
-            (Locale::PtBr, Some(("opus", "medium")), "opus", "xhigh"),
-            (Locale::EnUs, Some(("opus", "max")), "opus", "xhigh"),
-            (Locale::EnUs, Some(("opus", "ultra")), "opus", "xhigh"),
+            (Locale::PtBr, Some(("opus", "medium", true)), "sonnet", "xhigh"),
+            (Locale::PtBr, Some(("opus", "medium", false)), "opus", "xhigh"),
+            (Locale::EnUs, Some(("opus", "max", false)), "opus", "xhigh"),
+            (Locale::EnUs, Some(("opus", "ultra", false)), "opus", "xhigh"),
         ] {
             let dir = tempdir().unwrap();
             let root = dir.path();
@@ -3635,8 +3636,8 @@ mod tests {
                 );
             });
             let mut config = json!({"language": {"text": lang.as_str()}});
-            if let Some((declared_model, declared_effort)) = declared {
-                config["agents"] = json!({"model": declared_model, "effort": declared_effort});
+            if let Some((declared_model, declared_effort, by_difficulty)) = declared {
+                config["agents"] = json!({"model": declared_model, "effort": declared_effort, "by_difficulty": by_difficulty});
             }
             std::fs::write(root.join("mustard.json"), config.to_string()).unwrap();
 
