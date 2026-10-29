@@ -284,19 +284,10 @@ impl GoalProject {
             .unwrap_or_default()
     }
 
-    /// O assistente diz `shown` e, na mesma vez, faz a pergunta `question`,
-    /// com o cabeçalho `header` e as opções `options`; o usuário responde
-    /// `answer`. Devolve o que a testemunha disse ao assistente.
-    fn ask(&self, shown: &str, question: &str, header: &str, options: &[&str], answer: &str) -> String {
-        let transcript = self.home.join("conversa.jsonl");
-        let lines = [
-            json!({"type": "user", "message": {"role": "user", "content": "quero que a leitura custe menos"}}),
-            json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": shown}]}}),
-            json!({"type": "assistant", "message": {"role": "assistant", "content": [
-                {"type": "tool_use", "id": "t1", "name": "AskUserQuestion", "input": {}}
-            ]}}),
-        ];
-        fs::write(&transcript, lines.map(|line| line.to_string()).join("\n") + "\n").unwrap();
+    /// O assistente faz a pergunta `question`, com o cabeçalho `header` e as
+    /// opções `options`; o usuário responde `answer`. Devolve o que a
+    /// testemunha disse ao assistente.
+    fn ask(&self, question: &str, header: &str, options: &[&str], answer: &str) -> String {
         let options: Vec<Value> = options.iter().map(|label| json!({ "label": label })).collect();
         self.hook(
             "PostToolUse",
@@ -307,7 +298,6 @@ impl GoalProject {
                 "tool_response": {"questions": [], "answers": {question: answer}},
                 "session_id": GOAL_SESSION,
                 "cwd": self.root.to_string_lossy(),
-                "transcript_path": transcript.to_string_lossy(),
             }),
         )
     }
@@ -478,8 +468,8 @@ fn a_common_question_keeps_only_the_answer_with_the_user() {
     let project = GoalProject::new();
     let before = project.events().iter().filter(|e| e["type"] == "response").count();
 
-    let picked = project.ask("Falta a base.", "Qual a base?", "Base", &["dev", "main"], "dev");
-    let typed = project.ask("Falta a base.", "Qual a base?", "Base", &["dev", "main"], "a main, por favor");
+    let picked = project.ask("Qual a base?", "Base", &["dev", "main"], "dev");
+    let typed = project.ask("Qual a base?", "Base", &["dev", "main"], "a main, por favor");
 
     assert!(picked.is_empty() && typed.is_empty(), "a common question says nothing: {picked} {typed}");
     let answers: Vec<Value> = project

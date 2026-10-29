@@ -446,9 +446,7 @@ fn menu(offered: &[String]) -> String {
 /// texto é só o que o usuário disse: a resposta (várias escolhas separadas
 /// por vírgula, ou o que ele digitou em "Outro") e a nota, cada uma numa
 /// linha. A pergunta é do assistente e fica na própria mensagem, nunca como
-/// resposta solta: a regra do objetivo lê a última resposta antes do clique,
-/// e a pergunta curta no meio tomaria o lugar da fala que mostrou o objetivo.
-/// Com `witness`, ela vai na testemunha, ao lado da opção clicada; sem, no
+/// resposta solta: cada autor fica com o que disse. Com `witness`, ela vai na testemunha, ao lado da opção clicada; sem, no
 /// campo `question`. Pergunta sem resposta não grava nada; o número da
 /// mensagem quando gravou.
 fn record_answer(

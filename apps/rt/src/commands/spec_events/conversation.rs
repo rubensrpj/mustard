@@ -253,27 +253,14 @@ pub(crate) fn record_answered_message(root: &Path, session: Option<&str>, text: 
 /// acha a resposta que respondeu. A resposta que a regra das pendências
 /// barrou também passa por aqui, e o complemento que o bloqueio pediu vem
 /// depois dela, ligado à mesma mensagem. A resposta que repete um segredo é
-/// gravada sem ele, como a mensagem. A fala já gravada antes de um clique não
-/// se repete: com o mesmo texto da última resposta, sem diferença de espaços,
-/// e só com mensagens testemunhadas depois dela, nada é gravado.
+/// gravada sem ele, como a mensagem.
 pub(crate) fn record_response(root: &Path, session: Option<&str>, text: &str) -> Option<u64> {
-    reply(root, session, text, |after| !after.is_empty() && after.iter().all(|message| message.fields.contains_key("witness")))
-}
-
-/// Grava a resposta `text`, ligada à última mensagem do usuário, a menos que
-/// a última resposta gravada tenha o mesmo texto, sem diferença de espaços,
-/// e `repeated` diga, pelas mensagens gravadas depois dela, que é a mesma
-/// fala.
-fn reply(root: &Path, session: Option<&str>, text: &str, repeated: impl FnOnce(&[&SpecEvent]) -> bool) -> Option<u64> {
     if text.trim().is_empty() {
         return None;
     }
     let spec = conversation_spec(root, session)?;
     let log = DiskSpecState::new(root).log(&spec)?;
     let text = without_secrets(text);
-    if messages_after_the_same_response(&log, &text).is_some_and(|after| repeated(&after)) {
-        return None;
-    }
     let mut fields = json!({ "author": "assistant", "text": text });
     let asked = last_user_message(&log).map(|asked| asked.id);
     if let Some(asked) = asked {
@@ -291,16 +278,6 @@ fn reply(root: &Path, session: Option<&str>, text: &str, repeated: impl FnOnce(&
         None if asked_since(now) => Err(Refusal::MissingField { event_type: "response".to_string(), field: "reply_to".to_string() }),
         _ => Ok(()),
     })
-}
-
-/// As mensagens gravadas depois da última resposta de `log`, quando ela tem
-/// o texto `text`, sem diferença de espaços; `None` quando não tem, ou não há
-/// resposta.
-fn messages_after_the_same_response<'a>(log: &'a SpecLog, text: &str) -> Option<Vec<&'a SpecEvent>> {
-    let events = log.visible();
-    let at = events.iter().rposition(|event| event.event_type == "response")?;
-    let same = events[at].str_field("text").is_some_and(|last| last.split_whitespace().eq(text.split_whitespace()));
-    same.then(|| events[at + 1..].iter().copied().filter(|event| event.event_type == "message").collect())
 }
 
 /// Um gancho barrou ou avisou: quem, o quê, em que ferramenta (ou evento) e

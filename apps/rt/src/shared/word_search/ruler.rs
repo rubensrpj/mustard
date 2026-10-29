@@ -409,8 +409,8 @@ struct Heard {
 /// O que o despachante do gancho responde à chamada de `row`, rodada de
 /// `root` numa sessão só dela, e quanto ele levou. A conversa de `row` até a
 /// chamada vai para a pasta temporária `scratch` ([`write_conversation`]) e o
-/// gancho a lê em `transcript_path`, sem nome de subagente; a régua lê dela a
-/// fala pelo mesmo leitor do gancho, e o arquivo sai ao fim da busca.
+/// gancho a recebe em `transcript_path`, sem nome de subagente; a régua lê
+/// dela a última fala do agente, e o arquivo sai ao fim da busca.
 fn hear(root: &Path, row: &Row, session: &str, scratch: &Path) -> Heard {
     let conversation = write_conversation(row, session, scratch);
     let with_speech = conversation.as_deref().is_some_and(|file| !agent_said::last_said(file).is_empty());
