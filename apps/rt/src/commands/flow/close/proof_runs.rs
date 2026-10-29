@@ -44,7 +44,7 @@ use serde_json::Value;
 use super::CloseRefusal;
 use crate::commands::flow::round::Keeping;
 use crate::commands::git_settle::CopiesLock;
-use crate::commands::review::qa_run::{ProofRun, canonical_test_command, run_criteria_proofs, run_server_command};
+use crate::commands::review::qa_run::{OUTPUT_CUT, ProofRun, canonical_test_command, run_criteria_proofs, run_server_command};
 
 /// O nome da pasta da cópia do código de antes dentro da pasta das cópias da
 /// obra, ao lado da cópia limpa (`check`).
@@ -192,8 +192,7 @@ impl BeforeCopy {
     pub(super) fn rerun(&self, command: &str, clean: &Path, after: &ProofRun) -> Result<(ProofRun, bool), CloseRefusal> {
         self.ready()?;
         let before = run_server_command(&super::clean_env(command), &self.path);
-        let (lines, new) = new_lines(&after.evidence, &before.evidence, &[clean, &self.path]);
-        let from_base = before.result != "pass" && lines > 0 && new.is_empty();
+        let from_base = from_the_base(after, &before, &[clean, &self.path]);
         Ok((before, from_base))
     }
 
@@ -231,14 +230,29 @@ pub(super) fn passed_before(out: &ProofRun) -> Option<u64> {
     out.tests.filter(|count| out.result == "pass" && *count > 0)
 }
 
+/// A falha `after`, na cópia limpa, já era da base, pela execução `before`
+/// do mesmo comando no código de antes: o comando caiu lá também, nenhuma das
+/// duas saídas foi cortada no teto, e cada linha de diagnóstico de `after`
+/// aparece em `before` ([`new_lines`]). A falha sem linha de diagnóstico
+/// nenhuma não se compara, e é da obra; a saída cortada pode esconder o erro
+/// novo depois do corte, e também é.
+fn from_the_base(after: &ProofRun, before: &ProofRun, copies: &[&Path]) -> bool {
+    let cut = |run: &ProofRun| run.evidence.ends_with(OUTPUT_CUT);
+    let (lines, new) = new_lines(&after.evidence, &before.evidence, copies);
+    before.result != "pass" && !cut(after) && !cut(before) && lines > 0 && new.is_empty()
+}
+
 /// Quantas linhas de diagnóstico a saída `after` tem e, delas, as que a
 /// saída `before` não tinha, como `after` as escreveu. A linha é de
 /// diagnóstico quando cita um lugar — dois-pontos ou parêntese seguidos de
 /// número, como `src/a.rs:3:5` e `a.ts(3,5)` — ou fala de erro, aviso, falha
 /// ou pânico. As duas se comparam sem a pasta de cada cópia (`copies`) e sem
-/// número nenhum: a linha e a coluna andam quando a obra mexe acima do erro,
-/// e o tempo e a contagem do resumo mudam a cada execução. Cada linha conta
-/// quantas vezes aparece: o mesmo erro num arquivo a mais é novo.
+/// os números de lugar (`:3`, `:3:5`, `(3,5)`, `line 3`): a linha e a coluna
+/// andam quando a obra mexe acima do erro. O resto da linha, números
+/// inclusive, conta: `case_1` e `case_2` são erros diferentes. A linha do
+/// resumo da suíte (`test result:` e a do tempo), que muda a cada execução,
+/// fica de fora. Cada linha conta quantas vezes aparece: o mesmo erro num
+/// arquivo a mais é novo.
 pub(super) fn new_lines(after: &str, before: &str, copies: &[&Path]) -> (usize, Vec<String>) {
     // A pasta mais longa sai primeiro: a da cópia limpa é o começo da pasta
     // da cópia do código de antes.
@@ -269,21 +283,56 @@ pub(super) fn new_lines(after: &str, before: &str, copies: &[&Path]) -> (usize, 
 }
 
 /// A linha `line` como [`new_lines`] a compara, sem as pastas `folders`, sem
-/// número e com um espaço só entre as palavras; `None` quando ela não é de
-/// diagnóstico.
+/// os números de lugar ([`without_places`]) e com um espaço só entre as
+/// palavras; `None` quando ela não é de diagnóstico ou é a do resumo.
 fn diagnostic(line: &str, folders: &[String]) -> Option<String> {
     let mut text = line.to_string();
     for folder in folders {
         text = text.replace(folder.as_str(), "");
     }
-    let lower = text.to_lowercase();
+    let lower = text.trim().to_lowercase();
+    if lower.starts_with("test result:") || lower.contains("finished in ") {
+        return None;
+    }
     let located = text.as_bytes().windows(2).any(|pair| matches!(pair[0], b':' | b'(') && pair[1].is_ascii_digit());
     let said = ["erro", "warn", "fail", "panic", "✕", "✗", "×", "✖"].iter().any(|word| lower.contains(word));
     if !located && !said {
         return None;
     }
-    let bare: String = text.chars().filter(|c| !c.is_ascii_digit()).collect();
-    Some(bare.split_whitespace().collect::<Vec<_>>().join(" "))
+    Some(without_places(&text).split_whitespace().collect::<Vec<_>>().join(" "))
+}
+
+/// `text` sem os números que dizem o lugar: os de `:3` e `:3:5`, os de `(3,5)`
+/// e `(3)` e o de `line 3`. Os outros números ficam.
+fn without_places(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let digits_from = |at: usize| chars[at..].iter().take_while(|c| c.is_ascii_digit()).count();
+    let mut out = String::new();
+    let mut at = 0;
+    while at < chars.len() {
+        let after_line = out.to_lowercase().ends_with("line ");
+        match chars[at] {
+            ':' if digits_from(at + 1) > 0 => at += 1 + digits_from(at + 1),
+            '(' if digits_from(at + 1) > 0 => {
+                let mut end = at + 1 + digits_from(at + 1);
+                if chars.get(end) == Some(&',') && digits_from(end + 1) > 0 {
+                    end += 1 + digits_from(end + 1);
+                }
+                if chars.get(end) == Some(&')') {
+                    at = end + 1;
+                } else {
+                    out.push('(');
+                    at += 1;
+                }
+            }
+            c if c.is_ascii_digit() && after_line => at += digits_from(at),
+            c => {
+                out.push(c);
+                at += 1;
+            }
+        }
+    }
+    out
 }
 
 /// A execução de uma prova que não rodou porque os arquivos de teste da obra
@@ -361,6 +410,46 @@ mod tests {
         assert_eq!((runs_before(false), runs_before(true)), (proofs, proofs), "o segundo fechamento não roda a prova de antes de novo: {closed}");
     }
 
+    /// Uma execução que caiu, com a saída inteira `evidence`.
+    fn failed_with(evidence: &str) -> crate::commands::review::qa_run::ProofRun {
+        crate::commands::review::qa_run::ProofRun {
+            reused: false,
+            result: "fail",
+            exit: 1,
+            ms: 0,
+            output: String::new(),
+            ran_no_test: None,
+            missing_test: None,
+            tests: None,
+            evidence: evidence.to_string(),
+        }
+    }
+
+    /// O teste que a base já quebrava e a obra conserta não cobre o teste que
+    /// a obra quebra: `case_1` e `case_2` são linhas diferentes, e a falha é
+    /// da obra. O mesmo erro, com a linha mudada, segue da base.
+    #[test]
+    fn a_work_that_fixes_one_failing_test_and_breaks_another_is_refused() {
+        let copies = [Path::new("/c/x/check"), Path::new("/c/x/check-base")];
+        let before = failed_with("test tests::case_1 ... FAILED\nthread 'tests::case_1' panicked at src/lib.rs:10:5:\ntest result: FAILED. 3 passed; 1 failed; finished in 0.20s\n");
+        let after = failed_with("test tests::case_2 ... FAILED\nthread 'tests::case_2' panicked at src/lib.rs:12:5:\ntest result: FAILED. 3 passed; 1 failed; finished in 0.31s\n");
+        assert!(!super::from_the_base(&after, &before, &copies), "case_2 is the work's");
+        let moved = failed_with("test tests::case_1 ... FAILED\nthread 'tests::case_1' panicked at src/lib.rs:14:5:\ntest result: FAILED. 4 passed; 1 failed; finished in 0.40s\n");
+        assert!(super::from_the_base(&moved, &before, &copies), "the same failure, at another line, is the base's");
+    }
+
+    /// A saída cortada no teto não se compara: o erro novo pode estar depois
+    /// do corte, e a falha é da obra, de qualquer lado que o corte esteja.
+    #[test]
+    fn a_cut_output_is_never_taken_as_the_base_failure() {
+        let copies = [Path::new("/c/x/check"), Path::new("/c/x/check-base")];
+        let base = "error: unused variable `x`\n  --> src/old.rs:3:9\n";
+        let cut = format!("{base}{}", crate::commands::review::qa_run::OUTPUT_CUT);
+        assert!(super::from_the_base(&failed_with(base), &failed_with(base), &copies), "the same full output is the base's");
+        assert!(!super::from_the_base(&failed_with(&cut), &failed_with(base), &copies), "the work's output was cut");
+        assert!(!super::from_the_base(&failed_with(base), &failed_with(&cut), &copies), "the base's output was cut");
+    }
+
     /// A comparação com o código de antes ignora a linha e a coluna, a pasta
     /// de cada cópia, o tempo e a contagem do resumo, e a linha que não é de
     /// diagnóstico. O mesmo erro num arquivo a mais, ou repetido, é novo.
@@ -373,11 +462,11 @@ mod tests {
         let after = "   Compiling a v0.1.0 (/c/x/check)\n   Compiling b v1.0.0\n\
             error: unused variable `x`\n  --> /c/x/check/src/old.rs:7:9\n\
             test result: FAILED. 4 passed; 1 failed; finished in 0.31s\n";
-        assert_eq!(super::new_lines(after, before, &[clean, base]), (3, Vec::<String>::new()), "só o que andou");
+        assert_eq!(super::new_lines(after, before, &[clean, base]), (2, Vec::<String>::new()), "só o que andou");
 
         let again = format!("{after}error: unused variable `x`\n  --> /c/x/check/src/new.rs:1:1\n");
         let (lines, new) = super::new_lines(&again, before, &[clean, base]);
-        assert_eq!((lines, new), (5, vec!["error: unused variable `x`".to_string(), "  --> /c/x/check/src/new.rs:1:1".to_string()]));
+        assert_eq!((lines, new), (4, vec!["error: unused variable `x`".to_string(), "  --> /c/x/check/src/new.rs:1:1".to_string()]));
     }
 
     /// O commit em que o repositório de `root` nasceu.

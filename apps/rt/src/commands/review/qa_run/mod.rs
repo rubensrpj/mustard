@@ -20,6 +20,7 @@ pub(crate) use lint_command::readonly as readonly_lint_command;
 use mustard_core::platform::git;
 
 mod runner;
+pub(crate) use runner::OUTPUT_CUT;
 
 #[cfg(test)]
 pub(crate) use runner::{Ceiling, ceiling_secs, with_timeout_variable};

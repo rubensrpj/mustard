@@ -324,8 +324,13 @@ fn excerpt(s: &str) -> String {
 /// tomar a memória.
 const WHOLE_OUTPUT_BYTES: usize = 1024 * 1024;
 
+/// A última linha da saída cortada no teto: quem compara a saída inteira sabe
+/// por ela que o resto não chegou.
+pub(crate) const OUTPUT_CUT: &str = "[Mustard] saída cortada no teto";
+
 /// A saída do comando, inteira até [`WHOLE_OUTPUT_BYTES`], cortada no último
-/// fim de linha que cabe: a linha cortada ao meio não se lê.
+/// fim de linha que cabe: a linha cortada ao meio não se lê. A saída cortada
+/// termina em [`OUTPUT_CUT`].
 fn whole_output(s: &str) -> String {
     if s.len() <= WHOLE_OUTPUT_BYTES {
         return s.to_string();
@@ -335,7 +340,7 @@ fn whole_output(s: &str) -> String {
         end -= 1;
     }
     let kept = &s[..end];
-    kept.rfind('\n').map_or(kept, |at| &kept[..at]).to_string()
+    format!("{}\n{OUTPUT_CUT}", kept.rfind('\n').map_or(kept, |at| &kept[..at]))
 }
 
 /// Quantas linhas do fim da saída uma falha guarda.
@@ -989,8 +994,10 @@ mod tests {
         let line = "x".repeat(99);
         let huge = format!("{line}\n").repeat(WHOLE_OUTPUT_BYTES / 100 + 10);
         let kept = whole_output(&huge);
-        assert!(kept.len() <= WHOLE_OUTPUT_BYTES && kept.len() > WHOLE_OUTPUT_BYTES - 100, "{}", kept.len());
-        assert!(kept.ends_with(&line), "cut at the end of a line");
+        assert!(kept.len() <= WHOLE_OUTPUT_BYTES + OUTPUT_CUT.len() + 1 && kept.len() > WHOLE_OUTPUT_BYTES - 100, "{}", kept.len());
+        let kept = kept.strip_suffix(OUTPUT_CUT).expect("the cut output says so");
+        assert!(kept.ends_with(&format!("{line}\n")), "cut at the end of a line");
+        assert!(!whole_output("linha\n").contains(OUTPUT_CUT), "the whole output says nothing");
     }
 
     /// A falha mostra o FIM da saída, onde o motivo aparece: numa saída de 200
