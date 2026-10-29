@@ -18,8 +18,8 @@ fn private_host_environment_keys_are_masked_without_changing_the_file() {
     let private=json!({"env":{"TYPESAFE_API_KEY":SECRET},"rtk":true}).to_string();
     let file=".claude/settings.local.json";
     std::fs::write(dir.path().join(file),&private).unwrap();
-    let command=masked_command(dir.path(),"cat .claude/settings.local.json; echo finished");
-    assert!(command.ends_with("; echo finished"), "{command}");
+    let command=masked_command(dir.path(),"cat .claude/settings.local.json");
+    assert!(command.contains("--file '.claude/settings.local.json'"), "{command}");
     let output=native(dir.path(),file,"cat",json!([]));
     assert!(output.status.success());
     let shown=String::from_utf8(output.stdout).unwrap();
@@ -60,6 +60,17 @@ fn masked_command(root: &Path, command: &str) -> String {
     ready.to_string()
 }
 
+/// A recusa de `command`, uma linha de mais de uma etapa que lê a
+/// configuração: sem comando pronto, sem a chave, e nada da linha roda.
+fn refused_without_command(root: &Path, command: &str) {
+    let result = hook(root, command);
+    let specific = &result["hookSpecificOutput"];
+    assert_eq!(specific["permissionDecision"], "deny", "{command}: {result}");
+    assert!(specific.get("updatedInput").is_none(), "{command}: {result}");
+    assert!(!specific["permissionDecisionReason"].as_str().unwrap().contains("--reader"), "no masked command: {result}");
+    assert!(!result.to_string().contains(SECRET) && !result.to_string().contains("testCommand"), "{command}: {result}");
+}
+
 fn native(root: &Path, file: &str, reader: &str, args: Value) -> std::process::Output {
     binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
         .args(["run", "config-read", "--file", file, "--reader", reader, "--args-json", &args.to_string()])
@@ -81,33 +92,34 @@ fn filtered_config_and_git_execute_once_without_a_secret_or_full_config_dump() {
     assert!(result["hookSpecificOutput"].get("additionalContext").is_none(), "no configuration dump: {result}");
     // The hook itself executed no part of the requested command.
     assert!(!result.to_string().contains("?? untracked.txt"));
-    let command = masked_command(dir.path(), original);
-    assert!(command.ends_with(r#" | cut -c1-200; echo "--- git"; git status --short | head -5; echo "fim""#), "{command}");
+    // The line has more than one step: the refusal hands back no command.
+    refused_without_command(dir.path(), original);
+    let command = masked_command(dir.path(), r#"grep -n -E "ignore-pattern|--roots|taskset|\"enabled\"|\"rtk\"|flow|protected" mustard.json"#);
     let out = shell(dir.path(), &command);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let text = String::from_utf8(out.stdout).unwrap();
     assert!(text.contains("2:  \"git\"") && text.contains("3:  \"testCommand\"") && text.contains("4:  \"lintCommand\""), "{text}");
-    assert!(text.contains("?? untracked.txt") && text.contains("--- git") && text.contains("fim"), "{text}");
     assert!(!text.contains("jev") && !text.contains(SECRET), "{text}");
     assert_eq!(std::fs::read_to_string(dir.path().join("mustard.json")).unwrap(), CONFIG);
-    let command = masked_command(dir.path(), "grep -q flow mustard.json && printf tested >> run.count");
+    refused_without_command(dir.path(), "grep -q flow mustard.json && printf tested >> run.count");
     assert!(!dir.path().join("run.count").exists(), "hook must never run the suffix");
-    let out = shell(dir.path(), &command);
-    assert!(out.status.success());
-    assert_eq!(std::fs::read_to_string(dir.path().join("run.count")).unwrap(), "tested");
 }
 
 #[test]
 fn masked_reads_preserve_no_match_conditions_and_read_latest_bytes() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("mustard.json"), CONFIG).unwrap();
+    for original in [
+        "grep absent mustard.json && echo WRONG || echo fallback",
+        "grep absent mustard.json; echo continued",
+        "grep -q flow mustard.json && echo found",
+        "echo 'início'; (grep -q flow mustard.json) && echo found",
+        "cat mustard.json | grep key",
+    ] {
+        refused_without_command(dir.path(), original);
+    }
     for (original, expected) in [
-        ("grep absent mustard.json && echo WRONG || echo fallback", "fallback\n"),
-        ("grep absent mustard.json; echo continued", "continued\n"),
-        ("grep -q flow mustard.json && echo found", "found\n"),
-        ("echo 'início'; (grep -q flow mustard.json) && echo found", "início\nfound\n"),
-        ("cat mustard.json | grep -n key mustard.json", "5:  \"jev\": {\"key\": \"***\"}\n"),
-        ("cat mustard.json | grep key", "  \"jev\": {\"key\": \"***\"}\n"),
+        ("grep -n key mustard.json", "5:  \"jev\": {\"key\": \"***\"}\n"),
         ("grep -nH flow mustard.json", "mustard.json:2:  \"git\": {\"flow\": {\"*\": \"develop\"}},\n"),
     ] {
         let out = shell(dir.path(), &masked_command(dir.path(), original));
@@ -133,6 +145,7 @@ fn unsupported_or_mixed_reads_do_not_execute_any_suffix_or_dump_the_config() {
         "cat mustard.json; bash -c 'cat mustard.json'; touch wrong",
         "cat=unexpected cat mustard.json; touch wrong",
         "grep * mustard.json; touch wrong",
+        "cat mustard.json && rm -r -f work",
     ] {
         let result = hook(dir.path(), original);
         let specific = &result["hookSpecificOutput"];
@@ -151,7 +164,8 @@ fn unsupported_or_mixed_reads_do_not_execute_any_suffix_or_dump_the_config() {
 
 /// The read the session reported: the plain read, the same read after
 /// entering the project folder, and a cut read. Each is refused; the command
-/// the refusal hands back passes the hook and shows the file with `***`.
+/// the refusal of a one-step line hands back passes the hook and shows the
+/// file with `***`, and the line that enters the folder first gets no command.
 #[test]
 fn a_config_read_is_refused_with_the_masked_command_ready() {
     let dir = tempfile::tempdir().unwrap();
@@ -162,7 +176,8 @@ fn a_config_read_is_refused_with_the_masked_command_ready() {
     // Quoted, as a shell needs a Windows path: unquoted, its backslashes
     // vanish and the `cd` itself fails.
     let entering = format!("cd '{}' && cat .claude/mustard.json", project.display());
-    for (at, original) in [(project.as_path(), "cat .claude/mustard.json"), (dir.path(), entering.as_str()), (project.as_path(), "head -5 mustard.json")] {
+    refused_without_command(dir.path(), &entering);
+    for (at, original) in [(project.as_path(), "cat .claude/mustard.json"), (project.as_path(), "head -5 mustard.json")] {
         let ready = masked_command(at, original);
         let again = hook(at, &ready);
         assert_ne!(again["hookSpecificOutput"]["permissionDecision"], "deny", "{original}: {again}");
@@ -288,15 +303,15 @@ fn a_masked_read_inside_a_wave_copy_reads_the_main_checkout_configuration() {
     assert!(named(&reason, "d") && named(&reason, "shop"), "both places are named: {reason}");
 }
 
-/// The masked read the refusal hands back, with the caller's filter after
-/// it, runs: the guard that keeps the Mustard's own answers whole does not
-/// refuse it, since what comes out is the person's file, masked.
+/// The masked read the refusal hands back, with a filter after it, runs: the
+/// guard that keeps the Mustard's own answers whole does not refuse it, since
+/// what comes out is the person's file, masked.
 #[test]
 fn the_masked_read_with_a_filter_is_not_refused_again() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("mustard.json"), CONFIG).unwrap();
-    for original in ["cat mustard.json | grep -n testCommand", "grep -n flow mustard.json | head -3"] {
-        let command = masked_command(dir.path(), original);
+    for (original, filter) in [("cat mustard.json", " | grep -n testCommand"), ("grep -n flow mustard.json", " | head -3")] {
+        let command = masked_command(dir.path(), original) + filter;
         let again = hook(dir.path(), &command);
         assert_ne!(again["hookSpecificOutput"]["permissionDecision"], "deny", "{command}: {again}");
         let out = shell(dir.path(), &command);

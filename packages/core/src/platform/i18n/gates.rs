@@ -300,10 +300,10 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // comando. `{command}` vem do chamador, sozinho depois da última
         // quebra de linha: o mesmo comando, com cada leitura já mascarada.
         ("config_key.masked_command", Locale::PtBr) => {
-            "[Mustard] A leitura da configuração foi barrada para proteger a chave secreta. Nenhuma etapa foi executada. Rode como está o comando abaixo: ele faz a mesma leitura com a chave trocada por *** e mantém as outras etapas na mesma ordem.\n{command}"
+            "[Mustard] A leitura da configuração foi barrada para proteger a chave secreta. Nada foi executado. Rode como está o comando abaixo: ele faz a mesma leitura com a chave trocada por ***.\n{command}"
         }
         ("config_key.masked_command", Locale::EnUs) => {
-            "[Mustard] Reading the configuration was blocked to protect the secret key. No step was executed. Run the command below as is: it does the same read with the key replaced by *** and keeps the other steps in the same order.\n{command}"
+            "[Mustard] Reading the configuration was blocked to protect the secret key. Nothing was executed. Run the command below as is: it does the same read with the key replaced by ***.\n{command}"
         }
         // A leitura do arquivo de configuração que guarda uma chave secreta,
         // a do Jev ou o token da publicação, volta com o arquivo, e a chave
@@ -322,15 +322,13 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // chamador, no jeito do programa da busca.
         ("config_key.swept_rewritten", Locale::PtBr) => {
             "[Mustard] Essa busca passa pelo arquivo que guarda a chave secreta, e mostraria a \
-             chave. A chave nunca entra na conversa. Nenhuma etapa foi executada. Rode como está o \
-             comando abaixo. Ele faz a mesma busca com o arquivo de fora. As outras etapas ficam \
-             na mesma ordem.\n{command}"
+             chave. A chave nunca entra na conversa. Nada foi executado. Rode como está o comando \
+             abaixo. Ele faz a mesma busca com o arquivo de fora.\n{command}"
         }
         ("config_key.swept_rewritten", Locale::EnUs) => {
             "[Mustard] This search goes through the file that holds the secret key, and would show \
-             the key. The key never enters the conversation. No step was executed. Run the command \
-             below as it is. It does the same search with the file left out. The other steps stay \
-             in the same order.\n{command}"
+             the key. The key never enters the conversation. Nothing was executed. Run the command \
+             below as it is. It does the same search with the file left out.\n{command}"
         }
         ("config_key.swept", Locale::PtBr) => {
             "[Mustard] Essa busca passa por {file}, que guarda uma chave secreta, e mostraria a chave. \

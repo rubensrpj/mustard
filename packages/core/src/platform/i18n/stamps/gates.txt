@@ -32,10 +32,10 @@ command_guard.deny	bbb0d527d9275379
 command_guard.glued_argument	1d4f68c950441498
 command_guard.shell_edit	398b12b36bfbb15b
 config_key.hidden	eccb139f52b19c0e
-config_key.masked_command	1fde7ee3e66368f6
+config_key.masked_command	2db93b8661f6c151
 config_key.shell_unsupported	38f4f95df20a20b9
 config_key.swept	970425e591cf4d47
-config_key.swept_rewritten	94d4ac6bf09b3b89
+config_key.swept_rewritten	9a2ea84a19f21cac
 config_key.swept_tool	c8651e00b4ae2b0e
 gate.askuser.amber.option_authorize	d1dd6019c11e6942
 gate.askuser.amber.option_block	34105448e7e8fa6a
