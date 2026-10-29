@@ -22,7 +22,6 @@ pub(super) const PREFIXES: &[&str] = &[
     "message",
     "pr",
     "approve_spec",
-    "retired",
     "banner",
     "stuck",
     "copies",
