@@ -1608,13 +1608,6 @@ pub(crate) fn outdated_block(db: &MapDb) -> Result<bool> {
     map_db::holds_retired(db.conn(), &RETIRED)
 }
 
-/// [`open_existing`] com a espera `wait` pela trava de outra gravação, para
-/// quem desiste logo em vez de segurar a ação de quem o chamou.
-pub(crate) fn open_existing_waiting(model: &Path, wait: std::time::Duration) -> std::result::Result<MapDb, MapRefusal> {
-    existing(model)?;
-    open_declared(model, project_of(model), wait).map_err(unreadable)
-}
-
 /// A recusa do mapa que falta ou que não começa como um banco.
 pub(crate) fn existing(model: &Path) -> std::result::Result<(), MapRefusal> {
     if !exists_at(model) {
@@ -3421,7 +3414,7 @@ mod tests {
 
         // Outra gravação segura a trava: a abertura do mapa limpo não a pede.
         conn.execute_batch("BEGIN IMMEDIATE").unwrap();
-        assert!(open_existing_waiting(&model, std::time::Duration::from_millis(20)).is_ok(), "a clean map asked for the lock");
+        assert!(open_existing(&model).is_ok(), "a clean map asked for the lock");
         conn.execute_batch("ROLLBACK").unwrap();
     }
 }

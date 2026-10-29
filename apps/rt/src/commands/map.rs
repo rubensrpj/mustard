@@ -53,7 +53,6 @@ use mustard_core::domain::normalize::Languages;
 use mustard_core::domain::project_map::{self as project_map, DeclAt, FoundItem, MapRefusal, ProjectMap, UseSite};
 use mustard_core::domain::scan::{HistoryReport, NativePass, ScanReport};
 use mustard_core::domain::search::TOP;
-use mustard_core::io::map_glossary::{self, Place};
 use mustard_core::io::map_search;
 use mustard_core::io::map_specs;
 use mustard_core::io::map_triage::{self, Triaged};
@@ -204,10 +203,7 @@ pub(crate) fn map_at(opts: &MapOpts, mine: &Mine<'_>, trace: &Trace<'_>, assembl
     }
     let lang = project.lang;
     let mut report = match answer(opts, &project.root, lang, &project.languages, trace, assemble) {
-        Ok(report) => {
-            remember(opts, &project.root, &project.languages, &report);
-            report
-        }
+        Ok(report) => report,
         Err(refusal) => refreshing::refused(&refusal, lang, running.get()),
     };
     if running.get() {
@@ -248,50 +244,6 @@ fn source_search(opts:&MapOpts,grep:&GrepSearch)->Value {
         crate::shared::search_gateway::answer(&opts.root,&request).map(|answer|(request,answer))
     });
     match result {Ok((request,answer))=>grep_answer::answered(&opts.root,&request,answer),Err(reason)=>json!({"ok":false,"reason":reason,"fallback":"use-original-host-tool","executed":false})}
-}
-
-/// Guarda no glossário do mapa o que a resposta entregou à sessão de quem
-/// pergunta: da busca, as palavras da `--query` e os lugares achados, no
-/// lugar da busca anterior da sessão; da leitura de uma declaração e da de
-/// quem a usa, os lugares delas, somados aos da última busca. A edição que
-/// vier depois ensina por eles. A falha da gravação não muda a resposta.
-fn remember(opts: &MapOpts, root: &Path, languages: &Languages, report: &Value) {
-    let Some(session) = opts.session.as_deref().filter(|session| !session.is_empty()) else {
-        return;
-    };
-    let model = store::model_path(root);
-    let _ = match opts.question {
-        Question::Search => {
-            let Some(query) = opts.query.as_deref() else {
-                return;
-            };
-            map_glossary::record_search(&model, session, query, languages, &delivered(report))
-        }
-        Question::Slice | Question::Users => map_glossary::add_delivered(&model, session, &delivered(report)),
-        _ => return,
-    };
-}
-
-/// Os lugares que a resposta entregou: cada arquivo da busca do banco,
-/// inteiro; cada peça da busca com filtro, cada declaração de quem usa e a
-/// declaração lida, com as linhas dela.
-fn delivered(report: &Value) -> Vec<Place> {
-    let lines = |entry: &Value, key: &str| entry[key].as_u64().unwrap_or(0);
-    let mut out: Vec<Place> = Vec::new();
-    for file in report["files"].as_array().into_iter().flatten() {
-        if let Some(path) = file["path"].as_str() {
-            out.push(Place::whole(path));
-        }
-    }
-    let pieces = report["pieces"].as_array().into_iter().flatten();
-    let declarations = report["declarations"].as_array().into_iter().flatten();
-    let read = (report["question"] == "slice").then_some(report);
-    for entry in pieces.chain(declarations).chain(read) {
-        if let Some(file) = entry["path"].as_str().or_else(|| entry["file"].as_str()) {
-            out.push(Place { file: file.to_string(), line: lines(entry, "line"), end_line: lines(entry, "end_line") });
-        }
-    }
-    out
 }
 
 /// Antes da busca, a história por função dos arquivos que ligam os itens
