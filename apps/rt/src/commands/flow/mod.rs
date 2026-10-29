@@ -125,8 +125,8 @@ mod tests {
     }
 
     /// Cada comando de resposta curta aceita `--full`, e com ele a resposta é
-    /// a de antes da curta: a projeção que o levantamento e a rodada já
-    /// tinham e, nos outros, o relatório como veio. Sem ele, cada um encolhe.
+    /// a de antes da curta: a projeção que o levantamento já tinha e, nos
+    /// outros, o relatório como veio. Sem ele, cada um encolhe.
     #[test]
     fn short_answer_gives_way_to_the_whole_answer_with_full() {
         for line in ["run grill --full", "run round --dispatch --full", "run review-wave --wave 1 --full", "run read backlog --full", "run settings --full"] {

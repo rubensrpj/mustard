@@ -912,28 +912,35 @@ pub(crate) fn backlog_ready(log: &SpecLog) -> Vec<u64> {
     backlog_ready_without(log, &BTreeSet::new())
 }
 
-/// `true` quando a obra `spec`, como está gravada agora em `root`, tem onda a
-/// despachar: a órfã, que sai de novo, ou, com vaga livre, a onda pronta do
-/// plano ou a tarefa pronta do backlog. A spec que não se lê, e o plano com
-/// dependência em círculo, contam como tendo: na dúvida, quem pergunta segue
-/// como se a onda fosse sair.
-pub(crate) fn dispatch_waiting(root: &Path, spec: &str) -> bool {
+/// `true` quando o programa da branch vai ser usado logo depois desta
+/// rodada da obra `spec`, como está gravada agora em `root`: há onda a
+/// despachar ([`dispatch_waiting`]), ou a obra não tem mais nada aberto —
+/// nenhuma tarefa no backlog e toda onda do plano terminada — e o passo
+/// seguinte é o fechamento. A spec que não se lê conta como usando: na
+/// dúvida, quem pergunta segue como se o programa fosse rodar.
+pub(crate) fn program_needed(root: &Path, spec: &str) -> bool {
     use mustard_core::io::spec_events as store;
     let Some(log) = store::spec_file(root, spec).ok().and_then(|path| store::read(&path).ok().flatten()) else {
         return true;
     };
-    if !orphaned_waves(&log).is_empty() {
+    dispatch_waiting(root, spec, &log) || (backlog_left(&log).is_empty() && super::wave_states(&log).values().all(|state| state.finished()))
+}
+
+/// `true` quando a obra `spec`, lida em `log`, tem onda a despachar: a órfã e
+/// a do envio aberto sem agente, que saem de novo; a onda do plano que sai
+/// agora ([`next_waves`]), a replanejada que segura a própria vaga
+/// inclusive, mesmo sem vaga livre; ou, com vaga livre, a tarefa pronta do
+/// backlog. O plano com dependência em círculo conta como tendo.
+pub(crate) fn dispatch_waiting(root: &Path, spec: &str, log: &SpecLog) -> bool {
+    if !orphaned_waves(log).is_empty() || waves_in_progress(log).iter().any(|(wave, sent)| !agent_known(root, spec, log, *wave, *sent)) {
         return true;
     }
-    let vacancies = super::vacancy::vacancies(root, spec, &log);
-    if vacancies.free() == 0 {
-        return false;
-    }
-    if !backlog_ready(&log).is_empty() {
+    let vacancies = super::vacancy::vacancies(root, spec, log);
+    let (stuck, evaluating) = (super::stops::waves_stuck(log), super::skill_hold::waves_waiting(root, spec, log));
+    if next_waves(log, &vacancies, (&stuck, &evaluating)).map_or(true, |going| !going.is_empty()) {
         return true;
     }
-    let (stuck, evaluating) = (super::stops::waves_stuck(&log), super::skill_hold::waves_waiting(root, spec, &log));
-    next_waves(&log, &vacancies, (&stuck, &evaluating)).map_or(true, |going| !going.is_empty())
+    vacancies.free() > 0 && !backlog_ready(log).is_empty()
 }
 
 /// [`backlog_ready`] como ficaria sem as ondas de lote `undone`
@@ -1509,6 +1516,22 @@ mod tests {
         let again = round(root, "x", None);
         assert_eq!(waves_in(&again, "dispatch"), vec![2], "{again}");
         assert_eq!(sent_copy(root, 2), second_slot, "a vaga a está livre, e a onda 2 volta à b: {again}");
+    }
+
+    /// Com as duas vagas tomadas — a onda 1 trabalhando e a 2 replanejada,
+    /// dona da vaga que o envio dela gravou —, a onda 2 ainda sai: há onda a
+    /// despachar, e o programa da branch é usado.
+    #[test]
+    fn a_replanned_wave_holding_its_slot_is_a_dispatch_with_every_slot_taken() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
+        assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1, 2]);
+        replan(root, 2);
+        let log = spec_now(root);
+        assert_eq!(super::super::vacancy::vacancies(root, "x", &log).free(), 0, "every slot is taken");
+        assert!(dispatch_waiting(root, "x", &log), "the replanned wave leaves by its own slot");
+        assert!(program_needed(root, "x"));
     }
 
     /// A vaga cuja pasta existe sem ser cópia do git — sobra de um processo

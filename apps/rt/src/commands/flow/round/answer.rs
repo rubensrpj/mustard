@@ -589,12 +589,17 @@ pub(super) fn run_entered_round(
         out
     };
     recorded.splice(0..0, released);
-    // O programa da branch compila na hora do uso: quando a rodada vai
-    // despachar e ele está atrás do commit atual. Com a compilação verde, o
-    // despacho passa ao programa novo, e esta rodada não solta onda nenhuma;
-    // a vermelha só avisa, e o despacho segue no programa de agora. O
-    // programa que recebeu o despacho não compila de novo.
-    let built = if !super::handoff::handed_over() && super::queue::dispatch_waiting(root, &spec) {
+    // No checkout do Mustard, o programa da branch compila na hora do uso:
+    // quando a rodada vai despachar, a onda pausada por este relatório
+    // inclusive, ou quando o passo seguinte é o fechamento, e só com ele atrás
+    // do commit atual. Com a compilação verde, o despacho passa ao programa
+    // novo, e esta rodada não solta onda nenhuma; a vermelha só avisa, e o
+    // despacho segue no programa de agora. O programa que recebeu o despacho
+    // não compila de novo. Outro projeto nem relê a spec para isso.
+    let built = if mustard_core::mustard_checkout(root).is_some()
+        && !super::handoff::handed_over()
+        && (!paused.is_empty() || super::queue::program_needed(root, &spec))
+    {
         super::commit::build_development_version(root, &spec, lang)
     } else {
         None

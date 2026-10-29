@@ -3589,13 +3589,14 @@ fn a_task_whose_files_are_all_git_ignored_is_refused_with_its_own_reason() {
 }
 
 /// A obra do próprio Mustard: a rodada que comita código do programa sem
-/// onda nenhuma a despachar depois não chama o executor de compilação.
+/// onda nenhuma a despachar, com a onda 2 ainda no ar, não chama o executor
+/// de compilação: o programa não roda antes da volta dela.
 #[test]
 fn a_round_that_commits_the_program_with_nothing_to_dispatch_does_not_build_it() {
-    let (project, _, _, _) = backlog_in(Project::as_mustard_source(), &[&["apps/rt/a.txt"]], &[]);
+    let (project, _, _, _) = backlog_in(Project::as_mustard_source(), &[&["apps/rt/a.txt"], &["apps/rt/b.txt"]], &[]);
     let first = project.run(&["round", "--dispatch", "--spec", SPEC]);
-    assert_eq!(waves_in(&first, "dispatch"), vec![1], "{first}");
-    keep_sent(&project, &[1]);
+    assert_eq!(waves_in(&first, "dispatch"), vec![1, 2], "{first}");
+    keep_sent(&project, &[1, 2]);
     deliver_file_in_copy(&project, 1, "apps/rt/a.txt", "um\n");
     let view = project.run(&["review-wave", "--wave", "1", "--spec", SPEC]);
     assert!(view["fingerprint"].is_string(), "{view}");
@@ -3610,6 +3611,31 @@ fn a_round_that_commits_the_program_with_nothing_to_dispatch_does_not_build_it()
     assert!(out.get("commit").is_some(), "the round committed the wave 1: {out}");
     assert!(waves_in(&out, "dispatch").is_empty(), "{out}");
     assert_eq!(calls(), before, "nothing to dispatch, nothing built");
+}
+
+/// A obra do próprio Mustard: a rodada que comita a última onda, sem nada a
+/// despachar e com o programa atrás, compila uma vez: o passo seguinte é o
+/// fechamento, que roda o programa da branch.
+#[test]
+fn a_round_that_commits_the_last_wave_builds_the_program_for_the_close() {
+    let (project, _, _, _) = backlog_in(Project::as_mustard_source(), &[&["apps/rt/a.txt"]], &[]);
+    let first = project.run(&["round", "--dispatch", "--spec", SPEC]);
+    assert_eq!(waves_in(&first, "dispatch"), vec![1], "{first}");
+    keep_sent(&project, &[1]);
+    deliver_file_in_copy(&project, 1, "apps/rt/a.txt", "um\n");
+    let view = project.run(&["review-wave", "--wave", "1", "--spec", SPEC]);
+    assert!(view["fingerprint"].is_string(), "{view}");
+    let reviewed = json!({"wave": 1, "note": "O conferente leu o diff e as regras."});
+    let report = format!("{USAGE_OF_WAVE_ONE}\n<REVIEWED>{reviewed}</REVIEWED>");
+    let builds = || std::fs::read_to_string(project.home.join("cargo.log")).unwrap_or_default().matches("build --profile").count();
+    let before = builds();
+
+    let out = project.command(&["run", "round", "--dispatch", "--spec", SPEC, "--report", &report], "");
+    let out: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stdout)));
+
+    assert!(out.get("commit").is_some(), "the round committed the last wave: {out}");
+    assert!(waves_in(&out, "dispatch").is_empty(), "{out}");
+    assert_eq!(builds(), before + 1, "nothing left open, the close comes next: {out}");
 }
 
 /// A obra do próprio Mustard: a rodada que comita código do programa o

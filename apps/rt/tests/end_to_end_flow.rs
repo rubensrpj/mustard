@@ -2376,6 +2376,24 @@ fn a_round_that_committed_the_program_builds_the_development_version_once_in_the
     assert!(!reasons.contains(&"development-build-failed"), "a compilação verde não avisa: {second}");
 }
 
+/// A compilação vermelha antes de um despacho sem commit também só avisa, e a
+/// onda sai.
+#[test]
+fn a_red_build_before_a_dispatch_without_a_commit_warns_and_the_wave_leaves() {
+    let project = Project::as_mustard_source();
+    std::fs::write(project.home.join("cargo-falha"), "").expect("the build is red");
+    project.open();
+    survey(&project);
+    plan_files(&project, &["apps/rt/src/main.rs"]);
+    approve(&project);
+
+    let sent = first_round(&project);
+    assert!(sent.get("commit").is_none(), "{sent}");
+    assert_eq!(project.cargo_calls(), [the_build_call(&project)], "{sent}");
+    let warned = sent["warnings"].as_array().into_iter().flatten().any(|w| w["reason"] == json!("development-build-failed"));
+    assert!(warned, "o aviso da compilação vermelha: {sent}");
+}
+
 /// O despacho com o programa compilado atrás do commit atual compila uma vez,
 /// mesmo sem commit nenhum na rodada.
 #[test]

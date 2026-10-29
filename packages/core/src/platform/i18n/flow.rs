@@ -1060,12 +1060,12 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // `{read}` é o comando que lê a execução gravada da compilação, com a
         // saída inteira, que o aviso não repete.
         ("round.development_build_failed", Locale::PtBr) => {
-            "O commit saiu, mas a versão em construção do Mustard não compilou. A sessão segue no \
-             programa compilado anterior. A saída da compilação se lê com `{read}`."
+            "A versão em construção do Mustard não compilou. A sessão segue no programa compilado \
+             anterior. A saída da compilação se lê com `{read}`."
         }
         ("round.development_build_failed", Locale::EnUs) => {
-            "The commit landed, but the development build of Mustard did not compile. The session \
-             stays on the previous compiled program. Read the build output with `{read}`."
+            "The development build of Mustard did not compile. The session stays on the previous \
+             compiled program. Read the build output with `{read}`."
         }
         ("round.commit_carried_more", Locale::PtBr) => {
             "O commit levou arquivo que a entrega não listou: {extra}, em {repo}. Isso acontece \

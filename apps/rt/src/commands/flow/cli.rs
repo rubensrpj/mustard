@@ -116,8 +116,9 @@ pub enum FlowCmd {
     /// do que a onda tirou, formata só os arquivos da rodada e faz o commit,
     /// sem compilar nem rodar prova, e então despacha as dependentes
     /// liberadas. No repositório do Mustard, o programa da branch é
-    /// recompilado antes do despacho, só quando está atrás do commit atual. A
-    /// compilação, o lint, a suíte e as provas ficam para o fechamento.
+    /// recompilado antes do despacho, ou antes do fechamento quando nada
+    /// ficou aberto, só quando está atrás do commit atual. A compilação, o
+    /// lint, a suíte e as provas ficam para o fechamento.
     /// Nenhuma etapa da rodada publica uma página externa.
     #[command(display_order = 3)]
     Round {

@@ -1,9 +1,9 @@
-//! A passagem do despacho ao programa recém-compilado. A rodada que comita
-//! código do Mustard refaz o programa compilado da branch logo depois do
-//! commit; se é esse mesmo programa que roda a rodada, o processo atual é o
-//! antigo, e a onda que ele soltasse sairia montada pelo código de antes do
-//! commit. Então, com a compilação verde, a rodada termina a parte do commit
-//! e pede o despacho ao programa novo (`run round --dispatch --full`, sem
+//! A passagem do despacho ao programa recém-compilado. No checkout do
+//! Mustard, a rodada que vai despachar refaz o programa compilado da branch
+//! quando ele está atrás do commit atual; se é esse mesmo programa que roda a
+//! rodada, o processo atual é o antigo, e a onda que ele soltasse sairia
+//! montada pelo código de antes. Então, com a compilação verde, a rodada
+//! termina a sua parte e pede o despacho ao programa novo (`run round --dispatch --full`, sem
 //! relatório), devolvendo a resposta dele junto da sua. A resposta inteira, e
 //! não a curta: o processo que imprime é este, e é ele quem a encurta, uma vez
 //! só — agrupar as tarefas seguradas de uma resposta já agrupada as perde. Sem
