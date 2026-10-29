@@ -79,7 +79,7 @@ flowchart LR
     C --> PR["pr-open"]
 ```
 
-Every command names the next step. `open` starts the spec; `grill` surveys open points; `plan` checks the plan for user approval. `round` dispatches waves in separate copies, integrates authorized deliveries, runs build and targeted proofs, commits and releases dependent tasks. `close` runs the configured lint, general suite and criteria on integrated code, reusing only current validation. A final reviewer uses wave summaries to guide code/diff verification, including a single-wave spec. Failures open traceable repairs. `pr-open` opens the pull request; merge requires a user request.
+Every command names the next step. `open` starts the spec; `grill` surveys open points; `plan` checks the plan for user approval. `round` dispatches waves in separate copies, integrates the deliveries, formats the round's files, commits and releases dependent tasks, without building or running proofs. `close` runs the build, the configured lint, the general suite and the criteria proofs on integrated code, reusing only current validation. A final reviewer uses wave summaries to guide code/diff verification, including a single-wave spec. Failures open traceable repairs. `pr-open` opens the pull request; merge requires a user request.
 
 The plugin provides the `/mustard:*` commands:
 
