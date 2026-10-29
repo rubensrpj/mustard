@@ -677,9 +677,9 @@ mod tests {
 
     /// Uma spec aberta com as tarefas `tasks` no backlog, na ordem: o
     /// título, o arquivo e as posições das anteriores de que cada uma
-    /// depende. Devolve os números.
+    /// depende, num projeto de quatro vagas. Devolve os números.
     fn backlog(dir: &Path, tasks: &[(&str, &str, &[usize])]) -> Vec<u64> {
-        crate::shared::test_fixture::seeded_repo(dir, &[("mustard.json", "{}")]);
+        crate::shared::test_fixture::seeded_repo(dir, &[("mustard.json", r#"{"maxCompilingWaves":4}"#)]);
         assert_eq!(record_open(dir, "x", "feature/x", "dev"), Ok(true));
         let said = json!({ "author": "user", "text": "reorganize a lista" });
         let said = record(dir, "x", "message", object(said), PhaseWriter::Binary).unwrap().written.id;

@@ -364,6 +364,7 @@ fn backlog_task_with(project: &Project, criterion: u64, said: u64, files: &[&str
 #[test]
 fn backlog_always_becomes_the_same_batches() {
     let project = Project::new();
+    declare_slots(&project, 3);
     project.open();
     let said = survey(&project);
     let criterion = project.write(
@@ -651,6 +652,7 @@ fn task_with_a_wildcard_goes_out_alone_and_waits_for_the_wave_in_progress() {
 fn task_with_a_wildcard_goes_out_alone_and_the_pattern_joins_the_file_it_matches() {
     let own = ["src/a.rs", "lib/1.rs", "lib/2.rs", "lib/3.rs", "lib/4.rs"];
     let (project, crit, said, tasks) = backlog_project(&[&own, &["src/**"]]);
+    declare_slots(&project, 3);
     let (_, out) = dispatch_ready(&project);
     let joined = wave_of(&project, tasks[0]).expect("a tarefa de src/a.rs vira onda");
     assert_eq!(wave_of(&project, tasks[1]), Some(joined), "src/** junta com src/a.rs, que ele casa");
@@ -1347,6 +1349,15 @@ fn one_slot(project: &Project) {
     slots(project, 1);
 }
 
+/// Declara `count` vagas no `mustard.json` do projeto, guardando o resto
+/// dele.
+fn declare_slots(project: &Project, count: usize) {
+    let path = project.root.join("mustard.json");
+    let mut config: Value = serde_json::from_str(&std::fs::read_to_string(&path).expect("config")).expect("json");
+    config["maxCompilingWaves"] = json!(count);
+    std::fs::write(&path, config.to_string()).expect("config");
+}
+
 /// Deixa o projeto com `count` vagas: até `count` ondas ao mesmo tempo.
 fn slots(project: &Project, count: usize) {
     std::fs::write(
@@ -1392,6 +1403,7 @@ fn a_marked_task_with_the_highest_number_leaves_first_with_and_without_the_jev()
 #[test]
 fn independent_small_tasks_leave_with_priority_preserved() {
     let (project, crit, said, tasks) = backlog_project(&[&["a.rs"]]);
+    declare_slots(&project, 3);
     let (_, out) = dispatch_ready(&project);
     assert_eq!(out, vec![wave_of(&project, tasks[0]).expect("a primeira onda")], "a onda de a.rs sai e fica no ar");
     let plain = seed_backlog_task(&project, crit, said, &["b.rs"]);
@@ -2587,8 +2599,8 @@ fn unreviewed_round(project: &Project) -> Value {
     report
 }
 
-/// Duas vagas e três cópias, todas guardadas: as ondas 1 e 2 voltaram e
-/// esperam a revisão, e a 3 trabalha. Com uma sessão conduzindo, a rodada
+/// Três vagas, cada uma com a sua cópia, todas guardadas: as ondas 1 e 2
+/// voltaram e esperam a revisão, e a 3 trabalha. Com uma sessão conduzindo, a rodada
 /// pede a formação das duas tarefas que sobram, e o recibo do agente de
 /// análise volta. A onda 3 volta também, e a vaga dela abre, mas as cópias
 /// seguem cheias. A rodada seguinte, com a mesma fila, reaproveita a
@@ -2596,10 +2608,7 @@ fn unreviewed_round(project: &Project) -> Value {
 #[test]
 fn with_full_copies_the_next_round_reuses_the_formation_of_the_same_tasks() {
     let mut project = Project::new();
-    let path = project.root.join("mustard.json");
-    let mut config: Value = serde_json::from_str(&std::fs::read_to_string(&path).expect("config")).expect("json");
-    config["maxCompilingWaves"] = json!(2);
-    std::fs::write(&path, config.to_string()).expect("config");
+    declare_slots(&project, 3);
     project.open();
     let said = survey(&project);
     let criterion = project.write(
@@ -2614,13 +2623,10 @@ fn with_full_copies_the_next_round_reuses_the_formation_of_the_same_tasks() {
     approve(&project);
 
     let first = project.run(&["round", "--dispatch", "--spec", SPEC]);
-    assert_eq!(waves_in(&first, "dispatch"), vec![1, 2], "{first}");
-    keep_sent(&project, &[1, 2]);
+    assert_eq!(waves_in(&first, "dispatch"), vec![1, 2, 3], "{first}");
+    keep_sent(&project, &[1, 2, 3]);
     deliver_file_in_copy(&project, 1, files[0], "pronto\n");
     deliver_file_in_copy(&project, 2, files[1], "pronto\n");
-    let second = unreviewed_round(&project);
-    assert_eq!(waves_in(&second, "dispatch"), vec![3], "{second}");
-    keep_sent(&project, &[3]);
     project.session = Some(SESSION);
 
     let asked = unreviewed_round(&project);
@@ -2709,10 +2715,7 @@ fn deliver_wave_one(project: &Project, text: &str, files: &[&str], undone: &[Str
 /// projeto e as quatro tarefas: as duas da onda 1 e as duas que a seguem.
 fn running_wave_with_followers() -> (Project, [u64; 4]) {
     let mut project = Project::new();
-    let path = project.root.join("mustard.json");
-    let mut config: Value = serde_json::from_str(&std::fs::read_to_string(&path).expect("config")).expect("json");
-    config["maxCompilingWaves"] = json!(2);
-    std::fs::write(&path, config.to_string()).expect("config");
+    declare_slots(&project, 2);
     project.open();
     let said = survey(&project);
     let criterion = project.write(
@@ -2848,8 +2851,8 @@ fn copies_full(out: &Value) -> Option<&Value> {
     out["warnings"].as_array().into_iter().flatten().find(|warning| warning["reason"] == json!("copies-full"))
 }
 
-/// Uma vaga só, duas cópias e quatro tarefas prontas, cada uma no seu
-/// arquivo. As ondas 1 e 2 voltam e guardam as duas cópias; o aviso de
+/// Duas vagas, cada uma com a sua cópia, e quatro tarefas prontas, cada uma
+/// no seu arquivo. As ondas 1 e 2 voltam e guardam as duas cópias; o aviso de
 /// cópias cheias cita as duas. A onda 1 perde a tarefa depois de voltar e
 /// sai do ar: a cópia dela vai para a onda 3, e quando as ondas 2 e 3
 /// voltam e a quarta tarefa espera, o aviso cita só as duas que guardam
@@ -2857,13 +2860,10 @@ fn copies_full(out: &Value) -> Option<&Value> {
 #[test]
 fn a_wave_that_lost_its_last_task_after_returning_is_not_named_among_the_copies_kept() {
     let (project, _, _, tasks) = backlog_project(&[&["a.rs"], &["b.rs"], &["c.rs"], &["d.rs"]]);
-    one_slot(&project);
+    slots(&project, 2);
     let (_, first) = dispatch_ready(&project);
-    assert_eq!(first, vec![1]);
+    assert_eq!(first, vec![1, 2]);
     deliver_file_in_copy(&project, 1, "a.rs", "um\n");
-    let second = unreviewed_round(&project);
-    assert_eq!(waves_in(&second, "dispatch"), vec![2], "{second}");
-    keep_sent(&project, &[2]);
     deliver_file_in_copy(&project, 2, "b.rs", "dois\n");
 
     let full = unreviewed_round(&project);
@@ -2888,15 +2888,15 @@ fn a_wave_that_lost_its_last_task_after_returning_is_not_named_among_the_copies_
     assert_eq!(warning["hint"], json!(expected), "{held}");
 }
 
-/// Três vagas e quatro cópias. As ondas 1 e 2 voltam e esperam a revisão,
-/// guardando duas cópias. Do backlog, a tarefa de um arquivo sai numa das
-/// duas cópias livres, e a que cruza a árvore inteira segue pronta,
+/// Quatro vagas, cada uma com a sua cópia. As ondas 1 e 2 voltam e esperam
+/// a revisão, guardando duas cópias. Do backlog, a tarefa de um arquivo sai
+/// numa das duas cópias livres, e a que cruza a árvore inteira segue pronta,
 /// esperando a vez de sair sozinha, e não uma cópia: sobra cópia livre, e a
 /// rodada não diz que as cópias estão cheias.
 #[test]
 fn a_round_that_leaves_a_copy_free_does_not_say_the_copies_are_full() {
     let (project, crit, said, _) = backlog_project(&[&["a.rs"], &["b.rs"]]);
-    slots(&project, 3);
+    slots(&project, 4);
     let first = project.run(&["round", "--dispatch", "--spec", SPEC]);
     assert_eq!(waves_in(&first, "dispatch"), vec![1, 2], "{first}");
     deliver_file_in_copy(&project, 1, "a.rs", "um\n");
@@ -2913,8 +2913,9 @@ fn a_round_that_leaves_a_copy_free_does_not_say_the_copies_are_full() {
     assert!(copies_full(&out).is_none(), "a copy is still free: {out}");
 }
 
-/// Duas vagas e três cópias, com quatro tarefas prontas. As ondas 1 e 2
-/// voltam e esperam a revisão, guardando duas cópias, e sobra uma. O Jev
+/// Três vagas, cada uma com a sua cópia, e quatro tarefas prontas. As ondas
+/// 1 e 2 saem com duas vagas, voltam e esperam a revisão, guardando duas
+/// cópias, e o projeto passa a três: sobra uma. O Jev
 /// recusa só a escolha dos itens: a onda montada do backlog espera o recibo e
 /// não sai, então não toma a cópia livre. A rodada diz que a onda espera a
 /// escolha, e não que as cópias estão cheias; com o recibo, a onda sai na
@@ -2927,6 +2928,7 @@ fn a_wave_held_for_the_item_choice_takes_no_copy_and_the_round_does_not_say_the_
     assert_eq!(waves_in(&first, "dispatch"), vec![1, 2], "{first}");
     deliver_file_in_copy(&project, 1, "a.rs", "um\n");
     deliver_file_in_copy(&project, 2, "b.rs", "dois\n");
+    slots(&project, 3);
     let jev = FakeJev::start(|asked| if asks_items(asked) { (400, json!({"error": "refused"})) } else { items_answer(asked, &|_| 0.5) });
     project.jev = Some(jev.url.clone());
 
@@ -3595,6 +3597,8 @@ fn a_task_whose_files_are_all_git_ignored_is_refused_with_its_own_reason() {
 #[test]
 fn a_round_that_commits_the_program_hands_the_dispatch_over_and_answers_once() {
     let (project, crit, said, _) = backlog_in(Project::as_mustard_source(), &[&["apps/rt/a.txt"]], &[]);
+    // A onda 2 guarda a cópia dela, e as duas limpezas tomam as outras duas.
+    declare_slots(&project, 3);
     let first = project.run(&["round", "--dispatch", "--spec", SPEC]);
     assert_eq!(waves_in(&first, "dispatch"), vec![1], "{first}");
     keep_sent(&project, &[1]);

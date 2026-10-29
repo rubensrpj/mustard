@@ -20,11 +20,11 @@ use crate::commands::spec_events::task_dependents::TaskRefs;
 use crate::commands::spec_events::write::record;
 use crate::shared::dag::touches_whole_tree;
 
-/// Quantas ondas saem juntas quando o projeto não diz outra coisa: quatro, que
-/// é quanto a máquina aguenta compilando ao mesmo tempo. Cada onda compila
-/// dentro da própria vaga e trabalha na própria cópia: duas ondas com o mesmo
-/// arquivo saem juntas, e a rodada junta as duas no commit.
-const DEFAULT_PARALLEL: usize = 4;
+/// Quantas ondas saem juntas quando o projeto não diz outra coisa: duas. Cada
+/// onda compila dentro da própria vaga e trabalha na própria cópia, e cada
+/// cópia leva a sua compilação para o disco: duas ondas com o mesmo arquivo
+/// saem juntas, e a rodada junta as duas no commit.
+const DEFAULT_PARALLEL: usize = 2;
 
 /// Quantas ondas o projeto deixa compilar ao mesmo tempo.
 pub(crate) fn max_parallel(root: &Path) -> usize {
@@ -1137,24 +1137,15 @@ mod tests {
     }
 
     /// Duas ondas sem dependência entre si, com o mesmo arquivo declarado,
-    /// saem juntas com a terceira: cada uma trabalha na própria cópia. Cinco
-    /// ondas sem arquivo em comum saem até o teto de quatro; a quinta espera a
-    /// vaga.
+    /// saem juntas: cada uma trabalha na própria cópia. Sem `maxCompilingWaves`
+    /// no projeto, o teto é de duas; a terceira espera a vaga.
     #[test]
-    fn waves_with_a_shared_file_leave_together_up_to_the_cap_of_four() {
+    fn waves_with_a_shared_file_leave_together_up_to_the_default_cap_of_two() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/a.rs"], &[]), (3, &["src/c.rs"], &[])]);
         let out = round(root, "x", None);
-        assert_eq!(waves_in(&out, "dispatch"), vec![1, 2, 3], "o arquivo em comum não segura a onda 2: {out}");
-
-        // Quatro ondas sem arquivo em comum saem juntas, até o teto de
-        // quatro; a quinta espera.
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[]), (3, &["src/c.rs"], &[]), (4, &["src/d.rs"], &[]), (5, &["src/e.rs"], &[])]);
-        let out = round(root, "x", None);
-        assert_eq!(waves_in(&out, "dispatch"), vec![1, 2, 3, 4], "sem cruzar arquivo, as quatro saem: {out}");
+        assert_eq!(waves_in(&out, "dispatch"), vec![1, 2], "o arquivo em comum não segura a onda 2, e a 3 espera a vaga: {out}");
     }
 
     /// A cópia da onda órfã — pedido aberto sem o processo que mandou —
@@ -1225,6 +1216,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/app.ts"], &[]), (2, &["src/b.ts"], &[]), (3, &["src/c.ts"], &[])]);
+        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":3}"#).unwrap();
         let first = round(root, "x", None);
         assert_eq!(waves_in(&first, "dispatch"), vec![1, 2, 3], "{first}");
 
@@ -1262,6 +1254,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/app.ts"], &[]), (2, &["src/b.ts"], &[]), (3, &["src/c.ts"], &[])]);
+        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":3}"#).unwrap();
         let first = round(root, "x", None);
         assert_eq!(waves_in(&first, "dispatch"), vec![1, 2, 3], "{first}");
 
@@ -3609,6 +3602,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let (said, crit) = backlog_project(root);
+        // A onda grande em andamento e duas ao lado dela: três vagas.
+        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":3}"#).unwrap();
         backlog_task_on(root, said, crit, "Mexer na parte grande.", &SIX_FILES);
         let log = spec_now(root);
         assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), (None, None)).map(|(formed, _)| formed), Ok(vec![1]));
@@ -3642,6 +3637,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let (said, crit) = backlog_project(root);
+        // A onda grande em andamento e duas ao lado dela: três vagas.
+        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":3}"#).unwrap();
         backlog_task_on(root, said, crit, "Mexer na parte grande.", &SIX_FILES);
         let log = spec_now(root);
         assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), (None, None)).map(|(formed, _)| formed), Ok(vec![1]));

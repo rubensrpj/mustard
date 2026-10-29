@@ -602,8 +602,8 @@ fn step_of(root: &Path, phase: &str, spec: &str, log: &SpecLog, lang: Locale) ->
     if !stuck.is_empty() {
         return waves("resume.step.stuck_one", "resume.step.stuck_many", &stuck.keys().copied().collect::<Vec<_>>());
     }
-    // As vagas pela conta única da rodada: a onda que voltou guarda a cópia
-    // sem ocupar vaga.
+    // As vagas pela conta única da rodada: a onda que voltou guarda a cópia,
+    // e com ela a vaga, até o commit.
     let vacancies = crate::commands::flow::round::vacancy::vacancies(root, spec, log);
     // A onda que leva a avaliação de uma skill e espera tarefas abertas nos
     // arquivos que a skill cita não sai, como na rodada.

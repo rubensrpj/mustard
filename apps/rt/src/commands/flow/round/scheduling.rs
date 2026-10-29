@@ -58,8 +58,8 @@ fn queue(root: &Path, spec: &str, log: &SpecLog) -> Queue {
     let left = queue::backlog_left(log);
     let uncovered = queue::backlog_uncovered(log);
     let codes = log.codes();
-    // As vagas pela conta única da rodada: a onda que voltou guarda a cópia
-    // sem ocupar vaga.
+    // As vagas pela conta única da rodada: a onda que voltou guarda a cópia,
+    // e com ela a vaga, até o commit.
     let vacancies = super::vacancy::vacancies(root, spec, log);
     let (capacity, free) = (vacancies.capacity, vacancies.free());
     let declared = mustard_core::ProjectConfig::load(root).max_compiling_waves().is_some();
@@ -247,7 +247,7 @@ mod tests {
         assert_eq!(view["tasks"][0]["reason"], "ready");
         assert_eq!(view["tasks"][1]["reason"], "ready");
         assert_eq!(view["occupied_wave_slots"], 1);
-        assert_eq!(view["free_wave_slots"], 3);
+        assert_eq!(view["free_wave_slots"], 1, "the default of two slots, one running");
         assert_eq!(format!("{:?}", spec_now(root)), before);
         std::fs::write(root.join("mustard.json"), r#"{"maxCompilingWaves":1}"#).unwrap();
         let full = snapshot(root, "x", &log);

@@ -322,7 +322,7 @@ mod tests {
     #[test]
     fn a_wave_cap_patch_changes_the_value_read_next() {
         let dir=fixture();let root=dir.path();
-        assert_eq!(read(root)["values"]["max_compiling_waves"],4);
+        assert_eq!(read(root)["values"]["max_compiling_waves"],2);
         assert_eq!(patch(root,json!({"max_compiling_waves":7}))["ok"],true);
         assert_eq!(read(root)["values"]["max_compiling_waves"],7);
         assert_eq!(document(root).unwrap().1["jev"]["key"],SECRET);

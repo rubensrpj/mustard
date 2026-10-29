@@ -172,9 +172,9 @@ pub(super) fn open_copies(
         .filter(|(wave, path)| waves_holding(&holders, path).is_some_and(|by| by.iter().all(|other| other == wave)))
         .map(|(_, path)| path)
         .collect();
-    // As pastas de vaga vão até o teto de cópias da obra, além das vagas: a
-    // onda que voltou guarda a dela até o commit sem segurar o despacho.
-    let mut free: Vec<PathBuf> = (0..super::vacancy::copy_cap(max_parallel(root)))
+    // Uma pasta por vaga, e nenhuma além delas: a onda que voltou guarda a
+    // dela até o commit.
+    let mut free: Vec<PathBuf> = (0..max_parallel(root))
         .map(|slot| slot_path(root, spec, slot))
         .filter(|slot| !has_place(&held, &shown(slot)) || has_place(&own, &shown(slot)))
         .collect();

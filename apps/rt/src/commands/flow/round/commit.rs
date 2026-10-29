@@ -2061,6 +2061,8 @@ mod tests {
         let before = git_text(root, &["rev-parse", "HEAD"]);
 
         delivered(root, 1, "Saiu.", &["src/a.rs"]);
+        // A onda 1 segura a cópia dela até o commit: a 2 sai pela segunda vaga.
+        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":2}"#).unwrap();
         let out = round(root, "x", None);
         assert_eq!(out["ok"], json!(true), "{out}");
         let held = warning_of(&out, "project-hook-refused");
