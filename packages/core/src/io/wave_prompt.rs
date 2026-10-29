@@ -575,23 +575,18 @@ pub fn check_copy_path(root: &Path, spec: &str) -> PathBuf {
     spec_copies_dir(root, spec).join("check")
 }
 
-/// O commit em que o revisor final confere a obra: o mais novo que a spec
-/// gravou no repositório principal do checkout `root`. O commit de um
-/// submódulo, que a rodada grava com o nome da pasta dele em `repo`, não
-/// existe no principal, e a cópia não nasceria nele. `None` quando a obra
-/// ainda não comitou nada ali — aí o pedido diz `HEAD`, e o fechamento cria a
-/// cópia no commit atual do checkout.
+/// O commit em que o revisor final confere a obra: o da cópia limpa da spec
+/// ([`check_copy_path`]), em que a máquina do fechamento rodou; sem a cópia,
+/// o commit atual do checkout `root`, de onde o fechamento a cria. `None`
+/// quando o git não responde, e aí o pedido diz `HEAD`.
 #[must_use]
-pub fn final_review_commit(root: &Path, log: &SpecLog) -> Option<String> {
-    let main = root.file_name().map(|name| name.to_string_lossy().to_string());
-    log.block(BlockQuery::Block(Block::Progress))
-        .into_iter()
-        .rev()
-        .filter(|e| e.event_type == "commit")
-        .filter(|e| e.str_field("repo").is_none_or(|repo| Some(repo) == main.as_deref()))
-        .find_map(|e| e.str_field("sha").map(str::to_string))
+pub fn final_review_commit(root: &Path, spec: &str) -> Option<String> {
+    let head = |dir: &Path| {
+        crate::platform::git::run(dir, &["rev-parse", "HEAD"]).out().map(|sha| sha.trim().to_string()).filter(|sha| !sha.is_empty())
+    };
+    let copy = check_copy_path(root, spec);
+    copy.join(".git").exists().then(|| head(&copy)).flatten().or_else(|| head(root))
 }
-
 
 /// O pedido do agente de teste dedicado da spec `spec`, que o fechamento pede
 /// a toda obra, mesmo a de uma onda só, no lugar da revisão de cada onda: só
@@ -633,7 +628,7 @@ pub fn final_review_commit(root: &Path, log: &SpecLog) -> Option<String> {
 /// gravar nada, para o usuário ver o pedido real antes de ele valer.
 #[must_use]
 pub fn final_review(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> FinalReview {
-    let commit = final_review_commit(root, log);
+    let commit = final_review_commit(root, spec);
     let copy = check_copy_path(root, spec);
     let prepared = crate::io::workspace::checkout_git_dir(&copy).is_some_and(|admin| admin.join("mustard-dependencies.sha256").is_file());
     let execution = Execution { commit, prepared, copy: Some(WaveCopy { path: shown(&copy), reused: None }), ..project_execution(root) };
@@ -3695,7 +3690,9 @@ mod tests {
                 "o pedido ainda traz todos os requisitos acordados: {last}"
             );
             assert!(last.contains(t("prompt.final.look_again")) && !last.contains(t("prompt.final.look")), "{last}");
-            let suite = t("prompt.review.suite").replace("{command}", "make test").replace("{commit}", "bbb2222");
+            // Sem cópia limpa nem git na pasta, o pedido diz `HEAD`: o commit é
+            // o da cópia, e não o último que a spec gravou.
+            let suite = t("prompt.review.suite").replace("{command}", "make test").replace("{commit}", "HEAD");
             assert!(last.contains(&format!("- {suite}")) && last.contains(&build), "{lang:?}: {last}");
             assert!(whole_suite_once(&last), "a revisão não roda a suíte inteira: {last}");
 
@@ -3713,7 +3710,7 @@ mod tests {
             assert!(part_lines(&first, since).is_empty() && !first.contains(&format!("## {since}")), "{first}");
             assert!(first.contains(t("prompt.final.look")) && !first.contains(t("prompt.final.look_again")), "{first}");
             assert!(whole_suite_once(&first), "a revisão não roda a suíte inteira: {first}");
-            let suite = t("prompt.review.suite").replace("{command}", "make test").replace("{commit}", "aaa1111");
+            let suite = t("prompt.review.suite").replace("{command}", "make test").replace("{commit}", "HEAD");
             assert!(first.contains(&format!("- {suite}")) && first.contains(&build), "{first}");
         }
     }

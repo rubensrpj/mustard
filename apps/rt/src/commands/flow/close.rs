@@ -2201,8 +2201,8 @@ mod tests {
 
     /// O revisor final confere a obra na mesma cópia limpa em que a máquina
     /// rodou, no commit da obra e sem os arquivos locais do projeto, e o
-    /// envio da revisão grava essa cópia. O fechamento prepara só ela, além
-    /// da vaga da onda. Quando a obra fecha, o binário apaga todas as vagas
+    /// envio da revisão grava essa cópia, e o pedido cita o commit dela. O
+    /// fechamento prepara só ela, além da vaga da onda. Quando a obra fecha, o binário apaga todas as vagas
     /// dela; a pasta principal e o que ela compilou ficam.
     #[test]
     fn the_reviewer_works_in_the_clean_copy_of_the_machine() {
@@ -2222,6 +2222,9 @@ mod tests {
             String::from_utf8_lossy(&out.stdout).trim().to_string()
         };
 
+        // Um commit fora da obra adianta a pasta principal: a cópia nasce nele.
+        std::fs::write(root.join("fora.txt"), "fora").unwrap();
+        commit_file(root, "fora.txt");
         let asked = ask(None);
         assert_eq!(asked["review"]["final"], json!(true), "{asked}");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
@@ -2231,6 +2234,7 @@ mod tests {
         assert!(!copy.join(".env").exists() && hints_of(&asked, "local-file-missing").is_empty(), "nenhum arquivo local: {asked}");
         let prompt = review_prompt(&asked);
         assert!(prompt.contains(&format!("`{shown}`")) && !prompt.contains(".env"), "{prompt}");
+        assert!(prompt.contains(&format!("`{}`", git_out(&copy, &["rev-parse", "HEAD"]))), "o pedido cita o commit da cópia: {prompt}");
         let mut prepared: Vec<String> =
             std::fs::read_dir(copy.parent().unwrap()).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
         prepared.sort();
@@ -3434,8 +3438,7 @@ exit "${2:-0}"
             rest.split("\n## ").next().unwrap_or_default().to_string()
         };
         let suite_line = |prompt: &str| {
-            let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-            let commit = mustard_core::io::wave_prompt::final_review_commit(root, &log).unwrap_or_else(|| "HEAD".into());
+            let commit = mustard_core::io::wave_prompt::final_review_commit(root, "x").unwrap_or_else(|| "HEAD".into());
             let said = translate("prompt.review.suite", Locale::PtBr).replace("{command}", "git --version");
             assert!(prompt.contains(&said.replace("{commit}", &commit)), "a suíte passou no commit da cópia: {prompt}");
             assert!(!prompt.contains("Teste com `git --version`"), "a revisão não roda a suíte inteira: {prompt}");
