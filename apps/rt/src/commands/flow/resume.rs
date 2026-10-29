@@ -95,7 +95,8 @@ pub(crate) fn resume_for(opts: &ResumeOpts, session: Option<&str>) -> Value {
         // exato do catálogo, o único que a testemunha da aprovação reconhece.
         "next": translate(next_key(phase), lang)
             .replace("{question}", translate("approval.question", lang))
-            .replace("{option}", translate("approval.option", lang)),
+            .replace("{option}", translate("approval.option", lang))
+            .replace("{spec}", &spec),
         "command": next_command_now(&project.root, phase, &spec, &state, &log),
     });
     if let Some(branch) = state.branch.as_deref() {
@@ -392,7 +393,8 @@ pub(crate) fn resume_block(spec: &str, log: &SpecLog, observed: &[SpecEvent], la
     let command = next_command(phase, spec, &state).as_str().map_or_else(|| none.to_string(), str::to_string);
     let next = translate(next_key(phase), lang)
         .replace("{question}", translate("approval.question", lang))
-        .replace("{option}", translate("approval.option", lang));
+        .replace("{option}", translate("approval.option", lang))
+        .replace("{spec}", spec);
     let text = translate("conversation_size.block", lang)
         .replace("{spec}", spec)
         .replace("{phase}", phase)

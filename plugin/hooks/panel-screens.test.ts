@@ -902,6 +902,20 @@ for(const surface of SURFACES)test(`the overview shows the counts of the binary 
   await f.close();
 });
 
+// O que a página da spec mostra antes do clique em "Aprovar": as decisões do
+// usuário e as outras, o resolvido pelo código com a fonte, o critério com a
+// prova e as tarefas com a previsão.
+const approval={user_decisions:[{code:'MSTD-RULE-0001',type:'rule',title:'Nome inteiro'}],other_decisions:[{code:'MSTD-LIMIT-0001',type:'limit',title:'Teto'}],
+  resolved_by_code:[{code:'MSTD-POINT-0002',gap:'contracts',facts:[{text:'A saudação é montada aqui.',source:'src/main.rs:1'}]}],
+  criteria:[{code:'MSTD-CRIT-0001',title:'Nome na saudação',proof:'cargo test saudacao'}],tasks:{total:1,forecast:'Ondas pela formação: 1.'}};
+for(const surface of SURFACES)test(`the spec screen shows what one click approves, block by block · ${surface}`,async ($,on)=>{
+  const f=await open($,on,surface,{patch:{spec:{spec:{...spec.spec,approval}}}});await reach(f,'spec');
+  inOrder(reading(await f.pane.drawn()),['PARA APROVAR','Decisões do usuário','MSTD-RULE-0001 · Nome inteiro','Outras decisões','MSTD-LIMIT-0001 · Teto',
+    'Resolvido pelo código','MSTD-POINT-0002 · contracts','A saudação é montada aqui. · src/main.rs:1','Critérios e prova','MSTD-CRIT-0001 · Nome na saudação',
+    'cargo test saudacao','Tarefas e previsão','1 tarefas','Ondas pela formação: 1.']);
+  await f.close();
+});
+
 for(const surface of SURFACES)test(`the overview lists the project's deliveries after the layout's blocks, the newest first · ${surface}`,async ($,on)=>{
   const f=await open($,on,surface,{patch:{overview:{deliveries}}}),pane=f.pane;
   inOrder(reading(await pane.drawn()),['USO','ENTREGAS DO PROJETO','2 de 12 entregas','Recibo nomeia o programa atrás do plugin',/17\/10\s+·\s+PR #326\s+·\s+2 regras/,

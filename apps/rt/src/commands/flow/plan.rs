@@ -307,11 +307,13 @@ pub(crate) fn plan_for(opts: &PlanOpts, session: Option<&str>) -> Value {
     }
     // O bloco que vai antes da pergunta: as ondas e as etapas pela formação,
     // e o tempo das ondas pela história das specs do próprio projeto.
-    let specs = mustard_core::io::spec_index::read_specs(&project.root);
-    report["forecast"] = forecast(&log, wave_times(specs.iter().map(|(_, log)| log)), lang);
+    report["forecast"] = forecast_for(&project.root, &log, lang);
     // A pergunta vai com o texto exato do catálogo: a testemunha da aprovação
     // só reconhece essa pergunta, e outro texto não aprova nada.
-    let ask = translate("plan.next", lang).replace("{question}", translate("approval.question", lang)).replace("{option}", translate("approval.option", lang));
+    let ask = translate("plan.next", lang)
+        .replace("{question}", translate("approval.question", lang))
+        .replace("{option}", translate("approval.option", lang))
+        .replace("{spec}", &spec);
     report["next"] = json!(ask);
     report["panel"] = json!("/mustard:mods");
     let withheld = spec_events::pages::secrets::withheld(&log);
@@ -622,6 +624,14 @@ fn waves_and_stages(log: &SpecLog) -> WaveCount {
     let mut known = BTreeMap::new();
     let stages = waits.keys().map(|slot| chain(slot, &waits, &mut known, &mut BTreeSet::new())).max().unwrap_or(0);
     WaveCount { waves: waits.len(), stages, formed: !slots.values().any(|slot| matches!(slot, Slot::Alone(_))) }
+}
+
+/// A previsão da spec de `log` no projeto `root` ([`forecast`]), com o tempo
+/// das ondas pela história das specs do próprio projeto: a mesma do plano e
+/// da página da spec.
+pub(crate) fn forecast_for(root: &Path, log: &SpecLog, lang: Locale) -> Value {
+    let specs = mustard_core::io::spec_index::read_specs(root);
+    forecast(log, wave_times(specs.iter().map(|(_, log)| log)), lang)
 }
 
 /// O bloco que o plano diz antes da pergunta de aprovação, no idioma `lang`:
@@ -1595,7 +1605,8 @@ mod tests {
         let next = report["next"].as_str().unwrap_or_default();
         let plain = translate("plan.next", Locale::PtBr)
             .replace("{question}", translate("approval.question", Locale::PtBr))
-            .replace("{option}", translate("approval.option", Locale::PtBr));
+            .replace("{option}", translate("approval.option", Locale::PtBr))
+            .replace("{spec}", "x");
         assert!(next.ends_with(&plain), "a pergunta não leva prefixo de nota: {report}");
         assert!(!next.contains("ponto"), "nenhum texto impresso cita a nota do Scrum: {next}");
     }

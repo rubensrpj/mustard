@@ -219,7 +219,58 @@ fn deliveries(root: &Path) -> Value {
 /// The spec screen: where it lives, what was agreed in six counters, waves by
 /// state with the stopped ones named, the final review and the pull request,
 /// and the other specs to switch to.
-pub(super) fn spec(start: &Path, root: &Path, name: &str, log: &SpecLog) -> Value {
+/// Os itens combinados que a página mostra antes do clique em "Aprovar".
+const AGREED: &[&str] = &["request", "rule", "limit", "contract", "error", "edge_case", "out_of_scope", "decision"];
+
+/// Os tipos que dizem que o usuário decidiu.
+const DECIDED_BY_USER: &[&str] = &["request", "rule", "decision"];
+
+/// O que a página da spec mostra antes do clique em "Aprovar esta spec?", em
+/// cinco blocos: o objetivo; as decisões do usuário, separadas das outras; o
+/// que o código resolveu, os pontos do assistente fechados, com a lacuna e os
+/// fatos com a fonte; os critérios com a prova; e as tarefas com a previsão,
+/// a mesma do plano.
+fn approval(root: &Path, log: &SpecLog, lang: mustard_core::platform::i18n::Locale) -> Value {
+    use mustard_core::domain::survey::{Owner, owner_of, points};
+    let codes = log.codes();
+    let closed: Vec<_> = points(log).into_iter().filter(|point| point.closing().is_some()).collect();
+    // O que responde um ponto do usuário é dele, como o pedido, a regra e a
+    // decisão.
+    let answers_the_user: BTreeSet<u64> =
+        closed.iter().filter(|point| owner_of(point.shown()) == Owner::User).filter_map(|point| point.closing()).flat_map(|closing| closing.ints("result")).collect();
+    let row = |event: &SpecEvent| json!({"code":codes.get(&event.id),"type":event.event_type,"title":title(event)});
+    let (user, other): (Vec<&SpecEvent>, Vec<&SpecEvent>) = log
+        .visible()
+        .into_iter()
+        .filter(|event| AGREED.contains(&event.event_type.as_str()))
+        .partition(|event| DECIDED_BY_USER.contains(&event.event_type.as_str()) || answers_the_user.contains(&event.id));
+    let resolved: Vec<Value> = closed
+        .iter()
+        .filter(|point| owner_of(point.shown()) == Owner::Assistant)
+        .map(|point| {
+            let facts: Vec<Value> = [point.original(), point.closing()]
+                .into_iter()
+                .flatten()
+                .flat_map(|event| event.fields.get("facts").and_then(Value::as_array).cloned().unwrap_or_default())
+                .map(|fact| json!({"text":fact["text"],"source":fact["source"]}))
+                .collect();
+            json!({"code":codes.get(&point.shown().id),"gap":point.gap(),"facts":facts})
+        })
+        .collect();
+    let criteria: Vec<Value> = log
+        .visible()
+        .into_iter()
+        .filter(|event| event.event_type == "criterion")
+        .map(|event| json!({"code":codes.get(&event.id),"title":title(event),"proof":event.str_field("proof")}))
+        .collect();
+    let tasks = log.visible().into_iter().filter(|event| event.event_type == "task").count();
+    let forecast = crate::commands::flow::plan::forecast_for(root, log, lang);
+    json!({"goal":mustard_core::domain::spec_index::goal_of(log),"user_decisions":user.into_iter().map(row).collect::<Vec<_>>(),
+        "other_decisions":other.into_iter().map(row).collect::<Vec<_>>(),"resolved_by_code":resolved,"criteria":criteria,
+        "tasks":{"total":tasks,"forecast":forecast["text"]}})
+}
+
+pub(super) fn spec(start: &Path, root: &Path, name: &str, log: &SpecLog, lang: mustard_core::platform::i18n::Locale) -> Value {
     let merges = merges(start);
     let states = progress::wave_states(log);
     let state = State::from_log(log);
@@ -235,7 +286,8 @@ pub(super) fn spec(start: &Path, root: &Path, name: &str, log: &SpecLog) -> Valu
         "last_commit":commits.last().map(|e|json!({"at":e.at(),"sha":e.str_field("sha")})),"commits":commits.len(),
         "counts":{"tasks":progress::tasks(log,&states),"criteria":progress::criteria(log),
             "questions":{"total":questions,"open":open_questions},"decisions":count("decision"),"rules":count("rule"),"waves":states.len()},
-        "waves":progress::waves(&states),"review":crate::commands::flow::common::progress::review(log),"pr":pull_request(log,&state,&merges)},
+        "waves":progress::waves(&states),"review":crate::commands::flow::common::progress::review(log),"pr":pull_request(log,&state,&merges),
+        "approval":approval(root,log,lang)},
         "specs":specs,"discarded":discarded})
 }
 
@@ -464,7 +516,9 @@ pub(super) fn items(log: &SpecLog, params: &Params, languages: &mustard_core::do
     let rows: Vec<Value> = ordered.into_iter().skip(offset).take(limit).map(|event| {
         let wave = row_of(event);
         let state = if event.event_type == "task" { Some(progress::task_state(event, &states)) } else { None };
-        json!({"code":codes.get(&event.id),"title":title(event),"wave":event.wave(),"state":state,
+        // O critério mostra a prova que o confere.
+        let proof = (event.event_type == "criterion").then(|| event.str_field("proof")).flatten();
+        json!({"code":codes.get(&event.id),"title":title(event),"wave":event.wave(),"state":state,"proof":proof,
             "at":wave.and_then(|row|row.at.clone()),"files":wave.and_then(|row|row.files),
             "covers":event.fields.get("covers").and_then(Value::as_array).map(Vec::len),
             "resends":wave.map(|row|row.resends),"unmet":wave.map(|row|row.unmet),
@@ -862,6 +916,50 @@ mod tests {
 
     fn screen(root: &Path, section: &str, params: &Params) -> Value {
         super::super::dashboard::query_with(root, Some("demo"), None, None, section, None, params)
+    }
+
+    /// A página da spec traz, antes do clique, os cinco blocos: o objetivo, a
+    /// regra que respondeu o ponto do usuário entre as decisões dele e o
+    /// limite solto entre as outras, o contrato que o código resolveu com a
+    /// fonte, o critério com a prova e as tarefas com a previsão do plano.
+    #[test]
+    fn the_spec_page_shows_the_five_blocks_before_the_approval() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), "{}").unwrap();
+        let folder = root.join(".claude/spec/demo");
+        std::fs::create_dir_all(&folder).unwrap();
+        let at = "2026-10-01T10:00:00Z";
+        let rows = [
+            json!({"v":1,"id":1,"at":at,"type":"message","author":"user","text":"A saudação mostra o nome."}),
+            json!({"v":1,"id":2,"at":at,"type":"context","text":"A saudação mostra o nome.","origin":1}),
+            json!({"v":1,"id":3,"at":at,"type":"point","block":"condensed","gap":"rules","from":"gap","status":"open","origin":1}),
+            json!({"v":1,"id":4,"at":at,"type":"point","block":"condensed","gap":"contracts","from":"gap","status":"open","origin":1}),
+            json!({"v":1,"id":5,"at":at,"type":"message","author":"user","text":"Sim."}),
+            json!({"v":1,"id":6,"at":at,"type":"rule","title":"Nome inteiro","text":"O nome sai inteiro.","keys":["nome"],"example":"Olá, Ana Lima","origin":5}),
+            json!({"v":1,"id":7,"at":at,"type":"point","block":"condensed","gap":"rules","from":"gap","status":"closed","closes":3,"result":[6],"origin":5}),
+            json!({"v":1,"id":8,"at":at,"type":"contract","title":"Entrada","text":"Recebe o nome.","keys":["nome"],"example":"saudacao(nome)","origin":1}),
+            json!({"v":1,"id":9,"at":at,"type":"point","block":"condensed","gap":"contracts","from":"gap","status":"closed","closes":4,"result":[8],"origin":1,
+                "facts":[{"text":"A saudação é montada aqui.","source":"src/main.rs:1"}]}),
+            json!({"v":1,"id":10,"at":at,"type":"limit","title":"Teto","text":"Até 40 letras.","keys":["nome"],"value":"40","origin":1}),
+            json!({"v":1,"id":11,"at":at,"type":"criterion","title":"Nome na saudação","when":"a saudação sai","then":"traz o nome","proof":"cargo test saudacao","origin":1}),
+            json!({"v":1,"id":12,"at":at,"type":"task","title":"Pôr o nome","text":"Pôr o nome.","files":[{"path":"src/main.rs"}],"covers":[11],"origin":1}),
+        ];
+        let text = rows.iter().map(Value::to_string).collect::<Vec<_>>().join("\n") + "\n";
+        std::fs::write(folder.join("spec.ndjson"), text).unwrap();
+
+        let approval = screen(root, "spec", &Params::default())["spec"]["approval"].clone();
+        assert_eq!(approval["goal"], json!("A saudação mostra o nome."), "{approval}");
+        assert_eq!(approval["user_decisions"], json!([{"code":"MSTD-RULE-0001","type":"rule","title":"Nome inteiro"}]), "{approval}");
+        let others: Vec<&str> = approval["other_decisions"].as_array().unwrap().iter().filter_map(|row| row["type"].as_str()).collect();
+        assert_eq!(others, ["contract", "limit"], "{approval}");
+        assert_eq!(approval["resolved_by_code"], json!([{"code":"MSTD-POINT-0002","gap":"contracts",
+            "facts":[{"text":"A saudação é montada aqui.","source":"src/main.rs:1"}]}]), "{approval}");
+        assert_eq!(approval["criteria"][0]["proof"], json!("cargo test saudacao"), "{approval}");
+        assert_eq!(approval["tasks"]["total"], json!(1), "{approval}");
+        assert!(approval["tasks"]["forecast"].as_str().is_some_and(|text| !text.is_empty()), "{approval}");
+        let items = screen(root, "items", &Params { kind: Some("criterion".into()), ..Params::default() });
+        assert_eq!(items["rows"][0]["proof"], json!("cargo test saudacao"), "{items}");
     }
 
     /// The overview carries the project summary: the newest deliveries

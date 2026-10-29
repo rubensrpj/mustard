@@ -72,13 +72,15 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("plan.next", Locale::PtBr) => {
             "Diga ao usuário o texto de `forecast`, com as regras primeiro, depois as ondas, as etapas e o \
-             tempo das ondas neste projeto. Depois, faça a pergunta de aprovação na ordem de explicar do estilo de resposta, com o \
+             tempo das ondas neste projeto. A spec inteira está no painel `/mustard:mods {spec}`: diga \
+             isso ao usuário antes da pergunta. Depois, faça a pergunta de aprovação na ordem de explicar do estilo de resposta, com o \
              texto exato \"{question}\". As opções são \"{option}\" e \"Ajustar\", e com outro texto \
              a aprovação não vale."
         }
         ("plan.next", Locale::EnUs) => {
             "Tell the user the `forecast` text, with the rules first, then the waves, the stages and the \
-             time of the waves in this project. Then ask the approval question in the order of explaining from the response style, with \
+             time of the waves in this project. The whole spec is in the panel `/mustard:mods {spec}`: \
+             tell the user so before the question. Then ask the approval question in the order of explaining from the response style, with \
              the exact text \"{question}\". The options are \"{option}\" and \"Adjust\", and with \
              another text the approval does not count."
         }
@@ -235,7 +237,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "O plano está gravado: confira o plano pelo próximo comando. A resposta dele traz o bloco \
              `forecast`, com as regras primeiro, depois as ondas, as etapas e o tempo das ondas neste \
              projeto. Diga esse bloco ao \
-             usuário antes da pergunta. Depois, faça a pergunta de aprovação na ordem \
+             usuário antes da pergunta, e que a spec inteira está no painel `/mustard:mods {spec}`. \
+             Depois, faça a pergunta de aprovação na ordem \
              de explicar do estilo de resposta, com o texto exato \"{question}\". As opções são \
              \"{option}\" e \"Ajustar\", e com outro texto a aprovação não vale."
         }
@@ -243,7 +246,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The plan is recorded: check the plan with the next command. Its answer carries the \
              `forecast` block, with the rules first, then the waves, the stages and the time of the waves \
              in this project. \
-             Tell the user that block before the question. Then ask the approval question in the order of \
+             Tell the user that block before the question, and that the whole spec is in the panel \
+             `/mustard:mods {spec}`. Then ask the approval question in the order of \
              explaining from the response style, with the exact text \"{question}\". The options \
              are \"{option}\" and \"Adjust\", and with another text the approval does not count."
         }
@@ -2709,7 +2713,7 @@ mod tests {
     fn i18n_translates_wave_prompt_keys() {
         for (key, slots) in [
             ("plan.not_ready", &["{count}"][..]),
-            ("plan.next", &["{question}", "{option}"][..]),
+            ("plan.next", &["{question}", "{option}", "{spec}"][..]),
             ("plan.formation_pending", &[][..]),
             ("plan.forecast.waves", &["{waves}", "{stages}"][..]),
             ("plan.forecast.ceiling", &["{waves}", "{stages}"][..]),
@@ -2740,7 +2744,7 @@ mod tests {
             ("resume.unbound", &[][..]),
             ("resume.wave", &["{n}"][..]),
             ("resume.next.survey", &[][..]),
-            ("resume.next.plan", &["{question}", "{option}"][..]),
+            ("resume.next.plan", &["{question}", "{option}", "{spec}"][..]),
             ("resume.next.running", &[][..]),
             ("resume.next.closed", &[][..]),
             ("resume.next.pr_open", &[][..]),
