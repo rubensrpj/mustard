@@ -169,7 +169,7 @@ spec_events.skipped_line	8f3c59f0bee24b3f
 spec_events.spec_not_open	7612f34b65ce80fb
 spec_events.spec_required	0b1580b8a897a1fa
 spec_events.state_by_flow_only	5cc849c23522797e
-spec_events.survey_answered_early	51dbf599974edd7f
+spec_events.survey_answered_early	d80f426568950c66
 spec_events.survey_gaps_unrecorded	d564294b0720a316
 spec_events.survey_not_started	4c7931f35883d81b
 spec_events.survey_open	858af4911eeb398c

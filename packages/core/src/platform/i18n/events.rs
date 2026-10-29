@@ -550,13 +550,15 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("spec_events.survey_answered_early", Locale::PtBr) => {
             "Na spec {spec}, um ponto do usuário fechou com uma mensagem anterior a ele: {points}. A \
-             resposta vem depois da pergunta. Mostre o ponto ao usuário e grave a resposta com a \
-             mensagem dele em `origin`. A spec segue no levantamento."
+             resposta vem depois da pergunta. Mostre o ponto ao usuário. Com a resposta, grave uma \
+             versão nova do fechamento pelo `run write point`, com `replaces` nele e a mensagem nova \
+             em `origin`. A spec segue no levantamento."
         }
         ("spec_events.survey_answered_early", Locale::EnUs) => {
             "In spec {spec}, a user point closed with a message older than the point: {points}. The \
-             answer comes after the question. Show the point to the user and record the answer with \
-             the user's message in `origin`. The spec stays in the survey."
+             answer comes after the question. Show the point to the user. With the answer, record a \
+             new version of the closing with `run write point`, with `replaces` on it and the new \
+             message in `origin`. The spec stays in the survey."
         }
         ("spec_events.goal_title_too_long", Locale::PtBr) => {
             "O objetivo não tem `title`, e a primeira frase dele é o título do pull request: ela tem \

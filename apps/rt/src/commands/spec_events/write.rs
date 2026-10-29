@@ -4788,6 +4788,35 @@ mod tests {
         assert_eq!(DiskSpecState::new(root).state("teste").unwrap().phase, Some("plan"));
     }
 
+    /// O ponto do usuário fechado com a mensagem de antes dele segura a saída
+    /// do levantamento, e a recusa ensina a saída: a versão nova do
+    /// fechamento, com `replaces` nele e a mensagem nova em `origin`, deixa a
+    /// spec passar para o plano.
+    #[test]
+    fn a_user_point_answered_early_leaves_by_a_new_version_of_its_closing() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, points) = listed(root, &["fix"], true);
+        let mut closings = Vec::new();
+        for point in &points {
+            closings.push(settle(root, point, said));
+        }
+        let Err(refusal) = to_plan(root) else {
+            panic!("the user point answered before it was asked holds the survey");
+        };
+        assert_eq!(refusal.reason(), "survey-answered-early");
+        assert!(refusal.message(Locale::PtBr).contains("`replaces`"), "{}", refusal.message(Locale::PtBr));
+        let user = points.iter().position(|point| point.gap == survey::GapKey::ExpectedVsActual.label(Locale::PtBr)).unwrap();
+        let answered = message(root, "user", "O esperado é a saudação com o nome.");
+        let closing = closings[user]["id"].as_u64().unwrap();
+        let result = DiskSpecState::new(root).log("teste").unwrap().get(closing).unwrap().fields["result"].clone();
+        let version = json!({"block": points[user].block, "gap": points[user].gap, "from": "gap", "status": "closed",
+            "replaces": closing, "result": result, "origin": answered});
+        let written = write(root, "point", &version.to_string());
+        assert_eq!(written["ok"], json!(true), "{written}");
+        assert!(to_plan(root).is_ok());
+    }
+
     /// Fechar o que não é um ponto aberto é recusado, com o código, o número
     /// e a lacuna dos pontos abertos, e nada é gravado.
     #[test]
