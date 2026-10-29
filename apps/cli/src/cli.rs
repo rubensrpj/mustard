@@ -115,7 +115,7 @@ mod tests {
                 assert!(yes);
                 assert!(dry_run);
             }
-            other => panic!("expected Init, got {other:?}"),
+            other @ Commands::Config { .. } => panic!("expected Init, got {other:?}"),
         }
     }
 
@@ -216,7 +216,7 @@ mod tests {
     fn every_command_help_keeps_uppercase_inside_backticks() {
         use clap::CommandFactory;
         let tree = Cli::command();
-        assert!(tree.get_subcommands().count() >= 3, "the check reached every command");
+        assert!(tree.get_subcommands().count() >= 2, "the check reached every command");
         let defects = tree_defects(&tree);
         assert!(defects.is_empty(), "{} help texts break the uppercase rule:\n{}", defects.len(), defects.join("\n"));
     }

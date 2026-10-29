@@ -195,13 +195,15 @@ fn nothing_refuses_for_absence_from_the_preselected_list() {
                  so the door would decide by two literals and nothing else",
             );
         }
-        assert!(
-            body.contains("has_unit_record"),
-            "{name} no longer asks the project for its RECORD of the unit, so it is back \
-             to deciding by the shape of a name — and `release/2026-Q3` has the shape of \
-             a unit",
-        );
     }
+    // Só a exclusão ainda recusa de dentro de uma unidade: a lista dos pull
+    // requests abertos, que fazia o mesmo, saiu com a revisão de colega.
+    assert!(
+        delete.contains("has_unit_record"),
+        "git_delete no longer asks the project for its RECORD of the unit, so it is back \
+         to deciding by the shape of a name — and `release/2026-Q3` has the shape of \
+         a unit",
+    );
     // O alvo que a recusa nomeia não pode acabar num nome que ninguém mediu.
     //
     // A primeira forma desta conferência proibia o `primary_base()` de uma vez,
@@ -212,13 +214,11 @@ fn nothing_refuses_for_absence_from_the_preselected_list() {
     // mora no tipo: sem fluxo declarado o acessor devolve ausência, e não um
     // nome. O que continua exigido é o último degrau: quando o projeto não
     // declarou nada, a recusa nomeia a branch padrão do próprio remoto.
-    for (name, body) in [("pr_door", &pr), ("git_delete", &delete)] {
-        assert!(
-            body.contains("mustard_core::default_branch("),
-            "{name}'s refusal no longer falls back to origin/HEAD, so the base it \
-             names can be a literal nobody measured",
-        );
-    }
+    assert!(
+        delete.contains("mustard_core::default_branch("),
+        "git_delete's refusal no longer falls back to origin/HEAD, so the base it \
+         names can be a literal nobody measured",
+    );
 
     // --- 3. The legacy shape is resolved by the CATALOGUE -------------------
     let work_kind = read("apps/rt/src/shared/work_kind.rs");
