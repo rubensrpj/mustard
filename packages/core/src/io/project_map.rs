@@ -515,19 +515,21 @@ const INDEXED_FROM: [&MapBlock; 4] = [&FILES, &DECLS, &GRAPH, &HISTORY];
 const DECLARED: [&MapBlock; 13] = [&CENSUS, &FILES, &DECLS, &ROUTES, &GRAPH, &HISTORY, &RESOURCES, &LINEAGE, &PULLS, &SPECS, &GLOSSARY, &KNOWLEDGE_NOTES, &PROJECT_PROFILE];
 
 /// Os mesmos blocos, como o banco os abre.
-pub(crate) const DB_BLOCKS: [Block; 16] =
+pub(crate) const DB_BLOCKS: [Block; 15] =
     [CENSUS.block, FILES.block, DECLS.block, ROUTES.block, GRAPH.block, HISTORY.block, RESOURCES.block, LINEAGE.block, PULLS.block, SPECS.block, GLOSSARY.block, KNOWLEDGE_NOTES.block, crate::io::knowledge::catalog::BLOCK, crate::io::knowledge::observations::BLOCK,
-    crate::io::knowledge::precise::BLOCK, PROJECT_PROFILE.block];
+    PROJECT_PROFILE.block];
 
 /// Os blocos que saíram do programa e que a abertura do mapa tira dele, com
 /// as tabelas de cada um. Bloco que sai deixa [`DB_BLOCKS`] e entra aqui com
 /// as tabelas que tinha; a linha do formato dele em `block_formats` fica.
-pub(crate) const RETIRED: [Retired; 2] = [
+pub(crate) const RETIRED: [Retired; 3] = [
     // As frases de sentido por arquivo e por declaração.
     Retired { name: "notes", tables: &["notes"] },
     // Os perfis por área e os procedimentos revisados, com o registro dos
     // arquivos que se exportavam deles.
     Retired { name: "expertise", tables: &["expertise", "expertise_exports"] },
+    // O índice de compilador importado, que respondia às referências exatas.
+    Retired { name: "precise_symbols", tables: &["precise_documents", "precise_occurrences", "precise_relationships", "precise_meta"] },
 ];
 
 /// Abre o banco em `model` com os blocos do mapa em dia e os que saíram
@@ -3377,7 +3379,7 @@ mod tests {
     /// para a passada do scan. O mapa já limpo abre sem pedir a trava.
     #[test]
     fn a_retired_block_leaves_the_map_on_opening_and_a_clean_map_opens_without_writing() {
-        for name in ["notes", "expertise"] {
+        for name in ["notes", "expertise", "precise_symbols"] {
             assert!(RETIRED.iter().any(|retired| retired.name == name), "the block `{name}` is not retired");
         }
         for retired in &RETIRED {
@@ -3397,7 +3399,11 @@ mod tests {
                  INSERT INTO expertise(id, payload) VALUES ('area-src-service', '{}'); \
                  CREATE TABLE IF NOT EXISTS expertise_exports(id TEXT, payload TEXT); \
                  INSERT INTO expertise_exports(id, payload) VALUES ('.claude/agents/mustard-area.md', 'abc'); \
-                 INSERT OR REPLACE INTO blocks(name, version) VALUES ('expertise', 1);",
+                 INSERT OR REPLACE INTO blocks(name, version) VALUES ('expertise', 1); \
+                 CREATE TABLE IF NOT EXISTS precise_documents(path TEXT PRIMARY KEY, sha256 TEXT NOT NULL); \
+                 INSERT INTO precise_documents(path, sha256) VALUES ('src/a.rs', 'abc'); \
+                 CREATE TABLE IF NOT EXISTS precise_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL); \
+                 INSERT OR REPLACE INTO blocks(name, version) VALUES ('precise_symbols', 1);",
             )
             .unwrap();
         assert!(needs_block_update(&model), "a map still holding a retired block is left for the scan");
@@ -3405,11 +3411,11 @@ mod tests {
         drop(open_existing(&model).unwrap());
         let conn = Connection::open(&model).unwrap();
         let tables = tables_and_columns(&conn);
-        for table in ["notes", "expertise", "expertise_exports"] {
+        for table in ["notes", "expertise", "expertise_exports", "precise_documents", "precise_meta"] {
             assert!(!tables.contains_key(table), "the table `{table}` of a retired block stays");
         }
         let rows: i64 =
-            conn.query_row("SELECT count(*) FROM blocks WHERE name IN ('notes', 'expertise')", [], |row| row.get(0)).unwrap();
+            conn.query_row("SELECT count(*) FROM blocks WHERE name IN ('notes', 'expertise', 'precise_symbols')", [], |row| row.get(0)).unwrap();
         assert_eq!(rows, 0, "the line of a retired block stays");
         assert!(!needs_block_update(&model));
 

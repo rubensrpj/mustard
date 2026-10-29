@@ -20,7 +20,6 @@ pub mod coverage;
 pub mod dossier;
 pub mod investigation;
 pub mod observations;
-pub mod precise;
 pub mod relations;
 pub(crate) mod catalog;
 pub(crate) mod references;

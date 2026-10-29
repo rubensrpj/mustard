@@ -51,4 +51,3 @@ mod stack_evidence_excludes;
 mod test_units;
 mod use_in_every_language;
 
-mod search_operations;

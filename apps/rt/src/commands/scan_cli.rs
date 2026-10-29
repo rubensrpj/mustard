@@ -25,12 +25,7 @@ pub enum ScanCmd {
         #[arg(long,default_value=".")]
         root: PathBuf,
         /// Versioned JSON: {schema_version:1,request:{tool,input,intent,purpose,choose?}}.
-        /// Original `CLI` shape is supported. Additional tool/input pairs:
-        /// Symbol {file_path,symbol}; Trace adds direction?,depth?,target?,limit?.
-        /// Structure {file_path,query}: Tree-sitter syntax query.
-        /// References {file_path,line,column,relation?,limit?}: current `SCIP` or `LSP`;
-        /// one-based line, zero-based UTF-8 byte column; relation is definitions,
-        /// references (default) or implementations. No model calls.
+        /// Original `CLI` shape is supported.
         #[arg(long,conflicts_with="args")]
         request: Option<String>,
         /// Specific question to establish; required for investigation or Choice.
@@ -54,14 +49,12 @@ pub enum ScanCmd {
     /// Retrieve current functions, documents, configuration and interpretations
     /// natively, with optional configured Choice for ambiguous responsibility.
     /// Export a report with `--markdown --out <file>`.
-    /// Optional precise index: `mustard-rt run knowledge --import-scip <index>`;
-    /// add `--source-manifest <receipt>` when source text is not embedded.
     #[command(display_order = 28)]
     Knowledge {
         #[arg(long, default_value = ".")]
         root: PathBuf,
         /// Read the persisted native project profile; --file scopes conventions.
-        #[arg(long, conflicts_with_all=["query","intent","purpose","symbol","direction","refresh","record","prepare_session","session_model","complete_session","cancel_session","import_scip","source_manifest","coverage","topics","evaluate","responsibility","all","detail","markdown","out"])]
+        #[arg(long, conflicts_with_all=["query","intent","purpose","symbol","direction","refresh","record","prepare_session","session_model","complete_session","cancel_session","coverage","topics","evaluate","responsibility","all","detail","markdown","out"])]
         profile: bool,
         #[arg(long, default_value = "")]
         query: String,
@@ -100,24 +93,18 @@ pub enum ScanCmd {
         record: Option<PathBuf>,
         /// Prepare bounded code evidence for a native subagent of the current
         /// session. Does not launch a model or require a generation `API` key.
-        #[arg(long, value_parser = ["claude", "codex"], conflicts_with_all = ["complete_session", "record", "import_scip", "coverage", "topics", "evaluate", "responsibility", "refresh", "symbol", "direction", "markdown", "out", "all", "detail", "intent", "purpose"])]
+        #[arg(long, value_parser = ["claude", "codex"], conflicts_with_all = ["complete_session", "record", "coverage", "topics", "evaluate", "responsibility", "refresh", "symbol", "direction", "markdown", "out", "all", "detail", "intent", "purpose"])]
         prepare_session: Option<String>,
         /// Preferred model of that host; unavailable models use native
         /// retrieval, never another process or family.
         #[arg(long, requires = "prepare_session")]
         session_model: Option<String>,
         /// Validate a session receipt and store its source-bound interpretation.
-        #[arg(long, conflicts_with_all = ["prepare_session", "record", "import_scip", "coverage", "topics", "evaluate", "responsibility", "refresh", "symbol", "direction", "markdown", "out", "all", "detail", "intent", "purpose", "query", "file"])]
+        #[arg(long, conflicts_with_all = ["prepare_session", "record", "coverage", "topics", "evaluate", "responsibility", "refresh", "symbol", "direction", "markdown", "out", "all", "detail", "intent", "purpose", "query", "file"])]
         complete_session: Option<PathBuf>,
         /// Release an abandoned native-session preparation, without deleting knowledge.
-        #[arg(long, conflicts_with_all = ["prepare_session", "complete_session", "record", "import_scip", "coverage", "topics", "evaluate", "responsibility", "refresh", "symbol", "direction", "markdown", "out", "all", "detail", "intent", "purpose", "query", "file"])]
+        #[arg(long, conflicts_with_all = ["prepare_session", "complete_session", "record", "coverage", "topics", "evaluate", "responsibility", "refresh", "symbol", "direction", "markdown", "out", "all", "detail", "intent", "purpose", "query", "file"])]
         cancel_session: Option<String>,
-        /// Import an optional `SCIP` Protobuf index, without invoking an indexer.
-        #[arg(long, conflicts_with_all = ["query", "file", "symbol", "record", "refresh", "coverage", "topics", "evaluate", "intent", "purpose", "out", "all", "detail", "markdown", "responsibility"])]
-        import_scip: Option<PathBuf>,
-        /// Source hashes produced alongside that exact index (`JSON`).
-        #[arg(long, requires = "import_scip")]
-        source_manifest: Option<PathBuf>,
         /// Report indexed scope, parser gaps and exclusions without inference.
         #[arg(long, conflicts_with_all = ["query", "file", "symbol", "refresh", "record", "topics", "evaluate", "markdown", "all", "detail"])]
         coverage: bool,
@@ -243,8 +230,7 @@ pub fn dispatch(cmd: ScanCmd) {
         }=>super::search::run(&root,request.as_deref(),&args,intent.as_deref(),purpose.as_deref(),choose,raw,shell_output,
         ),
         ScanCmd::Knowledge { root, profile, query, intent, purpose, file, symbol, direction, refresh, limit, depth, all, markdown, detail, out, record, coverage, topics, evaluate, responsibility,
-            import_scip,
-            source_manifest, prepare_session, session_model, complete_session, cancel_session,
+            prepare_session, session_model, complete_session, cancel_session,
         } => {
             super::knowledge::run(
                 &root,
@@ -270,8 +256,6 @@ pub fn dispatch(cmd: ScanCmd) {
                     profile,
                     prepare_session: prepare_session.as_deref(), session_model: session_model.as_deref(), complete_session: complete_session.as_deref(),
                     cancel_session: cancel_session.as_deref(),
-                    import_scip: import_scip.as_deref(),
-                    source_manifest: source_manifest.as_deref(),
                     coverage, topics: topics.as_deref(), evaluate: evaluate.as_deref(), responsibility,
                     task: mustard_core::domain::knowledge::investigation::Task {
                         intent: intent.as_deref().unwrap_or_default(),

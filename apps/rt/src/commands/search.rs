@@ -63,9 +63,10 @@ pub fn run(
                 let receipt=if shell_output {delivery_context.as_ref().and_then(|context|
                     mustard_core::io::code_search::delivery::prepare(&mut answer,&request,&tree,context))}else{None};
                 let output = if shell_output {
-                    let view = mustard_core::io::code_search::presentation::agent(&answer, &request, root).stdout;
+                    let view = mustard_core::io::code_search::presentation::agent(&answer, &request, root);
                     let enriched = answer.report["crossing_status"] == "enriched";
-                    conversation_answer(root, &request, view, receipt.as_deref(), enriched)
+                    let cap = conversation_cap(enriched, view.representation);
+                    conversation_answer(root, &request, view.stdout, receipt.as_deref(), cap)
                 } else {
                     answer.stdout.clone()
                 };
@@ -105,23 +106,35 @@ pub fn run(
 }
 
 /// A resposta da busca de `request` que vai para a conversa, pelo terminal ou
-/// pelo MCP: `view` no teto que [`conversation_cap`] der, com a linha que diz
-/// como pedir o resultado inteiro quando sai cortada.
-pub(crate) fn conversation_answer(root: &Path, request: &Request, view: Vec<u8>, token: Option<&str>, enriched: bool) -> Vec<u8> {
-    conversation_output(view, token, conversation_cap(enriched), || rest_line(root, request))
+/// pelo MCP: `view` no teto `cap` que [`conversation_cap`] der, com a linha
+/// que diz como pedir o resultado inteiro quando sai cortada.
+pub(crate) fn conversation_answer(root: &Path, request: &Request, view: Vec<u8>, token: Option<&str>, cap: usize) -> Vec<u8> {
+    conversation_output(view, token, cap, || rest_line(root, request))
 }
 
-/// O teto da resposta: cheio para a busca enriquecida, metade para a que caiu
-/// no modo reserva.
+/// O teto da investigação: a busca com finalidade que junta o código do mapa
+/// ao resultado. Ela só roda quando o agente pede, e o resultado inteiro
+/// segue a um pedido de `purpose=locate`.
+pub(crate) const INVESTIGATION_BYTES: usize = 4_096;
+
+/// O teto da resposta de representação `representation`: o da investigação
+/// para a evidência da tarefa; fora dela, cheio para a busca enriquecida e
+/// metade para a que caiu no modo reserva.
 ///
 /// O modo reserva entrega o que o programa nativo achou, sem a triagem que
 /// escolhe o que importa. Em campo, uma busca assim devolveu 34.568 bytes de
 /// uma vez, enquanto as maiores enriquecidas ficaram perto de 9.800
 /// (21/10/2026). Quem não sabe escolher não pode ocupar mais que quem sabe: o
 /// corte diz quantas linhas ficaram de fora e como pedir o resto.
-pub(crate) fn conversation_cap(enriched: bool) -> usize {
+pub(crate) fn conversation_cap(enriched: bool, representation: &str) -> usize {
     let cap = super::knowledge::CONVERSATION_BYTES;
-    if enriched { cap } else { cap / 2 }
+    if representation == "current-task-evidence" {
+        INVESTIGATION_BYTES
+    } else if enriched {
+        cap
+    } else {
+        cap / 2
+    }
 }
 
 /// A resposta da busca que vai para a conversa. A que cabe em `cap` bytes sai
@@ -261,5 +274,18 @@ mod tests {
         );
         assert_eq!(fitted, expected);
         assert!(fitted.len() <= 2_000, "{} bytes", fitted.len());
+    }
+
+    /// A investigação sai em até 4 KB, mesmo enriquecida; as outras
+    /// representações seguem no teto da conversa.
+    #[test]
+    fn an_investigation_answer_fits_four_kilobytes() {
+        let cap = conversation_cap(true, "current-task-evidence");
+        assert_eq!(cap, 4_096);
+        assert_eq!(conversation_cap(true, "grouped-matches"), super::super::knowledge::CONVERSATION_BYTES);
+        let evidence: String = (0..400).map(|at| format!("{at} | let value_{at} = compute({at});\n")).collect();
+        let fitted = conversation_output(evidence.into_bytes(), Some("token"), cap, || "# Rest: x\n".into());
+        assert!(fitted.len() <= 4_096, "{} bytes", fitted.len());
+        assert!(!String::from_utf8(fitted).unwrap().contains("# mustard-delivery:"));
     }
 }

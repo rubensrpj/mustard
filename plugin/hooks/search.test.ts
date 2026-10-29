@@ -149,8 +149,8 @@ test('invalid investigations get a corrective result before any host execution',
     {tool:'rg',input:{args:['save','src']},intent:'',purpose:'locate',choose:true},
     {tool:'rg',input:{args:['save','src']},intent:'question',purpose:'spec',choose:'true'},
     {tool:'rg',input:{args:['save','src']},intent:'question',purpose:'spec',invented_evidence:true},
-    {tool:'References',input:{file_path:'a.ts',line:0,column:0},intent:'definition',purpose:'locate'},
-    {tool:'References',input:{file_path:'a.ts',line:1},intent:'definition',purpose:'locate'},
+    {tool:'Symbol',input:{file_path:'a.ts',symbol:'alpha'},intent:'definition',purpose:'locate'},
+    {tool:'Read',input:{file_path:'a.ts',offset:0},intent:'definition',purpose:'locate'},
     {tool:'Read',input:{file_path:'a.ts',pattern:'save'},intent:'definition',purpose:'locate'},
     {tool:'rg',input:{args:[7]},intent:'definition',purpose:'locate'},
   ]){
@@ -175,7 +175,7 @@ test('delivery receipts are acknowledged only in the same agent and uncompressed
     return {value:{exitCode:0,stdout:`evidence\n# mustard-delivery:${receipt}:8:ae70fc8f5906c564\n`,stderr:''}};
   });
   await $.session.start({cwd:'/fixture',surface:'terminal',isInteractive:true});
-  const request={tool:'Symbol',input:{file_path:'a.ts',symbol:'alpha'},intent:'inspect alpha',purpose:'implement'};
+  const request={tool:'Grep',input:{pattern:'alpha',path:'.'},intent:'inspect alpha',purpose:'implement'};
   const first=await $.tool.call({tool:'mcp__mustard__search',request});
   expect(first.result).toBe('evidence');
   await $.tool.call({tool:'mcp__mustard__search',request});

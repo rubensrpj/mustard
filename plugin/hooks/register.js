@@ -66,7 +66,7 @@ function panelEvent(kind,surface) {
 }
 let measurementQueue = Promise.resolve();
 const searchPurposes = ['locate','understand','spec','implement','validate'];
-const searchTools = ['rg','grep','git','Grep','Glob','Read','Symbol','Trace','Structure','References'];
+const searchTools = ['rg','grep','git','Grep','Glob','Read'];
 let evidenceEpoch, evidenceAcknowledged = new Map();
 const analysisAgents=new Map();
 function resetEvidence() {
@@ -388,7 +388,7 @@ export function register(on) {
     resetEvidence();
     const saved=await restorePresentation($);
     if(saved){await setPanel($,{...initialPanelState(),...saved.state});panelWanted=saved.wanted===true;}
-    await $.tool.register({name:'search',description:'Use Mustard for project code searches and reads. Preserve original arguments and scope. Provide intent (local resource/provider + operation, without repeating the whole project goal) and purpose. locate returns occurrences; understand/spec/implement/validate investigate current source. Once a declaration is found, ask for its scoped evidence instead of opening its whole file. Reuse complete bodies; expand indicated missing ranges before relying on omitted code. Read preserves the requested offset/limit and result. Symbol/Trace use {file_path,symbol,direction?,depth?,target?,limit?} with current cards[].id or owners.symbols[].id (References symbol IDs are provider-specific); Trace follows current static connections, not runtime flow. Structure uses {file_path,query} with a Tree-sitter query. References uses {file_path,line,column,relation?,limit?}; line is one-based and column is a zero-based UTF-8 byte offset; uses a current imported SCIP index or the installed language server from init/doctor. No model is called. Cold server queries can take longer; use them for exact definitions/references, not literal greps. If unavailable, the result includes a native text-search fallback with explicit limitations. Additional candidates/tests have native expansion commands. Investigative Grep/rg/Glob requests permit optional Jev for unresolved source-backed responsibility alternatives when the project enables it; choose=false opts out. Literal lookup and exact reads stay native. The adapter supplies the contract version.',
+    await $.tool.register({name:'search',description:'Use Mustard for project code searches and reads. Preserve original arguments and scope. Provide intent (local resource/provider + operation, without repeating the whole project goal) and purpose. locate returns occurrences; understand/spec/implement/validate investigate current source. Once a declaration is found, ask for its scoped evidence instead of opening its whole file. Reuse complete bodies; expand indicated missing ranges before relying on omitted code. Read preserves the requested offset/limit and result. Additional candidates/tests have native expansion commands. Investigative Grep/rg/Glob requests permit optional Jev for unresolved source-backed responsibility alternatives when the project enables it; choose=false opts out. Literal lookup and exact reads stay native. The adapter supplies the contract version.',
       inputSchema:searchSchema});
     const result=await next(e);
     if(panelWanted)await openPanel($);

@@ -3,10 +3,9 @@ use std::path::Path;
 
 mod evaluation;
 
-pub struct Modes<'a> { pub profile:bool, pub import_scip: Option<&'a Path>,
+pub struct Modes<'a> { pub profile:bool,
     pub prepare_session: Option<&'a str>, pub session_model: Option<&'a str>, pub complete_session: Option<&'a Path>,
     pub cancel_session: Option<&'a str>,
-    pub source_manifest: Option<&'a Path>,
     pub coverage: bool, pub topics: Option<&'a Path>, pub evaluate: Option<&'a Path>, pub responsibility:bool,
     pub task: mustard_core::domain::knowledge::investigation::Task<'a> }
 
@@ -99,15 +98,6 @@ pub fn run(root: &Path, query: &mustard_core::io::knowledge::Query<'_>, markdown
         if let Some(path) = modes.complete_session {
             let receipt = read_manifest(path)?;
             return mustard_core::io::knowledge::enrichment::complete_session(root, &tree, &receipt).map(|v|v.to_string());
-        }
-        if let Some(index) = modes.import_scip {
-            return mustard_core::io::knowledge::precise::import(
-                root,
-                &tree,
-                index,
-                modes.source_manifest,
-            )
-            .map(|v| v.to_string());
         }
         if let Some(record) = record {
             let metadata = std::fs::metadata(record).map_err(|e| e.to_string())?;

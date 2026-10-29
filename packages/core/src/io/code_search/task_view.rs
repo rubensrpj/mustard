@@ -5,8 +5,6 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
-fn quote(value:&str)->String {format!("'{}'",value.replace('\'',"'\\''"))}
-
 pub(super) fn reuse_notice(card:&Value)->Option<String> {
     Some(format!("@ {}\n# Reuse {} {}-{}: complete body already delivered here; current hash. Scoped Read repeats.\n",
         card["source"]["file"].as_str()?,card["name"].as_str()?,card["source"]["line"].as_u64()?,card["source"]["end_line"].as_u64()?))
@@ -93,9 +91,7 @@ pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> 
     ordered.extend(cards.iter().filter(|card| !hit_card(card)));
     let mut lead = None;
     let mut previous = "";
-    let mut test_files = BTreeSet::new();
     let mut ranges = BTreeMap::<&str, Vec<String>>::new();
-    let mut test_ranges = BTreeMap::<&str, Vec<String>>::new();
     let mut deferred = BTreeMap::<&str, usize>::new();
     let mut visible_ids = BTreeSet::new();
     let mut source_view = super::source_view::View::default();
@@ -117,7 +113,6 @@ pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> 
         if card["initial_source_excerpt"] != true {
             if card["initial_reference"] == true {
                 ranges.entry(file).or_default().push(format!("{} {start}-{end}",card["name"].as_str().unwrap_or_default()));
-                if card["test_only"]==true {test_ranges.entry(file).or_default().push(format!("{start}-{end}"));}
                 visible_ids.insert(card["id"].as_str().unwrap_or_default());
             } else {*deferred.entry(file).or_default()+=1;}
             continue;
@@ -153,23 +148,6 @@ pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> 
         for field in ["contracts", "routes", "annotations"] {
             if let Some(values) = card[field].as_array().filter(|values| !values.is_empty()) {
                 let _ = writeln!(text, "# {field}: {}", Value::Array(values.clone()));
-            }
-        }
-        let tests: Vec<_> = card["tests"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-            .filter(|file| test_files.insert(*file))
-            .collect();
-        if !tests.is_empty() {
-            let _ = writeln!(
-                text,
-                "# test candidates (coverage unverified): {}",
-                tests.iter().take(2).copied().collect::<Vec<_>>().join(", ")
-            );
-            if tests.len()>2 {
-                let _=writeln!(text,"# {} more test candidates: mustard-rt run map tests --file {}",tests.len()-2,quote(file));
             }
         }
         if !source.is_empty() {
@@ -215,14 +193,8 @@ pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> 
             "@ {file}\n# References (expand source/responsibility): {}",
             candidates.join("; ")
         );
-        if let Some(tests)=test_ranges.get(file) {let _=writeln!(text,"# Test-only ranges: {}",tests.join("; "));}
     }
     graph(&mut text,context,&shown);
-    for test in context["chain"]["test_mentions"].as_array().into_iter().flatten()
-        .filter(|test|shown(test["source"]["file"].as_str().unwrap_or_default())) {
-        let _=writeln!(text,"@ {}\n{} | {}\n# Associated test mention; coverage/execution unverified.",
-            test["source"]["file"].as_str().unwrap_or_default(),test["source"]["line"],test["text"].as_str().unwrap_or_default());
-    }
     for (at,question) in context["question_coverage"].as_array().into_iter().flatten().enumerate() {
         let _=writeln!(text,"# Question {}: {} — {} source references; behavior unverified",at+1,
             question["question"].as_str().unwrap_or_default(),question["references"].as_array().map_or(0,Vec::len));
@@ -232,26 +204,6 @@ pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> 
         for (file,count) in deferred {
             let _=writeln!(text,"# {file}: {count}");
         }
-    }
-    for edge in context["navigation"]["paths"]
-        .as_array()
-        .into_iter()
-        .flatten()
-    {
-        // A unique direct dependency already includes its call and target
-        // ranges in Native follow-up. Keep other directions/resolutions and
-        // longer paths; those are different evidence, not repeated wording.
-        if edge["via"]=="outgoing" && edge["distance"]==1 && edge["resolution"]=="unique-static-target"
-            && context["chain"]["steps"].as_array().into_iter().flatten().any(|step|
-                step["operation"]=="unique-static-dependency" && step["from"]==edge["from"] && step["to"]==edge["to"]) {continue;}
-        if !["from","to"].iter().all(|end|shown(declared_file(edge[*end].as_str().unwrap_or_default()))) {continue;}
-        let _ = writeln!(
-            text,
-            "# static relation: {} -> {} ({}, runtime order unknown)",
-            edge["from"].as_str().unwrap_or_default(),
-            edge["to"].as_str().unwrap_or_default(),
-            edge["via"].as_str().unwrap_or_default()
-        );
     }
     for resource in resources.into_iter().flatten().filter(|resource|shown(resource["source"]["file"].as_str().unwrap_or_default())) {
         let _ = writeln!(
@@ -279,21 +231,6 @@ pub(super) fn agent(answer: &Answer, request: &Request) -> Option<Presentation> 
             note["text"].as_str().unwrap_or_default()
         );
     }
-    for gap in context["gaps"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-    {
-        if gap=="Static relations do not prove runtime order, authorization, business rules or test coverage." {continue;}
-        if let Some(count)=context["navigation"]["ambiguous_relations"].as_u64()
-            && gap.starts_with(&format!("{count} ambiguous static relations")) {
-            let _=writeln!(text,"# Gap: {count} ambiguous static links; inspect an exact symbol to verify targets.");
-        } else {
-            let _ = writeln!(text, "# Gap: {gap}");
-        }
-    }
-    text.push_str("# Partial evidence; static links/tests are candidates. Expand before inferring absence.\n");
     // Hits keep their own section: merging a file's later references into it
     // would put them before the next file's hits.
     let text=match lead {
@@ -333,11 +270,6 @@ fn pattern_lines(text: &mut String, context: &Value, live: Option<&Vec<Value>>) 
             item["excerpt"]["text"].as_str().unwrap_or_default()
         );
     }
-}
-
-/// The file of a declaration id written as `file:line:name`.
-fn declared_file(id: &str) -> &str {
-    id.rsplitn(3, ':').nth(2).unwrap_or_default()
 }
 
 /// How many files the evidence links to that the pattern did not hit.
@@ -417,22 +349,24 @@ fn graph(text:&mut String,context:&Value,shown:&dyn Fn(&str)->bool) {
 #[cfg(test)]
 mod graph_tests {
     use super::*;
+    /// A investigação mostra o código e o passo seguinte, sem as linhas de
+    /// lacuna, de teste candidato e de relação estática.
     #[test]
-    fn direct_navigation_deduplicates_only_the_same_unique_dependency() {
-        let mut context=serde_json::json!({"status":"current-task-evidence","written_clues":{"covered_slots":1},"cards":[
-            {"id":"a:1:first","name":"first","source":{"file":"a","line":1,"end_line":2},"initial_source_excerpt":true,"parse_complete":true,"source_excerpt":{"text":"1 | first()\n2 | target()"}}],
-            "chain":{"steps":[{"operation":"unique-static-dependency","from":"a:1:first","to":"b:10:target","call_source":{"line":2},"target_source":{"file":"b","line":10,"end_line":15}}]},
-            "navigation":{"paths":[{"from":"a:1:first","to":"b:10:target","via":"outgoing","distance":1,"resolution":"unique-static-target"}]}});
+    fn the_investigation_leaves_out_gaps_test_candidates_and_static_relations() {
+        let context=serde_json::json!({"status":"current-task-evidence","written_clues":{"covered_slots":1},"cards":[
+            {"id":"a:1:first","name":"first","source":{"file":"a","line":1,"end_line":2},"initial_source_excerpt":true,"parse_complete":true,
+                "source_excerpt":{"text":"1 | first()\n2 | target()"},"tests":["tests/a.rs"]},
+            {"id":"a:9:helper","name":"helper","source":{"file":"a","line":9,"end_line":9},"initial_reference":true,"test_only":true}],
+            "chain":{"steps":[{"operation":"unique-static-dependency","from":"a:1:first","to":"b:10:target","call_source":{"line":2},"target_source":{"file":"b","line":10,"end_line":15}}],
+                "test_mentions":[{"source":{"file":"tests/a.rs","line":3},"text":"first();"}]},
+            "navigation":{"paths":[{"from":"a:1:first","to":"b:10:target","via":"outgoing","distance":2,"resolution":"ambiguous"}]},
+            "gaps":["unknown runtime"]});
         let request=Request {tool:"rg".into(),input:serde_json::json!({"args":["first","."]}),intent:"inspect first".into(),purpose:crate::domain::knowledge::investigation::Purpose::Implement,choose:false};
-        let render=|context:&Value|String::from_utf8(agent(&Answer {report:serde_json::json!({"task_context":context}),stdout:vec![],stderr:vec![],exit_code:0},&request).unwrap().stdout).unwrap();
-        let view=render(&context);
+        let view=String::from_utf8(agent(&Answer {report:serde_json::json!({"task_context":context}),stdout:vec![],stderr:vec![],exit_code:0},&request).unwrap().stdout).unwrap();
         assert!(view.contains("first:2 -> target 10-15"));assert!(view.contains("1 | first()"));
-        assert!(!view.contains("# static relation:"));
-        context["navigation"]["paths"][0]["resolution"]=serde_json::json!("ambiguous");
-        assert!(render(&context).contains("# static relation:"));
-        context["navigation"]["paths"][0]["resolution"]=serde_json::json!("unique-static-target");
-        context["navigation"]["paths"][0]["distance"]=serde_json::json!(2);
-        assert!(render(&context).contains("# static relation:"));
+        for line in ["# static relation:","# Gap:","test candidates","# Test-only ranges","Associated test mention","# Partial evidence"] {
+            assert!(!view.contains(line),"{line}: {view}");
+        }
     }
     #[test]
     fn pattern_hits_come_before_every_reference_and_files_without_hits_stay_out() {
