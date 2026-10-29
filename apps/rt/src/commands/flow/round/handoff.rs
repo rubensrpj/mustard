@@ -57,10 +57,22 @@ pub(super) fn dispatch_by_new_program(start: &Path, spec: &str, rebuilt: bool, p
     run(&program, &args).filter(|answer| answer.get("ok").is_some())
 }
 
-/// Roda o programa e lê a última linha JSON da saída dele: a rodada responde
-/// numa linha só, e a saída de erro fica de fora.
+/// A marca do programa novo que recebeu o despacho: ele despacha sem
+/// compilar de novo, e nunca passa o despacho adiante. Sem ela, o programa
+/// que a compilação não deixou em dia compilaria e passaria o despacho a si
+/// mesmo sem fim.
+const HANDED_OVER: &str = "MUSTARD_RT_HANDED_OVER";
+
+/// `true` no programa que recebeu o despacho de outra rodada.
+pub(super) fn handed_over() -> bool {
+    std::env::var_os(HANDED_OVER).is_some()
+}
+
+/// Roda o programa, com a marca de quem recebeu o despacho, e lê a última
+/// linha JSON da saída dele: a rodada responde numa linha só, e a saída de
+/// erro fica de fora.
 pub(super) fn run_program(program: &Path, args: &[String]) -> Option<Value> {
-    let out = std::process::Command::new(program).args(args).output().ok()?;
+    let out = std::process::Command::new(program).args(args).env(HANDED_OVER, "1").output().ok()?;
     String::from_utf8_lossy(&out.stdout).lines().rev().find_map(|line| serde_json::from_str::<Value>(line.trim()).ok())
 }
 

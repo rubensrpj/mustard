@@ -57,21 +57,6 @@ pub(crate) fn build_command(target: &Path) -> String {
     format!("cargo build --profile mustard-dev --locked {} --target-dir {}", packages.join(" "), quoted(&target.display().to_string()))
 }
 
-pub(crate) fn build_changed_command(target: &Path, files: &[String]) -> String {
-    let shared = files
-        .iter()
-        .any(|f| f.starts_with("packages/") || f.starts_with("plugin/") || matches!(f.as_str(), "Cargo.toml" | "Cargo.lock" | "apps/rt/build.rs") || f.starts_with(".cargo/"));
-    let packages: Vec<_> = PACKAGES
-        .into_iter()
-        .filter(|p| shared || *p == "mustard-rt" || files.iter().any(|f| f.starts_with(if *p == "scan" { "apps/scan/" } else { "apps/cli/" })))
-        .collect();
-    format!(
-        "cargo build --profile mustard-dev --locked {} --target-dir {}",
-        packages.iter().map(|p| format!("-p {p}")).collect::<Vec<_>>().join(" "),
-        quoted(&target.display().to_string())
-    )
-}
-
 /// O programa compilado da pasta `target`, esteja ele em disco ou não.
 pub(crate) fn program_in(target: &Path) -> PathBuf {
     target.join("mustard-dev").join(if cfg!(windows) { "mustard-rt.exe" } else { "mustard-rt" })

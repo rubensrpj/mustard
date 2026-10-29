@@ -3601,14 +3601,15 @@ fn a_round_that_commits_the_program_with_nothing_to_dispatch_does_not_build_it()
     assert!(view["fingerprint"].is_string(), "{view}");
     let reviewed = json!({"wave": 1, "note": "O conferente leu o diff e as regras."});
     let report = format!("{USAGE_OF_WAVE_ONE}\n<REVIEWED>{reviewed}</REVIEWED>");
+    let calls = || std::fs::read_to_string(project.home.join("cargo.log")).unwrap_or_default();
+    let before = calls();
 
     let out = project.command(&["run", "round", "--dispatch", "--spec", SPEC, "--report", &report], "");
     let out: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stdout)));
 
     assert!(out.get("commit").is_some(), "the round committed the wave 1: {out}");
     assert!(waves_in(&out, "dispatch").is_empty(), "{out}");
-    let calls = std::fs::read_to_string(project.home.join("cargo.log")).unwrap_or_default();
-    assert!(!calls.contains("build"), "nothing to dispatch, nothing built: {calls}");
+    assert_eq!(calls(), before, "nothing to dispatch, nothing built");
 }
 
 /// A obra do próprio Mustard: a rodada que comita código do programa o
@@ -3641,12 +3642,15 @@ fn a_round_that_commits_the_program_hands_the_dispatch_over_and_answers_once() {
     let reviewed = json!({"wave": 1, "note": "O conferente leu o diff e as regras."});
     let report = format!("{USAGE_OF_WAVE_ONE}\n<REVIEWED>{reviewed}</REVIEWED>");
 
+    let builds = || std::fs::read_to_string(project.home.join("cargo.log")).unwrap_or_default().matches("build --profile").count();
+    let before = builds();
+
     let out = project.command(&["run", "round", "--dispatch", "--spec", SPEC, "--report", &report], "");
     let out: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stdout)));
 
     assert_eq!(out["ok"], json!(true), "{out}");
     assert!(out.get("commit").is_some(), "the round committed the wave 1: {out}");
-    assert!(std::fs::read_to_string(project.home.join("cargo.log")).is_ok_and(|calls| calls.contains("build")), "the commit rebuilt the program: {out}");
+    assert_eq!(builds(), before + 1, "the dispatch after the commit rebuilt the program once: {out}");
     let log = project.log();
     let codes = log.codes();
     let cleanups: Vec<&String> = log

@@ -333,6 +333,11 @@ impl Project {
         executable::write_executable(&program, &format!("#!/bin/sh\necho '{says}'\n"));
     }
 
+    /// O programa compilado de mentira no commit atual: em dia, nada compila.
+    fn compiled_program_at_the_head(&self) {
+        self.compiled_program_says(&format!("mustard-rt 0.2.4 (build dev, g{} 2026-10-02)", self.head()));
+    }
+
     /// As chamadas ao `cargo` depois de esperar `at_least` delas chegarem: a
     /// compilação do início da sessão roda em segundo plano.
     fn cargo_calls_after_waiting(&self, at_least: usize) -> Vec<String> {
@@ -2351,34 +2356,34 @@ fn the_build_call(project: &Project) -> String {
     )
 }
 
-/// A rodada que levou ao commit uma onda que mexeu no programa do Mustard, e
-/// tem onda a despachar depois dele, compila a versão em construção: uma vez,
-/// no checkout principal, com os três programas, na pasta de compilação do
-/// projeto, e sem recusar nem avisar quando a compilação passa.
+/// A rodada que comita e tem onda a despachar depois, com o programa
+/// compilado atrás do commit novo, compila a versão em construção antes de
+/// despachar: uma vez, no checkout principal, com os três programas, na pasta
+/// de compilação do projeto, e sem recusar nem avisar quando a compilação
+/// passa.
 #[test]
 fn a_round_that_committed_the_program_builds_the_development_version_once_in_the_main_checkout() {
     let project = Project::as_mustard_source();
+    project.compiled_program_at_the_head();
     deliver_the_first_wave_changing(&project, "apps/rt/src/main.rs");
     a_task_after_the_first_wave(&project, "apps/rt/src/main.rs");
-    assert!(project.cargo_calls().is_empty(), "nada compila antes da rodada: {:?}", project.cargo_calls());
+    assert!(project.cargo_calls().is_empty(), "o despacho com o programa em dia não compila: {:?}", project.cargo_calls());
 
     let second = project.run(&["round", "--dispatch", "--spec", SPEC]);
     assert!(second.get("commit").is_some(), "the round committed the return: {second}");
-    assert_eq!(project.cargo_calls(), [changed_build_call(&project)], "{second}");
+    assert_eq!(project.cargo_calls(), [the_build_call(&project)], "{second}");
     let reasons: Vec<&str> = second["warnings"].as_array().into_iter().flatten().filter_map(|w| w["reason"].as_str()).collect();
     assert!(!reasons.contains(&"development-build-failed"), "a compilação verde não avisa: {second}");
 }
 
-/// A onda que não tocou `apps/` nem `packages/` comita sem compilar nada,
-/// mesmo no repositório do Mustard.
+/// O despacho com o programa compilado atrás do commit atual compila uma vez,
+/// mesmo sem commit nenhum na rodada.
 #[test]
-fn a_round_whose_commit_left_the_program_alone_does_not_build() {
+fn a_dispatch_with_the_program_behind_builds_it_once_without_a_commit() {
     let project = Project::as_mustard_source();
-    deliver_the_first_wave_changing(&project, "src/main.rs");
-
-    let second = project.run(&["round", "--dispatch", "--spec", SPEC]);
-    assert!(second.get("commit").is_some(), "the round committed the return: {second}");
-    assert!(project.cargo_calls().is_empty(), "o commit não tocou o programa: {:?}", project.cargo_calls());
+    project.compiled_program_says("mustard-rt 0.2.4 (build dev, g0123456789ab 2026-10-02)");
+    deliver_the_first_wave_changing(&project, "apps/rt/src/main.rs");
+    assert_eq!(project.cargo_calls(), [the_build_call(&project)], "a primeira rodada só despachou");
 }
 
 /// Fora do repositório do Mustard a rodada nunca compila, nem com um arquivo
@@ -2389,6 +2394,7 @@ fn a_round_outside_the_mustard_repository_never_builds() {
     std::fs::remove_file(project.root.join("apps/rt/Cargo.toml")).expect("the manifest goes");
     git(&project.root, &["commit", "-q", "-a", "-m", "o projeto deixa de ser o Mustard"]);
     deliver_the_first_wave_changing(&project, "apps/rt/src/main.rs");
+    a_task_after_the_first_wave(&project, "apps/rt/src/main.rs");
 
     let second = project.run(&["round", "--dispatch", "--spec", SPEC]);
     assert!(second.get("commit").is_some(), "the round committed the return: {second}");
@@ -2401,13 +2407,14 @@ fn a_round_outside_the_mustard_repository_never_builds() {
 #[test]
 fn a_red_development_build_warns_with_the_read_of_its_output_and_the_round_still_commits() {
     let project = Project::as_mustard_source();
+    project.compiled_program_at_the_head();
     deliver_the_first_wave_changing(&project, "apps/rt/src/main.rs");
     a_task_after_the_first_wave(&project, "apps/rt/src/main.rs");
     std::fs::write(project.home.join("cargo-falha"), "").expect("the build is red");
 
     let second = project.run(&["round", "--dispatch", "--spec", SPEC]);
     assert!(second.get("commit").is_some(), "the round committed anyway: {second}");
-    assert_eq!(project.cargo_calls(), [changed_build_call(&project)], "{second}");
+    assert_eq!(project.cargo_calls(), [the_build_call(&project)], "{second}");
     let warning = second["warnings"]
         .as_array()
         .into_iter()
@@ -2568,13 +2575,9 @@ fn building_the_development_version_installs_nothing_and_leaves_the_plugin_folde
     assert!(second.get("commit").is_some(), "the round committed the return: {second}");
 
     let calls = project.cargo_calls();
-    assert_eq!(calls.len(), 2, "uma compilação pela sessão e outra pela rodada: {calls:?}");
-    assert_eq!(calls, [the_build_call(&project), changed_build_call(&project)], "full startup then affected runtime build");
+    let build = the_build_call(&project);
+    assert_eq!(calls, [build.clone(), build.clone(), build], "o primeiro despacho, a sessão e o despacho depois do commit compilam");
     let after = snapshot_of(&config);
     let changed: Vec<&PathBuf> = before.keys().chain(after.keys()).filter(|path| before.get(*path) != after.get(*path)).collect();
     assert!(changed.is_empty(), "o plugin instalado e o registro ficam como estavam: {changed:?}");
-}
-
-fn changed_build_call(project: &Project) -> String {
-    format!("{} build --profile mustard-dev --locked -p mustard-rt --target-dir {}", project.root.display(), project.build_folder().display())
 }

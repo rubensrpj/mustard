@@ -953,51 +953,52 @@ fn after_wave_answer(waves: &[WaveReport], found: &[Finding], lang: Locale) -> (
     (warnings, held)
 }
 
-/// Os arquivos de uma rodada que mudam o programa: o que mora sob `apps/` ou
-/// `packages/`. Um documento, uma spec ou um texto do plugin não pedem
-/// compilação nenhuma.
-fn changes_the_program(files: &[String]) -> bool {
-    files.iter().any(|file| {
-        file.starts_with("apps/") || file.starts_with("packages/") || file.starts_with(".cargo/") || matches!(file.as_str(), "Cargo.toml" | "Cargo.lock")
-    })
-}
-
-/// Compila a versão em construção do Mustard depois do commit de uma onda que
-/// mexeu no programa, em primeiro plano, e devolve o aviso da falha: a sessão
-/// roda o programa compilado, e quem o refaz a cada commit é a rodada, para
-/// que a próxima chamada já rode o código recém-comitado.
+/// Compila a versão em construção do Mustard na hora do uso, em primeiro
+/// plano: a rodada que vai despachar chama aqui, e o despacho passa ao
+/// programa novo ([`super::handoff`]). Só compila quando o programa compilado
+/// está atrás do commit atual ([`crate::shared::development_build::gap`]), e
+/// a etapa `runtime-build` mede o tempo de cada compilação.
 ///
-/// Nada roda fora do repositório do Mustard (`mustard_core::mustard_checkout`),
-/// e nada roda quando os arquivos do commit não tocaram `apps/` nem
-/// `packages/`. A compilação vai para a pasta de
+/// Nada roda fora do repositório do Mustard (`mustard_core::mustard_checkout`).
+/// A compilação vai para a pasta de
 /// `mustard_core::io::wave_prompt::development_build_dir`, e nenhum programa
-/// é instalado em lugar nenhum. Com a compilação vermelha, a sessão segue no
-/// programa compilado anterior, e a execução fica gravada na spec `spec`, com
-/// o fim da saída — é ela que diz o que consertar —; o aviso traz o comando
-/// que a lê, sem repetir a saída. A rodada nunca recusa por isso, porque o
-/// commit já saiu.
-pub(super) fn build_development_version(root: &Path, spec: &str, files: &[String], lang: Locale) -> Option<Value> {
-    build_development_version_with(root, spec, files, lang, &|command, cwd| crate::commands::review::qa_run::run_server_command(command, cwd))
+/// é instalado em lugar nenhum. `None` quando não havia o que compilar,
+/// `Some(Ok(()))` com a compilação verde. Com a vermelha, `Some(Err(aviso))`:
+/// a sessão segue no programa compilado anterior, e a execução fica gravada na
+/// spec `spec`, com o fim da saída — é ela que diz o que consertar —; o aviso
+/// traz o comando que a lê, sem repetir a saída. A rodada nunca recusa por
+/// isso.
+pub(super) fn build_development_version(root: &Path, spec: &str, lang: Locale) -> Option<Result<(), Value>> {
+    let mut timing = super::super::validation::Stage::new(root, spec, "delivery", "runtime-build", false);
+    let behind = |main: &Path| crate::shared::development_build::gap(main).is_some();
+    let built = build_development_version_with(root, spec, lang, &behind, &|command, cwd| crate::commands::review::qa_run::run_server_command(command, cwd));
+    match built {
+        None => timing.skipped(),
+        Some(Ok(())) => timing.passed(),
+        Some(Err(_)) => {}
+    }
+    built
 }
 
-/// [`build_development_version`] com o executor recebido, que é como um teste
-/// prova a regra sem rodar o `cargo` de verdade.
+/// [`build_development_version`] com a leitura de atraso (`behind`) e o
+/// executor recebidos, que é como um teste prova a regra sem rodar o `cargo`
+/// de verdade.
 fn build_development_version_with(
     root: &Path,
     spec: &str,
-    files: &[String],
     lang: Locale,
+    behind: &dyn Fn(&Path) -> bool,
     exec: &dyn Fn(&str, &Path) -> crate::commands::review::qa_run::ProofRun,
-) -> Option<Value> {
-    if !changes_the_program(files) {
+) -> Option<Result<(), Value>> {
+    let main = mustard_core::mustard_checkout(root)?;
+    if !behind(&main) {
         return None;
     }
-    let main = mustard_core::mustard_checkout(root)?;
     let target = mustard_core::io::wave_prompt::development_build_dir(&main);
-    let command = crate::shared::development_build::build_changed_command(&target, files);
+    let command = crate::shared::development_build::build_command(&target);
     let built = exec(&command, &main);
     if built.result == "pass" {
-        return None;
+        return Some(Ok(()));
     }
     // A execução que não pôde ser gravada não tem comando que a leia: o aviso
     // diz o motivo da gravação recusada no lugar dele.
@@ -1006,7 +1007,7 @@ fn build_development_version_with(
         Err(refusal) => refusal.message(lang),
     };
     let hint = translate("round.development_build_failed", lang).replace("{read}", &read);
-    Some(json!({ "reason": "development-build-failed", "hint": hint }))
+    Some(Err(json!({ "reason": "development-build-failed", "hint": hint })))
 }
 
 /// Os caminhos que o `status --porcelain -z` lista, inclusive o nome antigo
@@ -2162,11 +2163,11 @@ mod tests {
         }
     }
 
-    /// Só a onda que tocou `apps/` ou `packages/` compila: um documento, um
-    /// arquivo do plugin ou da raiz nunca chama o executor, e fora do
-    /// repositório do Mustard nada compila nem com o código dele tocado.
+    /// Só o programa atrás do commit atual compila, uma vez, com os três
+    /// programas e no checkout principal; o programa em dia nunca chama o
+    /// executor, e fora do repositório do Mustard nada compila.
     #[test]
-    fn the_development_build_only_runs_when_the_commit_touched_the_program() {
+    fn the_development_build_only_runs_when_the_program_is_behind() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         mustard_like_root(root);
@@ -2175,25 +2176,20 @@ mod tests {
             commands.borrow_mut().push((command.to_string(), cwd.to_path_buf()));
             proof("pass", "")
         };
-        let files = |names: &[&str]| names.iter().map(|name| name.to_string()).collect::<Vec<_>>();
 
-        for untouched in [files(&[]), files(&["docs/guia.md", "plugin/hooks/hooks.json", "README.md", "scripts/x.sh"])] {
-            assert!(build_development_version_with(root, "x", &untouched, Locale::PtBr, &exec).is_none());
-            assert!(commands.borrow().is_empty(), "{untouched:?} não toca o programa: {:?}", commands.borrow());
-        }
-        for touched in [files(&["apps/rt/src/main.rs"]), files(&["docs/guia.md", "packages/core/src/lib.rs"])] {
-            assert!(build_development_version_with(root, "x", &touched, Locale::PtBr, &exec).is_none(), "compilação verde: sem aviso");
-        }
+        assert_eq!(build_development_version_with(root, "x", Locale::PtBr, &|_| false, &exec), None, "em dia: nada a compilar");
+        assert!(commands.borrow().is_empty(), "{:?}", commands.borrow());
+        assert_eq!(build_development_version_with(root, "x", Locale::PtBr, &|_| true, &exec), Some(Ok(())), "atrás: compilação verde");
         let commands = commands.into_inner();
-        assert_eq!(commands.len(), 2, "uma compilação por rodada que tocou o programa: {commands:?}");
+        assert_eq!(commands.len(), 1, "{commands:?}");
         let (command, cwd) = &commands[0];
         let target = mustard_core::io::wave_prompt::development_build_dir(root);
-        assert_eq!(command, &crate::shared::development_build::build_changed_command(&target, &files(&["apps/rt/src/main.rs"])));
+        assert_eq!(command, &crate::shared::development_build::build_command(&target));
         assert_eq!(std::fs::canonicalize(cwd).unwrap(), std::fs::canonicalize(root).unwrap(), "no checkout principal");
 
         let other = tempdir().unwrap();
         let counting = |_: &str, _: &Path| -> crate::commands::review::qa_run::ProofRun { panic!("fora do Mustard nada compila") };
-        assert!(build_development_version_with(other.path(), "x", &files(&["apps/rt/src/main.rs"]), Locale::PtBr, &counting).is_none());
+        assert_eq!(build_development_version_with(other.path(), "x", Locale::PtBr, &|_| true, &counting), None);
     }
 
     /// A compilação vermelha vira o aviso nos dois idiomas, e nunca recusa a
@@ -2207,9 +2203,8 @@ mod tests {
         assert_eq!(crate::commands::spec_events::write::record_open(root, "x", "feature/x", "dev"), Ok(true));
         let error = "error[E0425]: cannot find value `x`";
         let exec = |_: &str, _: &Path| proof("fail", error);
-        let files = vec!["apps/rt/src/main.rs".to_string()];
         for lang in [Locale::PtBr, Locale::EnUs] {
-            let warning = build_development_version_with(root, "x", &files, lang, &exec).expect("aviso de compilação vermelha");
+            let warning = build_development_version_with(root, "x", lang, &|_| true, &exec).and_then(Result::err).expect("aviso de compilação vermelha");
             assert_eq!(warning["reason"], json!("development-build-failed"), "{warning}");
             let hint = warning["hint"].as_str().unwrap_or_default();
             assert!(!hint.contains(error), "o aviso não traz a saída: {lang:?}: {warning}");
@@ -2234,10 +2229,9 @@ mod tests {
         std::fs::write(root.join("mustard.json"), "{}").unwrap();
         assert_eq!(crate::commands::spec_events::write::record_open(root, "x", "feature/x", "dev"), Ok(true));
         let exec = |_: &str, _: &Path| proof("fail", "error[E0425]: cannot find value `x`");
-        let files = vec!["apps/rt/src/main.rs".to_string()];
 
         let timing = crate::commands::flow::validation::Stage::new(root, "x", "delivery", "runtime-build", false);
-        assert!(build_development_version_with(root, "x", &files, Locale::PtBr, &exec).is_some(), "compilação vermelha: com aviso");
+        assert!(build_development_version_with(root, "x", Locale::PtBr, &|_| true, &exec).is_some_and(|built| built.is_err()), "compilação vermelha: com aviso");
         drop(timing);
 
         let builds = |log: &mustard_core::domain::spec_events::SpecLog| {

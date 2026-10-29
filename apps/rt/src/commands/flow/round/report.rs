@@ -25,7 +25,7 @@ use super::agreed::{
 };
 use super::answer::RoundRefusal;
 use super::commit::{
-    Held, UNMADE_SHA, build_development_version, commit_draft, covered, ensure_after_wave, files_of, format_round_files, git_lock, head, ignored_by_git,
+    Held, UNMADE_SHA, commit_draft, covered, ensure_after_wave, files_of, format_round_files, git_lock, head, ignored_by_git,
     join_copies, needs_commit, on_spec_branch, record_commit, reset_committed_copies, round_repos, write_joined,
 };
 use super::wave_commit::{commit_waves, made_drafts, record_made, removed_warnings};
@@ -181,9 +181,6 @@ pub(crate) struct Taken {
     /// usuário, e a que uma conferência da volta, da gravação ou de depois da
     /// onda recusou. O aviso de cada uma já vai em `warnings`.
     pub waiting: Vec<HeldReturn>,
-    /// A compilação depois do commit refez o programa da branch, e saiu
-    /// verde: o despacho que vem a seguir passa ao programa novo.
-    pub program_rebuilt: bool,
     /// As voltas que ficaram fora à espera da decisão do Jev, com a pergunta
     /// de cada uma: quem chamou a faz depois de soltar a trava do passo do
     /// git e a das cópias ([`super::triage_questions::ask_after_locks`]).
@@ -324,7 +321,7 @@ pub(crate) fn take_report_with_mine(
 impl Taken {
     /// Nada assumido: só as ondas que pausaram, que a rodada reenvia.
     fn only_paused(paused: Vec<u64>) -> Self {
-        Taken { recorded: Vec::new(), formatted: Vec::new(), warnings: Vec::new(), commit: None, paused, waiting: Vec::new(), program_rebuilt: false, asking: Vec::new() }
+        Taken { recorded: Vec::new(), formatted: Vec::new(), warnings: Vec::new(), commit: None, paused, waiting: Vec::new(), asking: Vec::new() }
     }
 }
 
@@ -539,7 +536,7 @@ fn take_returns(
         refused.extend(report.waves.iter().map(|wave| HeldReturn { wave: wave.wave, refusal: hold_of(wave.wave).refusal() }));
         let recorded = return_cut_batches(start, spec, log, cut).map_err(RoundRefusal::Refused)?;
         drop(held_lock);
-        return Ok(Taken { recorded, formatted, warnings, commit: None, paused: report.paused, waiting: refused, program_rebuilt: false, asking });
+        return Ok(Taken { recorded, formatted, warnings, commit: None, paused: report.paused, waiting: refused, asking });
     }
     if !git_refused.is_empty() {
         // Com outros commits já feitos, só as ondas recusadas ficam de fora:
@@ -601,36 +598,8 @@ fn take_returns(
     // mesmo com um arquivo só, e a onda seguinte sai sem esperar por ela. Até
     // ela acabar, o pedido não mostra linha do mapa de arquivo que este commit
     // mudou.
-    let mut program_rebuilt = false;
     if commit.is_some() {
         super::map_pass::start_map_refresh(root);
-        // O programa compilado da branch acompanha o commit que tocou o
-        // código do Mustard quando há onda a despachar: o despacho que vem a
-        // seguir passa ao programa novo ([`super::handoff`]), que precisa
-        // estar pronto. Sem onda a despachar, a rodada não compila. A falha só
-        // avisa — o commit já saiu — e a sessão segue no programa compilado
-        // anterior.
-        let mut timing = super::super::validation::Stage::new(root, spec, "delivery", "runtime-build", false);
-        let dispatching = super::queue::dispatch_waiting(root, spec);
-        let rebuilt = if dispatching { build_development_version(root, spec, &files, lang) } else { None };
-        if !dispatching
-            || mustard_core::mustard_checkout(root).is_none()
-            || !files.iter().any(|file| {
-                file.starts_with("apps/")
-                    || file.starts_with("packages/")
-                    || file.starts_with("plugin/")
-                    || file.starts_with(".cargo/")
-                    || file == "Cargo.toml"
-                    || file == "Cargo.lock"
-            })
-        {
-            timing.skipped();
-        } else if rebuilt.is_none() {
-            timing.passed();
-            program_rebuilt = true;
-        }
-        drop(timing);
-        warnings.extend(rebuilt);
     }
     knowledge::capture(root, spec, &mut recorded, &mut warnings);
     // O arquivo de conversa da onda pode não ser achado, e nunca em silêncio:
@@ -645,7 +614,7 @@ fn take_returns(
             warnings.push(usage_missing(wave, lang));
         }
     }
-    Ok(Taken { recorded, formatted, warnings, commit, paused: report.paused, waiting: refused, program_rebuilt, asking })
+    Ok(Taken { recorded, formatted, warnings, commit, paused: report.paused, waiting: refused, asking })
 }
 
 /// O envio que despachou a onda `wave` por último, na posição em que a onda
