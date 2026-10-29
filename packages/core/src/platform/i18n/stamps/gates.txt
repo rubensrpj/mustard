@@ -21,8 +21,6 @@ clarity.hard_to_read	a0b4bcb694768424
 clarity.hard_to_read_at	199d307d9b44290b
 clarity.internal_code	1580a447fd16a8d8
 clarity.long_sentence	132cd73a7e998457
-clarity.more	a38711bc83cddf89
-clarity.next.head	977b61289e1d5f96
 clarity.unexpanded_acronym	ce75a0904fc25d74
 clarity.wrong_language	07edba10bf4fe150
 clarity.wrong_language_block	f5dd4034940c4a93

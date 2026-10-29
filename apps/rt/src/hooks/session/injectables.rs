@@ -92,12 +92,11 @@ pub fn collect(project_dir: &str, session_id: Option<&str>, ignore_markers: bool
             if !ignore_markers && notice_seen(root,session_id,"session-map-content",&hash) {continue;}
             remember_notice(root,session_id,"session-map-content",&hash);
             if ignore_markers {
-                // A janela renovada recebe a linha do caminho e os princípios
-                // do condutor, e não o mapa inteiro: o bloco de retomada da
-                // compactação fica com o lugar que sobra.
+                // A janela renovada recebe a linha do caminho, e não o mapa
+                // inteiro: o bloco de retomada da compactação fica com o
+                // lugar que sobra.
                 let lang = config.language().text_or_default();
-                let principles = mustard_core::platform::seeds::principles_for(lang, mustard_core::platform::seeds::Reader::Conductor, 2);
-                blocks.push(format!("{}\n\n{}", mustard_core::platform::i18n::translate("session.guide", lang), principles.trim_end()));
+                blocks.push(mustard_core::platform::i18n::translate("session.guide", lang).to_string());
                 delivered.push(marker_name);continue;
             }
         }
@@ -309,10 +308,10 @@ mod tests {
         assert!(!dir.path().join(".claude/.session/s1/injected-gone.md").exists());
     }
     /// O mapa do Mustard sai uma vez por conteúdo; a janela renovada recebe,
-    /// no lugar dele, a linha do caminho e os princípios do condutor. O texto
-    /// que a pessoa escreveu no lugar do mapa sai como está.
+    /// no lugar dele, só a linha do caminho. O texto que a pessoa escreveu no
+    /// lugar do mapa sai como está.
     #[test]
-    fn the_managed_map_is_deduplicated_and_refreshes_with_the_conductor_principles() {
+    fn the_managed_map_is_deduplicated_and_refreshes_with_the_guide_line() {
         let dir=tempfile::tempdir().unwrap();let root=dir.path();
         std::fs::create_dir_all(root.join(".claude/mustard")).unwrap();
         std::fs::write(root.join("mustard.json"),r#"{"inject":[{"on":"sessionStart","file":".claude/mustard/session-map.md","once":false}]}"#).unwrap();
@@ -322,10 +321,8 @@ mod tests {
         assert_eq!(collect(&project,Some("dedup"),false).unwrap(),map.trim());
         assert!(collect(&project,Some("dedup"),false).is_none());
         let refreshed=collect(&project,Some("dedup"),true).unwrap();
-        let principles=mustard_core::platform::seeds::principles_for(mustard_core::SupportedLocale::PtBr,mustard_core::platform::seeds::Reader::Conductor,2);
         assert!(refreshed.len()<map.len(),"the renewed window does not get the whole map: {refreshed}");
         assert!(refreshed.contains("mcp__mustard__search") && refreshed.contains(".claude/mustard/session-map.md"),"{refreshed}");
-        assert!(refreshed.contains(principles.trim_end()),"the renewed window lacks the conductor's principles: {refreshed}");
         std::fs::write(root.join(".claude/mustard/session-map.md"),"My explicit project rule").unwrap();
         assert_eq!(collect(&project,Some("dedup"),true).unwrap(),"My explicit project rule");
     }

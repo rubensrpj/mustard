@@ -11,8 +11,6 @@
 
 Commit/PR sem cliente, e-mail ou caminho local.
 
-{principles}
-
 ## Retomar
 
 `mustard-rt run resume`.

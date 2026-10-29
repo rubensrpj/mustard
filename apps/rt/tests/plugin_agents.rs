@@ -1289,8 +1289,6 @@ fn no_agent_text_creates_a_copy_on_its_own_and_the_request_names_the_slot_withou
         for key in ["prompt.execution.copy", "prompt.review.copy"] {
             assert!(translate(key, text).contains(said), "the {lang} `{key}` does not say `{said}`");
         }
-        let notice = translate("scratch.residue.notice", text);
-        assert!(notice.contains("mustard-rt run clean"), "the {lang} disk notice lost its cleanup command");
     }
 
     let dir = tempfile::tempdir().unwrap();

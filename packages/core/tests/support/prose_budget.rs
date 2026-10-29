@@ -3,9 +3,8 @@
 //! do repositório fica duas pastas acima do pacote que compila o teste.
 //!
 //! Em cada idioma, todo texto que o modelo lê — os comandos e o estilo de
-//! resposta do plugin, os agentes, o mapa do início da sessão que o
-//! instalador grava e os princípios do produto, que chegam ao mapa e aos
-//! pedidos — soma menos de 30.500 bytes. Não há teto por arquivo de agente: o
+//! resposta do plugin, os agentes e o mapa do início da sessão que o
+//! instalador grava — soma menos de 30.500 bytes. Não há teto por arquivo de agente: o
 //! que prende um molde é o que ele diz.
 //!
 //! A conta é a do disco, byte a byte, como `find … -printf '%s'` a faz. Um

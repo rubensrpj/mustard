@@ -11,8 +11,6 @@
 
 Commit/PR omit clients, email and local paths.
 
-{principles}
-
 ## Resuming
 
 `mustard-rt run resume`.

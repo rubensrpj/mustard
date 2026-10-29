@@ -207,7 +207,6 @@ impl Writer<'_> {
         };
         out.push_str(self.t(look));
         out.push_str("\n\n");
-        let _ = writeln!(out, "{}", crate::platform::seeds::principles_for(self.lang, crate::platform::seeds::Reader::Review, 3));
         let _ = writeln!(out, "## {}\n", self.t("prompt.part.read"));
         self.read_example(&mut out, "prompt.read.final", true);
         for (key, items) in &listing.parts {

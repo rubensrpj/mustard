@@ -2008,10 +2008,10 @@ fn a_spec_on_the_main_repository_and_a_submodule_readies_the_main_pull_request_o
     let waiting = translate("pr.submodules.waiting", Locale::PtBr).replace("{pr}", "7").replace("{paths}", SUB);
     assert_eq!(pr["hint"], json!(waiting), "{pr}");
 
-    // Enquanto o do submódulo não entra, o início da sessão diz qual falta, e
-    // o principal segue rascunho.
+    // Enquanto o do submódulo não entra, o principal segue rascunho, e a
+    // abertura não fala disso.
     let said = project.hook("SessionStart", &session_start(&project));
-    assert!(said.contains(&waiting), "the session start names the missing pull request: {said}");
+    assert!(!said.contains(&waiting), "the opening says nothing of the submodules: {said}");
     assert!(!project.gh_calls().iter().any(|call| call.starts_with("main pr ready")), "still a draft");
 
     // O do submódulo entra pelo `pr-merge`: o ponteiro vai para a base do
@@ -2040,7 +2040,7 @@ fn a_spec_on_the_main_repository_and_a_submodule_readies_the_main_pull_request_o
 
 /// O pull request do submódulo que outra pessoa mergeou é achado no início da
 /// sessão: o ponteiro vai para a base do submódulo, a branch do principal é
-/// enviada, o principal fica pronto e o aviso diz isso.
+/// enviada e o principal fica pronto, sem texto na abertura.
 #[test]
 fn a_submodule_pull_request_merged_by_someone_else_readies_the_main_one_at_session_start() {
     let project = Project::with_submodule();
@@ -2052,7 +2052,7 @@ fn a_submodule_pull_request_merged_by_someone_else_readies_the_main_one_at_sessi
     let start = session_start(&project);
     let said = project.hook("SessionStart", &start);
     let ready = translate("pr.submodules.ready", Locale::PtBr).replace("{pr}", "7").replace("{paths}", SUB);
-    assert!(said.contains(&ready), "the session start says the main pull request is ready: {said}");
+    assert!(!said.contains(&ready), "the opening says nothing of it: {said}");
     let sub_base = submodule_base_tip(&project);
     assert_eq!(pointer(&project), sub_base, "the pointer moved");
     assert_eq!(
@@ -2429,18 +2429,6 @@ fn session_notices(project: &Project) -> String {
         .unwrap_or_default()
 }
 
-/// O aviso do compilado de `key`, com o commit atual do projeto e o que
-/// aconteceu com a compilação em segundo plano, até o ponto em que o programa
-/// que roda a sessão é dito: cortado antes da versão dele, que muda a cada
-/// compilação.
-fn build_notice_head(project: &Project, key: &str, compiled: &str, progress: &str) -> String {
-    let text = translate(key, Locale::PtBr)
-        .replace("{head}", &project.head())
-        .replace("{compiled}", compiled)
-        .replace("{progress}", translate(progress, Locale::PtBr));
-    text.split("{running}").next().unwrap_or_default().to_string()
-}
-
 /// Espera a compilação em segundo plano acabar: a trava dela passa a dizer
 /// como terminou (`built` ou `failed`).
 fn wait_for_the_background_build(project: &Project) {
@@ -2448,29 +2436,28 @@ fn wait_for_the_background_build(project: &Project) {
 }
 
 /// No repositório do Mustard sem o programa compilado, o início da sessão
-/// solta a compilação em segundo plano, uma vez e no checkout principal, e
-/// avisa que a sessão roda o programa instalado até ela acabar.
+/// solta a compilação em segundo plano, uma vez e no checkout principal, sem
+/// falar disso na abertura.
 #[test]
-fn a_session_in_the_mustard_repository_without_the_compiled_program_starts_the_build_and_says_so() {
+fn a_session_in_the_mustard_repository_without_the_compiled_program_starts_the_build() {
     let project = Project::as_mustard_source();
 
     let said = session_notices(&project);
-    let expected = build_notice_head(&project, "session.build.missing", "", "session.build.started");
-    assert!(said.contains(&format!("{expected}{}", env!("CARGO_PKG_VERSION"))), "o aviso diz o programa que a sessão roda: {said}");
+    assert!(!said.contains("compilado da branch"), "a abertura não fala da compilação: {said}");
     assert_eq!(project.cargo_calls_after_waiting(1), [the_build_call(&project)]);
     wait_for_the_background_build(&project);
     assert_eq!(project.cargo_calls().len(), 1, "uma compilação só");
 }
 
-/// O programa compilado atrás do commit atual pede a mesma compilação, e o
-/// aviso diz de qual commit é o programa que a sessão roda até lá.
+/// O programa compilado atrás do commit atual pede a mesma compilação, sem
+/// texto na abertura.
 #[test]
-fn a_session_with_the_compiled_program_behind_the_head_starts_the_build_and_names_the_old_commit() {
+fn a_session_with_the_compiled_program_behind_the_head_starts_the_build() {
     let project = Project::as_mustard_source();
     project.compiled_program_says("mustard-rt 0.2.4 (build dev, g0123456789ab 2026-10-02)");
 
     let said = session_notices(&project);
-    assert!(said.contains(&build_notice_head(&project, "session.build.behind", "0123456789ab", "session.build.started")), "{said}");
+    assert!(!said.contains("0123456789ab"), "{said}");
     assert_eq!(project.cargo_calls_after_waiting(1), [the_build_call(&project)]);
     wait_for_the_background_build(&project);
 }
@@ -2490,15 +2477,14 @@ fn a_session_with_the_compiled_program_at_the_head_stays_silent_and_builds_nothi
 }
 
 /// Com outra compilação ainda valendo — a trava dela existe —, a sessão não
-/// solta uma segunda e diz que a outra está em andamento.
+/// solta uma segunda.
 #[test]
 fn a_session_while_another_build_runs_does_not_start_a_second_one() {
     let project = Project::as_mustard_source();
     std::fs::create_dir_all(project.build_marker().parent().expect("the build base")).expect("the base");
     std::fs::write(project.build_marker(), "").expect("the lock of the other build");
 
-    let said = session_notices(&project);
-    assert!(said.contains(&build_notice_head(&project, "session.build.missing", "", "session.build.in_progress")), "{said}");
+    let _ = session_notices(&project);
     crate::pause::room_for_what_must_not_happen();
     assert!(project.cargo_calls().is_empty(), "a trava vale: {:?}", project.cargo_calls());
 }

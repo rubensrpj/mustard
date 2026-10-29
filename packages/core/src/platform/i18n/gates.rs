@@ -686,17 +686,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The reply came out in {found}, and the language of the project and the user is \
              {expected}. Write the reply again in {expected}."
         }
-        // A frase curta que a linha escondida da mensagem seguinte leva
-        // depois de uma resposta com erro de escrita
-        // (`apps/rt/src/hooks/task/clarity_check.rs`), para o assistente
-        // corrigir na resposta seguinte. Só a resposta fora do idioma é
-        // barrada; a frase não aparece na tela. `{errors}` vem do chamador: os
-        // erros, separados por ponto e vírgula.
-        ("clarity.next.head", Locale::PtBr) => "Na última resposta: {errors}.",
-        ("clarity.next.head", Locale::EnUs) => "In the last reply: {errors}.",
-        // O último item da lista quando há mais erros do que ela mostra.
-        ("clarity.more", Locale::PtBr) => "e mais {count}",
-        ("clarity.more", Locale::EnUs) => "and {count} more",
         _ => return None,
     })
 }
@@ -785,16 +774,7 @@ mod tests {
             ("subagent.launch_settings_forced", &["{agent}", "{asked_model}", "{asked_effort}", "{model}", "{effort}"][..]),
             ("subagent.no_small_model_for_code", &["{agent}", "{asked_model}", "{model}"][..]),
             ("session.merged", &["{count}", "{branches}"][..]),
-            ("session.landed", &["{pr}", "{spec}"][..]),
-            ("session.landed.outside", &["{branch}", "{spec}"][..]),
-            ("session.landed.outside_closed", &["{branch}", "{spec}"][..]),
-            ("session.provider_silent", &["{spec}", "{reason}"][..]),
-            ("session.submodules", &["{spec}", "{text}"][..]),
             ("session.version.drift", &["{stamped}", "{running}"][..]),
-            ("session.version.stale", &["{running}", "{installed}"][..]),
-            ("session.version.behind", &["{running}", "{plugin}"][..]),
-            ("session.build.missing", &["{head}", "{progress}", "{running}"][..]),
-            ("session.build.behind", &["{compiled}", "{head}", "{progress}"][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
             assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");
@@ -805,25 +785,11 @@ mod tests {
                 assert!(pt.contains(slot) && en.contains(slot), "{key} lost {slot}");
             }
         }
-        // O que aconteceu com a compilação em segundo plano entra no aviso
-        // do programa compilado no lugar de `{progress}`.
-        for key in ["session.build.started", "session.build.in_progress", "session.build.not_started"] {
-            let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
-            assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");
-            assert_ne!(en, "<missing-key>", "{key} missing in en-US");
-            assert_ne!(pt, en, "{key} must differ per locale");
-        }
         // A branch que já tinha saído e as recusas da entrega fora do
         // fechamento, com as vagas que quem chama troca.
         for (key, slots) in [
-            ("session.landed.gone", &["{branch}"][..]),
-            ("session.landed.kept", &["{branch}"][..]),
-            ("session.landed.recorded", &[][..]),
-            ("session.landed.leaving_one", &["{spec}", "{report}"][..]),
-            ("session.landed.leaving_many", &["{spec}", "{count}", "{report}"][..]),
             ("session.deliver.in_flight", &["{spec}"][..]),
             ("session.deliver.backlog", &["{spec}", "{count}"][..]),
-            ("session.landed.tasks_left", &["{branch}", "{spec}", "{count}"][..]),
             ("session.deliver.not_started", &["{spec}", "{reason}"][..]),
             ("session.deliver.no_spec", &["{spec}"][..]),
             ("session.deliver.not_open", &["{spec}", "{phase}"][..]),
@@ -929,8 +895,6 @@ mod tests {
             ("clarity.hard_to_read_at", &["{score}", "{min}", "{opening}"][..]),
             ("clarity.wrong_language", &["{found}", "{expected}"][..]),
             ("clarity.wrong_language_block", &["{found}", "{expected}"][..]),
-            ("clarity.next.head", &["{errors}"][..]),
-            ("clarity.more", &["{count}"][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
             assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");
@@ -940,9 +904,8 @@ mod tests {
                 assert!(pt.contains(slot) && en.contains(slot), "{key} lost {slot}");
             }
         }
-        assert_eq!(translate("clarity.next.head", Locale::PtBr), "Na última resposta: {errors}.");
-        assert_eq!(translate("clarity.next.head", Locale::EnUs), "In the last reply: {errors}.");
         for lang in [Locale::PtBr, Locale::EnUs] {
+            assert_eq!(translate("clarity.next.head", lang), "<missing-key>", "the correction of the next message left");
             assert_eq!(translate("clarity.block.head", lang), "<missing-key>", "the complement request left");
             assert_eq!(translate("clarity.note.head", lang), "<missing-key>", "the warning after the complement left");
             for key in ["clarity.too_long", "clarity.too_long_and_hard_to_read"] {

@@ -3075,9 +3075,8 @@ mod tests {
     }
 
     /// As dicas que mandam perguntar ou responder (a de apresentar um ponto
-    /// do levantamento, a de revisar um bloco, a do plano e a da retomada) e o
-    /// mapa do início da sessão apontam para a ordem de explicar do estilo de
-    /// resposta, sem pedir a forma antiga: o fato com a fonte, o que já está
+    /// do levantamento, a de revisar um bloco, a do plano e a da retomada)
+    /// apontam para a ordem de explicar do estilo de resposta, sem pedir a forma antiga: o fato com a fonte, o que já está
     /// decidido, o que falta decidir e uma recomendação. O estilo de cada
     /// idioma tem essa ordem, os quatro passos em sequência, e deixou de dizer
     /// que a página é publicada em cada marco. A dica do plano e a da retomada
@@ -3131,8 +3130,7 @@ mod tests {
             assert!(!style.contains(old_example), "the {lang} style still says the page waits for a milestone");
 
             let hints = ["survey.present_point", "survey.review_step", "plan.next", "resume.next.plan"];
-            let texts = hints.map(|key| (key, translate(key, lang))).into_iter().chain([("session map", crate::platform::seeds::session_map(lang))]);
-            for (key, text) in texts {
+            for (key, text) in hints.map(|key| (key, translate(key, lang))) {
                 assert!(text.contains(pointer), "{key} in {lang} does not point to the answer style: {text}");
                 for old in old_shape {
                     assert!(!text.contains(old), "{key} in {lang} still asks for the old shape `{old}`: {text}");

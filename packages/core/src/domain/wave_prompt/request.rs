@@ -219,7 +219,6 @@ impl Writer<'_> {
         if let Some(first) = listing.steps.first() {
             let _ = writeln!(out, "{}\n", self.task_block(first, 1, listing.steps.len()).text);
         }
-        let _ = writeln!(out, "{}", crate::platform::seeds::principles_for(self.lang, crate::platform::seeds::Reader::Wave, 3));
     }
 
     /// O bloco de cada tarefa, na ordem de execução ([`super::task_blocks`]).

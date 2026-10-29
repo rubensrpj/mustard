@@ -79,7 +79,7 @@ use std::path::PathBuf;
 use binaries::check_binaries;
 use drift::check_drift;
 use host::{check_claude_cli, check_effort_env, check_nerd_font, check_rtk, lsp_check};
-use project::{check_claude_md, check_scan_output, check_switches};
+use project::{check_claude_md, check_merged_branches, check_project_version, check_scan_output, check_switches};
 use protection::check_branch_protection;
 use report::{render_report, render_report_json};
 use residue::{check_residue, check_scratch_residue};
@@ -287,6 +287,22 @@ const CHECKS: &[Check] = &[
         check: |place| {
             let project = place.project();
             check_switches(&project.root, project.lang)
+        },
+    },
+    // As branches já mergeadas que seguem vivas e a versão gravada no
+    // projeto, que o início da sessão deixou de dizer: só acusam.
+    Check {
+        runs: Runs::Round,
+        check: |place| {
+            let project = place.project();
+            check_merged_branches(&project.root, project.lang)
+        },
+    },
+    Check {
+        runs: Runs::Round,
+        check: |place| {
+            let project = place.project();
+            check_project_version(&project.root, project.lang)
         },
     },
     // O que um Mustard antigo deixou em arquivos que não são dele.

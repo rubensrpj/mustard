@@ -213,10 +213,6 @@ mod tests {
             ("pending.not_dropped", &["{id}"][..]),
             ("pending.gate.block", &["{spec}", "{count}", "{items}"][..]),
             ("pending.duplicate", &["{id}", "{title}"][..]),
-            ("scratch.residue.notice", &["{total}", "{count}"][..]),
-            ("session.landed.settled", &["{branch}"][..]),
-            ("session.landed.unsettled", &["{branch}", "{reason}"][..]),
-            ("session.landed.pending", &["{items}"][..]),
             ("statusline.wave", &["{delivered}", "{total}"][..]),
             ("statusline.rtk", &["{pct}"][..]),
             ("statusline.spend", &["{change}"][..]),
@@ -228,13 +224,6 @@ mod tests {
             for slot in slots {
                 assert!(pt.contains(slot) && en.contains(slot), "{key} lost {slot}");
             }
-        }
-        // O aviso de sobras manda, nos dois idiomas, para o comando de limpeza
-        // que existe: listar sem nada e apagar com `--apply`.
-        for lang in [Locale::PtBr, Locale::EnUs] {
-            let notice = translate("scratch.residue.notice", lang);
-            assert!(notice.contains("`mustard-rt run clean`"), "the notice names the list call: {notice}");
-            assert!(notice.contains("`mustard-rt run clean --apply`"), "and the delete call: {notice}");
         }
         for key in [
             "deliver.order",
