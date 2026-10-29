@@ -731,6 +731,10 @@ fn run_close(
             out["criteria"] = json!(runs);
             out["stages"] = json!(stages);
             out["validation"] = json!({"status":"pass","reused":reused});
+            for kept in review_kept.iter() {
+                let hint = crate::commands::flow::round::code_kept_hint(kept, lang);
+                spec_events::pages::push_warning(&mut out, "code-kept", &hint);
+            }
             if let Some(hint) = &stuck_hint {
                 spec_events::pages::push_warning(&mut out, "stuck-found", hint);
             }
@@ -785,6 +789,12 @@ fn run_close(
     }
     if let Some((reason, hint)) = &agents_hint {
         spec_events::pages::push_warning(&mut out, reason, hint);
+    }
+    // O que a limpeza da cópia limpa guardou antes da máquina rodar de novo
+    // também vai na resposta de fechada: a ref existe, e ninguém mais a diria.
+    for kept in review_kept.iter() {
+        let hint = crate::commands::flow::round::code_kept_hint(kept, lang);
+        spec_events::pages::push_warning(&mut out, "code-kept", &hint);
     }
     for (reason, hint) in removal_warnings(&removal, lang) {
         spec_events::pages::push_warning(&mut out, reason, &hint);
@@ -2351,6 +2361,28 @@ mod tests {
             assert!(hints[0].contains(&refs[0]) && hints[0].contains(&shown), "{case}: {}", hints[0]);
             assert!(hints[0].contains(&format!("git cherry-pick --no-commit {}", refs[0])), "{case}: {}", hints[0]);
         }
+    }
+
+    /// Com a revisão aprovada e a máquina rodando de novo, a cópia limpa
+    /// volta ao commit e guarda o que o revisor deixou nela: a resposta de
+    /// fechada nomeia a ref, como a que pede a revisão.
+    #[test]
+    fn the_closed_answer_names_the_code_kept_from_the_clean_copy() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        ready_to_close(root, "x", &["git --version"]);
+        let ask = |report: Option<String>| close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), report, ..Default::default() }, None);
+        assert_eq!(ask(None)["review"]["final"], json!(true));
+        std::fs::write(check_copy(root).join("sobra.txt"), "o que o revisor deixou").unwrap();
+        // A configuração muda: a máquina roda de novo e refaz a cópia limpa.
+        std::fs::write(root.join("mustard.json"), json!({"lintCommand": "git --version"}).to_string()).unwrap();
+
+        let closed = ask(approve(root, "x"));
+        assert_eq!((closed["phase"].clone(), closed["validation"]["reused"].clone()), (json!("closed"), json!(false)), "{closed}");
+        let refs = kept_refs(root);
+        assert_eq!(refs.len(), 1, "{refs:?}");
+        let hints = hints_of(&closed, "code-kept");
+        assert!(hints.iter().any(|hint| hint.contains(&refs[0])), "{closed}");
     }
 
     /// Uma vaga a mais da obra, com um arquivo dentro que o git do projeto
