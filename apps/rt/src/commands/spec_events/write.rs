@@ -1338,9 +1338,9 @@ impl RecordCheck {
 /// arquivo antes e depois dela, como o relatório o mostra: em `next`, o que
 /// fazer, no idioma do projeto, e, quando falta ponto de lacuna, a ordem de
 /// rodar o `grill` de novo; em `points`, os pontos abertos, mostrados de uma
-/// vez, e em `point` o próximo deles, inteiro; em `unrouted`, uma linha com o
-/// código e o começo de cada mensagem do usuário sem destino. `None` quando
-/// não há passo.
+/// vez, em `point` o próximo deles, inteiro, e em `ask_user` os códigos dos
+/// que são do usuário; em `unrouted`, uma linha com o código e o começo de
+/// cada mensagem do usuário sem destino. `None` quando não há passo.
 ///
 /// Nenhum passo daqui pede a cópia do modelo visual aprovado: quem a pede é
 /// o `grill`, com os pontos que abre, para ela ser salva logo depois do sim.
@@ -1369,6 +1369,7 @@ pub(crate) fn survey_report(spec: &str, before: &SpecLog, after: &SpecLog, lang:
                 out.insert("points".to_string(), json!(open));
             }
             out.insert("point".to_string(), shown_point(point, &codes));
+            out.insert("ask_user".to_string(), json!(survey::ask_user(after).iter().map(|p| codes.get(&p.id)).collect::<Vec<_>>()));
             translate("survey.present_all", lang).to_string()
         }
         SurveyStep::Done { unrouted } => {
@@ -1393,8 +1394,9 @@ fn already_presented(before: &SpecLog, after: &SpecLog, point: &SpecEvent) -> bo
 }
 
 /// O ponto como o relatório do levantamento o mostra: cada fato só com o
-/// texto e a fonte. A conferência que o `grill` grava junto do fato fica no
-/// arquivo da spec, e a leitura do item a mostra.
+/// texto e a fonte, e quem fecha o ponto em `owner`. A conferência que o
+/// `grill` grava junto do fato fica no arquivo da spec, e a leitura do item a
+/// mostra.
 fn shown_point(point: &SpecEvent, codes: &BTreeMap<u64, String>) -> Value {
     let mut shown = super::shown(point, codes);
     if let Some(facts) = shown.get_mut("facts").and_then(Value::as_array_mut) {
@@ -1402,6 +1404,7 @@ fn shown_point(point: &SpecEvent, codes: &BTreeMap<u64, String>) -> Value {
             fact.retain(|name, _| matches!(name.as_str(), "text" | "source"));
         }
     }
+    shown["owner"] = json!(survey::owner_of(point).token());
     shown
 }
 

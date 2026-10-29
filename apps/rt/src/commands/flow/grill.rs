@@ -251,6 +251,8 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
         .iter()
         .map(|item| {
             let mut value = item.to_value(origin);
+            // Quem fecha o ponto sai da lacuna, e não vai ao registro.
+            value["owner"] = json!(item.key.owner().token());
             // O número e a situação saem da leitura única dos pontos, a mesma
             // da página e da passagem para o plano.
             if let Some((point, status)) = item.standing(&log) {
@@ -308,6 +310,7 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
         spec_events::pages::push_warning(&mut report, "citation-left-out", &left_out_hint(source, finding, lang));
     }
     if !survey::open_points(&log).is_empty() {
+        report["ask_user"] = json!(survey::ask_user(&log).iter().map(|point| codes.get(&point.id)).collect::<Vec<_>>());
         let present = translate("survey.present_all", lang);
         // Onde salvar a cópia do modelo visual aprovado sai aqui, o único
         // lugar que a pede: com os pontos que vão ao usuário, antes do sim, e
@@ -355,7 +358,7 @@ pub(crate) fn short(projected: &Value) -> Value {
     out["open"] = json!(open);
     out["spec"] = projected["spec"].clone();
     out["points"] = json!(points);
-    for key in ["unrouted", "reason", "touched", "touched_hint", "withheld", "warnings", "project_summary"] {
+    for key in ["ask_user", "unrouted", "reason", "touched", "touched_hint", "withheld", "warnings", "project_summary"] {
         if let Some(value) = projected.get(key) {
             out[key] = value.clone();
         }
@@ -799,8 +802,13 @@ mod tests {
 
     /// Os pontos gravados, na ordem do arquivo.
     fn recorded_points(root: &Path, spec: &str) -> Vec<SpecEvent> {
+        recorded_events(root, spec).into_iter().filter(|e| e.event_type == "point").collect()
+    }
+
+    /// Os eventos visíveis da spec, na ordem do arquivo.
+    fn recorded_events(root: &Path, spec: &str) -> Vec<SpecEvent> {
         let log = mustard_core::domain::spec_events::parse_log(&events(root, spec));
-        log.visible().into_iter().filter(|e| e.event_type == "point").cloned().collect()
+        log.visible().into_iter().cloned().collect()
     }
 
     /// Uma lição que casa com o objetivo no banco, e uma spec anterior que
@@ -1327,6 +1335,57 @@ mod tests {
             assert!(report["hint"].as_str().unwrap().contains(&format!("fase {phase}")), "{report}");
             assert_eq!(events(root, spec), bytes);
         }
+    }
+
+    /// O `grill` diz o dono de cada ponto e manda ao usuário só as lacunas
+    /// dele, em `ask_user`. O ponto do assistente fecha com o fato e a fonte
+    /// no código, sem mensagem nova do usuário, e as lacunas do usuário seguem
+    /// as mesmas.
+    #[test]
+    fn grill_asks_the_user_only_his_gaps_and_the_assistant_closes_the_rest_from_the_code() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        surveyed(root, "x");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src").join("a.rs"), "fn merge() {}\n").unwrap();
+        let report = grill(root, "x", Some("feature"));
+        let owned = |report: &Value, owner: &str| -> Vec<Value> {
+            items(report).iter().filter(|item| item["owner"] == json!(owner)).map(|item| item["code"].clone()).collect()
+        };
+        let user: Vec<&str> = survey::gaps(&["feature"]).into_iter().filter(|key| key.owner() == survey::Owner::User).map(|key| key.label(Locale::PtBr)).collect();
+        let asked: Vec<&str> = items(&report).iter().filter(|item| item["owner"] == json!("user")).filter_map(|item| item["gap"].as_str()).collect();
+        assert_eq!(asked, user);
+        assert_eq!(user.len(), 6, "{user:?}");
+        assert_eq!(report["ask_user"], json!(owned(&report, "user")), "{report}");
+
+        let contract = items(&report).iter().find(|item| item["gap"] == json!(survey::GapKey::Contracts.label(Locale::PtBr))).unwrap().clone();
+        assert_eq!(contract["owner"], json!("assistant"));
+        let messages = || recorded_events(root, "x").iter().filter(|e| e.event_type == "message").count();
+        let before = messages();
+        let item = json!({"title": "Entrada do merge", "text": "O merge recebe a pendência.", "agent": "- ver `src/a.rs:1`",
+            "keys": ["merge"], "example": "merge(pendencia)"});
+        let facts = json!([{"text": "O merge é declarado aqui.", "source": "src/a.rs:1"}]);
+        let closed = crate::commands::flow::answer::answer_for(
+            &crate::commands::flow::answer::AnswerOpts {
+                root: root.to_path_buf(),
+                spec: Some("x".into()),
+                point: contract["code"].as_str().map(str::to_string),
+                event_type: Some("contract".into()),
+                json: Some(item.to_string()),
+                facts: Some(facts.to_string()),
+                result: None,
+                not_applicable: false,
+                reason: None,
+            },
+            None,
+        );
+        assert_eq!(closed["ok"], json!(true), "{closed}");
+        assert_eq!(closed["closed"]["closes"], contract["id"], "{closed}");
+        assert_eq!(messages(), before, "no new user message");
+        let again = grill(root, "x", Some("feature"));
+        let now = items(&again).iter().find(|item| item["code"] == contract["code"]).unwrap();
+        assert_eq!(now["status"], json!("closed"), "{again}");
+        assert_eq!(again["ask_user"], report["ask_user"], "{again}");
     }
 
     /// Sem pedir, o `grill` grava todas as lacunas de uma vez, num bloco só,

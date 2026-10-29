@@ -110,24 +110,27 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              written."
         }
         ("survey.present_all", Locale::PtBr) => {
-            "Os pontos abertos estão em `points`. Antes do sim, preencha cada lacuna a partir do \
-             pedido e do código. Mostre tudo de uma vez, na ordem de explicar do estilo de \
-             resposta, e peça um sim só. Com o sim, \
-             grave a resposta de cada ponto com `mustard-rt run answer --point <número> --type \
-             <tipo> --json '{…}'`. Se o ponto não tem fato, o fechamento leva `--facts` (lista JSON de \
-             `{\"text\":\"…\",\"source\":\"arquivo:linha\"}`), ou os fatos entram antes numa versão do ponto. \
-             Cada resposta fecha o ponto. Ela devolve em `points` o código, o \
-             número e a lacuna de cada ponto ainda aberto, e em `point` o próximo inteiro."
+            "Os pontos abertos estão em `points`, cada um com o dono em `owner`. Feche sozinho os do \
+             assistente, sem perguntar ao usuário: responda do código com `mustard-rt run answer \
+             --point <número> --type <tipo> --json '{…}'` e os fatos em `--facts` (lista JSON de \
+             `{\"text\":\"…\",\"source\":\"arquivo:linha\"}`), citando a fonte. Os fatos também podem \
+             entrar antes numa versão do ponto. Os do usuário estão em `ask_user`. Mostre só eles, \
+             numa mensagem só, cada um com a proposta e a fonte. Apresente-os na ordem de explicar \
+             do estilo de resposta e peça um sim só. Com o sim, grave a resposta de cada um pelo \
+             mesmo comando, que fecha o ponto. A resposta devolve em `points` o código, o número e \
+             a lacuna de cada ponto ainda aberto, e em `point` o próximo inteiro."
         }
         ("survey.present_all", Locale::EnUs) => {
-            "The open points are in `points`. Before the yes, fill every gap from the request and \
-             the code. Show it all at once, in the order of explaining from the response style, \
-             and ask for a single yes. With the yes, \
-             record the answer to each point with `mustard-rt run answer --point <number> --type \
-             <type> --json '{…}'`. If the point has no fact, the closing takes `--facts` (JSON \
-             array of `{\"text\":\"…\",\"source\":\"file:line\"}`), or the facts go first into a version of \
-             the point. Each answer closes the point. It returns in `points` the code, \
-             the number and the gap of each point still open, and in `point` the next one in full."
+            "The open points are in `points`, each with its owner in `owner`. Close the assistant's \
+             on your own, without asking the user: answer from the code with `mustard-rt run answer \
+             --point <number> --type <type> --json '{…}'` and the facts in `--facts` (JSON array of \
+             `{\"text\":\"…\",\"source\":\"file:line\"}`), citing the source. The facts can also go \
+             first into a version of the point. The user's are in `ask_user`. Show only those, in a \
+             single message, each with the proposal and its source. Present them in the order of \
+             explaining from the response style and ask for a single yes. With the yes, record the \
+             answer to each one with the same command, which closes the point. The answer returns in \
+             `points` the code, the number and the gap of each point still open, and in `point` the \
+             next one in full."
         }
         ("survey.touched", Locale::PtBr) => {
             "A spec voltou ao levantamento por: {reason}. {count} itens já gravados são tocados por \

@@ -18,13 +18,14 @@
 //!
 //! A saída traz o item gravado, o fechamento e o passo seguinte do
 //! levantamento, como o `run write` o mostra. `points` traz só o código, o
-//! número e a lacuna de cada ponto aberto, e
-//! `point` traz o próximo inteiro:
+//! número e a lacuna de cada ponto aberto, `point` traz o próximo inteiro, e
+//! `ask_user`, os códigos dos abertos que são do usuário:
 //!
 //! ```text
 //! {"ok": true, "spec": "x", "id": 12, "type": "decision", "code": "MSTD-DEC-0003",
 //!  "closed": {"id": 13, "code": "MSTD-POINT-0007", "closes": 5, "status": "closed", "result": [12], …},
-//!  "next": "Apresente o ponto MSTD-POINT-0003 …", "point": {"id": 6, …}}
+//!  "next": "Os pontos abertos estão em `points` …", "point": {"id": 6, "owner": "user", …},
+//!  "ask_user": ["MSTD-POINT-0003"]}
 //! ```
 //!
 //! Recusa sai com `ok: false`, a razão curta em `reason` e a mensagem no

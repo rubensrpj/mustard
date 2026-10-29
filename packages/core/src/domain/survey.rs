@@ -103,6 +103,34 @@ pub const FACT_LESSON: &str = "lesson";
 pub const FACT_PRIOR_SPEC: &str = "prior_spec";
 pub const FACT_REQUEST: &str = "request";
 
+/// Quem fecha um ponto do levantamento: o usuário, que decide o produto, ou o
+/// assistente, que o responde do código.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Owner {
+    User,
+    Assistant,
+}
+
+impl Owner {
+    /// O nome estável do dono, como a resposta o mostra.
+    #[must_use]
+    pub fn token(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Assistant => "assistant",
+        }
+    }
+}
+
+/// O dono do ponto `point`, pela lacuna que o `gap` dele casa
+/// ([`GapKey::matches`]); nada novo no registro. O ponto que não casa lacuna
+/// nenhuma, como o de uma lição numa spec antiga, é do usuário.
+#[must_use]
+pub fn owner_of(point: &SpecEvent) -> Owner {
+    let gap = point.str_field("gap").unwrap_or_default();
+    GapKey::ALL.into_iter().find(|key| key.matches(gap)).map_or(Owner::User, GapKey::owner)
+}
+
 /// Uma lacuna do tipo de trabalho: o que o levantamento precisa responder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum GapKey {
@@ -239,6 +267,30 @@ impl GapKey {
     pub fn matches(self, written: &str) -> bool {
         let written = plain(written);
         !written.is_empty() && (written == self.name() || [Locale::PtBr, Locale::EnUs].into_iter().any(|lang| plain(self.label(lang)) == written))
+    }
+
+    /// Quem fecha a lacuna, por uma tabela fixa. O usuário decide o produto:
+    /// quem usa, as regras, os limites, os erros, os casos de borda, o que fica
+    /// fora e o esperado contra o obtido. O assistente responde as outras do
+    /// código, com a fonte.
+    #[must_use]
+    pub fn owner(self) -> Owner {
+        match self {
+            Self::WhoUses | Self::Rules | Self::Limits | Self::Errors | Self::EdgeCases | Self::OutOfScope | Self::ExpectedVsActual => Owner::User,
+            Self::ExternalDeps
+            | Self::Symptom
+            | Self::Reproduction
+            | Self::Cause
+            | Self::MeasuredReason
+            | Self::MustNotChange
+            | Self::RemovedAndUsers
+            | Self::Moves
+            | Self::Dependents
+            | Self::GreenOrder
+            | Self::BeforeAfter
+            | Self::Contracts
+            | Self::DoneProof => Owner::Assistant,
+        }
     }
 
     /// As lacunas de um tipo de trabalho; nenhuma para um tipo que não existe.
@@ -462,6 +514,13 @@ pub fn open_points(log: &SpecLog) -> Vec<&SpecEvent> {
     let mut open: Vec<SurveyPoint<'_>> = points(log).into_iter().filter(SurveyPoint::is_open).collect();
     open.sort_by_key(|p| (block_rank(p.block()), p.first(), p.shown().id));
     open.into_iter().map(|p| p.shown()).collect()
+}
+
+/// Os pontos abertos que vão ao usuário, os dele ([`owner_of`]), na ordem de
+/// [`open_points`]; os do assistente ele fecha do código, sem perguntar.
+#[must_use]
+pub fn ask_user(log: &SpecLog) -> Vec<&SpecEvent> {
+    open_points(log).into_iter().filter(|point| owner_of(point) == Owner::User).collect()
 }
 
 /// Os pontos como uma recusa os lista: o código, o número e a lacuna de cada
@@ -1564,6 +1623,22 @@ mod tests {
             ("z".to_string(), delivering(&["src/z.rs"])),
         ];
         assert_eq!(entered(&sources(&["fix"], None, &index, &prior)), ["x", "z"]);
+    }
+
+    /// O usuário decide quem usa, as regras, os limites, os erros, os casos
+    /// de borda, o que fica fora e o esperado contra o obtido; o assistente,
+    /// o resto. O dono de um ponto gravado sai da lacuna, em qualquer idioma;
+    /// o ponto que não casa lacuna nenhuma é do usuário.
+    #[test]
+    fn the_user_owns_only_the_product_gaps() {
+        let user: Vec<GapKey> = GapKey::ALL.into_iter().filter(|key| key.owner() == Owner::User).collect();
+        let product =
+            [GapKey::WhoUses, GapKey::ExpectedVsActual, GapKey::Rules, GapKey::Limits, GapKey::Errors, GapKey::EdgeCases, GapKey::OutOfScope];
+        assert_eq!(user, product);
+        let point = |gap: &str| parse_log(&open_point(1, CONDENSED, gap)).get(1).cloned().unwrap();
+        assert_eq!(owner_of(&point("Who uses it and what for")), Owner::User);
+        assert_eq!(owner_of(&point("contracts")), Owner::Assistant);
+        assert_eq!(owner_of(&point("Merge com pendência.")), Owner::User);
     }
 
     /// Todos os pontos vão para um bloco só, sem pedir.
