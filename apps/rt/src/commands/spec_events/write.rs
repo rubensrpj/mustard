@@ -4391,8 +4391,9 @@ mod tests {
         assert!(english["hint"].as_str().unwrap().contains("is written by `mustard-rt run grill`"), "{english}");
     }
 
-    /// A preocupação não é mais gravada: a recusa manda gravar como regra ou
-    /// decisão e nada entra. A spec antiga que a tem continua se lendo.
+    /// A preocupação não é mais gravada e nada entra: a recusa manda gravar a
+    /// do usuário como regra ou decisão, com a mensagem dele, e a do
+    /// assistente como anotação. A spec antiga que a tem continua se lendo.
     #[test]
     fn a_concern_is_refused_and_an_old_one_still_reads() {
         let dir = tempdir().unwrap();
@@ -4408,7 +4409,8 @@ mod tests {
         let refused = write(root, "concern", &draft);
         assert_eq!(refused["reason"], json!("type-not-written"), "{refused}");
         let hint = refused["hint"].as_str().unwrap();
-        assert!(hint.contains("`rule`") && hint.contains("`decision`"), "{refused}");
+        assert!(hint.contains("`rule`") && hint.contains("`decision`") && hint.contains("`origin`"), "{refused}");
+        assert!(hint.contains("`note`"), "the assistant's concern goes as a note: {refused}");
         assert_eq!(lines(root), before, "a refusal writes nothing");
         let read = super::super::read::read_at(&super::super::read::ReadOpts {
             root: root.to_path_buf(),

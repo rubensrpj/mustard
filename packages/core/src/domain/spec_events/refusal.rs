@@ -90,8 +90,8 @@ pub enum Refusal {
     /// reveria um desses eventos.
     BinaryOnlyType { event_type: String, spec: String },
     /// O `run write` com um tipo que a gravação nova não aceita mais: a spec
-    /// antiga que o tem continua se lendo, e o item novo vai como regra ou
-    /// decisão.
+    /// antiga que o tem continua se lendo. O item novo do usuário vai como
+    /// regra ou decisão, com a mensagem dele; o do assistente, como anotação.
     TypeNotWritten { event_type: String },
     /// O `run write` com o autor `binary`, que fica só para as gravações de
     /// dentro do binário.

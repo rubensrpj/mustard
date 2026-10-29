@@ -1026,12 +1026,15 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              open. Otherwise, the round or the close takes the return over."
         }
         ("spec_events.type_not_written", Locale::PtBr) => {
-            "O tipo {type} não é mais gravado, e nada foi gravado. Grave o item como regra \
-             (`rule`) ou decisão (`decision`). A spec antiga com esse tipo continua se lendo."
+            "O tipo {type} não é mais gravado, e nada foi gravado. A preocupação que o usuário \
+             disse vira regra (`rule`) ou decisão (`decision`), com a mensagem dele em `origin`. \
+             A do assistente vira anotação (`note`). A spec antiga com esse tipo continua se lendo."
         }
         ("spec_events.type_not_written", Locale::EnUs) => {
-            "The type {type} is no longer written, and nothing was written. Write the item as a \
-             rule (`rule`) or a decision (`decision`). An old spec with this type still reads."
+            "The type {type} is no longer written, and nothing was written. A concern the user \
+             said becomes a rule (`rule`) or a decision (`decision`), with the user's message in \
+             `origin`. The assistant's own becomes a note (`note`). An old spec with this type \
+             still reads."
         }
         ("spec_events.user_message_by_hook", Locale::PtBr) => {
             "Na spec {spec}, o `run write` não grava, não tira e não revê dois tipos de mensagem. Um \
