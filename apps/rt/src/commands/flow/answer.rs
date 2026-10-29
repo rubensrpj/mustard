@@ -217,6 +217,13 @@ fn answer_locked(
         Some(raw) => chosen(&before, &open, raw)?,
         None => *open.first().ok_or_else(|| AnswerRefusal::NoOpenPoint { spec: spec.to_string() })?,
     };
+    // O ponto do usuário fecha com a mensagem dele: sem `--origin` e sem
+    // `origin` no item, a resposta é recusada antes de gravar qualquer coisa,
+    // seja qual for o tipo do item.
+    let item_origin = asked.item.as_ref().is_some_and(|(_, draft)| draft.contains_key("origin"));
+    if survey::owner_of(point) == survey::Owner::User && asked.origin.is_none() && !item_origin {
+        return Err(mustard_core::domain::spec_state::origin_not_user(&before, "point", None).into());
+    }
     let mut result = asked.result.iter().map(|raw| recorded(&before, raw)).collect::<Result<Vec<u64>, _>>()?;
     let saved = locked.content().to_string();
     let mut report = json!({ "ok": true, "spec": spec });
@@ -474,6 +481,23 @@ mod tests {
         let code = log.codes()[&points[1]].clone();
         assert!(report["points"].as_str().unwrap().contains(&code), "{report}");
         assert_eq!(open_ids(root), vec![points[1]]);
+    }
+
+    /// O ponto do usuário não fecha sem a mensagem dele, nem com um item que
+    /// recebe a última mensagem sozinho, como o limite: a recusa lista as
+    /// últimas mensagens do usuário, e nada é gravado.
+    #[test]
+    fn a_user_point_without_origin_is_refused_whatever_the_item_type() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let points = surveyed(root, "limits", 1);
+        let before = snapshot(root);
+        let limit = r#"{"title": "O teto da saudação", "text": "A saudação tem até 40 letras.", "agent": "- conferir", "keys": ["saudação"], "value": "40"}"#;
+        let asked = AnswerOpts { event_type: Some("limit".into()), json: Some(limit.into()), origin: None, ..opts(root) };
+        let report = answer(&asked);
+        assert_eq!(report["reason"], json!("origin-not-user"), "{report}");
+        assert_eq!(snapshot(root), before, "a refusal writes nothing");
+        assert_eq!(open_ids(root), points);
     }
 
     /// O ponto seguinte volta com cada fato só com o texto e a fonte: a
