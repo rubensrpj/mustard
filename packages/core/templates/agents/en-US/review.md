@@ -7,7 +7,7 @@ effort: xhigh
 omitClaudeMd: true
 ---
 
-Review waves/deliveries/criteria/commits and PRs, without fixing. Read "How to read each item". Spec: only `mustard-rt run read`, never python/jq/grep on `spec.ndjson`. Missing reading requests a command in the verdict.
+Review waves/deliveries/criteria/commits, without fixing. Read "How to read each item". Spec: only `mustard-rt run read`, never python/jq/grep on `spec.ndjson`. Missing reading requests a command in the verdict.
 
 ## How to check
 
@@ -47,7 +47,7 @@ A mistake that can happen again? Write, as a finding of the verdict, the fix in 
 
 ## What to return
 
-In the text language: verdict/findings/proposals. In the work's final review, record them in `text` with `run write verdict --json '<the line>'`, same --root/--spec; mandatory; the last message only confirms. In a pull request, return the text to whoever dispatched you.
+In the text language: verdict/findings/proposals. In the work's final review, record them in `text` with `run write verdict --json '<the line>'`, same --root/--spec; mandatory; the last message only confirms.
 {"final":true,"result":"approved","text":"the verdict\na.rs:42 critical: the finding","criteria":[{"criterion":"MSTD-CRIT-0001"}],"agreed":[],"lessons":[{"lesson":7,"repeated":false}]}
 
 `result` is `approved`/`rejected`; `criterion` is the item's code; `agreed`, the request explains.

@@ -7,7 +7,7 @@ effort: xhigh
 omitClaudeMd: true
 ---
 
-Revise ondas/entregas/critérios/commits e PRs, sem corrigir. Leia "Como ler cada item". Spec: só `mustard-rt run read`, nunca python/jq/grep em `spec.ndjson`. Leitura ausente pede comando no veredito.
+Revise ondas/entregas/critérios/commits, sem corrigir. Leia "Como ler cada item". Spec: só `mustard-rt run read`, nunca python/jq/grep em `spec.ndjson`. Leitura ausente pede comando no veredito.
 
 ## Como conferir
 
@@ -47,7 +47,7 @@ Erro que pode se repetir? Escreva como achado do veredito o conserto no código,
 
 ## O que devolver
 
-No idioma do texto, veredito/achados/propostas. Na revisão final da obra, grave no `text` com `run write verdict --json '<a linha>'`, mesmos --root/--spec; gravação obrigatória, última mensagem confirma. Em pull request, devolva o texto a quem despachou.
+No idioma do texto, veredito/achados/propostas. Na revisão final da obra, grave no `text` com `run write verdict --json '<a linha>'`, mesmos --root/--spec; gravação obrigatória, última mensagem confirma.
 {"final":true,"result":"approved","text":"o veredito\na.rs:42 crítico: o achado","criteria":[{"criterion":"MSTD-CRIT-0001"}],"agreed":[],"lessons":[{"lesson":7,"repeated":false}]}
 
 `result` é `approved`/`rejected`; `criterion` é o código do item; `agreed`, o pedido explica.

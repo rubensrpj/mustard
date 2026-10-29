@@ -34,8 +34,7 @@
 //! consertos e as revisões cujo texto o orquestrador escreve recebem o idioma
 //! dos nomes. O texto que já traz a linha, como o pedido da rodada,
 //! passa como veio. O despacho ao `mustard-review` que o orquestrador
-//! escreve — a revisão do pull request — ganha no fim as
-//! regras do projeto, os arquivos de regras da raiz e das pastas onde a obra
+//! escreve ganha no fim as regras do projeto, os arquivos de regras da raiz e das pastas onde a obra
 //! mexe, porque o revisor é instalado sem eles; o que manda ler o pedido da
 //! revisão final não ganha, porque esse pedido já as traz. Todo despacho ao
 //! `mustard-review` ganha no fim o caminho da cópia do desenho aprovado
@@ -368,8 +367,7 @@ fn dispatched(input: &HookInput, ctx: &Ctx) -> Verdict {
 }
 
 /// As regras do projeto que o despacho ao revisor ganha no fim, quando o
-/// texto é do orquestrador — a revisão do pull request:
-/// o revisor é instalado sem os `CLAUDE.md`, e o pedido que ele recebe é o
+/// texto é do orquestrador: o revisor é instalado sem os `CLAUDE.md`, e o pedido que ele recebe é o
 /// único caminho delas. São os arquivos de regras da raiz e das pastas dos
 /// arquivos que a obra da spec atual mexe ([`touched_files`]), a mesma
 /// leitura da revisão final. Nada ao agente de onda, ao texto que já traz a
@@ -387,7 +385,7 @@ fn review_rules(input: &HookInput, root: &Path, prompt: &str, lang: Locale) -> O
 
 /// Se o despacho manda ler o pedido gravado da revisão final
 /// (`mustard-rt run read request-review`): é o que distingue o revisor final
-/// do texto que o orquestrador escreve para a revisão do pull request.
+/// do texto que o orquestrador escreve ao revisor.
 fn reads_final_request(prompt: &str) -> bool {
     prompt.contains("run read request-review")
 }
@@ -856,9 +854,7 @@ mod tests {
     }
 
     /// O revisor final sai no modelo que a chamada pediu e, sem pedido, no de
-    /// `agents.review`, sempre com o esforço xhigh. O outro revisor — o do
-    /// pull request de colega — segue o `agents.model`, sem o Opus do revisor
-    /// final.
+    /// `agents.review`, sempre com o esforço xhigh.
     #[test]
     fn the_final_reviewer_launches_on_the_model_it_was_asked() {
         let dir = tempdir().unwrap();
@@ -880,8 +876,6 @@ mod tests {
         assert_eq!((sent["model"].as_str(), sent["effort"].as_str()), (Some("haiku"), Some("xhigh")), "the call's model stays: {sent}");
         let sent = launch(None);
         assert_eq!((sent["model"].as_str(), sent["effort"].as_str()), (Some("opus"), Some("xhigh")), "{sent}");
-        let colleague = launch_with("Revise o pull request 12 do colega: o diff e as regras.", None);
-        assert_eq!((colleague["model"].as_str(), colleague["effort"].as_str()), (Some("sonnet"), Some("xhigh")), "the colleague reviewer is not the final one: {colleague}");
     }
 
     /// The model the user asked for the final reviewer stays, at the usual
@@ -1096,8 +1090,8 @@ mod tests {
         assert_eq!(dispatch_to(root, "general-purpose", "Investigue o gancho."), Verdict::Allow);
     }
 
-    /// O despacho que o orquestrador escreve ao revisor — a revisão do pull
-    /// request — ganha no fim as regras do projeto: o
+    /// O despacho que o orquestrador escreve ao revisor ganha no fim as regras
+    /// do projeto: o
     /// texto do `CLAUDE.md` da raiz e, quando a pasta de um arquivo das
     /// tarefas da spec da branch tem regras, também as dela, cada uma sob o
     /// caminho; sem arquivo de regras, sai como antes, só com a linha dos
@@ -1115,7 +1109,7 @@ mod tests {
         assert!(init.status.success(), "{init:?}");
         std::fs::write(root.join("mustard.json"), r#"{"language":{"code":"pt-BR"}}"#).unwrap();
         let line = translate("prompt.languages", Locale::PtBr).replace("{text}", "pt-BR").replace("{code}", "pt-BR");
-        let request = "Confira o pull request 12 do colega.";
+        let request = "Confira a entrega da biblioteca.";
         assert_eq!(rewritten(dispatch_to(root, "mustard-review", request)), format!("{line}\n\n{request}"), "no file");
 
         let rules = "# Regras\n\n- O instalador nunca grava na configuração do git.";

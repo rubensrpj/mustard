@@ -962,25 +962,25 @@ fn the_installed_agents_let_a_project_language_rule_win_over_the_languages_line(
     }
 }
 
-/// O revisor diz os dois caminhos da volta: na revisão final da obra, grava o
-/// veredito pela ferramenta, com a linha de exemplo que a gravação aceita; no
-/// pull request de um colega, devolve o texto a quem despachou. O pedido do
-/// fechamento manda gravar. O levantamento não tem revisor próprio.
+/// O revisor diz um caminho só da volta: na revisão final da obra, grava o
+/// veredito pela ferramenta, com a linha de exemplo que a gravação aceita, e
+/// o pedido do fechamento manda gravar. Não há volta de pull request de
+/// colega, e o levantamento não tem revisor próprio.
 #[test]
-fn reviewer_template_states_the_two_paths() {
+fn reviewer_template_records_the_final_verdict() {
     for (lang, locale, header, said, survey) in [
         (
             "pt-BR",
             Locale::PtBr,
             "## O que devolver",
-            ["revisão final da obra", "`run write verdict", "pull request", "devolva o texto a quem despachou"],
+            ["revisão final da obra", "`run write verdict"],
             "levantamento",
         ),
         (
             "en-US",
             Locale::EnUs,
             "## What to return",
-            ["final review", "`run write verdict", "pull request", "return the text to whoever dispatched you"],
+            ["final review", "`run write verdict"],
             "survey",
         ),
     ] {
@@ -997,14 +997,14 @@ fn reviewer_template_states_the_two_paths() {
         let close = translate("close.final_review", locale);
         assert!(close.contains("run write verdict") && !close.contains("<VERDICT>"), "{close}");
         assert!(!back.contains(survey), "the {lang} reviewer still returns a survey review:{back}");
+        assert!(!review.contains("pull request") && !review.contains("PRs"), "the {lang} reviewer still reviews a pull request:{review}");
     }
 }
 
 /// O despacho ao revisor, pelo gancho com o JSON do Claude Code, leva o
 /// caminho da cópia do desenho aprovado quando a pasta da spec tem uma: no
 /// pedido gravado da revisão final, no da revisão de uma onda e no texto que
-/// quem conduz escreve para a revisão do pull request, cuja spec é a da
-/// branch. Sem a cópia, nenhum deles fala de desenho.
+/// quem conduz escreve ao revisor, cuja spec é a da branch. Sem a cópia, nenhum deles fala de desenho.
 #[test]
 fn the_reviewer_dispatch_points_to_the_approved_design_only_when_the_spec_has_one() {
     let dir = tempfile::tempdir().unwrap();

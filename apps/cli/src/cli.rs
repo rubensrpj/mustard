@@ -5,8 +5,7 @@
 //! parser from the types below.
 //!
 //! Retired: `update` (versioned refreshes come from the plugin marketplace; a
-//! re-run of `init` re-stamps `mustard.json#version`), `review` (the
-//! `/mustard:pr review` step drives the native code-review skill), `add`, o
+//! re-run of `init` re-stamps `mustard.json#version`), `review`, `add`, o
 //! molde de terceiros que nenhum item da spec pede, e o sugeridor de
 //! gramáticas do tree-sitter, que não baixava nem compilava gramática
 //! nenhuma — só imprimia um repositório e uma linha de shell para a pessoa
