@@ -3035,7 +3035,7 @@ mod tests {
             ("prompt.step.user_message", &[][..]),
             ("prompt.task.heading", &["{n}", "{total}", "{item}"][..]),
             ("prompt.task.skill", &["{name}", "{path}"][..]),
-            ("prompt.task.skill_cut", &["{name}", "{path}"][..]),
+            ("prompt.task.skill_read", &[][..]),
             ("prompt.step.file", &["{files}"][..]),
             ("prompt.step.files", &["{files}"][..]),
             ("prompt.step.read_before", &["{hints}"][..]),

@@ -40,7 +40,7 @@ Estado externo: só leitura autorizada; resumo é histórico. Recibos: `run pane
 Grave a entrega com `run write delivered --json '<a linha>'`, mesmos --root/--spec: obrigatória.
 {"wave":1,"text":"<a entrega>","files":["caminho/do/arquivo.rs"],"commit":"<o resumo do commit>"}
 
-- `text`: no idioma do texto, até 8.000 caracteres: uma frase por arquivo; teste de cada critério e o comando que o rodou; decisões fora do pedido; pendências e motivos.
+- `text`: no idioma do texto, até 2.000 caracteres: uma frase por arquivo; teste de cada critério e o comando que o rodou; decisões fora do pedido; pendências e motivos.
 - `commit`: o que a onda fez, sem código, até 45 caracteres (60 no título).
 - Teste de critério com nome novo: `"proofs":[{"criterion":"<código>","proof":"<o comando>"}]`.
 - Item combinado: `"agreed":[{"item":"<código>","met":true}]`, um por item. Sem tarefa da onda para realizá-lo, `met:true` confirma que a mudança preserva a regra. Quebra ou tarefa não feita: `{"item":"<código>","met":false,"text":"<o que falta>"}`; vira tarefa no backlog, salvo cobertura pendente existente.

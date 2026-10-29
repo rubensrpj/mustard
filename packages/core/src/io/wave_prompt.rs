@@ -1214,13 +1214,10 @@ fn task_skills(
         }
         let skills: Vec<TaskSkill> = picked
             .into_iter()
-            .filter_map(|(name, text, file)| {
+            .filter_map(|(name, _, file)| {
                 let skill = accepted(&file)?;
-                let mut body = crate::domain::skill::frontmatter::body(text);
-                if let Some((_, note)) = creator.as_ref().filter(|(at, _)| *at == file.as_path()) {
-                    body = format!("{note}\n\n{}", body.trim_start());
-                }
-                Some(TaskSkill { name, path: skill.path.clone(), stale: skill.stale, body })
+                let note = creator.as_ref().filter(|(at, _)| *at == file.as_path()).map(|(_, note)| note.clone()).unwrap_or_default();
+                Some(TaskSkill { name, path: skill.path.clone(), stale: skill.stale, note })
             })
             .collect();
         if !skills.is_empty() {
@@ -1708,8 +1705,8 @@ mod tests {
 
     /// A skill que a tarefa nomeia entra no pedido pelo caminho absoluto do
     /// arquivo no projeto principal, que existe mesmo com a onda saindo numa
-    /// cópia fora dele, e pelo quando usar da descrição dela, sem o texto; e
-    /// ela é procurada no subprojeto em que a tarefa mexe. O caminho nunca é o
+    /// cópia fora dele, sem a descrição nem o corpo; e ela é procurada no
+    /// subprojeto em que a tarefa mexe. O caminho nunca é o
     /// da cópia: a pasta das skills fica fora do git e não chega lá.
     #[test]
     fn the_skill_reaches_the_request_by_the_absolute_path_in_the_main_project() {
@@ -1728,12 +1725,12 @@ mod tests {
         assert!(built[0].text.contains(&format!("`{path}`")), "{}", built[0].text);
         assert!(!built[0].text.contains("`apps/rt/.claude/skills/somar/SKILL.md`"), "{}", built[0].text);
         assert!(!built[0].text.contains(&format!("{copy}/apps/rt/.claude")), "{}", built[0].text);
-        assert!(built[0].text.contains("# Somar\n\nUm passo por linha."), "the body comes whole: {}", built[0].text);
+        assert!(!built[0].text.contains("Um passo por linha."), "the body stays in its file: {}", built[0].text);
         assert!(!built[0].text.contains("Use ao somar dois números no motor."), "the header stays out: {}", built[0].text);
     }
 
-    /// A skill sem frontmatter entra mesmo assim: o bloco da tarefa a traz
-    /// inteira, com o nome e o caminho.
+    /// A skill sem frontmatter entra mesmo assim: o bloco da tarefa a cita
+    /// pelo nome e pelo caminho.
     #[test]
     fn a_skill_without_frontmatter_still_reaches_the_request_by_path() {
         let dir = tempdir().unwrap();
@@ -1742,7 +1739,7 @@ mod tests {
         let built = prompts(root, "teste", &plan_log(), Locale::PtBr, &Flight::default(), &plan_log().planned_waves());
         assert!(built[0].bad_skills.is_empty(), "{:?}", built[0].bad_skills);
         let path = skill_path_in(root, "apps/rt", "somar");
-        assert!(built[0].text.contains(&format!("#### Skill somar, de `{path}`\n\n# Somar\n\nUm passo por linha.")), "{}", built[0].text);
+        assert!(built[0].text.contains(&format!("- Skill somar, de `{path}`. ")), "{}", built[0].text);
     }
 
     /// A skill que cita um caminho que não existe, e a que passa do tamanho
@@ -1801,12 +1798,12 @@ mod tests {
         for hidden in ["other-contract", "manual-procedure"] {
             assert!(!built[0].text.contains(hidden), "{}", built[0].text);
         }
-        assert!(built[0].text.contains("Only read this body when needed."), "the scoped skill comes whole in the task block: {}", built[0].text);
+        assert!(!built[0].text.contains("Only read this body when needed."), "the scoped skill is cited, not pasted: {}", built[0].text);
         assert!(built[0].bad_skills.is_empty());
     }
 
     /// A origem que o cabeçalho da skill declara não a tira da onda: a que a
-    /// tarefa nomeia e a que casa com os arquivos dela chegam inteiras, mesmo
+    /// tarefa nomeia e a que casa com os arquivos dela chegam citadas, mesmo
     /// com a marca dos procedimentos por área que saíram do Mustard.
     #[test]
     fn a_skill_reaches_the_wave_whatever_source_its_header_names() {
@@ -1821,15 +1818,15 @@ mod tests {
         ]);
         let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default(), &log.planned_waves());
         assert!(built[0].bad_skills.is_empty(), "{:?}", built[0].bad_skills);
-        assert!(built[0].text.contains("# Somar\n\nUm passo por linha."), "{}", built[0].text);
-        assert!(built[0].text.contains("O corpo do contrato."), "{}", built[0].text);
+        assert!(built[0].text.contains("skills/somar/SKILL.md"), "{}", built[0].text);
+        assert!(built[0].text.contains("skills/contrato/SKILL.md"), "{}", built[0].text);
     }
 
-    /// O bloco de uma tarefa traz no máximo três skills inteiras: a que a
-    /// tarefa nomeia primeiro, depois as que casam com os arquivos dela, na
-    /// ordem em que a escolha as acha. O corpo vem sem o cabeçalho.
+    /// O bloco de uma tarefa cita no máximo três skills: a que a tarefa
+    /// nomeia primeiro, depois as que casam com os arquivos dela, na ordem em
+    /// que a escolha as acha. Nem o corpo nem o cabeçalho entram.
     #[test]
-    fn a_task_block_brings_at_most_three_whole_skills_the_named_one_first() {
+    fn a_task_block_cites_at_most_three_skills_the_named_one_first() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         std::fs::create_dir_all(root.join("apps/rt/src")).unwrap();
@@ -1840,18 +1837,18 @@ mod tests {
         write_skill(root, "apps/rt", "somar", "---\nname: somar\ndescription: The named one.\n---\n\nBody of somar.\n");
         let built = prompts(root, "teste", &plan_log(), Locale::PtBr, &Flight::default(), &plan_log().planned_waves()).remove(0);
         let block = &built.tasks[0].text;
-        let at = |body: &str| block.find(body).unwrap_or_else(|| panic!("{body}: {block}"));
-        assert!(at("Body of somar.") < at("Body of b-scoped.") && at("Body of b-scoped.") < at("Body of c-scoped."), "{block}");
-        assert!(!block.contains("Body of d-scoped.") && !block.contains("description: The named one."), "{block}");
+        let at = |name: &str| block.find(&format!("skills/{name}/SKILL.md")).unwrap_or_else(|| panic!("{name}: {block}"));
+        assert!(at("somar") < at("b-scoped") && at("b-scoped") < at("c-scoped"), "{block}");
+        assert!(!block.contains("d-scoped") && !block.contains("Body of") && !block.contains("description: The named one."), "{block}");
         assert!(built.text.contains(block.as_str()), "the request carries the first block: {}", built.text);
     }
 
-    /// The task that creates a skill carries the whole skill-creator procedure
-    /// from where the machine has it, with the folder of its scripts and the
-    /// instruction to follow it without asking anyone; the real procedure,
-    /// with a scoped skill beside it, still fits the block cap.
+    /// The task that creates a skill cites the skill-creator procedure where
+    /// the machine has it, with the folder of its scripts and the instruction
+    /// to follow it without asking anyone; the procedure's body stays in its
+    /// file.
     #[test]
-    fn a_skill_creation_task_block_brings_the_whole_skill_creator_and_the_instruction() {
+    fn a_skill_creation_task_block_cites_the_skill_creator_and_brings_the_instruction() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         std::fs::create_dir_all(root.join("apps/rt/src")).unwrap();
@@ -1869,22 +1866,13 @@ mod tests {
         let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default(), &log.planned_waves()).remove(0);
         assert!(built.bad_skills.is_empty(), "the procedure from outside the project is no bad skill: {:?}", built.bad_skills);
         let block = &built.tasks[0].text;
-        assert!(block.contains("# Skill Creator\n\nRun `scripts/run_eval.py`."), "{block}");
+        assert!(!block.contains("# Skill Creator") && block.contains(&format!("`{}`", shown(&creator.join("SKILL.md")))), "{block}");
         assert!(block.contains(&format!("`{}`", shown(&creator))), "the folder of its scripts: {block}");
         assert!(block.contains("sem pedir aprovação") && block.contains("run write skill"), "{block}");
         assert!(block.contains("`.mustard-skill/<nome>/SKILL.md`"), "the new skill goes to the reserved folder of the copy: {block}");
         assert!(!block.contains(&shown(&root.join(".claude").join("skills"))), "never to the skills folder of the main project: {block}");
-        assert!(block.find("# Skill Creator").unwrap() < block.find("Body of area.").unwrap(), "{block}");
-
-        let bundled = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugin/third-party/skill-creator");
-        crate::io::skill_creator::folder_in_test(Some(bundled.clone()));
-        let real = prompts(root, "teste", &log, Locale::PtBr, &Flight::default(), &log.planned_waves()).remove(0);
+        assert!(block.find("skill-creator").unwrap() < block.find("area").unwrap() && !block.contains("Body of area."), "{block}");
         crate::io::skill_creator::folder_in_test(None);
-        let block = &real.tasks[0].text;
-        let body = crate::domain::skill::frontmatter::body(&std::fs::read_to_string(bundled.join("SKILL.md")).unwrap());
-        assert!(block.contains(body.trim()), "the whole procedure, never cut");
-        let tokens = crate::domain::wave_prompt::estimate_tokens(block);
-        assert!(tokens <= crate::domain::wave_prompt::TASK_BLOCK_TOKEN_CAP, "{tokens} tokens");
     }
 
     /// Grava `SKILL.md` em `<directory>/<folder>` com a hora de modificação
@@ -1924,12 +1912,12 @@ mod tests {
                 let log = log_of(&[("wave", json!({"n":1,"text":"A onda","criteria":[],"done_when":"passa"})), ("task", task)]);
                 let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default(), &log.planned_waves()).remove(0);
                 let block = &built.tasks[0].text;
-                let (kept, kept_body) = &paths[newest];
+                let (kept, _) = &paths[newest];
                 let context = format!("named={named} newest={newest}: {block}");
                 assert_eq!(built.skills.len(), 1, "{context}");
                 assert_eq!(built.skills[0]["path"], json!(kept), "{context}");
-                assert_eq!(block.matches(kept_body.as_str()).count(), 1, "{context}");
-                assert_eq!(block.matches("#### Skill somar").count(), 1, "{context}");
+                assert_eq!(block.matches(kept.as_str()).count(), 1, "{context}");
+                assert_eq!(block.matches("- Skill somar,").count(), 1, "{context}");
                 for (directory, (path, body)) in &paths {
                     if *directory != newest {
                         assert!(!block.contains(body.as_str()) && !built.text.contains(path.as_str()), "{context}");
@@ -1975,13 +1963,13 @@ mod tests {
                     }
                     let log = log_of(&events);
                     let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default(), &log.planned_waves()).remove(0);
-                    let (kept, kept_body) = &paths[newest];
+                    let (kept, _) = &paths[newest];
                     let context = format!("named={named} split={split} newest={newest}: {}", built.text);
                     assert_eq!(built.skills.len(), 1, "{context}");
                     assert_eq!(built.skills[0]["path"], json!(kept), "{context}");
                     for block in built.tasks.iter().map(|task| &task.text) {
-                        assert_eq!(block.matches(kept_body.as_str()).count(), 1, "{context}");
-                        assert_eq!(block.matches("#### Skill somar").count(), 1, "{context}");
+                        assert_eq!(block.matches(kept.as_str()).count(), 1, "{context}");
+                        assert_eq!(block.matches("- Skill somar,").count(), 1, "{context}");
                     }
                     for (directory, (path, body)) in &paths {
                         if *directory != newest {
@@ -2010,7 +1998,7 @@ mod tests {
         let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default(), &log.planned_waves()).remove(0);
         let block = &built.tasks[0].text;
         assert_eq!(built.skills.len(), 2, "{block}");
-        assert!(block.contains("Body of somar.") && block.contains("Body of subtrair."), "{block}");
+        assert!(block.contains("skills/somar/SKILL.md") && block.contains("skills/subtrair/SKILL.md"), "{block}");
     }
 
     /// O nome da skill é o `name` do cabeçalho, não o da pasta: a mesma
@@ -2030,7 +2018,7 @@ mod tests {
         assert_eq!(built.skills.len(), 1, "{block}");
         assert_eq!(built.skills[0]["name"], json!("somar"), "{block}");
         assert_eq!(built.skills[0]["path"], json!(new), "{block}");
-        assert!(block.contains(&format!("#### Skill somar, de `{new}`")), "{block}");
+        assert!(block.contains(&format!("- Skill somar, de `{new}`")), "{block}");
         assert!(!block.contains("Older body.") && !built.text.contains(&old) && !block.contains("somar-codex,"), "{block}");
     }
 

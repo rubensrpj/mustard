@@ -114,8 +114,8 @@ pub struct Skill {
     pub stale: bool,
 }
 
-/// Uma skill inteira no bloco de uma tarefa: o corpo do `SKILL.md`, sem o
-/// cabeçalho, com o nome, o caminho e a marca de a revisar.
+/// Uma skill citada no bloco de uma tarefa: o nome, o caminho e a marca de a
+/// revisar. O agente abre o `SKILL.md` antes de editar o que ela cobre.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TaskSkill {
     /// O nome da pasta da skill.
@@ -124,11 +124,12 @@ pub struct TaskSkill {
     pub path: String,
     /// A skill a revisar ([`Skill::stale`]).
     pub stale: bool,
-    /// O corpo do arquivo, sem o cabeçalho.
-    pub body: String,
+    /// A ordem que vem com a skill: a do skill-creator, na tarefa que cria
+    /// uma skill; vazia nas outras.
+    pub note: String,
 }
 
-/// Quantas skills inteiras o bloco de uma tarefa leva, no máximo: as que a
+/// Quantas skills o bloco de uma tarefa cita, no máximo: as que a
 /// tarefa nomeia primeiro, depois as que casam com os arquivos dela.
 pub const TASK_SKILLS_MAX: usize = 3;
 
@@ -164,12 +165,6 @@ pub struct SkillTie {
     pub candidates: Vec<SkillOption>,
 }
 
-/// O teto, em tokens ([`estimate_tokens`]), do bloco de uma tarefa: o bloco
-/// que passa dele perde a última skill, uma de cada vez, e diz qual cortou. O
-/// resto do bloco — a tarefa, o que ela atende, os arquivos e o padrão — sai
-/// sempre inteiro.
-pub const TASK_BLOCK_TOKEN_CAP: u64 = 12_000;
-
 /// O bloco de uma tarefa, como o pedido o traz para a primeira e a resposta
 /// do passo para cada uma das seguintes: o mesmo texto, de um renderizador
 /// só.
@@ -182,7 +177,7 @@ pub struct TaskBlock {
     /// O que o bloco entrega inteiro: o código da tarefa e o de cada item que
     /// só ela traz. Entregar o texto conta como ler.
     pub items: Vec<String>,
-    /// As skills que entraram inteiras no bloco, pelo nome.
+    /// As skills que o bloco cita, pelo nome.
     pub skills: Vec<String>,
 }
 
@@ -3651,30 +3646,22 @@ mod tests {
         }
     }
 
-    /// O bloco traz as skills da tarefa inteiras, o corpo de cada uma com o
-    /// nome e o caminho, a revisar marcada. Passado o teto do bloco, a última
-    /// skill sai e uma linha diz qual saiu e onde lê-la; o resto do bloco
-    /// fica inteiro.
+    /// O bloco cita cada skill da tarefa pelo nome e pelo caminho, a revisar
+    /// marcada, e manda abrir o `SKILL.md` antes de editar; o corpo da skill
+    /// não entra no pedido.
     #[test]
-    fn a_task_block_carries_its_skills_whole_and_cuts_the_last_one_past_the_cap() {
+    fn a_task_block_cites_its_skills_by_path_without_their_body() {
         let log = two_tasks();
-        let skill = |name: &str, stale: bool, body: String| TaskSkill { name: name.into(), path: format!("/repo/.claude/skills/{name}/SKILL.md"), stale, body };
+        let skill = |name: &str, stale: bool| TaskSkill { name: name.into(), path: format!("/repo/.claude/skills/{name}/SKILL.md"), stale, note: String::new() };
         let mut m = material(&log, 1);
-        m.task_skills.insert("MSTD-TASK-0001".into(), vec![skill("somar", false, "Some pelo motor.".into()), skill("mostrar", true, "Mostre o total.".into())]);
+        m.task_skills.insert("MSTD-TASK-0001".into(), vec![skill("somar", false), skill("mostrar", true)]);
         let stale = translate("prompt.skill.stale", Locale::PtBr);
-        let block = task_blocks(&m, Locale::PtBr).remove(0).text;
-        assert!(block.contains("Some pelo motor.") && block.contains("Mostre o total."), "{block}");
-        assert!(block.contains("`/repo/.claude/skills/somar/SKILL.md`"), "{block}");
-        assert!(block.contains(&format!("`/repo/.claude/skills/mostrar/SKILL.md` ({stale})")), "{block}");
-
-        let huge = "palavra ".repeat(usize::try_from(TASK_BLOCK_TOKEN_CAP).unwrap());
-        m.task_skills.insert("MSTD-TASK-0001".into(), vec![skill("somar", false, "Some pelo motor.".into()), skill("grande", false, huge.clone())]);
-        let block = task_blocks(&m, Locale::PtBr).remove(0).text;
-        assert!(estimate_tokens(&block) <= TASK_BLOCK_TOKEN_CAP, "{}", block.len());
-        assert!(block.contains("Some pelo motor.") && block.contains("- src/a.rs: `soma`"), "{block}");
-        assert!(!block.contains(huge.trim()), "the last skill was cut");
-        let cut = translate("prompt.task.skill_cut", Locale::PtBr).replace("{name}", "grande").replace("{path}", "/repo/.claude/skills/grande/SKILL.md");
-        assert!(block.contains(&cut), "{block}");
+        let read = translate("prompt.task.skill_read", Locale::PtBr);
+        let block = task_blocks(&m, Locale::PtBr).remove(0);
+        assert!(block.text.contains(&format!("`/repo/.claude/skills/somar/SKILL.md`. {read}")), "{}", block.text);
+        assert!(block.text.contains(&format!("`/repo/.claude/skills/mostrar/SKILL.md` ({stale}). {read}")), "{}", block.text);
+        assert!(block.text.contains("- src/a.rs: `soma`"), "{}", block.text);
+        assert_eq!(block.skills, ["somar", "mostrar"]);
     }
 
     /// A mensagem que responde a uma pergunta com opções guarda só a resposta

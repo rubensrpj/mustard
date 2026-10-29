@@ -291,8 +291,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.message.answer", Locale::PtBr) => "Resposta: {answer}",
         ("prompt.message.answer", Locale::EnUs) => "Answer: {answer}",
         // O bloco de uma tarefa: o título, com a posição dela na onda, e cada
-        // skill dela inteira, pelo nome e pelo caminho. A skill que o teto do
-        // bloco cortou fica numa linha, com o caminho para lê-la.
+        // skill dela numa linha, pelo nome e pelo caminho, com a ordem de
+        // abri-la antes de editar.
         ("prompt.task.heading", Locale::PtBr) => "Tarefa {n} de {total}: {item}",
         ("prompt.task.heading", Locale::EnUs) => "Task {n} of {total}: {item}",
         ("prompt.task.skill", Locale::PtBr) => "Skill {name}, de `{path}`",
@@ -300,8 +300,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // A tarefa que cria a skill de uma falha repetida, antes do
         // skill-creator inteiro (`io::wave_prompt`).
         ("prompt.task.skill_creator", Locale::PtBr) => {
-            "Esta tarefa cria ou atualiza uma skill. Siga o processo do skill-creator abaixo, sem pedir aprovação a \
-             ninguém. Os scripts e os agentes dele ficam em `{folder}`. Use o formato oficial, com nome \
+            "Esta tarefa cria ou atualiza uma skill. Siga o processo do skill-creator, no `SKILL.md` citado acima, sem \
+             pedir aprovação a ninguém. Os scripts e os agentes dele ficam em `{folder}`. Use o formato oficial, com nome \
              curto. A descrição fica em terceira pessoa e diz o que a skill faz e quando usar. O \
              corpo tem menos de 500 linhas, com o mais importante no topo. No cabeçalho, `paths:` \
              traz os caminhos onde ela vale. Escreva só o que o modelo não sabe: a armadilha, a convenção não óbvia, a ferramenta \
@@ -316,8 +316,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              `text`."
         }
         ("prompt.task.skill_creator", Locale::EnUs) => {
-            "This task creates or updates a skill. Follow the skill-creator process below without asking anyone \
-             for approval. Its scripts and agents live in `{folder}`. Use the official format, with a \
+            "This task creates or updates a skill. Follow the skill-creator process in the `SKILL.md` cited above, \
+             without asking anyone for approval. Its scripts and agents live in `{folder}`. Use the official format, with a \
              short name. The description is in the third person and says what the skill does and \
              when to use it. The body stays under 500 lines, with the most important part on top. \
              In the header, `paths:` lists the paths where it applies. Write only what the model does not know: the trap, the non-obvious convention, \
@@ -331,14 +331,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              updates a skill that exists. Without a gain, record `\"action\":\"discarded\"` with the \
              reason in `text`."
         }
-        ("prompt.task.skill_cut", Locale::PtBr) => {
-            "A skill {name} ficou fora deste bloco, que passou do teto de tamanho. Se a tarefa pedir, \
-             leia `{path}`."
-        }
-        ("prompt.task.skill_cut", Locale::EnUs) => {
-            "The skill {name} was left out of this block, which went past the size cap. If the task \
-             needs it, read `{path}`."
-        }
+        ("prompt.task.skill_read", Locale::PtBr) => "Abra esse `SKILL.md` antes de editar os arquivos que ela cobre.",
+        ("prompt.task.skill_read", Locale::EnUs) => "Open that `SKILL.md` before editing the files it covers.",
         ("prompt.step.file", Locale::PtBr) => "Arquivo: {files}",
         ("prompt.step.file", Locale::EnUs) => "File: {files}",
         ("prompt.step.files", Locale::PtBr) => "Arquivos: {files}",
@@ -880,7 +874,7 @@ mod tests {
                 "prompt.message.answer",
                 "prompt.task.heading",
                 "prompt.task.skill",
-                "prompt.task.skill_cut",
+                "prompt.task.skill_read",
                 "prompt.step.file",
                 "prompt.step.files",
                 "prompt.step.read_before",

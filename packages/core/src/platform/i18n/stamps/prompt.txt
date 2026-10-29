@@ -99,8 +99,8 @@ prompt.step.tasks	61710b6ffab53e32
 prompt.step.user_message	a26e541c5aaa0159
 prompt.task.heading	3ed1b992b14981ca
 prompt.task.skill	2ddb6c2f55b78ebd
-prompt.task.skill_creator	91ba9f1fe330a85c
-prompt.task.skill_cut	067d4e4e549b6c71
+prompt.task.skill_creator	5d431febadd41351
+prompt.task.skill_read	4154207e30692e7c
 prompt.task.tested_by	9a858fc14f8eb880
 prompt.task_read.function	286a8f50138e19a3
 prompt.task_read.function_lines	bd97a91ee7512a83

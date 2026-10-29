@@ -40,7 +40,7 @@ External state: authorized reads only; a summary is history. Receipts: `run pane
 Record the delivery with `run write delivered --json '<the line>'`, same --root/--spec; mandatory.
 {"wave":1,"text":"<the delivery>","files":["path/to/file.rs"],"commit":"<the commit summary>"}
 
-- `text`: in the text language, at most 8,000 characters: one sentence per file; each criterion's test and its command; decisions outside the request; open work and reasons.
+- `text`: in the text language, at most 2,000 characters: one sentence per file; each criterion's test and its command; decisions outside the request; open work and reasons.
 - `commit`: what the wave did, no spec code, at most 45 characters (60 in title).
 - A criterion's test got a new name: `"proofs":[{"criterion":"<code>","proof":"<the command>"}]`.
 - Agreed item: `"agreed":[{"item":"<code>","met":true}]`, one per item. Without a wave task implementing it, `met:true` confirms the change preserves the rule. Broken rule or undone task: `{"item":"<code>","met":false,"text":"<what is missing>"}`; becomes backlog work unless already covered by an unfinished task.
