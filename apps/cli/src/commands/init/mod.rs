@@ -734,8 +734,9 @@ mod tests {
 
     /// O `init --yes` numa pasta vazia escreve `agents.model` e `agents.effort`
     /// com os padrões no `mustard.json` e os mesmos valores no cabeçalho dos
-    /// dois agentes, salvo o revisor final, que fica no Opus. Com `opus` e `medium` no arquivo, uma instalação por cima
-    /// escreve os dois nos agentes e mantém os campos; um esforço fora da
+    /// dois agentes, salvo o revisor final, que fica no Opus. Com `opus` e
+    /// `medium` no arquivo e a escolha pela dificuldade desligada, uma
+    /// instalação por cima escreve os dois nos agentes e mantém os campos; um esforço fora da
     /// lista do Claude Code fica no arquivo e os agentes recebem o padrão; um
     /// `mustard.json` sem os campos os ganha, sem perder o que já tinha.
     #[test]
@@ -761,19 +762,19 @@ mod tests {
         assert_eq!(carried(&project, "effort"), both("xhigh"));
 
         let mut config = json_object(&project.join("mustard.json"));
-        config.insert("agents".into(), serde_json::json!({"model": "opus", "effort": "medium"}));
+        config.insert("agents".into(), serde_json::json!({"model": "opus", "effort": "medium", "by_difficulty": false}));
         fs::write(project.join("mustard.json"), serde_json::to_string(&config).unwrap()).unwrap();
         init(&project, &InitOptions { yes: true, ..InitOptions::default() }).unwrap();
         assert_eq!(
             agents(&project),
-            serde_json::json!({"model": "opus", "effort": "medium"}),
+            serde_json::json!({"model": "opus", "effort": "medium", "by_difficulty": false}),
             "the install kept the person's choice"
         );
         assert_eq!(carried(&project, "model"), both("opus"));
         assert_eq!(carried(&project, "effort"), both("medium"));
 
         let mut config = json_object(&project.join("mustard.json"));
-        config.insert("agents".into(), serde_json::json!({"model": "opus", "effort": "ultra"}));
+        config.insert("agents".into(), serde_json::json!({"model": "opus", "effort": "ultra", "by_difficulty": false}));
         fs::write(project.join("mustard.json"), serde_json::to_string(&config).unwrap()).unwrap();
         init(&project, &InitOptions { yes: true, ..InitOptions::default() }).unwrap();
         assert_eq!(agents(&project)["effort"], serde_json::json!("ultra"), "what the person wrote stays");

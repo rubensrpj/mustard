@@ -482,10 +482,11 @@ mod tests {
     }
 
     /// A instalação nova escreve o modelo padrão em `agents.model` e no
-    /// cabeçalho do agente de onda, e o Opus no do revisor final; com um
-    /// modelo já declarado, ela o mantém no arquivo e o escreve no de onda; e a linha do arquivo, trocada, muda
-    /// os dois agentes na instalação seguinte. Um modelo que um cabeçalho não
-    /// aceita fica onde está, e os agentes recebem o padrão.
+    /// cabeçalho do agente de onda, e o Opus no do revisor final. Com um
+    /// modelo já declarado, ela o mantém no arquivo; ele chega ao cabeçalho de
+    /// onda só com a escolha pela dificuldade desligada, e trocado, muda o
+    /// agente na instalação seguinte. Um modelo que um cabeçalho não aceita
+    /// fica onde está, e os agentes recebem o padrão.
     #[test]
     fn the_agents_are_installed_with_the_model_the_project_declares() {
         let dir = tempdir().unwrap();
@@ -496,12 +497,16 @@ mod tests {
 
         std_fs::write(root.join("mustard.json"), r#"{"version":"9.9.9","acronyms":["PI"],"agents":{"model":"opus"}}"#).unwrap();
         upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
-        assert_eq!(installed_agent_models(root), ["opus", "opus"]);
+        assert_eq!(installed_agent_models(root), ["sonnet", "opus"], "by difficulty, the wave header stays on Sonnet");
         let config = written_config(root);
         assert_eq!(config["agents"]["model"], json!("opus"), "the declared model is kept");
         assert_eq!(config["acronyms"], json!(["PI"]));
 
-        std_fs::write(root.join("mustard.json"), r#"{"version":"9.9.9","agents":{"model":"claude-sonnet-5-5"}}"#).unwrap();
+        std_fs::write(root.join("mustard.json"), r#"{"version":"9.9.9","agents":{"model":"opus","by_difficulty":false}}"#).unwrap();
+        upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
+        assert_eq!(installed_agent_models(root), ["opus", "opus"]);
+
+        std_fs::write(root.join("mustard.json"), r#"{"version":"9.9.9","agents":{"model":"claude-sonnet-5-5","by_difficulty":false}}"#).unwrap();
         upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
         assert_eq!(installed_agent_models(root), ["claude-sonnet-5-5", "opus"], "the final reviewer does not inherit `agents.model`");
 
@@ -566,7 +571,7 @@ mod tests {
             upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
             assert_eq!(installed_agent_header(root, "omitClaudeMd"), ["true", "true"], "the {text} install");
 
-            std_fs::write(root.join("mustard.json"), format!(r#"{{"language":{{"text":"{}"}},"agents":{{"model":"opus","effort":"low"}}}}"#, text.as_str()))
+            std_fs::write(root.join("mustard.json"), format!(r#"{{"language":{{"text":"{}"}},"agents":{{"model":"opus","effort":"low","by_difficulty":false}}}}"#, text.as_str()))
                 .unwrap();
             upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
             assert_eq!(installed_agent_models(root), ["opus", "opus"], "the {text} model change");
@@ -598,7 +603,7 @@ mod tests {
         std_fs::write(root.join("mustard.json"), r#"{"version":"1.0.0","agents":{"model":"opus"}}"#).unwrap();
         upsert_project(root, Some("1.0.0"), InstallMode::Shared).unwrap();
         assert_eq!(written_config(root)["agents"], json!({"model": "opus", "effort": "xhigh"}));
-        assert_eq!(installed_agent_models(root), ["opus", "opus"]);
+        assert_eq!(installed_agent_models(root), ["sonnet", "opus"]);
         assert_eq!(installed_agent_efforts(root), ["xhigh", "xhigh"]);
     }
 

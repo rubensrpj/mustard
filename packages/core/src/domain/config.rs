@@ -1149,10 +1149,12 @@ impl ProjectConfig {
         self.agents.extra.get(BY_DIFFICULTY).and_then(Value::as_bool).unwrap_or(true)
     }
 
-    /// O modelo e o esforço dos agentes, os dois já conferidos.
+    /// O modelo e o esforço que o cabeçalho do agente de onda leva, os dois
+    /// já conferidos: o modelo da onda sem envio ([`Self::wave_agent_model`])
+    /// e o esforço dos agentes.
     #[must_use]
     pub fn agent_settings(&self) -> AgentSettings<'_> {
-        AgentSettings { model: self.agent_model(), effort: self.agent_effort() }
+        AgentSettings { model: self.wave_agent_model(), effort: self.agent_effort() }
     }
 
     /// O modelo do agente de onda sem envio que o diga: o Sonnet quando o
@@ -1168,11 +1170,25 @@ impl ProjectConfig {
     /// [`FINAL_REVIEW_MODEL`], e o esforço segue o dos agentes de onda.
     #[must_use]
     pub fn review_settings(&self) -> AgentSettings<'_> {
-        let review = self.agents.extra.get(REVIEW_AGENT);
-        let field = |name: &str| review.and_then(|review| review.get(name)).and_then(Value::as_str).map(str::trim);
-        let model = field("model").filter(|model| is_model_name(model)).unwrap_or(FINAL_REVIEW_MODEL);
-        let effort = field("effort").and_then(|effort| AGENT_EFFORTS.into_iter().find(|known| known.eq_ignore_ascii_case(effort))).unwrap_or_else(|| self.agent_effort());
-        AgentSettings { model, effort }
+        let effort = self.review_field("effort").and_then(|effort| AGENT_EFFORTS.into_iter().find(|known| known.eq_ignore_ascii_case(effort)));
+        AgentSettings { model: self.declared_review_model().unwrap_or(FINAL_REVIEW_MODEL), effort: effort.unwrap_or_else(|| self.agent_effort()) }
+    }
+
+    /// O modelo do revisor que não é o final — o do levantamento e o do pull
+    /// request de colega: o de `agents.review`, ou o de `agents.model`.
+    #[must_use]
+    pub fn other_review_model(&self) -> &str {
+        self.declared_review_model().unwrap_or_else(|| self.agent_model())
+    }
+
+    /// O modelo de `agents.review.model`, quando vale como nome de modelo.
+    fn declared_review_model(&self) -> Option<&str> {
+        self.review_field("model").filter(|model| is_model_name(model))
+    }
+
+    /// O campo `name` de `agents.review`, sem espaço em volta.
+    fn review_field(&self, name: &str) -> Option<&str> {
+        self.agents.extra.get(REVIEW_AGENT).and_then(|review| review.get(name)).and_then(Value::as_str).map(str::trim)
     }
 }
 
@@ -1989,7 +2005,7 @@ mod tests {
             assert_eq!(cfg.agent_effort(), effort, "{agents}");
         }
 
-        std::fs::write(&path, r#"{"agents":{"model":"opus","effort":"max"}}"#).unwrap();
+        std::fs::write(&path, r#"{"agents":{"model":"opus","effort":"max","by_difficulty":false}}"#).unwrap();
         let cfg = ProjectConfig::load(dir.path());
         assert_eq!(cfg.agent_settings(), AgentSettings { model: "opus", effort: "max" });
         assert_eq!(AgentSettings::default(), AgentSettings { model: "sonnet", effort: "xhigh" });
@@ -2007,25 +2023,28 @@ mod tests {
         }
     }
 
-    /// `agents.model` only reaches the wave agent with the choice by
-    /// difficulty turned off; on, the wave without a grade goes to Sonnet.
-    /// The final reviewer runs on Opus unless `agents.review.model` says
-    /// otherwise, never inheriting `agents.model`.
+    /// O `agents.model` só chega ao agente de onda, e ao cabeçalho dele, com
+    /// a escolha pela dificuldade desligada; ligada, a onda sem nota vai ao
+    /// Sonnet. O revisor final roda no Opus, salvo o que `agents.review.model`
+    /// diz, sem herdar o `agents.model`; o outro revisor segue como antes, no
+    /// `agents.review.model` ou no `agents.model`.
     #[test]
     fn the_configured_model_reaches_the_wave_only_without_difficulty_and_the_final_reviewer_is_opus() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("mustard.json");
-        for (agents, wave, review) in [
-            (r#"{"model":"opus"}"#, "sonnet", "opus"),
-            (r#"{"model":"haiku"}"#, "sonnet", "opus"),
-            (r#"{"model":"opus","by_difficulty":false}"#, "opus", "opus"),
-            (r#"{"model":"sonnet","review":{"model":"sonnet"}}"#, "sonnet", "sonnet"),
-            ("{}", "sonnet", "opus"),
+        for (agents, wave, review, other) in [
+            (r#"{"model":"opus"}"#, "sonnet", "opus", "opus"),
+            (r#"{"model":"haiku"}"#, "sonnet", "opus", "haiku"),
+            (r#"{"model":"opus","by_difficulty":false}"#, "opus", "opus", "opus"),
+            (r#"{"model":"sonnet","review":{"model":"sonnet"}}"#, "sonnet", "sonnet", "sonnet"),
+            ("{}", "sonnet", "opus", "sonnet"),
         ] {
             std::fs::write(&path, format!(r#"{{"agents":{agents}}}"#)).unwrap();
             let cfg = ProjectConfig::load(dir.path());
             assert_eq!(cfg.wave_agent_model(), wave, "{agents}");
+            assert_eq!(cfg.agent_settings().model, wave, "{agents}: the installed wave header");
             assert_eq!(cfg.review_settings().model, review, "{agents}");
+            assert_eq!(cfg.other_review_model(), other, "{agents}");
         }
     }
 
@@ -2055,8 +2074,8 @@ mod tests {
         assert_eq!(invalid.agent_effort(), DEFAULT_AGENT_EFFORT, "the agent falls back to the default");
     }
 
-    /// A `mustard.json` from before the wave reviewer left still opens: its
-    /// `agents.wave_review` section is kept as it came, and nothing reads it.
+    /// Um `mustard.json` de antes da saída do revisor de onda ainda abre: a
+    /// seção `agents.wave_review` fica como veio, e nada a lê.
     #[test]
     fn an_older_config_with_the_wave_reviewer_still_opens_and_keeps_the_section() {
         let dir = tempdir().unwrap();

@@ -498,9 +498,8 @@ fn each_agent_template_declares_its_own_model_and_effort() {
 
 /// O modelo dos agentes vem do `mustard.json` do projeto, pelo instalador de
 /// verdade: sem o campo, o agente de onda sai no padrão, o revisor final no
-/// Opus, e o arquivo ganha o campo; com `opus` no arquivo, os dois saem em
-/// opus e o campo fica onde estava; trocada a linha, a instalação seguinte
-/// troca o agente de onda.
+/// Opus, e o arquivo ganha o campo; com `opus` no arquivo e a escolha pela
+/// dificuldade desligada, os dois saem em opus e o campo fica onde estava.
 #[test]
 fn the_installed_agents_use_the_model_of_the_project_config() {
     let model_of = |root: &Path, name: &str| -> String {
@@ -521,7 +520,7 @@ fn the_installed_agents_use_the_model_of_the_project_config() {
 
         std::fs::write(
             root.join("mustard.json"),
-            format!(r#"{{"version":"1.0.0","language":{{"text":"{lang}"}},"agents":{{"model":"opus"}}}}"#),
+            format!(r#"{{"version":"1.0.0","language":{{"text":"{lang}"}},"agents":{{"model":"opus","by_difficulty":false}}}}"#),
         )
         .unwrap();
         let report = rt(&root, &home, &["run", "upsert"], None);

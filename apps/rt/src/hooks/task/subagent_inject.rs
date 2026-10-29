@@ -469,8 +469,8 @@ fn launch_settings(verdict: Verdict, input: &HookInput, ctx: &Ctx) -> Verdict {
 /// escolheu para ele — o da onda, o do último envio dela, que sai da
 /// dificuldade das tarefas e sobe na reprovação; o do revisor final, o que a
 /// chamada pede e, sem pedido, o de `agents.review` ou o Opus; o do texto
-/// que o orquestrador escreve para o revisor, o mesmo do revisor final; o da onda sem envio
-/// legível, o Sonnet, ou o de `agents.model` com a escolha pela dificuldade
+/// que o orquestrador escreve para o revisor, o de `agents.review` ou o de
+/// `agents.model`; o da onda sem envio legível, o Sonnet, ou o de `agents.model` com a escolha pela dificuldade
 /// desligada — e sempre com o esforço `xhigh`, no lugar do que a chamada
 /// pede: o `model` da chamada vence o cabeçalho do agente, então o escolhido
 /// vai nela. O modelo que o usuário pediu para o revisor final fica: só a
@@ -494,7 +494,8 @@ fn launch_settings_with(verdict: Verdict, input: &HookInput, ctx: &Ctx, effort_e
     }
     let configured = match agent {
         "mustard-wave" => ctx.config.wave_agent_model(),
-        "mustard-review" => ctx.config.review_settings().model,
+        "mustard-review" if reads_final_request(dispatch_prompt(input)) => ctx.config.review_settings().model,
+        "mustard-review" => ctx.config.other_review_model(),
         _ => return verdict,
     };
     let root = ctx.project_dir_or_cwd(input);
@@ -855,15 +856,17 @@ mod tests {
         assert_eq!(review["model"].as_str(), Some("haiku"), "{review}");
     }
 
-    /// The final reviewer goes on the model its call asked for, and on
-    /// `agents.review` when the call asks for none, always at effort xhigh.
+    /// O revisor final sai no modelo que a chamada pediu e, sem pedido, no de
+    /// `agents.review`, sempre com o esforço xhigh. O outro revisor — o do
+    /// levantamento ou o do pull request de colega — segue o `agents.model`,
+    /// sem o Opus do revisor final.
     #[test]
     fn the_final_reviewer_launches_on_the_model_it_was_asked() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        std::fs::write(root.join("mustard.json"), json!({"agents": {"review": {"model": "opus"}}}).to_string()).unwrap();
-        let launch = |model: Option<&str>| {
-            let mut input = task_input("mustard-review", "# x — agente de teste dedicado\n\nmustard-rt run read request-review --root /r --spec x");
+        std::fs::write(root.join("mustard.json"), json!({"agents": {"model": "sonnet"}}).to_string()).unwrap();
+        let launch_with = |prompt: &str, model: Option<&str>| {
+            let mut input = task_input("mustard-review", prompt);
             if let Some(model) = model {
                 input.tool_input["model"] = json!(model);
             }
@@ -873,10 +876,13 @@ mod tests {
                 other => panic!("the launch is rewritten, got {other:?}"),
             }
         };
+        let launch = |model: Option<&str>| launch_with("# x — agente de teste dedicado\n\nmustard-rt run read request-review --root /r --spec x", model);
         let sent = launch(Some("haiku"));
         assert_eq!((sent["model"].as_str(), sent["effort"].as_str()), (Some("haiku"), Some("xhigh")), "the call's model stays: {sent}");
         let sent = launch(None);
         assert_eq!((sent["model"].as_str(), sent["effort"].as_str()), (Some("opus"), Some("xhigh")), "{sent}");
+        let survey = launch_with("Revise o levantamento da spec x: os pontos, as regras e as decisões.", None);
+        assert_eq!((survey["model"].as_str(), survey["effort"].as_str()), (Some("sonnet"), Some("xhigh")), "the survey reviewer is not the final one: {survey}");
     }
 
     /// The model the user asked for the final reviewer stays, at the usual
