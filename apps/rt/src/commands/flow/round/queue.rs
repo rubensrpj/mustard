@@ -3052,7 +3052,7 @@ mod tests {
             let goal = "Mexer no código de um e de dois.";
             id_of(&write(root, "x", "context", json!({"text": goal, "origin": said})));
             let opts =
-                crate::commands::flow::grill::GrillOpts { root: root.to_path_buf(), spec: Some("x".into()), kinds: Some("fix".into()), condensed: false };
+                crate::commands::flow::grill::GrillOpts { root: root.to_path_buf(), spec: Some("x".into()), kinds: Some("fix".into()) };
             // O `grill` grava os pontos abertos; cada um é fechado pelo número.
             let listed = crate::commands::flow::grill::grill_for(&opts, None);
             for item in listed["points"].as_array().cloned().unwrap_or_default() {

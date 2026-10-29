@@ -17,8 +17,8 @@
 //! recusado tira o item do arquivo: um nunca fica sem o outro.
 //!
 //! A saída traz o item gravado, o fechamento e o passo seguinte do
-//! levantamento, como o `run write` o mostra. No levantamento condensado,
-//! `points` traz só o código, o número e a lacuna de cada ponto aberto, e
+//! levantamento, como o `run write` o mostra. `points` traz só o código, o
+//! número e a lacuna de cada ponto aberto, e
 //! `point` traz o próximo inteiro:
 //!
 //! ```text
@@ -444,7 +444,7 @@ mod tests {
         assert_eq!(log.get(item).and_then(|event| event.int("origin")), Some(said));
         assert_eq!(report["point"]["id"], json!(points[1]), "{report}");
         let code = log.codes()[&points[1]].clone();
-        assert!(report["next"].as_str().unwrap().contains(&code), "{report}");
+        assert!(report["points"].as_str().unwrap().contains(&code), "{report}");
         assert_eq!(open_ids(root), vec![points[1]]);
     }
 
@@ -613,12 +613,12 @@ mod tests {
         assert_eq!(answer(&last)["reason"], json!("no-open-point"));
     }
 
-    /// No levantamento condensado, a resposta não repete o texto dos pontos
-    /// abertos: `points` traz o código, o número e a lacuna de cada um, e
-    /// `point` traz inteiro só o próximo. O passo seguinte manda responder
-    /// cada ponto pelo mesmo comando e diz o que a resposta devolve.
+    /// A resposta não repete o texto dos pontos abertos: `points` traz o
+    /// código, o número e a lacuna de cada um, e `point` traz inteiro só o
+    /// próximo. O passo seguinte manda responder cada ponto pelo mesmo
+    /// comando e diz o que a resposta devolve.
     #[test]
-    fn a_condensed_answer_lists_the_open_points_briefly() {
+    fn an_answer_lists_the_open_points_briefly() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let points = surveyed(root, survey::CONDENSED, 3);

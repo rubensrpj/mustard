@@ -1,5 +1,5 @@
-//! `mustard-rt run grill [--kinds <tipos>] [--spec <nome>] [--condensed]` — o
-//! levantamento de uma spec: grava o tipo de trabalho e os pontos da lista.
+//! `mustard-rt run grill [--kinds <tipos>] [--spec <nome>]` — o levantamento
+//! de uma spec: grava o tipo de trabalho e os pontos da lista.
 //!
 //! Roda só numa spec em levantamento que já tem o objetivo, o primeiro
 //! `context`, que é a resposta do usuário à pergunta do `open`. O tipo de
@@ -17,8 +17,8 @@
 //! dentro desses pontos, até 3 lembretes: mensagens antigas do usuário que não
 //! viraram registro. A regra do projeto nunca vira ponto: vale sempre. O
 //! banco, o índice, as specs anteriores e o mapa são os do checkout
-//! principal, também vistos de um worktree. Com `--condensed`, o pedido que
-//! cabe numa frase, todos os pontos vão para um bloco só.
+//! principal, também vistos de um worktree. Todos os pontos vão para um bloco
+//! só e são mostrados de uma vez.
 //!
 //! O `grill` grava cada item da lista que ainda não tem ponto como ponto
 //! aberto, com o autor `binary`, os fatos que a lista já traz e os lembretes;
@@ -29,8 +29,8 @@
 //! esse nome, e a que não se confere fica fora, com o motivo em `warnings`. O ponto pode nascer sem fato; o assistente
 //! soma os fatos que conferiu no próprio `answer --facts`, que grava a
 //! resposta e o fechamento numa transação. Cada item da resposta traz o número, o código e a situação do
-//! ponto que o registra. A resposta devolve em `next` o primeiro ponto aberto
-//! ou, no condensado, pede para mostrar todos de uma vez, e a dica diz onde
+//! ponto que o registra. A resposta pede para mostrar todos os pontos de uma
+//! vez, e a dica diz onde
 //! salvar, logo depois do sim, a cópia do modelo visual que o usuário aprovar;
 //! sem ponto aberto, lista em `unrouted` o código e o começo de cada mensagem do usuário sem
 //! destino, uma por linha. Chamar de novo com os mesmos tipos não grava nada e
@@ -39,10 +39,10 @@
 //! contexto, nunca ponto.
 //!
 //! ```text
-//! {"ok": true, "spec": "x", "work_type": 4, "kinds": ["feature"], "condensed": false,
-//!  "points": [{"block": "context", "gap": "Quem usa e para quê", "from": "gap", "origin": 2,
+//! {"ok": true, "spec": "x", "work_type": 4, "kinds": ["feature"],
+//!  "points": [{"block": "condensed", "gap": "Quem usa e para quê", "from": "gap", "origin": 2,
 //!              "id": 5, "code": "MSTD-POINT-0001", "status": "open"}, …],
-//!  "reminders": 0, "next": {"id": 5, …}, "hint": "Apresente o ponto MSTD-POINT-0001 …"}
+//!  "reminders": 0, "hint": "Antes do sim, preencha cada lacuna …"}
 //! ```
 //!
 //! Recusa sai com exit 1 e `ok: false`, com a razão curta em `reason` e a
@@ -63,7 +63,7 @@ use mustard_core::io::{lessons, project_map, spec_events as store, spec_index};
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Map, Value, json};
 
-use crate::commands::spec_events::{self, shown, write::record};
+use crate::commands::spec_events::{self, write::record};
 use crate::shared::spec_state::{DiskSpecState, checkout, session_from_env};
 
 /// Options for `mustard-rt run grill`.
@@ -74,8 +74,6 @@ pub struct GrillOpts {
     pub spec: Option<String>,
     /// Os tipos de trabalho, separados por vírgula.
     pub kinds: Option<String>,
-    /// O pedido que cabe numa frase: todos os pontos de uma vez.
-    pub condensed: bool,
 }
 
 /// As recusas do `grill`: as dele e as da leitura e da gravação da spec.
@@ -126,7 +124,7 @@ pub(crate) fn grill_at(opts: &GrillOpts) -> Value {
 /// com os fatos do banco de lições, do índice, das specs e do mapa do checkout
 /// principal. É a montagem que o `grill` usa, e quem confere o que ela traz
 /// chama esta função em vez de refazê-la.
-fn survey_list(project: &spec_events::Project, spec: &str, kinds: &[&str], goal: &str, goal_agent: &str, condensed: bool) -> Vec<survey::Proposed> {
+fn survey_list(project: &spec_events::Project, spec: &str, kinds: &[&str], goal: &str, goal_agent: &str) -> Vec<survey::Proposed> {
     let lessons_path = ClaudePaths::for_project(&project.root).ok().map(|paths| paths.lessons_path());
     let bank = lessons_path.as_deref().and_then(|path| lessons::read(path).ok().flatten());
     let lessons_file = lessons_path
@@ -145,7 +143,6 @@ fn survey_list(project: &spec_events::Project, spec: &str, kinds: &[&str], goal:
         index: &index,
         prior: &prior,
         map: Some(&map),
-        condensed,
         lang: project.lang,
         languages: &project.languages,
     })
@@ -217,8 +214,7 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
         Err(refusal) => return refuse(GrillRefusal::Spec(refusal)),
     };
 
-    let condensed = opts.condensed || survey::condensed(&log);
-    let mut list = survey_list(&project, &spec, &kinds, &goal_text, &goal_agent, condensed);
+    let mut list = survey_list(&project, &spec, &kinds, &goal_text, &goal_agent);
     // Toda citação passa pela conferência que recusaria a gravação do ponto
     // antes de virar fato. O fato velho do mapa sai primeiro, e o ponto do
     // defeito que ficou vazio recebe as citações do pedido que se conferem:
@@ -276,7 +272,6 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
         "spec": spec,
         "work_type": work_type,
         "kinds": kinds,
-        "condensed": condensed,
         "points": points,
         "reminders": reminders,
         "goal_approval": super::goal::status(&log, lang),
@@ -311,15 +306,8 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
     for (source, finding) in &left_out {
         spec_events::pages::push_warning(&mut report, "citation-left-out", &left_out_hint(source, finding, lang));
     }
-    let open = survey::open_points(&log);
-    if let Some(first) = open.first() {
-        let present = if condensed {
-            translate("survey.present_all", lang).to_string()
-        } else {
-            let code = codes.get(&first.id).cloned().unwrap_or_default();
-            report["next"] = shown(first, &codes);
-            translate("survey.present_point", lang).replace("{code}", &code).replace("{id}", &first.id.to_string())
-        };
+    if !survey::open_points(&log).is_empty() {
+        let present = translate("survey.present_all", lang);
         // Onde salvar a cópia do modelo visual aprovado sai aqui, o único
         // lugar que a pede: com os pontos que vão ao usuário, antes do sim, e
         // de novo a cada volta ao levantamento pelo `grill`. Nenhum passo do
@@ -333,20 +321,12 @@ pub(crate) fn grill_for(opts: &GrillOpts, session: Option<&str>) -> Value {
     report
 }
 
-/// Transport projection: the next point remains complete. Other points are
-/// an index; source cards and full point records are retrieved on demand.
+/// A resposta para transporte: os pontos vão inteiros, porque se mostram
+/// todos de uma vez; as fichas do código vêm reduzidas, e o resto se lê a
+/// pedido.
 pub(crate) fn projection(full: &Value) -> Value {
     if full["ok"] != true {return full.clone();}
     let mut out=full.clone();
-    if full["condensed"] != true && let Some(points)=out["points"].as_array_mut() {
-        for point in points {
-            let count=point["facts"].as_array().map_or(0,Vec::len);
-            if let Some(fields)=point.as_object_mut() {
-                fields.retain(|key,_| ["block","gap","from","origin","id","code","status"].contains(&key.as_str()));
-                fields.insert("fact_count".into(),json!(count));
-            }
-        }
-    }
     if let Some(knowledge)=out.get_mut("knowledge") {
         let cards=knowledge["cards"].as_array().into_iter().flatten().take(3).map(|card| {
             let mut card=card.clone();
@@ -362,23 +342,17 @@ pub(crate) fn projection(full: &Value) -> Value {
 }
 
 /// A resposta curta do levantamento, tirada de [`projection`]: primeiro a
-/// dica, o próximo ponto e os códigos dos pontos abertos; depois só o que a
-/// dica manda usar — as mensagens sem destino, os itens que a volta ao
-/// levantamento toca, os itens retidos e o objetivo ainda sem aceite. No
-/// condensado, a dica manda mostrar todos os pontos, e eles vêm. O resto,
-/// com `--full`.
+/// dica e os códigos dos pontos abertos; depois os pontos, que a dica manda
+/// mostrar de uma vez, e só o que ela manda usar — as mensagens sem destino,
+/// os itens que a volta ao levantamento toca, os itens retidos e o objetivo
+/// ainda sem aceite. O resto, com `--full`.
 pub(crate) fn short(projected: &Value) -> Value {
     let points = projected["points"].as_array().map_or(&[][..], Vec::as_slice);
     let open: Vec<&Value> = points.iter().filter(|point| point["status"] == "open").map(|point| &point["code"]).collect();
     let mut out = json!({"ok": true, "hint": projected["hint"]});
-    if let Some(next) = projected.get("next") {
-        out["next"] = next.clone();
-    }
     out["open"] = json!(open);
     out["spec"] = projected["spec"].clone();
-    if projected["condensed"] == true {
-        out["points"] = json!(points);
-    }
+    out["points"] = json!(points);
     for key in ["unrouted", "reason", "touched", "touched_hint", "withheld", "warnings", "project_summary"] {
         if let Some(value) = projected.get(key) {
             out[key] = value.clone();
@@ -598,10 +572,10 @@ pub(crate) fn run_grill_line(root: &Path, line: &str) -> Value {
     }
     let root_arg = root.to_string_lossy().into_owned();
     let argv = ["run"].into_iter().chain(line.split_whitespace().skip(2)).chain(["--root", &root_arg]);
-    let Ok(Harness { cmd: RunCmd::Flow(FlowCmd::Grill { spec, kinds, condensed, root, .. }) }) = clap::Parser::try_parse_from(argv) else {
+    let Ok(Harness { cmd: RunCmd::Flow(FlowCmd::Grill { spec, kinds, root, .. }) }) = clap::Parser::try_parse_from(argv) else {
         panic!("not the grill: {line}");
     };
-    grill_for(&GrillOpts { root, spec, kinds, condensed }, None)
+    grill_for(&GrillOpts { root, spec, kinds }, None)
 }
 
 #[cfg(test)]
@@ -662,8 +636,8 @@ mod tests {
         said
     }
 
-    fn grill(root: &Path, spec: &str, kinds: Option<&str>, condensed: bool) -> Value {
-        let opts = GrillOpts { root: root.to_path_buf(), spec: Some(spec.to_string()), kinds: kinds.map(str::to_string), condensed };
+    fn grill(root: &Path, spec: &str, kinds: Option<&str>) -> Value {
+        let opts = GrillOpts { root: root.to_path_buf(), spec: Some(spec.to_string()), kinds: kinds.map(str::to_string) };
         grill_for(&opts, None)
     }
 
@@ -681,7 +655,7 @@ mod tests {
         rule("A página da spec sai no fim de cada passo.", "página");
 
         // Sem volta, a consulta não existe.
-        let before = grill(root, "x", Some("fix"), false);
+        let before = grill(root, "x", Some("fix"));
         assert!(before["touched"].is_null(), "{before}");
 
         // A spec aprovada volta ao levantamento com o motivo gravado.
@@ -697,7 +671,7 @@ mod tests {
         );
         assert_eq!(back["recorded"], json!(true), "{back}");
 
-        let after = grill(root, "x", Some("fix"), false);
+        let after = grill(root, "x", Some("fix"));
         let touched = after["touched"].as_array().cloned().unwrap_or_default();
         assert!(!touched.is_empty(), "{after}");
         assert!(touched[0]["title"].as_str().unwrap_or_default().contains("formata"), "o mais forte vem primeiro: {touched:?}");
@@ -716,7 +690,7 @@ mod tests {
         let note = write(root, Some("x"), "note", json!({"text": "client_secret=9f8e7d6c5b4a3210", "keys": ["cliente"], "origin": said}));
         let code = note["code"].as_str().unwrap_or_default().to_string();
 
-        let report = grill(root, "x", Some("fix"), false);
+        let report = grill(root, "x", Some("fix"));
         assert_eq!(report["ok"], json!(true), "{report}");
         assert_eq!(report["withheld"], json!([code]), "{report}");
         let warnings = report["warnings"].as_array().cloned().unwrap_or_default();
@@ -763,7 +737,7 @@ mod tests {
         let said = id_of(&write(root, Some("x"), "message", json!({"author": "user", "text": goal})));
         let context = json!({"title": "Tirar o registro de nascimento", "text": goal, "agent": agent, "origin": said});
         id_of(&write(root, Some("x"), "context", context));
-        grill(root, "x", Some("refactor"), false)
+        grill(root, "x", Some("refactor"))
     }
 
     /// O mapa velho ainda declara um nome num arquivo que foi apagado: o
@@ -795,7 +769,7 @@ mod tests {
         surveyed(root, "x");
         let spec = root.join(".claude").join("spec").join("x");
 
-        let report = grill(root, "x", Some("fix"), false);
+        let report = grill(root, "x", Some("fix"));
         assert_eq!(report["ok"], json!(true), "{report}");
         assert!(report["warnings"].is_null(), "{report}");
         for written in ["spec.html", "spec.md", "copy"] {
@@ -809,6 +783,11 @@ mod tests {
 
     fn items(report: &Value) -> &Vec<Value> {
         report["points"].as_array().unwrap_or_else(|| panic!("no points: {report}"))
+    }
+
+    /// O primeiro ponto aberto da lista, na ordem em que ela se mostra.
+    fn first_open(report: &Value) -> Value {
+        items(report).iter().find(|item| item["status"] == json!("open")).cloned().unwrap_or(Value::Null)
     }
 
     /// Os pontos gravados, na ordem do arquivo.
@@ -868,7 +847,7 @@ mod tests {
             json!({"author": "user", "text": "O defeito está em `src/a.rs:2` e a chamada em src/b.rs:1, com o mesmo motivo.", "origin": said}),
         ));
 
-        let report = grill(root, "x", Some("fix"), false);
+        let report = grill(root, "x", Some("fix"));
         assert_eq!(report["ok"], json!(true), "{report}");
         let points = recorded_points(root, "x");
         let with_facts: Vec<&str> = points
@@ -892,7 +871,7 @@ mod tests {
         let bare = other.path();
         std::fs::write(bare.join("mustard.json"), b"{}").unwrap();
         surveyed(bare, "y");
-        assert_eq!(grill(bare, "y", Some("fix"), false)["ok"], json!(true));
+        assert_eq!(grill(bare, "y", Some("fix"))["ok"], json!(true));
         assert!(recorded_points(bare, "y").iter().all(|point| point.fields.get("facts").is_none()), "sem citação, nenhum fato");
     }
 
@@ -935,7 +914,7 @@ mod tests {
             json!({"author": "user", "text": "O defeito está em `nada.rs:1`, ou seja, em `src/a.rs:1`.", "origin": said}),
         ));
 
-        let report = grill(root, "x", Some("fix"), false);
+        let report = grill(root, "x", Some("fix"));
         assert_eq!(report["ok"], json!(true), "{report}");
         assert!(!recorded_points(root, "x").is_empty(), "os pontos do defeito são gravados: {report}");
         let sources = recorded_sources(root, "x");
@@ -967,7 +946,7 @@ mod tests {
             json!({"author": "user", "text": "O defeito está em `a.rs:1`, ou seja, em `src/a.rs:1`, e a chamada em b.rs:2.", "origin": said}),
         ));
 
-        let report = grill(root, "x", Some("fix"), false);
+        let report = grill(root, "x", Some("fix"));
         assert_eq!(report["ok"], json!(true), "{report}");
         let points = recorded_points(root, "x");
         let filled: Vec<Vec<&str>> = points
@@ -1003,7 +982,7 @@ mod tests {
             json!({"author": "user", "text": "O defeito está em `a.rs:1`, e a chamada em `src/b.rs:1`.", "origin": said}),
         ));
 
-        let report = grill(root, "x", Some("fix"), false);
+        let report = grill(root, "x", Some("fix"));
         assert_eq!(report["ok"], json!(true), "{report}");
         let sources = recorded_sources(root, "x");
         assert!(sources.iter().any(|source| source == "src/b.rs:1"), "{sources:?}");
@@ -1038,7 +1017,7 @@ mod tests {
         // A lista do mapa, montada pela mesma função que o `grill` usa antes da
         // limpeza, dá à reprodução o fato velho que cita o arquivo apagado.
         let project = spec_events::project(root);
-        let before_settling = survey_list(&project, "x", &["fix"], goal, agent, false);
+        let before_settling = survey_list(&project, "x", &["fix"], goal, agent);
         let stale: Vec<&str> = before_settling
             .iter()
             .find(|item| item.key == Some(survey::GapKey::Reproduction))
@@ -1049,7 +1028,7 @@ mod tests {
             .collect();
         assert_eq!(stale, ["src/gone.rs:2"], "a lista do mapa chega à limpeza com o fato velho: {before_settling:?}");
 
-        let report = grill(root, "x", Some("fix"), false);
+        let report = grill(root, "x", Some("fix"));
         assert_eq!(report["ok"], json!(true), "{report}");
         let points = recorded_points(root, "x");
         let reproduction = points
@@ -1100,13 +1079,14 @@ mod tests {
 
     /// O `grill` numa spec nova grava o tipo de trabalho, com o autor e a
     /// origem do objetivo, e um ponto aberto por lacuna, na ordem dos blocos,
-    /// do binário e sem fato; a resposta devolve o primeiro.
+    /// do binário e sem fato, todos no bloco único; a resposta devolve todos
+    /// e pede para mostrá-los de uma vez.
     #[test]
-    fn grill_records_the_work_type_and_one_open_point_per_gap_and_returns_the_first() {
+    fn grill_records_the_work_type_and_one_open_point_per_gap_and_returns_them_all() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = surveyed(root, "x");
-        let report = grill(root, "x", Some("feature"), false);
+        let report = grill(root, "x", Some("feature"));
         assert_eq!(report["ok"], json!(true), "{report}");
         let log = mustard_core::domain::spec_events::parse_log(&events(root, "x"));
         let work_type = survey::work_type(&log).expect("the work type is recorded");
@@ -1131,13 +1111,13 @@ mod tests {
         }
         assert!(report.get("to_record").is_none(), "{report}");
 
-        assert_eq!(report["next"]["gap"], json!("Quem usa e para quê"), "{report}");
-        assert_eq!(report["next"]["block"], json!("context"));
-        assert_eq!(report["next"]["id"], json!(points[0].id));
+        assert!(points.iter().all(|p| p.str_field("block") == Some(survey::CONDENSED)), "{points:?}");
+        assert!(report.get("next").is_none(), "{report}");
+        assert_eq!(first_open(&report)["gap"], json!("Quem usa e para quê"), "{report}");
+        assert_eq!(first_open(&report)["id"], json!(points[0].id));
         let hint = report["hint"].as_str().unwrap();
-        let code = report["next"]["code"].as_str().unwrap();
-        assert!(hint.contains(code) && hint.contains(&report["next"]["id"].to_string()), "{hint}");
-        // O ponto é apresentado na ordem de explicar do estilo de resposta.
+        assert!(hint.starts_with(translate("survey.present_all", Locale::PtBr)), "{hint}");
+        // Os pontos são apresentados na ordem de explicar do estilo de resposta.
         assert!(hint.contains("na ordem de explicar do estilo de resposta"), "{hint}");
     }
 
@@ -1149,12 +1129,12 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         surveyed(root, "x");
-        let first = grill(root, "x", Some("fix"), false);
+        let first = grill(root, "x", Some("fix"));
         let bytes = events(root, "x");
-        assert_eq!(grill(root, "x", Some("fix"), false), first, "the same step");
+        assert_eq!(grill(root, "x", Some("fix")), first, "the same step");
         // Sem os tipos, vale o gravado, antes do da branch `feature/x`.
-        assert_eq!(grill(root, "x", None, false), first, "the recorded fix, not the feature of the branch");
-        assert_eq!(first["next"]["gap"], json!("O sintoma"));
+        assert_eq!(grill(root, "x", None), first, "the recorded fix, not the feature of the branch");
+        assert_eq!(first_open(&first)["gap"], json!("O sintoma"));
         assert_eq!(events(root, "x"), bytes, "nothing was written");
 
         // Noutro projeto, para a spec `x` não casar como spec anterior.
@@ -1168,8 +1148,8 @@ mod tests {
             assert_eq!(write(root, Some("manual"), "point", point)["ok"], json!(true));
         }
         let bytes = events(root, "manual");
-        let report = grill(root, "manual", Some("fix"), false);
-        assert_eq!(report["next"]["gap"], json!("O sintoma"), "{report}");
+        let report = grill(root, "manual", Some("fix"));
+        assert_eq!(first_open(&report)["gap"], json!("O sintoma"), "{report}");
         assert_eq!(events(root, "manual"), bytes, "no point twice");
     }
 
@@ -1182,7 +1162,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = surveyed(root, "x");
-        let first = grill(root, "x", Some("fix"), false)["next"].clone();
+        let first = first_open(&grill(root, "x", Some("fix")));
         let (id, code) = (id_of(&first), first["code"].as_str().unwrap().to_string());
         let one = json!({"text": "O sintoma aparece no merge.", "source": format!("mensagem {said}")});
         let two = json!({"text": "O merge lê a pendência.", "source": format!("mensagem {said}")});
@@ -1198,9 +1178,8 @@ mod tests {
         }
         assert_eq!(newest.fields["facts"], json!([one, two]), "the facts add up, none twice");
         assert_eq!(survey::open_points(&log).len(), survey::gaps(&["fix"]).len(), "still one open point per gap");
-        let next = grill(root, "x", Some("fix"), false);
-        assert_eq!(next["next"]["code"], json!(code), "the same point: {next}");
-        assert_eq!(next["next"]["facts"], json!([one, two]), "{next}");
+        let next = grill(root, "x", Some("fix"));
+        assert_eq!(first_open(&next)["code"], json!(code), "the same point: {next}");
     }
 
     /// O ponto sem fato não fecha com resposta, só como "não se aplica", com
@@ -1210,7 +1189,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = surveyed(root, "x");
-        let listed = grill(root, "x", Some("fix"), false);
+        let listed = grill(root, "x", Some("fix"));
         let (first, second) = (&items(&listed)[0], &items(&listed)[1]);
         let decided = id_of(&write(root, Some("x"), "decision", json!({"text": "Resposta.", "keys": ["k"], "why": "w", "origin": said})));
         let answer = |item: &Value| {
@@ -1240,9 +1219,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         surveyed(root, "x");
-        let first = grill(root, "x", Some("feature"), false);
+        let first = grill(root, "x", Some("feature"));
         let before = recorded_points(root, "x").len();
-        let wider = grill(root, "x", Some("fix,feature"), false);
+        let wider = grill(root, "x", Some("fix,feature"));
         assert_eq!(wider["kinds"], json!(["feature", "fix"]), "{wider}");
         let log = mustard_core::domain::spec_events::parse_log(&events(root, "x"));
         let now = survey::work_type(&log).unwrap();
@@ -1258,9 +1237,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         surveyed(root, "x");
-        assert_eq!(grill(root, "x", Some("feature,fix"), false)["ok"], json!(true));
+        assert_eq!(grill(root, "x", Some("feature,fix"))["ok"], json!(true));
         let bytes = events(root, "x");
-        let narrower = grill(root, "x", Some("feature"), false);
+        let narrower = grill(root, "x", Some("feature"));
         assert_eq!(narrower["reason"], json!("kinds-narrowed"), "{narrower}");
         assert!(narrower["hint"].as_str().unwrap().contains("feature, fix"), "{narrower}");
         assert_eq!(events(root, "x"), bytes);
@@ -1275,11 +1254,11 @@ mod tests {
         let root = dir.path();
         surveyed_on(root, "x", "x");
         let bytes = events(root, "x");
-        let missing = grill(root, "x", None, false);
+        let missing = grill(root, "x", None);
         assert_eq!(missing["reason"], json!("kinds-missing"), "{missing}");
         assert!(missing["hint"].as_str().unwrap().contains("--kinds"), "{missing}");
-        assert_eq!(grill(root, "x", Some(" , "), false)["reason"], json!("kinds-missing"));
-        let unknown = grill(root, "x", Some("feature,bug"), false);
+        assert_eq!(grill(root, "x", Some(" , "))["reason"], json!("kinds-missing"));
+        let unknown = grill(root, "x", Some("feature,bug"));
         assert_eq!(unknown["reason"], json!("invalid-value"), "{unknown}");
         assert!(unknown["hint"].as_str().unwrap().contains("refactor"), "{unknown}");
         assert_eq!(events(root, "x"), bytes);
@@ -1292,13 +1271,13 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = surveyed_on(root, "x", "fix/x");
-        let report = grill(root, "x", None, false);
+        let report = grill(root, "x", None);
         assert_eq!(report["kinds"], json!(["fix"]), "{report}");
         let log = mustard_core::domain::spec_events::parse_log(&events(root, "x"));
         let work_type = survey::work_type(&log).expect("the work type is recorded");
         assert_eq!(survey::kinds_of(work_type), ["fix"]);
         assert_eq!(work_type.int("origin"), Some(said));
-        assert_eq!(report["next"]["gap"], json!("O sintoma"), "{report}");
+        assert_eq!(first_open(&report)["gap"], json!("O sintoma"), "{report}");
     }
 
     /// Sem o objetivo, o `grill` recusa nos dois idiomas, com a pergunta a
@@ -1313,7 +1292,7 @@ mod tests {
             }
             assert_eq!(record_open(root, "x", "feature/x", "dev"), Ok(true));
             let bytes = events(root, "x");
-            let report = grill(root, "x", Some("feature"), false);
+            let report = grill(root, "x", Some("feature"));
             assert_eq!(report["reason"], json!("goal-missing"), "{report}");
             assert!(report["hint"].as_str().unwrap().contains(question), "{report}");
             assert_eq!(events(root, "x"), bytes);
@@ -1337,28 +1316,26 @@ mod tests {
         id_of(&write(root, Some("sem-estado"), "message", json!({"author": "user", "text": GOAL})));
         for (spec, phase) in [("plano", "plan"), ("aprovada", "approved"), ("sem-estado", "-")] {
             let bytes = events(root, spec);
-            let report = grill(root, spec, Some("feature"), false);
+            let report = grill(root, spec, Some("feature"));
             assert_eq!(report["reason"], json!("not-in-survey"), "{spec}: {report}");
             assert!(report["hint"].as_str().unwrap().contains(&format!("fase {phase}")), "{report}");
             assert_eq!(events(root, spec), bytes);
         }
     }
 
-    /// No pedido que cabe numa frase, o `grill` grava todas as lacunas de uma
-    /// vez, num bloco só, e pede um sim só, dizendo onde salvar a cópia do
-    /// modelo visual que o usuário aprovar.
+    /// Sem pedir, o `grill` grava todas as lacunas de uma vez, num bloco só,
+    /// e pede um sim só, dizendo onde salvar a cópia do modelo visual que o
+    /// usuário aprovar.
     #[test]
-    fn a_condensed_survey_returns_every_gap_at_once_in_one_block() {
+    fn grill_returns_every_gap_at_once_in_one_block() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         surveyed(root, "x");
-        let report = grill(root, "x", Some("feature,fix"), true);
-        assert_eq!(report["condensed"], json!(true), "{report}");
+        let report = grill(root, "x", Some("feature,fix"));
         assert_eq!(items(&report).len(), 13);
         assert!(items(&report).iter().all(|item| item["block"] == json!(survey::CONDENSED)), "{report}");
         assert!(recorded_points(root, "x").iter().all(|p| p.str_field("block") == Some(survey::CONDENSED)));
-        let all = grill(root, "x", Some("feature,fix"), false);
-        assert_eq!(all["condensed"], json!(true), "the recorded points keep the survey condensed");
+        let all = grill(root, "x", Some("feature,fix"));
         assert!(all.get("next").is_none(), "{all}");
         let design = translate("survey.save_design", Locale::PtBr).replace("{spec}", "x");
         assert_eq!(all["hint"], json!(format!("{} {design}", translate("survey.present_all", Locale::PtBr))));
@@ -1374,9 +1351,9 @@ mod tests {
         let root = dir.path();
         lesson_and_prior_spec(root);
         surveyed(root, "x");
-        let report = grill(root, "x", Some("fix"), false);
+        let report = grill(root, "x", Some("fix"));
         let lesson = items(&report).iter().find(|item| item["from"] == json!("lesson")).expect("a lesson point");
-        assert_eq!(lesson["block"], json!("lessons"));
+        assert_eq!(lesson["block"], json!(survey::CONDENSED));
         assert_eq!(lesson["gap"], json!("Merge com pendência."));
         assert_eq!(lesson["facts"], json!([{"text": LESSON, "source": ".claude/spec/lessons.ndjson:1"}]));
         let bank = std::fs::read_to_string(root.join(".claude").join("spec").join("lessons.ndjson")).unwrap();
@@ -1401,7 +1378,7 @@ mod tests {
         );
         assert_eq!(by_files["ok"], json!(true), "{by_files}");
         surveyed(root, "x");
-        let report = grill(root, "x", Some("fix"), false);
+        let report = grill(root, "x", Some("fix"));
         assert_eq!(report["ok"], json!(true), "{report}");
         assert!(!items(&report).iter().any(|item| item["from"] == json!("lesson")), "a lição por arquivo não vira ponto: {report}");
         let by_skill = write(
@@ -1412,7 +1389,7 @@ mod tests {
                    "keys": ["merge", "pendência"], "applies_to": {"skill": "backend"}, "found_in": {"spec": "antiga"}}),
         );
         assert_eq!(by_skill["ok"], json!(true), "{by_skill}");
-        let again = grill(root, "x", Some("fix"), false);
+        let again = grill(root, "x", Some("fix"));
         let asked: Vec<&Value> = items(&again).iter().filter(|item| item["from"] == json!("lesson")).collect();
         assert_eq!(asked.len(), 1, "{again}");
         assert_eq!(asked[0]["gap"], json!("Merge sem trava."));
@@ -1453,7 +1430,7 @@ mod tests {
         assert_eq!(lessons::read(&path).unwrap().unwrap().visible().len(), 301);
 
         surveyed(root, "x");
-        let report = grill(root, "x", Some("fix"), false);
+        let report = grill(root, "x", Some("fix"));
         assert_eq!(report["ok"], json!(true), "{report}");
         let from_lessons: Vec<&Value> = items(&report).iter().filter(|item| item["from"] == json!("lesson")).collect();
         assert!(!from_lessons.iter().any(|item| item.to_string().contains("Regra ")), "nenhuma regra do projeto vira ponto: {from_lessons:?}");
@@ -1470,9 +1447,9 @@ mod tests {
         let root = dir.path();
         lesson_and_prior_spec(root);
         surveyed(root, "x");
-        let report = grill(root, "x", Some("fix"), false);
+        let report = grill(root, "x", Some("fix"));
         let prior = items(&report).iter().find(|item| item["from"] == json!("prior_spec")).expect("a prior spec point");
-        assert_eq!(prior["block"], json!("prior_specs"));
+        assert_eq!(prior["block"], json!(survey::CONDENSED));
         assert_eq!(prior["gap"], json!("antiga: Travar o merge com pendência aberta."));
         let facts = prior["facts"].as_array().unwrap();
         assert!(facts.contains(&json!({"text": "Merge travado.", "source": "mustard-rt run read agreed --spec antiga --term MSTD-RULE-0001"})), "{facts:?}");
@@ -1502,7 +1479,7 @@ mod tests {
         let root = dir.path();
         surveyed(root, "x");
         id_of(&write(root, Some("x"), "message", json!({"author": "user", "text": "O merge com pendência aberta travou."})));
-        let report = grill(root, "x", Some("fix"), false);
+        let report = grill(root, "x", Some("fix"));
         assert!(items(&report).iter().all(|item| item["from"] == json!("gap")), "{report}");
         assert_eq!(report["reminders"], json!(0));
     }
@@ -1514,7 +1491,7 @@ mod tests {
         let root = dir.path();
         surveyed(root, "x");
         std::fs::remove_file(root.join(".claude").join("spec").join("index.ndjson")).unwrap();
-        let report = grill(root, "x", Some("refactor"), false);
+        let report = grill(root, "x", Some("refactor"));
         assert_eq!(report["ok"], json!(true), "{report}");
         assert_eq!(items(&report).len(), 9);
         assert!(items(&report).iter().all(|item| item["from"] == json!("gap") && item.get("facts").is_none()));
@@ -1529,7 +1506,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         surveyed(root, "x");
-        let report = grill(root, "x", Some("feature"), false);
+        let report = grill(root, "x", Some("feature"));
         assert!(report.get("project_summary").is_none(), "{report}");
 
         let entry = mustard_core::domain::project_summary::Entry {
@@ -1543,7 +1520,7 @@ mod tests {
             cost: None,
         };
         mustard_core::io::project_summary::upsert(root, &entry).unwrap();
-        let report = grill(root, "x", Some("feature"), false);
+        let report = grill(root, "x", Some("feature"));
         let summary = &report["project_summary"];
         assert_eq!(summary["chosen"], json!("recent"), "{report}");
         assert_eq!(summary["entries"], json!([{"spec":"antes","delivered_at":"2026-10-01","pr":7,"title":"Resumo do projeto","delivered":"Grava uma linha por spec."}]));
@@ -1557,14 +1534,14 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = surveyed(root, "x");
-        let listed = grill(root, "x", Some("fix"), false);
+        let listed = grill(root, "x", Some("fix"));
         for item in items(&listed) {
             let closing = json!({"block": item["block"], "gap": item["gap"], "from": "gap", "status": "not_applicable",
                 "closes": item["id"], "reason": "não se aplica", "origin": said});
             assert_eq!(write(root, Some("x"), "point", closing)["ok"], json!(true));
         }
         let loose = id_of(&write(root, Some("x"), "message", json!({"author": "user", "text": "E o painel?"})));
-        let done = grill(root, "x", Some("fix"), false);
+        let done = grill(root, "x", Some("fix"));
         assert!(done.get("next").is_none(), "{done}");
         let scale = translate("plan.points_scale", Locale::PtBr);
         assert_eq!(done["hint"], json!(translate("survey.done", Locale::PtBr).replace("{scale}", scale)), "the end does not ask for the design copy");
@@ -1583,7 +1560,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = surveyed(root, "x");
-        let listed = grill(root, "x", Some("fix"), false);
+        let listed = grill(root, "x", Some("fix"));
         let ids: Vec<u64> = items(&listed).iter().map(|item| item["id"].as_u64().unwrap()).collect();
         let close = |item: &Value, closes: u64| {
             let closing = json!({"block": item["block"], "gap": item["gap"], "from": "gap", "status": "not_applicable",
@@ -1604,26 +1581,26 @@ mod tests {
         let log = mustard_core::domain::spec_events::parse_log(&events(root, "x"));
         assert_eq!(survey::open_points(&log).len(), ids.len() - 1);
         assert_eq!(open_points(root), ids.len() - 1, "the revised point closed by its first number");
-        let next = grill(root, "x", Some("fix"), false);
-        assert_eq!(next["next"]["id"], json!(ids[1]), "{next}");
+        let next = grill(root, "x", Some("fix"));
+        assert_eq!(first_open(&next)["id"], json!(ids[1]), "{next}");
 
         let second = &items(&listed)[1];
         let reworded = json!({"block": second["block"], "gap": "Outro texto na lacuna", "from": "gap",
             "status": "not_applicable", "closes": ids[1], "reason": "não se aplica", "origin": said});
         assert_eq!(write(root, Some("x"), "point", reworded)["ok"], json!(true));
         assert_eq!(open_points(root), ids.len() - 2);
-        let after = grill(root, "x", Some("fix"), false);
+        let after = grill(root, "x", Some("fix"));
         let open = items(&after).iter().filter(|item| item["status"] == json!("open")).count();
         assert_eq!(open, ids.len() - 2, "{after}");
         assert_eq!(items(&after)[1]["status"], json!("closed"), "{after}");
         assert_eq!(items(&after)[1]["id"], json!(ids[1]), "{after}");
-        assert_eq!(after["next"]["id"], json!(ids[2]), "{after}");
+        assert_eq!(first_open(&after)["id"], json!(ids[2]), "{after}");
 
         for (item, id) in items(&listed).iter().zip(&ids).skip(2) {
             close(item, *id);
         }
         assert_eq!(open_points(root), 0);
-        let done = grill(root, "x", Some("fix"), false);
+        let done = grill(root, "x", Some("fix"));
         assert!(done.get("next").is_none() && done["unrouted"].is_array(), "{done}");
     }
 
@@ -1636,7 +1613,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let said = surveyed(root, "x");
-        let listed = grill(root, "x", Some("fix"), false);
+        let listed = grill(root, "x", Some("fix"));
         let ids: Vec<u64> = items(&listed).iter().map(|item| item["id"].as_u64().unwrap()).collect();
         // O fato com o segredo vem na versão em que o assistente o soma.
         let fact = json!({"text": GOAL, "source": format!("mensagem {said}")});
@@ -1649,7 +1626,7 @@ mod tests {
         let purged = write(root, Some("x"), "purge", json!({"targets": [version], "reason": "client_data", "excerpt": GOAL, "origin": said}));
         assert_eq!(purged["purged"], json!([version]), "{purged}");
 
-        let after = grill(root, "x", Some("fix"), false);
+        let after = grill(root, "x", Some("fix"));
         assert!(items(&after).iter().all(|item| item["status"] == json!("closed")), "{after}");
         let log = mustard_core::domain::spec_events::parse_log(&events(root, "x"));
         assert_eq!(survey::points(&log).iter().filter(|p| p.is_open()).count(), 0);
@@ -1678,7 +1655,7 @@ mod tests {
             let dir = tempdir().unwrap();
             let root = dir.path();
             let said = surveyed(root, "x");
-            let listed = grill(root, "x", Some("fix"), false);
+            let listed = grill(root, "x", Some("fix"));
             let ids: Vec<u64> = items(&listed).iter().map(|item| item["id"].as_u64().unwrap()).collect();
             let close = |item: &Value, closes: u64, gap: &str| {
                 let closing = json!({"block": item["block"], "gap": gap, "from": "gap", "status": "not_applicable",
@@ -1715,7 +1692,8 @@ mod tests {
 
             let asked = write(root, Some("x"), "message", json!({"text": "E agora?"}));
             for report in [&last, &asked] {
-                assert!(report.get("points").is_none(), "{case}: the gap is not asked again: {report}");
+                let listed = report["points"].as_array().into_iter().flatten().any(|point| point["id"] == json!(ids[0]));
+                assert!(!listed, "{case}: the gap is not asked again: {report}");
             }
             // O fechamento mostra o ponto seguinte; o expurgo, a remoção e a
             // mensagem que vêm depois não mudam os pontos abertos e não o repetem.
@@ -1725,13 +1703,13 @@ mod tests {
                 assert!(last.get("point").is_none(), "{case}: {last}");
             }
             assert!(asked.get("point").is_none(), "{case}: {asked}");
-            let after = grill(root, "x", Some("fix"), false);
+            let after = grill(root, "x", Some("fix"));
             assert_eq!(items(&after)[0]["status"], json!("closed"), "{case}: {after}");
             let shown = if leaves == Some("remove") { closing } else { version.unwrap_or(ids[0]) };
             assert_eq!(items(&after)[0]["id"], json!(shown), "{case}: {after}");
             let open = items(&after).iter().filter(|item| item["status"] == json!("open")).count();
             assert_eq!(open, ids.len() - 1, "{case}: {after}");
-            assert_eq!(after["next"]["id"], json!(ids[1]), "{case}: {after}");
+            assert_eq!(first_open(&after)["id"], json!(ids[1]), "{case}: {after}");
             assert_eq!(open_closed(), (ids.len() - 1, 1), "{case}");
 
             for (item, id) in items(&listed).iter().zip(&ids).skip(1) {
@@ -1755,7 +1733,7 @@ mod tests {
             let dir = tempdir().unwrap();
             let root = dir.path();
             let said = surveyed(root, "x");
-            let listed = grill(root, "x", Some("fix"), false);
+            let listed = grill(root, "x", Some("fix"));
             let ids: Vec<u64> = items(&listed).iter().map(|item| item["id"].as_u64().unwrap()).collect();
             let close = |item: &Value, closes: u64| {
                 let closing = json!({"block": item["block"], "gap": item["gap"], "from": "gap", "status": "not_applicable",
@@ -1781,11 +1759,11 @@ mod tests {
             let log = mustard_core::domain::spec_events::parse_log(&events(root, "x"));
             assert_eq!(log.get(id_of(&revised)).and_then(|e| e.int("closes")), Some(ids[0]), "{leaves}");
 
-            let after = grill(root, "x", Some("fix"), false);
+            let after = grill(root, "x", Some("fix"));
             assert_eq!(items(&after)[0]["status"], json!("closed"), "{leaves}: {after}");
             let open = items(&after).iter().filter(|item| item["status"] == json!("open")).count();
             assert_eq!(open, ids.len() - 1, "{leaves}: {after}");
-            assert_eq!(after["next"]["id"], json!(ids[1]), "{leaves}: {after}");
+            assert_eq!(first_open(&after)["id"], json!(ids[1]), "{leaves}: {after}");
             assert_eq!(open_closed(), (ids.len() - 1, 1), "{leaves}");
 
             for (item, id) in items(&listed).iter().zip(&ids).skip(1) {
@@ -1825,7 +1803,7 @@ mod tests {
 
         lesson_and_prior_spec(&main);
         surveyed(&worktree, "x");
-        let report = grill(&worktree, "x", Some("fix"), false);
+        let report = grill(&worktree, "x", Some("fix"));
         assert_eq!(report["ok"], json!(true), "{report}");
         let from: Vec<&str> = items(&report).iter().map(|item| item["from"].as_str().unwrap()).collect();
         assert!(from.contains(&"lesson") && from.contains(&"prior_spec"), "{report}");
@@ -1834,16 +1812,13 @@ mod tests {
         assert!(!worktree.join(".claude").exists(), "nothing of the Mustard inside the worktree");
     }
     #[test]
-    fn compact_transport_preserves_next_point_and_exact_source_coordinates() {
+    fn compact_transport_keeps_the_points_and_exact_source_coordinates() {
         let full=json!({"ok":true,"points":[{"code":"MSTD-POINT-0001","id":4,"gap":"Reproduce","facts":[{"text":"candidate","source":"src/a.rs:10"}]}],
-            "next":{"id":4,"facts":[{"text":"measured","receipt":"r"}]},"knowledge":{"cards":[{"id":"x","name":"save","source":{"file":"src/a.rs","line":10,"end_line":30},"source_excerpt":{"text":"x".repeat(38000)}}]}});
+            "knowledge":{"cards":[{"id":"x","name":"save","source":{"file":"src/a.rs","line":10,"end_line":30},"source_excerpt":{"text":"x".repeat(38000)}}]}});
         let compact=projection(&full);
-        assert_eq!(compact["next"],full["next"]);
         assert_eq!(compact["knowledge"]["cards"][0]["source"],full["knowledge"]["cards"][0]["source"]);
         assert!(compact.to_string().len()*10<full.to_string().len());
-        assert_eq!(compact["points"][0]["fact_count"],1);
-        let mut condensed=full.clone();condensed["condensed"]=json!(true);
-        assert_eq!(projection(&condensed)["points"],full["points"],"presenting all points together keeps their facts");
+        assert_eq!(compact["points"],full["points"],"presenting all points together keeps their facts");
     }
 
     /// A primeira linha de 121 letras sai inteira na lista dos tocados, no

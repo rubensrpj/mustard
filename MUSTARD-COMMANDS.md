@@ -47,7 +47,7 @@ Cria a branch `<tipo>/<nome>` e a spec com o mesmo nome. O que falta volta como 
 
 `mustard-rt run grill --spec <spec>`
 
-Grava o tipo de trabalho e os pontos da lista, abertos, com os fatos que ela traz. Sem `--kinds`, vale o tipo gravado e, na primeira vez, o do começo da branch; o pedido misto diz os tipos, como `--kinds feature,fix`. `--condensed` junta todos os pontos num bloco só, para um pedido que cabe numa frase.
+Grava o tipo de trabalho e os pontos da lista, abertos, com os fatos que ela traz. Sem `--kinds`, vale o tipo gravado e, na primeira vez, o do começo da branch; o pedido misto diz os tipos, como `--kinds feature,fix`. Todos os pontos vêm juntos, num bloco só, para mostrar de uma vez.
 
 O assistente inclui os fatos conferidos no próprio `answer --facts '[{"text":"…","source":"…"}]'`, que grava o item e fecha o ponto atomicamente. `write point` com `replaces` e `facts` continua disponível para acrescentar evidências sem responder.
 

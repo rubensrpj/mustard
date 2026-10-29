@@ -77,13 +77,8 @@ pub enum FlowCmd {
         /// do começo da branch da spec (`fix/x` dá `fix`).
         #[arg(long)]
         kinds: Option<String>,
-        /// Um pedido que cabe numa frase: todos os pontos num bloco só,
-        /// mostrados de uma vez para um sim só.
-        #[arg(long)]
-        condensed: bool,
-        /// A resposta inteira, com cada ponto da lista e o conhecimento achado.
-        /// Sem ela, vêm a dica, o próximo ponto, os códigos dos pontos abertos
-        /// e só o que a dica manda usar.
+        /// A resposta inteira, com o conhecimento achado. Sem ela, vêm a dica,
+        /// os pontos, os códigos dos abertos e só o que a dica manda usar.
         #[arg(long)]
         full: bool,
         /// Qualquer pasta dentro do repositório. Por padrão, a pasta atual.
@@ -289,8 +284,8 @@ pub enum FlowCmd {
     /// devolve. O item sem `origin` recebe o número da última mensagem do
     /// usuário, e o fechamento aponta a mesma mensagem. As duas gravações vão
     /// juntas, sob a trava da spec: o item recusado não fecha o ponto, e o
-    /// fechamento recusado tira o item. No levantamento condensado, `points`
-    /// traz o código, o número e a lacuna de cada ponto aberto, e `point`
+    /// fechamento recusado tira o item. `points` traz o código, o número e a
+    /// lacuna de cada ponto aberto, e `point`
     /// traz o próximo inteiro. O texto longo do item entra cru, sem virar
     /// JSON: `--text -` ou `--agent -` lê esse campo da entrada padrão, por
     /// heredoc, junto dos outros campos do `--json`.
@@ -377,8 +372,8 @@ pub fn dispatch(cmd: FlowCmd) {
             let named = opts.name.clone();
             flow::answer("open", &opts.root, named.as_deref(), started, &flow::open::open_at(&opts), false);
         }
-        FlowCmd::Grill { spec, kinds, condensed, full, root } => {
-            let opts = flow::grill::GrillOpts { root, spec, kinds, condensed };
+        FlowCmd::Grill { spec, kinds, full, root } => {
+            let opts = flow::grill::GrillOpts { root, spec, kinds };
             flow::answer("grill", &opts.root, opts.spec.as_deref(), started, &flow::grill::grill_at(&opts), full);
         }
         FlowCmd::Plan { spec, root } => {

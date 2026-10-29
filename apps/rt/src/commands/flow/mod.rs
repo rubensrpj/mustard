@@ -133,10 +133,10 @@ mod tests {
             assert!(full_of(line), "{line}");
             assert!(!full_of(&line.replace(" --full", "")), "{line}");
         }
-        let grill = json!({"ok":true,"spec":"x","work_type":4,"kinds":["fix"],"condensed":false,"points":[
-            {"block":"context","gap":"Who uses it","from":"gap","origin":2,"id":5,"code":"MSTD-POINT-0001","status":"open","facts":["a.ts:1"],"reminders":[]},
-            {"block":"context","gap":"Where it runs","from":"gap","origin":2,"id":6,"code":"MSTD-POINT-0002","status":"closed","facts":[]}],
-            "reminders":0,"goal_approval":{"confirmed":true},"next":{"id":5},"hint":"Present MSTD-POINT-0001."});
+        let grill = json!({"ok":true,"spec":"x","work_type":4,"kinds":["fix"],"points":[
+            {"block":"condensed","gap":"Who uses it","from":"gap","origin":2,"id":5,"code":"MSTD-POINT-0001","status":"open","facts":["a.ts:1"],"reminders":[]},
+            {"block":"condensed","gap":"Where it runs","from":"gap","origin":2,"id":6,"code":"MSTD-POINT-0002","status":"closed","facts":[]}],
+            "reminders":0,"goal_approval":{"confirmed":true},"hint":"Present the open points."});
         let round = json!({"ok":true,"spec":"x","dispatch":[],"running":[],"held":[
             {"task":"MSTD-TASK-0002","reason":"capacity","detail":"No free slot."},
             {"task":"MSTD-TASK-0003","reason":"capacity","detail":"No free slot."}],
@@ -162,9 +162,10 @@ mod tests {
         }
         let short = projection("grill", &grill, false).unwrap();
         let keys: Vec<&String> = short.as_object().unwrap().keys().collect();
-        assert_eq!(keys[..3], ["ok", "hint", "next"], "{short}");
+        assert_eq!(keys[..3], ["ok", "hint", "open"], "{short}");
         assert_eq!(short["open"], json!(["MSTD-POINT-0001"]), "{short}");
-        assert!(short.get("points").is_none() && short.get("goal_approval").is_none(), "{short}");
+        assert_eq!(short["points"], grill["points"], "{short}");
+        assert!(short.get("goal_approval").is_none(), "{short}");
         let short = projection("backlog", &backlog, false).unwrap();
         assert_eq!(short.as_object().unwrap().keys().nth(1).map(String::as_str), Some("total"), "{short}");
         assert_eq!(short["events"], json!([{"id":7,"code":"MSTD-TASK-0001","files":2}]), "{short}");

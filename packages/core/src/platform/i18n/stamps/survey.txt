@@ -10,7 +10,6 @@ survey.answer_no_open_point	1aea52d068f46db1
 survey.answer_not_applicable_mixed	f16154e215724a25
 survey.answer_options	41522a7af66146de
 survey.continue_option	82708bda9640a01a
-survey.covered_point	f5607ad079caf513
 survey.done	55a8a99824f8be23
 survey.fact_declared	ca5a636ee1ea2b10
 survey.fact_importers	79913f4b1edcadd1
@@ -36,12 +35,11 @@ survey.gap.rules	525d231d04d102f7
 survey.gap.symptom	5fccf6703f510558
 survey.gap.who_uses	1d071c5294e7c61c
 survey.outside_review_step	18007866c7c8c352
-survey.present_all	ee8def334427cd03
-survey.present_point	5fdc58b61af0e3d5
+survey.present_all	01f0973f38569b32
 survey.project_summary	b7c737a81e4da78b
 survey.project_summary.recent	39d9693f02d93ac2
 survey.project_summary.reserve	69317ccaf3122b29
-survey.rerun_grill	a3702736133df903
+survey.rerun_grill	90ad086cec6a8529
 survey.review_question	fdde0baf925131ac
 survey.review_step	519bfa4d2f3e37cd
 survey.save_design	e896e6e73c089a7a

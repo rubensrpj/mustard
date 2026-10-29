@@ -737,7 +737,7 @@ mod tests {
         assert_eq!(record_open(root, spec, &format!("feature/{spec}"), "dev"), Ok(true));
         let said = id_of(&write(root, Some(spec), "message", json!({"author": "user", "text": GOAL})));
         id_of(&write(root, Some(spec), "context", json!({"text": GOAL, "origin": said})));
-        let opts = GrillOpts { root: root.to_path_buf(), spec: Some(spec.into()), kinds: Some("fix".into()), condensed: false };
+        let opts = GrillOpts { root: root.to_path_buf(), spec: Some(spec.into()), kinds: Some("fix".into()) };
         // O `grill` grava os pontos abertos; cada um é fechado pelo número.
         let listed = grill_for(&opts, None);
         for item in listed["points"].as_array().cloned().unwrap_or_default() {

@@ -20,8 +20,9 @@
 //! por ela, [`missing`] diz quais itens ainda não têm ponto gravado, e
 //! [`open_points`] diz quais pontos continuam abertos, na ordem dos blocos.
 //!
-//! O pedido que cabe numa frase tem o levantamento condensado: todos os
-//! pontos num bloco só ([`CONDENSED`]), mostrados de uma vez para um "sim".
+//! Todos os pontos vão para um bloco só ([`CONDENSED`]) e são mostrados de
+//! uma vez, para um "sim". A spec antiga, com os pontos nos blocos de
+//! [`BLOCKS`], continua lida na ordem deles ([`block_rank`]).
 //!
 //! Depois de cada gravação, [`next_step`] diz o passo seguinte: gravar os
 //! pontos das lacunas que ainda não têm, o próximo ponto aberto, a revisão do
@@ -48,7 +49,7 @@ use crate::domain::text::{fold_accents, one_line};
 use crate::io::project_map::{MapReader, Need};
 use crate::platform::i18n::{Locale, translate};
 
-/// O bloco único do levantamento condensado.
+/// O bloco único do levantamento.
 pub const CONDENSED: &str = "condensed";
 
 /// Os blocos do levantamento, na ordem em que os pontos são apresentados.
@@ -340,7 +341,7 @@ pub fn missing_gaps(log: &SpecLog) -> Vec<GapKey> {
     gaps(&kinds).into_iter().filter(|key| !gap_recorded(log, *key)).collect()
 }
 
-/// A ordem de um bloco na apresentação: o condensado primeiro, depois os de
+/// A ordem de um bloco na apresentação: o bloco único primeiro, depois os de
 /// [`BLOCKS`], e o bloco desconhecido por último.
 #[must_use]
 pub fn block_rank(block: &str) -> usize {
@@ -529,12 +530,6 @@ pub fn leave_survey(log: &SpecLog) -> Result<(), SurveyGap<'_>> {
     if open.is_empty() { Ok(()) } else { Err(SurveyGap::Open(open)) }
 }
 
-/// O levantamento é condensado: algum ponto visível está no bloco único.
-#[must_use]
-pub fn condensed(log: &SpecLog) -> bool {
-    log.visible().iter().any(|e| e.event_type == "point" && e.str_field("block").map(str::trim) == Some(CONDENSED))
-}
-
 /// Um passo do levantamento, que o `write` devolve depois de uma gravação.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SurveyStep<'a> {
@@ -563,7 +558,7 @@ pub enum SurveyStep<'a> {
 /// - nenhum fora do levantamento e do plano, e numa spec sem nenhum ponto e
 ///   sem lacuna por gravar (as specs antigas);
 /// - a revisão do bloco, quando a gravação fechou o último ponto aberto de um
-///   bloco que não é o do levantamento condensado; o revisor de fora só é
+///   bloco que não é o bloco único; o revisor de fora só é
 ///   mandado rodar quando o levantamento acabou e nenhum ponto veio dele ainda;
 /// - depois dela, ou sozinho: enquanto alguma lacuna do tipo de trabalho não
 ///   tem ponto (a gravação do `grill` parou no meio, ou um ponto saiu), rodar
@@ -662,29 +657,6 @@ fn review_changed(log: &SpecLog, block: &str) -> bool {
                 !closing.ints("reused_results").contains(&id) || current.is_none_or(|event| event.id != id)
             })
         })
-}
-
-/// Conservative coverage: only another answered point with the same gap,
-/// or an agreed item explicitly cited by the evidence. No semantic guess
-/// closes an open question.
-#[must_use]
-pub fn known_answers(log: &SpecLog, point: &SpecEvent) -> Vec<u64> {
-    let mut candidates = BTreeSet::new();
-    for previous in points(log).into_iter().filter(|previous| !previous.is_open() && previous.shown().id != point.id
-        && previous.shown().str_field("gap") == point.str_field("gap")) {
-        if let Some(closing) = previous.closing() { candidates.extend(closing.ints("result")); }
-    }
-    if let Some(facts) = point.fields.get("facts").and_then(Value::as_array) {
-        let codes = log.codes();
-        for source in facts.iter().filter_map(|fact| fact.get("source").and_then(Value::as_str)) {
-            for (start, end) in crate::domain::mustard_id::find(source) {
-                candidates.extend(codes.iter().filter_map(|(id, code)| (code == &source[start..end]).then_some(*id)));
-            }
-        }
-    }
-    candidates.into_iter().filter_map(|id| log.current(id))
-        .filter(|event| matches!(event.event_type.as_str(), "decision" | "rule" | "out_of_scope"))
-        .map(|event| event.id).collect::<BTreeSet<_>>().into_iter().collect()
 }
 
 /// Algum ponto veio do revisor de fora, pela leitura dos pares: ele já
@@ -891,18 +863,17 @@ pub struct Sources<'a> {
     /// Como o mapa do projeto se lê, quando há um: cada pergunta lê só as
     /// tabelas dela, e só a lacuna de quem depende pergunta.
     pub map: Option<&'a MapReader<'a>>,
-    /// O levantamento condensado: todos os pontos num bloco só.
-    pub condensed: bool,
     /// O idioma dos rótulos.
     pub lang: Locale,
     /// As línguas em que as palavras das buscas são cortadas.
     pub languages: &'a Languages,
 }
 
-/// A lista de pontos do levantamento: as lacunas do tipo, as lições que
-/// casam, as specs anteriores que casam e, dentro desses pontos, os
-/// lembretes. Cada lembrete vai para o ponto cujo texto casa melhor com ele;
-/// sem casamento, para o primeiro. Nenhum ponto nasce para um lembrete.
+/// A lista de pontos do levantamento, toda no bloco único: as lacunas do
+/// tipo, as lições que casam, as specs anteriores que casam e, dentro desses
+/// pontos, os lembretes. Cada lembrete vai para o ponto cujo texto casa
+/// melhor com ele; sem casamento, para o primeiro. Nenhum ponto nasce para um
+/// lembrete.
 #[must_use]
 pub fn build(sources: &Sources<'_>) -> Vec<Proposed> {
     let mut list: Vec<Proposed> = gaps(sources.kinds)
@@ -920,10 +891,8 @@ pub fn build(sources: &Sources<'_>) -> Vec<Proposed> {
     list.extend(prior_spec_points(sources));
     let prior = sources.prior.iter().filter(|(name, _)| name != sources.current).map(|(name, log)| (name.as_str(), log));
     place(&mut list, reminders(prior, sources.goal, MAX_REMINDERS, sources.languages), sources.languages);
-    if sources.condensed {
-        for item in &mut list {
-            item.block = CONDENSED.to_string();
-        }
+    for item in &mut list {
+        item.block = CONDENSED.to_string();
     }
     list
 }
@@ -1265,7 +1234,6 @@ mod tests {
             index,
             prior,
             map: None,
-            condensed: false,
             lang: Locale::PtBr,
             languages: &LANGUAGES,
         }
@@ -1506,7 +1474,7 @@ mod tests {
         let points: Vec<&Proposed> = list.iter().filter(|p| p.from == "lesson").collect();
         assert_eq!(points.len(), 1, "{list:?}");
         assert_eq!(points[0].gap, "Merge com pendência.");
-        assert_eq!(points[0].block, "lessons");
+        assert_eq!(points[0].block, CONDENSED);
         assert_eq!(points[0].facts[0].text, "**Merge com pendência.** O merge não passa com pendência aberta.");
         assert_eq!(points[0].facts[0].source, ".claude/spec/lessons.ndjson:1");
         let shown = points[0].to_value(Some(7)).to_string();
@@ -1667,12 +1635,10 @@ mod tests {
         assert_eq!(entered, ["x: Um.", "z: Três."], "{entered:?}");
     }
 
-    /// No condensado, todos os pontos vão para um bloco só.
+    /// Todos os pontos vão para um bloco só, sem pedir.
     #[test]
-    fn a_condensed_list_puts_every_point_in_one_block() {
-        let mut given = sources(&["feature", "fix"], None, &[], &[]);
-        given.condensed = true;
-        let list = build(&given);
+    fn the_list_puts_every_point_in_one_block() {
+        let list = build(&sources(&["feature", "fix"], None, &[], &[]));
         assert_eq!(list.len(), 13);
         assert!(list.iter().all(|p| p.block == CONDENSED), "{list:?}");
     }

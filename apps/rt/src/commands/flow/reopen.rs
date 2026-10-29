@@ -1284,7 +1284,6 @@ mod tests {
                 root: root.to_path_buf(),
                 spec: Some("epico".into()),
                 kinds: Some("fix".into()),
-                condensed: false,
             },
             None,
         );

@@ -109,26 +109,10 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Spec {spec} has no open point in the survey: there is nothing to answer. Nothing was \
              written."
         }
-        ("survey.present_point", Locale::PtBr) => {
-            "Apresente o ponto {code}, e só ele, na ordem de explicar do estilo de resposta. Com a \
-             resposta do usuário, grave o item e feche o ponto num comando só: `mustard-rt run \
-             answer --point {id} --type <tipo> --json '{…}'`. Se o ponto não tem fato, o \
-             fechamento leva `--facts` (lista JSON de `{\"text\":\"…\",\"source\":\"arquivo:linha\"}`), \
-             ou os fatos entram antes numa versão do ponto. A resposta já gravada vai em \
-             `--result`, e o ponto que não se aplica fecha com `--not-applicable` e `--reason`."
-        }
-        ("survey.present_point", Locale::EnUs) => {
-            "Present point {code}, and only it, in the order of explaining from the response style. \
-             With the user's answer, record the item and close the point in one command: \
-             `mustard-rt run answer --point {id} --type <type> --json '{…}'`. If the point has no \
-             fact, the closing takes `--facts` (JSON array of `{\"text\":\"…\",\"source\":\"file:line\"}`), \
-             or the facts go first into a version of the point. An answer already \
-             recorded goes in `--result`, and a point that does not apply closes with \
-             `--not-applicable` and `--reason`."
-        }
         ("survey.present_all", Locale::PtBr) => {
-            "Pedido pequeno: os pontos abertos estão em `points`. Antes do sim, preencha cada lacuna \
-             a partir do pedido e do código, mostre tudo de uma vez e peça um sim só. Com o sim, \
+            "Os pontos abertos estão em `points`. Antes do sim, preencha cada lacuna a partir do \
+             pedido e do código. Mostre tudo de uma vez, na ordem de explicar do estilo de \
+             resposta, e peça um sim só. Com o sim, \
              grave a resposta de cada ponto com `mustard-rt run answer --point <número> --type \
              <tipo> --json '{…}'`. Se o ponto não tem fato, o fechamento leva `--facts` (lista JSON de \
              `{\"text\":\"…\",\"source\":\"arquivo:linha\"}`), ou os fatos entram antes numa versão do ponto. \
@@ -136,8 +120,9 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              número e a lacuna de cada ponto ainda aberto, e em `point` o próximo inteiro."
         }
         ("survey.present_all", Locale::EnUs) => {
-            "Small request: the open points are in `points`. Before the yes, fill every gap from the \
-             request and the code, show it all at once and ask for a single yes. With the yes, \
+            "The open points are in `points`. Before the yes, fill every gap from the request and \
+             the code. Show it all at once, in the order of explaining from the response style, \
+             and ask for a single yes. With the yes, \
              record the answer to each point with `mustard-rt run answer --point <number> --type \
              <type> --json '{…}'`. If the point has no fact, the closing takes `--facts` (JSON \
              array of `{\"text\":\"…\",\"source\":\"file:line\"}`), or the facts go first into a version of \
@@ -159,11 +144,11 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("survey.rerun_grill", Locale::PtBr) => {
             "Falta ponto para alguma lacuna do tipo de trabalho. Rode `mustard-rt run grill --spec \
-             {spec}`, que grava os pontos que faltam e devolve o primeiro aberto."
+             {spec}`, que grava os pontos que faltam e devolve os abertos."
         }
         ("survey.rerun_grill", Locale::EnUs) => {
             "Some gap of the work type has no point. Run `mustard-rt run grill --spec {spec}`, which \
-             records the missing points and returns the first open one."
+             records the missing points and returns the open ones."
         }
         ("survey.done", Locale::PtBr) => {
             "O levantamento não tem ponto aberto. Mostre ao usuário as mensagens de `unrouted`, que \
@@ -189,8 +174,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              \"{continue}\" last."
         }
         ("survey.review_question", Locale::PtBr) => "Quer ver mais algum ponto ou aprofundar algum?",
-        ("survey.covered_point", Locale::PtBr) => "Há respostas já registradas relacionadas a este ponto: {records}. Confira os itens; se cobrirem a pergunta, use `answer --result` sem repetir a pergunta ao usuário.",
-        ("survey.covered_point", Locale::EnUs) => "Existing answers relate to this point: {records}. Check the items; if they cover the question, use `answer --result` without asking the user again.",
         ("survey.review_question", Locale::EnUs) => "Would you like to see another point or go deeper into one?",
         ("survey.continue_option", Locale::PtBr) => "Seguir",
         ("survey.continue_option", Locale::EnUs) => "Continue",
@@ -312,12 +295,12 @@ mod tests {
         crate::platform::i18n::tests::assert_part_unchanged("survey", include_str!("survey.rs"), super::PREFIXES);
     }
 
-    /// O ponto aberto sem fato só fecha com os fatos: a dica de fechar um
-    /// ponto e a do pedido pequeno citam `--facts` nos dois idiomas, com a
-    /// forma de cada fato, e o caminho pela versão do ponto.
+    /// O ponto aberto sem fato só fecha com os fatos: a dica de mostrar os
+    /// pontos cita `--facts` nos dois idiomas, com a forma de cada fato, e o
+    /// caminho pela versão do ponto.
     #[test]
     fn the_closing_hints_name_the_facts_a_point_without_fact_needs() {
-        for key in ["survey.present_point", "survey.present_all"] {
+        for key in ["survey.present_all"] {
             for lang in [Locale::PtBr, Locale::EnUs] {
                 let text = translate(key, lang);
                 assert!(text.contains("`--facts`"), "{key} ({lang}): {text}");
@@ -350,7 +333,6 @@ mod tests {
             ("survey.answer_options".into(), &[][..]),
             ("survey.answer_not_applicable_mixed".into(), &[][..]),
             ("survey.answer_no_open_point".into(), &["{spec}"][..]),
-            ("survey.present_point".into(), &["{code}", "{id}"][..]),
             ("survey.present_all".into(), &[][..]),
             ("survey.rerun_grill".into(), &["{spec}"][..]),
             ("survey.touched".into(), &["{count}", "{reason}"][..]),

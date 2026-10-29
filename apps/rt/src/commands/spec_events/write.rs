@@ -1341,8 +1341,8 @@ impl RecordCheck {
 /// O passo do levantamento depois de uma gravação na spec `spec`, lido do
 /// arquivo antes e depois dela, como o relatório o mostra: em `next`, o que
 /// fazer, no idioma do projeto, e, quando falta ponto de lacuna, a ordem de
-/// rodar o `grill` de novo; em `point`, o ponto a apresentar; em `points`, os
-/// pontos abertos do levantamento condensado, mostrados de uma vez; em
+/// rodar o `grill` de novo; em `points`, os pontos abertos, mostrados de uma
+/// vez, e em `point` o próximo deles, inteiro; em
 /// `review`, o bloco que fechou, com os pontos, os registros que os fecharam,
 /// a pergunta e as opções, "Seguir" por último; em `unrouted`, uma linha com o
 /// código e o começo de cada mensagem do usuário sem destino. Com a revisão e outro passo juntos, `next` traz os
@@ -1354,9 +1354,8 @@ impl RecordCheck {
 /// O fim, o revisor de fora e o fechamento do ponto que ele achou não a
 /// repetem.
 ///
-/// Com `brief`, o levantamento condensado não repete o texto dos pontos
-/// abertos: `points` traz o código, o número e a lacuna de cada um, e `point`
-/// traz inteiro só o próximo. Em qualquer relatório, cada fato do ponto vem só
+/// Com `brief`, o relatório não repete o texto dos pontos abertos: `points`
+/// traz o código, o número e a lacuna de cada um. Em qualquer relatório, cada fato do ponto vem só
 /// com `text` e `source` ([`shown_point`]).
 ///
 /// A gravação que não muda os pontos abertos e deixa como próximo o ponto que
@@ -1394,24 +1393,17 @@ pub(crate) fn survey_report(spec: &str, before: &SpecLog, after: &SpecLog, lang:
             SurveyStep::OutsideReview => {
                 next.push(translate("survey.outside_review_step", lang).replace("{spec}", spec));
             }
-            SurveyStep::Point(point) if point.str_field("block").map(str::trim) == Some(survey::CONDENSED) => {
+            // A spec antiga, com os pontos nos blocos de antes, também mostra
+            // todos os abertos de uma vez.
+            SurveyStep::Point(point) => {
                 next.push(translate("survey.present_all", lang).to_string());
                 let open = survey::open_points(after);
                 if brief {
                     out.insert("points".to_string(), json!(survey::describe(after, &open)));
-                    out.insert("point".to_string(), shown_point(point, &codes));
                 } else {
                     let open: Vec<Value> = open.into_iter().map(|p| shown_point(p, &codes)).collect();
                     out.insert("points".to_string(), json!(open));
                 }
-            }
-            SurveyStep::Point(point) => {
-                let covered = survey::known_answers(after, point);
-                if !covered.is_empty() {
-                    out.insert("covered_by".into(), json!(covered.iter().map(code_of).collect::<Vec<_>>()));
-                    next.push(translate("survey.covered_point", lang).replace("{records}", &covered.iter().map(code_of).collect::<Vec<_>>().join(", ")));
-                }
-                next.push(translate("survey.present_point", lang).replace("{code}", &code_of(&point.id)).replace("{id}", &point.id.to_string()));
                 out.insert("point".to_string(), shown_point(point, &codes));
             }
             SurveyStep::Done { unrouted } => {
@@ -4399,9 +4391,11 @@ mod tests {
 
     /// Uma spec em levantamento com o objetivo, o tipo de trabalho `kinds`
     /// gravado pela porta do binário, como o `grill` grava, e um ponto aberto
-    /// por lacuna, na ordem da lista; no condensado, todos num bloco só.
+    /// por lacuna, na ordem da lista; no condensado, todos num bloco só, como
+    /// o `grill` grava, e sem ele cada um no bloco da lacuna, como nas specs
+    /// antigas.
     /// Enquanto falta ponto de lacuna, cada gravação manda rodar o `grill` de
-    /// novo; a gravação do último ponto devolve o primeiro.
+    /// novo; a gravação do último ponto devolve todos, com o primeiro inteiro.
     /// Devolve a mensagem do objetivo e os pontos.
     fn listed(root: &std::path::Path, kinds: &[&str], condensed: bool) -> (u64, Vec<Opened>) {
         surveyed(root);
@@ -4430,9 +4424,8 @@ mod tests {
                 let ask = translate("survey.rerun_grill", Locale::PtBr).replace("{spec}", "teste");
                 assert_eq!(report["next"], json!(ask), "{report}");
                 assert!(report.get("point").is_none() && report.get("points").is_none(), "{report}");
-            } else if condensed {
-                assert_eq!(report["points"].as_array().map(Vec::len), Some(gaps.len()), "{report}");
             } else {
+                assert_eq!(report["points"].as_array().map(Vec::len), Some(gaps.len()), "{report}");
                 assert_eq!(report["point"]["id"], json!(points[0].id), "{report}");
             }
         }
@@ -4497,8 +4490,8 @@ mod tests {
         }
         let closed = settle(root, &points[0], said);
         assert_eq!(closed["point"]["id"], json!(points[1].id), "{closed}");
-        let next = closed["next"].as_str().unwrap();
-        assert!(next.contains(&points[1].code) && next.contains(&points[1].id.to_string()), "{next}");
+        assert_eq!(closed["next"], json!(translate("survey.present_all", Locale::PtBr)), "{closed}");
+        assert_eq!(closed["points"].as_array().map(Vec::len), Some(points.len() - 1), "{closed}");
         assert!(closed.get("review").is_none(), "{closed}");
     }
 
@@ -4538,9 +4531,8 @@ mod tests {
         let reduced = json!([{"text": GOAL, "source": format!("mensagem {said}")}, {"text": "Conferido no mapa.", "source": format!("mensagem {said}")}]);
         for brief in [true, false] {
             let report = survey_report("teste", &before, &after, Locale::PtBr, brief).expect("a new version of the point is shown");
-            let shown = if brief { &report["point"] } else { &report["points"][0] };
-            assert_eq!(shown["id"], json!(revised), "brief {brief}: {report:?}");
-            assert_eq!(shown["facts"], reduced, "brief {brief}: {report:?}");
+            assert_eq!(report["point"]["id"], json!(revised), "brief {brief}: {report:?}");
+            assert_eq!(report["point"]["facts"], reduced, "brief {brief}: {report:?}");
         }
     }
 
@@ -4566,7 +4558,7 @@ mod tests {
         assert_eq!(review["records"], json!(["MSTD-DEC-0001", "MSTD-DEC-0002", "MSTD-DEC-0003", "MSTD-DEC-0004"]));
         assert_eq!(report["point"]["id"], json!(points[4].id), "{report}");
         let next = report["next"].as_str().unwrap();
-        assert!(next.starts_with("O bloco defect fechou.") && next.contains(&points[4].code), "{next}");
+        assert!(next.starts_with("O bloco defect fechou.") && next.ends_with(translate("survey.present_all", Locale::PtBr)), "{next}");
     }
 
     /// No fim do levantamento, o próximo passo manda rodar o revisor de fora,
@@ -4700,7 +4692,7 @@ mod tests {
         assert!(unrelated.get("next").is_none(), "a write that changes nothing brings no step: {unrelated}");
     }
 
-    /// No levantamento condensado, fechar os pontos não pede revisão de
+    /// No bloco único, fechar os pontos não pede revisão de
     /// bloco: cada fechamento devolve os que faltam, de uma vez, e o último
     /// devolve o fim.
     #[test]
