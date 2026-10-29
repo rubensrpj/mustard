@@ -12,10 +12,11 @@
 //! a versão nova do `work_type`, e a lista ganha só as lacunas que faltam; um
 //! tipo a menos é recusado, porque ponto nenhum sai por isso.
 //!
-//! A lista (`mustard_core::domain::survey::build`) junta as lacunas dos
-//! tipos, as lições do banco e as specs anteriores que casam com o objetivo e,
-//! dentro desses pontos, até 3 lembretes: mensagens antigas do usuário que não
-//! viraram registro. A regra do projeto nunca vira ponto: vale sempre. O
+//! A lista (`mustard_core::domain::survey::build`) tem um ponto por lacuna dos
+//! tipos. Dentro desses pontos entram, como fatos, as lições do banco e as
+//! specs anteriores que casam com o objetivo, e até 3 lembretes: mensagens
+//! antigas do usuário que não viraram registro. A regra do projeto nunca
+//! entra: vale sempre. O
 //! banco, o índice, as specs anteriores e o mapa são os do checkout
 //! principal, também vistos de um worktree. Todos os pontos vão para um bloco
 //! só e são mostrados de uma vez.
@@ -452,7 +453,7 @@ type LeftOut = (String, Finding);
 fn prefill_from_the_request(list: &mut [survey::Proposed], log: &SpecLog, world: &DiskWorld, lang: Locale) -> Vec<LeftOut> {
     use mustard_core::domain::citation::file_citations;
 
-    let empty = |item: &survey::Proposed| item.facts.is_empty() && item.key.is_some_and(|key| DEFECT_GAPS.contains(&key));
+    let empty = |item: &survey::Proposed| item.facts.is_empty() && DEFECT_GAPS.contains(&item.key);
     if !list.iter().any(empty) {
         return Vec::new();
     }
@@ -476,7 +477,11 @@ fn prefill_from_the_request(list: &mut [survey::Proposed], log: &SpecLog, world:
         for item in list.iter_mut().filter(|item| empty(item)) {
             item.facts = cited
                 .iter()
-                .map(|source| survey::Fact { text: translate("grill.cited_in_the_request", lang).to_string(), source: source.clone() })
+                .map(|source| survey::Fact {
+                    text: translate("grill.cited_in_the_request", lang).to_string(),
+                    source: source.clone(),
+                    kind: survey::FACT_REQUEST,
+                })
                 .collect();
         }
     }
@@ -533,12 +538,13 @@ fn record_point(start: &Path, spec: &str, item: &survey::Proposed, origin: Optio
         for fact in facts {
             let source = fact["source"].as_str().unwrap_or_default();
             let version = crate::shared::evidence::source_version(&root, source);
-            // The syntax map suggests places to verify. Historical decisions
-            // and lessons are reported context, not proof of current code.
-            fact["classification"] = json!(match item.from {
-                "gap" => "syntax-candidate",
-                "prior_spec" => "historical-decision",
-                _ => "reported-lesson",
+            // O mapa e o pedido apontam onde conferir. A decisão de uma spec
+            // anterior e a lição são contexto contado, não prova do código de
+            // agora.
+            fact["classification"] = json!(match fact["kind"].as_str() {
+                Some(survey::FACT_PRIOR_SPEC) => "historical-decision",
+                Some(survey::FACT_LESSON) => "reported-lesson",
+                _ => "syntax-candidate",
             });
             fact["source_version"] = json!(version);
             fact["verification"] = json!("requires-source-confirmation");
@@ -1021,7 +1027,7 @@ mod tests {
         let before_settling = survey_list(&project, "x", &["fix"], goal, agent);
         let stale: Vec<&str> = before_settling
             .iter()
-            .find(|item| item.key == Some(survey::GapKey::Reproduction))
+            .find(|item| item.key == survey::GapKey::Reproduction)
             .expect("a lacuna da reprodução está na lista")
             .facts
             .iter()
@@ -1055,12 +1061,11 @@ mod tests {
         let said = json!({"v": 1, "id": 1, "at": "t", "type": "message", "author": "user", "text": "O defeito está em `src/a.rs:1`."});
         let log = mustard_core::domain::spec_events::parse_log(&said.to_string());
         let key = survey::GapKey::Reproduction;
-        let stale = survey::Fact { text: "drop_birth".to_string(), source: "src/gone.rs:2".to_string() };
+        let stale = survey::Fact { text: "drop_birth".to_string(), source: "src/gone.rs:2".to_string(), kind: survey::FACT_CODE };
         let reproduction = survey::Proposed {
-            block: key.block().to_string(),
+            block: survey::CONDENSED.to_string(),
             gap: key.label(Locale::PtBr).to_string(),
-            from: "gap",
-            key: Some(key),
+            key,
             facts: vec![stale],
             reminders: Vec::new(),
         };
@@ -1343,29 +1348,37 @@ mod tests {
         assert!(items(&all).iter().all(|item| item["status"] == json!("open")));
     }
 
-    /// A lição que casa vira item da lista, com o texto original como fato e
-    /// a linha do banco como fonte, nunca o `search`; o ponto gravado com essa
-    /// fonte passa na conferência das citações.
+    /// Os fatos de um tipo, em todos os pontos da resposta do `grill`.
+    fn facts_of(report: &Value, kind: &str) -> Vec<Value> {
+        let facts = items(report).iter().filter_map(|item| item["facts"].as_array()).flatten();
+        facts.filter(|fact| fact["kind"] == json!(kind)).cloned().collect()
+    }
+
+    /// A lição que casa vira fato de um ponto de lacuna, e não ponto, com o
+    /// texto original e a linha do banco como fonte, nunca o `search`; o
+    /// ponto gravado com essa fonte passa na conferência das citações e
+    /// guarda a lição como contexto contado.
     #[test]
-    fn a_matching_lesson_becomes_a_point_with_its_original_text_never_the_search_field() {
+    fn a_matching_lesson_becomes_a_fact_not_a_point_with_its_original_text() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         lesson_and_prior_spec(root);
         surveyed(root, "x");
         let report = grill(root, "x", Some("fix"));
-        let lesson = items(&report).iter().find(|item| item["from"] == json!("lesson")).expect("a lesson point");
-        assert_eq!(lesson["block"], json!(survey::CONDENSED));
-        assert_eq!(lesson["gap"], json!("Merge com pendência."));
-        assert_eq!(lesson["facts"], json!([{"text": LESSON, "source": ".claude/spec/lessons.ndjson:1"}]));
+        assert_eq!(items(&report).len(), survey::gaps(&["fix"]).len(), "{report}");
+        assert!(items(&report).iter().all(|item| item["from"] == json!("gap")), "{report}");
+        assert_eq!(facts_of(&report, "lesson"), [json!({"text": LESSON, "source": ".claude/spec/lessons.ndjson:1", "kind": "lesson"})]);
         let bank = std::fs::read_to_string(root.join(".claude").join("spec").join("lessons.ndjson")).unwrap();
         let search = serde_json::from_str::<Value>(bank.lines().next().unwrap()).unwrap()["search"].as_str().unwrap().to_string();
         assert!(!report.to_string().contains(&search), "the search field never shows: {report}");
-        assert_eq!(lesson["status"], json!("open"), "the point with that source was recorded: {report}");
+        let stored: Vec<Value> = recorded_points(root, "x").iter().filter_map(|p| p.fields.get("facts")?.as_array().cloned()).flatten().collect();
+        let lesson = stored.iter().find(|fact| fact["kind"] == json!("lesson")).expect("the point with that source was recorded");
+        assert_eq!(lesson["classification"], json!("reported-lesson"), "{lesson}");
     }
 
     /// A lição da armadilha do ambiente que casa com o objetivo mas diz os
-    /// arquivos onde vale não vira ponto do `grill`: o pedido de cada onda que mexe neles a
-    /// leva. A que só diz a skill, com o mesmo texto, continua virando.
+    /// arquivos onde vale fica fora do `grill`: o pedido de cada onda que mexe
+    /// neles a leva. A que só diz a skill, com o mesmo texto, entra como fato.
     #[test]
     fn a_lesson_that_names_files_is_left_to_the_wave_and_not_asked() {
         let dir = tempdir().unwrap();
@@ -1381,7 +1394,7 @@ mod tests {
         surveyed(root, "x");
         let report = grill(root, "x", Some("fix"));
         assert_eq!(report["ok"], json!(true), "{report}");
-        assert!(!items(&report).iter().any(|item| item["from"] == json!("lesson")), "a lição por arquivo não vira ponto: {report}");
+        assert!(facts_of(&report, "lesson").is_empty(), "a lição por arquivo fica fora do levantamento: {report}");
         let by_skill = write(
             root,
             None,
@@ -1391,15 +1404,14 @@ mod tests {
         );
         assert_eq!(by_skill["ok"], json!(true), "{by_skill}");
         let again = grill(root, "x", Some("fix"));
-        let asked: Vec<&Value> = items(&again).iter().filter(|item| item["from"] == json!("lesson")).collect();
+        let asked = facts_of(&again, "lesson");
         assert_eq!(asked.len(), 1, "{again}");
-        assert_eq!(asked[0]["gap"], json!("Merge sem trava."));
+        assert_eq!(asked[0]["text"], json!("**Merge sem trava.** O merge passa com pendência aberta."));
     }
 
     /// Uma pasta com 300 regras do projeto que casam com o objetivo, e um
-    /// defeito que também casa: o levantamento não traz regra nenhuma como
-    /// ponto, e o defeito continua virando ponto, sem perder o lugar para
-    /// elas.
+    /// defeito que também casa: o levantamento não traz regra nenhuma, e o
+    /// defeito continua entrando como fato, sem perder o lugar para elas.
     #[test]
     fn hundreds_of_project_rules_never_become_survey_points() {
         let dir = tempdir().unwrap();
@@ -1433,35 +1445,35 @@ mod tests {
         surveyed(root, "x");
         let report = grill(root, "x", Some("fix"));
         assert_eq!(report["ok"], json!(true), "{report}");
-        let from_lessons: Vec<&Value> = items(&report).iter().filter(|item| item["from"] == json!("lesson")).collect();
-        assert!(!from_lessons.iter().any(|item| item.to_string().contains("Regra ")), "nenhuma regra do projeto vira ponto: {from_lessons:?}");
+        let from_lessons = facts_of(&report, "lesson");
+        assert!(!from_lessons.iter().any(|fact| fact.to_string().contains("Regra ")), "nenhuma regra do projeto entra: {from_lessons:?}");
         assert_eq!(from_lessons.len(), 1, "{from_lessons:?}");
-        assert_eq!(from_lessons[0]["gap"], json!("Merge com pendência."));
+        assert_eq!(from_lessons[0]["text"], json!(LESSON));
     }
 
-    /// A spec anterior que casa vira item da lista, com as regras e as
-    /// decisões que casam como fatos, e a lista a grava; a mensagem sem
-    /// registro dela vira lembrete dentro de um ponto.
+    /// A spec anterior que casa entra com as regras e as decisões que casam
+    /// como fatos de um ponto de lacuna, sem ponto próprio, e a lista os
+    /// grava; a mensagem sem registro dela vira lembrete dentro de um ponto.
     #[test]
-    fn a_matching_prior_spec_becomes_a_point_with_its_rules_and_decisions_as_facts() {
+    fn a_matching_prior_spec_enters_as_facts_of_its_rules_and_decisions() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         lesson_and_prior_spec(root);
         surveyed(root, "x");
         let report = grill(root, "x", Some("fix"));
-        let prior = items(&report).iter().find(|item| item["from"] == json!("prior_spec")).expect("a prior spec point");
-        assert_eq!(prior["block"], json!(survey::CONDENSED));
-        assert_eq!(prior["gap"], json!("antiga: Travar o merge com pendência aberta."));
-        let facts = prior["facts"].as_array().unwrap();
-        assert!(facts.contains(&json!({"text": "Merge travado.", "source": "mustard-rt run read agreed --spec antiga --term MSTD-RULE-0001"})), "{facts:?}");
+        assert!(items(&report).iter().all(|item| item["from"] == json!("gap")), "{report}");
+        let facts = facts_of(&report, "prior_spec");
+        let rule = json!({"text": "Merge travado.", "source": "mustard-rt run read agreed --spec antiga --term MSTD-RULE-0001", "kind": "prior_spec"});
+        assert!(facts.contains(&rule), "{facts:?}");
         assert!(facts.iter().any(|fact| fact["text"] == json!("A cobrança da pendência sai no merge.")), "{facts:?}");
         assert_eq!(report["reminders"], json!(1));
         let reminders: Vec<&Value> = items(&report).iter().filter_map(|item| item.get("reminders")).flat_map(|r| r.as_array().unwrap()).collect();
         assert_eq!(reminders, [&json!({"spec": "antiga", "message": 5, "text": "O merge com pendência aberta passou sem aviso."})]);
         let recorded = recorded_points(root, "x");
-        let point = recorded.iter().find(|p| p.str_field("from") == Some("prior_spec")).expect("the prior spec point");
-        let stored = point.fields["facts"].as_array().unwrap();
-        for (recorded, original) in stored.iter().zip(prior["facts"].as_array().unwrap()) {
+        let stored: Vec<Value> = recorded.iter().filter_map(|p| p.fields.get("facts")?.as_array().cloned()).flatten().collect();
+        let stored: Vec<&Value> = stored.iter().filter(|fact| fact["kind"] == json!("prior_spec")).collect();
+        assert_eq!(stored.len(), facts.len(), "{stored:?}");
+        for (recorded, original) in stored.iter().zip(&facts) {
             assert_eq!(recorded["text"], original["text"]);
             assert_eq!(recorded["source"], original["source"]);
             assert_eq!(recorded["classification"], "historical-decision");
@@ -1805,8 +1817,7 @@ mod tests {
         surveyed(&worktree, "x");
         let report = grill(&worktree, "x", Some("fix"));
         assert_eq!(report["ok"], json!(true), "{report}");
-        let from: Vec<&str> = items(&report).iter().map(|item| item["from"].as_str().unwrap()).collect();
-        assert!(from.contains(&"lesson") && from.contains(&"prior_spec"), "{report}");
+        assert!(!facts_of(&report, "lesson").is_empty() && !facts_of(&report, "prior_spec").is_empty(), "{report}");
         assert!(events(&main, "x").contains("\"type\":\"work_type\""));
         assert!(events(&main, "x").contains("\"type\":\"point\""), "the points go to the main checkout");
         assert!(!worktree.join(".claude").exists(), "nothing of the Mustard inside the worktree");

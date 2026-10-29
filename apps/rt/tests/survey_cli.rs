@@ -254,18 +254,17 @@ fn earlier_spec(root: &Path, name: &str, goal: &str, rule_agent: &str, delivered
 }
 
 /// O levantamento da spec nova, e os nomes das specs anteriores que viraram
-/// ponto dele, na ordem da lista.
+/// fato dele, pela fonte de cada fato, em ordem de nome.
 fn earlier_specs_surveyed(root: &Path) -> Vec<String> {
     let grilled = rt(root, &["grill", "--kinds", "fix", "--spec", "nova", "--full"]);
     assert_eq!(grilled.status.code(), Some(0), "{}", String::from_utf8_lossy(&grilled.stdout));
     let answer = report(&grilled);
-    answer["points"]
-        .as_array()
-        .expect("the point list")
-        .iter()
-        .filter(|point| point["from"] == json!("prior_spec"))
-        .map(|point| point["gap"].as_str().and_then(|gap| gap.split(':').next()).expect("the gap").to_string())
-        .collect()
+    let points = answer["points"].as_array().expect("the point list");
+    let facts = points.iter().filter_map(|point| point["facts"].as_array()).flatten().filter(|fact| fact["kind"] == json!("prior_spec"));
+    let names: std::collections::BTreeSet<String> = facts
+        .filter_map(|fact| fact["source"].as_str()?.split("--spec ").nth(1)?.split(' ').next().map(str::to_string))
+        .collect();
+    names.into_iter().collect()
 }
 
 /// A spec nova que cita um arquivo na parte do agente do objetivo (o texto

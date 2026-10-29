@@ -1,18 +1,19 @@
 //! `survey` — o levantamento de uma spec: a lista de pontos que o `grill`
 //! monta e a leitura dos pontos que continuam abertos.
 //!
-//! A lista ([`build`]) junta, nesta ordem:
-//! - as lacunas do tipo de trabalho ([`gaps`]): funcionalidade, defeito e
-//!   refatoração, juntas sem repetir no pedido misto, cada uma no bloco dela;
-//!   a lacuna que o mapa do projeto já responde vem com o fato e a fonte;
+//! A lista ([`build`]) tem um ponto por lacuna do tipo de trabalho
+//! ([`gaps`]): funcionalidade, defeito e refatoração, juntas sem repetir no
+//! pedido misto; a lacuna que o mapa do projeto já responde vem com o fato e
+//! a fonte. Dentro desses pontos, nunca num ponto novo, entram:
 //! - as lições do banco que casam com o objetivo, pelo BM25 de
-//!   `domain::search`, com o texto original, nunca o `search`; a regra do
-//!   projeto fica fora, porque vale sempre e não vira pergunta;
+//!   `domain::search`, como fato, com o texto original, nunca o `search`; a
+//!   regra do projeto fica fora, porque vale sempre;
 //! - as specs anteriores que casam com o objetivo, pelo `search` do índice,
-//!   com as regras, as decisões e os erros delas que casam; quando a spec
-//!   cita arquivos, entram as que mexeram em algum deles ([`prior_spec_points`]);
-//! - dentro desses pontos, nunca num ponto novo, até 3 lembretes: mensagens do
-//!   usuário nas specs anteriores que nenhum registro aponta ([`reminders`]).
+//!   como fatos, com as regras, as decisões e os erros delas que casam;
+//!   quando a spec cita arquivos, entram as que mexeram em algum deles
+//!   ([`prior_spec_facts`]);
+//! - até 3 lembretes: mensagens do usuário nas specs anteriores que nenhum
+//!   registro aponta ([`reminders`]).
 //!
 //! Quem grava os pontos é o assistente, pelo `write`, sobre esta lista, que
 //! não é gravada: a mesma entrada dá sempre a mesma lista. Cada ponto gravado
@@ -79,7 +80,7 @@ pub const MAX_REMINDERS: usize = 3;
 /// cita arquivo; citando, entra pelo arquivo em comum.
 pub const STRONG_ROOTS: usize = 2;
 
-/// Quantos fatos de uma spec anterior entram no ponto dela.
+/// Quantos fatos de uma spec anterior entram no levantamento.
 pub const PRIOR_FACTS: usize = 3;
 
 /// Quantos nomes citados no objetivo, e quantas declarações de cada um, o
@@ -89,13 +90,18 @@ const MAP_NAMES: usize = 3;
 /// Quantos arquivos que importam o declarado entram no fato.
 const MAP_IMPORTERS: usize = 20;
 
-/// Os tipos da spec anterior que viram fato do ponto dela.
+/// Os tipos da spec anterior que viram fato.
 const PRIOR_FACT_TYPES: &[&str] = &["rule", "decision", "error"];
 
 /// A origem de cada ponto da lista, no campo `from`.
 const FROM_GAP: &str = "gap";
-const FROM_LESSON: &str = "lesson";
-const FROM_PRIOR_SPEC: &str = "prior_spec";
+
+/// De onde vem cada fato da lista, no campo `kind`: o mapa do código, o banco
+/// de lições, uma spec anterior ou uma citação do pedido do usuário.
+pub const FACT_CODE: &str = "code";
+pub const FACT_LESSON: &str = "lesson";
+pub const FACT_PRIOR_SPEC: &str = "prior_spec";
+pub const FACT_REQUEST: &str = "request";
 
 /// Uma lacuna do tipo de trabalho: o que o levantamento precisa responder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -676,22 +682,24 @@ pub fn reminders<'a>(prior: impl IntoIterator<Item = (&'a str, &'a SpecLog)>, go
     found
 }
 
-/// Um fato de um ponto da lista, com a fonte.
+/// Um fato de um ponto da lista, com a fonte e de onde ele vem.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fact {
     pub text: String,
     pub source: String,
+    /// De onde o fato vem: [`FACT_CODE`], [`FACT_LESSON`], [`FACT_PRIOR_SPEC`]
+    /// ou [`FACT_REQUEST`].
+    pub kind: &'static str,
 }
 
-/// Um item da lista que o `grill` monta: o ponto que ele grava, aberto.
+/// Um item da lista que o `grill` monta: o ponto de uma lacuna, que ele
+/// grava aberto.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Proposed {
     pub block: String,
     pub gap: String,
-    /// De onde o ponto vem: `gap`, `lesson` ou `prior_spec`.
-    pub from: &'static str,
-    /// A lacuna, quando o ponto é de uma.
-    pub key: Option<GapKey>,
+    /// A lacuna do ponto.
+    pub key: GapKey,
     /// Os fatos que a lista já traz, cada um com a fonte.
     pub facts: Vec<Fact>,
     pub reminders: Vec<Reminder>,
@@ -704,7 +712,7 @@ impl Proposed {
         let mut out = Map::new();
         out.insert("block".into(), Value::from(self.block.as_str()));
         out.insert("gap".into(), Value::from(self.gap.as_str()));
-        out.insert("from".into(), Value::from(self.from));
+        out.insert("from".into(), Value::from(FROM_GAP));
         if let Some(origin) = origin {
             out.insert("origin".into(), Value::from(origin));
         }
@@ -716,6 +724,7 @@ impl Proposed {
                     let mut item = Map::new();
                     item.insert("text".into(), Value::from(fact.text.as_str()));
                     item.insert("source".into(), Value::from(fact.source.as_str()));
+                    item.insert("kind".into(), Value::from(fact.kind));
                     Value::Object(item)
                 })
                 .collect();
@@ -728,29 +737,16 @@ impl Proposed {
     }
 
     /// O ponto que registra este item pela leitura dos pares ([`points`]),
-    /// com a situação dele, `open` ou `closed`: o que vem do mesmo lugar
-    /// (`from`: lacuna, lição ou spec anterior) e tem a mesma lacuna, um aberto
-    /// antes de um fechado. A lacuna é reconhecida
-    /// pelo rótulo em qualquer idioma ou pelo nome; o resto, pelo texto do
-    /// `gap`. O ponto vem pelo original e, se ele saiu, pelo fechamento.
+    /// com a situação dele, `open` ou `closed`: o ponto de lacuna com a mesma
+    /// lacuna, um aberto antes de um fechado. A lacuna é reconhecida pelo
+    /// rótulo em qualquer idioma ou pelo nome. O ponto vem pelo original e,
+    /// se ele saiu, pelo fechamento.
     #[must_use]
     pub fn standing<'a>(&self, log: &'a SpecLog) -> Option<(&'a SpecEvent, &'static str)> {
         let points = points(log);
-        let found = |open: bool| points.iter().find(|p| p.is_open() == open && self.is(p));
+        let is = |p: &SurveyPoint<'_>| p.from() == Some(FROM_GAP) && p.gap().is_some_and(|gap| self.key.matches(gap));
+        let found = |open: bool| points.iter().find(|p| p.is_open() == open && is(p));
         found(true).map(|p| (p.shown(), "open")).or_else(|| found(false).map(|p| (p.shown(), "closed")))
-    }
-
-    fn is(&self, point: &SurveyPoint<'_>) -> bool {
-        if point.from() != Some(self.from) {
-            return false;
-        }
-        let Some(gap) = point.gap() else {
-            return false;
-        };
-        match self.key {
-            Some(key) => key.matches(gap),
-            None => plain(gap) == plain(&self.gap),
-        }
     }
 }
 
@@ -791,30 +787,39 @@ pub struct Sources<'a> {
     pub languages: &'a Languages,
 }
 
-/// A lista de pontos do levantamento, toda no bloco único: as lacunas do
-/// tipo, as lições que casam, as specs anteriores que casam e, dentro desses
-/// pontos, os lembretes. Cada lembrete vai para o ponto cujo texto casa
-/// melhor com ele; sem casamento, para o primeiro. Nenhum ponto nasce para um
-/// lembrete.
+/// A lista de pontos do levantamento, toda no bloco único: um ponto por
+/// lacuna do tipo e, dentro desses pontos, as lições que casam, as specs
+/// anteriores que casam e os lembretes. Cada lição e cada spec anterior vira
+/// fato do ponto cuja lacuna casa melhor com ela, e cada lembrete vai para o
+/// ponto cujo texto casa melhor com ele; sem casamento, para o primeiro.
+/// Nenhum ponto nasce para uma lição, uma spec anterior ou um lembrete.
 #[must_use]
 pub fn build(sources: &Sources<'_>) -> Vec<Proposed> {
     let mut list: Vec<Proposed> = gaps(sources.kinds)
         .into_iter()
         .map(|key| Proposed {
-            block: key.block().to_string(),
+            block: CONDENSED.to_string(),
             gap: key.label(sources.lang).to_string(),
-            from: FROM_GAP,
-            key: Some(key),
+            key,
             facts: map_facts(key, sources),
             reminders: Vec::new(),
         })
         .collect();
-    list.extend(lesson_points(sources));
-    list.extend(prior_spec_points(sources));
+    let mut by_gap = PointIndex::new(&list, sources.languages);
+    for (matched, facts) in lesson_facts(sources).into_iter().chain(prior_spec_facts(sources)) {
+        let at = by_gap.ranked(&matched).into_iter().next().unwrap_or_default();
+        if let Some(item) = list.get_mut(at) {
+            item.facts.extend(facts);
+        }
+    }
     let prior = sources.prior.iter().filter(|(name, _)| name != sources.current).map(|(name, log)| (name.as_str(), log));
-    place(&mut list, reminders(prior, sources.goal, MAX_REMINDERS, sources.languages), sources.languages);
-    for item in &mut list {
-        item.block = CONDENSED.to_string();
+    let mut by_text = PointIndex::new(&list, sources.languages);
+    for reminder in reminders(prior, sources.goal, MAX_REMINDERS, sources.languages) {
+        let has_room = |at: &usize| list.get(*at).is_some_and(|item| item.reminders.len() < MAX_REMINDERS);
+        let target = by_text.ranked(&reminder.text).into_iter().find(has_room).or_else(|| (0..list.len()).find(has_room));
+        if let Some(item) = target.and_then(|at| list.get_mut(at)) {
+            item.reminders.push(reminder);
+        }
     }
     list
 }
@@ -847,6 +852,7 @@ fn map_facts(key: GapKey, sources: &Sources<'_>) -> Vec<Fact> {
             push(Fact {
                 text: translate("survey.fact_declared", sources.lang).replace("{name}", &name).replace("{path}", &path).replace("{line}", &line.to_string()),
                 source: format!("{path}:{line}"),
+                kind: FACT_CODE,
             });
             if validation
                 && let Some(tests) = read(Need::Tests(&path)).ok().and_then(|map| crate::domain::project_map::tests_for(&map, &path).ok())
@@ -858,6 +864,7 @@ fn map_facts(key: GapKey, sources: &Sources<'_>) -> Vec<Fact> {
                         .replace("{tests}", &tests.files.join(", "))
                         .replace("{inline}", if tests.inline { "true" } else { "false" }),
                     source: format!("mustard-rt run map tests --file {path}"),
+                    kind: FACT_CODE,
                 });
             }
             if !consumers {
@@ -874,27 +881,26 @@ fn map_facts(key: GapKey, sources: &Sources<'_>) -> Vec<Fact> {
             push(Fact {
                 text: translate("survey.fact_importers", sources.lang).replace("{path}", &path).replace("{importers}", &listed),
                 source: format!("mustard-rt run map importers --file {path}"),
+                kind: FACT_CODE,
             });
         }
     }
     facts
 }
 
-/// Um ponto por lição do banco que casa com o objetivo, as mais fortes
-/// primeiro: o título da lição como lacuna e o texto original dela como fato,
-/// com o arquivo e a linha do banco como fonte. A regra do projeto nunca vira
-/// ponto: ela vale sempre, e perguntar por ela em cada spec não acrescenta
-/// nada. Ela sai antes da busca, para que centenas de regras não tomem o
-/// lugar dos defeitos, das armadilhas e das preferências entre as mais
-/// fortes. As lições são as que a leitura do banco mostra
-/// ([`lessons::kept`]): a linha que retira lições não é lição.
+/// Um fato por lição do banco que casa com o objetivo, as mais fortes
+/// primeiro: o texto original dela, com o arquivo e a linha do banco como
+/// fonte, junto do texto que procura o ponto dela. A regra do projeto nunca
+/// entra: ela vale sempre, e repeti-la em cada spec não acrescenta nada. Ela
+/// sai antes da busca, para que centenas de regras não tomem o lugar dos
+/// defeitos, das armadilhas e das preferências entre as mais fortes. As
+/// lições são as que a leitura do banco mostra ([`lessons::kept`]): a linha
+/// que retira lições não é lição.
 ///
 /// A lição que diz os arquivos onde vale também sai antes da busca
 /// ([`lessons::reaches_waves_by_files`]): o pedido de cada onda que mexe
-/// neles já a leva, e perguntar por ela ao usuário só repete o que a onda
-/// recebe de qualquer modo. Ficam as lições que só dizem o subprojeto ou a
-/// skill.
-fn lesson_points(sources: &Sources<'_>) -> Vec<Proposed> {
+/// neles já a leva. Ficam as lições que só dizem o subprojeto ou a skill.
+fn lesson_facts(sources: &Sources<'_>) -> Vec<(String, Vec<Fact>)> {
     let Some(bank) = sources.bank else {
         return Vec::new();
     };
@@ -908,26 +914,21 @@ fn lesson_points(sources: &Sources<'_>) -> Vec<Proposed> {
         .filter_map(|hit| {
             let lesson = bank.get(hit.id)?;
             let text = lesson.str_field("text").map(str::trim).filter(|t| !t.is_empty())?;
-            Some(Proposed {
-                block: "lessons".to_string(),
-                gap: title_of(lesson).unwrap_or_else(|| text.to_string()),
-                from: FROM_LESSON,
-                key: None,
-                facts: vec![Fact { text: text.to_string(), source: format!("{}:{}", sources.lessons_file, lesson.line) }],
-                reminders: Vec::new(),
-            })
+            let fact = Fact { text: text.to_string(), source: format!("{}:{}", sources.lessons_file, lesson.line), kind: FACT_LESSON };
+            Some((text.to_string(), vec![fact]))
         })
         .collect()
 }
 
-/// Um ponto por spec anterior que entra no levantamento, as [`TOP`] mais
-/// fortes: o nome e o objetivo dela como lacuna, e as regras, as decisões e
-/// os erros dela que casam como fatos.
+/// Os fatos de cada spec anterior que entra no levantamento, as [`TOP`] mais
+/// fortes: as regras, as decisões e os erros dela que casam, ou o objetivo
+/// dela ([`prior_facts`]), junto do texto que procura o ponto deles, o
+/// objetivo e os fatos.
 ///
 /// Quem entra: se a spec do levantamento cita arquivos, as specs que
 /// mexeram em algum deles ([`by_files`]); sem arquivo citado, as que casam
 /// com o objetivo pelo `search` do índice ([`by_words`]).
-fn prior_spec_points(sources: &Sources<'_>) -> Vec<Proposed> {
+fn prior_spec_facts(sources: &Sources<'_>) -> Vec<(String, Vec<Fact>)> {
     let mut normalizer = Normalizer::new(sources.languages);
     let terms = normalizer.query(sources.goal);
     let cited = files_cited_by_the_survey(sources);
@@ -937,14 +938,9 @@ fn prior_spec_points(sources: &Sources<'_>) -> Vec<Proposed> {
         .map(|line| {
             let goal = line.goal.as_deref().map(str::trim).filter(|g| !g.is_empty());
             let log = sources.prior.iter().find(|(name, _)| *name == line.name).map(|(_, log)| log);
-            Proposed {
-                block: "prior_specs".to_string(),
-                gap: goal.map_or_else(|| line.name.clone(), |goal| format!("{}: {goal}", line.name)),
-                from: FROM_PRIOR_SPEC,
-                key: None,
-                facts: prior_facts(&line.name, goal, log, &terms, &mut normalizer),
-                reminders: Vec::new(),
-            }
+            let facts = prior_facts(&line.name, goal, log, &terms, &mut normalizer);
+            let texts: Vec<&str> = facts.iter().map(|fact| fact.text.as_str()).collect();
+            (search_field(goal, &texts), facts)
         })
         .collect()
 }
@@ -1043,38 +1039,43 @@ fn prior_facts(name: &str, goal: Option<&str>, log: Option<&SpecLog>, terms: &[V
             let (Some(text), Some(code)) = (title_of(item), codes.get(&item.id)) else {
                 continue;
             };
-            facts.push(Fact { text, source: format!("mustard-rt run read agreed --spec {name} --term {code}") });
+            facts.push(Fact { text, source: format!("mustard-rt run read agreed --spec {name} --term {code}"), kind: FACT_PRIOR_SPEC });
         }
     }
     if facts.is_empty()
         && let Some(goal) = goal
     {
-        facts.push(Fact { text: goal.to_string(), source: format!("mustard-rt run read specification --spec {name}") });
+        facts.push(Fact { text: goal.to_string(), source: format!("mustard-rt run read specification --spec {name}"), kind: FACT_PRIOR_SPEC });
     }
     facts
 }
 
-/// Põe cada lembrete no ponto da lista cujo texto (a lacuna e os fatos) casa
-/// melhor com ele, sem passar de [`MAX_REMINDERS`] num ponto; sem casamento,
-/// no primeiro ponto com lugar. As palavras são cortadas nas línguas
-/// `languages`.
-fn place(list: &mut [Proposed], found: Vec<Reminder>, languages: &Languages) {
-    let mut normalizer = Normalizer::new(languages);
-    let docs: Vec<Vec<Vec<String>>> = list
-        .iter()
-        .map(|item| {
-            let facts: Vec<&str> = item.facts.iter().map(|fact| fact.text.as_str()).collect();
-            normalizer.forms(&search_field(Some(&item.gap), &facts))
-        })
-        .collect();
-    let index = SearchIndex::build(docs.into_iter().enumerate().map(|(i, doc)| (doc_id(i), doc)));
-    let has_room = |list: &[Proposed], at: usize| list.get(at).is_some_and(|item| item.reminders.len() < MAX_REMINDERS);
-    for reminder in found {
-        let ranked = index.top(&normalizer.query(&reminder.text), list.len());
-        let target = ranked.iter().map(|hit| doc_pos(hit.id)).find(|at| has_room(list, *at)).or_else(|| (0..list.len()).find(|at| has_room(list, *at)));
-        if let Some(item) = target.and_then(|at| list.get_mut(at)) {
-            item.reminders.push(reminder);
-        }
+/// A busca pelo BM25 sobre os pontos da lista, pelo texto de cada um (a
+/// lacuna e os fatos), com as palavras cortadas nas línguas do projeto.
+struct PointIndex {
+    normalizer: Normalizer,
+    index: SearchIndex,
+    len: usize,
+}
+
+impl PointIndex {
+    fn new(list: &[Proposed], languages: &Languages) -> Self {
+        let mut normalizer = Normalizer::new(languages);
+        let docs: Vec<Vec<Vec<String>>> = list
+            .iter()
+            .map(|item| {
+                let facts: Vec<&str> = item.facts.iter().map(|fact| fact.text.as_str()).collect();
+                normalizer.forms(&search_field(Some(&item.gap), &facts))
+            })
+            .collect();
+        let index = SearchIndex::build(docs.into_iter().enumerate().map(|(i, doc)| (doc_id(i), doc)));
+        Self { normalizer, index, len: list.len() }
+    }
+
+    /// As posições dos pontos que casam com `text`, do mais parecido ao
+    /// menos; vazio quando nenhum casa.
+    fn ranked(&mut self, text: &str) -> Vec<usize> {
+        self.index.top(&self.normalizer.query(text), self.len).into_iter().map(|hit| doc_pos(hit.id)).collect()
     }
 }
 
@@ -1381,34 +1382,36 @@ mod tests {
         assert_eq!(found, [("a", 2), ("b", 1)]);
     }
 
-    /// A lição que casa vira ponto, com o texto original como fato e a linha
-    /// do banco como fonte, nunca o `search`.
+    /// Os fatos de um tipo, em todos os pontos da lista.
+    fn facts_of<'a>(list: &'a [Proposed], kind: &str) -> Vec<&'a Fact> {
+        list.iter().flat_map(|p| p.facts.iter()).filter(|f| f.kind == kind).collect()
+    }
+
+    /// A lição que casa vira fato do ponto de lacuna mais parecido com ela,
+    /// com o texto original e a linha do banco como fonte, nunca o `search`.
+    /// Nenhum ponto nasce para ela: a funcionalidade tem os nove de sempre.
     #[test]
-    fn a_lesson_point_carries_the_lesson_text_and_its_line_never_the_search() {
-        let bank = parse_log(
-            &[
-                lesson(1, "**Merge com pendência.** O merge não passa com pendência aberta.", &["merge", "pendência"]),
-                lesson(2, "O cargo não está no PATH.", &["cargo"]),
-            ]
-            .concat(),
-        );
-        let list = build(&sources(&["fix"], Some(&bank), &[], &[]));
-        let points: Vec<&Proposed> = list.iter().filter(|p| p.from == "lesson").collect();
-        assert_eq!(points.len(), 1, "{list:?}");
-        assert_eq!(points[0].gap, "Merge com pendência.");
-        assert_eq!(points[0].block, CONDENSED);
-        assert_eq!(points[0].facts[0].text, "**Merge com pendência.** O merge não passa com pendência aberta.");
-        assert_eq!(points[0].facts[0].source, ".claude/spec/lessons.ndjson:1");
-        let shown = points[0].to_value(Some(7)).to_string();
-        assert!(!shown.contains("search") && !shown.contains("merg pendenc"), "{shown}");
+    fn a_lesson_becomes_a_fact_of_the_closest_point_never_a_point() {
+        let edge = "**Borda do merge.** Os casos de borda do merge com pendência aberta.";
+        let bank = parse_log(&[lesson(1, edge, &["merge", "pendência"]), lesson(2, "O cargo não está no PATH.", &["cargo"])].concat());
+        let list = build(&sources(&["feature"], Some(&bank), &[], &[]));
+        assert_eq!(list.len(), 9, "{list:?}");
+        let facts = facts_of(&list, FACT_LESSON);
+        assert_eq!(facts.len(), 1, "{list:?}");
+        assert_eq!(facts[0].text, edge);
+        assert_eq!(facts[0].source, ".claude/spec/lessons.ndjson:1");
+        let holder = list.iter().find(|p| p.facts.iter().any(|f| f.kind == FACT_LESSON)).expect("the point of the lesson");
+        assert_eq!(holder.key, GapKey::EdgeCases, "{list:?}");
+        let shown = holder.to_value(Some(7)).to_string();
+        assert!(!shown.contains("search") && !shown.contains("merg pendenc") && shown.contains("\"kind\":\"lesson\""), "{shown}");
     }
 
     /// A lição que diz os arquivos onde vale, o projeto todo incluído, chega
-    /// ao pedido de toda onda que mexe neles e não vira ponto; a que só diz o
-    /// subprojeto ou a skill continua virando, com o mesmo casamento com o
-    /// objetivo.
+    /// ao pedido de toda onda que mexe neles e fica fora do levantamento; a
+    /// que só diz o subprojeto ou a skill continua entrando como fato, com o
+    /// mesmo casamento com o objetivo.
     #[test]
-    fn a_lesson_that_names_files_never_becomes_a_point() {
+    fn a_lesson_that_names_files_never_enters_the_survey() {
         let text = |name: &str| format!("**{name}.** O merge não passa com pendência aberta.");
         let bank = log_of(&[
             lesson_for(1, &text("Por arquivo"), &["merge", "pendência"], json!({"files": ["apps/rt/src/**"]})),
@@ -1418,8 +1421,9 @@ mod tests {
             lesson_for(5, &text("Arquivo e skill"), &["merge", "pendência"], json!({"files": ["src/main.rs"], "skill": "backend"})),
         ]);
         let list = build(&sources(&["fix"], Some(&bank), &[], &[]));
-        let asked: Vec<&str> = list.iter().filter(|p| p.from == "lesson").map(|p| p.gap.as_str()).collect();
-        assert_eq!(asked, ["Por skill.", "Por subprojeto."], "{list:?}");
+        let mut asked: Vec<&str> = facts_of(&list, FACT_LESSON).iter().map(|f| f.text.as_str()).collect();
+        asked.sort_unstable();
+        assert_eq!(asked, [text("Por skill"), text("Por subprojeto")], "{list:?}");
     }
 
     /// O levantamento lê as lições como a leitura do banco as mostra: a
@@ -1435,17 +1439,18 @@ mod tests {
             format!("{}\n", render_line(&stamp(lessons::normalize(obj(retirement), None), 3, None, "2026-09-14T09:00:00-03:00"))),
         ]);
         let list = build(&sources(&["fix"], Some(&bank), &[], &[]));
-        let lines: Vec<&str> = list.iter().filter(|p| p.from == "lesson").flat_map(|p| p.facts.iter().map(|f| f.source.as_str())).collect();
+        let lines: Vec<&str> = facts_of(&list, FACT_LESSON).iter().map(|f| f.source.as_str()).collect();
         let shown: Vec<String> = lessons::kept(&bank).iter().map(|l| format!(".claude/spec/lessons.ndjson:{}", l.line)).collect();
         assert_eq!(lines, shown, "{list:?}");
         assert_eq!(lines, [".claude/spec/lessons.ndjson:1"]);
     }
 
-    /// A spec anterior que casa vira ponto, com as regras e as decisões que
-    /// casam como fatos e o comando que as lê como fonte; a spec atual nunca é
-    /// a própria spec anterior, e a que divide uma palavra só fica fora.
+    /// A spec anterior que casa entra com as regras e as decisões que casam
+    /// como fatos e o comando que as lê como fonte, sem ponto próprio; a spec
+    /// atual nunca é a própria spec anterior, e a que divide uma palavra só
+    /// fica fora.
     #[test]
-    fn a_prior_spec_point_lists_its_matching_rules_and_decisions() {
+    fn a_prior_spec_enters_as_facts_of_its_matching_rules_and_decisions() {
         let old = log_of(&[
             ev(1, "message", json!({"author": "user", "text": "x"})),
             ev(2, "context", json!({"text": "Travar o merge com pendência aberta.", "origin": 1})),
@@ -1463,13 +1468,19 @@ mod tests {
         let index = vec![line("antiga", "Travar o merge com pendência aberta."), line("atual", GOAL), line("fraca", "O merge da página.")];
         let prior = vec![("antiga".to_string(), old)];
         let list = build(&sources(&["fix"], None, &index, &prior));
-        let points: Vec<&Proposed> = list.iter().filter(|p| p.from == "prior_spec").collect();
-        assert_eq!(points.len(), 1, "{points:?}");
-        assert_eq!(points[0].gap, "antiga: Travar o merge com pendência aberta.");
-        let facts: Vec<(&str, &str)> = points[0].facts.iter().map(|f| (f.text.as_str(), f.source.as_str())).collect();
+        assert_eq!(list.len(), gaps(&["fix"]).len(), "{list:?}");
+        assert_eq!(entered(&sources(&["fix"], None, &index, &prior)), ["antiga"]);
+        let facts: Vec<(&str, &str)> = facts_of(&list, FACT_PRIOR_SPEC).iter().map(|f| (f.text.as_str(), f.source.as_str())).collect();
         assert!(facts.contains(&("Merge travado.", "mustard-rt run read agreed --spec antiga --term MSTD-RULE-0001")), "{facts:?}");
         assert!(facts.contains(&("A cobrança da pendência sai no merge.", "mustard-rt run read agreed --spec antiga --term MSTD-DEC-0001")), "{facts:?}");
         assert!(!facts.iter().any(|(text, _)| text.contains("título")), "{facts:?}");
+    }
+
+    /// As specs anteriores que entram no levantamento, na ordem, pelo nome
+    /// que a fonte dos fatos de cada uma cita.
+    fn entered(given: &Sources<'_>) -> Vec<String> {
+        let name = |facts: &[Fact]| facts.first()?.source.split("--spec ").nth(1)?.split(' ').next().map(str::to_string);
+        prior_spec_facts(given).iter().filter_map(|(_, facts)| name(facts)).collect()
     }
 
     /// A linha do índice de uma spec, com o objetivo no `search`.
@@ -1521,8 +1532,7 @@ mod tests {
         ];
         let mut given = sources(&["fix"], None, &index, &prior);
         given.goal_agent = "- o defeito está em `src/a.rs:3` e em `src/b.rs`.";
-        let entered: Vec<String> = build(&given).into_iter().filter(|p| p.from == "prior_spec").map(|p| p.gap).collect();
-        assert_eq!(entered, ["dois: Redesenhar o rótulo.", "cinco: Mudar o menu.", "tres: Trocar a cor.", "um: Reescrever a impressão."], "{entered:?}");
+        assert_eq!(entered(&given), ["dois", "cinco", "tres", "um"]);
     }
 
     /// Os arquivos que a spec do levantamento cita, além dos do objetivo, vêm
@@ -1553,8 +1563,7 @@ mod tests {
             ("y".to_string(), delivering(&["src/y.rs"])),
             ("z".to_string(), delivering(&["src/z.rs"])),
         ];
-        let entered: Vec<String> = build(&sources(&["fix"], None, &index, &prior)).into_iter().filter(|p| p.from == "prior_spec").map(|p| p.gap).collect();
-        assert_eq!(entered, ["x: Um.", "z: Três."], "{entered:?}");
+        assert_eq!(entered(&sources(&["fix"], None, &index, &prior)), ["x", "z"]);
     }
 
     /// Todos os pontos vão para um bloco só, sem pedir.
@@ -1583,15 +1592,15 @@ mod tests {
         let whole = |_: Need<'_>| Ok(map.clone());
         given.map = Some(&whole);
         let list = build(&given);
-        let dependents = list.iter().find(|p| p.key == Some(GapKey::Dependents)).unwrap();
+        let dependents = list.iter().find(|p| p.key == GapKey::Dependents).unwrap();
         assert_eq!(
             dependents.facts,
             [
-                Fact { text: "`record_birth` é declarado em src/a.rs, linha 3.".into(), source: "src/a.rs:3".into() },
-                Fact { text: "src/a.rs é importado por: src/b.rs, src/c.rs.".into(), source: "mustard-rt run map importers --file src/a.rs".into() },
+                Fact { text: "`record_birth` é declarado em src/a.rs, linha 3.".into(), source: "src/a.rs:3".into(), kind: FACT_CODE },
+                Fact { text: "src/a.rs é importado por: src/b.rs, src/c.rs.".into(), source: "mustard-rt run map importers --file src/a.rs".into(), kind: FACT_CODE },
             ]
         );
-        assert!(list.iter().filter(|p| p.key == Some(GapKey::OutOfScope)).all(|p| p.facts.is_empty()));
+        assert!(list.iter().filter(|p| p.key == GapKey::OutOfScope).all(|p| p.facts.is_empty()));
     }
 
     #[test]
@@ -1609,13 +1618,13 @@ mod tests {
             let whole = |_: Need<'_>| Ok(map.clone());
             given.map = Some(&whole);
             let list = build(&given);
-            let uses = list.iter().find(|point| point.key == Some(GapKey::WhoUses)).unwrap();
+            let uses = list.iter().find(|point| point.key == GapKey::WhoUses).unwrap();
             assert!(uses.facts.iter().any(|fact| fact.text.contains("src/api.py")));
-            let contract = list.iter().find(|point| point.key == Some(GapKey::Contracts)).unwrap();
+            let contract = list.iter().find(|point| point.key == GapKey::Contracts).unwrap();
             assert_eq!(contract.facts[0].source, "src/billing.py:1");
-            let proof = list.iter().find(|point| point.key == Some(GapKey::DoneProof)).unwrap();
+            let proof = list.iter().find(|point| point.key == GapKey::DoneProof).unwrap();
             assert!(proof.facts.iter().any(|fact| fact.text.contains("tests/test_billing.py")));
-            assert!(list.iter().filter(|point| point.key == Some(GapKey::OutOfScope)).all(|point| point.facts.is_empty()));
+            assert!(list.iter().filter(|point| point.key == GapKey::OutOfScope).all(|point| point.facts.is_empty()));
         }
     }
 
@@ -1638,12 +1647,12 @@ mod tests {
         let whole = |_: Need<'_>| Ok(map.clone());
         given.map = Some(&whole);
         let list = build(&given);
-        let dependents = list.iter().find(|p| p.key == Some(GapKey::Dependents)).unwrap();
+        let dependents = list.iter().find(|p| p.key == GapKey::Dependents).unwrap();
         assert_eq!(
             dependents.facts,
             [
-                Fact { text: "`record_birth` é declarado em src/a.rs, linha 3.".into(), source: "src/a.rs:3".into() },
-                Fact { text: "src/a.rs é importado por: src/b.rs, src/c.rs.".into(), source: "mustard-rt run map importers --file src/a.rs".into() },
+                Fact { text: "`record_birth` é declarado em src/a.rs, linha 3.".into(), source: "src/a.rs:3".into(), kind: FACT_CODE },
+                Fact { text: "src/a.rs é importado por: src/b.rs, src/c.rs.".into(), source: "mustard-rt run map importers --file src/a.rs".into(), kind: FACT_CODE },
             ]
         );
     }
@@ -1666,7 +1675,7 @@ mod tests {
         given.goal = "Tirar o `record_birth` e o `Birth` do fluxo.";
         given.map = Some(read);
         let list = build(&given);
-        list.iter().find(|p| p.key == Some(GapKey::Dependents)).unwrap().facts.clone()
+        list.iter().find(|p| p.key == GapKey::Dependents).unwrap().facts.clone()
     }
 
     /// O levantamento lê só as declarações com o nome e quem importa cada
@@ -1720,8 +1729,8 @@ mod tests {
         ]);
         assert_eq!(missing_gaps(&log), [GapKey::Cause, GapKey::DoneProof]);
         let list = build(&sources(&["fix"], None, &[], &[]));
-        let left: Vec<Option<GapKey>> = missing(&log, &list).iter().map(|p| p.key).collect();
-        assert_eq!(left, [Some(GapKey::Cause), Some(GapKey::DoneProof)]);
+        let left: Vec<GapKey> = missing(&log, &list).iter().map(|p| p.key).collect();
+        assert_eq!(left, [GapKey::Cause, GapKey::DoneProof]);
         assert_eq!(list[0].standing(&log), Some((log.get(3).unwrap(), "open")));
     }
 
