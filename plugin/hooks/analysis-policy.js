@@ -24,6 +24,6 @@ export function analysisTool(event,state) {
   const tool=event.tool;
   const request=event.input?.request || event.input;
   const safe=['Read','Grep','Glob','ToolSearch'].includes(tool) || tool==='mcp__mustard__search'
-    && ['Read','Grep','Glob','Symbol','Trace','References','Structure'].includes(request?.tool);
+    && ['Read','Grep','Glob'].includes(request?.tool);
   return safe?null:{decision:'deny',reason:'Mustard analysis is read-only: supplied evidence or code discovery only. Return the requested receipt to the conductor; no editing, shell execution or further delegation.'};
 }

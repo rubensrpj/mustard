@@ -1,51 +1,17 @@
-//! `mustard-rt run pr-review` / `pr-merge` — the engine of the `/mustard:pr`
-//! door.
+//! `mustard-rt run pr-merge` — the merge step of the `/mustard:pr` door.
 //!
-//! ONE module for the list, the review and the merge, because they are one
-//! ritual over one seam:
-//! the link between a pull request and the work unit behind it. A PR's head
-//! branch is `{kind}/{slug}` (or the older `{base}_{slug}`, still recognised)
-//! and that slug IS the spec — `pr-review` prints the brief of the unit under
-//! it and `pr-merge` reads back the verdicts the round recorded there. Written
-//! once here, the link cannot drift into three spellings across three files.
+//! The seam is the link between a pull request and the work unit behind it. A
+//! PR's head branch is `{kind}/{slug}` (or the older `{base}_{slug}`, still
+//! recognised) and that slug IS the spec: `pr-merge` reads back the verdicts
+//! the round recorded there.
 //!
-//! ## What each command answers
+//! The verdict the merge reads is in `.claude/`, redirected state resolved to
+//! the MAIN checkout from inside any linked worktree, so the `spec.ndjson` the
+//! merge reads is the main checkout's, whatever branch happens to be out, and
+//! the round that wrote it adds nothing tracked to the base's tree.
 //!
-//! - **The list** (`pr-review` with no number, [`list_at`]) — the base gate
-//!   first: it refuses from INSIDE a work unit,
-//!   because "which PRs are open" is a question about the BASE, not about one
-//!   unit. The test is the unit, never a declared list: a branch that is
-//!   somebody's unit and is not a base by the project's one base reading
-//!   ([`crate::commands::event::work_branch::on_integration_base`]) refuses and
-//!   names the base to
-//!   switch to, touching nothing; anything else is a base as far as this
-//!   question goes. On a base it answers one row per open PR:
-//!   number, title, whether the provider calls it mergeable, whether it is a
-//!   draft, and the head branch its unit lives on.
-//! - **`pr-review`** — resolves the PR to its unit and prints the review brief:
-//!   the spec the unit belongs to, the subproject its tasks' files name, and
-//!   that subproject's skill shelf. The shelf is the reviewer's alone: a wave
-//!   is never handed the shelf, only the skills its tasks name, each by the
-//!   path of its file. `--verdict` no longer records
-//!   anything: it refuses at the door and says the round records each wave's
-//!   verdict in the spec file. The merge step reads those verdicts from the
-//!   spec's `spec.ndjson`, one per wave.
+//! ## What the command answers
 //!
-//! ## The spec is read out of the PR's OWN branch
-//!
-//! A review runs from an integration base — that is the door's design. The spec
-//! is its event file, `.claude/spec/{slug}/spec.ndjson`, never a rendered
-//! `spec.md`: the binary writes no `spec.md` any more. It is read from the head
-//! ref itself — `git show {head}:.claude/spec/{slug}/spec.ndjson` — for a
-//! project that commits its specs, with the remote-tracking ref and then the
-//! main checkout's own spec folder as fallbacks ([`spec_text_of_unit`]). The
-//! subproject comes from the files the spec's tasks name.
-//!
-//! The verdict the merge reads needs no such hop: `.claude/` is redirected
-//! state, resolved to the MAIN checkout from inside any linked worktree, so the
-//! `spec.ndjson` the merge reads is the main checkout's, whatever branch
-//! happens to be out, and the round that wrote it adds nothing tracked to the
-//! base's tree.
 //! - **`pr-merge`** — the merge and the tidying up, in ONE call. It merges,
 //!   then hands the pruning to [`git_settle::settle_at`] — returning to the
 //!   base, pulling it, removing the worktree and deleting the local branch IS
@@ -105,47 +71,14 @@ use std::process::Command;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::commands::agent::render::skills::build_skills_list;
 use crate::commands::event::pending::{OpenPending, carried_by, close_pending, open_pending_born_in};
-use crate::commands::event::work_branch::on_integration_base;
-use crate::commands::git_settle::{git_out, main_checkout_root, settle_at, settle_unit_at, superproject_of};
+use crate::commands::git_settle::{main_checkout_root, settle_at, settle_unit_at, superproject_of};
 use crate::commands::review::pr_checks::checks_word;
 use crate::commands::review::pr_publish::{SpecPr, SubmodulePrs, spec_pr, submodules_landed};
 use crate::shared::branch_state::PrStatus;
 use crate::shared::pr_provider::{PrChecks, PrProvider, provider_for, provider_in};
 use crate::shared::work_kind::BaseFlow;
 use mustard_core::platform::i18n::{Locale, translate};
-
-/// O subprojeto que um conjunto de arquivos aponta, ou nada quando eles se
-/// espalham por mais de um.
-///
-/// Lê o par `apps/<nome>` ou `packages/<nome>` de cada caminho; dois pares
-/// diferentes no mesmo conjunto não têm subprojeto comum, e a resposta é nada.
-/// Veio da checagem de dependência quando ela saiu: era a única função dela
-/// com chamador vivo.
-fn detect_subproject(files: &[String], repo_root: &Path) -> Option<PathBuf> {
-    let mut chosen: Option<(String, String)> = None;
-    for raw in files {
-        let normalized = raw.replace('\\', "/");
-        let segments: Vec<&str> = normalized.split('/').filter(|s| !s.is_empty()).collect();
-        let mut found: Option<(String, String)> = None;
-        let bases = ["apps", "packages"];
-        for (i, seg) in segments.iter().enumerate() {
-            if bases.contains(seg)
-                && let Some(name) = segments.get(i + 1) {
-                    found = Some(((*seg).to_string(), (*name).to_string()));
-                    break;
-                }
-        }
-        match (&chosen, &found) {
-            (None, Some(f)) => chosen = Some(f.clone()),
-            (Some(c), Some(f)) if c != f => return None,
-            _ => {}
-        }
-    }
-    chosen.map(|(base, name)| repo_root.join(base).join(name))
-}
-
 
 // ---------------------------------------------------------------------------
 // Shared plumbing — the provider, the bases, and the PR↔unit link
@@ -224,34 +157,6 @@ fn spec_of_branch(branch: &str, flow: &BaseFlow) -> Option<String> {
     flow.slug_of(branch)
 }
 
-/// Where a unit's spec lives, relative to the repository root: its event file.
-fn spec_rel_path(slug: &str) -> String {
-    format!(".claude/spec/{slug}/spec.ndjson")
-}
-
-/// The event file of `slug`'s spec, as the PR's OWN branch carries it when the
-/// project commits its specs, else as this machine keeps it.
-///
-/// `git show <head>:.claude/spec/<slug>/spec.ndjson` first — the local ref for
-/// the author reviewing their own unit, the remote-tracking ref for the
-/// reviewer who only ever fetched it — because `pr-review` runs from an
-/// integration base by design. The main checkout's own spec folder is the last
-/// fallback: specs usually stay out of git, and for a spec that was never
-/// committed it is the only copy there is.
-fn spec_text_of_unit(root: &Path, head: &str, slug: &str) -> Option<String> {
-    let rel = spec_rel_path(slug);
-    for reference in [format!("{head}:{rel}"), format!("origin/{head}:{rel}")] {
-        if let Some(text) = git_out(root, &["show", &reference]).filter(|t| !t.trim().is_empty()) {
-            return Some(text);
-        }
-    }
-    let on_disk = mustard_core::ClaudePaths::for_project(root)
-        .ok()
-        .and_then(|p| p.for_spec(slug).ok())
-        .map(|p| p.spec_ndjson_path())?;
-    std::fs::read_to_string(on_disk).ok().filter(|t| !t.trim().is_empty())
-}
-
 /// The pull request a command was pointed at, reduced to the two facts every
 /// step here needs: which PR, and which branch carries its unit.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -284,251 +189,11 @@ fn resolve_pr(root: &Path, pr: Option<u64>) -> Result<PrFacts, String> {
     })
 }
 
-/// The subproject the files of a spec's tasks name, relative to the repo root
-/// (`apps/rt`, `packages/core`, …), read from the spec's event file
-/// `spec_text`: every task the reading shows, each file once. `None` when the
-/// paths disagree or name no `apps/<x>` / `packages/<x>` segment.
-///
-/// Derived through [`detect_subproject`], the ONE discovery the dispatch plan
-/// already uses — joined onto an empty root so the answer comes back relative,
-/// which is the form both the skill shelf and `review.result` want.
-fn spec_subproject(spec_text: &str) -> Option<String> {
-    let log = mustard_core::domain::spec_events::parse_log(spec_text);
-    let mut files: Vec<String> = Vec::new();
-    for task in log.visible().into_iter().filter(|e| e.event_type == "task") {
-        let declared = task.fields.get("files").and_then(Value::as_array).into_iter().flatten();
-        for path in declared.filter_map(|file| file.get("path").and_then(Value::as_str)) {
-            if !files.iter().any(|known| known == path) {
-                files.push(path.to_string());
-            }
-        }
-    }
-    detect_subproject(&files, Path::new(""))
-        .map(|p| p.to_string_lossy().replace('\\', "/"))
-        .filter(|s| !s.is_empty())
-}
-
-// ---------------------------------------------------------------------------
-// The list of open pull requests (`pr-review` with no number)
-// ---------------------------------------------------------------------------
-
-/// One open pull request, as the door lists it.
-#[derive(Debug, Serialize, PartialEq, Eq)]
-pub(crate) struct PrEntry {
-    pub number: u64,
-    pub title: String,
-    /// The provider's own word, verbatim (`MERGEABLE` / `CONFLICTING` /
-    /// `UNKNOWN`). Never re-spelled into a bool: `UNKNOWN` means the provider
-    /// has not finished computing it, which is not the same answer as "no".
-    pub mergeable: String,
-    /// A draft cannot be merged even when it is mergeable — the parent of a
-    /// monorepo unit opens as a draft while any submodule PR is still open, so
-    /// omitting this would show a row the merge step will refuse.
-    pub draft: bool,
-    /// The head branch — the work unit `pr-review` and `pr-merge` act on.
-    pub head: String,
-}
-
-/// The document of the list of open pull requests.
-#[derive(Debug, Serialize)]
-pub(crate) struct PrListReport {
-    /// False only when the base gate refused. An unreachable provider is
-    /// `ok: true` with `gh_error` set — the checkout was fine, the network was
-    /// not.
-    pub ok: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reason: Option<&'static str>,
-    pub branch: String,
-    /// What `git.flow` really DECLARES — reported so the operator sees the hint
-    /// the project wrote down, and EMPTY when it wrote none (the installer
-    /// writes no flow). It decides nothing here: the refusal below is measured
-    /// against the unit and the protected set, never against this list — and it
-    /// is [`mustard_core::ProjectConfig`]'s declared set rather than its
-    /// pre-selected one, so a report never names the `{main, master}` fallback
-    /// as branches this repository has.
-    pub bases: Vec<String>,
-    /// Sorted by number, so two runs over the same state print the same bytes.
-    pub prs: Vec<PrEntry>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub gh_error: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub hint: Option<String>,
-}
-
 /// O texto `key` do catálogo, no idioma `lang`, com cada vaga de `slots`
 /// trocada pelo valor dela.
 fn said(key: &str, lang: Locale, slots: &[(&str, &str)]) -> String {
     slots.iter().fold(translate(key, lang).to_string(), |text, (slot, value)| text.replace(slot, value))
 }
-
-/// Read one `gh pr list` row into a [`PrEntry`]. A row without a number is not
-/// a pull request and is dropped rather than reported as number 0.
-fn pr_entry(row: &Value) -> Option<PrEntry> {
-    Some(PrEntry {
-        number: row.get("number").and_then(Value::as_u64)?,
-        title: row.get("title").and_then(Value::as_str).unwrap_or_default().to_string(),
-        mergeable: row
-            .get("mergeable")
-            .and_then(Value::as_str)
-            .unwrap_or("UNKNOWN")
-            .to_string(),
-        draft: row.get("isDraft").and_then(Value::as_bool).unwrap_or(false),
-        head: row
-            .get("headRefName")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string(),
-    })
-}
-
-/// List the open pull requests of the base `root` is standing on.
-///
-/// **What the refusal measures.** It used to ask whether the checkout's branch
-/// appears in `git.flow`'s declared set, which refused a real integration base
-/// for the sole reason that a file written at install time does not list it —
-/// and the installer writes no flow at all. The question this command actually
-/// asks is the opposite one: *am I standing INSIDE a unit?* So it refuses on a
-/// positive reading — the branch is somebody's work unit
-/// ([`crate::shared::work_kind::BaseFlow::base_of`], the crate's one parser) —
-/// and lets a branch the project's one base reading
-/// ([`crate::commands::event::work_branch::on_integration_base`]) measures as a
-/// base through even when its name reads like a unit's.
-#[must_use]
-pub(crate) fn list_at(root: &Path) -> PrListReport {
-    let repo = project_root(root);
-    let (flow, branch) = bases_and_branch(&repo);
-    let config = mustard_core::ProjectConfig::load(&repo);
-    let bases: Vec<String> = config.git.declared_bases().into_iter().collect();
-    let unit = flow.base_of(&branch);
-    // The project's own RECORD of the unit, not the name's shape: an undeclared
-    // base like `release/2026-Q3` splits into a kind and a slug exactly like a
-    // unit branch does, and this list was measured refusing to run from it.
-    // A pergunta "esta branch é base de integração" tem uma resposta só, a
-    // mesma que as outras portas fazem: o que o projeto declarou MAIS o que o
-    // próprio remoto chama de padrão. Sem a segunda metade, um projeto
-    // recém-instalado — que não declara fluxo nenhum — respondia aqui o
-    // contrário do que responde lá.
-    if flow.has_unit_record(&branch) && !on_integration_base(&repo, &branch, &config) {
-        // Name the base rather than the rule, so the refusal ends with something
-        // the operator can type without this module ever spelling a branch name
-        // of its own.
-        // Three sources, in the order their authority runs out. What the flow
-        // and the branch name establish for the unit comes first. Next,
-        // when — and only when — the project DECLARES a flow, its primary base
-        // is the project's own stated answer: naming `origin/HEAD` there sent a
-        // unit that integrates into `dev` off to `main`, a regression measured
-        // in a repo whose flow says exactly that. With no flow declared there is
-        // nothing to state, and the remote's own default is the last resort, so
-        // this module never spells a branch name of its own.
-        let target = unit
-            .known()
-            .map(str::to_string)
-            .or_else(|| config.git.primary_base())
-            .or_else(|| mustard_core::default_branch(&repo));
-        let lang = config.language().text_or_default();
-        let hint = match &target {
-            Some(base) => said("pr.list_from_unit", lang, &[("{base}", base)]),
-            // Nothing established the base and git named no default: say what to
-            // do without inventing a branch nobody measured.
-            None => said("pr.list_from_unit_no_base", lang, &[]),
-        };
-        return PrListReport {
-            ok: false,
-            reason: Some("not-on-integration-base"),
-            hint: Some(hint),
-            branch,
-            bases,
-            prs: Vec::new(),
-            gh_error: None,
-        };
-    }
-
-    let (prs, gh_error) = match gh_json(
-        &repo,
-        &["pr", "list", "--state", "open", "--json", "number,title,mergeable,isDraft,headRefName"],
-    ) {
-        Ok(value) => {
-            let mut rows: Vec<PrEntry> = value
-                .as_array()
-                .map(|arr| arr.iter().filter_map(pr_entry).collect())
-                .unwrap_or_default();
-            rows.sort_by_key(|p| p.number);
-            (rows, None)
-        }
-        Err(e) => (Vec::new(), Some(e)),
-    };
-    PrListReport { ok: true, reason: None, branch, bases, prs, gh_error, hint: None }
-}
-
-// ---------------------------------------------------------------------------
-// `pr-review`
-// ---------------------------------------------------------------------------
-
-/// The `pr-review` document — the review brief, plus what was recorded when a
-/// verdict was supplied.
-#[derive(Debug, Serialize)]
-pub(crate) struct PrReviewReport {
-    /// False only when the PR could not be resolved. A unit with no spec is a
-    /// legitimate answer (`spec: null`), not a failure.
-    pub ok: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reason: Option<&'static str>,
-    pub pr: u64,
-    pub head: String,
-    /// The spec slug the head branch names — the unit under review.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub spec: Option<String>,
-    /// Where that spec lives, when it is on disk in this checkout. The spec is
-    /// materialized ON the work branch, so a base checkout legitimately reports
-    /// `null` here while the branch itself reports the path.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub spec_path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub subproject: Option<String>,
-    /// The subproject's skill shelf, verbatim. Only the reviewer gets it: the
-    /// wave gets just the skills its tasks name.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub patterns: Option<String>,
-}
-
-/// Build the review brief for a resolved PR.
-///
-/// It records nothing. The door refuses `--verdict` before anything gets
-/// here, so a recorder reachable from this step would be a recorder nobody
-/// can reach: the per-wave verdicts `pr-merge` reads are the ones the round
-/// writes into the spec's `spec.ndjson`.
-#[must_use]
-fn review_brief(root: &Path, facts: &PrFacts, flow: &BaseFlow) -> PrReviewReport {
-    let spec = spec_of_branch(&facts.head, flow);
-    let spec_text = spec
-        .as_deref()
-        .and_then(|slug| spec_text_of_unit(root, &facts.head, slug));
-    // Named only when the spec was really found — a path on an `ok:true` report
-    // is a promise that something is there.
-    let spec_path = spec
-        .as_deref()
-        .filter(|_| spec_text.is_some())
-        .map(spec_rel_path);
-    let subproject = spec_subproject(spec_text.as_deref().unwrap_or_default());
-    let patterns = subproject
-        .as_deref()
-        .map(|sub| build_skills_list(root, sub))
-        .filter(|shelf| !shelf.is_empty());
-
-    PrReviewReport {
-        ok: true,
-        reason: None,
-        pr: facts.number,
-        head: facts.head.clone(),
-        spec,
-        // Repo-relative, forward slashes: one report reads the same on every
-        // platform and carries no machine path.
-        spec_path,
-        subproject,
-        patterns,
-    }
-}
-
 // ---------------------------------------------------------------------------
 // `pr-merge`
 // ---------------------------------------------------------------------------
@@ -1511,37 +1176,6 @@ fn emit<T: Serialize>(report: &T) {
     println!("{}", serde_json::to_string_pretty(report).unwrap_or_else(|_| "{}".to_string()));
 }
 
-
-/// Dispatch `mustard-rt run pr-review`. The brief still answers; recording a
-/// verdict has left the flow, so `--verdict` refuses at the door with exit 1,
-/// records nothing and says to wait for the round.
-pub fn run_review(root: &Path, pr: Option<u64>, verdict: Option<&str>) {
-    let repo = project_root(root);
-    if verdict.is_some() {
-        crate::commands::retired::refuse(
-            &repo,
-            "wait-for-round",
-            "retired.wait_round",
-            &[("{command}", "pr-review --verdict")],
-        );
-    }
-    // Sem número, o comando LISTA os pull requests abertos em vez de adivinhar
-    // um. Ele existe para revisar o de um colega, e o colega não está na branch
-    // desta máquina: resolver pela branch do checkout devolvia o pull request
-    // de quem chamou, que é justamente o que ninguém pediu.
-    let Some(number) = pr else {
-        emit(&list_at(&repo));
-        return;
-    };
-    match resolve_pr(&repo, Some(number)) {
-        Ok(facts) => {
-            let (flow, _) = bases_and_branch(&repo);
-            emit(&review_brief(&repo, &facts, &flow));
-        }
-        Err(e) => emit(&serde_json::json!({ "ok": false, "reason": e, "pr": pr })),
-    }
-}
-
 /// Dispatch `mustard-rt run pr-merge`: the merge and the tidying up in one
 /// call, the delivery recorded and the pending item that became the spec
 /// closed.
@@ -1590,140 +1224,6 @@ mod tests {
     use serde_json::json;
     use std::cell::Cell;
     use tempfile::tempdir;
-
-    fn git(dir: &Path, args: &[&str]) {
-        let out = Command::new("git").args(args).current_dir(dir).output().expect("spawn git");
-        assert!(out.status.success(), "git {args:?} failed");
-    }
-
-    /// A repo with `git.flow` declaring `dev` (primary) and `main`, sitting on
-    /// `dev`. No remote, no `gh` — the base gate is answered from local state
-    /// alone, which is the whole point of testing it here.
-    fn repo() -> tempfile::TempDir {
-        let dir = tempdir().expect("tempdir");
-        let root = dir.path();
-        git(root, &["init", "."]);
-        git(root, &["config", "user.email", "t@t"]);
-        git(root, &["config", "user.name", "t"]);
-        git(root, &["checkout", "-b", "dev"]);
-        std::fs::write(
-            root.join("mustard.json"),
-            r#"{"language":{"text":"en-US"},"git":{"flow":{"*":"dev","dev":"main"}}}"#,
-        )
-        .expect("cfg");
-        git(root, &["add", "-A"]);
-        git(root, &["commit", "-m", "seed"]);
-        dir
-    }
-
-    /// The list of open pull requests — `pr-review` with no number — REFUSES
-    /// from a work branch, names the base to switch to and the command to run
-    /// there again; from the base it does not refuse (whatever the provider
-    /// answers).
-    #[test]
-    fn pr_list_refuses_off_an_integration_base_and_names_it() {
-        let dir = repo();
-        let root = dir.path();
-
-        // On the base: the gate passes. `gh` is absent/unauthenticated in the
-        // test environment, which is reported as `gh_error` — never as a
-        // refusal, because the checkout was fine.
-        let on_base = list_at(root);
-        assert!(on_base.ok, "the base itself is never refused: {:?}", on_base.reason);
-        assert_eq!(on_base.reason, None);
-        assert_eq!(on_base.branch, "dev");
-        assert!(on_base.bases.contains(&"dev".to_string()), "bases: {:?}", on_base.bases);
-
-        // On a work branch: refused, and the refusal NAMES the base. What makes
-        // it a work branch is the project's RECORD of the unit, not the shape of
-        // the name — the fixture used to create only the branch, so this case
-        // was satisfied by anything that merely looked like a unit, which is how
-        // a real release line ended up being refused here.
-        git(root, &["checkout", "-b", "dev_some-unit"]);
-        std::fs::create_dir_all(root.join(".claude").join("spec").join("some-unit"))
-            .expect("unit record");
-        let off_base = list_at(root);
-        assert!(!off_base.ok, "a work branch must be refused");
-        assert_eq!(off_base.reason, Some("not-on-integration-base"));
-        assert_eq!(off_base.branch, "dev_some-unit");
-        assert!(off_base.prs.is_empty(), "a refusal lists nothing");
-        let hint = off_base.hint.unwrap_or_default();
-        assert!(hint.contains("`git checkout dev`"), "the refusal must name the base: {hint}");
-        // O que rodar de novo, lá na base, é o comando que existe: o mesmo
-        // `pr-review` sem número que pediu a lista.
-        assert!(
-            hint.contains("run `mustard-rt run pr-review` again"),
-            "the refusal must name the command to run again from the base: {hint}"
-        );
-
-        // A branch that is NOBODY's unit is not refused any more. It used to
-        // be, for the sole reason that `git.flow` does not list it — and the
-        // installer writes no flow, so that refusal fired on every branch a
-        // real project integrates through. The question here is whether the
-        // checkout is inside a unit, and this one is not.
-        git(root, &["checkout", "-b", "loose-branch"]);
-        let loose = list_at(root);
-        assert_eq!(loose.reason, None, "an undeclared base is still a base");
-        assert!(loose.ok, "nothing about the checkout refuses: {:?}", loose.hint);
-    }
-
-    /// A dica da lista de pull requests abertos, pedida de dentro de uma
-    /// unidade, sai no idioma do texto do projeto: em português para o
-    /// pt-BR, e no inglês de sempre para o en-US.
-    #[test]
-    fn the_list_hint_follows_the_project_language() {
-        for (language, says, other) in [
-            ("pt-BR", "e rode `mustard-rt run pr-review` de novo", "run `mustard-rt run pr-review` again"),
-            ("en-US", "run `mustard-rt run pr-review` again", "de novo"),
-        ] {
-            let dir = repo();
-            let root = dir.path();
-            std::fs::write(
-                root.join("mustard.json"),
-                format!(r#"{{"language":{{"text":"{language}"}},"git":{{"flow":{{"*":"dev","dev":"main"}}}}}}"#),
-            )
-            .expect("cfg");
-            git(root, &["checkout", "-b", "dev_some-unit"]);
-            std::fs::create_dir_all(root.join(".claude").join("spec").join("some-unit")).expect("unit record");
-            let hint = list_at(root).hint.unwrap_or_default();
-            assert!(hint.contains("`git checkout dev`") && hint.contains(says), "{language}: {hint}");
-            assert!(!hint.contains(other), "{language}: the other language leaked: {hint}");
-        }
-    }
-
-    /// The rows survive the trip from `gh` shape to report shape, sorted, with
-    /// the provider's own mergeable word kept verbatim.
-    #[test]
-    fn pr_list_rows_keep_the_provider_word_and_sort_by_number() {
-        let rows = json!([
-            {"number": 9, "title": "later", "mergeable": "UNKNOWN", "isDraft": true, "headRefName": "dev_b"},
-            {"number": 2, "title": "earlier", "mergeable": "MERGEABLE", "isDraft": false, "headRefName": "dev_a"},
-            {"number": null, "title": "not a pr"},
-        ]);
-        let mut got: Vec<PrEntry> =
-            rows.as_array().map(|a| a.iter().filter_map(pr_entry).collect()).unwrap_or_default();
-        got.sort_by_key(|p| p.number);
-        assert_eq!(
-            got,
-            vec![
-                PrEntry {
-                    number: 2,
-                    title: "earlier".into(),
-                    mergeable: "MERGEABLE".into(),
-                    draft: false,
-                    head: "dev_a".into(),
-                },
-                PrEntry {
-                    number: 9,
-                    title: "later".into(),
-                    mergeable: "UNKNOWN".into(),
-                    draft: true,
-                    head: "dev_b".into(),
-                },
-            ],
-            "numbered rows only, sorted, provider word verbatim"
-        );
-    }
 
     /// A merge requested with NO recorded review verdict warns and asks:
     /// it does not refuse (`ok` stays true) and it does not merge (neither
@@ -2657,56 +2157,5 @@ mod tests {
         assert_eq!(spec_of_branch("main_hotfix", &bases).as_deref(), Some("hotfix"));
         assert_eq!(spec_of_branch("dev", &bases), None, "a bare base carries no unit");
         assert_eq!(spec_of_branch("feature_x", &bases), None, "a name of neither shape");
-    }
-
-    /// The brief points at the spec and hands back the skill shelf of the
-    /// subproject the tasks touch, and records nothing on the way: the
-    /// verdicts `pr-merge` reads are the ones the round writes into the spec.
-    #[test]
-    fn pr_review_brief_names_the_spec_and_records_nothing() {
-        let dir = tempdir().expect("tempdir");
-        let root = dir.path();
-        let spec_dir = root.join(".claude").join("spec").join("my-unit");
-        std::fs::create_dir_all(&spec_dir).expect("spec dir");
-        // A spec is its event file: the brief reads the files of its tasks,
-        // and a rendered `spec.md` that says otherwise is not read.
-        std::fs::write(spec_dir.join("spec.md"), "# demo\n\n## Files\n\n- `packages/core/src/lib.rs`\n")
-            .expect("an old spec.md");
-        let events = [
-            json!({"v": 1, "id": 1, "at": "2026-09-18T10:00:00-03:00", "type": "task", "author": "assistant",
-                "wave": 1, "text": "A.", "files": [{"path": "apps/rt/src/lib.rs"}], "origin": 1}),
-            json!({"v": 1, "id": 2, "at": "2026-09-18T10:00:01-03:00", "type": "task", "author": "assistant",
-                "wave": 2, "text": "B.", "files": [{"path": "apps/rt/src/main.rs"}, {"path": "apps/rt/src/lib.rs"}],
-                "origin": 1}),
-        ];
-        let lines: Vec<String> = events.iter().map(Value::to_string).collect();
-        std::fs::write(spec_dir.join("spec.ndjson"), format!("{}\n", lines.join("\n"))).expect("spec");
-        let shelf = root.join("apps/rt/.claude/skills/rt-demo-pattern");
-        std::fs::create_dir_all(&shelf).expect("shelf");
-        std::fs::write(
-            shelf.join("SKILL.md"),
-            "---\nname: rt-demo-pattern\ndescription: Use when demoing.\n---\n\nbody\n",
-        )
-        .expect("skill");
-
-        let bases = door_flow();
-        let facts = PrFacts { number: 7, head: "dev_my-unit".to_string() };
-
-        let brief = review_brief(root, &facts, &bases);
-        assert!(brief.ok);
-        assert_eq!(brief.spec.as_deref(), Some("my-unit"));
-        assert_eq!(brief.subproject.as_deref(), Some("apps/rt"));
-        assert!(
-            brief.spec_path.unwrap_or_default().ends_with("my-unit/spec.ndjson"),
-            "forward slashes on every platform"
-        );
-        assert!(
-            brief.patterns.unwrap_or_default().contains("rt-demo-pattern"),
-            "the review reads the shelf of the subproject the tasks touch"
-        );
-        assert!(
-            !root.join(".claude").join("spec").join("my-unit").join("review").exists(),
-            "the brief writes no verdict of its own"
-        );
     }
 }

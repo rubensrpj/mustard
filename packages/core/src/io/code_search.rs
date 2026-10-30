@@ -9,7 +9,6 @@ use serde_json::{Value, json};
 use std::path::Path;
 use std::process::Stdio;
 
-pub mod operations;
 pub mod presentation;
 pub mod delivery;
 mod chain;
@@ -35,13 +34,8 @@ pub fn execute(
     selector: Option<&dyn SymbolSelector>,
 ) -> Result<Answer, String> {
     let mut later = Later::default();
-    let mut answer = if operations::requested(request) {
-        operations::execute(root, tree, cwd, request, &mut later)?
-    } else {
-        let mut answer = execute_native(cwd, request)?;
-        enrich(root, tree, cwd, request, &mut answer, selector, &mut later);
-        answer
-    };
+    let mut answer = execute_native(cwd, request)?;
+    enrich(root, tree, cwd, request, &mut answer, selector, &mut later);
     // Quem chama a biblioteca sem prazo grava o que aprendeu esperando a
     // trava como toda gravação.
     settle(&mut answer, &later.keep(crate::io::map_db::BUSY_WAIT));

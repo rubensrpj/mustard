@@ -5,9 +5,8 @@
 
 //! O levantamento de ponta a ponta pelo binário, num projeto com `git.flow` e
 //! um arquivo de código: o `open`, o objetivo, o `grill`, uma resposta e o
-//! fechamento de cada ponto, com o passo que cada `write` devolve, a revisão
-//! de cada bloco, a ordem de rodar o revisor de fora e o fim com as mensagens
-//! do usuário sem destino. No meio, com
+//! fechamento de cada ponto, com o passo que cada `write` devolve e o fim com
+//! as mensagens do usuário sem destino. No meio, com
 //! um ponto aberto, a gravação do plano pela porta do binário é recusada com a
 //! lista; com todos fechados, ela passa.
 
@@ -254,18 +253,17 @@ fn earlier_spec(root: &Path, name: &str, goal: &str, rule_agent: &str, delivered
 }
 
 /// O levantamento da spec nova, e os nomes das specs anteriores que viraram
-/// ponto dele, na ordem da lista.
+/// fato dele, pela fonte de cada fato, em ordem de nome.
 fn earlier_specs_surveyed(root: &Path) -> Vec<String> {
     let grilled = rt(root, &["grill", "--kinds", "fix", "--spec", "nova", "--full"]);
     assert_eq!(grilled.status.code(), Some(0), "{}", String::from_utf8_lossy(&grilled.stdout));
     let answer = report(&grilled);
-    answer["points"]
-        .as_array()
-        .expect("the point list")
-        .iter()
-        .filter(|point| point["from"] == json!("prior_spec"))
-        .map(|point| point["gap"].as_str().and_then(|gap| gap.split(':').next()).expect("the gap").to_string())
-        .collect()
+    let points = answer["points"].as_array().expect("the point list");
+    let facts = points.iter().filter_map(|point| point["facts"].as_array()).flatten().filter(|fact| fact["kind"] == json!("prior_spec"));
+    let names: std::collections::BTreeSet<String> = facts
+        .filter_map(|fact| fact["source"].as_str()?.split("--spec ").nth(1)?.split(' ').next().map(str::to_string))
+        .collect();
+    names.into_iter().collect()
 }
 
 /// A spec nova que cita um arquivo na parte do agente do objetivo (o texto
@@ -331,8 +329,9 @@ fn a_test_survey_goes_through_every_point_and_the_plan_is_refused_while_one_is_o
     }
     let mut current = last["point"].clone();
     assert_eq!(current["gap"], items[0]["gap"], "{last}");
+    // A resposta do usuário vem depois dos pontos que ela fecha.
+    let answered = user_says(root, "Respondi todos os pontos.");
 
-    let mut reviewed = Vec::new();
     for (i, item) in items.iter().enumerate() {
         assert!(current["id"].is_u64(), "the next point: {current}");
         let code = current["code"].as_str().expect("the point's code").to_string();
@@ -341,7 +340,7 @@ fn a_test_survey_goes_through_every_point_and_the_plan_is_refused_while_one_is_o
             root,
             "decision",
             &json!({"title": "Combinar o item", "agent": format!("- ponto {code}"), "text": "O usuário respondeu ao ponto.", "keys": ["levantamento"], "why": "o usuário respondeu",
-                "origin": said}),
+                "origin": answered}),
         );
         assert!(answer.get("point").is_none(), "an answer that closes no point does not repeat the open one: {answer}");
 
@@ -357,43 +356,32 @@ fn a_test_survey_goes_through_every_point_and_the_plan_is_refused_while_one_is_o
             root,
             "point",
             &json!({"block": item["block"], "gap": item["gap"], "from": "gap", "status": "closed", "closes": code,
-                "result": [id(&answer)], "origin": said}),
+                "result": [id(&answer)], "origin": answered}),
         );
-        let block_ends = items.get(i + 1).is_none_or(|next| next["block"] != item["block"]);
-        if block_ends {
-            assert_eq!(closed["review"]["block"], item["block"], "{closed}");
-            assert_eq!(closed["review"]["question"], "Quer ver mais algum ponto ou aprofundar algum?");
-            reviewed.push(item["block"].clone());
-        } else {
-            assert!(closed.get("review").is_none(), "{closed}");
-        }
+        assert!(closed.get("review").is_none(), "no review per block: {closed}");
         match items.get(i + 1) {
             Some(next) => {
                 current = closed["point"].clone();
                 assert_eq!(current["gap"], next["gap"], "{closed}");
-                assert_eq!(closed["review"].get("options").map(|o| o.as_array().map(Vec::len)), block_ends.then_some(Some(1)));
+                let open = closed["points"].as_array().map_or(0, Vec::len);
+                assert_eq!(open, items.len() - i - 1, "the open points come together: {closed}");
             }
             None => {
-                assert_eq!(closed["review"]["options"], json!(["Seguir"]), "the outside reviewer is not an option");
                 let next = closed["next"].as_str().expect("the next step");
-                assert!(
-                    next.contains("rode o revisor de fora") && next.contains("`mustard-review`") && next.contains(SPEC),
-                    "the end of the survey orders the outside reviewer: {next}"
-                );
+                assert!(!next.contains("`mustard-review`"), "the survey orders no outside reviewer: {next}");
                 let loose_codes: Vec<String> = loose.iter().map(|id| code_of(root, *id)).collect();
                 assert_eq!(unrouted_codes(&closed), loose_codes, "{closed}");
             }
         }
     }
-    assert_eq!(reviewed.len(), 8, "one review per block: {reviewed:?}");
 
     assert!(to_plan(root).is_ok(), "with every point closed the passage goes");
     assert_eq!(phase(root), Some("plan"));
 }
 
 /// O levantamento inteiro sai com uma chamada de `run answer` por ponto: a
-/// resposta num item novo, sem `--point` e sem `origin`, fecha o primeiro
-/// ponto aberto e aponta a última fala do usuário; a resposta pelo item já
+/// resposta num item novo, sem `--point` e com `--origin` na fala do usuário,
+/// fecha o primeiro ponto aberto e aponta essa fala; a resposta pelo item já
 /// gravado e o "não se aplica" com o motivo fecham o ponto apontado; cada
 /// chamada devolve o próximo ponto. O ponto que já fechou é recusado com
 /// saída 1, e nada além da chamada é gravado.
@@ -432,12 +420,15 @@ fn a_survey_is_answered_with_one_answer_call_per_point() {
         let code = current["code"].as_str().expect("the point's code").to_string();
         assert_eq!(current["gap"], item["gap"], "{current}");
         let shown = point.to_string();
-        let args: Vec<&str> = match i {
+        let origin = reply.to_string();
+        let mut args: Vec<&str> = match i {
             0 => vec!["answer", "--spec", SPEC, "--type", "decision", "--json", &decision],
             1 => vec!["answer", "--spec", SPEC, "--point", &code, "--result", &first_item],
             2 => vec!["answer", "--spec", SPEC, "--point", &shown, "--not-applicable", "--reason", "Não se aplica."],
             _ => vec!["answer", "--spec", SPEC, "--point", &code, "--type", "decision", "--json", &decision],
         };
+        // A resposta vem da fala do usuário depois dos pontos.
+        args.extend(["--origin", &origin]);
         let out = rt(root, &args);
         let answered = report(&out);
         assert_eq!(out.status.code(), Some(0), "answer {i}: {answered}");
@@ -467,9 +458,8 @@ fn a_survey_is_answered_with_one_answer_call_per_point() {
         match items.get(i + 1) {
             Some(next) => {
                 assert_eq!(current["gap"], next["gap"], "the answer returns the next point: {answered}");
-                let step = format!("mustard-rt run answer --point {}", current["id"]);
                 let said = answered["next"].as_str().unwrap_or_default();
-                assert!(said.contains(&step), "the next step gives the call that answers the next point: {said}");
+                assert!(said.contains("mustard-rt run answer --point"), "the next step gives the call that answers each point: {said}");
             }
             None => assert!(current.is_null() && answered.get("unrouted").is_some(), "the end of the survey: {answered}"),
         }
@@ -618,7 +608,7 @@ fn the_end_of_the_survey_shows_each_unrouted_message_once_as_a_short_line() {
     // aponta como origem.
     let pasted = format!("{}{TAIL}", "Linha colada do registro, com bastante detalhe sobre o merge.\n".repeat(60));
     let long = [hook_says(root, home.path(), &pasted), hook_says(root, home.path(), &pasted)];
-    hook_says(root, home.path(), "Pode seguir.");
+    let go = hook_says(root, home.path(), "Pode seguir.").to_string();
 
     let items = report(&rt(root, &["grill", "--kinds", "feature", "--spec", SPEC, "--full"]))["points"]
         .as_array()
@@ -635,7 +625,7 @@ fn the_end_of_the_survey_shows_each_unrouted_message_once_as_a_short_line() {
     let mut ended = None;
     for (i, _) in items.iter().enumerate() {
         let code = current["code"].as_str().expect("the point's code").to_string();
-        let out = rt(root, &["answer", "--spec", SPEC, "--point", &code, "--type", "decision", "--json", &decision]);
+        let out = rt(root, &["answer", "--spec", SPEC, "--point", &code, "--type", "decision", "--json", &decision, "--origin", &go]);
         let answered = report(&out);
         assert_eq!(out.status.code(), Some(0), "answer {i}: {answered}");
         current = answered["point"].clone();
@@ -660,8 +650,10 @@ fn the_end_of_the_survey_shows_each_unrouted_message_once_as_a_short_line() {
     // A fala que chega depois do último ponto fica sem destino, e a decisão
     // seguinte a aponta: as duas colagens já foram mostradas, e a gravação
     // não as repete.
-    hook_says(root, home.path(), "E o painel?");
-    let out = rt(root, &["write", "decision", "--spec", SPEC, "--json", &decision]);
+    let late = hook_says(root, home.path(), "E o painel?");
+    let mut pointed: Value = serde_json::from_str(&decision).expect("the decision");
+    pointed["origin"] = json!(late);
+    let out = rt(root, &["write", "decision", "--spec", SPEC, "--json", &pointed.to_string()]);
     let decided = report(&out);
     assert_eq!(out.status.code(), Some(0), "{decided}");
     assert!(decided.get("unrouted").is_none(), "the end of the survey is shown once: {decided}");
@@ -673,7 +665,7 @@ fn the_end_of_the_survey_shows_each_unrouted_message_once_as_a_short_line() {
 }
 
 /// O `grill` que abre os pontos diz onde salvar a cópia do modelo visual
-/// aprovado uma vez só no `hint`, depois de apresentar o ponto: diz que a
+/// aprovado uma vez só no `hint`, depois de apresentar os pontos: diz que a
 /// cópia vai logo depois de gravar o sim, e diz o caminho dela na pasta da
 /// spec.
 fn asks_for_the_design_copy_once(out: &Output, present: &str, after_yes: &str) {
@@ -681,7 +673,7 @@ fn asks_for_the_design_copy_once(out: &Output, present: &str, after_yes: &str) {
     let opening = report(out);
     let hint = opening["hint"].as_str().unwrap_or_else(|| panic!("no hint: {opening}"));
     let design = format!("`.claude/spec/{SPEC}/desenho.html`");
-    let shown = hint.find(present).unwrap_or_else(|| panic!("the grill presents the first point: {hint}"));
+    let shown = hint.find(present).unwrap_or_else(|| panic!("the grill presents the open points: {hint}"));
     let save = hint.find(&design).unwrap_or_else(|| panic!("the grill says where the approved design goes: {hint}"));
     assert!(shown < save && hint.contains(after_yes), "the copy goes right after the yes is recorded: {hint}");
     assert_eq!(String::from_utf8_lossy(&out.stdout).matches("desenho.html").count(), 1, "{hint}");
@@ -691,12 +683,11 @@ fn asks_for_the_design_copy_once(out: &Output, present: &str, after_yes: &str) {
 /// abre os pontos, no `grill` curto e no inteiro, para quem conduz salvá-la
 /// logo depois de gravar o sim, enquanto o modelo ainda está à mão. Nenhuma
 /// resposta depois repete o
-/// pedido: nem as que gravam os fatos e as respostas, a do sim inclusive, nem
-/// a que fecha o último ponto e manda rodar o revisor de fora, nem a que fecha
-/// o ponto achado por ele, nem o `grill` sem ponto aberto. A escrita da cópia
-/// no caminho dito sai do gancho de escrita sem decisão nenhuma, o mesmo
-/// gancho que, no mesmo projeto, barra o arquivo da spec; e o despacho do
-/// revisor de fora, pelo gancho, passa a apontar a cópia salva.
+/// pedido: nem as que gravam os fatos e as respostas, a do sim inclusive, a
+/// que fecha o último ponto inclusive, nem o `grill` sem ponto aberto. A
+/// escrita da cópia no caminho dito sai do gancho de escrita sem decisão
+/// nenhuma, o mesmo gancho que, no mesmo projeto, barra o arquivo da spec; e
+/// o despacho do revisor, pelo gancho, passa a apontar a cópia salva.
 #[test]
 fn the_survey_asks_for_the_approved_design_copy_when_it_opens_the_points_and_never_again() {
     const APPROVED_AT: usize = 2;
@@ -711,9 +702,9 @@ fn the_survey_asks_for_the_approved_design_copy_when_it_opens_the_points_and_nev
     write(root, "context", &json!({"title": "Combinar o item", "agent": "- conferir pelo teste", "text": GOAL, "origin": said}));
 
     let short = rt(root, &["grill", "--kinds", "feature", "--spec", SPEC]);
-    asks_for_the_design_copy_once(&short, "Apresente o ponto", "logo depois de gravar o sim");
+    asks_for_the_design_copy_once(&short, "Os pontos abertos", "logo depois de gravar o sim");
     let grilled = rt(root, &["grill", "--kinds", "feature", "--spec", SPEC, "--full"]);
-    asks_for_the_design_copy_once(&grilled, "Apresente o ponto", "logo depois de gravar o sim");
+    asks_for_the_design_copy_once(&grilled, "Os pontos abertos", "logo depois de gravar o sim");
     let items = report(&grilled)["points"].as_array().cloned().expect("the point list");
     assert_eq!(items.len(), 9, "{items:?}");
 
@@ -734,10 +725,12 @@ fn the_survey_asks_for_the_approved_design_copy_when_it_opens_the_points_and_nev
     let target = root.join(&design);
     let html = "<html><body><main>tela aprovada</main></body></html>\n";
     let mut ended = Value::Null;
+    // O sim do usuário vem depois dos pontos, e cada resposta o aponta.
+    let yes = hook_says(root, home.path(), "Sim, pode seguir.").to_string();
     for i in 0..items.len() {
         let code = current["code"].as_str().expect("the point's code").to_string();
         let text = if i == APPROVED_AT { "O usuário aprovou o modelo da tela." } else { "O usuário respondeu ao ponto." };
-        let out = rt(root, &["answer", "--spec", SPEC, "--point", &code, "--type", "decision", "--json", &decision(text)]);
+        let out = rt(root, &["answer", "--spec", SPEC, "--point", &code, "--type", "decision", "--json", &decision(text), "--origin", &yes]);
         let answered = report(&out);
         assert_eq!(out.status.code(), Some(0), "answer {i}: {answered}");
         later.push((format!("answer {i}"), mentions(&out)));
@@ -760,36 +753,21 @@ fn the_survey_asks_for_the_approved_design_copy_when_it_opens_the_points_and_nev
         assert!(gate.trim().is_empty(), "the copy is let through with no decision, warning or question: {gate}");
         std::fs::write(&target, html).expect("the conductor saves the copy");
     }
-    let next = ended["next"].as_str().unwrap_or_default();
-    assert!(next.contains("rode o revisor de fora") && ended["unrouted"].is_array(), "the last answer ends the survey: {ended}");
-
-    // O revisor de fora acha um ponto, e o fechamento dele é o fim de novo.
-    let found = json!({"block": "outside_review", "gap": "O merge pela interface web", "from": "outside_review", "status": "open",
-        "origin": said, "facts": [{"text": "O revisor achou.", "source": "src/main.rs:2"}]});
-    let out = rt(root, &["write", "point", "--spec", SPEC, "--json", &found.to_string()]);
-    let added = report(&out);
-    assert_eq!(out.status.code(), Some(0), "{added}");
-    later.push(("outside review point".to_string(), mentions(&out)));
-    let code = added["code"].as_str().unwrap_or_else(|| panic!("the reviewer's point: {added}")).to_string();
-    let out = rt(root, &["answer", "--spec", SPEC, "--point", &code, "--type", "decision", "--json", &decision("O usuário respondeu ao revisor.")]);
-    let closed = report(&out);
-    assert_eq!(out.status.code(), Some(0), "{closed}");
-    assert!(closed["unrouted"].is_array(), "closing the reviewer's point ends the survey: {closed}");
-    later.push(("outside review closed".to_string(), mentions(&out)));
+    assert!(ended["unrouted"].is_array(), "the last answer ends the survey: {ended}");
     let out = rt(root, &["grill", "--spec", SPEC, "--full"]);
     assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stdout));
     assert!(report(&out)["unrouted"].is_array(), "the grill with no open point: {}", String::from_utf8_lossy(&out.stdout));
     later.push(("grill at the end".to_string(), mentions(&out)));
-    assert_eq!(later.len(), 9 + 9 + 3, "{later:?}");
+    assert_eq!(later.len(), 9 + 9 + 1, "{later:?}");
     let repeated: Vec<&(String, usize)> = later.iter().filter(|(_, count)| *count > 0).collect();
     assert!(repeated.is_empty(), "no response after the grill repeats the copy: {repeated:?}");
 
-    let prompt = format!("Revise o levantamento da spec {SPEC}: os pontos, as regras e as decisões.");
+    let prompt = format!("Revise a obra da spec {SPEC}: o diff, as regras e as decisões.");
     let dispatch = json!({"hook_event_name": "PreToolUse", "tool_name": "Agent", "session_id": SESSION,
         "cwd": root.to_string_lossy(), "tool_input": {"subagent_type": "mustard-review", "description": "revisão", "prompt": prompt}});
     let answer: Value = serde_json::from_str(&on(root, home.path(), "PreToolUse", &dispatch)).expect("the hook answers JSON");
     let sent = answer["hookSpecificOutput"]["updatedInput"]["prompt"].as_str().unwrap_or_else(|| panic!("no rewritten prompt: {answer}"));
-    assert!(sent.contains(&format!("{design}`")), "the outside reviewer is pointed to the saved copy: {sent}");
+    assert!(sent.contains(&format!("{design}`")), "the reviewer is pointed to the saved copy: {sent}");
 }
 
 /// Num projeto em inglês, o `grill` curto que abre os pontos diz o mesmo, na
@@ -808,7 +786,7 @@ fn the_short_grill_asks_for_the_design_copy_once_in_english() {
     write(root, "context", &json!({"title": "Agree on the item", "agent": "- check by the test", "text": GOAL, "origin": said}));
 
     let short = rt(root, &["grill", "--kinds", "feature", "--spec", SPEC]);
-    asks_for_the_design_copy_once(&short, "Present point", "right after recording the yes");
+    asks_for_the_design_copy_once(&short, "The open points", "right after recording the yes");
 }
 
 /// Duas tarefas que passam a depender uma da outra, em círculo, são

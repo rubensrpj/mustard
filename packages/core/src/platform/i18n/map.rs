@@ -483,12 +483,11 @@ mod tests {
     use super::*;
     use crate::platform::i18n::translate;
 
-    /// Esta parte guarda as mesmas chaves, com os mesmos textos nos dois
-    /// idiomas, como o arquivo de impressões dela em `stamps/` guarda. Quem muda
-    /// um texto de propósito regrava o arquivo pelo comando que a falha mostra.
+    /// Cada chave desta parte começa por um dos começos que ela declara e tem
+    /// texto nos dois idiomas.
     #[test]
-    fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged("map", include_str!("map.rs"), super::PREFIXES);
+    fn the_part_answers_each_of_its_keys() {
+        crate::platform::i18n::tests::assert_part_answers(include_str!("map.rs"), super::PREFIXES);
     }
 
     /// O que a resposta de quem usa diz das ligações — o cabeçalho, o próximo

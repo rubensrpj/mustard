@@ -81,7 +81,7 @@ fn run_for_host(trigger: Option<Trigger>, input: &HookInput, codex: bool) -> Out
         return outcome;
     }
     for module in registry.applicable(trigger, tool) {
-        if codex && !["command_guard", "write_gate", "subagent_inject", "approval_witness", "size_notice", "precompact_notice"].contains(&module.id) { continue; }
+        if codex && !["command_guard", "write_gate", "subagent_inject", "approval_witness", "size_notice"].contains(&module.id) { continue; }
         run_module(module, input, &ctx, &root, &mut outcome);
     }
     // A resposta barrada também é gravada, antes do complemento que o
@@ -217,7 +217,7 @@ mod tests {
         let dir = project_on("desligado");
         let root = dir.path();
         std::fs::write(root.join("mustard.json"), r#"{"enabled":false}"#).unwrap();
-        let input = HookInput { session_id: Some("s1".to_string()), ..bash_input(root, "rm -rf /", "PreToolUse") };
+        let input = HookInput { session_id: Some("s1".to_string()), ..bash_input(root, "mustard-rt run read backlog | head -5", "PreToolUse") };
         let outcome = run_event(Some(Trigger::PreToolUse), &input);
         assert_eq!(outcome.verdict, Verdict::Allow, "{outcome:?}");
         assert!(outcome.warnings.is_empty(), "{outcome:?}");
@@ -225,7 +225,7 @@ mod tests {
 
         let on = tempfile::tempdir().unwrap();
         std::fs::write(on.path().join("mustard.json"), r#"{"enabled":true}"#).unwrap();
-        assert!(run_event(Some(Trigger::PreToolUse), &bash_input(on.path(), "rm -rf /", "PreToolUse")).is_blocking());
+        assert!(run_event(Some(Trigger::PreToolUse), &bash_input(on.path(), "mustard-rt run read backlog | head -5", "PreToolUse")).is_blocking());
     }
 
     /// Um comando comum de leitura passa pelo despachante.

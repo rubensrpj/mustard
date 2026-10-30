@@ -226,7 +226,11 @@ fn seed_dest(
     // A troca vem antes da reposição: com a antiga já trocada no lugar dela,
     // a nova não entra de novo no fim da lista.
     swap_mixed_wildcard_deny_rules(&mut settings);
-    backfill_own_permission_rules(&mut settings, &seed);
+    // O padrão das permissões chega ao arquivo local; no modo compartilhado,
+    // pela gravação do arquivo local, e nunca ao arquivo da equipe.
+    if mode.is_private() {
+        backfill_own_permission_rules(&mut settings, &seed, None);
+    }
     retire_old_rules(&mut settings);
     // rtk's own hook lived in the local layer only: a shared install writes
     // the team's file, and the local file loses the hook in
@@ -243,9 +247,10 @@ fn seed_dest(
     write_if_changed(&dest, existing_raw.as_deref(), settings)
 }
 
-/// No modo compartilhado, leva a pasta das cópias ao arquivo local, que o
-/// modo não semeia: só essa chave entra, e o resto do arquivo fica. O arquivo
-/// que existe e não é um objeto JSON fica intocado.
+/// No modo compartilhado, leva ao arquivo local, que o modo não semeia, a
+/// pasta das cópias e as regras de permissão da semente que o arquivo da
+/// equipe não tem; o resto do arquivo fica. O arquivo que existe e não é um
+/// objeto JSON fica intocado.
 fn seed_local_copies_dir(claude_dir: &Path, copies: &str) -> Result<SeedOutcome> {
     let dest = settings_dest(claude_dir, InstallMode::Private);
     let existing_raw = fs::read_to_string(&dest).ok();
@@ -257,6 +262,8 @@ fn seed_local_copies_dir(claude_dir: &Path, copies: &str) -> Result<SeedOutcome>
         },
     };
     allow_copies_dir(&mut settings, copies);
+    let team = fs::read_to_string(settings_dest(claude_dir, InstallMode::Shared)).map(|raw| parse_json_object(&raw)).unwrap_or_default();
+    backfill_own_permission_rules(&mut settings, &parse_json_object(SETTINGS_SEED), Some(&team));
     remove_rtk_hook(&mut settings);
     write_if_changed(&dest, existing_raw.as_deref(), settings)
 }
@@ -400,7 +407,11 @@ pub fn retire_planted_plugin_enablement(settings: &mut Map<String, Value>) {
 ///   asking for it back, and one who allowed a command the seed denies chose so.
 ///
 /// Nothing happens when the file declares no `permissions` object.
-fn backfill_own_permission_rules(settings: &mut Map<String, Value>, seed: &Map<String, Value>) {
+///
+/// Com `team`, o arquivo da equipe de uma instalação compartilhada, as regras
+/// vão ao arquivo local: as listas nascem quando faltam, e a regra que o
+/// arquivo da equipe tem em qualquer lista já está decidida ali.
+fn backfill_own_permission_rules(settings: &mut Map<String, Value>, seed: &Map<String, Value>, team: Option<&Map<String, Value>>) {
     let seed_list = |list: &str| -> Vec<String> {
         seed.get("permissions")
             .and_then(|p| p.get(list))
@@ -410,6 +421,19 @@ fn backfill_own_permission_rules(settings: &mut Map<String, Value>, seed: &Map<S
     };
     let allow: Vec<String> = seed_list("allow").into_iter().filter(|r| is_own_allow_rule(r)).collect();
     let deny = seed_list("deny");
+    let team_rules: Vec<String> = team
+        .and_then(|team| team.get("permissions"))
+        .and_then(Value::as_object)
+        .into_iter()
+        .flat_map(|perms| ["allow", "deny", "ask"].into_iter().filter_map(|list| perms.get(list)))
+        .filter_map(Value::as_array)
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect();
+    if team.is_some() {
+        settings.entry("permissions").or_insert_with(|| Value::Object(Map::new()));
+    }
     let Some(perms) = settings.get_mut("permissions").and_then(Value::as_object_mut) else {
         return;
     };
@@ -433,6 +457,10 @@ fn backfill_own_permission_rules(settings: &mut Map<String, Value>, seed: &Map<S
             .map(|(_, new)| (*new).to_string())
             .collect();
         decided.extend(renamed);
+        decided.extend(team_rules.iter().cloned());
+        if team.is_some() && !wanted.iter().all(|rule| decided.contains(rule)) {
+            perms.entry(list).or_insert_with(|| Value::Array(Vec::new()));
+        }
         let Some(rules) = perms.get_mut(list).and_then(Value::as_array_mut) else {
             continue;
         };
@@ -835,7 +863,8 @@ mod tests {
     // --- the harness's own permission rules ---------------------------------
 
     /// A permission default Mustard ships reaches a project that is ALREADY
-    /// installed — and touches nothing else in the operator's file.
+    /// installed — in the local file, never the team's file, which keeps
+    /// exactly what it had.
     ///
     /// The seed merge is top-level only, so a project that has a `permissions`
     /// object keeps it verbatim and a rule added to the seed lands nowhere it is
@@ -865,36 +894,22 @@ mod tests {
 
         seed_settings(&root.join(".claude"), false, InstallMode::Shared, Locale::PtBr).unwrap();
 
-        let settings: Value = serde_json::from_str(
-            &std_fs::read_to_string(root.join(".claude/settings.json")).unwrap(),
-        )
-        .unwrap();
-        let allow: Vec<&str> = settings["permissions"]["allow"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(Value::as_str)
-            .collect();
-
-        // Every `mustard-rt run` rule the seed declares is now present.
-        for rule in seed_own_rules() {
-            assert!(
-                allow.contains(&rule.as_str()),
-                "{rule} must reach an installed project: {allow:?}",
-            );
+        let list = |file: &str, list: &str| -> Vec<String> {
+            let settings: Value = serde_json::from_str(&std_fs::read_to_string(root.join(file)).unwrap()).unwrap();
+            settings["permissions"][list].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect()
+        };
+        // The team's file keeps its own lists, in its own order.
+        assert_eq!(list(".claude/settings.json", "allow"), ["Read", "Bash(mustard-rt run qa-run:*)", "Bash(npm test:*)"]);
+        assert_eq!(list(".claude/settings.json", "deny"), ["Bash(rm -rf:*)"]);
+        // Every seed rule the team's file lacks reaches the local file, once.
+        let local_allow = list(".claude/settings.local.json", "allow");
+        for rule in seed_own_rules().iter().filter(|rule| *rule != "Bash(mustard-rt run qa-run:*)") {
+            assert!(local_allow.contains(rule), "{rule} must reach an installed project: {local_allow:?}");
         }
-        // What the operator wrote is untouched, in its own order, once each.
-        assert_eq!(allow[0], "Read", "the operator's list keeps its head: {allow:?}");
-        assert_eq!(allow[1], "Bash(mustard-rt run qa-run:*)", "{allow:?}");
-        assert_eq!(allow[2], "Bash(npm test:*)", "{allow:?}");
-        assert_eq!(
-            allow.iter().filter(|r| **r == "Bash(mustard-rt run qa-run:*)").count(),
-            1,
-            "a rule already present is never duplicated: {allow:?}",
-        );
-        // Nothing else in the file was invented: the operator declared no `env`,
-        // and the top-level merge is what backfills it — not this rule.
-        assert_eq!(settings["permissions"]["deny"][0], json!("Bash(rm -rf:*)"));
+        assert!(!local_allow.iter().any(|rule| rule == "Bash(mustard-rt run qa-run:*)"), "{local_allow:?}");
+        let local_deny = list(".claude/settings.local.json", "deny");
+        assert!(local_deny.iter().any(|rule| rule == "Bash(git reset --hard:*)"), "{local_deny:?}");
+        assert!(!local_deny.iter().any(|rule| rule == "Bash(rm -rf:*)"), "a rule the team holds is not repeated: {local_deny:?}");
     }
 
     /// A DENIED Mustard command stays denied. A default never overrides a
@@ -911,7 +926,7 @@ mod tests {
             }))
             .unwrap(),
         );
-        backfill_own_permission_rules(&mut settings, &seed);
+        backfill_own_permission_rules(&mut settings, &seed, None);
 
         let allow: Vec<&str> = settings["permissions"]["allow"]
             .as_array()
@@ -934,7 +949,7 @@ mod tests {
     fn a_file_without_permissions_is_left_to_the_top_level_merge() {
         let seed = parse_json_object(SETTINGS_SEED);
         let mut settings = parse_json_object(r#"{"env":{"X":"1"}}"#);
-        backfill_own_permission_rules(&mut settings, &seed);
+        backfill_own_permission_rules(&mut settings, &seed, None);
         assert!(settings.get("permissions").is_none(), "nothing invented: {settings:?}");
     }
 

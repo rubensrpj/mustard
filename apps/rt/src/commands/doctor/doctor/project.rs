@@ -28,6 +28,40 @@ pub(super) fn check_scan_output(root: &Path, lang: Locale) -> CheckResult {
     CheckResult::warn(NAME, vec![translate("doctor.scan_output.visible", lang).replace("{paths}", &visible.join(", "))])
 }
 
+/// As branches cujo trabalho já entrou na base por merge e que seguem vivas,
+/// pela conferência do git local, que nunca pergunta ao provedor: só acusa,
+/// no idioma `lang`. Fora de um projeto com `mustard.json`, nada a conferir.
+pub(super) fn check_merged_branches(root: &Path, lang: Locale) -> CheckResult {
+    const NAME: &str = "merged-branches";
+    if !mustard_core::ProjectConfig::exists(root) {
+        return CheckResult::ok(NAME);
+    }
+    let flow = crate::shared::work_kind::BaseFlow::of_at(&mustard_core::ProjectConfig::load(root).git, root);
+    let merged: Vec<String> = crate::shared::branch_state::merged_by_another(root, &flow).into_iter().map(|state| state.branch).collect();
+    if merged.is_empty() {
+        return CheckResult::ok(NAME);
+    }
+    let said = translate("session.merged", lang).replace("{count}", &merged.len().to_string()).replace("{branches}", &merged.join(", "));
+    CheckResult::warn(NAME, vec![said])
+}
+
+/// A versão do Mustard gravada no `mustard.json` contra a do programa que
+/// roda: diferente, ou sem versão, acusa no idioma `lang`. Fora de um projeto
+/// com `mustard.json`, nada a conferir.
+pub(super) fn check_project_version(root: &Path, lang: Locale) -> CheckResult {
+    const NAME: &str = "project-version";
+    if !mustard_core::ProjectConfig::exists(root) {
+        return CheckResult::ok(NAME);
+    }
+    let running = mustard_core::harness_version();
+    let stamped = mustard_core::ProjectConfig::load(root).version;
+    if stamped.as_deref() == Some(running.as_str()) {
+        return CheckResult::ok(NAME);
+    }
+    let stamped = stamped.unwrap_or_else(|| translate("session.version.unstamped", lang).to_string());
+    CheckResult::warn(NAME, vec![translate("session.version.drift", lang).replace("{stamped}", &stamped).replace("{running}", &running)])
+}
+
 /// The paths git sees: tracked, or new and not ignored. `None` when git does
 /// not answer (no git, outside a repository).
 fn visible_to_git(root: &Path, paths: &[String]) -> Option<Vec<String>> {
@@ -119,10 +153,10 @@ fn unread_languages(root: &Path, lang: Locale) -> Vec<String> {
 pub(super) fn check_claude_md(root: &Path, lang: Locale) -> CheckResult {
     const NAME: &str = "claude-md";
     let plan = mustard_core::platform::project_seed::cleanup::plan(root);
-    if plan.files.is_empty() {
+    if plan.files.is_empty() && plan.team.is_none() {
         return CheckResult::ok(NAME);
     }
-    let paths: Vec<&str> = plan.files.iter().map(|change| change.path.as_str()).collect();
+    let paths: Vec<&str> = plan.files.iter().chain(&plan.team).map(|change| change.path.as_str()).collect();
     CheckResult::warn(NAME, vec![translate("doctor.claude_md.leftovers", lang).replace("{paths}", &paths.join(", "))])
 }
 
@@ -239,5 +273,39 @@ mod tests {
         assert_eq!(found.status, Status::Warn);
         assert!(found.details[0].contains("apps/api/CLAUDE.md"), "{:?}", found.details);
         assert!(found.details[0].contains("mustard-rt run upsert"), "{:?}", found.details);
+    }
+
+    /// A branch que já entrou na base por merge e segue viva, e a versão do
+    /// projeto que difere da que roda, viram aviso do `doctor`, que a
+    /// abertura deixou de dar; a branch em andamento não aparece.
+    #[test]
+    fn the_doctor_names_the_merged_branches_and_the_project_version() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        assert_eq!(check_merged_branches(root, Locale::PtBr).status, Status::Ok, "no mustard.json, nothing to check");
+        assert_eq!(check_project_version(root, Locale::PtBr).status, Status::Ok);
+        let git = |args: &[&str]| assert!(mustard_core::platform::git::run(root, args).ok, "git {args:?}");
+        git(&["init", "-q", "-b", "dev", "."]);
+        git(&["config", "user.email", "t@t"]);
+        git(&["config", "user.name", "t"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        write_file(&root.join("mustard.json"), r#"{"version":"0.0.1-velha","git":{"flow":{"*":"dev"}}}"#);
+        git(&["commit", "-q", "--allow-empty", "-m", "seed"]);
+        git(&["checkout", "-q", "-b", "feature/entregue"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "work"]);
+        git(&["checkout", "-q", "dev"]);
+        git(&["merge", "-q", "--no-ff", "-m", "merge", "feature/entregue"]);
+        git(&["checkout", "-q", "-b", "feature/andando"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "in flight"]);
+        git(&["checkout", "-q", "dev"]);
+
+        let merged = check_merged_branches(root, Locale::PtBr);
+        assert_eq!(merged.status, Status::Warn, "{:?}", merged.details);
+        assert!(merged.details[0].contains("feature/entregue") && !merged.details[0].contains("feature/andando"), "{:?}", merged.details);
+        let version = check_project_version(root, Locale::PtBr);
+        assert_eq!(version.status, Status::Warn, "{:?}", version.details);
+        assert!(version.details[0].contains("0.0.1-velha"), "{:?}", version.details);
+        write_file(&root.join("mustard.json"), &format!(r#"{{"version":"{}"}}"#, mustard_core::harness_version()));
+        assert_eq!(check_project_version(root, Locale::PtBr).status, Status::Ok);
     }
 }

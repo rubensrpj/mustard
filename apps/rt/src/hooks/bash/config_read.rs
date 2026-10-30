@@ -9,10 +9,15 @@ use super::{lex, reading};
 use crate::commands::maint::config_read::supported;
 use crate::shared::{config_key, search_gateway::{literal_shell, quote}};
 
-/// `command` with each supported read of the configuration file replaced by
-/// the masked read, the other steps kept in order. `None` when no read can be
-/// replaced safely, or when the replaced command would still expose the key.
+/// `command` with its supported read of the configuration file replaced by
+/// the masked read. `None` when the line has more than one step (a command
+/// handed back ready would carry the other steps, a destructive one included),
+/// when no read can be replaced safely, or when the replaced command would
+/// still expose the key.
 pub(super) fn masked_command(command: &str, input: &HookInput, ctx: &Ctx) -> Option<String> {
+    if lex::command_ranges(command).len() != 1 {
+        return None;
+    }
     let binary = std::env::current_exe().ok()?;
     let binary = quote(&crate::shared::paths::canonical(&binary.to_string_lossy()));
     // A travessia das etapas e a troca de trás para frente moram em

@@ -95,7 +95,8 @@ pub(crate) fn resume_for(opts: &ResumeOpts, session: Option<&str>) -> Value {
         // exato do catálogo, o único que a testemunha da aprovação reconhece.
         "next": translate(next_key(phase), lang)
             .replace("{question}", translate("approval.question", lang))
-            .replace("{option}", translate("approval.option", lang)),
+            .replace("{option}", translate("approval.option", lang))
+            .replace("{spec}", &spec),
         "command": next_command_now(&project.root, phase, &spec, &state, &log),
     });
     if let Some(branch) = state.branch.as_deref() {
@@ -130,7 +131,6 @@ pub(crate) fn resume_for(opts: &ResumeOpts, session: Option<&str>) -> Value {
     if let Some(hint) = work_copies::orphans_hint(&orphans, lang) {
         out["copies_left"] = json!({"hint": hint, "copies": orphans});
     }
-    out["goal_approval"] = super::goal::status(&log, lang);
     out["since_last_message"] = since_last_message(&project.root, &spec, &log);
     out
 }
@@ -279,16 +279,6 @@ pub(crate) fn current_line(root: &Path, session: Option<&str>) -> Option<String>
     Some(resume_line(&spec, &log, &observed, lang))
 }
 
-/// A linha de retomada da spec atual, como [`current_line`], e as ondas com
-/// agente vivo ([`waves_with_live_agent`](crate::commands::flow::round::queue::waves_with_live_agent)),
-/// numa leitura só da spec: o aviso de tamanho de quem conduz manda esperar a
-/// volta delas antes de limpar a conversa.
-pub(crate) fn current_line_and_live(root: &Path, session: Option<&str>) -> Option<(String, Vec<u64>)> {
-    let (spec, log, lang, observed) = current_log(root, session)?;
-    let live = crate::commands::flow::round::queue::waves_with_live_agent(&spec_events::project(root).root, &spec, &log);
-    Some((resume_line(&spec, &log, &observed, lang), live.into_keys().collect()))
-}
-
 /// O que a retomada depois de `/clear` diz das ondas cujo agente a limpeza
 /// parou: as que tinham agente vivo quando a conversa foi limpa, e o que
 /// fazer com cada uma, mandar a linha `PAUSED` dela na próxima rodada, que a
@@ -393,7 +383,8 @@ pub(crate) fn resume_block(spec: &str, log: &SpecLog, observed: &[SpecEvent], la
     let command = next_command(phase, spec, &state).as_str().map_or_else(|| none.to_string(), str::to_string);
     let next = translate(next_key(phase), lang)
         .replace("{question}", translate("approval.question", lang))
-        .replace("{option}", translate("approval.option", lang));
+        .replace("{option}", translate("approval.option", lang))
+        .replace("{spec}", spec);
     let text = translate("conversation_size.block", lang)
         .replace("{spec}", spec)
         .replace("{phase}", phase)
@@ -602,8 +593,8 @@ fn step_of(root: &Path, phase: &str, spec: &str, log: &SpecLog, lang: Locale) ->
     if !stuck.is_empty() {
         return waves("resume.step.stuck_one", "resume.step.stuck_many", &stuck.keys().copied().collect::<Vec<_>>());
     }
-    // As vagas pela conta única da rodada: a onda que voltou guarda a cópia
-    // sem ocupar vaga.
+    // As vagas pela conta única da rodada: a onda que voltou guarda a cópia,
+    // e com ela a vaga, até o commit.
     let vacancies = crate::commands::flow::round::vacancy::vacancies(root, spec, log);
     // A onda que leva a avaliação de uma skill e espera tarefas abertas nos
     // arquivos que a skill cita não sai, como na rodada.

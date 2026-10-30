@@ -10,7 +10,6 @@ use super::text::{CutAt, cut};
 use super::project_map::{ProjectMap, UseSite, file_history};
 
 pub mod annotation;
-pub mod precise;
 pub mod resources;
 pub mod references;
 pub mod capabilities;

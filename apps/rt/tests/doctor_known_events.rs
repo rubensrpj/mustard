@@ -7,8 +7,7 @@
 //! `plugin/hooks/hooks.json` manifest.
 //!
 //! A conferência da fiação valida os comandos `mustard-rt on <evento>` contra
-//! o conjunto de eventos que o manifesto registra, inclusive `PreCompact` e
-//! `Stop`. `doctor::known_hook_events` deriva o conjunto do manifesto; este
+//! o conjunto de eventos que o manifesto registra, inclusive `Stop`. `doctor::known_hook_events` deriva o conjunto do manifesto; este
 //! teste lê o manifesto uma segunda vez, de forma independente, direto do
 //! disco, e falha se os dois discordam para qualquer lado — assim uma
 //! derivação desfeita, ou um leitor que deixa de enxergar uma forma que o
@@ -136,10 +135,9 @@ fn source(rel: &str) -> String {
 /// leitura da onda da cópia pelo tamanho da conversa saíram do código em obras
 /// anteriores. Esta prova fecha as três portas por onde elas voltam a aparecer
 /// para quem lê: um comentário que ainda descreva a regra que saiu; um teste
-/// composto que repita prova já existente em teste próprio; e o registro do
-/// gancho de compactação, hoje conferido só contra si mesmo — quem tira a
-/// entrada `PreCompact` do manifesto tira junto a lista derivada dele, e o
-/// aviso de compactar some sem nenhum teste cair.
+/// composto que repita prova já existente em teste próprio; e a entrada
+/// `PreCompact` do manifesto, que saiu com o aviso antes de compactar: o
+/// início da sessão depois do resumo traz o bloco de retomada.
 #[test]
 fn leftovers_of_the_old_economy_no_longer_exist() {
     // 1) Nenhum comentário descreve regra que já saiu do código. Cada frase
@@ -198,7 +196,7 @@ fn leftovers_of_the_old_economy_no_longer_exist() {
         ),
         (
             "apps/rt/src/hooks/session/conversation_size.rs",
-            "fn compaction_warning_arrives_in_the_hook_and_nobody_else_is_blocked_by_size",
+            "fn nothing_runs_before_compaction_and_nobody_is_blocked_by_size",
         ),
     ] {
         assert!(
@@ -207,38 +205,10 @@ fn leftovers_of_the_old_economy_no_longer_exist() {
         );
     }
 
-    // 3) O registro do gancho de compactação tem catraca. O manifesto é lido
-    // aqui pelo nome do evento, não pela lista que o doutor deriva dele: a
-    // entrada precisa existir, chamar `on PreCompact` e cobrir as duas formas
-    // de compactar, a manual e a automática.
+    // 3) Antes de compactar, nenhum gancho: o início da sessão depois do
+    // resumo traz o bloco de retomada, e o manifesto não chama o evento.
     let path = shipped_manifest_path().expect("plugin/hooks/hooks.json must be reachable");
     let text = std::fs::read_to_string(&path).expect("hooks.json must be readable");
     let manifest: serde_json::Value = serde_json::from_str(&text).expect("hooks.json must be valid JSON");
-    let entries = manifest["hooks"]["PreCompact"]
-        .as_array()
-        .expect("o manifesto tem de registrar `PreCompact` — sem ele o aviso de compactar nunca chega");
-    assert!(
-        entries.iter().any(|entry| {
-            entry["hooks"]
-                .as_array()
-                .is_some_and(|hooks| hooks.iter().any(|h| {
-                    h.get("command")
-                        .and_then(serde_json::Value::as_str)
-                        .is_some_and(|c| c.contains("on PreCompact"))
-                }))
-        }),
-        "`PreCompact` está registrado sem chamar `mustard-rt on PreCompact`: {entries:?}"
-    );
-    let matchers: Vec<String> = entries
-        .iter()
-        .filter_map(|e| e.get("matcher").and_then(serde_json::Value::as_str))
-        .map(str::to_string)
-        .collect();
-    for source_name in ["manual", "auto"] {
-        assert!(
-            matchers.iter().any(|m| m.split('|').any(|alt| alt.trim() == source_name)),
-            "nenhum matcher de `PreCompact` cobre `{source_name}` — compactar assim não avisa nada. \
-             Registrados: {matchers:?}",
-        );
-    }
+    assert!(manifest["hooks"].get("PreCompact").is_none(), "o manifesto voltou a chamar `PreCompact`");
 }

@@ -1234,7 +1234,6 @@ pub(crate) mod tests {
     use super::*;
     use crate::domain::project_map::{DeclLineage, FileLineage, LineageCommit};
     use crate::domain::search::{bm25f, score_x1024, Fields, NameHits, Posting, TOP};
-    use crate::io::map_glossary;
     use crate::io::map_index::TOKENIZER;
     use crate::io::map_lists::{base_list, name_hits, ranked_files_near, sources_near};
     use crate::io::map_sense::Near;
@@ -2053,10 +2052,13 @@ pub(crate) mod tests {
         };
         assert_eq!(base(dir.path()), vec![id_of(dir.path(), named)]);
 
-        map_glossary::record_search(&model, "s1", "sobra", &languages(), &[]).unwrap();
-        let wait = std::time::Duration::from_secs(1);
-        let marks = map_glossary::confirm_edit(&model, "s1", "src/rounds.rs", &[(2, 2)], &languages(), wait).unwrap();
-        assert_eq!(marks.len(), 1, "{marks:?}");
+        rusqlite::Connection::open(&model)
+            .unwrap()
+            .execute(
+                "INSERT INTO glossary_marks(forms, file, name) VALUES (?1, 'src/rounds.rs', 'collect_leftover')",
+                [serde_json::to_string(&Normalizer::new(&languages()).word_forms("sobra")).unwrap()],
+            )
+            .unwrap();
         assert_eq!(base(dir.path()), vec![id_of(dir.path(), named), id_of(dir.path(), "collect_leftover")]);
     }
 

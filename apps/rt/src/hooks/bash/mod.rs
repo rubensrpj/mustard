@@ -1,3 +1,4 @@
+mod base_delete;
 pub mod command_guard;
 mod config_read;
 pub(crate) mod lex;
@@ -5,7 +6,6 @@ pub(crate) mod reading;
 mod rewrite;
 pub(crate) mod rtk_swap;
 mod runtime_output;
-mod safety;
+pub(crate) mod shell_edit;
 pub(crate) mod waiting;
-mod windows_redirect;
 pub(crate) mod workspace_scope;

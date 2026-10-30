@@ -111,14 +111,7 @@ impl Request {
         if self.intent.len() > 4000 || self.input.to_string().len() > 64 * 1024 {
             return Err("search-request-too-large".into());
         }
-        if !matches!(
-            self.tool.as_str(),
-            "rg" | "grep" | "git" | "Grep" | "Glob" | "Read"
-                | "Symbol"
-                | "Trace"
-                | "Structure"
-                | "References"
-        ) {
+        if !matches!(self.tool.as_str(), "rg" | "grep" | "git" | "Grep" | "Glob" | "Read") {
             return Err("search-tool-unsupported; use the original host tool".into());
         }
         if !self.input.is_object() {

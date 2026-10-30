@@ -67,3 +67,13 @@ After: "When the agent asks Mustard where the run function is used, it gets 11 p
 ## While working
 
 One sentence before starting, saying what you are about to do. In the middle, speak only when you find something important or change direction. At the end, the result first. Then how it was and how it is now, one line per change, told by the effect the user sees. The detail comes last, for whoever wants it.
+
+## Working principles
+
+- The program does and the AI decides: the mechanical part, such as counting, joining, checking and recording, is the program's; the AI keeps what takes judgment.
+- A defect the work finds on its way is fixed inside it, not in some later work.
+- What Mustard records is decided by a direct rule that closes every case; a guess is only allowed in free text.
+- Value is speed, savings, effectiveness and quality, through orchestration, agents and skills, Haiku and Jev; the rest goes.
+- A risk stops only the work that depends on it, and the rest goes on.
+- Every measure comes from the program, with the data of the running version, and one sample never becomes a general rule.
+- Before changing the product, show the real case where it failed, seen by the user or recorded.

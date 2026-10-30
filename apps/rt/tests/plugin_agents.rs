@@ -467,7 +467,7 @@ fn the_agents_state_that_the_marked_line_is_mandatory_and_the_ledger_is_not_thei
 }
 
 /// Os dois moldes — onda e revisão — declaram o modelo e o esforço padrão da
-/// configuração, nos dois idiomas: cada agente sabe o próprio modelo e o
+/// configuração, nos dois idiomas, e o revisor final fica no Opus: cada agente sabe o próprio modelo e o
 /// próprio esforço, sem herdar o da sessão em silêncio. O modelo e o esforço
 /// do molde são os mesmos padrões que a instalação escreve no
 /// `mustard.json`, para o molde copiado sem instalação valer o mesmo. Teto de
@@ -476,10 +476,9 @@ fn the_agents_state_that_the_marked_line_is_mandatory_and_the_ledger_is_not_thei
 /// tamanho em bytes — o que prende o texto é o que ele diz.
 #[test]
 fn each_agent_template_declares_its_own_model_and_effort() {
-    let default = mustard_core::domain::config::DEFAULT_AGENT_MODEL;
     let effort = mustard_core::domain::config::DEFAULT_AGENT_EFFORT;
     for lang in ["pt-BR", "en-US"] {
-        for name in ["wave", "review"] {
+        for (name, default) in [("wave", mustard_core::domain::config::DEFAULT_AGENT_MODEL), ("review", mustard_core::domain::config::FINAL_REVIEW_MODEL)] {
             let text = template(lang, name);
             assert!(
                 text.contains(&format!("\nmodel: {default}\n")),
@@ -490,7 +489,6 @@ fn each_agent_template_declares_its_own_model_and_effort() {
                 "the {lang} `{name}` agent does not declare the default effort {effort}:\n{text}",
             );
             assert!(!text.contains("model: inherit"), "the {lang} `{name}` agent still inherits the session's model");
-            assert!(!text.contains("model: opus"), "the {lang} `{name}` agent still fixes the opus model:\n{text}");
         }
 
         let wave = template(lang, "wave");
@@ -499,9 +497,9 @@ fn each_agent_template_declares_its_own_model_and_effort() {
 }
 
 /// O modelo dos agentes vem do `mustard.json` do projeto, pelo instalador de
-/// verdade: sem o campo, os dois agentes saem no padrão e o arquivo ganha o
-/// campo; com `opus` no arquivo, os dois saem em opus e o campo fica onde
-/// estava; trocada a linha, a instalação seguinte troca os dois agentes.
+/// verdade: sem o campo, o agente de onda sai no padrão, o revisor final no
+/// Opus, e o arquivo ganha o campo; com `opus` no arquivo e a escolha pela
+/// dificuldade desligada, os dois saem em opus e o campo fica onde estava.
 #[test]
 fn the_installed_agents_use_the_model_of_the_project_config() {
     let model_of = |root: &Path, name: &str| -> String {
@@ -516,13 +514,13 @@ fn the_installed_agents_use_the_model_of_the_project_config() {
         let dir = tempfile::tempdir().unwrap();
         let (root, home) = installed(dir.path(), &format!(r#"{{"version":"1.0.0","language":{{"text":"{lang}"}}}}"#));
         assert_eq!(declared(&root)["model"], json!("sonnet"), "the install did not write the default model");
-        for name in ["wave", "review"] {
-            assert_eq!(model_of(&root, name), "sonnet", "the {lang} `{name}` agent");
+        for (name, default) in [("wave", "sonnet"), ("review", "opus")] {
+            assert_eq!(model_of(&root, name), default, "the {lang} `{name}` agent");
         }
 
         std::fs::write(
             root.join("mustard.json"),
-            format!(r#"{{"version":"1.0.0","language":{{"text":"{lang}"}},"agents":{{"model":"opus"}}}}"#),
+            format!(r#"{{"version":"1.0.0","language":{{"text":"{lang}"}},"agents":{{"model":"opus","by_difficulty":false}}}}"#),
         )
         .unwrap();
         let report = rt(&root, &home, &["run", "upsert"], None);
@@ -632,6 +630,38 @@ fn the_wave_agent_template_has_exactly_four_items() {
     }
 }
 
+/// O objetivo do molde da onda, nos dois idiomas, diz que nem a spec, nem a
+/// cópia, nem o código passam por python, jq ou grep; que o código se lê pela
+/// ferramenta de leitura, com `offset`/`limit`, e muda só pela ferramenta de
+/// edição, várias edições numa resposta.
+#[test]
+fn both_wave_templates_say_code_changes_only_through_the_edit_tool() {
+    for (lang, header, said) in [
+        (
+            "pt-BR",
+            "## Objetivo",
+            [
+                "nunca python/jq/grep da spec, da cópia ou do código",
+                "Código se lê pela ferramenta de leitura, com `offset`/`limit`, e muda só pela ferramenta de edição, várias edições numa resposta",
+            ],
+        ),
+        (
+            "en-US",
+            "## Goal",
+            [
+                "no python/jq/grep on spec, copy or code",
+                "Code is read with the read tool, using `offset`/`limit`, and changed only with the edit tool, several edits in one response",
+            ],
+        ),
+    ] {
+        let wave = template(lang, "wave");
+        let goal = section(&wave, header);
+        for phrase in said {
+            assert!(goal.contains(phrase), "the {lang} wave goal does not say `{phrase}`: {goal}");
+        }
+    }
+}
+
 /// O texto de uma seção de segundo nível de um molde: da linha `header` até a
 /// próxima seção, sem a própria linha do título.
 fn section<'a>(body: &'a str, header: &str) -> &'a str {
@@ -712,8 +742,8 @@ fn wave_template_puts_in_the_task_the_file_the_change_requires() {
 }
 
 /// A fronteira do molde de onda, nos dois idiomas: tirar o que a própria
-/// mudança deixou sem uso é princípio do produto, que chega pelo pedido da
-/// onda. Num arquivo de outra onda em andamento, o agente não
+/// mudança deixou sem uso é regra do produto, cobrada pelo teste dela. Num
+/// arquivo de outra onda em andamento, o agente não
 /// edita e deixa a sobra em `leftovers`, o campo da entrega que a rodada
 /// grava, com o título, o detalhe e os arquivos a mudar: toda sobra vai ao backlog, e o
 /// molde não pede mais que o agente diga se ela quebra algo ou é cosmética. A
@@ -932,28 +962,26 @@ fn the_installed_agents_let_a_project_language_rule_win_over_the_languages_line(
     }
 }
 
-/// O revisor diz os dois caminhos da volta: na revisão final da obra, grava o
-/// veredito pela ferramenta, com a linha de exemplo que a gravação aceita; na
-/// revisão de um levantamento e no pull request de um colega, devolve o texto
-/// a quem despachou. O pedido de cada uso diz qual vale: o do fechamento manda
-/// gravar, o do levantamento e o da porta do pull request dizem que o texto
-/// volta sem gravar nada.
+/// O revisor diz um caminho só da volta: na revisão final da obra, grava o
+/// veredito pela ferramenta, com a linha de exemplo que a gravação aceita, e
+/// o pedido do fechamento manda gravar. Não há volta de pull request de
+/// colega, e o levantamento não tem revisor próprio.
 #[test]
-fn reviewer_template_states_the_two_paths() {
-    for (lang, locale, header, said, survey_said) in [
+fn reviewer_template_records_the_final_verdict() {
+    for (lang, locale, header, said, survey) in [
         (
             "pt-BR",
             Locale::PtBr,
             "## O que devolver",
-            ["revisão final da obra", "`run write verdict", "levantamento", "pull request", "devolva o texto a quem despachou"],
-            "devolve o texto a você, sem gravar veredito",
+            ["revisão final da obra", "`run write verdict"],
+            "levantamento",
         ),
         (
             "en-US",
             Locale::EnUs,
             "## What to return",
-            ["final review", "`run write verdict", "survey", "pull request", "return the text to whoever dispatched you"],
-            "returns its text to you, recording no verdict",
+            ["final review", "`run write verdict"],
+            "survey",
         ),
     ] {
         let review = template(lang, "review");
@@ -968,18 +996,15 @@ fn reviewer_template_states_the_two_paths() {
 
         let close = translate("close.final_review", locale);
         assert!(close.contains("run write verdict") && !close.contains("<VERDICT>"), "{close}");
-        let survey = translate("survey.outside_review_step", locale);
-        assert!(survey.contains(survey_said), "{survey}");
+        assert!(!back.contains(survey), "the {lang} reviewer still returns a survey review:{back}");
+        assert!(!review.contains("pull request") && !review.contains("PRs"), "the {lang} reviewer still reviews a pull request:{review}");
     }
-    let pr = std::fs::read_to_string(repo_root().join("plugin/commands/pr.md")).unwrap();
-    assert!(pr.contains("`mustard-review` agent, from that brief: it returns its text to you and records nothing"), "{pr}");
 }
 
 /// O despacho ao revisor, pelo gancho com o JSON do Claude Code, leva o
 /// caminho da cópia do desenho aprovado quando a pasta da spec tem uma: no
 /// pedido gravado da revisão final, no da revisão de uma onda e no texto que
-/// quem conduz escreve para a revisão do levantamento, cuja spec é a da
-/// branch. Sem a cópia, nenhum deles fala de desenho.
+/// quem conduz escreve ao revisor, cuja spec é a da branch. Sem a cópia, nenhum deles fala de desenho.
 #[test]
 fn the_reviewer_dispatch_points_to_the_approved_design_only_when_the_spec_has_one() {
     let dir = tempfile::tempdir().unwrap();
@@ -997,9 +1022,7 @@ fn the_reviewer_dispatch_points_to_the_approved_design_only_when_the_spec_has_on
 
     let shown = mustard_core::io::wave_prompt::shown(&root);
     let final_review = format!("mustard-rt run read request-review --root {shown} --spec tela");
-    let title = translate("round.wave_review.title", Locale::PtBr).replace("{spec}", "tela").replace("{wave}", "1");
-    let wave_review = format!("# {title}\n\nmustard-rt run read review-request-1 --root {shown} --spec tela");
-    let survey_review = "Revise o levantamento da spec tela: os pontos, as regras e as decisões.".to_string();
+    let pull_request_review = "Revise o pull request da spec tela: o diff, as regras e as decisões.".to_string();
     let dispatch = |prompt: &str| -> String {
         let payload = json!({"hook_event_name": "PreToolUse", "tool_name": "Agent", "session_id": "sessao-revisor",
             "cwd": root.to_string_lossy(), "tool_input": {"subagent_type": "mustard-review", "description": "revisão", "prompt": prompt}});
@@ -1009,12 +1032,12 @@ fn the_reviewer_dispatch_points_to_the_approved_design_only_when_the_spec_has_on
         sent.to_string()
     };
 
-    for prompt in [&final_review, &wave_review, &survey_review] {
+    for prompt in [&final_review, &pull_request_review] {
         let sent = dispatch(prompt);
         assert!(!sent.contains("desenho.html"), "a spec without the approved design got a design: {sent}");
     }
     std::fs::write(&design, "<html><body><main>tela aprovada</main></body></html>\n").unwrap();
-    for prompt in [&final_review, &wave_review, &survey_review] {
+    for prompt in [&final_review, &pull_request_review] {
         let sent = dispatch(prompt);
         assert!(sent.contains(".claude/spec/tela/desenho.html`"), "the reviewer was not pointed to the approved design: {sent}");
         assert_eq!(sent.matches("desenho.html").count(), 1, "{sent}");
@@ -1144,9 +1167,7 @@ fn the_wave_and_review_agents_carry_the_project_wide_execution_rules() {
     }
 }
 
-/// A revisão de onda lê só o pedido que o despacho manda ler, não corrige,
-/// não compila nem roda teste, e dá um veredito curto: aprovado, ou reprovado
-/// com o motivo e os arquivos. Tudo o que roda — reler os
+/// O molde do revisor não traz mais a revisão de cada onda. Tudo o que roda — reler os
 /// recibos do fechamento e reexecutar o que ficou incerto, a prova de ponta a
 /// ponta pelo caminho do usuário e o caso da proteção tirada com duas voltas
 /// ao mesmo tempo — mora só no bloco da revisão final da obra,
@@ -1155,16 +1176,11 @@ fn the_wave_and_review_agents_carry_the_project_wide_execution_rules() {
 /// todo projeto: instalar o Mustard é a prova deste repositório, e mora no
 /// CLAUDE.md da raiz dele. Nos dois idiomas.
 #[test]
-fn only_the_final_review_runs_checks_and_the_wave_review_reads_the_diff_and_receipts() {
-    for (lang, severity, wave_review, final_review, runs, critical) in [
+fn only_the_final_review_runs_checks() {
+    for (lang, severity, final_review, runs, critical) in [
         (
             "pt-BR",
             "## Gravidade",
-            ("- Revisão de onda:", [
-                "leia só o pedido que o despacho manda ler (diff, tarefas, critérios, regras, skills e provas)",
-                "Não corrija, não compile nem rode teste",
-                "`rejected` com o motivo em poucas frases e os arquivos em `files`",
-            ]),
             "- Revisão final da obra, completa:",
             [
                 "`testCommand`",
@@ -1181,11 +1197,6 @@ fn only_the_final_review_runs_checks_and_the_wave_review_reads_the_diff_and_rece
         (
             "en-US",
             "## Severity",
-            ("- Wave review:", [
-                "read only the request the dispatch points to (diff, tasks, criteria, rules, skills and proofs)",
-                "Do not fix, build or run tests",
-                "`rejected` with the reason in a few sentences and the files in `files`",
-            ]),
             "- The work's final review, in full:",
             [
                 "`testCommand`",
@@ -1201,11 +1212,7 @@ fn only_the_final_review_runs_checks_and_the_wave_review_reads_the_diff_and_rece
         ),
     ] {
         let review = template(lang, "review");
-        let (head, said) = wave_review;
-        let line = review.lines().find(|l| l.starts_with(head)).unwrap_or_else(|| panic!("the {lang} reviewer has no `{head}` line:{review}"));
-        for phrase in said {
-            assert!(line.contains(phrase), "the {lang} wave review does not say `{phrase}`: {line}");
-        }
+        assert!(!review.contains("Revisão de onda") && !review.contains("Wave review"), "the {lang} reviewer still reviews each wave");
         let mut after = review.lines().skip_while(|l| !l.starts_with(final_review));
         assert!(after.next().is_some(), "the {lang} reviewer has no `{final_review}` block:{review}");
         let block: Vec<&str> = after.take_while(|l| l.starts_with("  - ")).collect();
@@ -1222,9 +1229,9 @@ fn only_the_final_review_runs_checks_and_the_wave_review_reads_the_diff_and_rece
 
 /// No critério, o revisor confere lendo o diff e o recibo vigente, sem cortar
 /// o caminho do usuário nem rodar nada para ver o vermelho; que o teste da
-/// regra cai antes e passa depois é princípio do produto, que chega pelos
-/// pedidos de revisão. O molde não manda mais cortar em parte alguma, nos
-/// dois idiomas.
+/// regra cai antes e passa depois é regra do produto, cobrada pelo
+/// fechamento. O molde não manda mais cortar em parte alguma, nos dois
+/// idiomas.
 #[test]
 fn the_reviewer_checks_a_criterion_by_reading_the_diff_and_receipt() {
     for (lang, criterion, said, banned) in [
@@ -1276,8 +1283,6 @@ fn no_agent_text_creates_a_copy_on_its_own_and_the_request_names_the_slot_withou
         for key in ["prompt.execution.copy", "prompt.review.copy"] {
             assert!(translate(key, text).contains(said), "the {lang} `{key}` does not say `{said}`");
         }
-        let notice = translate("scratch.residue.notice", text);
-        assert!(notice.contains("mustard-rt run clean"), "the {lang} disk notice lost its cleanup command");
     }
 
     let dir = tempfile::tempdir().unwrap();

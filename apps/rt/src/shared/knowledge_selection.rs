@@ -18,12 +18,6 @@ pub(crate) struct KnowledgeSelector {
     invoke: Box<Invoke>,
     languages: Languages,
 }
-impl KnowledgeSelector {
-    pub(crate) fn configured(root: &Path) -> Option<Self> {
-        let filter = JevFilter::for_knowledge(root)?;
-        Some(Self { invoke: Box::new(move |payload| filter.choose_symbols(payload)), languages: Languages::of_project(root) })
-    }
-}
 
 /// A escolha do Jev dentro do prazo da busca que a pede: vencido o prazo, a
 /// escolha fica nativa, sem pedido nenhum; dentro dele, o pedido acaba com o

@@ -1,21 +1,10 @@
 //! `conversation_size` — o tamanho da conversa e o que fazer quando ela cresce.
 //!
-//! Dois ganchos:
+//! Um gancho:
 //!
-//! - [`PrecompactNotice`], no evento `PreCompact`: antes de toda compactação
-//!   — manual (`/compact`) ou, se a máquina a deixou ligada, a automática —, a
-//!   conversa recebe o bloco de retomada
-//!   ([`resume_block`](crate::commands::flow::resume::resume_block)), o mesmo
-//!   que o início da sessão coloca sozinho depois do resumo. Sem controle de
-//!   "já avisado": o próprio `PreCompact` é o degrau, então cada compactação
-//!   merece o bloco de novo, e não há como ele ficar velho.
 //! - [`SizeNotice`], nos dois lados de cada ferramenta, com a conversa que a
-//!   chamada mede. **Em quem conduz** (a sessão principal), depois da
-//!   ferramenta, a conversa avisa aos 200 mil e depois a cada 100 mil tokens,
-//!   uma vez por faixa, com uma linha de retomada. Só um início confirmado
-//!   após `/clear` ou `/compact` reinicia as faixas; uma leitura menor não o
-//!   faz. Quem conduz nunca é recusado por tamanho. **No agente de
-//!   onda** (o subagente cujo primeiro texto é o título de um pedido de onda),
+//!   chamada mede. Quem conduz nunca é avisado nem recusado por tamanho.
+//!   **No agente de onda** (o subagente cujo primeiro texto é o título de um pedido de onda),
 //!   o sinal chega aos 200 mil tokens de contexto, contando a entrada inicial
 //!   e os resumos herdados, com qualquer modelo. A janela do modelo que
 //!   responde ao agente só serve de teto, quando 75% dela vem antes: pela
@@ -82,11 +71,6 @@ use serde_json::Value;
 
 use crate::hooks::bash::lex::{Segment, segments};
 
-/// O degrau de tamanho da conversa de quem conduz, em tokens: a cada degrau
-/// novo, um aviso.
-pub(crate) const CONDUCTOR_FIRST_NOTICE: u64 = 200_000;
-pub(crate) const CONDUCTOR_STEP: u64 = 100_000;
-
 /// O tamanho de contexto do agente de onda em que o sinal chega, com
 /// qualquer modelo: fixo, contando a entrada inicial e os resumos herdados; a
 /// janela só o encurta, como teto ([`WINDOW_SHARE`]). A montagem das ondas
@@ -104,36 +88,8 @@ const WINDOW_SHARE: u64 = 75;
 /// uso está sempre nas últimas linhas.
 const TAIL_BYTES: u64 = 256 * 1024;
 
-/// O aviso, antes de compactar: o bloco de retomada, que volta sozinho
-/// depois do resumo. Dispara em toda compactação, sem controle de "já
-/// avisado" — o próprio `PreCompact` é o degrau.
-pub struct PrecompactNotice;
-
-impl Check for PrecompactNotice {
-    fn evaluate(&self, input: &HookInput, ctx: &Ctx) -> Result<Verdict, Error> {
-        if ctx.trigger != Some(Trigger::PreCompact) {
-            return Ok(Verdict::Allow);
-        }
-        let root = ctx.workspace_root.clone().unwrap_or_else(|| PathBuf::from(ctx.project_dir_or_cwd(input)));
-        let Some(context) = precompact_text(&root, input.session_id.as_deref()) else {
-            return Ok(Verdict::Allow);
-        };
-        Ok(Verdict::Inject { context })
-    }
-}
-
-/// O aviso antes de compactar: o bloco de retomada da spec atual, dizendo
-/// que ele volta sozinho depois do resumo. `None` sem spec atual, sem arquivo
-/// de eventos ou com a spec já terminada.
-fn precompact_text(root: &Path, session: Option<&str>) -> Option<String> {
-    let block = crate::commands::flow::resume::current_block(root, session)?;
-    let lang = crate::commands::spec_events::project(root).lang;
-    Some(translate("conversation_size.precompact", lang).replace("{block}", &block))
-}
-
-/// O tamanho da conversa nos dois lados de cada ferramenta: depois dela, a
-/// quem conduz, o aviso de limpar ou compactar, e ao agente de onda que
-/// terminou uma tarefa, a ordem de seguir ou de entregar; antes dela, só o
+/// O tamanho da conversa nos dois lados de cada ferramenta: depois dela, ao
+/// agente de onda que terminou uma tarefa, a ordem de seguir ou de entregar; antes dela, só o
 /// agente de onda que recebeu a ordem de entregar e o que a reprovação tirou
 /// da onda são recusados, fora a devolução do relatório a quem conduz.
 pub struct SizeNotice;
@@ -143,11 +99,7 @@ impl Check for SizeNotice {
         let root = ctx.workspace_root.clone().unwrap_or_else(|| PathBuf::from(ctx.project_dir_or_cwd(input)));
         match ctx.trigger {
             Some(Trigger::PostToolUse) => {
-                let context = if input.is_subagent() {
-                    wave_notice_text(input, &root, ctx.config.language().text_or_default())
-                } else {
-                    conductor_text(input, &root)
-                };
+                let context = if input.is_subagent() { wave_notice_text(input, &root, ctx.config.language().text_or_default()) } else { None };
                 Ok(context.map_or(Verdict::Allow, |context| Verdict::Inject { context }))
             }
             Some(Trigger::PreToolUse) => Ok(wave_lock_reason(input, &root, ctx).map_or(Verdict::Allow, |reason| Verdict::Deny { reason })),
@@ -262,16 +214,51 @@ fn write_mark(path: &Path, value: u64) {
     let _ = std::fs::write(path, value.to_string());
 }
 
-/// O aviso de limpar ou compactar a quem conduz: a conversa principal em
-/// `input`, sob `root`, passou de uma faixa nova de [`CONDUCTOR_STEP`]. A
-/// faixa guardada só reinicia quando o host confirma limpeza/compactação;
-/// uma leitura menor sozinha não apaga o aviso. `None` sem faixa nova ou spec.
+/// A marca de sessão de quem conduz, pela sessão ou, sem ela, pela conversa.
 fn conductor_mark(input: &HookInput, root: &Path) -> Option<PathBuf> {
     mark_path(root, input.session_id.as_deref(), "size-step").or_else(|| {
         let transcript = input.transcript_path()?;
         let key = format!("transcript-{}", blake3::hash(transcript.as_bytes()).to_hex());
         mark_path(root, Some(&key), "size-step")
     })
+}
+
+/// O que a marca de sessão de quem conduz guarda: na primeira linha, a faixa
+/// de tamanho já avisada; em cada linha seguinte, a impressão de um texto fixo
+/// que a rodada ou o fechamento já deram na sessão. Limpar ou compactar a
+/// regrava como `0`, e as duas coisas voltam juntas. A marca de antes, só com
+/// o número, se lê sem nenhum texto dado.
+struct SessionMark {
+    band: u64,
+    given: std::collections::BTreeSet<String>,
+}
+
+impl SessionMark {
+    fn parse(text: &str) -> Self {
+        let mut lines = text.lines();
+        let band = lines.next().and_then(|line| line.trim().parse::<u64>().ok()).unwrap_or(0);
+        let given = lines.map(str::trim).filter(|line| !line.is_empty()).map(str::to_string).collect();
+        Self { band, given }
+    }
+
+    fn render(&self) -> String {
+        std::iter::once(self.band.to_string()).chain(self.given.iter().cloned()).collect::<Vec<_>>().join("\n")
+    }
+}
+
+/// As impressões de `prints` que a sessão `session` já recebeu desde a última
+/// limpeza ou compactação; todas passam a contar como recebidas. Sem sessão de
+/// verdade, ou sem a marca legível, nenhuma: o texto vai sempre, porque
+/// repetir é melhor que calar.
+pub(crate) fn given_in_session(root: &Path, session: Option<&str>, prints: &[String]) -> std::collections::BTreeSet<String> {
+    let Some(path) = mark_path(root, session, "size-step") else { return std::collections::BTreeSet::new() };
+    let Ok(mut mark) = mustard_core::io::fs::lock::LockedFile::exclusive(&path) else { return std::collections::BTreeSet::new() };
+    let Ok(text) = mark.read_to_string() else { return std::collections::BTreeSet::new() };
+    let mut state = SessionMark::parse(&text);
+    let given = prints.iter().filter(|print| state.given.contains(*print)).cloned().collect();
+    state.given.extend(prints.iter().cloned());
+    let _ = mark.replace(state.render().as_bytes());
+    given
 }
 
 /// Reset only after the host confirms a clear or completed compaction.
@@ -281,38 +268,6 @@ pub(crate) fn reset_conductor_notice(input: &HookInput, root: &Path) {
     {
         let _ = mark.replace(b"0");
     }
-}
-
-fn conductor_text(input: &HookInput, root: &Path) -> Option<String> {
-    conductor_text_with(input, root, || crate::commands::flow::resume::current_line_and_live(root, input.session_id.as_deref()))
-}
-
-/// O aviso a quem conduz, com a linha de retomada e as ondas com agente vivo
-/// tiradas de `line`. A marca da faixa é lida antes: a faixa já avisada não
-/// lê a spec, e só a faixa nova a lê. Com onda de agente vivo, o aviso manda
-/// esperar a volta delas antes de limpar a conversa, que para esses agentes.
-fn conductor_text_with(input: &HookInput, root: &Path, line: impl FnOnce() -> Option<(String, Vec<u64>)>) -> Option<String> {
-    let tokens = last_context(Path::new(input.transcript_path()?))?;
-    if tokens < CONDUCTOR_FIRST_NOTICE { return None; }
-    let threshold = tokens / CONDUCTOR_STEP * CONDUCTOR_STEP;
-    let path = conductor_mark(input, root)?;
-    let mut mark = mustard_core::io::fs::lock::LockedFile::exclusive(&path).ok()?;
-    let warned = mark.read_to_string().ok()?.trim().parse::<u64>().unwrap_or(0);
-    // Older versions stored the number of 200k bands instead of tokens.
-    let warned = if warned > 0 && warned < CONDUCTOR_FIRST_NOTICE { warned.saturating_mul(200_000) } else { warned };
-    if threshold <= warned { return None; }
-    let (line, live) = line()?;
-    mark.replace(threshold.to_string().as_bytes()).ok()?;
-    let lang = crate::commands::spec_events::project(root).lang;
-    let key = if live.is_empty() { "conversation_size.notice" } else { "conversation_size.notice_live" };
-    let waves: Vec<String> = live.iter().map(u64::to_string).collect();
-    Some(
-        translate(key, lang)
-            .replace("{tokens}", &(threshold / 1000).to_string())
-            .replace("{count}", &live.len().to_string())
-            .replace("{waves}", &waves.join(", "))
-            .replace("{line}", &line),
-    )
 }
 
 /// O que a leitura da conversa de um agente de onda traz.
@@ -918,32 +873,6 @@ mod tests {
     }
 
     #[test]
-    fn codex_context_notices_use_last_input_once_and_reset_only_on_confirmed_compaction() {
-        let dir=open_project("x"); let root=dir.path(); let path=root.join("rollout.jsonl");
-        let call=conductor_after_tool(root,&path);
-        let at=|tokens| {
-            std::fs::write(&path,codex_sample(tokens,tokens-1).to_string()).unwrap();
-            codex_event("PostToolUse",&call)
-        };
-        assert!(at(199_999).is_none(),"cumulative 10M and cached input must not trigger a notice");
-        assert!(at(200_000).unwrap()["hookSpecificOutput"]["additionalContext"].as_str().unwrap().contains("200"));
-        assert!(at(299_999).is_none());
-        // The resume line already opens with its own label: the notice does not repeat it.
-        let notice=at(300_000).unwrap()["hookSpecificOutput"]["additionalContext"].as_str().unwrap().to_string();
-        assert!(notice.contains("Retomada: spec x") && !notice.contains("Retomada: Retomada:"),"{notice}");
-        assert!(at(70_000).is_none()); assert!(at(200_000).is_none(),"a lower reading is not compaction");
-        let before=codex_event("PreCompact",&call).unwrap();
-        let block=crate::commands::flow::resume::current_block(root,Some("s1")).unwrap();
-        assert!(before["systemMessage"].as_str().unwrap().contains(&block));
-        assert!(before.get("hookSpecificOutput").is_none(),"compact uses documented common output");
-        assert!(at(200_000).is_none(),"pre-compaction is not completed compaction");
-        assert!(codex_event("PostCompact",&call).is_none()); assert!(at(200_000).is_some());
-        assert!(at(200_000).is_none());
-        let mut clear=call.clone(); clear.raw["source"]=serde_json::json!("clear");
-        codex_event("SessionStart",&clear); assert!(at(200_000).is_some());
-    }
-
-    #[test]
     fn codex_unknown_latest_context_does_not_reuse_an_older_measurement() {
         let dir=tempfile::tempdir().unwrap(); let path=dir.path().join("rollout.jsonl");
         let good=codex_sample(250_000,240_000);
@@ -1109,67 +1038,6 @@ mod tests {
         }
     }
 
-    /// Quem conduz é avisado de limpar ou compactar a cada degrau novo de 200
-    /// mil tokens, com o bloco de retomada: 199.999 não avisa e 200.000 avisa;
-    /// 399.999 não repete o mesmo degrau e 400.000 repete; depois de uma
-    /// compactação de verdade (a conversa cai para 70 mil), o degrau de 200 mil
-    /// avisa de novo. Nos dois idiomas.
-    #[test]
-    fn the_conductor_is_told_to_clear_or_compact_once_per_step() {
-        for lang in [Locale::PtBr, Locale::EnUs] {
-            let dir = open_project_in("x", lang);
-            let root = dir.path();
-            let transcript = root.join("t.jsonl");
-            let call = conductor_after_tool(root, &transcript);
-            let at = |tokens: u64| {
-                conductor_transcript_of(&transcript, tokens);
-                injected(&call)
-            };
-
-            assert_eq!(at(199_999), None, "{lang:?}: below the step");
-            let notice = at(200_000).unwrap_or_else(|| panic!("{lang:?}: the first step warns"));
-            for order in ["/clear", "/compact", "200"] {
-                assert!(notice.contains(order), "{lang:?}: {order} is missing: {notice}");
-            }
-            let line = crate::commands::flow::resume::current_line(root, Some("s1")).expect("the line");
-            assert!(notice.contains(&line), "{lang:?}: the notice carries the resume line: {notice}");
-            assert!(notice.len()<700,"short notice: {notice}");
-            assert_eq!(at(299_999), None, "{lang:?}: the same step does not repeat");
-            assert!(at(300_000).is_some(), "{lang:?}: 300k is the next band");
-            assert_eq!(at(399_999), None, "{lang:?}: 300k does not repeat");
-            let second = at(400_000).unwrap_or_else(|| panic!("{lang:?}: a new step warns again"));
-            assert!(second.contains("400"), "{lang:?}: {second}");
-            assert_eq!(at(70_000), None, "{lang:?}: a compacted conversation is below the step");
-            assert_eq!(at(200_000),None,"a lower reading alone is not a compaction");
-            reset_conductor_notice(&call, root);
-            assert!(at(200_000).is_some(), "{lang:?}: after confirmed compaction the step warns again");
-            assert!(at(500_000).is_some(),"skipped bands emit only the latest notice");
-            assert_eq!(at(500_000),None);
-        }
-    }
-
-    /// O aviso de quem conduz nunca chega a um subagente — nem o gasta: a
-    /// conversa principal passou de 400 mil tokens, a chamada de um subagente
-    /// não recebe nada, e a de quem conduz, logo depois, recebe o aviso por
-    /// inteiro. Sem spec para retomar, ninguém recebe aviso.
-    #[test]
-    fn the_conductor_notice_never_reaches_a_subagent_and_needs_a_spec() {
-        let dir = open_project("x");
-        let root = dir.path();
-        let transcript = root.join("t.jsonl");
-        conductor_transcript_of(&transcript, 450_000);
-        let subagent = HookInput { agent_id: Some("a1".to_string()), ..conductor_after_tool(root, &transcript) };
-
-        assert_eq!(injected(&subagent), None, "a subagent call is not the conductor's");
-        assert!(injected(&conductor_after_tool(root, &transcript)).is_some(), "the subagent call did not use the notice up");
-
-        let bare = tempfile::tempdir().unwrap();
-        std::fs::write(bare.path().join("mustard.json"), r#"{"language":{"text":"pt-BR"}}"#).unwrap();
-        let transcript = bare.path().join("t.jsonl");
-        conductor_transcript_of(&transcript, 450_000);
-        assert_eq!(injected(&conductor_after_tool(bare.path(), &transcript)), None, "nothing to resume");
-    }
-
     /// What the step command prints for the wave agent of `call`, at `root`.
     fn step_command_report(root: &Path, call: &HookInput) -> Value {
         let mut report = serde_json::json!({"ok": true, "type": "step"});
@@ -1239,23 +1107,6 @@ mod tests {
         assert!(crate::commands::flow::round::queue::record_launch(root, "x", 1, log.dispatch_position(sent)));
     }
 
-    /// Clearing the conversation stops the agents still working: the
-    /// conductor's size notice counts the waves with a live agent and says to
-    /// wait for them before clearing.
-    #[test]
-    fn the_conductor_notice_says_to_wait_for_the_waves_with_a_live_agent() {
-        for lang in [Locale::PtBr, Locale::EnUs] {
-            let dir = open_project_in("x", lang);
-            let root = dir.path();
-            seed_live_wave(root);
-            let transcript = root.join("t.jsonl");
-            conductor_transcript_of(&transcript, 200_000);
-            let notice = injected(&conductor_after_tool(root, &transcript)).expect("the notice");
-            let wait = if lang == Locale::EnUs { "1 wave(s) with a live agent (1)" } else { "1 onda(s) com agente vivo (1)" };
-            assert!(notice.contains(wait) && notice.contains("/clear"), "{lang:?}: {notice}");
-        }
-    }
-
     /// After a clear, the session start lists the waves whose agent the clear
     /// stopped and how to send them again.
     #[test]
@@ -1280,58 +1131,6 @@ mod tests {
             let cleared = start("clear");
             assert!(cleared.contains("<PAUSED>{\"wave\":1}</PAUSED>"), "{lang:?}: {cleared}");
             assert!(!start("startup").contains("<PAUSED>"), "{lang:?}: only the clear stops the agents");
-        }
-    }
-
-    /// Above the first step, every tool call reaches the notice; the spec is
-    /// read only when the band is new.
-    #[test]
-    fn a_band_already_warned_does_not_read_the_spec() {
-        let dir = open_project("x");
-        let root = dir.path();
-        let transcript = root.join("t.jsonl");
-        conductor_transcript_of(&transcript, 250_000);
-        let call = conductor_after_tool(root, &transcript);
-        assert!(injected(&call).is_some(), "the first band warns");
-        let read = std::cell::Cell::new(false);
-        let again = conductor_text_with(&call, root, || {
-            read.set(true);
-            Some(("line".to_string(), Vec::new()))
-        });
-        assert_eq!(again, None, "the same band is quiet");
-        assert!(!read.get(), "the warned band never reads the spec");
-    }
-
-    #[test]
-    fn overlapping_notices_without_a_session_id_share_the_transcript_checkpoint() {
-        let dir=open_project("x");
-        let transcript=dir.path().join("t.jsonl");
-        conductor_transcript_of(&transcript,300_000);
-        let call=HookInput {session_id:None,..conductor_after_tool(dir.path(),&transcript)};
-        let notices=std::thread::scope(|scope| {
-            let threads:Vec<_>=(0..8).map(|_|scope.spawn(||injected(&call))).collect();
-            threads.into_iter().filter_map(|thread|thread.join().unwrap()).count()
-        });
-        assert_eq!(notices,1,"same band is claimed once even without a session identity");
-    }
-
-    /// Nenhum aviso de tamanho cita valor de compactação automática: nem o de
-    /// limpar ou compactar a quem conduz, nem o de antes de compactar. Nos dois
-    /// idiomas.
-    #[test]
-    fn no_size_notice_cites_a_compaction_value() {
-        for lang in [Locale::PtBr, Locale::EnUs] {
-            let dir = open_project_in("x", lang);
-            let root = dir.path();
-            let transcript = root.join("t.jsonl");
-            conductor_transcript_of(&transcript, 200_000);
-            let notice = injected(&conductor_after_tool(root, &transcript)).expect("the notice");
-            let (_, precompact) = hook_contexts(root, lang);
-            for text in [notice, precompact] {
-                for value in ["AUTOCOMPACT", "autocompact", "settings.json", "%"] {
-                    assert!(!text.contains(value), "{lang:?}: cites a compaction value ({value}): {text}");
-                }
-            }
         }
     }
 
@@ -2089,42 +1888,25 @@ mod tests {
         assert!(calls().iter().all(Option::is_some), "the new delivery closes the lock again");
     }
 
-    /// O aviso de compactar chega pelo gancho de `PreCompact`, com o bloco de
-    /// retomada — spec, fase e o próximo passo —, com onda rodando ou sem: a
-    /// linha das ondas em andamento é uma parte do bloco, não um substituto.
-    /// E nenhuma chamada de ferramenta é mais recusada por tamanho: o mesmo
-    /// registro inteiro, com uma transcrição de 200 mil tokens (o antigo
-    /// degrau), deixa passar um `PreToolUse` comum.
+    /// Antes de compactar, o despachante não injeta nada: o início da sessão
+    /// depois do resumo traz o bloco de retomada. E nenhuma chamada de
+    /// ferramenta de quem conduz é recusada por tamanho: o mesmo registro
+    /// inteiro, com uma transcrição de 200 mil tokens, deixa passar um
+    /// `PreToolUse` comum.
     #[test]
-    fn compaction_warning_arrives_in_the_hook_and_nobody_else_is_blocked_by_size() {
+    fn nothing_runs_before_compaction_and_nobody_is_blocked_by_size() {
         let dir = open_project("x");
         let root = dir.path();
 
-        // O caminho de verdade: o evento `PreCompact` inteiro, pelo
-        // despachante e pelo registro — não a função auxiliar direto — é
-        // quem precisa injetar o bloco.
+        // Antes de compactar, nada é injetado: o início da sessão depois do
+        // resumo traz o bloco de retomada.
         let precompact = HookInput {
             hook_event_name: Some("PreCompact".to_string()),
             session_id: Some("s1".to_string()),
             cwd: Some(root.to_string_lossy().into_owned()),
             ..HookInput::default()
         };
-        let outcome = crate::dispatch::run_event(Some(Trigger::PreCompact), &precompact);
-        let Verdict::Inject { context } = outcome.verdict else {
-            panic!("antes de compactar, o bloco de retomada é injetado");
-        };
-        assert!(context.contains('x'), "o bloco traz a spec: {context}");
-        assert!(context.contains("fase"), "o bloco traz a fase: {context}");
-
-        // Com uma onda em andamento, o bloco continua saindo, com a onda
-        // citada.
-        seed_running_wave(root, "x");
-        let outcome = crate::dispatch::run_event(Some(Trigger::PreCompact), &precompact);
-        let Verdict::Inject { context } = outcome.verdict else {
-            panic!("com onda em andamento, o bloco continua saindo");
-        };
-        assert!(context.contains("fase"), "o bloco não vira só a frase das ondas no ar: {context}");
-        assert!(context.contains('1'), "o bloco cita a onda em andamento: {context}");
+        assert_eq!(crate::dispatch::run_event(Some(Trigger::PreCompact), &precompact).verdict, Verdict::Allow);
 
         // Uma transcrição de 200 mil tokens — o antigo degrau — não recusa
         // mais nenhuma chamada de ferramenta de quem conduz: o mesmo
@@ -2197,7 +1979,7 @@ mod tests {
 
     /// O texto que o início da sessão depois da compactação e o aviso antes
     /// de compactar injetam em `root`, pelo evento do gancho, nessa ordem.
-    fn hook_contexts(root: &Path, lang: Locale) -> (String, String) {
+    fn hook_contexts(root: &Path, lang: Locale) -> String {
         let event = |name: &str, trigger: Trigger, raw: serde_json::Value| {
             let input = HookInput {
                 hook_event_name: Some(name.to_string()),
@@ -2211,10 +1993,7 @@ mod tests {
                 other => panic!("{lang:?}: {name} injects nothing: {other:?}"),
             }
         };
-        (
-            event("SessionStart", Trigger::SessionStart, serde_json::json!({"source": "compact"})),
-            event("PreCompact", Trigger::PreCompact, serde_json::json!({})),
-        )
+        event("SessionStart", Trigger::SessionStart, serde_json::json!({"source": "compact"}))
     }
 
     /// O que o bloco em `context` mostra na vaga `slot` do modelo do bloco em
@@ -2301,13 +2080,13 @@ mod tests {
             let after = seed_decisions_after_round(root, said, 1);
             let before = read_log(root).codes()[&before].clone();
 
-            let (started, precompact) = hook_contexts(root, lang);
+            let started = hook_contexts(root, lang);
 
             let running = translate("conversation_size.copy", lang)
                 .replace("{wave}", "1")
                 .replace("{copy}", &copy_of(root, 1));
             let replan = translate("conversation_size.replan", lang).replace("{wave}", "2");
-            for (moment, context) in [("session start", &started), ("precompact", &precompact)] {
+            for (moment, context) in std::iter::once(("session start", &started)) {
                 assert_eq!(slot_value(context, lang, "{delivered}"), "2", "{lang:?} {moment}: how many waves were delivered");
                 assert_eq!(slot_value(context, lang, "{running}"), running, "{lang:?} {moment}: the wave in flight");
                 assert_eq!(
@@ -2321,11 +2100,8 @@ mod tests {
                 assert!(context.contains("mustard-rt run round --dispatch --spec x"), "{lang:?} {moment}: {context}");
             }
             let block = crate::commands::flow::resume::current_block(root, Some("s1")).expect("the block");
-            assert!(started.contains(&block) && precompact.contains(&block), "{lang:?}: the same block");
+            assert!(started.contains(&block), "{lang:?}: the same block");
             assert!(block.len() <= MAX_BYTES, "{lang:?}: {} bytes", block.len());
-            for paste in ["cole", "colar", "paste"] {
-                assert!(!precompact.contains(paste), "{lang:?}: the notice still asks to paste: {precompact}");
-            }
         }
     }
 
@@ -2354,8 +2130,8 @@ mod tests {
             }
         }
 
-        let (started, precompact) = hook_contexts(root, lang);
-        for (moment, context) in [("session start", &started), ("precompact", &precompact)] {
+        let started = hook_contexts(root, lang);
+        for (moment, context) in std::iter::once(("session start", &started)) {
             assert_eq!(slot_value(context, lang, "{delivered}"), "11", "{moment}: the count: {context}");
             assert!(!context.contains("2, 3, 4"), "{moment}: the delivered waves are listed: {context}");
         }
@@ -2378,9 +2154,9 @@ mod tests {
             let said = seed(root, "message", json!({"author": "user", "text": "muitas decisões"}));
             let codes = seed_decisions_after_round(root, said, 450);
 
-            let (started, precompact) = hook_contexts(root, lang);
+            let started = hook_contexts(root, lang);
             let block = crate::commands::flow::resume::current_block(root, Some("s1")).expect("the block");
-            assert!(started.contains(&block) && precompact.contains(&block), "{lang:?}: the same block");
+            assert!(started.contains(&block), "{lang:?}: the same block");
             let kept = assert_cut_at_the_cap(&block, lang, "{recorded}", &codes);
             assert!(kept > 0, "{lang:?}: the codes that fit are shown: {block}");
             let running = translate("conversation_size.copy", lang)
@@ -2411,9 +2187,9 @@ mod tests {
             }
             let codes = seed_decisions_after_round(root, said, 3);
 
-            let (started, precompact) = hook_contexts(root, lang);
+            let started = hook_contexts(root, lang);
             let block = crate::commands::flow::resume::current_block(root, Some("s1")).expect("the block");
-            assert!(started.contains(&block) && precompact.contains(&block), "{lang:?}: the same block");
+            assert!(started.contains(&block), "{lang:?}: the same block");
             assert_eq!(slot_value(&block, lang, "{recorded}"), cut_list(&codes, 0, lang), "{lang:?}: {block}");
             let returns: Vec<String> = waves
                 .iter()

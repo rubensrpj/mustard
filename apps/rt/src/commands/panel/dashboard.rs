@@ -80,7 +80,7 @@ fn screen(start:&Path,root:&Path,selected:Option<String>,session:Option<&str>,se
         "selected_spec":selected});
     let body=match (section,selected.as_deref(),log.as_ref()) {
         ("overview",name,log)=>sections::overview(start,root,name,log,session,config.language().text_or_default()),
-        ("spec",Some(name),Some(log))=>sections::spec(start,root,name,log),
+        ("spec",Some(name),Some(log))=>sections::spec(start,root,name,log,config.language().text_or_default()),
         ("items",_,Some(log))=>sections::items(log,params,&mustard_core::domain::normalize::Languages::of(&config)),
         ("item",_,Some(log))=>params.item.as_deref().map_or_else(||json!({"item":null,"reason":"panel-item-missing"}),|code|sections::item(log,code)),
         ("usage",name,log)=>sections::usage(root,name,log,session),

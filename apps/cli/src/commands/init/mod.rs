@@ -43,10 +43,9 @@
 //!    marcas nos arquivos `CLAUDE.md`, as linhas do molde no
 //!    `.claude/settings.json` da equipe, um `.claude/CLAUDE.md` plantado) e
 //!    dizer como tirar, com uma linha, no idioma do texto, para cada regra de
-//!    bloqueio do arquivo da equipe que o `/mustard:upsert` vai trocar no
-//!    lugar e deixar para a pessoa comitar. Nada disso sai nem é trocado aqui:
-//!    isso acontece pelo `/mustard:upsert`, depois que a pessoa diz sim à
-//!    lista.
+//!    bloqueio do arquivo da equipe que a pessoa pode trocar no lugar. Nada
+//!    disso sai nem é trocado aqui; o arquivo da equipe, nem pelo
+//!    `/mustard:upsert`.
 //!
 //! This library entry stages or commits nothing and writes only in the project:
 //! `~/.claude/` is never touched. A re-run re-stamps `mustard.json#version`,
@@ -57,22 +56,21 @@
 //! arquivo acima vai para o disco, porque o harness precisa dele lá, mas
 //! nenhum fica visível ao git do repositório hospedeiro, e nada se grava fora
 //! de `.claude/` além do `mustard.json`. Não há opção nem pergunta para isso.
-//! O `init` nunca grava o `.claude/settings.json` da equipe: só a limpeza do
-//! `/mustard:upsert` mexe nele, para tirar as linhas do molde e, como única
-//! exceção entre as regras de bloqueio dele, trocar no lugar cada uma das três
-//! que um molde antigo escreveu com as duas formas de asterisco; essas linhas
-//! mudadas são da pessoa para comitar.
+//! Nada do Mustard grava o `.claude/settings.json` da equipe: a limpeza só
+//! lista as linhas do molde antigo e as regras de bloqueio escritas com as
+//! duas formas de asterisco, e quem as muda é a pessoa.
 //!
 //! Everything laid down is compiled into the binary: `init` looks up no folder
 //! of molds, so it runs in an empty project with no extra setting.
 //!
-//! What is NOT a step of `init`, though it still happens on a `mustard init`
-//! run: the rtk gate, the ripgrep installer and the code-tool step ([`tools`]).
-//! They act on the MACHINE, so they live in `cli::dispatch`, and a library call
-//! never takes them on its caller's behalf. `apps/cli/tests/library_is_pure.rs`
-//! measures it. The code-tool step itself is
-//! `mustard_core::platform::code_tools::ensure_code_tools`, the one the project
-//! update runs too; [`tools`] only hands it the machine.
+//! O que NÃO é passo do `init`, embora aconteça numa chamada de
+//! `mustard init`: o portão do rtk e o aviso do ripgrep ([`tools`]). Os dois
+//! olham a MÁQUINA, por isso moram em `cli::dispatch`, e uma chamada de
+//! biblioteca nunca os faz por quem a chama; `apps/cli/tests/library_is_pure.rs`
+//! mede isso. Nada é instalado: o ripgrep e as ferramentas de código que
+//! faltam saem como comando pronto
+//! (`mustard_core::platform::code_tools::code_tool_hints`), e [`tools`] os
+//! imprime.
 //!
 //! ## The parts
 //!
@@ -81,8 +79,8 @@
 //! - [`seeding`] — the guard, the footprint and the narration;
 //! - [`map`] — the project map, created at the end of the install;
 //! - [`project_config`] — the one write of `mustard.json`;
-//! - [`tools`] — the rtk gate, the ripgrep installer and the call into the
-//!   code-tool step.
+//! - [`tools`] — o portão do rtk, o aviso do ripgrep e a atualização nativa
+//!   que termina a instalação.
 
 use std::io::Write;
 use std::path::Path;
@@ -97,7 +95,7 @@ mod questions;
 mod seeding;
 mod tools;
 
-pub(crate) use tools::{complete_installation, ensure_ripgrep, probe_rtk};
+pub(crate) use tools::{complete_installation, probe_rtk, ripgrep_hint};
 
 use questions::ExistingAction;
 
@@ -734,8 +732,9 @@ mod tests {
 
     /// O `init --yes` numa pasta vazia escreve `agents.model` e `agents.effort`
     /// com os padrões no `mustard.json` e os mesmos valores no cabeçalho dos
-    /// dois agentes. Com `opus` e `medium` no arquivo, uma instalação por cima
-    /// escreve os dois nos agentes e mantém os campos; um esforço fora da
+    /// dois agentes, salvo o revisor final, que fica no Opus. Com `opus` e
+    /// `medium` no arquivo e a escolha pela dificuldade desligada, uma
+    /// instalação por cima escreve os dois nos agentes e mantém os campos; um esforço fora da
     /// lista do Claude Code fica no arquivo e os agentes recebem o padrão; um
     /// `mustard.json` sem os campos os ganha, sem perder o que já tinha.
     #[test]
@@ -757,23 +756,23 @@ mod tests {
         fs::create_dir_all(&project).unwrap();
         init(&project, &InitOptions { yes: true, ..InitOptions::default() }).unwrap();
         assert_eq!(agents(&project), serde_json::json!({"model": "sonnet", "effort": "xhigh"}));
-        assert_eq!(carried(&project, "model"), both("sonnet"));
+        assert_eq!(carried(&project, "model"), ("sonnet".into(), "opus".into()), "the final reviewer defaults to Opus");
         assert_eq!(carried(&project, "effort"), both("xhigh"));
 
         let mut config = json_object(&project.join("mustard.json"));
-        config.insert("agents".into(), serde_json::json!({"model": "opus", "effort": "medium"}));
+        config.insert("agents".into(), serde_json::json!({"model": "opus", "effort": "medium", "by_difficulty": false}));
         fs::write(project.join("mustard.json"), serde_json::to_string(&config).unwrap()).unwrap();
         init(&project, &InitOptions { yes: true, ..InitOptions::default() }).unwrap();
         assert_eq!(
             agents(&project),
-            serde_json::json!({"model": "opus", "effort": "medium"}),
+            serde_json::json!({"model": "opus", "effort": "medium", "by_difficulty": false}),
             "the install kept the person's choice"
         );
         assert_eq!(carried(&project, "model"), both("opus"));
         assert_eq!(carried(&project, "effort"), both("medium"));
 
         let mut config = json_object(&project.join("mustard.json"));
-        config.insert("agents".into(), serde_json::json!({"model": "opus", "effort": "ultra"}));
+        config.insert("agents".into(), serde_json::json!({"model": "opus", "effort": "ultra", "by_difficulty": false}));
         fs::write(project.join("mustard.json"), serde_json::to_string(&config).unwrap()).unwrap();
         init(&project, &InitOptions { yes: true, ..InitOptions::default() }).unwrap();
         assert_eq!(agents(&project)["effort"], serde_json::json!("ultra"), "what the person wrote stays");
@@ -787,7 +786,7 @@ mod tests {
         init(&project, &InitOptions { yes: true, ..InitOptions::default() }).unwrap();
         assert_eq!(agents(&project), serde_json::json!({"model": "sonnet", "effort": "xhigh"}), "the missing fields came back");
         assert_eq!(json_object(&project.join("mustard.json"))["acronyms"], serde_json::json!(["PI"]));
-        assert_eq!(carried(&project, "model"), both("sonnet"));
+        assert_eq!(carried(&project, "model"), ("sonnet".into(), "opus".into()), "the final reviewer defaults to Opus");
         assert_eq!(carried(&project, "effort"), both("xhigh"));
     }
 

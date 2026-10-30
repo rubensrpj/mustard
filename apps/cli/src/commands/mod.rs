@@ -15,4 +15,3 @@
 pub mod config;
 pub mod git_flow;
 pub mod init;
-pub mod install_nerd_font;

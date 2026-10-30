@@ -6,12 +6,14 @@
 //! (`group.difficulty`). O modelo sai da nota: os níveis 0, 1 e 2 vão ao
 //! Sonnet e o 3 ao Opus — o Haiku não escreve código —; a confiança abaixo de
 //! [`LOW_CONFIDENCE`] sobe um degrau, porque a leitura incerta pede cautela.
-//! A tarefa sem nota vai no modelo da configuração, e a onda leva o maior
-//! modelo das tarefas dela. A onda reprovada volta um degrau acima do modelo
+//! A tarefa sem nota vai ao Sonnet ([`DEFAULT_AGENT_MODEL`]), nunca ao modelo
+//! de `agents.model`, que só vale com a escolha pela dificuldade desligada; a
+//! onda leva o maior modelo das tarefas dela. A onda reprovada volta um degrau acima do modelo
 //! do envio anterior; o Opus fica no Opus.
 
 use serde_json::{Value, json};
 
+use crate::domain::config::DEFAULT_AGENT_MODEL;
 use crate::domain::spec_events::{SpecEvent, SpecLog};
 
 /// Os degraus de modelo, do mais leve ao mais pesado, pelos apelidos que a
@@ -80,7 +82,7 @@ pub fn step_up(model: &str) -> Option<&'static str> {
 }
 
 /// O maior dos dois modelos. O modelo fora dos degraus é o que a
-/// configuração do projeto escolheu e vence os degraus.
+/// configuração do projeto escolheu num envio anterior e vence os degraus.
 #[must_use]
 pub fn larger<'a>(one: &'a str, other: &'a str) -> &'a str {
     match (step_of(one), step_of(other)) {
@@ -135,19 +137,19 @@ pub fn escalate(previous: &str, floor: &str, cause: u64) -> WaveModel {
     WaveModel { model: model.to_string(), escalated_from: rose.then(|| Escalation { from: previous.to_string(), cause }) }
 }
 
-/// O modelo da onda `wave` de `log`, com `configured` como o da
-/// configuração: o maior das tarefas dela, cada uma pela nota dela, ou pelo
-/// da configuração quando não tem nota. Reprovada por um veredito depois do
-/// despacho do envio anterior, a onda sobe um degrau acima do modelo dele.
+/// O modelo da onda `wave` de `log`: o maior das tarefas dela, cada uma pela
+/// nota dela, ou o Sonnet quando não tem nota. Reprovada por um veredito
+/// depois do despacho do envio anterior, a onda sobe um degrau acima do
+/// modelo dele.
 #[must_use]
-pub fn wave_model(log: &SpecLog, wave: u64, configured: &str) -> WaveModel {
+pub fn wave_model(log: &SpecLog, wave: u64) -> WaveModel {
     let floor = log
         .visible()
         .into_iter()
         .filter(|event| event.event_type == "task" && event.wave() == Some(wave))
-        .map(|task| -> &str { Difficulty::of(task).map_or(configured, |difficulty| difficulty.model()) })
+        .map(|task| Difficulty::of(task).map_or(DEFAULT_AGENT_MODEL, Difficulty::model))
         .reduce(larger)
-        .unwrap_or(configured);
+        .unwrap_or(DEFAULT_AGENT_MODEL);
     let previous = log.last_by_wave("send").get(&wave).and_then(|sent| log.send_field(*sent, "model")).and_then(Value::as_str);
     match (previous, rejected_since_dispatch(log, wave)) {
         (Some(previous), Some(cause)) => escalate(previous, floor, cause),
@@ -202,22 +204,19 @@ mod tests {
         assert_eq!(model(0, LOW_CONFIDENCE), "sonnet", "the floor itself is not low");
     }
 
-    /// The wave takes the largest model of its tasks; a task without a grade
-    /// counts as the configured model, and a wave without grades goes on the
-    /// configuration.
+    /// A onda leva o maior modelo das tarefas dela; a tarefa sem nota conta
+    /// como Sonnet, nunca como o modelo da configuração, e não vai ao Opus.
     #[test]
     fn the_wave_takes_the_largest_model_of_its_tasks() {
         let graded = log(&[task(1, Some((0, 0.9))), task(1, Some((3, 0.9))), task(2, Some((0, 0.9))), task(2, Some((0, 0.95)))]);
-        assert_eq!(wave_model(&graded, 1, "sonnet").model, "opus");
-        assert_eq!(wave_model(&graded, 2, "sonnet").model, "sonnet", "a simple wave is written on Sonnet, never on Haiku");
-        assert_eq!(wave_model(&graded, 2, "opus").model, "sonnet", "a simple wave goes below a heavier configuration");
+        assert_eq!(wave_model(&graded, 1).model, "opus");
+        assert_eq!(wave_model(&graded, 2).model, "sonnet", "a simple wave is written on Sonnet, never on Haiku");
         let mixed = log(&[task(1, Some((0, 0.9))), task(1, None)]);
-        assert_eq!(wave_model(&mixed, 1, "sonnet").model, "sonnet", "the task without a grade counts as the configuration");
+        assert_eq!(wave_model(&mixed, 1).model, "sonnet", "the task without a grade counts as Sonnet");
         let bare = log(&[task(1, None)]);
-        assert_eq!(wave_model(&bare, 1, "claude-opus-5-5"), WaveModel { model: "claude-opus-5-5".into(), escalated_from: None });
-        assert_eq!(wave_model(&log(&[task(1, Some((3, 0.9)))]), 1, "custom-model-1").model, "opus", "a graded task goes by its grade");
-        let custom = log(&[task(1, Some((0, 0.9))), task(1, None)]);
-        assert_eq!(wave_model(&custom, 1, "custom-model-1").model, "custom-model-1", "a configured model off the ladder wins");
+        assert_eq!(wave_model(&bare, 1), WaveModel { model: "sonnet".into(), escalated_from: None }, "a task without a grade does not go to Opus");
+        assert_eq!(wave_model(&log(&[task(1, Some((2, 0.9))), task(1, None)]), 1).model, "sonnet");
+        assert_eq!(wave_model(&log(&[task(1, Some((3, 0.9)))]), 1).model, "opus", "a graded task goes by its grade");
     }
 
     /// A wave rejected by a verdict after its last send goes one step above
@@ -229,13 +228,13 @@ mod tests {
         let rejected = ("verdict", json!({ "wave": 1, "result": "rejected", "text": "faltou o teste", "author": "review" }));
         let wave = ("wave", json!({ "n": 1, "text": "Onda.", "criteria": [], "done_when": "a suíte passa" }));
         let after = log(&[wave.clone(), task(1, Some((0, 0.9))), send("haiku"), rejected.clone()]);
-        assert_eq!(wave_model(&after, 1, "sonnet"), WaveModel { model: "sonnet".into(), escalated_from: Some(Escalation { from: "haiku".into(), cause: 4 }) });
+        assert_eq!(wave_model(&after, 1), WaveModel { model: "sonnet".into(), escalated_from: Some(Escalation { from: "haiku".into(), cause: 4 }) });
         let twice = log(&[wave.clone(), task(1, Some((0, 0.9))), send("sonnet"), rejected.clone()]);
-        assert_eq!(wave_model(&twice, 1, "sonnet").model, "opus");
+        assert_eq!(wave_model(&twice, 1).model, "opus");
         let top = log(&[wave.clone(), task(1, Some((0, 0.9))), send("opus"), rejected.clone()]);
-        assert_eq!(wave_model(&top, 1, "sonnet"), WaveModel { model: "opus".into(), escalated_from: None }, "opus stays");
+        assert_eq!(wave_model(&top, 1), WaveModel { model: "opus".into(), escalated_from: None }, "opus stays");
         let before = log(&[wave, task(1, Some((0, 0.9))), rejected, send("sonnet")]);
-        assert_eq!(wave_model(&before, 1, "sonnet").model, "sonnet", "a verdict before the send does not count");
+        assert_eq!(wave_model(&before, 1).model, "sonnet", "a verdict before the send does not count");
         assert_eq!(escalate("claude-sonnet-5-5", "haiku", 7).model, "opus");
         assert_eq!(escalate("custom-model-1", "haiku", 7), WaveModel { model: "custom-model-1".into(), escalated_from: None });
     }

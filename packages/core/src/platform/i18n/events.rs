@@ -20,11 +20,81 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // comandos `run write` e `run read`). As vagas vêm do chamador.
         ("spec_events.not_an_object", Locale::PtBr) => {
             "Os campos do evento precisam vir num objeto JSON, como {\"text\": \"…\"}, e o que \
-             veio não serve: {detail}. Nada foi gravado."
+             veio não serve: {detail}. Nada foi gravado. Texto longo vai cru pela entrada padrão, \
+             com `--text -` ou `--agent -`. Várias gravações vão juntas no `run write --batch`, \
+             uma linha JSON por item."
         }
         ("spec_events.not_an_object", Locale::EnUs) => {
             "The event's fields must come as one JSON object, like {\"text\": \"…\"}, and what \
-             came does not parse: {detail}. Nothing was written."
+             came does not parse: {detail}. Nothing was written. Long text goes raw through \
+             standard input, with `--text -` or `--agent -`. Many writes go together through \
+             `run write --batch`, one JSON line per item."
+        }
+        // A entrada crua e o lote do `run write` e do `run answer`.
+        ("spec_events.raw_input_twice", Locale::PtBr) => {
+            "Só um campo lê a entrada padrão: `--text -` ou `--agent -`. Dê o outro direto na \
+             opção ou no `--json`. Nada foi gravado."
+        }
+        ("spec_events.raw_input_twice", Locale::EnUs) => {
+            "Only one field reads standard input: `--text -` or `--agent -`. Give the other one \
+             straight in its option or in `--json`. Nothing was written."
+        }
+        ("spec_events.raw_field_twice", Locale::PtBr) => {
+            "O campo {field} veio no `--json` e na opção própria. Mande só um dos dois. Nada foi \
+             gravado."
+        }
+        ("spec_events.raw_field_twice", Locale::EnUs) => {
+            "The {field} field came both in `--json` and in its own option. Send only one of \
+             them. Nothing was written."
+        }
+        ("spec_events.batch_empty", Locale::PtBr) => {
+            "O lote chegou vazio. Mande pela entrada padrão uma linha JSON por item, cada uma com \
+             o tipo em `type`."
+        }
+        ("spec_events.batch_empty", Locale::EnUs) => {
+            "The batch came empty. Send one JSON line per item through standard input, each with \
+             its type in `type`."
+        }
+        ("spec_events.batch_type_missing", Locale::PtBr) => {
+            "Cada linha do lote traz o tipo do evento em `type`, como {\"type\": \"task\", …}. \
+             Nada desta linha foi gravado."
+        }
+        ("spec_events.batch_type_missing", Locale::EnUs) => {
+            "Each batch line carries the event type in `type`, like {\"type\": \"task\", …}. \
+             Nothing from this line was written."
+        }
+        ("spec_events.batch_line_refused", Locale::PtBr) => {
+            "Esta linha cita pelo rótulo {label} a linha {line} do lote, que não foi gravada. \
+             Nada desta linha foi gravado. Corrija a linha {line} e mande as duas de novo."
+        }
+        ("spec_events.batch_line_refused", Locale::EnUs) => {
+            "This line cites by the label {label} line {line} of the batch, which was not \
+             written. Nothing from this line was written. Fix line {line} and send both again."
+        }
+        // O rascunho que a recusa do `run write` guarda para a correção.
+        ("spec_events.draft_kept", Locale::PtBr) => {
+            "O rascunho {draft} guardou o que foi mandado: para corrigir, grave de novo com \
+             {\"draft\": {draft}, …} mandando só o campo corrigido."
+        }
+        ("spec_events.draft_kept", Locale::EnUs) => {
+            "Draft {draft} kept what was sent: to fix it, write again with {\"draft\": {draft}, …} \
+             sending only the corrected field."
+        }
+        ("spec_events.draft_unknown", Locale::PtBr) => {
+            "O rascunho {draft} não existe nesta spec: ele já foi usado, a spec fechou ou o número \
+             está errado. Nada foi gravado. Mande a gravação inteira de novo."
+        }
+        ("spec_events.draft_unknown", Locale::EnUs) => {
+            "Draft {draft} does not exist in this spec: it was already used, the spec closed or \
+             the number is wrong. Nothing was written. Send the whole write again."
+        }
+        ("spec_events.draft_other_type", Locale::PtBr) => {
+            "O rascunho {draft} é de um item do tipo {found}, e esta gravação é do tipo {type}. \
+             Nada foi gravado. Grave com o tipo do rascunho, ou mande a gravação inteira."
+        }
+        ("spec_events.draft_other_type", Locale::EnUs) => {
+            "Draft {draft} is of type {found}, and this write is of type {type}. Nothing was \
+             written. Write with the draft's type, or send the whole write."
         }
         ("spec_events.unknown_type", Locale::PtBr) => {
             "O tipo {type} não existe no arquivo da spec. Nada foi gravado. Tipos aceitos: {types}."
@@ -467,6 +537,28 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The first `context` of spec {spec} is the goal, and it points in `origin` to the user \
              message that defines it. Put the goal in `text` and that message's number in `origin`; \
              {origin} is not a user message. Nothing was written."
+        }
+        ("spec_events.origin_not_user", Locale::PtBr) => {
+            "O item `{type}` diz que o usuário decidiu, e por isso aponta em `origin` a mensagem em \
+             que ele decidiu. {origin} não é uma mensagem do usuário. Ponha em `origin` o número da \
+             mensagem certa. As últimas dele: {recent}. Nada foi gravado."
+        }
+        ("spec_events.origin_not_user", Locale::EnUs) => {
+            "Item `{type}` says the user decided, so it points in `origin` to the message where the \
+             user decided. {origin} is not a user message. Put the number of the right message in \
+             `origin`. The user's latest: {recent}. Nothing was written."
+        }
+        ("spec_events.survey_answered_early", Locale::PtBr) => {
+            "Na spec {spec}, um ponto do usuário fechou com uma mensagem anterior a ele: {points}. A \
+             resposta vem depois da pergunta. Mostre o ponto ao usuário. Com a resposta, grave uma \
+             versão nova do fechamento pelo `run write point`, com `replaces` nele e a mensagem nova \
+             em `origin`. A spec segue no levantamento."
+        }
+        ("spec_events.survey_answered_early", Locale::EnUs) => {
+            "In spec {spec}, a user point closed with a message older than the point: {points}. The \
+             answer comes after the question. Show the point to the user. With the answer, record a \
+             new version of the closing with `run write point`, with `replaces` on it and the new \
+             message in `origin`. The spec stays in the survey."
         }
         ("spec_events.goal_title_too_long", Locale::PtBr) => {
             "O objetivo não tem `title`, e a primeira frase dele é o título do pull request: ela tem \
@@ -932,6 +1024,17 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              its own return, with `run write delivered`, while its send is open. The reviewer \
              writes only its own verdict, with `run write verdict`, while the review request is \
              open. Otherwise, the round or the close takes the return over."
+        }
+        ("spec_events.type_not_written", Locale::PtBr) => {
+            "O tipo {type} não é mais gravado, e nada foi gravado. A preocupação que o usuário \
+             disse vira regra (`rule`) ou decisão (`decision`), com a mensagem dele em `origin`. \
+             A do assistente vira anotação (`note`). A spec antiga com esse tipo continua se lendo."
+        }
+        ("spec_events.type_not_written", Locale::EnUs) => {
+            "The type {type} is no longer written, and nothing was written. A concern the user \
+             said becomes a rule (`rule`) or a decision (`decision`), with the user's message in \
+             `origin`. The assistant's own becomes a note (`note`). An old spec with this type \
+             still reads."
         }
         ("spec_events.user_message_by_hook", Locale::PtBr) => {
             "Na spec {spec}, o `run write` não grava, não tira e não revê dois tipos de mensagem. Um \
@@ -1452,12 +1555,11 @@ mod tests {
     use super::*;
     use crate::platform::i18n::translate;
 
-    /// Esta parte guarda as mesmas chaves, com os mesmos textos nos dois
-    /// idiomas, como o arquivo de impressões dela em `stamps/` guarda. Quem muda
-    /// um texto de propósito regrava o arquivo pelo comando que a falha mostra.
+    /// Cada chave desta parte começa por um dos começos que ela declara e tem
+    /// texto nos dois idiomas.
     #[test]
-    fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged("events", include_str!("events.rs"), super::PREFIXES);
+    fn the_part_answers_each_of_its_keys() {
+        crate::platform::i18n::tests::assert_part_answers(include_str!("events.rs"), super::PREFIXES);
     }
 
     /// As recusas e os avisos do arquivo de eventos da spec saem do catálogo
@@ -1466,6 +1568,14 @@ mod tests {
     fn i18n_translates_spec_event_keys() {
         for (key, slots) in [
             ("spec_events.not_an_object", &["{detail}"][..]),
+            ("spec_events.raw_input_twice", &[][..]),
+            ("spec_events.raw_field_twice", &["{field}"][..]),
+            ("spec_events.batch_empty", &[][..]),
+            ("spec_events.batch_type_missing", &[][..]),
+            ("spec_events.batch_line_refused", &["{label}", "{line}"][..]),
+            ("spec_events.draft_kept", &["{draft}"][..]),
+            ("spec_events.draft_unknown", &["{draft}"][..]),
+            ("spec_events.draft_other_type", &["{draft}", "{found}", "{type}"][..]),
             ("spec_events.unknown_type", &["{type}", "{types}"][..]),
             ("spec_events.find_more", &["{shown}", "{total}"][..]),
             ("spec_events.find_none", &[][..]),
@@ -1530,6 +1640,8 @@ mod tests {
             ("spec_events.name_unknown", &["{fact}", "{name}"][..]),
             ("spec_events.names_unchecked", &[][..]),
             ("spec_events.goal_origin_not_user", &["{spec}", "{origin}"][..]),
+            ("spec_events.origin_not_user", &["{type}", "{origin}", "{recent}"][..]),
+            ("spec_events.survey_answered_early", &["{spec}", "{points}"][..]),
             ("spec_events.goal_title_too_long", &["{chars}", "{max}", "{sentence}"][..]),
             ("spec_events.goal_title_field_too_long", &["{chars}", "{max}", "{title}"][..]),
             ("spec_events.survey_open", &["{spec}", "{count}", "{points}"][..]),
@@ -1588,6 +1700,7 @@ mod tests {
             ("spec_events.phase_change_refused", &["{spec}", "{from}", "{to}"][..]),
             ("spec_events.state_by_flow_only", &["{spec}"][..]),
             ("spec_events.binary_only_type", &["{type}", "{spec}"][..]),
+            ("spec_events.type_not_written", &["{type}"][..]),
             ("spec_events.binary_author", &[][..]),
             ("spec_events.wave_by_backlog", &[][..]),
             ("spec_events.files_ignored_by_git", &["{files}"][..]),

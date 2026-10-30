@@ -84,10 +84,12 @@ mod tests {
     #[test]
     fn typed_operations_refuse_missing_wrong_and_cross_operation_arguments() {
         assert!(schema().is_object());
-        assert!(validate_input("References", &json!({"file_path":"a.ts","line":1,"column":0})).is_ok());
-        for input in [json!({"file_path":"a.ts","line":0,"column":0}),json!({"file_path":"a.ts","line":1,"column":"0"}),
-            json!({"file_path":"a.ts","line":1}),json!({"file_path":"a.ts","line":1,"column":0,"query":"x"})] {
-            assert!(validate_input("References", &input).is_err());
+        assert!(validate_input("Read", &json!({"file_path":"a.ts","offset":1,"limit":20})).is_ok());
+        for input in [json!({"file_path":"a.ts","offset":"1"}),json!({"offset":1}),json!({"file_path":"a.ts","query":"x"})] {
+            assert!(validate_input("Read", &input).is_err());
+        }
+        for tool in ["Symbol", "Trace", "Structure", "References"] {
+            assert_eq!(validate_input(tool, &json!({"file_path":"a.ts"})), Err("search-tool-unsupported".into()));
         }
         assert!(validate_input("rg", &json!({"args":[1]})).is_err());
         assert!(validate_input("Read", &json!({"file_path":"a","offset":0})).is_err());

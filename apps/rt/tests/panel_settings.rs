@@ -10,7 +10,7 @@ fn native_settings_are_safe_versioned_and_change_only_selected_fields() {
     let dir=tempfile::tempdir().unwrap();let root=dir.path();
     std::fs::create_dir_all(root.join(".claude/agents/mustard")).unwrap();
     let secret="synthetic-cli-settings-key";
-    std::fs::write(root.join("mustard.json"),json!({"ai":{"fallback":false},"jev":{"key":secret},"future":"preserve"}).to_string()).unwrap();
+    std::fs::write(root.join("mustard.json"),json!({"ai":{"fallback":false},"agents":{"by_difficulty":false},"jev":{"key":secret},"future":"preserve"}).to_string()).unwrap();
     std::fs::write(root.join(".claude/settings.local.json"),r#"{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"rtk hook claude"}]}]}}"#).unwrap();
     let run=|patch:Option<Value>| {
         let mut command=binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"));

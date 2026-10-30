@@ -691,10 +691,8 @@ fn entries(found: BTreeMap<Owner, Vec<Evidence>>, missing: &[&Word], limit: Opti
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::io::map_glossary;
     use crate::io::project_map as store;
     use serde_json::{json, Value};
-    use std::time::Duration;
     use tempfile::{tempdir, TempDir};
 
     fn languages() -> Languages {
@@ -1118,10 +1116,13 @@ mod tests {
             {"path": "src/cash.rs", "declarations": [function("close_month", 1, "")]}
         ]}));
         let model = model_path(dir.path());
-        map_glossary::record_search(&model, "s1", "sobra", &languages(), &[]).unwrap();
-        let wait = Duration::from_secs(1);
-        let marks = map_glossary::confirm_edit(&model, "s1", "src/rounds.rs", &[(2, 2)], &languages(), wait).unwrap();
-        assert_eq!(marks.len(), 1, "{marks:?}");
+        rusqlite::Connection::open(&model)
+            .unwrap()
+            .execute(
+                "INSERT INTO glossary_marks(forms, file, name) VALUES (?1, 'src/rounds.rs', 'collect_leftover')",
+                [serde_json::to_string(&Normalizer::new(&languages()).word_forms("sobra")).unwrap()],
+            )
+            .unwrap();
         let got = whole(&dir, "sobra");
         assert_eq!(got.deeper.len(), 1, "{:?}", got.deeper);
         assert_eq!(got.deeper[0].decl.as_ref().map(|decl| decl.name.as_str()), Some("collect_leftover"));

@@ -282,8 +282,8 @@ fn prompts_reading(
 const MOVES_KEY: &str = "historyMoves";
 
 /// O que os dois pedidos leem do `mustard.json` do projeto `root`: os
-/// comandos de compilar e de testar, o de preparo, os arquivos locais e os
-/// idiomas, com o repositório principal.
+/// comandos de compilar e de testar, o de preparo e os idiomas, com o
+/// repositório principal.
 fn project_execution(root: &Path) -> Execution {
     let config = crate::ProjectConfig::load(root);
     let commands = config.commands();
@@ -291,10 +291,9 @@ fn project_execution(root: &Path) -> Execution {
         build: commands.build,
         test: commands.test,
         prepare: commands.prepare,
-        local_files: local_files(&config),
         root: shown(root),
         language: config.language(),
-        model: config.agent_model().to_string(),
+        model: config.wave_agent_model().to_string(),
         // O esforço é sempre o padrão, em todo agente e modelo: o lançamento
         // o impõe, e o pedido diz o mesmo.
         effort: crate::domain::config::DEFAULT_AGENT_EFFORT.to_string(),
@@ -567,47 +566,34 @@ pub fn is_slot_of(root: &Path, spec: &str, copy: &str) -> bool {
     parent.as_deref() == Some(shown(&spec_copies_dir(root, spec)).as_str())
 }
 
-/// A pasta da cópia do revisor final da spec `spec`: a vaga do último envio
-/// de onda que gravou uma vaga desta spec, que já tem a compilação da obra.
-/// Sem envio assim — a spec sem nenhum envio de onda, ou só com envios de
-/// endereço antigo —, a vaga `a`. Quem a prepara, no commit de [`final_review_commit`], é o
-/// fechamento (`mustard-rt run close`); o pedido do revisor só diz onde ela
-/// está.
+/// A cópia limpa da spec `spec`, fora das vagas das ondas: a máquina do
+/// fechamento roda nela, e o revisor final confere a obra nela, no mesmo
+/// commit. Quem a prepara é o fechamento (`mustard-rt run close`); o pedido
+/// do revisor só diz onde ela está.
 #[must_use]
-pub fn final_copy_path(root: &Path, spec: &str, log: &SpecLog) -> PathBuf {
-    log.visible()
-        .into_iter()
-        .rev()
-        .filter(|e| e.event_type == "send" && e.str_field("role") != Some("review"))
-        .filter_map(|e| e.str_field("copy"))
-        .find(|copy| is_slot_of(root, spec, copy))
-        .map_or_else(|| slot_path(root, spec, 0), PathBuf::from)
+pub fn check_copy_path(root: &Path, spec: &str) -> PathBuf {
+    spec_copies_dir(root, spec).join("check")
 }
 
-/// O commit em que o revisor final confere a obra: o mais novo que a spec
-/// gravou no repositório principal do checkout `root`. O commit de um
-/// submódulo, que a rodada grava com o nome da pasta dele em `repo`, não
-/// existe no principal, e a cópia não nasceria nele. `None` quando a obra
-/// ainda não comitou nada ali — aí o pedido diz `HEAD`, e o fechamento cria a
-/// cópia no commit atual do checkout.
+/// O commit em que o revisor final confere a obra: o da cópia limpa da spec
+/// ([`check_copy_path`]), em que a máquina do fechamento rodou; sem a cópia,
+/// o commit atual do checkout `root`, de onde o fechamento a cria. `None`
+/// quando o git não responde, e aí o pedido diz `HEAD`.
 #[must_use]
-pub fn final_review_commit(root: &Path, log: &SpecLog) -> Option<String> {
-    let main = root.file_name().map(|name| name.to_string_lossy().to_string());
-    log.block(BlockQuery::Block(Block::Progress))
-        .into_iter()
-        .rev()
-        .filter(|e| e.event_type == "commit")
-        .filter(|e| e.str_field("repo").is_none_or(|repo| Some(repo) == main.as_deref()))
-        .find_map(|e| e.str_field("sha").map(str::to_string))
+pub fn final_review_commit(root: &Path, spec: &str) -> Option<String> {
+    let head = |dir: &Path| {
+        crate::platform::git::run(dir, &["rev-parse", "HEAD"]).out().map(|sha| sha.trim().to_string()).filter(|sha| !sha.is_empty())
+    };
+    let copy = check_copy_path(root, spec);
+    copy.join(".git").exists().then(|| head(&copy)).flatten().or_else(|| head(root))
 }
-
 
 /// O pedido do agente de teste dedicado da spec `spec`, que o fechamento pede
 /// a toda obra, mesmo a de uma onda só, no lugar da revisão de cada onda: só
 /// o que nenhuma prova verde cobre ([`wave_prompt::Proven`]) — as tarefas sem
 /// passo de término, o combinado sem onda que o cubra e os critérios sem
-/// execução que passou — e a cópia do revisor, no commit mais novo da spec e
-/// na pasta de compilação que a última onda enviada usou. No fim vêm as regras do projeto: os
+/// execução que passou — e a cópia limpa em que a máquina do fechamento
+/// rodou ([`check_copy_path`]), no commit mais novo da spec. No fim vêm as regras do projeto: os
 /// arquivos de regras da raiz e das pastas dos arquivos que a obra mexe
 /// ([`project_rules`], [`touched_files`]), quando algum existe com texto.
 ///
@@ -642,8 +628,8 @@ pub fn final_review_commit(root: &Path, log: &SpecLog) -> Option<String> {
 /// gravar nada, para o usuário ver o pedido real antes de ele valer.
 #[must_use]
 pub fn final_review(root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> FinalReview {
-    let commit = final_review_commit(root, log);
-    let copy = final_copy_path(root, spec, log);
+    let commit = final_review_commit(root, spec);
+    let copy = check_copy_path(root, spec);
     let prepared = crate::io::workspace::checkout_git_dir(&copy).is_some_and(|admin| admin.join("mustard-dependencies.sha256").is_file());
     let execution = Execution { commit, prepared, copy: Some(WaveCopy { path: shown(&copy), reused: None }), ..project_execution(root) };
     let mut material = Material {
@@ -1111,7 +1097,7 @@ type Chosen = [(String, Option<(String, PathBuf)>)];
 
 /// As skills de cada tarefa, como a montagem as escolhe ([`task_skills`]).
 struct TaskSkills {
-    /// As skills inteiras de cada tarefa, pelo código dela.
+    /// As skills de cada tarefa, citadas pelo caminho, pelo código dela.
     blocks: BTreeMap<String, Vec<TaskSkill>>,
     /// As tarefas com mais candidatas do que cabem, ainda sem escolha.
     ties: Vec<SkillTie>,
@@ -1148,15 +1134,14 @@ fn skill_option(name: &str, text: &str, file: &Path) -> SkillOption {
     }
 }
 
-/// As skills inteiras de cada tarefa, pelo código dela: a que a tarefa nomeia
-/// primeiro, sempre, depois as que casam com os arquivos dela, sem repetir,
+/// As skills de cada tarefa, citadas pelo caminho, pelo código dela: a que
+/// a tarefa nomeia primeiro, sempre, depois as que casam com os arquivos dela, sem repetir,
 /// até [`wave_prompt::TASK_SKILLS_MAX`]. Só entra a skill que a conferência
 /// da onda aceitou (`passed`), com o texto que a escolha da onda leu
 /// (`chosen`). Quando sobram mais candidatas do que cabem, entram as que a
 /// escolha deu para a tarefa em `picks`, na ordem dela; sem escolha, as
 /// primeiras, e a tarefa volta entre as que esperam escolha. O skill-creator
-/// (`creator`, o arquivo dele e a instrução) vem com a instrução antes do
-/// corpo.
+/// (`creator`, o arquivo dele e a instrução) vem citado com a instrução.
 fn task_skills(
     root: &Path,
     log: &SpecLog,
@@ -1214,13 +1199,10 @@ fn task_skills(
         }
         let skills: Vec<TaskSkill> = picked
             .into_iter()
-            .filter_map(|(name, text, file)| {
+            .filter_map(|(name, _, file)| {
                 let skill = accepted(&file)?;
-                let mut body = crate::domain::skill::frontmatter::body(text);
-                if let Some((_, note)) = creator.as_ref().filter(|(at, _)| *at == file.as_path()) {
-                    body = format!("{note}\n\n{}", body.trim_start());
-                }
-                Some(TaskSkill { name, path: skill.path.clone(), stale: skill.stale, body })
+                let note = creator.as_ref().filter(|(at, _)| *at == file.as_path()).map(|(_, note)| note.clone()).unwrap_or_default();
+                Some(TaskSkill { name, path: skill.path.clone(), stale: skill.stale, note })
             })
             .collect();
         if !skills.is_empty() {
@@ -1265,7 +1247,7 @@ fn execution(context: &Context, wave: u64) -> Execution {
     else if execution.by_difficulty {
         // O modelo da onda sai da dificuldade das tarefas dela, e sobe um
         // degrau quando ela volta reprovada.
-        let chosen = crate::domain::agent_model::wave_model(log, wave, &execution.model);
+        let chosen = crate::domain::agent_model::wave_model(log, wave);
         execution.model = chosen.model;
         execution.escalated_from = chosen.escalated_from;
     }
@@ -1674,6 +1656,8 @@ mod tests {
         assert!(first.text.contains("Modelo desta onda: sonnet. Esforço: xhigh."), "{}", first.text);
         let codex = built(&log_of(&plan), &Flight { host: Some("codex".into()), ..Flight::default() });
         assert_eq!((codex.model.as_str(), codex.effort.as_str()), ("inherit", "inherit"));
+        let ungraded = [plan[0].clone(), ("task", json!({"wave": 1, "text": "Somar", "files": [{"path": "apps/rt/src/a.rs"}]}))];
+        assert_eq!(built(&log_of(&ungraded), &claude).model, "sonnet", "a task without a grade goes to Sonnet, not to the configured Opus");
 
         let mut rejected = plan.to_vec();
         rejected.push(("send", json!({"wave": 1, "role": "wave", "text": "pedido", "lines": 1, "chars": 6, "mustard": "0", "model": "sonnet"})));
@@ -1706,8 +1690,8 @@ mod tests {
 
     /// A skill que a tarefa nomeia entra no pedido pelo caminho absoluto do
     /// arquivo no projeto principal, que existe mesmo com a onda saindo numa
-    /// cópia fora dele, e pelo quando usar da descrição dela, sem o texto; e
-    /// ela é procurada no subprojeto em que a tarefa mexe. O caminho nunca é o
+    /// cópia fora dele, sem a descrição nem o corpo; e ela é procurada no
+    /// subprojeto em que a tarefa mexe. O caminho nunca é o
     /// da cópia: a pasta das skills fica fora do git e não chega lá.
     #[test]
     fn the_skill_reaches_the_request_by_the_absolute_path_in_the_main_project() {
@@ -1726,12 +1710,12 @@ mod tests {
         assert!(built[0].text.contains(&format!("`{path}`")), "{}", built[0].text);
         assert!(!built[0].text.contains("`apps/rt/.claude/skills/somar/SKILL.md`"), "{}", built[0].text);
         assert!(!built[0].text.contains(&format!("{copy}/apps/rt/.claude")), "{}", built[0].text);
-        assert!(built[0].text.contains("# Somar\n\nUm passo por linha."), "the body comes whole: {}", built[0].text);
+        assert!(!built[0].text.contains("Um passo por linha."), "the body stays in its file: {}", built[0].text);
         assert!(!built[0].text.contains("Use ao somar dois números no motor."), "the header stays out: {}", built[0].text);
     }
 
-    /// A skill sem frontmatter entra mesmo assim: o bloco da tarefa a traz
-    /// inteira, com o nome e o caminho.
+    /// A skill sem frontmatter entra mesmo assim: o bloco da tarefa a cita
+    /// pelo nome e pelo caminho.
     #[test]
     fn a_skill_without_frontmatter_still_reaches_the_request_by_path() {
         let dir = tempdir().unwrap();
@@ -1740,7 +1724,7 @@ mod tests {
         let built = prompts(root, "teste", &plan_log(), Locale::PtBr, &Flight::default(), &plan_log().planned_waves());
         assert!(built[0].bad_skills.is_empty(), "{:?}", built[0].bad_skills);
         let path = skill_path_in(root, "apps/rt", "somar");
-        assert!(built[0].text.contains(&format!("#### Skill somar, de `{path}`\n\n# Somar\n\nUm passo por linha.")), "{}", built[0].text);
+        assert!(built[0].text.contains(&format!("- Skill somar, de `{path}`. ")), "{}", built[0].text);
     }
 
     /// A skill que cita um caminho que não existe, e a que passa do tamanho
@@ -1799,12 +1783,12 @@ mod tests {
         for hidden in ["other-contract", "manual-procedure"] {
             assert!(!built[0].text.contains(hidden), "{}", built[0].text);
         }
-        assert!(built[0].text.contains("Only read this body when needed."), "the scoped skill comes whole in the task block: {}", built[0].text);
+        assert!(!built[0].text.contains("Only read this body when needed."), "the scoped skill is cited, not pasted: {}", built[0].text);
         assert!(built[0].bad_skills.is_empty());
     }
 
     /// A origem que o cabeçalho da skill declara não a tira da onda: a que a
-    /// tarefa nomeia e a que casa com os arquivos dela chegam inteiras, mesmo
+    /// tarefa nomeia e a que casa com os arquivos dela chegam citadas, mesmo
     /// com a marca dos procedimentos por área que saíram do Mustard.
     #[test]
     fn a_skill_reaches_the_wave_whatever_source_its_header_names() {
@@ -1819,15 +1803,15 @@ mod tests {
         ]);
         let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default(), &log.planned_waves());
         assert!(built[0].bad_skills.is_empty(), "{:?}", built[0].bad_skills);
-        assert!(built[0].text.contains("# Somar\n\nUm passo por linha."), "{}", built[0].text);
-        assert!(built[0].text.contains("O corpo do contrato."), "{}", built[0].text);
+        assert!(built[0].text.contains("skills/somar/SKILL.md"), "{}", built[0].text);
+        assert!(built[0].text.contains("skills/contrato/SKILL.md"), "{}", built[0].text);
     }
 
-    /// O bloco de uma tarefa traz no máximo três skills inteiras: a que a
-    /// tarefa nomeia primeiro, depois as que casam com os arquivos dela, na
-    /// ordem em que a escolha as acha. O corpo vem sem o cabeçalho.
+    /// O bloco de uma tarefa cita no máximo três skills: a que a tarefa
+    /// nomeia primeiro, depois as que casam com os arquivos dela, na ordem em
+    /// que a escolha as acha. Nem o corpo nem o cabeçalho entram.
     #[test]
-    fn a_task_block_brings_at_most_three_whole_skills_the_named_one_first() {
+    fn a_task_block_cites_at_most_three_skills_the_named_one_first() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         std::fs::create_dir_all(root.join("apps/rt/src")).unwrap();
@@ -1838,18 +1822,17 @@ mod tests {
         write_skill(root, "apps/rt", "somar", "---\nname: somar\ndescription: The named one.\n---\n\nBody of somar.\n");
         let built = prompts(root, "teste", &plan_log(), Locale::PtBr, &Flight::default(), &plan_log().planned_waves()).remove(0);
         let block = &built.tasks[0].text;
-        let at = |body: &str| block.find(body).unwrap_or_else(|| panic!("{body}: {block}"));
-        assert!(at("Body of somar.") < at("Body of b-scoped.") && at("Body of b-scoped.") < at("Body of c-scoped."), "{block}");
-        assert!(!block.contains("Body of d-scoped.") && !block.contains("description: The named one."), "{block}");
+        let at = |name: &str| block.find(&format!("skills/{name}/SKILL.md")).unwrap_or_else(|| panic!("{name}: {block}"));
+        assert!(at("somar") < at("b-scoped") && at("b-scoped") < at("c-scoped"), "{block}");
+        assert!(!block.contains("d-scoped") && !block.contains("Body of") && !block.contains("description: The named one."), "{block}");
         assert!(built.text.contains(block.as_str()), "the request carries the first block: {}", built.text);
     }
 
-    /// The task that creates a skill carries the whole skill-creator procedure
-    /// from where the machine has it, with the folder of its scripts and the
-    /// instruction to follow it without asking anyone; the real procedure,
-    /// with a scoped skill beside it, still fits the block cap.
+    /// A tarefa que cria uma skill cita o processo do skill-creator onde a
+    /// máquina o tem, com a pasta dos scripts dele e a ordem de segui-lo sem
+    /// pedir aprovação a ninguém; o corpo do processo fica no arquivo dele.
     #[test]
-    fn a_skill_creation_task_block_brings_the_whole_skill_creator_and_the_instruction() {
+    fn a_skill_creation_task_block_cites_the_skill_creator_and_brings_the_instruction() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         std::fs::create_dir_all(root.join("apps/rt/src")).unwrap();
@@ -1867,22 +1850,13 @@ mod tests {
         let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default(), &log.planned_waves()).remove(0);
         assert!(built.bad_skills.is_empty(), "the procedure from outside the project is no bad skill: {:?}", built.bad_skills);
         let block = &built.tasks[0].text;
-        assert!(block.contains("# Skill Creator\n\nRun `scripts/run_eval.py`."), "{block}");
+        assert!(!block.contains("# Skill Creator") && block.contains(&format!("`{}`", shown(&creator.join("SKILL.md")))), "{block}");
         assert!(block.contains(&format!("`{}`", shown(&creator))), "the folder of its scripts: {block}");
         assert!(block.contains("sem pedir aprovação") && block.contains("run write skill"), "{block}");
         assert!(block.contains("`.mustard-skill/<nome>/SKILL.md`"), "the new skill goes to the reserved folder of the copy: {block}");
         assert!(!block.contains(&shown(&root.join(".claude").join("skills"))), "never to the skills folder of the main project: {block}");
-        assert!(block.find("# Skill Creator").unwrap() < block.find("Body of area.").unwrap(), "{block}");
-
-        let bundled = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugin/third-party/skill-creator");
-        crate::io::skill_creator::folder_in_test(Some(bundled.clone()));
-        let real = prompts(root, "teste", &log, Locale::PtBr, &Flight::default(), &log.planned_waves()).remove(0);
+        assert!(block.find("skill-creator").unwrap() < block.find("area").unwrap() && !block.contains("Body of area."), "{block}");
         crate::io::skill_creator::folder_in_test(None);
-        let block = &real.tasks[0].text;
-        let body = crate::domain::skill::frontmatter::body(&std::fs::read_to_string(bundled.join("SKILL.md")).unwrap());
-        assert!(block.contains(body.trim()), "the whole procedure, never cut");
-        let tokens = crate::domain::wave_prompt::estimate_tokens(block);
-        assert!(tokens <= crate::domain::wave_prompt::TASK_BLOCK_TOKEN_CAP, "{tokens} tokens");
     }
 
     /// Grava `SKILL.md` em `<directory>/<folder>` com a hora de modificação
@@ -1922,12 +1896,12 @@ mod tests {
                 let log = log_of(&[("wave", json!({"n":1,"text":"A onda","criteria":[],"done_when":"passa"})), ("task", task)]);
                 let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default(), &log.planned_waves()).remove(0);
                 let block = &built.tasks[0].text;
-                let (kept, kept_body) = &paths[newest];
+                let (kept, _) = &paths[newest];
                 let context = format!("named={named} newest={newest}: {block}");
                 assert_eq!(built.skills.len(), 1, "{context}");
                 assert_eq!(built.skills[0]["path"], json!(kept), "{context}");
-                assert_eq!(block.matches(kept_body.as_str()).count(), 1, "{context}");
-                assert_eq!(block.matches("#### Skill somar").count(), 1, "{context}");
+                assert_eq!(block.matches(kept.as_str()).count(), 1, "{context}");
+                assert_eq!(block.matches("- Skill somar,").count(), 1, "{context}");
                 for (directory, (path, body)) in &paths {
                     if *directory != newest {
                         assert!(!block.contains(body.as_str()) && !built.text.contains(path.as_str()), "{context}");
@@ -1973,13 +1947,13 @@ mod tests {
                     }
                     let log = log_of(&events);
                     let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default(), &log.planned_waves()).remove(0);
-                    let (kept, kept_body) = &paths[newest];
+                    let (kept, _) = &paths[newest];
                     let context = format!("named={named} split={split} newest={newest}: {}", built.text);
                     assert_eq!(built.skills.len(), 1, "{context}");
                     assert_eq!(built.skills[0]["path"], json!(kept), "{context}");
                     for block in built.tasks.iter().map(|task| &task.text) {
-                        assert_eq!(block.matches(kept_body.as_str()).count(), 1, "{context}");
-                        assert_eq!(block.matches("#### Skill somar").count(), 1, "{context}");
+                        assert_eq!(block.matches(kept.as_str()).count(), 1, "{context}");
+                        assert_eq!(block.matches("- Skill somar,").count(), 1, "{context}");
                     }
                     for (directory, (path, body)) in &paths {
                         if *directory != newest {
@@ -2008,7 +1982,7 @@ mod tests {
         let built = prompts(root, "teste", &log, Locale::PtBr, &Flight::default(), &log.planned_waves()).remove(0);
         let block = &built.tasks[0].text;
         assert_eq!(built.skills.len(), 2, "{block}");
-        assert!(block.contains("Body of somar.") && block.contains("Body of subtrair."), "{block}");
+        assert!(block.contains("skills/somar/SKILL.md") && block.contains("skills/subtrair/SKILL.md"), "{block}");
     }
 
     /// O nome da skill é o `name` do cabeçalho, não o da pasta: a mesma
@@ -2028,7 +2002,7 @@ mod tests {
         assert_eq!(built.skills.len(), 1, "{block}");
         assert_eq!(built.skills[0]["name"], json!("somar"), "{block}");
         assert_eq!(built.skills[0]["path"], json!(new), "{block}");
-        assert!(block.contains(&format!("#### Skill somar, de `{new}`")), "{block}");
+        assert!(block.contains(&format!("- Skill somar, de `{new}`")), "{block}");
         assert!(!block.contains("Older body.") && !built.text.contains(&old) && !block.contains("somar-codex,"), "{block}");
     }
 
@@ -3537,8 +3511,8 @@ mod tests {
     /// Os pedidos que a rodada monta — o da onda e o da revisão final — num
     /// projeto sem mapa, num só com parte Node, num com uma parte Node e uma
     /// Rust e num só Rust: nenhum cita pasta de compilação à parte, o Cargo
-    /// ou a variável dele. A compilação mora dentro da cópia, e a cópia
-    /// aparece em todos. O envio antigo com a pasta gravada não a traz de
+    /// ou a variável dele. A compilação mora dentro da cópia, e a cópia — a
+    /// da onda ou a limpa, do revisor — aparece em todos. O envio antigo com a pasta gravada não a traz de
     /// volta.
     #[test]
     fn no_request_names_a_build_folder_in_any_project() {
@@ -3565,7 +3539,8 @@ mod tests {
             for lang in [Locale::PtBr, Locale::EnUs] {
                 let built = prompts(root, "teste", &log, lang, &flight, &log.planned_waves());
                 let last = final_review(root, "teste", &log, lang).text;
-                for (what, text) in [("wave", &built[0].text), ("final", &last)] {
+                let clean = shown(&check_copy_path(root, "teste"));
+                for (what, text, copy) in [("wave", &built[0].text, &copy), ("final", &last, &clean)] {
                     assert!(text.contains(&format!("`{copy}`")), "{map:?} {lang:?} {what}: {text}");
                     for word in ["CARGO_TARGET_DIR", "Cargo", "target/copias", &folder] {
                         assert!(!text.contains(word), "{map:?} {lang:?} {what} cita {word}: {text}");
@@ -3575,42 +3550,19 @@ mod tests {
         }
     }
 
-    /// O revisor final trabalha na vaga do último envio de onda que gravou
-    /// uma vaga desta spec, a que já tem a compilação da obra. O envio de
-    /// revisão e o envio com o endereço antigo (`<spec>-<onda>`) não contam.
-    /// Sem envio de onda com vaga — a spec sem nenhum envio —, a vaga `a`.
+    /// O revisor final trabalha na cópia limpa da spec, fora das vagas das
+    /// ondas, qualquer que seja a vaga do último envio. As vagas das ondas
+    /// têm nome de letra e, depois da última, de número.
     #[test]
-    fn the_final_review_uses_the_slot_of_the_last_wave() {
+    fn the_final_review_uses_the_clean_copy() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        let slot = |n: usize| shown(&slot_path(root, "teste", n));
-        let send = |wave: u64, copy: &str| {
-            (
-                "send",
-                json!({"wave": wave, "role": "wave", "text": "p", "lines": 1, "chars": 1, "items": [1],
-                            "mustard": "0", "author": "binary", "copy": copy}),
-            )
-        };
-        let old = shown(&copies_dir(root).join("teste-3"));
-        let review = (
-            "send",
-            json!({"role": "review", "text": "p", "lines": 1, "chars": 1, "mustard": "0",
-                                      "author": "binary", "copy": slot(2)}),
-        );
-        let log = log_of(&[
-            ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
-            send(1, &slot(0)),
-            send(2, &slot(1)),
-            send(3, &old),
-            review,
-        ]);
-        assert_eq!(shown(&final_copy_path(root, "teste", &log)), slot(1));
-        assert!(final_review(root, "teste", &log, Locale::PtBr).text.contains(&format!("`{}`", slot(1))));
-
-        let unsent = log_of(&[("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"}))]);
-        assert_eq!(shown(&final_copy_path(root, "teste", &unsent)), slot(0));
-        let other_spec = log_of(&[send(1, &shown(&slot_path(root, "outra", 3)))]);
-        assert_eq!(shown(&final_copy_path(root, "teste", &other_spec)), slot(0));
+        let send = json!({"wave": 1, "role": "wave", "text": "p", "lines": 1, "chars": 1, "items": [1],
+            "mustard": "0", "author": "binary", "copy": shown(&slot_path(root, "teste", 1))});
+        let log = log_of(&[("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})), ("send", send)]);
+        let clean = check_copy_path(root, "teste");
+        assert_eq!(clean, copies_dir(root).join("teste").join("check"));
+        assert!(final_review(root, "teste", &log, Locale::PtBr).text.contains(&format!("`{}`", shown(&clean))));
         assert_eq!(slot_name(0), "a");
         assert_eq!(slot_name(25), "z");
         assert_eq!(slot_name(26), "27");
@@ -3738,7 +3690,9 @@ mod tests {
                 "o pedido ainda traz todos os requisitos acordados: {last}"
             );
             assert!(last.contains(t("prompt.final.look_again")) && !last.contains(t("prompt.final.look")), "{last}");
-            let suite = t("prompt.review.suite").replace("{command}", "make test").replace("{commit}", "bbb2222");
+            // Sem cópia limpa nem git na pasta, o pedido diz `HEAD`: o commit é
+            // o da cópia, e não o último que a spec gravou.
+            let suite = t("prompt.review.suite").replace("{command}", "make test").replace("{commit}", "HEAD");
             assert!(last.contains(&format!("- {suite}")) && last.contains(&build), "{lang:?}: {last}");
             assert!(whole_suite_once(&last), "a revisão não roda a suíte inteira: {last}");
 
@@ -3756,7 +3710,7 @@ mod tests {
             assert!(part_lines(&first, since).is_empty() && !first.contains(&format!("## {since}")), "{first}");
             assert!(first.contains(t("prompt.final.look")) && !first.contains(t("prompt.final.look_again")), "{first}");
             assert!(whole_suite_once(&first), "a revisão não roda a suíte inteira: {first}");
-            let suite = t("prompt.review.suite").replace("{command}", "make test").replace("{commit}", "aaa1111");
+            let suite = t("prompt.review.suite").replace("{command}", "make test").replace("{commit}", "HEAD");
             assert!(first.contains(&format!("- {suite}")) && first.contains(&build), "{first}");
         }
     }
@@ -3992,12 +3946,12 @@ mod tests {
     /// pedido da onda e o do revisor mandam rodar o preparo dentro da cópia
     /// antes de compilar — a linha vem antes da de compilar — e devolver ao
     /// commit, pelo `git checkout`, o arquivo versionado que ele mudar, salvo
-    /// o que a tarefa declara. Só o pedido do revisor lista os arquivos
-    /// locais, a copiar pelo conteúdo do repositório principal, sem o item
-    /// que sairia do projeto. Sem os dois — chaves ausentes, ou comando vazio
-    /// e lista vazia —, nenhum pedido traz essas linhas. Nos dois idiomas.
+    /// o que a tarefa declara. Nenhum dos dois lista os arquivos locais: a
+    /// cópia da onda os recebe da rodada, e a do revisor é a cópia limpa.
+    /// Sem comando — chave ausente ou vazia —, nenhum pedido traz essas
+    /// linhas. Nos dois idiomas.
     #[test]
-    fn the_wave_requests_cite_the_prepare_command_and_the_local_files() {
+    fn the_wave_requests_cite_the_prepare_command_and_no_local_file() {
         let log = log_of(&[
             ("wave", json!({"n": 1, "text": "A onda", "criteria": [], "done_when": "passa"})),
             ("task", json!({"wave": 1, "text": "Somar", "files": [{"path": "src/a.rs"}]})),
@@ -4017,7 +3971,6 @@ mod tests {
                 let new_copy = t("prompt.execution.prepare_new").replace("{command}", "npm ci");
                 let review = t("prompt.execution.prepare").replace("{command}", "npm ci");
                 let build = t("prompt.execution.build").replace("{command}", "npm run build");
-                let local = t("prompt.review.local_files").replace("{files}", "`.env`, `apps/api/.env.local`").replace("{root}", &shown(root));
                 let wave = prompts(root, "teste", &log, lang, &flight, &log.planned_waves()).remove(0).text;
                 let last = final_review(root, "teste", &log, lang).text;
                 for (what, text, prepare) in [("wave", &wave, &new_copy), ("final", &last, &review)] {
@@ -4030,7 +3983,7 @@ mod tests {
                     }
                     assert!(!text.contains("fora.env"), "{lang:?} {what}: {text}");
                 }
-                assert_eq!(last.contains(&local), cites, "{config} {lang:?}: {last}");
+                assert!(!last.contains(".env"), "a cópia limpa do revisor nunca recebe os arquivos locais: {lang:?}: {last}");
                 assert!(!wave.contains(".env"), "a cópia da onda já recebe os arquivos da rodada: {lang:?}: {wave}");
             }
         }

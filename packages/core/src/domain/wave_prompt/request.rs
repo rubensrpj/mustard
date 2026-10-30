@@ -15,7 +15,7 @@ use std::fmt::Write as _;
 use serde_json::Value;
 
 use super::{
-    Material, STEP_INDENT, TASK_BLOCK_TOKEN_CAP, TaskBlock, Writer, code_of, estimate_tokens, item_body, language_line, lowered,
+    Material, STEP_INDENT, TaskBlock, Writer, code_of, item_body, language_line, lowered,
     pattern_block_in_task, wave_title,
 };
 use crate::domain::spec_events::SpecEvent;
@@ -184,8 +184,7 @@ impl Writer<'_> {
     /// passos numerados — ler o que obedecer, fazer as tarefas uma por vez e
     /// gravar a entrega. As tarefas vêm só pelo código e pelo título, na
     /// ordem, com a primeira marcada; o bloco inteiro dela vem logo depois
-    /// dos passos, e depois dele os princípios do produto que o agente de onda
-    /// recebe. A suíte inteira do projeto não é passo do agente: quem a roda,
+    /// dos passos. A suíte inteira do projeto não é passo do agente: quem a roda,
     /// com o lint, é a rodada, antes do commit.
     fn to_do(&self, out: &mut String, listing: &Listing) {
         let _ = writeln!(out, "## {}\n", self.t("prompt.part.do"));
@@ -219,7 +218,6 @@ impl Writer<'_> {
         if let Some(first) = listing.steps.first() {
             let _ = writeln!(out, "{}\n", self.task_block(first, 1, listing.steps.len()).text);
         }
-        let _ = writeln!(out, "{}", crate::platform::seeds::principles_for(self.lang, crate::platform::seeds::Reader::Wave, 3));
     }
 
     /// O bloco de cada tarefa, na ordem de execução ([`super::task_blocks`]).
@@ -232,9 +230,8 @@ impl Writer<'_> {
     /// O bloco da tarefa `at`, a `n`-ésima de `total`: o título e o código, o
     /// texto inteiro dela e de cada item que ela atende, os arquivos, o que
     /// mudou neles depois do texto, o que ler antes, quem testa, o padrão do
-    /// projeto e as skills dela inteiras. O que ela atende e já veio antes no
-    /// pedido entra numa linha. O bloco que passa de [`TASK_BLOCK_TOKEN_CAP`]
-    /// perde a última skill, uma de cada vez, e diz qual cortou.
+    /// projeto e as skills dela, citadas pelo nome e pelo caminho. O que ela
+    /// atende e já veio antes no pedido entra numa linha.
     fn task_block(&self, at: &TaskStep, n: usize, total: usize) -> TaskBlock {
         let m = self.material;
         let code = code_of(m, at.task);
@@ -289,28 +286,20 @@ impl Writer<'_> {
             let _ = writeln!(out, "{lines}");
         }
         let skills = m.task_skills.get(&code).map(Vec::as_slice).unwrap_or_default();
-        let mut kept = skills.len();
-        let text = loop {
-            let mut text = out.clone();
-            for skill in &skills[..kept] {
-                let mut heading = self.t("prompt.task.skill").replace("{name}", &skill.name).replace("{path}", &skill.path);
-                if skill.stale {
-                    let _ = write!(heading, " ({})", self.t("prompt.skill.stale"));
-                }
-                let _ = writeln!(text, "#### {heading}\n\n{}\n", skill.body.trim());
+        for skill in skills {
+            let mut line = self.t("prompt.task.skill").replace("{name}", &skill.name).replace("{path}", &skill.path);
+            if skill.stale {
+                let _ = write!(line, " ({})", self.t("prompt.skill.stale"));
             }
-            for skill in &skills[kept..] {
-                let _ = writeln!(text, "- {}", self.t("prompt.task.skill_cut").replace("{name}", &skill.name).replace("{path}", &skill.path));
+            let _ = writeln!(out, "- {line}. {}", self.t("prompt.task.skill_read"));
+            if !skill.note.trim().is_empty() {
+                let _ = writeln!(out, "\n{}\n", skill.note.trim());
             }
-            if kept == 0 || estimate_tokens(&text) <= TASK_BLOCK_TOKEN_CAP {
-                break text;
-            }
-            kept -= 1;
-        };
+        }
         let mut items = vec![code.clone()];
         items.extend(at.attended.iter().map(|item| code_of(m, item)));
-        let skills = skills[..kept].iter().map(|skill| skill.name.clone()).collect();
-        TaskBlock { task: code, text: text.trim_end().to_string(), items, skills }
+        let skills = skills.iter().map(|skill| skill.name.clone()).collect();
+        TaskBlock { task: code, text: out.trim_end().to_string(), items, skills }
     }
 
     /// O texto inteiro de `item` ([`item_body`]), seguido de uma linha em

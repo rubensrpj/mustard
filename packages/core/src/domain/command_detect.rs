@@ -148,6 +148,25 @@ fn ascend_to_js_root(dir: &Path, stop_at: &Path) -> Option<(PathBuf, String)> {
     }
 }
 
+/// O preparo que cada arquivo de lock pede, na ordem em que se procura: o
+/// primeiro achado na raiz é o sugerido, com ele mesmo como gatilho.
+const PREPARE_BY_LOCK: &[(&str, &str)] = &[
+    ("pnpm-lock.yaml", "pnpm install --frozen-lockfile"),
+    ("yarn.lock", "yarn install --frozen-lockfile"),
+    ("package-lock.json", "npm ci"),
+    ("bun.lock", "bun install --frozen-lockfile"),
+    ("bun.lockb", "bun install --frozen-lockfile"),
+    ("packages.lock.json", "dotnet restore --locked-mode"),
+];
+
+/// A linha de preparo que a atualização sugere ao projeto em `root`: o
+/// comando que o arquivo de lock da raiz pede e esse arquivo, o gatilho do
+/// preparo. `None` sem arquivo de lock conhecido.
+#[must_use]
+pub fn suggested_prepare(root: &Path) -> Option<(&'static str, &'static str)> {
+    PREPARE_BY_LOCK.iter().find(|(lock, _)| root.join(lock).is_file()).map(|(lock, command)| (*command, *lock))
+}
+
 /// Resolve the JS/TS package manager for `dir`, if any.
 ///
 /// Lockfiles win (they are authoritative); failing that, the `packageManager`
@@ -282,6 +301,16 @@ mod tests {
             assert!(c.build_output.is_empty(), "{name} declares no build output");
         }
         assert!(detect_commands(tempdir().unwrap().path()).build_output.is_empty());
+    }
+
+    /// A atualização sugere o preparo pelo arquivo de lock da raiz, com ele
+    /// como gatilho; sem arquivo de lock, nada.
+    #[test]
+    fn the_prepare_suggestion_comes_from_the_lock_file() {
+        let d = tempfile::tempdir().unwrap();
+        assert_eq!(suggested_prepare(d.path()), None);
+        touch(d.path(), "package-lock.json", "{}");
+        assert_eq!(suggested_prepare(d.path()), Some(("npm ci", "package-lock.json")));
     }
 
     #[test]

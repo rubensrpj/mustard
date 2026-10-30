@@ -1,12 +1,11 @@
 //! Argument parsing and subcommand dispatch.
 //!
 //! The `mustard` binary exposes a small set of subcommands: `init` (the thin
-//! 2.0 bootstrap), `config` (git-flow) and the opt-in `install-nerd-font`
-//! helper. `clap`'s derive API builds the parser from the types below.
+//! 2.0 bootstrap) and `config` (git-flow). `clap`'s derive API builds the
+//! parser from the types below.
 //!
 //! Retired: `update` (versioned refreshes come from the plugin marketplace; a
-//! re-run of `init` re-stamps `mustard.json#version`), `review` (the
-//! `/mustard:pr review` step drives the native code-review skill), `add`, o
+//! re-run of `init` re-stamps `mustard.json#version`), `review`, `add`, o
 //! molde de terceiros que nenhum item da spec pede, e o sugeridor de
 //! gramáticas do tree-sitter, que não baixava nem compilava gramática
 //! nenhuma — só imprimia um repositório e uma linha de shell para a pessoa
@@ -17,7 +16,6 @@ use clap::{Parser, Subcommand};
 
 use crate::commands::config::{self, ConfigOptions};
 use crate::commands::init::{self, InitOptions};
-use crate::commands::install_nerd_font::{self, InstallNerdFontOptions};
 
 /// Framework-agnostic command line for Claude Code project setup.
 #[derive(Debug, Parser)]
@@ -47,20 +45,6 @@ enum Commands {
         /// Accept defaults without prompting.
         #[arg(short = 'y', long)]
         yes: bool,
-    },
-    /// Install a Nerd Font on the host (required for powerline statusline themes).
-    #[command(name = "install-nerd-font")]
-    InstallNerdFont {
-        /// Font family. Default: JetBrainsMono.
-        /// One of: JetBrainsMono, CaskaydiaCove, FiraCode, Hack.
-        #[arg(long)]
-        font: Option<String>,
-        /// Reinstall even if the font is already detected.
-        #[arg(short, long)]
-        force: bool,
-        /// Print intended actions without invoking any package manager.
-        #[arg(long = "dry-run")]
-        dry_run: bool,
     },
 }
 
@@ -92,9 +76,10 @@ fn dispatch(cli: Cli) -> Result<()> {
                 init::probe_rtk();
             }
             let outcome = init::init(&cwd, &InitOptions { force, yes, dry_run })?;
-            // Environment acts live HERE, never in the library: putting software
-            // on the operator's machine is something a library call must never
-            // take on its caller's behalf. The native door reports plugin updates.
+            // O que olha o ambiente mora AQUI, nunca na biblioteca: uma chamada
+            // de biblioteca não age sobre a máquina de quem a chama. Nada se
+            // instala: o ripgrep que falta vira comando pronto, e a porta
+            // nativa relata a atualização do plugin.
             //
             // The condition is `Installed`, not "no error". `Ok` used to cover
             // the operator answering Cancel to an existing `.claude/` — and on
@@ -102,18 +87,12 @@ fn dispatch(cli: Cli) -> Result<()> {
             // refusal. Measured through a pty in review. `InitOutcome` exists so
             // the caller can tell the two apart.
             if outcome == init::InitOutcome::Installed {
-                init::ensure_ripgrep();
+                init::ripgrep_hint();
                 init::complete_installation(&cwd)?;
             }
             Ok(())
         }
         Commands::Config { yes } => config::config(&cwd, &ConfigOptions { yes }),
-        Commands::InstallNerdFont { font, force, dry_run } => {
-            install_nerd_font::install_nerd_font(
-                &cwd,
-                &InstallNerdFontOptions { font, force, dry_run },
-            )
-        }
     }
 }
 
@@ -135,7 +114,7 @@ mod tests {
                 assert!(yes);
                 assert!(dry_run);
             }
-            other => panic!("expected Init, got {other:?}"),
+            other @ Commands::Config { .. } => panic!("expected Init, got {other:?}"),
         }
     }
 
@@ -236,7 +215,7 @@ mod tests {
     fn every_command_help_keeps_uppercase_inside_backticks() {
         use clap::CommandFactory;
         let tree = Cli::command();
-        assert!(tree.get_subcommands().count() >= 3, "the check reached every command");
+        assert!(tree.get_subcommands().count() >= 2, "the check reached every command");
         let defects = tree_defects(&tree);
         assert!(defects.is_empty(), "{} help texts break the uppercase rule:\n{}", defects.len(), defects.join("\n"));
     }

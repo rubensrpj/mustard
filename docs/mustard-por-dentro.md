@@ -1,10 +1,10 @@
 # Mustard por dentro
 
 O que o Mustard faz sozinho, para quem precisa do detalhe: a instalação e os
-arquivos que ela grava, as regras e as skills que nascem das specs, os pontos em
-que o Jev decide, a publicação externa e a busca de código. O caminho do
-trabalho e os comandos do dia estão em
-[`MUSTARD-COMMANDS.md`](../MUSTARD-COMMANDS.md).
+arquivos que ela grava, a configuração do `mustard.json`, as regras e as skills
+que nascem das specs, os pontos em que o Jev decide, a publicação externa e a
+busca de código. O caminho do trabalho está no README, e cada comando diz o que
+faz em `mustard-rt run <comando> --help`.
 
 ---
 
@@ -29,12 +29,12 @@ Uma instalação antiga que declarava as três partes do roteador (`orchestrator
 
 ### As skills que o Mustard cria
 
-- Registro de falhas: cada reprovação de onda com motivo (revisor da onda, `REJECTED` de quem conduz, revisão final que aponta onda) vira uma linha em `.claude/mustard/failures.ndjson`, depois da rodada, fora das travas. As anteriores que dividem arquivo ou pasta vão ao Jev, um sim ou não por candidata ("é a mesma falha?"); de 0,8 para cima, a linha entra no grupo dela.
-- Gatilho de 2: o grupo com duas ocorrências ganha, na spec aberta, a tarefa "Criar a skill: …", com as ocorrências na parte do agente e o skill-creator nomeado. O bloco dela leva o skill-creator inteiro: o plugin oficial da máquina e, sem ele, a cópia em `plugin/third-party/skill-creator`.
+- Registro de falhas: cada reprovação de onda com motivo (`REJECTED` de quem conduz, revisão final que aponta onda) vira uma linha em `.claude/mustard/failures.ndjson`, depois da rodada, fora das travas. As anteriores que dividem arquivo ou pasta vão ao Jev, um sim ou não por candidata ("é a mesma falha?"); de 0,8 para cima, a linha entra no grupo dela.
+- Gatilho de 2: o grupo com duas ocorrências ganha, na spec aberta, a tarefa "Criar a skill: …", com as ocorrências na parte do agente e o skill-creator nomeado. O bloco dela cita o skill-creator pelo caminho: o plugin oficial da máquina e, sem ele, a cópia em `plugin/third-party/skill-creator`.
 - Teste com e sem: a onda testa a skill nas tarefas que a motivaram, pela avaliação do skill-creator, fora do projeto, e grava `run write skill` com `created`, `updated` ou `discarded` e o ganho em `text`. Só com ganho a skill vai a `.claude/skills/<nome>/`.
 - Fora do git e cópia: a pasta da skill fica fora do git pela regra local do clone, ganha a cópia de segurança fora do projeto (`MUSTARD_SKILLS_DIR`, ou `~/.cache/mustard/skills`) e entra na linha da spec no resumo do projeto. As contas ficam em `.claude/mustard/skills.json`, nunca na spec.
 - Desempate: o bloco de uma tarefa leva até 3 skills, a nomeada sempre. Com mais candidatas pelos caminhos, o Jev responde um sim ou não por candidata ("faz a coisa específica que a tarefa pede?"), vendo a descrição inteira e 700 caracteres do corpo. Entram as de maior chance, de 0,30 para cima; nenhuma acima disso, nenhuma entra. Sem Jev, as 3 primeiras. A pergunta sai antes das travas da rodada; com o Jev falhando, a onda nova não sai na rodada, e só ela: a escolha vai à reserva. O envio grava em `tasks` as skills de cada bloco.
-- Atualização: depois do commit de cada onda, a skill cujo arquivo citado mudou vai ao Jev com o corpo e o diff, até 6 mil caracteres cada, sem segredo ("a mudança contradiz o que a skill ensina?"). Com 0,2 ou mais nasce "Atualizar a skill <nome>", uma por skill enquanto espera, com o skill-creator inteiro no bloco e a mudança na parte do agente. Arquivo citado apagado cria a tarefa sem perguntar. A onda que recebeu a skill e foi reprovada pela mesma falha que a motivou também. Nenhuma skill é reescrita sozinha.
+- Atualização: depois do commit de cada onda, a skill cujo arquivo citado mudou vai ao Jev com o corpo e o diff, até 6 mil caracteres cada, sem segredo ("a mudança contradiz o que a skill ensina?"). Com 0,2 ou mais nasce "Atualizar a skill <nome>", uma por skill enquanto espera, com o skill-creator citado pelo caminho no bloco e a mudança na parte do agente. Arquivo citado apagado cria a tarefa sem perguntar. A onda que recebeu a skill e foi reprovada pela mesma falha que a motivou também. Nenhuma skill é reescrita sozinha.
 - Saída: a skill candidata em 30 envios que nunca entrou num bloco, ou descartada sem ganho em dois testes seguidos, sai de `.claude/skills/`. A cópia de segurança fica, a spec ganha o evento `skill` `retired` e a rodada avisa com `skill-retired`.
 - Painel: a tela de consumo lista as skills do Mustard, com o estado (ativa, descartada, retirada), quantas vezes cada uma foi com uma tarefa, o último ganho e os tokens da onda que a criou. O custo em dinheiro por onda não é medido, e não aparece.
 
@@ -57,6 +57,33 @@ Cada pergunta sai numa chamada só, sem segredo. Só a certeza alta age: chance 
 - Entregas ligadas ao objetivo (`run grill`): `project_summary` vem com `chosen: "reserve"` e o pedido em `reserve`, em vez das recentes; com o recibo, o `run grill` seguinte traz as entregas escolhidas.
 - Na formação das ondas, a leitura do modelo pequeno já leva a nota de cada tarefa, o valor de cada onda e o assunto da tarefa nova, sem outro agente; a dificuldade incerta sobe um modelo. A leitura vê também as ondas em andamento: a onda formada no mesmo sentido de uma delas a segue, e as tarefas dela ficam na rodada em `held`, motivo `following-running-wave`, até a volta da onda seguida. Saem na montagem seguinte à volta, com o resumo que ela deixou como base e junto das tarefas que ele deixou por fazer; a onda que concluiu tudo não deixa resumo, e elas saem numa onda nova.
 - Quando não entra: com o Jev desligado (interruptor geral fora ou sem chave), vale o fluxo sem Jev: as regras saem sem regra, a falha fica no grupo dela, as entregas são as recentes, o bloco leva as 3 primeiras skills, a linha de código com o nome tirado segura e o comentário ou documento só avisa, a volta sem mudança pede a conferência de quem conduz, e a sobra e o item não cumprido seguem a regra dos mesmos arquivos e da tarefa devolvida, sem espera; o despacho monta as ondas pelos arquivos e leva o pedido padrão. Na busca de código e no `run find`, o Jev ligado que falha ou passa do prazo não vai à reserva — a pergunta é do próprio agente —: a resposta diz, numa linha, que a escolha entre os candidatos listados é dele.
+
+## A configuração
+
+O `mustard.json` na raiz é a **fonte única** de configuração do projeto:
+
+Leituras simples de `mustard.json` por `cat`, `grep`, `egrep`, `fgrep`, `head` e `tail` são recusadas, e a recusa traz pronto, na última linha, o mesmo comando com essa leitura trocada pela que devolve os bytes com a chave mascarada, preservando o filtro, as linhas e o resultado do comando. A recusa vale contra qualquer outro hook que troque o comando, como o do rtk, cujos leitores (`rtk read`, `rtk json`) também são recusados. No comando pronto, pipes, `&&`, `||`, consultas ao Git e testes continuam no shell, sob as permissões normais. Nenhuma chave é copiada para arquivo temporário e essa operação não usa IA. Para consultar diretamente: `mustard-rt run config-read --file mustard.json --reader grep --args-json '["-n","-E","flow|protected"]'`. Sem `--reader` e `--args-json`, o comando mostra a configuração mascarada inteira. Formatos que exigem scripts, expansão ou vários arquivos permanecem bloqueados com uma mensagem curta, sem despejar a configuração.
+
+```jsonc
+{
+  // "flow" é OPCIONAL e não restringe nada: ele apenas pré-seleciona a base
+  // no seletor. De onde uma unidade pode sair vem do git;
+  // onde o commit direto é recusado vem do branch padrão do remoto, mais o que
+  // "protected" acrescentar. Uma instalação nova não grava "flow".
+  "git":  { "provider": "github" },
+  "buildCommand": "cargo build",
+  "testCommand":  "cargo test",
+  "lintCommand":  "cargo clippy",
+  "typeCheckCommand": "cargo check",
+  "proofTimeoutSecs": 900,  // opcional: teto, em segundos, da prova de cada critério
+  "language": {             // os dois idiomas, cada um na sua chave
+    "text": "pt-BR",        // conversa, specs, páginas, comentários e commits
+    "code": "en-US"         // nomes no código: variáveis, funções, testes, arquivos, comandos e tabelas; sem a chave, inglês
+  }
+}
+```
+
+O Mustard é **agnóstico** de linguagem e de arquitetura: o texto gerado segue `language.text`; os nomes no código (variáveis, funções, testes, arquivos, comandos e tabelas do banco) seguem `language.code`. A instalação pergunta os dois idiomas e grava só o que você escolher; sem escolha, os nomes no código ficam em inglês. Os comandos de build/test/lint são lidos daqui. A prova de cada critério tem 120 s, ou 600 s quando compila: `cargo`, uma checagem de tipos ou o `buildCommand`, o `typeCheckCommand` ou o `testCommand` declarado. `proofTimeoutSecs` troca os dois pelo número inteiro de segundos que você escrever; um valor que não é inteiro positivo é ignorado. A variável de ambiente `MUSTARD_QA_AC_TIMEOUT_SECS` vence a chave. O lint e a suíte que o servidor roda têm o teto de uma hora, que nenhuma das duas alcança. Regras de monorepo: todo o estado vive na **raiz** do repositório git; um subprojeto só é um projeto Mustard próprio quando é um repositório git independente (submódulo).
 
 ## Publicação externa nativa
 
@@ -131,7 +158,7 @@ apagar recursos remotos requer operação separada na conta do usuário.
 Protocolo: [Direct Upload](https://developers.cloudflare.com/pages/get-started/direct-upload/)
 e [API de deployments](https://developers.cloudflare.com/api/resources/pages/subresources/projects/subresources/deployments/methods/create/).
 
-Quem conduz recebe um aviso curto aos 200 mil tokens e em cada faixa seguinte de 100 mil, uma vez por faixa. Limpar ou compactar a sessão reinicia essa contagem. Para o agente, o sinal chega aos 200 mil tokens de contexto, contando a entrada e os resumos herdados, ou antes, aos 75% da janela do modelo que o atende, quando ela é menor. O próprio passo de término da tarefa responde se o agente segue ou entrega. Com agente vivo, o aviso de quem conduz manda esperar a volta dele antes de `/clear`, e a retomada depois de limpar lista as ondas cujo agente parou. Ao sinal, ele conclui a tarefa atual, os testes mínimos e o resumo, sem iniciar outra tarefa após a ordem de entrega.
+Quem conduz não recebe aviso de tamanho. Para o agente, o sinal chega aos 200 mil tokens de contexto, contando a entrada e os resumos herdados, ou antes, aos 75% da janela do modelo que o atende, quando ela é menor. O próprio passo de término da tarefa responde se o agente segue ou entrega. A retomada depois de limpar lista as ondas cujo agente parou. Ao sinal, ele conclui a tarefa atual, os testes mínimos e o resumo, sem iniciar outra tarefa após a ordem de entrega.
 
 O painel conta as chamadas observadas do fluxo, leitura, gravação e busca, inclusive recusas. A medição de transporte de `read`, `write` e `search` fica em `.claude/mustard/operations/<spec>.ndjson`, separada dos itens e dos recibos obrigatórios de leitura do agente. Uma gravação recusada não muda o histórico canônico da spec. Bytes são medidos; tokens de transporte são aproximações pelo tamanho do texto, sem guardar o conteúdo dos argumentos. Essas contagens não demonstram, sozinhas, economia de tokens ou de dinheiro.
 
@@ -198,7 +225,7 @@ Verified new hits feed the local grain database with source hashes and checkout 
 
 Claude mods register `mcp__mustard__search` with a nested `request` object. It invokes the gateway through the host's Bash tool, retaining permissions and classic hooks. Classic hooks route supported Grep/Glob/text Read requests to the gateway and rewrite simple rg/grep/git grep commands. Unsupported tools/options, shell compounds, pipelines, redirects and substitutions keep the native path. This is not universal interception of arbitrary programs or a deployed Codex adapter. `run map search "<pattern>"` uses the same source-first path; `run knowledge --symbol <id>` expands indexed evidence.
 
-Explicit gateway operations also accept `Symbol` (exact current declaration ID), `Trace` (bounded static paths), `Structure` (a Tree-sitter query in one file), and `References` (compiler/index locations). They require `input.file_path`. References also requires `line` (one-based) and `column` (zero-based UTF-8 bytes), with `relation` set to `definitions`, `references` or `implementations`. Installed language servers use the existing language catalog; an unavailable provider returns native text candidates with its limitation. Identity resolution never calls Jev.
+An investigation answer goes to the conversation in at most 4 KB, without gap, test-candidate or static-relation lines; the complete original result follows a repeat with `purpose=locate`.
 
 Task retrieval groups all admitted native occurrences by source before selecting candidates; the first 256 lines no longer decide which owners exist. File/byte/time budgets and omissions remain explicit. Learning samples up to 256 line witnesses across admitted files and tracks whole source hashes separately, so a later discovered file can trigger a native structural refresh. Task ranking weights terms across declarations, normalizes document length and softly diversifies files; scores establish reading order, not meaning. Up to 24 current decision candidates are preserved before the presentation/graph cut, so the optional selector does not inherit that cut. Broad OR words do not become exclusive identity anchors merely by coinciding with a function name; declaration patterns use modifiers from actual signatures. Unavailable sources make the investigation partial without discarding other current evidence. Dependency bodies need an explicit name or additional written question evidence; references remain expandable. Optional Choice shares file hashes once and retains complete/incomplete source status. It can still accept a wrong candidate, particularly when the right one is missing; cache reuse and low request cost do not establish semantic accuracy.
 
@@ -208,31 +235,16 @@ Independent intent, source-field and native-pattern rankings are fused by recipr
 
 An `intent` consisting entirely of two to eight `- ` or `* ` bullet lines supplies explicit independent questions. Preserve each question's constraints; ordinary prose is not split. Selection and source excerpts use each question individually. Optional Jev `knowledge-choice-v6` shares repeated candidates, excerpts and hashes across groups; missing source or conflicting snapshots defer without a paid call. It retains `none`, insufficient evidence, configured acceptance thresholds and caching. Shared state does not guarantee fewer tokens for a single question.
 
-For explicit diagnostics, `MUSTARD_SEARCH_TRACE=1` adds metadata for hydrated candidates, source validity, reading rank and retention before the decision cut. It adds no source to the provider or the routine agent view. An absent rank does not prove source absence or semantic irrelevance. Choice v5 asks for source support of inputs, outputs and distinguishing constraints, and permits `none` or `insufficient`; its probability thresholds remain a measured pilot policy, not a calibrated guarantee. `gateway-project.mjs` tests fixed task probes in a disposable checkout with no provider calls; `gateway-audit.mjs` grades saved public retrieval outputs offline. Whole-host validation uses `gateway-session.mjs --dry-run` for preflight or `--execute` with explicit authenticated model configuration.
-
-Optional precise indexes are imported with `mustard-rt run knowledge --import-scip <index.scip> --source-manifest <receipt.json>`. The manifest binds `index_sha256`, `position_encoding` (SCIP enum) and `sources` (relative file → SHA-256); include compiler configuration and lockfiles too. Embedded current document text can replace per-document receipts, but does not attest omitted compiler inputs. Imported locations are refused after a bound source changes. Mustard does not install or run a SCIP indexer automatically.
+For explicit diagnostics, `MUSTARD_SEARCH_TRACE=1` adds metadata for hydrated candidates, source validity, reading rank and retention before the decision cut. It adds no source to the provider or the routine agent view. An absent rank does not prove source absence or semantic irrelevance. Choice v5 asks for source support of inputs, outputs and distinguishing constraints, and permits `none` or `insufficient`; its probability thresholds remain a measured pilot policy, not a calibrated guarantee.
 
 An investigation with an explicit non-literal intent can follow callers as well as outgoing static relations from discovery seeds. It reserves response slots for those relations; `grill` uses both directions. Cards distinguish selection by name from selection through a static relation and expose the current source hashes and relation locations. These are evidence categories, not calibrated confidence percentages. Dynamic dispatch, unresolved interfaces and unindexed calls can leave gaps; a reference alone does not establish behavior or prove that a completion hook is the correct implementation point.
 
-The data-only `plugin/hooks/search-schema.js` is the canonical per-operation contract used by both Mods and Rust. Native args remain arrays. Read offsets and References lines start at 1; columns start at 0. The adapter supplies `schema_version:1` and may append a transport-only `context:{session,agent,epoch,acknowledged}` outside `request`. Only the adapter may acknowledge delivery receipts, after checking the delivered UTF-8 byte length and checksum; failed, interrupted, rewritten or truncated output is not acknowledged. Compact/reload/agent changes require a new context epoch. Complete current bodies may be replaced by a shorter reuse reference after acknowledgement; small/incomplete bodies and explicit Read remain whole.
+The data-only `plugin/hooks/search-schema.js` is the canonical per-operation contract used by both Mods and Rust. Native args remain arrays. Read offsets start at 1. The adapter supplies `schema_version:1` and may append a transport-only `context:{session,agent,epoch,acknowledged}` outside `request`. Only the adapter may acknowledge delivery receipts, after checking the delivered UTF-8 byte length and checksum; failed, interrupted, rewritten or truncated output is not acknowledged. Compact/reload/agent changes require a new context epoch. Complete current bodies may be replaced by a shorter reuse reference after acknowledgement; small/incomplete bodies and explicit Read remain whole.
 
 Investigations follow current unique static dependencies from exact-name/accepted recommendation seeds within the original inventory. Call lines, declared parameter/type fields and textual test mentions are source evidence, not proven data flow or coverage. Remaining candidates are expandable. Scan schema/build marks invalidate old structural extraction. A migrated index with missing structural marks requests a native rebuild even when the original search has no matches; learned source hashes cannot certify an empty derived index.
 
-Unresolved task investigations also follow a bounded set of primary evidence seeds. Stored members, contracts/implementations and current unique caller associations contribute expandable references, with at most two additional bodies when they add written question evidence. Parser associations remain labelled candidates. An already imported current SCIP index can contribute compiler implementation relations when its source verification stays inside the original inventory; automatic chains do not launch LSP. Out-of-scope, ambiguous or unavailable destinations remain partial and never enlarge the original inventory.
+Unresolved task investigations also follow a bounded set of primary evidence seeds. Stored members, contracts/implementations and current unique caller associations contribute expandable references, with at most two additional bodies when they add written question evidence. Parser associations remain labelled candidates. Out-of-scope, ambiguous or unavailable destinations remain partial and never enlarge the original inventory.
 
-Live References may reuse a private local compiler worker, isolated by checkout, language, binary and environment, with a 90-second idle shutdown. Each query checks workspace fingerprints and dependency metadata and obtains a fresh compiler response. Source/config changes restart the session. Returned source is still hashed; omitted/external compiler inputs are not exhaustively attested. First queries can cost more than cold queries; use References when exact identity matters. No language model is involved.
-
-Reproducible follow-up evaluation (from the repository checkout):
-
-The native acceptance benchmark requires Node 22+ with `node:sqlite`. This is a benchmark dependency, not a runtime dependency of the binary. The warm LSP benchmark prepares each arm's own native index before starting the timer.
-
-```sh
-node apps/scan/benchmarks/gateway-acceptance.mjs
-node apps/scan/benchmarks/gateway-heldout.mjs --dataset /path/to/repoqa-2024-06-23.json --selection apps/scan/benchmarks/repoqa-selection-followups-20261009.json --baseline /path/to/baseline-bin --current /path/to/current-bin --out target/heldout
-node apps/scan/benchmarks/gateway-warm-lsp.mjs --root /path/to/target/backend-snapshot --baseline /path/to/old/mustard-rt --current /path/to/new/mustard-rt --out target/warm-lsp
-node apps/scan/benchmarks/gateway-session.mjs --dry-run --out target/session-pair
-```
-
-The paid responsibility pilot requires an explicit `--jev`, a key in `TYPESAFE_API_KEY` or `--config /path/to/local/mustard.json`, and `--out`; optional `--bin` selects the comparison binary directory. Secrets are passed only through the child environment. The whole-task runner requires `--execute --model <full-model-id> --plugin <review-plugin> --out <new-output-folder>` and `ANTHROPIC_API_KEY` because the official bare CLI ignores subscription OAuth. It alternates baseline/Mustard order on two authored tasks, checks external behavior graders, records actual usage/cache categories and estimated cost, and rejects a Mustard session that never used its gateway. Dry-run is free. These samples do not establish general correctness or whole-session savings. Detailed results: [gateway continuation](2026-10-09-gateway-de-busca.md).
+Detailed results: [gateway continuation](2026-10-09-gateway-de-busca.md).
 
 

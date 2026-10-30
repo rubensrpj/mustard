@@ -279,13 +279,9 @@ impl JevFilter {
         Some(filter)
     }
 
-    pub(crate) fn choose_symbols(&self,payload:&str)->Result<Value,FilterError> {
-        self.choose_symbols_until(payload,Instant::now()+self.timeouts.response)
-    }
-
-    /// [`Self::choose_symbols`] que acaba também em `deadline`, o prazo da
-    /// busca que pediu a escolha: o pedido leva o que sobra dele, nunca mais
-    /// que a espera do filtro.
+    /// A escolha entre os símbolos do pedido `payload`, que acaba em
+    /// `deadline`, o prazo da busca que pediu a escolha: o pedido leva o que
+    /// sobra dele, nunca mais que a espera do filtro.
     pub(crate) fn choose_symbols_until(&self,payload:&str,deadline:Instant)->Result<Value,FilterError> {
         validate_wire_size(payload)?;
         let deadline=deadline.min(Instant::now()+self.timeouts.response);

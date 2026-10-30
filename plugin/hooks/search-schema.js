@@ -12,11 +12,7 @@ export default {
             "git",
             "Grep",
             "Glob",
-            "Read",
-            "Symbol",
-            "Trace",
-            "Structure",
-            "References"
+            "Read"
           ]
         },
         "input": {
@@ -38,7 +34,7 @@ export default {
         },
         "choose": {
           "type": "boolean",
-          "description": "Optional responsibility Choice after native triage. By default, investigative rg/grep/Grep/Glob requests permit Jev only for unresolved source-backed alternatives when the project enables it. Literal locate and exact read/symbol tools stay native. Set false to opt out."
+          "description": "Optional responsibility Choice after native triage. By default, investigative rg/grep/Grep/Glob requests permit Jev only for unresolved source-backed alternatives when the project enables it. Literal locate and exact reads stay native. Set false to opt out."
         }
       },
       "required": [
@@ -251,151 +247,6 @@ export default {
               },
               "required": [
                 "file_path"
-              ],
-              "additionalProperties": false
-            }
-          },
-          "required": [
-            "tool",
-            "input"
-          ]
-        },
-        {
-          "properties": {
-            "tool": {
-              "const": "Symbol"
-            },
-            "input": {
-              "type": "object",
-              "properties": {
-                "file_path": {
-                  "type": "string"
-                },
-                "symbol": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "file_path",
-                "symbol"
-              ],
-              "additionalProperties": false
-            }
-          },
-          "required": [
-            "tool",
-            "input"
-          ]
-        },
-        {
-          "properties": {
-            "tool": {
-              "const": "Trace"
-            },
-            "input": {
-              "type": "object",
-              "properties": {
-                "file_path": {
-                  "type": "string"
-                },
-                "symbol": {
-                  "type": "string"
-                },
-                "direction": {
-                  "type": "string",
-                  "enum": [
-                    "outgoing",
-                    "callers",
-                    "both"
-                  ]
-                },
-                "depth": {
-                  "type": "integer",
-                  "minimum": 0
-                },
-                "limit": {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                "target": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "file_path",
-                "symbol"
-              ],
-              "additionalProperties": false
-            }
-          },
-          "required": [
-            "tool",
-            "input"
-          ]
-        },
-        {
-          "properties": {
-            "tool": {
-              "const": "Structure"
-            },
-            "input": {
-              "type": "object",
-              "properties": {
-                "file_path": {
-                  "type": "string"
-                },
-                "query": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "file_path",
-                "query"
-              ],
-              "additionalProperties": false
-            }
-          },
-          "required": [
-            "tool",
-            "input"
-          ]
-        },
-        {
-          "properties": {
-            "tool": {
-              "const": "References"
-            },
-            "input": {
-              "type": "object",
-              "properties": {
-                "file_path": {
-                  "type": "string"
-                },
-                "line": {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                "column": {
-                  "type": "integer",
-                  "minimum": 0
-                },
-                "relation": {
-                  "type": "string",
-                  "enum": [
-                    "definitions",
-                    "references",
-                    "implementations"
-                  ]
-                },
-                "limit": {
-                  "type": "integer",
-                  "minimum": 1
-                }
-              },
-              "required": [
-                "file_path",
-                "line",
-                "column"
               ],
               "additionalProperties": false
             }

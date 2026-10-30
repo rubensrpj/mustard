@@ -1,9 +1,9 @@
-//! A passagem do despacho ao programa recém-compilado. A rodada que comita
-//! código do Mustard refaz o programa compilado da branch logo depois do
-//! commit; se é esse mesmo programa que roda a rodada, o processo atual é o
-//! antigo, e a onda que ele soltasse sairia montada pelo código de antes do
-//! commit. Então, com a compilação verde, a rodada termina a parte do commit
-//! e pede o despacho ao programa novo (`run round --dispatch --full`, sem
+//! A passagem do despacho ao programa recém-compilado. No checkout do
+//! Mustard, a rodada que vai despachar refaz o programa compilado da branch
+//! quando ele está atrás do commit atual; se é esse mesmo programa que roda a
+//! rodada, o processo atual é o antigo, e a onda que ele soltasse sairia
+//! montada pelo código de antes. Então, com a compilação verde, a rodada
+//! termina a sua parte e pede o despacho ao programa novo (`run round --dispatch --full`, sem
 //! relatório), devolvendo a resposta dele junto da sua. A resposta inteira, e
 //! não a curta: o processo que imprime é este, e é ele quem a encurta, uma vez
 //! só — agrupar as tarefas seguradas de uma resposta já agrupada as perde. Sem
@@ -57,10 +57,22 @@ pub(super) fn dispatch_by_new_program(start: &Path, spec: &str, rebuilt: bool, p
     run(&program, &args).filter(|answer| answer.get("ok").is_some())
 }
 
-/// Roda o programa e lê a última linha JSON da saída dele: a rodada responde
-/// numa linha só, e a saída de erro fica de fora.
+/// A marca do programa novo que recebeu o despacho: ele despacha sem
+/// compilar de novo, e nunca passa o despacho adiante. Sem ela, o programa
+/// que a compilação não deixou em dia compilaria e passaria o despacho a si
+/// mesmo sem fim.
+const HANDED_OVER: &str = "MUSTARD_RT_HANDED_OVER";
+
+/// `true` no programa que recebeu o despacho de outra rodada.
+pub(super) fn handed_over() -> bool {
+    std::env::var_os(HANDED_OVER).is_some()
+}
+
+/// Roda o programa, com a marca de quem recebeu o despacho, e lê a última
+/// linha JSON da saída dele: a rodada responde numa linha só, e a saída de
+/// erro fica de fora.
 pub(super) fn run_program(program: &Path, args: &[String]) -> Option<Value> {
-    let out = std::process::Command::new(program).args(args).output().ok()?;
+    let out = std::process::Command::new(program).args(args).env(HANDED_OVER, "1").output().ok()?;
     String::from_utf8_lossy(&out.stdout).lines().rev().find_map(|line| serde_json::from_str::<Value>(line.trim()).ok())
 }
 

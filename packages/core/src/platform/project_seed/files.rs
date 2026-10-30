@@ -31,10 +31,12 @@ const AGENTS_DIR: &str = "agents/mustard";
 /// rodar o instalador de novo troca o texto no mesmo arquivo. Páginas externas
 /// são exportações explícitas; os caminhos históricos permanecem reconhecidos.
 /// O `model:` e o
-/// `effort:` do cabeçalho de cada agente são os que o projeto declara.
+/// `effort:` do cabeçalho de cada agente são os que o projeto declara; o
+/// revisor final fica no Opus, como a instalação o grava sem `agents.review`.
 #[must_use]
 pub fn harness_texts(text: Locale, agents: AgentSettings<'_>) -> Vec<(String, String)> {
-    harness_texts_with(text, agents, agents)
+    let review = AgentSettings { model: crate::domain::config::FINAL_REVIEW_MODEL, effort: agents.effort };
+    harness_texts_with(text, agents, review)
 }
 
 /// [`harness_texts`] como o projeto de `config` os grava: o revisor final

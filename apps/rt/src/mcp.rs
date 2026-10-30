@@ -67,7 +67,8 @@ fn response(root: &Path, message: &Value, initialized: &mut bool) -> Option<Valu
                     let mut text = String::from_utf8_lossy(&view.stdout).into_owned();
                     if !answer.stderr.is_empty() { text.push_str(&String::from_utf8_lossy(&answer.stderr)); }
                     let enriched = answer.report["crossing_status"] == "enriched";
-                    let text = String::from_utf8_lossy(&crate::commands::search::conversation_answer(root, &request, text.into_bytes(), None, enriched)).into_owned();
+                    let cap = crate::commands::search::conversation_cap(enriched, view.representation);
+                    let text = String::from_utf8_lossy(&crate::commands::search::conversation_answer(root, &request, text.into_bytes(), None, cap)).into_owned();
                     let _ = crate::commands::spec_events::conversation::record_output_call_as(root, session.as_deref(), "search", None, started, &answer.report, &text);
                     json!({"content":[{"type":"text","text":text}],"isError":answer.report["ok"] != true})
                 }
@@ -184,7 +185,7 @@ mod tests {
         let start: String = text.chars().take(300).collect();
         // Esta busca não enriquece, então vale o teto do modo reserva, lido
         // do dono dele: um número escrito aqui envelheceria junto.
-        let cap = crate::commands::search::conversation_cap(false);
+        let cap = crate::commands::search::conversation_cap(false, "native");
         assert!(text.len() <= cap, "{} bytes: {start}", text.len());
         // O começo da linha e a marca do corte, sem o número de bytes que
         // sobraram: ele muda quando o cabeçalho da resposta ganha uma linha, e

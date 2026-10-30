@@ -318,23 +318,6 @@ pub fn declaration_only(card:&Card,source:&str)->bool {
     normalize(&range)==normalize(&card.signature)
 }
 
-/// Only candidates close to the native winner, with multiple written query
-/// clues, can affect the next choice. No request for a missing candidate.
-pub fn ambiguity(file: &str, group: &[Ranked], cards: &[Card]) -> Option<Ambiguity> {
-    let first = group.first()?;
-    if first.own_matches < 2 {
-        return None;
-    }
-    let margin = (first.score * 0.12).max(0.5);
-    let candidates: Vec<_> = group
-        .iter()
-        .take_while(|r| r.own_matches == first.own_matches && first.score - r.score <= margin)
-        .filter(|r| r.own_matches >= 2)
-        .map(|r| cards[r.card].clone())
-        .collect();
-    (candidates.len() > 1).then(|| Ambiguity::new(file.into(), candidates))
-}
-
 #[derive(Debug, Default)]
 pub struct Decisions {
     /// Only a supplied candidate id can replace its own group's winner.
@@ -378,17 +361,6 @@ mod tests {
         let languages = Languages::new(["en-US"]);
         let groups = within_files(&cards, "quartz beacon", &languages, &[]);
         assert_eq!(cards[groups["src/worker.rs"][0].card].name, "process");
-        assert!(ambiguity("src/worker.rs", &groups["src/worker.rs"], &cards).is_none());
-    }
-    #[test]
-    fn ambiguity_requires_multiple_own_clues_and_close_scores() {
-        let mut cards = cards();
-        cards[2].identifiers = "quartz beacon".into();
-        cards[2].body_comment = "quartz beacon".into();
-        let groups = within_files(&cards, "quartz beacon", &Languages::new(["en-US"]), &[]);
-        assert_eq!(ambiguity("src/worker.rs", &groups["src/worker.rs"], &cards).unwrap().candidates.len(), 2);
-        let groups = within_files(&cards, "quartz", &Languages::new(["en-US"]), &[]);
-        assert!(ambiguity("src/worker.rs", &groups["src/worker.rs"], &cards).is_none());
     }
 
     #[test]

@@ -52,13 +52,6 @@ async function restorePresentation($) {
     return value?.schema_version===2 && value.cwd===await $.session.cwd()?value:undefined;
   }catch{return undefined;}
 }
-// The cause of a failure on one line, short enough for the diagnostics record.
-function cause(error) {return String(error?.message ?? error ?? '').replace(/\s+/g,' ').trim().slice(0,300) || undefined;}
-async function diagnostic($,component,operation,reason,detail) {
-  try {const cwd=await $.session.cwd();await $.process.run([await runtime($),'run','panel-diagnostics','--root',cwd,'--record'],
-    {cwd,timeoutMs:3000,stdin:JSON.stringify({component,operation,reason,...(detail?{detail}:{}),session:await $.session.id()})});}catch{/* Diagnostics never blocks work. */}
-}
-
 const panelEvents=[];
 function panelEvent(kind,surface) {
   panelEvents.push({kind,at:new Date().toISOString(),...(surface?{surface}: {})});
@@ -66,7 +59,7 @@ function panelEvent(kind,surface) {
 }
 let measurementQueue = Promise.resolve();
 const searchPurposes = ['locate','understand','spec','implement','validate'];
-const searchTools = ['rg','grep','git','Grep','Glob','Read','Symbol','Trace','Structure','References'];
+const searchTools = ['rg','grep','git','Grep','Glob','Read'];
 let evidenceEpoch, evidenceAcknowledged = new Map();
 const analysisAgents=new Map();
 function resetEvidence() {
@@ -179,9 +172,8 @@ async function refresh($,{force=false}={}) {
     try {usage={...usage,...await $.session.usage()};} catch { /* Keep the last native observation. */ }
     try {themeName=(await $.config.list()).find(row=>row.key==='theme')?.value;} catch { /* The chart keeps its dark colors. */ }
     problem=undefined;
-  } catch (error) {
-    if (opened && mine === ticket) {problem=t('Não foi possível atualizar. O painel mostra a última leitura.','Could not update. The panel shows the last reading.');
-      void diagnostic($,'panel','refresh','panel-query-failed',cause(error));}
+  } catch {
+    if (opened && mine === ticket) problem=t('Não foi possível atualizar. O painel mostra a última leitura.','Could not update. The panel shows the last reading.');
   } finally {
     busy=false;
     if(measure)measuring=false;
@@ -226,8 +218,8 @@ async function showMore($) {
     // The rows shown now were not read in one go: the next reading is whole.
     cache.items={identity:identityOf({...state,rows}),revision:undefined,value};
     await setPanel($,{rows});
-  } catch (error) {
-    problem=t('Não foi possível trazer mais linhas.','Could not bring more rows.');void diagnostic($,'panel','more','panel-query-failed',cause(error));
+  } catch {
+    problem=t('Não foi possível trazer mais linhas.','Could not bring more rows.');
   }
   $.ui.invalidate('ui.render');
 }
@@ -241,23 +233,15 @@ function measureNow($) {
 function recordMeasurement($, measurement) {
   // Preserve arrival order. A repeated cumulative reading replaces no spend,
   // and the runtime resolves attribution from the checkout, not the pane tab.
+  // The runtime records a live-usage failure, with its cause, by itself.
   measurementQueue = measurementQueue.catch(() => {}).then(async () => {
-    let failure='usage-record-failed',detail;
     try {
       const cwd = await $.session.cwd();
       const session = await $.session.id();
       const model = await $.session.model();
-      const result=await $.process.run([await runtime($), 'run', 'usage-record', '--root', cwd, '--session', session],
+      await $.process.run([await runtime($), 'run', 'usage-record', '--root', cwd, '--session', session],
         {cwd, timeoutMs:5000, stdin:JSON.stringify({...measurement,model:measurement.model || model})});
-      const reply=JSON.parse(result.stdout);
-      // The runtime already recorded a live-usage failure, with its cause.
-      if(result.exitCode!==0 || (reply.ok!==true && reply.live?.diagnosed!==true)) {
-        const reason=reply.live?.reason || reply.reason;
-        if(typeof reason==='string' && /^(usage|live-usage)-[a-z-]{1,80}$/.test(reason))failure=reason;
-        detail=reply.live?.detail || reply.detail || (typeof reason==='string' && reason!==failure?reason:`exit ${result.exitCode}`);
-        throw new Error('usage-record-failed');
-      }
-    } catch(error) {void diagnostic($,'usage','record',failure,detail ?? cause(error));}
+    } catch { /* A lost measurement never blocks work. */ }
   });
   return measurementQueue;
 }
@@ -388,7 +372,7 @@ export function register(on) {
     resetEvidence();
     const saved=await restorePresentation($);
     if(saved){await setPanel($,{...initialPanelState(),...saved.state});panelWanted=saved.wanted===true;}
-    await $.tool.register({name:'search',description:'Use Mustard for project code searches and reads. Preserve original arguments and scope. Provide intent (local resource/provider + operation, without repeating the whole project goal) and purpose. locate returns occurrences; understand/spec/implement/validate investigate current source. Once a declaration is found, ask for its scoped evidence instead of opening its whole file. Reuse complete bodies; expand indicated missing ranges before relying on omitted code. Read preserves the requested offset/limit and result. Symbol/Trace use {file_path,symbol,direction?,depth?,target?,limit?} with current cards[].id or owners.symbols[].id (References symbol IDs are provider-specific); Trace follows current static connections, not runtime flow. Structure uses {file_path,query} with a Tree-sitter query. References uses {file_path,line,column,relation?,limit?}; line is one-based and column is a zero-based UTF-8 byte offset; uses a current imported SCIP index or the installed language server from init/doctor. No model is called. Cold server queries can take longer; use them for exact definitions/references, not literal greps. If unavailable, the result includes a native text-search fallback with explicit limitations. Additional candidates/tests have native expansion commands. Investigative Grep/rg/Glob requests permit optional Jev for unresolved source-backed responsibility alternatives when the project enables it; choose=false opts out. Literal lookup and exact reads stay native. The adapter supplies the contract version.',
+    await $.tool.register({name:'search',description:'Use Mustard for project code searches and reads. Preserve original arguments and scope. Provide intent (local resource/provider + operation, without repeating the whole project goal) and purpose. locate returns occurrences; understand/spec/implement/validate investigate current source. Once a declaration is found, ask for its scoped evidence instead of opening its whole file. Reuse complete bodies; expand indicated missing ranges before relying on omitted code. Read preserves the requested offset/limit and result. Additional candidates/tests have native expansion commands. Investigative Grep/rg/Glob requests permit optional Jev for unresolved source-backed responsibility alternatives when the project enables it; choose=false opts out. Literal lookup and exact reads stay native. The adapter supplies the contract version.',
       inputSchema:searchSchema});
     const result=await next(e);
     if(panelWanted)await openPanel($);
@@ -463,13 +447,6 @@ export function register(on) {
     if(failed) return {result:text || `Process exited with code ${run.exitCode}`,isError:true};
     return {result:text || (unmatched?'No matches (exit code 1)':'')};
   });
-  // Observe failed operations for the diagnostics, without replacing
-  // permissions or the native orchestration. No tool reads the panel again.
-  on('tool.call', async ($, e, next) => {
-    const result=await next(e);
-    if(result?.isError || result?.deny)void diagnostic($,'tool',e.tool,result.deny?'tool-denied':'tool-failed');
-    return result;
-  });
   // The end of the conductor's turn rereads the visible screen; an agent's
   // turn only records its measure, and its stop rereads.
   on('turn.complete', async ($, e, next) => {
@@ -528,7 +505,7 @@ export function register(on) {
     if(!surfaces?.length)stopPanel();
     return next(e);
   });
-  on('ui.fault',async ($,e,next)=>{panelEvent('ui-fault',e.surface);void diagnostic($,'panel','render','ui-fault');return next(e);});
+  on('ui.fault',async ($,e,next)=>{panelEvent('ui-fault',e.surface);return next(e);});
   on('agent.spawn',async ($,e,next)=>{
     const prepared=analysisSpawn(e);
     if(prepared.deny)return prepared;

@@ -248,7 +248,8 @@ impl UpsertReport {
 /// 6. the cleanup ([`cleanup::plan`], then [`cleanup::apply`]) — what an older
 ///    Mustard left between its marks is taken out in this same call, with no
 ///    question: the rules of the Guards go first to the project's pending list
-///    (see [`upsert_project_with`]), and a file without a mark is only listed.
+///    (see [`upsert_project_with`]); a file without a mark and the team's
+///    `.claude/settings.json` are only listed.
 ///
 /// Nothing is staged or committed, whatever git tracks: the stamp in a
 /// versioned `mustard.json` stays a change for the person to commit.
@@ -263,11 +264,9 @@ impl UpsertReport {
 /// repositório, nem por um instante. Quando essa gravação não pode acontecer
 /// dentro de um repositório que existe, o passo 0 RECUSA, e nenhum passo
 /// depois dele roda. O passo 2 então mira a camada local das configurações, e
-/// o `.claude/settings.json` da equipe só é alcançado pelo passo 6: ele tira
-/// as linhas do molde e, como única exceção entre as regras de bloqueio dele,
-/// troca no lugar cada uma das três que um molde antigo escreveu com as duas
-/// formas de asterisco. Essas linhas mudadas ficam visíveis ao git, para a
-/// pessoa comitar.
+/// o `.claude/settings.json` da equipe nunca é gravado: o passo 6 só lista as
+/// linhas do molde antigo e as regras de bloqueio escritas com as duas formas
+/// de asterisco, para a pessoa mudar.
 ///
 /// # Errors
 ///
@@ -345,12 +344,12 @@ pub fn upsert_project_with(root: &Path, version: Option<&str>, mode: InstallMode
     report.record(MUSTARD_JSON, outcome);
 
     // 6. What an older Mustard left in files that are not its own is its own
-    //    leftover, and leaves now. A shared install writes the seed into
-    //    `.claude/settings.json` itself, so there that file is the install's
-    //    and not the team's.
+    //    leftover, and leaves now; the team's settings are only listed. A
+    //    shared install writes the seed into `.claude/settings.json` itself,
+    //    so there that file is the install's and not the team's.
     let mut plan = cleanup::plan(root);
     if !mode.is_private() {
-        plan.files.retain(|change| change.path != SETTINGS_JSON);
+        plan.team = None;
     }
     if plan.has_changes() {
         report.cleaned = Some(cleanup::apply(root, &plan, pending)?);
@@ -482,32 +481,37 @@ mod tests {
     }
 
     /// A instalação nova escreve o modelo padrão em `agents.model` e no
-    /// cabeçalho dos dois agentes; com um modelo já declarado, ela o mantém
-    /// no arquivo e o escreve nos agentes; e a linha do arquivo, trocada, muda
-    /// os dois agentes na instalação seguinte. Um modelo que um cabeçalho não
-    /// aceita fica onde está, e os agentes recebem o padrão.
+    /// cabeçalho do agente de onda, e o Opus no do revisor final. Com um
+    /// modelo já declarado, ela o mantém no arquivo; ele chega ao cabeçalho de
+    /// onda só com a escolha pela dificuldade desligada, e trocado, muda o
+    /// agente na instalação seguinte. Um modelo que um cabeçalho não aceita
+    /// fica onde está, e os agentes recebem o padrão.
     #[test]
     fn the_agents_are_installed_with_the_model_the_project_declares() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
         assert_eq!(written_config(root)["agents"]["model"], json!("sonnet"));
-        assert_eq!(installed_agent_models(root), ["sonnet", "sonnet"]);
+        assert_eq!(installed_agent_models(root), ["sonnet", "opus"]);
 
         std_fs::write(root.join("mustard.json"), r#"{"version":"9.9.9","acronyms":["PI"],"agents":{"model":"opus"}}"#).unwrap();
         upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
-        assert_eq!(installed_agent_models(root), ["opus", "opus"]);
+        assert_eq!(installed_agent_models(root), ["sonnet", "opus"], "by difficulty, the wave header stays on Sonnet");
         let config = written_config(root);
         assert_eq!(config["agents"]["model"], json!("opus"), "the declared model is kept");
         assert_eq!(config["acronyms"], json!(["PI"]));
 
-        std_fs::write(root.join("mustard.json"), r#"{"version":"9.9.9","agents":{"model":"claude-sonnet-5-5"}}"#).unwrap();
+        std_fs::write(root.join("mustard.json"), r#"{"version":"9.9.9","agents":{"model":"opus","by_difficulty":false}}"#).unwrap();
         upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
-        assert_eq!(installed_agent_models(root), ["claude-sonnet-5-5", "claude-sonnet-5-5"]);
+        assert_eq!(installed_agent_models(root), ["opus", "opus"]);
+
+        std_fs::write(root.join("mustard.json"), r#"{"version":"9.9.9","agents":{"model":"claude-sonnet-5-5","by_difficulty":false}}"#).unwrap();
+        upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
+        assert_eq!(installed_agent_models(root), ["claude-sonnet-5-5", "opus"], "the final reviewer does not inherit `agents.model`");
 
         std_fs::write(root.join("mustard.json"), r#"{"version":"9.9.9","agents":{"model":"opus\neffort: low"}}"#).unwrap();
         upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
-        assert_eq!(installed_agent_models(root), ["sonnet", "sonnet"]);
+        assert_eq!(installed_agent_models(root), ["sonnet", "opus"]);
         let text = std_fs::read_to_string(root.join(".claude/agents/mustard/wave.md")).unwrap();
         assert!(!text.contains("effort: low"), "a model with a line break wrote another key: {text}");
         assert_eq!(written_config(root)["agents"]["model"], json!("opus\neffort: low"), "what the person wrote stays");
@@ -534,14 +538,14 @@ mod tests {
             let config = written_config(root);
             assert_eq!(config["agents"], json!({"model": "sonnet", "effort": effort}), "the declared effort is kept");
             assert_eq!(config["acronyms"], json!(["PI"]));
-            assert_eq!(installed_agent_models(root), ["sonnet", "sonnet"], "the model line was touched");
+            assert_eq!(installed_agent_models(root), ["sonnet", "opus"], "the model line was touched");
         }
 
         for invalid in ["ultra", "", "high\nmodel: opus", "high max"] {
             std_fs::write(root.join("mustard.json"), serde_json::to_string(&json!({"version": "9.9.9", "agents": {"effort": invalid}})).unwrap()).unwrap();
             upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
             assert_eq!(installed_agent_efforts(root), ["xhigh", "xhigh"], "`{invalid}` reached the agents");
-            assert_eq!(installed_agent_models(root), ["sonnet", "sonnet"], "`{invalid}` wrote the model line");
+            assert_eq!(installed_agent_models(root), ["sonnet", "opus"], "`{invalid}` wrote the model line");
             assert_eq!(written_config(root)["agents"]["effort"], json!(invalid), "what the person wrote stays");
             let text = std_fs::read_to_string(root.join(".claude/agents/mustard/review.md")).unwrap();
             let header = text.split("\n---\n").next().unwrap();
@@ -566,7 +570,7 @@ mod tests {
             upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
             assert_eq!(installed_agent_header(root, "omitClaudeMd"), ["true", "true"], "the {text} install");
 
-            std_fs::write(root.join("mustard.json"), format!(r#"{{"language":{{"text":"{}"}},"agents":{{"model":"opus","effort":"low"}}}}"#, text.as_str()))
+            std_fs::write(root.join("mustard.json"), format!(r#"{{"language":{{"text":"{}"}},"agents":{{"model":"opus","effort":"low","by_difficulty":false}}}}"#, text.as_str()))
                 .unwrap();
             upsert_project(root, Some("9.9.9"), InstallMode::Shared).unwrap();
             assert_eq!(installed_agent_models(root), ["opus", "opus"], "the {text} model change");
@@ -590,7 +594,7 @@ mod tests {
         assert_eq!(config["agents"], json!({"model": "sonnet", "effort": "xhigh", "note": "mine"}));
         assert_eq!(config["acronyms"], json!(["PI"]));
         assert_eq!(config["language"], json!({"text": "en-US"}));
-        assert_eq!(installed_agent_models(root), ["sonnet", "sonnet"]);
+        assert_eq!(installed_agent_models(root), ["sonnet", "opus"]);
         assert_eq!(installed_agent_efforts(root), ["xhigh", "xhigh"]);
 
         // A configuração da onda anterior, com o modelo e sem o esforço,
@@ -598,7 +602,7 @@ mod tests {
         std_fs::write(root.join("mustard.json"), r#"{"version":"1.0.0","agents":{"model":"opus"}}"#).unwrap();
         upsert_project(root, Some("1.0.0"), InstallMode::Shared).unwrap();
         assert_eq!(written_config(root)["agents"], json!({"model": "opus", "effort": "xhigh"}));
-        assert_eq!(installed_agent_models(root), ["opus", "opus"]);
+        assert_eq!(installed_agent_models(root), ["sonnet", "opus"]);
         assert_eq!(installed_agent_efforts(root), ["xhigh", "xhigh"]);
     }
 
@@ -635,7 +639,7 @@ mod tests {
     /// que diz o que tirou; o agente do projeto com o mesmo nome, fora da
     /// pasta do Mustard, fica como está; e a atualização seguinte não tem mais
     /// nada a tirar. O produto não traz mais o molde deles em idioma nenhum, e
-    /// o texto que o modelo lê fica abaixo de 30.400 bytes em cada idioma,
+    /// o texto que o modelo lê fica abaixo de 26.000 bytes em cada idioma,
     /// pela mesma medida do teste do limite.
     #[test]
     fn an_update_removes_the_retired_single_task_wave_agent() {
@@ -865,16 +869,14 @@ mod tests {
         let report = upsert_project_with(root, None, InstallMode::Private, &list).unwrap();
         let plan = report.cleanup.clone().expect("what left is listed");
         let listed: Vec<(&str, &cleanup::Action)> = plan.files.iter().map(|f| (f.path.as_str(), &f.action)).collect();
-        assert_eq!(
-            listed,
-            [("apps/api/CLAUDE.md", &cleanup::Action::Edit), ("apps/web/CLAUDE.md", &cleanup::Action::Delete), (SETTINGS_JSON, &cleanup::Action::Edit),],
-        );
+        assert_eq!(listed, [("apps/api/CLAUDE.md", &cleanup::Action::Edit), ("apps/web/CLAUDE.md", &cleanup::Action::Delete)]);
+        assert_eq!(plan.team.as_ref().map(|team| team.path.as_str()), Some(SETTINGS_JSON), "the team file is only listed");
         assert_eq!(plan.unmarked, ["apps/cli/CLAUDE.md"], "the file without a mark is only listed");
         let rules: Vec<&str> = plan.rules.iter().map(|r| r.text.as_str()).collect();
         assert_eq!(rules, ["Reuse the shared client.", "Never block the render."]);
         let done = report.cleaned.clone().expect("the report says what the cleanup did");
         assert!(done.failed.is_empty(), "{done:?}");
-        assert_eq!(done.edited, ["apps/api/CLAUDE.md", SETTINGS_JSON]);
+        assert_eq!(done.edited, ["apps/api/CLAUDE.md"]);
         assert_eq!(done.deleted, ["apps/web/CLAUDE.md"]);
         assert_eq!(done.pending.as_deref(), Some("P-1"), "{done:?}");
         let detail = list.0.borrow()[0].1.clone();
@@ -895,8 +897,7 @@ mod tests {
         assert!(!root.join("apps/web/CLAUDE.md").exists(), "the file that was only Mustard's goes");
         assert_eq!(read(root, "apps/cli/CLAUDE.md"), unmarked.as_bytes(), "the unmarked file is never touched");
         assert_eq!(read(root, "CLAUDE.md"), root_md.as_bytes(), "a file with nothing of Mustard's is never touched");
-        let settings: Value = serde_json::from_slice(&read(root, SETTINGS_JSON)).unwrap();
-        assert_eq!(settings, json!({ "teamKey": 1 }), "only the seed's line leaves the team's settings");
+        assert_eq!(read(root, SETTINGS_JSON), team_settings.as_bytes(), "the team's settings are never written");
 
         assert!(!root.join(".claude/spec/lessons.ndjson").exists(), "nothing goes to the lesson bank");
         let again = upsert_project_with(root, None, InstallMode::Private, &list).unwrap();

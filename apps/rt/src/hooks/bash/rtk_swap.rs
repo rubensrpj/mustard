@@ -71,7 +71,7 @@ pub(crate) fn swap(input: &HookInput, verdict: Verdict, rtk: &Path, runner: &imp
     };
     if command.len() > 65_536
         || command.contains('\0')
-        || lex::segments(command).iter().any(|seg| matches!(seg.name(), "mustard-rt" | "mustard-rt.exe" | "mustard-boot" | "mustard-boot.cmd"))
+        || lex::segments(command).iter().any(lex::Segment::runs_mustard)
     {
         return verdict;
     }

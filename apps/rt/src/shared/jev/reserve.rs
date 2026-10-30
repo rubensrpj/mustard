@@ -22,7 +22,7 @@ use serde_json::{Map, Value, json};
 
 use super::JevFilter;
 pub(crate) use super::call_record::record_reserve_call;
-use crate::shared::secret::without_secrets;
+use crate::shared::secret::{value_without_secrets, without_secrets};
 use crate::shared::spec_state::{is_codex_session, session_from_env};
 
 pub(crate) use super::call_record::RESERVE_CALL;
@@ -85,16 +85,6 @@ struct Asking {
     kind: String,
 }
 
-/// O texto `value` sem segredo, em cada texto que ele traz.
-fn clean(value: &Value) -> Value {
-    match value {
-        Value::String(text) => Value::String(without_secrets(text)),
-        Value::Array(items) => Value::Array(items.iter().map(clean).collect()),
-        Value::Object(fields) => Value::Object(fields.iter().map(|(key, value)| (key.clone(), clean(value))).collect()),
-        other => other.clone(),
-    }
-}
-
 /// O texto de um critério do Jev: a frase, ou o `what` dela; vazio na
 /// pergunta sem critério.
 fn meaning(criterion: &Value) -> String {
@@ -113,9 +103,9 @@ fn decision(payloads: &[String]) -> (String, Vec<ReserveQuestion>, Vec<Asking>) 
     let docs: Vec<Value> = payloads.iter().map(|payload| serde_json::from_str(payload).unwrap_or(Value::Null)).collect();
     let several = docs.len() > 1;
     let material = if several {
-        Value::Object(docs.iter().enumerate().map(|(at, doc)| (format!("decision_{}", at + 1), clean(&doc["state"]))).collect())
+        Value::Object(docs.iter().enumerate().map(|(at, doc)| (format!("decision_{}", at + 1), value_without_secrets(&doc["state"]))).collect())
     } else {
-        docs.first().map_or(Value::Null, |doc| clean(&doc["state"]))
+        docs.first().map_or(Value::Null, |doc| value_without_secrets(&doc["state"]))
     };
     let option = |name: &str, said: &Value| ReserveOption { name: name.to_string(), meaning: without_secrets(&meaning(said)) };
     let (mut questions, mut asking) = (Vec::new(), Vec::new());

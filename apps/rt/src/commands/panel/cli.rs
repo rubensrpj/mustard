@@ -3,9 +3,6 @@ use std::path::PathBuf;
 
 #[derive(Debug, Subcommand)]
 pub enum PanelCmd {
-    /// Record one failure's metadata from stdin for the local diagnostics.
-    #[command(display_order=37)]
-    PanelDiagnostics { #[arg(long,default_value=".")] root:PathBuf, #[arg(long)] record:bool },
     /// Read safe project settings, or apply an explicit versioned patch.
     #[command(display_order = 31)]
     Settings {
@@ -106,12 +103,6 @@ pub struct ScreenArgs {
 
 pub fn dispatch(cmd: PanelCmd) {
     match cmd {
-        PanelCmd::PanelDiagnostics {root,record}=>{
-            let root=mustard_core::io::spec_events::spec_root(&root);
-            let result=if record {read_stdin().map_or_else(||serde_json::json!({"ok":false,"reason":"diagnostic-invalid"}),|value|super::diagnostics::record(&root,&value))}
-                else {serde_json::json!({"ok":false,"reason":"diagnostic-needs-record"})};
-            println!("{}",super::safe_value(result));
-        },
         PanelCmd::Settings {root,json,stdin,full} => {
             let json = crate::shared::json_arg::resolve_opt(json);
             let report=if stdin {

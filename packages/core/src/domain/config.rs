@@ -376,22 +376,6 @@ impl Subprojects {
     }
 }
 
-/// The `amend` block. Note the field is `drift_threshold` (snake_case) on disk
-/// — this sub-struct keeps Rust's natural snake naming so it matches existing
-/// files; only the top-level `ProjectConfig` keys are camelCase.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct Amend {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub drift_threshold: Option<u64>,
-}
-
-impl Amend {
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.drift_threshold.is_none()
-    }
-}
-
 /// The `language` block of `mustard.json`: the two languages a project writes
 /// in, each declared on its own key.
 ///
@@ -496,13 +480,9 @@ impl AgentsConfig {
 /// A chave de `agents` com o modelo e o esforço do revisor final.
 pub const REVIEW_AGENT: &str = "review";
 
-/// A chave de `agents` com o modelo do revisor de cada onda e o interruptor
-/// dele (`enabled`).
-pub const WAVE_REVIEW_AGENT: &str = "wave_review";
-
-/// O modelo do revisor de onda quando `agents.wave_review.model` não declara
-/// um que valha.
-pub const DEFAULT_WAVE_REVIEW_MODEL: &str = "sonnet";
+/// O modelo do revisor final quando `agents.review.model` não declara um que
+/// valha: o Opus, sem herdar o de `agents.model`.
+pub const FINAL_REVIEW_MODEL: &str = "opus";
 
 /// A chave de `agents` que liga o modelo de cada onda pela dificuldade das
 /// tarefas dela ([`ProjectConfig::by_difficulty`]).
@@ -592,16 +572,17 @@ pub struct Commands {
 ///
 /// `#[serde(rename_all = "camelCase")]` applies to the **top-level** keys only
 /// (`buildCommand`, `maxActiveSpecs`, …). The nested structs keep
-/// snake/lowercase naming (`amend.drift_threshold`, `git.provider`,
-/// `language.text`, `subprojects.exclude`) to match the on-disk shape. Legacy
-/// snake_case command keys are still accepted on read via `alias`.
+/// snake/lowercase naming (`git.provider`, `language.text`,
+/// `subprojects.exclude`) to match the on-disk shape. Legacy snake_case
+/// command keys are still accepted on read via `alias`.
 ///
 /// The language keys that came before `language` (`specLang`, `lang`) and the
 /// `tone` key are no longer part of the schema, nor are the three keys that
 /// described the architecture in words (`architecture`, `rolePatterns`,
 /// `waveLayerOrder`): the rules come from the import graph of the code as it
-/// is, never from a declared text. A file that still carries any of them keeps
-/// loading: they land in [`ProjectConfig::extra`] like any unknown key,
+/// is, never from a declared text. Nor are the keys nothing read (`amend`,
+/// `sourceExtensions`, `primaryExt`). A file that still carries any of them
+/// keeps loading: they land in [`ProjectConfig::extra`] like any unknown key,
 /// preserved on write and read by nobody.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -630,8 +611,15 @@ pub struct ProjectConfig {
     /// instalação ainda não perguntou; vazio, o projeto não tem preparo.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prepare_command: Option<String>,
+    /// Os arquivos cujo conteúdo pede o preparo de novo (`prepareFiles`),
+    /// como o arquivo de lock, relativos à raiz. O selo do preparo leva o
+    /// comando e o conteúdo deles; sem nenhum, o preparo roda uma vez por
+    /// cópia nova.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prepare_files: Option<Vec<String>>,
     /// As pastas de compilação da pasta principal que só crescem e podem ser
-    /// apagadas no fim do fechamento e do descarte, relativas à raiz. A
+    /// apagadas no fim do descarte, relativas à raiz; o fechamento nunca as
+    /// apaga. A
     /// instalação as grava pela detecção dos comandos. Ausente, a instalação
     /// ainda não detectou; vazia, o projeto não tem nenhuma. Nas duas, nada é
     /// apagado.
@@ -664,10 +652,6 @@ pub struct ProjectConfig {
     #[serde(skip_serializing_if = "AgentsConfig::is_empty")]
     pub agents: AgentsConfig,
 
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub source_extensions: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub primary_ext: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_active_specs: Option<u64>,
     /// Quantas ondas saem na mesma rodada, que é quantas compilam ao mesmo
@@ -722,8 +706,6 @@ pub struct ProjectConfig {
 
     #[serde(skip_serializing_if = "Subprojects::is_empty")]
     pub subprojects: Subprojects,
-    #[serde(skip_serializing_if = "Amend::is_empty")]
-    pub amend: Amend,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub runtime: Option<Runtime>,
@@ -909,6 +891,13 @@ impl ProjectConfig {
         }
     }
 
+    /// Os arquivos de `prepareFiles`, sem as pontas em branco e sem as
+    /// entradas vazias.
+    #[must_use]
+    pub fn prepare_files(&self) -> Vec<String> {
+        self.prepare_files.iter().flatten().filter_map(|file| non_blank(Some(file.as_str()))).collect()
+    }
+
     /// VCS binary policy: `Some("git")` by default, `Some(bin)` when pinned,
     /// `None` when the user set `vcs` to an empty string (explicit opt-out).
     #[must_use]
@@ -1046,12 +1035,6 @@ impl ProjectConfig {
         self.rtk != Some(false)
     }
 
-    /// `amend.drift_threshold` as a `u32`; `None` when absent or out of range.
-    #[must_use]
-    pub fn drift_threshold(&self) -> Option<u32> {
-        self.amend.drift_threshold.and_then(|n| u32::try_from(n).ok())
-    }
-
     /// Declared injectables, normalised fail-open: entries with a blank `on`
     /// or `file` are dropped (a config typo silences that entry, never the
     /// hook), `on` is trimmed + ASCII-lowercased so hooks compare against
@@ -1153,40 +1136,46 @@ impl ProjectConfig {
         self.agents.extra.get(BY_DIFFICULTY).and_then(Value::as_bool).unwrap_or(true)
     }
 
-    /// O modelo e o esforço dos agentes, os dois já conferidos.
+    /// O modelo e o esforço que o cabeçalho do agente de onda leva, os dois
+    /// já conferidos: o modelo da onda sem envio ([`Self::wave_agent_model`])
+    /// e o esforço dos agentes.
     #[must_use]
     pub fn agent_settings(&self) -> AgentSettings<'_> {
-        AgentSettings { model: self.agent_model(), effort: self.agent_effort() }
+        AgentSettings { model: self.wave_agent_model(), effort: self.agent_effort() }
+    }
+
+    /// O modelo do agente de onda sem envio que o diga: o Sonnet quando o
+    /// modelo sai da dificuldade das tarefas ([`Self::by_difficulty`]); o de
+    /// `agents.model` só com essa escolha desligada.
+    #[must_use]
+    pub fn wave_agent_model(&self) -> &str {
+        if self.by_difficulty() { DEFAULT_AGENT_MODEL } else { self.agent_model() }
     }
 
     /// O modelo e o esforço do revisor final: os de `agents.review`, cada um
-    /// conferido como os dos agentes; o que falta ou não vale segue o dos
-    /// agentes de onda ([`Self::agent_settings`]).
+    /// conferido como os dos agentes; o modelo que falta ou não vale é o
+    /// [`FINAL_REVIEW_MODEL`], e o esforço segue o dos agentes de onda.
     #[must_use]
     pub fn review_settings(&self) -> AgentSettings<'_> {
-        let review = self.agents.extra.get(REVIEW_AGENT);
-        let field = |name: &str| review.and_then(|review| review.get(name)).and_then(Value::as_str).map(str::trim);
-        let model = field("model").filter(|model| is_model_name(model)).unwrap_or_else(|| self.agent_model());
-        let effort = field("effort").and_then(|effort| AGENT_EFFORTS.into_iter().find(|known| known.eq_ignore_ascii_case(effort))).unwrap_or_else(|| self.agent_effort());
-        AgentSettings { model, effort }
+        let effort = self.review_field("effort").and_then(|effort| AGENT_EFFORTS.into_iter().find(|known| known.eq_ignore_ascii_case(effort)));
+        AgentSettings { model: self.declared_review_model().unwrap_or(FINAL_REVIEW_MODEL), effort: effort.unwrap_or_else(|| self.agent_effort()) }
     }
 
-    /// O modelo e o esforço do revisor de cada onda: o modelo de
-    /// `agents.wave_review.model`, conferido como o dos agentes, ou
-    /// [`DEFAULT_WAVE_REVIEW_MODEL`]; o esforço é sempre o
-    /// [`DEFAULT_AGENT_EFFORT`], que o lançamento impõe a todo agente.
+    /// O modelo do revisor que não é o final — o do levantamento e o do pull
+    /// request de colega: o de `agents.review`, ou o de `agents.model`.
     #[must_use]
-    pub fn wave_review_settings(&self) -> AgentSettings<'_> {
-        let model = self.agents.extra.get(WAVE_REVIEW_AGENT).and_then(|review| review.get("model")).and_then(Value::as_str).map(str::trim);
-        AgentSettings { model: model.filter(|model| is_model_name(model)).unwrap_or(DEFAULT_WAVE_REVIEW_MODEL), effort: DEFAULT_AGENT_EFFORT }
+    pub fn other_review_model(&self) -> &str {
+        self.declared_review_model().unwrap_or_else(|| self.agent_model())
     }
 
-    /// Se a volta de cada onda vai ao revisor de onda antes do commit:
-    /// ligado, salvo quando `agents.wave_review.enabled` é `false`. Desligado,
-    /// quem conduz aceita a volta com a linha `REVIEWED`.
-    #[must_use]
-    pub fn wave_review_enabled(&self) -> bool {
-        self.agents.extra.get(WAVE_REVIEW_AGENT).and_then(|review| review.get("enabled")).and_then(Value::as_bool).unwrap_or(true)
+    /// O modelo de `agents.review.model`, quando vale como nome de modelo.
+    fn declared_review_model(&self) -> Option<&str> {
+        self.review_field("model").filter(|model| is_model_name(model))
+    }
+
+    /// O campo `name` de `agents.review`, sem espaço em volta.
+    fn review_field(&self, name: &str) -> Option<&str> {
+        self.agents.extra.get(REVIEW_AGENT).and_then(|review| review.get(name)).and_then(Value::as_str).map(str::trim)
     }
 }
 
@@ -1815,10 +1804,11 @@ mod tests {
     }
 
     /// Os três campos que descreviam a arquitetura em texto saíram do esquema:
-    /// a regra vem do grafo de importações do código. Um `mustard.json` antigo
-    /// que ainda os traga continua sendo lido sem erro, o resto da
-    /// configuração vem igual e os três ficam guardados como chave
-    /// desconhecida, lidos por ninguém e mantidos na gravação.
+    /// a regra vem do grafo de importações do código. Saíram também as chaves
+    /// que nada lia. Um `mustard.json` antigo que ainda as traga continua
+    /// sendo lido sem erro, o resto da configuração vem igual e elas ficam
+    /// guardadas como chave desconhecida, lidas por ninguém e mantidas na
+    /// gravação.
     #[test]
     fn the_old_architecture_keys_are_kept_but_never_read() {
         let dir = tempdir().unwrap();
@@ -1826,14 +1816,15 @@ mod tests {
             dir.path().join("mustard.json"),
             r#"{"buildCommand":"make","maxActiveSpecs":3,"architecture":"Clean",
                 "rolePatterns":[{"pattern":"Controllers","role":"api"}],
-                "waveLayerOrder":["domain","api"]}"#,
+                "waveLayerOrder":["domain","api"],"amend":{"drift_threshold":3},
+                "sourceExtensions":["rs"],"primaryExt":"rs"}"#,
         )
         .unwrap();
         let cfg = ProjectConfig::load(dir.path());
         assert!(!cfg.unreadable, "the old keys never make the file unreadable");
         assert_eq!(cfg.build_command.as_deref(), Some("make"), "the rest of the config still loads");
         assert_eq!(cfg.max_active_specs(), Some(3), "the rest of the config still loads");
-        for key in ["architecture", "rolePatterns", "waveLayerOrder"] {
+        for key in ["architecture", "rolePatterns", "waveLayerOrder", "amend", "sourceExtensions", "primaryExt"] {
             assert!(cfg.extra.contains_key(key), "{key} survives as an unknown key");
         }
         cfg.write(dir.path()).unwrap();
@@ -2003,7 +1994,7 @@ mod tests {
             assert_eq!(cfg.agent_effort(), effort, "{agents}");
         }
 
-        std::fs::write(&path, r#"{"agents":{"model":"opus","effort":"max"}}"#).unwrap();
+        std::fs::write(&path, r#"{"agents":{"model":"opus","effort":"max","by_difficulty":false}}"#).unwrap();
         let cfg = ProjectConfig::load(dir.path());
         assert_eq!(cfg.agent_settings(), AgentSettings { model: "opus", effort: "max" });
         assert_eq!(AgentSettings::default(), AgentSettings { model: "sonnet", effort: "xhigh" });
@@ -2018,6 +2009,31 @@ mod tests {
         for (agents, on) in [("{}", true), (r#"{"by_difficulty":true}"#, true), (r#"{"by_difficulty":false}"#, false), (r#"{"by_difficulty":"no"}"#, true)] {
             std::fs::write(&path, format!(r#"{{"agents":{agents}}}"#)).unwrap();
             assert_eq!(ProjectConfig::load(dir.path()).by_difficulty(), on, "{agents}");
+        }
+    }
+
+    /// O `agents.model` só chega ao agente de onda, e ao cabeçalho dele, com
+    /// a escolha pela dificuldade desligada; ligada, a onda sem nota vai ao
+    /// Sonnet. O revisor final roda no Opus, salvo o que `agents.review.model`
+    /// diz, sem herdar o `agents.model`; o outro revisor segue como antes, no
+    /// `agents.review.model` ou no `agents.model`.
+    #[test]
+    fn the_configured_model_reaches_the_wave_only_without_difficulty_and_the_final_reviewer_is_opus() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("mustard.json");
+        for (agents, wave, review, other) in [
+            (r#"{"model":"opus"}"#, "sonnet", "opus", "opus"),
+            (r#"{"model":"haiku"}"#, "sonnet", "opus", "haiku"),
+            (r#"{"model":"opus","by_difficulty":false}"#, "opus", "opus", "opus"),
+            (r#"{"model":"sonnet","review":{"model":"sonnet"}}"#, "sonnet", "sonnet", "sonnet"),
+            ("{}", "sonnet", "opus", "sonnet"),
+        ] {
+            std::fs::write(&path, format!(r#"{{"agents":{agents}}}"#)).unwrap();
+            let cfg = ProjectConfig::load(dir.path());
+            assert_eq!(cfg.wave_agent_model(), wave, "{agents}");
+            assert_eq!(cfg.agent_settings().model, wave, "{agents}: the installed wave header");
+            assert_eq!(cfg.review_settings().model, review, "{agents}");
+            assert_eq!(cfg.other_review_model(), other, "{agents}");
         }
     }
 
@@ -2047,23 +2063,18 @@ mod tests {
         assert_eq!(invalid.agent_effort(), DEFAULT_AGENT_EFFORT, "the agent falls back to the default");
     }
 
-    /// The wave reviewer has its own model, Sonnet by default whatever the
-    /// wave agents use, always at effort xhigh, and is on unless
-    /// `agents.wave_review.enabled` is `false`.
+    /// Um `mustard.json` de antes da saída do revisor de onda ainda abre: a
+    /// seção `agents.wave_review` fica como veio, e nada a lê.
     #[test]
-    fn the_wave_reviewer_defaults_to_sonnet_at_xhigh_and_is_on_unless_turned_off() {
+    fn an_older_config_with_the_wave_reviewer_still_opens_and_keeps_the_section() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("mustard.json");
-        for (agents, model, on) in [
-            (r#"{"model":"opus"}"#, "sonnet", true),
-            (r#"{"wave_review":{"model":"haiku","effort":"low"}}"#, "haiku", true),
-            (r#"{"wave_review":{"model":"bad name","enabled":false}}"#, "sonnet", false),
-            (r#"{"wave_review":{"enabled":"no"}}"#, "sonnet", true),
-        ] {
-            std::fs::write(&path, format!(r#"{{"agents":{agents}}}"#)).unwrap();
-            let cfg = ProjectConfig::load(dir.path());
-            assert_eq!(cfg.wave_review_settings(), AgentSettings { model, effort: DEFAULT_AGENT_EFFORT }, "{agents}");
-            assert_eq!(cfg.wave_review_enabled(), on, "{agents}");
-        }
+        std::fs::write(&path, r#"{"agents":{"model":"opus","wave_review":{"model":"haiku","enabled":false}}}"#).unwrap();
+        let cfg = ProjectConfig::load(dir.path());
+        assert!(!cfg.unreadable, "the old section must not make the file unreadable");
+        assert_eq!(cfg.agent_model(), "opus");
+        cfg.write(dir.path()).unwrap();
+        let written: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(written["agents"]["wave_review"], serde_json::json!({"model": "haiku", "enabled": false}));
     }
 }

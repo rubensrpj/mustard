@@ -14,7 +14,7 @@ use mustard_core::io::fs::lock::LockedFile;
 
 use crate::commands::git_settle::CopiesLock;
 use mustard_core::io::wave_prompt::{
-    copies_dir, final_copy_path, inside_copies, is_slot_of, local_file_inside, recorded_copy, shown, slot_path, spec_copies_dir,
+    check_copy_path, copies_dir, inside_copies, is_slot_of, local_file_inside, recorded_copy, shown, slot_path, spec_copies_dir,
     terminal_folder,
 };
 use mustard_core::platform::git;
@@ -91,19 +91,18 @@ pub(super) fn without_live_copy(log: &SpecLog, waves: impl IntoIterator<Item = u
 /// As vagas presas da spec `spec`, lida em `log`, cada uma pelo caminho como
 /// o envio a grava: a cópia de cada onda que a segura ([`copy_holders`]) — a
 /// do envio aberto, a órfã inclusive, e a da onda com volta ainda não
-/// assumida — e, com a revisão final aberta, a vaga que o envio dela gravou.
-/// A vaga da revisão é a que o fechamento preparou, e continua dela até o
-/// veredito, mesmo que outra onda saia e comite depois. O envio de revisão
-/// antigo, sem a cópia gravada, cai na vaga da última onda
-/// ([`final_copy_path`]). É a conta única da vaga ocupada: o despacho não
-/// entrega nenhuma delas a outra onda, e a busca dos processos presos não
-/// encerra o que roda nelas.
+/// assumida — e, com a revisão final aberta, a cópia que o envio dela gravou.
+/// A do revisor é a cópia limpa do fechamento, fora das vagas das ondas
+/// ([`check_copy_path`]), e o envio de revisão antigo, sem a cópia gravada,
+/// cai nela. É a conta única da vaga ocupada: o despacho não entrega
+/// nenhuma delas a outra onda, e a busca dos processos presos não encerra o
+/// que roda nelas.
 pub(crate) fn held_slots(root: &Path, spec: &str, log: &SpecLog) -> BTreeSet<String> {
     let mut held: BTreeSet<String> =
         copy_holders(log).into_values().map(|(copy, _)| copy).filter(|copy| is_slot_of(root, spec, copy)).collect();
     if let Some(review) = open_review(log) {
         let recorded = log.get(review).and_then(|sent| sent.str_field("copy")).map(str::to_string);
-        held.insert(recorded.unwrap_or_else(|| shown(&final_copy_path(root, spec, log))));
+        held.insert(recorded.unwrap_or_else(|| shown(&check_copy_path(root, spec))));
     }
     held
 }
@@ -172,9 +171,9 @@ pub(super) fn open_copies(
         .filter(|(wave, path)| waves_holding(&holders, path).is_some_and(|by| by.iter().all(|other| other == wave)))
         .map(|(_, path)| path)
         .collect();
-    // As pastas de vaga vão até o teto de cópias da obra, além das vagas: a
-    // onda que voltou guarda a dela até o commit sem segurar o despacho.
-    let mut free: Vec<PathBuf> = (0..super::vacancy::copy_cap(max_parallel(root)))
+    // Uma pasta por vaga, e nenhuma além delas: a onda que voltou guarda a
+    // dela até o commit.
+    let mut free: Vec<PathBuf> = (0..max_parallel(root))
         .map(|slot| slot_path(root, spec, slot))
         .filter(|slot| !has_place(&held, &shown(slot)) || has_place(&own, &shown(slot)))
         .collect();
@@ -248,7 +247,7 @@ pub(super) fn open_copies(
 }
 
 /// O aviso do arquivo local `file` que não chegou à cópia `copy`.
-pub(crate) fn local_file_missing(file: &str, copy: &str, lang: Locale) -> String {
+fn local_file_missing(file: &str, copy: &str, lang: Locale) -> String {
     translate("round.local_file_missing", lang).replace("{file}", file).replace("{copy}", copy)
 }
 
@@ -275,7 +274,7 @@ pub(crate) struct Prepared {
 ///
 /// A cópia recebe os arquivos locais do projeto ([`copy_local_files`]): o git
 /// não os leva. A cópia sai mesmo com um deles faltando.
-pub(crate) fn ensure_copy(root: &Path, path: &Path, head: &str, owner: &Keeping) -> Result<Prepared, String> {
+pub(super) fn ensure_copy(root: &Path, path: &Path, head: &str, owner: &Keeping) -> Result<Prepared, String> {
     if !live_copy(path) {
         return new_copy(root, path, head, owner);
     }
@@ -298,7 +297,7 @@ pub(crate) fn ensure_copy(root: &Path, path: &Path, head: &str, owner: &Keeping)
 /// data, e a compilação refaz só o que mudou. A pasta que não é cópia viva
 /// nasce de novo ([`new_copy`]), guardando antes o que ela tinha de `owner`.
 /// Depois, os arquivos locais do projeto.
-pub(crate) fn reset_slot(root: &Path, path: &Path, head: &str, owner: &Keeping) -> Result<Prepared, String> {
+fn reset_slot(root: &Path, path: &Path, head: &str, owner: &Keeping) -> Result<Prepared, String> {
     // O commit em que a vaga estava, lido antes de zerá-la: só a vaga que sai
     // de novo o usa, para dizer o que mudou desde o último uso.
     let mut before = String::new();
@@ -919,26 +918,24 @@ mod tests {
         recorded_copy(&spec_log(root), wave).unwrap_or_else(|| panic!("wave {wave}")).path
     }
 
-    /// A vaga da revisão final aberta fica presa como a de uma onda em
-    /// andamento: a onda que sai enquanto o revisor trabalha na vaga a, a da
-    /// última onda, vai para a vaga b, e o que o revisor mudou na a, sem
-    /// comitar, fica.
+    /// A revisão final aberta prende a cópia limpa do fechamento, fora das
+    /// vagas das ondas: a onda que sai enquanto o revisor trabalha toma a
+    /// vaga a, livre desde a entrega da onda 1.
     #[test]
-    fn an_open_final_review_holds_its_slot_and_the_new_wave_takes_another() {
+    fn an_open_final_review_holds_the_clean_copy_and_leaves_the_slots_to_the_waves() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[])]);
         let first = round(root, "x", None);
         assert_eq!(waves_in(&first, "dispatch"), vec![1], "{first}");
-        let review = slot_path(root, "x", 0);
-        assert_eq!(sent_copy(root, 1), shown(&review), "{first}");
+        let slot = slot_path(root, "x", 0);
+        assert_eq!(sent_copy(root, 1), shown(&slot), "{first}");
         let done = round(root, "x", Some(&delivered(root, 1, "Saiu.", &["src/a.rs"])));
         assert_eq!(done["ok"], json!(true), "{done}");
 
         seed_review(root);
-        assert_eq!(final_copy_path(root, "x", &spec_log(root)), review, "o revisor usa a vaga da última onda");
-        std::fs::write(review.join("src/a.rs"), "fn revisto() {}\n").unwrap();
         let log = spec_log(root);
+        assert!(held_slots(root, "x", &log).contains(&shown(&check_copy_path(root, "x"))), "a cópia do revisor fica presa");
         let first_of = |kind: &str| log.visible().into_iter().find(|e| e.event_type == kind).map(|e| e.id).unwrap();
         let (said, crit) = (first_of("message"), first_of("criterion"));
         write(root, "x", "wave", json!({"n": 2, "text": "Onda 2.", "criteria": [crit], "done_when": "A suíte passa.",
@@ -948,9 +945,7 @@ mod tests {
 
         let out = round(root, "x", None);
         assert_eq!(waves_in(&out, "dispatch"), vec![2], "{out}");
-        assert_eq!(sent_copy(root, 2), shown(&slot_path(root, "x", 1)), "a vaga da revisão aberta está presa: {out}");
-        let kept = std::fs::read_to_string(review.join("src/a.rs")).unwrap();
-        assert_eq!(kept, "fn revisto() {}\n", "a mudança do revisor fica na vaga dele");
+        assert_eq!(sent_copy(root, 2), shown(&slot), "a revisão não ocupa vaga de onda: {out}");
     }
 
     /// A volta da onda 1 com `files` entregues e a rodada que a comita.

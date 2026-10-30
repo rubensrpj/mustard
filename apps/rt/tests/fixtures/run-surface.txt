@@ -5,7 +5,6 @@ config-read
 deliver-merged
 discard
 doctor
-evidence
 find
 grill
 help
@@ -16,12 +15,10 @@ measure
 open
 page
 panel
-panel-diagnostics
 pending
 plan
 pr-merge
 pr-open
-pr-review
 publish
 read
 reopen

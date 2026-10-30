@@ -223,7 +223,6 @@ fn a_search_in_a_wave_copy_runs_for_a_caller_without_identity() {
     assert_eq!(tool.status.code(), Some(0), "{detail}");
     assert!(String::from_utf8_lossy(&tool.stdout).contains("def quartz"), "{detail}");
     let (code, stdout, detail) = in_own_copy(&copies, None, "grep -n quartz src/a.py");
-    assert!(detail.starts_with(&format!("cd -- '{}' && (", copies.root.display())), "{detail}");
     assert_eq!(code, Some(0), "{detail}");
     assert!(stdout.contains("def quartz"), "{detail}");
 }

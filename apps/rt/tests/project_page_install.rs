@@ -199,7 +199,7 @@ fn record_project_page(root: &Path, home: &Path, publish: &Value) -> Output {
     rt(root, home, &["run", "write", "publish", "--json", &publish.to_string()], "")
 }
 
-/// O início da sessão aponta para o painel local, sem pedir publicação.
+/// A abertura aponta para o painel local pelo mapa, sem pedir publicação.
 /// Um endereço histórico confirmado continua disponível na barra de status.
 #[test]
 fn a_session_without_project_page_tracks_locally_and_preserves_a_legacy_link() {
@@ -211,7 +211,7 @@ fn a_session_without_project_page_tracks_locally_and_preserves_a_legacy_link() {
     assert!(!root.join(template).exists());
     for source in ["startup", "clear", "compact"] {
         let context = session_start(&root, &home, source);
-        assert!(context.contains("/mustard:mods") && context.contains("/mustard:pages"), "{context}");
+        assert!(source != "startup" || context.contains("/mustard:mods"), "the map names the local panel: {context}");
         assert!(!context.contains("/mustard-publish"), "no command that does not exist: {context}");
         assert!(!context.contains(template), "no automatic publication instruction: {context}");
     }

@@ -29,6 +29,9 @@ pub fn isolated(program: impl AsRef<OsStr>) -> Command {
     for var in SESSION_VARS {
         command.env_remove(var);
     }
+    // Sem o agente que o gancho nomeia: a suíte rodada por um agente de onda
+    // teria as gravações dos próprios testes recusadas.
+    command.env_remove("MUSTARD_AGENT_ID");
     // Sem a pasta do projeto da conversa: fora de um projeto, o programa
     // cairia nela e tomaria por sua a sessão mais nova de lá.
     command.env_remove("CLAUDE_PROJECT_DIR");

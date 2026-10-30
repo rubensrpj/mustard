@@ -20,6 +20,7 @@ pub(crate) use lint_command::readonly as readonly_lint_command;
 use mustard_core::platform::git;
 
 mod runner;
+pub(crate) use runner::OUTPUT_CUT;
 
 #[cfg(test)]
 pub(crate) use runner::{Ceiling, ceiling_secs, with_timeout_variable};
@@ -36,8 +37,9 @@ pub(crate) struct AcResult {
     /// e não veredito: quem julga esse número é a prova de um critério, em
     /// [`run_proof`], e nunca o lint nem outro comando do fluxo.
     tests_run: Option<u64>,
-    /// A saída inteira de um verde, até um teto alto; vazia em todo outro
-    /// desfecho, que leva o trecho de [`AcResult::stderr_excerpt`].
+    /// A saída inteira do verde e da falha, até um teto alto; vazia no comando
+    /// que não chegou a terminar, que leva o trecho de
+    /// [`AcResult::stderr_excerpt`].
     evidence: String,
 }
 
@@ -52,7 +54,8 @@ pub(crate) struct ProofRun {
     /// Quanto demorou, em milissegundos.
     pub ms: u64,
     /// O que a prova escreveu, quando ela não passou — a saída do executor, e
-    /// não uma frase montada sobre ela: o fim dela, onde a falha aparece, ou o
+    /// não uma frase montada sobre ela: o fim dela, onde a falha aparece e
+    /// onde o verde que cita um teste ausente diz quais testes rodou, ou o
     /// começo, quando o verde disse ter rodado zero teste.
     pub output: String,
     /// A prova de critério saiu verde sem rodar teste nenhum, e por isso não
@@ -71,9 +74,10 @@ pub(crate) struct ProofRun {
     /// fechamento sabe se a prova que passou no código de antes da obra rodou
     /// teste de verdade.
     pub tests: Option<u64>,
-    /// A saída inteira do verde, até um teto alto, que não é gravada na spec:
-    /// o fechamento a entrega à análise final de código sem uso, onde o aviso
-    /// de código morto do compilador só acrescenta. Vazia quando não passou.
+    /// A saída inteira, até um teto alto, que não é gravada na spec. A do
+    /// verde vai à análise final de código sem uso, onde o aviso de código
+    /// morto do compilador só acrescenta; a da falha, à comparação com o
+    /// código de antes da obra.
     pub evidence: String,
 }
 
@@ -111,10 +115,6 @@ pub(crate) fn run_command(command: &str, cwd: &Path) -> ProofRun {
 /// executor e mesma leitura de [`run_command`], com um teto só deles, de uma
 /// hora: a suíte inteira de um projeto não cabe no teto de uma prova de
 /// critério, e a variável `MUSTARD_QA_AC_TIMEOUT_SECS` vale só para a prova.
-pub(crate) fn run_build_command(command: &str, cwd: &Path) -> ProofRun {
-    graded(runner::run_build_command(command, cwd), None)
-}
-
 pub(crate) fn run_server_command(command: &str, cwd: &Path) -> ProofRun {
     graded(runner::run_server_command(command, cwd), None)
 }
@@ -189,7 +189,9 @@ pub(crate) fn run_criteria_proofs(root: &Path, criteria: &[(u64, String, String)
 /// montada aqui: quem lê o evento gravado precisa ver a saída do executor. O
 /// número lido vai pelo `ran_no_test`, e o nome que faltou pelo
 /// `missing_test`: é deles que [`ProofRun::fault`] tira o motivo que cada
-/// recusa e cada aviso mostram.
+/// recusa e cada aviso mostram. O verde comum chega sem trecho, e por isso o
+/// verde recusado pelo nome ausente leva o fim da saída inteira que o verde
+/// guardou, como uma falha leva o fim da dela.
 fn graded(out: AcResult, proof: Option<(&str, &Path)>) -> ProofRun {
     let green = out.status == "pass";
     let ran_no_test = out.tests_run.filter(|count| *count == 0 && proof.is_some() && green);
@@ -197,6 +199,7 @@ fn graded(out: AcResult, proof: Option<(&str, &Path)>) -> ProofRun {
         Some((command, root)) if green && ran_no_test.is_none() => missing_test_name(command, root),
         _ => None,
     };
+    let output = if missing_test.is_some() { runner::tail_excerpt(&out.evidence) } else { out.stderr_excerpt };
     ProofRun {
         reused: false,
         result: if green && ran_no_test.is_none() && missing_test.is_none() { "pass" } else { "fail" },
@@ -205,7 +208,7 @@ fn graded(out: AcResult, proof: Option<(&str, &Path)>) -> ProofRun {
         ran_no_test,
         missing_test,
         tests: out.tests_run,
-        output: out.stderr_excerpt,
+        output,
         evidence: out.evidence,
     }
 }

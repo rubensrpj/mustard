@@ -20,11 +20,11 @@ use crate::commands::spec_events::task_dependents::TaskRefs;
 use crate::commands::spec_events::write::record;
 use crate::shared::dag::touches_whole_tree;
 
-/// Quantas ondas saem juntas quando o projeto não diz outra coisa: quatro, que
-/// é quanto a máquina aguenta compilando ao mesmo tempo. Cada onda compila
-/// dentro da própria vaga e trabalha na própria cópia: duas ondas com o mesmo
-/// arquivo saem juntas, e a rodada junta as duas no commit.
-const DEFAULT_PARALLEL: usize = 4;
+/// Quantas ondas saem juntas quando o projeto não diz outra coisa: duas. Cada
+/// onda compila dentro da própria vaga e trabalha na própria cópia, e cada
+/// cópia leva a sua compilação para o disco: duas ondas com o mesmo arquivo
+/// saem juntas, e a rodada junta as duas no commit.
+const DEFAULT_PARALLEL: usize = 2;
 
 /// Quantas ondas o projeto deixa compilar ao mesmo tempo.
 pub(crate) fn max_parallel(root: &Path) -> usize {
@@ -246,11 +246,11 @@ const WAVE_LEFT_KEY: &str = "wave-left-without-tasks";
 /// mais novo da revisão final, que o fechamento grava ([`review_send`]), sem
 /// veredito oficial depois dele. A volta que o revisor gravou e ninguém
 /// assumiu ainda não fecha o pedido: só o veredito que a rodada ou o
-/// fechamento grava ao assumi-la. O veredito do revisor de uma onda nunca o
-/// fecha.
+/// fechamento grava ao assumi-la. O veredito do revisor de onda de uma spec
+/// antiga nunca o fecha.
 pub(crate) fn open_review(log: &SpecLog) -> Option<u64> {
     let asked = review_send(log, None)?.asked;
-    (!log.visible().iter().any(|e| e.event_type == "verdict" && !super::wave_review::is_wave_verdict(e) && e.id > asked)).then_some(asked)
+    (!log.visible().iter().any(|e| e.event_type == "verdict" && !super::is_wave_verdict(e) && e.id > asked)).then_some(asked)
 }
 
 /// O pedido de revisão final aberto ([`open_review`]) cujo veredito ainda
@@ -912,6 +912,37 @@ pub(crate) fn backlog_ready(log: &SpecLog) -> Vec<u64> {
     backlog_ready_without(log, &BTreeSet::new())
 }
 
+/// `true` quando o programa da branch vai ser usado logo depois desta
+/// rodada da obra `spec`, como está gravada agora em `root`: há onda a
+/// despachar ([`dispatch_waiting`]), ou a obra não tem mais nada aberto —
+/// nenhuma tarefa no backlog e toda onda do plano terminada — e o passo
+/// seguinte é o fechamento. A spec que não se lê conta como usando: na
+/// dúvida, quem pergunta segue como se o programa fosse rodar.
+pub(crate) fn program_needed(root: &Path, spec: &str) -> bool {
+    use mustard_core::io::spec_events as store;
+    let Some(log) = store::spec_file(root, spec).ok().and_then(|path| store::read(&path).ok().flatten()) else {
+        return true;
+    };
+    dispatch_waiting(root, spec, &log) || (backlog_left(&log).is_empty() && super::wave_states(&log).values().all(|state| state.finished()))
+}
+
+/// `true` quando a obra `spec`, lida em `log`, tem onda a despachar: a órfã e
+/// a do envio aberto sem agente, que saem de novo; a onda do plano que sai
+/// agora ([`next_waves`]), a replanejada que segura a própria vaga
+/// inclusive, mesmo sem vaga livre; ou, com vaga livre, a tarefa pronta do
+/// backlog. O plano com dependência em círculo conta como tendo.
+pub(crate) fn dispatch_waiting(root: &Path, spec: &str, log: &SpecLog) -> bool {
+    if !orphaned_waves(log).is_empty() || waves_in_progress(log).iter().any(|(wave, sent)| !agent_known(root, spec, log, *wave, *sent)) {
+        return true;
+    }
+    let vacancies = super::vacancy::vacancies(root, spec, log);
+    let (stuck, evaluating) = (super::stops::waves_stuck(log), super::skill_hold::waves_waiting(root, spec, log));
+    if next_waves(log, &vacancies, (&stuck, &evaluating)).map_or(true, |going| !going.is_empty()) {
+        return true;
+    }
+    vacancies.free() > 0 && !backlog_ready(log).is_empty()
+}
+
 /// [`backlog_ready`] como ficaria sem as ondas de lote `undone`
 /// ([`backlog_left_without`]).
 pub(super) fn backlog_ready_without(log: &SpecLog, undone: &BTreeSet<u64>) -> Vec<u64> {
@@ -1079,15 +1110,14 @@ mod tests {
 
     /// A rodada abre a cópia da onda fora da pasta do projeto, na pasta das
     /// cópias dele — o nome do projeto e um código curto que não muda —, sob
-    /// a pasta da spec, e o envio grava esse caminho, que o pedido cita. O
-    /// revisor final usa a vaga da última onda; nada nasce em
-    /// `.claude/worktrees`. A entrega que cita o arquivo pelo caminho absoluto
+    /// a pasta da spec, e o envio grava esse caminho, que o pedido cita. Nada
+    /// nasce em `.claude/worktrees`. A entrega que cita o arquivo pelo caminho absoluto
     /// da cópia gravada no envio volta relativa ao repositório, mesmo quando
     /// essa cópia não é a que a pasta das cópias daria hoje, como a da onda
     /// que saiu antes de a pasta mudar.
     #[test]
     fn a_wave_copy_is_born_outside_the_project_folder() {
-        use mustard_core::io::wave_prompt::{copies_dir, final_copy_path};
+        use mustard_core::io::wave_prompt::copies_dir;
 
         let dir = tempdir().unwrap();
         let root = dir.path();
@@ -1109,8 +1139,6 @@ mod tests {
         assert!(Path::new(&copy).join(".git").is_file(), "the copy is a linked checkout");
         let prompt = &request_at(&out, 0);
         assert!(prompt.contains(&format!("`{copy}`")), "{prompt}");
-        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        assert_eq!(final_copy_path(root, "x", &log), copies.join("x").join("a"), "the review uses the wave's slot");
         assert!(!root.join(".claude").join("worktrees").exists(), "nothing is born inside the project");
 
         // Um envio mais novo da onda grava a cópia noutro lugar.
@@ -1137,24 +1165,15 @@ mod tests {
     }
 
     /// Duas ondas sem dependência entre si, com o mesmo arquivo declarado,
-    /// saem juntas com a terceira: cada uma trabalha na própria cópia. Cinco
-    /// ondas sem arquivo em comum saem até o teto de quatro; a quinta espera a
-    /// vaga.
+    /// saem juntas: cada uma trabalha na própria cópia. Sem `maxCompilingWaves`
+    /// no projeto, o teto é de duas; a terceira espera a vaga.
     #[test]
-    fn waves_with_a_shared_file_leave_together_up_to_the_cap_of_four() {
+    fn waves_with_a_shared_file_leave_together_up_to_the_default_cap_of_two() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/a.rs"], &[]), (3, &["src/c.rs"], &[])]);
         let out = round(root, "x", None);
-        assert_eq!(waves_in(&out, "dispatch"), vec![1, 2, 3], "o arquivo em comum não segura a onda 2: {out}");
-
-        // Quatro ondas sem arquivo em comum saem juntas, até o teto de
-        // quatro; a quinta espera.
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[]), (3, &["src/c.rs"], &[]), (4, &["src/d.rs"], &[]), (5, &["src/e.rs"], &[])]);
-        let out = round(root, "x", None);
-        assert_eq!(waves_in(&out, "dispatch"), vec![1, 2, 3, 4], "sem cruzar arquivo, as quatro saem: {out}");
+        assert_eq!(waves_in(&out, "dispatch"), vec![1, 2], "o arquivo em comum não segura a onda 2, e a 3 espera a vaga: {out}");
     }
 
     /// A cópia da onda órfã — pedido aberto sem o processo que mandou —
@@ -1225,6 +1244,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/app.ts"], &[]), (2, &["src/b.ts"], &[]), (3, &["src/c.ts"], &[])]);
+        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":3}"#).unwrap();
         let first = round(root, "x", None);
         assert_eq!(waves_in(&first, "dispatch"), vec![1, 2, 3], "{first}");
 
@@ -1262,6 +1282,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/app.ts"], &[]), (2, &["src/b.ts"], &[]), (3, &["src/c.ts"], &[])]);
+        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":3}"#).unwrap();
         let first = round(root, "x", None);
         assert_eq!(waves_in(&first, "dispatch"), vec![1, 2, 3], "{first}");
 
@@ -1494,6 +1515,22 @@ mod tests {
         assert_eq!(sent_copy(root, 2), second_slot, "a vaga a está livre, e a onda 2 volta à b: {again}");
     }
 
+    /// Com as duas vagas tomadas — a onda 1 trabalhando e a 2 replanejada,
+    /// dona da vaga que o envio dela gravou —, a onda 2 ainda sai: há onda a
+    /// despachar, e o programa da branch é usado.
+    #[test]
+    fn a_replanned_wave_holding_its_slot_is_a_dispatch_with_every_slot_taken() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[])]);
+        assert_eq!(waves_in(&round(root, "x", None), "dispatch"), vec![1, 2]);
+        replan(root, 2);
+        let log = spec_now(root);
+        assert_eq!(super::super::vacancy::vacancies(root, "x", &log).free(), 0, "every slot is taken");
+        assert!(dispatch_waiting(root, "x", &log), "the replanned wave leaves by its own slot");
+        assert!(program_needed(root, "x"));
+    }
+
     /// A vaga cuja pasta existe sem ser cópia do git — sobra de um processo
     /// que caiu no meio — nasce de novo, sem o que havia nela; a vaga cuja
     /// pasta sumiu com o registro do git ainda de pé também, sem que o
@@ -1635,7 +1672,7 @@ mod tests {
         let head = git_text(root, &["rev-parse", "HEAD"]);
 
         let owner = super::super::keep::Keeping { label: "x/1-7".to_string(), wave: Some(1) };
-        let prepared = crate::commands::flow::round::ensure_copy(root, &slot, &head, &owner).unwrap();
+        let prepared = super::super::slots::ensure_copy(root, &slot, &head, &owner).unwrap();
         assert_eq!(prepared.kept.len(), 1);
         let kept = &prepared.kept[0];
         assert_eq!(kept.wave, Some(1));
@@ -3015,12 +3052,14 @@ mod tests {
             let goal = "Mexer no código de um e de dois.";
             id_of(&write(root, "x", "context", json!({"text": goal, "origin": said})));
             let opts =
-                crate::commands::flow::grill::GrillOpts { root: root.to_path_buf(), spec: Some("x".into()), kinds: Some("fix".into()), condensed: false };
-            // O `grill` grava os pontos abertos; cada um é fechado pelo número.
+                crate::commands::flow::grill::GrillOpts { root: root.to_path_buf(), spec: Some("x".into()), kinds: Some("fix".into()) };
+            // O `grill` grava os pontos abertos; cada um é fechado pelo número,
+            // com a resposta do usuário, que vem depois deles.
             let listed = crate::commands::flow::grill::grill_for(&opts, None);
+            let answered = id_of(&write(root, "x", "message", json!({"author": "user", "text": "Já respondi tudo no pedido."})));
             for item in listed["points"].as_array().cloned().unwrap_or_default() {
                 let closing = json!({"block": item["block"], "gap": item["gap"], "from": "gap",
-                    "status": "not_applicable", "closes": id_of(&item), "reason": "Já respondido.", "origin": said});
+                    "status": "not_applicable", "closes": id_of(&item), "reason": "Já respondido.", "origin": answered});
                 assert_eq!(write(root, "x", "point", closing)["ok"], json!(true));
             }
             before(said);
@@ -3609,6 +3648,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let (said, crit) = backlog_project(root);
+        // A onda grande em andamento e duas ao lado dela: três vagas.
+        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":3}"#).unwrap();
         backlog_task_on(root, said, crit, "Mexer na parte grande.", &SIX_FILES);
         let log = spec_now(root);
         assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), (None, None)).map(|(formed, _)| formed), Ok(vec![1]));
@@ -3642,6 +3683,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let (said, crit) = backlog_project(root);
+        // A onda grande em andamento e duas ao lado dela: três vagas.
+        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":3}"#).unwrap();
         backlog_task_on(root, said, crit, "Mexer na parte grande.", &SIX_FILES);
         let log = spec_now(root);
         assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), (None, None)).map(|(formed, _)| formed), Ok(vec![1]));

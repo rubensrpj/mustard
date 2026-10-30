@@ -43,8 +43,6 @@ pub(crate) enum Ceiling {
     /// da variável `MUSTARD_QA_AC_TIMEOUT_SECS` ou, sem ela, da chave
     /// `proofTimeoutSecs` do `mustard.json`.
     Criterion,
-    /// Declared build, irrespective of language/tool.
-    Build,
     /// O lint ou a suíte que o servidor roda: [`SERVER_COMMAND_TIMEOUT_SECS`],
     /// sempre.
     ServerCommand,
@@ -239,7 +237,6 @@ pub(crate) fn with_timeout_variable<T>(value: &str, f: impl FnOnce() -> T) -> T 
 pub(crate) fn ceiling_secs(ceiling: Ceiling, command: &str, env_override: Option<&str>, compiling: &[String]) -> u64 {
     match ceiling {
         Ceiling::ServerCommand => SERVER_COMMAND_TIMEOUT_SECS,
-        Ceiling::Build => env_override.and_then(|s| s.trim().parse().ok()).unwrap_or(AC_TIMEOUT_CARGO_SECS),
         Ceiling::Criterion => ac_timeout_secs_with_override(command, env_override, compiling),
     }
 }
@@ -322,23 +319,28 @@ fn excerpt(s: &str) -> String {
     s.chars().take(100).collect()
 }
 
-/// Quantos bytes da saída de um verde a evidência guarda: o bastante para a
-/// saída inteira do lint ou da suíte de um projeto, sem deixar uma saída sem
-/// fim tomar a memória.
-const GREEN_EVIDENCE_BYTES: usize = 1024 * 1024;
+/// Quantos bytes da saída a evidência guarda: o bastante para a saída
+/// inteira do lint ou da suíte de um projeto, sem deixar uma saída sem fim
+/// tomar a memória.
+const WHOLE_OUTPUT_BYTES: usize = 1024 * 1024;
 
-/// A saída de um verde, inteira até [`GREEN_EVIDENCE_BYTES`], cortada no
-/// último fim de linha que cabe: a linha cortada ao meio não se lê.
-fn green_evidence(s: &str) -> String {
-    if s.len() <= GREEN_EVIDENCE_BYTES {
+/// A última linha da saída cortada no teto: quem compara a saída inteira sabe
+/// por ela que o resto não chegou.
+pub(crate) const OUTPUT_CUT: &str = "[Mustard] saída cortada no teto";
+
+/// A saída do comando, inteira até [`WHOLE_OUTPUT_BYTES`], cortada no último
+/// fim de linha que cabe: a linha cortada ao meio não se lê. A saída cortada
+/// termina em [`OUTPUT_CUT`].
+fn whole_output(s: &str) -> String {
+    if s.len() <= WHOLE_OUTPUT_BYTES {
         return s.to_string();
     }
-    let mut end = GREEN_EVIDENCE_BYTES;
+    let mut end = WHOLE_OUTPUT_BYTES;
     while !s.is_char_boundary(end) {
         end -= 1;
     }
     let kept = &s[..end];
-    kept.rfind('\n').map_or(kept, |at| &kept[..at]).to_string()
+    format!("{}\n{OUTPUT_CUT}", kept.rfind('\n').map_or(kept, |at| &kept[..at]))
 }
 
 /// Quantas linhas do fim da saída uma falha guarda.
@@ -350,11 +352,12 @@ const FAILURE_TAIL_CHARS: usize = 2000;
 /// O fim de `s`: as últimas [`FAILURE_TAIL_LINES`] linhas, cortadas ainda aos
 /// últimos [`FAILURE_TAIL_CHARS`] caracteres, o que restringir mais.
 ///
-/// É o trecho que uma falha leva em `stderr_excerpt`: quem roda a prova de um
-/// critério, o lint ou a suíte escreve o motivo da falha no fim — o teste que
-/// quebrou, o erro que interrompeu a compilação —, e o começo da saída é só o
-/// andamento do que ainda passava.
-fn tail_excerpt(s: &str) -> String {
+/// É o trecho que uma falha leva em `stderr_excerpt`, e o que a prova verde
+/// que cita um teste ausente grava: quem roda a prova de um critério, o lint
+/// ou a suíte escreve o motivo da falha e o resumo dos testes no fim — o teste
+/// que quebrou, o erro que interrompeu a compilação, quantos passaram —, e o
+/// começo da saída é só o andamento do que ainda passava.
+pub(super) fn tail_excerpt(s: &str) -> String {
     let lines: Vec<&str> = s.lines().collect();
     let kept = lines[lines.len().saturating_sub(FAILURE_TAIL_LINES)..].join("\n");
     let skipped = kept.chars().count().saturating_sub(FAILURE_TAIL_CHARS);
@@ -380,10 +383,6 @@ pub(super) fn run_ac_command(command: &str, expect: Option<&str>, cwd: &Path) ->
 /// classificação da prova de um critério.
 pub(super) fn run_server_command(command: &str, cwd: &Path) -> AcResult {
     run_with_ceiling(command, None, cwd, Ceiling::ServerCommand)
-}
-
-pub(super) fn run_build_command(command: &str, cwd: &Path) -> AcResult {
-    run_with_ceiling(command, None, cwd, Ceiling::Build)
 }
 
 /// O executor com o teto que `ceiling` escolhe.
@@ -542,7 +541,7 @@ fn run_ac_command_inner(command: &str, expect: Option<&str>, cwd: &Path, timeout
                 // O verde guarda a saída inteira, até o teto: o aviso de
                 // código morto que o compilador escreveu nela é evidência a
                 // mais da análise final, e nunca condição.
-                evidence: green_evidence(combined_full),
+                evidence: whole_output(combined_full),
             },
             ExpectVerdict::Missed => AcResult {
                 status: "fail".to_string(),
@@ -605,7 +604,9 @@ fn run_ac_command_inner(command: &str, expect: Option<&str>, cwd: &Path, timeout
         duration_ms,
         stderr_excerpt: tail_excerpt(combined_full),
         tests_run: counted,
-        evidence: String::new(),
+        // A falha guarda a saída inteira também: o fechamento a compara,
+        // linha por linha, com a do mesmo comando no código de antes da obra.
+        evidence: whole_output(combined_full),
     }
 }
 
@@ -975,10 +976,11 @@ mod tests {
     const PRINTS_LINES_THEN_FAILS: &str = "i=1; while [ $i -le 200 ]; do echo \"linha $i\"; i=$((i+1)); done; exit 3";
 
     /// O verde guarda a saída inteira, do começo ao fim, como evidência, e
-    /// segue sem trecho; a falha não guarda evidência, só o fim da saída. A
-    /// saída maior que o teto fica nele, cortada no último fim de linha.
+    /// segue sem trecho; a falha guarda a saída inteira e, no trecho, só o
+    /// fim dela. A saída maior que o teto fica nele, cortada no último fim de
+    /// linha.
     #[test]
-    fn a_green_run_keeps_its_whole_output_as_evidence() {
+    fn a_run_keeps_its_whole_output_as_evidence() {
         let dir = tempdir().unwrap();
         let green = run_ac_command("i=1; while [ $i -le 200 ]; do echo \"linha $i\"; i=$((i+1)); done", None, dir.path());
         assert_eq!(green.status, "pass", "{}", green.stderr_excerpt);
@@ -986,13 +988,16 @@ mod tests {
         assert_eq!(green.evidence.lines().count(), 200, "{}", green.evidence);
         assert!(green.evidence.starts_with("linha 1\n") && green.evidence.ends_with("linha 200"), "{}", green.evidence);
         let red = run_ac_command(PRINTS_LINES_THEN_FAILS, None, dir.path());
-        assert!(red.evidence.is_empty(), "{}", red.evidence);
+        assert_eq!(red.evidence.lines().count(), 200, "{}", red.evidence);
+        assert!(!red.stderr_excerpt.contains("linha 1\n"), "{}", red.stderr_excerpt);
 
         let line = "x".repeat(99);
-        let huge = format!("{line}\n").repeat(GREEN_EVIDENCE_BYTES / 100 + 10);
-        let kept = green_evidence(&huge);
-        assert!(kept.len() <= GREEN_EVIDENCE_BYTES && kept.len() > GREEN_EVIDENCE_BYTES - 100, "{}", kept.len());
-        assert!(kept.ends_with(&line), "cut at the end of a line");
+        let huge = format!("{line}\n").repeat(WHOLE_OUTPUT_BYTES / 100 + 10);
+        let kept = whole_output(&huge);
+        assert!(kept.len() <= WHOLE_OUTPUT_BYTES + OUTPUT_CUT.len() + 1 && kept.len() > WHOLE_OUTPUT_BYTES - 100, "{}", kept.len());
+        let kept = kept.strip_suffix(OUTPUT_CUT).expect("the cut output says so");
+        assert!(kept.ends_with(&format!("{line}\n")), "cut at the end of a line");
+        assert!(!whole_output("linha\n").contains(OUTPUT_CUT), "the whole output says nothing");
     }
 
     /// A falha mostra o FIM da saída, onde o motivo aparece: numa saída de 200

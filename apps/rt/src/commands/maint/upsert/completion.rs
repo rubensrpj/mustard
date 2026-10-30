@@ -34,7 +34,6 @@ fn finish_with_install(root:&Path,report:&Report,runner:&impl ToolRunner,left:Du
         check("rtk-hook",!switches.rtk_hook_left(),"mustard-rt run upsert"),
         check("scan",scan["ok"]==true && root.join(".claude/grain.db").is_file(),"mustard-rt run scan; mustard-rt run upsert"),
         check("spec-search",report.search_warning.is_none(),"mustard-rt run upsert"),
-        check("language-tools",report.code_tool_warnings.is_empty(),"see codeToolWarnings"),
     ];
     let parent=std::env::current_exe().ok().and_then(|path|path.parent().map(Path::to_path_buf));
     for name in ["scan","rtk","rg","mustard"] {
@@ -335,6 +334,20 @@ mod tests {
             assert_eq!(dependent["remedy"],"not checked: needs plugin-version","{ahead}");
         }
     }
+    /// A ferramenta de linguagem que falta é dica, em `codeToolWarnings` e no
+    /// doctor, e não conta para o projeto estar pronto: o Mustard não a
+    /// instala, e quem decide instalá-la é a pessoa.
+    #[test]
+    fn a_missing_language_tool_does_not_hold_the_project_ready() {
+        let dir=tempfile::tempdir().unwrap();let root=dir.path();
+        let report=Report{code_tool_warnings:vec!["missing: rust-analyzer (install: rustup component add rust-analyzer)".into()],..installed_project(root)};
+        let result=finish_with_install(root,&report,&MissingPrograms,AMPLE,None,"http://127.0.0.1:9/v1/systemone",KEY_CHECK_WAIT);
+        assert!(result["checks"].as_array().unwrap().iter().all(|check|check["component"]!="language-tools"),"{result}");
+        let others=Report{code_tool_warnings:Vec::new(),..installed_project(tempfile::tempdir().unwrap().path())};
+        let without=finish_with_install(root,&others,&MissingPrograms,AMPLE,None,"http://127.0.0.1:9/v1/systemone",KEY_CHECK_WAIT);
+        assert_eq!(result["project_ready"],without["project_ready"],"the hint changes nothing: {result}");
+    }
+
     #[test]
     fn files_written_without_a_working_scan_and_host_are_not_a_complete_installation() {
         let dir=tempfile::tempdir().unwrap();let root=dir.path();
@@ -395,7 +408,7 @@ mod tests {
     fn installed_project(root:&Path)->Report {
         assert!(std::process::Command::new("git").args(["init","-q"]).current_dir(root).status().unwrap().success());
         let project=mustard_core::platform::project_seed::upsert_project(root,Some(&mustard_core::harness_version()),mustard_core::platform::project_seed::InstallMode::Private).unwrap();
-        Report{project,plugin_refresh:super::super::skipped(None,"no installed host".into()),code_tool_warnings:vec![],search_warning:None,summary_warning:None,reserves:Vec::new(),reserves_hint:None,local_files_found:None,installation:None,scan:None}
+        Report{project,plugin_refresh:super::super::skipped(None,"no installed host".into()),code_tool_warnings:vec![],search_warning:None,summary_warning:None,reserves:Vec::new(),reserves_hint:None,local_files_found:None,prepare_suggested:None,installation:None,scan:None}
     }
 
     /// O projeto instalado em `root` com a busca pelo Jev e a chave no

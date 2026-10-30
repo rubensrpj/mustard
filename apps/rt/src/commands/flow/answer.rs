@@ -7,8 +7,11 @@
 //! `--json`, nos mesmos campos do `run write`), em itens já gravados
 //! (`--result`, números ou códigos separados por vírgula) ou nos dois. O ponto
 //! que não se aplica fecha com `--not-applicable` e o motivo em `--reason`,
-//! sem item. O item sem `origin` vem da última mensagem do usuário, e o
-//! fechamento aponta a mesma mensagem que o item.
+//! sem item. `--origin` diz a mensagem do usuário de onde veio a resposta: o
+//! item sem `origin` e o fechamento a apontam. Sem ela, o item que não diz
+//! que o usuário decidiu vem da última mensagem do usuário, e o fechamento
+//! aponta a mesma mensagem que o item; o pedido, a regra, a decisão e o
+//! fechamento do ponto do usuário pedem a mensagem dele.
 //!
 //! Tudo acontece sob a trava do arquivo de eventos da spec, nesta ordem: a
 //! conferência de que o ponto está aberto, a gravação do item pela mesma
@@ -17,14 +20,15 @@
 //! recusado tira o item do arquivo: um nunca fica sem o outro.
 //!
 //! A saída traz o item gravado, o fechamento e o passo seguinte do
-//! levantamento, como o `run write` o mostra. No levantamento condensado,
-//! `points` traz só o código, o número e a lacuna de cada ponto aberto, e
-//! `point` traz o próximo inteiro:
+//! levantamento, como o `run write` o mostra. `points` traz só o código, o
+//! número e a lacuna de cada ponto aberto, `point` traz o próximo inteiro, e
+//! `ask_user`, os códigos dos abertos que são do usuário:
 //!
 //! ```text
 //! {"ok": true, "spec": "x", "id": 12, "type": "decision", "code": "MSTD-DEC-0003",
 //!  "closed": {"id": 13, "code": "MSTD-POINT-0007", "closes": 5, "status": "closed", "result": [12], …},
-//!  "next": "Apresente o ponto MSTD-POINT-0003 …", "point": {"id": 6, …}}
+//!  "next": "Os pontos abertos estão em `points` …", "point": {"id": 6, "owner": "user", …},
+//!  "ask_user": ["MSTD-POINT-0003"]}
 //! ```
 //!
 //! Recusa sai com `ok: false`, a razão curta em `reason` e a mensagem no
@@ -64,6 +68,9 @@ pub struct AnswerOpts {
     pub not_applicable: bool,
     /// O motivo do fechamento.
     pub reason: Option<String>,
+    /// A mensagem do usuário de onde veio a resposta, pelo número ou pelo
+    /// código: o item sem `origin` e o fechamento a apontam.
+    pub origin: Option<String>,
 }
 
 /// As recusas do `answer`: as dele e as da leitura e da gravação da spec.
@@ -114,6 +121,8 @@ struct Asked {
     facts: Option<Value>,
     reason: Option<String>,
     not_applicable: bool,
+    /// A mensagem de onde veio a resposta, como veio: número ou código.
+    origin: Option<Value>,
 }
 
 /// O núcleo testável do comando. A sessão vem do ambiente. Nunca entra em
@@ -161,8 +170,17 @@ fn answer_in(
 /// inteiro, itens já gravados ou os dois; ou "não se aplica", sozinho.
 fn asked(opts: &AnswerOpts) -> Result<Asked, AnswerRefusal> {
     let filled = |value: Option<&str>| value.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    // A mensagem de onde veio a resposta, pelo número ou pelo código, entra
+    // no item que não a diz e no fechamento.
+    let origin = filled(opts.origin.as_deref()).map(|raw| raw.parse::<u64>().map_or_else(|_| json!(raw), |id| json!(id)));
     let item = match (filled(opts.event_type.as_deref()), opts.json.as_deref()) {
-        (Some(event_type), Some(json)) => Some((event_type, write::draft_object(json)?)),
+        (Some(event_type), Some(json)) => {
+            let mut draft = write::draft_object(json)?;
+            if let Some(origin) = &origin {
+                draft.entry("origin").or_insert_with(|| origin.clone());
+            }
+            Some((event_type, draft))
+        }
         (None, None) => None,
         _ => return Err(AnswerRefusal::Options),
     };
@@ -178,7 +196,7 @@ fn asked(opts: &AnswerOpts) -> Result<Asked, AnswerRefusal> {
     }
     let facts = opts.facts.as_deref().map(serde_json::from_str::<Value>).transpose()
         .map_err(|_| Refusal::InvalidValue { event_type: "point".into(), field: "facts".into(), expected: mustard_core::domain::spec_events::Kind::Objects })?;
-    Ok(Asked { item, result, facts, reason: filled(opts.reason.as_deref()), not_applicable: opts.not_applicable })
+    Ok(Asked { item, result, facts, reason: filled(opts.reason.as_deref()), not_applicable: opts.not_applicable, origin })
 }
 
 /// As gravações sob a trava do arquivo de eventos: confere o ponto e os itens
@@ -199,14 +217,20 @@ fn answer_locked(
         Some(raw) => chosen(&before, &open, raw)?,
         None => *open.first().ok_or_else(|| AnswerRefusal::NoOpenPoint { spec: spec.to_string() })?,
     };
+    // O ponto do usuário fecha com a mensagem dele: sem `--origin` e sem
+    // `origin` no item, a resposta é recusada antes de gravar qualquer coisa,
+    // seja qual for o tipo do item.
+    let item_origin = asked.item.as_ref().is_some_and(|(_, draft)| draft.contains_key("origin"));
+    if survey::owner_of(point) == survey::Owner::User && asked.origin.is_none() && !item_origin {
+        return Err(mustard_core::domain::spec_state::origin_not_user(&before, "point", None).into());
+    }
     let mut result = asked.result.iter().map(|raw| recorded(&before, raw)).collect::<Result<Vec<u64>, _>>()?;
-    let reused = result.clone();
     let saved = locked.content().to_string();
     let mut report = json!({ "ok": true, "spec": spec });
-    let mut origin = None;
+    let mut origin = asked.origin;
     if let Some((event_type, draft)) = asked.item {
         let item = write::record_locked_by_model(locked, &opts.root, spec, &event_type, draft, session)?.written;
-        origin = locked.log().get(item.id).and_then(|event| event.int("origin"));
+        origin = locked.log().get(item.id).and_then(|event| event.int("origin")).map(|id| json!(id)).or(origin);
         report["id"] = json!(item.id);
         report["type"] = json!(event_type);
         if let Some(code) = item.code {
@@ -215,7 +239,6 @@ fn answer_locked(
         result.insert(0, item.id);
     }
     let mut draft = closing(point, &result, asked.reason, asked.not_applicable, origin);
-    if !reused.is_empty() { draft.insert("reused_results".into(), json!(reused)); }
     if let Some(facts) = asked.facts {
         draft.insert("facts".into(), facts);
     }
@@ -304,7 +327,7 @@ fn closing(
     result: &[u64],
     reason: Option<String>,
     not_applicable: bool,
-    origin: Option<u64>,
+    origin: Option<Value>,
 ) -> Map<String, Value> {
     let mut draft = Map::new();
     for field in ["block", "gap", "from"] {
@@ -322,7 +345,7 @@ fn closing(
         draft.insert("reason".to_string(), Value::String(reason));
     }
     if let Some(origin) = origin {
-        draft.insert("origin".to_string(), json!(origin));
+        draft.insert("origin".to_string(), origin);
     }
     draft
 }
@@ -370,7 +393,10 @@ mod tests {
             .collect()
     }
 
+    /// A resposta pela última mensagem do usuário, a que `--origin` aponta.
     fn opts(root: &Path) -> AnswerOpts {
+        let log = store::spec_file(&store::spec_root(root), "x").ok().and_then(|path| store::read(&path).ok().flatten());
+        let said = log.as_ref().and_then(mustard_core::domain::spec_state::last_user_message).map(|said| said.id.to_string());
         AnswerOpts {
             root: root.to_path_buf(),
             spec: Some("x".into()),
@@ -381,6 +407,7 @@ mod tests {
             result: None,
             not_applicable: false,
             reason: None,
+            origin: said,
         }
     }
 
@@ -394,9 +421,11 @@ mod tests {
         AnswerOpts { result: Some(result.into()), ..opts(root) }
     }
 
-    /// Uma decisão gravada pela porta do `run write`, sem `origin`.
+    /// Uma decisão gravada pela porta do `run write`, da última mensagem do
+    /// usuário.
     fn decided(root: &Path) -> u64 {
-        id_of(&write(root, "decision", json!({"text": "O merge espera.", "keys": ["merge"], "why": "w"})))
+        let said = mustard_core::domain::spec_state::last_user_message(&log_of(root)).map(|said| said.id);
+        id_of(&write(root, "decision", json!({"text": "O merge espera.", "keys": ["merge"], "why": "w", "origin": said})))
     }
 
     fn answer(opts: &AnswerOpts) -> Value {
@@ -423,14 +452,20 @@ mod tests {
     }
 
     /// A resposta com um item novo grava o item, fecha o ponto apontando o
-    /// item e devolve o próximo ponto aberto. Sem `origin`, o item e o
-    /// fechamento apontam a última mensagem do usuário.
+    /// item e devolve o próximo ponto aberto. Com `--origin`, o item sem
+    /// `origin` e o fechamento apontam a mensagem do usuário; sem ela, a
+    /// decisão é recusada com as últimas mensagens dele, e nada é gravado.
     #[test]
     fn an_answer_records_the_item_closes_the_point_and_returns_the_next() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let points = surveyed(root, "rules", 2);
         let said = id_of(&write(root, "message", json!({"author": "user", "text": "Vale para os dois casos."})));
+        let before = snapshot(root);
+        let unsaid = answer(&AnswerOpts { origin: None, ..with_item(root, DECISION) });
+        assert_eq!(unsaid["reason"], json!("origin-not-user"), "{unsaid}");
+        assert!(unsaid["hint"].as_str().unwrap().contains(&format!("{said}: “Vale para os dois casos.”")), "{unsaid}");
+        assert_eq!(snapshot(root), before, "a refusal writes nothing");
 
         let report = answer(&with_item(root, DECISION));
         let item = id_of(&report);
@@ -444,8 +479,25 @@ mod tests {
         assert_eq!(log.get(item).and_then(|event| event.int("origin")), Some(said));
         assert_eq!(report["point"]["id"], json!(points[1]), "{report}");
         let code = log.codes()[&points[1]].clone();
-        assert!(report["next"].as_str().unwrap().contains(&code), "{report}");
+        assert!(report["points"].as_str().unwrap().contains(&code), "{report}");
         assert_eq!(open_ids(root), vec![points[1]]);
+    }
+
+    /// O ponto do usuário não fecha sem a mensagem dele, nem com um item que
+    /// recebe a última mensagem sozinho, como o limite: a recusa lista as
+    /// últimas mensagens do usuário, e nada é gravado.
+    #[test]
+    fn a_user_point_without_origin_is_refused_whatever_the_item_type() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let points = surveyed(root, "limits", 1);
+        let before = snapshot(root);
+        let limit = r#"{"title": "O teto da saudação", "text": "A saudação tem até 40 letras.", "agent": "- conferir", "keys": ["saudação"], "value": "40"}"#;
+        let asked = AnswerOpts { event_type: Some("limit".into()), json: Some(limit.into()), origin: None, ..opts(root) };
+        let report = answer(&asked);
+        assert_eq!(report["reason"], json!("origin-not-user"), "{report}");
+        assert_eq!(snapshot(root), before, "a refusal writes nothing");
+        assert_eq!(open_ids(root), points);
     }
 
     /// O ponto seguinte volta com cada fato só com o texto e a fonte: a
@@ -540,21 +592,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn reusing_a_record_across_three_single_point_blocks_does_not_repeat_block_review() {
-        let dir=tempdir().unwrap();let root=dir.path();
-        let mut points=surveyed(root,"rules",1);
-        for block in ["limits","contracts"] {
-            points.push(id_of(&write(root,"point",json!({"block":block,"gap":format!("Lacuna {block}"),"from":"gap","status":"open",
-                "facts":[{"text":GOAL,"source":"mensagem 2"}]}))));
-        }
-        let decided=decided(root);
-        for point in points {
-            let report=answer(&AnswerOpts {point:Some(point.to_string()),..with_result(root,&decided.to_string())});
-            assert_eq!(report["ok"],true,"{report}");assert!(report.get("review").is_none(),"no new result in this block: {report}");
-        }
-    }
-
     /// O ponto fecha com resposta ou como não se aplica. Sem resposta, com os
     /// dois juntos ou com "não se aplica" sem motivo, a recusa diz o que falta
     /// e nada é gravado; com o motivo, o ponto fecha sem item.
@@ -613,12 +650,12 @@ mod tests {
         assert_eq!(answer(&last)["reason"], json!("no-open-point"));
     }
 
-    /// No levantamento condensado, a resposta não repete o texto dos pontos
-    /// abertos: `points` traz o código, o número e a lacuna de cada um, e
-    /// `point` traz inteiro só o próximo. O passo seguinte manda responder
-    /// cada ponto pelo mesmo comando e diz o que a resposta devolve.
+    /// A resposta não repete o texto dos pontos abertos: `points` traz o
+    /// código, o número e a lacuna de cada um, e `point` traz inteiro só o
+    /// próximo. O passo seguinte manda responder cada ponto pelo mesmo
+    /// comando e diz o que a resposta devolve.
     #[test]
-    fn a_condensed_answer_lists_the_open_points_briefly() {
+    fn an_answer_lists_the_open_points_briefly() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let points = surveyed(root, survey::CONDENSED, 3);

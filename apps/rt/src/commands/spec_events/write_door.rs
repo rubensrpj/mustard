@@ -6,6 +6,10 @@
 //! backlog as tarefas da onda que ela tira, e a resposta do passo traz a
 //! próxima tarefa da onda.
 //!
+//! A gravação recusada, sozinha ou numa linha do lote, guarda o rascunho dela
+//! na pasta da spec e devolve o número em `draft`; a correção que o cita
+//! manda só o campo errado ([`super::refusal_draft`]).
+//!
 //! A gravação em si é a de [`super::write`], a mesma que a rodada e a parte
 //! comum do fluxo usam por dentro do binário. A porta importa a rodada e a
 //! gravação; a gravação não importa nenhuma das duas, e nada se importa em
@@ -17,10 +21,12 @@ use mustard_core::domain::lessons::LESSON;
 use mustard_core::domain::spec_events::{Refusal, SpecEvent, SpecLog, type_spec};
 use mustard_core::domain::spec_index;
 use mustard_core::domain::spec_state::{PhaseWriter, SpecState};
+use mustard_core::io::fs::lock::LockedFile;
 use mustard_core::io::spec_events as store;
 use mustard_core::platform::i18n::{Locale, translate};
 use serde_json::{Map, Value, json};
 
+use super::refusal_draft::Resolved;
 use super::request_route::Route;
 use super::write::{self, Recorded, WriteOpts};
 use crate::commands::flow::round::queue::{files_in, task_files};
@@ -42,6 +48,14 @@ use crate::shared::task_triage::{self, Candidate, Classifying, Destination, Item
 /// [`Refusal::FilesIgnoredByGit`], com os arquivos, ou a recusa de
 /// [`write::draft_rules`].
 pub(crate) fn draft_rules(start: &Path, spec: &str, event_type: &str, draft: &mut Map<String, Value>, returns: bool) -> Result<(), Refusal> {
+    // A versão nova de uma tarefa herda o que não mandou antes das
+    // conferências: a prova que a parte herdada nomeia, e os arquivos
+    // herdados, passam por elas como os mandados.
+    if event_type == "task"
+        && let Some(log) = DiskSpecState::new(start).log(spec.trim())
+    {
+        super::task_inherit::inherit_task(&log, true, draft);
+    }
     if event_type == "task" {
         let files = files_in(draft);
         if all_ignored(&checkout(start), &files) {
@@ -51,18 +65,19 @@ pub(crate) fn draft_rules(start: &Path, spec: &str, event_type: &str, draft: &mu
     write::draft_rules(start, spec, event_type, draft, returns)
 }
 
-/// O núcleo testável de [`run`]: o relatório da gravação ou a recusa. Com
+/// O núcleo testável de [`run`]: o relatório da gravação ou a recusa, e o
+/// `--json` como foi gravado, com o rascunho que ele cita já juntado. Com
 /// `copy`, a resposta só avisa que a cópia virou publicação explícita.
 /// A tarefa e o pedido novos passam antes pelo classificador das atividades,
 /// com a pergunta ao Jev da orquestração ([`same_work_open`]); o pedido novo,
 /// ao mesmo tempo, pela pergunta do lugar dele ([`super::request_route`]).
 /// A sessão `session` é a que a entrada passou: ela decide a spec da gravação
 /// sem `--spec` e vai no evento gravado. Nunca entra em pânico.
-pub(crate) fn write_for(opts: &WriteOpts, copy: bool, session: Option<&str>) -> Value {
-    write_triaged(opts, copy, session, &|root, spec, payload| reserve::ask_orchestration(root, spec, TASK_TRIAGE_CALL, payload))
+pub(crate) fn write_for(opts: &WriteOpts, copy: bool, session: Option<&str>) -> (Value, String) {
+    write_joined(opts, copy, session, &|root, spec, payload| reserve::ask_orchestration(root, spec, TASK_TRIAGE_CALL, payload))
 }
 
-/// A pergunta ao Jev que [`write_triaged`] faz: recebe a raiz do projeto, a
+/// A pergunta ao Jev que [`write_joined`] faz: recebe a raiz do projeto, a
 /// spec e o pedido, e diz o que o Jev deu. As perguntas de uma gravação saem
 /// ao mesmo tempo, cada uma na sua linha de execução.
 type AskJev<'a> = dyn Fn(&Path, &str, &str) -> Asked<Value> + Sync + 'a;
@@ -76,12 +91,59 @@ fn ask_together(root: &Path, spec: &str, payloads: &[String], ask: &AskJev<'_>) 
     })
 }
 
+/// Para os testes: o relatório de [`write_joined`], sem o `--json` gravado.
+#[cfg(test)]
+pub(super) fn write_triaged(opts: &WriteOpts, copy: bool, session: Option<&str>, ask: &AskJev<'_>) -> Value {
+    write_joined(opts, copy, session, ask).0
+}
+
 /// [`write_for`] com a pergunta ao classificador e ao lugar do pedido feita
 /// por `ask` ([`AskJev`]).
-fn write_triaged(opts: &WriteOpts, copy: bool, session: Option<&str>, ask: &AskJev<'_>) -> Value {
+fn write_joined(opts: &WriteOpts, copy: bool, session: Option<&str>, ask: &AskJev<'_>) -> (Value, String) {
+    // A gravação que cita um rascunho de recusa parte dele, e a recusa desta
+    // guarda o rascunho de novo; a que passa o tira.
+    let draft = match Resolved::of(&opts.root, opts.spec.as_deref(), session, &opts.event_type, &opts.json) {
+        Ok(draft) => draft,
+        Err(report) => return (report, opts.json.clone()),
+    };
+    let joined = WriteOpts { root: opts.root.clone(), spec: opts.spec.clone(), event_type: opts.event_type.clone(), json: draft.json().to_string() };
+    let report = match prepare(&joined, session, ask) {
+        Ok(mut ready) => {
+            let recorded = record_ready(&mut ready, &joined.root, session);
+            finish(ready, &joined.root, copy, recorded)
+        }
+        Err(report) => report,
+    };
+    (draft.settle(report), joined.json)
+}
+
+/// O rascunho que passou por todas as conferências da porta e só falta
+/// gravar, com o que o relatório da gravação leva depois dela.
+struct Ready {
+    project: super::Project,
+    spec: String,
+    event_type: String,
+    draft: Map<String, Value>,
+    /// A trava do passo do git que a volta da onda e a do revisor prendem
+    /// até estarem no arquivo.
+    held: Option<LockedFile>,
+    /// Os avisos de antes da gravação: o passo fora da onda, a prova e a
+    /// dúvida sobre o lugar do pedido.
+    warnings: Vec<String>,
+    /// O nome e a ação da skill criada ou atualizada.
+    skill: Option<(String, String)>,
+    /// A chave do passo seguinte de um pedido, pelo efeito dele.
+    next: Option<String>,
+}
+
+/// As conferências da porta sobre o pedido `opts`, antes de gravar: o
+/// rascunho pronto, ou a resposta que a porta já dá sem gravar na spec — a
+/// recusa, a lição e a página do projeto, gravadas fora dela, o pedido que vai
+/// a outra spec ou à lista de pendências e a decisão que foi à reserva do Jev.
+fn prepare(opts: &WriteOpts, session: Option<&str>, ask: &AskJev<'_>) -> Result<Ready, Value> {
     let project = super::project(&opts.root);
     let lang = project.lang;
-    let refuse = move |refusal: Refusal| super::refused(&refusal, lang);
+    let refuse = move |refusal: Refusal| Err(super::refused(&refusal, lang));
 
     let mut draft = match write::draft_object(&opts.json) {
         Ok(draft) => draft,
@@ -99,7 +161,7 @@ fn write_triaged(opts: &WriteOpts, copy: bool, session: Option<&str>, ask: &AskJ
     }
     let event_type = opts.event_type.trim();
     if event_type == LESSON {
-        return write::write_lesson(&project, opts.spec.as_deref(), draft);
+        return Err(write::write_lesson(&project, opts.spec.as_deref(), draft));
     }
     let bound;
     let spec = match opts.spec.as_deref() {
@@ -108,7 +170,7 @@ fn write_triaged(opts: &WriteOpts, copy: bool, session: Option<&str>, ask: &AskJ
             // A página do projeto nasce antes de qualquer spec.
             let page = draft.get("page").and_then(Value::as_str).map(str::trim);
             if event_type == "publish" && page == Some(spec_index::PROJECT_PAGE) {
-                return write::record_project_page(&project, &draft);
+                return Err(write::record_project_page(&project, &draft));
             }
             // Sem spec, um tipo que não existe continua recusado pelo nome; o
             // que existe vai para a spec ligada à conversa que grava.
@@ -166,7 +228,7 @@ fn write_triaged(opts: &WriteOpts, copy: bool, session: Option<&str>, ask: &AskJ
         Some(Reserved::Pending) => {
             let pending = reserve::reserve_request(&project.root, spec, TASK_TRIAGE_CALL, &payloads);
             if pending.get("unavailable").is_none() {
-                return super::request_route::to_reserve(pending, event_type, lang);
+                return Err(super::request_route::to_reserve(pending, event_type, lang));
             }
             None
         }
@@ -188,9 +250,9 @@ fn write_triaged(opts: &WriteOpts, copy: bool, session: Option<&str>, ask: &AskJ
     let confirm = || Some(translate("triage.request_unsure", lang).to_string());
     match &route_answer {
         Some(Asked::Answered(doc)) => match super::request_route::read(doc) {
-            Some(Route::NewSpec) => return super::request_route::new_spec(&draft, lang),
+            Some(Route::NewSpec) => return Err(super::request_route::new_spec(&draft, lang)),
             Some(Route::Pending) => match super::request_route::to_pending(&project.root, spec, &draft, lang) {
-                Ok(moved) => return moved,
+                Ok(moved) => return Err(moved),
                 Err(_) => route_warning = confirm(),
             },
             Some(Route::Unsure) => route_warning = confirm(),
@@ -204,7 +266,7 @@ fn write_triaged(opts: &WriteOpts, copy: bool, session: Option<&str>, ask: &AskJ
     if to_reserve && !from_reserve {
         let request = reserve::reserve_request(&project.root, spec, TASK_TRIAGE_CALL, &payloads);
         if request.get("unavailable").is_none() {
-            return super::request_route::to_reserve(request, event_type, lang);
+            return Err(super::request_route::to_reserve(request, event_type, lang));
         }
         // Sem a reserva, a decisão do pedido fica em dúvida: grava, e quem
         // conduz confirma com o usuário; a tarefa grava como sempre.
@@ -222,15 +284,13 @@ fn write_triaged(opts: &WriteOpts, copy: bool, session: Option<&str>, ask: &AskJ
         if let Some(warning) = route_warning {
             refusal["warnings"] = json!([warning]);
         }
-        return refusal;
+        return Err(refusal);
     }
     // A skill criada ou atualizada ganha a impressão da versão que a onda
     // deixou no caminho reservado da cópia, que a rodada grava no lugar dela;
     // depois de gravada, sai do git e entra no resumo do projeto.
     let skill = if event_type == "skill" {
-        if let Err(refusal) = crate::shared::failure_skills::prepare_skill(&opts.root, spec, &mut draft, lang) {
-            return refusal;
-        }
+        crate::shared::failure_skills::prepare_skill(&opts.root, spec, &mut draft, lang)?;
         let field = |name: &str| draft.get(name).and_then(Value::as_str).map(str::trim).unwrap_or_default().to_string();
         Some((field("name"), field("action")))
     } else {
@@ -251,7 +311,7 @@ fn write_triaged(opts: &WriteOpts, copy: bool, session: Option<&str>, ask: &AskJ
     let (held, proof_warnings) = if ["delivered", "verdict"].contains(&event_type) {
         match check_return(&opts.root, spec, event_type, &mut draft, lang) {
             Ok((held, warnings)) => (Some(held), warnings),
-            Err(refusal) => return refusal.to_value(lang),
+            Err(refusal) => return Err(refusal.to_value(lang)),
         }
     } else {
         (None, Vec::new())
@@ -261,14 +321,36 @@ fn write_triaged(opts: &WriteOpts, copy: bool, session: Option<&str>, ask: &AskJ
     if event_type == "verdict"
         && let Err(refusal) = check_verdict_return(&opts.root, spec, &mut draft)
     {
-        return refusal.to_value(lang);
+        return Err(refusal.to_value(lang));
     }
     // O passo seguinte de um pedido, pelo efeito dele; a conferência do tipo
     // recusa um efeito que não existe antes de o relatório sair.
     let next = (event_type == "request").then(|| draft.get("effect").and_then(Value::as_str).map(|effect| format!("request.{}", effect.trim()))).flatten();
-    let recorded =
-        if event_type == "remove" { record_removal(&project, &opts.root, spec, draft, session) } else { write::record_in(&project, &opts.root, spec, event_type, draft, None, session) };
+    let spec = spec.to_string();
+    let event_type = event_type.to_string();
+    Ok(Ready { project, spec, event_type, draft, held, warnings: stray_step.into_iter().chain(proof_warnings).chain(route_warning).collect(), skill, next })
+}
+
+/// Grava o rascunho pronto `ready`, visto de `start`, sob a trava da spec: a
+/// remoção com a volta das tarefas da onda que ela tira, e o resto pela
+/// gravação comum.
+fn record_ready(ready: &mut Ready, start: &Path, session: Option<&str>) -> Result<Recorded, Refusal> {
+    let draft = std::mem::take(&mut ready.draft);
+    let (project, spec) = (&ready.project, ready.spec.as_str());
+    if ready.event_type == "remove" {
+        return record_removal(project, start, spec, draft, session);
+    }
+    write::record_in(project, start, spec, &ready.event_type, draft, None, session)
+}
+
+/// O relatório da gravação `recorded` do rascunho pronto `ready`, visto de
+/// `start`, como o `run write` o imprime. Solta a trava do passo do git que a
+/// volta prendia. Com `copy`, a resposta só avisa que a cópia virou
+/// publicação explícita.
+fn finish(ready: Ready, start: &Path, copy: bool, recorded: Result<Recorded, Refusal>) -> Value {
+    let Ready { project, spec, event_type, held, warnings: early, skill, next, .. } = ready;
     drop(held);
+    let (spec, event_type, lang) = (spec.as_str(), event_type.as_str(), project.lang);
     match recorded {
         Ok(Recorded { written, survey, returned, emptied_waves }) => {
             // O item gravado entra no bloco das specs do mapa. A gravação na
@@ -306,11 +388,9 @@ fn write_triaged(opts: &WriteOpts, copy: bool, session: Option<&str>, ask: &AskJ
             for (fact, finding) in &written.citation_warnings {
                 warnings.extend(finding.warning(*fact, lang));
             }
-            warnings.extend(stray_step);
-            warnings.extend(proof_warnings);
-            warnings.extend(route_warning);
+            warnings.extend(early);
             if let Some((name, action)) = &skill {
-                warnings.extend(crate::shared::failure_skills::after_skill_written(&opts.root, spec, (written.id, name, action), lang));
+                warnings.extend(crate::shared::failure_skills::after_skill_written(start, spec, (written.id, name, action), lang));
             }
             // Só a gravação com `--copy` prepara a cópia: a última de um
             // pedido do usuário que muda o plano, que a leva uma vez, já com
@@ -337,7 +417,7 @@ fn write_triaged(opts: &WriteOpts, copy: bool, session: Option<&str>, ask: &AskJ
             }
             report
         }
-        Err(refusal) => refuse(refusal),
+        Err(refusal) => super::refused(&refusal, lang),
     }
 }
 
@@ -429,19 +509,33 @@ fn same_work_open(same: &SameWork, event_type: &str, draft: &Map<String, Value>,
 /// A recusa da remoção, sem nada gravado, ou a da volta de uma tarefa.
 fn record_removal(project: &super::Project, start: &Path, spec: &str, draft: Map<String, Value>, session: Option<&str>) -> Result<Recorded, Refusal> {
     let path = store::spec_file(&project.root, spec)?;
-    let held = store::with_locked_writer(&path, |locked| -> Result<Recorded, Refusal> {
-        let before = locked.log().waves_left_without_tasks();
-        let mut removal = write::record_to(project, start, spec, "remove", draft.clone(), None, Some(&mut *locked), session)?;
-        let freed: Vec<Map<String, Value>> = locked.log().tasks_of_removed_waves(&removal.written.removed).into_iter().map(backlog_return).collect();
-        for task in freed {
-            let back = write::record_to(project, start, spec, "task", task, Some(PhaseWriter::Binary), Some(&mut *locked), session)?;
-            removal.returned.push(back.written.id);
-        }
-        removal.emptied_waves = locked.log().waves_left_without_tasks().into_keys().filter(|wave| !before.contains_key(wave)).collect();
-        Ok(removal)
-    })?;
+    let held = store::with_locked_writer(&path, |locked| removal_locked(locked, project, start, spec, draft.clone(), session))?;
     // Sem o arquivo de eventos, a gravação comum dá a recusa de sempre.
     held.unwrap_or_else(|| write::record_in(project, start, spec, "remove", draft, None, session))
+}
+
+/// [`record_removal`] dentro da trava da spec que `locked` já prende.
+///
+/// # Errors
+///
+/// A recusa da remoção ou a da volta de uma tarefa.
+fn removal_locked(
+    locked: &mut store::LockedLog,
+    project: &super::Project,
+    start: &Path,
+    spec: &str,
+    draft: Map<String, Value>,
+    session: Option<&str>,
+) -> Result<Recorded, Refusal> {
+    let before = locked.log().waves_left_without_tasks();
+    let mut removal = write::record_to(project, start, spec, "remove", draft, None, Some(&mut *locked), session)?;
+    let freed: Vec<Map<String, Value>> = locked.log().tasks_of_removed_waves(&removal.written.removed).into_iter().map(backlog_return).collect();
+    for task in freed {
+        let back = write::record_to(project, start, spec, "task", task, Some(PhaseWriter::Binary), Some(&mut *locked), session)?;
+        removal.returned.push(back.written.id);
+    }
+    removal.emptied_waves = locked.log().waves_left_without_tasks().into_keys().filter(|wave| !before.contains_key(wave)).collect();
+    Ok(removal)
 }
 
 /// O aviso de que esta gravação veio de outra sessão: a spec já tinha
@@ -516,7 +610,12 @@ pub fn run(opts: &WriteOpts, copy: bool) {
     let started = std::time::Instant::now();
     // A entrada lê a sessão uma vez e a passa a tudo o que grava.
     let session = session_from_env();
-    let mut report = write_for(opts, copy, session.as_deref());
+    let agent = crate::shared::search_gateway::agent_from_env();
+    if let Some(refusal) = agent_plan_refusal(Some(&opts.event_type), agent.as_deref(), super::project(&opts.root).lang) {
+        println!("{}", serde_json::to_string_pretty(&refusal).unwrap_or_else(|_| "{}".into()));
+        std::process::exit(1);
+    }
+    let (mut report, json) = write_for(opts, copy, session.as_deref());
     // A gravação que veio de outra sessão avisa: duas conversas no mesmo
     // projeto gravam na mesma spec, e quem conduz não via a gravação da
     // outra. O aviso não segura nada — a decisão é de quem lê.
@@ -527,31 +626,246 @@ pub fn run(opts: &WriteOpts, copy: bool) {
             super::pages::push_warning(&mut report, "another-session", &hint);
         }
     }
-    // O passo que termina uma tarefa responde, ele mesmo, a medida da
-    // conversa do agente de onda que o gravou, pela identidade que o gancho
-    // do terminal exporta ao comando.
-    if opts.event_type.trim() == "step" && report["ok"] == json!(true) {
-        let project = super::project(&opts.root);
-        let transcript = session.as_deref().and_then(|session| crate::shared::typed_messages::session_transcript(&project.root, session));
-        let deliver = crate::hooks::session::conversation_size::answer_step(
-            &mut report,
-            &project.root,
-            &opts.event_type,
-            &opts.json,
-            crate::shared::search_gateway::agent_from_env().as_deref(),
-            session.as_deref(),
-            transcript.as_deref(),
-            project.lang,
-        );
-        // Abaixo do limite, ou sem medida, a resposta traz a próxima tarefa
-        // da onda, que fica liberada; acima, só a ordem de entregar.
-        if deliver != Some(true) {
-            answer_next_task(&mut report, &project, opts.spec.as_deref(), session.as_deref(), &opts.json, started);
-        }
-    }
+    // O passo corrigido por um rascunho traz só o campo que faltava: a
+    // resposta dele lê os campos como foram gravados, com o rascunho juntado.
+    let written = WriteOpts { root: opts.root.clone(), spec: opts.spec.clone(), event_type: opts.event_type.clone(), json };
+    answer_written_step(&mut report, &written, session.as_deref(), started);
     let _ = super::conversation::record_call_as(&opts.root, session.as_deref(), "write", opts.spec.as_deref(), started, &report);
     println!("{}", serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".into()));
     if report["ok"] != json!(true) {
+        std::process::exit(1);
+    }
+}
+
+/// A recusa ao agente de onda `agent`, que o gancho do terminal nomeia ao
+/// comando, da gravação que só o condutor faz: tarefa, pedido e onda, e o lote
+/// (`event_type` ausente), que leva qualquer tipo. O agente relata sobras e
+/// propostas no retorno da onda. `None` para quem conduz e para outro tipo.
+fn agent_plan_refusal(event_type: Option<&str>, agent: Option<&str>, lang: Locale) -> Option<Value> {
+    agent?;
+    let (reason, pt, en) = match event_type.map(str::trim) {
+        Some("task" | "request" | "wave") => (
+            "agent-plan-write",
+            "O agente não altera o plano diretamente. Relate sobras, obrigações e proposta no retorno da onda; o condutor e o runtime gravam a tarefa autorizada.",
+            "An agent cannot edit the plan directly. Report leftovers, obligations and proposals in the wave return; the conductor and runtime write authorized tasks.",
+        ),
+        Some(_) => return None,
+        None => (
+            "agent-batch-write",
+            "O agente não grava em lote: o lote leva tarefa, pedido e onda, que só o condutor grava. Grave cada passo ou entrega numa chamada `run write` própria.",
+            "An agent cannot write a batch: a batch carries tasks, requests and waves, which only the conductor writes. Write each step or delivery in its own `run write` call.",
+        ),
+    };
+    Some(json!({ "ok": false, "reason": reason, "hint": if lang == Locale::PtBr { pt } else { en } }))
+}
+
+/// O passo `opts` gravado, com o relatório `report`, responde ele mesmo a
+/// medida da conversa do agente de onda que o gravou, pela identidade que o
+/// gancho do terminal exporta ao comando. Abaixo do limite, ou sem medida, a
+/// resposta traz a próxima tarefa da onda, que fica liberada; acima, só a
+/// ordem de entregar. Outro tipo, ou o passo recusado, fica como está.
+fn answer_written_step(report: &mut Value, opts: &WriteOpts, session: Option<&str>, started: std::time::Instant) {
+    if opts.event_type.trim() != "step" || report["ok"] != json!(true) {
+        return;
+    }
+    let project = super::project(&opts.root);
+    let transcript = session.and_then(|session| crate::shared::typed_messages::session_transcript(&project.root, session));
+    let deliver = crate::hooks::session::conversation_size::answer_step(
+        report,
+        &project.root,
+        &opts.event_type,
+        &opts.json,
+        crate::shared::search_gateway::agent_from_env().as_deref(),
+        session,
+        transcript.as_deref(),
+        project.lang,
+    );
+    if deliver != Some(true) {
+        answer_next_task(report, &project, opts.spec.as_deref(), session, &opts.json, started);
+    }
+}
+
+/// Os campos da resposta de uma gravação que a linha curta do lote mantém:
+/// a ordem ao agente que só a resposta traz — a próxima tarefa liberada, a de
+/// entregar, o pedido que a recusa manda atender antes de gravar de novo e o
+/// número do rascunho que a recusa guardou para a correção, com a dica dela.
+const ORDER_FIELDS: &[&str] = &[NEXT_TASK_FIELD, TASKS_FINISHED_FIELD, "reserve", "rewrite", "request", "draft", "draft_hint"];
+
+/// Uma linha do lote, lida da entrada.
+struct BatchLine {
+    /// O número da linha na entrada, contando as vazias.
+    number: usize,
+    /// O rótulo com que as linhas seguintes a citam.
+    label: Option<String>,
+    /// O tipo e os campos, ou a recusa da linha que não se lê.
+    item: Result<(String, Map<String, Value>), Value>,
+}
+
+/// As linhas não vazias da entrada `input` do lote: cada uma é um objeto JSON
+/// com o tipo em `type` e os outros campos do evento.
+fn batch_lines(input: &str, lang: Locale) -> Vec<BatchLine> {
+    input
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| !line.trim().is_empty())
+        .map(|(at, line)| {
+            let item = write::draft_object(line).map_err(|refusal| super::refused(&refusal, lang)).and_then(|mut fields| {
+                match fields.remove("type").as_ref().and_then(Value::as_str).map(str::trim).filter(|kind| !kind.is_empty()) {
+                    Some(kind) => Ok((kind.to_string(), fields)),
+                    None => Err(json!({ "ok": false, "reason": "batch-type-missing", "hint": translate("spec_events.batch_type_missing", lang) })),
+                }
+            });
+            let label = item.as_ref().ok().and_then(|(_, fields)| fields.get("label")).and_then(Value::as_str).map(str::trim).filter(|label| !label.is_empty()).map(str::to_string);
+            BatchLine { number: at + 1, label, item }
+        })
+        .collect()
+}
+
+/// A gravação em lote: cada linha de `input`, na ordem, passa pelas mesmas
+/// conferências da gravação sozinha, na spec `spec` de `root`, e grava como
+/// ela, sob a trava da spec, antes de a linha seguinte se conferir: a
+/// conferência de cada linha — a do trabalho repetido, a da entrega — enxerga
+/// as que o lote já gravou, e os rótulos que ela cita já chegam a ela como os
+/// números dessas linhas. A linha recusada não grava, e a que cita pelo rótulo
+/// uma linha do lote que não gravou também é recusada, apontando a linha de
+/// origem. Devolve, na ordem, o número de cada linha e a resposta que a
+/// gravação sozinha daria.
+fn batch_for(root: &Path, spec: Option<&str>, input: &str, session: Option<&str>, ask: &AskJev<'_>) -> Vec<(usize, Value)> {
+    let lang = super::project(root).lang;
+    let lines = batch_lines(input, lang);
+    let mut answers: Vec<Value> = Vec::with_capacity(lines.len());
+    let mut ids: Vec<Option<u64>> = vec![None; lines.len()];
+    // Os campos de cada linha como ela foi gravada, com o rascunho juntado:
+    // é deles que a resposta do passo lê a onda e o item.
+    let mut written: Vec<Option<String>> = vec![None; lines.len()];
+    for at in 0..lines.len() {
+        let (event_type, mut fields) = match &lines[at].item {
+            Ok(item) => item.clone(),
+            Err(refusal) => {
+                answers.push(refusal.clone());
+                continue;
+            }
+        };
+        if let Some(refusal) = cites_unrecorded(&lines, &ids, at, &event_type, &fields, lang) {
+            answers.push(refusal);
+            continue;
+        }
+        let by_label = |label: &str| (0..at).rev().find(|before| lines[*before].label.as_deref() == Some(label)).and_then(|before| ids[before]);
+        write::resolve_labels(&event_type, &mut fields, &by_label);
+        // A linha que cita um rascunho de recusa parte dele; a recusa dela o
+        // guarda de novo, e a que grava o tira.
+        let draft = match Resolved::of(root, spec, session, &event_type, &Value::Object(fields).to_string()) {
+            Ok(draft) => draft,
+            Err(refusal) => {
+                answers.push(refusal);
+                continue;
+            }
+        };
+        let opts = WriteOpts { root: root.to_path_buf(), spec: spec.map(str::to_string), event_type, json: draft.json().to_string() };
+        written[at] = Some(opts.json.clone());
+        let answer = match prepare(&opts, session, ask) {
+            Err(answer) => answer,
+            Ok(mut ready) => {
+                let recorded = record_ready(&mut ready, root, session);
+                ids[at] = recorded.as_ref().ok().map(|done| done.written.id);
+                finish(ready, root, false, recorded)
+            }
+        };
+        answers.push(draft.settle(answer));
+    }
+    lines
+        .iter()
+        .zip(answers)
+        .zip(written)
+        .map(|((line, mut answer), json)| {
+            if let (Ok((event_type, _)), Some(json)) = (&line.item, json) {
+                let opts = WriteOpts { root: root.to_path_buf(), spec: spec.map(str::to_string), event_type: event_type.clone(), json };
+                answer_written_step(&mut answer, &opts, session, std::time::Instant::now());
+            }
+            (line.number, answer)
+        })
+        .collect()
+}
+
+/// A recusa da linha `at` do lote que cita pelo rótulo uma linha anterior que
+/// não gravou, `ids` sem o número dela: a recusada, ou a que gravou fora da
+/// spec. Cada rótulo aponta a linha mais próxima antes dela com ele.
+fn cites_unrecorded(lines: &[BatchLine], ids: &[Option<u64>], at: usize, event_type: &str, fields: &Map<String, Value>, lang: Locale) -> Option<Value> {
+    write::cited_labels(event_type, fields).into_iter().find_map(|label| {
+        let origin = (0..at).rev().find(|before| lines[*before].label.as_deref() == Some(label.as_str()))?;
+        ids[origin].is_none().then(|| {
+            let hint = translate("spec_events.batch_line_refused", lang).replace("{line}", &lines[origin].number.to_string()).replace("{label}", &label);
+            json!({ "ok": false, "reason": "batch-line-refused", "hint": hint, "line": lines[origin].number })
+        })
+    })
+}
+
+/// A linha curta do lote para a linha `number` com a resposta `answer`: o
+/// código gravado, ou o número do evento sem código; ou a razão e a dica da
+/// recusa. Os avisos da gravação — a citação que o mapa não confirma, a
+/// prova, o passo fora da onda, a dúvida do lugar do pedido — e os campos de
+/// ordem ao agente ([`ORDER_FIELDS`]) seguem junto.
+fn batch_line(number: usize, answer: &Value) -> Value {
+    let mut line = json!({ "line": number });
+    let kept: &[&str] = if answer["ok"] == json!(true) {
+        if answer.get("code").is_some() { &["code", "warnings"] } else { &["id", "warnings"] }
+    } else {
+        &["reason", "hint", "warnings"]
+    };
+    for field in kept.iter().chain(ORDER_FIELDS) {
+        if let Some(value) = answer.get(*field) {
+            line[*field] = value.clone();
+        }
+    }
+    line
+}
+
+/// As linhas curtas da gravação em lote de `input` ([`batch_for`],
+/// [`batch_line`]), na ordem, pela sessão `session` da entrada. Como na
+/// gravação sozinha, a primeira linha gravada em cada spec avisa quando outra
+/// sessão gravou nela ([`another_session_wrote`]).
+fn batch_report(root: &Path, spec: Option<&str>, input: &str, session: Option<&str>, ask: &AskJev<'_>) -> Vec<Value> {
+    let project = super::project(root);
+    let mut seen: Vec<String> = Vec::new();
+    batch_for(root, spec, input, session, ask)
+        .iter()
+        .map(|(number, answer)| {
+            let mut line = batch_line(*number, answer);
+            let written = spec.or_else(|| answer["spec"].as_str()).filter(|_| answer["ok"] == json!(true)).map(str::trim);
+            if let Some(written) = written.filter(|written| !seen.iter().any(|had| had == written)) {
+                if let Some(hint) = another_session_wrote(&project.root, Some(written), session, project.lang) {
+                    super::pages::push_warning(&mut line, "another-session", &hint);
+                }
+                seen.push(written.to_string());
+            }
+            line
+        })
+        .collect()
+}
+
+/// Run `write --batch`: read the lines of standard input, write them as
+/// [`batch_report`] does and print one short line per item, in order. Exit 1
+/// when a line was refused.
+pub fn run_batch(root: &Path, spec: Option<&str>) {
+    let started = std::time::Instant::now();
+    let session = session_from_env();
+    let lang = super::project(root).lang;
+    if let Some(refusal) = agent_plan_refusal(None, crate::shared::search_gateway::agent_from_env().as_deref(), lang) {
+        println!("{refusal}");
+        std::process::exit(1);
+    }
+    let ask = |root: &Path, spec: &str, payload: &str| reserve::ask_orchestration(root, spec, TASK_TRIAGE_CALL, payload);
+    let lines: Vec<Value> = match std::io::read_to_string(std::io::stdin()) {
+        Ok(input) if input.trim().is_empty() => vec![json!({ "ok": false, "reason": "batch-empty", "hint": translate("spec_events.batch_empty", lang) })],
+        Ok(input) => batch_report(root, spec, &input, session.as_deref(), &ask),
+        Err(error) => vec![write::RawRefusal::Stdin { detail: error.to_string() }.to_value(lang)],
+    };
+    let refused = lines.iter().find(|line| line.get("reason").is_some());
+    let summary = json!({ "ok": refused.is_none(), "reason": refused.map(|line| line["reason"].clone()), "lines": lines.len() });
+    let output: String = lines.iter().map(|line| line.to_string() + "\n").collect();
+    let _ = super::conversation::record_output_call_as(root, session.as_deref(), "write", spec, started, &summary, &output);
+    print!("{output}");
+    if refused.is_some() {
         std::process::exit(1);
     }
 }
@@ -561,6 +875,24 @@ mod tests {
     use super::*;
     use mustard_core::domain::spec_events::parse_log;
     use tempfile::tempdir;
+
+    /// O agente de onda recebe a recusa do próprio comando de gravação na
+    /// tarefa, no pedido, na onda e no lote; o passo dele e tudo o que o
+    /// condutor grava passam.
+    #[test]
+    fn the_wave_agent_is_refused_plan_writes_with_and_without_a_batch() {
+        for kind in ["task", "request", "wave"] {
+            let refusal = agent_plan_refusal(Some(kind), Some("agent-a"), Locale::PtBr).expect("the agent is refused");
+            assert_eq!(refusal["reason"], "agent-plan-write", "{kind}");
+            assert!(refusal["hint"].as_str().unwrap().contains("retorno da onda"), "{refusal}");
+            assert!(agent_plan_refusal(Some(kind), None, Locale::PtBr).is_none(), "the conductor writes {kind}");
+        }
+        let batch = agent_plan_refusal(None, Some("agent-a"), Locale::EnUs).expect("the agent batch is refused");
+        assert_eq!(batch["reason"], "agent-batch-write");
+        assert!(batch["hint"].as_str().unwrap().contains("own `run write` call"), "{batch}");
+        assert!(agent_plan_refusal(None, None, Locale::EnUs).is_none(), "the conductor writes a batch");
+        assert!(agent_plan_refusal(Some("step"), Some("agent-a"), Locale::PtBr).is_none(), "the agent writes its step");
+    }
 
     /// Grava na spec `teste`, aberta antes como o comando que abre uma spec a
     /// deixa, como a produção grava ([`write::seed_at`]).
@@ -614,13 +946,74 @@ mod tests {
         let said = |text: &str, session: Option<&str>| {
             let json = json!({ "title": "Anotar o pedido", "text": text, "keys": ["pedido"], "origin": asked }).to_string();
             let opts = WriteOpts { root: root.to_path_buf(), spec: Some("marca".into()), event_type: "note".into(), json };
-            let out = write_for(&opts, false, session);
+            let (out, _) = write_for(&opts, false, session);
             assert_eq!(out["ok"], json!(true), "{out}");
             let log = store::read(&store::spec_file(root, "marca").unwrap()).unwrap().unwrap();
             log.get(out["id"].as_u64().unwrap()).and_then(|event| event.str_field("session")).map(str::to_string)
         };
         assert_eq!(said("com a sessão da entrada", Some("s-recebida")).as_deref(), Some("s-recebida"));
         assert_eq!(said("sem sessão nenhuma", None), None);
+    }
+
+    /// O lote gravado numa spec em que outra sessão ligada a ela já gravou
+    /// avisa como a gravação sozinha: a primeira linha gravada leva o aviso
+    /// com a sessão da outra, e a seguinte, na mesma spec, não o repete.
+    #[test]
+    fn a_batch_after_another_session_wrote_warns_like_a_single_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), "{}").unwrap();
+        write::record_open(root, "marca", "feature/marca", "dev").unwrap();
+        super::super::session_spec::bind(root, Some("s-outra"), "marca");
+        super::super::session_spec::bind(root, Some("s-minha"), "marca");
+        let asked = super::super::conversation::record_message(root, Some("s-minha"), "Anote o pedido.").unwrap();
+        let note = |title: &str| json!({ "title": title, "text": title, "keys": ["pedido"], "origin": asked });
+        let theirs = WriteOpts { root: root.to_path_buf(), spec: Some("marca".into()), event_type: "note".into(), json: note("da outra").to_string() };
+        assert_eq!(write_for(&theirs, false, Some("s-outra")).0["ok"], json!(true));
+
+        let line = |title: &str| {
+            let mut line = note(title);
+            line["type"] = json!("note");
+            line
+        };
+        let input = format!("{}\n{}\n", line("primeira"), line("segunda"));
+        let lines = batch_report(root, Some("marca"), &input, Some("s-minha"), &|_, _, _| Asked::Off);
+        assert!(lines.iter().all(|line| line.get("code").is_some()), "{lines:?}");
+        let warnings = |line: &Value| line["warnings"].as_array().cloned().unwrap_or_default();
+        let first = warnings(&lines[0]);
+        assert_eq!(first.len(), 1, "{lines:?}");
+        assert_eq!(first[0]["reason"], json!("another-session"));
+        assert!(first[0]["hint"].as_str().unwrap_or_default().contains("s-outra"), "{first:?}");
+        assert!(warnings(&lines[1]).is_empty(), "one warning per spec: {lines:?}");
+    }
+
+    /// Cada linha do lote se confere depois de as anteriores gravarem: a
+    /// tarefa repetida na linha seguinte vai ao Jev com a primeira entre as
+    /// abertas e volta recusada, nomeando a primeira, como na gravação
+    /// sozinha. Só a primeira grava.
+    #[test]
+    fn a_batch_line_is_checked_after_the_lines_before_it_are_written() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("mustard.json"), "{}").unwrap();
+        let asked = write(root, "message", r#"{"author":"user","text":"inclua a subtração"}"#)["id"].as_u64().unwrap();
+        let request = json!({"title": "Subtração", "text": "Incluir a subtração.", "keys": ["subtração"], "effect": "new_waves",
+            "agent": "- conferir pelo teste. Prova: `git --version`", "origin": asked});
+        let request = write(root, "request", &request.to_string())["id"].as_u64().unwrap();
+        let task = json!({"type": "task", "title": "Subtrair", "text": "Subtrair dois números.", "agent": "- subtrair",
+            "files": [{"path": "src/calc.ts"}], "depends_on": [], "covers": [request], "origin": asked});
+        let ask = |root: &Path, spec: &str, _: &str| {
+            let log = store::read(&store::spec_file(root, spec).unwrap()).unwrap().unwrap();
+            let open = backlog_left(&log).into_iter().next().expect("the task of the first line is open");
+            Asked::Answered(triaged(&format!("join:t{open}")))
+        };
+
+        let answers = batch_for(root, Some("teste"), &format!("{task}\n{task}\n"), None, &ask);
+        let first = answers[0].1["code"].as_str().unwrap_or_else(|| panic!("the first line is written: {answers:?}")).to_string();
+        assert_eq!(answers[1].1["reason"], json!("same-work-open"), "{answers:?}");
+        assert_eq!(answers[1].1["task"], json!(first), "the refusal names the first line: {answers:?}");
+        let log = store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap();
+        assert_eq!(log.visible().iter().filter(|e| e.event_type == "task").count(), 1, "only the first line is written");
     }
 
     /// A spec com o pedido da subtração e uma tarefa aberta que o cobre, em
@@ -893,6 +1286,22 @@ mod tests {
         }
     }
 
+    /// A linha do lote leva os avisos da gravação dela, como a gravação
+    /// sozinha os devolve: o pedido cujo lugar o Jev põe em dúvida grava, e a
+    /// linha curta traz o código e o aviso de confirmar com o usuário.
+    #[test]
+    fn a_batch_line_keeps_the_warnings_of_its_write() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let opts = routed_request(root, "Trocar o tema do site para escuro.");
+        let mut line: Value = serde_json::from_str(&opts(&json!({})).json).unwrap();
+        line["type"] = json!("request");
+        let asked = std::sync::Mutex::new(Vec::new());
+        let lines = batch_report(root, Some("teste"), &format!("{line}\n"), None, &route_jev(route_answer("new_spec", 0.55, 0.1), &asked));
+        assert!(lines[0]["code"].is_string(), "the line is written: {lines:?}");
+        assert!(lines[0]["warnings"].to_string().contains("confirme com o usuário"), "{lines:?}");
+    }
+
     /// As duas perguntas do pedido novo ao Jev — o lugar dele e a comparação
     /// com as tarefas abertas — saem ao mesmo tempo: o Jev só responde cada
     /// uma quando as duas estão no ar, e uma depois da outra a primeira nunca
@@ -981,5 +1390,91 @@ mod tests {
         assert_eq!(out["ok"], json!(true), "{out}");
         assert!(out.get("warnings").is_none(), "{out}");
         assert_eq!(requests(root), 1);
+    }
+
+    /// A tarefa recusada, sozinha ou numa linha do lote, devolve o número do
+    /// rascunho que guardou, e a correção com esse número e só o campo errado
+    /// grava a tarefa inteira, passando pela conferência de sempre: a
+    /// correção que erra de novo mantém o mesmo rascunho, o rascunho usado
+    /// sai, e o número dele não vale mais nem para outro tipo de item.
+    #[test]
+    fn a_refused_task_keeps_a_draft_and_the_fix_sends_only_the_wrong_field() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = message(root, "user", "Quero a conferência de cada critério.");
+        let crit = crate::shared::spec_state::seed_event(
+            root,
+            "teste",
+            "criterion",
+            json!({"when": "a obra fecha", "then": "cada critério é conferido", "proof": "git --version", "form": "ubiquitous"}),
+        );
+        let by_model = |event_type: &str, body: &Value| {
+            let opts = WriteOpts { root: root.to_path_buf(), spec: Some("teste".into()), event_type: event_type.into(), json: body.to_string() };
+            write_triaged(&opts, false, None, &|_, _, _| Asked::Off)
+        };
+        let log = || store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap();
+        let without_files = json!({"title": "Fechamento confere cada critério", "text": "Conferir.", "agent": "- conferir cada critério",
+            "depends_on": [], "covers": [crit], "origin": said});
+
+        let refused = by_model("task", &without_files);
+        assert_eq!(refused["reason"], json!("task-declaration-missing"), "{refused}");
+        let draft = refused["draft"].as_u64().unwrap_or_else(|| panic!("a recusa devolve o número do rascunho: {refused}"));
+        assert!(refused["draft_hint"].as_str().unwrap_or_default().contains(&format!("\"draft\": {draft}")), "a dica ensina a correção: {refused}");
+        let before = log().events.len();
+
+        let other = by_model("note", &json!({"draft": draft}));
+        assert_eq!(other["reason"], json!("draft-other-type"), "o rascunho é de uma tarefa: {other}");
+        let wrong = by_model("task", &json!({"draft": draft, "files": "src/a.rs"}));
+        assert_eq!(wrong["ok"], json!(false), "{wrong}");
+        assert_eq!(wrong["draft"], json!(draft), "a correção errada mantém o rascunho: {wrong}");
+        assert_eq!(log().events.len(), before, "nada foi gravado");
+
+        let fixed = by_model("task", &json!({"draft": draft, "files": []}));
+        let id = fixed["id"].as_u64().unwrap_or_else(|| panic!("a correção só com o campo errado grava: {fixed}"));
+        let log = log();
+        let written = log.get(id).expect("a tarefa gravada");
+        for field in ["title", "text", "agent", "depends_on", "covers"] {
+            assert_eq!(written.fields.get(field), without_files.get(field), "{field} veio do rascunho: {:?}", written.fields);
+        }
+        assert_eq!(written.fields.get("files"), Some(&json!([])));
+        assert!(written.fields.get("draft").is_none(), "o número do rascunho não vai ao evento: {:?}", written.fields);
+        let used = by_model("task", &json!({"draft": draft, "files": []}));
+        assert_eq!(used["reason"], json!("draft-unknown"), "o rascunho usado saiu: {used}");
+
+        let line = |fields: &Value| {
+            let mut line = fields.clone();
+            line["type"] = json!("task");
+            line.to_string()
+        };
+        let batch = |input: &str| batch_for(root, Some("teste"), input, None, &|_, _, _| Asked::Off);
+        let refused_line = batch(&line(&without_files));
+        let batch_draft = refused_line[0].1["draft"].as_u64().unwrap_or_else(|| panic!("a linha recusada devolve o rascunho: {refused_line:?}"));
+        assert!(batch_draft > draft, "o número não volta a ser dado: {batch_draft}");
+        assert_eq!(batch_line(refused_line[0].0, &refused_line[0].1)["draft"], json!(batch_draft), "a linha curta mantém o número");
+        let fixed_line = batch(&line(&json!({"draft": batch_draft, "files": []})));
+        assert_eq!(fixed_line[0].1["ok"], json!(true), "{fixed_line:?}");
+    }
+
+    /// A versão nova de uma tarefa que manda só os arquivos herda a parte do
+    /// agente da anterior antes das conferências da porta: a prova que a parte
+    /// herdada nomeia passa pela mesma conferência da prova mandada, e a que
+    /// não roda é recusada sem gravar nada.
+    #[test]
+    fn a_new_task_version_checks_the_proof_named_in_what_it_inherits() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = message(root, "user", "Quero a conferência de cada critério.");
+        let seed = |event_type: &str, fields: Value| crate::shared::spec_state::seed_event(root, "teste", event_type, fields);
+        let crit = seed("criterion", json!({"when": "a obra fecha", "then": "cada critério é conferido", "proof": "git --version", "form": "ubiquitous"}));
+        let old = seed("task", json!({"title": "Fechamento confere cada critério", "text": "Conferir.",
+            "agent": "- conferir cada critério. Prova: `programa-que-nao-existe --rodar`", "files": [], "depends_on": [], "covers": [crit], "origin": said}));
+        let events = || store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap().events.len();
+        let before = events();
+
+        let opts = WriteOpts { root: root.to_path_buf(), spec: Some("teste".into()), event_type: "task".into(),
+            json: json!({"replaces": old, "files": [{"path": "src/b.rs"}]}).to_string() };
+        let refused = write_triaged(&opts, false, None, &|_, _, _| Asked::Off);
+        assert_eq!(refused["reason"], json!("proof-program-unknown"), "the inherited proof is checked: {refused}");
+        assert_eq!(events(), before, "nothing is recorded");
     }
 }

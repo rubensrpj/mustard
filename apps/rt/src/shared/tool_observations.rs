@@ -201,7 +201,7 @@ fn kept_source(command: &str) -> String {
 /// agent wrote a `grep` or `rg`, and the rewrite must not cost its receipt.
 fn runs_a_flow_step(command: &str) -> bool {
     crate::hooks::bash::lex::segments(command).iter().any(|segment| {
-        matches!(segment.name(), "mustard-rt" | "mustard-rt.exe" | "mustard-boot" | "mustard-boot.cmd")
+        segment.runs_mustard()
             && segment.args.first().is_some_and(|arg| arg.text == "run")
             && !routed_native_search(&segment.args)
     })

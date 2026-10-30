@@ -1,9 +1,9 @@
 //! `template_budget` — o tamanho do texto do Mustard que o modelo lê.
 //!
-//! Em cada idioma, todo texto que o modelo lê soma menos de 30.400 bytes, pela
+//! Em cada idioma, todo texto que o modelo lê soma menos de 26.000 bytes, pela
 //! medida que mora em `support/prose_budget.rs`, ao lado deste arquivo — a
 //! mesma que o teste da instalação dos agentes confere. O mapa do início da
-//! sessão, que entra em toda sessão, tem o teto dele de 4.840 bytes.
+//! sessão, que entra em toda sessão, tem o teto dele de 2.200 bytes.
 //!
 //! O teste mora no pacote da medida: trazido de outro pacote pelo caminho, o
 //! arquivo da medida ficaria fora dele, e o cargo o guardaria pelo endereço da
@@ -20,22 +20,15 @@ use std::path::Path;
 
 use prose_budget::{collect_md, language_of, read_by_the_model, repo_root, shown, LANGUAGES};
 
-/// O teto do mapa do início da sessão, em bytes. O início da sessão inteiro
-/// cabe em 5.440 bytes; os 600 que sobram ao lado do mapa guardam o lugar da
-/// retomada e do relato do pull request mesclado por outra pessoa, que nunca
-/// saem. Com o mapa maior, é ele que sai.
-///
-/// A conta: o teto era 2.400, e sobe o que os princípios do condutor ocupam
-/// no mapa do idioma em que ocupam mais, o `en-US`. O bloco deles tem 2.619
-/// bytes, com a linha em branco que o separa são 2.621, e saem 181 bytes das
-/// frases do mapa que repetiam um princípio: 2.400 + 2.621 − 181 = 4.840. No
-/// `pt-BR` o bloco tem 2.534 bytes e saem 175: o mapa fica com 4.755.
-const MAP_CAP: u64 = 4_840;
+/// O teto do mapa do início da sessão, em bytes. A abertura inteira cabe em
+/// 2.560 bytes; os 360 que sobram ao lado do mapa guardam o lugar da linha de
+/// retomada e da contagem das pendências. Com o mapa maior, é ele que sai.
+const MAP_CAP: u64 = 2_200;
 
 /// O corte da descrição de um comando na lista do Claude Code, em caracteres.
 const DESCRIPTION_CHAR_CAP: usize = 1_536;
 
-/// Em cada idioma, o texto que o modelo lê soma menos de 30.400 bytes. Não há
+/// Em cada idioma, o texto que o modelo lê soma menos de 26.000 bytes. Não há
 /// teto por arquivo: o que prende um texto de agente é o que ele diz, e a
 /// soma do idioma é que guarda o tamanho do todo.
 #[test]
@@ -61,9 +54,8 @@ fn every_text_exists_in_both_languages() {
     }
 }
 
-/// O texto do início da sessão — o mapa, com os princípios do condutor — tem
-/// até 4.840 bytes em cada idioma, medido no texto que o binário embute e
-/// grava no projeto.
+/// O mapa do início da sessão tem até 2.200 bytes em cada idioma, medido no
+/// texto que o binário embute e grava no projeto.
 #[test]
 fn the_session_start_text_fits_its_cap() {
     for text in [mustard_core::platform::i18n::Locale::PtBr, mustard_core::platform::i18n::Locale::EnUs] {

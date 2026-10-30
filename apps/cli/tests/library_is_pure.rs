@@ -15,7 +15,7 @@
 //! too, six ways, and every one of them is a lesson this file now encodes:
 //!
 //! 1. **Do not shim the tool you are watching for.** `rg` was in the shim list,
-//!    so `rg_on_path()` succeeded and `ensure_ripgrep` returned before doing
+//!    so `rg_on_path()` succeeded and `ripgrep_hint` returned before doing
 //!    anything. The pin disarmed the half it claimed to measure. Neither `rg`
 //!    nor `rtk` is shimmed here, so both installers engage and announce
 //!    themselves.
@@ -215,8 +215,8 @@ fn a_library_init_touches_nothing_outside_the_project() {
         foreign.join("\n")
     );
 
-    // 4. Neither installer may even ANNOUNCE itself. On Linux `install_ripgrep`
-    //    spawns nothing, so its only trace is what it prints — without this the
+    // 4. Neither gate may even ANNOUNCE itself. `ripgrep_hint` spawns
+    //    nothing but the probe, so its only trace is what it prints — without this the
     //    whole ripgrep half of the invariant would be unobservable here.
     for trace in ["ripgrep", "RTK", "Global settings", "Global env"] {
         assert!(

@@ -3,7 +3,6 @@
 //! Reads the host JSON from stdin. Malformed input always falls back to Claude.
 
 pub mod cli;
-pub mod preview;
 pub mod segment;
 pub(crate) mod theme;
 
@@ -11,7 +10,7 @@ use segment::{Segment, context_segment, git_segment, inert_segment, model_segmen
 use serde_json::Value;
 use std::io::Read;
 use std::path::PathBuf;
-use theme::{Theme, ThemeId, render_line};
+use theme::render_line;
 
 fn build_segments(data: &Value) -> Vec<Segment> {
     let cwd: PathBuf = data
@@ -46,16 +45,12 @@ fn build_segments(data: &Value) -> Vec<Segment> {
     segments
 }
 
-fn rows(theme: &Theme, segments: Vec<Segment>) -> Vec<String> {
-    let line = render_line(theme, &segments);
+fn rows(segments: Vec<Segment>) -> Vec<String> {
+    let line = render_line(&segments);
     if line.is_empty() { Vec::new() } else { vec![line] }
 }
 
-pub fn run(preview: bool) {
-    if preview {
-        preview::run();
-        return;
-    }
+pub fn run() {
     let mut input = String::new();
     if std::io::stdin().read_to_string(&mut input).is_err() {
         println!("Claude");
@@ -65,7 +60,7 @@ pub fn run(preview: bool) {
         Ok(data) => {
             // Keep recording the host measurements for the detailed panel.
             crate::commands::panel::observe_statusline(&data);
-            for line in rows(ThemeId::from_env().theme(), build_segments(&data)) {
+            for line in rows(build_segments(&data)) {
                 println!("{line}");
             }
         }
@@ -119,7 +114,7 @@ mod tests {
         project(&root, "pt-BR");
         seed_event(&root, "checkout", "state", json!({"phase":"running","branch":"feature/checkout"}));
         let segments = build_segments(&payload(&root));
-        let output = rows(ThemeId::Mustard.theme(), segments.clone());
+        let output = rows(segments.clone());
         assert_eq!(output.len(), 1);
         let shown = &output[0];
         for value in ["project","checkout", "em execução", "Sonnet 5.5", "contexto 7%","/mustard:mods"] {
@@ -139,28 +134,26 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("project");
         project(&root, "en-US");
-        let line = rows(ThemeId::Mustard.theme(), build_segments(&payload(&root))).join("");
+        let line = rows(build_segments(&payload(&root))).join("");
         for value in ["project", "feature/checkout", "context 7%", "Sonnet 5.5"] {
             assert!(line.contains(value), "{line}");
         }
     }
 
     #[test]
-    fn missing_context_is_omitted_and_every_theme_renders_one_row() {
+    fn missing_context_is_omitted_and_the_bar_renders_one_row() {
         let dir = tempfile::tempdir().unwrap();
         let data = json!({"cwd":dir.path(),"model":{"display_name":"Sonnet 5.5"}});
         let segments = build_segments(&data);
         assert!(!segments.iter().any(|segment| segment.kind == segment::SegmentKind::Context));
-        for theme in ThemeId::ALL {
-            let lines = rows(theme.theme(), segments.clone());
-            assert_eq!(lines.len(), 1);
-            assert!(!lines[0].contains('\n'));
-        }
+        let lines = rows(segments);
+        assert_eq!(lines.len(), 1);
+        assert!(!lines[0].contains('\n'));
     }
 
     #[test]
     fn an_empty_segment_list_creates_no_blank_row() {
-        assert!(rows(ThemeId::Mustard.theme(), Vec::new()).is_empty());
+        assert!(rows(Vec::new()).is_empty());
     }
 
     #[test]
@@ -171,7 +164,7 @@ mod tests {
         std::fs::create_dir_all(root.join(".claude")).unwrap();
         let copy = mustard_core::io::wave_prompt::slot_path(&root, "checkout", 0);
         assert!(mustard_core::platform::git::run(&root, &["worktree", "add", "--detach", copy.to_str().unwrap(), "HEAD"]).ok);
-        let line = rows(ThemeId::Mustard.theme(), build_segments(&payload(&copy))).join("");
+        let line = rows(build_segments(&payload(&copy))).join("");
         assert!(line.contains("project") && line.contains("cópia a") && line.contains("/mustard:mods"), "{line}");
         assert!(mustard_core::platform::git::run(&root, &["worktree", "remove", "--force", copy.to_str().unwrap()]).ok);
     }

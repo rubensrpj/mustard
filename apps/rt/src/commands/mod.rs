@@ -40,7 +40,6 @@ pub mod search;
 pub mod maint;
 pub mod map;
 pub mod panel;
-pub mod retired;
 pub mod review;
 pub mod scan;
 pub mod scan_claude;

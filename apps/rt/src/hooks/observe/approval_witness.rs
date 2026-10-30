@@ -10,7 +10,7 @@
 //!
 //! Cada gesto é um item de [`GESTURES`]: como a pergunta é reconhecida, a
 //! opção que dá o "sim" e o que fazer com a resposta. Acrescentar um gesto é
-//! somar um item. Hoje são três:
+//! somar um item. Hoje são dois:
 //!
 //! - **"Aprovar esta spec?"**, com "Aprovar" e "Ajustar". Com a spec em plano,
 //!   o "Aprovar" grava no `spec.ndjson` um `state` com a fase `approved`, o
@@ -24,14 +24,9 @@
 //!   palavras que o usuário entender e nunca é comparado: quem diz qual
 //!   mudança o clique decide é o código no cabeçalho da pergunta, que a
 //!   testemunha guarda ao lado da resposta.
-//! - **a confirmação do objetivo sugerido**, com o cabeçalho `MustardGoal` e
-//!   "Confirmar objetivo" e "Ajustar objetivo". O clique conta na pergunta
-//!   com o objetivo inteiro, ou na pergunta curta quando a última resposta
-//!   do assistente gravada antes do clique mostrou o objetivo inteiro. A
-//!   fala do mesmo turno da pergunta, que só viraria resposta no fim dele, é
-//!   lida da conversa e gravada como resposta antes do clique. O clique que
-//!   não confirmou é dito na hora, com o objetivo gravado, e só enquanto o
-//!   objetivo ainda não está confirmado.
+//!
+//! O objetivo não tem clique próprio: ele nasce de uma mensagem do usuário e
+//! é aprovado junto com o plano, no "Aprovar".
 //!
 //! ## A resposta de cada pergunta
 //!
@@ -98,7 +93,7 @@ use std::path::Path;
 
 use mustard_core::domain::model::contract::{AskAnswer, Check, Ctx, HookInput, Trigger, Verdict};
 use mustard_core::domain::spec_events::Refusal;
-use mustard_core::domain::spec_state::{PhaseWriter, SpecState};
+use mustard_core::domain::spec_state::PhaseWriter;
 use mustard_core::domain::text::{cut, CutAt};
 use mustard_core::io::spec_events::spec_root;
 use mustard_core::platform::error::Error;
@@ -106,10 +101,9 @@ use mustard_core::platform::i18n::{translate, Locale};
 use serde_json::{json, Map, Value};
 
 use crate::commands::flow::round::change_code_of;
-use crate::commands::spec_events::conversation::{record_answered_message, record_said_before_click, record_witnessed_message};
+use crate::commands::spec_events::conversation::{record_answered_message, record_witnessed_message};
 use crate::hooks::write::write_gate::say;
-use crate::shared::agent_said::last_said;
-use crate::shared::spec_state::{conversation_bound_spec, DiskSpecState};
+use crate::shared::spec_state::conversation_bound_spec;
 
 /// A testemunha dos gestos de aprovação, no `PostToolUse` da pergunta com
 /// opções.
@@ -120,7 +114,6 @@ const SLOT: &str = "{code}";
 
 /// Como a pergunta de um gesto é reconhecida.
 enum Keyed {
-    Goal,
     /// Pela frase do catálogo, que pode ter a vaga [`SLOT`]: o que a vaga
     /// traz é o que o gesto decide.
     Phrase(&'static str),
@@ -146,7 +139,6 @@ const GESTURES: &[Gesture] = &[
     Gesture { keyed: Keyed::Phrase("approval.question"), yes: "approval.option", decide: decide_approval },
     // "Aceitar/Recusar": a mudança que parte de um agente.
     Gesture { keyed: Keyed::Options("change.decline"), yes: "change.accept", decide: decide_change },
-    Gesture {keyed:Keyed::Goal,yes:"goal.confirm",decide:decide_goal},
 ];
 
 /// O que o usuário fez na pergunta de um gesto.
@@ -206,10 +198,6 @@ fn slot_of(template: &str, question: &str) -> Option<String> {
 /// ao assistente o que fazer.
 fn gesture_of(question: &str, offered: &[String], header: &str) -> Option<(&'static Gesture, String)> {
     GESTURES.iter().find_map(|gesture| match gesture.keyed {
-        Keyed::Goal => (header == "MustardGoal" && [Locale::PtBr,Locale::EnUs].into_iter().any(|lang| {
-            let (yes,no)=crate::commands::flow::goal::labels(lang);
-            offered.iter().any(|label|label==yes) && offered.iter().any(|label|label==no)
-        })).then(||(gesture,String::new())),
         Keyed::Phrase(key) => [Locale::PtBr, Locale::EnUs]
             .into_iter()
             .find_map(|lang| slot_of(translate(key, lang), question))
@@ -232,31 +220,7 @@ fn offers_both(offered: &[String], yes: &'static str, no: &'static str) -> bool 
 /// A opção é a do "sim" do gesto: o rótulo do catálogo, por inteiro, num dos
 /// idiomas.
 fn is_yes(gesture: &Gesture, label: &str) -> bool {
-    if matches!(gesture.keyed,Keyed::Goal) {return [Locale::PtBr,Locale::EnUs].into_iter().any(|lang|crate::commands::flow::goal::labels(lang).0==label.trim());}
     [Locale::PtBr, Locale::EnUs].into_iter().any(|lang| translate(gesture.yes, lang).trim() == label.trim())
-}
-
-/// A confirmação do objetivo: o clique gravado conta pela mesma regra que a
-/// retomada lê, e a testemunha diz na hora se o objetivo ficou confirmado. O
-/// clique em "Confirmar objetivo" que não confirmou é dito no próprio clique,
-/// com o motivo e o objetivo gravado: calado, o aviso só chegava no comando
-/// seguinte. Só quando o objetivo ainda não está confirmado: um clique a mais,
-/// com o objetivo já confirmado por um clique anterior, pelo texto do usuário
-/// ou pela aprovação da spec, não tem o que recusar. O objetivo lido é o da
-/// spec ligada à conversa, onde o clique foi gravado, e nunca o da branch.
-fn decide_goal(answer: &Answered<'_>) -> Option<String> {
-    answer.recorded?;
-    if !matches!(answer.choice, Choice::Yes(_)) {
-        return None;
-    }
-    let log = DiskSpecState::new(Path::new(answer.root)).log(&bound_spec(answer.root, answer.session)?)?;
-    if crate::commands::flow::goal::status(&log, answer.lang)["confirmed"] != json!(true) {
-        return crate::commands::flow::goal::refused_click(&log, answer.lang);
-    }
-    Some(match answer.lang {
-        Locale::PtBr => "Objetivo confirmado e gravado na spec. A retomada preserva esta escolha após /clear.".into(),
-        Locale::EnUs => "Goal confirmed and recorded in the spec. Resume preserves this choice after /clear.".into(),
-    })
 }
 
 /// Os rótulos que a pergunta `question` ofereceu, lidos do `tool_input`, que
@@ -482,9 +446,7 @@ fn menu(offered: &[String]) -> String {
 /// texto é só o que o usuário disse: a resposta (várias escolhas separadas
 /// por vírgula, ou o que ele digitou em "Outro") e a nota, cada uma numa
 /// linha. A pergunta é do assistente e fica na própria mensagem, nunca como
-/// resposta solta: a regra do objetivo lê a última resposta antes do clique,
-/// e a pergunta curta no meio tomaria o lugar da fala que mostrou o objetivo.
-/// Com `witness`, ela vai na testemunha, ao lado da opção clicada; sem, no
+/// resposta solta: cada autor fica com o que disse. Com `witness`, ela vai na testemunha, ao lado da opção clicada; sem, no
 /// campo `question`. Pergunta sem resposta não grava nada; o número da
 /// mensagem quando gravou.
 fn record_answer(
@@ -536,15 +498,6 @@ impl Check for ApprovalWitness {
                 continue;
             };
             let witness = clicked(&item.labels, &offered);
-            // O objetivo mostrado no mesmo turno da pergunta só viraria
-            // resposta no fim do turno: lida da conversa, a fala é gravada
-            // antes do clique, que a regra do objetivo compara com ela.
-            if matches!(gesture.keyed, Keyed::Goal)
-                && witness.is_some()
-                && let Some(transcript) = input.transcript_path()
-            {
-                record_said_before_click(Path::new(&root), session, &last_said(Path::new(transcript)));
-            }
             // O código da mudança fica ao lado da resposta: é por ele, e não
             // pela frase mostrada, que a rodada reconhece o "sim".
             let change = Some(slot.as_str()).filter(|code| !code.is_empty() && matches!(gesture.keyed, Keyed::Options(_)));
@@ -570,229 +523,14 @@ impl Check for ApprovalWitness {
 mod tests {
     use super::*;
     use crate::shared::context::session::bind_session_spec;
-    use mustard_core::domain::spec_state::State;
+    use crate::shared::spec_state::DiskSpecState;
+    use mustard_core::domain::spec_state::{SpecState, State};
     use mustard_core::io::spec_events as store;
     use mustard_core::ProjectConfig;
     use tempfile::{tempdir, TempDir};
 
     const SESSION: &str = "s-witness";
     const QUESTION: &str = "Aprovar esta spec?";
-
-    /// O objetivo sugerido de uma spec `x` ligada à sessão: a mensagem do
-    /// usuário que o originou não começa por ele, então só a confirmação
-    /// conta. Devolve a pasta e o número dessa mensagem.
-    fn suggested_goal() -> (TempDir, u64) {
-        suggested_goal_text(GOAL)
-    }
-
-    /// Como [`suggested_goal`], com o objetivo que o teste quiser gravar: é
-    /// por ele que se prova o que a comparação do texto perdoa.
-    fn suggested_goal_text(goal: &str) -> (TempDir, u64) {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        crate::commands::spec_events::write::record_open(root, "x", "fix/x", "dev").unwrap();
-        bind_session_spec(&root.to_string_lossy(), SESSION, "x");
-        let said = crate::shared::spec_state::seed_event(root, "x", "message", json!({"author": "user", "text": "sim"}));
-        crate::shared::spec_state::seed_event(
-            root,
-            "x",
-            "context",
-            json!({"text": goal, "title": "Leitura", "agent": "Conferir a leitura.", "origin": said}),
-        );
-        (dir, said)
-    }
-
-    const GOAL: &str = "Reduzir o custo da leitura.";
-    const SHORT_GOAL_QUESTION: &str = "Confirma o objetivo gravado na spec?";
-
-    /// A pergunta curta do objetivo, com o cabeçalho e as duas opções.
-    fn short_goal_question(answer: &str) -> HookInput {
-        ask_with(SHORT_GOAL_QUESTION, "MustardGoal", &["Confirmar objetivo", "Ajustar objetivo"], json!(answer))
-    }
-
-    fn assistant_said(root: &Path, text: &str, reply_to: u64) -> u64 {
-        crate::shared::spec_state::seed_event(root, "x", "response", json!({"author": "assistant", "text": text, "reply_to": reply_to}))
-    }
-
-    fn goal_status(root: &Path, lang: Locale) -> Value {
-        crate::commands::flow::goal::status(&DiskSpecState::new(root).log("x").unwrap(), lang)
-    }
-
-    #[test]
-    fn goal_approval_by_the_full_question_survives_a_new_session_without_approving_the_spec() {
-        if ambient_override() {
-            return;
-        }
-        let (dir, _) = suggested_goal();
-        let root = dir.path();
-        let disk = DiskSpecState::new(root);
-        let question = crate::commands::flow::goal::question(&disk.log("x").unwrap(), Locale::PtBr).unwrap();
-        let input = ask_with(&question, "MustardGoal", &["Confirmar objetivo", "Ajustar objetivo"], json!("Confirmar objetivo"));
-        assert!(matches!(witness(root, &input), Verdict::Inject { .. }));
-        bind_session_spec(&root.to_string_lossy(), "after-clear", "x");
-        assert_eq!(goal_status(root, Locale::PtBr)["confirmed"], true);
-        assert_ne!(State::from_log(&disk.log("x").unwrap()).phase, Some("approved"));
-    }
-
-    /// A pergunta curta conta quando a última resposta do assistente antes
-    /// dela mostrou o objetivo inteiro, ainda que com outros espaços e
-    /// quebras de linha.
-    #[test]
-    fn goal_approval_counts_a_short_question_after_the_last_response_shows_the_goal() {
-        if ambient_override() {
-            return;
-        }
-        let (dir, said) = suggested_goal();
-        let root = dir.path();
-        assistant_said(root, "O objetivo é:\n\n  Reduzir o custo\n   da leitura.\n\nConfirma?", said);
-        assert!(matches!(witness(root, &short_goal_question("Confirmar objetivo")), Verdict::Inject { .. }));
-        let status = goal_status(root, Locale::PtBr);
-        assert_eq!(status["confirmed"], true, "{status}");
-        assert_eq!(status["source"], "native-question-witness", "{status}");
-        assert!(status.get("hint").is_none(), "{status}");
-    }
-
-    /// Sem o objetivo na última resposta antes da pergunta curta, o clique não
-    /// confirma nada, mesmo com o objetivo numa resposta mais antiga: a
-    /// testemunha diz isso no clique, e a dica da retomada, nas duas línguas,
-    /// diz como perguntar curto.
-    #[test]
-    fn goal_approval_does_not_count_a_short_question_when_the_last_response_lacks_the_goal() {
-        if ambient_override() {
-            return;
-        }
-        let (dir, said) = suggested_goal();
-        let root = dir.path();
-        assistant_said(root, &format!("O objetivo é: {GOAL}"), said);
-        assistant_said(root, "Vou confirmar com você.", said);
-        assert!(matches!(witness(root, &short_goal_question("Confirmar objetivo")), Verdict::Inject { .. }));
-        let status = goal_status(root, Locale::PtBr);
-        assert_eq!(status["confirmed"], false, "{status}");
-        assert_eq!(status["question"], format!("O objetivo é: {GOAL}\nConfirma este objetivo?"), "{status}");
-        let english = goal_status(root, Locale::EnUs);
-        for hint in [&status["hint"], &english["hint"]] {
-            let hint = hint.as_str().expect("the hint is text");
-            assert!(hint.contains("MustardGoal"), "{hint}");
-        }
-        assert!(status["hint"].as_str().unwrap().contains("objetivo inteiro"), "{status}");
-        assert!(english["hint"].as_str().unwrap().contains("whole goal"), "{english}");
-        // O clique que veio e não valeu é dito pelo nome, com o número da
-        // mensagem: a pergunta repetida sem motivo fazia o usuário clicar duas
-        // vezes no mesmo botão (campo, 21/10/2026).
-        assert_eq!(status["reason"], "goal-text-differs", "{status}");
-        assert!(status["clicked"].is_u64(), "{status}");
-        // E o objetivo como está gravado vai junto: foi mostrando outro texto
-        // que o clique se perdeu, e sem ele quem lê não sabe o que mostrar.
-        assert_eq!(status["goal_text"], json!(GOAL), "{status}");
-        for hint in [&status["hint"], &english["hint"]] {
-            let hint = hint.as_str().expect("the hint is text");
-            assert!(hint.contains("MustardGoal"), "a dica do motivo não apaga a de como perguntar: {hint}");
-        }
-    }
-
-    /// O objetivo gravado sem acento e a fala acentuada são o mesmo objetivo:
-    /// o clique confirma.
-    ///
-    /// Em campo (21/10/2026) a comparação era letra por letra. O objetivo foi
-    /// gravado sem acento — e a gravação aceita —, o assistente mostrou a
-    /// versão acentuada, como o estilo de resposta do projeto manda, e o
-    /// clique do usuário em "Confirmar objetivo" se perdeu calado: a retomada
-    /// seguiu pedindo a confirmação, e ele clicou de novo.
-    #[test]
-    fn goal_approval_counts_when_only_the_accents_and_the_case_differ() {
-        if ambient_override() {
-            return;
-        }
-        let recorded = "Corrigir a recusa que mede a frase e nao o titulo.";
-        let (dir, said) = suggested_goal_text(recorded);
-        let root = dir.path();
-        // A fala que o estilo do projeto manda escrever, com acento e com a
-        // maiúscula no lugar.
-        assistant_said(root, "Corrigir a recusa que mede a frase e não o título.", said);
-        let Verdict::Inject { context } = witness(root, &short_goal_question("Confirmar objetivo"))
-        else {
-            panic!("o clique confirma, e a testemunha diz que confirmou");
-        };
-        assert!(context.contains("confirmado"), "{context}");
-        let status = goal_status(root, Locale::PtBr);
-        assert_eq!(status["confirmed"], true, "{status}");
-        assert_eq!(status["source"], "native-question-witness", "{status}");
-        assert!(status["reason"].is_null(), "o que confirmou não tem motivo de recusa: {status}");
-    }
-
-    /// A conversa do Claude Code em `folder`: a mensagem do usuário, a fala
-    /// `shown` do assistente e, na mesma vez dele, o uso da pergunta.
-    fn transcript_showing(folder: &Path, shown: &str) -> std::path::PathBuf {
-        let file = folder.join("session.jsonl");
-        let lines = [
-            json!({"type": "user", "message": {"role": "user", "content": "ok, use esse objetivo"}}),
-            json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": shown}]}}),
-            json!({"type": "assistant", "message": {"role": "assistant", "content": [
-                {"type": "tool_use", "id": "t1", "name": "AskUserQuestion", "input": {}}
-            ]}}),
-        ];
-        std::fs::write(&file, lines.map(|line| line.to_string()).join("\n") + "\n").unwrap();
-        file
-    }
-
-    /// [`short_goal_question`] respondida com "Confirmar objetivo", com a
-    /// conversa em `transcript`, como o harness entrega.
-    fn short_goal_click_in(transcript: &Path) -> HookInput {
-        let mut input = short_goal_question("Confirmar objetivo");
-        input.raw["transcript_path"] = json!(transcript.to_string_lossy());
-        input
-    }
-
-    /// Os textos das respostas gravadas na spec `x`, em ordem.
-    fn responses(root: &Path) -> Vec<String> {
-        let log = DiskSpecState::new(root).log("x").unwrap();
-        log.visible().into_iter().filter(|e| e.event_type == "response").filter_map(|e| e.str_field("text").map(str::to_string)).collect()
-    }
-
-    /// O objetivo mostrado no mesmo turno da pergunta curta ainda não virou
-    /// resposta na hora do clique: lido da conversa, ele é gravado antes da
-    /// testemunha, e o clique conta. Um segundo clique não grava a fala de
-    /// novo.
-    #[test]
-    fn goal_approval_reads_the_goal_shown_in_the_same_turn_from_the_transcript() {
-        if ambient_override() {
-            return;
-        }
-        let (dir, said) = suggested_goal();
-        let root = dir.path();
-        assistant_said(root, "Vou confirmar com você.", said);
-        let shown = format!("O objetivo é:\n\n{GOAL}\n\nConfirma?");
-        let notes = tempdir().unwrap();
-        let input = short_goal_click_in(&transcript_showing(notes.path(), &shown));
-        assert!(matches!(witness(root, &input), Verdict::Inject { .. }));
-        let status = goal_status(root, Locale::PtBr);
-        assert_eq!(status["confirmed"], true, "{status}");
-        assert_eq!(responses(root), ["Vou confirmar com você.".to_string(), shown.clone()]);
-        witness(root, &input);
-        assert_eq!(responses(root), ["Vou confirmar com você.".to_string(), shown]);
-    }
-
-    /// A resposta do fim do turno que repete a fala gravada antes do clique,
-    /// só com o clique depois dela, não é gravada de novo; com uma mensagem do
-    /// usuário sem testemunha depois dela, é.
-    #[test]
-    fn goal_approval_end_of_turn_does_not_repeat_the_speech_recorded_before_the_click() {
-        if ambient_override() {
-            return;
-        }
-        let (dir, _) = suggested_goal();
-        let root = dir.path();
-        let shown = format!("O objetivo é: {GOAL}");
-        let notes = tempdir().unwrap();
-        witness(root, &short_goal_click_in(&transcript_showing(notes.path(), &shown)));
-        assert_eq!(responses(root), std::slice::from_ref(&shown));
-        let end_of_turn = format!("O objetivo é:\n{GOAL}\n");
-        assert_eq!(crate::commands::spec_events::conversation::record_response(root, Some(SESSION), &end_of_turn), None);
-        assert_eq!(responses(root), std::slice::from_ref(&shown));
-        crate::commands::spec_events::conversation::record_message(root, Some(SESSION), "e agora?");
-        assert!(crate::commands::spec_events::conversation::record_response(root, Some(SESSION), &end_of_turn).is_some());
-        assert_eq!(responses(root).len(), 2);
-    }
 
     /// Uma variável `MUSTARD_ACTIVE_SPEC` herdada responde antes da sessão.
     fn ambient_override() -> bool {
@@ -922,7 +660,7 @@ mod tests {
     #[test]
     fn the_gestures_are_a_list_with_the_spec_approval_and_the_agent_change() {
         let yeses: Vec<&str> = GESTURES.iter().map(|g| g.yes).collect();
-        assert_eq!(yeses, ["approval.option", "change.accept", "goal.confirm"]);
+        assert_eq!(yeses, ["approval.option", "change.accept"]);
 
         let (approval, slot) = gesture_of("Approve this spec?", &[], "").expect("the approval, in English");
         assert!(matches!(approval.keyed, Keyed::Phrase("approval.question")));

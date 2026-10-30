@@ -1,6 +1,6 @@
 ---
-description: Use when the user runs /mustard:pr or asks to open a pull request, review a colleague's, or merge one.
-argument-hint: <open|review|merge> [<pr-number>] [--confirm]
+description: Use when the user runs /mustard:pr or asks to open a pull request or merge one.
+argument-hint: <open|merge> [<pr-number>] [--confirm]
 disable-model-invocation: true
 ---
 # /mustard:pr — the pull request door
@@ -13,12 +13,6 @@ Relay each answer in the response style. The PR body is not yours to write. The 
 2. Record the summary for whoever reviews, in two or three sentences: `mustard-rt run write pr_summary --spec {spec} --json '{"text":"…"}'`. Every number in it is measured, and what is still open is named.
 3. Run `mustard-rt run pr-open --base <base> --head <branch> --spec {spec}`. An existing pull request only gets its body rewritten. Relay `checks.text`: the provider's pipeline right after.
 4. It publishes: it does not judge and does not gate. A red suite is reported, never investigated here. A push refused by the repository's own tooling is reported, not routed around.
-
-## review
-
-1. `mustard-rt run pr-review` lists the open pull requests; `--pr <n>` prints the brief of one.
-2. Review it with the `mustard-review` agent, from that brief: it returns its text to you and records nothing.
-3. Relay the outcome to the user.
 
 ## merge — only when the user asks
 

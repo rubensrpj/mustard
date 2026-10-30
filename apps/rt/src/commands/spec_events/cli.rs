@@ -137,13 +137,23 @@ pub enum SpecEventsCmd {
     /// those lessons into one; `{"targets":[4],"reason":"…"}`, with no
     /// `class` and no other field, retires lesson 4. The answer to a survey
     /// point goes through `answer` instead, which records the item and
-    /// closes the point in one call.
+    /// closes the point in one call. Long text goes raw, never escaped into
+    /// JSON: `--text -` or `--agent -` reads that field from standard input,
+    /// by heredoc, joined to the other fields of `--json`. Many events go in
+    /// one call with `--batch`: one JSON line per item on standard input,
+    /// `{"type":"task", …fields}`, each checked and written as a write of its
+    /// own, in order, so the checks of a line see the lines the batch already
+    /// wrote. A line cites an
+    /// earlier line of the batch by its `label` in a reference field such as
+    /// `depends_on`. A refused line writes nothing, and neither does a line
+    /// citing one. The answer is one short line per item: the code written,
+    /// or the `reason` and the `hint`.
     #[command(display_order = 9, after_help = fields_of_each_type())]
     Write {
         /// The event type, e.g. `rule`, `decision`, `wave`, `remove` or
-        /// `lesson`.
-        #[arg(value_name = "TYPE")]
-        event_type: String,
+        /// `lesson`. Left out with `--batch`, where each line says its own.
+        #[arg(value_name = "TYPE", required_unless_present = "batch", conflicts_with = "batch")]
+        event_type: Option<String>,
         /// The spec whose file receives the event. Required for every type
         /// but `lesson`, which takes it, when given, as the spec the lesson
         /// was found in, and the project page's `publish`, which without it
@@ -156,9 +166,26 @@ pub enum SpecEventsCmd {
         /// sets `v`, `id`, `code`, `at` and `search`; a `code` sent here is
         /// refused. An item of a type that needs `origin` and comes without
         /// it takes the number of the user's latest message; with no user
-        /// message in the spec, the missing field is refused.
+        /// message in the spec, the missing field is refused. A `request`, a
+        /// `rule`, a `decision` and the closing of a user's survey point say
+        /// the user decided: they name the user's message, and without it are
+        /// refused.
         #[arg(long, default_value = "{}")]
         json: String,
+        /// The `text` field, raw: `-` reads the whole standard input as
+        /// written, titles, lists and backticks included; another value goes
+        /// in as given. The field must not come in `--json` too.
+        #[arg(long, value_name = "TEXT")]
+        text: Option<String>,
+        /// The `agent` field, raw, as `--text` takes it. Only one of the two
+        /// reads standard input.
+        #[arg(long, value_name = "AGENT")]
+        agent: Option<String>,
+        /// Write many events: one JSON object per line on standard input, with
+        /// the event type in `type`. The spec comes from `--spec`, as in a
+        /// single write.
+        #[arg(long, conflicts_with_all = ["json", "text", "agent"])]
+        batch: bool,
         /// Kept only so older calls still run: no write prepares a copy of
         /// the page anymore, and the answer says to publish explicitly with
         /// `/mustard:pages`. The write itself is the same with or without it.
@@ -211,16 +238,21 @@ pub enum SpecEventsCmd {
 /// tabela que a conferência da gravação usa, então a ajuda nunca diverge do
 /// que a gravação recusa. Os obrigatórios vêm primeiro, com o `origin` nos
 /// tipos que o assistente grava a partir da conversa, e os que podem faltar
-/// vêm entre parênteses.
+/// vêm entre parênteses. O tipo que a gravação não aceita mais fica de fora.
 fn fields_of_each_type() -> String {
     let mut help = String::from(
         "Fields of each type, the required ones first and the optional ones in parentheses. Every \
          type also takes `author`, `label` and `replaces`, and `text` and `keys` where not listed:",
     );
-    for spec in TYPES {
+    for spec in TYPES.iter().filter(|spec| written(spec)) {
         help.push_str(&fields_line(spec));
     }
     help
+}
+
+/// O tipo `spec` ainda é aceito na gravação.
+fn written(spec: &TypeSpec) -> bool {
+    !spec_events::write::NOT_WRITTEN.contains(&spec.name)
 }
 
 /// A linha de um tipo no fim da ajuda: `\n  <tipo>: ` e os obrigatórios,
@@ -241,6 +273,25 @@ fn fields_line(spec: &TypeSpec) -> String {
     line
 }
 
+/// O tipo que `run write` grava, lido das palavras depois de `write` como o
+/// clap as lê, em qualquer posição entre as opções: a primeira palavra fora
+/// delas, pulando o valor de cada opção que leva um. `None` sem tipo, como no
+/// lote, em que cada linha diz o seu.
+#[must_use]
+pub fn written_type<S: AsRef<str>>(rest: &[S]) -> Option<&str> {
+    let mut words = rest.iter().map(AsRef::as_ref);
+    while let Some(word) = words.next() {
+        match word {
+            "--spec" | "--json" | "--text" | "--agent" | "--root" => {
+                words.next();
+            }
+            flag if flag.starts_with('-') => {}
+            word => return Some(word),
+        }
+    }
+    None
+}
+
 /// A ajuda de `run write <TYPE> --help` (`args` é a linha de comando
 /// inteira) com um tipo que existe: o uso e a linha dos campos só desse
 /// tipo, da mesma tabela da ajuda inteira. O agente que só queria o formato
@@ -255,23 +306,9 @@ pub fn write_help_for_type(args: &[String]) -> Option<String> {
     if !rest.iter().any(|arg| arg == "--help" || arg == "-h") {
         return None;
     }
-    let mut words = rest.iter();
-    let mut named = None;
-    while let Some(arg) = words.next() {
-        match arg.as_str() {
-            "--spec" | "--json" | "--root" => {
-                words.next();
-            }
-            flag if flag.starts_with('-') => {}
-            word => {
-                named = Some(word);
-                break;
-            }
-        }
-    }
-    let spec = type_spec(named?)?;
+    let spec = type_spec(written_type(rest)?).filter(|spec| written(spec))?;
     Some(format!(
-        "Usage: mustard-rt run write {name} [--spec <SPEC>] [--json <JSON>] [--root <ROOT>]\n\n\
+        "Usage: mustard-rt run write {name} [--spec <SPEC>] [--json <JSON>] [--text <TEXT>] [--agent <AGENT>] [--root <ROOT>]\n\n\
          Fields of `{name}`, the required ones first and the optional ones in parentheses. It also \
          takes `author`, `label` and `replaces`, and `text` and `keys` when not listed:{line}\n\n\
          `mustard-rt run write --help` shows the whole help.\n",
@@ -285,7 +322,8 @@ pub fn write_help_for_type(args: &[String]) -> Option<String> {
 /// `find` é texto de quem procura, e não bloco.
 fn asked_block(cmd: &SpecEventsCmd) -> Option<&str> {
     match cmd {
-        SpecEventsCmd::Read { block, .. } | SpecEventsCmd::Write { event_type: block, .. } => Some(block),
+        SpecEventsCmd::Read { block, .. } => Some(block),
+        SpecEventsCmd::Write { event_type, .. } => event_type.as_deref(),
         SpecEventsCmd::Find { .. } | SpecEventsCmd::Index { .. } => None,
     }
 }
@@ -299,15 +337,28 @@ pub fn dispatch(cmd: SpecEventsCmd) {
         SpecEventsCmd::Read { block, spec, term, full, all, session, root } => {
             spec_events::read::run(&spec_events::read::ReadOpts { root, spec, block, term, session }, full, all);
         }
-        SpecEventsCmd::Write { event_type, spec, json, copy, root } => match crate::shared::json_arg::resolve(json) {
-            Ok(json) => spec_events::write_door::run(&spec_events::write::WriteOpts { root, spec, event_type, json }, copy),
-            // O arquivo do `--json` que não se lê recusa sem gravar nada.
-            Err(detail) => {
-                let refused = spec_events::refused(&mustard_core::domain::spec_events::Refusal::Io { detail }, spec_events::project(&root).lang);
-                println!("{}", serde_json::to_string_pretty(&refused).unwrap_or_else(|_| "{}".into()));
-                std::process::exit(1);
+        SpecEventsCmd::Write { batch: true, spec, root, .. } => spec_events::write_door::run_batch(&root, spec.as_deref()),
+        SpecEventsCmd::Write { event_type, spec, json, text, agent, copy, root, .. } => {
+            let lang = spec_events::project(&root).lang;
+            // O arquivo do `--json` que não se lê recusa sem gravar nada, e
+            // os campos crus entram nele antes da gravação.
+            let joined = crate::shared::json_arg::resolve(json)
+                .map_err(|detail| spec_events::refused(&mustard_core::domain::spec_events::Refusal::Io { detail }, lang))
+                .and_then(|json| {
+                    let stdin = || std::io::read_to_string(std::io::stdin());
+                    spec_events::write::with_raw_fields(json, [("text", text), ("agent", agent)], stdin).map_err(|refusal| refusal.to_value(lang))
+                });
+            match joined {
+                Ok(json) => {
+                    let event_type = event_type.unwrap_or_default();
+                    spec_events::write_door::run(&spec_events::write::WriteOpts { root, spec, event_type, json }, copy);
+                }
+                Err(refused) => {
+                    println!("{}", serde_json::to_string_pretty(&refused).unwrap_or_else(|_| "{}".into()));
+                    std::process::exit(1);
+                }
             }
-        },
+        }
         SpecEventsCmd::Find { term, types, spec, root } => {
             spec_events::find::run(&spec_events::find::FindOpts { root, spec, term, types });
         }
@@ -372,8 +423,10 @@ mod tests {
         let write = tree.find_subcommand_mut("write").expect("the write command is registered");
         let help = write.render_long_help().to_string();
         for spec in TYPES {
-            assert!(help.contains(&format!("\n  {}: ", spec.name)), "the help has no line for {}:\n{help}", spec.name);
+            let listed = help.contains(&format!("\n  {}: ", spec.name));
+            assert_eq!(listed, written(spec), "the line of {} in the help:\n{help}", spec.name);
         }
+        assert!(!help.contains("\n  concern: "), "a type the write refuses is not in the help:\n{help}");
         assert!(help.contains("\n  decision: text, keys, why, origin (applies_to, waves, every_wave, no_code, title, agent)"), "{help}");
         assert!(help.contains("\n  message: text (witness, during, question)"), "{help}");
         assert!(
@@ -423,7 +476,7 @@ mod tests {
         else {
             panic!("not the write command");
         };
-        let refused = seed_at(&WriteOpts { root, spec, event_type, json });
+        let refused = seed_at(&WriteOpts { root, spec, event_type: event_type.unwrap_or_default(), json });
         assert_eq!(refused["reason"], json!("missing-field"), "{refused}");
         let hint = refused["hint"].as_str().unwrap_or_default();
         assert!(hint.contains("keys, why"), "{refused}");

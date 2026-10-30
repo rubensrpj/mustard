@@ -9,7 +9,7 @@ omitClaudeMd: true
 
 ## Objetivo
 
-Só implemente a onda, uma tarefa por vez: a próxima vem em `next_task` no passo que termina a atual; não leia adiante. Leia "O que obedecer" numa chamada só, pelo comando de "Como ler cada item"; nunca python/jq/grep da spec/cópia. Leitura ausente: `leftovers`. Item novo leva `title`, `text` e `agent`; critério: só `title`.
+Só implemente a onda, uma tarefa por vez: a próxima vem em `next_task` no passo que termina a atual; não leia adiante. Leia "O que obedecer" numa chamada só, pelo comando de "Como ler cada item"; nunca python/jq/grep da spec, da cópia ou do código. Código se lê pela ferramenta de leitura, com `offset`/`limit`, e muda só pela ferramenta de edição, várias edições numa resposta. Leitura ausente: `leftovers`. Item novo leva `title`, `text` e `agent`; critério: só `title`.
 
 ## Orientação sobre ferramentas
 
@@ -21,8 +21,8 @@ Só implemente a onda, uma tarefa por vez: a próxima vem em `next_task` no pass
 - Rode cada comando de dentro da cópia. Parta da evidência do pedido; as regras obrigatórias valem mesmo com `omitClaudeMd`.
 - Use os comandos do mapa quando a localização ou evidência atual faltar:
   - `mustard-rt run search --shell-output --intent "<pergunta específica>" --purpose implement -- rg -n "<padrão>" .`: trechos. Busca literal: `--purpose locate`. Não repita a spec na intenção. Em Bash nativo, a descrição `mustard:implement: <pergunta>` leva a finalidade ao hook.
-  - `run map summary --file <arquivo>`: antes de abrir arquivo. `run map slice --file <arquivo> --name <nome>`: só a declaração. `run map users --name <nome>`: antes de mudá-la. `run map tests --file <arquivo>`: testes candidatos. `run map history --name <nome>`: o histórico.
-- Na busca, preserve as opções originais, sem Jev por busca literal. Scan não comprova cobertura nem ausência de uso. Leia a faixa pertinente e expanda se faltar contexto; sem coordenadas, `Read` com `offset`/`limit`. Releia quando o conteúdo mudou ou a prova exigir.
+  - `mustard-rt run map summary --file <arquivo>`: antes de abrir arquivo. `run map slice --file <arquivo> --name <nome>`: só a declaração. `run map users --name <nome>`: antes de mudá-la. `run map tests --file <arquivo>`: testes candidatos. `run map history --name <nome>`: o histórico.
+- Na busca, preserve as opções originais, sem Jev por busca literal. Scan não comprova cobertura nem ausência de uso. Leia a faixa pertinente e expanda se faltar contexto. Releia quando o conteúdo mudou ou a prova exigir.
 - Leituras que não dependem uma da outra saem juntas: várias chamadas numa resposta (Read, Grep, Glob, `mustard-rt run read` ou o terminal), ou vários trechos num comando só do terminal; reduza idas ao modelo.
 - Compile e rode só a prova da tarefa e dos critérios da onda; sem suíte, lint ou corte. A rodada junta e comita sem compilar nem rodar prova: a compilação, a suíte inteira, o lint, as provas dos critérios e a prova de ponta a ponta ficam no fechamento.
 - Nunca mande compilação ou teste para segundo plano, nem espere outro processo em laço: cada um leva `timeout: 600000`, e acima de dez minutos: um pacote por comando.
@@ -40,7 +40,7 @@ Estado externo: só leitura autorizada; resumo é histórico. Recibos: `run pane
 Grave a entrega com `run write delivered --json '<a linha>'`, mesmos --root/--spec: obrigatória.
 {"wave":1,"text":"<a entrega>","files":["caminho/do/arquivo.rs"],"commit":"<o resumo do commit>"}
 
-- `text`: no idioma do texto, até 8.000 caracteres: uma frase por arquivo; teste de cada critério e o comando que o rodou; decisões fora do pedido; pendências e motivos.
+- `text`: no idioma do texto, até 2.000 caracteres: uma frase por arquivo; teste de cada critério e o comando que o rodou; decisões fora do pedido; pendências e motivos.
 - `commit`: o que a onda fez, sem código, até 45 caracteres (60 no título).
 - Teste de critério com nome novo: `"proofs":[{"criterion":"<código>","proof":"<o comando>"}]`.
 - Item combinado: `"agreed":[{"item":"<código>","met":true}]`, um por item. Sem tarefa da onda para realizá-lo, `met:true` confirma que a mudança preserva a regra. Quebra ou tarefa não feita: `{"item":"<código>","met":false,"text":"<o que falta>"}`; vira tarefa no backlog, salvo cobertura pendente existente.
