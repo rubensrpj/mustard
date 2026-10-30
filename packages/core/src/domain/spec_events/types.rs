@@ -462,10 +462,12 @@ const RUN_RESULTS: &[&str] = &["pass", "fail"];
 /// critério já gravado sem o campo continua válido na leitura.
 const CRITERION_FORMS: &[&str] =
     &["ubiquitous", "event_driven", "state_driven", "optional_feature", "unwanted_behavior"];
-/// O que a tarefa de criar skill fez com a skill: criou, atualizou ou
-/// descartou, porque o teste com e sem ela não mudou o resultado; ou a
-/// saída que o binário grava quando a skill deixa de servir.
-const SKILL_ACTIONS: &[&str] = &["created", "updated", "discarded", "retired"];
+/// O que a tarefa de criar ou de atualizar skill fez com a skill: criou,
+/// atualizou, manteve — a skill já estava em dia e a versão nova não traz
+/// ganho — ou descartou, porque o teste com e sem ela não mudou o resultado;
+/// ou a saída e a volta que o binário grava quando a skill deixa de servir e
+/// quando ela volta.
+const SKILL_ACTIONS: &[&str] = &["created", "updated", "kept", "discarded", "retired", "restored"];
 const ROLES: &[&str] = &["wave", "review", "wave-review"];
 const VERDICTS: &[&str] = &["approved", "rejected"];
 /// O resultado de uma marca da máquina numa onda: a reprovação, que põe a

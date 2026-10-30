@@ -28,7 +28,9 @@ pub const RETIRED: &str = "retired";
 /// uma tarefa antes de sair.
 pub const IDLE_CANDIDACIES: u64 = 30;
 
-/// Quantos descartes seguidos, depois de criada ou atualizada, tiram a skill.
+/// Quantos descartes seguidos do teste da skill inteira, com e sem ela,
+/// depois de criada, tiram a skill. A resposta da tarefa de atualizá-la não
+/// entra na conta: ela testa a versão nova, e não a skill.
 pub const DISCARDS_IN_ROW: u64 = 2;
 
 /// Uma skill que o Mustard criou.
@@ -66,6 +68,12 @@ pub struct MustardSkill {
     /// atualização.
     #[serde(default)]
     pub discards_in_row: u64,
+    /// Quantos desses descartes vieram do teste da skill inteira, com e sem
+    /// ela. O que respondeu à tarefa de atualizá-la não entra: testou a versão
+    /// nova, e não a skill. O registro de antes desta conta traz zero, porque
+    /// os descartes dele vieram da atualização.
+    #[serde(default)]
+    pub whole_discards: u64,
     /// A tarefa de atualizá-la, enquanto espera.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub update_task: Option<SkillTask>,
@@ -74,17 +82,35 @@ pub struct MustardSkill {
 impl MustardSkill {
     /// O motivo de a skill sair agora, quando sai: candidata em
     /// [`IDLE_CANDIDACIES`] envios sem nunca ir com uma tarefa (`idle`), ou
-    /// [`DISCARDS_IN_ROW`] descartes seguidos depois de criada (`discarded`).
-    /// A skill que nunca teve pasta, ou que já saiu, não sai de novo.
+    /// [`DISCARDS_IN_ROW`] descartes seguidos do teste da skill inteira
+    /// depois de criada (`discarded`). A skill em dia, que a tarefa de
+    /// atualizá-la manteve, não soma descarte. A skill que nunca teve pasta,
+    /// ou que já saiu, não sai de novo.
     #[must_use]
     pub fn retire_reason(&self) -> Option<&'static str> {
         if !self.made || self.state == RETIRED {
             return None;
         }
-        if self.discards_in_row >= DISCARDS_IN_ROW {
+        if self.whole_discards >= DISCARDS_IN_ROW {
             return Some("discarded");
         }
-        (self.candidacies >= IDLE_CANDIDACIES && self.deliveries == 0).then_some("idle")
+        self.idle().then_some("idle")
+    }
+
+    /// `true` quando a skill saiu só por descartes que respondiam à tarefa de
+    /// atualizá-la, e não pelo teste da skill inteira nem por parada: ela
+    /// merece voltar. Vale também para o registro de antes da conta dos
+    /// descartes da skill inteira ([`Self::whole_discards`]), cujos descartes
+    /// vieram da atualização.
+    #[must_use]
+    pub fn retired_by_updates(&self) -> bool {
+        self.made && self.state == RETIRED && self.discards_in_row >= DISCARDS_IN_ROW && self.whole_discards < DISCARDS_IN_ROW && !self.idle()
+    }
+
+    /// `true` quando a skill foi candidata em [`IDLE_CANDIDACIES`] envios sem
+    /// nunca ir com uma tarefa.
+    fn idle(&self) -> bool {
+        self.candidacies >= IDLE_CANDIDACIES && self.deliveries == 0
     }
 }
 
@@ -104,9 +130,11 @@ impl Registry {
     /// Grava o evento `skill` de ação `action` da skill `name`, feito na hora
     /// `at`, com o ganho ou o motivo `text` e os arquivos `files`, na spec
     /// `spec` e na onda `wave`, motivado pelos grupos `groups`. A criação e a
-    /// atualização a deixam ativa, com o ganho, e zeram os descartes; o
-    /// descarte conta mais um seguido; a saída a deixa retirada. Toda gravação
-    /// encerra a tarefa de atualizá-la.
+    /// atualização a deixam ativa, com o ganho, e zeram os descartes; a skill
+    /// em dia (`kept`) segue ativa e também os zera; a volta (`restored`) a
+    /// deixa ativa de novo. O descarte conta mais um seguido, e só o que não
+    /// responde à tarefa de atualizá-la conta para tirar a skill; a saída a
+    /// deixa retirada. Toda gravação encerra a tarefa de atualizá-la.
     pub fn record(&mut self, name: &str, action: &str, at: &str, text: &str, files: &[String], (spec, wave): (&str, Option<u64>), groups: &[String]) {
         let skill = self.skills.entry(name.to_string()).or_insert_with(|| MustardSkill { spec: spec.to_string(), wave, ..MustardSkill::default() });
         for group in groups {
@@ -114,7 +142,7 @@ impl Registry {
                 skill.groups.push(group.clone());
             }
         }
-        skill.update_task = None;
+        let answers_update = skill.update_task.take().is_some();
         match action {
             "created" | "updated" => {
                 if action == "created" || skill.spec.is_empty() {
@@ -124,6 +152,7 @@ impl Registry {
                 skill.since = at.to_string();
                 skill.made = true;
                 skill.discards_in_row = 0;
+                skill.whole_discards = 0;
                 if !text.trim().is_empty() {
                     skill.gain = Some(text.trim().to_string());
                 }
@@ -131,10 +160,26 @@ impl Registry {
                     skill.files = files.to_vec();
                 }
             }
+            "kept" => {
+                if skill.state != RETIRED {
+                    skill.state = ACTIVE.to_string();
+                }
+                skill.discards_in_row = 0;
+                skill.whole_discards = 0;
+            }
+            "restored" => {
+                skill.state = ACTIVE.to_string();
+                skill.since = at.to_string();
+                skill.discards_in_row = 0;
+                skill.whole_discards = 0;
+            }
             "discarded" => {
                 skill.discards_in_row += 1;
-                if skill.state != RETIRED {
-                    skill.state = DISCARDED.to_string();
+                if !answers_update {
+                    skill.whole_discards += 1;
+                    if skill.state != RETIRED {
+                        skill.state = DISCARDED.to_string();
+                    }
                 }
             }
             "retired" => skill.state = RETIRED.to_string(),
@@ -224,5 +269,74 @@ mod tests {
         registry.record("nunca-feita", "discarded", "t", "Sem ganho.", &[], ("x", None), &[]);
         registry.record("nunca-feita", "discarded", "t", "Sem ganho.", &[], ("x", None), &[]);
         assert_eq!(registry.skills["nunca-feita"].retire_reason(), None, "a skill that never had a folder has nothing to retire");
+    }
+
+    /// Marca a tarefa de atualizar a skill `name` como à espera de resposta.
+    fn wait_for_update(registry: &mut Registry, name: &str) {
+        registry.skills.get_mut(name).unwrap().update_task = Some(SkillTask { spec: "x".into(), task: Some(7) });
+    }
+
+    /// A skill criada com ganho, como a tarefa de criar a deixa.
+    fn created(name: &str) -> Registry {
+        let mut registry = Registry::default();
+        registry.record(name, "created", "t0", "Ganho de 2 de 3.", &["src/a.rs".into()], ("x", Some(2)), &[]);
+        registry
+    }
+
+    #[test]
+    fn a_skill_the_update_task_finds_up_to_date_stays_active_and_never_counts_as_a_discard() {
+        let mut registry = created("em-dia");
+        for _ in 0..2 {
+            wait_for_update(&mut registry, "em-dia");
+            registry.record("em-dia", "kept", "t1", "A versão nova não traz ganho.", &[], ("x", None), &[]);
+        }
+        let skill = &registry.skills["em-dia"];
+        assert_eq!((skill.state.as_str(), skill.retire_reason(), skill.discards_in_row, skill.update_task.is_none()), (ACTIVE, None, 0, true));
+        assert_eq!((skill.gain.as_deref(), skill.since.as_str()), (Some("Ganho de 2 de 3."), "t0"), "being up to date measures no new gain and makes no new version");
+
+        // O em dia zera a fila: o descarte de antes e o de depois não somam.
+        registry.record("em-dia", "discarded", "t2", "Sem ganho.", &[], ("x", None), &[]);
+        registry.record("em-dia", "kept", "t3", "Em dia.", &[], ("x", None), &[]);
+        assert_eq!(registry.skills["em-dia"].state, ACTIVE, "up to date brings back a skill the last test discarded");
+        registry.record("em-dia", "discarded", "t4", "Sem ganho.", &[], ("x", None), &[]);
+        assert_eq!(registry.skills["em-dia"].retire_reason(), None, "up to date starts the row again");
+
+        registry.record("saiu", "retired", "t5", "Saiu.", &[], ("x", None), &[]);
+        registry.record("saiu", "kept", "t6", "Em dia.", &[], ("x", None), &[]);
+        assert_eq!(registry.skills["saiu"].state, RETIRED, "up to date does not bring back a skill that left");
+    }
+
+    #[test]
+    fn only_the_whole_skill_test_takes_the_skill_out_and_the_update_task_answer_does_not_count() {
+        let mut registry = created("falta-teste");
+        for _ in 0..3 {
+            wait_for_update(&mut registry, "falta-teste");
+            registry.record("falta-teste", "discarded", "t1", "A versão nova não traz ganho.", &[], ("x", None), &[]);
+        }
+        let skill = &registry.skills["falta-teste"];
+        assert_eq!((skill.state.as_str(), skill.retire_reason(), skill.discards_in_row), (ACTIVE, None, 3), "the test of the new version is not a test of the skill");
+
+        registry.record("falta-teste", "discarded", "t2", "Sem ganho com e sem a skill.", &[], ("x", None), &[]);
+        assert_eq!(registry.skills["falta-teste"].retire_reason(), None, "one test of the whole skill is not enough");
+        registry.record("falta-teste", "discarded", "t3", "Sem ganho com e sem a skill.", &[], ("x", None), &[]);
+        assert_eq!(registry.skills["falta-teste"].retire_reason(), Some("discarded"), "two tests of the whole skill in a row take it out");
+    }
+
+    #[test]
+    fn a_skill_retired_by_update_answers_is_told_apart_and_comes_back_active() {
+        // O registro de antes da conta: dois descartes, nenhum da skill inteira.
+        let old = MustardSkill { state: RETIRED.into(), made: true, candidacies: 38, deliveries: 30, discards_in_row: 2, ..MustardSkill::default() };
+        assert!(old.retired_by_updates());
+        assert!(!MustardSkill { whole_discards: 2, ..old.clone() }.retired_by_updates(), "the whole-skill test took it out");
+        assert!(!MustardSkill { deliveries: 0, candidacies: IDLE_CANDIDACIES, ..old.clone() }.retired_by_updates(), "it stood idle");
+        assert!(!MustardSkill { state: ACTIVE.into(), ..old.clone() }.retired_by_updates(), "it never left");
+        assert!(!MustardSkill { made: false, ..old.clone() }.retired_by_updates(), "it never had a folder");
+
+        let mut registry = Registry::default();
+        registry.skills.insert("catalogo".into(), old);
+        registry.record("catalogo", "restored", "t9", "Voltou.", &[], ("x", None), &[]);
+        let skill = &registry.skills["catalogo"];
+        assert_eq!((skill.state.as_str(), skill.since.as_str(), skill.discards_in_row, skill.whole_discards), (ACTIVE, "t9", 0, 0));
+        assert_eq!((skill.retire_reason(), skill.retired_by_updates()), (None, false), "back, it does not leave again");
     }
 }
