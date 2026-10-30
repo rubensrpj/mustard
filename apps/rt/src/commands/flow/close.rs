@@ -2693,8 +2693,11 @@ exit "${2:-0}"
         let dir = tempdir().unwrap();
         let root = dir.path();
         ready_to_close(root, "x", &["git --version"]);
+        // O lint cita só um arquivo que a obra não mudou: nenhuma onda reabre, e
+        // é o fechamento que a retomada manda repetir.
+        branched_from_dev(root);
         let script = root.join("lint");
-        std::fs::write(&script, format!("#!/bin/sh\necho '{}:1:1 erro'\nexit 1\n", wave_file(1))).unwrap();
+        std::fs::write(&script, "#!/bin/sh\necho 'lib/fora.rs:1:1 erro'\nexit 1\n").unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         commit_file(root, "lint");
         std::fs::write(root.join("mustard.json"), json!({"lintCommand":"./lint", "testCommand":"git --version"}).to_string()).unwrap();

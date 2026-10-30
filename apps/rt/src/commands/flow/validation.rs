@@ -216,8 +216,9 @@ pub(super) struct Work {
 
 impl Work {
     /// A obra como o git e a spec a contam: os arquivos que a branch mudou
-    /// desde a base gravada no `state` da spec (`git diff --name-only
-    /// <base>...HEAD`, com a base local e, sem ela, a do `origin`) e, de cada
+    /// desde o commit em que a obra começou (`git diff --name-only
+    /// <começo>...HEAD`, com o [`base_commit`]: o `start` gravado, o pai do
+    /// commit mais antigo da obra ou o `merge-base` com a base) e, de cada
     /// onda de `waves`, os que as tarefas dela declaram mais os que as
     /// entregas dela listam, e as ondas de cada commit gravado que mudaram
     /// arquivo nele — a onda que o commit fecha sem ter mudado nada não
@@ -270,14 +271,24 @@ fn push_path(files: &mut Vec<String>, file: &str) {
     }
 }
 
-/// Os arquivos que a branch do checkout em `root` mudou desde a base gravada
-/// no `state` da spec: o que [`Work::of`] conta como obra.
+/// Os arquivos que a branch do checkout em `root` mudou desde o commit em que
+/// a obra começou ([`base_commit`]): o que [`Work::of`] conta como obra. A
+/// origem é a mesma que o fechamento usa para a prova, e não a base de hoje:
+/// com a obra já juntada na base, `base...HEAD` sairia vazio e a saída que cita
+/// arquivo da obra passaria por de fora.
+///
+/// Conta o que cada commit da linha principal da branch mudou (`--first-parent
+/// --no-merges`), e não a diferença entre o começo e `HEAD`: a base que a
+/// branch juntou depois do começo (um `merge` da base na branch) traz commits
+/// que a obra não fez, e eles chegam por o segundo pai do `merge`, fora da
+/// linha principal. A base não se subtrai: ela pode já guardar a obra inteira.
 fn branch_files(root: &Path, log: &SpecLog) -> BTreeSet<String> {
-    let Some(base) = base_ref(root, log) else {
+    let Some(start) = base_commit(root, log) else {
         return BTreeSet::new();
     };
-    let range = format!("{base}...HEAD");
-    let listed = git::run(root, &["diff", "--name-only", "-z", "--no-renames", "--relative", &range]).out().unwrap_or_default();
+    let range = format!("{start}..HEAD");
+    let args = ["log", "--first-parent", "--no-merges", "--name-only", "--format=", "-z", "--no-renames", "--relative", range.as_str()];
+    let listed = git::run(root, &args).out().unwrap_or_default();
     listed.split('\0').filter_map(project_path).collect()
 }
 
@@ -1459,10 +1470,10 @@ src/a.ts(1,10): error TS6133: 'lonelyTotal' is declared but its value is never r
         assert_eq!(names, ["DB_URL", "PATH", "TOKEN"]);
     }
 
-    /// Um repositório em `root` com três commits vazios, do mais velho ao mais
-    /// novo, e a branch `dev` no último: a obra já entrou na base.
-    fn history(root: &std::path::Path) -> [String; 3] {
-        let git = |args: &[&str]| -> String {
+    /// O git de `root`, com autoria fixa e sem assinatura: roda os argumentos,
+    /// recusa a saída que falha e devolve a saída sem as bordas em branco.
+    fn git_in(root: &std::path::Path) -> impl Fn(&[&str]) -> String + '_ {
+        move |args: &[&str]| -> String {
             let out = std::process::Command::new("git")
                 .args(["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
                 .args(args)
@@ -1471,7 +1482,13 @@ src/a.ts(1,10): error TS6133: 'lonelyTotal' is declared but its value is never r
                 .expect("git");
             assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
             String::from_utf8_lossy(&out.stdout).trim().to_string()
-        };
+        }
+    }
+
+    /// Um repositório em `root` com três commits vazios, do mais velho ao mais
+    /// novo, e a branch `dev` no último: a obra já entrou na base.
+    fn history(root: &std::path::Path) -> [String; 3] {
+        let git = git_in(root);
         git(&["init", "-q"]);
         let commits = ["seed", "first", "second"].map(|title| {
             git(&["commit", "-q", "--allow-empty", "-m", title]);
@@ -1518,6 +1535,48 @@ src/a.ts(1,10): error TS6133: 'lonelyTotal' is declared but its value is never r
         let no_commits = spec_log(true, None, &[&other]);
         assert_eq!(base_commit(&no_commits), Some(second), "sem commit que o git ache, o merge-base com a base de hoje");
         assert_eq!(base_commit(&spec_log(false, Some(&first), &[&first])), None, "sem base gravada, não há com o que comparar");
+    }
+
+    /// Os arquivos da obra saem do commit em que ela começou, e não da base de
+    /// hoje: com a obra já na base (`dev` no último commit dela), `dev...HEAD`
+    /// sairia vazio e a saída que cita arquivo da obra passaria por de fora. A
+    /// base que anda depois da obra não entra na lista, nem a que a branch
+    /// junta nela por um `merge`, e sem base gravada não há de onde contar.
+    #[test]
+    fn the_work_files_come_from_the_commit_the_work_started_from() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let git = git_in(root);
+        git(&["init", "-q"]);
+        let commit = |file: &str| -> String {
+            std::fs::create_dir_all(root.join(file).parent().unwrap()).unwrap();
+            std::fs::write(root.join(file), file).unwrap();
+            git(&["add", file]);
+            git(&["commit", "-q", "-m", file]);
+            git(&["rev-parse", "HEAD"])
+        };
+        let (seed, first, second) = (commit("seed.txt"), commit("src/a.rs"), commit("src/b.rs"));
+        let work = git(&["rev-parse", "--abbrev-ref", "HEAD"]);
+        git(&["branch", "dev"]);
+        let of = |log: &mustard_core::domain::spec_events::SpecLog| Work::of(root, log, &[1]).changed;
+        let both = BTreeSet::from(["src/a.rs".to_string(), "src/b.rs".to_string()]);
+
+        assert_eq!(of(&spec_log(true, Some(&seed), &[&first, &second])), both, "the base already holds the work and the list still has its files");
+        assert_eq!(of(&spec_log(true, None, &[&first, &second])), both, "without a start, the parent of the oldest commit of the work");
+        assert_eq!(of(&spec_log(true, Some(&second), &[&first, &second])), BTreeSet::new(), "a work that started at the head changed nothing");
+        assert_eq!(of(&spec_log(false, Some(&seed), &[&first, &second])), BTreeSet::new(), "without a recorded base there is nothing to count from");
+
+        git(&["checkout", "-q", "dev"]);
+        commit("src/other.rs");
+        git(&["checkout", "-q", &work]);
+        let started = spec_log(true, Some(&seed), &[&first, &second]);
+        assert_eq!(of(&started), both, "what the base took in after the work is not the work");
+
+        git(&["merge", "-q", "--no-ff", "--no-edit", "dev"]);
+        assert_eq!(of(&started), both, "the base merged into the branch brings commits the work did not make");
+        commit("src/c.rs");
+        let more = BTreeSet::from(["src/a.rs".to_string(), "src/b.rs".to_string(), "src/c.rs".to_string()]);
+        assert_eq!(of(&started), more, "the work done after the merge of the base still counts");
     }
 
     /// O tempo de cada etapa da rodada vai para o arquivo de operações da
