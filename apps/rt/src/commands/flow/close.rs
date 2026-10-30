@@ -1573,6 +1573,13 @@ mod tests {
         format!("src/w{n}.rs")
     }
 
+    /// O comando `command` só passa depois da obra: a obra faz `src/w1.rs`
+    /// chamar `dois`, e o `grep` cai no código de antes dela, o começo da obra.
+    /// A prova que roda teste e passa também ali o fechamento recusa.
+    fn after_the_work(command: &str) -> String {
+        format!("grep -q dois {} && {command}", wave_file(1))
+    }
+
     /// [`ready_to_close`] com `waves` ondas soltas, cada uma com a tarefa num
     /// arquivo dela, despachadas e entregues juntas. A rodada não pede
     /// revisão de onda nenhuma: a entrega já basta, e falta só o fechamento
@@ -1595,6 +1602,13 @@ mod tests {
     /// agente de um pedido, como o achado de uma revisão vira, e a tarefa da
     /// primeira onda cobre esses pedidos.
     pub(super) fn ready_with_files(root: &Path, spec: &str, proofs: &[&str], waves_files: &[String], checked: &[u64], findings: &[&str]) {
+        ready_with_files_on(root, Some("dev"), spec, proofs, waves_files, checked, findings);
+    }
+
+    /// [`ready_with_files`] numa spec aberta na base `base`; sem ela, o
+    /// nascimento da spec não grava base nem o começo da obra, como o de uma
+    /// spec antiga.
+    fn ready_with_files_on(root: &Path, base: Option<&str>, spec: &str, proofs: &[&str], waves_files: &[String], checked: &[u64], findings: &[&str]) {
         let waves = waves_files.len() as u64;
         let file_of = |n: u64| waves_files[(n - 1) as usize].clone();
         let typescript = |file: &str| file.ends_with(".ts");
@@ -1604,7 +1618,13 @@ mod tests {
         }));
         crate::shared::test_fixture::seeded_repo_on(root, &format!("feature/{spec}"), &files);
 
-        assert_eq!(record_open(root, spec, &format!("feature/{spec}"), "dev"), Ok(true));
+        let branch = format!("feature/{spec}");
+        match base {
+            Some(base) => assert_eq!(record_open(root, spec, &branch, base), Ok(true)),
+            None => {
+                crate::shared::spec_state::seed_event(root, spec, "state", json!({"phase": "survey", "branch": branch, "author": "binary"}));
+            }
+        }
         let said = id_of(&write(root, spec, "message", json!({"author": "user", "text": "o objetivo"})));
         let _crits: Vec<u64> = proofs
             .iter()
@@ -2149,10 +2169,11 @@ mod tests {
         // teste — sempre verde, para a rodada não travar a entrega.
         assert_eq!(asked["criteria"].as_array().map(Vec::len), Some(3), "os três critérios rodaram: {asked}");
         assert_eq!(asked["review"]["final"], json!(true), "a de uma onda só também pede o agente de teste: {asked}");
-        // A base `dev` da spec não existe no repositório: sem código de antes,
-        // a resposta avisa que as provas não rodaram nele.
+        // A base `dev` da spec não existe no repositório, mas o código de antes
+        // é o começo da obra, que a spec gravou ao abrir: as provas rodam nele,
+        // e a resposta não avisa que ficaram sem rodar.
         let warned = asked["warnings"].as_array().into_iter().flatten().any(|w| w["reason"] == json!("proof-before-unchecked"));
-        assert!(warned, "{asked}");
+        assert!(!warned, "{asked}");
 
         // O trecho de conserto que uma recusa deixou para o agente da onda
         // não fica na pasta da spec fechada.
@@ -2181,6 +2202,8 @@ mod tests {
         assert_eq!(ran, criteria, "cada critério roda, e uma vez só");
         assert!(runs.iter().all(|e| e.str_field("result") == Some("pass")), "{runs:?}");
         assert_eq!(State::from_log(&log).phase, Some("closed"));
+        let before = |e: &&SpecEvent| e.event_type == "stage_run" && e.str_field("stage").is_some_and(|stage| stage.starts_with("criterion-before:"));
+        assert_eq!(log.events.iter().filter(before).count(), criteria.len(), "cada critério também rodou no começo da obra");
 
         // A pasta da spec fechada guarda o estado, e mais nada: o retrato do
         // mapa da base mora fora do projeto, e o fechamento o apaga. Ele
@@ -2236,8 +2259,9 @@ mod tests {
     /// O revisor final confere a obra na mesma cópia limpa em que a máquina
     /// rodou, no commit da obra e sem os arquivos locais do projeto, e o
     /// envio da revisão grava essa cópia, e o pedido cita o commit dela. O
-    /// fechamento prepara só ela, além da vaga da onda. Quando a obra fecha, o binário apaga todas as vagas
-    /// dela; a pasta principal e o que ela compilou ficam.
+    /// fechamento prepara só ela para o revisor, além da vaga da onda e da cópia
+    /// do começo da obra, onde as provas rodam. Quando a obra fecha, o binário
+    /// apaga todas as vagas dela; a pasta principal e o que ela compilou ficam.
     #[test]
     fn the_reviewer_works_in_the_clean_copy_of_the_machine() {
         let dir = tempdir().unwrap();
@@ -2272,7 +2296,7 @@ mod tests {
         let mut prepared: Vec<String> =
             std::fs::read_dir(copy.parent().unwrap()).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
         prepared.sort();
-        assert_eq!(prepared, ["a", "check"], "além da vaga da onda, o fechamento prepara uma cópia só: {asked}");
+        assert_eq!(prepared, ["a", "check", "check-base"], "além da vaga da onda, o fechamento prepara a cópia do revisor e a do começo da obra: {asked}");
 
         // Aprovada a obra, o binário apaga todas as vagas dela, com o que
         // compilaram, e a pasta das cópias da obra, e o git não as lista
@@ -2649,10 +2673,10 @@ exit "${2:-0}"
     }
 
     /// A compilação, o lint ou a suíte que caem no fechamento rodam de novo
-    /// no código de antes da obra, e só quando caem. A falha cujas linhas a
-    /// base já tinha não trava: vira aviso, com o comando que lê o que ele
-    /// disse. A linha que a base não tinha recusa. Sem código de antes, o
-    /// fechamento cobra tudo.
+    /// no código de antes da obra, o começo dela, e só quando caem. A falha
+    /// cujas linhas o começo já tinha não trava: vira aviso, com o comando que
+    /// lê o que ele disse. A linha que ele não tinha recusa. A base `dev` nem
+    /// existe no repositório: o que conta é o commit em que a spec abriu.
     ///
     /// Em campo (21/10/2026) o fechamento caiu num arquivo de outro time,
     /// mudado na base seis dias antes, que a obra não toca; o projeto do
@@ -2675,14 +2699,7 @@ exit "${2:-0}"
             log.events.iter().filter(|e| e.event_type == "stage_run" && e.str_field("stage") == Some(stage)).count()
         };
 
-        // Sem código de antes, o lint que cai trava o fechamento.
-        lint("ruim");
-        let strict = closing();
-        assert_eq!(strict["reason"], json!("lint-failed"), "sem a base, cobra tudo: {strict}");
-
-        // Com a base, a linha que só a obra tem recusa.
-        let first = Command::new("git").args(["rev-list", "--max-parents=0", "HEAD"]).current_dir(root).output().unwrap();
-        git_at(root, &["branch", "dev", String::from_utf8_lossy(&first.stdout).trim()]);
+        // A linha que só a obra tem recusa.
         lint("dois");
         let mine = closing();
         assert_eq!(mine["reason"], json!("lint-failed"), "o erro novo recusa: {mine}");
@@ -2699,6 +2716,36 @@ exit "${2:-0}"
         assert!(read_by(root, read).contains("src/outro.rs:1:fn ruim"), "o comando do aviso lê o que o comando disse: {}", said[0]);
         assert!(hints_of(&out, "lint-failed").is_empty(), "{out}");
         assert_eq!(ran("testCommand-before"), 0, "a suíte verde não roda no código de antes");
+    }
+
+    /// A spec sem base gravada não tem de onde tirar o começo da obra, e por
+    /// isso não tem código de antes: o lint que cai trava o fechamento por
+    /// inteiro, ainda que o arquivo seja de outro time, e não roda no código de
+    /// antes; passado o lint, a resposta avisa que as provas não rodaram nele.
+    #[test]
+    fn a_work_with_no_recorded_base_is_charged_every_failure_and_warned_that_the_proofs_did_not_run_before() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src").join("outro.rs"), "fn ruim() {}\n").unwrap();
+        ready_with_files_on(root, None, "x", &["git --version"], &[wave_file(1)], &[], &[]);
+        let lint = |command: &str| {
+            std::fs::write(root.join("mustard.json"), json!({"lintCommand": command, "testCommand": "git --version"}).to_string()).unwrap();
+        };
+        let closing = || close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), ..Default::default() }, None);
+
+        lint("! grep -Hn ruim src/*.rs");
+        let strict = closing();
+        assert_eq!(strict["reason"], json!("lint-failed"), "sem a base, cobra tudo: {strict}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let before = log.events.iter().filter(|e| e.event_type == "stage_run" && e.str_field("stage") == Some("lintCommand-before")).count();
+        assert_eq!(before, 0, "sem código de antes, o lint não roda nele: {strict}");
+        repair_machine_failure(root, "x");
+
+        lint("git --version");
+        let out = closing();
+        assert_eq!(out["review"]["final"], json!(true), "{out}");
+        assert_eq!(hints_of(&out, "proof-before-unchecked").len(), 1, "{out}");
     }
 
     /// Depois de um fechamento recusado, com todas as ondas entregues e o
@@ -3912,7 +3959,8 @@ exit "${2:-0}"
         )
         .unwrap();
         std::fs::write(root.join(".gitignore"), "target/\n").unwrap();
-        ready_to_close(root, "x", &["cargo test --lib -- tests::sum_of_two --exact", "cargo test --lib -- tests::sum --exact"]);
+        let right_name = after_the_work("cargo test --lib -- tests::sum_of_two --exact");
+        ready_to_close(root, "x", &[&right_name, "cargo test --lib -- tests::sum --exact"]);
 
         let refused = close(root, "x");
         assert_eq!(refused["reason"], json!("criterion-ran-no-test"), "{refused}");
@@ -3947,7 +3995,8 @@ exit "${2:-0}"
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("src/lib.rs"), "#[test]\nfn sum_of_two() {}\n#[test]\nfn sum_of_three() {}\n").unwrap();
         let absent = "echo sum_of_two sum_of_four";
-        ready_to_close(root, "x", &["echo Tests: 3 total", "echo sum_of_two sum_of_three", absent]);
+        let counted = after_the_work("echo Tests: 3 total");
+        ready_to_close(root, "x", &[&counted, "echo sum_of_two sum_of_three", absent]);
 
         let refused = close(root, "x");
         assert_eq!(refused["reason"], json!("criterion-missing-test"), "{refused}");
@@ -3990,7 +4039,8 @@ exit "${2:-0}"
         for (case, ran, zero, written) in cases {
             let dir = tempdir().unwrap();
             let root = dir.path();
-            ready_to_close(root, "x", &[ran, zero]);
+            let ran = after_the_work(ran);
+            ready_to_close(root, "x", &[&ran, zero]);
 
             let refused = close(root, "x");
             assert_eq!(refused["reason"], json!("criterion-ran-no-test"), "{case}: {refused}");

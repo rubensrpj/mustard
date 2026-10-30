@@ -155,13 +155,16 @@ mod tests {
     /// sem critério que o cite, ganha o aviso na rodada e no fechamento: o do
     /// Rust por `#[tokio::test]`, sem o `#[test]` em cima nem nome começado
     /// por `test_`, e o do TypeScript por `it(...)`, que o mapa guarda como
-    /// declaração de teste com o texto do nome.
+    /// declaração de teste com o texto do nome. A prova do critério cita um
+    /// teste que a obra criou: citar o que a base já tinha passaria também no
+    /// começo da obra, e o fechamento a recusaria.
     #[test]
     fn a_new_test_of_any_form_without_a_criterion_is_warned() {
         let rust_after = concat!(
             "fn one() {}\n#[cfg(test)]\nmod tests {\n",
             "    #[tokio::test]\n    async fn tokio_check() { assert_eq!(2, 2); }\n",
-            "    #[test]\n    fn old_check() { assert_eq!(1, 1); }\n}\n",
+            "    #[test]\n    fn old_check() { assert_eq!(1, 1); }\n",
+            "    #[test]\n    fn cited_check() { assert_eq!(3, 3); }\n}\n",
         );
         let typescript = "import { sum } from \"./sum\";\n\nit(\"adds two numbers\", () => {\n  expect(sum(1, 2)).toBe(3);\n});\n";
         let before = vec![module("src/w1.rs", "rust", (2, 6), vec![decl("function", "one", 1, false), decl("function", "old_check", 5, true)])];
@@ -169,15 +172,20 @@ mod tests {
             module(
                 "src/w1.rs",
                 "rust",
-                (2, 8),
-                vec![decl("function", "one", 1, false), decl("function", "tokio_check", 4, true), decl("function", "old_check", 6, true)],
+                (2, 10),
+                vec![
+                    decl("function", "one", 1, false),
+                    decl("function", "tokio_check", 4, true),
+                    decl("function", "old_check", 6, true),
+                    decl("function", "cited_check", 8, true),
+                ],
             ),
             module("src/sum.test.ts", "typescript", (3, 5), vec![decl("test", "adds two numbers", 3, true)]),
         ];
         let (in_round, at_close, expected) = warned(
             &[("src/w1.rs", BEFORE)],
             &[("src/w1.rs", rust_after), ("src/sum.test.ts", typescript)],
-            "echo running 1 test old_check",
+            "echo running 1 test cited_check",
             (before, later),
             &[("adds two numbers", "src/sum.test.ts", 3), ("tokio_check", "src/w1.rs", 4)],
         );

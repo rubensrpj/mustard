@@ -2511,7 +2511,8 @@ mod tests {
 
     /// A rodada junta a entrega e comita sem compilar nem rodar prova. O lint
     /// ou a suíte declarados que caem ficam para o fechamento, que recusa com
-    /// a saída deles sem desfazer a entrega já integrada. A saída que não cita arquivo
+    /// a saída deles sem desfazer a entrega já integrada, quando a falha é da
+    /// obra e não já estava no começo dela. A saída que não cita arquivo
     /// nenhum não reabre onda: a recusa diz isso, e nenhuma reprovação é
     /// gravada.
     #[cfg(unix)]
@@ -2522,7 +2523,10 @@ mod tests {
             let root = dir.path();
             approved(root, "x", &[(1, &["src/a.rs"], &[])]);
             let mut config = json!({"lintCommand":"true","testCommand":"true"});
-            config[key] = json!("echo final-failure; exit 1");
+            // O comando cai só no código da obra: no começo dela, onde o
+            // fechamento o roda de novo, ele passa. O que cai igual lá é da
+            // base e não trava o fechamento.
+            config[key] = json!("if grep -q integrated src/a.rs; then echo final-failure; exit 1; fi");
             std::fs::write(root.join("mustard.json"), config.to_string()).unwrap();
             round(root, "x", None);
             std::fs::write(slot_of(root, 1).join("src/a.rs"), "fn one() {}\n// integrated\n").unwrap();
