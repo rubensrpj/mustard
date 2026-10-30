@@ -480,13 +480,15 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // chamador: a ferramenta de edição do hospedeiro que pediu o comando.
         ("command_guard.shell_edit", Locale::PtBr) => {
             "[Mustard] Agente de onda não mexe em arquivo do projeto pelo terminal: nada de programa \
-             avulso, `sed -i`, `perl -i` ou texto redirecionado. Leia só o trecho pela ferramenta de \
+             avulso, `sed -i`, `perl -i`, texto redirecionado ou arquivo de fora trazido por `mv`/`cp`. \
+             Leia só o trecho pela ferramenta de \
              leitura, com `offset` e `limit`. Edite pela ferramenta de edição do hospedeiro, {edit}. \
              Trocas independentes saem juntas, numa resposta só."
         }
         ("command_guard.shell_edit", Locale::EnUs) => {
             "[Mustard] A wave agent never changes project files from the shell: no ad hoc program, \
-             `sed -i`, `perl -i` or redirected text. Read only the excerpt with the read tool, using \
+             `sed -i`, `perl -i`, redirected text or an outside file brought in with `mv`/`cp`. \
+             Read only the excerpt with the read tool, using \
              `offset` and `limit`. Edit with the host's edit tool, {edit}. Independent edits go \
              together, in one response."
         }

@@ -12,14 +12,23 @@
 //! - o interpretador que roda um programa guardado fora do projeto, como o da
 //!   pasta temporária, pelo nome, pelo `<` ou pelo `cat` que o passa pelo
 //!   cano;
+//! - o interpretador com o programa na linha ou pela entrada cuja saída é
+//!   redirecionada para um arquivo do projeto (`python3 -c "print(1)" >
+//!   src/lib.rs`), mesmo que o texto dele não cite caminho nenhum;
+//! - o lançador que roda, sem nome de interpretador, um programa guardado fora
+//!   do projeto (`uv run /tmp/edit.py`);
 //! - a edição no lugar (`sed -i`, `perl -i`, `ruby -i`);
 //! - `cat`, `echo`, `printf` e `tee` gravando no projeto ou numa cópia (`>`,
-//!   `>>` ou o arquivo do `tee`).
+//!   `>>` ou o arquivo do `tee`);
+//! - `mv` e `cp` que trazem para dentro do projeto um arquivo guardado fora
+//!   dele, como a troca pela pasta temporária (`sed … > /tmp/x.rs && mv
+//!   /tmp/x.rs src/lib.rs`).
 //!
 //! Passam o programa na linha sem caminho do projeto, o script do projeto
 //! (`python scripts/x.py`, `python -m pytest`), o gerador com a saída
-//! redirecionada (`cargo run --bin gen > src/gen.rs`), a leitura e a gravação
-//! fora do projeto. A conversa principal não passa pela recusa; a medição do
+//! redirecionada (`cargo run --bin gen > src/gen.rs`), a leitura, a gravação
+//! fora do projeto e o `mv`/`cp` entre arquivos do projeto ou para fora dele.
+//! A conversa principal não passa pela recusa; a medição do
 //! uso real conta, pela mesma regra ([`edited_by_shell`]), as edições por
 //! script de toda conversa do projeto, e reconhece o interpretador, o
 //! `python` e o programa escrito na linha pela mesma gramática
@@ -150,20 +159,68 @@ fn grammar(name: &str) -> Option<&'static Grammar> {
 }
 
 /// Os lançadores que rodam, depois de `run` e das opções deles, outro
-/// programa (`uv run --with x python -c …`).
-const LAUNCHERS: &[&str] = &["uv", "poetry", "pipenv", "pdm", "hatch", "rye", "conda"];
+/// programa (`uv run --with x python -c …`), cada um com as opções que levam o
+/// valor na palavra seguinte (`conda run -n py python`): o valor delas não é o
+/// programa.
+const LAUNCHERS: &[(&str, &[&str])] = &[
+    (
+        "uv",
+        &[
+            "--with",
+            "--with-editable",
+            "--with-requirements",
+            "--python",
+            "-p",
+            "--project",
+            "--directory",
+            "--package",
+            "--group",
+            "--extra",
+            "--env-file",
+            "--config-file",
+            "--cache-dir",
+            "--index",
+            "--index-url",
+            "--extra-index-url",
+            "--find-links",
+            "-f",
+        ],
+    ),
+    ("poetry", &["--directory", "-C", "--project", "-P"]),
+    ("pipenv", &["--python"]),
+    ("pdm", &["--project"]),
+    ("hatch", &["--env", "-e", "--include", "-i", "--exclude", "-x"]),
+    ("rye", &["--pyproject"]),
+    ("conda", &["-n", "--name", "-p", "--prefix", "--cwd"]),
+];
+
+/// O programa que o lançador de `segment` roda, com os argumentos dele: a
+/// primeira palavra depois do `run`, pulando as opções do lançador e o valor
+/// das que o levam. `None` para o comando que não é um lançador com `run`.
+fn launched(segment: &Segment) -> Option<(&Word, &[Word])> {
+    let (_, valued) = LAUNCHERS.iter().find(|(name, _)| *name == segment.name())?;
+    let rest = segment.args.split_first().filter(|(run, _)| run.text == "run").map(|(_, rest)| rest)?;
+    let mut at = 0;
+    while let Some(word) = rest.get(at) {
+        at += 1;
+        match word.text.as_str() {
+            "--" => return rest.get(at).map(|program| (program, &rest[at + 1..])),
+            "-" => return Some((word, &rest[at..])),
+            option if option.starts_with('-') => at += usize::from(valued.contains(&option)),
+            _ => return Some((word, &rest[at..])),
+        }
+    }
+    None
+}
 
 /// O interpretador que `segment` roda, com os argumentos dele: o próprio
-/// programa ou, num lançador, o primeiro interpretador depois do `run`.
+/// programa ou, num lançador, o programa que ele roda quando é um interpretador.
 fn interpreter(segment: &Segment) -> Option<(&'static Grammar, &[Word])> {
     if let Some(grammar) = grammar(segment.name()) {
         return Some((grammar, &segment.args));
     }
-    let (run, rest) = segment.args.split_first().filter(|_| LAUNCHERS.contains(&segment.name()))?;
-    if run.text != "run" {
-        return None;
-    }
-    rest.iter().enumerate().find_map(|(at, word)| Some((grammar(&word.text)?, &rest[at + 1..])))
+    let (program, args) = launched(segment)?;
+    Some((grammar(&program.text)?, args))
 }
 
 /// O comando que passa a saída pelo cano a `line[at]`: o anterior no mesmo
@@ -259,6 +316,17 @@ fn program(grammar: &Grammar, args: &[Word]) -> Program {
     if codes.is_empty() { Program::Stdin } else { Program::Embedded(codes) }
 }
 
+/// O programa que `segment` roda: o que o interpretador pede nas opções ou,
+/// no lançador sem nome de interpretador, o arquivo dado depois do `run`
+/// (`uv run /tmp/edit.py`) ou a entrada padrão (`uv run -`).
+fn program_of(segment: &Segment) -> Option<Program> {
+    if let Some((grammar, args)) = interpreter(segment) {
+        return Some(program(grammar, args));
+    }
+    let (word, _) = launched(segment)?;
+    Some(if word.text == "-" { Program::Stdin } else { Program::Script(word.text.clone()) })
+}
+
 /// O programa que o redirecionamento `redirect` traz na própria linha: o
 /// corpo do heredoc ou o texto do `<<<`.
 fn inline_text(redirect: &Redirect) -> Option<&str> {
@@ -334,10 +402,60 @@ fn writes(redirect: &Redirect) -> bool {
 /// redirecionamento ou, no `tee`, pelo arquivo dado.
 const WRITERS: &[&str] = &["cat", "echo", "printf", "tee"];
 
-/// O comando pode mexer em arquivo por uma das quatro formas da regra.
+/// Os programas que levam um arquivo de um lugar a outro: a troca pela pasta
+/// temporária termina num deles.
+const TRANSFERS: &[&str] = &["mv", "cp"];
+
+/// As origens e o destino de `mv` ou `cp`: o destino é a pasta do `-t` ou,
+/// sem ele, a última palavra fora das opções. `None` quando faltam as origens
+/// ou o destino.
+fn transfer(args: &[Word]) -> Option<(Vec<&str>, &str)> {
+    let mut operands = Vec::new();
+    let mut target = None;
+    let mut words = args.iter().map(|word| word.text.as_str());
+    while let Some(word) = words.next() {
+        if word == "--" {
+            operands.extend(words);
+            break;
+        }
+        if let Some(long) = word.strip_prefix("--") {
+            match long.split_once('=') {
+                Some(("target-directory", value)) => target = Some(value),
+                None if long == "target-directory" => target = words.next(),
+                None if long == "suffix" => {
+                    words.next();
+                }
+                _ => {}
+            }
+        } else if let Some(cluster) = word.strip_prefix('-').filter(|cluster| !cluster.is_empty()) {
+            if let Some((at, letter)) = cluster.char_indices().find(|(_, letter)| matches!(letter, 't' | 'S')) {
+                let rest = &cluster[at + letter.len_utf8()..];
+                let value = if rest.is_empty() { words.next() } else { Some(rest) };
+                if letter == 't' {
+                    target = value;
+                }
+            }
+        } else {
+            operands.push(word);
+        }
+    }
+    match target {
+        Some(target) => Some((operands, target)),
+        None => {
+            let destination = operands.pop()?;
+            (!operands.is_empty()).then_some((operands, destination))
+        }
+    }
+}
+
+/// O comando pode mexer em arquivo por uma das formas da regra.
 fn suspect(segment: &Segment) -> bool {
     let name = segment.name();
-    name == "sed" || WRITERS.contains(&name) || interpreter(segment).is_some()
+    name == "sed"
+        || WRITERS.contains(&name)
+        || TRANSFERS.contains(&name)
+        || interpreter(segment).is_some()
+        || launched(segment).is_some()
 }
 
 /// Os sinais que, além de letra e número, cabem num caminho citado no texto
@@ -409,19 +527,24 @@ impl Project {
             })
     }
 
-    /// O interpretador de gramática `grammar`, com os argumentos `args`,
-    /// rodado por `line[at]`, mexe em arquivo do projeto por uma das três
-    /// formas dele: edição no lugar, programa na linha que cita caminho do
-    /// projeto ou programa guardado fora do projeto. O programa da entrada
-    /// padrão vem do redirecionamento ou do comando que o passa pelo cano.
-    fn interprets(&self, grammar: &Grammar, args: &[Word], line: &[Segment], at: usize, shell: &Shell) -> bool {
-        match program(grammar, args) {
+    /// O programa `program`, rodado por `line[at]`, mexe em arquivo do projeto
+    /// por uma das formas dele: edição no lugar, programa na linha que cita
+    /// caminho do projeto ou programa guardado fora do projeto. O programa da
+    /// entrada padrão vem do redirecionamento ou do comando que o passa pelo
+    /// cano. O programa na linha ou pela entrada que tem a saída
+    /// redirecionada para o projeto também mexe nele, cite ou não um caminho:
+    /// o script do projeto com a saída redirecionada passa, como o gerador.
+    fn interprets(&self, program: Program, line: &[Segment], at: usize, shell: &Shell) -> bool {
+        let segment = &line[at];
+        match program {
             Program::InPlace => true,
             Program::Module => false,
-            Program::Embedded(codes) => codes.iter().any(|code| self.cited(code, shell)),
+            Program::Embedded(codes) => codes.iter().any(|code| self.cited(code, shell)) || self.redirected(segment, shell),
             Program::Script(script) => self.outside(&script, shell),
             Program::Stdin => {
-                self.fed(&line[at].redirects, shell) || feeder(line, at).is_some_and(|feeder| self.piped(feeder, shell))
+                self.fed(&segment.redirects, shell)
+                    || feeder(line, at).is_some_and(|feeder| self.piped(feeder, shell))
+                    || self.redirected(segment, shell)
             }
         }
     }
@@ -453,14 +576,33 @@ impl Project {
         }
     }
 
+    /// `target`, o alvo de uma gravação (o arquivo do `tee` ou o de um
+    /// redirecionamento), é um arquivo do projeto. O `&` do começo é o
+    /// descritor de `2>&1`, não um arquivo.
+    fn writes_to(&self, target: &Word, shell: &Shell) -> bool {
+        !target.text.starts_with('&') && shell.path(&target.text).is_some_and(|path| self.holds(&path))
+    }
+
+    /// Um redirecionamento de `segment` grava num arquivo do projeto.
+    fn redirected(&self, segment: &Segment, shell: &Shell) -> bool {
+        segment.redirects.iter().filter(|redirect| writes(redirect)).any(|redirect| self.writes_to(&redirect.target, shell))
+    }
+
     /// `cat`, `echo`, `printf` ou `tee` grava num arquivo do projeto, pelo
     /// redirecionamento ou pelo arquivo do `tee`.
     fn written(&self, segment: &Segment, shell: &Shell) -> bool {
         let teed = segment.args.iter().filter(|_| segment.name() == "tee").filter(|arg| !arg.text.starts_with('-'));
-        let redirected = segment.redirects.iter().filter(|redirect| writes(redirect)).map(|redirect| &redirect.target);
-        teed.chain(redirected)
-            .filter(|target| !target.text.starts_with('&'))
-            .any(|target| shell.path(&target.text).is_some_and(|path| self.holds(&path)))
+        teed.into_iter().any(|target| self.writes_to(target, shell)) || self.redirected(segment, shell)
+    }
+
+    /// `mv` ou `cp` traz para o projeto um arquivo guardado fora dele: o
+    /// destino fica no projeto e alguma origem, fora, como a troca pela pasta
+    /// temporária. Mover ou copiar entre arquivos do projeto, ou do projeto
+    /// para fora, não troca o conteúdo por um que veio de fora e passa.
+    fn transferred(&self, segment: &Segment, shell: &Shell) -> bool {
+        transfer(&segment.args).is_some_and(|(sources, destination)| {
+            shell.path(destination).is_some_and(|path| self.holds(&path)) && sources.iter().any(|source| self.outside(source, shell))
+        })
     }
 
     /// O comando `line[at]`, rodado na pasta atual de `shell`, mexe em
@@ -470,7 +612,8 @@ impl Project {
         match segment.name() {
             "sed" => sed_in_place(&segment.args),
             name if WRITERS.contains(&name) => self.written(segment, shell),
-            _ => interpreter(segment).is_some_and(|(grammar, args)| self.interprets(grammar, args, line, at, shell)),
+            name if TRANSFERS.contains(&name) => self.transferred(segment, shell),
+            _ => program_of(segment).is_some_and(|program| self.interprets(program, line, at, shell)),
         }
     }
 
@@ -588,14 +731,17 @@ mod tests {
         CommandGuard.evaluate(&input, &ctx).unwrap()
     }
 
-    /// As quatro formas de mexer em arquivo do projeto pelo terminal são
-    /// recusadas no agente de onda: o programa na linha que cita caminho do
-    /// projeto ou da cópia, o programa guardado fora do projeto, a edição no
-    /// lugar e o texto gravado por `cat`, `echo`, `printf` ou `tee`. Valem
-    /// também o programa passado pelo cano, o interpretador rodado por um
-    /// lançador e a gravação depois do `cd -` que volta à cópia. A recusa
-    /// manda ler o trecho e editar pela ferramenta do hospedeiro que pediu. A
-    /// conversa principal segue sem essa recusa.
+    /// As formas de mexer em arquivo do projeto pelo terminal são recusadas
+    /// no agente de onda: o programa na linha que cita caminho do projeto ou
+    /// da cópia, o programa na linha ou pela entrada que grava no projeto pela
+    /// saída, o programa guardado fora do projeto, a edição no lugar, o texto
+    /// gravado por `cat`, `echo`, `printf` ou `tee` e o arquivo de fora trazido
+    /// por `mv` ou `cp`. Valem também o programa passado pelo cano, o
+    /// interpretador rodado por um lançador (que pula o valor das opções dele
+    /// e roda também o script de fora sem nome de interpretador) e a gravação
+    /// depois do `cd -` que volta à cópia. A recusa manda ler o trecho e
+    /// editar pela ferramenta do hospedeiro que pediu. A conversa principal
+    /// segue sem essa recusa.
     #[test]
     fn a_wave_agent_writing_files_from_the_shell_is_refused() {
         let scene = scene();
@@ -626,6 +772,17 @@ mod tests {
             "poetry run python - <<'EOF'\nopen('src/lib.rs', 'w').write('')\nEOF".to_string(),
             "py -3 -c \"open('src/lib.rs', 'w').write('')\"".to_string(),
             "php -r 'file_put_contents(\"src/lib.rs\", \"\");'".to_string(),
+            "python3 -c \"print(1)\" > src/lib.rs".to_string(),
+            "python3 - > src/lib.rs <<'EOF'\nprint(1)\nEOF".to_string(),
+            format!("node -e \"console.log(1)\" >> {root}/src/lib.rs"),
+            format!("echo 'print(1)' | python3 > {copy}/src/lib.rs"),
+            format!("sed 's/a/b/' src/lib.rs > {outside}/x.rs && mv {outside}/x.rs src/lib.rs"),
+            format!("cp {outside}/x.rs {copy}/src/lib.rs"),
+            format!("mv -f -t src {outside}/x.rs"),
+            "conda run -n py python -c \"open('src/lib.rs', 'w').write('')\"".to_string(),
+            "conda run --name py python - <<'EOF'\nopen('src/lib.rs', 'w').write('')\nEOF".to_string(),
+            format!("uv run {outside}/edit.py"),
+            format!("poetry run -- {outside}/edit.py"),
         ];
         for command in &refused {
             let Verdict::Deny { reason } = guard(&scene, command, true, "claude") else {
@@ -669,10 +826,41 @@ mod tests {
             "cat scripts/check.py | python3".to_string(),
             "uv run python -m pytest -q".to_string(),
             "poetry run python scripts/check.py".to_string(),
+            format!("python3 -c \"print(1)\" > {outside}/out.txt"),
+            "python3 -c \"print(1)\" 2>&1".to_string(),
+            "python3 -c \"print(1)\" > /dev/null".to_string(),
+            "python3 scripts/check.py > src/gen.rs".to_string(),
+            format!("sed 's/a/b/' src/lib.rs > {outside}/x.rs"),
+            "mv src/lib.rs src/old.rs".to_string(),
+            "cp src/lib.rs src/copy.rs".to_string(),
+            format!("cp src/lib.rs {outside}/lib.rs"),
+            format!("mv {outside}/a.txt {outside}/b.txt"),
+            "uv run scripts/check.py".to_string(),
+            "uv run pytest -q -k python".to_string(),
+            "conda run -n py python -m pytest -q".to_string(),
+            "conda run -n py python -c \"print(1)\"".to_string(),
         ];
         for command in &free {
             let verdict = guard(&scene, command, true, "claude");
             assert!(!matches!(verdict, Verdict::Deny { .. }), "{command}: {verdict:?}");
         }
+    }
+
+    /// O lançador roda a primeira palavra depois do `run`, pulado o valor das
+    /// opções dele: `conda run -n py python` roda o `python`, e não o `py` que
+    /// é o valor do `-n`; `uv run pytest -k python` não roda interpretador.
+    #[test]
+    fn a_launcher_runs_the_first_word_after_its_options() {
+        let runs = |command: &str| {
+            let line = super::super::lex::segments(command);
+            (is_interpreter(&line[0]), is_python(&line[0]))
+        };
+        assert_eq!(runs("conda run -n py python -c 'print(1)'"), (true, true));
+        assert_eq!(runs("conda run -n py node -e '1'"), (true, false));
+        assert_eq!(runs("uv run --with requests --python 3.12 python3 x.py"), (true, true));
+        assert_eq!(runs("uv run -- python x.py"), (true, true));
+        assert_eq!(runs("uv run pytest -k python"), (false, false));
+        assert_eq!(runs("conda run -n py pytest"), (false, false));
+        assert_eq!(runs("uv sync python"), (false, false));
     }
 }
