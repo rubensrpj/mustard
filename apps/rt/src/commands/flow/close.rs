@@ -101,6 +101,8 @@ mod review_request_tests;
 #[cfg(test)]
 mod session_answer_tests;
 #[cfg(test)]
+mod expired_verdicts;
+#[cfg(test)]
 mod stale_marks;
 mod unused;
 
@@ -573,6 +575,14 @@ fn run_close(
     // pedir conserto.
     let pending = crate::commands::flow::round::waves_pending_fix(&log);
     let log = if super::common::stale_marks::release(root, &spec, &log, pending, lang).map_err(CloseRefusal::Refused)?.is_empty() { log } else { read(&path)? };
+    // A reprovação que perdeu o motivo sai do mesmo jeito, antes de a obra ser
+    // conferida: a máquina prova de novo e grava a que ainda vale.
+    let pending = crate::commands::flow::round::waves_pending_fix(&log);
+    let log = if crate::commands::flow::round::expired::release_expired(root, &spec, &log, &pending, lang).map_err(CloseRefusal::Refused)?.is_empty() {
+        log
+    } else {
+        read(&path)?
+    };
     // A onda segurada acima não é cobrada de novo por falta de commit.
     missing.extend(unfinished(&log).into_iter().filter(|refusal| !matches!(refusal, CloseRefusal::WaveWithoutCommit { wave } if held.contains(wave))));
     // O pedido de revisão só fecha com o veredito que o revisor grava e que a
@@ -1235,6 +1245,8 @@ fn authorize_final_repair(root: &Path, spec: &str, log: &SpecLog, failure: Close
                 && e.wave() == Some(wave)
                 && e.str_field("fingerprint") == Some(&fingerprint)
                 && log.last_by_wave("delivered").get(&wave).is_none_or(|id| *id < e.id)
+                // A reprovação que perdeu o motivo e foi solta não segura a nova.
+                && !log.events.iter().any(|released| released.event_type == "validation_failure" && released.int("expired") == Some(e.id))
         }) {
             continue;
         }
@@ -1242,9 +1254,21 @@ fn authorize_final_repair(root: &Path, spec: &str, log: &SpecLog, failure: Close
         let text = messages.chain([translate("close.repair_next", lang).to_string()]).collect::<Vec<_>>().join("\n");
         let reason = shown[implicating[0]].reason();
         let files = mustard_core::domain::wave_prompt::wave_files(log, wave);
+        let grounds: Vec<(Option<&str>, bool)> = implicating
+            .iter()
+            .map(|at| match &shown[*at] {
+                CloseRefusal::CriterionFailed { code, .. } | CloseRefusal::CriterionRanNoTest { code, .. } | CloseRefusal::CriterionMissingTest { code, .. } => {
+                    (Some(code.as_str()), false)
+                }
+                CloseRefusal::CriterionPassedBefore { code, .. } => (Some(code.as_str()), true),
+                _ => (None, false),
+            })
+            .collect();
         let draft = json!({"wave":wave,"final":true,"result":"rejected","text":text,"reason":reason,
             "fingerprint":fingerprint,"files":files,"author":"binary"});
-        if let Err(refusal) = record(root, spec, "validation_failure", draft.as_object().cloned().unwrap_or_default(), PhaseWriter::Binary) {
+        let mut draft = draft.as_object().cloned().unwrap_or_default();
+        draft.extend(crate::commands::flow::round::expired::expiry_fields(root, log, &grounds));
+        if let Err(refusal) = record(root, spec, "validation_failure", draft, PhaseWriter::Binary) {
             return CloseRefusal::Refused(refusal);
         }
     }

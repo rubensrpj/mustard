@@ -793,6 +793,17 @@ pub const TYPES: &[TypeSpec] = &[
             req("fingerprint", Kind::Text),
             opt("files", Kind::Texts),
             opt("reason", Kind::Text),
+            // Os itens (a versão de cada pedido ou critério) cuja prova caiu: a
+            // reprovação vence quando todos saíram da spec ou ganharam versão
+            // nova. Vazio quando a reprovação também tem falha que não é de
+            // item; ausente na reprovação de antes do campo.
+            opt("items", Kind::Ints),
+            // O código de antes da obra que a prova usou, na reprovação de
+            // prova que já passava antes: a que gravou outro, ou nenhum, vence.
+            opt("before", Kind::Text),
+            // Na soltura, o número da reprovação vencida que ela tira da
+            // leitura e do limite de consertos.
+            opt("expired", Kind::Int),
         ],
     ),
     // Ondas.

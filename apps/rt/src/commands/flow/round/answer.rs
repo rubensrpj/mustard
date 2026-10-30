@@ -716,6 +716,16 @@ fn dispatch_round(
     } else {
         store::read(path).map_err(RoundRefusal::Refused)?.ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.clone() }))?
     };
+    // A reprovação que perdeu o motivo — o item saiu da spec ou ganhou versão
+    // nova, ou a prova usou outro código de antes — também sai antes: a onda
+    // não volta ao conserto por ela, o envio de conserto aberto que só tinha
+    // ela fecha sem agente, e o limite de consertos não a conta.
+    let pending = super::queue::waves_pending_fix(&locked);
+    let locked = if super::expired::release_expired(root, &spec, &locked, &pending, lang).map_err(RoundRefusal::Refused)?.is_empty() {
+        locked
+    } else {
+        store::read(path).map_err(RoundRefusal::Refused)?.ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.clone() }))?
+    };
     // Com a trava presa e a spec relida, sai da pasta de despacho o trecho de
     // conserto da onda que a rodada comitou ou que voltou de novo.
     sweep_fixes(root, &spec, Some(&locked));

@@ -355,6 +355,26 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              cites no file the branch changed and the wave declared or delivered. Without that proof, the wave does not return \
              to repair."
         }
+        // A reprovação do fechamento que perdeu o motivo: o item saiu da spec,
+        // ganhou versão nova, ou a prova usou outro código de antes.
+        ("close.verdict_expired", Locale::PtBr) => {
+            "A reprovação da onda {wave} perdeu o motivo. O item dela saiu da spec ou ganhou versão nova. Ou a prova dela usou \
+             um código de antes que não é o da obra de hoje. Ela não conta no limite de consertos e não manda a onda ao \
+             conserto. O fechamento prova de novo."
+        }
+        ("close.verdict_expired", Locale::EnUs) => {
+            "The rejection of wave {wave} lost its reason. Its item left the spec or got a new version. Or its proof used a \
+             before-code that is not today's work base. It does not count toward the repair limit and does not send the wave \
+             to repair. The close proves it again."
+        }
+        ("round.expired_send_cancelled", Locale::PtBr) => {
+            "O envio de conserto da onda {wave} foi cancelado pela rodada: a reprovação que o pediu perdeu o motivo, e nenhum \
+             agente foi chamado."
+        }
+        ("round.expired_send_cancelled", Locale::EnUs) => {
+            "The repair send of wave {wave} was cancelled by the round: the rejection that asked for it lost its reason, and no \
+             agent was called."
+        }
         ("close.not_running", Locale::PtBr) => "A spec está na fase {phase} e não está em execução: só fecha o que estava correndo.",
         ("close.not_running", Locale::EnUs) => "The spec is in the {phase} phase and is not running: only work in flight closes.",
         ("close.wave_without_commit", Locale::PtBr) => "A onda {wave} não tem commit: refaça a onda {wave} antes de fechar.",
