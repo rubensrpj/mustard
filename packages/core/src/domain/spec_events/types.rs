@@ -613,6 +613,9 @@ pub const TYPES: &[TypeSpec] = &[
             req("phase", Kind::OneOf(PHASES)),
             opt("branch", Kind::Text),
             opt("base", Kind::Text),
+            // O commit em que a obra começou: só o nascimento da spec aberta
+            // o traz, e é com ele que o fechamento compara a prova.
+            opt("start", Kind::Text),
             opt("witness", Kind::Object),
             opt("pr", Kind::Object),
             opt("reason", Kind::Text),

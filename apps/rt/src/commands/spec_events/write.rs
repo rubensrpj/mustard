@@ -1567,8 +1567,12 @@ pub(crate) fn record_birth(start: &Path, spec: &str, branch: Option<&str>) -> Re
 }
 
 /// O nascimento de uma spec aberta pelo `open`: um `state` em levantamento,
-/// com a branch que ele acabou de criar, a base de que ela saiu e a versão do
-/// Mustard que a abriu, pela mesma gravação do `run write`. Uma spec que já tem fase nunca volta ao
+/// com a branch que ele acabou de criar, a base de que ela saiu, o commit em
+/// que a obra começa e a versão do Mustard que a abriu, pela mesma gravação do
+/// `run write`. O commit é o de `HEAD` do checkout em `start`, que acabou de
+/// ser cortado da base: é o código de antes da obra, e fica gravado porque a
+/// base anda, e a obra pode entrar nela antes do fechamento. Sem git que
+/// responda, o campo não vai. Uma spec que já tem fase nunca volta ao
 /// levantamento: aí nada é gravado, e a resposta é `Ok(false)`.
 pub(crate) fn record_open(start: &Path, spec: &str, branch: &str, base: &str) -> Result<bool, Refusal> {
     if DiskSpecState::new(start).log(spec).is_some_and(|log| State::from_log(&log).phase.is_some()) {
@@ -1580,6 +1584,9 @@ pub(crate) fn record_open(start: &Path, spec: &str, branch: &str, base: &str) ->
     draft.insert("mustard".to_string(), json!(env!("CARGO_PKG_VERSION")));
     draft.insert("branch".to_string(), json!(branch));
     draft.insert("base".to_string(), json!(base));
+    if let Some(commit) = mustard_core::platform::git::run(start, &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]).out().filter(|commit| !commit.is_empty()) {
+        draft.insert("start".to_string(), json!(commit));
+    }
     record(start, spec, "state", draft, PhaseWriter::Binary).map(|_| true)
 }
 

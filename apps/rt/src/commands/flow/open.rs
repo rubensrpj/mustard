@@ -760,6 +760,22 @@ mod tests {
         assert!(spec_dir(root, "trava-de-pendencias").join("spec.ndjson").is_file());
     }
 
+    /// A spec nasce com o commit em que a obra começa, ao lado da branch e da
+    /// base: a ponta da base no corte da branch. A base anda depois, e o
+    /// começo da obra fica onde estava.
+    #[test]
+    fn open_records_the_commit_the_work_starts_from() {
+        let dir = repo(DEV_MAIN);
+        let root = dir.path();
+        let tip = git(root, &["rev-parse", "dev"]);
+        assert_eq!(open(root, Some("feature"), Some("trava"), Some("dev"))["ok"], json!(true));
+
+        git(root, &["checkout", "-q", "dev"]);
+        git(root, &["commit", "-q", "--allow-empty", "-m", "a base andou"]);
+        let opened = state(root, "trava");
+        assert_eq!((opened.branch.as_deref(), opened.base.as_deref(), opened.start.as_deref()), (Some("feature/trava"), Some("dev"), Some(tip.as_str())));
+    }
+
     /// O `open` não escreve página: a spec nasce só com o arquivo de
     /// eventos, e a mesma chamada de novo também não escreve.
     #[test]

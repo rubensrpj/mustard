@@ -67,10 +67,11 @@ pub(super) struct BeforeCopy {
 }
 
 /// A cópia do código de antes da obra `spec`, com a trava das cópias presa
-/// por quem chama (`_copies`): a vaga no commit base da obra
-/// ([`super::super::validation::base_commit`]), ainda sem preparar. `None`
-/// quando a obra não tem commit base que o git ache: não há código de antes
-/// onde rodar a prova.
+/// por quem chama (`_copies`): a vaga no commit base da obra, o commit em que
+/// ela começou ([`super::super::validation::base_commit`]) e não a base de
+/// hoje, onde a obra pode já estar, ainda sem preparar. `None` quando a obra
+/// não tem commit base que o git ache: não há código de antes onde rodar a
+/// prova.
 pub(super) fn prepare(root: &Path, spec: &str, log: &SpecLog, _copies: &CopiesLock) -> Result<Option<BeforeCopy>, CloseRefusal> {
     let Some(base) = super::super::validation::base_commit(root, log) else {
         return Ok(None);
@@ -408,6 +409,28 @@ mod tests {
         let closed = close_for(&opts, None);
         assert_eq!((closed["phase"].clone(), closed["validation"]["reused"].clone()), (json!("closed"), json!(false)), "{closed}");
         assert_eq!((runs_before(false), runs_before(true)), (proofs, proofs), "o segundo fechamento não roda a prova de antes de novo: {closed}");
+    }
+
+    /// A obra que já entrou na base: o `dev` está no commit em que ela
+    /// terminou, e o `merge-base` dele com a obra é a própria obra. O
+    /// fechamento roda a prova no commit em que a obra começou, onde ela cai, e
+    /// não a reprova por passar num código que já tem a obra.
+    #[test]
+    fn the_close_compares_each_proof_with_the_commit_the_work_started_from() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        ready_with_waves(root, "x", &["grep -q dois src/w1.rs && echo Tests: 1 total"], 1);
+        let started = first_commit(root);
+        git_at(root, &["branch", "dev", "HEAD"]);
+
+        let opts = CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), ..Default::default() };
+        let asked = close_for(&opts, None);
+        assert_eq!(asked["review"]["final"], json!(true), "a prova que cai no começo da obra não é reprovada: {asked}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        assert_eq!(crate::commands::flow::validation::base_commit(root, &log), Some(started), "o código de antes é o começo da obra");
+        let before = |e: &&mustard_core::domain::spec_events::SpecEvent| e.str_field("stage").is_some_and(|stage| stage.starts_with("criterion-before:"));
+        let results: Vec<&str> = log.events.iter().filter(|e| e.event_type == "stage_run").filter(before).filter_map(|e| e.str_field("result")).collect();
+        assert!(results.contains(&"fail"), "a prova cai no código de antes: {results:?}");
     }
 
     /// Uma execução que caiu, com a saída inteira `evidence`.

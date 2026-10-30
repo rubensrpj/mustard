@@ -56,6 +56,11 @@ pub struct State {
     pub branch: Option<String>,
     /// A base de que a branch foi cortada, herdada do mesmo jeito.
     pub base: Option<String>,
+    /// O commit em que a obra começou: onde a branch saiu da base quando a
+    /// spec foi aberta, herdado como a base. É o código de antes da obra, que
+    /// não anda quando a base anda nem quando a obra entra nela. Spec aberta
+    /// antes deste campo existir não o tem.
+    pub start: Option<String>,
     /// O número do último evento `state` com a fase `closed` ou `delivered`,
     /// na ordem da dobra: cada fechamento e cada merge trazem um número novo.
     pub last_closing: Option<u64>,
@@ -84,6 +89,9 @@ impl State {
             }
             if let Some(base) = text(event.str_field("base")) {
                 state.base = Some(base);
+            }
+            if let Some(start) = text(event.str_field("start")) {
+                state.start = Some(start);
             }
             if let Some(witness) = event.fields.get("witness").filter(|w| w.is_object()) {
                 state.witness = Some(witness.clone());
@@ -1082,7 +1090,7 @@ mod tests {
     #[test]
     fn the_state_folds_the_state_events_in_order() {
         let log = log(&[
-            json!({"v":1,"id":1,"type":"state","phase":"survey","branch":"feature/x","base":"dev"}),
+            json!({"v":1,"id":1,"type":"state","phase":"survey","branch":"feature/x","base":"dev","start":"abc123"}),
             json!({"v":1,"id":2,"type":"rule","text":"t","keys":["k"],"example":"e","origin":1}),
             json!({"v":1,"id":3,"type":"state","phase":"plan"}),
             json!({"v":1,"id":4,"type":"state","phase":"approved",
@@ -1095,6 +1103,7 @@ mod tests {
         assert!(state.approved, "a delivered spec was approved");
         assert_eq!(state.branch.as_deref(), Some("feature/x"), "the branch is inherited");
         assert_eq!(state.base.as_deref(), Some("dev"), "the base is inherited");
+        assert_eq!(state.start.as_deref(), Some("abc123"), "the commit the work started from is inherited");
         assert_eq!(state.last_closing, Some(6), "the merge after the close is the newest trigger");
         assert_eq!(state.closing(), Some(6));
         assert_eq!(state.witness, Some(json!({"question":"Aprova?","answer":"Aprovar"})));

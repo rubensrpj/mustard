@@ -289,15 +289,40 @@ fn base_ref(root: &Path, log: &SpecLog) -> Option<String> {
     Some(if resolves { base } else { format!("origin/{base}") })
 }
 
-/// O commit base da obra: onde a branch do checkout em `root` se separou da
-/// base gravada no `state` da spec, o mesmo ponto de que [`Work::of`] conta
-/// os arquivos mudados. É nele que o fechamento roda a prova de cada critério
-/// no código de antes da obra. `None` sem base gravada, ou quando o git não
-/// acha a base nem o ponto em que a branch saiu dela.
+/// O commit base da obra: o commit em que ela começou, onde o fechamento roda
+/// a prova de cada critério no código de antes dela. Ele não anda quando a
+/// base anda, e a obra que já entrou na base fecha do mesmo jeito. Vem, na
+/// ordem, de:
+///
+/// 1. o `start` que o `state` da spec gravou quando ela abriu;
+/// 2. na spec sem ele, o pai do commit mais antigo da obra, lido dos eventos
+///    `commit` da spec;
+/// 3. o `merge-base` da base gravada com `HEAD`, o ponto em que a branch do
+///    checkout em `root` se separou da base de hoje.
+///
+/// Cada um só vale quando o git de `root` o tem; senão, vale o seguinte.
+/// `None` sem base gravada, ou quando o git não acha nenhum dos três.
 pub(super) fn base_commit(root: &Path, log: &SpecLog) -> Option<String> {
     let base = base_ref(root, log)?;
-    let sha = git::run(root, &["merge-base", &base, "HEAD"]).out()?;
-    Some(sha.trim().to_string()).filter(|sha| !sha.is_empty())
+    State::from_log(log)
+        .start
+        .and_then(|start| commit_of(root, &start))
+        .or_else(|| oldest_commit_parent(root, log))
+        .or_else(|| git::run(root, &["merge-base", &base, "HEAD"]).out().filter(|sha| !sha.is_empty()))
+}
+
+/// O código inteiro do commit que `rev` nomeia no git de `root`; `None` quando
+/// o git não o tem.
+fn commit_of(root: &Path, rev: &str) -> Option<String> {
+    git::run(root, &["rev-parse", "--verify", "--quiet", &format!("{rev}^{{commit}}")]).out().filter(|sha| !sha.is_empty())
+}
+
+/// O pai do commit mais antigo da obra, pelo primeiro evento `commit` da
+/// spec; `None` sem commit gravado, quando o git não tem o commit ou o pai
+/// dele, ou quando ele é o primeiro do repositório.
+fn oldest_commit_parent(root: &Path, log: &SpecLog) -> Option<String> {
+    let oldest = log.visible().into_iter().find(|e| e.event_type == "commit")?.str_field("sha")?;
+    commit_of(root, &format!("{oldest}^"))
 }
 
 /// O que a saída de um comando que caiu cita, lida contra a obra.
@@ -1432,6 +1457,67 @@ src/a.ts(1,10): error TS6133: 'lonelyTotal' is declared but its value is never r
         let kept = super::cited_env(env.into_iter(), &["TOKEN=1 cargo test", "psql ${DB_URL}"]);
         let names: Vec<String> = kept.into_iter().map(|(name, _)| name.to_string_lossy().into_owned()).collect();
         assert_eq!(names, ["DB_URL", "PATH", "TOKEN"]);
+    }
+
+    /// Um repositório em `root` com três commits vazios, do mais velho ao mais
+    /// novo, e a branch `dev` no último: a obra já entrou na base.
+    fn history(root: &std::path::Path) -> [String; 3] {
+        let git = |args: &[&str]| -> String {
+            let out = std::process::Command::new("git")
+                .args(["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
+                .args(args)
+                .current_dir(root)
+                .output()
+                .expect("git");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        git(&["init", "-q"]);
+        let commits = ["seed", "first", "second"].map(|title| {
+            git(&["commit", "-q", "--allow-empty", "-m", title]);
+            git(&["rev-parse", "HEAD"])
+        });
+        git(&["branch", "dev"]);
+        commits
+    }
+
+    /// A spec que abriu na base `dev` (sem base, quando `base` é falso), com o
+    /// `start` dado, se há, e um evento `commit` por código de `commits`.
+    fn spec_log(base: bool, start: Option<&String>, commits: &[&String]) -> mustard_core::domain::spec_events::SpecLog {
+        let mut state = json!({"v": 1, "id": 1, "type": "state", "author": "binary", "phase": "survey", "branch": "feature/x"});
+        if base {
+            state["base"] = json!("dev");
+        }
+        if let Some(start) = start {
+            state["start"] = json!(start);
+        }
+        let commits = commits.iter().zip(2..).map(|(sha, id)| json!({"v": 1, "id": id, "type": "commit", "sha": sha, "waves": [1]}));
+        let rows: Vec<String> = std::iter::once(state).chain(commits).map(|row| row.to_string()).collect();
+        mustard_core::domain::spec_events::parse_log(&rows.join("\n"))
+    }
+
+    /// O código de antes da obra não anda com a base: com a obra já na base, o
+    /// `merge-base` seria o último commit. Vale o `start` que o `state`
+    /// gravou; sem ele, ou com um que o git não tem, o pai do commit mais
+    /// antigo da obra; sem commit que o git ache, o `merge-base`. Sem base
+    /// gravada, nenhum commit base.
+    #[test]
+    fn the_base_commit_is_the_start_then_the_parent_of_the_oldest_commit_then_the_merge_base() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let [seed, first, second] = history(root);
+        let (unknown, other) = ("0".repeat(40), "1".repeat(40));
+        let base_commit = |log: &mustard_core::domain::spec_events::SpecLog| super::base_commit(root, log);
+
+        let started = spec_log(true, Some(&first), &[&first, &second]);
+        assert_eq!(base_commit(&started), Some(first.clone()), "o start gravado vale mais que os commits da obra");
+        let no_start = spec_log(true, None, &[&first, &second]);
+        assert_eq!(base_commit(&no_start), Some(seed.clone()), "sem start, o pai do commit mais antigo da obra");
+        let missing = spec_log(true, Some(&unknown), &[&first, &second]);
+        assert_eq!(base_commit(&missing), Some(seed), "o start que o git não tem cai no pai do commit mais antigo");
+        let no_commits = spec_log(true, None, &[&other]);
+        assert_eq!(base_commit(&no_commits), Some(second), "sem commit que o git ache, o merge-base com a base de hoje");
+        assert_eq!(base_commit(&spec_log(false, Some(&first), &[&first])), None, "sem base gravada, não há com o que comparar");
     }
 
     /// O tempo de cada etapa da rodada vai para o arquivo de operações da
