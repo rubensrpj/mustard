@@ -573,67 +573,24 @@ fn all_met_verdict(decisions: &[Value]) -> Value {
     json!({"final": true, "result": "approved", "text": "Tudo atendido.", "agreed": all_met})
 }
 
-/// O veredito final aprovado que traz achados em `leftovers`, no formato da
-/// entrega de onda, cada um com a regra escrita na spec que ele quebra, pelo
-/// código, não leva a obra ao pull request: o fechamento grava cada achado
-/// como uma tarefa no backlog, que cobre o pedido dele, e manda rodar a
-/// rodada em vez de abrir o pull request. O fechamento seguinte recusa pelo
-/// backlog e não grava os achados de novo.
-#[test]
-fn an_approved_final_verdict_with_leftovers_becomes_backlog_tasks_instead_of_the_pull_request() {
-    let project = Project::new();
-    let decisions = ready(&project);
-    let asked = project.run(&["close", "--spec", SPEC]);
-    assert_eq!(asked["review"]["final"], json!(true), "{asked}");
-
-    let mut verdict = all_met_verdict(&decisions);
-    let rule = |at: usize| decisions[at]["code"].as_str().expect("the decision code").to_string();
-    verdict["leftovers"] = json!([
-        {"title": "A soma não trata estouro", "detail": "A soma de números grandes estoura em src/main.rs. Prova: `git --version`", "files": ["src/main.rs"], "rule": rule(0), "places": ["src/main.rs"]},
-        {"title": "O README não cita a soma", "detail": "O README não explica a soma. Prova: `git --version`", "files": ["README.md"], "cleanup": true, "rule": rule(1), "places": ["README.md"]},
-    ]);
-    project.read_review();
-    project.write("verdict", &verdict);
-    let after = project.run(&["close", "--spec", SPEC]);
-
-    assert_eq!(after["phase"], json!("running"), "a obra não fecha com achados: {after}");
-    let round = format!("mustard-rt run round --dispatch --spec {SPEC}");
-    assert_eq!(after["command"], json!(round), "o fechamento manda rodar a rodada: {after}");
-    assert!(!after.to_string().contains("pr-open"), "o fechamento não manda abrir o pull request: {after}");
-
-    let log = project.log();
-    let backlog = |log: &SpecLog| -> Vec<SpecEvent> {
-        log.visible().into_iter().filter(|e| e.event_type == "task" && e.wave().is_none()).cloned().collect()
-    };
-    let tasks = backlog(&log);
-    let titles: Vec<&str> = tasks.iter().filter_map(|task| task.str_field("title")).collect();
-    assert_eq!(titles, vec!["A soma não trata estouro", "O README não cita a soma"], "{tasks:?}");
-    for task in &tasks {
-        let title = task.str_field("title").unwrap_or_default();
-        let request = log
-            .visible()
-            .into_iter()
-            .find(|e| e.event_type == "request" && task.ints("covers").contains(&e.id))
-            .unwrap_or_else(|| panic!("a tarefa {title} não cobre o pedido do achado: {task:?}"));
-        assert_eq!(request.str_field("title"), Some(title), "{request:?}");
-    }
-    let files = |task: &SpecEvent| -> Vec<String> {
-        task.fields.get("files").and_then(Value::as_array).into_iter().flatten().filter_map(|f| f["path"].as_str().map(str::to_string)).collect()
-    };
-    assert_eq!(files(&tasks[0]), vec!["src/main.rs".to_string()], "{:?}", tasks[0]);
-    assert_eq!(files(&tasks[1]), vec!["README.md".to_string()], "{:?}", tasks[1]);
-    assert_eq!(tasks[1].fields.get("cleanup"), Some(&json!(true)), "a limpeza segue marcada: {:?}", tasks[1]);
-
-    let again = project.answer(&["close", "--spec", SPEC]);
-    assert_eq!(again["reason"], json!("backlog-not-empty"), "{again}");
-    assert_eq!(backlog(&project.log()).len(), 2, "o fechamento seguinte não grava os achados de novo");
+/// As pendências abertas na lista do projeto, na ordem dela: o título e o
+/// detalhe de cada uma.
+fn open_project_pending(project: &Project) -> Vec<(String, String)> {
+    let ledger = std::fs::read_to_string(project.root.join(".claude/pending/ledger.json")).expect("the pending list");
+    let ledger: Value = serde_json::from_str(&ledger).expect("the pending list is JSON");
+    let text = |item: &Value, key: &str| item[key].as_str().unwrap_or_default().to_string();
+    ledger["items"].as_array().into_iter().flatten().filter(|item| item["status"] == json!("open")).map(|item| (text(item, "title"), text(item, "detail"))).collect()
 }
 
-/// O achado do veredito final aprovado que só mexe em arquivo que o git
-/// ignora é mudança local: o fechamento o grava como nota ao usuário, sem
-/// tarefa, e a obra fecha em vez de voltar à rodada.
+/// O veredito final aprovado que traz achados em `leftovers`, no formato da
+/// entrega de onda, fecha a obra: a revisão que acha algo que bloqueia
+/// reprova, e por isso os achados da aprovada não bloqueiam. O fechamento põe
+/// cada um na lista de pendências do projeto, com o título e o detalhe, sem
+/// pedido, sem tarefa, sem nota e sem pergunta — também o que cita uma regra
+/// escrita na spec e o que só mexe em arquivo que o git ignora — e manda abrir
+/// o pull request em vez de voltar à rodada.
 #[test]
-fn an_approved_final_verdict_with_a_leftover_only_in_a_git_ignored_file_closes_with_a_note() {
+fn an_approved_final_verdict_with_leftovers_closes_the_work_and_lists_them_for_the_project() {
     let project = Project::new();
     let exclude = project.root.join(".git/info/exclude");
     let kept = std::fs::read_to_string(&exclude).expect("the exclude file");
@@ -642,17 +599,36 @@ fn an_approved_final_verdict_with_a_leftover_only_in_a_git_ignored_file_closes_w
     let asked = project.run(&["close", "--spec", SPEC]);
     assert_eq!(asked["review"]["final"], json!(true), "{asked}");
 
-    let title = "A chave da API falta no ambiente local";
+    let findings = [
+        ("A soma não trata estouro", "A soma de números grandes estoura em src/main.rs. Prova: `git --version`", "src/main.rs"),
+        ("O README não cita a soma", "O README não explica a soma. Prova: `git --version`", "README.md"),
+        ("A chave da API falta no ambiente local", "Falta a chave da API no .env desta máquina. Prova: `git --version`", ".env"),
+    ];
+    let rules = [decisions[0]["code"].as_str().expect("the decision code"), decisions[1]["code"].as_str().expect("the decision code"), "A chave da API mora no ambiente"];
     let mut verdict = all_met_verdict(&decisions);
-    verdict["leftovers"] = json!([{"title": title, "detail": "Falta a chave da API no .env desta máquina. Prova: `git --version`", "files": [".env"], "rule": "A chave da API mora no ambiente", "places": [".env"]}]);
+    verdict["leftovers"] = findings
+        .iter()
+        .zip(rules)
+        .map(|((title, detail, file), rule)| json!({"title": title, "detail": detail, "files": [file], "rule": rule, "places": [file]}))
+        .collect();
     project.read_review();
     project.write("verdict", &verdict);
     let after = project.run(&["close", "--spec", SPEC]);
 
-    assert_eq!(after["phase"], json!("closed"), "a mudança local não segura a obra: {after}");
+    assert_eq!(after["phase"], json!("closed"), "o achado que não bloqueia não segura a obra: {after}");
+    assert!(after.get("questions").is_none(), "nenhuma pergunta ao usuário: {after}");
+    let pull_request = format!("mustard-rt run pr-open --base dev --head feature/{SPEC} --spec {SPEC}");
+    assert_eq!(after["command"], json!(pull_request), "o fechamento manda abrir o pull request: {after}");
+
     let log = project.log();
-    let titled = |kind: &str| log.visible().into_iter().filter(|e| e.event_type == kind && e.str_field("title") == Some(title)).count();
-    assert_eq!((titled("task"), titled("request"), titled("note")), (0, 0, 1), "só a nota fica: {after}");
+    for (title, _, _) in findings {
+        for kind in ["task", "request", "note"] {
+            assert!(log.visible().into_iter().all(|e| e.event_type != kind || e.str_field("title") != Some(title)), "o achado não vira {kind}: {after}");
+        }
+    }
+    let listed = open_project_pending(&project);
+    let expected: Vec<(String, String)> = findings.iter().map(|(title, detail, _)| ((*title).to_string(), (*detail).to_string())).collect();
+    assert_eq!(listed, expected, "os achados vão à lista do projeto, com o efeito numa linha: {after}");
 }
 
 /// O veredito final que traz um achado sem título é recusado na gravação
@@ -708,7 +684,7 @@ fn assert_leftovers_refused(refused: &Value) {
     assert!(hint.contains("leftovers") && hint.contains("agreed"), "a recusa diz onde o achado vai: {hint}");
 }
 
-/// Só o veredito final aprovado transforma `leftovers` em tarefas: o final
+/// Só o veredito final aprovado leva `leftovers` à lista do projeto: o final
 /// reprovado, também o aprovado que um item combinado sem atender força a
 /// reprovado, recusa o campo sem gravar nada, e o pedido da revisão segue
 /// aberto. O mesmo veredito sem o campo é gravado.

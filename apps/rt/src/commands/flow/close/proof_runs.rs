@@ -388,8 +388,9 @@ fn back_to_base(path: &Path, base: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{approve, close, close_for, commit_file, git_at, ready_with_files, ready_with_waves, wave_file};
+    use super::super::tests::{approve, close, close_for, commit_file, git_at, id_of, ready_with_files, ready_with_waves, returned, round_for, wave_file, write};
     use crate::commands::flow::close::CloseOpts;
+    use crate::commands::flow::round::RoundOpts;
     use mustard_core::io::spec_events as store;
     use mustard_core::platform::i18n::{Locale, translate};
     use serde_json::json;
@@ -691,4 +692,66 @@ mod tests {
         assert!(failure.str_field("text").unwrap_or_default().contains(said), "a onda reaberta lê a recusa do pedido: {:?}", failure.fields);
     }
 
+    /// A obra fecha verde e grava o recibo da validação. Uma tarefa que só
+    /// confere volta sem mudar arquivo e deixa uma sobra que bloqueia, com a
+    /// prova que já passa no commit base, e a tarefa da sobra também volta sem
+    /// mudar arquivo nenhum. O fechamento seguinte não reaproveita o recibo: a
+    /// prova da sobra entrou na lista das provas, roda nas duas cópias e
+    /// recusa.
+    #[test]
+    fn a_blocking_leftover_delivered_without_change_runs_its_proof_instead_of_reusing_the_receipt() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        ready_with_waves(root, "x", &["git --version"], 1);
+        git_at(root, &["branch", "dev", &first_commit(root)]);
+        let opts = CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), ..Default::default() };
+        let asked = close_for(&opts, None);
+        assert_eq!((asked["review"]["final"].clone(), asked["validation"]["reused"].clone()), (json!(true), json!(false)), "{asked}");
+
+        let read = || store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let said = id_of(&write(root, "x", "message", json!({"author": "user", "text": "conferir a soma"})));
+        let criterion = read().visible().into_iter().find(|e| e.event_type == "criterion").expect("the criterion").id;
+        let task = write(
+            root,
+            "x",
+            "task",
+            json!({"title": "Conferir a soma", "text": "Conferir a soma da onda 1.", "agent": "- conferir o código da onda 1",
+                "files": [{"path": wave_file(1)}], "covers": [criterion], "origin": said}),
+        );
+        assert_eq!(task["ok"], json!(true), "{task}");
+        let round = || round_for(&RoundOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None }, None);
+        let newest_wave = || read().planned_waves().into_iter().max().expect("a planned wave");
+        let dispatched = round();
+        assert_eq!(dispatched["ok"], json!(true), "{dispatched}");
+        let checking = newest_wave();
+        assert!(checking > 1, "a conferência saiu numa onda própria: {dispatched}");
+        let finding = json!({"title": "A soma não trata estouro", "detail": "A soma estoura em src/w1.rs. Prova: `echo Tests: 2 total`",
+            "files": [wave_file(1)], "rule": "MSTD-CRIT-0001", "places": [wave_file(1)], "blocks": true});
+        returned(root, "x", json!({"wave": checking, "text": "Nada a mudar: a soma já estava assim. Rodei git --version e passou.", "leftovers": [finding]}));
+        let taken = round();
+        assert_eq!(taken["ok"], json!(true), "{taken}");
+        assert!(taken.get("commit").is_none(), "a conferência voltou sem mudança: {taken}");
+        let log = read();
+        assert!(
+            log.visible().into_iter().any(|e| e.event_type == "task" && e.str_field("title") == Some("A soma não trata estouro")),
+            "a sobra que bloqueia virou tarefa da obra: {taken}"
+        );
+
+        let dispatched = round();
+        assert_eq!(dispatched["ok"], json!(true), "{dispatched}");
+        let wave = newest_wave();
+        assert!(wave > checking, "a tarefa da sobra saiu numa onda própria: {dispatched}");
+        returned(
+            root,
+            "x",
+            json!({"wave": wave, "text": "Nada a mudar: a soma já estava assim. Rodei a prova e passou.",
+                "checked_places": [{"place": wave_file(1), "reason": "A soma já trata o estouro."}]}),
+        );
+        let back = round();
+        assert_eq!(back["ok"], json!(true), "{back}");
+        assert!(back.get("commit").is_none(), "a tarefa da sobra voltou sem mudança: {back}");
+
+        let refused = close_for(&opts, None);
+        assert_eq!(refused["reason"], json!("criterion-passed-before"), "a prova da sobra rodou e recusou: {refused}");
+    }
 }
