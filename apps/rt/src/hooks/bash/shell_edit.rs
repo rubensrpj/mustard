@@ -539,6 +539,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("project");
         let outside = dir.path().join("scratch");
+        // O endereço da cópia sai do caminho real do projeto, que só existe
+        // depois que a pasta nasce: com um atalho na pasta temporária, como no
+        // macOS, o endereço montado antes não bate com o que a trava calcula.
+        std::fs::create_dir_all(&root).unwrap();
         let copy = wave_prompt::slot_path(&root, "work", 0);
         for folder in [&root, &copy] {
             std::fs::create_dir_all(folder.join("scripts")).unwrap();

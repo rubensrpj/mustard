@@ -281,11 +281,13 @@ fn the_measure_counts_scripts_around_mustard_and_script_edits() {
     std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"pt-BR"}}"#).unwrap();
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(root.join("src/frete.rs"), "fn calcular() {}\n").unwrap();
-    let scratch = dir.path().join("scratch").display().to_string();
+    // O caminho entra num comando de terminal, onde a barra invertida do
+    // Windows é escape: ele vai com a barra comum, como o terminal o lê.
+    let scratch = dir.path().join("scratch").to_string_lossy().replace('\\', "/");
     // A pasta das cópias existe, mas a cópia da onda já saiu do disco.
     let copies = dir.path().join("copias").join(mustard_core::io::wave_prompt::copies_dir(&root).file_name().unwrap());
     std::fs::create_dir_all(&copies).unwrap();
-    let gone = copies.join("obra").join("z").display().to_string();
+    let gone = copies.join("obra").join("z").to_string_lossy().replace('\\', "/");
     let at = "2026-10-02T10:00:00Z";
     let bash = |id: &'static str, command: String| -> Call<'static> {
         (id, at, "Bash", json!({ "command": command }), None, String::new(), false)
@@ -393,7 +395,7 @@ fn the_measure_reads_python_by_the_interpreter_grammar_of_the_edit_refusal() {
     let config = dir.path().join("config");
     let root = project(&dir.path().join("loja"));
     std::fs::write(root.join("mustard.json"), r#"{"language":{"text":"pt-BR"}}"#).unwrap();
-    let scratch = dir.path().join("scratch").display().to_string();
+    let scratch = dir.path().join("scratch").to_string_lossy().replace('\\', "/");
     let at = "2026-10-02T10:00:00Z";
     let bash = |id: &'static str, command: String| -> Call<'static> {
         (id, at, "Bash", json!({ "command": command }), None, String::new(), false)
