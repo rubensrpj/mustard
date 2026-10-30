@@ -16,7 +16,8 @@
 //!   a um arquivo do projeto, mesmo que o texto dele não cite caminho nenhum:
 //!   pelo redirecionamento dele (`python3 -c "print(1)" > src/lib.rs`), pelo
 //!   de um comando que a recebe pelo cano (`| head > src/lib.rs`) ou pelo do
-//!   grupo que termina nele (`( … ) > src/lib.rs`);
+//!   grupo que o tem dentro (`( … ) > src/lib.rs`, de qualquer comando do
+//!   grupo);
 //! - o lançador que roda, sem nome de interpretador, um arquivo de programa
 //!   guardado fora do projeto (`uv run /tmp/edit.py`);
 //! - a edição no lugar (`sed -i`, `perl -i`, `ruby -i`);
@@ -177,29 +178,60 @@ fn grammar(name: &str) -> Option<&'static Grammar> {
 /// Os lançadores que rodam, depois de `run` e das opções deles, outro
 /// programa (`uv run --with x python -c …`), cada um com as opções que levam o
 /// valor na palavra seguinte (`conda run -n py python`): o valor delas não é o
-/// programa.
+/// programa. As do `uv` são todas as opções com valor do `uv run --help`: com
+/// duas opções fora da lista seguidas, o programa fica escondido atrás do
+/// valor da primeira e da palavra que vem depois dele.
 const LAUNCHERS: &[(&str, &[&str])] = &[
     (
         "uv",
         &[
+            "--extra",
+            "--no-extra",
+            "--group",
+            "--no-group",
+            "--only-group",
+            "--env-file",
             "--with",
+            "-w",
             "--with-editable",
             "--with-requirements",
+            "--package",
             "--python",
             "-p",
-            "--project",
-            "--directory",
-            "--package",
-            "--group",
-            "--extra",
-            "--env-file",
-            "--config-file",
-            "--cache-dir",
+            "--python-platform",
             "--index",
+            "--default-index",
             "--index-url",
+            "-i",
             "--extra-index-url",
             "--find-links",
             "-f",
+            "--index-strategy",
+            "--keyring-provider",
+            "--upgrade-package",
+            "-P",
+            "--upgrade-group",
+            "--resolution",
+            "--prerelease",
+            "--fork-strategy",
+            "--exclude-newer",
+            "--exclude-newer-package",
+            "--no-sources-package",
+            "--reinstall-package",
+            "--link-mode",
+            "--config-setting",
+            "-C",
+            "--config-settings-package",
+            "--no-build-isolation-package",
+            "--no-build-package",
+            "--no-binary-package",
+            "--refresh-package",
+            "--cache-dir",
+            "--color",
+            "--allow-insecure-host",
+            "--directory",
+            "--project",
+            "--config-file",
         ],
     ),
     ("poetry", &["--directory", "-C", "--project", "-P"]),
@@ -214,14 +246,20 @@ const LAUNCHERS: &[(&str, &[&str])] = &[
 /// argumentos dele: a primeira palavra depois do `run`, pulando as opções do
 /// lançador, o valor das que o levam e os invólucros (`uv run env python`).
 /// Essa palavra, logo depois de uma opção fora da lista, pode ser o valor da
-/// opção (`uv run --color never python`): quando ela não é um interpretador,
-/// a seguinte também pode ser o programa. Vazio para o comando que não é um
-/// lançador com `run`.
+/// opção (`uv run --frozen python`): quando ela não é um interpretador, a
+/// seguinte também pode ser o programa. Vazio para o comando que não é um
+/// lançador com `run`, que pode vir depois das opções gerais do lançador
+/// (`uv --directory sub run python`).
 fn launched(segment: &Segment) -> Vec<(&Word, &[Word])> {
     let Some((_, valued)) = LAUNCHERS.iter().find(|(name, _)| *name == segment.name()) else {
         return Vec::new();
     };
-    let Some((_, rest)) = segment.args.split_first().filter(|(run, _)| run.text == "run") else {
+    let option_at = |at: usize| segment.args.get(at).map(|word| word.text.as_str()).filter(|text| text.len() > 1 && text.starts_with('-'));
+    let mut general = 0;
+    while let Some(option) = option_at(general) {
+        general += 1 + usize::from(valued.contains(&option));
+    }
+    let Some((_, rest)) = segment.args.get(general..).and_then(<[Word]>::split_first).filter(|(run, _)| run.text == "run") else {
         return Vec::new();
     };
     let program = move |at: usize| {
@@ -641,16 +679,20 @@ impl Project {
     }
 
     /// A saída de `line[at]` é gravada num arquivo do projeto por um
-    /// redirecionamento: o dele ou o do grupo que termina nele (`( … ) > f`,
-    /// `{ …; } > f`), que vem no comando sem programa logo depois do grupo.
+    /// redirecionamento: o dele ou o do grupo que o tem dentro, que vem no
+    /// comando sem programa logo depois do grupo. O de `( … ) > f` vale para
+    /// todos os comandos do grupo, onde o leitor marca o começo dele; o de
+    /// `{ …; } > f` e o de `done > f`, que o leitor não marca, vale para o
+    /// último comando antes dele.
     fn redirected(&self, line: &[Segment], at: usize, shell: &Shell) -> bool {
         let depth = line[at].depth;
-        let group = line[at + 1..]
+        let next = line[at + 1..]
             .iter()
             .find(|segment| segment.depth <= depth)
             .filter(|segment| segment.depth == depth && segment.program.text.is_empty());
         std::iter::once(&line[at])
-            .chain(group)
+            .chain(next)
+            .chain(Segment::group_redirects(line, at))
             .flat_map(|segment| &segment.redirects)
             .filter(|redirect| writes(redirect))
             .any(|redirect| self.writes_to(&redirect.target, shell))
@@ -873,6 +915,12 @@ mod tests {
             "python3 -c \"print(1)\" | head -n 100 > src/lib.rs".to_string(),
             "python3 -c \"print(1)\" | sed 's/x/x/' > src/lib.rs".to_string(),
             "(python3 -c \"print(1)\") > src/lib.rs".to_string(),
+            "(python3 -c \"print(1)\"; true) > src/lib.rs".to_string(),
+            "(true; python3 -c \"print(1)\"; true) >> src/lib.rs".to_string(),
+            "((python3 -c \"print(1)\"; true); true) > src/lib.rs".to_string(),
+            "uv run --color never --only-group dev python -c \"open('src/lib.rs', 'w').write('')\"".to_string(),
+            format!("uv run --color never --only-group dev {outside}/edit.py"),
+            "uv --directory . run python -c \"open('src/lib.rs', 'w').write('')\"".to_string(),
             "{ echo 'pub fn b() {}'; } > src/lib.rs".to_string(),
             "tmp=$(mktemp) && sed 's/a/b/' src/lib.rs > \"$tmp\" && mv \"$tmp\" src/lib.rs".to_string(),
             "sed 's/a/b/' src/lib.rs > src/lib.rs.new && mv src/lib.rs.new src/lib.rs".to_string(),
@@ -938,6 +986,11 @@ mod tests {
             "python3 < scripts/check.py > src/gen.rs".to_string(),
             "cat scripts/check.py | python3 > src/gen.rs".to_string(),
             "uv run pytest -k python".to_string(),
+            "uv run --color never --only-group dev pytest -k python".to_string(),
+            "uv --directory . run pytest -q".to_string(),
+            format!("(python3 -c \"print(1)\"; true) > {outside}/out.txt"),
+            "python3 -c \"print(1)\"; (true; true) > src/lib.rs".to_string(),
+            "(python3 -c \"print(1)\"; true) 2>&1".to_string(),
             format!("sed -n 1,20p src/lib.rs > {outside}/x"),
         ];
         for command in &free {
@@ -951,7 +1004,10 @@ mod tests {
     /// e não o `py` que é o valor do `-n`; `uv run pytest -k python` não roda
     /// interpretador. Depois de uma opção que ele não conhece, a palavra que
     /// não é interpretador pode ser o valor dela, e a seguinte também conta:
-    /// `uv run --color never python` roda o `python`.
+    /// `uv run --color never python` roda o `python`. As opções com valor que
+    /// o `uv run --help` documenta estão na lista, e duas seguidas não
+    /// escondem o programa (`uv run --color never --only-group dev python`);
+    /// as opções gerais antes do `run` valem do mesmo jeito.
     #[test]
     fn a_launcher_runs_the_first_word_after_its_options() {
         let runs = |command: &str| {
@@ -970,5 +1026,12 @@ mod tests {
         assert_eq!(runs("uv run /usr/bin/env python x.py"), (true, true));
         assert_eq!(runs("uv run --frozen pytest -k python"), (false, false));
         assert_eq!(runs("uv run /usr/bin/env pytest -q"), (false, false));
+        assert_eq!(runs("uv run --color never --only-group dev python3 x.py"), (true, true));
+        assert_eq!(runs("uv run --with requests -P httpx --no-group docs node -e '1'"), (true, false));
+        assert_eq!(runs("uv run --color never --only-group dev pytest -k python"), (false, false));
+        assert_eq!(runs("uv --directory sub run python x.py"), (true, true));
+        assert_eq!(runs("uv -q --color never run --frozen python x.py"), (true, true));
+        assert_eq!(runs("uv --directory sub sync python"), (false, false));
+        assert_eq!(runs("uv --directory"), (false, false));
     }
 }

@@ -98,6 +98,11 @@ pub(crate) struct Segment {
     /// logo depois dele, mais fundos; os do corpo de um heredoc vêm depois do
     /// último comando da linha do heredoc.
     pub depth: usize,
+    /// No comando sem programa que só redireciona logo depois do `)` que fecha
+    /// um grupo (`( … ) > f`), quantos comandos antes dele, na mesma lista, o
+    /// grupo começa: os comandos de `line[at - n..at]`, de qualquer
+    /// profundidade, são o grupo. `None` nos outros comandos.
+    pub group_span: Option<usize>,
 }
 
 /// Os programas do Mustard, pelo nome sem a pasta: o `mustard-rt` e o
@@ -144,6 +149,20 @@ impl Segment {
             piped = segment.piped;
         }
         reached
+    }
+
+    /// Os comandos sem programa que redirecionam, com `( … ) > f`, um grupo
+    /// entre parênteses que tem `line[at]` dentro: os que vêm depois dele, no
+    /// mesmo nível, e cujo grupo ([`Segment::group_span`]) começa nele ou antes.
+    /// O redirecionamento vale para todos os comandos do grupo, e não só para
+    /// o último. Os comandos de dentro de um `$(…)` do grupo não entram: a
+    /// saída deles fica na substituição.
+    pub fn group_redirects(line: &[Segment], at: usize) -> impl Iterator<Item = &Segment> {
+        let depth = line[at].depth;
+        line.iter().enumerate().skip(at + 1).filter_map(move |(index, segment)| {
+            let start = index.checked_sub(segment.group_span?)?;
+            (segment.depth == depth && start <= at).then_some(segment)
+        })
     }
 }
 
@@ -194,6 +213,9 @@ struct Pending {
     redirects: Vec<Redirect>,
     inner: Vec<Segment>,
     piped: bool,
+    /// Onde, em `out`, começa o grupo entre parênteses que acabou de fechar
+    /// logo antes deste comando (`( … ) > f`); vira [`Segment::group_span`].
+    group: Option<usize>,
 }
 
 /// What a `${…}` or `$((…))` is, which tells where it closes.
@@ -308,7 +330,10 @@ impl Reader {
                     finish(&mut cur, &mut out, depth);
                     range_start = self.pos;
                     match groups.pop() {
-                        Some(start) => closed = Some(start),
+                        Some(start) => {
+                            closed = Some(start);
+                            cur.group = Some(start);
+                        }
                         None if close == Close::Paren => return out,
                         None => closed = None,
                     }
@@ -650,9 +675,10 @@ fn heredoc_commands(body: &str, depth: usize) -> Vec<Segment> {
 /// Close the command being read: resolve its program and push it, followed by
 /// the commands found inside it.
 fn finish(cur: &mut Pending, out: &mut Vec<Segment>, depth: usize) {
-    let Pending { words, redirects, inner, piped } = std::mem::take(cur);
+    let Pending { words, redirects, inner, piped, group } = std::mem::take(cur);
     if !words.is_empty() || !redirects.is_empty() {
-        let segment = Segment { piped, depth, ..simple_command(words, redirects) };
+        let group_span = group.filter(|_| words.is_empty()).map(|start| out.len().saturating_sub(start));
+        let segment = Segment { piped, depth, group_span, ..simple_command(words, redirects) };
         let nested = run_by(&segment, depth);
         out.push(segment);
         out.extend(inner);
@@ -706,7 +732,7 @@ fn simple_command(words: Vec<Word>, redirects: Vec<Redirect>) -> Segment {
         .collect();
     let mut rest = words.into_iter().skip(start);
     let program = rest.next().unwrap_or_default();
-    Segment { program, args: rest.collect(), redirects, leading, wrappers, piped: false, depth: 0 }
+    Segment { program, args: rest.collect(), redirects, leading, wrappers, piped: false, depth: 0, group_span: None }
 }
 
 /// Where the command really starts: past the structure words, a function
@@ -1159,6 +1185,39 @@ mod tests {
         assert_eq!(chain("{ { a; }; } | b"), ["a|", "|", "|", "b"]);
         assert_eq!(chain("a; { X=1; } | b"), ["a", "|", "|", "b"]);
         assert_eq!(chain("{ a; } || b"), ["a", "", "b"]);
+    }
+
+    /// O redirecionamento logo depois do `)` de um grupo vem num comando sem
+    /// programa que diz onde o grupo começa; ele vale para os comandos do
+    /// grupo no mesmo nível, e não para os de antes dele, os de depois, os de
+    /// dentro de uma substituição nem os de outro grupo.
+    #[test]
+    fn a_redirect_after_a_parenthesized_group_marks_where_the_group_starts() {
+        let reached = |cmd: &str| {
+            let line = segments(cmd);
+            let programs: Vec<String> = line.iter().map(|s| s.program.text.clone()).collect();
+            let spans: Vec<Option<usize>> = line.iter().map(|s| s.group_span).collect();
+            let covered: Vec<usize> = (0..line.len()).map(|at| Segment::group_redirects(&line, at).count()).collect();
+            (programs, spans, covered)
+        };
+        let (programs, spans, covered) = reached("x; (a; b $(c)) > f; d");
+        assert_eq!(programs, ["x", "a", "b", "c", "", "d"]);
+        assert_eq!(spans, [None, None, None, None, Some(3), None]);
+        assert_eq!(covered, [0, 1, 1, 0, 0, 0]);
+
+        let (programs, spans, covered) = reached("((a; b); c) 2> f");
+        assert_eq!(programs, ["a", "b", "c", ""]);
+        assert_eq!(spans, [None, None, None, Some(3)]);
+        assert_eq!(covered, [1, 1, 1, 0]);
+
+        let (programs, spans, covered) = reached("(a) > f && (b) > g");
+        assert_eq!(programs, ["a", "", "b", ""]);
+        assert_eq!(spans, [None, Some(1), None, Some(1)]);
+        assert_eq!(covered, [1, 0, 1, 0]);
+
+        // Sem redirecionamento, ou com programa depois do grupo, nada é marcado.
+        assert_eq!(reached("(a; b) | c").1, [None, None, None]);
+        assert_eq!(reached("(a) b > f").1, [None, None]);
     }
 
     #[test]
