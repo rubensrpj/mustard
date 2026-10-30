@@ -340,6 +340,12 @@ fn suspect(segment: &Segment) -> bool {
     name == "sed" || WRITERS.contains(&name) || interpreter(segment).is_some()
 }
 
+/// Os sinais que, além de letra e número, cabem num caminho citado no texto
+/// de um programa. No Windows entram a barra invertida e os dois-pontos da
+/// unidade: sem eles, `C:\proj\src\lib.rs` vira pedaços que nunca batem com um
+/// arquivo do projeto.
+const PATH_CHARS: &str = if cfg!(windows) { "_-./~+@\\:" } else { "_-./~+@" };
+
 /// As pastas do projeto: o checkout principal e a pasta das cópias.
 struct Project {
     folders: Vec<PathBuf>,
@@ -394,9 +400,9 @@ impl Project {
     /// começa em `/`, também como o resto de um caminho montado
     /// (`f"{root}/src/x.rs"`).
     fn cited(&self, text: &str, shell: &Shell) -> bool {
-        text.split(|c: char| !(c.is_alphanumeric() || "_-./~+@".contains(c)))
+        text.split(|c: char| !(c.is_alphanumeric() || PATH_CHARS.contains(c)))
             .map(|token| token.trim_end_matches('.'))
-            .filter(|token| token.contains(['/', '.']) && token.chars().any(char::is_alphanumeric))
+            .filter(|token| token.contains(['/', '.', '\\']) && token.chars().any(char::is_alphanumeric))
             .any(|token| {
                 let joined = shell.here().join(token.trim_start_matches('/'));
                 shell.path(token).into_iter().chain([joined]).any(|path| self.exists(&path) && self.holds(&path))
