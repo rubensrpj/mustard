@@ -234,7 +234,7 @@ use crate::shared::spec_state::session_from_env;
 
 pub(crate) use answer::{RoundRefusal, agents_refreshed, minutes_since, read_command, wave_dispatch};
 pub(crate) use jev_decision::{FINAL_REVIEW, Waiting};
-pub(crate) use leftovers::{FinalFindings, record_final_leftovers};
+pub(crate) use leftovers::{hand_legacy_findings_to_project, record_final_leftovers};
 pub(crate) use triage_questions::ask_after_locks;
 pub(crate) use fixes::{fix_file, sweep_fixes};
 pub(crate) use keep::{Keeping, Kept, landed_kept};

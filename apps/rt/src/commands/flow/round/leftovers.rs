@@ -1,7 +1,11 @@
 //! As sobras de uma volta: o que o agente de onda viu e deixou de fora da
-//! entrega, no campo `leftovers`. Toda sobra vai ao backlog da spec, sem
-//! pergunta: o que nasce na obra se resolve nela, e a rodada nunca passa um
-//! achado à lista de pendências do projeto. A sobra vira um pedido próprio,
+//! entrega, no campo `leftovers`. Só o achado que bloqueia segura a obra:
+//! `blocks` diz se ele quebra um critério, uma regra escrita na spec, um uso de
+//! hoje (regressão) ou a segurança. O que bloqueia vai ao backlog da spec,
+//! sem pergunta: o que quebra a obra se resolve nela. O que não bloqueia —
+//! e o achado de uma volta antiga, sem `blocks` — vai à lista de pendências
+//! do projeto, com o título e uma linha pelo efeito, sem pedido, tarefa nem
+//! onda ([`project_pending`]). A sobra que bloqueia vira um pedido próprio,
 //! com o título e o relato dela, e uma tarefa que cobre esse pedido — nunca
 //! os critérios da onda que a relatou, que quase nunca têm a ver com ela.
 //! Todo achado diz a regra que quebrou (`rule`) e os lugares dela
@@ -26,11 +30,12 @@
 //! regra, que passa a cobrir o item: tirar a tarefa deixa a regra descoberta.
 //!
 //! Os achados que a revisão final aprovada traz em `leftovers`, no mesmo
-//! formato, passam pela mesma montagem quando o fechamento os grava
-//! ([`record_final_leftovers`]), com os textos que nomeiam a revisão final no
-//! lugar da onda. Ali, o achado sem regra escrita na spec não vira pedido nem
-//! tarefa: a regra nova é decisão do usuário, e o achado vai a ele como
-//! pergunta.
+//! formato, não bloqueiam por definição — a revisão que acha algo que bloqueia
+//! reprova —: o fechamento os põe todos na lista de pendências do projeto
+//! ([`record_final_leftovers`]), sem tarefa e sem pergunta ao usuário. A tarefa
+//! aberta que um achado de revisão final aprovada deu antes desta regra passa
+//! também à lista, com a remoção dela gravada pelo programa
+//! ([`hand_legacy_findings_to_project`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -48,15 +53,18 @@ use mustard_core::domain::spec_state::PhaseWriter;
 use super::git_ignored::all_ignored;
 use super::jev_decision::FINAL_REVIEW;
 use super::queue::backlog_left;
-use super::rehearsal::{Recording, Rehearsed, rehearse};
 use super::report::{backlog_return, own_copy_relative};
 use super::stops::append_agent_line;
-use crate::commands::spec_events::write::RecordCheck;
+use crate::commands::event::pending::add_for_the_project;
+use crate::commands::spec_events::write::record;
 use crate::shared::task_triage;
 
 /// O campo que marca a limpeza, na sobra da volta e na tarefa que ela vira:
 /// o nome mora só aqui.
 const CLEANUP: &str = "cleanup";
+
+/// O campo que marca o achado que bloqueia a obra.
+const BLOCKS: &str = "blocks";
 
 /// O campo da sobra com os arquivos que ela pede para mudar.
 const FILES: &str = "files";
@@ -109,7 +117,8 @@ const REQUEST: &str = "request";
 /// marcou como limpeza — só muda comentário, documentação ou texto de ajuda,
 /// sem mudar comportamento nem o que um teste espera. O achado diz também a
 /// regra que quebrou, pelo código de uma regra da spec ou pelo texto de uma
-/// regra nova, e os lugares dessa regra.
+/// regra nova, e os lugares dessa regra, e se bloqueia (`blocks`): quebra um
+/// critério, uma regra escrita na spec, um uso de hoje ou a segurança.
 pub(crate) struct Leftover {
     pub title: String,
     pub detail: String,
@@ -117,22 +126,24 @@ pub(crate) struct Leftover {
     pub cleanup: bool,
     pub rule: String,
     pub places: Vec<String>,
+    pub blocks: bool,
 }
 
 /// As sobras da lista `leftovers` da volta, um evento `event_type` — a
 /// entrega da onda ou o veredito final —, na ordem, cada texto sem os
 /// espaços das pontas. O `kind` que ela ainda traga não é lido, e a marca de
-/// limpeza ausente vale "não". O achado sem título, detalhe, regra ou lugar
+/// limpeza ausente vale "não", como `blocks` ausente — a volta antiga não
+/// bloqueia. O achado sem título, detalhe, regra ou lugar
 /// nenhum é recusado pelo número dele, a contar de um, como a marca de
-/// limpeza que não é sim nem não, a lista de arquivos ou de lugares que não é
-/// uma lista de textos e a regra que não é texto.
+/// limpeza ou de bloqueio que não é sim nem não, a lista de arquivos ou de
+/// lugares que não é uma lista de textos e a regra que não é texto.
 ///
 /// # Errors
 ///
 /// [`Refusal::LeftoverFieldMissing`] quando falta ao achado o título, o
 /// detalhe, a regra ou os lugares; [`Refusal::InvalidValue`] quando a marca de
-/// limpeza dele não é um booleano, a regra dele não é texto, ou os arquivos
-/// ou os lugares dele não são uma lista de textos.
+/// limpeza ou a de bloqueio dele não é um booleano, a regra dele não é texto,
+/// ou os arquivos ou os lugares dele não são uma lista de textos.
 pub(super) fn leftovers_of(event_type: &str, items: &[Value]) -> Result<Vec<Leftover>, Refusal> {
     let field = |item: &Value, key: &str| item.get(key).and_then(Value::as_str).map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
     let invalid = |at: usize, name: &str, expected: Kind| Refusal::InvalidValue {
@@ -157,6 +168,11 @@ pub(super) fn leftovers_of(event_type: &str, items: &[Value]) -> Result<Vec<Left
             Some(Value::Bool(marked)) => *marked,
             Some(_) => return Err(invalid(at, CLEANUP, Kind::Bool)),
         };
+        let blocks = match item.get(BLOCKS) {
+            None => false,
+            Some(Value::Bool(marked)) => *marked,
+            Some(_) => return Err(invalid(at, BLOCKS, Kind::Bool)),
+        };
         let files = texts(at, item, FILES)?;
         let places: Vec<String> = texts(at, item, PLACES)?.unwrap_or_default().into_iter().filter(|place| !place.is_empty()).collect();
         if item.get(RULE).is_some_and(|said| !said.is_null() && !said.is_string()) {
@@ -170,7 +186,7 @@ pub(super) fn leftovers_of(event_type: &str, items: &[Value]) -> Result<Vec<Left
         let (Some(title), Some(detail), Some(rule), false) = (title, detail, rule, places.is_empty()) else {
             return Err(Refusal::LeftoverFieldMissing { finding: at + 1, field: missing.join(", ") });
         };
-        leftovers.push(Leftover { title, detail, files, cleanup, rule, places });
+        leftovers.push(Leftover { title, detail, files, cleanup, rule, places, blocks });
     }
     Ok(leftovers)
 }
@@ -227,8 +243,10 @@ pub(super) fn ask_rewrites(root: &Path, log: &SpecLog, joins: &[MeaningJoin], en
 /// numa tarefa que já existe leva a marca da sobra no título
 /// ([`marked_title`]), e o pedido aponta em `origin` a entrega da onda em
 /// `delivered`, quando ela está lá. O achado só em arquivo que o git ignora
-/// vira nota ao usuário, sem pedido nem tarefa ([`local_note`]). Os textos
-/// saem no idioma `lang`.
+/// vira nota ao usuário, sem pedido nem tarefa ([`local_note`]). Só o achado
+/// que bloqueia entra aqui: o que não bloqueia não vira evento da spec, e vai
+/// à lista de pendências do projeto ([`project_pending`]). Os textos saem no
+/// idioma `lang`.
 pub(super) fn leftover_events(
     root: &Path,
     log: &SpecLog,
@@ -245,7 +263,7 @@ pub(super) fn leftover_events(
     // Onde está, em `work`, a tarefa de cada regra que um achado desta volta
     // já trouxe.
     let mut ruled: Vec<(String, usize)> = Vec::new();
-    for &(wave, leftover) in found {
+    for &(wave, leftover) in found.iter().filter(|(_, leftover)| leftover.blocks) {
         let files: BTreeSet<String> = leftover_files(root, log, wave, leftover).into_iter().collect();
         // Só em arquivo que o git ignora é mudança local: nenhuma onda a
         // entrega, e o usuário a recebe como nota, sem pedido nem tarefa.
@@ -291,61 +309,136 @@ pub(super) fn leftover_events(
     requests
 }
 
-/// O que o fechamento fez dos achados do veredito final aprovado: de cada
-/// evento gravado, o tipo e o número (`recorded`), e a pergunta ao usuário de
-/// cada achado sem regra escrita na spec (`questions`).
-#[derive(Default)]
-pub(crate) struct FinalFindings {
-    pub recorded: Vec<Value>,
-    pub questions: Vec<Value>,
+/// Uma pendência do projeto que um achado que não bloqueia vira: a onda que o
+/// apontou, o título, o mesmo título com a marca da sobra — para a lista que já
+/// tem uma pendência aberta de mesmo título e outro detalhe — e a linha pelo
+/// efeito, que é o detalhe do achado numa linha só.
+pub(super) struct ProjectPending {
+    pub(super) wave: u64,
+    pub(super) title: String,
+    pub(super) marked: String,
+    pub(super) effect: String,
 }
 
-/// Grava no backlog da spec `spec`, vista de `start`, os achados que o
-/// veredito final aprovado `verdict`, lido em `log`, traz em `leftovers`: cada
-/// um vira o pedido com o relato dele, que aponta o veredito em `origin`, e a
-/// tarefa que o cobre, pela mesma montagem das sobras de uma onda
-/// ([`leftover_events`]), com a revisão final no lugar da onda
-/// ([`FINAL_REVIEW`]). O achado cuja regra não cita item escrito na spec
-/// ([`written_rule`]) não vira pedido nem tarefa: vai ao usuário como
-/// pergunta ([`finding_question`]), porque a regra nova é decisão dele. O
-/// achado só em arquivo que o git ignora segue para a nota, com ou sem regra
-/// escrita. Tudo passa antes pelo ensaio: a recusa de um não deixa gravado
-/// nenhum. Nada sem achado. Os textos saem no idioma `lang`.
+/// O tipo da entrada que a resposta da rodada e a do fechamento trazem por
+/// pendência do projeto que um achado deu.
+const PENDING: &str = "pending";
+
+/// A pendência do projeto que o achado `leftover`, apontado pela onda `wave`,
+/// vira, no idioma `lang`.
+fn pending_of(wave: u64, leftover: &Leftover, lang: Locale) -> ProjectPending {
+    ProjectPending { wave, title: leftover.title.clone(), marked: marked_title(wave, &leftover.title, lang), effect: text::one_line(&leftover.detail) }
+}
+
+/// As pendências do projeto que os achados de `found` que não bloqueiam
+/// viram, na ordem deles, no idioma `lang`: o título e uma linha pelo efeito,
+/// sem pedido, tarefa nem onda. O achado que bloqueia fica de fora, e é o que
+/// [`leftover_events`] grava na spec.
+pub(super) fn project_pending(found: &[(u64, &Leftover)], lang: Locale) -> Vec<ProjectPending> {
+    found.iter().filter(|(_, leftover)| !leftover.blocks).map(|(wave, leftover)| pending_of(*wave, leftover, lang)).collect()
+}
+
+/// Põe cada pendência de `items` na lista de pendências do projeto de `root`
+/// ([`add_for_the_project`]) e devolve uma entrada por uma, na ordem: o tipo,
+/// a onda que a apontou (a revisão final não tem), o título e o número que a
+/// lista deu, ou o motivo de a lista não a ter aceito. Uma pendência aberta de
+/// mesmo título e outro detalhe faz a pendência entrar com a marca da sobra no
+/// título. A lista que não grava nunca recusa a volta: o motivo vai na entrada.
+pub(super) fn hand_to_project(root: &Path, items: Vec<ProjectPending>) -> Vec<Value> {
+    items
+        .into_iter()
+        .map(|item| {
+            let added = add_for_the_project(root, &item.title, &item.effect).or_else(|_| add_for_the_project(root, &item.marked, &item.effect));
+            let mut entry = json!({ "type": PENDING, "title": item.title });
+            if item.wave != FINAL_REVIEW {
+                entry["wave"] = json!(item.wave);
+            }
+            match added {
+                Ok(id) => entry["id"] = json!(id),
+                Err(error) => entry["error"] = json!(error),
+            }
+            entry
+        })
+        .collect()
+}
+
+/// Põe na lista de pendências do projeto de `root` os achados que o veredito
+/// final aprovado `verdict` traz em `leftovers`, e devolve uma entrada por
+/// pendência ([`hand_to_project`]). O veredito final aprovado não bloqueia por
+/// definição — a revisão que acha algo que bloqueia reprova —, e por isso todo
+/// achado dele vai à lista, com o título e uma linha pelo efeito, sem pedido,
+/// tarefa nem pergunta ao usuário, tenha ou não regra escrita na spec e
+/// diga ou não `blocks`. Gravar de novo o mesmo achado devolve a pendência que
+/// já está lá. Os textos saem no idioma `lang`.
 ///
 /// # Errors
 ///
-/// A recusa da leitura dos achados ([`leftovers_of`]), do ensaio ou da
-/// gravação.
-pub(crate) fn record_final_leftovers(start: &Path, root: &Path, spec: &str, (log, verdict): (&SpecLog, &SpecEvent), lang: Locale) -> Result<FinalFindings, Refusal> {
+/// A recusa da leitura dos achados ([`leftovers_of`]): nada é gravado.
+pub(crate) fn record_final_leftovers(root: &Path, verdict: &SpecEvent, lang: Locale) -> Result<Vec<Value>, Refusal> {
     let listed = verdict.fields.get("leftovers").and_then(Value::as_array).cloned().unwrap_or_default();
     let found = leftovers_of("verdict", &listed)?;
-    let local = |leftover: &Leftover| all_ignored(root, &leftover_files(root, log, FINAL_REVIEW, leftover).into_iter().collect());
-    let (pointed, asked): (Vec<&Leftover>, Vec<&Leftover>) =
-        found.iter().partition(|leftover| written_rule(log, &leftover.rule).is_some() || local(leftover));
-    let questions = asked.into_iter().map(|leftover| finding_question(leftover, lang)).collect();
-    if pointed.is_empty() {
-        return Ok(FinalFindings { recorded: Vec::new(), questions });
+    Ok(hand_to_project(root, found.iter().map(|leftover| pending_of(FINAL_REVIEW, leftover, lang)).collect()))
+}
+
+/// As tarefas abertas do backlog de `log` que nasceram de achado de revisão
+/// final aprovada antes de só o que bloqueia segurar a obra — a tarefa de
+/// autor `review` que cobre um pedido apontando, em `origin`, um veredito
+/// final aprovado —, cada uma com os pedidos de achado que ela cobre.
+fn legacy_findings(log: &SpecLog) -> Vec<(&SpecEvent, Vec<u64>)> {
+    let approved: BTreeSet<u64> = log
+        .events
+        .iter()
+        .filter(|event| event.event_type == "verdict" && event.fields.get("final") == Some(&Value::Bool(true)) && event.str_field("result").map(str::trim) == Some("approved"))
+        .map(|event| event.id)
+        .collect();
+    backlog_left(log)
+        .into_iter()
+        .filter_map(|id| log.get(id))
+        .filter(|task| task.str_field("author") == Some("review"))
+        .filter_map(|task| {
+            let asks: Vec<u64> = task
+                .ints("covers")
+                .into_iter()
+                .filter(|id| log.get(*id).is_some_and(|ask| ask.event_type == REQUEST && ask.int("origin").is_some_and(|origin| approved.contains(&origin))))
+                .collect();
+            (!asks.is_empty()).then_some((task, asks))
+        })
+        .collect()
+}
+
+/// Passa à lista de pendências do projeto as tarefas abertas que um achado de
+/// revisão final aprovada deu antes de só o que bloqueia segurar a obra
+/// ([`legacy_findings`]): cada uma entra na lista com o título e uma linha
+/// pelo efeito, e só então ela e o pedido do achado saem da spec, por uma
+/// remoção do programa (`binary`) com o número da pendência no motivo, sem
+/// onda. A tarefa que a lista não aceitou fica no backlog, com o motivo na
+/// entrada. Devolve uma entrada por tarefa ([`hand_to_project`]), na ordem do
+/// backlog; vazia quando não há nenhuma, e nada é gravado. Os textos saem no
+/// idioma `lang`.
+///
+/// # Errors
+///
+/// A recusa da gravação da remoção.
+pub(crate) fn hand_legacy_findings_to_project(start: &Path, root: &Path, spec: &str, log: &SpecLog, lang: Locale) -> Result<Vec<Value>, Refusal> {
+    let mut handed = Vec::new();
+    for (task, asks) in legacy_findings(log) {
+        let title = task.str_field("title").unwrap_or_default();
+        let item = ProjectPending {
+            wave: FINAL_REVIEW,
+            title: title.to_string(),
+            marked: marked_title(FINAL_REVIEW, title, lang),
+            effect: text::one_line(task.str_field("text").unwrap_or_default()),
+        };
+        let entry = hand_to_project(root, vec![item]).remove(0);
+        if let Some(id) = entry["id"].as_str() {
+            let reason = translate("round.legacy_finding_removed", lang).replace("{pending}", id);
+            let targets: Vec<u64> = std::iter::once(task.id).chain(asks).collect();
+            let draft = json!({ "targets": targets, "reason": reason, "author": "binary" });
+            record(start, spec, "remove", draft.as_object().cloned().unwrap_or_default(), PhaseWriter::Binary)?;
+        }
+        handed.push(entry);
     }
-    let pointed: Vec<(u64, &Leftover)> = pointed.into_iter().map(|leftover| (FINAL_REVIEW, leftover)).collect();
-    let origin = BTreeMap::from([(FINAL_REVIEW, verdict.id)]);
-    let events = leftover_events(root, log, &pointed, &origin, lang);
-    let mut check = RecordCheck::open(start, spec, PhaseWriter::Binary)?;
-    let mut ids = Vec::new();
-    let mut rehearsed: Vec<(&str, Rehearsed)> = Vec::new();
-    for LeftoverEvent { kind, mut draft, asks, .. } in events {
-        draft.insert("author".into(), json!("review"));
-        cover_asks(&mut draft, &asks, &ids);
-        let event = rehearse(&mut check, kind, draft)?;
-        ids.push(event.id);
-        rehearsed.push((kind, event));
-    }
-    let mut recording = Recording::new(start, spec);
-    let mut recorded = Vec::new();
-    for (kind, event) in rehearsed {
-        let (id, _) = recording.record(kind, event)?;
-        recorded.push(json!({ "type": kind, "id": id }));
-    }
-    Ok(FinalFindings { recorded, questions })
+    Ok(handed)
 }
 
 /// O item escrito na spec, lida em `log`, que a regra `said` de um achado
@@ -359,15 +452,6 @@ fn written_rule<'a>(log: &'a SpecLog, said: &str) -> Option<&'a SpecEvent> {
         .filter_map(|word| codes.iter().filter(|(_, code)| code.eq_ignore_ascii_case(word)).map(|(id, _)| *id).max())
         .filter_map(|id| log.current(id))
         .find(|item| item.event_type == "criterion" || !carried_agreed([*item]).is_empty())
-}
-
-/// A pergunta ao usuário sobre o achado `leftover` da revisão final, cuja
-/// regra não está escrita na spec: o título, o detalhe, a regra e os lugares
-/// do achado, e o texto que pergunta se a regra passa a valer, no idioma
-/// `lang`.
-fn finding_question(leftover: &Leftover, lang: Locale) -> Value {
-    let question = translate("finding.question", lang).replace("{title}", &leftover.title).replace("{rule}", &leftover.rule);
-    json!({ "title": leftover.title, "detail": leftover.detail, "rule": leftover.rule, "places": leftover.places, "question": question })
 }
 
 /// Liga a tarefa `draft` aos pedidos das sobras que ela passa a cobrir: cada
@@ -642,13 +726,92 @@ mod tests {
             cleanup: false,
             rule: rule.into(),
             places: places.iter().map(|place| (*place).to_string()).collect(),
+            blocks: true,
         }
     }
 
-    /// O achado da volta, como a onda o grava: o título, o detalhe, a regra
-    /// e os lugares.
+    /// O achado da volta que bloqueia, como a onda o grava: o título, o
+    /// detalhe, a regra e os lugares.
     fn finding(title: &str, detail: &str, rule: &str, places: &[&str]) -> Value {
-        json!({"title": title, "detail": detail, "rule": rule, "places": places})
+        json!({"title": title, "detail": detail, "rule": rule, "places": places, "blocks": true})
+    }
+
+    /// A pendência aberta do projeto: os títulos que a lista guarda, na ordem.
+    fn project_titles(root: &Path) -> Vec<String> {
+        crate::commands::event::pending::open_project_pending(root).into_iter().map(|item| item.title).collect()
+    }
+
+    /// A marca `blocks` que não é sim nem não é recusada pelo número do
+    /// achado; a ausente vale "não bloqueia", como numa volta antiga.
+    #[test]
+    fn a_blocks_mark_defaults_to_not_blocking_and_must_be_a_boolean() {
+        let base = finding("A leitura abre", &format!("Abre. {PROOF}"), "Toda leitura passa pelo mapa", &["src/a.rs:3"]);
+        let mut old = base.clone();
+        old.as_object_mut().unwrap().remove("blocks");
+        let read = |blocks: Option<Value>| {
+            let mut item = old.clone();
+            if let Some(blocks) = blocks {
+                item["blocks"] = blocks;
+            }
+            leftovers_of("delivered", &[item]).map(|found| found[0].blocks)
+        };
+        assert_eq!(read(None).ok(), Some(false), "a volta antiga não bloqueia");
+        assert_eq!(read(Some(json!(true))).ok(), Some(true));
+        assert_eq!(read(Some(json!(false))).ok(), Some(false));
+        assert!(matches!(read(Some(json!("sim"))), Err(Refusal::InvalidValue { field, .. }) if field == "leftovers[1].blocks"));
+    }
+
+    /// A onda volta com três achados: um que bloqueia, um que diz que não
+    /// bloqueia e um de volta antiga, sem a marca. O que bloqueia vira o
+    /// pedido e a tarefa, como sempre; os outros dois vão à lista de
+    /// pendências do projeto, cada um com o título e o detalhe numa linha, sem
+    /// pedido nem tarefa, e a resposta da rodada traz uma entrada por pendência.
+    #[test]
+    fn a_wave_leftover_that_does_not_block_goes_to_the_project_list() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/soma.ts"), "export const soma = 1;\n").unwrap();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        round(root, "x", None);
+        std::fs::write(root.join("src/a.rs"), "fn one() {}\n// A soma saiu.\n").unwrap();
+        let mut breaking = finding("A soma perde o sinal", "A soma perde o sinal. Prova: `git --version`", "A soma guarda o sinal", &["src/soma.ts:1"]);
+        breaking["files"] = json!(["src/soma.ts"]);
+        let mut quiet = finding("O nome da soma é torto", "O nome da função\nnão diz o que ela faz. Prova: `git --version`", "Todo nome diz o que faz", &["src/a.rs:1"]);
+        quiet["blocks"] = json!(false);
+        let mut old = finding("A doc da soma está velha", "A doc cita a soma antiga. Prova: `git --version`", "A doc confere com o código", &["src/a.rs:2"]);
+        old.as_object_mut().unwrap().remove("blocks");
+        let wrote = returned(root, json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"], "commit": "a soma sai", "leftovers": [breaking, quiet, old]}));
+        assert_eq!(wrote["ok"], json!(true), "{wrote}");
+        let out = round(root, "x", None);
+        assert_eq!(out["ok"], json!(true), "{out}");
+
+        let tasks = recorded(root, &out, TASK);
+        assert_eq!(tasks.len(), 1, "só o achado que bloqueia vira tarefa: {out}");
+        assert_eq!(tasks[0].str_field("title"), Some("A soma perde o sinal"), "{:?}", tasks[0].fields);
+        assert_eq!(recorded(root, &out, REQUEST).len(), 1, "{out}");
+        assert_eq!(project_titles(root), ["O nome da soma é torto", "A doc da soma está velha"], "{out}");
+        let pending: Vec<&Value> = out["recorded"].as_array().unwrap().iter().filter(|entry| entry["type"] == json!(PENDING)).collect();
+        assert_eq!(pending.len(), 2, "{out}");
+        assert!(pending.iter().all(|entry| entry["wave"] == json!(1) && entry["id"].is_string()), "{out}");
+        let ledger = std::fs::read_to_string(mustard_core::ClaudePaths::for_project(root).unwrap().pending_ledger_path()).unwrap();
+        assert!(ledger.contains("O nome da função não diz o que ela faz. Prova: `git --version`"), "o efeito vai numa linha só: {ledger}");
+    }
+
+    /// Dois achados que não bloqueiam e têm o mesmo título, com detalhes
+    /// diferentes: a lista recusa o repetido, e o segundo entra com a marca da
+    /// sobra no título, sem perder o achado nem recusar a volta.
+    #[test]
+    fn two_findings_with_one_title_both_reach_the_project_list() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        // Sem o `mustard.json`, a lista do projeto seria a do projeto em que o teste roda.
+        std::fs::write(root.join("mustard.json"), "{}").unwrap();
+        let first = pending_of(1, &ruled("O nome é torto", "Todo nome diz o que faz", &["src/a.rs"], &["src/a.rs:1"]), Locale::PtBr);
+        let second = ProjectPending { effect: "Outro nome torto, em outro lugar.".into(), ..pending_of(1, &ruled("O nome é torto", "Todo nome diz o que faz", &["src/b.rs"], &["src/b.rs:1"]), Locale::PtBr) };
+        let entries = hand_to_project(root, vec![first, second]);
+        assert!(entries.iter().all(|entry| entry["id"].is_string()), "{entries:?}");
+        assert_eq!(project_titles(root), ["O nome é torto", "Sobra da onda 1: O nome é torto"]);
     }
 
     /// Uma tarefa do backlog faz valer a regra da leitura pelo mapa e é

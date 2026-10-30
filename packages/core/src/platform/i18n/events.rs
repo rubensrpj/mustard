@@ -824,24 +824,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("finding.review_joined_by_rule", Locale::EnUs) => {
             concat!("Finding from the final review, of the same rule — {title}: {detail} (By the map: ", map_commands_en!(), ".)")
         }
-        // O achado da revisão final sem regra escrita na spec, que vai ao
-        // usuário como pergunta, e o aviso que manda fazê-la.
-        ("finding.question", Locale::PtBr) => {
-            "A revisão final achou: {title}. A regra que o achado diz, {rule}, não está escrita na spec. \
-             Ela passa a valer nesta obra?"
-        }
-        ("finding.question", Locale::EnUs) => {
-            "The final review found: {title}. The rule the finding names, {rule}, is not written in the \
-             spec. Should it hold in this work?"
-        }
-        ("finding.questions_hint", Locale::PtBr) => {
-            "A revisão final trouxe achados sem regra escrita na spec, e eles não viraram tarefa. Antes do \
-             pull request, faça ao usuário a pergunta de cada um, em `questions`."
-        }
-        ("finding.questions_hint", Locale::EnUs) => {
-            "The final review brought findings without a rule written in the spec, and they did not become \
-             tasks. Before the pull request, ask the user the question of each one, in `questions`."
-        }
         ("spec_events.report_carries_return_line", Locale::PtBr) => {
             "A entrega e o veredito moram na spec: o agente os grava com mustard-rt run write. O \
              relatório leva só as linhas `USAGE`, `PAUSED` e `REJECTED`."
@@ -1685,7 +1667,6 @@ mod tests {
             ("finding.places", &["{places}"][..]),
             ("finding.joined_by_rule", &["{wave}", "{title}", "{detail}"][..]),
             ("finding.review_joined_by_rule", &["{title}", "{detail}"][..]),
-            ("finding.question", &["{title}", "{rule}"][..]),
             ("spec_events.report_carries_return_line", &[][..]),
             ("spec_events.return_missing", &["{wave}"][..]),
             ("spec_events.return_needs_commit", &["{wave}"][..]),

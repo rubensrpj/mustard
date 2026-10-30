@@ -603,18 +603,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("close.next", Locale::PtBr) => "Depois, abra o pull request: `{command}`.",
         ("close.next", Locale::EnUs) => "Then open the pull request: `{command}`.",
-        // A revisão final aprovou com achados: eles viraram tarefas, e o
-        // pull request espera a entrega delas e uma revisão final nova.
-        ("close.final_leftovers", Locale::PtBr) => {
-            "A revisão final aprovou a obra com achados, que viraram as tarefas {tasks} no backlog. \
-             A spec não fechou: antes do pull request, rode a rodada, que as despacha: `{command}`. \
-             Depois da entrega, o fechamento pede uma revisão final nova."
-        }
-        ("close.final_leftovers", Locale::EnUs) => {
-            "The final review approved the work with findings, which became tasks {tasks} in the \
-             backlog. The spec did not close: before the pull request, run the round, which dispatches \
-             them: `{command}`. After the delivery, the close asks for a new final review."
-        }
         // A pergunta de destino de uma pendência ligada à spec `{spec}`: a
         // mesma linha que a gravação de uma pendência devolve na hora, e que
         // o fechamento repete para cada uma que a spec ainda deixa aberta.
@@ -1464,6 +1452,16 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("round.leftover_without_files", Locale::EnUs) => {
             "Leftover without a declared file: write a new version of the task with its files and \
              dependencies before it goes out in a wave."
+        }
+        // O motivo da remoção da tarefa e do pedido que um achado de revisão
+        // final aprovada deu antes de só o que bloqueia segurar a obra.
+        ("round.legacy_finding_removed", Locale::PtBr) => {
+            "Achado de revisão final aprovada: não bloqueia a obra, e passou à lista de pendências do \
+             projeto ({pending}), sem tarefa."
+        }
+        ("round.legacy_finding_removed", Locale::EnUs) => {
+            "Finding of an approved final review: it does not block the work, and moved to the project's \
+             pending list ({pending}), with no task."
         }
         ("round.tasks_returned", Locale::PtBr) => {
             "A onda {wave} não fez as tarefas {tasks}, e elas voltaram ao backlog, com a mudança \
@@ -2751,7 +2749,6 @@ mod tests {
             ("close.final_review", &["{spec}"][..]),
             ("close.review_request_renewed", &["{items}", "{send}"][..]),
             ("close.next", &["{command}"][..]),
-            ("close.final_leftovers", &["{tasks}", "{command}"][..]),
             ("close.pending_destination", &["{id}", "{title}", "{spec}"][..]),
             ("close.unowned_item", &["{code}", "{title}"][..]),
             ("close.unowned_test", &["{name}", "{file}", "{line}"][..]),
@@ -2898,6 +2895,7 @@ mod tests {
             ("round.queued.following", &["{wave}"][..]),
             ("round.queued.open_tasks", &["{tasks}"][..]),
             ("round.leftover_without_files", &[][..]),
+            ("round.legacy_finding_removed", &["{pending}"][..]),
             ("round.tasks_returned", &["{wave}", "{tasks}"][..]),
             ("round.proof_rerouted", &["{item}", "{criterion}"][..]),
             ("round.proof_kept", &["{item}", "{type}"][..]),

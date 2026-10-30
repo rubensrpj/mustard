@@ -28,9 +28,11 @@
 //! como conserto pela rodada; entregue o conserto, o fechamento pede o mesmo
 //! agente de novo, mas só para conferir o conserto, não a obra inteira. Em
 //! até duas voltas de conserto sem aprovar, a onda para e a decisão passa a
-//! ser do usuário — o mesmo limite de qualquer conserto. Os achados que o
-//! veredito aprovado traz em `leftovers` viram tarefas no backlog, e a
-//! resposta manda rodar a rodada no lugar do pull request.
+//! ser do usuário — o mesmo limite de qualquer conserto. O veredito aprovado
+//! fecha a obra: os achados que ele traz em `leftovers` não bloqueiam, e vão à
+//! lista de pendências do projeto, sem tarefa e sem pergunta. A tarefa aberta
+//! que um achado de revisão aprovada deu antes dessa regra passa à lista, e não
+//! segura o fechamento.
 //!
 //! **Uma cópia limpa.** O agente de teste dedicado confere a obra na mesma
 //! cópia limpa em que a máquina rodou, no mesmo commit, e lê a spec pelo
@@ -528,6 +530,14 @@ fn run_close(
         return Err(CloseRefusal::NotRunning { phase });
     }
 
+    // A tarefa aberta que um achado de revisão final aprovada deu antes de só
+    // o que bloqueia segurar a obra passa à lista de pendências do projeto
+    // antes de qualquer conferência: o backlog dela não segura o fechamento. A
+    // spec é lida de novo, já sem ela, e a resposta leva uma entrada por
+    // pendência.
+    let legacy = crate::commands::flow::round::hand_legacy_findings_to_project(&opts.root, root, &spec, &log, lang).map_err(CloseRefusal::Refused)?;
+    let log = if legacy.is_empty() { log } else { read(&path)? };
+
     // Os agentes do projeto voltam ao texto deste programa no começo do
     // fechamento, bem antes do envio da revisão: o Claude Code leva alguns
     // segundos para reler o arquivo, e o revisor aberto logo depois da troca
@@ -724,37 +734,15 @@ fn run_close(
     // próprio veredito já trouxe por item, e a situação. Sem essa tabela,
     // ninguém consultava depois qual item tem qual verificação, nem onde o
     // comportamento mora — o resultado morria no veredito.
-    // Antes dela, os achados que o veredito aprovado traz em `leftovers` viram
-    // tarefas no backlog, e a obra não fecha: a resposta manda rodar a rodada
-    // no lugar do pull request. O fechamento seguinte recusa pelo backlog, e
-    // a entrega das tarefas pede revisão final nova. O achado sem regra
-    // escrita na spec não vira tarefa: vai ao usuário como pergunta, nesta
-    // resposta, e não segura a obra.
-    let mut questions = Vec::new();
+    // Antes dela, os achados que o veredito aprovado traz em `leftovers` vão
+    // à lista de pendências do projeto: a revisão aprovada não tem achado que
+    // bloqueia, e eles não viram tarefa nem pergunta. A resposta leva uma
+    // entrada por pendência, junto do que o fechamento gravou.
+    let mut recorded = recorded;
+    recorded.extend(legacy);
     if let Some(verdict) = final_approval(&log) {
-        let found = crate::commands::flow::round::record_final_leftovers(&opts.root, root, &spec, (&log, verdict), lang)
-            .map_err(CloseRefusal::Refused)?;
-        // O achado só em arquivo que o git ignora vira nota ao usuário, sem
-        // tarefa: sem tarefa nenhuma, a obra fecha como sempre.
-        if found.recorded.iter().any(|entry| entry["type"] == json!("task")) {
-            let mut out = final_leftovers_answer(&spec, recorded, found, &read(&path)?, lang);
-            out["criteria"] = json!(runs);
-            out["stages"] = json!(stages);
-            out["validation"] = json!({"status":"pass","reused":reused});
-            for kept in review_kept.iter() {
-                let hint = crate::commands::flow::round::code_kept_hint(kept, lang);
-                spec_events::pages::push_warning(&mut out, "code-kept", &hint);
-            }
-            if let Some(hint) = &stuck_hint {
-                spec_events::pages::push_warning(&mut out, "stuck-found", hint);
-            }
-            if let Some((reason, hint)) = &agents_hint {
-                spec_events::pages::push_warning(&mut out, reason, hint);
-            }
-            return Ok(out);
-        }
+        recorded.extend(crate::commands::flow::round::record_final_leftovers(root, verdict, lang).map_err(CloseRefusal::Refused)?);
         record_tracking_table(&opts.root, &spec, verdict).map_err(CloseRefusal::Refused)?;
-        questions = found.questions;
     }
 
     // A fase `closed` sai só por aqui, e é a mesma porta que arma a cobrança
@@ -833,7 +821,6 @@ fn run_close(
     for hint in &unowned_tests {
         spec_events::pages::push_warning(&mut out, super::common::ownerless::REASON, hint);
     }
-    ask_about_findings(&mut out, questions, lang);
     // As pendências abertas nascidas nesta spec vão ao usuário na hora, para
     // ele decidir o destino de cada uma, e cada uma vai com a linha que grava
     // a resposta "fica para depois"; é aviso, nunca recusa — o fechamento
@@ -883,42 +870,6 @@ fn run_close(
         out["command"] = command;
     }
     Ok(out)
-}
-
-/// A resposta do fechamento que gravou como tarefas os achados do veredito
-/// final aprovado — `found`, cada evento gravado com o tipo e o número, e a
-/// pergunta de cada achado sem regra escrita —, lidos em `log`: a obra segue
-/// em execução, o que o fechamento gravou (`recorded`) ganha esses eventos, o
-/// passo seguinte é a rodada, com o código de cada tarefa, no idioma `lang` —
-/// nunca o pull request —, e as perguntas vão ao usuário
-/// ([`ask_about_findings`]).
-fn final_leftovers_answer(spec: &str, mut recorded: Vec<Value>, found: crate::commands::flow::round::FinalFindings, log: &SpecLog, lang: Locale) -> Value {
-    let codes = log.codes();
-    let tasks: Vec<String> = found
-        .recorded
-        .iter()
-        .filter(|entry| entry["type"] == json!("task"))
-        .filter_map(|entry| entry["id"].as_u64())
-        .map(|id| codes.get(&id).cloned().unwrap_or_else(|| id.to_string()))
-        .collect();
-    let command = super::common::step_command("round", spec, &State::from_log(log)).unwrap_or_default();
-    let next = translate("close.final_leftovers", lang).replace("{tasks}", &tasks.join(", ")).replace("{command}", &command);
-    recorded.extend(found.recorded);
-    let mut out = json!({ "ok": true, "spec": spec, "phase": "running", "recorded": recorded, "next": next, "command": command });
-    ask_about_findings(&mut out, found.questions, lang);
-    out
-}
-
-/// Leva à resposta `out` do fechamento as perguntas `questions`, uma por
-/// achado da revisão final sem regra escrita na spec, em `questions`, com o
-/// aviso que manda fazê-las ao usuário antes do pull request, no idioma
-/// `lang`. Sem pergunta, a resposta não muda.
-fn ask_about_findings(out: &mut Value, questions: Vec<Value>, lang: Locale) {
-    if questions.is_empty() {
-        return;
-    }
-    out["questions"] = json!(questions);
-    spec_events::pages::push_warning(out, "final-finding-question", translate("finding.questions_hint", lang));
 }
 
 /// A linha que grava a resposta "fica para depois" da pendência `id`, pronta
@@ -4359,62 +4310,73 @@ exit "${2:-0}"
         log.visible().into_iter().filter(|event| event.event_type == kind).cloned().collect()
     }
 
-    /// O achado que cita o critério escrito vira o pedido e a tarefa da regra,
-    /// que cobre o critério. O achado de regra nova não vira pedido nem
-    /// tarefa: a resposta do fechamento o leva ao usuário como pergunta, com
-    /// o aviso que manda fazê-la antes do pull request.
+    /// A revisão final aprova a obra com dois achados, um que cita o critério
+    /// escrito e outro de regra nova, nenhum com `blocks`: a obra fecha, e os
+    /// dois vão à lista de pendências do projeto, com o título e o detalhe
+    /// numa linha, sem pedido, sem tarefa e sem pergunta ao usuário.
     #[test]
-    fn a_final_finding_without_a_written_rule_becomes_a_question_and_no_task() {
+    fn an_approved_review_closes_the_work_and_lists_what_does_not_block() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        let (out, criterion) = closed_with_a_written_and_an_unwritten_rule(root);
-        assert_eq!(out["phase"], json!("running"), "{out}");
+        let (out, _) = closed_with_a_written_and_an_unwritten_rule(root);
+        assert_eq!(out["phase"], json!("closed"), "{out}");
+        assert!(out.get("questions").is_none(), "nenhuma pergunta ao usuário: {out}");
 
         let (written, unwritten) = findings_of_the_final_review();
-        let titled = |kind: &str, finding: &Value| visible_of(root, kind).into_iter().filter(|event| event.str_field("title") == finding["title"].as_str()).collect::<Vec<_>>();
-        let tasks = titled("task", &written);
-        assert_eq!(tasks.len(), 1, "{out}");
-        assert!(tasks[0].ints("covers").contains(&criterion), "a tarefa da regra cobre o critério: {:?}", tasks[0]);
-        assert_eq!(titled("request", &written).len(), 1, "{out}");
-        assert!(titled("task", &unwritten).is_empty() && titled("request", &unwritten).is_empty(), "a regra nova não vira trabalho: {out}");
-
-        let question = translate("finding.question", Locale::PtBr)
-            .replace("{title}", unwritten["title"].as_str().unwrap())
-            .replace("{rule}", unwritten["rule"].as_str().unwrap());
-        let mut expected = unwritten.clone();
-        expected.as_object_mut().unwrap().remove("files");
-        expected["question"] = json!(question);
-        assert_eq!(out["questions"], json!([expected]), "{out}");
-        assert_eq!(hints_of(&out, "final-finding-question"), vec![translate("finding.questions_hint", Locale::PtBr)], "{out}");
+        for finding in [&written, &unwritten] {
+            let title = finding["title"].as_str();
+            for kind in ["task", "request"] {
+                assert!(visible_of(root, kind).iter().all(|event| event.str_field("title") != title), "o achado não vira {kind}: {out}");
+            }
+        }
+        let listed: Vec<String> = crate::commands::event::pending::open_project_pending(root).into_iter().map(|item| item.title).collect();
+        assert_eq!(listed, [written["title"].as_str().unwrap(), unwritten["title"].as_str().unwrap()], "{out}");
+        let pending: Vec<&Value> = out["recorded"].as_array().unwrap().iter().filter(|entry| entry["type"] == json!("pending")).collect();
+        assert_eq!(pending.len(), 2, "{out}");
+        let ledger = std::fs::read_to_string(mustard_core::ClaudePaths::for_project(root).unwrap().pending_ledger_path()).unwrap();
+        assert!(ledger.contains("A soma estoura em src/w1.rs. Prova: `git --version`"), "o efeito do achado vai na lista: {ledger}");
     }
 
-    /// A tarefa que o achado de regra escrita ganhou sai por `remove`, como
-    /// qualquer outra tarefa. Nenhuma tarefa cobre mais o critério, e o
-    /// fechamento seguinte recusa, pelo pedido do achado que nenhuma onda
-    /// entregou, sem gravar a tarefa de novo.
+    /// A tarefa aberta que um achado de revisão final aprovada deu antes de só
+    /// o que bloqueia segurar a obra — a de autor `review` que cobre o pedido
+    /// do achado, apontando o veredito — passa à lista de pendências do
+    /// projeto no fechamento, com a remoção dela e do pedido gravada pelo
+    /// programa, sem onda: o backlog não segura a obra, e ela fecha. Antes da
+    /// passagem, a mesma tarefa deixava o fechamento recusar pelo backlog.
     #[test]
-    fn removing_the_task_of_a_rule_leaves_it_uncovered_and_the_close_refuses() {
+    fn a_task_an_approved_review_gave_before_the_rule_goes_to_the_project_list_at_the_close() {
+        use mustard_core::domain::spec_state::PhaseWriter;
         let dir = tempdir().unwrap();
         let root = dir.path();
-        let (_, criterion) = closed_with_a_written_and_an_unwritten_rule(root);
-        let covering = |root: &Path| visible_of(root, "task").into_iter().filter(|task| task.ints("covers").contains(&criterion)).map(|task| task.id).collect::<Vec<_>>();
-        let task = covering(root)[0];
-
-        let removed = crate::commands::spec_events::write::write_at(&WriteOpts {
-            root: root.to_path_buf(),
-            spec: Some("x".into()),
-            event_type: "remove".into(),
-            json: json!({"targets": [task], "reason": "não vale"}).to_string(),
-        });
-        assert_eq!(removed["ok"], json!(true), "{removed}");
-        assert!(covering(root).is_empty(), "a regra fica descoberta");
-
-        let refused = close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), ..Default::default() }, None);
-        assert_eq!((refused["ok"].clone(), refused["reason"].clone()), (json!(false), json!("request-not-delivered")), "{refused}");
-        let (written, _) = findings_of_the_final_review();
+        ready_to_close(root, "x", &["git --version"]);
+        let opts = CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), ..Default::default() };
+        assert_eq!(close_for(&opts, None)["review"]["final"], json!(true));
+        approve(root, "x");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let request = visible_of(root, "request").into_iter().find(|request| request.str_field("title") == written["title"].as_str()).expect("the request");
-        assert!(refused["hint"].as_str().unwrap_or_default().contains(&log.codes()[&request.id]), "{refused}");
-        assert!(covering(root).is_empty(), "o fechamento recusado não grava a tarefa de novo");
+        let verdict = log.events.iter().rev().find(|event| event.event_type == "verdict" && event.fields.get("final") == Some(&json!(true))).expect("the final verdict").id;
+        let record = |kind: &str, draft: Value| {
+            let written = crate::commands::spec_events::write::record(root, "x", kind, draft.as_object().cloned().unwrap(), PhaseWriter::Binary).expect("recorded");
+            written.written.id
+        };
+        let request = record("request", json!({"title": "O nome é torto", "text": "O nome da função não diz o que ela faz.", "effect": "new_waves",
+            "keys": ["O nome é torto"], "author": "review", "origin": verdict}));
+        let task = record("task", json!({"title": "O nome é torto", "text": "O nome da função\nnão diz o que ela faz.", "files": [{"path": "src/w1.rs"}],
+            "depends_on": [], "author": "review", "covers": [request]}));
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        assert!(crate::commands::flow::round::backlog_left(&log).contains(&task), "antes da passagem a tarefa está no backlog");
+
+        let out = close_for(&opts, None);
+        assert_ne!(out["reason"], json!("backlog-not-empty"), "{out}");
+        assert_eq!(out["phase"], json!("closed"), "{out}");
+        let pending: Vec<&Value> = out["recorded"].as_array().unwrap().iter().filter(|entry| entry["type"] == json!("pending")).collect();
+        assert_eq!(pending.len(), 1, "{out}");
+        assert!(pending[0].get("wave").is_none(), "sem onda: {out}");
+        let listed: Vec<String> = crate::commands::event::pending::open_project_pending(root).into_iter().map(|item| item.title).collect();
+        assert_eq!(listed, ["O nome é torto"], "{out}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        assert!(visible_of(root, "task").iter().all(|event| event.id != task) && visible_of(root, "request").iter().all(|event| event.id != request), "a tarefa e o pedido saem da spec");
+        let removal = log.events.iter().find(|event| event.event_type == "remove").expect("the removal");
+        assert_eq!(removal.str_field("author"), Some("binary"), "{:?}", removal.fields);
+        assert_eq!(removal.ints("targets"), [task, request], "{:?}", removal.fields);
     }
 }
