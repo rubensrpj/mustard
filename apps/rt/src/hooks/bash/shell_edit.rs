@@ -560,6 +560,12 @@ mod tests {
         Scene { _dir: dir, root, copy, outside }
     }
 
+    /// `path` como ele vai num comando de terminal: com a barra comum, porque
+    /// a barra invertida do Windows fora de aspas é escape e some na leitura.
+    fn in_shell(path: &Path) -> String {
+        path.to_string_lossy().replace('\\', "/")
+    }
+
     /// O veredito da trava de comandos inteira para `command`, pedido pelo
     /// agente de onda de dentro da cópia (`wave`) ou pela conversa principal
     /// no checkout, no hospedeiro `host`.
@@ -593,7 +599,7 @@ mod tests {
     #[test]
     fn a_wave_agent_writing_files_from_the_shell_is_refused() {
         let scene = scene();
-        let (root, copy, outside) = (scene.root.display(), scene.copy.display(), scene.outside.display());
+        let (root, copy, outside) = (in_shell(&scene.root), in_shell(&scene.copy), in_shell(&scene.outside));
         let refused = [
             "python3 - <<'EOF'\nfrom pathlib import Path\np = Path('src/lib.rs')\np.write_text(p.read_text().replace('a', 'b'))\nEOF".to_string(),
             format!("python3 -c \"open('{copy}/src/lib.rs', 'w').write('')\""),
@@ -643,7 +649,7 @@ mod tests {
     #[test]
     fn a_wave_agent_one_line_check_and_reads_pass() {
         let scene = scene();
-        let outside = scene.outside.display();
+        let outside = in_shell(&scene.outside);
         let free = [
             "python3 -c \"print(sum(range(10)))\"".to_string(),
             "python3 - <<'EOF'\nimport json\nprint(json.dumps({'a': 1}))\nEOF".to_string(),
