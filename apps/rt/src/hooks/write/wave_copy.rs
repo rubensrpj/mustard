@@ -1,9 +1,10 @@
 //! Bind wave writes to the exact native dispatch, never to inherited cwd.
+use crate::hooks::bash::lex::Segment;
 use mustard_core::{
     domain::model::contract::{Ctx, HookInput, Verdict},
     io::wave_prompt,
 };
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub(crate) fn check(root: &Path, input: &HookInput, ctx: &Ctx) -> Option<Verdict> {
     if !input.is_subagent() {
@@ -19,8 +20,7 @@ pub(crate) fn check(root: &Path, input: &HookInput, ctx: &Ctx) -> Option<Verdict
     if !absolute.starts_with(root) && !absolute.starts_with(&copies) {
         return None;
     }
-    let native_wave = input.agent_type.as_deref().is_some_and(|kind| kind == "mustard-wave" || kind.ends_with(":mustard-wave"));
-    if binding.is_none() && !native_wave && !absolute.starts_with(&copies) {
+    if binding.is_none() && !is_wave_agent(input) && !absolute.starts_with(&copies) {
         return None;
     }
     let Some(binding) = binding else {
@@ -42,6 +42,39 @@ pub(crate) fn check(root: &Path, input: &HookInput, ctx: &Ctx) -> Option<Verdict
     })
 }
 
+/// O agente foi lançado como o agente de onda do Mustard, com ou sem o nome
+/// do plugin na frente.
+pub(crate) fn is_wave_agent(input: &HookInput) -> bool {
+    input.agent_type.as_deref().is_some_and(wave_agent_kind)
+}
+
+/// O tipo de agente `kind` é o agente de onda do Mustard, com ou sem o nome
+/// do plugin na frente.
+pub(crate) fn wave_agent_kind(kind: &str) -> bool {
+    kind == "mustard-wave" || kind.ends_with(":mustard-wave")
+}
+
+/// A pasta onde roda o comando do terminal de um agente de onda, ou `None`
+/// fora dele. O agente de onda é o subagente ligado ao envio de uma onda, o
+/// lançado como agente de onda ou o que trabalha na pasta das cópias. Com a
+/// ligação, o comando roda na cópia do envio: a pasta atual quando está nela,
+/// e a cópia quando a troca do fim o leva até ela.
+pub(crate) fn wave_shell_folder(root: &Path, input: &HookInput, ctx: &Ctx) -> Option<std::path::PathBuf> {
+    if !input.is_subagent() {
+        return None;
+    }
+    let cwd = Path::new(input.cwd.as_deref().unwrap_or(&ctx.project_dir));
+    let host = crate::shared::host_observation::caller_host(root, input.session_id.as_deref());
+    if let Some(binding) = crate::shared::host_observation::tool_binding(root, host, input) {
+        let copy = binding.send.str_field("copy").map(Path::new);
+        let inside = |copy: &Path| cwd.canonicalize().ok().zip(copy.canonicalize().ok()).is_some_and(|(cwd, copy)| cwd.starts_with(copy));
+        return Some(copy.filter(|copy| !inside(copy)).unwrap_or(cwd).to_path_buf());
+    }
+    let copies = wave_prompt::copies_dir(root);
+    let in_copies = cwd.canonicalize().ok().zip(copies.canonicalize().ok()).is_some_and(|(cwd, copies)| cwd.starts_with(copies));
+    (is_wave_agent(input) || in_copies).then(|| cwd.to_path_buf())
+}
+
 /// `path` sem os `.` e com cada `..` tirando a pasta de antes, sem consultar o
 /// disco.
 pub(crate) fn lexical(path: &Path) -> std::path::PathBuf {
@@ -56,6 +89,72 @@ pub(crate) fn lexical(path: &Path) -> std::path::PathBuf {
         }
     }
     absolute
+}
+
+/// O terminal de uma linha de comando, seguido como o terminal segue os `cd`
+/// dela: a pasta atual, a anterior e a pasta pessoal.
+pub(crate) struct Shell {
+    here: PathBuf,
+    previous: PathBuf,
+    home: Option<PathBuf>,
+}
+
+impl Shell {
+    /// O terminal em `here`, vindo de `previous`, com a pasta pessoal `home`.
+    pub(crate) fn new(here: PathBuf, previous: PathBuf, home: Option<PathBuf>) -> Self {
+        Self { here, previous, home }
+    }
+
+    /// A pasta atual.
+    pub(crate) fn here(&self) -> &Path {
+        &self.here
+    }
+
+    /// O caminho que `text` nomeia a partir da pasta atual, com `~`, `~/…` e
+    /// as variáveis (`$PWD`, `$OLDPWD`, `$HOME` e as do ambiente) trocadas,
+    /// ou `None` quando ele depende do que só o terminal sabe (`$(…)`,
+    /// variável sem valor aqui).
+    pub(crate) fn path(&self, text: &str) -> Option<PathBuf> {
+        if text.is_empty() {
+            return None;
+        }
+        let path = if text == "~" {
+            self.home.clone()?
+        } else if let Some(rest) = text.strip_prefix("~/") {
+            self.home.as_ref()?.join(rest)
+        } else if let Some(variable) = text.strip_prefix('$') {
+            let braced = variable.strip_prefix('{').and_then(|inner| inner.split_once('}'));
+            let (name, rest) = braced.unwrap_or_else(|| {
+                let end = variable.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(variable.len());
+                variable.split_at(end)
+            });
+            let value = match name {
+                "" => return None,
+                "PWD" => self.here.clone(),
+                "OLDPWD" => self.previous.clone(),
+                "HOME" => self.home.clone()?,
+                _ => PathBuf::from(std::env::var_os(name)?),
+            };
+            PathBuf::from(format!("{}{rest}", value.to_string_lossy()))
+        } else {
+            PathBuf::from(text)
+        };
+        Some(lexical(&if path.is_absolute() { path } else { self.here.join(path) }))
+    }
+
+    /// Segue o `cd` `segment` e devolve a pasta em que o terminal entra:
+    /// `cd -` volta à anterior, e `cd` sem pasta vai à pessoal. Quando o
+    /// destino não se sabe, devolve `None` e a pasta atual fica.
+    pub(crate) fn cd(&mut self, segment: &Segment) -> Option<PathBuf> {
+        let arg = segment.args.iter().map(|arg| arg.text.as_str()).find(|text| *text == "-" || !text.starts_with('-'));
+        let path = match arg {
+            Some("-") => self.previous.clone(),
+            None => self.path("~")?,
+            Some(text) => self.path(text)?,
+        };
+        self.previous = std::mem::replace(&mut self.here, path.clone());
+        Some(path)
+    }
 }
 
 pub(crate) fn guard_bash(input: &HookInput, ctx: &Ctx, verdict: Verdict) -> Verdict {
@@ -102,24 +201,13 @@ fn bash(input: &HookInput, ctx: &Ctx, home: Option<&Path>) -> Option<Verdict> {
     let in_copy = cwd.canonicalize().is_ok_and(|cwd| cwd.starts_with(&real));
     // O `cd` relativo parte de onde o terminal vai estar: da cópia, quando o
     // comando é levado a ela (a troca no fim), e depois da pasta do `cd`
-    // anterior, como no terminal.
-    let mut here = if in_copy { cwd.to_path_buf() } else { expected.to_path_buf() };
-    // A pasta de antes, destino de `cd -`: a de onde o comando parte, que o
-    // `cd` da troca para a cópia deixa como anterior.
-    let mut previous = cwd.to_path_buf();
+    // anterior, como no terminal. A pasta de antes, destino de `cd -`, é a de
+    // onde o comando parte, que o `cd` da troca para a cópia deixa como
+    // anterior.
+    let start = if in_copy { cwd } else { expected };
+    let mut shell = Shell::new(start.to_path_buf(), cwd.to_path_buf(), home.map(Path::to_path_buf));
     for segment in crate::hooks::bash::lex::segments(command).iter().filter(|segment| segment.name() == "cd") {
-        let arg = segment.args.iter().map(|arg| arg.text.as_str()).find(|text| *text == "-" || !text.starts_with('-'));
-        let target = match arg {
-            Some("-") => Some(previous.clone()),
-            None | Some("~") => home.map(Path::to_path_buf),
-            Some(text) => match text.strip_prefix("~/") {
-                Some(rest) => home.map(|home| home.join(rest)),
-                None => Some(Path::new(text).to_path_buf()),
-            },
-        };
-        let Some(given) = target else { continue };
-        let path = lexical(&if given.is_absolute() { given } else { here.join(given) });
-        previous = std::mem::replace(&mut here, path.clone());
+        let Some(path) = shell.cd(segment) else { continue };
         let Some(entered) = path.canonicalize().ok().filter(|entered| !entered.starts_with(&real)) else { continue };
         if entered.starts_with(&copies) || entered.starts_with(&checkout) {
             // A pasta de cópias pode morar dentro do projeto: ela decide
@@ -324,6 +412,34 @@ mod tests {
         assert!(matches!(check(root, &as_agent("stranger"), &ctx), Some(Verdict::Deny { .. })), "another agent gains no copy");
         reread("worker");
         assert!(check(root, &input, &ctx).is_none(), "the reread request binds the copy again");
+        std::fs::remove_dir_all(wave_prompt::copies_dir(root)).unwrap();
+    }
+
+    /// A recusa de editar pelo terminal vale para os três agentes de onda: o
+    /// ligado ao envio, cujo comando roda na cópia mesmo vindo de fora dela;
+    /// o lançado como agente de onda; e o subagente de outro tipo que trabalha
+    /// na pasta das cópias. O subagente de outro tipo fora das cópias passa
+    /// livre.
+    #[test]
+    fn the_shell_edit_refusal_reaches_every_wave_agent_and_frees_other_subagents() {
+        use crate::hooks::bash::command_guard::CommandGuard;
+        use mustard_core::domain::model::contract::Check;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let outside = tempfile::tempdir().unwrap();
+        let (_, b, ctx, mut input) = dispatched_worker(root);
+        input.tool_name = Some("Bash".into());
+        input.tool_input = json!({ "command": "echo 'pub mod x;' >> lib.rs" });
+        let mut refused = |session: &str, kind: &str, cwd: &Path| {
+            input.session_id = Some(session.into());
+            input.agent_type = Some(kind.into());
+            input.cwd = Some(cwd.to_string_lossy().into_owned());
+            matches!(CommandGuard.evaluate(&input, &ctx).unwrap(), Verdict::Deny { reason } if reason.contains("`Edit`/`Write`"))
+        };
+        assert!(refused("session", "general-purpose", outside.path()), "the agent bound to the dispatch writes in its copy");
+        assert!(refused("session-2", "mustard-wave", root), "the agent launched as the wave agent");
+        assert!(refused("session-2", "general-purpose", &b), "a subagent working in the copies folder");
+        assert!(!refused("session-2", "general-purpose", root), "another subagent outside the copies passes");
         std::fs::remove_dir_all(wave_prompt::copies_dir(root)).unwrap();
     }
 

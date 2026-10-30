@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use mustard_core::domain::model::contract::{Ctx, HookInput, Verdict};
 
 use super::lex::{self, Segment, Word};
+use super::shell_edit::is_interpreter;
 use crate::hooks::write::write_gate::say;
 use crate::shared::search_gateway::literal_shell;
 use crate::shared::config_key::{self, CONFIG_FILE, NameFilter, Walk};
@@ -97,10 +98,11 @@ const GIT_GREP_LONG_VALUE: &[&str] = &["max-depth", "threads", "max-count", "aft
 pub(super) fn bash_reading(segments: &[Segment], cmd: &str, input: &HookInput, ctx: &Ctx) -> Option<Verdict> {
     let root = ctx.project_dir_or_cwd(input);
     let lang = ctx.config.language().text_or_default();
-    // An inline interpreter can print a protected file without being one of
-    // the ordinary readers. Never attempt to execute or rewrite its program.
-    if segments.iter().any(|segment|matches!(segment.name(),"python"|"python3"|"node"|"bun"|"perl"|"ruby"|"php")
-        && segment.args.iter().any(|arg|arg.text.contains(CONFIG_FILE)))
+    // O interpretador mostra o arquivo protegido sem ser um dos leitores. Ele
+    // se reconhece pela gramática da recusa de edição, também pelo lançador
+    // (`uv run python`), pelo `py` e pelo `.exe`. Nunca roda nem reescreve o
+    // programa dele.
+    if segments.iter().any(|segment| is_interpreter(segment) && segment.args.iter().any(|arg| arg.text.contains(CONFIG_FILE)))
         && std::fs::read_to_string(mustard_core::io::spec_events::spec_root(Path::new(&root)).join(CONFIG_FILE)).is_ok_and(|text|config_key::masked(&text).is_some()) {
         return Some(Verdict::Deny {reason:format!("{} Use `mustard-rt run config-read`. {}",
             mustard_core::translate("config_key.shell_unsupported",lang).replace("{file}",CONFIG_FILE),
@@ -190,10 +192,10 @@ fn exclusion(walk: Walk, git: bool, name: &str) -> (String, bool) {
     }
 }
 
-/// `command` com a opção que tira o arquivo da chave posta na busca que o
-/// varre, e as outras etapas na mesma ordem e intactas.
+/// `command`, a linha de uma etapa só, com a opção que tira o arquivo da chave
+/// posta na busca que o varre.
 ///
-/// `None` quando a linha não varre o arquivo, quando a opção não pode ser
+/// `None` quando a linha tem mais de uma etapa, quando não varre o arquivo, quando a opção não pode ser
 /// posta com segurança (o pathspec do `git grep` vai depois do `--`), ou
 /// quando o comando reescrito ainda varreria o arquivo. Nesses casos a recusa
 /// fica com o texto que diz só o que acrescentar.
@@ -203,6 +205,11 @@ fn exclusion(walk: Walk, git: bool, name: &str) -> (String, bool) {
 /// troca é a de [`super::rewrite::rewritten`]: nenhuma parte da linha de quem
 /// chamou é executada.
 pub(super) fn excluded_command(command: &str, input: &HookInput, ctx: &Ctx) -> Option<String> {
+    // Só a linha de uma etapa volta pronta: com mais de uma, o comando pronto
+    // levaria as outras junto, uma que apaga trabalho inclusive.
+    if lex::command_ranges(command).len() != 1 {
+        return None;
+    }
     let segments = lex::segments(command);
     let Found::Swept { option, placeable: true, .. } = found_in(&segments, command, input, ctx)? else {
         return None;
@@ -969,12 +976,16 @@ mod tests {
         }
     }
 
+    /// A leitura encadeada a outra etapa é recusada sem comando pronto: ele
+    /// levaria a outra etapa junto, uma que apaga trabalho inclusive.
     #[test]
-    fn a_config_read_leaves_chained_tests_in_the_original_shell() {
+    fn a_config_read_chained_to_another_step_gets_no_ready_command() {
         let (_dir,root)=fixture::project(&format!(r#"{{"jev":{{"key":"{}"}}}}"#,fixture::FAKE_KEY),true);
-        let reason = refused(run(&root,"cat mustard.json && cargo test"), "a read chained to a test");
-        assert!(reason.lines().last().is_some_and(|ready| ready.ends_with(" && cargo test")), "{reason}");
-        assert!(!reason.contains(fixture::FAKE_KEY));
+        for command in ["cat mustard.json && cargo test", "cat mustard.json && rm -r -f work"] {
+            let reason = refused(run(&root,command), command);
+            assert!(!reason.contains("--reader") && !reason.contains(" && "), "{reason}");
+            assert!(!reason.contains(fixture::FAKE_KEY));
+        }
     }
     /// A busca recursiva que passaria pelo `mustard.json` com a chave é
     /// recusada com a opção que o deixa de fora, e o motivo nunca traz a
@@ -988,16 +999,14 @@ mod tests {
         // O terminal come a barra invertida de uma palavra sem aspas: a pasta
         // de cima entra na linha com barras normais, como a pessoa a escreve.
         let above = format!("grep -rn jev {}", crate::shared::paths::canonical(&root.parent().expect("a folder above the project").to_string_lossy()));
-        // A recusa devolve o comando inteiro reescrito, com a opção no fim da
-        // etapa que varre e as outras etapas intactas: a que só dizia o que
-        // acrescentar custava uma volta ao agente, e no comando composto ele
-        // ainda tinha de remontar as etapas sem relação (campo, 21/10/2026).
+        // A recusa da linha de uma etapa devolve o comando reescrito, com a
+        // opção no fim: a que só dizia o que acrescentar custava uma volta ao
+        // agente (campo, 21/10/2026).
         let (grep, rg) = ("--exclude=mustard.json", "-g '!mustard.json'");
         let above_ready = format!("{above} {grep}");
         for (command, ready) in [
             ("grep -r jev .", format!("grep -r jev . {grep}")),
             ("grep -rn jev", format!("grep -rn jev {grep}")),
-            ("cd src && grep -R key ..", format!("cd src && grep -R key .. {grep}")),
             ("grep -r -e jev -e key .", format!("grep -r -e jev -e key . {grep}")),
             ("grep -r --include=*.json key .", format!("grep -r --include=*.json key . {grep}")),
             (above.as_str(), above_ready.clone()),
@@ -1041,22 +1050,18 @@ mod tests {
         }
     }
 
-    /// Num comando composto, só a etapa que varre o arquivo da chave é
-    /// consertada: as outras voltam na reescrita como foram escritas.
-    ///
-    /// Em campo (21/10/2026) um comando com três etapas foi barrado inteiro, e
-    /// a resposta não devolveu nada pronto: o agente remontou a linha à mão.
+    /// O comando composto que varre o arquivo da chave é recusado sem comando
+    /// pronto: ele levaria as outras etapas junto, uma que apaga trabalho
+    /// inclusive.
     #[test]
-    fn a_composed_command_comes_back_rewritten_with_the_other_steps_intact() {
+    fn a_composed_command_gets_no_ready_command() {
         let config = format!(r#"{{"jev": {{"key": "{}"}}}}"#, fixture::FAKE_KEY);
         let (_dir, root) = fixture::project(&config, true);
-        let command = "grep -rn jev . && git log --oneline -3";
-        let reason = refused(run(&root, command), command);
-        assert!(!reason.contains(fixture::FAKE_KEY), "the key leaked: {reason}");
-        assert!(
-            reason.contains("grep -rn jev . --exclude=mustard.json && git log --oneline -3"),
-            "the ready command keeps the git log: {reason}",
-        );
+        for command in ["grep -rn jev . && git log --oneline -3", "cd src && grep -R key ..", "grep -rn jev . && rm -r -f work"] {
+            let reason = refused(run(&root, command), command);
+            assert!(!reason.contains(fixture::FAKE_KEY), "the key leaked: {reason}");
+            assert!(!reason.contains(" && ") && !reason.contains(" . --exclude") && !reason.contains(" .. --exclude"), "{command}: {reason}");
+        }
     }
 
     /// O leitor com um curinga sem aspas que o terminal abre e que alcança o

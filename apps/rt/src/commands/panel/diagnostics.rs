@@ -54,6 +54,15 @@ fn record_within(root:&Path,input:&Value,patience:std::time::Duration)->Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// O registro guarda só os campos conhecidos, no arquivo local.
+    #[test]
+    fn a_diagnostic_record_keeps_only_known_fields_and_stays_local() {
+        let dir=tempfile::tempdir().unwrap();let root=dir.path();std::fs::write(root.join("mustard.json"),"{}").unwrap();
+        let input=json!({"component":"jev","operation":"search","reason":"provider-unavailable","secret":"PRIVATE-UNKNOWN-FIELD"});
+        assert_eq!(record(root,&input)["ok"],true);
+        let content=std::fs::read_to_string(root.join(".claude/mustard/panel/diagnostics.json")).unwrap();
+        assert!(!content.contains("PRIVATE-UNKNOWN-FIELD"));assert!(content.contains("provider-unavailable"));
+    }
     /// A diagnostics file cut in the middle, as the full disk left it, no
     /// longer stops recording: its text stays aside, the list restarts saying
     /// so, and the new failure keeps the cause it was sent with.

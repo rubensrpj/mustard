@@ -114,8 +114,8 @@ pub struct Skill {
     pub stale: bool,
 }
 
-/// Uma skill inteira no bloco de uma tarefa: o corpo do `SKILL.md`, sem o
-/// cabeçalho, com o nome, o caminho e a marca de a revisar.
+/// Uma skill citada no bloco de uma tarefa: o nome, o caminho e a marca de a
+/// revisar. O agente abre o `SKILL.md` antes de editar o que ela cobre.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TaskSkill {
     /// O nome da pasta da skill.
@@ -124,11 +124,12 @@ pub struct TaskSkill {
     pub path: String,
     /// A skill a revisar ([`Skill::stale`]).
     pub stale: bool,
-    /// O corpo do arquivo, sem o cabeçalho.
-    pub body: String,
+    /// A ordem que vem com a skill: a do skill-creator, na tarefa que cria
+    /// uma skill; vazia nas outras.
+    pub note: String,
 }
 
-/// Quantas skills inteiras o bloco de uma tarefa leva, no máximo: as que a
+/// Quantas skills o bloco de uma tarefa cita, no máximo: as que a
 /// tarefa nomeia primeiro, depois as que casam com os arquivos dela.
 pub const TASK_SKILLS_MAX: usize = 3;
 
@@ -164,12 +165,6 @@ pub struct SkillTie {
     pub candidates: Vec<SkillOption>,
 }
 
-/// O teto, em tokens ([`estimate_tokens`]), do bloco de uma tarefa: o bloco
-/// que passa dele perde a última skill, uma de cada vez, e diz qual cortou. O
-/// resto do bloco — a tarefa, o que ela atende, os arquivos e o padrão — sai
-/// sempre inteiro.
-pub const TASK_BLOCK_TOKEN_CAP: u64 = 12_000;
-
 /// O bloco de uma tarefa, como o pedido o traz para a primeira e a resposta
 /// do passo para cada uma das seguintes: o mesmo texto, de um renderizador
 /// só.
@@ -182,7 +177,7 @@ pub struct TaskBlock {
     /// O que o bloco entrega inteiro: o código da tarefa e o de cada item que
     /// só ela traz. Entregar o texto conta como ler.
     pub items: Vec<String>,
-    /// As skills que entraram inteiras no bloco, pelo nome.
+    /// As skills que o bloco cita, pelo nome.
     pub skills: Vec<String>,
 }
 
@@ -227,27 +222,24 @@ pub struct Execution {
     pub prepare: Option<String>,
     /// The native dispatcher prepared dependencies before this wave.
     pub prepared: bool,
-    /// Os arquivos locais que o git ignora e a cópia precisa (`localFiles`),
-    /// relativos à raiz e já sem o caminho que sairia do projeto: o pedido
-    /// do revisor os lista, a copiar pelo conteúdo. Vazia, ele não fala deles.
-    pub local_files: Vec<String>,
     /// As outras ondas em andamento, cada uma com os arquivos das tarefas
     /// dela: o arquivo dividido com elas é juntado na volta.
     pub running: Vec<(u64, Vec<String>)>,
-    /// O commit em que o fechamento cria a cópia do revisor final; sem ele, o
-    /// pedido do revisor diz que ela sai do commit atual. O pedido da onda
-    /// não o cita.
+    /// O commit da cópia limpa em que o revisor final confere a obra; sem
+    /// ele, o pedido do revisor diz que ela sai do commit atual. O pedido da
+    /// onda não o cita.
     pub commit: Option<String>,
     /// O repositório principal: onde a spec mora e onde nada é editado.
     pub root: String,
     /// A cópia separada em que o agente trabalha: a que a rodada criou para
-    /// a onda, ou a do revisor final, que o fechamento cria. Sem ela, o
+    /// a onda, ou a cópia limpa do fechamento, a do revisor final. Sem ela, o
     /// pedido da onda não fala de cópia.
     pub copy: Option<WaveCopy>,
     /// Os idiomas que o projeto declara, lidos do `mustard.json`: o pedido
     /// abre com eles ([`language_line`]).
     pub language: Language,
-    /// O modelo dos agentes que o `mustard.json` declara em `agents.model`;
+    /// O modelo da onda: o Sonnet, ou o de `agents.model` com a escolha pela
+    /// dificuldade desligada ([`crate::ProjectConfig::wave_agent_model`]);
     /// vazio, o padrão da instalação ([`Execution::requested_model`]).
     pub model: String,
     /// O esforço do agente, sempre o padrão da instalação (`xhigh`), que o
@@ -353,8 +345,8 @@ pub struct Material<'a> {
     pub project_rules: Vec<RulesFile>,
     /// Current source components; they do not satisfy canonical item reads.
     pub prepared: Vec<PreparedSource>,
-    /// As skills inteiras de cada tarefa, pelo código dela, até
-    /// [`TASK_SKILLS_MAX`], na ordem em que o bloco as traz.
+    /// As skills de cada tarefa, citadas pelo caminho, pelo código dela, até
+    /// [`TASK_SKILLS_MAX`], na ordem em que o bloco as cita.
     pub task_skills: BTreeMap<String, Vec<TaskSkill>>,
 }
 
@@ -1717,9 +1709,9 @@ impl Writer<'_> {
         if in_copy && !root.is_empty() { format!("--root {root} ") } else { String::new() }
     }
 
-    /// As regras da execução do revisor: a cópia que o fechamento já criou no
-    /// commit da obra, o preparo que o projeto declara, os arquivos locais
-    /// que a cópia recebe pelo conteúdo, o comando de compilar, a suíte que o
+    /// As regras da execução do revisor: a cópia limpa em que a máquina do
+    /// fechamento já rodou, no commit da obra e sem os arquivos locais, o
+    /// preparo que o projeto declara, o comando de compilar, a suíte que o
     /// fechamento já rodou nesse commit — no lugar da ordem de rodá-la, só os
     /// testes em volta de cada corte —, menos processos, e desfazer cada corte
     /// antes de gravar o veredito — quem apaga a cópia é o fechamento. De onde
@@ -1732,11 +1724,6 @@ impl Writer<'_> {
         let line = self.t("prompt.review.copy").replace("{copy}", &copy.path).replace("{root}", root);
         let _ = writeln!(out, "- {}", line.replace("{commit}", commit));
         self.prepare(out, None);
-        if !execution.local_files.is_empty() {
-            let files: Vec<String> = execution.local_files.iter().map(|file| format!("`{file}`")).collect();
-            let line = self.t("prompt.review.local_files").replace("{files}", &files.join(", ")).replace("{root}", root);
-            let _ = writeln!(out, "- {line}");
-        }
         self.build_line(out);
         if let Some(command) = &execution.test {
             let line = self.t("prompt.review.suite").replace("{command}", command).replace("{commit}", commit);
@@ -3650,30 +3637,22 @@ mod tests {
         }
     }
 
-    /// O bloco traz as skills da tarefa inteiras, o corpo de cada uma com o
-    /// nome e o caminho, a revisar marcada. Passado o teto do bloco, a última
-    /// skill sai e uma linha diz qual saiu e onde lê-la; o resto do bloco
-    /// fica inteiro.
+    /// O bloco cita cada skill da tarefa pelo nome e pelo caminho, a revisar
+    /// marcada, e manda abrir o `SKILL.md` antes de editar; o corpo da skill
+    /// não entra no pedido.
     #[test]
-    fn a_task_block_carries_its_skills_whole_and_cuts_the_last_one_past_the_cap() {
+    fn a_task_block_cites_its_skills_by_path_without_their_body() {
         let log = two_tasks();
-        let skill = |name: &str, stale: bool, body: String| TaskSkill { name: name.into(), path: format!("/repo/.claude/skills/{name}/SKILL.md"), stale, body };
+        let skill = |name: &str, stale: bool| TaskSkill { name: name.into(), path: format!("/repo/.claude/skills/{name}/SKILL.md"), stale, note: String::new() };
         let mut m = material(&log, 1);
-        m.task_skills.insert("MSTD-TASK-0001".into(), vec![skill("somar", false, "Some pelo motor.".into()), skill("mostrar", true, "Mostre o total.".into())]);
+        m.task_skills.insert("MSTD-TASK-0001".into(), vec![skill("somar", false), skill("mostrar", true)]);
         let stale = translate("prompt.skill.stale", Locale::PtBr);
-        let block = task_blocks(&m, Locale::PtBr).remove(0).text;
-        assert!(block.contains("Some pelo motor.") && block.contains("Mostre o total."), "{block}");
-        assert!(block.contains("`/repo/.claude/skills/somar/SKILL.md`"), "{block}");
-        assert!(block.contains(&format!("`/repo/.claude/skills/mostrar/SKILL.md` ({stale})")), "{block}");
-
-        let huge = "palavra ".repeat(usize::try_from(TASK_BLOCK_TOKEN_CAP).unwrap());
-        m.task_skills.insert("MSTD-TASK-0001".into(), vec![skill("somar", false, "Some pelo motor.".into()), skill("grande", false, huge.clone())]);
-        let block = task_blocks(&m, Locale::PtBr).remove(0).text;
-        assert!(estimate_tokens(&block) <= TASK_BLOCK_TOKEN_CAP, "{}", block.len());
-        assert!(block.contains("Some pelo motor.") && block.contains("- src/a.rs: `soma`"), "{block}");
-        assert!(!block.contains(huge.trim()), "the last skill was cut");
-        let cut = translate("prompt.task.skill_cut", Locale::PtBr).replace("{name}", "grande").replace("{path}", "/repo/.claude/skills/grande/SKILL.md");
-        assert!(block.contains(&cut), "{block}");
+        let read = translate("prompt.task.skill_read", Locale::PtBr);
+        let block = task_blocks(&m, Locale::PtBr).remove(0);
+        assert!(block.text.contains(&format!("`/repo/.claude/skills/somar/SKILL.md`. {read}")), "{}", block.text);
+        assert!(block.text.contains(&format!("`/repo/.claude/skills/mostrar/SKILL.md` ({stale}). {read}")), "{}", block.text);
+        assert!(block.text.contains("- src/a.rs: `soma`"), "{}", block.text);
+        assert_eq!(block.skills, ["somar", "mostrar"]);
     }
 
     /// A mensagem que responde a uma pergunta com opções guarda só a resposta

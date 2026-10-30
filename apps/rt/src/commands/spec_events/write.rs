@@ -186,13 +186,9 @@
 //!
 //! Numa spec em levantamento com o tipo de trabalho ou algum ponto gravado,
 //! a saída traz o passo seguinte (`mustard_core::domain::survey::next_step`):
-//! em `next`, o que fazer; em `points`, enquanto alguma lacuna do tipo não
-//! tem ponto, os pontos que faltam gravar; em `point`, o próximo ponto
-//! aberto, quando a gravação muda os pontos abertos (a que não os muda não o
-//! repete); em `review`, o bloco cujo último ponto a gravação fechou, com a
-//! pergunta da revisão e as opções; no último bloco, `next` manda rodar o
-//! revisor de fora antes do fim, enquanto nenhum ponto veio dele;
-//! em `unrouted`, no fim, uma linha (o código e o começo do texto) por mensagem
+//! em `next`, o que fazer; em `points`, os pontos abertos, e em `point`, o
+//! próximo deles, quando a gravação muda os pontos abertos (a que não os
+//! muda não o repete); em `unrouted`, no fim, uma linha (o código e o começo do texto) por mensagem
 //! do usuário que nenhum registro aponta, uma vez só (o texto inteiro sai por
 //! `run read item-<código>`).
 //! O ponto aberto só sai fechado, por um `point` que o aponta em `closes`: o
@@ -216,7 +212,8 @@ use mustard_core::domain::spec_events::{
 };
 use mustard_core::domain::spec_index;
 use mustard_core::domain::spec_state::{
-    PhaseWriter, SpecState, State, birth_event, goal_rule, last_user_message, not_closed_yet, phase_write_allowed, reply_rule, returns_to_running, survey_rule,
+    PhaseWriter, SpecState, State, birth_event, decided_by_user, goal_rule, last_user_message, not_closed_yet, origin_not_user, phase_write_allowed, reply_rule,
+    returns_to_running, survey_rule,
 };
 use mustard_core::domain::survey::{self, SurveyStep};
 use mustard_core::domain::wave_prompt::{item_proofs, owner_rule, proofs_named_in};
@@ -236,6 +233,10 @@ use crate::shared::spec_state::{DiskSpecState, checkout, session_from_env};
 /// entradas são a volta da onda e a do revisor, escondidas da leitura até a
 /// rodada ou o fechamento assumi-las.
 const BINARY_ONLY: &[&str] = &["stage_run", "validation_failure", "criterion_run", "verdict", "send", "delivered", "commit", "tracking", "response"];
+
+/// Os tipos que a gravação nova não aceita mais e que nenhum texto do produto
+/// manda gravar. A spec antiga que os tem continua se lendo.
+pub(crate) const NOT_WRITTEN: &[&str] = &["concern"];
 
 /// A razão curta da recusa da lição de defeito: ela vira a tarefa do
 /// conserto, com o teste que falha se o defeito voltar.
@@ -312,7 +313,7 @@ pub(crate) fn write_at(opts: &WriteOpts) -> Value {
 /// como o `run write` a lê.
 #[cfg(test)]
 pub(crate) fn write_at_with(opts: &WriteOpts, copy: bool) -> Value {
-    super::write_door::write_for(opts, copy, session_from_env().as_deref())
+    super::write_door::write_for(opts, copy, session_from_env().as_deref()).0
 }
 
 /// Para os testes: grava como a produção grava. A mensagem do usuário chega
@@ -379,6 +380,128 @@ pub(crate) fn draft_object(json: &str) -> Result<Map<String, Value>, Refusal> {
     }
 }
 
+/// O valor da opção de um campo cru que pede a entrada padrão inteira.
+pub(crate) const FROM_STDIN: &str = "-";
+
+/// Por que os campos crus de uma gravação não entraram no `--json`.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum RawRefusal {
+    /// Os dois campos pediram a entrada padrão, que é uma só.
+    StdinTwice,
+    /// O campo veio no `--json` e na opção própria.
+    FieldTwice { field: &'static str },
+    /// A entrada padrão não se leu como texto.
+    Stdin { detail: String },
+}
+
+impl RawRefusal {
+    /// A recusa como o comando imprime, no idioma `lang`.
+    pub(crate) fn to_value(&self, lang: Locale) -> Value {
+        match self {
+            Self::StdinTwice => json!({ "ok": false, "reason": "raw-input-twice", "hint": translate("spec_events.raw_input_twice", lang) }),
+            Self::FieldTwice { field } => json!({
+                "ok": false,
+                "reason": "raw-field-twice",
+                "hint": translate("spec_events.raw_field_twice", lang).replace("{field}", field),
+            }),
+            Self::Stdin { detail } => super::refused(&Refusal::Io { detail: format!("stdin: {detail}") }, lang),
+        }
+    }
+}
+
+/// O `--json` de uma gravação com os campos que vieram crus, cada um pela
+/// opção própria (`raw`: o nome do campo e o valor da opção). O valor
+/// [`FROM_STDIN`] é a entrada padrão inteira, lida por `stdin`, sem a quebra
+/// que fecha a última linha; outro valor entra como veio. O texto longo, com
+/// títulos, listas e crases, chega assim sem virar JSON antes. O `--json` que
+/// não é um objeto segue como veio, e a gravação o recusa pelo motivo de
+/// sempre.
+///
+/// # Errors
+///
+/// [`RawRefusal`]: os dois campos pedindo a entrada padrão, o campo que veio
+/// também no `--json` ou a entrada padrão que não se lê.
+pub(crate) fn with_raw_fields(
+    json: String,
+    raw: [(&'static str, Option<String>); 2],
+    stdin: impl FnOnce() -> std::io::Result<String>,
+) -> Result<String, RawRefusal> {
+    let given: Vec<(&'static str, String)> = raw.into_iter().filter_map(|(field, value)| value.map(|value| (field, value))).collect();
+    if given.is_empty() {
+        return Ok(json);
+    }
+    if given.iter().filter(|(_, value)| value == FROM_STDIN).count() > 1 {
+        return Err(RawRefusal::StdinTwice);
+    }
+    let Ok(Value::Object(mut fields)) = serde_json::from_str::<Value>(&json) else {
+        return Ok(json);
+    };
+    let mut stdin = Some(stdin);
+    for (field, value) in given {
+        if fields.contains_key(field) {
+            return Err(RawRefusal::FieldTwice { field });
+        }
+        let value = match (value == FROM_STDIN).then(|| stdin.take()).flatten() {
+            Some(read) => {
+                let text = read().map_err(|error| RawRefusal::Stdin { detail: error.to_string() })?;
+                let open = text.strip_suffix('\n').map_or(text.as_str(), |cut| cut.strip_suffix('\r').unwrap_or(cut));
+                open.to_string()
+            }
+            None => value,
+        };
+        fields.insert(field.to_string(), Value::String(value));
+    }
+    Ok(Value::Object(fields).to_string())
+}
+
+/// Os campos do tipo `event_type` que apontam outro item: os de referência
+/// da tabela, a origem e a versão que o item substitui.
+fn reference_fields(event_type: &str) -> Vec<&'static str> {
+    use mustard_core::domain::spec_events::Kind;
+    let declared = type_spec(event_type).map(|spec| spec.fields).unwrap_or_default();
+    let mut names: Vec<&'static str> = declared.iter().filter(|field| matches!(field.kind, Kind::Ref | Kind::Refs)).map(|field| field.name).collect();
+    for common in ["origin", "replaces"] {
+        if !names.contains(&common) {
+            names.push(common);
+        }
+    }
+    names
+}
+
+/// Os valores dos campos de `draft` que apontam outro item, um a um: o
+/// valor sozinho ou cada um da lista.
+fn reference_values<'a>(event_type: &str, draft: &'a mut Map<String, Value>) -> impl Iterator<Item = &'a mut Value> {
+    let fields = reference_fields(event_type);
+    draft
+        .iter_mut()
+        .filter(move |(name, _)| fields.contains(&name.as_str()))
+        .flat_map(|(_, value)| match value {
+            Value::Array(list) => list.iter_mut().collect::<Vec<_>>(),
+            single => vec![single],
+        })
+}
+
+/// Os rótulos que o rascunho `draft` do tipo `event_type` cita nos campos
+/// que apontam outro item: o texto que não é número nem código de item. É
+/// assim que uma linha do lote aponta outra do mesmo lote, ainda sem número.
+pub(crate) fn cited_labels(event_type: &str, draft: &Map<String, Value>) -> Vec<String> {
+    let mut draft = draft.clone();
+    reference_values(event_type, &mut draft)
+        .filter(|value| mustard_core::domain::spec_events::EventRef::from_value(value).is_none())
+        .filter_map(|value| value.as_str().map(str::trim).filter(|label| !label.is_empty()).map(str::to_string))
+        .collect()
+}
+
+/// Troca, nos campos de `draft` que apontam outro item, cada rótulo que
+/// `recorded` conhece pelo número do item gravado com ele.
+pub(crate) fn resolve_labels(event_type: &str, draft: &mut Map<String, Value>, recorded: &dyn Fn(&str) -> Option<u64>) {
+    for value in reference_values(event_type, draft) {
+        if let Some(id) = value.as_str().map(str::trim).and_then(recorded) {
+            *value = json!(id);
+        }
+    }
+}
+
 /// As recusas do pedido do modelo na spec `spec` que olham só o tipo e os
 /// campos, antes de ler a spec: o autor do programa; o estado e o tipo de
 /// trabalho, que têm porta própria; os tipos que só o binário grava; a onda,
@@ -403,6 +526,9 @@ pub(crate) fn draft_rules(start: &Path, spec: &str, event_type: &str, draft: &mu
     let a_return = returns && ["delivered", "verdict"].contains(&event_type);
     if BINARY_ONLY.contains(&event_type) && !a_return {
         return Err(Refusal::BinaryOnlyType { event_type: event_type.to_string(), spec });
+    }
+    if NOT_WRITTEN.contains(&event_type) {
+        return Err(Refusal::TypeNotWritten { event_type: event_type.to_string() });
     }
     // A onda nasce do backlog, e a recusa vem antes da conferência dos campos:
     // uma onda sem pronto-quando não pode mandar completar o que nunca passa.
@@ -607,9 +733,9 @@ pub fn record(start: &Path, spec: &str, event_type: &str, draft: Map<String, Val
 /// que ela cobre. `files` e `depends_on` contam como declarados só pela chave
 /// estar presente, mesmo com a lista vazia — uma tarefa sem dependência
 /// declara `"depends_on": []`. O título vazio ou com mais de
-/// [`TASK_TITLE_MAX`] caracteres conta como faltando. A versão que o programa
-/// grava não precisa dele: herda o da versão que substitui
-/// ([`inherit_task_title`]).
+/// [`TASK_TITLE_MAX`] caracteres conta como faltando. A versão nova de uma
+/// tarefa não precisa mandar o que não muda: herda da versão que substitui
+/// (`task_inherit::inherit_task`), antes desta conferência.
 ///
 /// Os itens cobertos (`covers`) faltam também com a lista vazia: a onda leva
 /// como critérios os itens que as tarefas dela cobrem, e a tarefa que não
@@ -731,7 +857,7 @@ fn uncovered_items(log: &SpecLog) -> Vec<String> {
 /// exigem título e parte do usuário, e a parte do agente fica opcional.
 fn item_form(event_type: &str) -> Option<(bool, bool)> {
     match event_type {
-        "rule" | "limit" | "contract" | "error" | "edge_case" | "out_of_scope" | "decision" | "context" | "concern" | "task" => Some((true, true)),
+        "rule" | "limit" | "contract" | "error" | "edge_case" | "out_of_scope" | "decision" | "context" | "task" => Some((true, true)),
         "request" | "note" => Some((true, false)),
         "criterion" => Some((false, false)),
         _ => None,
@@ -857,25 +983,6 @@ fn unclear_fields(root: &Path, draft: &Map<String, Value>, known: &[String], lan
         .collect()
 }
 
-/// A versão de tarefa gravada pelo programa sem título leva o título da
-/// versão que ela substitui, quando essa tinha um. O evento gravado não muda
-/// mais, então ler a versão antiga antes da trava não perde nada.
-fn inherit_task_title(source: &Source, draft: &mut Map<String, Value>) -> Result<(), Refusal> {
-    if draft.get("title").and_then(Value::as_str).is_some_and(|t| !t.trim().is_empty()) {
-        return Ok(());
-    }
-    let Some(old) = draft.get("replaces").and_then(Value::as_u64) else {
-        return Ok(());
-    };
-    let Some(log) = source.log()? else {
-        return Ok(());
-    };
-    if let Some(title) = log.get(old).and_then(|e| e.fields.get("title")).filter(|t| t.is_string()) {
-        draft.insert("title".into(), title.clone());
-    }
-    Ok(())
-}
-
 /// Onde uma gravação lê o arquivo de eventos como ele está antes de gravar:
 /// pelo caminho, com a trava compartilhada, ou pelo trecho que já segura a
 /// trava exclusiva dele ([`record_locked`]) — ali dentro, ler pelo caminho
@@ -968,7 +1075,7 @@ pub(super) fn record_to(
     start: &Path,
     spec: &str,
     event_type: &str,
-    draft: Map<String, Value>,
+    mut draft: Map<String, Value>,
     by: Option<PhaseWriter>,
     locked: Option<&mut store::LockedLog>,
     session: Option<&str>,
@@ -978,11 +1085,19 @@ pub(super) fn record_to(
     }
     mustard_core::io::legacy_specs::refuse_legacy(&project.root, spec)?;
     let file = store::spec_file(&project.root, spec);
+    // A versão nova de uma tarefa leva da versão que substitui o que não
+    // mandou, antes de a conferência pedir cada declaração. O evento gravado
+    // não muda mais, então ler a versão antiga antes da trava não perde nada.
+    if event_type == "task"
+        && let Ok(path) = file.as_deref()
+        && let Some(log) = Source::of(path, locked.as_deref()).log()?
+    {
+        super::task_inherit::inherit_task(&log, by.is_none(), &mut draft);
+    }
     let declaration_issue = task_declared(event_type, &draft, by.is_none()).err().map(|refusal| {
         let source = file.as_deref().ok().map(|path| Source::of(path, locked.as_deref()));
         with_uncovered_items(source.as_ref(), refusal)
     });
-    let mut draft = draft;
     // De qual sessão veio: o registro diz quem gravou, e o consumo de duas
     // conversas no mesmo projeto deixa de sair somado. Quem já disse a sessão
     // no rascunho manda nela.
@@ -1015,9 +1130,6 @@ pub(super) fn record_to(
             issues.push(Refusal::ItemUnclear { fields: unclear });
         }
     }
-    if event_type == "task" && by.is_some() {
-        inherit_task_title(&Source::of(&path, locked.as_deref()), &mut draft)?;
-    }
     // A versão nova que o modelo grava sem `wave` fica na onda da vigente
     // enquanto o agente dela trabalha: a onda é do programa, e a tarefa que
     // sai dela deixaria o agente sem o que entregar.
@@ -1037,14 +1149,20 @@ pub(super) fn record_to(
         carry_open_point(&log, &mut draft);
     }
     // O item que o modelo grava a partir da conversa sem dizer de onde veio
-    // vem da última mensagem do usuário. Sem mensagem do usuário na spec, a
-    // conferência do tipo recusa a falta do campo.
+    // vem da última mensagem do usuário. O que diz que o usuário decidiu não:
+    // ele aponta a mensagem dele, e a falta é recusada com as últimas. Sem
+    // mensagem do usuário na spec, a conferência do tipo recusa a falta do
+    // campo.
     if by.is_none()
         && origin_missing(event_type, &draft)
         && let Some(log) = Source::of(&path, locked.as_deref()).log()?
-        && let Some(said) = last_user_message(&log)
     {
-        draft.insert("origin".to_string(), json!(said.id));
+        if decided_by_user(&log, event_type, &draft) {
+            return Err(origin_not_user(&log, event_type, None));
+        }
+        if let Some(said) = last_user_message(&log) {
+            draft.insert("origin".to_string(), json!(said.id));
+        }
     }
     if by_model {
         let normalized = mustard_core::domain::spec_events::normalize(draft.clone(), event_type);
@@ -1233,89 +1351,49 @@ impl RecordCheck {
 /// O passo do levantamento depois de uma gravação na spec `spec`, lido do
 /// arquivo antes e depois dela, como o relatório o mostra: em `next`, o que
 /// fazer, no idioma do projeto, e, quando falta ponto de lacuna, a ordem de
-/// rodar o `grill` de novo; em `point`, o ponto a apresentar; em `points`, os
-/// pontos abertos do levantamento condensado, mostrados de uma vez; em
-/// `review`, o bloco que fechou, com os pontos, os registros que os fecharam,
-/// a pergunta e as opções, "Seguir" por último; em `unrouted`, uma linha com o
-/// código e o começo de cada mensagem do usuário sem destino. Com a revisão e outro passo juntos, `next` traz os
-/// dois, na ordem; no fim do levantamento, entre a revisão e o fim, a ordem
-/// de rodar o revisor de fora. `None` quando não há passo.
+/// rodar o `grill` de novo; em `points`, os pontos abertos, mostrados de uma
+/// vez, em `point` o próximo deles, inteiro, e em `ask_user` os códigos dos
+/// que são do usuário; em `unrouted`, uma linha com o código e o começo de
+/// cada mensagem do usuário sem destino. `None` quando não há passo.
 ///
 /// Nenhum passo daqui pede a cópia do modelo visual aprovado: quem a pede é
 /// o `grill`, com os pontos que abre, para ela ser salva logo depois do sim.
-/// O fim, o revisor de fora e o fechamento do ponto que ele achou não a
-/// repetem.
+/// O fim não a repete.
 ///
-/// Com `brief`, o levantamento condensado não repete o texto dos pontos
-/// abertos: `points` traz o código, o número e a lacuna de cada um, e `point`
-/// traz inteiro só o próximo. Em qualquer relatório, cada fato do ponto vem só
-/// com `text` e `source` ([`shown_point`]).
+/// Com `brief`, o relatório não repete o texto dos pontos abertos: `points`
+/// traz o código, o número e a lacuna de cada um. Em qualquer relatório,
+/// cada fato do ponto vem só com `text` e `source` ([`shown_point`]).
 ///
 /// A gravação que não muda os pontos abertos e deixa como próximo o ponto que
 /// o relatório de antes já apresentou ([`already_presented`]) não o repete:
-/// sem outro passo, não há relatório do levantamento.
+/// não há relatório do levantamento.
 pub(crate) fn survey_report(spec: &str, before: &SpecLog, after: &SpecLog, lang: Locale, brief: bool) -> Option<Map<String, Value>> {
-    let mut steps = survey::next_step(before, after);
-    steps.retain(|step| !matches!(step, SurveyStep::Point(point) if already_presented(before, after, point)));
-    if steps.is_empty() {
-        return None;
-    }
+    let step = survey::next_step(before, after).filter(|step| !matches!(step, SurveyStep::Point(point) if already_presented(before, after, point)))?;
     let codes = after.codes();
-    let code_of = |id: &u64| codes.get(id).cloned().unwrap_or_else(|| id.to_string());
     let mut out = Map::new();
-    let mut next: Vec<String> = Vec::new();
-    for step in steps {
-        match step {
-            SurveyStep::ReviewBlock { block, closed, records, outside_review } => {
-                let go_on = translate("survey.continue_option", lang);
-                next.push(translate("survey.review_step", lang).replace("{block}", &block).replace("{continue}", go_on));
-                if outside_review {
-                    next.push(translate("survey.outside_review_step", lang).replace("{spec}", spec));
-                }
-                out.insert(
-                    "review".to_string(),
-                    json!({
-                        "block": block,
-                        "points": closed.iter().map(code_of).collect::<Vec<_>>(),
-                        "records": records.iter().map(code_of).collect::<Vec<_>>(),
-                        "question": translate("survey.review_question", lang),
-                        "options": [go_on],
-                    }),
-                );
+    let next = match step {
+        // A spec antiga, com os pontos nos blocos de antes, também mostra
+        // todos os abertos de uma vez.
+        SurveyStep::Point(point) => {
+            let open = survey::open_points(after);
+            if brief {
+                out.insert("points".to_string(), json!(survey::describe(after, &open)));
+            } else {
+                let open: Vec<Value> = open.into_iter().map(|p| shown_point(p, &codes)).collect();
+                out.insert("points".to_string(), json!(open));
             }
-            SurveyStep::OutsideReview => {
-                next.push(translate("survey.outside_review_step", lang).replace("{spec}", spec));
-            }
-            SurveyStep::Point(point) if point.str_field("block").map(str::trim) == Some(survey::CONDENSED) => {
-                next.push(translate("survey.present_all", lang).to_string());
-                let open = survey::open_points(after);
-                if brief {
-                    out.insert("points".to_string(), json!(survey::describe(after, &open)));
-                    out.insert("point".to_string(), shown_point(point, &codes));
-                } else {
-                    let open: Vec<Value> = open.into_iter().map(|p| shown_point(p, &codes)).collect();
-                    out.insert("points".to_string(), json!(open));
-                }
-            }
-            SurveyStep::Point(point) => {
-                let covered = survey::known_answers(after, point);
-                if !covered.is_empty() {
-                    out.insert("covered_by".into(), json!(covered.iter().map(code_of).collect::<Vec<_>>()));
-                    next.push(translate("survey.covered_point", lang).replace("{records}", &covered.iter().map(code_of).collect::<Vec<_>>().join(", ")));
-                }
-                next.push(translate("survey.present_point", lang).replace("{code}", &code_of(&point.id)).replace("{id}", &point.id.to_string()));
-                out.insert("point".to_string(), shown_point(point, &codes));
-            }
-            SurveyStep::Done { unrouted } => {
-                next.push(translate("survey.done", lang).replace("{scale}", translate("plan.points_scale", lang)));
-                out.insert("unrouted".to_string(), json!(super::unrouted::lines(unrouted, &codes)));
-            }
-            SurveyStep::Record(_) => {
-                next.push(translate("survey.rerun_grill", lang).replace("{spec}", spec));
-            }
+            out.insert("point".to_string(), shown_point(point, &codes));
+            out.insert("ask_user".to_string(), json!(survey::ask_user(after).iter().map(|p| codes.get(&p.id)).collect::<Vec<_>>()));
+            translate("survey.present_all", lang).to_string()
         }
-    }
-    out.insert("next".to_string(), json!(next.join(" ")));
+        SurveyStep::Done { unrouted } => {
+            let hint = survey::done_hint(&unrouted, lang).to_string();
+            out.insert("unrouted".to_string(), json!(super::unrouted::lines(unrouted, &codes)));
+            hint
+        }
+        SurveyStep::Record(_) => translate("survey.rerun_grill", lang).replace("{spec}", spec),
+    };
+    out.insert("next".to_string(), json!(next));
     Some(out)
 }
 
@@ -1325,13 +1403,14 @@ pub(crate) fn survey_report(spec: &str, before: &SpecLog, after: &SpecLog, lang:
 /// nenhum. Um ponto que ganhou versão, ou que o relatório de antes ainda não
 /// apresentava (faltava ponto de lacuna por gravar), não entra aqui.
 fn already_presented(before: &SpecLog, after: &SpecLog, point: &SpecEvent) -> bool {
-    let presented = survey::next_step(before, before).into_iter().any(|step| matches!(step, SurveyStep::Point(p) if p.id == point.id));
+    let presented = survey::next_step(before, before).is_some_and(|step| matches!(step, SurveyStep::Point(p) if p.id == point.id));
     presented && survey::open_points(before).iter().map(|p| p.id).eq(survey::open_points(after).iter().map(|p| p.id))
 }
 
 /// O ponto como o relatório do levantamento o mostra: cada fato só com o
-/// texto e a fonte. A conferência que o `grill` grava junto do fato fica no
-/// arquivo da spec, e a leitura do item a mostra.
+/// texto e a fonte, e quem fecha o ponto em `owner`. A conferência que o
+/// `grill` grava junto do fato fica no arquivo da spec, e a leitura do item a
+/// mostra.
 fn shown_point(point: &SpecEvent, codes: &BTreeMap<u64, String>) -> Value {
     let mut shown = super::shown(point, codes);
     if let Some(facts) = shown.get_mut("facts").and_then(Value::as_array_mut) {
@@ -1339,6 +1418,7 @@ fn shown_point(point: &SpecEvent, codes: &BTreeMap<u64, String>) -> Value {
             fact.retain(|name, _| matches!(name.as_str(), "text" | "source"));
         }
     }
+    shown["owner"] = json!(survey::owner_of(point).token());
     shown
 }
 
@@ -2659,7 +2739,7 @@ mod tests {
         assert!(missing["hint"].as_str().unwrap().contains("example"));
         let outside_a_conversation = |event_type: &str, json: &str| {
             let opts = WriteOpts { root: dir.path().to_path_buf(), spec: None, event_type: event_type.into(), json: json.into() };
-            super::super::write_door::write_for(&opts, false, None)
+            super::super::write_door::write_for(&opts, false, None).0
         };
         let no_spec = outside_a_conversation("rule", r#"{"text":"t","keys":["k"],"example":"e","origin":1}"#);
         assert_eq!(no_spec["reason"], json!("spec-required"), "{no_spec}");
@@ -4032,6 +4112,38 @@ mod tests {
         assert_eq!(log.get(id).and_then(|event| event.int("origin")), Some(said));
     }
 
+    /// O que diz que o usuário decidiu não recebe a última mensagem por conta
+    /// própria: a regra sem `origin`, ou com a mensagem do assistente, é
+    /// recusada, a recusa lista as últimas mensagens do usuário, e nada é
+    /// gravado. Com a mensagem dele, passa; a nota sem `origin` segue com a
+    /// última.
+    #[test]
+    fn a_rule_points_to_a_user_message_and_never_gets_the_last_one_by_itself() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let said = message(root, "user", "Trave o merge com pendência aberta.");
+        let replied = message(root, "assistant", "Anotado.");
+        let rule = |origin: Option<u64>| {
+            let mut rule = json!({"text": "A trava confere o merge.", "keys": ["trava"], "example": "merge com pendência é barrado."});
+            if let Some(origin) = origin {
+                rule["origin"] = json!(origin);
+            }
+            rule.to_string()
+        };
+        let before = lines(root);
+        for origin in [None, Some(replied)] {
+            let refused = write(root, "rule", &rule(origin));
+            assert_eq!(refused["reason"], json!("origin-not-user"), "{refused}");
+            let hint = refused["hint"].as_str().unwrap();
+            assert!(hint.contains(&format!("{said}: “Trave o merge com pendência aberta.”")) && !hint.contains("Anotado"), "{hint}");
+        }
+        assert_eq!(lines(root), before, "a refusal writes nothing");
+        assert_eq!(write(root, "rule", &rule(Some(said)))["ok"], json!(true));
+        let note = write(root, "note", &json!({"title": "Nota", "text": "Uma nota.", "keys": ["n"]}).to_string());
+        let log = store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap();
+        assert_eq!(log.get(note["id"].as_u64().unwrap()).and_then(|event| event.int("origin")), Some(said), "{note}");
+    }
+
     /// A resposta do assistente, gravada pelo binário como o despachante a
     /// grava no fim do turno, ligada à mensagem `reply_to`.
     fn response(root: &std::path::Path, text: &str, reply_to: u64) -> u64 {
@@ -4279,6 +4391,38 @@ mod tests {
         assert!(english["hint"].as_str().unwrap().contains("is written by `mustard-rt run grill`"), "{english}");
     }
 
+    /// A preocupação não é mais gravada e nada entra: a recusa manda gravar a
+    /// do usuário como regra ou decisão, com a mensagem dele, e a do
+    /// assistente como anotação. A spec antiga que a tem continua se lendo.
+    #[test]
+    fn a_concern_is_refused_and_an_old_one_still_reads() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        surveyed(root);
+        let said = message(root, "user", "Travar o merge.");
+        let mut old = Map::new();
+        old.insert("text".to_string(), json!("Testes prendem frases."));
+        old.insert("origin".to_string(), json!(said));
+        record(root, "teste", "concern", old, PhaseWriter::Binary).unwrap();
+        let before = lines(root);
+        let draft = json!({ "text": "Outra.", "title": "Outra", "agent": "- nada", "origin": said }).to_string();
+        let refused = write(root, "concern", &draft);
+        assert_eq!(refused["reason"], json!("type-not-written"), "{refused}");
+        let hint = refused["hint"].as_str().unwrap();
+        assert!(hint.contains("`rule`") && hint.contains("`decision`") && hint.contains("`origin`"), "{refused}");
+        assert!(hint.contains("`note`"), "the assistant's concern goes as a note: {refused}");
+        assert_eq!(lines(root), before, "a refusal writes nothing");
+        let read = super::super::read::read_at(&super::super::read::ReadOpts {
+            root: root.to_path_buf(),
+            spec: Some("teste".into()),
+            block: "specification".into(),
+            term: None,
+            session: None,
+        })
+        .expect("the old spec reads");
+        assert!(read.contains("Testes prendem frases."), "{read}");
+    }
+
     const GOAL: &str = "Travar o merge com pendência aberta.";
 
     /// Um ponto do levantamento gravado aberto.
@@ -4291,9 +4435,11 @@ mod tests {
 
     /// Uma spec em levantamento com o objetivo, o tipo de trabalho `kinds`
     /// gravado pela porta do binário, como o `grill` grava, e um ponto aberto
-    /// por lacuna, na ordem da lista; no condensado, todos num bloco só.
+    /// por lacuna, na ordem da lista; no condensado, todos num bloco só, como
+    /// o `grill` grava, e sem ele cada um no bloco da lacuna, como nas specs
+    /// antigas.
     /// Enquanto falta ponto de lacuna, cada gravação manda rodar o `grill` de
-    /// novo; a gravação do último ponto devolve o primeiro.
+    /// novo; a gravação do último ponto devolve todos, com o primeiro inteiro.
     /// Devolve a mensagem do objetivo e os pontos.
     fn listed(root: &std::path::Path, kinds: &[&str], condensed: bool) -> (u64, Vec<Opened>) {
         surveyed(root);
@@ -4322,9 +4468,8 @@ mod tests {
                 let ask = translate("survey.rerun_grill", Locale::PtBr).replace("{spec}", "teste");
                 assert_eq!(report["next"], json!(ask), "{report}");
                 assert!(report.get("point").is_none() && report.get("points").is_none(), "{report}");
-            } else if condensed {
-                assert_eq!(report["points"].as_array().map(Vec::len), Some(gaps.len()), "{report}");
             } else {
+                assert_eq!(report["points"].as_array().map(Vec::len), Some(gaps.len()), "{report}");
                 assert_eq!(report["point"]["id"], json!(points[0].id), "{report}");
             }
         }
@@ -4389,8 +4534,8 @@ mod tests {
         }
         let closed = settle(root, &points[0], said);
         assert_eq!(closed["point"]["id"], json!(points[1].id), "{closed}");
-        let next = closed["next"].as_str().unwrap();
-        assert!(next.contains(&points[1].code) && next.contains(&points[1].id.to_string()), "{next}");
+        assert_eq!(closed["next"], json!(translate("survey.present_all", Locale::PtBr)), "{closed}");
+        assert_eq!(closed["points"].as_array().map(Vec::len), Some(points.len() - 1), "{closed}");
         assert!(closed.get("review").is_none(), "{closed}");
     }
 
@@ -4430,106 +4575,9 @@ mod tests {
         let reduced = json!([{"text": GOAL, "source": format!("mensagem {said}")}, {"text": "Conferido no mapa.", "source": format!("mensagem {said}")}]);
         for brief in [true, false] {
             let report = survey_report("teste", &before, &after, Locale::PtBr, brief).expect("a new version of the point is shown");
-            let shown = if brief { &report["point"] } else { &report["points"][0] };
-            assert_eq!(shown["id"], json!(revised), "brief {brief}: {report:?}");
-            assert_eq!(shown["facts"], reduced, "brief {brief}: {report:?}");
+            assert_eq!(report["point"]["id"], json!(revised), "brief {brief}: {report:?}");
+            assert_eq!(report["point"]["facts"], reduced, "brief {brief}: {report:?}");
         }
-    }
-
-    /// Fechar o último ponto de um bloco devolve a revisão dele: a pergunta,
-    /// "Seguir" por último, os pontos do bloco e as respostas que os
-    /// fecharam; o próximo ponto vem junto, para depois da revisão.
-    #[test]
-    fn closing_the_last_point_of_a_block_returns_the_block_review_question() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let (said, points) = listed(root, &["fix"], false);
-        for point in &points[..3] {
-            let report = settle(root, point, said);
-            assert!(report.get("review").is_none(), "{report}");
-        }
-        let report = settle(root, &points[3], said);
-        let review = &report["review"];
-        assert_eq!(review["block"], json!("defect"), "{report}");
-        assert_eq!(review["question"], json!("Quer ver mais algum ponto ou aprofundar algum?"));
-        assert_eq!(review["options"], json!(["Seguir"]));
-        let codes: Vec<&str> = points[..4].iter().map(|p| p.code.as_str()).collect();
-        assert_eq!(review["points"], json!(codes));
-        assert_eq!(review["records"], json!(["MSTD-DEC-0001", "MSTD-DEC-0002", "MSTD-DEC-0003", "MSTD-DEC-0004"]));
-        assert_eq!(report["point"]["id"], json!(points[4].id), "{report}");
-        let next = report["next"].as_str().unwrap();
-        assert!(next.starts_with("O bloco defect fechou.") && next.contains(&points[4].code), "{next}");
-    }
-
-    /// No fim do levantamento, o próximo passo manda rodar o revisor de fora,
-    /// entre a revisão do último bloco e o fim, nos dois idiomas; a revisão
-    /// fica só com "Seguir", sem oferecê-lo como opção. Fechar o penúltimo
-    /// ponto, com um ainda aberto, não manda rodá-lo.
-    #[test]
-    fn the_end_of_the_survey_orders_the_outside_reviewer() {
-        for (config, lang, go_on, run) in [
-            (None, Locale::PtBr, "Seguir", "rode o revisor de fora"),
-            (Some(r#"{"language":{"text":"en-US"}}"#), Locale::EnUs, "Continue", "run the outside reviewer"),
-        ] {
-            let dir = tempdir().unwrap();
-            let root = dir.path();
-            let (said, points) = listed(root, &["fix"], false);
-            if let Some(config) = config {
-                std::fs::write(root.join("mustard.json"), config).unwrap();
-            }
-            let outside = translate("survey.outside_review_step", lang).replace("{spec}", "teste");
-            assert!(outside.contains(run) && outside.contains("`mustard-review`") && outside.contains("teste"), "{outside}");
-            let (last_one, before) = points.split_last().unwrap();
-            let mut report = Value::Null;
-            for point in before {
-                report = settle(root, point, said);
-            }
-            assert!(!report["next"].as_str().unwrap().contains(run), "one point still open: {report}");
-            let last = settle(root, last_one, said);
-            assert_eq!(last["review"]["block"], json!("proof"), "{last}");
-            assert_eq!(last["review"]["options"], json!([go_on]), "the reviewer is not an option: {last}");
-            assert!(last.get("point").is_none(), "{last}");
-            let review = translate("survey.review_step", lang).replace("{block}", "proof").replace("{continue}", go_on);
-            let done = translate("survey.done", lang).replace("{scale}", translate("plan.points_scale", lang));
-            assert_eq!(last["next"], json!(format!("{review} {outside} {done}")), "review, reviewer, then the end, with no design copy");
-            assert!(last["unrouted"].is_array(), "{last}");
-        }
-    }
-
-    /// O revisor de fora é mandado rodar uma vez: fechado o último ponto que
-    /// veio dele, a revisão do bloco dele fica só com "Seguir", o fim vem
-    /// junto, e o passo não manda rodá-lo de novo.
-    #[test]
-    fn closing_the_outside_reviewers_last_point_does_not_order_the_reviewer_again() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let (said, points) = listed(root, &["fix"], false);
-        let mut last = Value::Null;
-        for point in &points {
-            last = settle(root, point, said);
-        }
-        let outside = translate("survey.outside_review_step", Locale::PtBr).replace("{spec}", "teste");
-        assert!(last["next"].as_str().unwrap().contains(&outside), "{last}");
-        assert_eq!(last["review"]["options"], json!(["Seguir"]), "{last}");
-        let gap = "O merge pela interface web";
-        let found = json!({"block": "outside_review", "gap": gap, "from": "outside_review", "status": "open",
-            "origin": said, "facts": [{"text": "O revisor achou.", "source": format!("mensagem {said}")}]});
-        let added = write(root, "point", &found.to_string());
-        assert_eq!(added["point"]["id"], added["id"], "the reviewer's point is the next one: {added}");
-        let reviewer = Opened {
-            id: added["id"].as_u64().unwrap(),
-            code: added["code"].as_str().unwrap().to_string(),
-            block: "outside_review".to_string(),
-            gap: gap.to_string(),
-        };
-        let closed = settle(root, &reviewer, said);
-        assert_eq!(closed["review"]["block"], json!("outside_review"), "{closed}");
-        assert_eq!(closed["review"]["options"], json!(["Seguir"]), "{closed}");
-        let next = closed["next"].as_str().unwrap();
-        assert!(!next.contains(&outside), "ordered once: {closed}");
-        let done = translate("survey.done", Locale::PtBr).replace("{scale}", translate("plan.points_scale", Locale::PtBr));
-        assert!(next.ends_with(&done), "{closed}");
-        assert!(closed["unrouted"].is_array(), "{closed}");
     }
 
     /// O fim do levantamento lista as mensagens do usuário que nenhum
@@ -4592,55 +4640,29 @@ mod tests {
         assert!(unrelated.get("next").is_none(), "a write that changes nothing brings no step: {unrelated}");
     }
 
-    /// No levantamento condensado, fechar os pontos não pede revisão de
-    /// bloco: cada fechamento devolve os que faltam, de uma vez, e o último
-    /// devolve o fim.
+    /// Fechar os pontos não pede revisão de bloco nem revisor de fora, no
+    /// bloco único e nos blocos das specs antigas: cada fechamento devolve os
+    /// que faltam, de uma vez, e o último devolve o fim. Sem mensagem sem
+    /// destino, o fim não pede para mostrá-las.
     #[test]
-    fn a_condensed_survey_skips_the_block_review_and_goes_to_the_end() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let (said, points) = listed(root, &["fix"], true);
-        for (i, point) in points.iter().enumerate() {
-            let report = settle(root, point, said);
-            assert!(report.get("review").is_none(), "{report}");
-            let left = points.len() - i - 1;
-            if left > 0 {
-                assert_eq!(report["points"].as_array().map(Vec::len), Some(left), "{report}");
-                assert_eq!(report["next"], json!(translate("survey.present_all", Locale::PtBr)));
-            } else {
-                assert!(report["unrouted"].is_array(), "{report}");
-                let done = translate("survey.done", Locale::PtBr).replace("{scale}", translate("plan.points_scale", Locale::PtBr));
-                assert_eq!(report["next"], json!(done), "the end does not ask for the design copy");
+    fn closing_the_points_asks_no_review_and_the_last_one_ends_the_survey() {
+        for condensed in [true, false] {
+            let dir = tempdir().unwrap();
+            let root = dir.path();
+            let (said, points) = listed(root, &["fix"], condensed);
+            for (i, point) in points.iter().enumerate() {
+                let report = settle(root, point, said);
+                assert!(report.get("review").is_none(), "{report}");
+                let left = points.len() - i - 1;
+                if left > 0 {
+                    assert_eq!(report["points"].as_array().map(Vec::len), Some(left), "{report}");
+                    assert_eq!(report["next"], json!(translate("survey.present_all", Locale::PtBr)));
+                } else {
+                    assert_eq!(report["unrouted"], json!([]), "{report}");
+                    assert_eq!(report["next"], json!(translate("survey.done", Locale::PtBr)), "the end does not ask for the design copy");
+                }
             }
         }
-    }
-
-    /// Um ponto novo no bloco já revisto reabre o bloco: ele é o próximo
-    /// ponto, e o fechamento dele pede a revisão de novo.
-    #[test]
-    fn a_point_added_after_the_review_reopens_the_block_and_its_closing_asks_again() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        let (said, points) = listed(root, &["fix"], false);
-        let mut report = Value::Null;
-        for point in &points[..4] {
-            report = settle(root, point, said);
-        }
-        assert_eq!(report["review"]["block"], json!("defect"), "{report}");
-        let deeper = json!({"block": "defect", "gap": "O sintoma no Windows", "from": "gap", "status": "open",
-            "origin": said, "facts": [{"text": "Pedido na revisão.", "source": format!("mensagem {said}")}]});
-        let added = write(root, "point", &deeper.to_string());
-        assert_eq!(added["point"]["id"], added["id"], "the new point is the next one: {added}");
-        let added = Opened {
-            id: added["id"].as_u64().unwrap(),
-            code: added["code"].as_str().unwrap().to_string(),
-            block: "defect".to_string(),
-            gap: "O sintoma no Windows".to_string(),
-        };
-        let again = settle(root, &added, said);
-        assert_eq!(again["review"]["block"], json!("defect"), "{again}");
-        assert_eq!(again["review"]["points"].as_array().map(Vec::len), Some(5), "{again}");
-        assert_eq!(again["point"]["id"], json!(points[4].id), "{again}");
     }
 
     /// Depois da aprovação, nenhuma gravação traz passo do levantamento.
@@ -4648,7 +4670,8 @@ mod tests {
     fn after_approval_a_write_returns_no_survey_step() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        let (said, points) = listed(root, &["fix"], false);
+        let (_, points) = listed(root, &["fix"], false);
+        let said = message(root, "user", "Pode seguir.");
         for point in &points {
             settle(root, point, said);
         }
@@ -4749,8 +4772,7 @@ mod tests {
 
     /// Uma lacuna que ficou sem ponto faz a gravação seguinte mandar rodar o
     /// `grill` de novo, no lugar do próximo ponto; fechar os outros pontos não
-    /// traz o fim nem manda rodar o revisor de fora. Gravado o ponto que
-    /// faltava, ele é o próximo.
+    /// traz o fim. Gravado o ponto que faltava, ele é o próximo.
     #[test]
     fn a_gap_left_without_a_point_is_asked_again_by_the_next_write() {
         let dir = tempdir().unwrap();
@@ -4784,14 +4806,9 @@ mod tests {
             assert!(report.get("point").is_none() && report.get("unrouted").is_none(), "{report}");
         };
         asks_again(&answer(root, said));
-        let mut last = Value::Null;
         for point in &points {
-            last = settle(root, point, said);
-            asks_again(&last);
+            asks_again(&settle(root, point, said));
         }
-        assert_eq!(last["review"]["block"], json!("proof"), "{last}");
-        let outside = translate("survey.outside_review_step", Locale::PtBr).replace("{spec}", "teste");
-        assert!(!last["next"].as_str().unwrap().contains(&outside), "the survey is not over: {last}");
         let recorded = write(root, "point", &point_of(forgotten).to_string());
         assert_eq!(recorded["point"]["id"], recorded["id"], "the forgotten point is the next one: {recorded}");
     }
@@ -4801,12 +4818,42 @@ mod tests {
     fn leaving_the_survey_with_every_point_closed_passes() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        let (said, points) = listed(root, &["fix"], false);
+        let (_, points) = listed(root, &["fix"], false);
+        let said = message(root, "user", "Pode seguir.");
         for point in &points {
             settle(root, point, said);
         }
         assert!(to_plan(root).is_ok());
         assert_eq!(DiskSpecState::new(root).state("teste").unwrap().phase, Some("plan"));
+    }
+
+    /// O ponto do usuário fechado com a mensagem de antes dele segura a saída
+    /// do levantamento, e a recusa ensina a saída: a versão nova do
+    /// fechamento, com `replaces` nele e a mensagem nova em `origin`, deixa a
+    /// spec passar para o plano.
+    #[test]
+    fn a_user_point_answered_early_leaves_by_a_new_version_of_its_closing() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let (said, points) = listed(root, &["fix"], true);
+        let mut closings = Vec::new();
+        for point in &points {
+            closings.push(settle(root, point, said));
+        }
+        let Err(refusal) = to_plan(root) else {
+            panic!("the user point answered before it was asked holds the survey");
+        };
+        assert_eq!(refusal.reason(), "survey-answered-early");
+        assert!(refusal.message(Locale::PtBr).contains("`replaces`"), "{}", refusal.message(Locale::PtBr));
+        let user = points.iter().position(|point| point.gap == survey::GapKey::ExpectedVsActual.label(Locale::PtBr)).unwrap();
+        let answered = message(root, "user", "O esperado é a saudação com o nome.");
+        let closing = closings[user]["id"].as_u64().unwrap();
+        let result = DiskSpecState::new(root).log("teste").unwrap().get(closing).unwrap().fields["result"].clone();
+        let version = json!({"block": points[user].block, "gap": points[user].gap, "from": "gap", "status": "closed",
+            "replaces": closing, "result": result, "origin": answered});
+        let written = write(root, "point", &version.to_string());
+        assert_eq!(written["ok"], json!(true), "{written}");
+        assert!(to_plan(root).is_ok());
     }
 
     /// Fechar o que não é um ponto aberto é recusado, com o código, o número
@@ -4973,6 +5020,7 @@ mod tests {
                 result: None,
                 not_applicable: true,
                 reason: Some("Não vale para este pedido.".into()),
+                origin: None,
             },
             None,
         );
@@ -5395,9 +5443,9 @@ mod tests {
         assert!(index.lines().any(|l| l == line), "the spec line lost its last write: {index}");
     }
 
-    /// A versão de tarefa que o programa grava sem título é aceita e fica com
-    /// o título da versão que ela substitui; a mesma versão pela porta do
-    /// modelo é recusada sem gravar nada.
+    /// A tarefa nova sem título é recusada pela porta do modelo sem gravar
+    /// nada, e com título grava; a versão que o programa grava sem título é
+    /// aceita e fica com o título da versão que ela substitui.
     #[test]
     fn task_without_a_title_is_refused_and_with_a_title_is_written_and_the_program_version_inherits_the_title() {
         let dir = tempdir().unwrap();
@@ -5416,17 +5464,63 @@ mod tests {
             "agent": "- conferir cada critério", "files": [], "depends_on": [], "covers": [crit], "origin": said}));
         let first = first["id"].as_u64().unwrap_or_else(|| panic!("a tarefa com título grava: {first}"));
 
+        let untitled = json!({"text": "Conferir, de outro jeito.", "agent": "- conferir", "files": [], "depends_on": [], "covers": [crit], "origin": said});
+        let refused = by_model(untitled);
+        assert_eq!(refused["ok"], json!(false), "a tarefa nova sem título não grava: {refused}");
+
         let version = json!({"text": "Conferir, revista.", "files": [], "depends_on": [], "covers": [crit],
             "origin": said, "replaces": first});
-        let refused = by_model(version.clone());
-        assert_eq!(refused["reason"], json!("task-declaration-missing"), "{refused}");
-        assert!(!refused["hint"].as_str().unwrap_or_default().contains("covers"), "só falta o título: {refused}");
-
         let draft = version.as_object().cloned().unwrap();
         let recorded = record(root, "teste", "task", draft, PhaseWriter::Binary).expect("o programa grava");
         let log = store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap();
         let written = log.get(recorded.written.id).expect("a versão gravada");
         assert_eq!(written.str_field("title"), Some("Fechamento confere cada critério"), "{:?}", written.fields);
+        assert_eq!(written.str_field("agent"), None, "o programa herda só o título: {:?}", written.fields);
+    }
+
+    /// A versão nova de uma tarefa que manda só um campo mantém os outros da
+    /// versão anterior, pela porta do modelo, e a conferência da gravação
+    /// olha a tarefa inteira. O que o programa decide não se herda: a trava
+    /// `blocked_by` sai com a versão nova, e a onda segue a regra dela.
+    #[test]
+    fn a_new_task_version_inherits_the_fields_it_does_not_send() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        write(root, "message", r#"{"author":"user","text":"o plano"}"#);
+        let by_model =
+            |body: Value| write_at(&WriteOpts { root: root.to_path_buf(), spec: Some("teste".into()), event_type: "task".into(), json: body.to_string() });
+        let crit = crate::shared::spec_state::seed_event(
+            root,
+            "teste",
+            "criterion",
+            json!({"when": "a obra fecha", "then": "cada critério é conferido", "proof": "git --version", "form": "ubiquitous"}),
+        );
+        let first = by_model(json!({"title": "Fechamento confere cada critério", "text": "Conferir.", "agent": "- conferir cada critério",
+            "files": [{"path": "src/a.rs"}], "depends_on": [], "covers": [crit], "skill": "revisar", "must_read": ["README.md"],
+            "blocked_by": "Aguardar o acesso."}));
+        let first = first["id"].as_u64().unwrap_or_else(|| panic!("a tarefa grava: {first}"));
+
+        let revised = by_model(json!({"replaces": first, "files": [{"path": "src/b.rs"}]}));
+        let id = revised["id"].as_u64().unwrap_or_else(|| panic!("a versão só com `files` grava: {revised}"));
+        let log = store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap();
+        let (old, written) = (log.get(first).expect("a versão antiga"), log.get(id).expect("a versão nova"));
+        assert_eq!(written.fields.get("files"), Some(&json!([{"path": "src/b.rs"}])), "o campo mandado vence: {:?}", written.fields);
+        for field in ["title", "text", "agent", "depends_on", "covers", "skill", "must_read"] {
+            assert_eq!(written.fields.get(field), old.fields.get(field), "{field} vem da versão anterior: {:?}", written.fields);
+        }
+        assert_eq!(written.str_field("blocked_by"), None, "a trava do programa não se herda: {:?}", written.fields);
+        assert_eq!(written.wave(), None, "a onda não vem por aqui: {:?}", written.fields);
+
+        let cleared = by_model(json!({"replaces": id, "must_read": []}));
+        let cleared = log_field(root, &cleared, "must_read");
+        assert_eq!(cleared, Some(json!([])), "o campo mandado vazio limpa o herdado");
+    }
+
+    /// O campo `field` da versão que a resposta `report` gravou.
+    fn log_field(root: &std::path::Path, report: &Value, field: &str) -> Option<Value> {
+        let id = report["id"].as_u64()?;
+        let log = store::read(&store::spec_file(root, "teste").unwrap()).unwrap().unwrap();
+        log.get(id)?.fields.get(field).cloned()
     }
 
     /// A tarefa que cobre só uma decisão, sem prova nenhuma, é recusada sem

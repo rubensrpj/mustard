@@ -48,10 +48,7 @@ fn analysis(root: &Path, input: &HookInput, trigger: Trigger) -> bool {
 }
 fn read_request(input: &Value) -> bool {
     let request = input.get("request").unwrap_or(input);
-    matches!(
-        request["tool"].as_str(),
-        Some("Read" | "Grep" | "Glob" | "Symbol" | "Trace" | "References" | "Structure")
-    )
+    matches!(request["tool"].as_str(), Some("Read" | "Grep" | "Glob"))
 }
 fn read_command(command: &str) -> bool {
     use crate::hooks::bash::lex;

@@ -239,6 +239,50 @@ fn the_last_task_end_step_says_every_task_finished() {
     assert!(finished.contains("Grave a entrega"), "{finished}");
 }
 
+/// A gravação em lote de `input` na spec, pela entrada padrão, e a primeira
+/// linha curta da resposta.
+fn batch_step(root: &Path, input: &str) -> Value {
+    use std::io::Write;
+    let mut child = rt(root, &["write", "--batch", "--spec", SPEC])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("run write --batch");
+    child.stdin.take().expect("stdin").write_all(input.as_bytes()).expect("the batch input");
+    let out = child.wait_with_output().expect("the batch ends");
+    let text = String::from_utf8_lossy(&out.stdout);
+    let first = text.lines().next().unwrap_or_default();
+    serde_json::from_str(first).unwrap_or_else(|e| panic!("not JSON ({e}): {text}"))
+}
+
+/// O passo recusado por falta do texto e corrigido pelo rascunho, mandando só
+/// o texto, responde como o passo inteiro: sozinho ou numa linha do lote, a
+/// resposta traz a próxima tarefa da onda.
+#[test]
+fn a_step_fixed_through_a_draft_still_returns_the_next_task() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().join("projeto");
+    std::fs::create_dir_all(&root).expect("root");
+    let tasks = dispatched_wave(&root);
+    let single = |body: &Value| stdout_json(&rt(&root, &["write", "step", "--spec", SPEC, "--json", &body.to_string()]).output().expect("run write step"));
+
+    let refused = single(&json!({"wave": 1, "item": tasks[0]}));
+    assert_eq!(refused["ok"], json!(false), "the step without text is refused: {refused}");
+    let draft = refused["draft"].as_u64().unwrap_or_else(|| panic!("the refusal keeps a draft: {refused}"));
+    let fixed = single(&json!({"draft": draft, "text": "A tarefa ficou pronta."}));
+    assert_eq!(fixed["ok"], json!(true), "{fixed}");
+    assert!(fixed["next_task"].as_str().is_some_and(|text| text.contains("Tarefa 2: escrever o total.")), "the fixed step brings the next task: {fixed}");
+
+    let line = |mut fields: Value| {
+        fields["type"] = json!("step");
+        format!("{fields}\n")
+    };
+    let refused = batch_step(&root, &line(json!({"wave": 1, "item": tasks[0]})));
+    let draft = refused["draft"].as_u64().unwrap_or_else(|| panic!("the refused line keeps a draft: {refused}"));
+    let fixed = batch_step(&root, &line(json!({"draft": draft, "text": "A tarefa ficou pronta."})));
+    assert!(fixed["next_task"].as_str().is_some_and(|text| text.contains("Tarefa 2: escrever o total.")), "the fixed line brings the next task: {fixed}");
+}
+
 /// O que o gancho de depois da ferramenta, rodado em `root` com o JSON
 /// `payload` na entrada, injeta na conversa; vazio quando nada.
 fn after_tool(root: &Path, payload: &Value) -> String {

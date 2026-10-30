@@ -97,7 +97,7 @@
 //! cópia; só quando não sobra outra volta a recusa é a resposta. Do mesmo
 //! jeito fica de fora só a onda que uma conferência da volta recusa: o
 //! caminho que nunca entra num commit, a cópia que o git não lê, a gravação
-//! que a spec recusaria, o cliente gerado atrás do schema que ela mudou e a
+//! que a spec recusaria e a
 //! conferência depois da onda — a importação nova contra uma regra forte do
 //! padrão do projeto e o resto do que a onda tirou, que a onda conserta na
 //! mesma cópia, até a pergunta ao usuário depois da segunda rodada de
@@ -132,9 +132,6 @@
 //! que sai verde sem rodar teste nenhum sai pelo código do critério; a cópia
 //! que não pôde ser criada, cuja onda fica para a rodada seguinte; e a cópia
 //! com mudança fora da entrega, que fica no disco em vez de ser apagada.
-//! Cada onda que mudou arquivo volta com a linha de tamanho — as linhas
-//! postas e tiradas e os arquivos mudados —, que sai na resposta como aviso
-//! `wave-size`, e nunca no commit. O tamanho nunca recusa a onda.
 //!
 //! O painel local acompanha os eventos. Publicação externa só existe sob
 //! pedido explícito, pela porta de publicação.
@@ -155,7 +152,6 @@ pub(crate) use commit::{final_unused, work_maps};
 mod copy_check;
 mod dependencies;
 pub(crate) use dependencies::prepare as prepare_copy_dependencies;
-mod environment;
 mod finish_check;
 mod fixes;
 mod git_ignored;
@@ -178,6 +174,8 @@ mod skill_cycle_tests;
 #[cfg(test)]
 mod dispatch_jev_tests;
 #[cfg(test)]
+mod session_answer_tests;
+#[cfg(test)]
 mod triage_jev_tests;
 mod planning;
 pub(crate) use planning::needs_planning;
@@ -192,7 +190,6 @@ mod resend;
 mod running;
 pub(crate) mod review;
 mod sent_tasks;
-mod size_check;
 pub(crate) mod skill_hold;
 mod skill_install;
 mod slots;
@@ -203,8 +200,12 @@ mod triage_questions;
 mod usage;
 pub(crate) mod vacancy;
 mod wave_commit;
-mod wave_review;
-pub(crate) use wave_review::{is_dispatch as is_wave_review_dispatch, is_wave_verdict, wave_review_text};
+
+/// O veredito do revisor de onda que uma spec antiga pode trazer, marcado com
+/// `wave_review`: nunca é o da revisão final nem o de quem conduz.
+pub(crate) fn is_wave_verdict(event: &mustard_core::domain::spec_events::SpecEvent) -> bool {
+    event.event_type == "verdict" && event.fields.get("wave_review") == Some(&Value::Bool(true))
+}
 
 // O processo que já fechou, que os testes da rodada, os do gancho do despacho
 // e os da pasta `tests/` dividem: um arquivo só, trazido pelo caminho.
@@ -225,18 +226,17 @@ pub(crate) use map_pass::map_after_rounds;
 
 use std::path::{Path, PathBuf};
 
-use mustard_core::domain::spec_state::SpecState as _;
 use serde_json::{Value, json};
 
 use crate::commands::spec_events;
-use crate::shared::spec_state::{DiskSpecState, checkout, session_from_env};
+use crate::shared::spec_state::session_from_env;
 
 pub(crate) use answer::{RoundRefusal, agents_refreshed, minutes_since, read_command, wave_dispatch};
 pub(crate) use jev_decision::{FINAL_REVIEW, Waiting};
 pub(crate) use leftovers::{FinalFindings, record_final_leftovers};
 pub(crate) use triage_questions::ask_after_locks;
 pub(crate) use fixes::{fix_file, sweep_fixes};
-pub(crate) use keep::{Kept, landed_kept};
+pub(crate) use keep::{Keeping, Kept, landed_kept};
 pub(crate) use queue::{
     awaited_review, backlog_left, new_agent_escalation, open_review, send_revision, sender_fields, tasks_left, waves_awaiting_new_agent, waves_in_progress,
     waves_pending_fix,
@@ -246,8 +246,8 @@ pub(crate) use rejection::{replaced_by_rejection, replaced_in_file};
 #[cfg(test)]
 pub(crate) use slots::copies_leave_with_the_test;
 pub(crate) use slots::{
-    Removal, clean_copy, code_kept_hint, ensure_copy, held_slots, leaving_place, local_file_ignored, local_file_missing,
-    remove_single_copy, remove_spec_copies, reset_slot, slot_owner, remove_spec_copies_held, remove_spec_copies_under, spec_copies,
+    Removal, clean_copy, code_kept_hint, held_slots, leaving_place, local_file_ignored,
+    remove_single_copy, remove_spec_copies, slot_owner, remove_spec_copies_held, remove_spec_copies_under, spec_copies,
     standing_in_a_copy,
 };
 #[cfg(test)]
@@ -274,20 +274,7 @@ pub struct RoundOpts {
     pub report: Option<String>,
 }
 
-/// Keep dispatches, reviews, warnings and evidence intact; a wave-size warning
-/// becomes a short change line.
-pub(crate) fn projection(report: &Value) -> Value {
-    let mut out = report.clone();
-    if let Some(warnings) = out.get_mut("warnings").and_then(Value::as_array_mut) {
-        let changes: Vec<_> = warnings.iter().filter(|warning| warning["reason"] == "wave-size")
-            .map(|warning| json!({"wave":warning["wave"],"summary":warning["hint"]})).collect();
-        warnings.retain(|warning| warning["reason"] != "wave-size");
-        if !changes.is_empty() { out["changes"] = json!(changes); }
-    }
-    out
-}
-
-/// A resposta curta da rodada: a de [`projection`], com as tarefas seguradas
+/// A resposta curta da rodada: a inteira, com as tarefas seguradas
 /// agrupadas pelo motivo ([`scheduling::grouped`]) — a frase da vaga cheia
 /// sai uma vez, e não uma por tarefa.
 pub(crate) fn short(projected: &Value) -> Value {
@@ -298,20 +285,41 @@ pub(crate) fn short(projected: &Value) -> Value {
     out
 }
 
-#[cfg(test)]
-mod transport_tests {
-    use super::*;
-    #[test]
-    fn compact_round_keeps_actions_and_turns_size_warnings_into_changes() {
-        let full = json!({"ok":true,"dispatch":[{"wave":1,"read":"read request-1","agent":"mustard-wave"}],
-            "warnings":[{"reason":"proof-missing"},{"reason":"wave-size","wave":1,"hint":"smaller"}],"stopped":[2],"commit":{"sha":"abc"}});
-        let compact = projection(&full);
-        for field in ["dispatch", "stopped", "commit"] {
-            assert_eq!(compact[field], full[field]);
-        }
-        assert_eq!(compact["warnings"], json!([{"reason":"proof-missing"}]));
-        assert_eq!(compact["changes"], json!([{"wave":1,"summary":"smaller"}]));
+/// A resposta `out` da rodada ou do fechamento como a sessão `session` a
+/// recebe: cada texto fixo de `fixed` que está no `next` e cada aviso que a
+/// sessão já recebeu desde a última limpeza ou compactação saem; o resto fica,
+/// e passa a contar como recebido. A marca é a mesma do aviso de tamanho de
+/// quem conduz, que volta a zero quando o host confirma `/clear` ou a
+/// compactação. Sem sessão, nada sai.
+pub(crate) fn once_per_session(root: &Path, session: Option<&str>, out: &mut Value, fixed: &[String]) {
+    let print = |text: &str| blake3::hash(text.as_bytes()).to_hex()[..16].to_string();
+    let next = out["next"].as_str().unwrap_or_default().to_string();
+    let present: Vec<&String> = fixed.iter().filter(|text| !text.is_empty() && next.contains(text.as_str())).collect();
+    let warnings: Vec<Value> = out["warnings"].as_array().cloned().unwrap_or_default();
+    let prints: Vec<String> = present.iter().map(|text| print(text)).chain(warnings.iter().map(|w| print(&w.to_string()))).collect();
+    let given = crate::hooks::session::conversation_size::given_in_session(root, session, &prints);
+    if given.is_empty() {
+        return;
     }
+    let mut left = next;
+    for text in present.into_iter().filter(|text| given.contains(&print(text))) {
+        left = left.replace(text.as_str(), " ");
+    }
+    out["next"] = json!(left.split_whitespace().collect::<Vec<_>>().join(" "));
+    let new: Vec<Value> = warnings.into_iter().filter(|w| !given.contains(&print(&w.to_string()))).collect();
+    if let Some(fields) = out.as_object_mut() {
+        if new.is_empty() {
+            fields.remove("warnings");
+        } else {
+            fields.insert("warnings".into(), json!(new));
+        }
+    }
+}
+
+/// Os textos fixos do `next` da rodada no projeto em `root`: a ordem de
+/// despachar e o que fazer quando os agentes voltarem.
+fn fixed_texts(root: &Path, lang: mustard_core::platform::i18n::Locale) -> Vec<String> {
+    vec![mustard_core::translate("round.next", lang).to_string(), checks::report_back(root, lang)]
 }
 
 /// O passo que a rodada devolve quando todas as ondas estão entregues e
@@ -338,37 +346,15 @@ pub(crate) fn round_for(opts: &RoundOpts, session: Option<&str>) -> Value {
 pub(crate) fn round_in(opts: &RoundOpts, caller: Caller<'_>) -> Value {
     let project = spec_events::project(&opts.root);
     let lang = project.lang;
-    let unchecked = spec_without_base_check(opts, &project.root, caller.session);
     match answer::run_round(opts, &project.root, lang, caller) {
         Ok(mut report) => {
-            // O lint do projeto na base roda no primeiro despacho de onda,
-            // uma vez só: a rodada já passou por todas as conferências dela,
-            // e a onda que acabou de sair ainda não tem commit na branch,
-            // então o disco é a base. Só avisa quando não pôde gravar.
-            let dispatched = report["dispatch"].as_array().is_some_and(|waves| !waves.is_empty());
-            if let Some(spec) = unchecked.filter(|_| dispatched)
-                && let Some(reason) = super::validation::record_base_check(&project.root, &spec)
-            {
-                spec_events::pages::push_warning(&mut report, "base-check-not-recorded", &reason);
+            if report["ok"] == true {
+                once_per_session(&project.root, caller.session, &mut report, &fixed_texts(&project.root, lang));
             }
             report
         }
         Err(refusal) => refusal.to_value(lang),
     }
-}
-
-/// A spec desta rodada, quando ela ainda não teve onda enviada nem a
-/// conferência da base gravada ([`super::validation::base_check_due`]). Lida
-/// antes da rodada: depois dela, o envio que ela grava já esconde que este
-/// foi o primeiro. A spec é a do pedido ou, sem ela, a atual da sessão,
-/// como a rodada a acha.
-fn spec_without_base_check(opts: &RoundOpts, root: &Path, session: Option<&str>) -> Option<String> {
-    let spec = match opts.spec.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        Some(spec) => spec.to_string(),
-        None => DiskSpecState::new(&checkout(&opts.root)).active(session)?,
-    };
-    let log = mustard_core::io::spec_events::read(&mustard_core::io::spec_events::spec_file(root, &spec).ok()?).ok()??;
-    super::validation::base_check_due(&log).then_some(spec)
 }
 
 /// O que os testes das partes da rodada dividem: a spec aprovada com o plano

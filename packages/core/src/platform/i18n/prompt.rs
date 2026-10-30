@@ -167,8 +167,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // O pedido de uma onda: o texto que o agente dela recebe.
         ("prompt.title", Locale::PtBr) => "{spec} — onda {n}",
         ("prompt.title", Locale::EnUs) => "{spec} — wave {n}",
-        // O modelo e o esforço em que a onda roda — o que o `mustard.json`
-        // declara em `agents.model` e `agents.effort` —, ditos no cabeçalho do
+        // O modelo e o esforço em que a onda roda — o da dificuldade das
+        // tarefas, ou o de `agents.model` com ela desligada —, ditos no cabeçalho do
         // próprio pedido, do mesmo jeito que ele já diz a cópia, porque o
         // molde do agente sozinho não bastou: em 20/09 a onda saiu em Opus por
         // herdar o modelo da sessão.
@@ -291,17 +291,17 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("prompt.message.answer", Locale::PtBr) => "Resposta: {answer}",
         ("prompt.message.answer", Locale::EnUs) => "Answer: {answer}",
         // O bloco de uma tarefa: o título, com a posição dela na onda, e cada
-        // skill dela inteira, pelo nome e pelo caminho. A skill que o teto do
-        // bloco cortou fica numa linha, com o caminho para lê-la.
+        // skill dela numa linha, pelo nome e pelo caminho, com a ordem de
+        // abri-la antes de editar.
         ("prompt.task.heading", Locale::PtBr) => "Tarefa {n} de {total}: {item}",
         ("prompt.task.heading", Locale::EnUs) => "Task {n} of {total}: {item}",
         ("prompt.task.skill", Locale::PtBr) => "Skill {name}, de `{path}`",
         ("prompt.task.skill", Locale::EnUs) => "Skill {name}, from `{path}`",
-        // A tarefa que cria a skill de uma falha repetida, antes do
-        // skill-creator inteiro (`io::wave_prompt`).
+        // A tarefa que cria a skill de uma falha repetida, logo abaixo do
+        // skill-creator citado pelo caminho (`io::wave_prompt`).
         ("prompt.task.skill_creator", Locale::PtBr) => {
-            "Esta tarefa cria ou atualiza uma skill. Siga o processo do skill-creator abaixo, sem pedir aprovação a \
-             ninguém. Os scripts e os agentes dele ficam em `{folder}`. Use o formato oficial, com nome \
+            "Esta tarefa cria ou atualiza uma skill. Siga o processo do skill-creator, no `SKILL.md` citado acima, sem \
+             pedir aprovação a ninguém. Os scripts e os agentes dele ficam em `{folder}`. Use o formato oficial, com nome \
              curto. A descrição fica em terceira pessoa e diz o que a skill faz e quando usar. O \
              corpo tem menos de 500 linhas, com o mais importante no topo. No cabeçalho, `paths:` \
              traz os caminhos onde ela vale. Escreva só o que o modelo não sabe: a armadilha, a convenção não óbvia, a ferramenta \
@@ -316,8 +316,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              `text`."
         }
         ("prompt.task.skill_creator", Locale::EnUs) => {
-            "This task creates or updates a skill. Follow the skill-creator process below without asking anyone \
-             for approval. Its scripts and agents live in `{folder}`. Use the official format, with a \
+            "This task creates or updates a skill. Follow the skill-creator process in the `SKILL.md` cited above, \
+             without asking anyone for approval. Its scripts and agents live in `{folder}`. Use the official format, with a \
              short name. The description is in the third person and says what the skill does and \
              when to use it. The body stays under 500 lines, with the most important part on top. \
              In the header, `paths:` lists the paths where it applies. Write only what the model does not know: the trap, the non-obvious convention, \
@@ -331,14 +331,8 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              updates a skill that exists. Without a gain, record `\"action\":\"discarded\"` with the \
              reason in `text`."
         }
-        ("prompt.task.skill_cut", Locale::PtBr) => {
-            "A skill {name} ficou fora deste bloco, que passou do teto de tamanho. Se a tarefa pedir, \
-             leia `{path}`."
-        }
-        ("prompt.task.skill_cut", Locale::EnUs) => {
-            "The skill {name} was left out of this block, which went past the size cap. If the task \
-             needs it, read `{path}`."
-        }
+        ("prompt.task.skill_read", Locale::PtBr) => "Abra esse `SKILL.md` antes de editar os arquivos que ela cobre.",
+        ("prompt.task.skill_read", Locale::EnUs) => "Open that `SKILL.md` before editing the files it covers.",
         ("prompt.step.file", Locale::PtBr) => "Arquivo: {files}",
         ("prompt.step.file", Locale::EnUs) => "File: {files}",
         ("prompt.step.files", Locale::PtBr) => "Arquivos: {files}",
@@ -741,21 +735,9 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Review in the separate copy `{copy}`, never in the main repository `{root}`: the close \
              already created it at commit `{commit}`; run everything inside it and never create another."
         }
-        // Os arquivos locais que o git ignora não vêm com a cópia: o
-        // fechamento os copia para ela, e o revisor copia de novo, pelo
-        // conteúdo, o que faltar — nunca por link, que deixaria a cópia
-        // escrever no repositório principal.
-        ("prompt.review.local_files", Locale::PtBr) => {
-            "Os arquivos locais que o git ignora e a cópia precisa são {files}. O que faltar nela, \
-             copie do repositório principal `{root}` pelo conteúdo, nunca por link ou atalho."
-        }
-        ("prompt.review.local_files", Locale::EnUs) => {
-            "The local files git ignores and the copy needs are {files}. Whatever is missing from \
-             it, copy from the main repository `{root}` by content, never by link or shortcut."
-        }
         // O fechamento roda a suíte e os critérios antes de pedir a revisão,
-        // no mesmo commit em que a cópia do revisor nasce. O revisor não a
-        // repete: roda só o que cerca os cortes que ele faz.
+        // na mesma cópia limpa e no mesmo commit em que o revisor confere. O
+        // revisor não a repete: roda só o que cerca os cortes que ele faz.
         ("prompt.review.suite", Locale::PtBr) => {
             "A suíte `{command}` e os critérios já passaram no fechamento, no commit `{commit}` desta \
              cópia. Não rode a suíte inteira de novo: rode só os testes em volta de cada corte, com \
@@ -811,12 +793,11 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    /// Esta parte guarda as mesmas chaves, com os mesmos textos nos dois
-    /// idiomas, como o arquivo de impressões dela em `stamps/` guarda. Quem muda
-    /// um texto de propósito regrava o arquivo pelo comando que a falha mostra.
+    /// Cada chave desta parte começa por um dos começos que ela declara e tem
+    /// texto nos dois idiomas.
     #[test]
-    fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged("prompt", include_str!("prompt.rs"), super::PREFIXES);
+    fn the_part_answers_each_of_its_keys() {
+        crate::platform::i18n::tests::assert_part_answers(include_str!("prompt.rs"), super::PREFIXES);
     }
 
     /// O bloco do padrão sob a tarefa passa na conferência de escrita nos
@@ -880,7 +861,7 @@ mod tests {
                 "prompt.message.answer",
                 "prompt.task.heading",
                 "prompt.task.skill",
-                "prompt.task.skill_cut",
+                "prompt.task.skill_read",
                 "prompt.step.file",
                 "prompt.step.files",
                 "prompt.step.read_before",

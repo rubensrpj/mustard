@@ -17,49 +17,6 @@ use std::ops::Range;
 
 use super::lex;
 
-/// O que a reescrita faz com uma etapa.
-pub(super) enum Step {
-    /// A etapa vira este texto.
-    Put(String),
-    /// A etapa sai, com o encadeamento que a liga à etapa anterior: é o que o
-    /// corte da resposta do Mustard pede, porque ali a etapa inteira é o
-    /// problema, e não um pedaço dela.
-    Out,
-}
-
-/// `command` com cada etapa trocada ou tirada pelo que `change` der para ela.
-///
-/// Tirar uma etapa leva o `|` que a liga à anterior: o texto entre as duas
-/// faixas é o encadeamento, e deixá-lo no lugar daria um comando que não roda.
-/// A primeira etapa não tem anterior, e tirá-la leva só a faixa dela.
-///
-/// `None` no fim quando nenhuma etapa mudou.
-pub(super) fn rewritten_steps(command: &str, change: impl Fn(&str) -> Option<Step>) -> Option<String> {
-    let ranges = lex::command_ranges(command);
-    let mut changes: Vec<(Range<usize>, String)> = Vec::new();
-    for (at, range) in ranges.iter().enumerate() {
-        let source = command.get(range.clone())?;
-        let Some(step) = change(source.trim()) else { continue };
-        let start = range.start + (source.len() - source.trim_start().len());
-        let end = range.end - (source.len() - source.trim_end().len());
-        match step {
-            Step::Put(text) => changes.push((start..end, text)),
-            Step::Out => {
-                let from = at.checked_sub(1).map_or(start, |before| ranges[before].end);
-                changes.push((from..range.end, String::new()));
-            }
-        }
-    }
-    if changes.is_empty() {
-        return None;
-    }
-    let mut out = command.to_string();
-    for (range, replacement) in changes.into_iter().rev() {
-        out.replace_range(range, &replacement);
-    }
-    Some(out)
-}
-
 /// `command` com cada etapa trocada pelo que `change` der para ela.
 ///
 /// `change` recebe o texto da etapa, sem os espaços das pontas, e devolve o

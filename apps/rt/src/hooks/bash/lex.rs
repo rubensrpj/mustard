@@ -62,6 +62,9 @@ impl Word {
 pub(crate) struct Redirect {
     pub op: String,
     pub target: Word,
+    /// O corpo do heredoc (`<<`, `<<-`), como foi escrito, sem a linha do
+    /// delimitador; `None` nos outros redirecionamentos.
+    pub body: Option<String>,
 }
 
 /// One simple command of the line, split the way the terminal splits it.
@@ -97,10 +100,50 @@ pub(crate) struct Segment {
     pub depth: usize,
 }
 
+/// Os programas do Mustard, pelo nome sem a pasta: o `mustard-rt` e o
+/// `mustard-boot`, que o chama, com o nome de cada plataforma.
+const MUSTARD_PROGRAMS: &[&str] = &["mustard-rt", "mustard-rt.exe", "mustard-boot", "mustard-boot.cmd"];
+
 impl Segment {
     /// The program's name without its folder: `/bin/rm` is `rm`.
     pub fn name(&self) -> &str {
         base_name(&self.program.text)
+    }
+
+    /// Se o comando roda o Mustard ([`MUSTARD_PROGRAMS`]), por qualquer pasta
+    /// e depois de qualquer invólucro.
+    pub fn runs_mustard(&self) -> bool {
+        MUSTARD_PROGRAMS.contains(&self.name())
+    }
+
+    /// Os comandos que estão dentro de `line[at]`: os que vêm logo depois
+    /// dele, mais fundos que ele.
+    pub fn inside(line: &[Segment], at: usize) -> &[Segment] {
+        let depth = line[at].depth;
+        let rest = &line[at + 1..];
+        let end = rest.iter().position(|segment| segment.depth <= depth).unwrap_or(rest.len());
+        &rest[..end]
+    }
+
+    /// As posições dos comandos que recebem a saída de `line[at]` pelo
+    /// encadeamento de `|`, no mesmo nível e na ordem. Os comandos de dentro
+    /// de cada elo não são elos; o encadeamento acaba no primeiro elo sem `|`
+    /// ou quando a lista que o guarda fecha.
+    pub fn fed(line: &[Segment], at: usize) -> Vec<usize> {
+        let depth = line[at].depth;
+        let mut piped = line[at].piped;
+        let mut reached = Vec::new();
+        for (index, segment) in line.iter().enumerate().skip(at + 1) {
+            if segment.depth < depth || !piped {
+                break;
+            }
+            if segment.depth > depth {
+                continue;
+            }
+            reached.push(index);
+            piped = segment.piped;
+        }
+        reached
     }
 }
 
@@ -320,7 +363,7 @@ impl Reader {
                 expands: target.is_plain(),
             });
         }
-        cur.redirects.push(Redirect { op: format!("{fd}{op}"), target });
+        cur.redirects.push(Redirect { op: format!("{fd}{op}"), target, body: None });
     }
 
     /// Read one word up to the first blank or operator outside quotes. The
@@ -545,6 +588,8 @@ impl Reader {
     /// After a line break: the bodies of the heredocs opened on that line,
     /// each up to the line equal to its delimiter. A body is text; when its
     /// delimiter has no quote, the commands of its substitutions go to `out`.
+    /// Cada corpo fica no redirecionamento que o abriu, o primeiro ainda sem
+    /// corpo com o mesmo delimitador, na ordem em que a linha os abriu.
     fn heredoc_bodies(&mut self, out: &mut Vec<Segment>, depth: usize) {
         for doc in std::mem::take(&mut self.heredocs) {
             let body_start = self.pos;
@@ -563,10 +608,17 @@ impl Reader {
                     break;
                 }
             }
-            if doc.expands {
-                let body: String = self.chars.get(body_start..body_end).unwrap_or(&[]).iter().collect();
-                out.extend(heredoc_commands(&body, depth));
+            let body: String = self.chars.get(body_start..body_end).unwrap_or(&[]).iter().collect();
+            let commands = if doc.expands { heredoc_commands(&body, depth) } else { Vec::new() };
+            let opened = out.iter_mut().flat_map(|segment| segment.redirects.iter_mut()).find(|redirect| {
+                matches!(redirect.op.trim_start_matches(|c: char| c.is_ascii_digit()), "<<" | "<<-")
+                    && redirect.target.text == doc.delimiter
+                    && redirect.body.is_none()
+            });
+            if let Some(redirect) = opened {
+                redirect.body = Some(body);
             }
+            out.extend(commands);
         }
     }
 }

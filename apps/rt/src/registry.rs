@@ -8,16 +8,14 @@
 //! Os ganchos atuais incluem: a trava de comandos, o portão de escrita, o pedido
 //! do subagente, a testemunha da aprovação,
 //! a entrada da mensagem, o início da sessão, o conserto da barra de status,
-//! o sinal de vida da onda, a testemunha do glossário do mapa, o aviso antes
-//! de compactar, o aviso de tamanho da conversa, que também recusa o agente
-//! de onda depois da ordem de entregar, a faxina do fim da sessão e
-//! a conferência do fim da resposta.
+//! o sinal de vida da onda, o tamanho da conversa do agente de onda, que o
+//! recusa depois da ordem de entregar, a faxina do fim da sessão e a
+//! conferência do fim da resposta.
 
 use crate::hooks::bash::command_guard::CommandGuard;
 use crate::hooks::observe::approval_witness::ApprovalWitness;
-use crate::hooks::observe::glossary_witness::GlossaryWitness;
 use crate::hooks::observe::wave_alive_observer::WaveAliveObserver;
-use crate::hooks::session::conversation_size::{PrecompactNotice, SizeNotice};
+use crate::hooks::session::conversation_size::SizeNotice;
 use crate::hooks::session::prompt_entry::PromptEntry;
 use crate::hooks::session::session_cleanup_observer::SessionCleanupObserver;
 use crate::hooks::session::session_start_inject::SessionStartInject;
@@ -74,10 +72,6 @@ impl Module {
 /// escrita confere: a busca por palavra (`Grep`) e a busca por nome
 /// (`Glob`).
 const FILE_TOOLS: &[&str] = &["Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "Grep", "Glob"];
-
-/// As ferramentas que editam arquivo de texto, cuja edição ensina o
-/// glossário do mapa.
-const EDIT_TOOLS: &[&str] = &["Edit", "Write", "MultiEdit"];
 
 /// As ferramentas que despacham um subagente, e a que manda mais uma
 /// mensagem a um subagente já aberto.
@@ -154,22 +148,9 @@ impl Registry {
                 check: None,
                 observer: Some(Box::new(WaveAliveObserver)),
             },
-            // A testemunha do glossário do mapa: depois de cada edição, a
-            // declaração mudada que a última busca da sessão entregou ganha a
-            // marca das palavras da pergunta. Nunca barra.
-            Module {
-                id: "glossary_witness",
-                applies_to: &[(Trigger::PostToolUse, ToolMatch::OneOf(EDIT_TOOLS))],
-                check: None,
-                observer: Some(Box::new(GlossaryWitness)),
-            },
-            // O aviso antes de compactar: em toda compactação, manual ou
-            // automática, injeta o bloco de retomada pronto para colar.
-            Module { id: "precompact_notice", applies_to: &[(Trigger::PreCompact, ToolMatch::Any)], check: Some(Box::new(PrecompactNotice)), observer: None },
             // O tamanho da conversa nos dois lados de cada ferramenta. Depois
-            // dela: a quem conduz, o aviso de limpar ou compactar; ao agente
-            // de onda que terminou uma tarefa, a ordem de seguir ou de
-            // entregar. Antes dela: o agente de onda que recebeu a ordem de
+            // dela, ao agente de onda que terminou uma tarefa, a ordem de
+            // seguir ou de entregar. Antes dela: o agente de onda que recebeu a ordem de
             // entregar é recusado, menos para gravar na spec e compilar, e o
             // que a reprovação de quem conduz tirou da onda, em tudo.
             Module {
@@ -244,8 +225,6 @@ mod tests {
                 "approval_witness",
                 "command_guard",
                 "end_of_turn_check",
-                "glossary_witness",
-                "precompact_notice",
                 "prompt_entry",
                 "session_cleanup_observer",
                 "session_start_inject",
@@ -285,25 +264,20 @@ mod tests {
 
     /// O portão de escrita roda antes das cinco ferramentas de arquivo e das
     /// duas buscas (por palavra e por nome), e só delas, com o aviso de
-    /// tamanho depois dele; o sinal de vida da
-    /// onda segue rodando depois de cada uma, e a testemunha do glossário, só
-    /// depois das três que editam texto: a leitura nunca ensina.
+    /// tamanho depois dele; o sinal de vida da onda segue rodando depois de
+    /// cada uma.
     #[test]
     fn the_write_gate_runs_on_the_file_tools_and_the_searches() {
         let registry = Registry::new();
         for tool in ["Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "Grep", "Glob"] {
             assert_eq!(applicable_ids(&registry, Trigger::PreToolUse, Some(tool)), ["write_gate", "size_notice"], "{tool}");
-            let after: &[&str] = if ["Write", "Edit", "MultiEdit"].contains(&tool) {
-                &["wave_alive_observer", "glossary_witness", "size_notice"]
-            } else if matches!(tool,"Grep"|"Read") {
+            let after: &[&str] = if matches!(tool,"Grep"|"Read") {
                 &["write_gate", "wave_alive_observer", "size_notice"]
             } else {
                 &["wave_alive_observer", "size_notice"]
             };
             assert_eq!(applicable_ids(&registry, Trigger::PostToolUse, Some(tool)), after, "{tool}");
         }
-        let module = registry.by_id("glossary_witness").expect("registered");
-        assert!(module.check.is_none() && module.observer.is_some());
         for tool in ["Bash", "Task", "Agent", "Skill", "WebFetch"] {
             assert!(!applicable_ids(&registry, Trigger::PreToolUse, Some(tool)).contains(&"write_gate"), "{tool}");
         }
@@ -377,13 +351,13 @@ mod tests {
 
     /// A mensagem tem um gancho só; o início da sessão, dois, com o que
     /// coloca texto primeiro; o fim da sessão, a faxina; antes de compactar,
-    /// o aviso com o bloco de retomada.
+    /// nenhum: o início da sessão depois do resumo traz o bloco de retomada.
     #[test]
     fn the_session_hooks_apply_to_their_events() {
         let registry = Registry::new();
         assert_eq!(applicable_ids(&registry, Trigger::UserPromptSubmit, None), ["prompt_entry"]);
         assert_eq!(applicable_ids(&registry, Trigger::SessionStart, None), ["session_start_inject", "statusline_heal_observer"]);
         assert_eq!(applicable_ids(&registry, Trigger::SessionEnd, None), ["session_cleanup_observer"]);
-        assert_eq!(applicable_ids(&registry, Trigger::PreCompact, None), ["precompact_notice"]);
+        assert!(applicable_ids(&registry, Trigger::PreCompact, None).is_empty());
     }
 }

@@ -1,8 +1,8 @@
-//! The tools `mustard init` needs on the machine: the rtk gate, the
-//! best-effort ripgrep install, and the best-effort code-tool install (one
-//! language-server program + Claude Code plugin per detected language). All
-//! three are acts on the MACHINE, so they run from `cli::dispatch`, never
-//! from the library half of `init`.
+//! As ferramentas de que o `mustard init` precisa na máquina: o portão do rtk
+//! e o aviso do ripgrep. As duas olham a MÁQUINA, por isso rodam de
+//! `cli::dispatch`, nunca da metade de biblioteca do `init`. Nada é instalado
+//! aqui: o ripgrep que falta e as ferramentas de código de cada linguagem
+//! saem como comando pronto, e quem os roda é a pessoa.
 //!
 //! rtk itself comes with the installers, in a fixed version checked against
 //! `checksums.txt`; `mustard init` only refuses to go on without it. Nothing
@@ -60,33 +60,18 @@ pub(crate) fn probe_rtk() {
     std::process::exit(1);
 }
 
-/// Ensure ripgrep (`rg`) is installed. Best-effort and fail-open: a missing
-/// `rg` — and a *failed* install — never blocks `init`.
+/// Diz o comando que instala o ripgrep (`rg`) quando ele falta, sem rodá-lo:
+/// quem instala é a pessoa, e o `rg` que falta nunca trava o `init`.
 ///
-/// Why: RTK's `grep`/`find` filters use `rg` as their search engine. When `rg`
-/// is missing, RTK prints a fallback warning on every invocation that pollutes
-/// every Bash tool output with ~50 tokens.
-///
-/// Flow: if `rg` is already on PATH, return silently. Otherwise attempt
-/// auto-install via Scoop (Windows) or `cargo install ripgrep`; on Unix only
-/// print manual instructions (the package manager varies).
-pub(crate) fn ensure_ripgrep() {
-    // No external-tool side effects under unit tests (would `cargo install
-    // ripgrep` on a clean CI runner). Production keeps `cfg!(test) == false`.
-    if cfg!(test) {
+/// Por quê: os filtros `grep`/`find` do RTK usam o `rg`. Sem ele, o RTK
+/// imprime um aviso de troca em toda chamada, uns 50 tokens a mais em cada
+/// saída do Bash.
+pub(crate) fn ripgrep_hint() {
+    // Nos testes de unidade, nenhum efeito de ferramenta externa.
+    if cfg!(test) || rg_on_path() {
         return;
     }
-    if rg_on_path() {
-        return;
-    }
-
-    println!("  ripgrep not found - attempting auto-install (silences RTK `rg` fallback warning)...");
-    if install_ripgrep() && rg_on_path() {
-        println!("  ripgrep installed");
-        return;
-    }
-
-    println!("  ripgrep auto-install skipped or unavailable - install manually:");
+    println!("  ripgrep not found - install it to silence the RTK `rg` fallback warning:");
     if cfg!(windows) {
         println!("    Windows: scoop install ripgrep");
         println!("         or: cargo install ripgrep");
@@ -103,26 +88,6 @@ fn rg_on_path() -> bool {
         .arg("--version")
         .output()
         .is_ok_and(|o| o.status.success())
-}
-
-/// Best-effort ripgrep auto-install. Returns `true` only when an installer
-/// command exited successfully. Every spawn failure is swallowed.
-///
-/// - Windows: try `scoop install ripgrep` first, then `cargo install ripgrep`.
-///   O `scoop` é `scoop.cmd`: roda pelo arquivo que o `PATH` tem para ele.
-/// - Unix: return `false` so the caller prints manual instructions.
-fn install_ripgrep() -> bool {
-    let run_ok = |cmd: &mut Command| -> bool {
-        cmd.output().is_ok_and(|o| o.status.success())
-    };
-
-    if cfg!(windows) {
-        if run_ok(process::command("scoop").args(["install", "ripgrep"])) {
-            return true;
-        }
-        return run_ok(process::command("cargo").args(["install", "ripgrep"]));
-    }
-    false
 }
 
 /// The binary install and plugin update finish through the same native door.

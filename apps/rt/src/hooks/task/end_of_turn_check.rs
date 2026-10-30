@@ -8,12 +8,10 @@
 //! - as pendências ([`PendingRule`], `pending_gate.rs`): o turno em que a
 //!   spec fechou, ou entrou no merge, não termina sem citar cada pendência
 //!   aberta nascida nela. Esta barra;
-//! - a clareza ([`ClarityRule`], `clarity_check.rs`): a resposta segue a regra
-//!   de escrita e sai no idioma que o projeto declarou. Esta só barra a
-//!   resposta fora do idioma do projeto: o assistente a escreve de novo, no
-//!   mesmo turno. Os outros erros que ela acha ficam guardados na pasta
-//!   da sessão, e só por eles a mensagem seguinte do usuário leva uma linha
-//!   escondida, com o erro numa frase curta.
+//! - o idioma ([`ClarityRule`], `clarity_check.rs`): a resposta sai no
+//!   idioma que o projeto declarou. Esta barra a resposta fora dele: o
+//!   assistente a escreve de novo, no mesmo turno. A regra de escrita mora no
+//!   estilo de resposta, e nenhum outro erro volta na mensagem seguinte.
 //!
 //! ## Um bloqueio só
 //!
@@ -27,8 +25,8 @@
 //! Uma regra que barra devolve [`Finding::Block`]: o texto vai ao assistente,
 //! que responde no mesmo turno. A volta que um bloqueio pediu chega com
 //! `stop_hook_active` ([`Turn::retry`]), e cada regra decide o que faz com
-//! ela: a clareza nunca barra na volta e soma o erro dela ao da resposta
-//! barrada, e as pendências cobram até o contador delas. Nenhuma regra fala
+//! ela: o idioma nunca barra na volta, e as pendências cobram até o contador
+//! delas. Nenhuma regra fala
 //! com o usuário: sem bloqueio, a resposta termina calada.
 //!
 //! ## Tempo
@@ -167,12 +165,6 @@ mod tests {
     /// Um projeto que declarou o inglês dos Estados Unidos.
     const EN_PROJECT: &str = r#"{"language":{"text":"en-US"}}"#;
 
-    /// A linha curta que abre a correção num projeto em pt-BR.
-    const PT_LINE: &str = "Responda em português do Brasil, em texto simples: frases curtas e nenhum código interno.";
-
-    /// A mesma linha num projeto em en-US.
-    const EN_LINE: &str = "Answer in American English, in plain text: short sentences and no internal codes.";
-
     /// O texto que barra a resposta em inglês num projeto em pt-BR.
     const PT_BLOCK: &str = "A resposta saiu em en-US, e o idioma do projeto e do usuário é pt-BR. Escreva a resposta de novo em pt-BR.";
 
@@ -271,9 +263,9 @@ mod tests {
 
     /// A resposta final com uma frase de 40 palavras, uma sigla sem explicação
     /// e um código de item da spec (`MSTD-RULE-NNNN`) não é barrada, e nada
-    /// volta para a tela: nem bloqueio, nem aviso. A mensagem seguinte leva os
-    /// três erros numa frase curta. Tudo pelo `Stop` de verdade (registro,
-    /// `fold` e a resposta JSON).
+    /// volta para a tela: nem bloqueio, nem aviso. A mensagem seguinte também
+    /// não leva correção. Tudo pelo `Stop` de verdade (registro, `fold` e a
+    /// resposta JSON).
     #[test]
     fn a_reply_that_misses_the_writing_rule_is_not_blocked() {
         assert_eq!(FORTY_WORDS.split_whitespace().count(), 40);
@@ -281,13 +273,7 @@ mod tests {
         let root = dir.path();
         let reply = format!("A regra MSTD-RULE-0008 ficou pronta no CI.\n{FORTY_WORDS}");
         assert_eq!(run_stop(root, &stop("s1", &reply, false)), Value::Null, "neither blocked nor warned about");
-        assert_eq!(
-            next_line(root, "s1"),
-            format!(
-                "{PT_LINE} Na última resposta: frase com 40 palavras; CI é uma sigla sem explicação; \
-                 MSTD-RULE-0008 é um código interno."
-            )
-        );
+        assert_eq!(next_line(root, "s1"), "", "no correction rides the next message");
     }
 
     /// Uma resposta longa e clara não leva aviso: com 16 linhas curtas, a
@@ -391,18 +377,18 @@ mod tests {
     }
 
     /// A resposta que sai noutro idioma que não o de `language.text` é
-    /// barrada, e o erro também vai na mensagem seguinte. O idioma vem da
+    /// barrada, e a mensagem seguinte não leva nada. O idioma vem da
     /// configuração: o mesmo inglês passa num projeto em inglês, e o português
     /// é barrado nele, no idioma dele. A volta que o bloqueio pediu nunca
     /// barra de novo. A chave antiga de idioma não é mais lida: um projeto que
     /// só tem ela não declarou idioma, e nenhuma resposta é barrada nem ganha
     /// erro de idioma.
     #[test]
-    fn a_reply_in_another_language_is_blocked_and_goes_with_the_next_message() {
+    fn a_reply_in_another_language_is_blocked_and_nothing_rides_the_next_message() {
         let pt = project(PT_PROJECT);
         let verdict = EndOfTurnCheck.evaluate(&stop("s1", ENGLISH_REPLY, false), &ctx(pt.path()));
         assert_eq!(verdict.expect("never errors"), Verdict::Deny { reason: PT_BLOCK.to_string() });
-        assert_eq!(next_line(pt.path(), "s1"), format!("{PT_LINE} Na última resposta: resposta em en-US."));
+        assert_eq!(next_line(pt.path(), "s1"), "", "the block is the whole answer to the wrong language");
 
         let again = EndOfTurnCheck.evaluate(&stop("s2", ENGLISH_REPLY, true), &ctx(pt.path()));
         assert_eq!(again.expect("never errors"), Verdict::Allow, "the retry is never blocked again");
@@ -417,7 +403,7 @@ mod tests {
             Uma resposta curta não é julgada por ela.";
         let verdict = EndOfTurnCheck.evaluate(&stop("s1", portuguese, false), &ctx(en.path()));
         assert_eq!(verdict.expect("never errors"), Verdict::Deny { reason: EN_BLOCK.to_string() });
-        assert_eq!(next_line(en.path(), "s1"), format!("{EN_LINE} In the last reply: reply in pt-BR."));
+        assert_eq!(next_line(en.path(), "s1"), "");
 
         let old_key = project(r#"{"specLang":"pt-BR"}"#);
         let verdict = EndOfTurnCheck.evaluate(&stop("s1", ENGLISH_REPLY, false), &ctx(old_key.path()));
@@ -473,8 +459,8 @@ mod tests {
     /// barrando, pelos ganchos de verdade. A spec fecha, e a resposta final
     /// que não cita "Humanize", nascida nela, é barrada com o texto das
     /// pendências e só ele, mesmo com uma frase longa e um código interno. A
-    /// volta que cita as duas passa. O erro de escrita das duas respostas vai
-    /// na mensagem seguinte, e o fechamento não cobra de novo.
+    /// volta que cita as duas passa. A mensagem seguinte não leva correção, e
+    /// o fechamento não cobra de novo.
     #[test]
     fn the_pending_rule_still_blocks_after_the_clarity_change() {
         let dir = project_with_open_items(PT_PROJECT);
@@ -497,7 +483,7 @@ mod tests {
 
         let rewrite = "Fechei a unidade; seguem o Humanize e o html padrao da spec.";
         assert_eq!(stop_event(root, "s-both", rewrite, true), Value::Null, "the cited items pass");
-        assert_eq!(next_line(root, "s-both"), format!("{PT_LINE} Na última resposta: frase com 40 palavras; MSTD-RULE-0008 é um código interno."));
+        assert_eq!(next_line(root, "s-both"), "");
         assert_eq!(stop_event(root, "s-both", "Fechei a unidade.", false), Value::Null, "the closure settled");
     }
 

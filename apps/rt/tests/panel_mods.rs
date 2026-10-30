@@ -95,12 +95,3 @@ fn the_waves_screen_answers_the_page_asked_by_offset_and_limit() {
         assert!(row["commit"].is_null()&&row["tokens"].is_null(),"{row}");
     }
 }
-#[test]
-fn a_diagnostic_record_keeps_only_known_fields_and_stays_local() {
-    let dir=tempfile::tempdir().unwrap();let root=dir.path();std::fs::write(root.join("mustard.json"),"{}").unwrap();
-    let input=json!({"component":"jev","operation":"search","reason":"provider-unavailable","secret":"PRIVATE-UNKNOWN-FIELD"});
-    assert_eq!(call(root,&["panel-diagnostics","--record"],Some(&input))["ok"],true);
-    let content=std::fs::read_to_string(root.join(".claude/mustard/panel/diagnostics.json")).unwrap();
-    assert!(!content.contains("PRIVATE-UNKNOWN-FIELD"));assert!(content.contains("provider-unavailable"));
-    assert_eq!(call(root,&["panel-diagnostics"],None)["reason"],"diagnostic-needs-record");
-}

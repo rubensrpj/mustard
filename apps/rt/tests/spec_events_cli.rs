@@ -93,6 +93,36 @@ fn repeated_options_return_one_json_error_before_any_item_is_written() {
     assert_eq!(panel["specs"][0]["operations"]["refusals"],2);
 }
 
+/// O agente de onda, que o gancho do terminal nomeia ao comando, recebe a
+/// recusa do próprio comando de gravação na tarefa e no lote, que sai com o
+/// código 1 sem gravar nada; o passo dele não leva essa recusa.
+#[test]
+fn the_wave_agent_is_refused_a_task_and_a_batch_by_the_write_command() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    open_spec(dir.path());
+    let task = rt(dir.path(), &["write", "task", "--spec", "teste", "--json", r#"{"title":"Uma tarefa","text":"Faz a coisa."}"#])
+        .env("MUSTARD_AGENT_ID", "a")
+        .output()
+        .expect("run write task");
+    assert_eq!(task.status.code(), Some(1), "{}", String::from_utf8_lossy(&task.stdout));
+    assert_eq!(stdout_json(&task)["reason"], "agent-plan-write");
+    let batch = rt(dir.path(), &["write", "--batch", "--spec", "teste"])
+        .env("MUSTARD_AGENT_ID", "a")
+        .stdin(Stdio::null())
+        .output()
+        .expect("run write --batch");
+    assert_eq!(batch.status.code(), Some(1), "{}", String::from_utf8_lossy(&batch.stdout));
+    assert_eq!(stdout_json(&batch)["reason"], "agent-batch-write");
+    let log = mustard_core::io::spec_events::read(&dir.path().join(".claude/spec/teste/spec.ndjson")).expect("read").expect("spec");
+    assert!(log.events.is_empty(), "nothing is recorded");
+    let step = rt(dir.path(), &["write", "step", "--spec", "teste", "--json", r#"{"wave":1,"item":"1","text":"Passo."}"#])
+        .env("MUSTARD_AGENT_ID", "a")
+        .output()
+        .expect("run write step");
+    let said = String::from_utf8_lossy(&step.stdout);
+    assert!(!said.contains("agent-plan-write") && !said.contains("agent-batch-write"), "{said}");
+}
+
 fn write(root: &Path, event_type: &str, fields: &Value) -> u64 {
     let out = rt(root, &["write", event_type, "--spec", "teste", "--json", &fields.to_string()])
         .output()
@@ -328,7 +358,7 @@ fn two_processes_closing_a_wave_preserve_both_deliveries_without_automatic_publi
                 .cloned()
                 .unwrap_or_default()
                 .into_iter()
-                .filter(|w| !matches!(w["reason"].as_str(), Some("usage-missing" | "wave-size")))
+                .filter(|w| w["reason"] != "usage-missing")
                 .count();
             assert_eq!(warned, 0, "{}", String::from_utf8_lossy(&out.stdout));
         }
@@ -706,7 +736,7 @@ fn the_round_commits_the_undeclared_file_the_wave_changed() {
         .cloned()
         .unwrap_or_default()
         .into_iter()
-        .filter(|w| !matches!(w["reason"].as_str(), Some("usage-missing" | "wave-size")))
+        .filter(|w| w["reason"] != "usage-missing")
         .collect();
     assert_eq!(warned.len(), 2, "{body}");
     assert_eq!(warned[0], json!({"reason": "files-diverged", "wave": 1, "hint": hint}), "{body}");
@@ -857,7 +887,7 @@ fn writing_a_wave_by_hand_is_refused_and_says_to_write_only_the_task() {
 /// entrega. Sem ele, a gravação é recusada sem gravar nada, com o texto que
 /// pede o título de até 70 caracteres; com 71 caracteres também. Com 70 (e
 /// letras acentuadas, que contam uma cada), a tarefa é gravada. A versão
-/// nova que o modelo grava sem título também é recusada.
+/// nova que o modelo grava sem título herda o da versão que substitui.
 #[test]
 fn task_without_a_title_is_refused_and_with_a_title_is_written() {
     use mustard_core::platform::i18n::{Locale, translate};
@@ -903,9 +933,14 @@ fn task_without_a_title_is_refused_and_with_a_title_is_written() {
     let saved = written["events"].as_array().expect("events").iter().find(|e| e["code"] == out["code"]).cloned();
     assert_eq!(saved.map(|e| e["title"].clone()), Some(json!(exact)), "o título fica gravado: {written}");
 
-    // A versão nova pelo modelo, sem título: recusada.
-    refused(&task(None, json!({"replaces": first})), "versão nova sem título");
-    let (code, out) = write_out(root, "task", &task(Some("Fechamento confere cada critério"), json!({"replaces": first})));
+    // A versão nova pelo modelo, sem título: herda o da versão que substitui.
+    let (code, out) = write_out(root, "task", &task(None, json!({"replaces": first})));
+    assert_eq!((code, &out["ok"]), (Some(0), &json!(true)), "a versão nova sem título herda o título: {out}");
+    let second = out["id"].as_u64().expect("o número da versão");
+    let revised = read(root, "waves");
+    let saved = revised["events"].as_array().expect("events").iter().find(|e| e["code"] == out["code"]).cloned();
+    assert_eq!(saved.map(|e| e["title"].clone()), Some(json!(exact)), "o título veio da versão anterior: {revised}");
+    let (code, out) = write_out(root, "task", &task(Some("Fechamento confere cada critério"), json!({"replaces": second})));
     assert_eq!((code, &out["ok"]), (Some(0), &json!(true)), "a versão nova com título passa: {out}");
 }
 
@@ -1887,7 +1922,7 @@ fn a_json_argument_read_from_a_file_writes_the_same_as_the_direct_text() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     open_spec(root);
-    let said = write(root, "message", &json!({"text": "Trocar a saudação."}));
+    let said = seed_binary(root, "message", &json!({"author": "user", "text": "Trocar a saudação."}));
     for gap in ["Onde a saudação nasce", "Onde a saudação aparece"] {
         let seen = json!([{"text": "A saudação mora na página.", "source": "mensagem 1"}]);
         seed_binary(root, "point", &json!({"block": "defect", "gap": gap, "from": "gap", "status": "open", "origin": said, "facts": seen}));
@@ -2048,4 +2083,216 @@ fn a_spec_search_without_the_jev_says_why_and_which_setting_turns_it_on() {
         lines.insert(last);
     }
     assert_eq!(lines.len(), 4, "each case has its own reason: {lines:?}");
+}
+
+/// O comando `cmd` com `input` na entrada padrão, como um heredoc o entrega.
+fn fed(mut cmd: Command, input: &str) -> Output {
+    let mut child = cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().expect("the command runs");
+    let mut pipe = child.stdin.take().expect("the standard input");
+    std::io::Write::write_all(&mut pipe, input.as_bytes()).expect("the command reads its input");
+    drop(pipe);
+    child.wait_with_output().expect("the command ends")
+}
+
+/// O item gravado com o código `code`, como a leitura o devolve.
+fn item_read(root: &Path, code: &str) -> Value {
+    let out = rt(root, &["read", &format!("item-{code}"), "--spec", "teste"]).output().expect("run read");
+    assert!(out.status.success(), "read {code}: {}", String::from_utf8_lossy(&out.stdout));
+    let read = stdout_json(&out);
+    read["events"].as_array().and_then(|events| events.first()).cloned().unwrap_or(read)
+}
+
+/// O texto longo, com título, lista, crase e aspas, como um heredoc o manda.
+const LONG_TEXT: &str = "## O que muda\n\n- A trava fica `presa` até o fim.\n- O lote \"grava\" as boas: e devolve as outras.\n\n```text\nmustard-rt run read state\n```";
+
+/// Um lote de quatro tarefas: a segunda vem sem os arquivos, a terceira
+/// depende dela pelo rótulo e a quarta depende da primeira pelo rótulo. A
+/// primeira e a quarta gravam, e a quarta aponta o número da primeira. A
+/// segunda volta com o motivo, e a terceira volta apontando a linha da
+/// segunda. A resposta tem uma linha curta por item, na ordem.
+#[test]
+fn a_batch_records_the_good_lines_and_returns_the_refused_ones() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    seed_state(root, &json!({"author": "binary", "phase": "plan", "branch": "feature/teste", "base": "dev"}));
+    let msg = seed_binary(root, "message", &json!({"author": "user", "text": "o plano"}));
+    let crit = write(root, "criterion",
+        &json!({"title": "Combinar o item", "when": "a", "then": "b", "proof": "git --version", "form": "ubiquitous", "origin": msg}));
+    let task = |label: &str, depends_on: Value| json!({"type": "task", "label": label, "agent": "- conferir pelo teste",
+        "title": format!("Entregar a {label}"), "text": "Tarefa.", "files": [{"path": "a.rs"}], "depends_on": depends_on,
+        "covers": [crit], "origin": msg});
+    let mut second = task("segunda", json!([]));
+    second.as_object_mut().expect("an object").remove("files");
+    let input = [task("primeira", json!([])), second, task("terceira", json!(["segunda"])), task("quarta", json!(["primeira"]))]
+        .map(|line| line.to_string())
+        .join("\n");
+    let before = event_lines(root);
+
+    let out = fed(rt(root, &["write", "--batch", "--spec", "teste"]), &format!("{input}\n"));
+    let shown = String::from_utf8_lossy(&out.stdout).to_string();
+    assert_eq!(out.status.code(), Some(1), "a refused line makes the batch fail: {shown}");
+    let lines: Vec<Value> = shown.lines().map(|line| serde_json::from_str(line).unwrap_or_else(|e| panic!("{e}: {line}"))).collect();
+    assert_eq!(lines.iter().map(|line| line["line"].clone()).collect::<Vec<_>>(), vec![json!(1), json!(2), json!(3), json!(4)], "{shown}");
+    let first = lines[0]["code"].as_str().unwrap_or_else(|| panic!("the first line is written: {shown}"));
+    assert!(lines[1]["reason"].is_string() && lines[1]["hint"].is_string() && lines[1].get("code").is_none(), "{shown}");
+    assert_eq!(lines[2]["reason"], json!("batch-line-refused"), "{shown}");
+    let hint = lines[2]["hint"].as_str().unwrap_or_default();
+    assert!(hint.contains("segunda") && hint.contains(" 2 "), "the refusal points at the line it cites: {hint}");
+    let fourth = lines[3]["code"].as_str().unwrap_or_else(|| panic!("the fourth line is written: {shown}"));
+
+    assert_eq!(event_lines(root), before + 2, "only the good lines are written");
+    let path = mustard_core::io::spec_events::spec_file(root, "teste").expect("spec file");
+    let log = mustard_core::io::spec_events::read(&path).expect("read").expect("the spec file");
+    let codes = log.codes();
+    let id_of = |code: &str| codes.iter().find(|(_, c)| c.as_str() == code).map(|(id, _)| *id).expect("the code is in the spec");
+    let depends_on = log.get(id_of(fourth)).and_then(|event| event.fields.get("depends_on").cloned());
+    assert_eq!(depends_on, Some(json!([id_of(first)])), "the label becomes the number of the line it names");
+}
+
+/// O texto longo, com título, lista, crase e aspas, entra cru pela entrada
+/// padrão no `--agent -`, com o `--text` dado direto e os outros campos no
+/// `--json`, e a leitura do item devolve os dois como foram escritos, sem a
+/// quebra que fecha a última linha do heredoc.
+#[test]
+fn raw_text_from_standard_input_is_recorded_as_written() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    open_spec(root);
+    let said = write(root, "message", &json!({"text": "Trocar a saudação."}));
+    let text = "Ação “citada” (parênteses): dois-pontos; 'simples' e \"duplas\".";
+    let fields = json!({"title": "Saudação nova", "origin": said}).to_string();
+    let out = fed(rt(root, &["write", "context", "--spec", "teste", "--json", &fields, "--text", text, "--agent", "-"]), &format!("{LONG_TEXT}\n"));
+    let report = stdout_json(&out);
+    assert!(out.status.success(), "{report}");
+    let item = item_read(root, report["code"].as_str().unwrap_or_else(|| panic!("no code: {report}")));
+    assert_eq!(item["agent"], json!(LONG_TEXT), "{item}");
+    assert_eq!(item["text"], json!(text), "{item}");
+}
+
+/// A resposta de um ponto leva o texto longo cru pela entrada padrão no
+/// `--agent -`, e a leitura do item da resposta o devolve como foi escrito.
+#[test]
+fn raw_text_from_standard_input_answers_a_point_as_written() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    open_spec(root);
+    let said = seed_binary(root, "message", &json!({"author": "user", "text": "Trocar a saudação."}));
+    let seen = json!([{"text": "A saudação mora na página.", "source": "mensagem 1"}]);
+    seed_binary(root, "point", &json!({"block": "defect", "gap": "Onde a saudação nasce", "from": "gap", "status": "open", "origin": said, "facts": seen}));
+    let fields = json!({"title": "Saudação nova", "keys": ["saudação"], "why": "O usuário pediu.", "origin": said}).to_string();
+    let args = ["answer", "--spec", "teste", "--type", "decision", "--json", &fields, "--text", "Trocar a saudação da página.", "--agent", "-"];
+    let out = fed(rt(root, &args), &format!("{LONG_TEXT}\n"));
+    let report = stdout_json(&out);
+    assert!(out.status.success(), "{report}");
+    assert_eq!(report["closed"]["status"], json!("closed"), "{report}");
+    let item = item_read(root, report["code"].as_str().unwrap_or_else(|| panic!("no code: {report}")));
+    assert_eq!(item["agent"], json!(LONG_TEXT), "{item}");
+}
+
+/// O JSON com uma quebra de linha crua dentro do texto é recusado no `run
+/// write` e no `run answer`, sem gravar nada, e a dica ensina o texto cru pela
+/// entrada padrão e o lote.
+#[test]
+fn an_invalid_json_refusal_points_to_raw_input_and_batch() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    open_spec(root);
+    let broken = "{\"title\": \"Nota\", \"text\": \"primeira linha\nsegunda linha\"}";
+    let before = event_lines(root);
+    for args in [
+        vec!["write", "note", "--spec", "teste", "--json", broken],
+        vec!["answer", "--spec", "teste", "--type", "decision", "--json", broken],
+    ] {
+        let out = rt(root, &args).output().expect("the command runs");
+        let refused = stdout_json(&out);
+        assert_eq!((out.status.code(), refused["reason"].clone()), (Some(1), json!("not-an-object")), "{args:?}: {refused}");
+        let hint = refused["hint"].as_str().unwrap_or_default();
+        assert!(hint.contains("`--text -`") && hint.contains("`--agent -`"), "the hint shows the raw input: {hint}");
+        assert!(hint.contains("--batch"), "the hint shows the batch: {hint}");
+    }
+    assert_eq!(event_lines(root), before, "nothing is written");
+}
+
+/// A recusa impressa pela gravação `args`, que sai com 1 sem gravar nada.
+fn refused_write(root: &Path, args: &[&str]) -> Value {
+    let before = event_lines(root);
+    let out = rt(root, args).output().expect("the command runs");
+    let refused = stdout_json(&out);
+    assert_eq!(out.status.code(), Some(1), "{args:?}: {refused}");
+    assert_eq!(event_lines(root), before, "nothing is written: {args:?}");
+    refused
+}
+
+/// O `--text -` e o `--agent -` juntos pedem a entrada padrão, que é uma só:
+/// a gravação recusa antes de ler, e nada se grava.
+#[test]
+fn both_raw_fields_from_standard_input_are_refused() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    open_spec(root);
+    let fields = json!({"title": "Nota"}).to_string();
+    let refused = refused_write(root, &["write", "note", "--spec", "teste", "--json", &fields, "--text", "-", "--agent", "-"]);
+    assert_eq!(refused["reason"], json!("raw-input-twice"), "{refused}");
+}
+
+/// O campo que vem no `--json` e também na opção própria é recusado, com a
+/// dica nomeando o campo, e nada se grava.
+#[test]
+fn a_raw_field_also_given_in_the_json_is_refused() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    open_spec(root);
+    let fields = json!({"title": "Nota", "agent": "no json"}).to_string();
+    let refused = refused_write(root, &["write", "note", "--spec", "teste", "--json", &fields, "--agent", "na opção"]);
+    assert_eq!(refused["reason"], json!("raw-field-twice"), "{refused}");
+    assert!(refused["hint"].as_str().unwrap_or_default().contains("agent"), "the hint names the field: {refused}");
+}
+
+/// O `--json` que não é objeto, com o `--text` dado direto, segue como veio,
+/// e a gravação o recusa pelo motivo de sempre, sem gravar nada.
+#[test]
+fn a_json_that_is_not_an_object_with_a_direct_text_is_refused_as_usual() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    open_spec(root);
+    let refused = refused_write(root, &["write", "note", "--spec", "teste", "--json", "[\"Nota\"]", "--text", "direto"]);
+    assert_eq!(refused["reason"], json!("not-an-object"), "{refused}");
+}
+
+/// As linhas curtas que o lote `input` imprime, com o código de saída.
+fn batch_out(root: &Path, input: &str) -> (Option<i32>, Vec<Value>) {
+    let out = fed(rt(root, &["write", "--batch", "--spec", "teste"]), input);
+    let shown = String::from_utf8_lossy(&out.stdout).to_string();
+    let lines = shown.lines().map(|line| serde_json::from_str(line).unwrap_or_else(|e| panic!("{e}: {line}"))).collect();
+    (out.status.code(), lines)
+}
+
+/// O lote só com linhas em branco é recusado numa linha só, e nada se grava.
+#[test]
+fn an_empty_batch_is_refused() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    open_spec(root);
+    let before = event_lines(root);
+    let (code, lines) = batch_out(root, "\n  \n");
+    assert_eq!(code, Some(1), "{lines:?}");
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(lines[0]["reason"], json!("batch-empty"), "{lines:?}");
+    assert_eq!(event_lines(root), before, "nothing is written");
+}
+
+/// A linha do lote sem o tipo, ou com o tipo em branco, é recusada pelo
+/// motivo próprio, cada uma na sua linha, e nada se grava.
+#[test]
+fn a_batch_line_without_its_type_is_refused() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    open_spec(root);
+    let before = event_lines(root);
+    let input = format!("{}\n{}\n", json!({"title": "Nota"}), json!({"type": " ", "title": "Nota"}));
+    let (code, lines) = batch_out(root, &input);
+    assert_eq!(code, Some(1), "{lines:?}");
+    let refusals: Vec<(Value, Value)> = lines.iter().map(|line| (line["line"].clone(), line["reason"].clone())).collect();
+    assert_eq!(refusals, vec![(json!(1), json!("batch-type-missing")), (json!(2), json!("batch-type-missing"))], "{lines:?}");
+    assert_eq!(event_lines(root), before, "nothing is written");
 }

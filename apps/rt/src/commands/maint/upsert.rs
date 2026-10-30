@@ -8,10 +8,9 @@
 //! `mustard_core::upsert_project`, de forma idempotente.
 //! O arquivo de configurações é o LOCAL porque a instalação é sempre no modo
 //! privado (veja [`run`]); o `.claude/settings.json` compartilhado nunca é
-//! semeado aqui, e só a limpeza mais abaixo grava nele: ela tira as linhas do
-//! molde e, como única exceção entre as regras de bloqueio dele, troca no
-//! lugar cada uma das três que um molde antigo escreveu com as duas formas de
-//! asterisco (a que não está lá nunca entra). O que é da PESSOA só ganha o que
+//! semeado nem gravado aqui: a limpeza mais abaixo só lista as linhas do
+//! molde antigo e as regras de bloqueio escritas com as duas formas de
+//! asterisco, para a pessoa mudar. O que é da PESSOA só ganha o que
 //! falta: um `.claude/settings.local.json`, um `.claude/.gitignore` ou um
 //! `mustard.json` que já existe fica como está, e só o que falta é criado ou
 //! acrescentado. Os textos do próprio Mustard (`.claude/mustard/session-map.md`,
@@ -29,39 +28,35 @@
 //! apontar para o nome novo, com o resto do arquivo intocado.
 //!
 //! O que um Mustard antigo deixou em arquivos que não são dele (as marcas nos
-//! arquivos `CLAUDE.md`, as linhas do molde no `.claude/settings.json` da
-//! equipe, um `.claude/CLAUDE.md` plantado) é sobra dele mesmo, e sai nesta
-//! mesma chamada, sem pergunta: as regras dos Guards vão antes para a lista de
+//! arquivos `CLAUDE.md`, um `.claude/CLAUDE.md` plantado) é sobra dele mesmo,
+//! e sai nesta mesma chamada, sem pergunta: as regras dos Guards vão antes para a lista de
 //! pendências do projeto (`.claude/pending/ledger.json`), num item com o texto
 //! de cada regra e o arquivo de onde ela saiu, e depois as linhas saem. Elas
 //! nunca vão para o banco de lições, que fica nesta máquina e nunca vai para o
 //! git: a pessoa transforma cada regra num teste ou a descarta. Quando esse
 //! item não pode ser gravado, nenhum arquivo da limpeza muda. `cleanup` lista
-//! o que saiu, cada regra de bloqueio trocada no lugar (`swaps`, o texto
-//! antigo e o novo) e os arquivos sem marca, que nunca são tocados; `cleaned`
-//! diz o que foi feito, com o número do item de pendência e uma linha por
-//! regra trocada (`swapped`), no idioma do projeto. Nada vai para o stage nem
-//! é comitado.
+//! o que saiu, os arquivos sem marca e, em `team`, o que a pessoa pode tirar
+//! do `.claude/settings.json` da equipe e cada regra de bloqueio que ela pode
+//! trocar no lugar (`swaps`, o texto antigo e o novo): esses nunca são
+//! tocados. `cleaned` diz o que foi feito, com o número do item de pendência.
+//! Nada vai para o stage nem é comitado.
 //!
-//! Once the files are written, the same code-tool step `mustard init` runs
-//! (`mustard_core::platform::code_tools::ensure_code_tools`) sets up the
-//! language-server program and plugin of every language the project involves,
-//! so a project that only ever updates gets them too. What the step could not
-//! do by itself comes back in `codeToolWarnings`, each sentence naming the
-//! command a person runs to finish it; nothing it meets stops the upsert.
+//! Gravados os arquivos, `codeToolWarnings` diz, para cada linguagem do
+//! projeto, o servidor de linguagem que falta ou não responde, cada um com o
+//! comando pronto que a pessoa roda
+//! (`mustard_core::platform::code_tools::code_tool_hints`, a mesma lista do
+//! doctor). Nada é instalado: nenhum comando roda com `-g`, `--global` ou
+//! `@latest`, e a falta não deixa a instalação incompleta.
 //!
 //! O comando inteiro tem um orçamento de tempo só, [`UPSERT_BUDGET`] (100 s),
 //! para tudo o que ele roda fora do processo: os dois passos do plugin (cada
-//! um com o teto de [`REFRESH_TIMEOUT`], 45 s) e a etapa das ferramentas de
-//! código. Cada comando roda com o menor entre o prazo dele e o que resta do
-//! orçamento, e a etapa das ferramentas mantém o teto de 60 s
-//! (`mustard_core::platform::code_tools::STEP_BUDGET`) dentro do que resta.
-//! O que passa do prazo é cortado e volta como uma frase de "timed out"; com o
-//! orçamento esgotado o passo seguinte nem roda, e volta como a mesma frase,
-//! com o comando para a pessoa rodar. Assim a atualização nunca espera por uma
-//! instalação parada, e o pior caso é o orçamento — 100 s —, abaixo dos 2
-//! minutos que o Bash do Claude Code dá a quem a chama. O plugin roda antes
-//! das ferramentas, e as duas partes tiram do mesmo orçamento.
+//! um com o teto de [`REFRESH_TIMEOUT`], 45 s) e o índice. Cada comando roda
+//! com o menor entre o prazo dele e o que resta do orçamento. O que passa do
+//! prazo é cortado e volta como uma frase de "timed out"; com o orçamento
+//! esgotado o passo seguinte nem roda, e volta como a mesma frase, com o
+//! comando para a pessoa rodar. Assim a atualização nunca espera por um passo
+//! parado, e o pior caso é o orçamento — 100 s —, abaixo dos 2 minutos que o
+//! Bash do Claude Code dá a quem a chama.
 //!
 //! The local settings also allow the folder where the project's separate
 //! copies live, outside the project. Two answers of the person travel as
@@ -160,12 +155,12 @@ mod completion;
 /// outlast it would have the door killed from outside, and then nothing reports
 /// at all — the module's own deadline is the only one that can produce a
 /// `skipped` a person reads. So this is only the ceiling of one step: both steps
-/// and the code-tool step draw from the one [`UPSERT_BUDGET`], and a step that
-/// finds it spent does not run.
+/// and the index draw from the one [`UPSERT_BUDGET`], and a step that finds it
+/// spent does not run.
 const REFRESH_TIMEOUT: Duration = Duration::from_secs(45);
 
 /// O tempo que o comando inteiro tem para tudo o que roda fora do processo: os
-/// dois passos do plugin e a etapa das ferramentas de código. Abaixo dos 2
+/// dois passos do plugin e o índice. Abaixo dos 2
 /// minutos do Bash do Claude Code, com folga para gravar os arquivos.
 const UPSERT_BUDGET: Duration = Duration::from_secs(100);
 
@@ -228,7 +223,7 @@ struct PluginRefresh {
 }
 
 /// The whole answer of `run upsert`: what the engine did to the project, what
-/// the plugin refresh did, and what the code-tool step left for a person.
+/// the plugin refresh did, and what a person still has to install.
 ///
 /// The engine's report is flattened, so every key callers already read
 /// (`installedBefore`, `created`, `private`, …) keeps its name and its place;
@@ -240,11 +235,10 @@ struct Report {
     #[serde(flatten)]
     project: mustard_core::UpsertReport,
     plugin_refresh: PluginRefresh,
-    /// What the code-tool step could not do by itself, one sentence per
-    /// warning, in the order the step met them, each naming the command a
-    /// person runs to finish it. Always present: empty means every language
-    /// the project involves has its program and its plugin, or that it
-    /// involves none.
+    /// Each language-server program the project needs and the machine lacks,
+    /// one sentence each, naming the command a person runs to install it.
+    /// Always present: empty means every language the project involves has
+    /// its program answering, or that it involves none.
     code_tool_warnings: Vec<String>,
     /// O aviso de que o campo de busca que falta nas specs não foi posto, com
     /// o comando que o põe depois
@@ -269,6 +263,12 @@ struct Report {
     /// `mustard.json` não tem `localFiles`; vazia quando não há nenhum.
     #[serde(skip_serializing_if = "Option::is_none")]
     local_files_found: Option<Vec<String>>,
+    /// A linha de preparo sugerida pelo arquivo de lock da raiz, com ele como
+    /// gatilho ([`mustard_core::domain::command_detect::suggested_prepare`]).
+    /// Presente só enquanto o `mustard.json` não tem `prepareCommand`: a
+    /// resposta gravada, mesmo vazia, encerra a sugestão.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prepare_suggested: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     installation: Option<serde_json::Value>,
     #[serde(skip)]
@@ -285,6 +285,8 @@ pub struct UpsertOpts {
     pub local_files: Option<String>,
     /// `--prepare`: o comando de preparo; vazio quando o projeto não tem.
     pub prepare: Option<String>,
+    /// `--prepare-files`: os gatilhos do preparo, separados por vírgula.
+    pub prepare_files: Option<String>,
 }
 
 /// Execute `mustard-rt run upsert`.
@@ -300,8 +302,8 @@ pub fn run(opts: &UpsertOpts) {
     // process cwd — the fresh-install path, where no anchor exists yet.
     let root = PathBuf::from(crate::shared::context::env::project_dir());
 
-    // The code-tool commands find and spawn their programs against this
-    // process's own PATH, the way `mustard init` hands the same step its own.
+    // The checks of the code tools and the index find their programs against
+    // this process's own PATH.
     let path_env = std::env::var("PATH").unwrap_or_default();
     let runner=MachineRunner::new(&path_env).at(&root).without_runtime_delegation();
     let started=std::time::Instant::now();
@@ -341,13 +343,14 @@ pub fn run(opts: &UpsertOpts) {
 }
 
 /// The whole door, short of printing: seed the project, record the person's
-/// answers, fill the missing search of the specs, set up the code tools of
-/// every language it involves, refresh the plugin.
+/// answers, fill the missing search of the specs, name the code tools a
+/// person still has to install, refresh the plugin.
 ///
-/// `runner` runs the code-tool commands and `refresh` performs the plugin
-/// refresh. [`run`] hands both to the machine; the tests hand a fake runner and
-/// a canned refresh, so what they drive is the same sequence the command runs.
-/// The refresh is handed the [`UPSERT_BUDGET`] it shares with the code tools.
+/// `runner` runs the checks of the code tools and `refresh` performs the
+/// plugin refresh. [`run`] hands both to the machine; the tests hand a fake
+/// runner and a canned refresh, so what they drive is the same sequence the
+/// command runs. The refresh is handed the [`UPSERT_BUDGET`] it shares with the
+/// index.
 fn upsert_with_index<R: ToolRunner>(
     root: &Path,
     opts: &UpsertOpts,
@@ -379,7 +382,14 @@ fn upsert_with_index<R: ToolRunner>(
     if record_answers(root, opts)? {
         project.record_mustard_json_change();
     }
-    let local_files_found = ProjectConfig::load(root).local_files.is_none().then(|| ignored_files(root));
+    let config = ProjectConfig::load(root);
+    let local_files_found = config.local_files.is_none().then(|| ignored_files(root));
+    let prepare_suggested = config
+        .prepare_command
+        .is_none()
+        .then(|| mustard_core::domain::command_detect::suggested_prepare(root))
+        .flatten()
+        .map(|(command, lock)| serde_json::json!({"command": command, "files": [lock]}));
 
     // A busca que uma versão anterior deixou nas specs e no banco de lições
     // se acerta aqui, uma vez, como na instalação pelo terminal: a gravação
@@ -395,25 +405,23 @@ fn upsert_with_index<R: ToolRunner>(
     let reserves_hint = (!passed.reserves.is_empty()).then(|| crate::shared::jev::reserve::hint("mustard-rt run upsert", lang));
     let reserves = passed.reserves;
 
-    // Both steps below run only on the path where the project was really
-    // seeded: a run that wrote nothing has no installation to finish. They come
-    // after the files, so a step that fails or stalls leaves the project
-    // already updated, and each failure is a sentence in the report, never an
-    // abort. The two draw from ONE budget: the plugin refresh goes first, and
-    // the code tools get what it leaves — a step with no time left does not
-    // run, and comes back as the sentence with its command.
+    // Os dois passos abaixo só rodam quando o projeto foi semeado de verdade:
+    // a chamada que não gravou nada não tem instalação para terminar. Eles
+    // vêm depois dos arquivos, então o passo que falha ou para deixa o projeto
+    // já atualizado, e cada falha é uma frase na resposta, nunca um aborto. Os
+    // dois tiram de UM orçamento: a atualização do plugin vai antes, e o
+    // índice fica com o que ela deixa.
     let budget = Budget::start(runner, UPSERT_BUDGET);
     let plugin_refresh = refresh(root, &budget);
-    // Discover every subproject before choosing its language tools. A root
-    // manifest alone misses nested backends on the first installation.
+    // O índice acha cada subprojeto antes de nomear as ferramentas de
+    // linguagem: o manifesto da raiz sozinho perde o backend aninhado na
+    // primeira instalação. Nada é instalado aqui: a resposta traz o comando
+    // de cada ferramenta que falta, para a pessoa rodar.
     let scan=Some(index(root,&budget));
-    let code_tool_warnings =
-        code_tools::ensure_code_tools_in(root, &mustard_core::io::project_map::model_path(root), &budget)
-            .iter()
-            .map(ToString::to_string)
-            .collect();
+    let languages = code_tools::detect_code_languages(root, &mustard_core::io::project_map::model_path(root));
+    let code_tool_warnings = code_tools::code_tool_hints(&languages, runner);
 
-    Ok(Report { project, plugin_refresh, code_tool_warnings, search_warning, summary_warning, reserves, reserves_hint, local_files_found, installation:None,scan })
+    Ok(Report { project, plugin_refresh, code_tool_warnings, search_warning, summary_warning, reserves, reserves_hint, local_files_found, prepare_suggested, installation:None,scan })
 }
 
 #[cfg(test)]
@@ -422,12 +430,12 @@ fn upsert<R:ToolRunner>(root:&Path,opts:&UpsertOpts,runner:&R,refresh:impl FnOnc
 }
 
 /// Grava no `mustard.json` as respostas que vieram em `opts`: o comando de
-/// preparo, sem os espaços das pontas, e a lista dos arquivos locais, sem as
-/// entradas em branco. Uma resposta vazia também é gravada: ela diz que o
+/// preparo, sem os espaços das pontas, e as listas dos gatilhos do preparo e
+/// dos arquivos locais, sem as entradas em branco. Uma resposta vazia também é gravada: ela diz que o
 /// projeto não tem preparo, ou não precisa de arquivo local. `true` quando o
 /// arquivo mudou.
 fn record_answers(root: &Path, opts: &UpsertOpts) -> mustard_core::platform::error::Result<bool> {
-    if opts.local_files.is_none() && opts.prepare.is_none() {
+    if opts.local_files.is_none() && opts.prepare.is_none() && opts.prepare_files.is_none() {
         return Ok(false);
     }
     let mut config = ProjectConfig::load(root);
@@ -437,6 +445,13 @@ fn record_answers(root: &Path, opts: &UpsertOpts) -> mustard_core::platform::err
     {
         config.prepare_command = Some(prepare.to_string());
         changed = true;
+    }
+    if let Some(listed) = opts.prepare_files.as_deref() {
+        let files: Vec<String> = listed.split(',').map(str::trim).filter(|file| !file.is_empty()).map(str::to_string).collect();
+        if config.prepare_files.as_ref() != Some(&files) {
+            config.prepare_files = Some(files);
+            changed = true;
+        }
     }
     if opts.local_files.is_some() {
         let files: Vec<String> = listed_local_files(opts).map(str::to_string).collect();
@@ -521,7 +536,7 @@ fn refresh_plugin<R: ToolRunner>(root: &Path, budget: &Budget<'_, R>) -> PluginR
         .and_then(|dir| std::fs::read_to_string(dir.join(INSTALLED_PLUGINS)).ok())
         .and_then(|raw| refresh_target(&raw));
     // The version reader is bound to the record this refresh ACTED ON — the
-    // same key and the same scope. `installed_harness_version` answers a
+    // same key and the same scope. `installed_plugin` answers a
     // different question ("what is installed anywhere"), so a leftover copy in
     // another scope would be reported as the result of an update that never
     // touched it.
@@ -745,7 +760,7 @@ fn is_plain_id(value: &str) -> bool {
 ///
 /// The registry keys installs by `{plugin}@{marketplace}` and maps each to an
 /// ARRAY — one record per scope. The highest version wins, matching what
-/// `mustard_core::installed_harness_version_from` calls "installed": a
+/// `mustard_core::platform::harness::installed_plugin` calls "installed": a
 /// lower-scoped leftover must not be the one this command updates.
 ///
 /// `None` when the text is not JSON, carries no `plugins` object, or lists no
@@ -1012,6 +1027,7 @@ mod tests {
             reserves: Vec::new(),
             reserves_hint: None,
             local_files_found: None,
+            prepare_suggested: None,
             installation: None,
             scan: None,
         };
@@ -1114,100 +1130,6 @@ mod tests {
         }
     }
 
-    /// O orçamento curto que o teste dá à etapa inteira, no lugar dos 60 s de
-    /// verdade.
-    #[cfg(unix)]
-    const SHORT_BUDGET: Duration = Duration::from_secs(1);
-
-    /// O executor da máquina por dentro, com o orçamento curto da etapa.
-    #[cfg(unix)]
-    struct Short<'a> {
-        inner: &'a MachineRunner,
-    }
-
-    #[cfg(unix)]
-    impl ToolRunner for Short<'_> {
-        fn on_path(&self, program: &str) -> bool {
-            self.inner.on_path(program)
-        }
-
-        fn run(&self, program: &str, args: &[&str]) -> bool {
-            self.inner.run(program, args)
-        }
-
-        fn run_outcome(&self, program: &str, args: &[&str], limit: Duration) -> code_tools::RunOutcome {
-            self.inner.run_outcome(program, args, limit)
-        }
-
-        fn found_off_path(&self, program: &str) -> Option<PathBuf> {
-            self.inner.found_off_path(program)
-        }
-
-        fn budget(&self) -> Duration {
-            SHORT_BUDGET
-        }
-
-        fn command_deadline(&self) -> Duration {
-            self.inner.command_deadline()
-        }
-    }
-
-    /// A etapa roda no executor da máquina, que dá à etapa inteira um
-    /// orçamento de tempo: um `claude` que nunca responde é morto quando o
-    /// orçamento acaba, o passo seguinte nem roda e volta como frase de prazo,
-    /// com o comando para a pessoa rodar, e a atualização termina e relata os
-    /// arquivos dela. Só o primeiro comando chega a rodar (o registro do
-    /// programa falso tem uma linha), e a atualização volta com ele ainda
-    /// preso: ela o corta, sem esperar o fim dele. Só no Unix: os programas
-    /// falsos são scripts.
-    #[test]
-    #[cfg(unix)]
-    fn update_with_a_stalled_command_returns_the_deadline_warning_and_finishes() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let root = dir.path();
-        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"x\"\n").expect("write Cargo.toml");
-        let bin = tempfile::tempdir().expect("temp dir");
-        let ran = bin.path().join("ran.log");
-        crate::executable::write_executable(&bin.path().join("rust-analyzer"), "#!/bin/sh\nexit 0\n");
-        let (release, ended) = (bin.path().join("release"), bin.path().join("ended"));
-        crate::executable::write_executable(
-            &bin.path().join("claude"),
-            // O executor roda o programa falso com o `PATH` só da pasta dele:
-            // o laço e o `touch` vêm das pastas do sistema.
-            &format!(
-                "#!/bin/sh\nPATH=/usr/bin:/bin\necho \"$*\" >> \"{}\"\n{}\ntouch '{}'\n",
-                ran.display(),
-                crate::held_command::held_until_released(&release),
-                ended.display()
-            ),
-        );
-        let machine = MachineRunner::new(&bin.path().display().to_string());
-        let runner = Short { inner: &machine };
-
-        let outcome = upsert(root, &UpsertOpts::default(), &runner, |_, _| skipped(None, "no registry in a test".to_string()))
-            .expect("a plain project is seeded");
-        assert!(!ended.exists(), "the stalled command was cut at the budget, not waited for");
-        std::fs::write(&release, "").unwrap();
-        let value = serde_json::to_value(&outcome).expect("serialize");
-        assert_eq!(
-            value["codeToolWarnings"],
-            serde_json::json!([
-                "rust: timed out after 1s - run manually: claude plugin install rust-analyzer-lsp@claude-plugins-official",
-                "rust: timed out after 1s - run manually: claude plugin enable rust-analyzer-lsp@claude-plugins-official",
-            ]),
-        );
-        let started_commands = std::fs::read_to_string(&ran).expect("the first command ran");
-        assert_eq!(
-            started_commands.lines().collect::<Vec<_>>(),
-            vec!["plugin install rust-analyzer-lsp@claude-plugins-official"],
-            "with the budget spent, the second command does not even start",
-        );
-        assert!(
-            value["created"].as_array().is_some_and(|c| c.iter().any(|p| p == "mustard.json")),
-            "the upsert itself went through: {value}",
-        );
-    }
-
     /// A step that exited with `code`, for the plugin steps a test drives by hand.
     #[cfg(unix)]
     fn exited(code: i32) -> ShellOutcome {
@@ -1224,72 +1146,6 @@ mod tests {
         mut step: impl FnMut(Duration) -> ShellOutcome,
     ) -> PluginRefresh {
         fold_refresh("claude", refresh_target(REGISTRY), |_| step_within(budget, &mut step), || None)
-    }
-
-    /// The plugin steps and the code tools draw from ONE budget of 100 s. With
-    /// the two plugin steps spending 45 s each, the code tools get the 10 s that
-    /// are left: the first command is handed 10 s, the next the 4 s that remain
-    /// after it took 6, and the language after that does not run at all — each
-    /// of its steps comes back as the "timed out" sentence with its command.
-    /// With the plugin steps quick, every command runs.
-    #[test]
-    #[cfg(unix)]
-    fn the_plugin_steps_and_the_code_tools_share_one_budget() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let root = dir.path();
-        std::fs::write(root.join("go.mod"), "module x\n").expect("write go.mod");
-        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"x\"\n").expect("write Cargo.toml");
-        let go_plugin = "gopls-lsp@claude-plugins-official";
-        let rust_plugin = "rust-analyzer-lsp@claude-plugins-official";
-
-        let mut runner = FakeRunner::new(root, &["gopls", "rustup", "claude"]);
-        runner.brings.push(("rustup", "rust-analyzer"));
-        runner.taking.push(("claude plugin install gopls-lsp", Duration::from_secs(6)));
-        runner.taking.push(("claude plugin enable gopls-lsp", Duration::from_secs(4)));
-        let outcome = upsert(root, &UpsertOpts::default(), &runner, |_, budget| {
-            refresh_with(budget, |limit| {
-                runner.spend(Duration::from_secs(45).min(limit));
-                exited(0)
-            })
-        })
-        .expect("a plain project is seeded");
-
-        let value = serde_json::to_value(&outcome).expect("serialize");
-        assert_eq!(value["pluginRefresh"]["state"], serde_json::json!(REFRESHED), "both plugin steps ran");
-        assert_eq!(
-            *runner.log.borrow(),
-            vec![format!("claude plugin install {go_plugin}"), format!("claude plugin enable {go_plugin}")],
-            "the language after the one that spent the rest does not run",
-        );
-        assert_eq!(*runner.limits.borrow(), vec![Duration::from_secs(10), Duration::from_secs(4)]);
-        assert_eq!(
-            value["codeToolWarnings"],
-            serde_json::json!([
-                "rust: timed out after 10s - run manually: rustup component add rust-analyzer",
-                format!("rust: timed out after 10s - run manually: claude plugin install {rust_plugin}"),
-                format!("rust: timed out after 10s - run manually: claude plugin enable {rust_plugin}"),
-            ]),
-        );
-
-        let mut quick = FakeRunner::new(root, &["gopls", "rustup", "claude"]);
-        quick.brings.push(("rustup", "rust-analyzer"));
-        quick.taking.push(("claude plugin install gopls-lsp", Duration::from_secs(6)));
-        quick.taking.push(("claude plugin enable gopls-lsp", Duration::from_secs(4)));
-        let outcome = upsert(root, &UpsertOpts::default(), &quick, |_, budget| {
-            refresh_with(budget, |_| {
-                quick.spend(Duration::from_secs(5));
-                exited(0)
-            })
-        })
-        .expect("a plain project is seeded");
-        let value = serde_json::to_value(&outcome).expect("serialize");
-        assert_eq!(value["codeToolWarnings"], serde_json::json!([]), "with time to spare, nothing is cut");
-        assert_eq!(quick.log.borrow().len(), 5, "{:?}", quick.log.borrow());
-        assert_eq!(
-            quick.limits.borrow()[0],
-            Duration::from_secs(60),
-            "the code tools keep their own 60 s ceiling inside what is left",
-        );
     }
 
     /// A plugin step with no time left does not run: the refresh comes back
@@ -1364,106 +1220,31 @@ mod tests {
         assert!(step.contains("command"), "the page asks for the ready command: {step}");
     }
 
-    /// A project in C# and Rust, updated: the files are written first, then the
-    /// same code-tool step `mustard init` runs sets up each language. Each one
-    /// lands on one side of the line: `csharp-ls` is missing and so is
-    /// `dotnet`, so nothing installs and the warning names the command; the
-    /// C# plugin install fails and becomes a warning with its command, and the
-    /// step moves on; `rust-analyzer` is missing but `rustup` is there, so it
-    /// runs. Both warnings reach the report the command prints, and the rest
-    /// of the report — the files and the plugin refresh — is still there.
+    /// Num projeto em C# e Rust, a atualização devolve o comando que instala
+    /// o programa de cada linguagem, sem executá-lo: com `rustup`, `dotnet` e
+    /// `claude` no `PATH`, nenhum comando roda, e o resto da resposta segue.
     #[test]
-    fn update_runs_the_code_tools_step() {
+    fn the_update_names_the_code_tool_commands_without_running_them() {
         let dir = tempfile::tempdir().expect("temp dir");
         let root = dir.path();
         std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"x\"\n").expect("write Cargo.toml");
         std::fs::write(root.join("App.csproj"), "<Project/>\n").expect("write App.csproj");
-
-        let mut runner = FakeRunner::new(root, &["rustup", "claude"]);
-        runner.brings.push(("rustup", "rust-analyzer"));
-        runner.failing.push("claude plugin install csharp-lsp@claude-plugins-official");
+        let runner = FakeRunner::new(root, &["rustup", "dotnet", "claude"]);
 
         let outcome = upsert(root, &UpsertOpts::default(), &runner, |_, _| skipped(None, "no registry in a test".to_string()))
             .expect("a plain project is seeded");
 
-        assert_eq!(
-            *runner.log.borrow(),
-            vec![
-                "claude plugin install csharp-lsp@claude-plugins-official",
-                "claude plugin enable csharp-lsp@claude-plugins-official",
-                "rustup component add rust-analyzer",
-                "claude plugin install rust-analyzer-lsp@claude-plugins-official",
-                "claude plugin enable rust-analyzer-lsp@claude-plugins-official",
-            ],
-            "each language gets its program and its plugin, and the C# failure does not stop Rust",
-        );
-        assert!(
-            runner.seeded_when_called.borrow().iter().all(|seeded| *seeded),
-            "every code-tool command runs after the project files are written: {:?}",
-            runner.seeded_when_called.borrow(),
-        );
-
-        let first = serde_json::to_string_pretty(&outcome).expect("serialize");
-        let second = serde_json::to_string_pretty(&outcome).expect("serialize again");
-        assert_eq!(first, second, "the run face contracts byte-stable output");
-        let value: serde_json::Value = serde_json::from_str(&first).expect("valid JSON");
+        assert!(runner.log.borrow().is_empty(), "nothing is installed: {:?}", runner.log.borrow());
+        let value = serde_json::to_value(&outcome).expect("serialize");
         assert_eq!(
             value["codeToolWarnings"],
             serde_json::json!([
-                "csharp: csharp-ls not found on PATH - install manually: \
-                 dotnet tool install --global csharp-ls --version 0.18.0",
-                "csharp: could not install the csharp-lsp@claude-plugins-official plugin - run manually: \
-                 claude plugin install csharp-lsp@claude-plugins-official",
+                "missing: csharp-ls (install: dotnet tool install --global csharp-ls --version 0.18.0)",
+                "missing: rust-analyzer (install: rustup component add rust-analyzer)",
             ]),
-            "each warning reaches the report with the command to run: {first}",
+            "{value}",
         );
-        assert!(
-            value["created"].as_array().is_some_and(|c| c.iter().any(|p| p == "mustard.json")),
-            "the upsert itself went through: {first}",
-        );
-        assert_eq!(value["pluginRefresh"]["state"], serde_json::json!(SKIPPED), "{first}");
-        assert!(root.join(".claude/settings.local.json").is_file(), "the files are on disk");
-    }
-
-    /// The code-tool step runs only once the project was seeded. When the
-    /// seeding refuses — a repository whose exclude file cannot be written, so
-    /// a private install cannot hide itself — the upsert answers with the error,
-    /// and no code-tool command runs at all.
-    #[test]
-    #[cfg(unix)]
-    fn update_runs_the_code_tools_step_only_after_the_files() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let dir = tempfile::tempdir().expect("temp dir");
-        let root = dir.path();
-        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"x\"\n").expect("write Cargo.toml");
-        let init = std::process::Command::new("git")
-            .args(["init", "--quiet"])
-            .current_dir(root)
-            .status()
-            .expect("run git init");
-        assert!(init.success(), "git init");
-        // Seal the directory the exclude file lives in: the write fails, while
-        // the file itself stays readable to git.
-        let info_dir = root.join(".git").join("info");
-        std::fs::create_dir_all(&info_dir).expect("the info directory exists");
-        if !info_dir.join("exclude").exists() {
-            std::fs::write(info_dir.join("exclude"), "").expect("seed an empty exclude file");
-        }
-        std::fs::set_permissions(&info_dir, std::fs::Permissions::from_mode(0o555)).expect("seal");
-
-        let runner = FakeRunner::new(root, &["rustup", "claude"]);
-        let refused = upsert(root, &UpsertOpts::default(), &runner, |_, _| panic!("no refresh without a seeded project"));
-
-        // Unseal before asserting, so the temp dir can always be removed.
-        std::fs::set_permissions(&info_dir, std::fs::Permissions::from_mode(0o755)).expect("unseal");
-        assert!(
-            matches!(refused, Err(mustard_core::platform::error::Error::NotHidden(_))),
-            "the seeding refused: {:?}",
-            refused.as_ref().map(|_| "a report"),
-        );
-        assert!(runner.log.borrow().is_empty(), "no code-tool command may run: {:?}", runner.log.borrow());
-        assert!(!root.join("mustard.json").exists(), "nothing was written");
+        assert!(value["created"].as_array().is_some_and(|c| c.iter().any(|p| p == "mustard.json")), "{value}");
     }
 
     /// Dois arquivos de instrução com o bloco de regras que um Mustard antigo
@@ -1694,7 +1475,7 @@ mod tests {
 
         let confirmed = upsert_json(
             root,
-            &UpsertOpts { local_files: Some(" .env, apps/api/.env.local ,".to_string()), prepare: None },
+            &UpsertOpts { local_files: Some(" .env, apps/api/.env.local ,".to_string()), prepare: None, prepare_files: None },
         );
         assert!(confirmed.get("localFilesFound").is_none(), "{confirmed:#}");
         assert_eq!(mustard_json(root)["localFiles"], serde_json::json!([".env", "apps/api/.env.local"]));
@@ -1730,7 +1511,7 @@ mod tests {
         git(&["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "semente"]);
         std::fs::write(root.join(".env"), "A=1\n").expect("write");
 
-        let asked = UpsertOpts { local_files: Some(".env, config/app.json".to_string()), prepare: None };
+        let asked = UpsertOpts { local_files: Some(".env, config/app.json".to_string()), prepare: None, prepare_files: None };
         let refused = upsert(root, &asked, &FakeRunner::new(root, &[]), |_, _| -> PluginRefresh {
             panic!("a refused upsert refreshes nothing")
         });
@@ -1743,7 +1524,7 @@ mod tests {
         assert!(!root.join("mustard.json").exists(), "nothing is written");
         assert!(!root.join(".claude").exists(), "nothing of the install is written");
 
-        upsert_json(root, &UpsertOpts { local_files: Some(".env".to_string()), prepare: None });
+        upsert_json(root, &UpsertOpts { local_files: Some(".env".to_string()), prepare: None, prepare_files: None });
         assert_eq!(mustard_json(root)["localFiles"], serde_json::json!([".env"]));
     }
 
@@ -1758,7 +1539,7 @@ mod tests {
         std::fs::write(root.join("mustard.json"), r#"{"buildCommand":"npm run build","testCommand":"npm test"}"#)
             .expect("mustard.json");
 
-        upsert_json(root, &UpsertOpts { local_files: None, prepare: Some("pnpm install --frozen-lockfile".to_string()) });
+        upsert_json(root, &UpsertOpts { local_files: None, prepare: Some("pnpm install --frozen-lockfile".to_string()), prepare_files: None });
 
         let config = mustard_json(root);
         assert_eq!(config["prepareCommand"], serde_json::json!("pnpm install --frozen-lockfile"));
@@ -1773,9 +1554,29 @@ mod tests {
         upsert_json(other.path(), &UpsertOpts::default());
         assert!(!mustard_json(other.path()).contains_key("prepareCommand"), "without the option, nothing is recorded");
 
-        upsert_json(other.path(), &UpsertOpts { local_files: None, prepare: Some(String::new()) });
+        upsert_json(other.path(), &UpsertOpts { local_files: None, prepare: Some(String::new()), prepare_files: None });
         assert_eq!(mustard_json(other.path())["prepareCommand"], serde_json::json!(""), "no prepare is an answer too");
         assert_eq!(ProjectConfig::load(other.path()).commands().prepare, None, "and runs nothing");
+    }
+
+    /// Sem `prepareCommand`, a atualização sugere a linha de preparo pelo
+    /// arquivo de lock, com ele como gatilho, e não roda nada. Gravada a
+    /// resposta, com os gatilhos, a sugestão não volta.
+    #[test]
+    fn the_upsert_suggests_the_prepare_line_once_with_the_lock_file_as_trigger() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        std::fs::write(root.join("package-lock.json"), "{}").expect("lock file");
+
+        let first = upsert_json(root, &UpsertOpts::default());
+        assert_eq!(first["prepareSuggested"], serde_json::json!({"command": "npm ci", "files": ["package-lock.json"]}), "{first}");
+        assert!(!root.join("node_modules").exists(), "the suggestion runs nothing");
+
+        let answer = UpsertOpts { prepare: Some("npm ci".into()), prepare_files: Some("package-lock.json".into()), ..UpsertOpts::default() };
+        let answered = upsert_json(root, &answer);
+        assert!(answered.get("prepareSuggested").is_none(), "{answered}");
+        assert_eq!(ProjectConfig::load(root).prepare_files(), ["package-lock.json"]);
+        assert!(upsert_json(root, &UpsertOpts::default()).get("prepareSuggested").is_none(), "once answered, never again");
     }
 
     /// O projeto instalado antes da pasta de compilação declarada a ganha na

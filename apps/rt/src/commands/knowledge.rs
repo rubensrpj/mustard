@@ -1,13 +1,10 @@
 use serde_json::json;
 use std::path::Path;
 
-mod evaluation;
-
-pub struct Modes<'a> { pub profile:bool, pub import_scip: Option<&'a Path>,
+pub struct Modes<'a> { pub profile:bool,
     pub prepare_session: Option<&'a str>, pub session_model: Option<&'a str>, pub complete_session: Option<&'a Path>,
     pub cancel_session: Option<&'a str>,
-    pub source_manifest: Option<&'a Path>,
-    pub coverage: bool, pub topics: Option<&'a Path>, pub evaluate: Option<&'a Path>, pub responsibility:bool,
+    pub coverage: bool,
     pub task: mustard_core::domain::knowledge::investigation::Task<'a> }
 
 /// O teto, em bytes, da resposta de uma consulta ou de uma busca que vai para
@@ -100,15 +97,6 @@ pub fn run(root: &Path, query: &mustard_core::io::knowledge::Query<'_>, markdown
             let receipt = read_manifest(path)?;
             return mustard_core::io::knowledge::enrichment::complete_session(root, &tree, &receipt).map(|v|v.to_string());
         }
-        if let Some(index) = modes.import_scip {
-            return mustard_core::io::knowledge::precise::import(
-                root,
-                &tree,
-                index,
-                modes.source_manifest,
-            )
-            .map(|v| v.to_string());
-        }
         if let Some(record) = record {
             let metadata = std::fs::metadata(record).map_err(|e| e.to_string())?;
             if metadata.len() > 1_000_000 {
@@ -125,22 +113,11 @@ pub fn run(root: &Path, query: &mustard_core::io::knowledge::Query<'_>, markdown
                 return Err("knowledge-invalid-export-path".into());
             }
         }
-        let selector=if modes.coverage || !modes.responsibility {None}else{crate::shared::knowledge_selection::KnowledgeSelector::configured(&anchor)};
-        let selector=selector.as_ref().map(|s|s as &dyn mustard_core::domain::knowledge::selection::SymbolSelector);
         let (report,text)=if modes.coverage {
             let report=mustard_core::io::knowledge::coverage::report(root).map_err(|e|format!("{e:?}"))?;
             (report.clone(),report.to_string())
-        } else if let Some(path)=modes.evaluate {
-            let plan=read_manifest(path)?;
-            let report=evaluation::evaluate(root,&tree,&plan,query,selector)?;
-            (report.clone(),report.to_string())
-        } else if let Some(path)=modes.topics {
-            let plan=if path==Path::new("auto") {mustard_core::io::knowledge::dossier::Plan::from_scan(root).map_err(|e|format!("{e:?}"))?} else {read_manifest(path)?};
-            let (report,map)=mustard_core::io::knowledge::dossier::assemble(root,&tree,&plan,query,selector,modes.responsibility).map_err(|e|format!("{e:?}"))?;
-            let text=if markdown {mustard_core::io::knowledge::dossier::markdown(&report,&map)}else{report.to_string()};
-            (report,text)
         } else {
-            let (report,map)=if modes.responsibility {mustard_core::io::knowledge::query_with_selector(root,&tree,query,selector)} else {mustard_core::io::knowledge::query_for(root,&tree,query,modes.task)}.map_err(|e|format!("{e:?}"))?;
+            let (report,map)=mustard_core::io::knowledge::query_for(root,&tree,query,modes.task).map_err(|e|format!("{e:?}"))?;
             // A resposta que vai para a conversa respeita o teto; o arquivo de
             // `--out` e a exportação de `--all` saem inteiros.
             let text=if markdown {mustard_core::domain::knowledge::markdown(&report,&map)}

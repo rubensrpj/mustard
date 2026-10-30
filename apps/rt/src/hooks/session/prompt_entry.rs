@@ -1,7 +1,7 @@
 //! `prompt_entry` — a entrada da mensagem, o único gancho do
 //! `UserPromptSubmit`.
 //!
-//! Uma chamada por mensagem, com três passos, nesta ordem:
+//! Uma chamada por mensagem, com dois passos, nesta ordem:
 //!
 //! 1. **A trava de instalação.** Num projeto sem `mustard.json` na raiz, um
 //!    comando `/mustard:*` é barrado com a indicação do `/mustard:upsert`, o
@@ -19,15 +19,9 @@
 //!    do turno da abertura inclusive, quem grava é a abertura (`run open`),
 //!    lida da conversa da sessão com o mesmo filtro do aviso; daqui saem só
 //!    as seguintes, sem repetir nenhuma.
-//! 3. **A correção.** A regra de escrita mora no estilo de resposta, dita uma
-//!    vez, e uma mensagem comum não coloca texto nenhum na conversa: repetida
-//!    em toda mensagem, a lembrança empurrava a resposta a encolher. Só depois
-//!    de uma resposta com erro de escrita a mensagem seguinte leva uma linha
-//!    escondida: a linha curta, de até 100 caracteres (responder no idioma do
-//!    usuário, em texto simples), e uma frase curta com o erro, como "Na
-//!    última resposta: frase com 29 palavras.", uma vez só. Quem acha e guarda
-//!    o erro é a conferência do fim da resposta (`clarity_check`), que não
-//!    barra a resposta: esta frase é o único caminho do erro até o assistente.
+//!
+//! A mensagem nunca leva texto à conversa: a regra de escrita mora no estilo
+//! de resposta, dita uma vez.
 
 use std::path::Path;
 
@@ -36,7 +30,6 @@ use mustard_core::platform::error::Error;
 use mustard_core::ProjectConfig;
 
 use crate::commands::spec_events::conversation::record_message;
-use crate::hooks::task::clarity_check::take_next_note;
 use crate::shared::prompt::person_text;
 
 /// A entrada da mensagem.
@@ -60,29 +53,6 @@ fn is_upsert_prompt(prompt: &str) -> bool {
     const CMD: &str = "upsert";
     rest.starts_with(CMD)
         && rest.as_bytes().get(CMD.len()).is_none_or(|&b| !(b.is_ascii_alphanumeric() || b == b'_'))
-}
-
-/// A linha curta que abre a correção de uma resposta com erro de escrita:
-/// responder no idioma do usuário, em texto simples, com frases curtas e
-/// nenhum código interno. Até 100 caracteres nos dois idiomas.
-///
-/// O idioma só é nomeado quando o projeto o declarou (`language.text`). Sem
-/// declaração, a linha manda responder no idioma de quem escreve e não nomeia
-/// nenhum: o idioma padrão é o pt-BR, e nomeá-lo mandaria um projeto em
-/// inglês responder em português. Um `mustard.json` que não se lê não declara
-/// nada, e recebe a mesma linha.
-///
-/// `None` num projeto sem `mustard.json`.
-fn message_line(root: &Path) -> Option<String> {
-    if !ProjectConfig::exists(root) {
-        return None;
-    }
-    let language = ProjectConfig::load(root).language();
-    let key = match language.text {
-        Some(_) => "prompt_entry.line",
-        None => "prompt_entry.line.undeclared",
-    };
-    Some(mustard_core::translate(key, language.text_or_default()).to_string())
 }
 
 /// A recusa da trava de instalação, do catálogo, uma linha em cada idioma:
@@ -112,15 +82,7 @@ impl Check for PromptEntry {
         if let Some(text) = person_text(prompt) {
             let _ = record_message(root, input.session_id.as_deref(), &text);
         }
-        let Some(line) = message_line(root) else {
-            return Ok(Verdict::Allow);
-        };
-        // Só o erro de escrita da última resposta põe texto na mensagem: a
-        // linha curta e o erro, uma vez só. Sem erro, nada entra.
-        Ok(match take_next_note(root, input.session_id.as_deref()) {
-            Some(note) => Verdict::Inject { context: format!("{line} {note}") },
-            None => Verdict::Allow,
-        })
+        Ok(Verdict::Allow)
     }
 }
 
@@ -130,7 +92,6 @@ mod tests {
     use crate::commands::spec_events::write::record_open;
     use crate::shared::spec_state::{stand_on_spec_branch, DiskSpecState};
     use mustard_core::domain::spec_state::SpecState;
-    use mustard_core::platform::i18n::Locale;
 
     /// Um contexto numa pasta temporária sem nada: nem `mustard.json`, nem
     /// branch, nem spec.
@@ -156,69 +117,11 @@ mod tests {
     /// Um projeto que declarou o português do Brasil como idioma do texto.
     const PT_PROJECT: &str = r#"{"language":{"text":"pt-BR"}}"#;
 
-    /// A linha de um projeto que declarou pt-BR.
-    const PT_LINE: &str =
-        "Responda em português do Brasil, em texto simples: frases curtas e nenhum código interno.";
-
-    /// A linha de um projeto que declarou en-US.
-    const EN_LINE: &str = "Answer in American English, in plain text: short sentences and no internal codes.";
-
-    /// A linha de um projeto que não declarou idioma, no idioma padrão das
-    /// mensagens do Mustard.
-    const UNDECLARED_LINE: &str =
-        "Responda no idioma de quem escreve, em texto simples: frases curtas e nenhum código interno.";
-
-    /// A mesma linha, em inglês.
-    const UNDECLARED_LINE_EN: &str =
-        "Answer in the language the user writes in, in plain text: short sentences and no internal codes.";
-
     /// Um projeto com este `mustard.json`.
     fn project_with(config: &str) -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("temp dir");
         std::fs::write(dir.path().join("mustard.json"), config).expect("write config");
         dir
-    }
-
-    /// O texto que o veredito coloca na conversa.
-    fn context_of(verdict: Verdict) -> String {
-        match verdict {
-            Verdict::Inject { context } => context,
-            other => panic!("a message after a writing error gets the line, got {other:?}"),
-        }
-    }
-
-    /// O texto que o veredito coloca na conversa, vazio quando ele deixa
-    /// passar sem texto.
-    fn text_of(verdict: Verdict) -> String {
-        match verdict {
-            Verdict::Allow => String::new(),
-            other => context_of(other),
-        }
-    }
-
-    /// O erro de escrita guardado nos testes, e a frase que a mensagem
-    /// seguinte leva com ele num projeto em português.
-    const PT_ERROR: &str = "frase com 29 palavras";
-    const PT_NOTE: &str = "Na última resposta: frase com 29 palavras.";
-
-    /// Guarda `error` para a sessão `s1`, como a conferência do fim da
-    /// resposta guarda o erro da última resposta.
-    fn keep_error(root: &Path, error: &str) {
-        let dir = root.join(".claude").join(".session").join("s1");
-        std::fs::create_dir_all(&dir).expect("session dir");
-        let record = serde_json::json!({ "errors": [error] }).to_string();
-        std::fs::write(dir.join("clarity.json"), record).expect("write the record");
-    }
-
-    /// O veredito de uma mensagem que segue uma resposta com `error`, num
-    /// projeto com este `mustard.json`, pelo gancho de verdade — nunca pela
-    /// função auxiliar, para que desligar a ligação derrube o teste.
-    fn verdict_after_error(config: &str, prompt: &str, error: &str) -> (tempfile::TempDir, Verdict) {
-        let dir = project_with(config);
-        keep_error(dir.path(), error);
-        let c = Ctx::for_test(dir.path().to_string_lossy().to_string(), Some(Trigger::UserPromptSubmit));
-        let verdict = PromptEntry.evaluate(&prompt_input(prompt), &c).expect("the gate never errors");
-        (dir, verdict)
     }
 
     /// Um evento do Claude Code na sessão `s1` do projeto em `root`, pelo
@@ -271,28 +174,15 @@ mod tests {
     }
 
     /// Uma mensagem comum roda uma chamada só de gancho, não coloca texto na
-    /// conversa e é gravada no bloco da conversa; a linha da correção cabe em
-    /// 100 caracteres.
+    /// conversa e é gravada no bloco da conversa.
     ///
     /// Uma chamada só: o `hooks.json` registra um comando só no
     /// `UserPromptSubmit`, sem nenhum injetável próprio, e o registro tem um
-    /// gancho só nesse evento. Até 100 caracteres: as quatro linhas cabem.
-    /// Sem texto: pelo despachante, num projeto com injetáveis declarados e
-    /// uma spec atual, a mensagem passa sem nada. Gravada: a mensagem aparece
-    /// na spec, como o usuário a escreveu.
+    /// gancho só nesse evento. Sem texto: pelo despachante, num projeto com
+    /// injetáveis declarados e uma spec atual, a mensagem passa sem nada.
+    /// Gravada: a mensagem aparece na spec, como o usuário a escreveu.
     #[test]
-    fn the_message_line_fits_in_one_hundred_characters_in_both_languages() {
-        for (key, lang, line) in [
-            ("prompt_entry.line", Locale::PtBr, PT_LINE),
-            ("prompt_entry.line", Locale::EnUs, EN_LINE),
-            ("prompt_entry.line.undeclared", Locale::PtBr, UNDECLARED_LINE),
-            ("prompt_entry.line.undeclared", Locale::EnUs, UNDECLARED_LINE_EN),
-        ] {
-            let text = mustard_core::translate(key, lang);
-            assert_eq!(text, line, "{key} in {lang}");
-            assert!(text.chars().count() <= 100, "{key} in {lang}: {} characters", text.chars().count());
-        }
-
+    fn a_message_runs_one_hook_and_carries_no_text() {
         // Uma chamada só, no manifesto e no registro.
         // Lido da cópia que roda o teste: o `plugin/` fica fora do pacote.
         let hooks = crate::manifest_dir::manifest_dir().join("../../plugin/hooks/hooks.json");
@@ -382,33 +272,15 @@ mod tests {
         assert_eq!(messages(root, "subagente"), ["arrume o botão"]);
     }
 
-    /// A linha da correção segue o idioma declarado em `language.text`:
-    /// pt-BR recebe a linha em português, en-US a inglesa.
-    #[test]
-    fn the_line_follows_the_declared_language() {
-        let en_error = "sentence with 29 words";
-        let en_note = "In the last reply: sentence with 29 words.";
-        for (config, error, context) in [
-            (PT_PROJECT, PT_ERROR, format!("{PT_LINE} {PT_NOTE}")),
-            (r#"{"language":{"text":"en-US"}}"#, en_error, format!("{EN_LINE} {en_note}")),
-        ] {
-            let (_dir, verdict) = verdict_after_error(config, "uma mensagem comum", error);
-            assert_eq!(context_of(verdict), context, "{config}");
-        }
-    }
-
     /// Uma frase de 29 palavras, quatro acima do limite de 25.
     const TWENTY_NINE_WORDS: &str = "Eu li os arquivos do projeto e conferi cada teste que ainda falhava \
         na máquina do usuário antes de ajustar a leitura do idioma hoje cedo com toda calma.";
 
-    /// A linha escondida só vai junto de um erro de escrita, e uma vez só.
-    /// Uma mensagem comum não leva texto nenhum, nem a que segue uma resposta
-    /// clara; depois de uma resposta com uma frase de 29 palavras, que não é
-    /// barrada, a mensagem seguinte leva a linha curta e o erro; a mensagem
-    /// depois dela volta a não levar nada. Tudo pelos ganchos de verdade, no
-    /// despachante.
+    /// A mensagem que segue uma resposta com erro de escrita não recebe
+    /// correção nenhuma: a frase longa não é barrada, e a mensagem seguinte
+    /// passa sem texto. Tudo pelos ganchos de verdade, no despachante.
     #[test]
-    fn the_line_goes_only_with_a_writing_error_and_only_once() {
+    fn the_message_after_a_writing_error_carries_no_correction() {
         assert_eq!(TWENTY_NINE_WORDS.split_whitespace().count(), 29);
         let dir = project_with(PT_PROJECT);
         let root = dir.path();
@@ -416,19 +288,9 @@ mod tests {
         let reply = |text: &str| {
             event(root, "Stop", serde_json::json!({ "last_assistant_message": text, "stop_hook_active": false }))
         };
-
-        assert_eq!(prompt("uma mensagem comum"), Verdict::Allow, "no error yet, no text");
-
-        assert_eq!(reply("A resposta ficou curta e clara."), Verdict::Allow);
-        assert_eq!(prompt("e então?"), Verdict::Allow, "a clear reply leaves no text behind");
-
         assert_eq!(reply(TWENTY_NINE_WORDS), Verdict::Allow, "the long sentence is not blocked");
-        assert_eq!(
-            prompt("e agora?"),
-            Verdict::Inject { context: format!("{PT_LINE} {PT_NOTE}") },
-            "the message after the error carries the line and the error",
-        );
-        assert_eq!(prompt("e depois?"), Verdict::Allow, "the error goes once");
+        assert_eq!(prompt("e agora?"), Verdict::Allow, "no correction rides the next message");
+        assert!(!root.join(".claude/.session/s1/clarity.json").exists(), "nothing is kept for the next message");
     }
 
     /// O `Stop` da sessão `s1` com uma resposta em inglês, prosa bastante
@@ -454,132 +316,29 @@ mod tests {
     }
 
     /// Sem `language.text` no `mustard.json`, o idioma nunca é suposto, e as
-    /// chaves antigas de idioma não contam como declaração: a linha da
-    /// correção manda responder no idioma de quem escreve, sem nomear idioma,
-    /// e uma resposta em inglês não é barrada nem ganha erro de idioma na
-    /// mensagem seguinte. Com pt-BR declarado, ela é barrada, e o erro vai.
+    /// chaves antigas de idioma não contam como declaração: uma resposta em
+    /// inglês não é barrada. Com pt-BR declarado, ela é barrada, e a mensagem
+    /// seguinte passa sem texto. Sem `mustard.json`, nada.
     #[test]
     fn undeclared_language_is_never_assumed() {
         use crate::hooks::task::end_of_turn_check::EndOfTurnCheck;
 
         for config in ["{}", r#"{"specLang":"pt-BR","lang":"pt-BR"}"#] {
             let dir = project_with(config);
-            let c = Ctx::for_test(dir.path().to_string_lossy().to_string(), Some(Trigger::UserPromptSubmit));
-            keep_error(dir.path(), PT_ERROR);
-            let line = context_of(PromptEntry.evaluate(&prompt_input("uma mensagem comum"), &c).unwrap());
-            assert_eq!(line, format!("{UNDECLARED_LINE} {PT_NOTE}"), "{config}");
-            for named in ["português", "Brasil", "pt-BR", "en-US"] {
-                assert!(!line.contains(named), "{config}: an undeclared language is named ({named}): {line}");
-            }
-            let on_stop = Ctx { trigger: Some(Trigger::Stop), ..c.clone() };
-            assert_eq!(EndOfTurnCheck.evaluate(&english_stop(), &on_stop).unwrap(), Verdict::Allow);
-            let next = text_of(PromptEntry.evaluate(&prompt_input("e agora?"), &c).unwrap());
-            assert!(!next.contains("resposta em"), "{config}: no language verdict: {next}");
+            let c = Ctx::for_test(dir.path().to_string_lossy().to_string(), Some(Trigger::Stop));
+            assert_eq!(EndOfTurnCheck.evaluate(&english_stop(), &c).unwrap(), Verdict::Allow, "{config}");
         }
 
         let dir = project_with(PT_PROJECT);
         let c = Ctx::for_test(dir.path().to_string_lossy().to_string(), Some(Trigger::Stop));
         assert_blocked_for_language(EndOfTurnCheck.evaluate(&english_stop(), &c).unwrap());
         let on_prompt = Ctx { trigger: Some(Trigger::UserPromptSubmit), ..c };
-        let next = context_of(PromptEntry.evaluate(&prompt_input("e agora?"), &on_prompt).unwrap());
-        assert_eq!(next, format!("{PT_LINE} Na última resposta: resposta em en-US."));
-    }
-
-    /// A linha curta e a medição de idioma valem para todo projeto com
-    /// `mustard.json`. Com ou sem a antiga chave do tom, uma mensagem comum
-    /// não leva texto; uma resposta em inglês num projeto em pt-BR é barrada,
-    /// e a mensagem seguinte leva a linha do idioma declarado com o erro, uma
-    /// vez só. Sem `mustard.json`, nada.
-    #[test]
-    fn the_language_line_reaches_every_mustard_project() {
-        use crate::hooks::task::end_of_turn_check::EndOfTurnCheck;
-
-        for config in [PT_PROJECT, r#"{"language":{"text":"pt-BR"},"tone":"technical"}"#] {
-            let dir = project_with(config);
-            let c = Ctx::for_test(dir.path().to_string_lossy().to_string(), Some(Trigger::UserPromptSubmit));
-            let verdict = PromptEntry.evaluate(&prompt_input("uma mensagem comum"), &c).unwrap();
-            assert_eq!(verdict, Verdict::Allow, "{config}: no error yet, no text");
-
-            let on_stop = Ctx { trigger: Some(Trigger::Stop), ..c.clone() };
-            let verdict = EndOfTurnCheck.evaluate(&english_stop(), &on_stop).unwrap();
-            assert_blocked_for_language(verdict);
-
-            let next = context_of(PromptEntry.evaluate(&prompt_input("e agora?"), &c).unwrap());
-            assert_eq!(next, format!("{PT_LINE} Na última resposta: resposta em en-US."), "{config}");
-            let after = PromptEntry.evaluate(&prompt_input("e depois?"), &c).unwrap();
-            assert_eq!(after, Verdict::Allow, "{config}: the error goes once");
-        }
+        assert_eq!(PromptEntry.evaluate(&prompt_input("e agora?"), &on_prompt).unwrap(), Verdict::Allow);
 
         let (none, c) = ctx();
-        let verdict = PromptEntry.evaluate(&prompt_input("uma mensagem comum"), &c).unwrap();
-        assert_eq!(verdict, Verdict::Allow, "an uninstalled project gets no line");
         let on_stop = Ctx { trigger: Some(Trigger::Stop), ..c };
         assert_eq!(EndOfTurnCheck.evaluate(&english_stop(), &on_stop).unwrap(), Verdict::Allow);
         drop(none);
-    }
-
-    /// Todo projeto com `mustard.json` leva a correção com a linha curta,
-    /// declare ou não o idioma; a antiga chave do tom não a desliga. Sem
-    /// `mustard.json`, nada.
-    #[test]
-    fn the_line_rides_every_installed_project() {
-        for (config, line) in
-            [("{}", UNDECLARED_LINE), (r#"{"tone":"technical"}"#, UNDECLARED_LINE), (PT_PROJECT, PT_LINE)]
-        {
-            let (_dir, verdict) = verdict_after_error(config, "uma mensagem comum", PT_ERROR);
-            assert_eq!(
-                context_of(verdict),
-                format!("{line} {PT_NOTE}"),
-                "{config}: every installed project gets the correction",
-            );
-        }
-        let (_none, c) = ctx();
-        let verdict = PromptEntry.evaluate(&prompt_input("uma mensagem comum"), &c).unwrap();
-        assert_eq!(verdict, Verdict::Allow, "an uninstalled project declared nothing");
-    }
-
-    /// Um comando de barra leva a correção também: ela rege como a resposta
-    /// é escrita, e essa resposta é lida pela mesma pessoa.
-    #[test]
-    fn the_line_rides_a_slash_command_too() {
-        let (_dir, verdict) = verdict_after_error(PT_PROJECT, "/mustard:pr merge", PT_ERROR);
-        assert_eq!(verdict, Verdict::Inject { context: format!("{PT_LINE} {PT_NOTE}") });
-    }
-
-    /// Sem idioma declarado, a linha não nomeia nenhum, nos dois idiomas.
-    #[test]
-    fn an_undeclared_language_is_not_named_in_the_line() {
-        for lang in [Locale::PtBr, Locale::EnUs] {
-            let line = mustard_core::translate("prompt_entry.line.undeclared", lang);
-            for named in ["português", "Brasil", "English", "pt-BR", "en-US"] {
-                assert!(!line.contains(named), "{lang} names {named}: {line}");
-            }
-        }
-        let (_dir, verdict) = verdict_after_error("{}", "uma mensagem comum", PT_ERROR);
-        assert_eq!(context_of(verdict), format!("{UNDECLARED_LINE} {PT_NOTE}"));
-    }
-
-    /// Os parágrafos antigos de escrita e de idioma não vão em mensagem
-    /// nenhuma: nem comum, nem comando de barra, com ou sem idioma declarado.
-    #[test]
-    fn no_message_carries_the_old_writing_paragraph() {
-        for config in [PT_PROJECT, r#"{"language":{"text":"en-US"}}"#, "{}"] {
-            for prompt in ["uma mensagem comum", "/mustard:pr merge", "/outra-skill"] {
-                let (_dir, verdict) = verdict_after_error(config, prompt, PT_ERROR);
-                let context = context_of(verdict);
-                for old in ["ONE idea per sentence", "in the language they write in"] {
-                    assert!(!context.contains(old), "{config} {prompt}: {old}: {context}");
-                }
-            }
-        }
-    }
-
-    /// Um `mustard.json` que não se lê ainda quer dizer projeto instalado: a
-    /// correção vai com a linha, sem nomear idioma.
-    #[test]
-    fn a_broken_mustard_json_gets_the_line_without_a_language() {
-        let (_dir, verdict) = verdict_after_error("{ not json", "uma mensagem comum", PT_ERROR);
-        assert_eq!(context_of(verdict), format!("{UNDECLARED_LINE} {PT_NOTE}"));
     }
 
     /// Sem `mustard.json`, todo comando `/mustard:*` é barrado com a
@@ -646,15 +405,14 @@ mod tests {
         assert_eq!(PromptEntry.evaluate(&prompt_input("/mustard:feature x"), &other).unwrap(), Verdict::Allow);
     }
 
-    /// No `UserPromptSubmit` e no `SessionStart`, um só gancho coloca texto:
-    /// a linha curta da correção chega uma vez.
+    /// No `UserPromptSubmit` e no `SessionStart`, no máximo um gancho coloca
+    /// texto, e a mensagem não leva nenhum.
     #[test]
     fn prompt_and_session_start_have_one_injecting_check() {
         use crate::registry::Registry;
         use mustard_core::domain::model::contract::Outcome;
 
         let dir = project_with(PT_PROJECT);
-        keep_error(dir.path(), PT_ERROR);
         let c = Ctx::for_test(dir.path().to_string_lossy().to_string(), None);
         let registry = Registry::new();
         let on_prompt = prompt_input_with_session("e agora?", "s1");
@@ -680,10 +438,7 @@ mod tests {
             }
             assert!(injecting.len() <= 1, "{name}: {injecting:?} would share one response");
             if name == "UserPromptSubmit" {
-                let Verdict::Inject { context } = &outcome.verdict else {
-                    panic!("the prompt after an error carries the line: {:?}", outcome.verdict);
-                };
-                assert_eq!(context.matches(PT_LINE).count(), 1, "{context}");
+                assert!(injecting.is_empty(), "the message carries no text: {injecting:?}");
             }
         }
     }

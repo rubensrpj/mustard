@@ -171,6 +171,8 @@ mod tests {
             ));
         });
         let _jev = fake::refusing_with(402);
+        // As três ondas seguem em andamento, cada uma na sua vaga.
+        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":4}"#).unwrap();
         // O recibo de cada reserva da resposta `out`, com o sim certo, e a
         // rodada da sessão `session` que solta a onda que esperava por ele.
         let sent_by_receipt = |out: &Value, session: &str| {

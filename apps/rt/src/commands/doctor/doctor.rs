@@ -28,10 +28,6 @@
 //! - **state health** — orphan `.pipeline-states/` files (no matching active
 //!   spec), expired `closed-followup` state files, missing
 //!   `grain.db`. WARN per anomaly.
-//! - **nerd-font** — at least one Nerd Font detected in the OS font
-//!   directories. WARN with install hint (`mustard install-nerd-font`) when
-//!   absent. Powerline statusline themes require this; without it the
-//!   transition glyphs render as tofu.
 //! - **branch-protection** — which branches this repository REALLY refuses a
 //!   direct commit on, measured through `mustard_core::protected_branches`
 //!   (`origin/HEAD` ∪ `mustard.json#git.protected`). WARN only when
@@ -78,8 +74,8 @@ use std::path::PathBuf;
 
 use binaries::check_binaries;
 use drift::check_drift;
-use host::{check_claude_cli, check_effort_env, check_nerd_font, check_rtk, lsp_check};
-use project::{check_claude_md, check_scan_output, check_switches};
+use host::{check_claude_cli, check_effort_env, check_rtk, lsp_check};
+use project::{check_claude_md, check_merged_branches, check_project_version, check_scan_output, check_switches};
 use protection::check_branch_protection;
 use report::{render_report, render_report_json};
 use residue::{check_residue, check_scratch_residue};
@@ -145,8 +141,8 @@ impl CheckResult {
 /// doutor ler o mesmo artefato que o Claude Code lê, como a conferência da
 /// fiação lê, em `known_run_subcommands`, a mesma árvore do clap em que o
 /// binário despacha. O conjunto de eventos vem dele e não de uma lista à mão,
-/// que sairia de sincronia: `PreCompact`, `Stop` e `WorktreeCreate` entram
-/// porque o manifesto os registra.
+/// que sairia de sincronia: `Stop` e `SessionEnd` entram porque o manifesto
+/// os registra, e o evento que sai do manifesto sai do conjunto.
 ///
 /// O script de build o copia antes para `OUT_DIR`: embutido de `plugin/`,
 /// fora deste crate, o cargo o guardava pelo caminho absoluto da cópia que o
@@ -255,7 +251,6 @@ const CHECKS: &[Check] = &[
     Check { runs: Runs::Round, check: |_| check_claude_cli() },
     Check { runs: Runs::Round, check: |place| lsp_check(&place.cwd) },
     Check { runs: Runs::Round, check: |_| check_rtk() },
-    Check { runs: Runs::Round, check: |_| check_nerd_font() },
     Check { runs: Runs::Round, check: |_| check_effort_env() },
     Check { runs: Runs::Named("wave-integrity"), check: |place| check_wave_integrity(&place.claude_dir) },
     // O que o provedor realmente protege: uma base que só este binário recusa
@@ -287,6 +282,22 @@ const CHECKS: &[Check] = &[
         check: |place| {
             let project = place.project();
             check_switches(&project.root, project.lang)
+        },
+    },
+    // As branches já mergeadas que seguem vivas e a versão gravada no
+    // projeto, que o início da sessão deixou de dizer: só acusam.
+    Check {
+        runs: Runs::Round,
+        check: |place| {
+            let project = place.project();
+            check_merged_branches(&project.root, project.lang)
+        },
+    },
+    Check {
+        runs: Runs::Round,
+        check: |place| {
+            let project = place.project();
+            check_project_version(&project.root, project.lang)
         },
     },
     // O que um Mustard antigo deixou em arquivos que não são dele.

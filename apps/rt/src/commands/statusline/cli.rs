@@ -20,19 +20,14 @@ use crate::commands::{statusline};
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)] // CLI parser enum - clap-Subcommand; boxing breaks derive
 pub enum StatuslineCmd {
-    /// Render the Claude Code status bar (reads the payload JSON from stdin),
-    /// or `--preview` every shipped theme on its own labelled line.
+    /// Render the Claude Code status bar (reads the payload JSON from stdin).
     #[command(display_order = 21)]
-    Statusline {
-        /// Skip stdin; render every theme with a synthetic payload.
-        #[arg(long)]
-        preview: bool,
-    },
+    Statusline,
 }
 
 /// Dispatch one `statusline`-family `run` subcommand.
 pub fn dispatch(cmd: StatuslineCmd) {
     match cmd {
-        StatuslineCmd::Statusline { preview } => statusline::run(preview),
+        StatuslineCmd::Statusline => statusline::run(),
     }
 }

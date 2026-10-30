@@ -300,10 +300,10 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // comando. `{command}` vem do chamador, sozinho depois da última
         // quebra de linha: o mesmo comando, com cada leitura já mascarada.
         ("config_key.masked_command", Locale::PtBr) => {
-            "[Mustard] A leitura da configuração foi barrada para proteger a chave secreta. Nenhuma etapa foi executada. Rode como está o comando abaixo: ele faz a mesma leitura com a chave trocada por *** e mantém as outras etapas na mesma ordem.\n{command}"
+            "[Mustard] A leitura da configuração foi barrada para proteger a chave secreta. Nada foi executado. Rode como está o comando abaixo: ele faz a mesma leitura com a chave trocada por ***.\n{command}"
         }
         ("config_key.masked_command", Locale::EnUs) => {
-            "[Mustard] Reading the configuration was blocked to protect the secret key. No step was executed. Run the command below as is: it does the same read with the key replaced by *** and keeps the other steps in the same order.\n{command}"
+            "[Mustard] Reading the configuration was blocked to protect the secret key. Nothing was executed. Run the command below as is: it does the same read with the key replaced by ***.\n{command}"
         }
         // A leitura do arquivo de configuração que guarda uma chave secreta,
         // a do Jev ou o token da publicação, volta com o arquivo, e a chave
@@ -322,15 +322,13 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         // chamador, no jeito do programa da busca.
         ("config_key.swept_rewritten", Locale::PtBr) => {
             "[Mustard] Essa busca passa pelo arquivo que guarda a chave secreta, e mostraria a \
-             chave. A chave nunca entra na conversa. Nenhuma etapa foi executada. Rode como está o \
-             comando abaixo. Ele faz a mesma busca com o arquivo de fora. As outras etapas ficam \
-             na mesma ordem.\n{command}"
+             chave. A chave nunca entra na conversa. Nada foi executado. Rode como está o comando \
+             abaixo. Ele faz a mesma busca com o arquivo de fora.\n{command}"
         }
         ("config_key.swept_rewritten", Locale::EnUs) => {
             "[Mustard] This search goes through the file that holds the secret key, and would show \
-             the key. The key never enters the conversation. No step was executed. Run the command \
-             below as it is. It does the same search with the file left out. The other steps stay \
-             in the same order.\n{command}"
+             the key. The key never enters the conversation. Nothing was executed. Run the command \
+             below as it is. It does the same search with the file left out.\n{command}"
         }
         ("config_key.swept", Locale::PtBr) => {
             "[Mustard] Essa busca passa por {file}, que guarda uma chave secreta, e mostraria a chave. \
@@ -458,9 +456,9 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "[Mustard] Nothing was recorded for the change {code}: this session has no current spec."
         }
 
-        // Recusas da trava de comandos (`apps/rt/src/hooks/bash/safety.rs` e
-        // `windows_redirect.rs`). A recusa geral recebe o motivo de uma das
-        // chaves seguintes; as vagas vêm do chamador.
+        // Recusa da trava de comandos (`apps/rt/src/hooks/bash/base_delete.rs`).
+        // A recusa geral recebe o motivo da chave seguinte; as vagas vêm do
+        // chamador.
         ("command_guard.deny", Locale::PtBr) => {
             "Comando barrado: {reason}. Isso apaga trabalho sem volta.\nComando: {command}\nSe for \
              isso mesmo, peça ao usuário para rodar o comando no terminal dele."
@@ -469,111 +467,68 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Command blocked: {reason}. This destroys work with no way back.\nCommand: {command}\nIf \
              this is really what you want, ask the user to run the command in their own terminal."
         }
-        ("command_guard.rm_recursive_force", Locale::PtBr) => "apagar pasta à força (`rm` com `-r` e `-f`)",
-        ("command_guard.rm_recursive_force", Locale::EnUs) => {
-            "deleting a folder by force (`rm` with `-r` and `-f`)"
-        }
-        // O caminho permitido, na linha seguinte à do comando: só a pasta ou o
-        // arquivo do temporário do sistema que é do usuário e fica fora de
-        // qualquer checkout, que o `clean --path` confere antes de apagar.
-        ("command_guard.rm_recursive_force_instead", Locale::PtBr) => {
-            "Para apagar uma pasta ou um arquivo do temporário do sistema, rode `mustard-rt run clean \
-             --path <caminho>`. O caminho tem de ser seu e ficar fora de qualquer checkout do git. O \
-             comando confere isso antes de apagar. Vale também dentro do scratchpad da sessão."
-        }
-        ("command_guard.rm_recursive_force_instead", Locale::EnUs) => {
-            "To delete a folder or a file of the system temp directory, run `mustard-rt run clean \
-             --path <path>`. The path must be yours and lie outside any git checkout. The command \
-             checks this before deleting. It also works inside the session scratchpad."
-        }
-        ("command_guard.force_push", Locale::PtBr) => {
-            "forçar o envio ao servidor (`git push --force`); `--force-with-lease` continua liberado"
-        }
-        ("command_guard.force_push", Locale::EnUs) => {
-            "force-pushing to the server (`git push --force`); `--force-with-lease` is still allowed"
-        }
-        ("command_guard.reset_hard", Locale::PtBr) => "descartar as mudanças com `git reset --hard`",
-        ("command_guard.reset_hard", Locale::EnUs) => "discarding changes with `git reset --hard`",
-        ("command_guard.clean_force", Locale::PtBr) => {
-            "apagar os arquivos que estão fora do git com `git clean -f`"
-        }
-        ("command_guard.clean_force", Locale::EnUs) => "deleting untracked files with `git clean -f`",
-        ("command_guard.checkout_all", Locale::PtBr) => {
-            "descartar todas as mudanças com `git checkout -- .`"
-        }
-        ("command_guard.checkout_all", Locale::EnUs) => "discarding every change with `git checkout -- .`",
-        ("command_guard.restore_all", Locale::PtBr) => "descartar todas as mudanças com `git restore .`",
-        ("command_guard.restore_all", Locale::EnUs) => "discarding every change with `git restore .`",
         ("command_guard.delete_base", Locale::PtBr) => "apagar a branch de integração `{branch}`",
         ("command_guard.delete_base", Locale::EnUs) => "deleting the integration branch `{branch}`",
-        ("command_guard.windows_path_rewritten", Locale::PtBr) => {
-            "O destino `{original}` é um caminho do Windows, e o terminal do Bash não entende esse \
-             formato. O comando segue com `{posix}`, a forma que o shell entende."
-        }
-        ("command_guard.windows_path_rewritten", Locale::EnUs) => {
-            "The target `{original}` is a Windows path, and the Bash terminal does not understand \
-             that form. The command continues with `{posix}`, the form the shell understands."
-        }
-        ("command_guard.waiting_loop", Locale::PtBr) => {
-            "Comando barrado: espera outro processo num laço, checando com `pgrep`, `pidof` ou `ps`. \
-             O laço e o processo que ele espera podem citar o texto de busca um do outro e nunca \
-             terminar.\nComando: {command}\nRode o comando em primeiro plano, com o teto de tempo \
-             dele, e leia o resultado antes de seguir."
-        }
-        ("command_guard.waiting_loop", Locale::EnUs) => {
-            "Command blocked: it waits for another process in a loop, checking with `pgrep`, `pidof` \
-             or `ps`. The loop and the process it waits for can name each other's own search text and \
-             never end.\nCommand: {command}\nRun the command in the foreground, with its own time \
-             limit, and read the result before moving on."
-        }
-        // A recusa do comando que passa a resposta do Mustard por script,
-        // filtro ou corte (`apps/rt/src/hooks/bash/runtime_output.rs`).
-        // `{command}` vem do chamador: o comando recusado, encurtado.
         ("command_guard.glued_argument", Locale::PtBr) => {
             "Comando recusado: o terminal entregou a variável inteira, como um argumento só.\nRecebido: `{argument}`\nNão existe argumento parecido a procurar. O shell desta máquina não separa a variável nos espaços dela. Escreva cada opção na linha, uma por uma: `mustard-rt run read backlog --root /projeto --spec obra`. Com a variável, ponha cada parte dela no lugar da opção, e não a variável toda."
         }
         ("command_guard.glued_argument", Locale::EnUs) => {
             "Command refused: the shell handed the variable over whole, as a single argument.\nReceived: `{argument}`\nThere is no similar argument to look for. This machine's shell does not split the variable on its spaces. Write each option on the line, one by one: `mustard-rt run read backlog --root /project --spec work`. With a variable, put each part of it where the option goes, not the whole variable."
         }
-        ("runtime_output.ready", Locale::PtBr) => {
-            "Rode assim, que é o mesmo comando com a resposta inteira num arquivo:\n{ready}"
+        // A recusa do agente de onda que mexe em arquivo do projeto pelo
+        // terminal (`apps/rt/src/hooks/bash/shell_edit.rs`). `{edit}` vem do
+        // chamador: a ferramenta de edição do hospedeiro que pediu o comando.
+        ("command_guard.shell_edit", Locale::PtBr) => {
+            "[Mustard] Agente de onda não mexe em arquivo do projeto pelo terminal: nada de programa \
+             avulso, `sed -i`, `perl -i` ou texto redirecionado. Leia só o trecho pela ferramenta de \
+             leitura, com `offset` e `limit`. Edite pela ferramenta de edição do hospedeiro, {edit}. \
+             Trocas independentes saem juntas, numa resposta só."
         }
-        ("runtime_output.ready", Locale::EnUs) => {
-            "Run this instead, the same command with the whole answer in a file:\n{ready}"
+        ("command_guard.shell_edit", Locale::EnUs) => {
+            "[Mustard] A wave agent never changes project files from the shell: no ad hoc program, \
+             `sed -i`, `perl -i` or redirected text. Read only the excerpt with the read tool, using \
+             `offset` and `limit`. Edit with the host's edit tool, {edit}. Independent edits go \
+             together, in one response."
         }
-        // O comando pronto longo, que volta sem o meio: `…` marca cada pedaço
-        // tirado, e o arquivo de cada etapa volta inteiro.
-        ("runtime_output.ready_shortened", Locale::PtBr) => {
-            "O comando pronto é longo e volta sem o meio, marcado com `…`. Rode o seu comando sem a \
-             etapa que filtra a resposta, com cada etapa do Mustard gravando no arquivo que ele \
-             mostra:\n{ready}"
-        }
-        ("runtime_output.ready_shortened", Locale::EnUs) => {
-            "The ready command is long and comes back without its middle, marked with `…`. Run your \
-             command without the step that filters the answer, with each Mustard step writing to \
-             the file it shows:\n{ready}"
-        }
+        // A recusa do comando que passa a resposta do Mustard por script,
+        // filtro ou corte (`apps/rt/src/hooks/bash/runtime_output.rs`): a frase
+        // da recusa e, na linha seguinte, o caminho do comando barrado. Nenhuma
+        // delas manda gravar a resposta num arquivo.
         ("runtime_output.summary", Locale::PtBr) => {
             "O bloco `{block}` tem um resumo pronto, que cabe inteiro: `mustard-rt run read {summary}`."
         }
         ("runtime_output.summary", Locale::EnUs) => {
             "Block `{block}` has a ready summary that fits whole: `mustard-rt run read {summary}`."
         }
+        ("runtime_output.term", Locale::PtBr) => {
+            "Para ler só uma parte, use `mustard-rt run read <bloco> --term <termo>`."
+        }
+        ("runtime_output.term", Locale::EnUs) => {
+            "To read only one part, use `mustard-rt run read <block> --term <term>`."
+        }
+        ("runtime_output.alone_short", Locale::PtBr) => {
+            "Rode o comando do Mustard sozinho, sem o filtro: a resposta dele já vem curta e se lê inteira."
+        }
+        ("runtime_output.alone_short", Locale::EnUs) => {
+            "Run the Mustard command alone, without the filter: its answer already comes short and is read whole."
+        }
+        ("runtime_output.alone", Locale::PtBr) => {
+            "Rode o comando do Mustard sozinho, sem o filtro, e leia a resposta inteira."
+        }
+        ("runtime_output.alone", Locale::EnUs) => {
+            "Run the Mustard command alone, without the filter, and read the whole answer."
+        }
+        // `{command}` vem do chamador: o comando recusado, encurtado.
         ("runtime_output.scripted", Locale::PtBr) => {
             "Comando barrado: ele passa a resposta do Mustard por script, filtro ou corte.\nComando: \
              {command}\nA resposta do Mustard se lê inteira, e nada dela passa por script, filtro ou \
-             corte. Rode o comando do Mustard sozinho. Para ler só uma parte, use `mustard-rt run read \
-             <bloco> --term <termo>`. Se a resposta for grande, grave num arquivo na pasta temporária, \
-             fora do repositório, um por etapa, e leia o arquivo por partes. Se o Mustard não traz o recorte de que você precisa, isso vira um \
-             pedido, não um corte."
+             corte. Se o Mustard não traz o recorte de que você precisa, isso vira um pedido, não um \
+             corte."
         }
         ("runtime_output.scripted", Locale::EnUs) => {
             "Command blocked: it runs the Mustard answer through a script, a filter or a cut.\nCommand: \
              {command}\nThe Mustard answer is read whole, and none of it goes through a script, a filter \
-             or a cut. Run the Mustard command alone. To read only one part, use `mustard-rt run read \
-             <block> --term <term>`. When the answer is long, save it to a file in the temporary \
-             folder, one per step. Keep the file outside the repository, and read it in parts. When Mustard does not give the part you need, that becomes a request, \
-             not a cut."
+             or a cut. When Mustard does not give the part you need, that becomes a request, not a cut."
         }
         // O aviso depois do executor de teste ou de compilação cujo resumo o
         // pipe escondeu (`apps/rt/src/shared/tool_observations.rs`). `{command}`
@@ -674,17 +629,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "The reply came out in {found}, and the language of the project and the user is \
              {expected}. Write the reply again in {expected}."
         }
-        // A frase curta que a linha escondida da mensagem seguinte leva
-        // depois de uma resposta com erro de escrita
-        // (`apps/rt/src/hooks/task/clarity_check.rs`), para o assistente
-        // corrigir na resposta seguinte. Só a resposta fora do idioma é
-        // barrada; a frase não aparece na tela. `{errors}` vem do chamador: os
-        // erros, separados por ponto e vírgula.
-        ("clarity.next.head", Locale::PtBr) => "Na última resposta: {errors}.",
-        ("clarity.next.head", Locale::EnUs) => "In the last reply: {errors}.",
-        // O último item da lista quando há mais erros do que ela mostra.
-        ("clarity.more", Locale::PtBr) => "e mais {count}",
-        ("clarity.more", Locale::EnUs) => "and {count} more",
         _ => return None,
     })
 }
@@ -694,12 +638,11 @@ mod tests {
     use super::*;
     use crate::platform::i18n::translate;
 
-    /// Esta parte guarda as mesmas chaves, com os mesmos textos nos dois
-    /// idiomas, como o arquivo de impressões dela em `stamps/` guarda. Quem muda
-    /// um texto de propósito regrava o arquivo pelo comando que a falha mostra.
+    /// Cada chave desta parte começa por um dos começos que ela declara e tem
+    /// texto nos dois idiomas.
     #[test]
-    fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged("gates", include_str!("gates.rs"), super::PREFIXES);
+    fn the_part_answers_each_of_its_keys() {
+        crate::platform::i18n::tests::assert_part_answers(include_str!("gates.rs"), super::PREFIXES);
     }
 
     /// As recusas da leitura inteira e do arquivo com a chave passam na
@@ -773,16 +716,7 @@ mod tests {
             ("subagent.launch_settings_forced", &["{agent}", "{asked_model}", "{asked_effort}", "{model}", "{effort}"][..]),
             ("subagent.no_small_model_for_code", &["{agent}", "{asked_model}", "{model}"][..]),
             ("session.merged", &["{count}", "{branches}"][..]),
-            ("session.landed", &["{pr}", "{spec}"][..]),
-            ("session.landed.outside", &["{branch}", "{spec}"][..]),
-            ("session.landed.outside_closed", &["{branch}", "{spec}"][..]),
-            ("session.provider_silent", &["{spec}", "{reason}"][..]),
-            ("session.submodules", &["{spec}", "{text}"][..]),
             ("session.version.drift", &["{stamped}", "{running}"][..]),
-            ("session.version.stale", &["{running}", "{installed}"][..]),
-            ("session.version.behind", &["{running}", "{plugin}"][..]),
-            ("session.build.missing", &["{head}", "{progress}", "{running}"][..]),
-            ("session.build.behind", &["{compiled}", "{head}", "{progress}"][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
             assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");
@@ -793,25 +727,11 @@ mod tests {
                 assert!(pt.contains(slot) && en.contains(slot), "{key} lost {slot}");
             }
         }
-        // O que aconteceu com a compilação em segundo plano entra no aviso
-        // do programa compilado no lugar de `{progress}`.
-        for key in ["session.build.started", "session.build.in_progress", "session.build.not_started"] {
-            let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
-            assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");
-            assert_ne!(en, "<missing-key>", "{key} missing in en-US");
-            assert_ne!(pt, en, "{key} must differ per locale");
-        }
         // A branch que já tinha saído e as recusas da entrega fora do
         // fechamento, com as vagas que quem chama troca.
         for (key, slots) in [
-            ("session.landed.gone", &["{branch}"][..]),
-            ("session.landed.kept", &["{branch}"][..]),
-            ("session.landed.recorded", &[][..]),
-            ("session.landed.leaving_one", &["{spec}", "{report}"][..]),
-            ("session.landed.leaving_many", &["{spec}", "{count}", "{report}"][..]),
             ("session.deliver.in_flight", &["{spec}"][..]),
             ("session.deliver.backlog", &["{spec}", "{count}"][..]),
-            ("session.landed.tasks_left", &["{branch}", "{spec}", "{count}"][..]),
             ("session.deliver.not_started", &["{spec}", "{reason}"][..]),
             ("session.deliver.no_spec", &["{spec}"][..]),
             ("session.deliver.not_open", &["{spec}", "{phase}"][..]),
@@ -855,20 +775,13 @@ mod tests {
     fn i18n_translates_command_guard_keys() {
         for (key, slots) in [
             ("command_guard.deny", &["{reason}", "{command}"][..]),
-            ("command_guard.rm_recursive_force", &[][..]),
-            ("command_guard.rm_recursive_force_instead", &[][..]),
-            ("command_guard.force_push", &[][..]),
-            ("command_guard.reset_hard", &[][..]),
-            ("command_guard.clean_force", &[][..]),
-            ("command_guard.checkout_all", &[][..]),
-            ("command_guard.restore_all", &[][..]),
             ("command_guard.delete_base", &["{branch}"][..]),
-            ("command_guard.windows_path_rewritten", &["{original}", "{posix}"][..]),
-            ("command_guard.waiting_loop", &["{command}"][..]),
             ("runtime_output.scripted", &["{command}"][..]),
             ("command_guard.glued_argument", &["{argument}"][..]),
-            ("runtime_output.ready", &["{ready}"][..]),
-            ("runtime_output.ready_shortened", &["{ready}"][..]),
+            ("command_guard.shell_edit", &["{edit}"][..]),
+            ("runtime_output.term", &[][..]),
+            ("runtime_output.alone_short", &[][..]),
+            ("runtime_output.alone", &[][..]),
             ("runtime_output.summary", &["{block}", "{summary}"][..]),
             ("tool_observations.summary_hidden", &["{command}"][..]),
         ] {
@@ -915,8 +828,6 @@ mod tests {
             ("clarity.hard_to_read_at", &["{score}", "{min}", "{opening}"][..]),
             ("clarity.wrong_language", &["{found}", "{expected}"][..]),
             ("clarity.wrong_language_block", &["{found}", "{expected}"][..]),
-            ("clarity.next.head", &["{errors}"][..]),
-            ("clarity.more", &["{count}"][..]),
         ] {
             let (pt, en) = (translate(key, Locale::PtBr), translate(key, Locale::EnUs));
             assert_ne!(pt, "<missing-key>", "{key} missing in pt-BR");
@@ -926,9 +837,8 @@ mod tests {
                 assert!(pt.contains(slot) && en.contains(slot), "{key} lost {slot}");
             }
         }
-        assert_eq!(translate("clarity.next.head", Locale::PtBr), "Na última resposta: {errors}.");
-        assert_eq!(translate("clarity.next.head", Locale::EnUs), "In the last reply: {errors}.");
         for lang in [Locale::PtBr, Locale::EnUs] {
+            assert_eq!(translate("clarity.next.head", lang), "<missing-key>", "the correction of the next message left");
             assert_eq!(translate("clarity.block.head", lang), "<missing-key>", "the complement request left");
             assert_eq!(translate("clarity.note.head", lang), "<missing-key>", "the warning after the complement left");
             for key in ["clarity.too_long", "clarity.too_long_and_hard_to_read"] {

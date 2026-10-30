@@ -240,7 +240,7 @@ fn a_real_block_is_the_json_and_the_exit_code_stays_zero() {
         "session_id": "s1",
         "cwd": root.display().to_string(),
         "tool_name": "Bash",
-        "tool_input": { "command": "rm -rf ./pasta-que-o-gancho-nunca-deixa-apagar" }
+        "tool_input": { "command": "mustard-rt run read backlog | head -5" }
     });
     let fired = fire(&root, &home, "PreToolUse", call.to_string().as_bytes());
     assert_eq!(fired.code, Some(0), "barrar é o JSON, nunca o código de saída\nstderr: {}", fired.stderr);

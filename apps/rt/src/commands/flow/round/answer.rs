@@ -575,7 +575,7 @@ pub(super) fn run_entered_round(
     // despacha. Sem volta e sem linha a assumir, nada é juntado, e a rodada
     // vai direto ao despacho, com a escolha de cada onda.
     let raw = opts.report.as_deref().map(str::trim).filter(|r| !r.is_empty());
-    let Taken { mut recorded, formatted, warnings, commit, paused, waiting: held, program_rebuilt, asking } =
+    let Taken { mut recorded, formatted, mut warnings, commit, paused, waiting: held, asking } =
         super::report::take_report_with_mine(&opts.root, root, &spec, raw, &log, lang, caller, mine)?;
     // O commit desta rodada solta a tarefa que esperava a onda comitada: a
     // passada de antes pergunta de novo, para a onda dela sair agora.
@@ -589,8 +589,23 @@ pub(super) fn run_entered_round(
         out
     };
     recorded.splice(0..0, released);
-    // O commit refez o programa que roda esta rodada: o despacho passa ao
-    // programa novo, e esta rodada não solta onda nenhuma.
+    // No checkout do Mustard, o programa da branch compila na hora do uso:
+    // quando a rodada vai despachar, a onda pausada por este relatório
+    // inclusive, ou quando o passo seguinte é o fechamento, e só com ele atrás
+    // do commit atual. Com a compilação verde, o despacho passa ao programa
+    // novo, e esta rodada não solta onda nenhuma; a vermelha só avisa, e o
+    // despacho segue no programa de agora. O programa que recebeu o despacho
+    // não compila de novo. Outro projeto nem relê a spec para isso.
+    let built = if mustard_core::mustard_checkout(root).is_some()
+        && !super::handoff::handed_over()
+        && (!paused.is_empty() || super::queue::program_needed(root, &spec))
+    {
+        super::commit::build_development_version(root, &spec, lang)
+    } else {
+        None
+    };
+    let program_rebuilt = matches!(built, Some(Ok(())));
+    warnings.extend(built.and_then(Result::err));
     // O programa novo pega a trava das cópias para despachar: esta rodada a
     // solta antes de passar a ele, e só a pega de novo se despachar aqui.
     let rebuilt_program = if program_rebuilt { super::handoff::running_build(root) } else { None };
@@ -751,9 +766,15 @@ fn dispatch_round(
             .map_err(RoundRefusal::Refused)?
             .1
     };
-    // A tarefa do backlog que não cobre item nenhum não forma onda: a rodada
-    // a nomeia, porque ela fica no backlog e segura o fechamento.
-    let uncovered = backlog_uncovered(&locked);
+    // A tarefa do backlog que não cobre item nenhum não forma onda. A tarefa
+    // de skill que o programa gravou ganha a versão com os itens que cobriria
+    // ao nascer, e forma onda na rodada seguinte; a rodada nomeia as outras,
+    // porque ficam no backlog e seguram o fechamento.
+    let mut uncovered = backlog_uncovered(&locked);
+    for (task, written) in crate::shared::skill_cycle::cover_skill_tasks(&opts.root, &spec, &locked, &uncovered) {
+        uncovered.remove(&task);
+        recorded.push(written);
+    }
     if !uncovered.is_empty() {
         let codes = locked.codes();
         let tasks: Vec<String> = uncovered.iter().map(|id| codes.get(id).cloned().unwrap_or_else(|| id.to_string())).collect();

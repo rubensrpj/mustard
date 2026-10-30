@@ -15,8 +15,6 @@ pub mod cli;
 pub mod close;
 pub mod common;
 pub mod discard;
-pub(crate) mod evidence;
-pub(crate) mod goal;
 pub mod grill;
 pub mod open;
 pub mod plan;
@@ -39,7 +37,6 @@ use crate::commands::spec_events::conversation::record_output_call;
 /// retomada diz o último passo, sem a retomada mesma, que só lê; a procura, a
 /// leitura, as buscas e o mapa não são passo.
 pub(crate) const STEPS: &[&str] = &[
-    "evidence",
     "open",
     "grill",
     "answer",
@@ -84,7 +81,6 @@ pub(crate) fn answer(command: &str, root: &Path, named: Option<&str>, started: I
 pub(crate) fn projection(command: &str, report: &Value, full: bool) -> Option<Value> {
     let whole = match command {
         "grill" => Some(grill::projection(report)),
-        "round" => Some(round::projection(report)),
         _ => None,
     };
     if full || report.get("ok").and_then(Value::as_bool) != Some(true) {
@@ -126,22 +122,23 @@ mod tests {
     }
 
     /// Cada comando de resposta curta aceita `--full`, e com ele a resposta é
-    /// a de antes da curta: a projeção que o levantamento e a rodada já
-    /// tinham e, nos outros, o relatório como veio. Sem ele, cada um encolhe.
+    /// a de antes da curta: a projeção que o levantamento já tinha e, nos
+    /// outros, o relatório como veio. Sem ele, cada um encolhe.
     #[test]
     fn short_answer_gives_way_to_the_whole_answer_with_full() {
         for line in ["run grill --full", "run round --dispatch --full", "run review-wave --wave 1 --full", "run read backlog --full", "run settings --full"] {
             assert!(full_of(line), "{line}");
             assert!(!full_of(&line.replace(" --full", "")), "{line}");
         }
-        let grill = json!({"ok":true,"spec":"x","work_type":4,"kinds":["fix"],"condensed":false,"points":[
-            {"block":"context","gap":"Who uses it","from":"gap","origin":2,"id":5,"code":"MSTD-POINT-0001","status":"open","facts":["a.ts:1"],"reminders":[]},
-            {"block":"context","gap":"Where it runs","from":"gap","origin":2,"id":6,"code":"MSTD-POINT-0002","status":"closed","facts":[]}],
-            "reminders":0,"goal_approval":{"confirmed":true},"next":{"id":5},"hint":"Present MSTD-POINT-0001."});
+        let grill = json!({"ok":true,"spec":"x","work_type":4,"kinds":["fix"],"points":[
+            {"block":"condensed","gap":"Who uses it","from":"gap","origin":2,"id":5,"code":"MSTD-POINT-0001","status":"open","facts":["a.ts:1"],"reminders":[]},
+            {"block":"condensed","gap":"Where it runs","from":"gap","origin":2,"id":6,"code":"MSTD-POINT-0002","status":"closed","facts":[]}],
+            "reminders":0,"hint":"Present the open points.",
+            "knowledge":{"cards":[{"id":"c1","file":"a.ts","name":"save","line":1,"signature":"function save(point: Point): void"}]}});
         let round = json!({"ok":true,"spec":"x","dispatch":[],"running":[],"held":[
             {"task":"MSTD-TASK-0002","reason":"capacity","detail":"No free slot."},
             {"task":"MSTD-TASK-0003","reason":"capacity","detail":"No free slot."}],
-            "warnings":[{"reason":"wave-size","wave":1,"hint":"Wave 1 is big."}],"next":"Wait."});
+            "next":"Wait."});
         let review = json!({"ok":true,"spec":"x","wave":1,"fingerprint":"abc","files":["web/app.ts"],
             "project_rules":[{"source":"project","path":"CLAUDE.md","text":"Never duplicate types."}],"diff":"+x","hint":"Read the diff."});
         let backlog = json!({"ok":true,"spec":"x","block":"backlog","count":1,
@@ -150,7 +147,7 @@ mod tests {
             "jev":{"usable_key":false},"rtk":{"own_hook_left":false},"index_present":false,"availability":{"scan":"ok"}});
         let today = [
             ("grill", &grill, Some(grill::projection(&grill))),
-            ("round", &round, Some(round::projection(&round))),
+            ("round", &round, None),
             ("review-wave", &review, None),
             ("backlog", &backlog, None),
             ("settings", &settings, None),
@@ -163,9 +160,10 @@ mod tests {
         }
         let short = projection("grill", &grill, false).unwrap();
         let keys: Vec<&String> = short.as_object().unwrap().keys().collect();
-        assert_eq!(keys[..3], ["ok", "hint", "next"], "{short}");
+        assert_eq!(keys[..3], ["ok", "hint", "open"], "{short}");
         assert_eq!(short["open"], json!(["MSTD-POINT-0001"]), "{short}");
-        assert!(short.get("points").is_none() && short.get("goal_approval").is_none(), "{short}");
+        assert_eq!(short["points"], grill["points"], "{short}");
+        assert!(short.get("goal_approval").is_none(), "{short}");
         let short = projection("backlog", &backlog, false).unwrap();
         assert_eq!(short.as_object().unwrap().keys().nth(1).map(String::as_str), Some("total"), "{short}");
         assert_eq!(short["events"], json!([{"id":7,"code":"MSTD-TASK-0001","files":2}]), "{short}");

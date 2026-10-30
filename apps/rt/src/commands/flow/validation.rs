@@ -131,23 +131,45 @@ pub(super) fn fingerprint(root: &Path, log: &SpecLog) -> Option<String> {
     // As provas que a máquina roda entram também: a de um pedido que a
     // tarefa de um achado entregou sem mudar arquivo nenhum chega à lista sem
     // mudar o código nem os critérios, e o recibo de antes dela não vale.
-    for (id, code, command) in proof_list(log, config_inputs.commands().test.as_deref()) {
+    let declared = config_inputs.commands();
+    let proofs = proof_list(log, declared.test.as_deref());
+    for (id, code, command) in &proofs {
         digest.update(&serde_json::to_vec(&(id, code, command)).ok()?);
     }
-    let mut env: Vec<_> = std::env::vars_os()
-        .filter(|(name, _)| {
-            let name = name.to_string_lossy();
-            !matches!(name.as_ref(), "_" | "SHLVL" | "PWD" | "OLDPWD") && !name.starts_with("CLAUDE_") && !name.contains("SESSION")
-        })
+    let commands: Vec<&str> = [&declared.build, &declared.lint, &declared.test]
+        .into_iter()
+        .flatten()
+        .map(String::as_str)
+        .chain(proofs.iter().map(|(_, _, command)| command.as_str()))
         .collect();
-    env.sort();
-    for (name, value) in env {
+    for (name, value) in cited_env(std::env::vars_os(), &commands) {
         digest.update(name.to_str()?.as_bytes());
         digest.update(&[0]);
         digest.update(value.to_str()?.as_bytes());
         digest.update(&[0]);
     }
     Some(digest.hex_digest())
+}
+
+/// As variáveis de `env` que a impressão da validação leva, em ordem: o
+/// `PATH`, que escolhe os programas, e as que um dos `commands` cita pelo
+/// nome, como `$TOKEN` ou `TOKEN=1 cargo test`. A variável sem relação com o
+/// que a máquina roda não a faz rodar de novo.
+fn cited_env(env: impl Iterator<Item = (std::ffi::OsString, std::ffi::OsString)>, commands: &[&str]) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let cites = |command: &str, name: &str| {
+        command.match_indices(name).any(|(at, _)| {
+            !command[..at].chars().next_back().is_some_and(word) && !command[at + name.len()..].chars().next().is_some_and(word)
+        })
+    };
+    let mut kept: Vec<_> = env
+        .filter(|(name, _)| {
+            let name = name.to_string_lossy();
+            !name.is_empty() && (name == "PATH" || commands.iter().any(|command| cites(command, &name)))
+        })
+        .collect();
+    kept.sort();
+    kept
 }
 
 /// As provas que a máquina do fechamento roda, cada uma com o número e o
@@ -173,69 +195,6 @@ pub(super) fn proof_list(log: &SpecLog, test: Option<&str>) -> Vec<(u64, String,
 fn listed_files(root: &Path) -> Option<Vec<String>> {
     let files = git::run(root, &["ls-files", "--cached", "--others", "--exclude-standard", "-z"]).out()?;
     Some(files.split('\0').filter(|s| !s.is_empty()).map(str::to_string).collect())
-}
-
-/// A fase em que a conferência da base fica gravada, no primeiro despacho de
-/// onda da spec.
-pub(super) const BASE_PHASE: &str = "base";
-
-/// A etapa da conferência da base: o lint declarado do projeto.
-const BASE_STAGE: &str = "lintCommand";
-
-/// A conferência da base ainda cabe na spec lida em `log`: nenhuma onda foi
-/// enviada e nenhuma marca da base foi gravada. Uma vez só por spec, e nunca
-/// depois de uma onda sair: com onda enviada, a volta dela pode já ter
-/// commit na branch, e o disco deixa de ser a base.
-pub(super) fn base_check_due(log: &SpecLog) -> bool {
-    !log.events.iter().any(|e| {
-        e.event_type == "send" || e.event_type == "stage_run" && e.str_field("phase") == Some(BASE_PHASE) && e.str_field("stage") == Some(BASE_STAGE)
-    })
-}
-
-/// Roda o lint declarado do projeto na base e grava o que ele disse, no
-/// primeiro despacho de onda da spec `spec`, antes de a obra ter commit
-/// nenhum. Devolve o motivo quando não pôde gravar, e `None` quando gravou ou
-/// quando o projeto não declara lint.
-///
-/// Existe para o fechamento saber de quem é cada erro. Sem essa marca, o
-/// fechamento só sabe se a obra tocou o arquivo que a saída cita, e um erro
-/// que a obra criou noutro arquivo — a declaração que ficou sem uso porque a
-/// obra tirou o último que a usava — passaria como erro da base. Com ela, a
-/// pergunta é outra: a base já acusava este arquivo?
-///
-/// A base é o que o checkout tem agora: antes da primeira onda a branch não
-/// tem commit da obra, então o disco é a base. É também por isso que a
-/// conferência roda aqui e não no fechamento: aqui o projeto está instalado,
-/// com as dependências no lugar, e uma cópia limpa da base não estaria. Roda
-/// no despacho, e não na abertura: só o fechamento lê a marca, e a abertura
-/// gastava no lint dezenas de segundos de quem só queria começar a conversa.
-///
-/// Melhor esforço: o lint que não roda não grava nada, e o fechamento volta a
-/// cobrar tudo, como antes desta marca.
-pub(super) fn record_base_check(root: &Path, spec: &str) -> Option<String> {
-    let command = mustard_core::ProjectConfig::load(root).commands().lint?;
-    let command = crate::commands::review::qa_run::readonly_lint_command(root, &command);
-    let out = crate::commands::review::qa_run::run_server_command(&command, root);
-    record_run(root, spec, BASE_PHASE, BASE_STAGE, &command, &out).err().map(|refusal| refusal.reason().to_string())
-}
-
-/// Os arquivos que a conferência da base já acusava, lidos do que o primeiro
-/// despacho gravou: os que a saída dela cita e que a obra não mudou. Vazio
-/// quando nada foi gravado, e vazio quando a base passou.
-///
-/// A obra que mudou um arquivo depois da conferência sai desta lista pela própria
-/// leitura: um arquivo da obra nunca é da base.
-pub(super) fn base_findings(root: &Path, log: &SpecLog, work: &Work) -> Vec<String> {
-    let Some(output) = log
-        .events
-        .iter()
-        .rev()
-        .find(|e| e.event_type == "stage_run" && e.str_field("phase") == Some(BASE_PHASE) && e.str_field("stage") == Some(BASE_STAGE))
-        .and_then(|e| e.str_field("output"))
-    else {
-        return Vec::new();
-    };
-    cited(root, output, work).outside
 }
 
 /// A obra contra a qual se lê a saída de um comando que caiu: os arquivos que
@@ -802,12 +761,23 @@ pub(super) fn receipt(root: &Path, spec: &str, key: &str) -> Result<(), Refusal>
     record(root, spec, "stage_run", draft, PhaseWriter::Binary).map(|_| ())
 }
 
-pub(super) fn record_run(root: &Path, spec: &str, phase: &str, stage: &str, command: &str, out: &ProofRun) -> Result<(), Refusal> {
+/// Grava a execução `out` da etapa `stage` e devolve o evento gravado: é ele
+/// que a resposta cita para quem quer ler a saída inteira.
+pub(super) fn record_run(root: &Path, spec: &str, phase: &str, stage: &str, command: &str, out: &ProofRun) -> Result<mustard_core::io::spec_events::Written, Refusal> {
     record_run_fields(root, spec, phase, stage, command, out, Map::new())
 }
 
+/// [`record_run`] com os campos de `draft` a mais na execução gravada.
 #[allow(clippy::too_many_arguments)]
-fn record_run_fields(root: &Path, spec: &str, phase: &str, stage: &str, command: &str, out: &ProofRun, mut draft: Map<String, Value>) -> Result<(), Refusal> {
+pub(super) fn record_run_fields(
+    root: &Path,
+    spec: &str,
+    phase: &str,
+    stage: &str,
+    command: &str,
+    out: &ProofRun,
+    mut draft: Map<String, Value>,
+) -> Result<mustard_core::io::spec_events::Written, Refusal> {
     draft.insert("phase".into(), json!(phase));
     draft.insert("stage".into(), json!(stage));
     draft.insert("command".into(), json!(crate::commands::review::qa_run::canonical_test_command(command)));
@@ -822,7 +792,7 @@ fn record_run_fields(root: &Path, spec: &str, phase: &str, stage: &str, command:
     if !out.output.is_empty() {
         draft.insert("output".into(), json!(out.output));
     }
-    record(root, spec, "stage_run", draft, PhaseWriter::Binary).map(|_| ())
+    record(root, spec, "stage_run", draft, PhaseWriter::Binary).map(|recorded| recorded.written)
 }
 
 /// O tempo de relógio da revisão final inclui o despacho e a espera do
@@ -1451,6 +1421,17 @@ src/a.ts(1,10): error TS6133: 'lonelyTotal' is declared but its value is never r
             waves: vec![(1, vec![api]), (2, vec![web, manifest])],
             commits: Default::default(),
         }
+    }
+
+    /// A impressão leva o `PATH` e só as variáveis que um comando cita pelo
+    /// nome: a que nenhum comando cita fica de fora, e o pedaço de outro nome
+    /// não conta como citação.
+    #[test]
+    fn the_fingerprint_keeps_only_the_path_and_the_variables_a_command_names() {
+        let env = ["PATH", "TOKEN", "TOKEN_OLD", "EDITOR", "DB_URL"].map(|name| (name.into(), "v".into()));
+        let kept = super::cited_env(env.into_iter(), &["TOKEN=1 cargo test", "psql ${DB_URL}"]);
+        let names: Vec<String> = kept.into_iter().map(|(name, _)| name.to_string_lossy().into_owned()).collect();
+        assert_eq!(names, ["DB_URL", "PATH", "TOKEN"]);
     }
 
     /// O tempo de cada etapa da rodada vai para o arquivo de operações da

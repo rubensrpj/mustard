@@ -332,7 +332,7 @@ fn goal_title_rule(after: &SpecLog) -> Result<(), Refusal> {
 }
 
 /// O evento é uma mensagem do usuário.
-fn is_user_message(event: &SpecEvent) -> bool {
+pub(crate) fn is_user_message(event: &SpecEvent) -> bool {
     event.event_type == "message" && event.str_field("author").map(str::trim) == Some("user")
 }
 
@@ -342,6 +342,45 @@ fn is_user_message(event: &SpecEvent) -> bool {
 #[must_use]
 pub fn last_user_message(log: &SpecLog) -> Option<&SpecEvent> {
     log.visible().into_iter().rev().find(|e| is_user_message(e))
+}
+
+/// Os tipos de item que dizem que o usuário decidiu: o pedido, a regra e a
+/// decisão.
+const DECIDED_BY_USER: &[&str] = &["request", "rule", "decision"];
+
+/// Quantas mensagens do usuário a recusa da origem lista.
+const RECENT_MESSAGES: usize = 3;
+
+/// O item `event`, do tipo `event_type`, é do assistente e diz que o usuário
+/// decidiu: um pedido, uma regra, uma decisão ou o fechamento de um ponto do
+/// levantamento que é do usuário ([`crate::domain::survey::owner_of`]). A
+/// origem dele é uma mensagem do usuário, nunca a última por conta própria.
+/// O que o programa grava não entra.
+#[must_use]
+pub fn decided_by_user(log: &SpecLog, event_type: &str, event: &serde_json::Map<String, Value>) -> bool {
+    use crate::domain::survey::{Owner, owner_of};
+    let author = event.get("author").and_then(Value::as_str).map_or(crate::domain::spec_events::DEFAULT_AUTHOR, str::trim);
+    if author != crate::domain::spec_events::DEFAULT_AUTHOR {
+        return false;
+    }
+    let closes = || crate::domain::spec_events::referenced_id(log, event_type, event, "closes");
+    DECIDED_BY_USER.contains(&event_type)
+        || (event_type == "point" && closes().and_then(|id| log.get(id)).is_some_and(|point| owner_of(point) == Owner::User))
+}
+
+/// A recusa do item que diz que o usuário decidiu e não aponta, em `origin`,
+/// uma mensagem dele: com o número e o começo de cada uma das últimas
+/// mensagens do usuário, para quem grava escolher a certa.
+#[must_use]
+pub fn origin_not_user(log: &SpecLog, event_type: &str, origin: Option<u64>) -> Refusal {
+    let said: Vec<&SpecEvent> = log.visible().into_iter().rev().filter(|e| is_user_message(e)).take(RECENT_MESSAGES).collect();
+    let line = |message: &SpecEvent| format!("{}: “{}”", message.id, crate::domain::text::cut_line(message.str_field("text").unwrap_or_default(), 60));
+    let recent = if said.is_empty() { "-".to_string() } else { said.into_iter().map(line).collect::<Vec<_>>().join("; ") };
+    Refusal::OriginNotUser {
+        event_type: event_type.to_string(),
+        origin: origin.map_or_else(|| "-".to_string(), |id| id.to_string()),
+        recent,
+    }
 }
 
 /// A resposta do assistente aponta em `reply_to` a mensagem do usuário que

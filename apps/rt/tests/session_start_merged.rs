@@ -415,7 +415,7 @@ fn a_squash_the_provider_does_not_list_keeps_the_branch() {
     let (context, _) = scene.start_listing(&view("MERGED"), &json!([]), 0);
     assert_eq!(scene.phase(), "delivered", "{context}");
     assert!(scene.local_branch_exists(), "without the provider's word the branch stays: {context}");
-    assert!(context.contains("ficou nesta máquina"), "{context}");
+    assert!(!context.contains("ficou nesta máquina"), "the opening says nothing of it: {context}");
 }
 
 /// O que o caminho do merge deixa, pelo merge normal ou pelo squash.
@@ -436,9 +436,8 @@ fn delivered_through_the_merge_path(scene: &Scene, context: &str, asked: &[Strin
     assert!(scene.work.join("entrega.txt").is_file(), "the merged work is in the tree");
     assert!(scene.remote_branch_exists(), "the server branch stays without the option");
 
-    for expected in ["#7", "entrou pelas mãos de outra pessoa", "gravada como entregue", "saiu desta máquina", "Humanize"]
-    {
-        assert!(context.contains(expected), "{expected}: {context}");
+    for gone in ["entrou pelas mãos de outra pessoa", "gravada como entregue", "saiu desta máquina", "Humanize"] {
+        assert!(!context.contains(gone), "the opening no longer tells what the merge path did: {gone}: {context}");
     }
     assert!(!context.contains("segue(m) viva(s)"), "the tidied branch is not listed again as alive: {context}");
     let charges: Value = serde_json::from_str(
@@ -482,15 +481,14 @@ fn the_provider_is_not_asked_after_clear_or_compact() {
     assert_eq!(scene.phase(), "delivered");
 }
 
-/// Quando o provedor não responde, o aviso diz isso e nada muda.
+/// Quando o provedor não responde, nada muda, e a abertura não fala disso.
 #[test]
-fn a_silent_provider_warns_and_changes_nothing() {
+fn a_silent_provider_changes_nothing() {
     let scene = Scene::new(false);
     scene.merged_by_someone_else(false);
     let (context, asked) = scene.start(&view("MERGED"), 1);
     assert_eq!(asked.len(), 1, "{asked:#?}");
-    assert!(context.contains("o provedor não respondeu"), "{context}");
-    assert!(context.contains(SPEC), "{context}");
+    assert!(!context.contains("o provedor não respondeu"), "{context}");
     assert_eq!(scene.phase(), "pr_open", "nothing was recorded");
     assert!(scene.local_branch_exists(), "the branch stays");
     assert_eq!(git(&scene.work, &["branch", "--show-current"]), BRANCH);
@@ -763,8 +761,8 @@ fn a_running_spec_merged_outside_frees_its_copies_then_is_delivered() {
     scene.merged_by_a_colleague(BRANCH, false);
 
     let (context, asked) = scene.start("startup");
-    for expected in [SPEC, BRANCH, "entrou na base fora do fechamento", "sem a revisão final", "A cópia da obra sai em segundo plano"] {
-        assert!(context.contains(expected), "{expected}: {context}");
+    for gone in ["entrou na base fora do fechamento", "sem a revisão final", "A cópia da obra sai em segundo plano"] {
+        assert!(!context.contains(gone), "the opening no longer tells what the merge path did: {gone}: {context}");
     }
     let report = scene.background_report(SPEC);
     assert_eq!(report["ok"], json!(true), "{report}");
@@ -869,13 +867,13 @@ fn a_running_spec_merged_outside_is_delivered_on_resume() {
     scene.merged_by_a_colleague(BRANCH, false);
 
     let (context, asked) = scene.start("resume");
-    assert!(context.contains("entrou na base fora do fechamento"), "{context}");
+    assert!(!context.contains("entrou na base fora do fechamento"), "{context}");
     assert_eq!(scene.phase_of(SPEC), "delivered", "{context}");
     assert!(asked.is_empty(), "git alone proves the merge: {asked:#?}");
 }
 
-/// A spec fechada já passou pelo fechamento e pela revisão final: o aviso da
-/// obra juntada fora da porta não diz que ela ficou sem revisão.
+/// A spec fechada juntada fora da porta é entregue, e a abertura não fala
+/// disso.
 #[test]
 fn a_closed_spec_merged_outside_is_not_told_it_skipped_the_final_review() {
     let scene = Outside::new();
@@ -888,7 +886,7 @@ fn a_closed_spec_merged_outside_is_not_told_it_skipped_the_final_review() {
 
     let (context, _) = scene.start("startup");
     assert_eq!(scene.phase_of(SPEC), "delivered", "{context}");
-    assert!(context.contains("já fechada"), "{context}");
+    assert!(!context.contains("já fechada"), "{context}");
     assert!(!context.contains("sem a revisão final"), "{context}");
 }
 
@@ -933,8 +931,8 @@ fn a_spec_merged_outside_is_delivered_from_another_branch_only_through_a_real_me
 
     let (context, asked) = scene.start("startup");
     assert_eq!(scene.phase_of(SPEC), "delivered", "{context}");
-    for expected in [SPEC, "entrou na base fora do fechamento", "sem a revisão final", "já tinha saído"] {
-        assert!(context.contains(expected), "{expected}: {context}");
+    for gone in ["entrou na base fora do fechamento", "sem a revisão final", "já tinha saído"] {
+        assert!(!context.contains(gone), "the opening no longer tells what the merge path did: {gone}: {context}");
     }
     assert!(asked.is_empty(), "nothing is asked of the provider: {asked:#?}");
     assert_eq!(scene.phase_of("recem"), "running", "a branch cut a moment ago delivered nothing");
@@ -958,10 +956,7 @@ fn a_spec_merged_outside_with_tasks_left_is_not_delivered() {
     let (context, _) = scene.start("startup");
     assert_eq!(scene.phase_of(SPEC), "running", "{context}");
     assert!(!context.contains("fora do fechamento"), "{context}");
-    assert!(
-        context.contains(SPEC) && context.contains("2 tarefa(s)") && context.contains("não foi gravada como entregue"),
-        "the session start warns that the work went in with tasks left: {context}"
-    );
+    assert!(!context.contains("não foi gravada como entregue"), "the opening says nothing of the tasks left: {context}");
 
     let refused = scene.deliver_by_hand(SPEC);
     assert_eq!(refused["reason"], json!("backlog-left"), "{refused}");
@@ -995,7 +990,7 @@ fn a_spec_squashed_or_rebased_outside_is_delivered_by_its_content() {
 
         let (context, asked) = scene.start("startup");
         assert_eq!(scene.phase_of(SPEC), "delivered", "squash={squash}: {context}");
-        assert!(context.contains("entrou na base fora do fechamento"), "squash={squash}: {context}");
+        assert!(!context.contains("entrou na base fora do fechamento"), "squash={squash}: {context}");
         assert!(asked.is_empty(), "git alone proves it: {asked:#?}");
     }
 }
@@ -1044,14 +1039,15 @@ fn branches_of(answer: &Value, part: &str) -> Vec<String> {
 /// `release/x` sem registro, contida na base. Na pasta das cópias, um
 /// programa deixou uma pasta `.claude`.
 ///
-/// No início da sessão, em `dev`, o aviso das pendências e o das branches
-/// mergeadas saem na primeira sessão e não na segunda, com a mesma contagem;
+/// No início da sessão, em `dev`, o aviso das pendências sai na primeira
+/// sessão e não na segunda, com a mesma contagem, e o das branches mergeadas
+/// não sai: mora no `doctor`;
 /// a lista de pendências que não se lê não faz a contagem ser esquecida; a
 /// contagem nova traz o aviso de volta. A limpeza lista a cópia da spec
 /// apagada e nunca a `.claude`, e com `--apply` tira a cópia e a branch da
 /// spec apagada sem nenhum erro, deixando a `.claude`, a branch protegida, a
 /// `release/x`, a branch atual e a com commit fora da base, cada uma com o
-/// motivo. Com uma branch mergeada a menos, o aviso delas volta.
+/// motivo.
 #[test]
 fn a_start_notice_comes_once_per_count_and_the_clean_reaches_the_deleted_spec() {
     use mustard_core::io::wave_prompt::shown;
@@ -1093,7 +1089,7 @@ fn a_start_notice_comes_once_per_count_and_the_clean_reaches_the_deleted_spec() 
     let added = project.run(&["pending", "--add", "--title", "Revisar o texto", "--detail", "combinado na conversa"]);
     assert_eq!(added["id"], json!("P-1"), "{added}");
     let first = project.session_start("s-primeira");
-    assert!(first.contains(&one) && first.contains(&both), "the first session gets both counts: {first}");
+    assert!(first.contains(&one) && !first.contains(&both), "the first session gets the pending count, and the merged branches stay out: {first}");
     let second = project.session_start("s-segunda");
     assert!(!second.contains(&one) && !second.contains(PROTECTED), "the next session, with the same counts, gets neither: {second}");
     let ledger = root.join(".claude/pending/ledger.json");
@@ -1152,7 +1148,7 @@ fn a_start_notice_comes_once_per_count_and_the_clean_reaches_the_deleted_spec() 
 
     git(&root, &["checkout", "-q", "dev"]);
     let after = project.session_start("s-depois");
-    assert!(after.contains(&merged("1", PROTECTED)), "one merged branch less brings the notice back: {after}");
+    assert!(!after.contains(&merged("1", PROTECTED)), "the merged branches stay in the doctor: {after}");
 }
 
 /// A obra aberta cuja branch um colega juntou na base.
@@ -1197,13 +1193,11 @@ fn the_clean_removes_the_merged_branch_of_an_open_spec_and_keeps_the_one_just_cu
     assert!(root.join(".claude/spec").join(OPEN_MERGED).join("spec.ndjson").is_file(), "the clean never touches the open spec");
 }
 
-/// O binário com `args`, de dentro de `root`, com a pasta pessoal `home`, a
-/// pasta temporária `temp` e o limite do aviso de disco em `limit` bytes
-/// (`None` deixa a variável fora do ambiente), sem sessão nem spec forçada.
-/// Devolve o que ele imprimiu.
-fn with_a_disk_limit(root: &Path, home: &Path, temp: &Path, limit: Option<&str>, args: &[&str], stdin: &str) -> String {
-    let mut command = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"));
-    command
+/// O binário com `args`, de dentro de `root`, com a pasta pessoal `home` e a
+/// pasta temporária `temp`, sem sessão nem spec forçada. Devolve o que ele
+/// imprimiu.
+fn in_a_temp_folder(root: &Path, home: &Path, temp: &Path, args: &[&str]) -> String {
+    let out = binary::isolated(env!("CARGO_BIN_EXE_mustard-rt"))
         .args(args)
         .current_dir(root)
         .env("HOME", home)
@@ -1213,57 +1207,19 @@ fn with_a_disk_limit(root: &Path, home: &Path, temp: &Path, limit: Option<&str>,
         .env("MUSTARD_COPIES_DIR", test_copies_base())
         .env_remove("MUSTARD_WORKSPACE_ROOT")
         .env_remove("MUSTARD_ACTIVE_SPEC")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    match limit {
-        Some(bytes) => command.env("MUSTARD_SCRATCH_WARN_BYTES", bytes),
-        None => command.env_remove("MUSTARD_SCRATCH_WARN_BYTES"),
-    };
-    let mut child = command.spawn().expect("spawn mustard-rt");
-    child.stdin.take().unwrap().write_all(stdin.as_bytes()).unwrap();
-    let out = child.wait_with_output().expect("wait mustard-rt");
+        .stdin(Stdio::null())
+        .output()
+        .expect("run mustard-rt");
     assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-/// O limite do aviso de disco vem do ambiente do binário: a limpeza mostra,
-/// no que imprime, o limite com que o aviso do início da sessão compara o
-/// total das sobras. Um número de bytes na variável, alto ou baixo, é o
-/// limite; sem a variável, ou com um valor que não é número, vale o padrão de
-/// 5 GiB.
-#[test]
-fn the_clean_shows_the_disk_limit_the_environment_sets() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let root = dir.path().join("projeto");
-    let home = dir.path().join("casa");
-    let temp = dir.path().join("tmp");
-    for folder in [&root, &home, &temp] {
-        std::fs::create_dir_all(folder).unwrap();
-    }
-    let limit_with = |value: Option<&str>| -> Value {
-        let listed: Value = serde_json::from_str(&with_a_disk_limit(&root, &home, &temp, value, &["run", "clean"], "")).expect("the clean answers JSON");
-        listed["warn_bytes"].clone()
-    };
-
-    let default = json!(5u64 * 1024 * 1024 * 1024);
-    assert_eq!(limit_with(Some("1024")), json!(1024), "a low limit is the number in the variable");
-    assert_eq!(limit_with(Some("0")), json!(0), "zero turns the notice on for any leftover");
-    assert_eq!(limit_with(Some("107374182400")), json!(107_374_182_400u64), "a high limit is the number in the variable");
-    assert_eq!(limit_with(None), default, "without the variable the default stays");
-    assert_eq!(limit_with(Some("muito")), default, "a value that is not a number leaves the default");
-}
-
 /// Uma cópia do projeto recém-feita na pasta temporária, com as datas de dois
-/// dias atrás que o `cp -a` traz da origem, não entra no aviso de disco do
-/// início da sessão, nem com o limite do aviso em zero: o binário lê a pasta
-/// temporária e o limite do ambiente, e a varredura data a cópia pela mudança
-/// do inode, que nenhuma cópia preserva. A limpeza, no mesmo ambiente, mostra
-/// que a varredura viu a cópia e a guardou pela idade, e não por não achá-la.
+/// dias atrás que o `cp -a` traz da origem, não é sobra para a limpeza: a
+/// varredura data a cópia pela mudança do inode, que nenhuma cópia preserva,
+/// e a guarda pela idade, e não por não achá-la.
 #[test]
-fn a_copy_just_made_in_the_temporary_folder_brings_no_disk_notice_even_with_a_zero_limit() {
-    use mustard_core::platform::i18n::{Locale, translate};
-
+fn the_clean_keeps_a_copy_just_made_in_the_temporary_folder() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path().join("projeto");
     let home = dir.path().join("casa");
@@ -1289,23 +1245,12 @@ fn a_copy_just_made_in_the_temporary_folder_brings_no_disk_notice_even_with_a_ze
         std::fs::File::open(&path).unwrap().set_modified(two_days_ago).unwrap();
     }
 
-    let payload = json!({"hook_event_name": "SessionStart", "session_id": "s-disco", "source": "startup", "cwd": root.to_string_lossy()});
-    let said = with_a_disk_limit(&root, &home, &temp, Some("0"), &["on", "SessionStart"], &payload.to_string());
-    let context = serde_json::from_str::<Value>(said.trim())
-        .ok()
-        .and_then(|v| v.pointer("/hookSpecificOutput/additionalContext").and_then(Value::as_str).map(str::to_string))
-        .unwrap_or_default();
-    let notice = translate("scratch.residue.notice", Locale::PtBr);
-    let opening = notice.split("{total}").next().unwrap_or_default();
-    assert!(!opening.is_empty(), "{notice}");
-    assert!(!context.contains(opening), "a copy just made is not residue: {context}");
-
-    let listed: Value = serde_json::from_str(&with_a_disk_limit(&root, &home, &temp, Some("0"), &["run", "clean"], "")).expect("the clean answers JSON");
+    let listed: Value = serde_json::from_str(&in_a_temp_folder(&root, &home, &temp, &["run", "clean"])).expect("the clean answers JSON");
     assert_eq!(listed["candidates"], json!([]), "{listed}");
     let copy_path = copy.display().to_string();
     assert!(
         listed["kept"].as_array().into_iter().flatten().any(|kept| kept["path"] == json!(copy_path) && kept["reason"] == json!("younger than 12h")),
         "the scan saw the copy and kept it for its age: {listed}"
     );
-    assert!(copy.join("apps/rt/big.bin").is_file(), "the notice and the list only read");
+    assert!(copy.join("apps/rt/big.bin").is_file(), "the list only reads");
 }

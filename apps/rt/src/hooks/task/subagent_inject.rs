@@ -34,8 +34,7 @@
 //! consertos e as revisões cujo texto o orquestrador escreve recebem o idioma
 //! dos nomes. O texto que já traz a linha, como o pedido da rodada,
 //! passa como veio. O despacho ao `mustard-review` que o orquestrador
-//! escreve — a revisão do levantamento e a do pull request — ganha no fim as
-//! regras do projeto, os arquivos de regras da raiz e das pastas onde a obra
+//! escreve ganha no fim as regras do projeto, os arquivos de regras da raiz e das pastas onde a obra
 //! mexe, porque o revisor é instalado sem eles; o que manda ler o pedido da
 //! revisão final não ganha, porque esse pedido já as traz. Todo despacho ao
 //! `mustard-review` ganha no fim o caminho da cópia do desenho aprovado
@@ -368,18 +367,15 @@ fn dispatched(input: &HookInput, ctx: &Ctx) -> Verdict {
 }
 
 /// As regras do projeto que o despacho ao revisor ganha no fim, quando o
-/// texto é do orquestrador — a revisão do levantamento e a do pull request:
-/// o revisor é instalado sem os `CLAUDE.md`, e o pedido que ele recebe é o
+/// texto é do orquestrador: o revisor é instalado sem os `CLAUDE.md`, e o pedido que ele recebe é o
 /// único caminho delas. São os arquivos de regras da raiz e das pastas dos
 /// arquivos que a obra da spec atual mexe ([`touched_files`]), a mesma
 /// leitura da revisão final. Nada ao agente de onda, ao texto que já traz a
-/// seção e ao que manda ler o pedido gravado da revisão final ou o de uma
-/// onda, que já as trazem;
-/// nada também sem arquivo de regras com texto.
+/// seção e ao que manda ler o pedido gravado da revisão final, que já as
+/// traz; nada também sem arquivo de regras com texto.
 fn review_rules(input: &HookInput, root: &Path, prompt: &str, lang: Locale) -> Option<String> {
     let to_reviewer = input.tool_input.get("subagent_type").and_then(Value::as_str) == Some("mustard-review");
-    let recorded = reads_final_request(prompt) || crate::commands::flow::round::is_wave_review_dispatch(prompt);
-    if !to_reviewer || recorded || carries_project_rules(prompt, lang) {
+    if !to_reviewer || reads_final_request(prompt) || carries_project_rules(prompt, lang) {
         return None;
     }
     let disk = DiskSpecState::new(root);
@@ -389,8 +385,7 @@ fn review_rules(input: &HookInput, root: &Path, prompt: &str, lang: Locale) -> O
 
 /// Se o despacho manda ler o pedido gravado da revisão final
 /// (`mustard-rt run read request-review`): é o que distingue o revisor final
-/// do texto que o orquestrador escreve para a revisão do levantamento ou do
-/// pull request.
+/// do texto que o orquestrador escreve ao revisor.
 fn reads_final_request(prompt: &str) -> bool {
     prompt.contains("run read request-review")
 }
@@ -470,10 +465,10 @@ fn launch_settings(verdict: Verdict, input: &HookInput, ctx: &Ctx) -> Verdict {
 /// O lançamento do agente de onda ou do revisor com o modelo que o Mustard
 /// escolheu para ele — o da onda, o do último envio dela, que sai da
 /// dificuldade das tarefas e sobe na reprovação; o do revisor final, o que a
-/// chamada pede e, sem pedido, o de `agents.review`; o do revisor de uma
-/// onda, o de `agents.wave_review`; o do texto que o orquestrador escreve
-/// para o revisor, o de `agents.review`; o da onda sem envio legível, o de
-/// `agents` — e sempre com o esforço `xhigh`, no lugar do que a chamada
+/// chamada pede e, sem pedido, o de `agents.review` ou o Opus; o do texto
+/// que o orquestrador escreve para o revisor, o de `agents.review` ou o de
+/// `agents.model`; o da onda sem envio legível, o Sonnet, ou o de `agents.model` com a escolha pela dificuldade
+/// desligada — e sempre com o esforço `xhigh`, no lugar do que a chamada
 /// pede: o `model` da chamada vence o cabeçalho do agente, então o escolhido
 /// vai nela. O modelo que o usuário pediu para o revisor final fica: só a
 /// onda segue o da rodada. O nome inteiro do modelo vai pelo apelido que
@@ -495,9 +490,9 @@ fn launch_settings_with(verdict: Verdict, input: &HookInput, ctx: &Ctx, effort_e
         return analysis_effort(verdict, input);
     }
     let configured = match agent {
-        "mustard-wave" => ctx.config.agent_settings().model,
-        "mustard-review" if crate::commands::flow::round::is_wave_review_dispatch(dispatch_prompt(input)) => ctx.config.wave_review_settings().model,
-        "mustard-review" => ctx.config.review_settings().model,
+        "mustard-wave" => ctx.config.wave_agent_model(),
+        "mustard-review" if reads_final_request(dispatch_prompt(input)) => ctx.config.review_settings().model,
+        "mustard-review" => ctx.config.other_review_model(),
         _ => return verdict,
     };
     let root = ctx.project_dir_or_cwd(input);
@@ -516,7 +511,7 @@ fn launch_settings_with(verdict: Verdict, input: &HookInput, ctx: &Ctx, effort_e
     // escolha é de quem a fez, e o Mustard não a troca pelo do `mustard.json`.
     // A onda segue o modelo da rodada, e o texto do orquestrador, o da
     // configuração.
-    let final_review = agent == "mustard-review" && reads_final_request(dispatch_prompt(input)) && !crate::commands::flow::round::is_wave_review_dispatch(dispatch_prompt(input));
+    let final_review = agent == "mustard-review" && reads_final_request(dispatch_prompt(input));
     let kept = asked("model").filter(|_| final_review);
     let declared = AgentSettings { model: kept.or(sent_model.as_deref()).unwrap_or(configured), effort: DEFAULT_AGENT_EFFORT };
     let lower = |text: &str| text.to_ascii_lowercase();
@@ -795,7 +790,8 @@ mod tests {
     }
 
     /// O lançamento do agente de onda sem envio, ou do revisor, sai com o
-    /// modelo que o `mustard.json` declara para ele e o esforço `xhigh`, com
+    /// modelo que o `mustard.json` declara para ele — o da onda só com a
+    /// escolha pela dificuldade desligada — e o esforço `xhigh`, com
     /// os outros campos como vieram. O nome inteiro do modelo vira o apelido
     /// que ele contém; sem apelido, o modelo fica como veio e o aviso segue.
     /// Outro agente e outro hospedeiro passam como vieram.
@@ -803,7 +799,7 @@ mod tests {
     fn a_launch_goes_out_with_the_model_and_effort_the_config_declares() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        let agents = json!({"model": "claude-opus-5-5", "effort": "xhigh", "review": {"model": "sonnet", "effort": "max"}});
+        let agents = json!({"model": "claude-opus-5-5", "effort": "xhigh", "by_difficulty": false, "review": {"model": "sonnet", "effort": "max"}});
         std::fs::write(root.join("mustard.json"), json!({ "agents": agents }).to_string()).unwrap();
         let launch = |agent: &str, asked: Value, host: Option<&str>| {
             let mut input = task_input(agent, "Confira a obra.");
@@ -838,7 +834,12 @@ mod tests {
             Verdict::Allow => {}
             other => panic!("another host keeps the model, got {other:?}"),
         }
-        std::fs::write(root.join("mustard.json"), json!({"agents": {"model": "custom-model-1", "effort": "high"}}).to_string()).unwrap();
+        // Com o modelo pela dificuldade, a onda sem envio vai ao Sonnet, por
+        // mais que `agents.model` diga outro.
+        std::fs::write(root.join("mustard.json"), json!({"agents": {"model": "claude-opus-5-5"}}).to_string()).unwrap();
+        let (graded, _) = sent(launch("mustard-wave", json!({"model": "opus"}), None));
+        assert_eq!(graded["model"].as_str(), Some("sonnet"), "{graded}");
+        std::fs::write(root.join("mustard.json"), json!({"agents": {"model": "custom-model-1", "effort": "high", "by_difficulty": false, "review": {"model": "custom-model-1"}}}).to_string()).unwrap();
         // O modelo configurado não tem apelido conhecido, então o pedido da
         // chamada passava como veio — e uma onda pedida no modelo pequeno
         // saía nele. O usuário decidiu em 20/10/2026 que código nunca vai no
@@ -852,18 +853,14 @@ mod tests {
         assert_eq!(review["model"].as_str(), Some("haiku"), "{review}");
     }
 
-    /// The wave reviewer, dispatched with the title and the command that
-    /// reads its request, goes out on `agents.wave_review` (Sonnet by
-    /// default) at effort xhigh, while the final reviewer goes on the model
-    /// its call asked for, and on `agents.review` when the call asks for
-    /// none; the wave review request already carries the project rules, so
-    /// the dispatch gains none.
+    /// O revisor final sai no modelo que a chamada pediu e, sem pedido, no de
+    /// `agents.review`, sempre com o esforço xhigh.
     #[test]
-    fn the_wave_reviewer_launches_on_its_own_settings_and_the_final_one_on_the_model_it_was_asked() {
+    fn the_final_reviewer_launches_on_the_model_it_was_asked() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        std::fs::write(root.join("CLAUDE.md"), "Never duplicate types.\n").unwrap();
-        let launch = |prompt: &str, model: Option<&str>| {
+        std::fs::write(root.join("mustard.json"), json!({"agents": {"model": "sonnet"}}).to_string()).unwrap();
+        let launch_with = |prompt: &str, model: Option<&str>| {
             let mut input = task_input("mustard-review", prompt);
             if let Some(model) = model {
                 input.tool_input["model"] = json!(model);
@@ -874,21 +871,11 @@ mod tests {
                 other => panic!("the launch is rewritten, got {other:?}"),
             }
         };
-        let wave = "# x — revisão da onda 2\n\nmustard-rt run read review-request-2 --root /r --spec x";
-        let last = "# x — agente de teste dedicado\n\nmustard-rt run read request-review --root /r --spec x";
-        for (agents, wave_model, final_model) in [
-            (json!({"review": {"model": "opus"}}), "sonnet", "opus"),
-            (json!({"review": {"model": "opus"}, "wave_review": {"model": "haiku"}}), "haiku", "opus"),
-        ] {
-            std::fs::write(root.join("mustard.json"), json!({ "agents": agents }).to_string()).unwrap();
-            let sent = launch(wave, Some("haiku"));
-            assert_eq!((sent["model"].as_str(), sent["effort"].as_str()), (Some(wave_model), Some("xhigh")), "{agents}: {sent}");
-            assert!(!sent["prompt"].as_str().unwrap().contains("Never duplicate types."), "{sent}");
-            let sent = launch(last, Some("haiku"));
-            assert_eq!((sent["model"].as_str(), sent["effort"].as_str()), (Some("haiku"), Some("xhigh")), "{agents}: the call's model stays: {sent}");
-            let sent = launch(last, None);
-            assert_eq!((sent["model"].as_str(), sent["effort"].as_str()), (Some(final_model), Some("xhigh")), "{agents}: {sent}");
-        }
+        let launch = |model: Option<&str>| launch_with("# x — agente de teste dedicado\n\nmustard-rt run read request-review --root /r --spec x", model);
+        let sent = launch(Some("haiku"));
+        assert_eq!((sent["model"].as_str(), sent["effort"].as_str()), (Some("haiku"), Some("xhigh")), "the call's model stays: {sent}");
+        let sent = launch(None);
+        assert_eq!((sent["model"].as_str(), sent["effort"].as_str()), (Some("opus"), Some("xhigh")), "{sent}");
     }
 
     /// The model the user asked for the final reviewer stays, at the usual
@@ -931,8 +918,8 @@ mod tests {
         assert_eq!((review["model"].as_str(), review["effort"].as_str()), (Some("opus"), Some("xhigh")), "{review}");
         assert!(note.contains("low") && note.contains("xhigh") && !note.contains("sonnet"), "only the effort is said to be swapped: {note}");
 
-        let (survey, _) = launch("mustard-review", "Confira a obra.", json!({"model": "opus"}));
-        assert_eq!(survey["model"].as_str(), Some("sonnet"), "the conductor's own text keeps the configured model: {survey}");
+        let (own, _) = launch("mustard-review", "Confira a obra.", json!({"model": "opus"}));
+        assert_eq!(own["model"].as_str(), Some("sonnet"), "the conductor's own text keeps the configured model: {own}");
     }
 
     /// The wave agent goes out on the model its last send recorded, not the
@@ -1103,8 +1090,8 @@ mod tests {
         assert_eq!(dispatch_to(root, "general-purpose", "Investigue o gancho."), Verdict::Allow);
     }
 
-    /// O despacho que o orquestrador escreve ao revisor — a revisão do
-    /// levantamento, a do pull request — ganha no fim as regras do projeto: o
+    /// O despacho que o orquestrador escreve ao revisor ganha no fim as regras
+    /// do projeto: o
     /// texto do `CLAUDE.md` da raiz e, quando a pasta de um arquivo das
     /// tarefas da spec da branch tem regras, também as dela, cada uma sob o
     /// caminho; sem arquivo de regras, sai como antes, só com a linha dos
@@ -1122,22 +1109,22 @@ mod tests {
         assert!(init.status.success(), "{init:?}");
         std::fs::write(root.join("mustard.json"), r#"{"language":{"code":"pt-BR"}}"#).unwrap();
         let line = translate("prompt.languages", Locale::PtBr).replace("{text}", "pt-BR").replace("{code}", "pt-BR");
-        let survey = "Confira o levantamento inteiro da spec x.";
-        assert_eq!(rewritten(dispatch_to(root, "mustard-review", survey)), format!("{line}\n\n{survey}"), "no file");
+        let request = "Confira a entrega da biblioteca.";
+        assert_eq!(rewritten(dispatch_to(root, "mustard-review", request)), format!("{line}\n\n{request}"), "no file");
 
         let rules = "# Regras\n\n- O instalador nunca grava na configuração do git.";
         std::fs::write(root.join("CLAUDE.md"), format!("{rules}\n")).unwrap();
-        let review = rewritten(dispatch_to(root, "mustard-review", survey));
+        let review = rewritten(dispatch_to(root, "mustard-review", request));
         let section = format!("## Regras do projeto\n\n{}\n\n{rules}", translate("prompt.project_rules.source", Locale::PtBr));
-        assert_eq!(review, format!("{line}\n\n{survey}\n\n{section}"));
+        assert_eq!(review, format!("{line}\n\n{request}\n\n{section}"));
         assert_eq!(rewritten(dispatch_to(root, "mustard-review", &review)), review, "the section is never repeated");
 
         std::fs::create_dir_all(root.join("lib/sub")).unwrap();
         std::fs::write(root.join("lib/sub/CLAUDE.md"), "- A biblioteca não lê o disco.\n").unwrap();
-        let nested = rewritten(dispatch_to(root, "mustard-review", survey));
+        let nested = rewritten(dispatch_to(root, "mustard-review", request));
         let sources = translate("prompt.project_rules.sources", Locale::PtBr);
         let both = format!("## Regras do projeto\n\n{sources}\n\n### `CLAUDE.md`\n\n{rules}\n\n### `lib/sub/CLAUDE.md`\n\n- A biblioteca não lê o disco.");
-        assert_eq!(nested, format!("{line}\n\n{survey}\n\n{both}"));
+        assert_eq!(nested, format!("{line}\n\n{request}\n\n{both}"));
 
         let final_review = format!("{line}\n\nmustard-rt run read request-review --root /r --spec x");
         assert_eq!(rewritten(dispatch_to(root, "mustard-review", &final_review)), final_review, "the recorded request has them");

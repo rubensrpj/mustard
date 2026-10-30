@@ -20,16 +20,11 @@ use tempfile::TempDir;
 /// Roda o gancho de antes da ferramenta Bash para um comando, a partir de
 /// `dir`, e devolve o que ele imprimiu.
 fn run_guard(dir: &Path, command: &str) -> String {
-    run_guard_in(dir, command, "command-guard-test")
-}
-
-/// The same, for the conversation `session` of the host.
-fn run_guard_in(dir: &Path, command: &str, session: &str) -> String {
     let input = serde_json::json!({
         "hook_event_name": "PreToolUse",
         "tool_name": "Bash",
         "cwd": dir.to_str().expect("utf-8 path"),
-        "session_id": session,
+        "session_id": "command-guard-test",
         "tool_input": { "command": command }
     });
     run_hook(dir, &input, None)
@@ -55,16 +50,9 @@ fn own_program() -> (TempDir, std::path::PathBuf) {
 /// Claude Code's config folder moved to `config`, or to an empty folder: the
 /// plugin installed on the machine never takes part.
 fn run_hook(dir: &Path, input: &Value, config: Option<&Path>) -> String {
-    run_hook_with_temp(dir, input, config, None)
-}
-
-/// O mesmo, com a pasta temporária do programa trocada por `temp`, quando ela
-/// vem: é onde a recusa manda gravar a resposta de um comando cortado.
-fn run_hook_with_temp(dir: &Path, input: &Value, config: Option<&Path>, temp: Option<&Path>) -> String {
     let (_folder, program) = own_program();
     let empty = TempDir::new().expect("empty config folder");
-    let mut command = binary::isolated(&program);
-    command
+    let mut child = binary::isolated(&program)
         .args(["on", "PreToolUse"])
         .current_dir(dir)
         .env_remove("CLAUDE_PROJECT_DIR")
@@ -72,12 +60,9 @@ fn run_hook_with_temp(dir: &Path, input: &Value, config: Option<&Path>, temp: Op
         .env("CLAUDE_CONFIG_DIR", config.unwrap_or(empty.path()))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    if let Some(temp) = temp {
-        // `TMPDIR` no Unix; `TMP` e `TEMP` no Windows.
-        command.env("TMPDIR", temp).env("TMP", temp).env("TEMP", temp);
-    }
-    let mut child = command.spawn().expect("spawn mustard-rt");
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn mustard-rt");
     child
         .stdin
         .take()
@@ -104,64 +89,6 @@ fn refusal(stdout: &str) -> Option<String> {
     Some(reason.unwrap_or_default().to_string())
 }
 
-/// Separa `line` em palavras como o shell faz com aspas simples: o espaço
-/// separa fora das aspas, `'...'` guarda o texto como está e a barra
-/// invertida fora das aspas protege o caractere seguinte, como no `'\''` de um
-/// nome com aspa simples. Assim o caminho volta sem as aspas que o terminal
-/// pede.
-fn shell_words(line: &str) -> Vec<String> {
-    let mut words = Vec::new();
-    let mut word = String::new();
-    let (mut started, mut quoted) = (false, false);
-    let mut chars = line.chars();
-    while let Some(c) = chars.next() {
-        match c {
-            '\'' => {
-                quoted = !quoted;
-                started = true;
-            }
-            '\\' if !quoted => {
-                if let Some(next) = chars.next() {
-                    word.push(next);
-                    started = true;
-                }
-            }
-            c if c.is_whitespace() && !quoted => {
-                if started {
-                    words.push(std::mem::take(&mut word));
-                    started = false;
-                }
-            }
-            c => {
-                word.push(c);
-                started = true;
-            }
-        }
-    }
-    if started {
-        words.push(word);
-    }
-    words
-}
-
-/// Os arquivos em que o comando pronto `line` grava, sem as aspas.
-fn redirect_targets(line: &str) -> Vec<String> {
-    let words = shell_words(line);
-    words.windows(2).filter(|pair| pair[0] == ">").map(|pair| pair[1].clone()).collect()
-}
-
-/// O arquivo em que o comando pronto, na última linha da recusa `reason`,
-/// grava a resposta; sem as aspas.
-fn written_file(reason: &str) -> String {
-    let ready = reason.lines().last().unwrap_or_default();
-    redirect_targets(ready).pop().unwrap_or_else(|| panic!("the ready command writes to a file: {ready}"))
-}
-
-/// O nome do arquivo em `path`, sem a pasta.
-fn file_name(path: &str) -> String {
-    Path::new(path).file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()
-}
-
 fn project_with(config: &str) -> TempDir {
     let dir = TempDir::new().expect("tempdir");
     std::fs::write(dir.path().join("mustard.json"), config).expect("write mustard.json");
@@ -185,21 +112,23 @@ fn ndjson_lines(root: &Path) -> Vec<String> {
     lines
 }
 
-/// A commit message and a pending-item title that only name a dangerous
-/// command pass; the real command is refused.
+/// A mensagem de commit e o título de pendência que só citam apagar a base
+/// passam; o comando de verdade é recusado. Apagar pasta à força fica com o
+/// bloqueio nativo das configurações.
 #[test]
-fn quoted_text_passes_and_a_real_delete_is_blocked() {
-    let dir = TempDir::new().expect("tempdir");
+fn quoted_text_passes_and_a_real_base_delete_is_blocked() {
+    let dir = project_with(r#"{"git":{"flow":{"*":"dev","dev":"main"}}}"#);
     for command in [
-        r#"git commit -m "limpa: rm -rf build antigo""#,
-        r#"mustard-rt run pending --add --title "rodar rm -rf target antes do build""#,
+        r#"git commit -m "limpa: git branch -D dev""#,
+        r#"mustard-rt run pending --add --title "rodar git branch -D dev depois""#,
+        "rm -rf pasta",
     ] {
         let out = run_guard(dir.path(), command);
         assert!(refusal(&out).is_none(), "{command} must pass: {out}");
     }
-    let out = run_guard(dir.path(), "rm -rf pasta");
-    let reason = refusal(&out).unwrap_or_else(|| panic!("rm -rf pasta must be refused: {out}"));
-    assert!(reason.starts_with("Comando barrado: apagar pasta à força"), "{reason}");
+    let out = run_guard(dir.path(), "git branch -D dev");
+    let reason = refusal(&out).unwrap_or_else(|| panic!("git branch -D dev must be refused: {out}"));
+    assert!(reason.starts_with("Comando barrado: apagar a branch de integração `dev`"), "{reason}");
 }
 
 /// Outside a Mustard project the guard hands the command back untouched:
@@ -286,8 +215,7 @@ fn a_wave_agent_cargo_test_runs_once_in_its_copy_through_the_bundled_rtk() {
         format!("cd -- '{}' && (\n'{}' cargo test\n)", wave_prompt::shown(&copy), rtk.display()),
         "{out}"
     );
-    assert_eq!(updated["timeout"], 600_000);
-    assert!(updated.get("run_in_background").is_none(), "{out}");
+    assert_eq!(updated["run_in_background"], true, "the request keeps the agent's own fields: {out}");
     std::fs::remove_dir_all(wave_prompt::copies_dir(root)).unwrap();
 }
 
@@ -314,147 +242,84 @@ fn a_flow_base_is_protected_and_other_branches_are_not() {
 
 #[test]
 fn the_refusal_follows_the_project_language() {
-    let dir = project_with(r#"{"language":{"text":"en-US"}}"#);
-    let out = run_guard(dir.path(), "rm -rf pasta");
-    let reason = refusal(&out).unwrap_or_else(|| panic!("rm -rf pasta must be refused: {out}"));
-    assert!(reason.starts_with("Command blocked: deleting a folder by force"), "{reason}");
+    let dir = project_with(r#"{"language":{"text":"en-US"},"git":{"flow":{"*":"dev","dev":"main"}}}"#);
+    let out = run_guard(dir.path(), "git branch -D dev");
+    let reason = refusal(&out).unwrap_or_else(|| panic!("git branch -D dev must be refused: {out}"));
+    assert!(reason.starts_with("Command blocked: deleting the integration branch `dev`"), "{reason}");
 }
 
-/// O comando pronto da recusa grava a resposta de cada etapa do Mustard num
-/// arquivo próprio, com o nome da etapa, na pasta temporária, fora do
-/// repositório; a etapa de ajuda, que passa sozinha, sai intacta, com o corte
-/// dela. Antes a sugestão gravava todas as etapas no mesmo `arquivo`, na
-/// pasta do projeto — que o `git add -A` de um pre-commit leva ao commit —, e
-/// reescrevia também a ajuda.
+/// A recusa do filtro no projeto de idioma `language`, pelo binário.
+fn filter_refusal(command: &str, language: &str) -> String {
+    let dir = project_with(&format!(r#"{{"language":{{"text":"{language}"}}}}"#));
+    refusal(&run_guard(dir.path(), command)).unwrap_or_else(|| panic!("{command} must be refused in {language}"))
+}
+
+/// Se a recusa `reason` manda gravar a resposta num arquivo: pela palavra,
+/// num dos dois idiomas, ou por um redirecionamento.
+fn offers_a_file(reason: &str) -> bool {
+    let lower = reason.to_lowercase();
+    lower.contains("arquivo") || lower.contains("file") || reason.contains(" > ") || reason.contains(" >> ")
+}
+
+/// O filtro da resposta do Mustard é recusado nos dois idiomas, e a recusa
+/// termina no caminho daquele comando: o resumo pronto do bloco grande, a
+/// leitura por termo dos blocos que a aceitam, ou o comando sozinho, com ou sem a
+/// razão de resposta curta. Nenhuma das quatro recusas manda gravar a
+/// resposta num arquivo, e a do bloco grande não sugere a leitura por termo.
 #[test]
-fn the_ready_command_writes_each_answer_to_its_own_file_outside_the_project() {
-    let dir = project_with(r#"{"language":{"text":"pt-BR"}}"#);
-    let ready = |command: &str| {
-        let reason = refusal(&run_guard(dir.path(), command)).unwrap_or_else(|| panic!("{command} must be refused"));
-        reason.lines().last().unwrap_or_default().to_string()
-    };
+fn the_filter_refusal_points_to_the_summary_and_never_to_a_file() {
+    use mustard_core::platform::i18n::{Locale, translate};
 
-    let mixed = ready("mustard-rt run answer --help | head && mustard-rt run resume | head");
-    assert!(mixed.starts_with("mustard-rt run answer --help | head && mustard-rt run resume > "), "the help step stays as written: {mixed}");
-    let resume = redirect_targets(&mixed);
-    assert_eq!(resume.len(), 1, "{mixed}");
-    assert!(resume[0].contains("resume"), "{mixed}");
-
-    let two = ready("mustard-rt run read backlog --spec x 2>&1 | head; mustard-rt run read criteria --spec x");
-    let files = redirect_targets(&two);
-    assert_eq!(files.len(), 2, "{two}");
-    assert_ne!(files[0], files[1], "one file per step: {two}");
-    assert!(files[0].contains("backlog") && files[1].contains("criteria"), "the name says the step: {two}");
-    for file in resume.iter().chain(&files) {
-        let path = Path::new(file);
-        assert!(path.is_absolute() && !path.starts_with(dir.path()), "{file} must sit outside the project");
-        assert!(path.starts_with(std::env::temp_dir()), "{file} must sit in the temporary folder");
+    for (language, locale) in [("pt-BR", Locale::PtBr), ("en-US", Locale::EnUs)] {
+        let summary = translate("runtime_output.summary", locale).replace("{block}", "metrics").replace("{summary}", "calls");
+        for (command, way) in [
+            ("mustard-rt run read metrics --spec x | grep calls", summary.as_str()),
+            ("mustard-rt run read notes --spec x | head -20", translate("runtime_output.term", locale)),
+            ("mustard-rt run round --spec x | grep next", translate("runtime_output.alone_short", locale)),
+            ("mustard-rt run panel | grep waves", translate("runtime_output.alone", locale)),
+        ] {
+            let reason = filter_refusal(command, language);
+            assert!(reason.ends_with(way), "{command} ends on its way in {language}: {reason}");
+            assert!(!offers_a_file(&reason), "the refusal never offers a file: {reason}");
+            if way == summary {
+                assert!(!reason.contains("--term"), "the summary is the only way given: {reason}");
+            }
+        }
     }
 }
 
-/// Duas conversas que cortam o mesmo comando ao mesmo tempo não dividem o
-/// arquivo do comando pronto: o id da sessão que o host mandou entra no nome.
+/// O filtro da resposta da rodada é recusado nos dois idiomas, e a recusa
+/// diz para rodar o comando sozinho, porque a resposta já vem curta. Ela não
+/// sugere a leitura por termo; a ausência de arquivo nela e nas outras
+/// recusas do filtro é provada no teste do resumo, acima.
 #[test]
-fn the_ready_command_names_its_file_by_the_session_that_asked() {
-    let dir = project_with(r#"{"language":{"text":"pt-BR"}}"#);
-    let ready = |session: &str| {
-        let reason = refusal(&run_guard_in(dir.path(), "mustard-rt run resume | head -80", session)).expect("the cut must be refused");
-        written_file(&reason)
-    };
-    assert_eq!(file_name(&ready("conversa-a1")), "mustard-resume-conversa-a1.txt");
-    assert_eq!(file_name(&ready("conversa-b2")), "mustard-resume-conversa-b2.txt");
+fn the_round_filter_refusal_says_to_run_it_alone() {
+    use mustard_core::platform::i18n::{Locale, translate};
+
+    for (language, locale) in [("pt-BR", Locale::PtBr), ("en-US", Locale::EnUs)] {
+        let reason = filter_refusal("mustard-rt run round --spec x | grep next", language);
+        assert!(reason.ends_with(translate("runtime_output.alone_short", locale)), "the refusal says to run it alone: {reason}");
+        assert!(!reason.contains("--term"), "the round has no read by term: {reason}");
+    }
 }
 
-/// A mesma etapa do Mustard duas vezes no mesmo comando não divide o arquivo
-/// do comando pronto: a segunda ganha um número depois do nome da etapa, antes
-/// do id da sessão, e a resposta da primeira não se perde.
+/// A resposta do Mustard passada a um interpretador é recusada por qualquer
+/// nome que a gramática do interpretador reconhece: o lançador do Python no
+/// Windows, o Python rodado pelo `uv run` e o nome com `.exe`, pelo cano e
+/// por substituição. A recusa diz para rodar o comando sozinho.
 #[test]
-fn the_ready_command_numbers_a_repeated_step() {
-    let dir = project_with(r#"{"language":{"text":"pt-BR"}}"#);
-    let command = "mustard-rt run resume | head -3 && mustard-rt run resume | tail -3";
-    let reason = refusal(&run_guard_in(dir.path(), command, "conversa-e5")).expect("the cut must be refused");
-    let files: Vec<String> = redirect_targets(reason.lines().last().unwrap_or_default()).iter().map(|file| file_name(file)).collect();
-    assert_eq!(files, ["mustard-resume-conversa-e5.txt", "mustard-resume-2-conversa-e5.txt"], "{reason}");
-}
+fn a_runtime_answer_fed_to_any_interpreter_name_is_refused() {
+    use mustard_core::platform::i18n::{Locale, translate};
 
-/// Dois agentes da mesma conversa, que o host identifica pelo mesmo id de
-/// sessão, não dividem o arquivo do comando pronto: o id do agente entra no
-/// nome, ao lado do da sessão, e a conversa principal fica só com o da sessão.
-/// O ponto entre os dois não aparece em nenhum id, e a sessão `a` com o agente
-/// `b-c` não divide o arquivo com a sessão `a-b` e o agente `c`.
-#[test]
-fn the_ready_command_names_its_file_by_the_agent_that_asked() {
-    let dir = project_with(r#"{"language":{"text":"pt-BR"}}"#);
-    let ready = |session: &str, agent: Option<&str>| {
-        let mut input = serde_json::json!({
-            "hook_event_name": "PreToolUse",
-            "tool_name": "Bash",
-            "cwd": dir.path().to_str().expect("utf-8 path"),
-            "session_id": session,
-            "tool_input": { "command": "mustard-rt run resume | head -80" }
-        });
-        if let Some(agent) = agent {
-            input["agent_id"] = Value::from(agent);
-        }
-        let reason = refusal(&run_hook(dir.path(), &input, None)).expect("the cut must be refused");
-        file_name(&written_file(&reason))
-    };
-    assert_eq!(ready("conversa-c3", None), "mustard-resume-conversa-c3.txt");
-    assert_eq!(ready("conversa-c3", Some("agente-a1")), "mustard-resume-conversa-c3.agente-a1.txt");
-    assert_eq!(ready("conversa-c3", Some("agente-b2")), "mustard-resume-conversa-c3.agente-b2.txt");
-
-    let (first, second) = (ready("a", Some("b-c")), ready("a-b", Some("c")));
-    assert_ne!(first, second, "the session and the agent keep apart in the name");
-    assert_eq!(first, "mustard-resume-a.b-c.txt");
-    assert_eq!(second, "mustard-resume-a-b.c.txt");
-}
-
-/// A frase do catálogo, em pt-BR, que vem logo antes do comando pronto na
-/// recusa, pela chave `key`.
-fn ready_phrase(key: &str) -> String {
-    let text = mustard_core::platform::i18n::translate(key, mustard_core::platform::i18n::Locale::PtBr);
-    text.split("{ready}").next().unwrap_or_default().trim_end().to_string()
-}
-
-/// O comando pronto vai na recusa inteiro até 600 bytes, e acima deles sai do
-/// meio do trecho mais longo, marcado por `…`, com a frase que diz que ele
-/// voltou encurtado. O caminho do arquivo nunca se corta: com um espaço na
-/// pasta temporária ele volta entre aspas, inteiro, com a aspa do fim, mesmo
-/// quando os 600 bytes caem no meio dele. Cortar o texto no meio do caminho
-/// tirava a aspa do fim e deixava um comando que o terminal não fecha.
-#[test]
-fn the_ready_command_is_shortened_above_600_bytes_and_keeps_its_quoted_path_whole_in_a_folder_with_a_space() {
-    let dir = project_with(r#"{"language":{"text":"pt-BR"}}"#);
-    let root = TempDir::new().expect("tempdir");
-    let temp = root.path().join("with space");
-    std::fs::create_dir(&temp).expect("temporary folder with a space");
-    let refused = |command: &str| {
-        let input = serde_json::json!({
-            "hook_event_name": "PreToolUse",
-            "tool_name": "Bash",
-            "cwd": dir.path().to_str().expect("utf-8 path"),
-            "session_id": "conversa-d4",
-            "tool_input": { "command": command }
-        });
-        refusal(&run_hook_with_temp(dir.path(), &input, None, Some(&temp))).expect("the cut must be refused")
-    };
-    let file = temp.join("mustard-resume-conversa-d4.txt");
-
-    // Abaixo do limite, o comando volta inteiro, pronto para rodar.
-    let reason = refused(&format!("echo {} && mustard-rt run resume | head -5", "x".repeat(132)));
-    let ready = reason.lines().last().unwrap_or_default();
-    assert_eq!(ready, format!("echo {} && mustard-rt run resume > '{}'", "x".repeat(132), file.display()));
-    assert!(reason.contains(&ready_phrase("runtime_output.ready")), "{reason}");
-    assert_eq!(Path::new(&written_file(&reason)), file, "{ready}");
-
-    // Acima dele, o caminho começa no byte 593 e passa do 600: o corte sai do
-    // meio do trecho de antes, o mais longo, e o resto fica como foi escrito.
-    let reason = refused(&format!("echo {} && mustard-rt run resume | head -5 && echo {}", "x".repeat(560), "y".repeat(300)));
-    let ready = reason.lines().last().unwrap_or_default();
-    assert!(ready.len() <= 600, "the ready command stays within 600 bytes: {} bytes", ready.len());
-    assert!(ready.starts_with("echo xxx") && ready.contains('…'), "{ready}");
-    assert!(ready.ends_with(&format!(".txt' && echo {}", "y".repeat(300))), "the closing quote and the rest stay: {ready}");
-    assert_eq!(Path::new(&written_file(&reason)), file, "{ready}");
-    assert!(reason.contains(&ready_phrase("runtime_output.ready_shortened")), "{reason}");
-    assert!(!reason.contains(&ready_phrase("runtime_output.ready")), "a shortened command is not offered as the same command: {reason}");
+    let alone = translate("runtime_output.alone", Locale::PtBr);
+    for command in [
+        r#"mustard-rt run panel | py -c "import sys; print(sys.stdin.read()[:100])""#,
+        r#"mustard-rt run panel | uv run python -c "import sys; print(sys.stdin.read()[:100])""#,
+        r#"mustard-rt run panel | python.exe -c "import sys; print(sys.stdin.read()[:100])""#,
+        "py summarize.py <(mustard-rt run panel)",
+        "uv run python summarize.py <(mustard-rt run panel)",
+    ] {
+        let reason = filter_refusal(command, "pt-BR");
+        assert!(reason.ends_with(alone), "{command} ends on running it alone: {reason}");
+    }
 }

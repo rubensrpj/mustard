@@ -19,7 +19,7 @@ pub(crate) fn wave_states(log: &SpecLog) -> WaveStates {
 
 /// As vagas da obra `spec`, lida em `log`, pela conta única da rodada
 /// ([`crate::commands::flow::round::vacancy::vacancies`]): `(vagas do projeto,
-/// vagas livres)`. A onda que voltou guarda a cópia sem ocupar vaga.
+/// vagas livres)`. A onda que voltou guarda a cópia, e com ela a vaga.
 pub(crate) fn slots(root: &Path, spec: &str, log: &SpecLog) -> (usize, usize) {
     let vacancies = crate::commands::flow::round::vacancy::vacancies(root, spec, log);
     (vacancies.capacity, vacancies.free())

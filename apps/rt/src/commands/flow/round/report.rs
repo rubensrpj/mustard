@@ -25,7 +25,7 @@ use super::agreed::{
 };
 use super::answer::RoundRefusal;
 use super::commit::{
-    Held, UNMADE_SHA, build_development_version, commit_draft, covered, ensure_after_wave, files_of, format_round_files, git_lock, head, ignored_by_git,
+    Held, UNMADE_SHA, commit_draft, covered, ensure_after_wave, files_of, format_round_files, git_lock, head, ignored_by_git,
     join_copies, needs_commit, on_spec_branch, record_commit, reset_committed_copies, round_repos, write_joined,
 };
 use super::wave_commit::{commit_waves, made_drafts, record_made, removed_warnings};
@@ -181,9 +181,6 @@ pub(crate) struct Taken {
     /// usuário, e a que uma conferência da volta, da gravação ou de depois da
     /// onda recusou. O aviso de cada uma já vai em `warnings`.
     pub waiting: Vec<HeldReturn>,
-    /// A compilação depois do commit refez o programa da branch, e saiu
-    /// verde: o despacho que vem a seguir passa ao programa novo.
-    pub program_rebuilt: bool,
     /// As voltas que ficaram fora à espera da decisão do Jev, com a pergunta
     /// de cada uma: quem chamou a faz depois de soltar a trava do passo do
     /// git e a das cópias ([`super::triage_questions::ask_after_locks`]).
@@ -280,12 +277,7 @@ pub(crate) fn take_report_with_mine(
     // A reprovação de quem conduz a obra é gravada antes de tudo, presa à
     // volta que ela reprova, e a spec é lida de novo: a volta reprovada passa
     // a ser segurada pela mesma leitura que a segura nas rodadas seguintes.
-    // O veredito do revisor de cada onda é assumido antes: o reprovado entra
-    // pela mesma reprovação, com o motivo e os arquivos que ele apontou.
-    let (reviewed, by_reviewer) = super::wave_review::take_verdicts(start, spec, &path, &mut fresh)?;
-    report.rejected.extend(by_reviewer);
     let (mut rejections, unmeasured) = record_rejections(start, spec, &path, &mut fresh, &report.rejected, caller, lang)?;
-    rejections.splice(0..0, reviewed);
     rejections.extend(release_unstarted(start, spec, &path, &mut fresh, log)?);
     // O falso positivo de quem conduz também é gravado antes, preso à volta
     // pendente da onda: a conferência depois da onda o lê da spec.
@@ -329,7 +321,7 @@ pub(crate) fn take_report_with_mine(
 impl Taken {
     /// Nada assumido: só as ondas que pausaram, que a rodada reenvia.
     fn only_paused(paused: Vec<u64>) -> Self {
-        Taken { recorded: Vec::new(), formatted: Vec::new(), warnings: Vec::new(), commit: None, paused, waiting: Vec::new(), program_rebuilt: false, asking: Vec::new() }
+        Taken { recorded: Vec::new(), formatted: Vec::new(), warnings: Vec::new(), commit: None, paused, waiting: Vec::new(), asking: Vec::new() }
     }
 }
 
@@ -483,23 +475,14 @@ fn take_returns(
             .iter()
             .map(|name| json!({ "reason": "formatter-not-found", "hint": translate("round.formatter_missing", lang).replace("{name}", name) }))
             .collect();
-        // A rodada junta e comita sem compilar nem rodar prova: a prova é de
-        // cada onda, e a compilação, o lint, a suíte e os critérios são do
-        // fechamento. Antes do commit ficam o preparo do cliente gerado, no
-        // projeto que declara compilação, e a conferência depois da onda
-        // (importações contra a regra, restos e órfãos), que lê o mapa e não
-        // roda comando do projeto. A onda recusada volta o disco ao que era e
+        // A rodada junta e comita sem compilar nem rodar prova nem comando do
+        // projeto: a prova é de cada onda, e a compilação, o lint, a suíte e
+        // os critérios são do fechamento, na cópia limpa. Antes do commit fica
+        // a conferência depois da onda (importações contra a regra, restos e
+        // órfãos), que lê o mapa. A onda recusada volta o disco ao que era e
         // fica de fora; o que só avisa segue nos avisos.
         if !commits.is_empty() {
             let mut timing = super::super::validation::Stage::new(root, spec, "delivery", "validation-and-gates", true);
-            if mustard_core::ProjectConfig::load(root).commands().build.is_some() {
-                let stale = super::environment::prepare_or_hold(root, spec, &mut report.waves, &earlier, lang);
-                if !stale.as_ref().is_ok_and(Vec::is_empty) {
-                    drop(write_joined(root, &join.joined, false));
-                    refused.extend(stale?);
-                    continue;
-                }
-            }
             let mut gates = super::super::validation::Stage::new(root, spec, "delivery", "structural-gates", false);
             let skipped: BTreeSet<u64> = earlier.union(&after_checked).copied().collect();
             let (after, after_held, after_asking) = ensure_after_wave(root, spec, log, &report.waves, &skipped, mine, lang, jev_on);
@@ -544,7 +527,7 @@ fn take_returns(
         refused.extend(report.waves.iter().map(|wave| HeldReturn { wave: wave.wave, refusal: hold_of(wave.wave).refusal() }));
         let recorded = return_cut_batches(start, spec, log, cut).map_err(RoundRefusal::Refused)?;
         drop(held_lock);
-        return Ok(Taken { recorded, formatted, warnings, commit: None, paused: report.paused, waiting: refused, program_rebuilt: false, asking });
+        return Ok(Taken { recorded, formatted, warnings, commit: None, paused: report.paused, waiting: refused, asking });
     }
     if !git_refused.is_empty() {
         // Com outros commits já feitos, só as ondas recusadas ficam de fora:
@@ -606,34 +589,8 @@ fn take_returns(
     // mesmo com um arquivo só, e a onda seguinte sai sem esperar por ela. Até
     // ela acabar, o pedido não mostra linha do mapa de arquivo que este commit
     // mudou.
-    let mut program_rebuilt = false;
     if commit.is_some() {
         super::map_pass::start_map_refresh(root);
-        // O programa compilado da branch acompanha o commit que tocou o
-        // código do Mustard: a próxima chamada já roda o que acabou de entrar.
-        // A falha só avisa — o commit já saiu — e a sessão segue no programa
-        // compilado anterior. A compilação fica na hora, e não em segundo
-        // plano: o despacho que vem a seguir passa ao programa novo
-        // ([`super::handoff`]), que precisa estar pronto.
-        let mut timing = super::super::validation::Stage::new(root, spec, "delivery", "runtime-build", false);
-        let rebuilt = build_development_version(root, &files, lang);
-        if mustard_core::mustard_checkout(root).is_none()
-            || !files.iter().any(|file| {
-                file.starts_with("apps/")
-                    || file.starts_with("packages/")
-                    || file.starts_with("plugin/")
-                    || file.starts_with(".cargo/")
-                    || file == "Cargo.toml"
-                    || file == "Cargo.lock"
-            })
-        {
-            timing.skipped();
-        } else if rebuilt.is_none() {
-            timing.passed();
-            program_rebuilt = true;
-        }
-        drop(timing);
-        warnings.extend(rebuilt);
     }
     knowledge::capture(root, spec, &mut recorded, &mut warnings);
     // O arquivo de conversa da onda pode não ser achado, e nunca em silêncio:
@@ -648,7 +605,7 @@ fn take_returns(
             warnings.push(usage_missing(wave, lang));
         }
     }
-    Ok(Taken { recorded, formatted, warnings, commit, paused: report.paused, waiting: refused, program_rebuilt, asking })
+    Ok(Taken { recorded, formatted, warnings, commit, paused: report.paused, waiting: refused, asking })
 }
 
 /// O envio que despachou a onda `wave` por último, na posição em que a onda
@@ -705,7 +662,7 @@ pub(super) fn returned_verdict(log: &SpecLog) -> Vec<VerdictReport> {
     };
     let hidden = log.hidden();
     let returns: Vec<&SpecEvent> = log.events.iter()
-        .filter(|e| e.event_type == "verdict" && !super::wave_review::is_wave_verdict(e) && e.id > asked && hidden.get(&e.id) == Some(&Hidden::Returned))
+        .filter(|e| e.event_type == "verdict" && !super::is_wave_verdict(e) && e.id > asked && hidden.get(&e.id) == Some(&Hidden::Returned))
         .collect();
     let Some(last) = returns.last() else {
         return Vec::new();
@@ -2207,7 +2164,7 @@ mod tests {
             .cloned()
             .unwrap_or_default()
             .into_iter()
-            .filter(|w| !matches!(w["reason"].as_str(), Some("usage-missing" | "wave-size")))
+            .filter(|w| w["reason"] != "usage-missing")
             .collect();
         assert_eq!(warned.len(), 1, "{went}");
         assert_eq!(warned[0]["reason"], "scope-expanded");
@@ -2439,7 +2396,7 @@ mod tests {
             .cloned()
             .unwrap_or_default()
             .into_iter()
-            .filter(|w| !matches!(w["reason"].as_str(), Some("usage-missing" | "wave-size")))
+            .filter(|w| w["reason"] != "usage-missing")
             .collect();
         assert_eq!(json!(warned), json!([{"reason": "round-merge-conflict", "wave": 1, "hint": expected}]), "{out}");
         // O agente da onda segurada já terminou: ela não está em andamento, e
@@ -3605,21 +3562,22 @@ mod tests {
         assert_eq!(refused["hint"], json!(expected), "the path stays as it came: {refused}");
     }
 
-    /// Sem nota de dificuldade nas tarefas, o modelo do agente vem do
-    /// `mustard.json` do projeto, e o esforço é sempre xhigh: a onda de várias
-    /// tarefas e a de uma só saem com o modelo de `agents.model` e o esforço
-    /// xhigh nos campos `model` e `effort` do envio gravado, seja qual for o
-    /// `agents.effort`, e o pedido que o agente recebe diz o mesmo na linha do
-    /// modelo, nos dois idiomas. Sem os campos, o padrão é o Sonnet, e nem o
-    /// envio nem o pedido falam do Opus.
+    /// Sem nota de dificuldade nas tarefas, a onda vai ao Sonnet, e o modelo
+    /// de `agents.model` só vale com a escolha pela dificuldade desligada; o
+    /// esforço é sempre xhigh: a onda de várias tarefas e a de uma só saem
+    /// com esse modelo e o esforço xhigh nos campos `model` e `effort` do
+    /// envio gravado, seja qual for o `agents.effort`, e o pedido que o agente
+    /// recebe diz o mesmo na linha do modelo, nos dois idiomas. Sem os campos,
+    /// nem o envio nem o pedido falam do Opus.
     #[test]
     fn the_wave_request_and_send_carry_the_configured_model_at_effort_xhigh() {
         for (lang, declared, model, effort) in [
             (Locale::PtBr, None, "sonnet", "xhigh"),
             (Locale::EnUs, None, "sonnet", "xhigh"),
-            (Locale::PtBr, Some(("opus", "medium")), "opus", "xhigh"),
-            (Locale::EnUs, Some(("opus", "max")), "opus", "xhigh"),
-            (Locale::EnUs, Some(("opus", "ultra")), "opus", "xhigh"),
+            (Locale::PtBr, Some(("opus", "medium", true)), "sonnet", "xhigh"),
+            (Locale::PtBr, Some(("opus", "medium", false)), "opus", "xhigh"),
+            (Locale::EnUs, Some(("opus", "max", false)), "opus", "xhigh"),
+            (Locale::EnUs, Some(("opus", "ultra", false)), "opus", "xhigh"),
         ] {
             let dir = tempdir().unwrap();
             let root = dir.path();
@@ -3635,8 +3593,8 @@ mod tests {
                 );
             });
             let mut config = json!({"language": {"text": lang.as_str()}});
-            if let Some((declared_model, declared_effort)) = declared {
-                config["agents"] = json!({"model": declared_model, "effort": declared_effort});
+            if let Some((declared_model, declared_effort, by_difficulty)) = declared {
+                config["agents"] = json!({"model": declared_model, "effort": declared_effort, "by_difficulty": by_difficulty});
             }
             std::fs::write(root.join("mustard.json"), config.to_string()).unwrap();
 

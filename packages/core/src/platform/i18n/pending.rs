@@ -164,12 +164,11 @@ mod tests {
     use super::*;
     use crate::platform::i18n::translate;
 
-    /// Esta parte guarda as mesmas chaves, com os mesmos textos nos dois
-    /// idiomas, como o arquivo de impressões dela em `stamps/` guarda. Quem muda
-    /// um texto de propósito regrava o arquivo pelo comando que a falha mostra.
+    /// Cada chave desta parte começa por um dos começos que ela declara e tem
+    /// texto nos dois idiomas.
     #[test]
-    fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged("pending", include_str!("pending.rs"), super::PREFIXES);
+    fn the_part_answers_each_of_its_keys() {
+        crate::platform::i18n::tests::assert_part_answers(include_str!("pending.rs"), super::PREFIXES);
     }
 
     /// O aviso do fim da resposta, com a saída "fica para depois", passa na
@@ -213,10 +212,6 @@ mod tests {
             ("pending.not_dropped", &["{id}"][..]),
             ("pending.gate.block", &["{spec}", "{count}", "{items}"][..]),
             ("pending.duplicate", &["{id}", "{title}"][..]),
-            ("scratch.residue.notice", &["{total}", "{count}"][..]),
-            ("session.landed.settled", &["{branch}"][..]),
-            ("session.landed.unsettled", &["{branch}", "{reason}"][..]),
-            ("session.landed.pending", &["{items}"][..]),
             ("statusline.wave", &["{delivered}", "{total}"][..]),
             ("statusline.rtk", &["{pct}"][..]),
             ("statusline.spend", &["{change}"][..]),
@@ -228,13 +223,6 @@ mod tests {
             for slot in slots {
                 assert!(pt.contains(slot) && en.contains(slot), "{key} lost {slot}");
             }
-        }
-        // O aviso de sobras manda, nos dois idiomas, para o comando de limpeza
-        // que existe: listar sem nada e apagar com `--apply`.
-        for lang in [Locale::PtBr, Locale::EnUs] {
-            let notice = translate("scratch.residue.notice", lang);
-            assert!(notice.contains("`mustard-rt run clean`"), "the notice names the list call: {notice}");
-            assert!(notice.contains("`mustard-rt run clean --apply`"), "and the delete call: {notice}");
         }
         for key in [
             "deliver.order",

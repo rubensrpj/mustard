@@ -296,17 +296,19 @@ fn survey(project: &Project) -> u64 {
         let facts = json!([{"text": "A saudação mora no programa.", "source": "src/main.rs:2"}]);
         current = project.write("point", &json!({"replaces": point["id"], "facts": facts}))["point"].clone();
     }
+    // A resposta do usuário vem depois dos pontos que ela fecha.
+    let answered = user_says(project, "Respondi todos os pontos.");
     for point in &points {
         let code = current["code"].as_str().expect("the open point").to_string();
         let answer = project.write(
             "decision",
             &json!({"title": "Combinar o item", "agent": format!("- ponto {code}"), "text": "O usuário respondeu ao ponto.", "keys": ["levantamento"],
-                "why": "o usuário respondeu", "origin": said, "applies_to": {"files": ["**"]}}),
+                "why": "o usuário respondeu", "origin": answered, "applies_to": {"files": ["**"]}}),
         );
         let closed = project.write(
             "point",
             &json!({"block": point["block"], "gap": point["gap"], "from": "gap", "status": "closed",
-                "closes": code, "result": [answer["id"]], "origin": said}),
+                "closes": code, "result": [answer["id"]], "origin": answered}),
         );
         current = closed["point"].clone();
     }
@@ -364,6 +366,7 @@ fn backlog_task_with(project: &Project, criterion: u64, said: u64, files: &[&str
 #[test]
 fn backlog_always_becomes_the_same_batches() {
     let project = Project::new();
+    declare_slots(&project, 3);
     project.open();
     let said = survey(&project);
     let criterion = project.write(
@@ -651,6 +654,7 @@ fn task_with_a_wildcard_goes_out_alone_and_waits_for_the_wave_in_progress() {
 fn task_with_a_wildcard_goes_out_alone_and_the_pattern_joins_the_file_it_matches() {
     let own = ["src/a.rs", "lib/1.rs", "lib/2.rs", "lib/3.rs", "lib/4.rs"];
     let (project, crit, said, tasks) = backlog_project(&[&own, &["src/**"]]);
+    declare_slots(&project, 3);
     let (_, out) = dispatch_ready(&project);
     let joined = wave_of(&project, tasks[0]).expect("a tarefa de src/a.rs vira onda");
     assert_eq!(wave_of(&project, tasks[1]), Some(joined), "src/** junta com src/a.rs, que ele casa");
@@ -833,21 +837,23 @@ fn a_task_of_an_unsent_wave_that_lost_a_dependency_returns_to_the_backlog_and_th
     assert!(!detail.contains(&open_code), "o motivo não nomeia a tarefa aberta e válida: {out}");
 }
 
-/// O bloco de retomada que o aviso antes de compactar traz, pelo gancho
-/// `PreCompact` da sessão que conduz a obra, como o Claude Code o chama.
-fn precompact_block(project: &Project) -> String {
-    let payload = json!({"hook_event_name": "PreCompact", "trigger": "auto", "session_id": SESSION,
+/// O bloco de retomada que o início da sessão depois da compactação traz,
+/// pelo gancho `SessionStart` da sessão que conduz a obra, como o Claude Code
+/// o chama.
+fn compaction_block(project: &Project) -> String {
+    let payload = json!({"hook_event_name": "SessionStart", "source": "compact", "session_id": SESSION,
         "cwd": project.root.to_string_lossy()});
-    let out = project.command(&["on", "PreCompact"], &payload.to_string());
+    let out = project.command(&["on", "SessionStart"], &payload.to_string());
     assert_eq!(out.status.code(), Some(0), "a hook always exits 0: {}", String::from_utf8_lossy(&out.stderr));
     let answer: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("the hook answers JSON ({e}): {}", String::from_utf8_lossy(&out.stdout)));
-    answer["systemMessage"].as_str().unwrap_or_else(|| panic!("the hook brings the resume block: {answer}")).to_string()
+    answer["hookSpecificOutput"]["additionalContext"].as_str().unwrap_or_else(|| panic!("the hook brings the resume block: {answer}")).to_string()
 }
 
 /// A volta gravada de uma onda que saiu do ar depois dela — a remoção tirou a
 /// última tarefa da onda depois da entrega — não espera a rodada, que nunca a
 /// assume: a retomada não a lista entre as voltas à espera, e o bloco de
-/// retomada do aviso antes de compactar diz que nenhuma volta espera. Antes
+/// retomada do início da sessão depois de compactar diz que nenhuma volta
+/// espera. Antes
 /// da remoção, as duas leituras a mostram.
 #[test]
 fn the_return_of_a_wave_that_left_the_air_does_not_wait_in_the_resume() {
@@ -863,7 +869,7 @@ fn the_return_of_a_wave_that_left_the_air_does_not_wait_in_the_resume() {
     let label = block.split("{returned}").next().and_then(|before| before.rsplit(". ").next()).expect("the label of the returns");
     let waiting = |list: &str| format!("{label}{list}.");
     assert_eq!(awaiting(), vec![1], "a volta da onda no plano espera a rodada");
-    let before = precompact_block(&project);
+    let before = compaction_block(&project);
     assert!(before.contains(&waiting("1")), "o bloco lista a volta da onda no plano: {before}");
 
     let removal = json!({"targets": [tasks[0]], "reason": "Já foi feito fora da onda."});
@@ -871,7 +877,7 @@ fn the_return_of_a_wave_that_left_the_air_does_not_wait_in_the_resume() {
     assert_eq!(removed["waves_left_without_tasks"], json!([1]), "a remoção tira a onda 1 do ar: {removed}");
 
     assert_eq!(awaiting(), Vec::<u64>::new(), "a volta da onda fora do ar não espera a rodada");
-    let after = precompact_block(&project);
+    let after = compaction_block(&project);
     assert!(after.contains(&waiting(translate("resume.none", Locale::PtBr))), "o bloco não lista a volta da onda fora do ar: {after}");
 }
 
@@ -1106,14 +1112,14 @@ fn tasks_of_one_kind_share_a_wave_without_a_file_in_common_and_the_call_is_recor
     assert_eq!((call["requests"].clone(), call["candidates"].clone(), call["returned"].clone()), (json!(3), json!(3), json!(3)));
 }
 
-/// A onda sem nota de dificuldade sai no modelo do projeto, com o Jev ligado
-/// ou não, e ainda que o `mustard.json` traga a chave `light_model` de antes:
-/// o envio grava o modelo do projeto e o esforço `xhigh`, o pedido da onda diz
+/// A onda sem nota de dificuldade sai no Sonnet, com o Jev ligado ou não,
+/// mesmo com `agents.model` em opus e a chave `light_model` de antes no
+/// `mustard.json`: o envio grava o Sonnet e o esforço `xhigh`, o pedido da onda diz
 /// os dois, a resposta do despacho traz o modelo de cada onda, o texto do
 /// próximo passo manda lançar o agente com ele, e o Jev não pergunta mais se a
 /// tarefa é mecânica.
 #[test]
-fn a_wave_without_a_grade_goes_out_on_the_project_model_and_the_dispatch_names_it() {
+fn a_wave_without_a_grade_goes_out_on_sonnet_and_the_dispatch_names_it() {
     let jev = FakeJev::judging(
         |position| {
             if position == 0 { ("defect", 0.9) } else { ("feature", 0.9) }
@@ -1132,13 +1138,13 @@ fn a_wave_without_a_grade_goes_out_on_the_project_model_and_the_dispatch_names_i
     let log = project.log();
     for wave in [1, 2] {
         let send = log.visible().into_iter().find(|e| e.event_type == "send" && e.wave() == Some(wave)).expect("the send");
-        assert_eq!((send.str_field("model"), send.str_field("effort")), (Some("opus"), Some("xhigh")), "a onda {wave} vai no modelo do projeto: {out}");
+        assert_eq!((send.str_field("model"), send.str_field("effort")), (Some("sonnet"), Some("xhigh")), "a onda {wave} vai no Sonnet: {out}");
         let prompt = send.str_field("text").expect("the request");
-        assert!(prompt.contains("Modelo desta onda: opus. Esforço: xhigh."), "o pedido diz o modelo do projeto: {prompt}");
+        assert!(prompt.contains("Modelo desta onda: sonnet. Esforço: xhigh."), "o pedido diz o modelo da onda: {prompt}");
     }
     let dispatch = out["dispatch"].as_array().expect("the dispatch");
     assert_eq!(dispatch.len(), 2, "{out}");
-    assert!(dispatch.iter().all(|sent| sent["model"] == json!("opus")), "o despacho traz o modelo de cada onda: {out}");
+    assert!(dispatch.iter().all(|sent| sent["model"] == json!("sonnet")), "o despacho traz o modelo de cada onda: {out}");
     let next = out["next"].as_str().expect("the next step");
     assert!(next.contains("`model`"), "o próximo passo manda lançar com o modelo da entrada: {next}");
     for asked in jev.requests() {
@@ -1347,6 +1353,15 @@ fn one_slot(project: &Project) {
     slots(project, 1);
 }
 
+/// Declara `count` vagas no `mustard.json` do projeto, guardando o resto
+/// dele.
+fn declare_slots(project: &Project, count: usize) {
+    let path = project.root.join("mustard.json");
+    let mut config: Value = serde_json::from_str(&std::fs::read_to_string(&path).expect("config")).expect("json");
+    config["maxCompilingWaves"] = json!(count);
+    std::fs::write(&path, config.to_string()).expect("config");
+}
+
 /// Deixa o projeto com `count` vagas: até `count` ondas ao mesmo tempo.
 fn slots(project: &Project, count: usize) {
     std::fs::write(
@@ -1392,6 +1407,7 @@ fn a_marked_task_with_the_highest_number_leaves_first_with_and_without_the_jev()
 #[test]
 fn independent_small_tasks_leave_with_priority_preserved() {
     let (project, crit, said, tasks) = backlog_project(&[&["a.rs"]]);
+    declare_slots(&project, 3);
     let (_, out) = dispatch_ready(&project);
     assert_eq!(out, vec![wave_of(&project, tasks[0]).expect("a primeira onda")], "a onda de a.rs sai e fica no ar");
     let plain = seed_backlog_task(&project, crit, said, &["b.rs"]);
@@ -2587,8 +2603,8 @@ fn unreviewed_round(project: &Project) -> Value {
     report
 }
 
-/// Duas vagas e três cópias, todas guardadas: as ondas 1 e 2 voltaram e
-/// esperam a revisão, e a 3 trabalha. Com uma sessão conduzindo, a rodada
+/// Três vagas, cada uma com a sua cópia, todas guardadas: as ondas 1 e 2
+/// voltaram e esperam a revisão, e a 3 trabalha. Com uma sessão conduzindo, a rodada
 /// pede a formação das duas tarefas que sobram, e o recibo do agente de
 /// análise volta. A onda 3 volta também, e a vaga dela abre, mas as cópias
 /// seguem cheias. A rodada seguinte, com a mesma fila, reaproveita a
@@ -2596,10 +2612,7 @@ fn unreviewed_round(project: &Project) -> Value {
 #[test]
 fn with_full_copies_the_next_round_reuses_the_formation_of_the_same_tasks() {
     let mut project = Project::new();
-    let path = project.root.join("mustard.json");
-    let mut config: Value = serde_json::from_str(&std::fs::read_to_string(&path).expect("config")).expect("json");
-    config["maxCompilingWaves"] = json!(2);
-    std::fs::write(&path, config.to_string()).expect("config");
+    declare_slots(&project, 3);
     project.open();
     let said = survey(&project);
     let criterion = project.write(
@@ -2614,13 +2627,10 @@ fn with_full_copies_the_next_round_reuses_the_formation_of_the_same_tasks() {
     approve(&project);
 
     let first = project.run(&["round", "--dispatch", "--spec", SPEC]);
-    assert_eq!(waves_in(&first, "dispatch"), vec![1, 2], "{first}");
-    keep_sent(&project, &[1, 2]);
+    assert_eq!(waves_in(&first, "dispatch"), vec![1, 2, 3], "{first}");
+    keep_sent(&project, &[1, 2, 3]);
     deliver_file_in_copy(&project, 1, files[0], "pronto\n");
     deliver_file_in_copy(&project, 2, files[1], "pronto\n");
-    let second = unreviewed_round(&project);
-    assert_eq!(waves_in(&second, "dispatch"), vec![3], "{second}");
-    keep_sent(&project, &[3]);
     project.session = Some(SESSION);
 
     let asked = unreviewed_round(&project);
@@ -2709,10 +2719,7 @@ fn deliver_wave_one(project: &Project, text: &str, files: &[&str], undone: &[Str
 /// projeto e as quatro tarefas: as duas da onda 1 e as duas que a seguem.
 fn running_wave_with_followers() -> (Project, [u64; 4]) {
     let mut project = Project::new();
-    let path = project.root.join("mustard.json");
-    let mut config: Value = serde_json::from_str(&std::fs::read_to_string(&path).expect("config")).expect("json");
-    config["maxCompilingWaves"] = json!(2);
-    std::fs::write(&path, config.to_string()).expect("config");
+    declare_slots(&project, 2);
     project.open();
     let said = survey(&project);
     let criterion = project.write(
@@ -2848,8 +2855,8 @@ fn copies_full(out: &Value) -> Option<&Value> {
     out["warnings"].as_array().into_iter().flatten().find(|warning| warning["reason"] == json!("copies-full"))
 }
 
-/// Uma vaga só, duas cópias e quatro tarefas prontas, cada uma no seu
-/// arquivo. As ondas 1 e 2 voltam e guardam as duas cópias; o aviso de
+/// Duas vagas, cada uma com a sua cópia, e quatro tarefas prontas, cada uma
+/// no seu arquivo. As ondas 1 e 2 voltam e guardam as duas cópias; o aviso de
 /// cópias cheias cita as duas. A onda 1 perde a tarefa depois de voltar e
 /// sai do ar: a cópia dela vai para a onda 3, e quando as ondas 2 e 3
 /// voltam e a quarta tarefa espera, o aviso cita só as duas que guardam
@@ -2857,13 +2864,10 @@ fn copies_full(out: &Value) -> Option<&Value> {
 #[test]
 fn a_wave_that_lost_its_last_task_after_returning_is_not_named_among_the_copies_kept() {
     let (project, _, _, tasks) = backlog_project(&[&["a.rs"], &["b.rs"], &["c.rs"], &["d.rs"]]);
-    one_slot(&project);
+    slots(&project, 2);
     let (_, first) = dispatch_ready(&project);
-    assert_eq!(first, vec![1]);
+    assert_eq!(first, vec![1, 2]);
     deliver_file_in_copy(&project, 1, "a.rs", "um\n");
-    let second = unreviewed_round(&project);
-    assert_eq!(waves_in(&second, "dispatch"), vec![2], "{second}");
-    keep_sent(&project, &[2]);
     deliver_file_in_copy(&project, 2, "b.rs", "dois\n");
 
     let full = unreviewed_round(&project);
@@ -2888,15 +2892,15 @@ fn a_wave_that_lost_its_last_task_after_returning_is_not_named_among_the_copies_
     assert_eq!(warning["hint"], json!(expected), "{held}");
 }
 
-/// Três vagas e quatro cópias. As ondas 1 e 2 voltam e esperam a revisão,
-/// guardando duas cópias. Do backlog, a tarefa de um arquivo sai numa das
-/// duas cópias livres, e a que cruza a árvore inteira segue pronta,
+/// Quatro vagas, cada uma com a sua cópia. As ondas 1 e 2 voltam e esperam
+/// a revisão, guardando duas cópias. Do backlog, a tarefa de um arquivo sai
+/// numa das duas cópias livres, e a que cruza a árvore inteira segue pronta,
 /// esperando a vez de sair sozinha, e não uma cópia: sobra cópia livre, e a
 /// rodada não diz que as cópias estão cheias.
 #[test]
 fn a_round_that_leaves_a_copy_free_does_not_say_the_copies_are_full() {
     let (project, crit, said, _) = backlog_project(&[&["a.rs"], &["b.rs"]]);
-    slots(&project, 3);
+    slots(&project, 4);
     let first = project.run(&["round", "--dispatch", "--spec", SPEC]);
     assert_eq!(waves_in(&first, "dispatch"), vec![1, 2], "{first}");
     deliver_file_in_copy(&project, 1, "a.rs", "um\n");
@@ -2913,8 +2917,9 @@ fn a_round_that_leaves_a_copy_free_does_not_say_the_copies_are_full() {
     assert!(copies_full(&out).is_none(), "a copy is still free: {out}");
 }
 
-/// Duas vagas e três cópias, com quatro tarefas prontas. As ondas 1 e 2
-/// voltam e esperam a revisão, guardando duas cópias, e sobra uma. O Jev
+/// Três vagas, cada uma com a sua cópia, e quatro tarefas prontas. As ondas
+/// 1 e 2 saem com duas vagas, voltam e esperam a revisão, guardando duas
+/// cópias, e o projeto passa a três: sobra uma. O Jev
 /// recusa só a escolha dos itens: a onda montada do backlog espera o recibo e
 /// não sai, então não toma a cópia livre. A rodada diz que a onda espera a
 /// escolha, e não que as cópias estão cheias; com o recibo, a onda sai na
@@ -2927,6 +2932,7 @@ fn a_wave_held_for_the_item_choice_takes_no_copy_and_the_round_does_not_say_the_
     assert_eq!(waves_in(&first, "dispatch"), vec![1, 2], "{first}");
     deliver_file_in_copy(&project, 1, "a.rs", "um\n");
     deliver_file_in_copy(&project, 2, "b.rs", "dois\n");
+    slots(&project, 3);
     let jev = FakeJev::start(|asked| if asks_items(asked) { (400, json!({"error": "refused"})) } else { items_answer(asked, &|_| 0.5) });
     project.jev = Some(jev.url.clone());
 
@@ -3094,6 +3100,29 @@ fn a_new_task_version_without_the_wave_stays_in_the_wave_in_progress_and_its_del
 
     deliver_in_copy(&project, 1, "hello\n");
     assert!(project.log().events.iter().any(|e| e.event_type == "delivered" && e.wave() == Some(1)), "a entrega do agente foi gravada");
+}
+
+/// A versão nova da tarefa de uma onda já entregue, gravada só com `files`,
+/// herda os outros campos da versão anterior e sai sem onda: a onda não se
+/// herda por aí, e a tarefa volta ao backlog.
+#[test]
+fn a_new_version_of_a_delivered_wave_task_leaves_the_wave() {
+    let (project, task) = wave_in_progress();
+    deliver_in_copy(&project, 1, "hello\n");
+    assert_eq!(wave_of(&project, task), Some(1), "a tarefa entregue segue na onda 1");
+    let log = project.log();
+    let before = log.current(task).expect("the task").clone();
+    let code = log.codes().get(&before.id).cloned().expect("the task code");
+
+    let sent = json!({"replaces": code, "files": [{"path": "src/other.txt"}]});
+    let revised = project.answer(&["write", "task", "--spec", SPEC, "--json", &sent.to_string()]);
+    assert_eq!(revised["ok"], json!(true), "{revised}");
+    assert_eq!(wave_of(&project, task), None, "a versão nova sai sem onda: {revised}");
+    let now = project.log().current(task).expect("the task").clone();
+    assert_eq!(now.fields.get("files"), Some(&json!([{"path": "src/other.txt"}])), "{:?}", now.fields);
+    for field in ["title", "text", "agent", "depends_on", "covers"] {
+        assert_eq!(now.fields.get(field), before.fields.get(field), "{field} vem da versão anterior: {:?}", now.fields);
+    }
 }
 
 /// Mudar a onda de uma tarefa cujo envio está aberto é recusado com o motivo
@@ -3563,6 +3592,56 @@ fn a_task_whose_files_are_all_git_ignored_is_refused_with_its_own_reason() {
     assert_eq!(tasks(&project), before + 1, "{mixed}");
 }
 
+/// A obra do próprio Mustard: a rodada que comita código do programa sem
+/// onda nenhuma a despachar, com a onda 2 ainda no ar, não chama o executor
+/// de compilação: o programa não roda antes da volta dela.
+#[test]
+fn a_round_that_commits_the_program_with_nothing_to_dispatch_does_not_build_it() {
+    let (project, _, _, _) = backlog_in(Project::as_mustard_source(), &[&["apps/rt/a.txt"], &["apps/rt/b.txt"]], &[]);
+    let first = project.run(&["round", "--dispatch", "--spec", SPEC]);
+    assert_eq!(waves_in(&first, "dispatch"), vec![1, 2], "{first}");
+    keep_sent(&project, &[1, 2]);
+    deliver_file_in_copy(&project, 1, "apps/rt/a.txt", "um\n");
+    let view = project.run(&["review-wave", "--wave", "1", "--spec", SPEC]);
+    assert!(view["fingerprint"].is_string(), "{view}");
+    let reviewed = json!({"wave": 1, "note": "O conferente leu o diff e as regras."});
+    let report = format!("{USAGE_OF_WAVE_ONE}\n<REVIEWED>{reviewed}</REVIEWED>");
+    let calls = || std::fs::read_to_string(project.home.join("cargo.log")).unwrap_or_default();
+    let before = calls();
+
+    let out = project.command(&["run", "round", "--dispatch", "--spec", SPEC, "--report", &report], "");
+    let out: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stdout)));
+
+    assert!(out.get("commit").is_some(), "the round committed the wave 1: {out}");
+    assert!(waves_in(&out, "dispatch").is_empty(), "{out}");
+    assert_eq!(calls(), before, "nothing to dispatch, nothing built");
+}
+
+/// A obra do próprio Mustard: a rodada que comita a última onda, sem nada a
+/// despachar e com o programa atrás, compila uma vez: o passo seguinte é o
+/// fechamento, que roda o programa da branch.
+#[test]
+fn a_round_that_commits_the_last_wave_builds_the_program_for_the_close() {
+    let (project, _, _, _) = backlog_in(Project::as_mustard_source(), &[&["apps/rt/a.txt"]], &[]);
+    let first = project.run(&["round", "--dispatch", "--spec", SPEC]);
+    assert_eq!(waves_in(&first, "dispatch"), vec![1], "{first}");
+    keep_sent(&project, &[1]);
+    deliver_file_in_copy(&project, 1, "apps/rt/a.txt", "um\n");
+    let view = project.run(&["review-wave", "--wave", "1", "--spec", SPEC]);
+    assert!(view["fingerprint"].is_string(), "{view}");
+    let reviewed = json!({"wave": 1, "note": "O conferente leu o diff e as regras."});
+    let report = format!("{USAGE_OF_WAVE_ONE}\n<REVIEWED>{reviewed}</REVIEWED>");
+    let builds = || std::fs::read_to_string(project.home.join("cargo.log")).unwrap_or_default().matches("build --profile").count();
+    let before = builds();
+
+    let out = project.command(&["run", "round", "--dispatch", "--spec", SPEC, "--report", &report], "");
+    let out: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stdout)));
+
+    assert!(out.get("commit").is_some(), "the round committed the last wave: {out}");
+    assert!(waves_in(&out, "dispatch").is_empty(), "{out}");
+    assert_eq!(builds(), before + 1, "nothing left open, the close comes next: {out}");
+}
+
 /// A obra do próprio Mustard: a rodada que comita código do programa o
 /// recompila e passa o despacho ao programa novo, que responde numa segunda
 /// passada, e as duas respostas saem juntas. A onda 1 volta com duas sobras de
@@ -3572,6 +3651,8 @@ fn a_task_whose_files_are_all_git_ignored_is_refused_with_its_own_reason() {
 #[test]
 fn a_round_that_commits_the_program_hands_the_dispatch_over_and_answers_once() {
     let (project, crit, said, _) = backlog_in(Project::as_mustard_source(), &[&["apps/rt/a.txt"]], &[]);
+    // A onda 2 guarda a cópia dela, e as duas limpezas tomam as outras duas.
+    declare_slots(&project, 3);
     let first = project.run(&["round", "--dispatch", "--spec", SPEC]);
     assert_eq!(waves_in(&first, "dispatch"), vec![1], "{first}");
     keep_sent(&project, &[1]);
@@ -3591,12 +3672,15 @@ fn a_round_that_commits_the_program_hands_the_dispatch_over_and_answers_once() {
     let reviewed = json!({"wave": 1, "note": "O conferente leu o diff e as regras."});
     let report = format!("{USAGE_OF_WAVE_ONE}\n<REVIEWED>{reviewed}</REVIEWED>");
 
+    let builds = || std::fs::read_to_string(project.home.join("cargo.log")).unwrap_or_default().matches("build --profile").count();
+    let before = builds();
+
     let out = project.command(&["run", "round", "--dispatch", "--spec", SPEC, "--report", &report], "");
     let out: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stdout)));
 
     assert_eq!(out["ok"], json!(true), "{out}");
     assert!(out.get("commit").is_some(), "the round committed the wave 1: {out}");
-    assert!(std::fs::read_to_string(project.home.join("cargo.log")).is_ok_and(|calls| calls.contains("build")), "the commit rebuilt the program: {out}");
+    assert_eq!(builds(), before + 1, "the dispatch after the commit rebuilt the program once: {out}");
     let log = project.log();
     let codes = log.codes();
     let cleanups: Vec<&String> = log

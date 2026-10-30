@@ -234,7 +234,6 @@ test('a Windows query failure keeps the last reading and the English panel', asy
   on('ui.close', () => ({value:null}));
   on('turn.complete',()=>({text:''}));
   on('process.run', ($, e) => {
-    if(e.argv[2]==='panel-diagnostics')return {value:{exitCode:0,stdout:'{"ok":true}',stderr:''}};
     reads++;
     expect(e.argv[0]).toMatch(/mustard-rt\.exe$/);
     return {value:reads===1 ? {exitCode:0,stdout:JSON.stringify(overview({project:{name:'fixture',language:'en-US'},
@@ -342,41 +341,6 @@ test('a command hook that fails answers in text and runs nothing', () => {
   const reply=commandFailed();
   expect(reply.text).toContain('Nada foi executado');expect(reply.text).toContain('/plugin');
   expect(reply.context).toBeUndefined();
-});
-
-test('panel and usage failures reach the diagnostics with their cause, once', async ($, on) => {
-  const clock = mock.clock(on);
-  on('tool.register',()=>({value:{tool:'mcp__mustard__search'}}));
-  mock.env(on, {});
-  let reads = 0;
-  const diagnostics:any[] = [];
-  const replies = [
-    {ok:false,reason:'usage-cost-unknown',live:{ok:false,reason:'live-usage-unreadable',detail:'EOF while parsing a string',diagnosed:true}},
-    {ok:false,reason:'io error: No space left on device (os error 28)'},
-  ];
-  on('session.start', ($, e) => ({cwd:e.cwd}));on('session.measure',($,e)=>({changed:e.changed}));
-  on('command.register', () => ({value:null}));
-  on('session.cwd', () => ({value:'/fixture'}));on('session.id',()=>({value:'actual-session'}));on('session.model',()=>({value:'test-model'}));
-  on('session.usage', () => ({value:{rateLimits:[]}}));
-  on('ui.open', () => ({value:null}));
-  on('ui.close', () => ({value:null}));
-  on('turn.complete',()=>({text:''}));
-  on('process.run', ($, e) => {
-    if(e.argv[2]==='panel-diagnostics') {diagnostics.push(JSON.parse(e.init.stdin));return {value:{exitCode:0,stdout:'{"ok":true}',stderr:''}};}
-    if(e.argv[2]==='usage-record')return {value:{exitCode:0,stdout:JSON.stringify(replies.shift()),stderr:''}};
-    reads++;
-    return {value:reads===1 ? {exitCode:0,stdout:JSON.stringify(overview()),stderr:''} : {exitCode:1,stdout:'',stderr:'database is locked\n'}};
-  });
-  await $.session.start({cwd:'/fixture',surface:'terminal',isInteractive:true});
-  for(const _ of [0,1])await $.session.measure({context:{percent:1,tokens:10,window:200000},cost:{usd:0.1},rateLimits:[],changed:['cost']});
-  await $.command.run({command:'mustard:mods',args:''});
-  await $.ui.mount({plugin:'mustard',surface:'terminal',component:'Pane',props:{id:'mustard-panel',title:'Mustard'},requestId:'mustard-panel'});
-  await $.turn.complete({answer:'',durationMs:1,isAborted:false,turnId:'main',reason:'answer'});
-  await clock.advance(10);
-  expect(diagnostics).toEqual([
-    {component:'usage',operation:'record',reason:'usage-record-failed',detail:'io error: No space left on device (os error 28)',session:'actual-session'},
-    {component:'panel',operation:'refresh',reason:'panel-query-failed',detail:'exit 1: database is locked',session:'actual-session'},
-  ]);
 });
 
 test('a module restart restores the requested pane, spec and screen without a model',async ($,on)=>{

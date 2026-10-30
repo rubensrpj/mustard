@@ -33,8 +33,9 @@
 //!   core's `MapFilter` port: one request with the candidates' code and the
 //!   two questions, the core's cut, and the machine-wide key that never leaves
 //!   the `Authorization` header.
-//! - [`agent_said`] — the agent's last words before a call, read backwards
-//!   from the end of the session transcript and never a person's text.
+//! - `agent_said` — the agent's last words before a call, read backwards
+//!   from the end of the session transcript and never a person's text; only
+//!   the historical search ruler, under test, reads it.
 //! - [`typed_messages`] — o que o usuário digitou numa conversa, lido do
 //!   arquivo da sessão, sem resultado de ferramenta, linha de sistema nem
 //!   bloco do harness; a spec aberta no meio da conversa grava essas falas.
@@ -53,7 +54,8 @@
 pub(crate) mod tool_observations;
 
 /// A última fala do agente antes de uma chamada, lida do fim do arquivo da
-/// conversa; nunca texto do usuário.
+/// conversa; nunca texto do usuário. Só a régua histórica da busca a lê.
+#[cfg(test)]
 pub mod agent_said;
 pub mod branch_state;
 /// Os avisos da remoção das cópias da obra e a remoção da pasta de

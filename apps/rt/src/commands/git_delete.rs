@@ -24,8 +24,8 @@
 //!
 //! Deleting the branch you are standing on is not an operation — git refuses it,
 //! and the ritual would leave the session on a ref that no longer exists.
-//! "Which unit do I give up on" is a question asked from the BASE, exactly like
-//! the list of open pull requests, so a checkout that IS somebody's unit
+//! "Which unit do I give up on" is a question asked from the BASE, so a
+//! checkout that IS somebody's unit
 //! REFUSES and names the base to switch to, touching nothing.
 //!
 //! Both refusals are measured, never read off a declared list. The old test was
@@ -396,9 +396,8 @@ mod tests {
     /// A declared integration base whose NAME carries a slash
     /// (`release/2026-Q3`) parses into a first segment that reads as a kind and
     /// a second that reads as a slug, exactly like `feature/aba` does. So the
-    /// project's own release line answered "somebody's work unit", and both
-    /// doors acted on that answer: this one OFFERED to delete it, and the list
-    /// of open pull requests REFUSED to run from it.
+    /// project's own release line answered "somebody's work unit", and this
+    /// door acted on that answer: it OFFERED to delete it.
     ///
     /// Behaviour, not source text: every assertion below is a command's own
     /// report plus what the repository looks like afterwards.
@@ -424,19 +423,10 @@ mod tests {
         std::fs::create_dir_all(root.join(".claude").join("spec").join("na-linha"))
             .expect("unit record");
 
-        // Standing ON the slashed base, the PR door does not refuse. `gh` is
-        // absent here, which is reported as `ghError` — never as a refusal.
+        // Standing ON the slashed base, the base itself is not deletable, from
+        // there or anywhere: a base is nobody's unit, whatever the shape of its
+        // name.
         git(root, &["checkout", "release/2026-Q3"]);
-        let listed = crate::commands::review::pr_door::list_at(root);
-        assert!(
-            listed.ok,
-            "the pull request list refused from the project's own base: {:?} / {:?}",
-            listed.reason, listed.hint
-        );
-        assert_eq!(listed.branch, "release/2026-Q3");
-
-        // …and the base itself is not deletable, from there or anywhere: a base
-        // is nobody's unit, whatever the shape of its name.
         let refused = delete_at(root, "release/2026-Q3");
         assert_eq!(
             refused["ok"],
@@ -499,14 +489,12 @@ mod tests {
         assert!(!branch_exists(bare_root, "feature/real"), "the unit's branch survived");
     }
 
-    /// Num projeto recém-instalado, que não declara fluxo nenhum, as portas
-    /// respondem a mesma coisa sobre a mesma branch: a que o próprio remoto
-    /// chama de padrão é base, mesmo que o nome dela se parta em espécie e
-    /// apelido como o de uma unidade.
+    /// Num projeto recém-instalado, que não declara fluxo nenhum, a branch que o
+    /// próprio remoto chama de padrão é base, mesmo que o nome dela se parta em
+    /// espécie e apelido como o de uma unidade.
     ///
     /// Sem essa leitura única, a declaração vazia fazia a branch padrão do
-    /// servidor contar como unidade de alguém: a lista dos pull requests
-    /// recusava rodar de cima dela e a exclusão aceitava apagá-la.
+    /// servidor contar como unidade de alguém, e a exclusão aceitava apagá-la.
     #[test]
     fn server_default_branch_is_the_base_for_every_door() {
         let dir = tempdir().expect("tempdir");
@@ -535,16 +523,7 @@ mod tests {
             &["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/release/2026-Q3"],
         );
 
-        // De cima dela, a porta dos pull requests não recusa.
-        let listed = crate::commands::review::pr_door::list_at(root);
-        assert!(
-            listed.ok,
-            "a lista dos pull requests recusou da branch que o próprio remoto chama de padrão: \
-             {:?} / {:?}",
-            listed.reason, listed.hint
-        );
-
-        // E ela mesma nunca é apagada.
+        // Ela mesma nunca é apagada.
         let refused = delete_at(root, "release/2026-Q3");
         assert_eq!(
             refused["reason"],

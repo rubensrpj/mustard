@@ -255,6 +255,14 @@ pub fn check_against(
     {
         return Err(Refusal::UnknownTarget { target: EventRef::Id(origin) });
     }
+    // O item do assistente que diz que o usuário decidiu aponta uma mensagem
+    // do usuário: outra origem, ou nenhuma, é recusada com as últimas dele.
+    if crate::domain::spec_state::decided_by_user(log, event_type, event) {
+        let origin = event.get("origin").and_then(Value::as_u64);
+        if !origin.and_then(|id| log.get(id)).is_some_and(crate::domain::spec_state::is_user_message) {
+            return Err(crate::domain::spec_state::origin_not_user(log, event_type, origin));
+        }
+    }
     let mut targets = ints(event.get("targets"));
     if let Some(unknown) = targets.iter().find(|id| log.get(**id).is_none()) {
         return Err(Refusal::UnknownTarget { target: EventRef::Id(*unknown) });
@@ -554,6 +562,38 @@ mod tests {
     use crate::domain::spec_events::tests::{checked, line, obj};
     use crate::domain::spec_events::{parse_log, Kind};
     use crate::platform::i18n::Locale;
+
+    /// O item do assistente que diz que o usuário decidiu aponta uma mensagem
+    /// do usuário: a regra que aponta a mensagem do assistente, ou nenhuma, é
+    /// recusada com as últimas do usuário, com o número e o começo do texto. O
+    /// fechamento do ponto do usuário também; o do ponto do assistente, a nota
+    /// e o que o programa grava, não.
+    #[test]
+    fn what_the_user_decided_points_to_a_user_message() {
+        let log = parse_log(
+            &[
+                line(1, "message", ",\"author\":\"user\",\"text\":\"Trave o merge com pendência aberta.\""),
+                line(2, "message", ",\"author\":\"assistant\",\"text\":\"Anotado.\""),
+                line(3, "point", ",\"author\":\"binary\",\"block\":\"condensed\",\"gap\":\"rules\",\"from\":\"gap\",\"status\":\"open\""),
+                line(4, "point", ",\"author\":\"binary\",\"block\":\"condensed\",\"gap\":\"contracts\",\"from\":\"gap\",\"status\":\"open\""),
+            ]
+            .concat(),
+        );
+        let write = |fields: Value| check_against(&log, &obj(fields), 5);
+        let rule = |origin: Value| json!({"type": "rule", "author": "assistant", "origin": origin});
+        for origin in [json!(2), Value::Null] {
+            let refusal = write(rule(origin)).unwrap_err();
+            assert_eq!(refusal.reason(), "origin-not-user", "{refusal:?}");
+            let said = refusal.message(Locale::PtBr);
+            assert!(said.contains("1: “Trave o merge com pendência aberta.”") && !said.contains("Anotado"), "{said}");
+        }
+        assert!(write(rule(json!(1))).is_ok());
+        assert!(write(json!({"type": "rule", "author": "binary"})).is_ok(), "what the program writes does not change");
+        assert!(write(json!({"type": "note", "author": "assistant", "origin": 2})).is_ok());
+        let closing = |closes: u64| json!({"type": "point", "author": "assistant", "status": "not_applicable", "closes": closes, "origin": 2});
+        assert_eq!(write(closing(3)).unwrap_err().reason(), "origin-not-user", "the user's point");
+        assert!(write(closing(4)).is_ok(), "the assistant's point");
+    }
 
     /// Um código aponta o item: em `replaces`, a versão mais nova; nos alvos,
     /// todas as versões. Um código que não existe é recusado citando o código,
@@ -857,8 +897,9 @@ mod tests {
             ]
             .concat(),
         );
+        // Gravado pelo programa: a origem da regra não está em jogo aqui.
         let over = |kind: &str, replaces: Value| {
-            check_against(&log, &obj(json!({"type": kind, "replaces": replaces})), 9)
+            check_against(&log, &obj(json!({"type": kind, "replaces": replaces, "author": "binary"})), 9)
         };
         let superseded = Refusal::ReplacesSuperseded { id: 1, current: "MSTD-RULE-0001 (2)".into() };
 

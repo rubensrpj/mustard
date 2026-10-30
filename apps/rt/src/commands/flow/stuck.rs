@@ -612,21 +612,22 @@ mod tests {
         }
     }
 
-    /// A vaga da revisão final aberta tem trabalho, como a de uma onda em
-    /// andamento: o processo do revisor, parado na vaga da última onda, fica;
-    /// o da vaga sem onda nem revisão é detectado.
+    /// A cópia da revisão final aberta tem trabalho, como a vaga de uma onda
+    /// em andamento: o processo do revisor, parado na cópia limpa do
+    /// fechamento, fica; o da vaga sem onda nem revisão é detectado.
     #[test]
-    fn a_process_in_the_slot_of_the_open_final_review_is_left_alone() {
-        use mustard_core::io::wave_prompt::slot_path;
+    fn a_process_in_the_copy_of_the_open_final_review_is_left_alone() {
+        use mustard_core::io::wave_prompt::{check_copy_path, slot_path};
 
         let dir = tempdir().expect("tempdir");
         let root = dir.path();
         crate::commands::flow::round::copies_leave_with_the_test(root);
+        let review = check_copy_path(root, "x");
         spec_with_wave_one_delivered(
             root,
-            &[serde_json::json!({"type": "send", "author": "binary", "role": "review", "text": "revise"})],
+            &[serde_json::json!({"type": "send", "author": "binary", "role": "review", "text": "revise",
+                "copy": mustard_core::io::wave_prompt::shown(&review)})],
         );
-        let review = slot_path(root, "x", 0);
         let free = slot_path(root, "x", 1);
         live_slots(&[&review, &free]);
 
@@ -638,7 +639,7 @@ mod tests {
         let held = crate::commands::git_settle::copies_lock(root).expect("copies lock");
         let ended = find_stuck_processes(root, &held);
         assert!(left_alive(&mut idle), "the command left in the slot with no work must only be reported");
-        assert!(reviewing.try_wait().ok().flatten().is_none(), "the slot of the open final review is left alone");
+        assert!(reviewing.try_wait().ok().flatten().is_none(), "the copy of the open final review is left alone");
         let reasons: Vec<(u32, &str)> = ended.iter().map(|e| (e.pid, e.reason)).collect();
         assert!(reasons.contains(&(idle.id(), "idle_copy")), "{reasons:?}");
         assert!(!reasons.iter().any(|(pid, _)| *pid == reviewing.id()), "{reasons:?}");

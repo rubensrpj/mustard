@@ -109,39 +109,30 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
             "Spec {spec} has no open point in the survey: there is nothing to answer. Nothing was \
              written."
         }
-        ("survey.present_point", Locale::PtBr) => {
-            "Apresente o ponto {code}, e só ele, na ordem de explicar do estilo de resposta. Com a \
-             resposta do usuário, grave o item e feche o ponto num comando só: `mustard-rt run \
-             answer --point {id} --type <tipo> --json '{…}'`. Se o ponto não tem fato, o \
-             fechamento leva `--facts` (lista JSON de `{\"text\":\"…\",\"source\":\"arquivo:linha\"}`), \
-             ou os fatos entram antes numa versão do ponto. A resposta já gravada vai em \
-             `--result`, e o ponto que não se aplica fecha com `--not-applicable` e `--reason`."
-        }
-        ("survey.present_point", Locale::EnUs) => {
-            "Present point {code}, and only it, in the order of explaining from the response style. \
-             With the user's answer, record the item and close the point in one command: \
-             `mustard-rt run answer --point {id} --type <type> --json '{…}'`. If the point has no \
-             fact, the closing takes `--facts` (JSON array of `{\"text\":\"…\",\"source\":\"file:line\"}`), \
-             or the facts go first into a version of the point. An answer already \
-             recorded goes in `--result`, and a point that does not apply closes with \
-             `--not-applicable` and `--reason`."
-        }
         ("survey.present_all", Locale::PtBr) => {
-            "Pedido pequeno: os pontos abertos estão em `points`. Antes do sim, preencha cada lacuna \
-             a partir do pedido e do código, mostre tudo de uma vez e peça um sim só. Com o sim, \
-             grave a resposta de cada ponto com `mustard-rt run answer --point <número> --type \
-             <tipo> --json '{…}'`. Se o ponto não tem fato, o fechamento leva `--facts` (lista JSON de \
-             `{\"text\":\"…\",\"source\":\"arquivo:linha\"}`), ou os fatos entram antes numa versão do ponto. \
-             Cada resposta fecha o ponto. Ela devolve em `points` o código, o \
-             número e a lacuna de cada ponto ainda aberto, e em `point` o próximo inteiro."
+            "Os pontos abertos estão em `points`, cada um com o dono em `owner`. Feche sozinho os do \
+             assistente, sem perguntar ao usuário: responda do código com `mustard-rt run answer \
+             --point <número> --type context --json '{…}'` e os fatos em `--facts` (lista JSON de \
+             `{\"text\":\"…\",\"source\":\"arquivo:linha\"}`), citando a fonte. O item deles é \
+             `context`, `contract` ou `note`, nunca `rule` nem `decision`, que são do usuário. Os \
+             fatos também podem entrar antes numa versão do ponto. Os do usuário estão em \
+             `ask_user`. Mostre só eles, numa mensagem só, cada um com a proposta e a fonte. \
+             Apresente-os na ordem de explicar do estilo de resposta e peça um sim só. Com o sim, \
+             grave a resposta de cada um pelo `answer`, com o tipo que ela pede e `--origin` no \
+             número da mensagem do sim. A resposta devolve em `points` o código, o número e a \
+             lacuna de cada ponto ainda aberto, e em `point` o próximo inteiro."
         }
         ("survey.present_all", Locale::EnUs) => {
-            "Small request: the open points are in `points`. Before the yes, fill every gap from the \
-             request and the code, show it all at once and ask for a single yes. With the yes, \
-             record the answer to each point with `mustard-rt run answer --point <number> --type \
-             <type> --json '{…}'`. If the point has no fact, the closing takes `--facts` (JSON \
-             array of `{\"text\":\"…\",\"source\":\"file:line\"}`), or the facts go first into a version of \
-             the point. Each answer closes the point. It returns in `points` the code, \
+            "The open points are in `points`, each with its owner in `owner`. Close the assistant's \
+             on your own, without asking the user: answer from the code with `mustard-rt run answer \
+             --point <number> --type context --json '{…}'` and the facts in `--facts` (JSON array of \
+             `{\"text\":\"…\",\"source\":\"file:line\"}`), citing the source. Their item is \
+             `context`, `contract` or `note`, never `rule` or `decision`, which belong to the user. \
+             The facts can also go first into a version of the point. The user's are in `ask_user`. \
+             Show only those, in a single message, each with the proposal and its source. Present \
+             them in the order of explaining from the response style and ask for a single yes. With \
+             the yes, record the answer to each one with `answer`, with the type it needs and \
+             `--origin` set to the yes message's number. The answer returns in `points` the code, \
              the number and the gap of each point still open, and in `point` the next one in full."
         }
         ("survey.touched", Locale::PtBr) => {
@@ -159,54 +150,25 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         }
         ("survey.rerun_grill", Locale::PtBr) => {
             "Falta ponto para alguma lacuna do tipo de trabalho. Rode `mustard-rt run grill --spec \
-             {spec}`, que grava os pontos que faltam e devolve o primeiro aberto."
+             {spec}`, que grava os pontos que faltam e devolve os abertos."
         }
         ("survey.rerun_grill", Locale::EnUs) => {
             "Some gap of the work type has no point. Run `mustard-rt run grill --spec {spec}`, which \
-             records the missing points and returns the first open one."
+             records the missing points and returns the open ones."
         }
-        ("survey.done", Locale::PtBr) => {
+        ("survey.done", Locale::PtBr) => "O levantamento não tem ponto aberto. Grave a especificação e as tarefas.",
+        ("survey.done", Locale::EnUs) => "The survey has no open point. Record the specification and the tasks.",
+        ("survey.done_unrouted", Locale::PtBr) => {
             "O levantamento não tem ponto aberto. Mostre ao usuário as mensagens de `unrouted`, que \
              nenhum registro aponta (cada linha traz o código e o começo da mensagem; o texto \
              inteiro sai por `mustard-rt run read item-<código>`), e pergunte o que fazer com cada \
              uma. Depois grave a especificação e as tarefas."
         }
-        ("survey.done", Locale::EnUs) => {
+        ("survey.done_unrouted", Locale::EnUs) => {
             "The survey has no open point. Show the user the messages in `unrouted`, which no record \
              points to (each line has the code and the start of the message; the whole text comes \
              from `mustard-rt run read item-<item-code>`), and ask what to do with each one. Then record \
              the specification and the tasks."
-        }
-        ("survey.review_step", Locale::PtBr) => {
-            "O bloco {block} fechou. Releia só as decisões dele e ache o que pode ter ficado de fora \
-             ou se contradiz. Apresente os achados na ordem de explicar do estilo de resposta e faça \
-             a pergunta de `question`, com os achados como opções e \"{continue}\" por último."
-        }
-        ("survey.review_step", Locale::EnUs) => {
-            "Block {block} is closed. Reread only its decisions and find what may have been left out \
-             or contradicts itself. Present the findings in the order of explaining from the response \
-             style and ask the question in `question`, with the findings as options and \
-             \"{continue}\" last."
-        }
-        ("survey.review_question", Locale::PtBr) => "Quer ver mais algum ponto ou aprofundar algum?",
-        ("survey.covered_point", Locale::PtBr) => "Há respostas já registradas relacionadas a este ponto: {records}. Confira os itens; se cobrirem a pergunta, use `answer --result` sem repetir a pergunta ao usuário.",
-        ("survey.covered_point", Locale::EnUs) => "Existing answers relate to this point: {records}. Check the items; if they cover the question, use `answer --result` without asking the user again.",
-        ("survey.review_question", Locale::EnUs) => "Would you like to see another point or go deeper into one?",
-        ("survey.continue_option", Locale::PtBr) => "Seguir",
-        ("survey.continue_option", Locale::EnUs) => "Continue",
-        ("survey.outside_review_step", Locale::PtBr) => {
-            "Depois, antes do fim, rode o revisor de fora. Despache ao agente `mustard-review` a \
-             conferência do levantamento inteiro da spec {spec}. Ele aponta o que ficou de fora ou \
-             se contradiz e devolve o texto a você, sem gravar veredito. Grave cada achado dele como \
-             ponto aberto, com `block` e `from` outside_review, e apresente-o como os outros. Sem \
-             achado, siga."
-        }
-        ("survey.outside_review_step", Locale::EnUs) => {
-            "Then, before the end, run the outside reviewer. Dispatch to the `mustard-review` agent \
-             the check of the whole survey of spec {spec}. It points out what was left out or \
-             contradicts itself and returns its text to you, recording no verdict. Record each of \
-             its findings as an open point, with `block` and `from` outside_review, and present it \
-             like the others. With no finding, go on."
         }
         // O nome do arquivo é o mesmo nos dois idiomas: é ele que o gancho do
         // despacho procura na pasta da spec para apontar o desenho ao revisor.
@@ -304,20 +266,19 @@ mod tests {
     use super::*;
     use crate::platform::i18n::translate;
 
-    /// Esta parte guarda as mesmas chaves, com os mesmos textos nos dois
-    /// idiomas, como o arquivo de impressões dela em `stamps/` guarda. Quem muda
-    /// um texto de propósito regrava o arquivo pelo comando que a falha mostra.
+    /// Cada chave desta parte começa por um dos começos que ela declara e tem
+    /// texto nos dois idiomas.
     #[test]
-    fn the_part_keeps_its_keys_and_texts() {
-        crate::platform::i18n::tests::assert_part_unchanged("survey", include_str!("survey.rs"), super::PREFIXES);
+    fn the_part_answers_each_of_its_keys() {
+        crate::platform::i18n::tests::assert_part_answers(include_str!("survey.rs"), super::PREFIXES);
     }
 
-    /// O ponto aberto sem fato só fecha com os fatos: a dica de fechar um
-    /// ponto e a do pedido pequeno citam `--facts` nos dois idiomas, com a
-    /// forma de cada fato, e o caminho pela versão do ponto.
+    /// O ponto aberto sem fato só fecha com os fatos: a dica de mostrar os
+    /// pontos cita `--facts` nos dois idiomas, com a forma de cada fato, e o
+    /// caminho pela versão do ponto.
     #[test]
     fn the_closing_hints_name_the_facts_a_point_without_fact_needs() {
-        for key in ["survey.present_point", "survey.present_all"] {
+        for key in ["survey.present_all"] {
             for lang in [Locale::PtBr, Locale::EnUs] {
                 let text = translate(key, lang);
                 assert!(text.contains("`--facts`"), "{key} ({lang}): {text}");
@@ -350,15 +311,11 @@ mod tests {
             ("survey.answer_options".into(), &[][..]),
             ("survey.answer_not_applicable_mixed".into(), &[][..]),
             ("survey.answer_no_open_point".into(), &["{spec}"][..]),
-            ("survey.present_point".into(), &["{code}", "{id}"][..]),
             ("survey.present_all".into(), &[][..]),
             ("survey.rerun_grill".into(), &["{spec}"][..]),
             ("survey.touched".into(), &["{count}", "{reason}"][..]),
             ("survey.done".into(), &[][..]),
-            ("survey.review_step".into(), &["{block}", "{continue}"][..]),
-            ("survey.review_question".into(), &[][..]),
-            ("survey.continue_option".into(), &[][..]),
-            ("survey.outside_review_step".into(), &["{spec}"][..]),
+            ("survey.done_unrouted".into(), &[][..]),
             ("survey.save_design".into(), &["{spec}"][..]),
             ("survey.fact_declared".into(), &["{name}", "{path}", "{line}"][..]),
             ("survey.fact_importers".into(), &["{path}", "{importers}"][..]),

@@ -333,6 +333,11 @@ impl Project {
         executable::write_executable(&program, &format!("#!/bin/sh\necho '{says}'\n"));
     }
 
+    /// O programa compilado de mentira no commit atual: em dia, nada compila.
+    fn compiled_program_at_the_head(&self) {
+        self.compiled_program_says(&format!("mustard-rt 0.2.4 (build dev, g{} 2026-10-02)", self.head()));
+    }
+
     /// As chamadas ao `cargo` depois de esperar `at_least` delas chegarem: a
     /// compilação do início da sessão roda em segundo plano.
     fn cargo_calls_after_waiting(&self, at_least: usize) -> Vec<String> {
@@ -653,18 +658,20 @@ fn open_the_points(project: &Project, title: &str, goal: &str) -> (u64, Vec<Valu
 /// [`survey`] com o objetivo de título `title` e texto `goal`, que o usuário
 /// diz.
 fn survey_with(project: &Project, title: &str, goal: &str) {
-    let (said, points, mut current) = open_the_points(project, title, goal);
+    let (_, points, mut current) = open_the_points(project, title, goal);
+    // A resposta do usuário vem depois dos pontos que ela fecha.
+    let answered = user_says(project, "Respondi todos os pontos.");
     for point in &points {
         let code = current["code"].as_str().expect("the open point").to_string();
         let answer = project.write(
             "decision",
             &json!({"title": "Combinar o item", "agent": format!("- ponto {code}"), "text": "O usuário respondeu ao ponto.", "keys": ["levantamento"],
-                "why": "o usuário respondeu", "origin": said, "applies_to": {"files": ["**"]}}),
+                "why": "o usuário respondeu", "origin": answered, "applies_to": {"files": ["**"]}}),
         );
         let closed = project.write(
             "point",
             &json!({"block": point["block"], "gap": point["gap"], "from": "gap", "status": "closed",
-                "closes": code, "result": [answer["id"]], "origin": said}),
+                "closes": code, "result": [answer["id"]], "origin": answered}),
         );
         current = closed["point"].clone();
     }
@@ -941,8 +948,8 @@ fn closed_planned(
 
 /// O revisor final, lançado pelo gancho com o JSON do Claude Code, sai no
 /// modelo que a chamada pede e no esforço de sempre, e o envio da revisão
-/// grava o modelo que valeu; sem modelo na chamada, sai o do `mustard.json`,
-/// e o envio grava esse. O veredito aprovado da versão nova do envio ainda
+/// grava o modelo que valeu; sem modelo na chamada, sai o Opus do revisor
+/// final, e o envio grava esse. O veredito aprovado da versão nova do envio ainda
 /// fecha a spec.
 #[test]
 fn the_final_reviewer_keeps_the_model_the_call_asks_and_the_send_records_it() {
@@ -969,13 +976,13 @@ fn the_final_reviewer_keeps_the_model_the_call_asks_and_the_send_records_it() {
         (log.send_field(sent.id, "model_used").and_then(Value::as_str).map(str::to_string), log.send_field(sent.id, "model").and_then(Value::as_str).map(str::to_string))
     };
 
-    let asked_opus = launch(Some("opus"));
-    assert_eq!((asked_opus["model"].as_str(), asked_opus["effort"].as_str()), (Some("opus"), Some("xhigh")), "{asked_opus}");
-    assert_eq!(recorded(), (Some("opus".into()), Some("sonnet".into())), "the send keeps what was configured and records what held");
+    let asked_sonnet = launch(Some("sonnet"));
+    assert_eq!((asked_sonnet["model"].as_str(), asked_sonnet["effort"].as_str()), (Some("sonnet"), Some("xhigh")), "{asked_sonnet}");
+    assert_eq!(recorded(), (Some("sonnet".into()), Some("opus".into())), "the send keeps what was configured and records what held");
 
     let unasked = launch(None);
-    assert_eq!((unasked["model"].as_str(), unasked["effort"].as_str()), (Some("sonnet"), Some("xhigh")), "{unasked}");
-    assert_eq!(recorded(), (Some("sonnet".into()), Some("sonnet".into())), "a call without a model goes on the configured one");
+    assert_eq!((unasked["model"].as_str(), unasked["effort"].as_str()), (Some("opus"), Some("xhigh")), "{unasked}");
+    assert_eq!(recorded(), (Some("opus".into()), Some("opus".into())), "a call without a model goes on Opus");
 
     let verdict = json!({"final": true, "result": "approved", "text": "A saudação mudou.", "agreed": agreed_all_met(&project)});
     project.read_review();
@@ -2008,10 +2015,10 @@ fn a_spec_on_the_main_repository_and_a_submodule_readies_the_main_pull_request_o
     let waiting = translate("pr.submodules.waiting", Locale::PtBr).replace("{pr}", "7").replace("{paths}", SUB);
     assert_eq!(pr["hint"], json!(waiting), "{pr}");
 
-    // Enquanto o do submódulo não entra, o início da sessão diz qual falta, e
-    // o principal segue rascunho.
+    // Enquanto o do submódulo não entra, o principal segue rascunho, e a
+    // abertura não fala disso.
     let said = project.hook("SessionStart", &session_start(&project));
-    assert!(said.contains(&waiting), "the session start names the missing pull request: {said}");
+    assert!(!said.contains(&waiting), "the opening says nothing of the submodules: {said}");
     assert!(!project.gh_calls().iter().any(|call| call.starts_with("main pr ready")), "still a draft");
 
     // O do submódulo entra pelo `pr-merge`: o ponteiro vai para a base do
@@ -2040,7 +2047,7 @@ fn a_spec_on_the_main_repository_and_a_submodule_readies_the_main_pull_request_o
 
 /// O pull request do submódulo que outra pessoa mergeou é achado no início da
 /// sessão: o ponteiro vai para a base do submódulo, a branch do principal é
-/// enviada, o principal fica pronto e o aviso diz isso.
+/// enviada e o principal fica pronto, sem texto na abertura.
 #[test]
 fn a_submodule_pull_request_merged_by_someone_else_readies_the_main_one_at_session_start() {
     let project = Project::with_submodule();
@@ -2052,7 +2059,7 @@ fn a_submodule_pull_request_merged_by_someone_else_readies_the_main_one_at_sessi
     let start = session_start(&project);
     let said = project.hook("SessionStart", &start);
     let ready = translate("pr.submodules.ready", Locale::PtBr).replace("{pr}", "7").replace("{paths}", SUB);
-    assert!(said.contains(&ready), "the session start says the main pull request is ready: {said}");
+    assert!(!said.contains(&ready), "the opening says nothing of it: {said}");
     let sub_base = submodule_base_tip(&project);
     assert_eq!(pointer(&project), sub_base, "the pointer moved");
     assert_eq!(
@@ -2269,6 +2276,19 @@ fn deliver_the_first_wave_changing(project: &Project, file: &str) {
     project.run(&["write", "delivered", "--spec", SPEC, "--json", &delivered.to_string()]);
 }
 
+/// Uma tarefa do backlog que depende da tarefa da onda 1 e muda `file`: ela
+/// fica pronta com o commit da onda, e a rodada que comita tem onda a
+/// despachar, que é quando a versão em construção compila.
+fn a_task_after_the_first_wave(project: &Project, file: &str) {
+    let log = project.log();
+    let first = log.visible().into_iter().find(|e| e.event_type == "task" && e.wave() == Some(1)).expect("the wave task");
+    project.write(
+        "task",
+        &json!({"agent": "- conferir pelo teste", "title": "Seguir a saudação", "text": "Mudar de novo a saudação no programa.",
+            "files": [{"path": file}], "depends_on": [first.id], "covers": first.ints("covers"), "origin": first.int("origin")}),
+    );
+}
+
 /// As passadas e as leituras da história que uma chamada trouxe, contadas
 /// desde o ponto `(passes, reads)` anterior a ela; a lista de leituras só
 /// vale depois de a leitura que não devia vir ganhar a chance de aparecer. A
@@ -2338,33 +2358,52 @@ fn the_build_call(project: &Project) -> String {
     )
 }
 
-/// A rodada que levou ao commit uma onda que mexeu no programa do Mustard
-/// compila a versão em construção: uma vez, no checkout principal, com os três
-/// programas, na pasta de compilação do projeto, e sem recusar nem avisar
-/// quando a compilação passa.
+/// A rodada que comita e tem onda a despachar depois, com o programa
+/// compilado atrás do commit novo, compila a versão em construção antes de
+/// despachar: uma vez, no checkout principal, com os três programas, na pasta
+/// de compilação do projeto, e sem recusar nem avisar quando a compilação
+/// passa.
 #[test]
 fn a_round_that_committed_the_program_builds_the_development_version_once_in_the_main_checkout() {
     let project = Project::as_mustard_source();
+    project.compiled_program_at_the_head();
     deliver_the_first_wave_changing(&project, "apps/rt/src/main.rs");
-    assert!(project.cargo_calls().is_empty(), "nada compila antes da rodada: {:?}", project.cargo_calls());
+    a_task_after_the_first_wave(&project, "apps/rt/src/main.rs");
+    assert!(project.cargo_calls().is_empty(), "o despacho com o programa em dia não compila: {:?}", project.cargo_calls());
 
     let second = project.run(&["round", "--dispatch", "--spec", SPEC]);
     assert!(second.get("commit").is_some(), "the round committed the return: {second}");
-    assert_eq!(project.cargo_calls(), [changed_build_call(&project)], "{second}");
+    assert_eq!(project.cargo_calls(), [the_build_call(&project)], "{second}");
     let reasons: Vec<&str> = second["warnings"].as_array().into_iter().flatten().filter_map(|w| w["reason"].as_str()).collect();
     assert!(!reasons.contains(&"development-build-failed"), "a compilação verde não avisa: {second}");
 }
 
-/// A onda que não tocou `apps/` nem `packages/` comita sem compilar nada,
-/// mesmo no repositório do Mustard.
+/// A compilação vermelha antes de um despacho sem commit também só avisa, e a
+/// onda sai.
 #[test]
-fn a_round_whose_commit_left_the_program_alone_does_not_build() {
+fn a_red_build_before_a_dispatch_without_a_commit_warns_and_the_wave_leaves() {
     let project = Project::as_mustard_source();
-    deliver_the_first_wave_changing(&project, "src/main.rs");
+    std::fs::write(project.home.join("cargo-falha"), "").expect("the build is red");
+    project.open();
+    survey(&project);
+    plan_files(&project, &["apps/rt/src/main.rs"]);
+    approve(&project);
 
-    let second = project.run(&["round", "--dispatch", "--spec", SPEC]);
-    assert!(second.get("commit").is_some(), "the round committed the return: {second}");
-    assert!(project.cargo_calls().is_empty(), "o commit não tocou o programa: {:?}", project.cargo_calls());
+    let sent = first_round(&project);
+    assert!(sent.get("commit").is_none(), "{sent}");
+    assert_eq!(project.cargo_calls(), [the_build_call(&project)], "{sent}");
+    let warned = sent["warnings"].as_array().into_iter().flatten().any(|w| w["reason"] == json!("development-build-failed"));
+    assert!(warned, "o aviso da compilação vermelha: {sent}");
+}
+
+/// O despacho com o programa compilado atrás do commit atual compila uma vez,
+/// mesmo sem commit nenhum na rodada.
+#[test]
+fn a_dispatch_with_the_program_behind_builds_it_once_without_a_commit() {
+    let project = Project::as_mustard_source();
+    project.compiled_program_says("mustard-rt 0.2.4 (build dev, g0123456789ab 2026-10-02)");
+    deliver_the_first_wave_changing(&project, "apps/rt/src/main.rs");
+    assert_eq!(project.cargo_calls(), [the_build_call(&project)], "a primeira rodada só despachou");
 }
 
 /// Fora do repositório do Mustard a rodada nunca compila, nem com um arquivo
@@ -2375,23 +2414,27 @@ fn a_round_outside_the_mustard_repository_never_builds() {
     std::fs::remove_file(project.root.join("apps/rt/Cargo.toml")).expect("the manifest goes");
     git(&project.root, &["commit", "-q", "-a", "-m", "o projeto deixa de ser o Mustard"]);
     deliver_the_first_wave_changing(&project, "apps/rt/src/main.rs");
+    a_task_after_the_first_wave(&project, "apps/rt/src/main.rs");
 
     let second = project.run(&["round", "--dispatch", "--spec", SPEC]);
     assert!(second.get("commit").is_some(), "the round committed the return: {second}");
     assert!(project.cargo_calls().is_empty(), "outro projeto: {:?}", project.cargo_calls());
 }
 
-/// A compilação vermelha vira um aviso com o fim da saída do `cargo`, e o
-/// commit sai do mesmo jeito: a rodada nunca recusa por causa dela.
+/// A compilação vermelha vira um aviso com o comando que lê a saída do
+/// `cargo`, gravada na spec, sem repeti-la, e o commit sai do mesmo jeito: a
+/// rodada nunca recusa por causa dela.
 #[test]
-fn a_red_development_build_warns_with_the_output_and_the_round_still_commits() {
+fn a_red_development_build_warns_with_the_read_of_its_output_and_the_round_still_commits() {
     let project = Project::as_mustard_source();
+    project.compiled_program_at_the_head();
     deliver_the_first_wave_changing(&project, "apps/rt/src/main.rs");
+    a_task_after_the_first_wave(&project, "apps/rt/src/main.rs");
     std::fs::write(project.home.join("cargo-falha"), "").expect("the build is red");
 
     let second = project.run(&["round", "--dispatch", "--spec", SPEC]);
     assert!(second.get("commit").is_some(), "the round committed anyway: {second}");
-    assert_eq!(project.cargo_calls(), [changed_build_call(&project)], "{second}");
+    assert_eq!(project.cargo_calls(), [the_build_call(&project)], "{second}");
     let warning = second["warnings"]
         .as_array()
         .into_iter()
@@ -2401,8 +2444,22 @@ fn a_red_development_build_warns_with_the_output_and_the_round_still_commits() {
         .unwrap_or_else(|| panic!("o aviso da compilação vermelha: {second}"));
     let hint = warning["hint"].as_str().unwrap_or_default();
     let head = translate("round.development_build_failed", Locale::PtBr);
-    assert!(hint.starts_with(head.split("{output}").next().unwrap_or_default()), "{warning}");
-    assert!(hint.contains("error[E0425]: cannot find value `x`"), "{warning}");
+    assert!(hint.starts_with(head.split("{read}").next().unwrap_or_default()), "{warning}");
+    let error = "error[E0425]: cannot find value `x`";
+    assert!(!hint.contains(error), "o aviso não repete a saída: {warning}");
+    let block = hint
+        .split_whitespace()
+        .find(|word| word.starts_with("item-"))
+        .unwrap_or_else(|| panic!("o aviso cita o item da execução gravada: {warning}"));
+    let read = project.run(&["read", block, "--spec", SPEC]);
+    let run = read["events"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|event| event["type"] == json!("stage_run"))
+        .unwrap_or_else(|| panic!("a execução da compilação gravada: {read}"));
+    assert_eq!(run["stage"], json!("runtime-build"), "{run}");
+    assert!(run["output"].as_str().unwrap_or_default().contains(error), "a leitura traz a saída do cargo: {run}");
 }
 
 /// O texto que o início da sessão põe no contexto, ou nada.
@@ -2414,18 +2471,6 @@ fn session_notices(project: &Project) -> String {
         .unwrap_or_default()
 }
 
-/// O aviso do compilado de `key`, com o commit atual do projeto e o que
-/// aconteceu com a compilação em segundo plano, até o ponto em que o programa
-/// que roda a sessão é dito: cortado antes da versão dele, que muda a cada
-/// compilação.
-fn build_notice_head(project: &Project, key: &str, compiled: &str, progress: &str) -> String {
-    let text = translate(key, Locale::PtBr)
-        .replace("{head}", &project.head())
-        .replace("{compiled}", compiled)
-        .replace("{progress}", translate(progress, Locale::PtBr));
-    text.split("{running}").next().unwrap_or_default().to_string()
-}
-
 /// Espera a compilação em segundo plano acabar: a trava dela passa a dizer
 /// como terminou (`built` ou `failed`).
 fn wait_for_the_background_build(project: &Project) {
@@ -2433,29 +2478,28 @@ fn wait_for_the_background_build(project: &Project) {
 }
 
 /// No repositório do Mustard sem o programa compilado, o início da sessão
-/// solta a compilação em segundo plano, uma vez e no checkout principal, e
-/// avisa que a sessão roda o programa instalado até ela acabar.
+/// solta a compilação em segundo plano, uma vez e no checkout principal, sem
+/// falar disso na abertura.
 #[test]
-fn a_session_in_the_mustard_repository_without_the_compiled_program_starts_the_build_and_says_so() {
+fn a_session_in_the_mustard_repository_without_the_compiled_program_starts_the_build() {
     let project = Project::as_mustard_source();
 
     let said = session_notices(&project);
-    let expected = build_notice_head(&project, "session.build.missing", "", "session.build.started");
-    assert!(said.contains(&format!("{expected}{}", env!("CARGO_PKG_VERSION"))), "o aviso diz o programa que a sessão roda: {said}");
+    assert!(!said.contains("compilado da branch"), "a abertura não fala da compilação: {said}");
     assert_eq!(project.cargo_calls_after_waiting(1), [the_build_call(&project)]);
     wait_for_the_background_build(&project);
     assert_eq!(project.cargo_calls().len(), 1, "uma compilação só");
 }
 
-/// O programa compilado atrás do commit atual pede a mesma compilação, e o
-/// aviso diz de qual commit é o programa que a sessão roda até lá.
+/// O programa compilado atrás do commit atual pede a mesma compilação, sem
+/// texto na abertura.
 #[test]
-fn a_session_with_the_compiled_program_behind_the_head_starts_the_build_and_names_the_old_commit() {
+fn a_session_with_the_compiled_program_behind_the_head_starts_the_build() {
     let project = Project::as_mustard_source();
     project.compiled_program_says("mustard-rt 0.2.4 (build dev, g0123456789ab 2026-10-02)");
 
     let said = session_notices(&project);
-    assert!(said.contains(&build_notice_head(&project, "session.build.behind", "0123456789ab", "session.build.started")), "{said}");
+    assert!(!said.contains("0123456789ab"), "{said}");
     assert_eq!(project.cargo_calls_after_waiting(1), [the_build_call(&project)]);
     wait_for_the_background_build(&project);
 }
@@ -2475,15 +2519,14 @@ fn a_session_with_the_compiled_program_at_the_head_stays_silent_and_builds_nothi
 }
 
 /// Com outra compilação ainda valendo — a trava dela existe —, a sessão não
-/// solta uma segunda e diz que a outra está em andamento.
+/// solta uma segunda.
 #[test]
 fn a_session_while_another_build_runs_does_not_start_a_second_one() {
     let project = Project::as_mustard_source();
     std::fs::create_dir_all(project.build_marker().parent().expect("the build base")).expect("the base");
     std::fs::write(project.build_marker(), "").expect("the lock of the other build");
 
-    let said = session_notices(&project);
-    assert!(said.contains(&build_notice_head(&project, "session.build.missing", "", "session.build.in_progress")), "{said}");
+    let _ = session_notices(&project);
     crate::pause::room_for_what_must_not_happen();
     assert!(project.cargo_calls().is_empty(), "a trava vale: {:?}", project.cargo_calls());
 }
@@ -2545,19 +2588,16 @@ fn building_the_development_version_installs_nothing_and_leaves_the_plugin_folde
     let before = snapshot_of(&config);
 
     deliver_the_first_wave_changing(&project, "apps/rt/src/main.rs");
+    a_task_after_the_first_wave(&project, "apps/rt/src/main.rs");
     session_notices(&project);
     wait_for_the_background_build(&project);
     let second = project.run(&["round", "--dispatch", "--spec", SPEC]);
     assert!(second.get("commit").is_some(), "the round committed the return: {second}");
 
     let calls = project.cargo_calls();
-    assert_eq!(calls.len(), 2, "uma compilação pela sessão e outra pela rodada: {calls:?}");
-    assert_eq!(calls, [the_build_call(&project), changed_build_call(&project)], "full startup then affected runtime build");
+    let build = the_build_call(&project);
+    assert_eq!(calls, [build.clone(), build.clone(), build], "o primeiro despacho, a sessão e o despacho depois do commit compilam");
     let after = snapshot_of(&config);
     let changed: Vec<&PathBuf> = before.keys().chain(after.keys()).filter(|path| before.get(*path) != after.get(*path)).collect();
     assert!(changed.is_empty(), "o plugin instalado e o registro ficam como estavam: {changed:?}");
-}
-
-fn changed_build_call(project: &Project) -> String {
-    format!("{} build --profile mustard-dev --locked -p mustard-rt --target-dir {}", project.root.display(), project.build_folder().display())
 }

@@ -1,10 +1,11 @@
 //! Statusline segments — pure data ([`Segment`]) plus the per-kind builders
-//! that turn the harness JSON payload into segments. Themes (in `theme.rs`)
-//! own all color/separator decisions; this module only produces *text*.
+//! that turn the harness JSON payload into segments. The theme (in
+//! `theme.rs`) owns every color/separator decision; this module only produces
+//! *text*.
 //!
 //! The one exception is [`Segment::override_fg`], used by [`context_segment`]
 //! when the per-segment threshold (yellow / red) needs to override the theme
-//! default. Theme renderers honor it.
+//! default. The renderer honors it.
 
 use super::theme::Color;
 use crate::shared::spec_state::DiskSpecState;
@@ -39,10 +40,7 @@ pub struct Segment {
     pub kind: SegmentKind,
     pub text: String,
     /// Per-render fg override — used by `context_segment` and `inert_segment`
-    /// for threshold coloring. **Honored only by flat separators**
-    /// (`Pipe` / `Whitespace`). Powerline themes ignore it so the palette
-    /// stays harmonic; the override clashing with a fixed bg looks worse than
-    /// the missing signal.
+    /// for threshold coloring.
     pub override_fg: Option<Color>,
 }
 
@@ -58,9 +56,8 @@ impl Segment {
 }
 
 // ---------------------------------------------------------------------------
-// Builders — one per kind. Each is `pub` so `preview.rs` can build a
-// synthetic line. The orchestration that picks which builders to call lives
-// in `mod.rs`.
+// Builders — one per kind. The orchestration that picks which builders to
+// call lives in `mod.rs`.
 // ---------------------------------------------------------------------------
 
 /// O nome do projeto (a pasta de `cwd`, ou `"?"`), como link para a página

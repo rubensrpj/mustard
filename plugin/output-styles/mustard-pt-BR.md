@@ -67,3 +67,13 @@ Depois: "Quando o agente pergunta ao Mustard onde a função run é usada, receb
 ## Durante o trabalho
 
 Uma frase antes de começar, dizendo o que vai fazer. No meio, fale só quando achar algo importante ou mudar de direção. No fim, o resultado primeiro. Depois, como era e como ficou, uma linha por mudança, dita pelo efeito que o usuário vê. O detalhe vem por último, para quem quiser.
+
+## Princípios do trabalho
+
+- O programa faz e a IA decide: o mecânico, como contar, juntar, conferir e gravar, é do programa; a IA fica com o que pede julgamento.
+- O erro achado na obra se conserta nela, e não numa obra depois.
+- O que o Mustard grava se decide por uma regra direta que fecha todos os casos; palpite só vale no texto livre.
+- Valor é rapidez, economia, eficácia e qualidade, pela orquestração, pelos agentes e skills, pelo Haiku e pelo Jev; o resto sai.
+- Um risco para só o trabalho que depende dele, e o resto segue.
+- Toda medida sai do programa, com o dado da versão que roda, e uma amostra não vira regra geral.
+- Antes de mudar o produto, mostre o caso real em que ele falhou, visto pelo usuário ou gravado.

@@ -20,8 +20,8 @@
 //!
 //! A atualização: depois do commit de cada onda, a skill cujo arquivo citado
 //! mudou vai ao Jev com a mudança, e o sim ou a dúvida viram a tarefa de
-//! atualizá-la, com o skill-creator inteiro no bloco, como a de criar; o
-//! arquivo citado que sumiu vira a tarefa sem pergunta. A onda que recebeu a
+//! atualizá-la, com o skill-creator citado pelo caminho no bloco, como a de
+//! criar; o arquivo citado que sumiu vira a tarefa sem pergunta. A onda que recebeu a
 //! skill e foi reprovada pela mesma falha que a motivou também. A avaliação
 //! sai uma vez por obra: a mudança que chega com ela ainda à espera entra numa
 //! versão nova dela, somada às que já tinha, e a fila da rodada a segura
@@ -531,6 +531,50 @@ fn waiting_task(start: &Path, mark: &SkillTask) -> Option<(SpecLog, u64)> {
     crate::commands::flow::round::queue::tasks_not_delivered(&log, &BTreeSet::new()).contains(&id).then_some((log, id))
 }
 
+/// Os itens que cobre, na spec `target` de `start`, a tarefa de atualizar uma
+/// skill pelos motivos `whys` ([`skill_task_covers`]): os das tarefas de cada
+/// onda reprovada e de cada onda que o commit de uma mudança ou de um
+/// apagamento comitou; sem item achado, o pedido mais recente do usuário.
+fn whys_covers(start: &Path, target: &str, whys: &[Why]) -> Vec<u64> {
+    let waves: Vec<(&str, u64)> = whys
+        .iter()
+        .filter_map(|why| match why {
+            Why::Failure { spec, wave, .. } => Some((spec.as_str(), *wave)),
+            Why::Change { .. } | Why::Gone { .. } => None,
+        })
+        .collect();
+    let shas: Vec<&str> = whys.iter().filter_map(Why::sha).collect();
+    skill_task_covers(start, target, &waves, &shas)
+}
+
+/// Grava, na spec `spec` de `start` lida em `log`, a versão de cada tarefa de
+/// skill entre as `uncovered`, as do backlog que não cobrem item nenhum, com
+/// os itens que ela cobriria ao nascer ([`whys_covers`]), pelos motivos
+/// guardados em [`WHYS`]: só a que o programa gravou, com `skill` preenchido e
+/// autor `binary`. A versão nova aponta a mais nova da tarefa
+/// ([`crate::commands::flow::round::queue::task_revision`]). Devolve, de cada
+/// uma que ganhou itens, o número dela e a versão gravada; a que não acha
+/// item, ou cuja gravação recusa, segue sem itens, e a rodada a nomeia.
+pub(crate) fn cover_skill_tasks(start: &Path, spec: &str, log: &SpecLog, uncovered: &BTreeSet<u64>) -> Vec<(u64, Value)> {
+    let mut covered = Vec::new();
+    for task in uncovered.iter().filter_map(|id| log.get(*id)) {
+        let made = task.str_field("skill").is_some_and(|skill| !skill.is_empty()) && task.str_field("author") == Some("binary");
+        if !made {
+            continue;
+        }
+        let whys: Vec<Why> = task.fields.get(WHYS).and_then(|had| serde_json::from_value(had.clone()).ok()).unwrap_or_default();
+        let covers = whys_covers(start, spec, &whys);
+        if covers.is_empty() {
+            continue;
+        }
+        let Some(draft) = crate::commands::flow::round::queue::task_revision(log, task.id, with_covers(Map::new(), covers.clone())) else { continue };
+        if let Ok(written) = crate::commands::spec_events::write::record(start, spec, "task", draft, PhaseWriter::Binary) {
+            covered.push((task.id, json!({ "type": "task", "spec": spec, "id": written.written.id, "replaces": task.id, "covers": covers })));
+        }
+    }
+    covered
+}
+
 /// Grava a tarefa de atualizar a skill `name` do projeto de `start` pelos
 /// motivos `whys`, e a marca no registro. Com a avaliação dela ainda à espera
 /// ([`waiting_task`]), a tarefa ganha uma versão nova, com os motivos novos
@@ -566,15 +610,8 @@ fn update_task(start: &Path, spec: &str, name: &str, whys: Vec<Why>, lang: Local
             all.push(why);
         }
     }
-    let waves: Vec<(&str, u64)> = all
-        .iter()
-        .filter_map(|why| match why {
-            Why::Failure { spec, wave, .. } => Some((spec.as_str(), *wave)),
-            Why::Change { .. } | Why::Gone { .. } => None,
-        })
-        .collect();
     let mut covers: Vec<u64> = before.map(|task| task.ints("covers")).unwrap_or_default();
-    for id in skill_task_covers(start, &target, &waves) {
+    for id in whys_covers(start, &target, &all) {
         if !covers.contains(&id) {
             covers.push(id);
         }

@@ -17,16 +17,6 @@ use crate::commands::flow;
 /// Os comandos `run` que são do fluxo da spec (`flow/`).
 #[derive(Debug, Subcommand)]
 pub enum FlowCmd {
-    /// List native measurement receipts or attach one to a survey point.
-    #[command(display_order=38)]
-    Evidence {
-        #[arg(long,default_value=".")] root:PathBuf,
-        #[arg(long)] spec:Option<String>,
-        #[arg(long)] wave:Option<u64>,
-        #[arg(long,requires_all=["receipt","text"])] point:Option<String>,
-        #[arg(long,requires="point")] receipt:Option<String>,
-        #[arg(long,requires="point")] text:Option<String>,
-    },
     /// Abre uma spec: a branch `<tipo>/<nome>` e a spec `<nome>`, nascida na
     /// fase de levantamento com a branch e a base dela. O nome vale
     /// exatamente como foi escrito; o que o git recusa (espaço, acento,
@@ -77,26 +67,22 @@ pub enum FlowCmd {
         /// do começo da branch da spec (`fix/x` dá `fix`).
         #[arg(long)]
         kinds: Option<String>,
-        /// Um pedido que cabe numa frase: todos os pontos num bloco só,
-        /// mostrados de uma vez para um sim só.
-        #[arg(long)]
-        condensed: bool,
-        /// A resposta inteira, com cada ponto da lista e o conhecimento achado.
-        /// Sem ela, vêm a dica, o próximo ponto, os códigos dos pontos abertos
-        /// e só o que a dica manda usar.
+        /// A resposta inteira, com o conhecimento achado. Sem ela, vêm a dica,
+        /// os pontos, os códigos dos abertos e só o que a dica manda usar.
         #[arg(long)]
         full: bool,
         /// Qualquer pasta dentro do repositório. Por padrão, a pasta atual.
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
-    /// O passo do plano, depois que a especificação, as ondas e as tarefas
-    /// estão gravadas: monta o pedido de cada onda com as lições e as skills;
-    /// confere que não há ponto do levantamento aberto, que o plano não tem
-    /// erro de montagem, que os arquivos e os nomes citados existem, que o arquivo citado está no git e
-    /// que ondas da mesma rodada não dividem arquivo; avisa os itens sem
-    /// tarefa; refaz o índice e prepara a pergunta de aprovação. Grava a
-    /// fase do plano. O acompanhamento é local; não prepara publicação.
+    /// O passo do plano, depois que a especificação e as tarefas estão
+    /// gravadas: forma as ondas e monta o pedido de cada uma com as lições e
+    /// as skills; confere que não há ponto do levantamento aberto, que os
+    /// arquivos citados existem e que a prova de cada critério é um comando de
+    /// verdade; avisa o arquivo citado fora do git, o nome que o mapa não acha
+    /// e os itens sem tarefa. Não confere se ondas dividem arquivo: essa trava
+    /// mora na rodada. Refaz o índice e prepara a pergunta de aprovação. Grava
+    /// a fase do plano. O acompanhamento é local; não prepara publicação.
     #[command(display_order = 2)]
     Plan {
         /// A spec cujo plano é conferido. Sem ela, a spec atual.
@@ -111,10 +97,14 @@ pub enum FlowCmd {
     /// escolhe as ondas que podem sair juntas, monta o pedido de cada uma,
     /// grava o envio com o pedido exato e marca a spec como em execução na
     /// primeira rodada. Com a entrega que uma onda gravou na spec, primeiro
-    /// assume a volta e grava o veredito da revisão, formata só os arquivos
-    /// da rodada e faz o commit, sem compilar nem rodar prova, e então
-    /// despacha as dependentes liberadas. A compilação, o lint, a suíte e as
-    /// provas ficam para o fechamento.
+    /// assume a volta e grava o veredito da revisão, confere a leitura do
+    /// pedido, o trabalho dado por feito, as importações novas e os restos
+    /// do que a onda tirou, formata só os arquivos da rodada e faz o commit,
+    /// sem compilar nem rodar prova, e então despacha as dependentes
+    /// liberadas. No repositório do Mustard, o programa da branch é
+    /// recompilado antes do despacho, ou antes do fechamento quando nada
+    /// ficou aberto, só quando está atrás do commit atual. A compilação, o
+    /// lint, a suíte e as provas ficam para o fechamento.
     /// Nenhuma etapa da rodada publica uma página externa.
     #[command(display_order = 3)]
     Round {
@@ -282,12 +272,16 @@ pub enum FlowCmd {
     /// Grava numa chamada só a resposta de um ponto do levantamento: o item
     /// da resposta, pela mesma porta e com as mesmas recusas do `write`; o
     /// ponto que fecha o aberto; e o passo seguinte, como o `write` o
-    /// devolve. O item sem `origin` recebe o número da última mensagem do
-    /// usuário, e o fechamento aponta a mesma mensagem. As duas gravações vão
+    /// devolve. O ponto do usuário fecha só com a mensagem dele, em `--origin`
+    /// ou no `origin` do item. No ponto do assistente, o item sem `origin`
+    /// recebe a última mensagem do usuário, e o fechamento aponta a mesma;
+    /// o pedido, a regra e a decisão pedem a mensagem. As duas gravações vão
     /// juntas, sob a trava da spec: o item recusado não fecha o ponto, e o
-    /// fechamento recusado tira o item. No levantamento condensado, `points`
-    /// traz o código, o número e a lacuna de cada ponto aberto, e `point`
-    /// traz o próximo inteiro.
+    /// fechamento recusado tira o item. `points` traz o código, o número e a
+    /// lacuna de cada ponto aberto, e `point`
+    /// traz o próximo inteiro. O texto longo do item entra cru, sem virar
+    /// JSON: `--text -` ou `--agent -` lê esse campo da entrada padrão, por
+    /// heredoc, junto dos outros campos do `--json`.
     #[command(display_order = 25)]
     Answer {
         /// A spec do levantamento. Sem ela, a spec atual.
@@ -305,6 +299,15 @@ pub enum FlowCmd {
         /// do `write`. Vem junto com `--type`.
         #[arg(long)]
         json: Option<String>,
+        /// O campo `text` do item, cru: `-` lê a entrada padrão inteira como
+        /// foi escrita; outro valor entra como veio. Vem junto com `--type`, e
+        /// o campo não vem também no `--json`.
+        #[arg(long, value_name = "TEXT")]
+        text: Option<String>,
+        /// O campo `agent` do item, cru, como o `--text`. Só um dos dois lê
+        /// a entrada padrão.
+        #[arg(long, value_name = "AGENT")]
+        agent: Option<String>,
         /// Fatos conferidos no código ou na conversa, como uma lista JSON
         /// de {"text":"...","source":"..."}. Gravados com o fechamento.
         #[arg(long)]
@@ -319,6 +322,11 @@ pub enum FlowCmd {
         /// O motivo do fechamento. Obrigatório com `--not-applicable`.
         #[arg(long)]
         reason: Option<String>,
+        /// A mensagem do usuário de onde veio a resposta, pelo número ou pelo
+        /// código. O item sem `origin` e o fechamento a apontam. O ponto do
+        /// usuário fecha só com ela.
+        #[arg(long)]
+        origin: Option<String>,
         /// Qualquer pasta dentro do repositório. Por padrão, a pasta atual.
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -352,18 +360,14 @@ pub enum FlowCmd {
 pub fn dispatch(cmd: FlowCmd) {
     let started = std::time::Instant::now();
     match cmd {
-        FlowCmd::Evidence {root,spec,wave,point,receipt,text}=>{
-            let report=flow::evidence::run(&root,spec.as_deref(),wave,point.as_deref(),receipt.as_deref(),text.as_deref());
-            flow::answer("evidence",&root,spec.as_deref(),started,&report, false);
-        }
         FlowCmd::Open { kind, name, base, pending, root } => {
             let session = crate::shared::spec_state::session_from_env();
             let opts = flow::open::OpenOpts { root, kind, name, base, pending, session };
             let named = opts.name.clone();
             flow::answer("open", &opts.root, named.as_deref(), started, &flow::open::open_at(&opts), false);
         }
-        FlowCmd::Grill { spec, kinds, condensed, full, root } => {
-            let opts = flow::grill::GrillOpts { root, spec, kinds, condensed };
+        FlowCmd::Grill { spec, kinds, full, root } => {
+            let opts = flow::grill::GrillOpts { root, spec, kinds };
             flow::answer("grill", &opts.root, opts.spec.as_deref(), started, &flow::grill::grill_at(&opts), full);
         }
         FlowCmd::Plan { spec, root } => {
@@ -411,20 +415,29 @@ pub fn dispatch(cmd: FlowCmd) {
             let opts = flow::triage::TriageOpts { root, spec, apply };
             flow::answer("triage", &opts.root, opts.spec.as_deref(), started, &flow::triage::triage_at(&opts), false);
         }
-        FlowCmd::Answer { spec, point, event_type, json, facts, result, not_applicable, reason, root } => {
+        FlowCmd::Answer { spec, point, event_type, json, text, agent, facts, result, not_applicable, reason, origin, root } => {
+            use crate::commands::spec_events::{project, refused, write::with_raw_fields};
             use crate::shared::json_arg::resolve_opt;
-            match resolve_opt(json).and_then(|json| Ok((json, resolve_opt(facts)?))) {
+            let lang = project(&root).lang;
+            // O arquivo do `--json` ou do `--facts` que não se lê recusa sem
+            // gravar nada, e os campos crus do item entram no `--json`.
+            let read = resolve_opt(json)
+                .and_then(|json| Ok((json, resolve_opt(facts)?)))
+                .map_err(|detail| refused(&mustard_core::domain::spec_events::Refusal::Io { detail }, lang))
+                .and_then(|(json, facts)| {
+                    if text.is_none() && agent.is_none() {
+                        return Ok((json, facts));
+                    }
+                    let stdin = || std::io::read_to_string(std::io::stdin());
+                    let joined = with_raw_fields(json.unwrap_or_else(|| "{}".into()), [("text", text), ("agent", agent)], stdin);
+                    joined.map(|json| (Some(json), facts)).map_err(|refusal| refusal.to_value(lang))
+                });
+            match read {
                 Ok((json, facts)) => {
-                    let opts = flow::answer::AnswerOpts { root, spec, point, event_type, json, facts, result, not_applicable, reason };
+                    let opts = flow::answer::AnswerOpts { root, spec, point, event_type, json, facts, result, not_applicable, reason, origin };
                     flow::answer("answer", &opts.root, opts.spec.as_deref(), started, &flow::answer::answer_at(&opts), false);
                 }
-                // O arquivo do `--json` ou do `--facts` que não se lê recusa
-                // sem gravar nada.
-                Err(detail) => {
-                    let refusal = mustard_core::domain::spec_events::Refusal::Io { detail };
-                    let refused = crate::commands::spec_events::refused(&refusal, crate::commands::spec_events::project(&root).lang);
-                    flow::answer("answer", &root, spec.as_deref(), started, &refused, false);
-                }
+                Err(refused) => flow::answer("answer", &root, spec.as_deref(), started, &refused, false),
             }
         }
     }

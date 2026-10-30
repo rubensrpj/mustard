@@ -37,18 +37,13 @@ use mustard_rt::commands::flow::resume::{next_command, NEXT_BY_PHASE};
 use mustard_rt::commands::flow::round::DONE_STEP;
 use mustard_rt::commands::RunCmd;
 
-/// Declared long flags that NO product prose spells, kept deliberately. Sorted
-/// by `(command, flag)`; each justification says why a reader is never left
-/// looking for this one.
+/// Declared long flags that neither the help nor any product prose spells,
+/// kept deliberately: the hidden ones. Sorted by `(command, flag)`; each
+/// justification says why a reader is never left looking for this one.
 ///
-/// The bar is not "it is minor". A flag reachable only by reading `--help` of a
-/// command the docs never show is a feature that shipped to nobody, and the
-/// honest fixes are to document it or to remove it. A row here says the flag is
-/// reachable some OTHER way — it mirrors a documented sibling, it is the escape
+/// A row here says the flag is reachable some OTHER way — it is the escape
 /// hatch a refusal message prints, or it exists for a caller that is not prose.
 const FLAG_WHITELIST: &[(&str, &str, &str)] = &[
-    ("knowledge", "cancel-session", "pending native-session JSON gives the explicit cancellation command to release abandoned analysis without launching a duplicate; session deduplication tests cover cancellation and reuse"),
-    ("knowledge", "session-model", "prepared-session JSON explains this preference override on demand; tested with its native protocol, while docs/2026-10-12-agentes-skills-codex.md documents the complete flow"),
     (
         "map",
         "described",
@@ -58,11 +53,6 @@ const FLAG_WHITELIST: &[(&str, &str, &str)] = &[
         "map",
         "said",
         "hidden option of the search measurement: the terminal hook fills the last speech of the agent by itself",
-    ),
-    (
-        "measure",
-        "lines",
-        "check by hand of the search table: one JSON line per answered search; the command only relays the text",
     ),
 ];
 
@@ -225,14 +215,20 @@ fn declared_long_flags(cmd: &Command) -> BTreeSet<&str> {
         .collect()
 }
 
-/// Every long flag spelled anywhere in the product corpus.
+/// Every long flag spelled anywhere in the product corpus or in the help each
+/// `run` command prints, which is the reference the documentation points to.
 ///
 /// The whole corpus is read as ONE text, because the question is whether a
-/// reader can find the flag at all — not which file happens to carry it.
+/// reader can find the flag at all — not which file happens to carry it. A
+/// hidden flag is left out of the help, so only the prose can spell it.
 fn spelled_long_flags(root: &Path) -> BTreeSet<String> {
+    let mut tree = run_command_tree();
+    let help: String = tree.get_subcommands_mut().map(|cmd| cmd.render_long_help().to_string()).collect();
     forward_corpus(root)
         .iter()
-        .flat_map(|p| scan_long_flags(&read_lossy(p)))
+        .map(|p| read_lossy(p))
+        .chain(std::iter::once(help))
+        .flat_map(|text| scan_long_flags(&text))
         .collect()
 }
 
@@ -246,10 +242,8 @@ fn extract_run_names(text: &str) -> Vec<String> {
 fn forward_corpus(root: &Path) -> Vec<PathBuf> {
     let mut files = reverse_prose_corpus(root);
     walk_files(&root.join("packaging"), &mut files);
-    files.push(root.join("MUSTARD-COMMANDS.md"));
-    // The reference lives in two files: the path and the day-to-day commands in
-    // the main one, the internals (install, Jev, publishing, code search) in the
-    // second. A flag only the internals spell is documented all the same.
+    // The reference of each command is its help; the internals (install, Jev,
+    // publishing, code search) live in this file.
     files.push(root.join("docs/mustard-por-dentro.md"));
     files
 }
@@ -515,8 +509,6 @@ const KEPT_HOOKS: &[&str] = &[
     "approval_witness",
     "command_guard",
     "end_of_turn_check",
-    "glossary_witness",
-    "precompact_notice",
     "prompt_entry",
     "session_cleanup_observer",
     "session_start_inject",
@@ -530,7 +522,8 @@ const KEPT_HOOKS: &[&str] = &[
 /// Os ganchos que saíram, pelo nome com que estavam registrados. Nenhum deles
 /// volta ao registro.
 const REMOVED_HOOKS: &[&str] = &[
-    "copy_witness",
+    "glossary_witness",
+    "precompact_notice",
     "active_spec_limit_gate",
     "amend_window_inject",
     "bash_command_gate",
@@ -557,7 +550,6 @@ const REMOVED_HOOKS: &[&str] = &[
     "tool_use_counter",
     "user_prompt_observer",
     "wave_complete_observer",
-    "wave_pause_check",
     "wave_start_observer",
     "wikilink_footer_observer",
     "worktree_create",

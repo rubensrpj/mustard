@@ -2447,7 +2447,7 @@ mod tests {
             ("web/legacy.ts", "export function legacyRun(): number {\n  return 2;\n}\n"),
             ("docs/2026-10-12-closing.md", cites),
             ("docs/evidence/2026-10-13-validation.json", "{\"removed\": [\"math::oldTotal\", \"web/legacy.ts\"]}\n"),
-            ("MUSTARD-COMMANDS.md", cites),
+            ("GUIDE.md", cites),
             ("docs/guide.md", cites),
         ];
         committed(root, &files);
@@ -2462,8 +2462,8 @@ mod tests {
         let mut refused: Vec<&str> = found.iter().filter(|f| f.text.contains("ainda cita")).map(|f| f.text.as_str()).collect();
         refused.sort_unstable();
         let expected = [
-            "`MUSTARD-COMMANDS.md` linha 1 ainda cita `legacy.ts`, que a onda tirou de `web/legacy.ts`",
-            "`MUSTARD-COMMANDS.md` linha 1 ainda cita `oldTotal`, que a onda tirou de `web/math.ts`",
+            "`GUIDE.md` linha 1 ainda cita `legacy.ts`, que a onda tirou de `web/legacy.ts`",
+            "`GUIDE.md` linha 1 ainda cita `oldTotal`, que a onda tirou de `web/math.ts`",
             "`docs/guide.md` linha 1 ainda cita `legacy.ts`, que a onda tirou de `web/legacy.ts`",
             "`docs/guide.md` linha 1 ainda cita `oldTotal`, que a onda tirou de `web/math.ts`",
         ];

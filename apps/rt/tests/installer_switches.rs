@@ -161,7 +161,7 @@ fn the_enabled_key_turns_every_hook_off_and_back_on() {
     let (root, home) = installed(dir.path());
     let dangerous = json!({
         "tool_name": "Bash",
-        "tool_input": {"command": "rm -rf /"},
+        "tool_input": {"command": "mustard-rt run read backlog | head -5"},
         "hook_event_name": "PreToolUse",
         "cwd": root.to_string_lossy(),
     })

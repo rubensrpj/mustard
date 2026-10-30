@@ -17,10 +17,8 @@ use crate::io::sha256::Sha256;
 pub mod enrichment;
 pub mod audit;
 pub mod coverage;
-pub mod dossier;
 pub mod investigation;
 pub mod observations;
-pub mod precise;
 pub mod relations;
 pub(crate) mod catalog;
 pub(crate) mod references;
@@ -292,7 +290,7 @@ pub fn query_with(
     tree: &Path,
     opts: &Query<'_>,
 ) -> Result<(Value, ProjectMap), MapRefusal> {
-    consistent_query(root, tree, opts, true, None, false, None)
+    consistent_query(root, tree, opts, true, None)
 }
 
 /// Task-aware retrieval with an optional embedded code channel. This port
@@ -301,7 +299,7 @@ pub fn query_for(root: &Path, tree: &Path, opts: &Query<'_>, task: knowledge::in
     if task.intent.len()>4000 || opts.text.len()>4000 || (opts.symbol.is_some() && !task.intent.trim().is_empty()) {
         return Err(invalid("knowledge-invalid-investigation-context"));
     }
-    consistent_query(root, tree, opts, true, None, false, Some(task))
+    consistent_query(root, tree, opts, true, Some(task))
 }
 
 /// The gateway supplies the inventory allowed by the original tool. Task
@@ -316,13 +314,7 @@ pub(crate) fn cards_for_ids(root: &Path, ids: &BTreeSet<String>) -> Result<Vec<C
 }
 
 pub(crate) fn query_for_scope(root: &Path, tree: &Path, opts: &Query<'_>, task: knowledge::investigation::Task<'_>, scope: &EvidenceScope<'_>) -> Result<(Value, ProjectMap), MapRefusal> {
-    consistent_scoped_query(root, tree, opts, true, None, false, Some(task), Some(scope))
-}
-
-/// Explicit experimental responsibility ranking, optionally judged. Ordinary
-/// queries retain the established ranking until independent relevance improves.
-pub fn query_with_selector(root:&Path,tree:&Path,opts:&Query<'_>,selector:Option<&dyn knowledge::selection::SymbolSelector>)->Result<(Value,ProjectMap),MapRefusal> {
-    consistent_query(root,tree,opts,true,selector,true,None)
+    consistent_scoped_query(root, tree, opts, true, Some(task), Some(scope))
 }
 
 /// Compare read generations without exposing the database connection publicly.
@@ -338,46 +330,22 @@ fn query_sources(
     tree: &Path,
     options: &Query<'_>,
 ) -> Result<(Value, ProjectMap), MapRefusal> {
-    consistent_query(root, tree, options, false, None, false, None)
+    consistent_query(root, tree, options, false, None)
 }
 
 /// Source blocks can be read through several database ports. Detect a writer
 /// between those reads instead of returning a mixed source generation.
-fn consistent_query(root: &Path, tree: &Path, options: &Query<'_>, include_interpretations: bool, selector:Option<&dyn knowledge::selection::SymbolSelector>, responsibility:bool, task:Option<knowledge::investigation::Task<'_>>) -> Result<(Value,ProjectMap),MapRefusal> {
-    consistent_scoped_query(root, tree, options, include_interpretations, selector, responsibility, task, None)
+fn consistent_query(root: &Path, tree: &Path, options: &Query<'_>, include_interpretations: bool, task:Option<knowledge::investigation::Task<'_>>) -> Result<(Value,ProjectMap),MapRefusal> {
+    consistent_scoped_query(root, tree, options, include_interpretations, task, None)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn consistent_scoped_query(root: &Path, tree: &Path, options: &Query<'_>, include_interpretations: bool, selector:Option<&dyn knowledge::selection::SymbolSelector>, responsibility:bool, task:Option<knowledge::investigation::Task<'_>>, scope:Option<&EvidenceScope<'_>>) -> Result<(Value,ProjectMap),MapRefusal> {
-    let mut calls=Some(0u64);
-    let mut attempts=Vec::new();
-    for attempt in 0..2 {
+fn consistent_scoped_query(root: &Path, tree: &Path, options: &Query<'_>, include_interpretations: bool, task:Option<knowledge::investigation::Task<'_>>, scope:Option<&EvidenceScope<'_>>) -> Result<(Value,ProjectMap),MapRefusal> {
+    for _ in 0..2 {
         let before = generation(root)?;
-        // A concurrent writer invalidates a choice. Retry natively rather than
-        // automatically paying for another generation of the same query.
-        let mut result=query_internal(root,tree,options,include_interpretations,if attempt==0 {selector}else{None},responsibility,task,scope)?;
-        calls=calls.zip(result.0["remote_model_calls"].as_u64()).map(|(a,b)|a+b);
-        attempts.push(result.0["responsibility_selection"]["usage"].clone());
+        let mut result=query_internal(root,tree,options,include_interpretations,task,scope)?;
         let after = generation(root)?;
         if before==after {
-            if attempt>0 {
-                result.0["remote_model_calls"]=json!(calls);
-                result.0["responsibility_selection"]["discarded_generation_usage"]=json!(&attempts[..attempt]);
-            }
             result.0["scan_snapshot"]["consistent_generation"]=json!(true);
-            // Remote latency opens a wider source-change window. Re-read the
-            // returned receipts after judgement, including cache hits, rather
-            // than trusting the hashes collected before the request.
-            if result.0["responsibility_selection"]["usage"]["status"]=="jev-choice" || result.0["remote_model_calls"]!=json!(0) {
-                let mut checked=BTreeMap::new();
-                let sources=result.0["cards"].as_array().into_iter().flatten().chain(result.0["resources"].as_array().into_iter().flatten()).map(|item|&item["source"])
-                    .chain(result.0["interpretations"].as_array().into_iter().flatten().flat_map(|note|note["sources"].as_array().into_iter().flatten()));
-                for source in sources {
-                    if !serde_json::from_value::<Source>(source.clone()).is_ok_and(|source|current(tree,&source,&mut checked)) {
-                        return Err(invalid("knowledge-source-changed-during-selection; refresh evidence; physical usage remains in judgement ledger"));
-                    }
-                }
-            }
             if !options.detail && !options.all && !options.refresh {knowledge::projection::compact(&mut result.0);}
             return Ok(result);
         }
@@ -390,8 +358,7 @@ fn consistent_scoped_query(root: &Path, tree: &Path, options: &Query<'_>, includ
 /// e sai inteiro, e `--detail` traz sempre o texto inteiro.
 const NOTE_CHARS: usize = 600;
 
-#[allow(clippy::too_many_arguments)]
-fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpretations: bool, selector:Option<&dyn knowledge::selection::SymbolSelector>, responsibility:bool, task:Option<knowledge::investigation::Task<'_>>, scope:Option<&EvidenceScope<'_>>) -> Result<(Value, ProjectMap), MapRefusal> {
+fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpretations: bool, task:Option<knowledge::investigation::Task<'_>>, scope:Option<&EvidenceScope<'_>>) -> Result<(Value, ProjectMap), MapRefusal> {
     let Query { text: query, file, limit, depth, all, detail, symbol, direction, refresh } = *options;
     // An explicit investigation may follow current callers of its discovery
     // seeds. Literal lookup still requires an exact symbol for navigation.
@@ -588,51 +555,6 @@ fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpr
         }
         ranking.sort_by_key(|&i| named_rank(&cards[i]));
     }
-    let mut expanded_candidates=0;
-    let mut ambiguous_files=0;
-    let mut selection_usage=knowledge::selection::native_usage();
-    let mut judged_symbols=BTreeSet::new();
-    if responsibility && symbol.is_none() && !exact_name && !all && !query.trim().is_empty() {
-        let mut seen=BTreeSet::new();
-        let files:Vec<_>=ranking.iter().map(|&i|cards[i].source.file.clone()).filter(|path|file.is_none_or(|file|file==path) && seen.insert(path.clone())).take(max).collect();
-        let (expanded,omitted)=catalog::expand_files(root,&mut cards,&files,query,all)?;
-        expanded_candidates=expanded;candidates_omitted|=omitted;
-        let weights=catalog::intent_weights(root,query,&languages)?;
-        let scope:BTreeSet<_>=files.iter().map(String::as_str).collect();
-        let positions:Vec<_>=cards.iter().enumerate().filter(|(_,card)|scope.contains(card.source.file.as_str())).map(|(i,_)|i).collect();
-        let scoped:Vec<_>=positions.iter().map(|&i|cards[i].clone()).collect();
-        let mut groups=knowledge::selection::within_files(&scoped,query,&languages,&weights);
-        for group in groups.values_mut() {for rank in group {rank.card=positions[rank.card];}}
-        let mut ambiguities:Vec<_>=files.iter().filter_map(|path|groups.get(path).and_then(|group|knowledge::selection::ambiguity(path,group,&cards)))
-            .filter(|group|group.candidates.iter().all(|card|current(tree,&card.source,&mut hashes))).collect();
-        if selector.is_some() {
-            let registry=knowledge::resources::Registry::load().map_err(invalid)?;
-            let texts:BTreeMap<_,_>=files.iter().filter_map(|file|investigation::safe_read(tree,file,&registry).map(|text|(file,text))).collect();
-            for group in &mut ambiguities {
-                for card in &group.candidates {
-                    if let Some(text)=texts.get(&card.source.file) {
-                        group.excerpts.insert(card.id.clone(),investigation::selection_excerpt_for(card,text,query,&languages));
-                    }
-                }
-            }
-        }
-        ambiguous_files=ambiguities.len();
-        let decisions=if let Some(selector)=selector.filter(|_|!ambiguities.is_empty() && !all) {selector.select(query,&ambiguities)} else {knowledge::selection::Decisions::default()};
-        if !decisions.usage.is_null(){selection_usage=decisions.usage;}
-        let mut reranked=Vec::new();let mut included=BTreeSet::new();
-        for path in &files {
-            let winner=decisions.choices.get(path).and_then(|id|ambiguities.iter().find(|g|&g.key==path)
-                .and_then(|g|g.candidates.iter().find(|c|&c.id==id)).and_then(|c|cards.iter().position(|candidate|candidate.id==c.id)))
-                .or_else(||groups.get(path).and_then(|group|group.first()).map(|r|r.card))
-                .or_else(||ranking.iter().copied().find(|&i|cards[i].source.file==*path));
-            if let Some(i)=winner && included.insert(i){
-                if decisions.choices.get(path)==Some(&cards[i].id) {judged_symbols.insert(cards[i].id.clone());}
-                reranked.push(i);
-            }
-        }
-        for i in ranking {if included.insert(i){reranked.push(i);}}
-        ranking=reranked;
-    }
     let investigation = if let Some(task)=task {
         Some(investigation::prepare(root,tree,options,task,&mut cards,&mut ranking,&mut hashes,scope)?)
     } else {None};
@@ -665,7 +587,7 @@ fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpr
         if current(tree, &cards[i].source, &mut hashes) {
             if selected.insert(i) {
                 order.push(i);
-                reasons.insert(i, if judged_symbols.contains(&cards[i].id) {"optional-responsibility-choice"} else if exact_name {"exact-name"} else if local_hybrid_index { "native-index-and-vocabulary" } else { "lexical" });
+                reasons.insert(i, if exact_name {"exact-name"} else if local_hybrid_index { "native-index-and-vocabulary" } else { "lexical" });
             }
         } else {
             stale_cards += 1;
@@ -800,8 +722,7 @@ fn query_internal(root: &Path, tree: &Path, options: &Query<'_>, include_interpr
         "navigation":{"symbol":symbol,"direction":direction,"max_depth":depth.min(4),"paths":if symbol.is_some() || guided {walk.paths}else{vec![]},"omitted_destinations":omitted_edges,"stale_destinations":stale_navigation,"stale_relations":stale_relations,"outside_scope_relations":outside_scope_relations,"ambiguous_relations":ambiguous_relations,"impact_completeness":"unknown; static links only"},
         "expand":{"detail":"Repeat the query with --detail; --symbol <id> selects one exact declaration.","source":"run map slice --file <source.file> --name <name>","relations":"run knowledge --symbol <id> --direction callers --detail; both ends checked, static resolution is not runtime proof.","refresh":"run knowledge --refresh to inspect stale interpretations without regenerating them."},
         "stale_interpretations":stale.iter().map(|note|&note.id).collect::<Vec<_>>(),"gaps":gaps,
-        "origin":"scan-and-versioned-interpretations","remote_model_calls":selection_usage["remote_model_calls"],
-        "responsibility_selection":{"experimental":responsibility,"expanded_candidates":expanded_candidates,"ambiguous_files":ambiguous_files,"usage":selection_usage},
+        "origin":"scan-and-versioned-interpretations","remote_model_calls":0,
         "retrieval_method":if exact_name {"exact-name-index"}else{"native-index-and-vocabulary"},"vectors_enabled":task.is_none() && crate::domain::config::ProjectConfig::load(tree).ai_vectors_enabled(),
         "local_model_calls":if task.is_none() && crate::domain::config::ProjectConfig::load(tree).ai_vectors_enabled(){Value::Null}else{json!(0)}});
     if let Some(native)=investigation {
@@ -937,64 +858,9 @@ use super::*;
             sha256: hash.hex_digest(),
         }
     }
-    struct Probe(std::cell::Cell<usize>);
-    impl knowledge::selection::SymbolSelector for Probe {
-        fn select(&self,_:&str,groups:&[knowledge::selection::Ambiguity])->knowledge::selection::Decisions {
-            self.0.set(self.0.get()+1);
-            knowledge::selection::Decisions{choices:groups.iter().map(|g|(g.key.clone(),g.candidates.iter().find(|c|c.name=="second").unwrap().id.clone())).collect(),
-                usage:json!({"remote_model_calls":1}),..Default::default()}
-        }
-    }
-    #[test]
-    fn selection_is_optional_and_never_runs_for_exact_missing_or_stale_evidence() {
-        let dir=tempfile::tempdir().unwrap();let root=dir.path();
-        std::fs::write(root.join("a.rs"),"one\ntwo\nthree\nfour\n").unwrap();
-        let mut raw=json!({"modules":[{"path":"a.rs","analysis":{"content_sha256":source(root,"a.rs").sha256,"parse_complete":true},"declarations":[
-            {"name":"first","kind":"function","line":1,"end_line":2,"body_names":"quartz beacon"},
-            {"name":"second","kind":"function","line":3,"end_line":4,"body_names":"quartz beacon"}]}]});
-        knowledge::enrich(&mut raw);store::write_text(root,&raw.to_string()).unwrap();
-        let probe=Probe(std::cell::Cell::new(0));
-        let opts=|text|Query{text,file:None,limit:1,depth:0,all:false,detail:false,symbol:None,direction:Direction::Outgoing,refresh:false};
-        let answer=query_with_selector(root,root,&opts("quartz beacon"),Some(&probe)).unwrap().0;
-        assert_eq!(probe.0.get(),1);assert_eq!(answer["cards"][0]["name"],"second");
-        assert_eq!(answer["remote_model_calls"],1);
-        assert_eq!(answer["cards"][0]["retrieval"],"optional-responsibility-choice");
-        for query in ["first","missingUnicorn"] {query_with_selector(root,root,&opts(query),Some(&probe)).unwrap();}
-        query_with_selector(root,root,&Query{all:true,..opts("quartz beacon")},Some(&probe)).unwrap();
-        assert_eq!(probe.0.get(),1);
-        std::fs::write(root.join("a.rs"),"changed\n").unwrap();
-        assert!(query_with_selector(root,root,&opts("quartz beacon"),Some(&probe)).unwrap().0["cards"].as_array().unwrap().is_empty());
-        assert_eq!(probe.0.get(),1);
-    }
 
     #[test]
-    fn a_writer_during_selection_discards_the_choice_without_repeating_payment() {
-        struct Writer<'a>{root:&'a Path,calls:std::cell::Cell<usize>,change_file:bool}
-        impl knowledge::selection::SymbolSelector for Writer<'_> {
-            fn select(&self,_:&str,groups:&[knowledge::selection::Ambiguity])->knowledge::selection::Decisions {
-                self.calls.set(self.calls.get()+1);
-                if self.change_file {std::fs::write(self.root.join("a.rs"),"changed\n").unwrap();}
-                else {let mut db=open_existing(&store::model_path(self.root)).unwrap();db.write(|tx|crate::io::map_revision::bump(tx)).unwrap();}
-                knowledge::selection::Decisions{choices:groups.iter().map(|g|(g.key.clone(),g.candidates.last().unwrap().id.clone())).collect(),usage:json!({"remote_model_calls":1}),..Default::default()}
-            }
-        }
-        let dir=tempfile::tempdir().unwrap();let root=dir.path();
-        std::fs::write(root.join("a.rs"),"one\ntwo\nthree\nfour\n").unwrap();
-        let mut raw=json!({"modules":[{"path":"a.rs","analysis":{"content_sha256":source(root,"a.rs").sha256},"declarations":[
-            {"name":"first","kind":"function","line":1,"end_line":2,"body_names":"quartz beacon"},
-            {"name":"second","kind":"function","line":3,"end_line":4,"body_names":"quartz beacon"}]}]});
-        knowledge::enrich(&mut raw);store::write_text(root,&raw.to_string()).unwrap();
-        let opts=Query{text:"quartz beacon",file:None,limit:1,depth:0,all:false,detail:false,symbol:None,direction:Direction::Outgoing,refresh:false};
-        let writer=Writer{root,calls:std::cell::Cell::new(0),change_file:false};
-        let report=query_with_selector(root,root,&opts,Some(&writer)).unwrap().0;
-        assert_eq!(writer.calls.get(),1);assert_eq!(report["remote_model_calls"],1);
-        assert_eq!(report["responsibility_selection"]["discarded_generation_usage"][0]["remote_model_calls"],1);
-        let writer=Writer{change_file:true,..writer};
-        assert!(query_with_selector(root,root,&opts,Some(&writer)).is_err());
-    }
-
-    #[test]
-    fn reviewed_notes_lead_wave_context_and_topic_reports_invalidate_all_sources() {
+    fn reviewed_notes_lead_wave_context() {
         let dir=tempfile::tempdir().unwrap();let root=dir.path();
         for file in ["a.rs","b.rs"] {std::fs::write(root.join(file),"fn run() {}\n").unwrap();}
         let mut raw=json!({"modules":[{"path":"a.rs","analysis":{"content_sha256":source(root,"a.rs").sha256},
@@ -1004,13 +870,6 @@ use super::*;
             record(root,&Interpretation{id:id.into(),title:"quartz beacon".into(),text:"Quarzt archive handles the beacon.".into(),status:status.into(),origin:"review-fixture".into(),sources:vec![source(root,"a.rs"),source(root,"b.rs")],rule_context:None}).unwrap();
         }
         assert_eq!(for_source(root,root,"a.rs","")["interpretations"][0]["status"],"reviewed");
-        let plan=dossier::Plan{title:"Project".into(),topics:vec![dossier::Topic{id:"archive".into(),title:"Archive".into(),query:"quartz beacon".into(),file:None}]};
-        let opts=Query{text:"",file:None,limit:8,depth:0,all:false,detail:true,symbol:None,direction:Direction::Outgoing,refresh:false};
-        let report=dossier::assemble(root,root,&plan,&opts,None,false).unwrap().0;
-        assert_eq!(report["topics"][0]["reviewed_interpretations"],json!(["z-reviewed"]));
-        std::fs::write(root.join("b.rs"),"fn changed() {}\n").unwrap();
-        let report=dossier::assemble(root,root,&plan,&opts,None,false).unwrap().0;
-        assert_eq!(report["topics"][0]["reviewed_interpretations"],json!([]));
     }
     #[test]
     fn changing_any_source_invalidates_the_whole_interpretation() {

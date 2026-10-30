@@ -1218,6 +1218,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         approved(root, "x", &[(1, &["src/a.rs"], &[]), (2, &["src/b.rs"], &[]), (3, &["src/a.rs"], &[]), (4, &["src/c.rs"], &[2]), (5, &["src/d.rs"], &[1])]);
+        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":3}"#).unwrap();
         let mut first = waves_in(&round(root, "x", None), "dispatch");
         first.sort_unstable();
         assert_eq!(first, vec![1, 2, 3], "a entrega 3 sai ao lado da 1, mesmo dividindo o arquivo dela");

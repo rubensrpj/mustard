@@ -428,6 +428,23 @@ export function renderPanel({elements,surface,columns,state,screens={},project,u
     const per=perRow(3,t('perguntas','questions').length,(width ?? 100)-2*cells('paddingX',20),1+cells('paddingX',13));
     body.push(section(t('O que foi combinado','What was agreed'),[column(Array.from({length:Math.ceil(tiles.length/per)},(_,n)=>row(tiles.slice(n*per,n*per+per),{flexWrap:'nowrap',columnGap:space(10)})),
       {rowGap:apart(10)})]));
+    // O que se aprova num clique, depois do objetivo do cartão de cima: as
+    // decisões do usuário, separadas das outras, o que o código resolveu com a
+    // fonte, os critérios com a prova e as tarefas com a previsão do plano.
+    const a=s.approval;
+    if(a){
+      const listed=(rows,line)=>rows?.length?rows.map(line):[soft(t('Nada ainda.','Nothing yet.'))];
+      const decision=row_=>text(join(row_.code,row_.title));
+      body.push(section(t('Para aprovar','To approve'),[card([
+        label(t('Decisões do usuário','The user’s decisions')),...listed(a.user_decisions,decision),
+        label(t('Outras decisões','Other decisions')),...listed(a.other_decisions,decision),
+        label(t('Resolvido pelo código','Settled by the code')),...listed(a.resolved_by_code,point=>column([text(join(point.code,point.gap)),
+          ...(point.facts ?? []).map(fact=>soft(join(fact.text,fact.source)))],{rowGap:space(4)})),
+        label(t('Critérios e prova','Criteria and proof')),...listed(a.criteria,criterion=>column([text(join(criterion.code,criterion.title)),
+          ...(criterion.proof?[text(criterion.proof,{mono:true,size:'caption'})]:[])],{rowGap:space(4)})),
+        label(t('Tarefas e previsão','Tasks and forecast')),text(`${int(a.tasks?.total)} ${t('tarefas','tasks')}`),...(a.tasks?.forecast?[soft(a.tasks.forecast)]:[])],
+        {rowGap:space(8)})]));
+    }
     // As ondas numa barra só e a legenda de cada parte.
     const w=s.waves,wavesOf=list=>`${t(list.length===1?'onda':'ondas',list.length===1?'wave':'waves')} ${list.join(', ')}`;
     const parts=[{value:w.committed,color:paint.ink,caption:`${int(w.committed)} ${t('comitadas','committed')}`},{value:w.integrated,color:paint.mustard,caption:`${int(w.integrated)} ${t('integradas','integrated')}`},

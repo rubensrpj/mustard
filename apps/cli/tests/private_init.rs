@@ -77,7 +77,7 @@ fn git_project_with_github_remote(root: &Path, name: &str) -> PathBuf {
 /// one executable this test is guaranteed to have and because its surface is
 /// ours: `--version` exits 0, which is all the two probes read. Answering the
 /// probes here — rather than hoping the runner has RTK and ripgrep — is what
-/// keeps the rtk gate open and the ripgrep installer from reaching for
+/// keeps the rtk gate open and the ripgrep hint from reaching for
 /// `scoop`/`cargo install` on CI.
 fn tool_shims(root: &Path) -> PathBuf {
     let bin = root.join("shims");

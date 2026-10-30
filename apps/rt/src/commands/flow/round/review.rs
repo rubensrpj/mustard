@@ -5,9 +5,7 @@
 //! enquanto outra espera. A revisão responde com o resumo — as linhas
 //! postas e tiradas por arquivo, o que saiu do plano e os passos da onda —,
 //! e o diff inteiro só a pedido. O aceite na rodada dispensa a impressão: o
-//! binário usa a da volta pendente, desde que quem conduz a tenha visto. Com
-//! o revisor de onda ligado, o veredito aprovado dele para o mesmo diff é o
-//! aceite ([`super::wave_review`]).
+//! binário usa a da volta pendente, desde que quem conduz a tenha visto.
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Component, Path, PathBuf};
@@ -129,7 +127,6 @@ pub(super) fn snapshot(root: &Path, log: &SpecLog, wave: &WaveReport) -> Result<
     let mut hash = Sha256::new();
     let mut diff = String::new();
     let mut changes = Vec::new();
-    let mut pieces = Vec::new();
     let mut files = wave.files.clone();
     files.sort();
     files.dedup();
@@ -166,7 +163,6 @@ pub(super) fn snapshot(root: &Path, log: &SpecLog, wave: &WaveReport) -> Result<
             moved_lines(&tracked)
         };
         changes.push((file.clone(), added, removed));
-        let start = diff.len();
         let _ = write!(diff, "\n--- {file} ---\n");
         let shown = if tracked.is_empty() {
             if std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.file_type().is_symlink()) {
@@ -181,19 +177,16 @@ pub(super) fn snapshot(root: &Path, log: &SpecLog, wave: &WaveReport) -> Result<
             diff.push_str(&crate::shared::secret::without_secrets(&shown));
         }
         diff.push('\n');
-        pieces.push((file.clone(), diff[start..].to_string()));
     }
-    Ok(Snapshot { fingerprint: hash.hex_digest(), diff, changes, pieces })
+    Ok(Snapshot { fingerprint: hash.hex_digest(), diff, changes })
 }
 
 /// O diff de uma onda como a revisão o lê ([`snapshot`]): a impressão
-/// digital, o texto do diff e, por arquivo, as linhas postas e tiradas e o
-/// trecho do diff dele.
+/// digital, o texto do diff e, por arquivo, as linhas postas e tiradas.
 pub(super) struct Snapshot {
     pub(super) fingerprint: String,
     diff: String,
     pub(super) changes: Vec<(String, u64, u64)>,
-    pub(super) pieces: Vec<(String, String)>,
 }
 
 /// As linhas postas e as tiradas do diff `tracked` de um arquivo, contadas
@@ -274,28 +267,14 @@ fn has_receipt(log: &SpecLog, wave: &WaveReport, step: &str, hash: &str) -> bool
     })
 }
 
-/// Segura a volta que ninguém revisou: aceita pelo recibo já gravado, pela
-/// linha `REVIEWED` de quem conduz depois de ver o resumo, ou pelo veredito
-/// aprovado do revisor da onda para o mesmo diff. Sem nenhum deles e com o
-/// revisor de onda ligado, grava o pedido dele ([`super::wave_review`]) e diz a
-/// quem conduz como lançá-lo; desligado, pede a linha `REVIEWED`.
+/// Segura a volta que ninguém revisou: aceita pelo recibo já gravado ou pela
+/// linha `REVIEWED` de quem conduz depois de ver o resumo; sem nenhum dos
+/// dois, pede a linha `REVIEWED`.
 pub(super) fn hold_unreviewed(root: &Path, spec: &str, log: &SpecLog, waves: &mut Vec<WaveReport>, approvals: &[Approval], lang: Locale) -> Vec<HeldReturn> {
-    let reviewer = mustard_core::ProjectConfig::load(root).wave_review_enabled();
     hold_refused(waves, |wave| {
         if wave.files.is_empty() { return Ok(());
         }
-        let seen = snapshot(root, log, wave);
-        if reviewer && let Ok(seen) = &seen && !has_receipt(log, wave, "accepted", &seen.fingerprint)
-            && !(has_receipt(log, wave, "view", &seen.fingerprint)
-                && approvals.iter().any(|a| a.wave == wave.wave && a.fingerprint.as_ref().is_none_or(|said| *said == seen.fingerprint))) {
-            if let Some(verdict) = super::wave_review::approved(log, wave.wave, &seen.fingerprint) {
-                return receipt(root, spec, wave, "accepted", &seen.fingerprint, verdict.str_field("text")).map_err(RoundRefusal::Refused);
-            }
-            let asked = super::wave_review::ask(root, spec, log, wave, seen, lang).map_err(RoundRefusal::Refused)?;
-            return Err(RoundRefusal::PreparationRequired(json!({"ok":false,"reason":"wave-review-required","wave":wave.wave,
-                "agent_rework_required":false,"hint":asked.hint,"review":{"agent":"mustard-review","title":asked.title,"read":asked.read}})));
-        }
-        let snapshot = seen.map(|seen| seen.fingerprint);
+        let snapshot = snapshot(root, log, wave).map(|seen| seen.fingerprint);
         if let Ok(hash) = &snapshot {
             if has_receipt(log, wave, "accepted", hash) { return Ok(());
             }

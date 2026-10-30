@@ -10,39 +10,6 @@ A tese do projeto é **mínimo de IA, máximo de determinismo**: tudo que pode s
 
 ---
 
-## Princípio central
-
-> A busca começa na evidência local; o modelo expande a leitura do código quando necessário.
-
-```mermaid
-flowchart LR
-    repo[("Repositório")] -->|"varredura ao abrir a spec e depois de cada commit de rodada (Rust, sem IA)"| model[("grain.db")]
-    model -->|mapa| anchors["arquivos apontados"]
-    anchors -->|"IA lê só estes"| work["pipeline de feature/bugfix"]
-```
-
-1. A **varredura** minera o repositório para um modelo durável (`grain.db`, um banco SQLite em blocos que só regrava o bloco que mudou) — de forma **determinística, sem IA e agnóstica de linguagem/arquitetura**: módulos, declarações, grafo de dependências, *roles*, *slices* e contratos. Roda na instalação, ao abrir a spec e depois de commits da rodada; `mustard-rt run scan` atualiza explicitamente. Limites de parse e origem das relações ficam visíveis.
-2. A **porta de busca** (`mustard-rt run search`) pesquisa o código com os parâmetros recebidos, registra achados verificados e cruza o resultado com o scan. Arquivos novos/alterados atualizam o índice estrutural sem IA. O mapa prepara expansões e referências; relações e testes candidatos não provam comportamento ou cobertura.
-3. Objetivo: **economia de contexto** — o mapa acha *onde olhar*, e o modelo confere os trechos necessários. Economia de tokens faturados deve ser medida no fluxo real.
-
-`mustard-rt run search --shell-output --intent "<tarefa>" --purpose implement -- rg -n --with-filename "<padrão>" src` retorna a busca original ou uma versão menor sem perder ocorrências, com intervalos atuais quando couberem. O Mods registra `mcp__mustard__search`; hooks encaminham buscas suportadas. Leituras exatas por `Read` passam pelas proteções normais; o Mustard cruza o trecho recebido com o mapa depois, sem recusa de encaminhamento, outra chamada ou IA. Intenção não substitui o padrão. Contratos e limites: [gateway de busca](docs/2026-10-09-gateway-de-busca.md).
-
-`mustard-rt run knowledge --query "<assunto>"` permanece como consulta analítica de símbolos/documentação/configuração com linhas e hash; `--detail` expande e `--all --markdown --out levantamento.md` exporta. Referências explícitas podem conectar documentos ao código; uma menção não comprova a regra descrita. `mustard-rt run map audit` verifica integridade e índices sem modelo auxiliar.
-
-`--intent "<tarefa>" --purpose implement` cruza candidatos com código atual e fornece trechos para edição; `spec`, `understand`, `validate` e `locate` ajustam o tamanho da evidência. Arquivos novos/alterados aparecem como ocorrências sem identidade antiga. Alternativas exigem conferência; trechos truncados precisam de expansão. O caminho comum é inteiramente nativo, mesmo com IA configurada. Nos hooks, o cruzamento usa ocorrências já executadas, preservando a busca literal.
-
-`run knowledge --coverage` mostra lacunas de gramática, arquivos não lidos e exclusões. `--topics plano.json --markdown --out relatorio.md` compõe evidências e interpretações revisadas por assunto; `--evaluate perguntas.json` compara recuperação compacta/detalhada e Choice configurado, sem executar uma spec. `--responsibility` experimenta seleção dentro dos arquivos encontrados; a regressão na avaliação externa impediu promovê-la a padrão. Jev é opcional nesse modo, somente nas ambiguidades com pistas próprias, usando a mesma interface, cache e registro de tentativas do restante do Mustard. Consulte os formatos e limites em [Scan como oráculo](docs/2026-10-08-scan-oraculo.md).
-
-A busca também usa identificadores dentro das funções e textos fixos completos. A resposta inicial mostra pequenos trechos correspondentes; `--detail` recupera a evidência completa. Bancos anteriores à versão 3 dos pacotes precisam de novo scan.
-
-> O binário cuida de estado, recuperação, contexto, orquestração, validação, cálculos e geração de páginas. O modelo raciocina e implementa. A recuperação semântica local está habilitada por padrão; `ai.vectors: false` a desliga. Jev exige `ai.fallback: true` e um filtro explícito por finalidade; credenciais sozinhas não ativam chamadas remotas. A interface de provedor e o cache versionado permanecem disponíveis. Grep/rg literais preservam seus argumentos e não chamam Jev por rotina.
-
-Para habilitar Jev apenas na escolha entre responsabilidades na busca, use `"ai":{"fallback":true}` e `"judgement":{"search":{"filter":"jev"}}` no `mustard.json`, além da chave local. No Mods, investigações por Grep/rg/Glob permitem essa escolha automaticamente; o binário só a solicita quando há alternativas sustentadas por código atual. `locate`, leituras e referências exatas seguem nativas; `choose:false` desativa a escolha naquela chamada. Ondas e contexto exigem filtros próprios. O painel mostra a configuração por finalidade, sem tratar uma chave presente como serviço validado ou crédito confirmado. Não há teto mensal interno: o histórico mede consumo e não bloqueia chamadas. Se o serviço recusar por falta de crédito, a operação segue com a alternativa nativa, sem repetir essa tentativa. O uso segue as [perguntas atômicas e decisões tipadas do Jev](https://docs.typesafe.ai/introduction).
-
-O consumo das ondas é atualizado localmente por conversa e tentativa de despacho, inclusive quando o pedido começa com instruções de idioma. Medições parciais aparecem como subtotal; a observação não altera os envios da spec. Antes do build integrado, um cliente Prisma cujos modelos/tipos diferem do schema atual é regenerado pelo script de geração já declarado pelo projeto. Sem script ou sem correção confirmada, a rodada preserva as entregas e informa um problema de preparo, sem atribuí-lo aos agentes.
-
----
-
 ## Instalação
 
 Pré-requisito único em todos os ambientes: **[Claude Code](https://docs.claude.com/claude-code)** instalado e logado (`claude --version` responde). Você **não** precisa de Rust, Node ou qualquer ferramenta de desenvolvimento — os instaladores trazem tudo pré-compilado.
@@ -112,128 +79,31 @@ flowchart LR
     C --> PR["pr-open"]
 ```
 
-Cada comando indica o próximo passo. `open` abre a spec; `grill` levanta pontos abertos; `plan` confere o plano para aprovação do usuário. `round` despacha ondas em cópias separadas, integra entregas autorizadas, executa build e provas pertinentes, comita e libera dependentes. `close` executa lint, suíte geral e critérios sobre o código integrado, reaproveitando apenas validação vigente. Um revisor final usa resumos para orientar a conferência no código/diff, inclusive com uma única onda. Falhas abrem consertos rastreáveis. `pr-open` abre o pull request; merge exige pedido do usuário.
+Cada comando indica o próximo passo. `open` abre a spec; `grill` levanta pontos abertos; `plan` confere o plano para aprovação do usuário. `round` despacha ondas em cópias separadas, integra as entregas, formata os arquivos da rodada, comita e libera as dependentes, sem compilar nem rodar prova. `close` faz a compilação, o lint, a suíte geral e as provas dos critérios sobre o código integrado, reaproveitando apenas validação vigente. Um revisor final usa resumos para orientar a conferência no código/diff, inclusive com uma única onda. Falhas abrem consertos rastreáveis. `pr-open` abre o pull request; merge exige pedido do usuário.
 
-O fechamento não fecha enquanto algum critério não tiver a última execução aprovada no `spec.ndjson`, enquanto o lint ou a suíte do projeto falharem, ou enquanto a revisão final do conjunto não tiver sido aprovada.
-
----
-
-## Comandos
-
-O plugin fornece comandos de fluxo `/mustard:*` e comandos imediatos de Mods para acompanhamento local. Um pedido que muda arquivos abre uma spec; cada comando nativo indica o próximo passo.
+O plugin traz os comandos `/mustard:*`:
 
 | Comando | Papel |
 |---|---|
 | `/mustard:continue` | Retoma a spec de onde parou. É o botão de reserva: a retomada já acontece no início da sessão. |
-| `/mustard:pr` | Abre o pull request, revisa o de um colega ou faz o merge, só a pedido. |
+| `/mustard:pr` | Abre o pull request ou faz o merge, só a pedido. |
 | `/mustard:mods [spec]` | Visão geral, spec, tarefas e demais itens, uma tarefa, consumo e configurações, lidos do binário local. Requer suporte a Mods (CLI 2.1.287+; Code do Desktop 2.1.286+). |
 | `/mustard:mods --diagnose` | Mostra versão do host, plugin carregado, interfaces reconhecidas e registro do painel, sem ler conversas ou chamar IA. |
 | `/mustard:pages` | Publicação explícita de `project`, `spec [nome]` ou `report <arquivo.md>` pelo adaptador nativo Cloudflare Pages, com o token em `publication.apiToken` do `mustard.json`. Sem configuração, entrega arquivos locais; sem turno do modelo. |
 | `/mustard:upsert` | Instala ou atualiza arquivos, índice e ferramentas do projeto. `installation.complete` só é verdadeiro quando a conferência da versão termina sem componentes pendentes; o Mods mostra esse resultado. Para desligar, use `"enabled": false` no `mustard.json`. |
 
-A referência completa — o fluxo, os ganchos e cada comando `mustard-rt run` — está em [`MUSTARD-COMMANDS.md`](MUSTARD-COMMANDS.md).
-
-O painel tem seis telas. **Visão geral** mostra a spec em três números (tarefas feitas, critérios passando, ondas concluídas), os avisos, o próximo passo, as ondas no ar, as outras specs que pedem atenção e o uso. **Spec** mostra branch, o combinado, as ondas por estado, a revisão final, o PR e a troca de spec. **Tarefas** lista tarefas, critérios, decisões, regras ou perguntas, com busca por título ou arquivo, filtro, as que pedem atenção primeiro e mais 8 por vez. **Uma tarefa** mostra o pedido, o que o agente fez, o resultado, o término, os arquivos, os itens cobertos, o gasto da onda e o histórico de versões. Depois vêm **Consumo** e **Configurações**. No terminal, as teclas ficam no rodapé: s spec, t tarefas, c consumo, b buscar, f filtrar, h histórico, m medir agora, o outra spec, v voltar e q sair; as linhas da lista se escolhem com Tab e abrem com Enter. No Desktop, as telas viram abas no topo e os tokens por dia são desenhados em SVG. O painel segue o tema do Claude Code, sem fundo fixo. As páginas para navegador seguem as [diretrizes do ERP.Brain](https://github.com/atiz/erpbrain/blob/main/design/guidelines/README.md), em modo escuro fixo, com Inter, controles maiores e navegação responsiva.
-
-Ao executar o comando novamente, o Mustard recria seu painel e volta à visão geral. A abertura confirma a solicitação no texto; falhas indicam o diagnóstico. O painel lê o binário ao abrir, ao trocar de tela e no fim de cada turno do condutor ou de um agente, relendo só a tela visível e só quando as fontes dela mudaram; parado, não consulta nada. O histórico das conversas e o disco das cópias das ondas só são medidos pelo botão **Medir agora**, na tela de consumo. Contexto e cotas da sessão vêm do próprio Claude Code.
-
-No **Desktop conectado por SSH**, confira o Mustard no gerenciador de plugins da própria sessão e a versão do Claude Code em `/status`: atualizar a instalação do terminal não comprova que o Desktop carregou a mesma cópia. Se o painel não aparecer, execute `/mustard:mods --diagnose` nessa sessão. O registro do painel no host não comprova sua exibição no cliente. Sessões SSH aceitam plugins; já **Remote Control** exibe o painel somente no terminal de origem, e sessões **WSL** do Desktop não oferecem plugins. Veja [sessões SSH](https://code.claude.com/docs/en/desktop#ssh-sessions) e [suporte de Mods por interface](https://code.claude.com/docs/en/plugins/mods/overview#where-mods-run).
-
-**Consumo** mostra até quando o histórico foi medido, o total do projeto e o da máquina (com o último dia comparado à média da semana), o custo estimado por spec, os tokens dos últimos 14 dias, o gasto desta spec, RTK, Jev por finalidade, buscas de código, a sessão e o disco das cópias. RTK mostra a compressão estimada da saída no diretório do projeto; não representa economia da fatura ou do contexto inteiro. Jev mostra chamadas e custo estimado, sem chamadas pagas ao abrir o painel. Medições ausentes não viram percentuais nem custos fictícios. A publicação externa fica no `/mustard:pages`.
-
-A statusline usa uma linha com spec/fase/andamento, modelo e percentual de contexto. Sem spec, mostra projeto e branch. Versão, duração e medições detalhadas ficam no painel. A paleta padrão `mustard` usa amarelo e texto neutro, sem exigir Nerd Font; os temas alternativos continuam disponíveis por `MUSTARD_STATUSLINE_THEME`.
-
 ---
 
-## Spec-Driven Development
+## Ajuda
 
-As specs vivem em `.claude/spec/{name}/`. `spec.ndjson` é o registro canônico de eventos: requisitos, decisões, tarefas, ondas, leituras, entregas, validação e revisão. O binário grava e consulta projeções por `mustard-rt run write` e `mustard-rt run read`. Pedidos no meio da obra entram nesse mesmo histórico.
-
-A tela **Configurações** escolhe modelo e esforço do agente de onda e do revisor final, quantas ondas compilam juntas, o Jev por finalidade (montar as ondas, escolher o contexto do pedido, busca de código com dúvida e busca na spec), o modelo local da busca, o RTK e a publicação no Cloudflare Pages (conta, projeto e token). As mudanças só são gravadas ao salvar, pelo binário; as demais escolhas do projeto são preservadas. O token só é gravado: nunca volta à tela, e só quando o `mustard.json` está fora do git. A publicação do projeto não exige spec aberta; a spec padrão vem da branch atual. Análises e resumos para gestores em Markdown solicitado usam o mesmo layout existente. Páginas externas são geradas só sob pedido explícito, como snapshots datados. `run publish` gera HTML/JSON/manifesto e envia pelo adaptador nativo Cloudflare Pages configurado. Só uma publicação pronta informa `published:true` e URL confirmada; sem configuração, os arquivos ficam locais. Início de sessão e término de onda não sincronizam páginas remotas. `run spend` mede localmente; `--publish`/`--republish` geram/publicam o snapshot estático completo de gasto por pedido explícito. A configuração está em `docs/mustard-por-dentro.md`; o token fica no `mustard.json` fora do git ou no ambiente.
-
----
-
-## Arquitetura (monorepo)
-
-| Caminho | Crate/App | Stack | Papel |
-|---|---|---|---|
-| `apps/rt` | `mustard-rt` | Rust | **Núcleo determinístico** — scan, mapa, eventos, gates, hooks, comandos do pipeline. É o motor. |
-| `apps/scan` | `scan` | Rust | Minerador do repositório → `grain.db` (SQLite). |
-| `apps/cli` | `mustard` | Rust | Instalação, configuração do projeto e fontes opcionais. |
-| `packages/core` | `core` | Rust | Tipos e lógica compartilhados (ex.: `ProjectConfig`). |
-| `plugin/` | — | — | O plugin do Claude Code: comandos, hooks, agentes e o bootstrap `mustard-boot` (baixa os binários do Release na primeira sessão). |
-
-O `cargo build --workspace` cobre todos os crates Rust.
-
----
-
-## Build & testes
+Cada comando diz o que faz, as opções que aceita e o que responde:
 
 ```bash
-cargo build --workspace --locked
-cargo build --profile mustard-dev --locked  # desenvolvimento incremental
-cargo test --workspace --locked
-cargo clippy --workspace --all-targets --locked -- -D warnings
+mustard-rt run --help            # a lista dos comandos
+mustard-rt run <comando> --help  # um comando, com as opções
 ```
 
-**Release oficial:** uma tag `vX.Y.Z` dispara o workflow que gera um instalador completo por sistema + os pacotes `mustard-bins-*` (consumidos pelo bootstrap do plugin) e publica tudo num GitHub Release. A versão da tag **deve** bater com `plugin/.claude-plugin/plugin.json` — o workflow recusa tag dessincronizada. O disparo manual (Actions → Release → Run workflow) faz um **ensaio**: builda tudo sem publicar.
-
----
-
-## Configuração
-
-O `mustard.json` na raiz é a **fonte única** de configuração do projeto:
-
-Leituras simples de `mustard.json` por `cat`, `grep`, `egrep`, `fgrep`, `head` e `tail` são recusadas, e a recusa traz pronto, na última linha, o mesmo comando com essa leitura trocada pela que devolve os bytes com a chave mascarada, preservando o filtro, as linhas e o resultado do comando. A recusa vale contra qualquer outro hook que troque o comando, como o do rtk, cujos leitores (`rtk read`, `rtk json`) também são recusados. No comando pronto, pipes, `&&`, `||`, consultas ao Git e testes continuam no shell, sob as permissões normais. Nenhuma chave é copiada para arquivo temporário e essa operação não usa IA. Para consultar diretamente: `mustard-rt run config-read --file mustard.json --reader grep --args-json '["-n","-E","flow|protected"]'`. Sem `--reader` e `--args-json`, o comando mostra a configuração mascarada inteira. Formatos que exigem scripts, expansão ou vários arquivos permanecem bloqueados com uma mensagem curta, sem despejar a configuração.
-
-```jsonc
-{
-  // "flow" é OPCIONAL e não restringe nada: ele apenas pré-seleciona a base
-  // no seletor. De onde uma unidade pode sair vem do git;
-  // onde o commit direto é recusado vem do branch padrão do remoto, mais o que
-  // "protected" acrescentar. Uma instalação nova não grava "flow".
-  "git":  { "provider": "github" },
-  "buildCommand": "cargo build",
-  "testCommand":  "cargo test",
-  "lintCommand":  "cargo clippy",
-  "typeCheckCommand": "cargo check",
-  "proofTimeoutSecs": 900,  // opcional: teto, em segundos, da prova de cada critério
-  "language": {             // os dois idiomas, cada um na sua chave
-    "text": "pt-BR",        // conversa, specs, páginas, comentários e commits
-    "code": "en-US"         // nomes no código: variáveis, funções, testes, arquivos, comandos e tabelas; sem a chave, inglês
-  }
-}
-```
-
-O Mustard é **agnóstico** de linguagem e de arquitetura: o texto gerado segue `language.text`; os nomes no código (variáveis, funções, testes, arquivos, comandos e tabelas do banco) seguem `language.code`. A instalação pergunta os dois idiomas e grava só o que você escolher; sem escolha, os nomes no código ficam em inglês. Os comandos de build/test/lint são lidos daqui. A prova de cada critério tem 120 s, ou 600 s quando compila: `cargo`, uma checagem de tipos ou o `buildCommand`, o `typeCheckCommand` ou o `testCommand` declarado. `proofTimeoutSecs` troca os dois pelo número inteiro de segundos que você escrever; um valor que não é inteiro positivo é ignorado. A variável de ambiente `MUSTARD_QA_AC_TIMEOUT_SECS` vence a chave. O lint e a suíte que o servidor roda têm o teto de uma hora, que nenhuma das duas alcança. Regras de monorepo: todo o estado vive na **raiz** do repositório git; um subprojeto só é um projeto Mustard próprio quando é um repositório git independente (submódulo).
-
----
-
-## Estrutura do repositório
-
-```
-apps/
-  rt/         mustard-rt — núcleo determinístico (Rust)
-  scan/       minerador do repositório (Rust)
-  cli/        mustard — instalador/scaffold (Rust)
-packages/
-  core/       tipos/lógica compartilhados (Rust)
-plugin/       plugin do Claude Code (comandos, hooks, agentes, bootstrap)
-packaging/    instaladores Win/macOS/Linux + tutoriais
-docs/         análises e redesenhos arquiteturais
-.claude/      config do harness (hooks, skills, refs, specs, grain.db)
-install.ps1   instalador de desenvolvimento (build + scaffold)
-mustard.json  configuração do projeto
-```
-
----
-
-## Documentação
-
-- **[MUSTARD-COMMANDS.md](MUSTARD-COMMANDS.md)** — referência visual de cada comando e seu fluxo (diagramas Mermaid).
-- **[docs/mustard-por-dentro.md](docs/mustard-por-dentro.md)** — o que o Mustard faz sozinho: a instalação, as regras e as skills que ele gera, os pontos em que consulta o Jev, a publicação e a busca de código.
-- **Tutoriais de instalação** — `packaging/installer/TUTORIAL-{WINDOWS,MACOS,LINUX}.md` (também anexados a cada release).
-- **[docs/](docs/)** — redesenhos arquiteturais (índice agnóstico, detecção de stack multissinal, validação do plugin).
+O que o Mustard faz sozinho — a instalação, a configuração do `mustard.json`, as regras e as skills que ele gera, os pontos em que consulta o Jev, a publicação e a busca de código — está em [docs/mustard-por-dentro.md](docs/mustard-por-dentro.md). Os tutoriais de instalação de cada sistema estão em `packaging/installer/TUTORIAL-{WINDOWS,MACOS,LINUX}.md` e nos *Assets* de cada release.
 
 ---
 

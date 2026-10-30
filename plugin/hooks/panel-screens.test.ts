@@ -160,7 +160,7 @@ async function open($,on,surface,{theme='dark',conflict=false,review,task,column
       during.push({publishing:await mounted?.find({text:/Publicando/})});
       value={ok:true,scope:'project',published:false,transport_required:true,reason:'publication-token-missing',hint:NO_TOKEN,
         snapshot_id:'project-snapshot',page:'/fixture/.claude/mustard/publications/project/index.html',database:'/fixture/.claude/mustard/publications/project/snapshot.json'};
-    } else if(['usage-record','panel-diagnostics'].includes(e.argv[2]))value={ok:true};
+    } else if(e.argv[2]==='usage-record')value={ok:true};
     else throw new Error('unexpected command '+e.argv.join(' '));
     return {value:{exitCode:0,stdout:JSON.stringify(value),stderr:''}};
   });
@@ -899,6 +899,20 @@ for(const surface of SURFACES)test(`the overview shows the counts of the binary 
   // A revisão reaberta não é aviso da visão geral: ela fica no Fechamento da spec.
   inOrder(reading(await pane.drawn()),[/PR #289 entrou na base em 05\/10/,/^A onda 193 consta em execução/]);await lacks(pane,/reaberta/);
   await has(pane,'falha-fora-da-obra');await has(pane,'Contexto');await has(pane,/US\$\s?1\.499/);
+  await f.close();
+});
+
+// O que a página da spec mostra antes do clique em "Aprovar": as decisões do
+// usuário e as outras, o resolvido pelo código com a fonte, o critério com a
+// prova e as tarefas com a previsão.
+const approval={user_decisions:[{code:'MSTD-RULE-0001',type:'rule',title:'Nome inteiro'}],other_decisions:[{code:'MSTD-LIMIT-0001',type:'limit',title:'Teto'}],
+  resolved_by_code:[{code:'MSTD-POINT-0002',gap:'contracts',facts:[{text:'A saudação é montada aqui.',source:'src/main.rs:1'}]}],
+  criteria:[{code:'MSTD-CRIT-0001',title:'Nome na saudação',proof:'cargo test saudacao'}],tasks:{total:1,forecast:'Ondas pela formação: 1.'}};
+for(const surface of SURFACES)test(`the spec screen shows what one click approves, block by block · ${surface}`,async ($,on)=>{
+  const f=await open($,on,surface,{patch:{spec:{spec:{...spec.spec,approval}}}});await reach(f,'spec');
+  inOrder(reading(await f.pane.drawn()),['PARA APROVAR','Decisões do usuário','MSTD-RULE-0001 · Nome inteiro','Outras decisões','MSTD-LIMIT-0001 · Teto',
+    'Resolvido pelo código','MSTD-POINT-0002 · contracts','A saudação é montada aqui. · src/main.rs:1','Critérios e prova','MSTD-CRIT-0001 · Nome na saudação',
+    'cargo test saudacao','Tarefas e previsão','1 tarefas','Ondas pela formação: 1.']);
   await f.close();
 });
 

@@ -217,6 +217,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let (said, crit) = backlog_project(root);
+        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":3}"#).unwrap();
         let left = backlog_task_on(root, said, crit, "Mexer no código de dois.", &["src/b.rs"]);
         let along = backlog_task_on(root, said, crit, "Mexer nos dois.", &["src/b.rs", "src/c.rs"]);
         let chained = backlog_task_on(root, said, crit, "Mexer no três.", &["src/c.rs"]);
@@ -266,6 +267,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let (said, crit) = backlog_project(root);
+        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":4}"#).unwrap();
         backlog_task_on(root, said, crit, "Mexer no código de dois.", &["src/b.rs"]);
         let log = spec_now(root);
         assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), (None, None)).map(|(formed, _)| formed), Ok(vec![1]));
@@ -292,6 +294,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let (said, crit) = backlog_project(root);
+        std::fs::write(root.join("mustard.json"), br#"{"maxCompilingWaves":3}"#).unwrap();
         backlog_task_on(root, said, crit, "Mexer na parte grande.", &SIX_FILES);
         let log = spec_now(root);
         assert_eq!(dispatch_backlog(root, "x", &log, &log, max_parallel(root), (None, None)).map(|(formed, _)| formed), Ok(vec![1]));

@@ -415,7 +415,7 @@ fn fix_covers(root: &Path, spec: &str, log: &SpecLog) -> Vec<u64> {
         return criteria;
     }
     let waves: Vec<(&str, u64)> = log.planned_waves().into_iter().map(|n| (spec, n)).collect();
-    let covered = skill_task_covers(root, spec, &waves);
+    let covered = skill_task_covers(root, spec, &waves, &[]);
     let test = mustard_core::ProjectConfig::load(&spec_events::project(root).root).commands().test;
     let proven = with_proof(log, covered.iter().copied(), test.as_deref());
     if proven.is_empty() { covered } else { proven }
@@ -1284,7 +1284,6 @@ mod tests {
                 root: root.to_path_buf(),
                 spec: Some("epico".into()),
                 kinds: Some("fix".into()),
-                condensed: false,
             },
             None,
         );

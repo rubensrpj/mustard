@@ -170,11 +170,10 @@ pub(super) fn report_migration(migrated: &[String]) {
 
 /// Diz, numa linha, quantos arquivos guardam o que um Mustard antigo deixou e
 /// quem tira; um arquivo com os rastros de um scan antigo e sem marca mantém a
-/// nota curta dele. Cada regra de bloqueio das configurações da equipe que a
-/// limpeza vai mudar no lugar ganha uma linha só dela, no idioma do projeto
-/// `lang`, dizendo que o `/mustard:upsert` faz a troca e que a linha mudada é
-/// da pessoa para comitar. Nada sai nem é trocado aqui: quem faz isso é a
-/// porta do plugin.
+/// nota curta dele. As configurações da equipe nunca são gravadas: as linhas
+/// do molde antigo ganham uma nota, e cada regra de bloqueio que a pessoa pode
+/// trocar no lugar ganha uma linha só dela, no idioma do projeto `lang`. Nada
+/// sai nem é trocado aqui.
 ///
 /// Escreve em `out` (a instalação passa a saída padrão) para que um teste leia
 /// exatamente o que o `mustard init` imprime. A escrita que falha é deixada de
@@ -187,9 +186,12 @@ pub(super) fn report_cleanup(out: &mut impl Write, plan: &CleanupPlan, lang: Loc
         let (noun, verb) = if count == 1 { ("file", "carries") } else { ("files", "carry") };
         let _ = writeln!(out, "  {count} {noun} {verb} leftovers of an older Mustard; /mustard:upsert takes them out.");
     }
-    for change in &plan.files {
-        for swap in &change.swaps {
-            let _ = writeln!(out, "  {}", planned_swap_line(&change.path, swap, lang));
+    if let Some(team) = &plan.team {
+        if !team.removes.is_empty() {
+            let _ = writeln!(out, "  note: {} carries lines of an older Mustard ({}) — yours to take out", team.path, team.removes.join(", "));
+        }
+        for swap in &team.swaps {
+            let _ = writeln!(out, "  {}", planned_swap_line(&team.path, swap, lang));
         }
     }
     for path in &plan.unmarked {
@@ -348,13 +350,12 @@ mod tests {
         assert_eq!(cleanup_notice(clean.path()), "");
     }
 
-    /// A regra de bloqueio do arquivo da equipe que vai mudar no lugar ganha
-    /// uma linha só dela, depois da contagem, com a antiga e a nova, no idioma
-    /// do projeto. A linha diz que o `/mustard:upsert` faz a troca, nunca que
-    /// ela já foi feita: o aviso sai antes de qualquer gravação, e o arquivo
-    /// continua como estava.
+    /// A regra de bloqueio do arquivo da equipe que a pessoa pode trocar no
+    /// lugar ganha uma linha só dela, com a antiga e a nova, no idioma do
+    /// projeto, sem a contagem das sobras do Mustard: o arquivo da equipe
+    /// nunca é gravado, e continua como estava.
     #[test]
-    fn a_swapped_deny_rule_gets_its_own_line_in_the_project_language() {
+    fn a_deny_rule_to_swap_gets_its_own_line_in_the_project_language() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let team = "{\"permissions\":{\"deny\":[\"Bash(git reset * --hard:*)\"]}}\n";
@@ -362,23 +363,18 @@ mod tests {
 
         assert_eq!(
             cleanup_notice(root),
-            "  1 file carries leftovers of an older Mustard; /mustard:upsert takes them out.\n  \
-             .claude/settings.json: /mustard:upsert swaps the deny rule `Bash(git reset * --hard:*)` for \
+            "  .claude/settings.json: the deny rule `Bash(git reset * --hard:*)` can become \
              `Bash(git reset * --hard*)`, in the same place. It still blocks the same command, and Claude Code \
-             stops warning; the changed line is yours to commit.\n",
+             stops warning. The file is the team's, and Mustard does not write it.\n",
         );
         let plan = mustard_core::platform::project_seed::cleanup::plan(root);
         let mut out = Vec::new();
         report_cleanup(&mut out, &plan, Locale::PtBr);
         let notice = String::from_utf8(out).unwrap();
         assert!(
-            notice.contains(
-                ".claude/settings.json: o /mustard:upsert troca a regra de bloqueio `Bash(git reset * --hard:*)` \
-                 por `Bash(git reset * --hard*)`, no mesmo lugar."
-            ) && notice.contains("a linha mudada é sua para comitar."),
+            notice.contains(".claude/settings.json: a regra de bloqueio `Bash(git reset * --hard:*)` pode virar `Bash(git reset * --hard*)`"),
             "{notice}",
         );
-        assert!(!notice.contains("virou"), "nothing was swapped yet: {notice}");
         assert_eq!(std::fs::read_to_string(root.join(".claude/settings.json")).unwrap(), team);
     }
 }
