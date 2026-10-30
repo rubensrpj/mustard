@@ -278,7 +278,7 @@ fn launched(segment: &Segment) -> Vec<(&Word, &[Word])> {
             }
             _ => {
                 let first = program(at);
-                let hidden = unknown && !first.is_some_and(|(word, _)| grammar(&word.text).is_some());
+                let hidden = unknown && first.is_none_or(|(word, _)| grammar(&word.text).is_none());
                 return first.into_iter().chain(program(at + 1).filter(|_| hidden)).collect();
             }
         }

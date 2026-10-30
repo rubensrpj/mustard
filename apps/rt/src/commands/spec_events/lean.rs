@@ -11,7 +11,8 @@
 //! qualquer linha pode trazer (`origin`, `replaces`, `covered_by`), e os
 //! números simples
 //! que apontam itens (as tarefas e a entrega da onda, os itens e a entrega do
-//! envio, o critério medido, o ponto aberto em que a fala foi dita). O número
+//! envio, o critério medido, o ponto aberto em que a fala foi dita, os itens
+//! cuja prova caiu e a reprovação vencida que a soltura tira). O número
 //! sem código fica como está, e o número que não aponta item (as ondas em
 //! `depends_on` da onda, as contagens, as medidas) não vira código.
 //!
@@ -41,8 +42,9 @@ const LINKS: &[&str] = &["origin", "replaces", "covered_by"];
 
 /// Os campos que o tipo declara como número simples, mas que apontam itens:
 /// as tarefas da onda em ordem e a entrega que ela continua, os itens e a
-/// entrega do envio, o critério que a medida rodou e o ponto do levantamento
-/// que estava aberto quando o usuário falou. A gravação e a conferência
+/// entrega do envio, o critério que a medida rodou, o ponto do levantamento
+/// que estava aberto quando o usuário falou, os itens cuja prova caiu numa
+/// reprovação e a reprovação vencida que a soltura tira. A gravação e a conferência
 /// seguem com o número, que a resolução dos códigos lê como ordinal; só a
 /// leitura os mostra pelo código. O `depends_on` da onda leva números de
 /// onda e fica fora.
@@ -54,6 +56,8 @@ const ITEM_NUMBERS: &[(&str, &str)] = &[
     ("send", "summary"),
     ("criterion_run", "criterion"),
     ("stage_run", "criterion"),
+    ("validation_failure", "items"),
+    ("validation_failure", "expired"),
 ];
 
 /// As marcas de conferência de um fato: as impressões da fonte e da medida,
@@ -324,8 +328,9 @@ mod tests {
     }
 
     /// Os números simples que apontam itens saem pelo código: as tarefas e a
-    /// entrega da onda, os itens e a entrega do envio, o critério medido e o
-    /// ponto aberto em que a fala foi dita.
+    /// entrega da onda, os itens e a entrega do envio, o critério medido, o
+    /// ponto aberto em que a fala foi dita, os itens cuja prova caiu e a
+    /// reprovação vencida.
     #[test]
     fn the_plain_numbers_that_point_at_items_read_by_the_item_code() {
         let codes = BTreeMap::from([(1, "MSTD-TASK-0001".to_string()), (2, "MSTD-DELIV-0002".to_string())]);
@@ -337,6 +342,8 @@ mod tests {
             ("send", "summary", json!(2), json!("MSTD-DELIV-0002")),
             ("criterion_run", "criterion", json!(1), json!("MSTD-TASK-0001")),
             ("stage_run", "criterion", json!(1), json!("MSTD-TASK-0001")),
+            ("validation_failure", "items", json!([1]), json!(["MSTD-TASK-0001"])),
+            ("validation_failure", "expired", json!(2), json!("MSTD-DELIV-0002")),
         ] {
             let line = read_lean(&codes, event(kind, field, given));
             assert_eq!(line[field], shown, "{kind} shows {field} by code: {line}");
