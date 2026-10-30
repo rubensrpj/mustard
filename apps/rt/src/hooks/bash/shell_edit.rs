@@ -12,21 +12,45 @@
 //! - o interpretador que roda um programa guardado fora do projeto, como o da
 //!   pasta temporária, pelo nome, pelo `<` ou pelo `cat` que o passa pelo
 //!   cano;
+//! - o interpretador com o programa na linha ou pela entrada cuja saída chega
+//!   a um arquivo do projeto, mesmo que o texto dele não cite caminho nenhum:
+//!   pelo redirecionamento dele (`python3 -c "print(1)" > src/lib.rs`), pelo
+//!   de um comando que a recebe pelo cano (`| head > src/lib.rs`, também o
+//!   cano depois de um grupo, que leva a saída de todos os comandos dele) ou
+//!   pelo do grupo que o tem dentro (`( … ) > src/lib.rs`,
+//!   `{ …; } > src/lib.rs`, `done`, `fi` ou `esac` com o redirecionamento
+//!   depois, de qualquer comando do grupo);
+//! - o lançador que roda, sem nome de interpretador, um arquivo de programa
+//!   guardado fora do projeto (`uv run /tmp/edit.py`);
 //! - a edição no lugar (`sed -i`, `perl -i`, `ruby -i`);
-//! - `cat`, `echo`, `printf` e `tee` gravando no projeto ou numa cópia (`>`,
-//!   `>>` ou o arquivo do `tee`).
+//! - `cat`, `echo`, `printf`, `tee`, `sed` e `awk` gravando no projeto ou numa
+//!   cópia (`>`, `>>`, o arquivo do `tee` ou o redirecionamento do grupo);
+//! - `mv` e `cp` que trazem para dentro do projeto um arquivo guardado fora
+//!   dele ou de lugar que só o terminal sabe, como a troca pela pasta
+//!   temporária (`sed … > /tmp/x.rs && mv /tmp/x.rs src/lib.rs`, `mv "$tmp"
+//!   src/lib.rs`);
+//! - o comando sem programa e o `:` ou `true`, que não escrevem nada, com um
+//!   redirecionamento próprio que grava no projeto (`> src/lib.rs`,
+//!   `: > src/lib.rs`, `true >> src/lib.rs`), e o grupo cujo redirecionamento
+//!   grava no projeto e cujos comandos são todos assim (`{ :; } > src/lib.rs`,
+//!   `(true; true) > src/lib.rs`): esvaziam o arquivo pelo terminal. O grupo
+//!   com um gerador ou um script do projeto passa.
 //!
 //! Passam o programa na linha sem caminho do projeto, o script do projeto
-//! (`python scripts/x.py`, `python -m pytest`), o gerador com a saída
-//! redirecionada (`cargo run --bin gen > src/gen.rs`), a leitura e a gravação
-//! fora do projeto. A conversa principal não passa pela recusa; a medição do
+//! pelo nome ou pela entrada (`python scripts/x.py`, `python3 <
+//! scripts/x.py`, `python -m pytest`), a ferramenta instalada rodada pelo
+//! lançador, também pelo caminho inteiro (`uv run /usr/bin/env pytest`), o
+//! gerador com a saída redirecionada (`cargo run --bin gen > src/gen.rs`), a
+//! leitura, a gravação fora do projeto e o `mv`/`cp` entre arquivos do
+//! projeto ou para fora dele.
+//! A conversa principal não passa pela recusa; a medição do
 //! uso real conta, pela mesma regra ([`edited_by_shell`]), as edições por
 //! script de toda conversa do projeto, e reconhece o interpretador, o
 //! `python` e o programa escrito na linha pela mesma gramática
 //! ([`is_interpreter`], [`is_python`], [`embedded_programs`]), sem lista
 //! própria de nomes.
 
-use super::lex::{Redirect, Segment, Word};
+use super::lex::{command_start, Redirect, Segment, Word};
 use crate::hooks::write::wave_copy::Shell;
 use mustard_core::domain::model::contract::{Ctx, HookInput, Verdict};
 use mustard_core::io::wave_prompt;
@@ -59,6 +83,8 @@ struct Grammar {
     long_value: &'static [&'static str],
     /// A palavra que, antes do arquivo, só pede para rodá-lo (`bun run x.ts`).
     runner: Option<&'static str>,
+    /// As extensões do arquivo de programa da linguagem, sem o ponto.
+    extensions: &'static [&'static str],
 }
 
 const PYTHON: Grammar = Grammar {
@@ -72,6 +98,7 @@ const PYTHON: Grammar = Grammar {
     long_code: &[],
     long_value: &["--check-hash-based-pycs"],
     runner: None,
+    extensions: &["py", "pyw"],
 };
 
 const NODE: Grammar = Grammar {
@@ -85,6 +112,7 @@ const NODE: Grammar = Grammar {
     long_code: &["--eval", "--print"],
     long_value: &["--require", "--import", "--loader", "--experimental-loader", "--conditions", "--input-type"],
     runner: None,
+    extensions: &["js", "mjs", "cjs", "ts", "mts", "cts"],
 };
 
 const BUN: Grammar = Grammar { name: "bun", runner: Some("run"), ..NODE };
@@ -100,6 +128,7 @@ const PERL: Grammar = Grammar {
     long_code: &[],
     long_value: &[],
     runner: None,
+    extensions: &["pl", "pm"],
 };
 
 const RUBY: Grammar = Grammar {
@@ -113,6 +142,7 @@ const RUBY: Grammar = Grammar {
     long_code: &[],
     long_value: &[],
     runner: None,
+    extensions: &["rb"],
 };
 
 /// O `-r` traz o programa; o `-B`, o `-R` e o `-E`, o trecho de antes, de
@@ -129,7 +159,11 @@ const PHP: Grammar = Grammar {
     long_code: &["--run", "--process-begin", "--process-code", "--process-end"],
     long_value: &["--php-ini", "--define", "--docroot", "--server", "--zend-extension"],
     runner: None,
+    extensions: &["php"],
 };
+
+/// As gramáticas de todos os interpretadores.
+const GRAMMARS: &[&Grammar] = &[&PYTHON, &NODE, &BUN, &PERL, &RUBY, &PHP];
 
 /// A gramática do interpretador `name`, com ou sem a pasta, ou `None` para
 /// outro programa. `py` é o lançador do Python no Windows, com as mesmas
@@ -150,20 +184,143 @@ fn grammar(name: &str) -> Option<&'static Grammar> {
 }
 
 /// Os lançadores que rodam, depois de `run` e das opções deles, outro
-/// programa (`uv run --with x python -c …`).
-const LAUNCHERS: &[&str] = &["uv", "poetry", "pipenv", "pdm", "hatch", "rye", "conda"];
+/// programa (`uv run --with x python -c …`), cada um com as opções que levam o
+/// valor na palavra seguinte (`conda run -n py python`): o valor delas não é o
+/// programa. As do `uv` são todas as opções com valor do `uv run --help`: com
+/// duas opções fora da lista seguidas, o programa fica escondido atrás do
+/// valor da primeira e da palavra que vem depois dele.
+const LAUNCHERS: &[(&str, &[&str])] = &[
+    (
+        "uv",
+        &[
+            "--extra",
+            "--no-extra",
+            "--group",
+            "--no-group",
+            "--only-group",
+            "--env-file",
+            "--with",
+            "-w",
+            "--with-editable",
+            "--with-requirements",
+            "--package",
+            "--python",
+            "-p",
+            "--python-platform",
+            "--index",
+            "--default-index",
+            "--index-url",
+            "-i",
+            "--extra-index-url",
+            "--find-links",
+            "-f",
+            "--index-strategy",
+            "--keyring-provider",
+            "--upgrade-package",
+            "-P",
+            "--upgrade-group",
+            "--resolution",
+            "--prerelease",
+            "--fork-strategy",
+            "--exclude-newer",
+            "--exclude-newer-package",
+            "--no-sources-package",
+            "--reinstall-package",
+            "--link-mode",
+            "--config-setting",
+            "-C",
+            "--config-settings-package",
+            "--no-build-isolation-package",
+            "--no-build-package",
+            "--no-binary-package",
+            "--refresh-package",
+            "--cache-dir",
+            "--color",
+            "--allow-insecure-host",
+            "--directory",
+            "--project",
+            "--config-file",
+        ],
+    ),
+    ("poetry", &["--directory", "-C", "--project", "-P"]),
+    ("pipenv", &["--python"]),
+    ("pdm", &["--project"]),
+    ("hatch", &["--env", "-e", "--include", "-i", "--exclude", "-x"]),
+    ("rye", &["--pyproject"]),
+    ("conda", &["-n", "--name", "-p", "--prefix", "--cwd"]),
+];
+
+/// A palavra `text` é uma opção do lançador (`-q`, `--color`): quantas
+/// palavras ela ocupa, com o valor quando a lista `valued` o dá a ela, e se o
+/// lançador não a conhece (fora da lista e sem `=`), caso em que a palavra
+/// seguinte pode ser o valor dela.
+fn launcher_option(text: &str, valued: &[&str]) -> Option<(usize, bool)> {
+    if text.len() <= 1 || !text.starts_with('-') {
+        return None;
+    }
+    let takes = valued.contains(&text);
+    Some((1 + usize::from(takes), !takes && !text.contains('=')))
+}
+
+/// Os programas que o lançador de `segment` pode rodar, cada um com os
+/// argumentos dele: a primeira palavra depois do `run`, pulando as opções do
+/// lançador, o valor das que o levam e os invólucros (`uv run env python`).
+/// Essa palavra, logo depois de uma opção fora da lista, pode ser o valor da
+/// opção (`uv run --frozen python`): quando ela não é um interpretador, a
+/// seguinte também pode ser o programa. Vazio para o comando que não é um
+/// lançador com `run`, que pode vir depois das opções gerais do lançador
+/// (`uv --directory sub run python`). Com uma opção geral fora da lista, a
+/// palavra que vem depois dela e não é o `run` pode ser o valor dela, e o
+/// `run` vem na seguinte (`uv --python-preference only-system run python`).
+fn launched(segment: &Segment) -> Vec<(&Word, &[Word])> {
+    let Some((_, valued)) = LAUNCHERS.iter().find(|(name, _)| *name == segment.name()) else {
+        return Vec::new();
+    };
+    let mut general = 0;
+    let mut unknown = false;
+    while let Some(text) = segment.args.get(general).map(|word| word.text.as_str()) {
+        if let Some((words, unseen)) = launcher_option(text, valued) {
+            general += words;
+            unknown = unseen;
+        } else if unknown && text != "run" {
+            general += 1;
+            unknown = false;
+        } else {
+            break;
+        }
+    }
+    let Some((_, rest)) = segment.args.get(general..).and_then(<[Word]>::split_first).filter(|(run, _)| run.text == "run") else {
+        return Vec::new();
+    };
+    let program = move |at: usize| {
+        let start = at + command_start(rest.get(at..).unwrap_or_default()).0;
+        rest.get(start).map(|word| (word, &rest[start + 1..]))
+    };
+    let mut unknown = false;
+    let mut at = 0;
+    while let Some(word) = rest.get(at) {
+        if word.text == "--" {
+            return program(at + 1).into_iter().collect();
+        }
+        let Some((words, unseen)) = launcher_option(&word.text, valued) else {
+            let first = program(at);
+            let hidden = unknown && first.is_none_or(|(word, _)| grammar(&word.text).is_none());
+            return first.into_iter().chain(program(at + 1).filter(|_| hidden)).collect();
+        };
+        at += words;
+        unknown = unseen;
+    }
+    Vec::new()
+}
 
 /// O interpretador que `segment` roda, com os argumentos dele: o próprio
-/// programa ou, num lançador, o primeiro interpretador depois do `run`.
+/// programa ou, num lançador, o primeiro dos programas que ele pode rodar que
+/// é um interpretador.
 fn interpreter(segment: &Segment) -> Option<(&'static Grammar, &[Word])> {
     if let Some(grammar) = grammar(segment.name()) {
         return Some((grammar, &segment.args));
     }
-    let (run, rest) = segment.args.split_first().filter(|_| LAUNCHERS.contains(&segment.name()))?;
-    if run.text != "run" {
-        return None;
-    }
-    rest.iter().enumerate().find_map(|(at, word)| Some((grammar(&word.text)?, &rest[at + 1..])))
+    launched(segment).into_iter().find_map(|(program, args)| Some((grammar(&program.text)?, args)))
 }
 
 /// O comando que passa a saída pelo cano a `line[at]`: o anterior no mesmo
@@ -172,6 +329,15 @@ fn interpreter(segment: &Segment) -> Option<(&'static Grammar, &[Word])> {
 fn feeder(line: &[Segment], at: usize) -> Option<&Segment> {
     let depth = line[at].depth;
     line[..at].iter().rev().find(|segment| segment.depth <= depth).filter(|segment| segment.depth == depth && segment.piped)
+}
+
+/// O programa que `line[at]` lê da entrada padrão vem de um arquivo: o do `<`
+/// ou um dos que o `cat` lhe passa pelo cano. Esse arquivo é um script, como
+/// o dado pelo nome.
+fn from_file(line: &[Segment], at: usize) -> bool {
+    line[at].redirects.iter().any(|redirect| redirect.op.trim_start_matches(|c: char| c.is_ascii_digit()) == "<")
+        || feeder(line, at)
+            .is_some_and(|feeder| feeder.name() == "cat" && feeder.args.iter().any(|arg| !arg.text.starts_with('-')))
 }
 
 /// O programa que o interpretador vai rodar, lido das opções.
@@ -259,6 +425,31 @@ fn program(grammar: &Grammar, args: &[Word]) -> Program {
     if codes.is_empty() { Program::Stdin } else { Program::Embedded(codes) }
 }
 
+/// O programa que `segment` roda: o que o interpretador pede nas opções ou,
+/// no lançador sem nome de interpretador, o arquivo de programa dado depois
+/// do `run` (`uv run /tmp/edit.py`) ou a entrada padrão (`uv run -`). A
+/// ferramenta instalada que o lançador roda (`uv run pytest`, `uv run
+/// /usr/bin/env pytest`) não é um programa da regra.
+fn program_of(segment: &Segment) -> Option<Program> {
+    if let Some((grammar, args)) = interpreter(segment) {
+        return Some(program(grammar, args));
+    }
+    launched(segment).into_iter().find_map(|(word, _)| match word.text.as_str() {
+        "-" => Some(Program::Stdin),
+        path if is_script(path) => Some(Program::Script(path.to_string())),
+        _ => None,
+    })
+}
+
+/// `path` é o arquivo de programa de um dos interpretadores, pela extensão
+/// (`edit.py`, `edit.ts`). A ferramenta instalada, como `/usr/bin/env` ou
+/// `~/.local/bin/black`, não tem nenhuma.
+fn is_script(path: &str) -> bool {
+    let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    name.rsplit_once('.')
+        .is_some_and(|(_, extension)| GRAMMARS.iter().any(|grammar| grammar.extensions.contains(&extension)))
+}
+
 /// O programa que o redirecionamento `redirect` traz na própria linha: o
 /// corpo do heredoc ou o texto do `<<<`.
 fn inline_text(redirect: &Redirect) -> Option<&str> {
@@ -331,13 +522,100 @@ fn writes(redirect: &Redirect) -> bool {
 }
 
 /// Os programas que passam texto adiante e o gravam num arquivo pelo
-/// redirecionamento ou, no `tee`, pelo arquivo dado.
-const WRITERS: &[&str] = &["cat", "echo", "printf", "tee"];
+/// redirecionamento ou, no `tee`, pelo arquivo dado: os que só o copiam
+/// (`cat`, `echo`, `printf`, `tee`) e os que o trocam no caminho (`sed`,
+/// `awk`).
+const WRITERS: &[&str] = &["cat", "echo", "printf", "tee", "sed", "awk"];
 
-/// O comando pode mexer em arquivo por uma das quatro formas da regra.
+/// Os programas que levam um arquivo de um lugar a outro: a troca pela pasta
+/// temporária termina num deles.
+const TRANSFERS: &[&str] = &["mv", "cp"];
+
+/// As origens e o destino de `mv` ou `cp`: o destino é a pasta do `-t` ou,
+/// sem ele, a última palavra fora das opções. `None` quando faltam as origens
+/// ou o destino.
+fn transfer(args: &[Word]) -> Option<(Vec<&str>, &str)> {
+    let mut operands = Vec::new();
+    let mut target = None;
+    let mut words = args.iter().map(|word| word.text.as_str());
+    while let Some(word) = words.next() {
+        if word == "--" {
+            operands.extend(words);
+            break;
+        }
+        if let Some(long) = word.strip_prefix("--") {
+            match long.split_once('=') {
+                Some(("target-directory", value)) => target = Some(value),
+                None if long == "target-directory" => target = words.next(),
+                None if long == "suffix" => {
+                    words.next();
+                }
+                _ => {}
+            }
+        } else if let Some(cluster) = word.strip_prefix('-').filter(|cluster| !cluster.is_empty()) {
+            if let Some((at, letter)) = cluster.char_indices().find(|(_, letter)| matches!(letter, 't' | 'S')) {
+                let rest = &cluster[at + letter.len_utf8()..];
+                let value = if rest.is_empty() { words.next() } else { Some(rest) };
+                if letter == 't' {
+                    target = value;
+                }
+            }
+        } else {
+            operands.push(word);
+        }
+    }
+    match target {
+        Some(target) => Some((operands, target)),
+        None => {
+            let destination = operands.pop()?;
+            (!operands.is_empty()).then_some((operands, destination))
+        }
+    }
+}
+
+/// Os programas que não escrevem nada: com `>` ou `>>` só esvaziam ou criam o
+/// arquivo.
+const NO_OUTPUT: &[&str] = &[":", "true"];
+
+/// As palavras que abrem um laço ou um `case` e ficam como o programa do
+/// comando (`for i in 1`, `case x in x`): elas mesmas não escrevem nada.
+const LOOP_WORDS: &[&str] = &["for", "select", "case"];
+
+/// O comando não escreve nada por si e tem um redirecionamento que grava: o
+/// `:` ou `true`, o comando sem programa (`> f`) ou o que fecha um grupo
+/// (`( … ) > f`, `} > f`, `done > f`), cujo redirecionamento é do grupo.
+fn silent(segment: &Segment) -> bool {
+    (segment.name().is_empty() || NO_OUTPUT.contains(&segment.name())) && segment.redirects.iter().any(writes)
+}
+
+/// O comando não escreve nada por si: o `:` ou `true`, o que não tem
+/// programa (`> f`, `{`, `}`, `done`) e a palavra que abre um laço ou um
+/// `case`.
+fn writes_nothing(segment: &Segment) -> bool {
+    segment.name().is_empty() || NO_OUTPUT.contains(&segment.name()) || LOOP_WORDS.contains(&segment.name())
+}
+
+/// O que o redirecionamento de `line[at]` recebe é vazio: nada, no `: > f` e
+/// no `> f`, ou, no comando que fecha um grupo, a saída dos comandos do grupo
+/// no mesmo nível, que não escrevem nada. Com um gerador ou um script no
+/// grupo, o arquivo recebe o que ele escreve.
+fn empties(line: &[Segment], at: usize) -> bool {
+    let segment = &line[at];
+    let Some(span) = segment.group_span else {
+        return true;
+    };
+    let group = line.get(at.saturating_sub(span)..at).unwrap_or_default();
+    group.iter().filter(|member| member.depth == segment.depth).all(writes_nothing)
+}
+
+/// O comando pode mexer em arquivo por uma das formas da regra.
 fn suspect(segment: &Segment) -> bool {
     let name = segment.name();
-    name == "sed" || WRITERS.contains(&name) || interpreter(segment).is_some()
+    WRITERS.contains(&name)
+        || TRANSFERS.contains(&name)
+        || grammar(name).is_some()
+        || !launched(segment).is_empty()
+        || silent(segment)
 }
 
 /// Os sinais que, além de letra e número, cabem num caminho citado no texto
@@ -409,19 +687,25 @@ impl Project {
             })
     }
 
-    /// O interpretador de gramática `grammar`, com os argumentos `args`,
-    /// rodado por `line[at]`, mexe em arquivo do projeto por uma das três
-    /// formas dele: edição no lugar, programa na linha que cita caminho do
-    /// projeto ou programa guardado fora do projeto. O programa da entrada
-    /// padrão vem do redirecionamento ou do comando que o passa pelo cano.
-    fn interprets(&self, grammar: &Grammar, args: &[Word], line: &[Segment], at: usize, shell: &Shell) -> bool {
-        match program(grammar, args) {
+    /// O programa `program`, rodado por `line[at]`, mexe em arquivo do projeto
+    /// por uma das formas dele: edição no lugar, programa na linha que cita
+    /// caminho do projeto ou programa guardado fora do projeto. O programa da
+    /// entrada padrão vem do redirecionamento ou do comando que o passa pelo
+    /// cano. O programa na linha ou pela entrada cuja saída chega a um
+    /// arquivo do projeto também mexe nele, cite ou não um caminho. O script
+    /// do projeto, pelo nome ou pela entrada (`python3 < scripts/x.py`), com a
+    /// saída redirecionada passa, como o gerador.
+    fn interprets(&self, program: Program, line: &[Segment], at: usize, shell: &Shell) -> bool {
+        let segment = &line[at];
+        match program {
             Program::InPlace => true,
             Program::Module => false,
-            Program::Embedded(codes) => codes.iter().any(|code| self.cited(code, shell)),
+            Program::Embedded(codes) => codes.iter().any(|code| self.cited(code, shell)) || self.lands(line, at, shell),
             Program::Script(script) => self.outside(&script, shell),
             Program::Stdin => {
-                self.fed(&line[at].redirects, shell) || feeder(line, at).is_some_and(|feeder| self.piped(feeder, shell))
+                self.fed(&segment.redirects, shell)
+                    || feeder(line, at).is_some_and(|feeder| self.piped(feeder, shell))
+                    || (!from_file(line, at) && self.lands(line, at, shell))
             }
         }
     }
@@ -453,14 +737,54 @@ impl Project {
         }
     }
 
-    /// `cat`, `echo`, `printf` ou `tee` grava num arquivo do projeto, pelo
+    /// `target`, o alvo de uma gravação (o arquivo do `tee` ou o de um
+    /// redirecionamento), é um arquivo do projeto. O `&` do começo é o
+    /// descritor de `2>&1`, não um arquivo.
+    fn writes_to(&self, target: &Word, shell: &Shell) -> bool {
+        !target.text.starts_with('&') && shell.path(&target.text).is_some_and(|path| self.holds(&path))
+    }
+
+    /// A saída de `line[at]` é gravada num arquivo do projeto por um
+    /// redirecionamento: o dele ou o do grupo que o tem dentro, que vem no
+    /// comando sem programa logo depois do grupo. O de `( … ) > f`,
+    /// `{ …; } > f`, `done > f`, `fi > f` e `esac > f` vale para todos os
+    /// comandos do grupo, onde o leitor marca o começo dele.
+    fn redirected(&self, line: &[Segment], at: usize, shell: &Shell) -> bool {
+        std::iter::once(&line[at])
+            .chain(Segment::group_redirects(line, at))
+            .any(|segment| self.writes_into(&segment.redirects, shell))
+    }
+
+    /// Algum dos redirecionamentos `redirects` grava num arquivo do projeto.
+    fn writes_into(&self, redirects: &[Redirect], shell: &Shell) -> bool {
+        redirects.iter().filter(|redirect| writes(redirect)).any(|redirect| self.writes_to(&redirect.target, shell))
+    }
+
+    /// A saída de `line[at]` chega a um arquivo do projeto: pelo
+    /// redirecionamento dele ou pelo de um comando que a recebe pelo cano
+    /// (`| head > src/lib.rs`), também o do grupo que termina num deles.
+    fn lands(&self, line: &[Segment], at: usize, shell: &Shell) -> bool {
+        std::iter::once(at).chain(Segment::fed(line, at)).any(|link| self.redirected(line, link, shell))
+    }
+
+    /// Um programa de [`WRITERS`] grava num arquivo do projeto, pelo
     /// redirecionamento ou pelo arquivo do `tee`.
-    fn written(&self, segment: &Segment, shell: &Shell) -> bool {
+    fn written(&self, line: &[Segment], at: usize, shell: &Shell) -> bool {
+        let segment = &line[at];
         let teed = segment.args.iter().filter(|_| segment.name() == "tee").filter(|arg| !arg.text.starts_with('-'));
-        let redirected = segment.redirects.iter().filter(|redirect| writes(redirect)).map(|redirect| &redirect.target);
-        teed.chain(redirected)
-            .filter(|target| !target.text.starts_with('&'))
-            .any(|target| shell.path(&target.text).is_some_and(|path| self.holds(&path)))
+        teed.into_iter().any(|target| self.writes_to(target, shell)) || self.redirected(line, at, shell)
+    }
+
+    /// `mv` ou `cp` traz para o projeto um arquivo guardado fora dele: o
+    /// destino fica no projeto e alguma origem fora dele ou num lugar que só
+    /// o terminal sabe (`"$tmp"`, `$(mktemp)`), como a troca pela pasta
+    /// temporária. Mover ou copiar entre arquivos do projeto, ou do projeto
+    /// para fora, não troca o conteúdo por um que veio de fora e passa.
+    fn transferred(&self, segment: &Segment, shell: &Shell) -> bool {
+        transfer(&segment.args).is_some_and(|(sources, destination)| {
+            shell.path(destination).is_some_and(|path| self.holds(&path))
+                && sources.iter().any(|source| shell.path(source).is_none_or(|path| !self.holds(&path)))
+        })
     }
 
     /// O comando `line[at]`, rodado na pasta atual de `shell`, mexe em
@@ -468,9 +792,11 @@ impl Project {
     fn edits(&self, line: &[Segment], at: usize, shell: &Shell) -> bool {
         let segment = &line[at];
         match segment.name() {
-            "sed" => sed_in_place(&segment.args),
-            name if WRITERS.contains(&name) => self.written(segment, shell),
-            _ => interpreter(segment).is_some_and(|(grammar, args)| self.interprets(grammar, args, line, at, shell)),
+            "sed" if sed_in_place(&segment.args) => true,
+            name if WRITERS.contains(&name) => self.written(line, at, shell),
+            name if TRANSFERS.contains(&name) => self.transferred(segment, shell),
+            _ if silent(segment) => empties(line, at) && self.writes_into(&segment.redirects, shell),
+            _ => program_of(segment).is_some_and(|program| self.interprets(program, line, at, shell)),
         }
     }
 
@@ -588,14 +914,23 @@ mod tests {
         CommandGuard.evaluate(&input, &ctx).unwrap()
     }
 
-    /// As quatro formas de mexer em arquivo do projeto pelo terminal são
-    /// recusadas no agente de onda: o programa na linha que cita caminho do
-    /// projeto ou da cópia, o programa guardado fora do projeto, a edição no
-    /// lugar e o texto gravado por `cat`, `echo`, `printf` ou `tee`. Valem
-    /// também o programa passado pelo cano, o interpretador rodado por um
-    /// lançador e a gravação depois do `cd -` que volta à cópia. A recusa
-    /// manda ler o trecho e editar pela ferramenta do hospedeiro que pediu. A
-    /// conversa principal segue sem essa recusa.
+    /// As formas de mexer em arquivo do projeto pelo terminal são recusadas
+    /// no agente de onda: o programa na linha que cita caminho do projeto ou
+    /// da cópia, o programa na linha ou pela entrada cuja saída chega ao
+    /// projeto (pelo redirecionamento dele, pelo cano ou pelo grupo), o
+    /// programa guardado fora do projeto, a edição no lugar, o texto gravado
+    /// por `cat`, `echo`, `printf`, `tee`, `sed` ou `awk`, também pelo grupo,
+    /// e o arquivo de fora ou de lugar desconhecido trazido por `mv` ou `cp`.
+    /// O comando sem programa, o `:` e o `true` com um redirecionamento que
+    /// grava no projeto (`> src/lib.rs`), e o grupo cujos comandos são todos
+    /// assim (`{ :; } > src/lib.rs`), esvaziam o arquivo e também são
+    /// recusados. Valem também o programa passado pelo cano, o interpretador rodado por
+    /// um lançador (que pula o valor das opções dele e os invólucros, confere
+    /// a palavra seguinte ao valor de uma opção que ele não conhece e roda
+    /// também o script de fora sem nome de interpretador) e a gravação depois
+    /// do `cd -` que volta à cópia. A recusa manda ler o trecho e editar pela
+    /// ferramenta do hospedeiro que pediu. A conversa principal segue sem
+    /// essa recusa.
     #[test]
     fn a_wave_agent_writing_files_from_the_shell_is_refused() {
         let scene = scene();
@@ -626,6 +961,60 @@ mod tests {
             "poetry run python - <<'EOF'\nopen('src/lib.rs', 'w').write('')\nEOF".to_string(),
             "py -3 -c \"open('src/lib.rs', 'w').write('')\"".to_string(),
             "php -r 'file_put_contents(\"src/lib.rs\", \"\");'".to_string(),
+            "python3 -c \"print(1)\" > src/lib.rs".to_string(),
+            "python3 - > src/lib.rs <<'EOF'\nprint(1)\nEOF".to_string(),
+            format!("node -e \"console.log(1)\" >> {root}/src/lib.rs"),
+            format!("echo 'print(1)' | python3 > {copy}/src/lib.rs"),
+            format!("sed 's/a/b/' src/lib.rs > {outside}/x.rs && mv {outside}/x.rs src/lib.rs"),
+            format!("cp {outside}/x.rs {copy}/src/lib.rs"),
+            format!("mv -f -t src {outside}/x.rs"),
+            "conda run -n py python -c \"open('src/lib.rs', 'w').write('')\"".to_string(),
+            "conda run --name py python - <<'EOF'\nopen('src/lib.rs', 'w').write('')\nEOF".to_string(),
+            format!("uv run {outside}/edit.py"),
+            format!("poetry run -- {outside}/edit.py"),
+            "pdm run -p . python -c \"open('src/lib.rs', 'w').write('')\"".to_string(),
+            "uv run --color never python -c \"open('src/lib.rs', 'w').write('')\"".to_string(),
+            "uv run --exclude-newer 2024-01-01 python -c \"open('src/lib.rs', 'w').write('')\"".to_string(),
+            "uv run --only-group dev python -c \"open('src/lib.rs', 'w').write('')\"".to_string(),
+            "uv run /usr/bin/env python -c \"open('src/lib.rs', 'w').write('')\"".to_string(),
+            format!("uv run --color never {outside}/edit.py"),
+            "python3 -c \"print(1)\" | head -n 100 > src/lib.rs".to_string(),
+            "python3 -c \"print(1)\" | sed 's/x/x/' > src/lib.rs".to_string(),
+            "(python3 -c \"print(1)\") > src/lib.rs".to_string(),
+            "(python3 -c \"print(1)\"; true) > src/lib.rs".to_string(),
+            "(true; python3 -c \"print(1)\"; true) >> src/lib.rs".to_string(),
+            "((python3 -c \"print(1)\"; true); true) > src/lib.rs".to_string(),
+            "uv run --color never --only-group dev python -c \"open('src/lib.rs', 'w').write('')\"".to_string(),
+            format!("uv run --color never --only-group dev {outside}/edit.py"),
+            "uv --directory . run python -c \"open('src/lib.rs', 'w').write('')\"".to_string(),
+            "{ echo 'pub fn b() {}'; } > src/lib.rs".to_string(),
+            "{ python3 -c \"print(1)\"; true; } > src/lib.rs".to_string(),
+            "for i in 1; do python3 -c \"print(1)\"; true; done > src/lib.rs".to_string(),
+            "while false; do python3 -c \"print(1)\"; true; done > src/lib.rs".to_string(),
+            "if true; then python3 -c \"print(1)\"; true; fi > src/lib.rs".to_string(),
+            "case x in x) python3 -c \"print(1)\"; true;; esac > src/lib.rs".to_string(),
+            "(python3 -c \"print(1)\"; true) | head -n 5 > src/lib.rs".to_string(),
+            "{ true; python3 -c \"print(1)\"; true; } | head -n 5 > src/lib.rs".to_string(),
+            "for i in 1; do for j in 1; do python3 -c \"print(1)\"; done; true; done > src/lib.rs".to_string(),
+            "(case x in x) python3 -c \"print(1)\";; esac; true) > src/lib.rs".to_string(),
+            "uv --python-preference only-system run python -c \"open('src/lib.rs', 'w').write('')\"".to_string(),
+            "uv --quiet --python-preference only-system run python -c \"open('src/lib.rs', 'w').write('')\"".to_string(),
+            "python3 -c \"print(1)\"; > src/lib.rs".to_string(),
+            "> src/lib.rs".to_string(),
+            ": > src/lib.rs".to_string(),
+            "true > src/lib.rs".to_string(),
+            format!("true >> {copy}/src/lib.rs"),
+            "if true; then > src/lib.rs; fi".to_string(),
+            "{ :; } > src/lib.rs".to_string(),
+            "(true; true) > src/lib.rs".to_string(),
+            format!("(true; :) >> {copy}/src/lib.rs"),
+            "for i in 1; do :; done > src/lib.rs".to_string(),
+            "if true; then :; fi > src/lib.rs".to_string(),
+            "case x in x) :;; esac > src/lib.rs".to_string(),
+            "{ { :; }; true; } > src/lib.rs".to_string(),
+            "tmp=$(mktemp) && sed 's/a/b/' src/lib.rs > \"$tmp\" && mv \"$tmp\" src/lib.rs".to_string(),
+            "sed 's/a/b/' src/lib.rs > src/lib.rs.new && mv src/lib.rs.new src/lib.rs".to_string(),
+            "awk '{print}' src/lib.rs > src/lib.rs.new".to_string(),
         ];
         for command in &refused {
             let Verdict::Deny { reason } = guard(&scene, command, true, "claude") else {
@@ -642,10 +1031,14 @@ mod tests {
     }
 
     /// No agente de onda passam o programa na linha sem caminho do projeto, o
-    /// script do projeto, o módulo instalado, o gerador com a saída
-    /// redirecionada, a leitura e a gravação fora do projeto, também depois de
-    /// um `cd` para fora dele. O programa passado pelo cano e o rodado por um
-    /// lançador passam pelas mesmas regras.
+    /// script do projeto, pelo nome ou pela entrada, o módulo instalado, a
+    /// ferramenta instalada rodada pelo lançador, também pelo caminho inteiro,
+    /// o gerador com a saída redirecionada, a leitura e a gravação fora do
+    /// projeto, também depois de um `cd` para fora dele. O programa passado
+    /// pelo cano e o rodado por um lançador passam pelas mesmas regras. O
+    /// redirecionamento que não grava no projeto (`> /tmp/x`, `2>&1`) e o que
+    /// fecha um grupo com gerador ou script (`{ ls; :; } > src/gen.rs`) passam
+    /// também.
     #[test]
     fn a_wave_agent_one_line_check_and_reads_pass() {
         let scene = scene();
@@ -669,10 +1062,101 @@ mod tests {
             "cat scripts/check.py | python3".to_string(),
             "uv run python -m pytest -q".to_string(),
             "poetry run python scripts/check.py".to_string(),
+            format!("python3 -c \"print(1)\" > {outside}/out.txt"),
+            "python3 -c \"print(1)\" 2>&1".to_string(),
+            "python3 -c \"print(1)\" > /dev/null".to_string(),
+            "python3 scripts/check.py > src/gen.rs".to_string(),
+            format!("sed 's/a/b/' src/lib.rs > {outside}/x.rs"),
+            "mv src/lib.rs src/old.rs".to_string(),
+            "cp src/lib.rs src/copy.rs".to_string(),
+            format!("cp src/lib.rs {outside}/lib.rs"),
+            format!("mv {outside}/a.txt {outside}/b.txt"),
+            "uv run scripts/check.py".to_string(),
+            "conda run -n py python -m pytest -q".to_string(),
+            "conda run -n py python -c \"print(1)\"".to_string(),
+            "uv run /usr/bin/env pytest -q".to_string(),
+            "poetry run ~/.local/bin/black src/".to_string(),
+            "python3 < scripts/check.py > src/gen.rs".to_string(),
+            "cat scripts/check.py | python3 > src/gen.rs".to_string(),
+            "uv run pytest -k python".to_string(),
+            "uv run --color never --only-group dev pytest -k python".to_string(),
+            "uv --directory . run pytest -q".to_string(),
+            format!("(python3 -c \"print(1)\"; true) > {outside}/out.txt"),
+            format!("(python3 -c \"print(1)\"; true) | head -n 5 > {outside}/out.txt"),
+            format!("{{ python3 -c \"print(1)\"; true; }} > {outside}/out.txt"),
+            format!("for i in 1; do python3 -c \"print(1)\"; true; done > {outside}/out.txt"),
+            "python3 -c \"print(1)\"; (ls; ls) > src/lib.rs".to_string(),
+            "python3 -c \"print(1)\"; { ls; } > src/lib.rs".to_string(),
+            "python3 -c \"print(1)\"; for i in 1; do ls; done > src/lib.rs".to_string(),
+            "python3 -c \"print(1)\"; (ls; ls) | head -n 5 > src/lib.rs".to_string(),
+            format!("{{ :; }} > {outside}/note.txt"),
+            "(true; true) > /dev/null".to_string(),
+            "{ :; } 2>&1".to_string(),
+            "{ ls; :; } > src/gen.rs".to_string(),
+            "if true; then ls; fi > src/gen.rs".to_string(),
+            format!("> {outside}/note.txt"),
+            format!(": > {outside}/note.txt"),
+            format!("true >> {outside}/note.txt"),
+            "true > /dev/null".to_string(),
+            "true 2>&1".to_string(),
+            ": 2>&1".to_string(),
+            "> /dev/null".to_string(),
+            "{ python3 scripts/check.py; } > src/gen.rs".to_string(),
+            "(cargo run --bin gen) > src/gen.rs".to_string(),
+            "for f in a b; do cargo run --bin gen -- $f; done > src/gen.rs".to_string(),
+            "uv --python-preference only-system run python -m pytest -q".to_string(),
+            "uv --quiet run pytest -q".to_string(),
+            "uv --python-preference only-system sync python".to_string(),
+            "(python3 -c \"print(1)\"; true) 2>&1".to_string(),
+            format!("sed -n 1,20p src/lib.rs > {outside}/x"),
         ];
         for command in &free {
             let verdict = guard(&scene, command, true, "claude");
             assert!(!matches!(verdict, Verdict::Deny { .. }), "{command}: {verdict:?}");
         }
+    }
+
+    /// O lançador roda a primeira palavra depois do `run`, pulado o valor das
+    /// opções dele e os invólucros: `conda run -n py python` roda o `python`,
+    /// e não o `py` que é o valor do `-n`; `uv run pytest -k python` não roda
+    /// interpretador. Depois de uma opção que ele não conhece, a palavra que
+    /// não é interpretador pode ser o valor dela, e a seguinte também conta:
+    /// `uv run --color never python` roda o `python`. As opções com valor que
+    /// o `uv run --help` documenta estão na lista, e duas seguidas não
+    /// escondem o programa (`uv run --color never --only-group dev python`);
+    /// as opções gerais antes do `run` valem do mesmo jeito, também a que o
+    /// lançador não conhece: a palavra depois dela, se não é o `run`, pode ser
+    /// o valor (`uv --python-preference only-system run python`).
+    #[test]
+    fn a_launcher_runs_the_first_word_after_its_options() {
+        let runs = |command: &str| {
+            let line = super::super::lex::segments(command);
+            (is_interpreter(&line[0]), is_python(&line[0]))
+        };
+        assert_eq!(runs("conda run -n py python -c 'print(1)'"), (true, true));
+        assert_eq!(runs("conda run -n py node -e '1'"), (true, false));
+        assert_eq!(runs("uv run --with requests --python 3.12 python3 x.py"), (true, true));
+        assert_eq!(runs("uv run -- python x.py"), (true, true));
+        assert_eq!(runs("uv run pytest -k python"), (false, false));
+        assert_eq!(runs("conda run -n py pytest"), (false, false));
+        assert_eq!(runs("uv sync python"), (false, false));
+        assert_eq!(runs("uv run --color never python3 x.py"), (true, true));
+        assert_eq!(runs("pdm run -p . node x.js"), (true, false));
+        assert_eq!(runs("uv run /usr/bin/env python x.py"), (true, true));
+        assert_eq!(runs("uv run --frozen pytest -k python"), (false, false));
+        assert_eq!(runs("uv run /usr/bin/env pytest -q"), (false, false));
+        assert_eq!(runs("uv run --color never --only-group dev python3 x.py"), (true, true));
+        assert_eq!(runs("uv run --with requests -P httpx --no-group docs node -e '1'"), (true, false));
+        assert_eq!(runs("uv run --color never --only-group dev pytest -k python"), (false, false));
+        assert_eq!(runs("uv --directory sub run python x.py"), (true, true));
+        assert_eq!(runs("uv -q --color never run --frozen python x.py"), (true, true));
+        assert_eq!(runs("uv --directory sub sync python"), (false, false));
+        assert_eq!(runs("uv --directory"), (false, false));
+        assert_eq!(runs("uv --python-preference only-system run python x.py"), (true, true));
+        assert_eq!(runs("uv --quiet --python-preference only-system run --frozen python x.py"), (true, true));
+        assert_eq!(runs("uv --quiet run python x.py"), (true, true));
+        assert_eq!(runs("uv --python-preference only-system run pytest -k python"), (false, false));
+        assert_eq!(runs("uv --python-preference only-system sync python"), (false, false));
+        assert_eq!(runs("uv --python-preference only-system pip install run python"), (false, false));
     }
 }

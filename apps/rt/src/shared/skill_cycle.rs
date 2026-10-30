@@ -32,9 +32,16 @@
 //! lugar da skill quando assume a volta com a atualização gravada.
 //!
 //! A saída: a skill candidata em [`IDLE_CANDIDACIES`] envios sem nunca ir com
-//! uma tarefa, ou descartada sem ganho em dois testes seguidos, sai de
-//! `.claude/skills/`, com a cópia de segurança guardada, o evento `skill`
-//! `retired` e o aviso no relato da rodada.
+//! uma tarefa, ou descartada sem ganho em dois testes seguidos da skill
+//! inteira, com e sem ela, sai de `.claude/skills/`, com a cópia de segurança
+//! guardada, o evento `skill` `retired` e o aviso no relato da rodada. A
+//! tarefa de atualizar responde `updated`, com ganho, ou `kept`, com a skill
+//! em dia: a resposta dela não conta como descarte.
+//!
+//! A volta: a skill que saiu só por descartes que respondiam à tarefa de
+//! atualizá-la ([`MustardSkill::retired_by_updates`]) volta a
+//! `.claude/skills/` pela cópia de segurança, com o evento `skill` `restored`,
+//! o registro ativo e o aviso no relato da rodada.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -342,8 +349,8 @@ fn motivating_groups(root: &Path, spec: &str, log: &SpecLog, wave: Option<u64>) 
 }
 
 /// Depois de gravado o evento `skill` número `id` na spec `spec` de `start`:
-/// o registro do projeto guarda a criação, a atualização ou o descarte, com
-/// o ganho, os arquivos citados — os do evento ou, sem eles, os que o
+/// o registro do projeto guarda a criação, a atualização, o em dia ou o
+/// descarte, com o ganho, os arquivos citados — os do evento ou, sem eles, os que o
 /// `SKILL.md` cita, o da versão nova no caminho reservado da cópia quando a
 /// criação ou a atualização a traz —, a onda que a gravou e os grupos de falha que a
 /// motivaram. Devolve os avisos, em `lang`.
@@ -896,11 +903,57 @@ fn retire(start: &Path, spec: &str, lang: Locale) -> (Vec<Value>, Vec<(&'static 
     (recorded, warnings)
 }
 
+/// Devolve a `.claude/skills/` cada skill do Mustard do projeto de `start` que
+/// saiu só por descartes que respondiam à tarefa de atualizá-la
+/// ([`MustardSkill::retired_by_updates`]): a pasta volta da cópia de
+/// segurança, sem tocar a que a pessoa já pôs de volta, o evento `skill`
+/// `restored` entra na spec `spec` e o registro a marca ativa, sem descartes.
+/// Sem cópia de segurança, nada volta. Devolve os eventos gravados e os
+/// avisos da rodada, cada um com o motivo.
+fn restore(start: &Path, spec: &str, lang: Locale) -> (Vec<Value>, Vec<(&'static str, String)>) {
+    let root = store::spec_root(start);
+    let due: Vec<String> = registry::read(&root).skills.iter().filter(|(_, skill)| skill.retired_by_updates()).map(|(name, _)| name.clone()).collect();
+    let (mut recorded, mut warnings) = (Vec::new(), Vec::new());
+    for name in due {
+        let (main, backup): (PathBuf, PathBuf) = (skill_dir(&root, &name), mustard_core::io::wave_prompt::skills_backup_dir(&root).join(&name));
+        if !backup.join("SKILL.md").is_file() {
+            continue;
+        }
+        if !main.join("SKILL.md").is_file()
+            && let Err(error) = copy_folder(&backup, &main)
+        {
+            warnings.push(("skill-cycle-failed", translate("skills.cycle_failed", lang).replace("{detail}", &error.to_string())));
+            continue;
+        }
+        let why = translate("skills.restored_reason", lang).to_string();
+        let draft = json!({ "name": name, "action": "restored", "text": why, "author": "binary" });
+        let written = match crate::commands::spec_events::write::record(start, spec, "skill", draft.as_object().cloned().unwrap_or_default(), PhaseWriter::Binary) {
+            Ok(written) => written,
+            Err(refusal) => {
+                warnings.push(("skill-cycle-failed", translate("skills.cycle_failed", lang).replace("{detail}", &refusal.message(lang))));
+                continue;
+            }
+        };
+        let at = mustard_core::platform::time::now_iso8601();
+        if let Err(error) = registry::change(&root, |skills| skills.record(&name, "restored", &at, &why, &[], (spec, None), &[])) {
+            warnings.push(("skill-cycle-failed", translate("skills.cycle_failed", lang).replace("{detail}", &error.to_string())));
+        }
+        recorded.push(json!({ "type": "skill", "spec": spec, "id": written.written.id, "name": name, "action": "restored" }));
+        let hint = translate("skills.restored", lang)
+            .replace("{name}", &name)
+            .replace("{reason}", &why)
+            .replace("{backup}", &mustard_core::io::wave_prompt::shown(&backup));
+        warnings.push(("skill-restored", hint));
+    }
+    (recorded, warnings)
+}
+
 /// Depois da rodada da spec `spec` de `start`, com as travas dela soltas: a
 /// conferência das skills do Mustard contra os commits novos, com o Jev do
-/// projeto, e a saída das que não servem. Sem skill do Mustard, nada. Devolve
-/// as tarefas e os eventos gravados, os avisos, cada um com o motivo, em
-/// `lang`, e o pedido de reserva da pergunta que o Jev ligado não respondeu.
+/// projeto, a volta das que saíram só pela atualização e a saída das que não
+/// servem. Sem skill do Mustard, nada. Devolve as tarefas e os eventos
+/// gravados, os avisos, cada um com o motivo, em `lang`, e o pedido de reserva
+/// da pergunta que o Jev ligado não respondeu.
 pub(crate) fn after_round(start: &Path, spec: &str, lang: Locale) -> (Vec<Value>, Vec<(&'static str, String)>, Option<Value>) {
     let root = store::spec_root(start);
     if !registry::path(&root).is_file() {
@@ -911,6 +964,9 @@ pub(crate) fn after_round(start: &Path, spec: &str, lang: Locale) -> (Vec<Value>
         Ok((tasks, reserve)) => (tasks, Vec::new(), reserve),
         Err(detail) => (Vec::new(), vec![("skill-cycle-failed", translate("skills.cycle_failed", lang).replace("{detail}", &detail))], None),
     };
+    let (restored, back) = restore(start, spec, lang);
+    recorded.extend(restored);
+    warnings.extend(back);
     let (retired, said) = retire(start, spec, lang);
     recorded.extend(retired);
     warnings.extend(said);

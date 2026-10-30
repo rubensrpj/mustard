@@ -12,11 +12,14 @@ const MAX_DEPTH: usize = 16;
 /// a command they are skipped, so the real command behind them is the program
 /// (`if x; then rm -rf y; fi` runs `rm`).
 const STRUCTURE_WORDS: &[&str] =
-    &["!", "{", "}", "if", "then", "else", "elif", "fi", "do", "done", "while", "until"];
+    &["!", "{", "}", "if", "then", "else", "elif", "fi", "do", "done", "while", "until", "esac"];
 
-/// As palavras de [`STRUCTURE_WORDS`] que fecham um grupo de comandos: o `|`
-/// logo depois de uma delas leva a saída do grupo.
-const CLOSING_WORDS: &[&str] = &["}", "fi", "done"];
+/// Os grupos de comandos escritos com palavras, cada um pela palavra que o abre
+/// e pela que o fecha: `{ …; }`, `if … fi`, os laços `… done` e `case … esac`.
+/// O `|` e o redirecionamento logo depois da palavra que fecha valem para o
+/// grupo todo, como os do `)` de um grupo entre parênteses.
+const WORD_GROUPS: &[(&str, &str)] =
+    &[("{", "}"), ("if", "fi"), ("while", "done"), ("until", "done"), ("for", "done"), ("select", "done"), ("case", "esac")];
 
 /// The word that opens a function definition. Written plain at the head of a
 /// command it is skipped together with the function's name, so the body is
@@ -88,9 +91,10 @@ pub(crate) struct Segment {
     pub wrappers: Vec<String>,
     /// `true` when the command hands its output to the next one through a
     /// pipe (`|` or `|&`). Num `|` logo depois de um grupo (`( … )`,
-    /// `{ …; }`, o `done` de um laço, o `fi` de um `if`), o encadeado é o
-    /// último comando do grupo, junto com as palavras que fecham os grupos de
-    /// dentro dele.
+    /// `{ …; }`, o `done` de um laço, o `fi` de um `if`, o `esac` de um
+    /// `case`), todos os comandos do grupo, no nível dele, ficam encadeados,
+    /// junto com as palavras que fecham os grupos de dentro: a saída de cada
+    /// um chega ao cano.
     pub piped: bool,
     /// A profundidade do comando: `0` na própria linha, e mais um para cada
     /// `$(…)`, crases, `<(…)`, `${…}`, `$((…))`, `bash -c "…"`, `eval` ou
@@ -98,6 +102,13 @@ pub(crate) struct Segment {
     /// logo depois dele, mais fundos; os do corpo de um heredoc vêm depois do
     /// último comando da linha do heredoc.
     pub depth: usize,
+    /// No comando sem programa que redireciona logo depois do que fecha um
+    /// grupo (o `)` de `( … ) > f`, ou o `}` de `{ …; } > f`, o `done` de um
+    /// laço, o `fi` de um `if` e o `esac` de um `case`, que ficam nele),
+    /// quantos comandos antes dele, na mesma lista, o grupo começa: os
+    /// comandos de `line[at - n..at]`, de qualquer profundidade, são o grupo.
+    /// `None` nos outros comandos.
+    pub group_span: Option<usize>,
 }
 
 /// Os programas do Mustard, pelo nome sem a pasta: o `mustard-rt` e o
@@ -144,6 +155,21 @@ impl Segment {
             piped = segment.piped;
         }
         reached
+    }
+
+    /// Os comandos sem programa que redirecionam, com `( … ) > f`,
+    /// `{ …; } > f`, `done > f`, `fi > f` ou `esac > f`, um grupo que tem
+    /// `line[at]` dentro: os que vêm depois dele, no mesmo nível, e cujo grupo
+    /// ([`Segment::group_span`]) começa nele ou antes. O redirecionamento vale
+    /// para todos os comandos do grupo, e não só para o último. Os comandos de
+    /// dentro de um `$(…)` do grupo não entram: a saída deles fica na
+    /// substituição.
+    pub fn group_redirects(line: &[Segment], at: usize) -> impl Iterator<Item = &Segment> {
+        let depth = line[at].depth;
+        line.iter().enumerate().skip(at + 1).filter_map(move |(index, segment)| {
+            let start = index.checked_sub(segment.group_span?)?;
+            (segment.depth == depth && start <= at).then_some(segment)
+        })
     }
 }
 
@@ -194,6 +220,23 @@ struct Pending {
     redirects: Vec<Redirect>,
     inner: Vec<Segment>,
     piped: bool,
+    /// Onde, em `out`, começa o grupo que acabou de fechar logo antes deste
+    /// comando: com o `)` de `( … ) > f` ou com a palavra que fecha
+    /// `{ …; } > f`, `done`, `fi` ou `esac`. Vira [`Segment::group_span`] e diz
+    /// ao `|` que vem em seguida qual é o grupo que ele leva.
+    group: Option<usize>,
+}
+
+/// Um grupo escrito com palavras ([`WORD_GROUPS`]) que ainda não fechou.
+struct Block {
+    /// A palavra que fecha o grupo.
+    close: &'static str,
+    /// Onde, em `out`, o grupo começa.
+    start: usize,
+    /// Quantos grupos entre parênteses estavam abertos quando ele abriu. O
+    /// `)` nesse mesmo nível, dentro de um `case`, fecha o padrão (`a) …`) e
+    /// não um grupo entre parênteses.
+    parens: usize,
 }
 
 /// What a `${…}` or `$((…))` is, which tells where it closes.
@@ -250,10 +293,10 @@ impl Reader {
     fn list(&mut self, close: Close, depth: usize) -> Vec<Segment> {
         let mut out = Vec::new();
         let mut cur = Pending::default();
-        // Onde começa, em `out`, cada grupo entre parênteses ainda aberto, e
-        // o do grupo que acabou de fechar, até o separador seguinte.
+        // Onde começa, em `out`, cada grupo entre parênteses ainda aberto, e os
+        // grupos escritos com palavras que ainda não fecharam.
         let mut groups: Vec<usize> = Vec::new();
-        let mut closed: Option<usize> = None;
+        let mut blocks: Vec<Block> = Vec::new();
         let mut range_start = self.pos;
         while let Some(c) = self.peek(0) {
             let before = self.pos;
@@ -264,7 +307,6 @@ impl Reader {
                     self.advance(1);
                     if depth == 0 && self.track_ranges { self.ranges.push(range_start..before); }
                     finish(&mut cur, &mut out, depth);
-                    closed = None;
                     range_start = self.pos;
                     self.heredoc_bodies(&mut out, depth);
                 }
@@ -272,7 +314,6 @@ impl Reader {
                     self.advance(1);
                     if depth == 0 && self.track_ranges { self.ranges.push(range_start..before); }
                     finish(&mut cur, &mut out, depth);
-                    closed = None;
                     range_start = self.pos;
                 }
                 '&' if self.peek(1) == Some('>') => self.redirect(&mut cur, String::new(), close, depth),
@@ -284,11 +325,10 @@ impl Reader {
                     }
                     cur.piped = c == '|' && second != Some('|');
                     if cur.piped {
-                        pipe_the_group(&mut out, &cur, closed, depth);
+                        pipe_the_group(&mut out, &cur, depth);
                     }
                     if depth == 0 && self.track_ranges { self.ranges.push(range_start..before); }
                     finish(&mut cur, &mut out, depth);
-                    closed = None;
                     range_start = self.pos;
                 }
                 '<' | '>' if self.peek(1) != Some('(') => {
@@ -298,7 +338,6 @@ impl Reader {
                     self.advance(1);
                     if depth == 0 && self.track_ranges { self.ranges.push(range_start..before); }
                     finish(&mut cur, &mut out, depth);
-                    closed = None;
                     range_start = self.pos;
                     groups.push(out.len());
                 }
@@ -307,10 +346,14 @@ impl Reader {
                     if depth == 0 && self.track_ranges { self.ranges.push(range_start..before); }
                     finish(&mut cur, &mut out, depth);
                     range_start = self.pos;
-                    match groups.pop() {
-                        Some(start) => closed = Some(start),
-                        None if close == Close::Paren => return out,
-                        None => closed = None,
+                    // O `)` do padrão de um `case` (`a) …`) não fecha grupo.
+                    let ends_a_pattern = blocks.last().is_some_and(|block| block.close == "esac" && block.parens == groups.len());
+                    if !ends_a_pattern {
+                        match groups.pop() {
+                            Some(start) => cur.group = Some(start),
+                            None if close == Close::Paren => return out,
+                            None => {}
+                        }
                     }
                 }
                 '`' if close == Close::Backtick => {
@@ -331,6 +374,7 @@ impl Reader {
                         self.redirect(&mut cur, word.raw, close, depth);
                     } else {
                         cur.words.push(word);
+                        track_blocks(&mut blocks, &mut cur, out.len(), groups.len());
                     }
                 }
             }
@@ -650,9 +694,11 @@ fn heredoc_commands(body: &str, depth: usize) -> Vec<Segment> {
 /// Close the command being read: resolve its program and push it, followed by
 /// the commands found inside it.
 fn finish(cur: &mut Pending, out: &mut Vec<Segment>, depth: usize) {
-    let Pending { words, redirects, inner, piped } = std::mem::take(cur);
+    let Pending { words, redirects, inner, piped, group } = std::mem::take(cur);
     if !words.is_empty() || !redirects.is_empty() {
-        let segment = Segment { piped, depth, ..simple_command(words, redirects) };
+        let closes_a_group = !redirects.is_empty() && words.iter().all(closes);
+        let group_span = group.filter(|_| closes_a_group).map(|start| out.len().saturating_sub(start));
+        let segment = Segment { piped, depth, group_span, ..simple_command(words, redirects) };
         let nested = run_by(&segment, depth);
         out.push(segment);
         out.extend(inner);
@@ -662,32 +708,49 @@ fn finish(cur: &mut Pending, out: &mut Vec<Segment>, depth: usize) {
     }
 }
 
-/// Um `|` logo depois de um grupo leva a saída do grupo inteiro. O grupo é o
-/// que `closed` aponta em `out`, quando o comando em `cur` não tem palavra
-/// (`(a) | b`, `(a) 2>&1 | b`), ou o que termina em `out`, quando `cur` só
-/// tem palavras que fecham grupos (`{ a; } | b`, `…; done | b`). Fica
-/// encadeado o último comando do grupo, na profundidade da lista, e também
-/// as palavras que fecham grupos entre ele e o `|`.
-fn pipe_the_group(out: &mut [Segment], cur: &Pending, closed: Option<usize>, depth: usize) {
-    let closes = |w: &Word| w.is_plain() && CLOSING_WORDS.contains(&w.text.as_str());
-    let start = if cur.words.is_empty() {
-        closed
-    } else if cur.words.iter().all(closes) {
-        Some(0)
-    } else {
-        None
-    };
-    let Some(group) = start.and_then(|start| out.get_mut(start..)) else {
+/// A palavra escrita sem aspas que fecha um grupo de comandos escrito com
+/// palavras ([`WORD_GROUPS`]): `}`, `fi`, `done` ou `esac`.
+fn closes(word: &Word) -> bool {
+    word.is_plain() && WORD_GROUPS.iter().any(|(_, close)| *close == word.text)
+}
+
+/// A palavra que acabou de entrar em `cur`, escrita sem aspas no começo do
+/// comando, abre ou fecha um grupo escrito com palavras ([`WORD_GROUPS`]). A
+/// que abre guarda em `blocks` onde o grupo começa em `out`, que é onde o
+/// comando em `cur` vai entrar (`at`); a que fecha diz em `cur.group` onde
+/// começa o grupo que ela fecha, e o grupo sai da lista. `parens` é quantos
+/// grupos entre parênteses estão abertos.
+fn track_blocks(blocks: &mut Vec<Block>, cur: &mut Pending, at: usize, parens: usize) {
+    let Some((word, before)) = cur.words.split_last() else {
         return;
     };
-    for segment in group.iter_mut().rev().filter(|segment| segment.depth == depth) {
-        segment.piped = true;
-        let closer = segment.program.text.is_empty()
-            && !segment.leading.is_empty()
-            && segment.leading.iter().all(|word| CLOSING_WORDS.contains(&word.as_str()));
-        if !closer {
-            return;
+    let opens = WORD_GROUPS.iter().find(|(open, _)| *open == word.text).map(|(_, close)| *close);
+    if !word.is_plain() || (opens.is_none() && !closes(word)) || command_start(before).0 != before.len() {
+        return;
+    }
+    match opens {
+        Some(close) => blocks.push(Block { close, start: at, parens }),
+        None => {
+            if let Some(open) = blocks.iter().rposition(|block| block.close == word.text) {
+                cur.group = Some(blocks[open].start);
+                blocks.truncate(open);
+            }
         }
+    }
+}
+
+/// Um `|` logo depois de um grupo leva a saída do grupo inteiro. O grupo é o
+/// que `cur.group` aponta em `out`, quando o comando em `cur` não tem palavra
+/// (`(a) | b`, `(a) 2>&1 | b`) ou só tem palavras que fecham grupos
+/// (`{ a; } | b`, `…; done | b`, `…;; esac | b`). Ficam encadeados todos os
+/// comandos do grupo, na profundidade da lista, e também as palavras que
+/// fecham grupos de dentro dele: a saída de cada um chega ao cano.
+fn pipe_the_group(out: &mut [Segment], cur: &Pending, depth: usize) {
+    let Some(group) = cur.group.filter(|_| cur.words.iter().all(closes)).and_then(|start| out.get_mut(start..)) else {
+        return;
+    };
+    for segment in group.iter_mut().filter(|segment| segment.depth == depth) {
+        segment.piped = true;
     }
 }
 
@@ -706,13 +769,13 @@ fn simple_command(words: Vec<Word>, redirects: Vec<Redirect>) -> Segment {
         .collect();
     let mut rest = words.into_iter().skip(start);
     let program = rest.next().unwrap_or_default();
-    Segment { program, args: rest.collect(), redirects, leading, wrappers, piped: false, depth: 0 }
+    Segment { program, args: rest.collect(), redirects, leading, wrappers, piped: false, depth: 0, group_span: None }
 }
 
 /// Where the command really starts: past the structure words, a function
 /// definition's head, the `NAME=value` assignments and the wrappers with
 /// their options. Junto, os nomes dos invólucros pulados, na ordem.
-fn command_start(words: &[Word]) -> (usize, Vec<String>) {
+pub(crate) fn command_start(words: &[Word]) -> (usize, Vec<String>) {
     let mut i = 0;
     let mut wrappers = Vec::new();
     while let Some(w) = words.get(i) {
@@ -1132,33 +1195,135 @@ mod tests {
     }
 
     /// O `|` logo depois de um grupo entre parênteses leva a saída do grupo:
-    /// o último comando dele fica encadeado, também com um redirecionamento
-    /// do grupo no meio e com grupos um dentro do outro. O `||` não encadeia.
+    /// todos os comandos dele ficam encadeados, também com um redirecionamento
+    /// do grupo no meio e com grupos um dentro do outro. Os de antes do grupo
+    /// não, e o `||` não encadeia.
     #[test]
-    fn a_pipe_right_after_a_parenthesized_group_chains_its_last_command() {
+    fn a_pipe_right_after_a_parenthesized_group_chains_every_command_of_the_group() {
         assert_eq!(chain("(a) | b"), ["a|", "b"]);
         assert_eq!(chain("(a) |& b"), ["a|", "b"]);
-        assert_eq!(chain("(a; b) | c"), ["a", "b|", "c"]);
+        assert_eq!(chain("(a; b) | c"), ["a|", "b|", "c"]);
+        assert_eq!(chain("x; (a; b) | c"), ["x", "a|", "b|", "c"]);
         assert_eq!(chain("((a)) 2>&1 | b"), ["a|", "|", "b"]);
+        assert_eq!(chain("((a); b) | c"), ["a|", "b|", "c"]);
         assert_eq!(chain("(a) || b"), ["a", "b"]);
         assert_eq!(chain("(a) && b | c"), ["a", "b|", "c"]);
         assert_eq!(chain("(npx tsc --noEmit -p tsconfig.json) | head -20"), ["npx|", "head"]);
-        assert_eq!(chain("(cd api && dotnet test Api.Tests.csproj) |& tail -15"), ["cd", "dotnet|", "tail"]);
+        assert_eq!(chain("(cd api && dotnet test Api.Tests.csproj) |& tail -15"), ["cd|", "dotnet|", "tail"]);
     }
 
     /// O `|` logo depois do `}` de um grupo entre chaves, do `done` de um
-    /// laço ou do `fi` de um `if` leva a saída do grupo: o último comando
-    /// dele fica encadeado, e as palavras que fecham grupos de dentro também.
-    /// Uma atribuição como último comando é o elo, e o comando de fora do
-    /// grupo não fica encadeado.
+    /// laço, do `fi` de um `if` ou do `esac` de um `case` leva a saída do
+    /// grupo: todos os comandos dele ficam encadeados, e as palavras que
+    /// fecham grupos de dentro também. Uma atribuição como último comando é
+    /// um elo, e o comando de fora do grupo não fica encadeado.
     #[test]
-    fn a_pipe_right_after_a_closing_word_chains_the_last_command_of_the_group() {
+    fn a_pipe_right_after_a_closing_word_chains_every_command_of_the_group() {
         assert_eq!(chain("{ a; } | b"), ["a|", "|", "b"]);
-        assert_eq!(chain("while x; do a; done | b"), ["x", "a|", "|", "b"]);
-        assert_eq!(chain("if x; then a; fi |& b"), ["x", "a|", "|", "b"]);
+        assert_eq!(chain("{ a; b; } | c"), ["a|", "b|", "|", "c"]);
+        assert_eq!(chain("x; { a; b; } | c"), ["x", "a|", "b|", "|", "c"]);
+        assert_eq!(chain("while x; do a; done | b"), ["x|", "a|", "|", "b"]);
+        assert_eq!(chain("for i in 1; do a; b; done | c"), ["for|", "a|", "b|", "|", "c"]);
+        assert_eq!(chain("if x; then a; fi |& b"), ["x|", "a|", "|", "b"]);
+        assert_eq!(chain("case x in x) a; b;; esac | c"), ["case|", "a|", "b|", "|", "c"]);
         assert_eq!(chain("{ { a; }; } | b"), ["a|", "|", "|", "b"]);
         assert_eq!(chain("a; { X=1; } | b"), ["a", "|", "|", "b"]);
         assert_eq!(chain("{ a; } || b"), ["a", "", "b"]);
+        // Sem o grupo aberto, a palavra que fecha não leva nada.
+        assert_eq!(chain("a; } | b"), ["a", "|", "b"]);
+    }
+
+    /// O redirecionamento logo depois do `)` de um grupo ou da palavra que o
+    /// fecha (`}`, `done`, `fi`, `esac`) vem num comando sem programa que diz
+    /// onde o grupo começa; ele vale para os comandos do grupo no mesmo
+    /// nível, e não para os de antes dele, os de depois, os de dentro de uma
+    /// substituição nem os de outro grupo.
+    #[test]
+    fn a_redirect_after_a_group_marks_where_the_group_starts() {
+        let reached = |cmd: &str| {
+            let line = segments(cmd);
+            let programs: Vec<String> = line.iter().map(|s| s.program.text.clone()).collect();
+            let spans: Vec<Option<usize>> = line.iter().map(|s| s.group_span).collect();
+            let covered: Vec<usize> = (0..line.len()).map(|at| Segment::group_redirects(&line, at).count()).collect();
+            (programs, spans, covered)
+        };
+        let (programs, spans, covered) = reached("x; (a; b $(c)) > f; d");
+        assert_eq!(programs, ["x", "a", "b", "c", "", "d"]);
+        assert_eq!(spans, [None, None, None, None, Some(3), None]);
+        assert_eq!(covered, [0, 1, 1, 0, 0, 0]);
+
+        let (programs, spans, covered) = reached("((a; b); c) 2> f");
+        assert_eq!(programs, ["a", "b", "c", ""]);
+        assert_eq!(spans, [None, None, None, Some(3)]);
+        assert_eq!(covered, [1, 1, 1, 0]);
+
+        let (programs, spans, covered) = reached("(a) > f && (b) > g");
+        assert_eq!(programs, ["a", "", "b", ""]);
+        assert_eq!(spans, [None, Some(1), None, Some(1)]);
+        assert_eq!(covered, [1, 0, 1, 0]);
+
+        // As chaves, os laços, o `if` e o `case` marcam o começo do grupo como os parênteses.
+        let (programs, spans, covered) = reached("{ a; b; } > f");
+        assert_eq!(programs, ["a", "b", ""]);
+        assert_eq!(spans, [None, None, Some(2)]);
+        assert_eq!(covered, [1, 1, 0]);
+
+        let (programs, spans, covered) = reached("x; for i in 1; do a; b; done > f; d");
+        assert_eq!(programs, ["x", "for", "a", "b", "", "d"]);
+        assert_eq!(spans, [None, None, None, None, Some(3), None]);
+        assert_eq!(covered, [0, 1, 1, 1, 0, 0]);
+
+        let (programs, spans, covered) = reached("while x; do a; done > f");
+        assert_eq!(programs, ["x", "a", ""]);
+        assert_eq!(spans, [None, None, Some(2)]);
+        assert_eq!(covered, [1, 1, 0]);
+
+        let (programs, spans, covered) = reached("if x; then a; fi > f");
+        assert_eq!(programs, ["x", "a", ""]);
+        assert_eq!(spans, [None, None, Some(2)]);
+        assert_eq!(covered, [1, 1, 0]);
+
+        let (programs, spans, covered) = reached("case x in x) a; b;; esac > f");
+        assert_eq!(programs, ["case", "a", "b", ""]);
+        assert_eq!(spans, [None, None, None, Some(3)]);
+        assert_eq!(covered, [1, 1, 1, 0]);
+
+        let (programs, spans, covered) = reached("case x in (a) rm y;; esac > f");
+        assert_eq!(programs, ["case", "a", "rm", ""]);
+        assert_eq!(spans, [None, None, None, Some(3)]);
+        assert_eq!(covered, [1, 1, 1, 0]);
+
+        // Um grupo dentro do outro: o redirecionamento de cada um vale para os
+        // comandos dele.
+        let (programs, spans, covered) = reached("{ a; { b; } > g; c; } > f");
+        assert_eq!(programs, ["a", "b", "", "c", ""]);
+        assert_eq!(spans, [None, None, Some(1), None, Some(4)]);
+        assert_eq!(covered, [1, 2, 1, 1, 0]);
+
+        // O `)` do padrão de um `case` não fecha o grupo entre parênteses que o guarda.
+        let (programs, spans, covered) = reached("(case x in a) b;; esac) > f");
+        assert_eq!(programs, ["case", "b", "", ""]);
+        assert_eq!(spans, [None, None, None, Some(3)]);
+        assert_eq!(covered, [1, 1, 1, 0]);
+
+        // Sem redirecionamento, ou com programa depois do grupo, nada é marcado.
+        assert_eq!(reached("(a; b) | c").1, [None, None, None]);
+        assert_eq!(reached("(a) b > f").1, [None, None]);
+        assert_eq!(reached("{ a; b; }").1, [None, None, None]);
+        assert_eq!(reached("{ a; } b > f").1, [None, None]);
+        // Uma palavra que fecha fora do começo do comando, entre aspas ou sem
+        // grupo aberto não fecha nada.
+        assert_eq!(reached("echo } > f").1, [None]);
+        assert_eq!(reached("{ a; } > f; '}' > g").1, [None, Some(1), None]);
+        assert_eq!(reached("a; } > f").1, [None, None]);
+    }
+
+    /// O `)` que fecha o padrão de um `case` não acaba a substituição nem o
+    /// grupo que a guarda: o que vem depois dele é lido como comando.
+    #[test]
+    fn a_case_pattern_does_not_end_the_substitution() {
+        assert_eq!(programs("echo $(case x in a) rm -rf y;; esac)"), ["echo", "case", "rm", ""]);
+        assert_eq!(programs("echo $(case x in a) rm -rf y;; esac) && ls"), ["echo", "case", "rm", "", "ls"]);
     }
 
     #[test]

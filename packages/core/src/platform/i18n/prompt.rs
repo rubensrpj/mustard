@@ -312,8 +312,9 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              `mustard-rt run write skill --root {root} --spec {spec} --json \
              '{\"name\":\"<nome>\",\"action\":\"created\",\"text\":\"<o ganho medido, numa \
              frase>\",\"files\":[\"<arquivo citado>\"]}'`, com `\"action\":\"updated\"` quando \
-             atualiza uma skill que já existe. Sem ganho, grave `\"action\":\"discarded\"` com o motivo em \
-             `text`."
+             atualiza uma skill que já existe. Se a skill que já existe está em dia, e a versão nova não traz \
+             ganho, grave `\"action\":\"kept\"` com o motivo em `text`. Sem ganho na skill nova, grave \
+             `\"action\":\"discarded\"` com o motivo em `text`."
         }
         ("prompt.task.skill_creator", Locale::EnUs) => {
             "This task creates or updates a skill. Follow the skill-creator process in the `SKILL.md` cited above, \
@@ -328,8 +329,9 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              At the end, record the result: `mustard-rt run write skill --root {root} --spec {spec} --json \
              '{\"name\":\"<name>\",\"action\":\"created\",\"text\":\"<the measured gain, in one \
              sentence>\",\"files\":[\"<cited file>\"]}'`, with `\"action\":\"updated\"` when it \
-             updates a skill that exists. Without a gain, record `\"action\":\"discarded\"` with the \
-             reason in `text`."
+             updates a skill that exists. When the skill that exists is up to date and the new version \
+             brings no gain, record `\"action\":\"kept\"` with the reason in `text`. Without a gain on a \
+             new skill, record `\"action\":\"discarded\"` with the reason in `text`."
         }
         ("prompt.task.skill_read", Locale::PtBr) => "Abra esse `SKILL.md` antes de editar os arquivos que ela cobre.",
         ("prompt.task.skill_read", Locale::EnUs) => "Open that `SKILL.md` before editing the files it covers.",

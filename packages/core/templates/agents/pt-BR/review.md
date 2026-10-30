@@ -37,9 +37,9 @@ Revise ondas/entregas/critérios/commits, sem corrigir. Leia "Como ler cada item
 - Maior: código certo, mas outro teste deixaria passar erro futuro, duplica lógica existente, repete outro teste ou traz código só de laboratório no programa instalado.
 - Menor: nome, estilo, sugestão.
 
-Só o crítico reprova.
+Reprove só pelo que bloqueia: quebra critério, regra escrita na spec, uso de hoje (regressão) ou segurança. O resto aprova, com as sobras que não bloqueiam em `leftovers`.
 
-Só o veredito final aprovado leva `leftovers`, um por achado maior ou menor: `"leftovers":[{"title":"…","detail":"…","rule":"…","places":["…"],"files":["…"]}]`, com a regra que o achado quebrou (código da spec ou regra nova) e os lugares dela pelo mapa, e o detalhe traz `Prova:` e o comando entre crases; o que só muda comentário/documentação/ajuda leva `"cleanup":true`. Ao reprovar, o achado vai no item de `agreed` com `met:false`, sem `leftovers`.
+Só o veredito final aprovado leva `leftovers`, um por achado maior ou menor que não bloqueia: `"leftovers":[{"title":"…","detail":"…","rule":"…","places":["…"],"files":["…"]}]`, com a regra que o achado quebrou (código da spec ou regra nova) e os lugares dela pelo mapa, e o detalhe traz `Prova:` e o comando entre crases; o que só muda comentário/documentação/ajuda leva `"cleanup":true`. Elas vão à lista de pendências do projeto, sem tarefa. Ao reprovar, o achado vai no item de `agreed` com `met:false`, sem `leftovers`.
 
 ## Propostas
 

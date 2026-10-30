@@ -462,10 +462,12 @@ const RUN_RESULTS: &[&str] = &["pass", "fail"];
 /// critério já gravado sem o campo continua válido na leitura.
 const CRITERION_FORMS: &[&str] =
     &["ubiquitous", "event_driven", "state_driven", "optional_feature", "unwanted_behavior"];
-/// O que a tarefa de criar skill fez com a skill: criou, atualizou ou
-/// descartou, porque o teste com e sem ela não mudou o resultado; ou a
-/// saída que o binário grava quando a skill deixa de servir.
-const SKILL_ACTIONS: &[&str] = &["created", "updated", "discarded", "retired"];
+/// O que a tarefa de criar ou de atualizar skill fez com a skill: criou,
+/// atualizou, manteve — a skill já estava em dia e a versão nova não traz
+/// ganho — ou descartou, porque o teste com e sem ela não mudou o resultado;
+/// ou a saída e a volta que o binário grava quando a skill deixa de servir e
+/// quando ela volta.
+const SKILL_ACTIONS: &[&str] = &["created", "updated", "kept", "discarded", "retired", "restored"];
 const ROLES: &[&str] = &["wave", "review", "wave-review"];
 const VERDICTS: &[&str] = &["approved", "rejected"];
 /// O resultado de uma marca da máquina numa onda: a reprovação, que põe a
@@ -611,6 +613,9 @@ pub const TYPES: &[TypeSpec] = &[
             req("phase", Kind::OneOf(PHASES)),
             opt("branch", Kind::Text),
             opt("base", Kind::Text),
+            // O commit em que a obra começou: só o nascimento da spec aberta
+            // o traz, e é com ele que o fechamento compara a prova.
+            opt("start", Kind::Text),
             opt("witness", Kind::Object),
             opt("pr", Kind::Object),
             opt("reason", Kind::Text),
@@ -788,6 +793,17 @@ pub const TYPES: &[TypeSpec] = &[
             req("fingerprint", Kind::Text),
             opt("files", Kind::Texts),
             opt("reason", Kind::Text),
+            // Os itens (a versão de cada pedido ou critério) cuja prova caiu: a
+            // reprovação vence quando todos saíram da spec ou ganharam versão
+            // nova. Vazio quando a reprovação também tem falha que não é de
+            // item; ausente na reprovação de antes do campo.
+            opt("items", Kind::Ints),
+            // O código de antes da obra que a prova usou, na reprovação de
+            // prova que já passava antes: a que gravou outro, ou nenhum, vence.
+            opt("before", Kind::Text),
+            // Na soltura, o número da reprovação vencida que ela tira da
+            // leitura e do limite de consertos.
+            opt("expired", Kind::Int),
         ],
     ),
     // Ondas.

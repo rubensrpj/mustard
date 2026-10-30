@@ -8,6 +8,7 @@ use std::rc::Rc;
 
 use mustard_core::domain::spec_events::SpecEvent;
 use mustard_core::domain::spec_state::PhaseWriter;
+use mustard_core::io::failures::SkillTask;
 use mustard_core::io::mustard_skills::{self as registry, MustardSkill};
 use mustard_core::io::spec_events as store;
 use serde_json::{Map, Value, json};
@@ -363,6 +364,101 @@ fn two_discards_in_a_row_retire_the_skill() {
     assert_eq!(registry::read(root).skills["falta-teste"].state, registry::RETIRED);
     assert!(!main.exists() && backup.join("SKILL.md").is_file());
     let _ = std::fs::remove_dir_all(&backup);
+}
+
+/// Marks the update task of the skill `name` as waiting for its answer.
+fn wait_for_update(root: &Path, name: &str) {
+    registry::change(root, |held| held.skills.get_mut(name).expect("the skill is registered").update_task = Some(SkillTask { spec: "x".into(), task: Some(1) })).unwrap();
+}
+
+#[test]
+fn a_skill_the_update_task_answers_twice_does_not_leave_the_project() {
+    // O em dia é a resposta nova; o descarte da tarefa de atualizar é a resposta
+    // das tarefas que saíram antes dela.
+    for action in ["kept", "discarded"] {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+        write_skill(root, "falta-teste", false);
+        registered(root, &[("falta-teste", made(&["src/a.rs"]))]);
+        let (main, backup) = folders(root, "falta-teste");
+        let _ = std::fs::remove_dir_all(&backup);
+        for _ in 0..2 {
+            wait_for_update(root, "falta-teste");
+            let body = json!({"name":"falta-teste","action":action,"text":"A versão nova não traz ganho."});
+            let opts = crate::commands::spec_events::write::WriteOpts { root: root.to_path_buf(), spec: Some("x".into()), event_type: "skill".into(), json: body.to_string() };
+            let wrote = crate::commands::spec_events::write::write_at(&opts);
+            assert_eq!(wrote["ok"], true, "{action}: {wrote}");
+            let (recorded, _, _) = crate::shared::skill_cycle::after_round(root, "x", mustard_core::platform::i18n::Locale::PtBr);
+            assert!(recorded.is_empty(), "{action}: the update task's answer takes nothing out: {recorded:?}");
+        }
+        let skill = registry::read(root).skills["falta-teste"].clone();
+        assert_eq!((skill.state.as_str(), skill.update_task.is_none()), (registry::ACTIVE, true), "{action}");
+        assert!(main.join("SKILL.md").is_file() && !backup.exists(), "{action}: the skill stays in the project and nothing was retired");
+        let _ = std::fs::remove_dir_all(&backup);
+    }
+}
+
+#[test]
+fn a_skill_retired_by_update_answers_comes_back_from_the_backup_copy() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    approved(root, "x", &[(1, &["src/a.rs"], &[])]);
+    let retired = MustardSkill { state: registry::RETIRED.into(), discards_in_row: 2, candidacies: 38, deliveries: 30, ..made(&["src/a.rs"]) };
+    registered(
+        root,
+        &[
+            ("da-atualizacao", retired.clone()),
+            ("ja-no-lugar", retired.clone()),
+            ("sem-copia", retired.clone()),
+            // As outras saídas continuam saídas.
+            ("do-teste-inteiro", MustardSkill { whole_discards: 2, ..retired.clone() }),
+            ("parada", MustardSkill { deliveries: 0, candidacies: registry::IDLE_CANDIDACIES, ..retired }),
+        ],
+    );
+    let place = |name: &str, folder: &Path, text: &str| {
+        std::fs::create_dir_all(folder).unwrap();
+        std::fs::write(folder.join("SKILL.md"), format!("---\nname: {name}\ndescription: {text}.\n---\n\nCorpo de {name}.\n")).unwrap();
+    };
+    let names = ["da-atualizacao", "ja-no-lugar", "sem-copia", "do-teste-inteiro", "parada"];
+    for name in names {
+        let (main, backup) = folders(root, name);
+        let _ = std::fs::remove_dir_all(&backup);
+        if name != "sem-copia" {
+            place(name, &backup, "Da cópia de segurança");
+        }
+        if name == "ja-no-lugar" {
+            place(name, &main, "Posta de volta pela pessoa");
+        }
+    }
+
+    let lang = mustard_core::platform::i18n::Locale::PtBr;
+    let (recorded, warnings, _) = crate::shared::skill_cycle::after_round(root, "x", lang);
+
+    let skills = registry::read(root).skills;
+    let (main, backup) = folders(root, "da-atualizacao");
+    assert_eq!(std::fs::read_to_string(main.join("SKILL.md")).unwrap(), std::fs::read_to_string(backup.join("SKILL.md")).unwrap(), "the folder came back from the backup copy");
+    assert_eq!((skills["da-atualizacao"].state.as_str(), skills["da-atualizacao"].discards_in_row, skills["da-atualizacao"].retire_reason()), (registry::ACTIVE, 0, None));
+    let (kept, _) = folders(root, "ja-no-lugar");
+    assert!(std::fs::read_to_string(kept.join("SKILL.md")).unwrap().contains("Posta de volta pela pessoa"), "what the person put back is not overwritten");
+    assert_eq!(skills["ja-no-lugar"].state, registry::ACTIVE);
+    for name in ["sem-copia", "do-teste-inteiro", "parada"] {
+        assert_eq!(skills[name].state, registry::RETIRED, "{name} stays out");
+        assert!(!folders(root, name).0.exists(), "{name}: nothing came back");
+    }
+
+    let events: Vec<_> = log_of(root).visible().into_iter().filter(|e| e.event_type == "skill").map(|e| (e.str_field("name").unwrap_or_default().to_string(), e.str_field("action").unwrap_or_default().to_string())).collect();
+    assert_eq!(events, [("da-atualizacao".to_string(), "restored".to_string()), ("ja-no-lugar".to_string(), "restored".to_string())], "the event is recorded: {recorded:?}");
+    assert_eq!(recorded.len(), 2, "{recorded:?}");
+    let told: Vec<&str> = warnings.iter().filter(|(reason, _)| *reason == "skill-restored").map(|(_, hint)| hint.as_str()).collect();
+    assert!(told.len() == 2 && told[0].contains("da-atualizacao"), "the round tells which skills came back: {warnings:?}");
+
+    let (again, _, _) = crate::shared::skill_cycle::after_round(root, "x", lang);
+    assert!(again.is_empty(), "a skill that came back does not come back twice: {again:?}");
+    assert_eq!(registry::read(root).skills["da-atualizacao"].state, registry::ACTIVE, "and it does not leave again");
+    for name in names {
+        let _ = std::fs::remove_dir_all(folders(root, name).1);
+    }
 }
 
 /// A onda da tarefa que atualiza uma skill escreve a versão nova na pasta

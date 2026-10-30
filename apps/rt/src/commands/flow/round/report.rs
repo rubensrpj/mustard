@@ -31,7 +31,7 @@ use super::commit::{
 use super::wave_commit::{commit_waves, made_drafts, record_made, removed_warnings};
 use super::commit_title::{check_summary, wave_commits};
 use super::copy_check::check_against_copies;
-use super::leftovers::{Leftover, LeftoverEvent, MeaningJoin, ask_rewrites, cover_asks, leftover_events, leftovers_of};
+use super::leftovers::{Leftover, LeftoverEvent, MeaningJoin, ProjectPending, ask_rewrites, cover_asks, hand_to_project, leftover_events, leftovers_of, project_pending};
 use super::queue::{backlog_wave, open_review, open_sends, waves_in_progress};
 use super::rehearsal::{Recording, Rehearsed, rehearse};
 use super::rejection::{held_rejection, keep_rejections, record_rejections, rejected_lines, release_unstarted};
@@ -879,6 +879,9 @@ struct CheckedReport {
     /// lote. O item ou a sobra que uma tarefa ainda por entregar já cobre vem
     /// como nota, e o de mesmo sentido, como versão nova dessa tarefa.
     wave_tasks: Vec<(u64, &'static str, Rehearsed)>,
+    /// A pendência do projeto de cada sobra que não bloqueia: vai à lista de
+    /// pendências do projeto, fora da spec, sem tarefa nem onda.
+    project: Vec<ProjectPending>,
     /// Cada tarefa que um item não cumprido ganhou pelo sentido, pela posição
     /// entre as entradas que a rodada grava, com os números desses itens: a
     /// resposta da rodada leva o pedido de reescrita de cada uma.
@@ -1028,6 +1031,7 @@ fn check_reports(
     // entrega e é coberto pelo número que o ensaio deu a ele: a gravação de
     // verdade troca cada um pelo dela.
     let leftovers = leftover_events(root, check.log(), &found, &reported, lang);
+    let project = project_pending(&found, lang);
     // As posições das junções pelo sentido entre as entradas que a rodada
     // grava, na ordem de [`record_reports`]: vereditos, o que a revisão final
     // deu, as tarefas devolvidas, as entregas e o que os itens viram.
@@ -1093,7 +1097,7 @@ fn check_reports(
     for draft in commits {
         check.record("commit", draft)?;
     }
-    Ok(CheckedReport { verdicts, deliveries, proofs, sent_proofs, sends, agreed_tasks, undone_tasks, wave_tasks, meaning_joins: meaning })
+    Ok(CheckedReport { verdicts, deliveries, proofs, sent_proofs, sends, agreed_tasks, undone_tasks, wave_tasks, project, meaning_joins: meaning })
 }
 
 /// A versão nova de um critério com a prova nova.
@@ -1156,7 +1160,7 @@ fn joined_proof(had: &str, new: &str) -> Option<String> {
 /// resposta da rodada, sem ir ler a spec. A entrada da tarefa que um item não
 /// cumprido deu pelo sentido leva o pedido de reescrita dela ([`ask_rewrites`]).
 fn record_reports(start: &Path, spec: &str, checked: CheckedReport) -> Result<RecordedReport, Refusal> {
-    let CheckedReport { verdicts, deliveries, proofs, sent_proofs, sends, agreed_tasks, undone_tasks, wave_tasks, meaning_joins } = checked;
+    let CheckedReport { verdicts, deliveries, proofs, sent_proofs, sends, agreed_tasks, undone_tasks, wave_tasks, project, meaning_joins } = checked;
     let root = crate::commands::spec_events::project(start).root;
     let path = store::spec_file(&root, spec)?;
     let read = || store::read(&path)?.ok_or_else(|| Refusal::NoSpecFile { spec: spec.to_string() });
@@ -1199,6 +1203,7 @@ fn record_reports(start: &Path, spec: &str, checked: CheckedReport) -> Result<Re
         }
         recorded.push(entry);
     }
+    recorded.extend(hand_to_project(&root, project));
     if !meaning_joins.is_empty() {
         ask_rewrites(&root, &read()?, &meaning_joins, &mut recorded);
     }
@@ -2511,7 +2516,8 @@ mod tests {
 
     /// A rodada junta a entrega e comita sem compilar nem rodar prova. O lint
     /// ou a suíte declarados que caem ficam para o fechamento, que recusa com
-    /// a saída deles sem desfazer a entrega já integrada. A saída que não cita arquivo
+    /// a saída deles sem desfazer a entrega já integrada, quando a falha é da
+    /// obra e não já estava no começo dela. A saída que não cita arquivo
     /// nenhum não reabre onda: a recusa diz isso, e nenhuma reprovação é
     /// gravada.
     #[cfg(unix)]
@@ -2522,7 +2528,10 @@ mod tests {
             let root = dir.path();
             approved(root, "x", &[(1, &["src/a.rs"], &[])]);
             let mut config = json!({"lintCommand":"true","testCommand":"true"});
-            config[key] = json!("echo final-failure; exit 1");
+            // O comando cai só no código da obra: no começo dela, onde o
+            // fechamento o roda de novo, ele passa. O que cai igual lá é da
+            // base e não trava o fechamento.
+            config[key] = json!("if grep -q integrated src/a.rs; then echo final-failure; exit 1; fi");
             std::fs::write(root.join("mustard.json"), config.to_string()).unwrap();
             round(root, "x", None);
             std::fs::write(slot_of(root, 1).join("src/a.rs"), "fn one() {}\n// integrated\n").unwrap();
@@ -4383,11 +4392,11 @@ fn main() { sum_comes_out_right(); double_comes_out_right(); }
             root,
             json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"],
             "commit": "a soma sai", "leftovers": [
-                {"title": "O log não gira", "detail": "O arquivo de log cresce sem limite. Prova: `git --version`", "rule": "O log gira por dia", "places": ["src/a.rs"]},
+                {"title": "O log não gira", "detail": "O arquivo de log cresce sem limite. Prova: `git --version`", "rule": "O log gira por dia", "places": ["src/a.rs"], "blocks": true},
                 {"title": "O nome da variável confunde", "detail": "Um nome mais claro. Prova: `git --version`", "kind": "cosmetic",
-                    "rule": "Cada nome diz o que guarda", "places": ["src/a.rs"]},
-                {"title": "A leitura para sem o índice", "detail": cites, "kind": "breaks", "rule": "A leitura tem índice", "places": ["src/commit.rs"]},
-                {"title": "a busca ignora ACENTO", "detail": "Achei de novo. Prova: `git --version`", "kind": "later", "rule": "A busca vê acento", "places": ["src/a.rs"]},
+                    "rule": "Cada nome diz o que guarda", "places": ["src/a.rs"], "blocks": true},
+                {"title": "A leitura para sem o índice", "detail": cites, "kind": "breaks", "rule": "A leitura tem índice", "places": ["src/commit.rs"], "blocks": true},
+                {"title": "a busca ignora ACENTO", "detail": "Achei de novo. Prova: `git --version`", "kind": "later", "rule": "A busca vê acento", "places": ["src/a.rs"], "blocks": true},
             ]}),
         );
         assert_eq!(wrote["ok"], json!(true), "a volta com `kind` de qualquer valor é aceita: {wrote}");
@@ -4437,8 +4446,8 @@ fn main() { sum_comes_out_right(); double_comes_out_right(); }
             json!({"wave": 1, "text": "A soma saiu.", "files": ["src/a.rs"],
             "commit": "a soma sai", "leftovers": [
                 {"title": "O comentário da soma diz dois", "detail": "A soma é de três. Prova: `git --version`", "cleanup": true,
-                    "rule": "O comentário diz o que o código faz", "places": ["src/a.rs"]},
-                {"title": "O log não gira", "detail": "O arquivo de log cresce sem limite. Prova: `git --version`", "rule": "O log gira por dia", "places": ["src/a.rs"]},
+                    "rule": "O comentário diz o que o código faz", "places": ["src/a.rs"], "blocks": true},
+                {"title": "O log não gira", "detail": "O arquivo de log cresce sem limite. Prova: `git --version`", "rule": "O log gira por dia", "places": ["src/a.rs"], "blocks": true},
             ]}),
         );
         assert_eq!(wrote["ok"], json!(true), "{wrote}");
@@ -4474,7 +4483,7 @@ fn main() { sum_comes_out_right(); double_comes_out_right(); }
 
         for (field, wrong) in [("cleanup", json!("sim")), ("files", json!("src/a.rs")), ("files", json!([1]))] {
             let mut leftover = json!({"title": "O comentário da soma diz dois", "detail": "A soma é de três.",
-                "rule": "O comentário diz o que o código faz", "places": ["src/a.rs"]});
+                "rule": "O comentário diz o que o código faz", "places": ["src/a.rs"], "blocks": true});
             leftover[field] = wrong;
             let refused = returned(
                 root,

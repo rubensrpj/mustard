@@ -3492,8 +3492,8 @@ fn a_classifier_decision_is_asked_again_when_the_unmet_item_changes() {
     assert_eq!(triage_requests(&jev), 2, "the classifier is asked about the changed unmet item: {again}");
 }
 
-/// A volta da onda 1 deixa uma sobra de limpeza, que vira tarefa, e quem
-/// conduz grava depois uma tarefa comum. A formação põe as duas no mesmo
+/// A volta da onda 1 deixa uma sobra de limpeza que bloqueia, que vira
+/// tarefa, e quem conduz grava depois uma tarefa comum. A formação põe as duas no mesmo
 /// sentido, e a rodada seguinte as despacha juntas na onda 2: a limpeza não
 /// espera a tarefa comum terminar.
 #[test]
@@ -3502,7 +3502,7 @@ fn a_cleanup_leftover_leaves_with_the_task_of_its_direction() {
     let first = project.run(&ROUND);
     assert_eq!(waves_in(&first, "dispatch"), vec![1], "{first}");
     let leftovers = json!({"leftovers": [{"title": "O comentário da saudação ainda diz olá", "detail": "A saudação mudou. Prova: `git --version`",
-        "files": ["src/greeting-notes.txt"], "cleanup": true, "rule": "O comentário diz o que a saudação diz", "places": ["src/greeting-notes.txt"]}]});
+        "files": ["src/greeting-notes.txt"], "cleanup": true, "blocks": true, "rule": "O comentário diz o que a saudação diz", "places": ["src/greeting-notes.txt"]}]});
     deliver_file_with(&project, 1, GREETING, "hello\n", &leftovers);
     let back = round_taking_back(&project, 1);
     assert!(back.get("commit").is_some(), "the round commits the wave 1: {back}");
@@ -3536,9 +3536,10 @@ fn ignore_the_env_file(project: &Project) {
     std::fs::write(&exclude, format!("{kept}.env\n")).expect("the local file is ignored");
 }
 
-/// A sobra que só mexe em arquivo que o git ignora é mudança local: a volta da
-/// onda 1 deixa uma nota ao usuário, sem pedido nem tarefa, e a sobra de
-/// arquivo versionado da mesma volta segue virando tarefa.
+/// A sobra que bloqueia e só mexe em arquivo que o git ignora é mudança local:
+/// a volta da onda 1 deixa uma nota ao usuário, sem pedido nem tarefa, e a
+/// sobra que bloqueia em arquivo versionado da mesma volta segue virando
+/// tarefa.
 #[test]
 fn a_leftover_only_in_a_git_ignored_file_leaves_a_note_and_no_task() {
     let (project, _, _, _) = backlog_project(&[&[GREETING]]);
@@ -3548,8 +3549,8 @@ fn a_leftover_only_in_a_git_ignored_file_leaves_a_note_and_no_task() {
     let local = "A chave da API falta no ambiente local";
     let versioned = "O README não cita a saudação";
     let leftovers = json!({"leftovers": [
-        {"title": local, "detail": "Falta a chave da API no .env desta máquina. Prova: `git --version`", "files": [".env"], "rule": "A chave da API mora no ambiente", "places": [".env"]},
-        {"title": versioned, "detail": "O README não explica a saudação. Prova: `git --version`", "files": ["README.md"], "rule": "O README explica a saudação", "places": ["README.md"]}]});
+        {"title": local, "detail": "Falta a chave da API no .env desta máquina. Prova: `git --version`", "files": [".env"], "blocks": true, "rule": "A chave da API mora no ambiente", "places": [".env"]},
+        {"title": versioned, "detail": "O README não explica a saudação. Prova: `git --version`", "files": ["README.md"], "blocks": true, "rule": "O README explica a saudação", "places": ["README.md"]}]});
     deliver_file_with(&project, 1, GREETING, "hello\n", &leftovers);
 
     let back = round_taking_back(&project, 1);
@@ -3648,6 +3649,7 @@ fn a_round_that_commits_the_last_wave_builds_the_program_for_the_close() {
 /// limpeza e entra no commit; a onda 2 volta fora do escopo e espera a
 /// revisão. A resposta traz as duas limpezas despachadas pela segunda
 /// passada, sem esperar o resto da obra, e cada aviso da onda 2 uma vez.
+/// As duas sobras bloqueiam: só a que bloqueia vira tarefa.
 #[test]
 fn a_round_that_commits_the_program_hands_the_dispatch_over_and_answers_once() {
     let (project, crit, said, _) = backlog_in(Project::as_mustard_source(), &[&["apps/rt/a.txt"]], &[]);
@@ -3661,8 +3663,8 @@ fn a_round_that_commits_the_program_hands_the_dispatch_over_and_answers_once() {
     assert_eq!(waves_in(&second, "dispatch"), vec![2], "{second}");
     keep_sent(&project, &[2]);
     let leftovers = json!({"leftovers": [
-        {"title": "Limpar o primeiro", "detail": "Sobrou um arquivo. Prova: `git --version`", "files": ["apps/rt/c.txt"], "cleanup": true, "rule": "Nenhum arquivo sobra", "places": ["apps/rt/c.txt"]},
-        {"title": "Limpar o segundo", "detail": "Sobrou outro. Prova: `git --version`", "files": ["apps/rt/d.txt"], "cleanup": true, "rule": "Nenhum texto velho sobra", "places": ["apps/rt/d.txt"]}]});
+        {"title": "Limpar o primeiro", "detail": "Sobrou um arquivo. Prova: `git --version`", "files": ["apps/rt/c.txt"], "cleanup": true, "blocks": true, "rule": "Nenhum arquivo sobra", "places": ["apps/rt/c.txt"]},
+        {"title": "Limpar o segundo", "detail": "Sobrou outro. Prova: `git --version`", "files": ["apps/rt/d.txt"], "cleanup": true, "blocks": true, "rule": "Nenhum texto velho sobra", "places": ["apps/rt/d.txt"]}]});
     deliver_file_with(&project, 1, "apps/rt/a.txt", "um\n", &leftovers);
     let copy = deliver_file_in_copy(&project, 2, "apps/rt/b.txt", "dois\n");
     std::fs::write(copy.join("apps/rt/fora.txt"), "fora do escopo\n").expect("a file outside the scope");

@@ -824,24 +824,6 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("finding.review_joined_by_rule", Locale::EnUs) => {
             concat!("Finding from the final review, of the same rule — {title}: {detail} (By the map: ", map_commands_en!(), ".)")
         }
-        // O achado da revisão final sem regra escrita na spec, que vai ao
-        // usuário como pergunta, e o aviso que manda fazê-la.
-        ("finding.question", Locale::PtBr) => {
-            "A revisão final achou: {title}. A regra que o achado diz, {rule}, não está escrita na spec. \
-             Ela passa a valer nesta obra?"
-        }
-        ("finding.question", Locale::EnUs) => {
-            "The final review found: {title}. The rule the finding names, {rule}, is not written in the \
-             spec. Should it hold in this work?"
-        }
-        ("finding.questions_hint", Locale::PtBr) => {
-            "A revisão final trouxe achados sem regra escrita na spec, e eles não viraram tarefa. Antes do \
-             pull request, faça ao usuário a pergunta de cada um, em `questions`."
-        }
-        ("finding.questions_hint", Locale::EnUs) => {
-            "The final review brought findings without a rule written in the spec, and they did not become \
-             tasks. Before the pull request, ask the user the question of each one, in `questions`."
-        }
         ("spec_events.report_carries_return_line", Locale::PtBr) => {
             "A entrega e o veredito moram na spec: o agente os grava com mustard-rt run write. O \
              relatório leva só as linhas `USAGE`, `PAUSED` e `REJECTED`."
@@ -1491,16 +1473,17 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
              Teste com e sem a mudança na skill, nas tarefas em que ela entra. Com ganho, escreva a versão \
              nova inteira em `{reserved}`, a partir da raiz da sua cópia. Depois grave \
              `\"action\":\"updated\"`. A rodada a grava no lugar da skill quando assumir a volta. O \
-             `SKILL.md` de `{path}` fica como está. Sem ganho, grave `\"action\":\"discarded\"`, com o \
-             motivo em `text`."
+             `SKILL.md` de `{path}` fica como está. Sem ganho da versão nova, a skill está em dia: grave \
+             `\"action\":\"kept\"`, com o motivo em `text`. Isso mantém a skill ativa e não conta como descarte."
         }
         ("skills.update_task_agent", Locale::EnUs) => {
             "Update the skill {name}, from `{path}`, with the skill-creator in this task's block. {why}\n\n\
              Test with and without the change to the skill, on the tasks it goes with. With a gain, write the \
              whole new version at `{reserved}`, from the root of your copy. Then record \
              `\"action\":\"updated\"`. The round writes it in the place of the skill when it takes the return. \
-             The `SKILL.md` at `{path}` stays as it is. Without one, record `\"action\":\"discarded\"`, with \
-             the reason in `text`."
+             The `SKILL.md` at `{path}` stays as it is. Without a gain from the new version, the skill is up \
+             to date: record `\"action\":\"kept\"`, with the reason in `text`. That keeps the skill active and \
+             does not count as a discard."
         }
         ("skills.not_installed", Locale::PtBr) => {
             "A versão nova da skill {name} não foi gravada no lugar dela: {detail}. Ela segue em `{reserved}`."
@@ -1542,6 +1525,18 @@ pub(super) fn text(key: &str, lang: Locale) -> Option<&'static str> {
         ("skills.retired_reason.idle", Locale::EnUs) => "it was a candidate in {count} sends and never entered a task block",
         ("skills.retired_reason.discarded", Locale::PtBr) => "foi descartada sem ganho em {count} testes seguidos",
         ("skills.retired_reason.discarded", Locale::EnUs) => "it was discarded without a gain in {count} tests in a row",
+        ("skills.restored", Locale::PtBr) => {
+            "A skill {name} voltou para `.claude/skills/`: {reason}. Ela veio da cópia de segurança em `{backup}`."
+        }
+        ("skills.restored", Locale::EnUs) => {
+            "The skill {name} came back to `.claude/skills/`: {reason}. It came from the backup copy in `{backup}`."
+        }
+        ("skills.restored_reason", Locale::PtBr) => {
+            "saiu por descartes da tarefa de atualizar, que testa a versão nova e não a skill inteira"
+        }
+        ("skills.restored_reason", Locale::EnUs) => {
+            "it left over discards from the update task, which tests the new version and not the whole skill"
+        }
         ("skills.cycle_failed", Locale::PtBr) => {
             "As contas das skills do Mustard não foram gravadas: {detail}. A próxima rodada tenta de novo."
         }
@@ -1672,7 +1667,6 @@ mod tests {
             ("finding.places", &["{places}"][..]),
             ("finding.joined_by_rule", &["{wave}", "{title}", "{detail}"][..]),
             ("finding.review_joined_by_rule", &["{title}", "{detail}"][..]),
-            ("finding.question", &["{title}", "{rule}"][..]),
             ("spec_events.report_carries_return_line", &[][..]),
             ("spec_events.return_missing", &["{wave}"][..]),
             ("spec_events.return_needs_commit", &["{wave}"][..]),

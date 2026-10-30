@@ -435,7 +435,11 @@ pub(crate) fn waves_stuck(log: &SpecLog) -> BTreeMap<u64, Vec<&SpecEvent>> {
     let mut out = BTreeMap::new();
     for (n, verdicts) in verdicts {
         let since = reset.get(&n).copied().unwrap_or(0);
-        let mut rejected: Vec<&SpecEvent> = verdicts.iter().rev().take_while(|v| v.id > since && v.str_field("result") == Some("rejected")).copied().collect();
+        // A reprovação vencida e a soltura dela não entram na conta: nem
+        // contam como rodada de conserto, nem a interrompem.
+        let expired: BTreeSet<u64> = verdicts.iter().filter_map(|v| v.int("expired")).collect();
+        let counted = verdicts.iter().rev().filter(|v| v.int("expired").is_none() && !expired.contains(&v.id));
+        let mut rejected: Vec<&SpecEvent> = counted.take_while(|v| v.id > since && v.str_field("result") == Some("rejected")).copied().collect();
         if rejected.len() > MAX_FIX_ROUNDS {
             rejected.reverse();
             out.insert(n, rejected);

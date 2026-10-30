@@ -199,12 +199,12 @@ fn listed_files(root: &Path) -> Option<Vec<String>> {
 
 /// A obra contra a qual se lê a saída de um comando que caiu: os arquivos que
 /// ela mudou, de cada onda, os que a onda declarou ou entregou, e as ondas de
-/// cada commit que a rodada gravou. Um arquivo é da obra quando o git diz que
-/// a branch o mudou, e não porque uma onda o listou: a lista da onda pode vir
+/// cada commit que a rodada gravou. Um arquivo é da obra quando um commit dela
+/// o mudou, e não porque uma onda o listou: a lista da onda pode vir
 /// incompleta.
 #[derive(Debug)]
 pub(super) struct Work {
-    /// Os arquivos que a obra mudou.
+    /// Os arquivos que a obra mudou ([`files_since`]).
     changed: BTreeSet<String>,
     /// Cada onda, na ordem pedida, com os arquivos que declarou ou entregou.
     waves: Vec<(u64, Vec<String>)>,
@@ -215,11 +215,13 @@ pub(super) struct Work {
 }
 
 impl Work {
-    /// A obra como o git e a spec a contam: os arquivos que a branch mudou
-    /// desde a base gravada no `state` da spec (`git diff --name-only
-    /// <base>...HEAD`, com a base local e, sem ela, a do `origin`) e, de cada
-    /// onda de `waves`, os que as tarefas dela declaram mais os que as
-    /// entregas dela listam, e as ondas de cada commit gravado que mudaram
+    /// A obra como a spec e o git a contam: os arquivos dos commits que a spec
+    /// gravou e que estão na história de `HEAD` depois do commit em que a obra
+    /// começou (o [`base_commit`]: o `start` gravado, o pai do commit mais
+    /// antigo da obra ou o `merge-base` com a base), mais os da linha
+    /// principal da branch depois do último commit gravado ([`files_since`])
+    /// e, de cada onda de `waves`, os que as tarefas dela declaram mais os que
+    /// as entregas dela listam, e as ondas de cada commit gravado que mudaram
     /// arquivo nele — a onda que o commit fecha sem ter mudado nada não
     /// escreveu linha dele. Sem base, ou sem git que responda, nenhum arquivo
     /// conta como mudado pela obra.
@@ -270,15 +272,65 @@ fn push_path(files: &mut Vec<String>, file: &str) {
     }
 }
 
-/// Os arquivos que a branch do checkout em `root` mudou desde a base gravada
-/// no `state` da spec: o que [`Work::of`] conta como obra.
+/// Os arquivos da obra no checkout em `root`: o que [`Work::of`] conta como
+/// mudado por ela, contados do commit em que ela começou ([`base_commit`]).
+/// A origem é a mesma que o fechamento usa para a prova, e não a base de hoje:
+/// com a obra já juntada na base, `base...HEAD` sairia vazio e a saída que cita
+/// arquivo da obra passaria por de fora.
 fn branch_files(root: &Path, log: &SpecLog) -> BTreeSet<String> {
-    let Some(base) = base_ref(root, log) else {
-        return BTreeSet::new();
+    base_commit(root, log).map(|start| files_since(root, log, &start)).unwrap_or_default()
+}
+
+/// Os arquivos da obra que começou no commit `start`, como o fechamento os lê
+/// para pôr a prova no código de antes e para dizer o que a saída que caiu
+/// cita. São a soma de duas partes, e nenhuma é a diferença entre `start` e
+/// `HEAD`:
+///
+/// 1. os arquivos de cada commit que a spec gravou (evento `commit`) e que
+///    está na história de `HEAD` depois de `start`, onde quer que ele esteja
+///    na história. A obra que entrou na base por um `merge` de pull request
+///    deixa os commits dela no segundo pai do `merge`, fora da linha
+///    principal, e a branch que avançou até a base os traz na história;
+/// 2. os de cada commit da linha principal da branch (`--first-parent
+///    --no-merges`) depois do último gravado, só os que descendem dele
+///    (`--ancestry-path`): o que a base tinha antes do `merge` da obra (o
+///    commit de versão que o `merge` da base trouxe, por exemplo) fica na
+///    linha principal, mas não nasceu do último commit da obra. Sem commit
+///    gravado na história, `start` faz o papel do último gravado.
+///
+/// A base não se subtrai: ela pode já guardar a obra inteira. Sem git que
+/// responda, nenhum arquivo.
+pub(super) fn files_since(root: &Path, log: &SpecLog, start: &str) -> BTreeSet<String> {
+    let recorded = recorded_commits(root, log, start);
+    let mut files: BTreeSet<String> = BTreeSet::new();
+    if !recorded.is_empty() {
+        let mut args = vec!["log", "--no-walk=unsorted", "--name-only", "--format=", "-z", "--no-renames", "--relative"];
+        args.extend(recorded.iter().map(String::as_str));
+        args.push("--");
+        files.extend(git::run(root, &args).out().unwrap_or_default().split('\0').filter_map(project_path));
+    }
+    let range = format!("{}..HEAD", recorded.last().map_or(start, String::as_str));
+    let args = ["log", "--first-parent", "--no-merges", "--ancestry-path", "--name-only", "--format=", "-z", "--no-renames", "--relative", range.as_str()];
+    files.extend(git::run(root, &args).out().unwrap_or_default().split('\0').filter_map(project_path));
+    files
+}
+
+/// Os commits que a spec gravou e que estão na história de `HEAD` depois de
+/// `start`, na ordem em que a spec os gravou e sem repetir. O commit gravado
+/// que o git não tem, ou que já estava na história de `start`, não é da obra.
+fn recorded_commits(root: &Path, log: &SpecLog, start: &str) -> Vec<String> {
+    let range = format!("{start}..HEAD");
+    let Some(listed) = git::run(root, &["rev-list", range.as_str()]).out() else {
+        return Vec::new();
     };
-    let range = format!("{base}...HEAD");
-    let listed = git::run(root, &["diff", "--name-only", "-z", "--no-renames", "--relative", &range]).out().unwrap_or_default();
-    listed.split('\0').filter_map(project_path).collect()
+    let history: HashSet<&str> = listed.lines().map(str::trim).collect();
+    let mut recorded: Vec<String> = Vec::new();
+    for sha in log.visible().into_iter().filter(|e| e.event_type == "commit").filter_map(|e| e.str_field("sha")) {
+        if history.contains(sha) && !recorded.iter().any(|seen| seen == sha) {
+            recorded.push(sha.to_string());
+        }
+    }
+    recorded
 }
 
 /// A base gravada no `state` da spec como o git do checkout em `root` a
@@ -289,15 +341,40 @@ fn base_ref(root: &Path, log: &SpecLog) -> Option<String> {
     Some(if resolves { base } else { format!("origin/{base}") })
 }
 
-/// O commit base da obra: onde a branch do checkout em `root` se separou da
-/// base gravada no `state` da spec, o mesmo ponto de que [`Work::of`] conta
-/// os arquivos mudados. É nele que o fechamento roda a prova de cada critério
-/// no código de antes da obra. `None` sem base gravada, ou quando o git não
-/// acha a base nem o ponto em que a branch saiu dela.
+/// O commit base da obra: o commit em que ela começou, onde o fechamento roda
+/// a prova de cada critério no código de antes dela. Ele não anda quando a
+/// base anda, e a obra que já entrou na base fecha do mesmo jeito. Vem, na
+/// ordem, de:
+///
+/// 1. o `start` que o `state` da spec gravou quando ela abriu;
+/// 2. na spec sem ele, o pai do commit mais antigo da obra, lido dos eventos
+///    `commit` da spec;
+/// 3. o `merge-base` da base gravada com `HEAD`, o ponto em que a branch do
+///    checkout em `root` se separou da base de hoje.
+///
+/// Cada um só vale quando o git de `root` o tem; senão, vale o seguinte.
+/// `None` sem base gravada, ou quando o git não acha nenhum dos três.
 pub(super) fn base_commit(root: &Path, log: &SpecLog) -> Option<String> {
     let base = base_ref(root, log)?;
-    let sha = git::run(root, &["merge-base", &base, "HEAD"]).out()?;
-    Some(sha.trim().to_string()).filter(|sha| !sha.is_empty())
+    State::from_log(log)
+        .start
+        .and_then(|start| commit_of(root, &start))
+        .or_else(|| oldest_commit_parent(root, log))
+        .or_else(|| git::run(root, &["merge-base", &base, "HEAD"]).out().filter(|sha| !sha.is_empty()))
+}
+
+/// O código inteiro do commit que `rev` nomeia no git de `root`; `None` quando
+/// o git não o tem.
+fn commit_of(root: &Path, rev: &str) -> Option<String> {
+    git::run(root, &["rev-parse", "--verify", "--quiet", &format!("{rev}^{{commit}}")]).out().filter(|sha| !sha.is_empty())
+}
+
+/// O pai do commit mais antigo da obra, pelo primeiro evento `commit` da
+/// spec; `None` sem commit gravado, quando o git não tem o commit ou o pai
+/// dele, ou quando ele é o primeiro do repositório.
+fn oldest_commit_parent(root: &Path, log: &SpecLog) -> Option<String> {
+    let oldest = log.visible().into_iter().find(|e| e.event_type == "commit")?.str_field("sha")?;
+    commit_of(root, &format!("{oldest}^"))
 }
 
 /// O que a saída de um comando que caiu cita, lida contra a obra.
@@ -1432,6 +1509,150 @@ src/a.ts(1,10): error TS6133: 'lonelyTotal' is declared but its value is never r
         let kept = super::cited_env(env.into_iter(), &["TOKEN=1 cargo test", "psql ${DB_URL}"]);
         let names: Vec<String> = kept.into_iter().map(|(name, _)| name.to_string_lossy().into_owned()).collect();
         assert_eq!(names, ["DB_URL", "PATH", "TOKEN"]);
+    }
+
+    /// O git de `root`, com autoria fixa e sem assinatura: roda os argumentos,
+    /// recusa a saída que falha e devolve a saída sem as bordas em branco.
+    fn git_in(root: &std::path::Path) -> impl Fn(&[&str]) -> String + '_ {
+        move |args: &[&str]| -> String {
+            let out = std::process::Command::new("git")
+                .args(["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
+                .args(args)
+                .current_dir(root)
+                .output()
+                .expect("git");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        }
+    }
+
+    /// Um repositório em `root` com três commits vazios, do mais velho ao mais
+    /// novo, e a branch `dev` no último: a obra já entrou na base.
+    fn history(root: &std::path::Path) -> [String; 3] {
+        let git = git_in(root);
+        git(&["init", "-q"]);
+        let commits = ["seed", "first", "second"].map(|title| {
+            git(&["commit", "-q", "--allow-empty", "-m", title]);
+            git(&["rev-parse", "HEAD"])
+        });
+        git(&["branch", "dev"]);
+        commits
+    }
+
+    /// A spec que abriu na base `dev` (sem base, quando `base` é falso), com o
+    /// `start` dado, se há, e um evento `commit` por código de `commits`.
+    fn spec_log(base: bool, start: Option<&String>, commits: &[&String]) -> mustard_core::domain::spec_events::SpecLog {
+        let mut state = json!({"v": 1, "id": 1, "type": "state", "author": "binary", "phase": "survey", "branch": "feature/x"});
+        if base {
+            state["base"] = json!("dev");
+        }
+        if let Some(start) = start {
+            state["start"] = json!(start);
+        }
+        let commits = commits.iter().zip(2..).map(|(sha, id)| json!({"v": 1, "id": id, "type": "commit", "sha": sha, "waves": [1]}));
+        let rows: Vec<String> = std::iter::once(state).chain(commits).map(|row| row.to_string()).collect();
+        mustard_core::domain::spec_events::parse_log(&rows.join("\n"))
+    }
+
+    /// O código de antes da obra não anda com a base: com a obra já na base, o
+    /// `merge-base` seria o último commit. Vale o `start` que o `state`
+    /// gravou; sem ele, ou com um que o git não tem, o pai do commit mais
+    /// antigo da obra; sem commit que o git ache, o `merge-base`. Sem base
+    /// gravada, nenhum commit base.
+    #[test]
+    fn the_base_commit_is_the_start_then_the_parent_of_the_oldest_commit_then_the_merge_base() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let [seed, first, second] = history(root);
+        let (unknown, other) = ("0".repeat(40), "1".repeat(40));
+        let base_commit = |log: &mustard_core::domain::spec_events::SpecLog| super::base_commit(root, log);
+
+        let started = spec_log(true, Some(&first), &[&first, &second]);
+        assert_eq!(base_commit(&started), Some(first.clone()), "o start gravado vale mais que os commits da obra");
+        let no_start = spec_log(true, None, &[&first, &second]);
+        assert_eq!(base_commit(&no_start), Some(seed.clone()), "sem start, o pai do commit mais antigo da obra");
+        let missing = spec_log(true, Some(&unknown), &[&first, &second]);
+        assert_eq!(base_commit(&missing), Some(seed), "o start que o git não tem cai no pai do commit mais antigo");
+        let no_commits = spec_log(true, None, &[&other]);
+        assert_eq!(base_commit(&no_commits), Some(second), "sem commit que o git ache, o merge-base com a base de hoje");
+        assert_eq!(base_commit(&spec_log(false, Some(&first), &[&first])), None, "sem base gravada, não há com o que comparar");
+    }
+
+    /// Grava `file` com o próprio caminho no conteúdo, comita e devolve o
+    /// commit.
+    fn commit_file_in(root: &std::path::Path, file: &str) -> String {
+        let git = git_in(root);
+        std::fs::create_dir_all(root.join(file).parent().unwrap()).unwrap();
+        std::fs::write(root.join(file), file).unwrap();
+        git(&["add", file]);
+        git(&["commit", "-q", "-m", file]);
+        git(&["rev-parse", "HEAD"])
+    }
+
+    /// Os arquivos da obra saem do commit em que ela começou, e não da base de
+    /// hoje: com a obra já na base (`dev` no último commit dela), `dev...HEAD`
+    /// sairia vazio e a saída que cita arquivo da obra passaria por de fora. A
+    /// base que anda depois da obra não entra na lista, nem a que a branch
+    /// junta nela por um `merge`, e sem base gravada não há de onde contar. A
+    /// obra que entrou na base por um `merge` de pull request, com a branch
+    /// avançada até a base, traz os arquivos dos commits dela, que ficam no
+    /// segundo pai do `merge`, e os da linha principal depois do último deles,
+    /// sem o commit que só a base tinha.
+    #[test]
+    fn the_work_files_come_from_the_commit_the_work_started_from() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let git = git_in(root);
+        git(&["init", "-q"]);
+        let commit = |file: &str| commit_file_in(root, file);
+        let (seed, first, second) = (commit("seed.txt"), commit("src/a.rs"), commit("src/b.rs"));
+        let work = git(&["rev-parse", "--abbrev-ref", "HEAD"]);
+        git(&["branch", "dev"]);
+        let of = |log: &mustard_core::domain::spec_events::SpecLog| Work::of(root, log, &[1]).changed;
+        let both = BTreeSet::from(["src/a.rs".to_string(), "src/b.rs".to_string()]);
+
+        assert_eq!(of(&spec_log(true, Some(&seed), &[&first, &second])), both, "the base already holds the work and the list still has its files");
+        assert_eq!(of(&spec_log(true, None, &[&first, &second])), both, "without a start, the parent of the oldest commit of the work");
+        assert_eq!(of(&spec_log(true, Some(&second), &[&first, &second])), BTreeSet::new(), "a work that started at the head changed nothing");
+        assert_eq!(of(&spec_log(false, Some(&seed), &[&first, &second])), BTreeSet::new(), "without a recorded base there is nothing to count from");
+
+        git(&["checkout", "-q", "dev"]);
+        commit("src/other.rs");
+        git(&["checkout", "-q", &work]);
+        let started = spec_log(true, Some(&seed), &[&first, &second]);
+        assert_eq!(of(&started), both, "what the base took in after the work is not the work");
+
+        git(&["merge", "-q", "--no-ff", "--no-edit", "dev"]);
+        assert_eq!(of(&started), both, "the base merged into the branch brings commits the work did not make");
+        commit("src/c.rs");
+        let more = BTreeSet::from(["src/a.rs".to_string(), "src/b.rs".to_string(), "src/c.rs".to_string()]);
+        assert_eq!(of(&started), more, "the work done after the merge of the base still counts");
+
+        // A obra na feature, um commit na base (`dev`), a feature juntada nela
+        // por `merge --no-ff` e a feature avançada até lá: o commit da base é a
+        // primeira linha da história, e os da obra ficam no segundo pai.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let git = git_in(root);
+        git(&["init", "-q"]);
+        let seed = commit_file_in(root, "seed.txt");
+        let feature = git(&["rev-parse", "--abbrev-ref", "HEAD"]);
+        git(&["branch", "dev"]);
+        let (first, second) = (commit_file_in(root, "src/a.rs"), commit_file_in(root, "src/b.rs"));
+        git(&["checkout", "-q", "dev"]);
+        commit_file_in(root, "src/other.rs");
+        git(&["merge", "-q", "--no-ff", "--no-edit", &feature]);
+        git(&["checkout", "-q", &feature]);
+        git(&["merge", "-q", "--ff-only", "dev"]);
+        commit_file_in(root, "src/c.rs");
+        let of = |log: &mustard_core::domain::spec_events::SpecLog| Work::of(root, log, &[1]).changed;
+        let all = BTreeSet::from(["src/a.rs".to_string(), "src/b.rs".to_string(), "src/c.rs".to_string()]);
+
+        let merged = spec_log(true, Some(&seed), &[&first, &second]);
+        assert_eq!(of(&merged), all, "the commits of the work on the second parent of the merge count, the base's own commit does not");
+        let unknown = "0".repeat(40);
+        let with_unknown = spec_log(true, Some(&seed), &[&unknown, &first, &second]);
+        assert_eq!(of(&with_unknown), all, "a recorded commit the history does not have is not the work");
     }
 
     /// O tempo de cada etapa da rodada vai para o arquivo de operações da

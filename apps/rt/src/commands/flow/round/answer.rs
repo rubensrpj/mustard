@@ -431,7 +431,15 @@ pub(super) fn run_round_with_mine(
     caller: Caller<'_>,
     mine: &dyn Fn(&Path, &Path) -> mustard_core::platform::error::Result<mustard_core::domain::scan::ScanReport>,
 ) -> Result<Value, RoundRefusal> {
-    let entry = enter_round(opts, root, caller.session)?;
+    let mut entry = enter_round(opts, root, caller.session)?;
+    // A tarefa aberta que um achado de revisão final aprovada deu antes de só
+    // o que bloqueia segurar a obra passa à lista de pendências do projeto
+    // antes de a fila formar qualquer lote, e a rodada segue com a spec já
+    // sem ela.
+    let handed = crate::commands::flow::round::hand_legacy_findings_to_project(&opts.root, root, &entry.spec, &entry.log, lang).map_err(RoundRefusal::Refused)?;
+    if !handed.is_empty() {
+        entry = enter_round(opts, root, caller.session)?;
+    }
     // Os agentes do projeto voltam ao texto deste programa no começo da
     // rodada, e não na hora do despacho: o Claude Code leva alguns segundos
     // para reler o arquivo, e o agente aberto logo depois da troca ainda
@@ -442,6 +450,9 @@ pub(super) fn run_round_with_mine(
     // as travas dela já soltas: a pergunta ao Jev e a tarefa de criar a skill
     // nunca seguram outra rodada.
     let mut out = crate::shared::failure_skills::after_round_into(&opts.root, &spec, lang, done)?;
+    if !handed.is_empty() {
+        out["pending"] = serde_json::json!(handed);
+    }
     if let Some((reason, hint)) = refreshed {
         crate::commands::spec_events::pages::push_warning(&mut out, reason, &hint);
     }
@@ -712,6 +723,16 @@ fn dispatch_round(
     // prova.
     let pending = super::queue::waves_pending_fix(&locked);
     let locked = if crate::commands::flow::common::stale_marks::release(root, &spec, &locked, pending, lang).map_err(RoundRefusal::Refused)?.is_empty() {
+        locked
+    } else {
+        store::read(path).map_err(RoundRefusal::Refused)?.ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.clone() }))?
+    };
+    // A reprovação que perdeu o motivo — o item saiu da spec ou ganhou versão
+    // nova, ou a prova usou outro código de antes — também sai antes: a onda
+    // não volta ao conserto por ela, o envio de conserto aberto que só tinha
+    // ela fecha sem agente, e o limite de consertos não a conta.
+    let pending = super::queue::waves_pending_fix(&locked);
+    let locked = if super::expired::release_expired(root, &spec, &locked, &pending, lang).map_err(RoundRefusal::Refused)?.is_empty() {
         locked
     } else {
         store::read(path).map_err(RoundRefusal::Refused)?.ok_or_else(|| RoundRefusal::Refused(Refusal::NoSpecFile { spec: spec.clone() }))?

@@ -37,9 +37,9 @@ Review waves/deliveries/criteria/commits, without fixing. Read "How to read each
 - Major: right code, but another test would let a future error through, duplicates existing logic, repeats another test, or ships laboratory-only code in the installed program.
 - Minor: naming, style, suggestion.
 
-Only a critical finding rejects.
+Reject only for what blocks: a broken criterion, spec rule, working use (regression) or security. Approve the rest, with the non-blocking ones in `leftovers`.
 
-Only the approved final verdict carries `leftovers`, one per major or minor finding: `"leftovers":[{"title":"…","detail":"…","rule":"…","places":["…"],"files":["…"]}]`, with the rule the finding broke (a spec code or a new rule) and its places from the map, and the detail carries `Proof:` and the command in backticks; one that only changes a comment/documentation/help carries `"cleanup":true`. On rejection, the finding goes in the `agreed` item with `met:false`, never in `leftovers`.
+Only the approved final verdict carries `leftovers`, one per major or minor finding that does not block: `"leftovers":[{"title":"…","detail":"…","rule":"…","places":["…"],"files":["…"]}]`, with the rule the finding broke (a spec code or a new rule) and its places from the map, and the detail carries `Proof:` and the command in backticks; one that only changes a comment/documentation/help carries `"cleanup":true`. They go to the project's pending list, with no task. On rejection, the finding goes in the `agreed` item with `met:false`, never in `leftovers`.
 
 ## Proposals
 

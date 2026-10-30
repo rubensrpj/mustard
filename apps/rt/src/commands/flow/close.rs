@@ -28,9 +28,11 @@
 //! como conserto pela rodada; entregue o conserto, o fechamento pede o mesmo
 //! agente de novo, mas só para conferir o conserto, não a obra inteira. Em
 //! até duas voltas de conserto sem aprovar, a onda para e a decisão passa a
-//! ser do usuário — o mesmo limite de qualquer conserto. Os achados que o
-//! veredito aprovado traz em `leftovers` viram tarefas no backlog, e a
-//! resposta manda rodar a rodada no lugar do pull request.
+//! ser do usuário — o mesmo limite de qualquer conserto. O veredito aprovado
+//! fecha a obra: os achados que ele traz em `leftovers` não bloqueiam, e vão à
+//! lista de pendências do projeto, sem tarefa e sem pergunta. A tarefa aberta
+//! que um achado de revisão aprovada deu antes dessa regra passa à lista, e não
+//! segura o fechamento.
 //!
 //! **Uma cópia limpa.** O agente de teste dedicado confere a obra na mesma
 //! cópia limpa em que a máquina rodou, no mesmo commit, e lê a spec pelo
@@ -100,6 +102,8 @@ mod proof_runs;
 mod review_request_tests;
 #[cfg(test)]
 mod session_answer_tests;
+#[cfg(test)]
+mod expired_verdicts;
 #[cfg(test)]
 mod stale_marks;
 mod unused;
@@ -526,6 +530,14 @@ fn run_close(
         return Err(CloseRefusal::NotRunning { phase });
     }
 
+    // A tarefa aberta que um achado de revisão final aprovada deu antes de só
+    // o que bloqueia segurar a obra passa à lista de pendências do projeto
+    // antes de qualquer conferência: o backlog dela não segura o fechamento. A
+    // spec é lida de novo, já sem ela, e a resposta leva uma entrada por
+    // pendência.
+    let legacy = crate::commands::flow::round::hand_legacy_findings_to_project(&opts.root, root, &spec, &log, lang).map_err(CloseRefusal::Refused)?;
+    let log = if legacy.is_empty() { log } else { read(&path)? };
+
     // Os agentes do projeto voltam ao texto deste programa no começo do
     // fechamento, bem antes do envio da revisão: o Claude Code leva alguns
     // segundos para reler o arquivo, e o revisor aberto logo depois da troca
@@ -573,6 +585,14 @@ fn run_close(
     // pedir conserto.
     let pending = crate::commands::flow::round::waves_pending_fix(&log);
     let log = if super::common::stale_marks::release(root, &spec, &log, pending, lang).map_err(CloseRefusal::Refused)?.is_empty() { log } else { read(&path)? };
+    // A reprovação que perdeu o motivo sai do mesmo jeito, antes de a obra ser
+    // conferida: a máquina prova de novo e grava a que ainda vale.
+    let pending = crate::commands::flow::round::waves_pending_fix(&log);
+    let log = if crate::commands::flow::round::expired::release_expired(root, &spec, &log, &pending, lang).map_err(CloseRefusal::Refused)?.is_empty() {
+        log
+    } else {
+        read(&path)?
+    };
     // A onda segurada acima não é cobrada de novo por falta de commit.
     missing.extend(unfinished(&log).into_iter().filter(|refusal| !matches!(refusal, CloseRefusal::WaveWithoutCommit { wave } if held.contains(wave))));
     // O pedido de revisão só fecha com o veredito que o revisor grava e que a
@@ -714,37 +734,15 @@ fn run_close(
     // próprio veredito já trouxe por item, e a situação. Sem essa tabela,
     // ninguém consultava depois qual item tem qual verificação, nem onde o
     // comportamento mora — o resultado morria no veredito.
-    // Antes dela, os achados que o veredito aprovado traz em `leftovers` viram
-    // tarefas no backlog, e a obra não fecha: a resposta manda rodar a rodada
-    // no lugar do pull request. O fechamento seguinte recusa pelo backlog, e
-    // a entrega das tarefas pede revisão final nova. O achado sem regra
-    // escrita na spec não vira tarefa: vai ao usuário como pergunta, nesta
-    // resposta, e não segura a obra.
-    let mut questions = Vec::new();
+    // Antes dela, os achados que o veredito aprovado traz em `leftovers` vão
+    // à lista de pendências do projeto: a revisão aprovada não tem achado que
+    // bloqueia, e eles não viram tarefa nem pergunta. A resposta leva uma
+    // entrada por pendência, junto do que o fechamento gravou.
+    let mut recorded = recorded;
+    recorded.extend(legacy);
     if let Some(verdict) = final_approval(&log) {
-        let found = crate::commands::flow::round::record_final_leftovers(&opts.root, root, &spec, (&log, verdict), lang)
-            .map_err(CloseRefusal::Refused)?;
-        // O achado só em arquivo que o git ignora vira nota ao usuário, sem
-        // tarefa: sem tarefa nenhuma, a obra fecha como sempre.
-        if found.recorded.iter().any(|entry| entry["type"] == json!("task")) {
-            let mut out = final_leftovers_answer(&spec, recorded, found, &read(&path)?, lang);
-            out["criteria"] = json!(runs);
-            out["stages"] = json!(stages);
-            out["validation"] = json!({"status":"pass","reused":reused});
-            for kept in review_kept.iter() {
-                let hint = crate::commands::flow::round::code_kept_hint(kept, lang);
-                spec_events::pages::push_warning(&mut out, "code-kept", &hint);
-            }
-            if let Some(hint) = &stuck_hint {
-                spec_events::pages::push_warning(&mut out, "stuck-found", hint);
-            }
-            if let Some((reason, hint)) = &agents_hint {
-                spec_events::pages::push_warning(&mut out, reason, hint);
-            }
-            return Ok(out);
-        }
+        recorded.extend(crate::commands::flow::round::record_final_leftovers(root, verdict, lang).map_err(CloseRefusal::Refused)?);
         record_tracking_table(&opts.root, &spec, verdict).map_err(CloseRefusal::Refused)?;
-        questions = found.questions;
     }
 
     // A fase `closed` sai só por aqui, e é a mesma porta que arma a cobrança
@@ -823,7 +821,6 @@ fn run_close(
     for hint in &unowned_tests {
         spec_events::pages::push_warning(&mut out, super::common::ownerless::REASON, hint);
     }
-    ask_about_findings(&mut out, questions, lang);
     // As pendências abertas nascidas nesta spec vão ao usuário na hora, para
     // ele decidir o destino de cada uma, e cada uma vai com a linha que grava
     // a resposta "fica para depois"; é aviso, nunca recusa — o fechamento
@@ -873,42 +870,6 @@ fn run_close(
         out["command"] = command;
     }
     Ok(out)
-}
-
-/// A resposta do fechamento que gravou como tarefas os achados do veredito
-/// final aprovado — `found`, cada evento gravado com o tipo e o número, e a
-/// pergunta de cada achado sem regra escrita —, lidos em `log`: a obra segue
-/// em execução, o que o fechamento gravou (`recorded`) ganha esses eventos, o
-/// passo seguinte é a rodada, com o código de cada tarefa, no idioma `lang` —
-/// nunca o pull request —, e as perguntas vão ao usuário
-/// ([`ask_about_findings`]).
-fn final_leftovers_answer(spec: &str, mut recorded: Vec<Value>, found: crate::commands::flow::round::FinalFindings, log: &SpecLog, lang: Locale) -> Value {
-    let codes = log.codes();
-    let tasks: Vec<String> = found
-        .recorded
-        .iter()
-        .filter(|entry| entry["type"] == json!("task"))
-        .filter_map(|entry| entry["id"].as_u64())
-        .map(|id| codes.get(&id).cloned().unwrap_or_else(|| id.to_string()))
-        .collect();
-    let command = super::common::step_command("round", spec, &State::from_log(log)).unwrap_or_default();
-    let next = translate("close.final_leftovers", lang).replace("{tasks}", &tasks.join(", ")).replace("{command}", &command);
-    recorded.extend(found.recorded);
-    let mut out = json!({ "ok": true, "spec": spec, "phase": "running", "recorded": recorded, "next": next, "command": command });
-    ask_about_findings(&mut out, found.questions, lang);
-    out
-}
-
-/// Leva à resposta `out` do fechamento as perguntas `questions`, uma por
-/// achado da revisão final sem regra escrita na spec, em `questions`, com o
-/// aviso que manda fazê-las ao usuário antes do pull request, no idioma
-/// `lang`. Sem pergunta, a resposta não muda.
-fn ask_about_findings(out: &mut Value, questions: Vec<Value>, lang: Locale) {
-    if questions.is_empty() {
-        return;
-    }
-    out["questions"] = json!(questions);
-    spec_events::pages::push_warning(out, "final-finding-question", translate("finding.questions_hint", lang));
 }
 
 /// A linha que grava a resposta "fica para depois" da pendência `id`, pronta
@@ -1235,6 +1196,8 @@ fn authorize_final_repair(root: &Path, spec: &str, log: &SpecLog, failure: Close
                 && e.wave() == Some(wave)
                 && e.str_field("fingerprint") == Some(&fingerprint)
                 && log.last_by_wave("delivered").get(&wave).is_none_or(|id| *id < e.id)
+                // A reprovação que perdeu o motivo e foi solta não segura a nova.
+                && !log.events.iter().any(|released| released.event_type == "validation_failure" && released.int("expired") == Some(e.id))
         }) {
             continue;
         }
@@ -1242,9 +1205,21 @@ fn authorize_final_repair(root: &Path, spec: &str, log: &SpecLog, failure: Close
         let text = messages.chain([translate("close.repair_next", lang).to_string()]).collect::<Vec<_>>().join("\n");
         let reason = shown[implicating[0]].reason();
         let files = mustard_core::domain::wave_prompt::wave_files(log, wave);
+        let grounds: Vec<(Option<&str>, bool)> = implicating
+            .iter()
+            .map(|at| match &shown[*at] {
+                CloseRefusal::CriterionFailed { code, .. } | CloseRefusal::CriterionRanNoTest { code, .. } | CloseRefusal::CriterionMissingTest { code, .. } => {
+                    (Some(code.as_str()), false)
+                }
+                CloseRefusal::CriterionPassedBefore { code, .. } => (Some(code.as_str()), true),
+                _ => (None, false),
+            })
+            .collect();
         let draft = json!({"wave":wave,"final":true,"result":"rejected","text":text,"reason":reason,
             "fingerprint":fingerprint,"files":files,"author":"binary"});
-        if let Err(refusal) = record(root, spec, "validation_failure", draft.as_object().cloned().unwrap_or_default(), PhaseWriter::Binary) {
+        let mut draft = draft.as_object().cloned().unwrap_or_default();
+        draft.extend(crate::commands::flow::round::expired::expiry_fields(root, log, &grounds));
+        if let Err(refusal) = record(root, spec, "validation_failure", draft, PhaseWriter::Binary) {
             return CloseRefusal::Refused(refusal);
         }
     }
@@ -1549,6 +1524,13 @@ mod tests {
         format!("src/w{n}.rs")
     }
 
+    /// O comando `command` só passa depois da obra: a obra faz `src/w1.rs`
+    /// chamar `dois`, e o `grep` cai no código de antes dela, o começo da obra.
+    /// A prova que roda teste e passa também ali o fechamento recusa.
+    fn after_the_work(command: &str) -> String {
+        format!("grep -q dois {} && {command}", wave_file(1))
+    }
+
     /// [`ready_to_close`] com `waves` ondas soltas, cada uma com a tarefa num
     /// arquivo dela, despachadas e entregues juntas. A rodada não pede
     /// revisão de onda nenhuma: a entrega já basta, e falta só o fechamento
@@ -1571,6 +1553,13 @@ mod tests {
     /// agente de um pedido, como o achado de uma revisão vira, e a tarefa da
     /// primeira onda cobre esses pedidos.
     pub(super) fn ready_with_files(root: &Path, spec: &str, proofs: &[&str], waves_files: &[String], checked: &[u64], findings: &[&str]) {
+        ready_with_files_on(root, Some("dev"), spec, proofs, waves_files, checked, findings);
+    }
+
+    /// [`ready_with_files`] numa spec aberta na base `base`; sem ela, o
+    /// nascimento da spec não grava base nem o começo da obra, como o de uma
+    /// spec antiga.
+    fn ready_with_files_on(root: &Path, base: Option<&str>, spec: &str, proofs: &[&str], waves_files: &[String], checked: &[u64], findings: &[&str]) {
         let waves = waves_files.len() as u64;
         let file_of = |n: u64| waves_files[(n - 1) as usize].clone();
         let typescript = |file: &str| file.ends_with(".ts");
@@ -1580,7 +1569,13 @@ mod tests {
         }));
         crate::shared::test_fixture::seeded_repo_on(root, &format!("feature/{spec}"), &files);
 
-        assert_eq!(record_open(root, spec, &format!("feature/{spec}"), "dev"), Ok(true));
+        let branch = format!("feature/{spec}");
+        match base {
+            Some(base) => assert_eq!(record_open(root, spec, &branch, base), Ok(true)),
+            None => {
+                crate::shared::spec_state::seed_event(root, spec, "state", json!({"phase": "survey", "branch": branch, "author": "binary"}));
+            }
+        }
         let said = id_of(&write(root, spec, "message", json!({"author": "user", "text": "o objetivo"})));
         let _crits: Vec<u64> = proofs
             .iter()
@@ -2125,10 +2120,11 @@ mod tests {
         // teste — sempre verde, para a rodada não travar a entrega.
         assert_eq!(asked["criteria"].as_array().map(Vec::len), Some(3), "os três critérios rodaram: {asked}");
         assert_eq!(asked["review"]["final"], json!(true), "a de uma onda só também pede o agente de teste: {asked}");
-        // A base `dev` da spec não existe no repositório: sem código de antes,
-        // a resposta avisa que as provas não rodaram nele.
+        // A base `dev` da spec não existe no repositório, mas o código de antes
+        // é o começo da obra, que a spec gravou ao abrir: as provas rodam nele,
+        // e a resposta não avisa que ficaram sem rodar.
         let warned = asked["warnings"].as_array().into_iter().flatten().any(|w| w["reason"] == json!("proof-before-unchecked"));
-        assert!(warned, "{asked}");
+        assert!(!warned, "{asked}");
 
         // O trecho de conserto que uma recusa deixou para o agente da onda
         // não fica na pasta da spec fechada.
@@ -2157,6 +2153,8 @@ mod tests {
         assert_eq!(ran, criteria, "cada critério roda, e uma vez só");
         assert!(runs.iter().all(|e| e.str_field("result") == Some("pass")), "{runs:?}");
         assert_eq!(State::from_log(&log).phase, Some("closed"));
+        let before = |e: &&SpecEvent| e.event_type == "stage_run" && e.str_field("stage").is_some_and(|stage| stage.starts_with("criterion-before:"));
+        assert_eq!(log.events.iter().filter(before).count(), criteria.len(), "cada critério também rodou no começo da obra");
 
         // A pasta da spec fechada guarda o estado, e mais nada: o retrato do
         // mapa da base mora fora do projeto, e o fechamento o apaga. Ele
@@ -2212,8 +2210,9 @@ mod tests {
     /// O revisor final confere a obra na mesma cópia limpa em que a máquina
     /// rodou, no commit da obra e sem os arquivos locais do projeto, e o
     /// envio da revisão grava essa cópia, e o pedido cita o commit dela. O
-    /// fechamento prepara só ela, além da vaga da onda. Quando a obra fecha, o binário apaga todas as vagas
-    /// dela; a pasta principal e o que ela compilou ficam.
+    /// fechamento prepara só ela para o revisor, além da vaga da onda e da cópia
+    /// do começo da obra, onde as provas rodam. Quando a obra fecha, o binário
+    /// apaga todas as vagas dela; a pasta principal e o que ela compilou ficam.
     #[test]
     fn the_reviewer_works_in_the_clean_copy_of_the_machine() {
         let dir = tempdir().unwrap();
@@ -2248,7 +2247,7 @@ mod tests {
         let mut prepared: Vec<String> =
             std::fs::read_dir(copy.parent().unwrap()).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
         prepared.sort();
-        assert_eq!(prepared, ["a", "check"], "além da vaga da onda, o fechamento prepara uma cópia só: {asked}");
+        assert_eq!(prepared, ["a", "check", "check-base"], "além da vaga da onda, o fechamento prepara a cópia do revisor e a do começo da obra: {asked}");
 
         // Aprovada a obra, o binário apaga todas as vagas dela, com o que
         // compilaram, e a pasta das cópias da obra, e o git não as lista
@@ -2625,10 +2624,10 @@ exit "${2:-0}"
     }
 
     /// A compilação, o lint ou a suíte que caem no fechamento rodam de novo
-    /// no código de antes da obra, e só quando caem. A falha cujas linhas a
-    /// base já tinha não trava: vira aviso, com o comando que lê o que ele
-    /// disse. A linha que a base não tinha recusa. Sem código de antes, o
-    /// fechamento cobra tudo.
+    /// no código de antes da obra, o começo dela, e só quando caem. A falha
+    /// cujas linhas o começo já tinha não trava: vira aviso, com o comando que
+    /// lê o que ele disse. A linha que ele não tinha recusa. A base `dev` nem
+    /// existe no repositório: o que conta é o commit em que a spec abriu.
     ///
     /// Em campo (21/10/2026) o fechamento caiu num arquivo de outro time,
     /// mudado na base seis dias antes, que a obra não toca; o projeto do
@@ -2651,14 +2650,7 @@ exit "${2:-0}"
             log.events.iter().filter(|e| e.event_type == "stage_run" && e.str_field("stage") == Some(stage)).count()
         };
 
-        // Sem código de antes, o lint que cai trava o fechamento.
-        lint("ruim");
-        let strict = closing();
-        assert_eq!(strict["reason"], json!("lint-failed"), "sem a base, cobra tudo: {strict}");
-
-        // Com a base, a linha que só a obra tem recusa.
-        let first = Command::new("git").args(["rev-list", "--max-parents=0", "HEAD"]).current_dir(root).output().unwrap();
-        git_at(root, &["branch", "dev", String::from_utf8_lossy(&first.stdout).trim()]);
+        // A linha que só a obra tem recusa.
         lint("dois");
         let mine = closing();
         assert_eq!(mine["reason"], json!("lint-failed"), "o erro novo recusa: {mine}");
@@ -2677,6 +2669,36 @@ exit "${2:-0}"
         assert_eq!(ran("testCommand-before"), 0, "a suíte verde não roda no código de antes");
     }
 
+    /// A spec sem base gravada não tem de onde tirar o começo da obra, e por
+    /// isso não tem código de antes: o lint que cai trava o fechamento por
+    /// inteiro, ainda que o arquivo seja de outro time, e não roda no código de
+    /// antes; passado o lint, a resposta avisa que as provas não rodaram nele.
+    #[test]
+    fn a_work_with_no_recorded_base_is_charged_every_failure_and_warned_that_the_proofs_did_not_run_before() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src").join("outro.rs"), "fn ruim() {}\n").unwrap();
+        ready_with_files_on(root, None, "x", &["git --version"], &[wave_file(1)], &[], &[]);
+        let lint = |command: &str| {
+            std::fs::write(root.join("mustard.json"), json!({"lintCommand": command, "testCommand": "git --version"}).to_string()).unwrap();
+        };
+        let closing = || close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), ..Default::default() }, None);
+
+        lint("! grep -Hn ruim src/*.rs");
+        let strict = closing();
+        assert_eq!(strict["reason"], json!("lint-failed"), "sem a base, cobra tudo: {strict}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let before = log.events.iter().filter(|e| e.event_type == "stage_run" && e.str_field("stage") == Some("lintCommand-before")).count();
+        assert_eq!(before, 0, "sem código de antes, o lint não roda nele: {strict}");
+        repair_machine_failure(root, "x");
+
+        lint("git --version");
+        let out = closing();
+        assert_eq!(out["review"]["final"], json!(true), "{out}");
+        assert_eq!(hints_of(&out, "proof-before-unchecked").len(), 1, "{out}");
+    }
+
     /// Depois de um fechamento recusado, com todas as ondas entregues e o
     /// backlog vazio, a retomada diz o motivo e as saídas, e o comando do
     /// próximo passo é o do fechamento, nunca o da rodada: uma rodada ali
@@ -2693,8 +2715,11 @@ exit "${2:-0}"
         let dir = tempdir().unwrap();
         let root = dir.path();
         ready_to_close(root, "x", &["git --version"]);
+        // O lint cita só um arquivo que a obra não mudou: nenhuma onda reabre, e
+        // é o fechamento que a retomada manda repetir.
+        branched_from_dev(root);
         let script = root.join("lint");
-        std::fs::write(&script, format!("#!/bin/sh\necho '{}:1:1 erro'\nexit 1\n", wave_file(1))).unwrap();
+        std::fs::write(&script, "#!/bin/sh\necho 'lib/fora.rs:1:1 erro'\nexit 1\n").unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         commit_file(root, "lint");
         std::fs::write(root.join("mustard.json"), json!({"lintCommand":"./lint", "testCommand":"git --version"}).to_string()).unwrap();
@@ -3885,7 +3910,8 @@ exit "${2:-0}"
         )
         .unwrap();
         std::fs::write(root.join(".gitignore"), "target/\n").unwrap();
-        ready_to_close(root, "x", &["cargo test --lib -- tests::sum_of_two --exact", "cargo test --lib -- tests::sum --exact"]);
+        let right_name = after_the_work("cargo test --lib -- tests::sum_of_two --exact");
+        ready_to_close(root, "x", &[&right_name, "cargo test --lib -- tests::sum --exact"]);
 
         let refused = close(root, "x");
         assert_eq!(refused["reason"], json!("criterion-ran-no-test"), "{refused}");
@@ -3920,7 +3946,8 @@ exit "${2:-0}"
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("src/lib.rs"), "#[test]\nfn sum_of_two() {}\n#[test]\nfn sum_of_three() {}\n").unwrap();
         let absent = "echo sum_of_two sum_of_four";
-        ready_to_close(root, "x", &["echo Tests: 3 total", "echo sum_of_two sum_of_three", absent]);
+        let counted = after_the_work("echo Tests: 3 total");
+        ready_to_close(root, "x", &[&counted, "echo sum_of_two sum_of_three", absent]);
 
         let refused = close(root, "x");
         assert_eq!(refused["reason"], json!("criterion-missing-test"), "{refused}");
@@ -3963,7 +3990,8 @@ exit "${2:-0}"
         for (case, ran, zero, written) in cases {
             let dir = tempdir().unwrap();
             let root = dir.path();
-            ready_to_close(root, "x", &[ran, zero]);
+            let ran = after_the_work(ran);
+            ready_to_close(root, "x", &[&ran, zero]);
 
             let refused = close(root, "x");
             assert_eq!(refused["reason"], json!("criterion-ran-no-test"), "{case}: {refused}");
@@ -4282,62 +4310,73 @@ exit "${2:-0}"
         log.visible().into_iter().filter(|event| event.event_type == kind).cloned().collect()
     }
 
-    /// O achado que cita o critério escrito vira o pedido e a tarefa da regra,
-    /// que cobre o critério. O achado de regra nova não vira pedido nem
-    /// tarefa: a resposta do fechamento o leva ao usuário como pergunta, com
-    /// o aviso que manda fazê-la antes do pull request.
+    /// A revisão final aprova a obra com dois achados, um que cita o critério
+    /// escrito e outro de regra nova, nenhum com `blocks`: a obra fecha, e os
+    /// dois vão à lista de pendências do projeto, com o título e o detalhe
+    /// numa linha, sem pedido, sem tarefa e sem pergunta ao usuário.
     #[test]
-    fn a_final_finding_without_a_written_rule_becomes_a_question_and_no_task() {
+    fn an_approved_review_closes_the_work_and_lists_what_does_not_block() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        let (out, criterion) = closed_with_a_written_and_an_unwritten_rule(root);
-        assert_eq!(out["phase"], json!("running"), "{out}");
+        let (out, _) = closed_with_a_written_and_an_unwritten_rule(root);
+        assert_eq!(out["phase"], json!("closed"), "{out}");
+        assert!(out.get("questions").is_none(), "nenhuma pergunta ao usuário: {out}");
 
         let (written, unwritten) = findings_of_the_final_review();
-        let titled = |kind: &str, finding: &Value| visible_of(root, kind).into_iter().filter(|event| event.str_field("title") == finding["title"].as_str()).collect::<Vec<_>>();
-        let tasks = titled("task", &written);
-        assert_eq!(tasks.len(), 1, "{out}");
-        assert!(tasks[0].ints("covers").contains(&criterion), "a tarefa da regra cobre o critério: {:?}", tasks[0]);
-        assert_eq!(titled("request", &written).len(), 1, "{out}");
-        assert!(titled("task", &unwritten).is_empty() && titled("request", &unwritten).is_empty(), "a regra nova não vira trabalho: {out}");
-
-        let question = translate("finding.question", Locale::PtBr)
-            .replace("{title}", unwritten["title"].as_str().unwrap())
-            .replace("{rule}", unwritten["rule"].as_str().unwrap());
-        let mut expected = unwritten.clone();
-        expected.as_object_mut().unwrap().remove("files");
-        expected["question"] = json!(question);
-        assert_eq!(out["questions"], json!([expected]), "{out}");
-        assert_eq!(hints_of(&out, "final-finding-question"), vec![translate("finding.questions_hint", Locale::PtBr)], "{out}");
+        for finding in [&written, &unwritten] {
+            let title = finding["title"].as_str();
+            for kind in ["task", "request"] {
+                assert!(visible_of(root, kind).iter().all(|event| event.str_field("title") != title), "o achado não vira {kind}: {out}");
+            }
+        }
+        let listed: Vec<String> = crate::commands::event::pending::open_project_pending(root).into_iter().map(|item| item.title).collect();
+        assert_eq!(listed, [written["title"].as_str().unwrap(), unwritten["title"].as_str().unwrap()], "{out}");
+        let pending: Vec<&Value> = out["recorded"].as_array().unwrap().iter().filter(|entry| entry["type"] == json!("pending")).collect();
+        assert_eq!(pending.len(), 2, "{out}");
+        let ledger = std::fs::read_to_string(mustard_core::ClaudePaths::for_project(root).unwrap().pending_ledger_path()).unwrap();
+        assert!(ledger.contains("A soma estoura em src/w1.rs. Prova: `git --version`"), "o efeito do achado vai na lista: {ledger}");
     }
 
-    /// A tarefa que o achado de regra escrita ganhou sai por `remove`, como
-    /// qualquer outra tarefa. Nenhuma tarefa cobre mais o critério, e o
-    /// fechamento seguinte recusa, pelo pedido do achado que nenhuma onda
-    /// entregou, sem gravar a tarefa de novo.
+    /// A tarefa aberta que um achado de revisão final aprovada deu antes de só
+    /// o que bloqueia segurar a obra — a de autor `review` que cobre o pedido
+    /// do achado, apontando o veredito — passa à lista de pendências do
+    /// projeto no fechamento, com a remoção dela e do pedido gravada pelo
+    /// programa, sem onda: o backlog não segura a obra, e ela fecha. Antes da
+    /// passagem, a mesma tarefa deixava o fechamento recusar pelo backlog.
     #[test]
-    fn removing_the_task_of_a_rule_leaves_it_uncovered_and_the_close_refuses() {
+    fn a_task_an_approved_review_gave_before_the_rule_goes_to_the_project_list_at_the_close() {
+        use mustard_core::domain::spec_state::PhaseWriter;
         let dir = tempdir().unwrap();
         let root = dir.path();
-        let (_, criterion) = closed_with_a_written_and_an_unwritten_rule(root);
-        let covering = |root: &Path| visible_of(root, "task").into_iter().filter(|task| task.ints("covers").contains(&criterion)).map(|task| task.id).collect::<Vec<_>>();
-        let task = covering(root)[0];
-
-        let removed = crate::commands::spec_events::write::write_at(&WriteOpts {
-            root: root.to_path_buf(),
-            spec: Some("x".into()),
-            event_type: "remove".into(),
-            json: json!({"targets": [task], "reason": "não vale"}).to_string(),
-        });
-        assert_eq!(removed["ok"], json!(true), "{removed}");
-        assert!(covering(root).is_empty(), "a regra fica descoberta");
-
-        let refused = close_for(&CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), ..Default::default() }, None);
-        assert_eq!((refused["ok"].clone(), refused["reason"].clone()), (json!(false), json!("request-not-delivered")), "{refused}");
-        let (written, _) = findings_of_the_final_review();
+        ready_to_close(root, "x", &["git --version"]);
+        let opts = CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), ..Default::default() };
+        assert_eq!(close_for(&opts, None)["review"]["final"], json!(true));
+        approve(root, "x");
         let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let request = visible_of(root, "request").into_iter().find(|request| request.str_field("title") == written["title"].as_str()).expect("the request");
-        assert!(refused["hint"].as_str().unwrap_or_default().contains(&log.codes()[&request.id]), "{refused}");
-        assert!(covering(root).is_empty(), "o fechamento recusado não grava a tarefa de novo");
+        let verdict = log.events.iter().rev().find(|event| event.event_type == "verdict" && event.fields.get("final") == Some(&json!(true))).expect("the final verdict").id;
+        let record = |kind: &str, draft: Value| {
+            let written = crate::commands::spec_events::write::record(root, "x", kind, draft.as_object().cloned().unwrap(), PhaseWriter::Binary).expect("recorded");
+            written.written.id
+        };
+        let request = record("request", json!({"title": "O nome é torto", "text": "O nome da função não diz o que ela faz.", "effect": "new_waves",
+            "keys": ["O nome é torto"], "author": "review", "origin": verdict}));
+        let task = record("task", json!({"title": "O nome é torto", "text": "O nome da função\nnão diz o que ela faz.", "files": [{"path": "src/w1.rs"}],
+            "depends_on": [], "author": "review", "covers": [request]}));
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        assert!(crate::commands::flow::round::backlog_left(&log).contains(&task), "antes da passagem a tarefa está no backlog");
+
+        let out = close_for(&opts, None);
+        assert_ne!(out["reason"], json!("backlog-not-empty"), "{out}");
+        assert_eq!(out["phase"], json!("closed"), "{out}");
+        let pending: Vec<&Value> = out["recorded"].as_array().unwrap().iter().filter(|entry| entry["type"] == json!("pending")).collect();
+        assert_eq!(pending.len(), 1, "{out}");
+        assert!(pending[0].get("wave").is_none(), "sem onda: {out}");
+        let listed: Vec<String> = crate::commands::event::pending::open_project_pending(root).into_iter().map(|item| item.title).collect();
+        assert_eq!(listed, ["O nome é torto"], "{out}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        assert!(visible_of(root, "task").iter().all(|event| event.id != task) && visible_of(root, "request").iter().all(|event| event.id != request), "a tarefa e o pedido saem da spec");
+        let removal = log.events.iter().find(|event| event.event_type == "remove").expect("the removal");
+        assert_eq!(removal.str_field("author"), Some("binary"), "{:?}", removal.fields);
+        assert_eq!(removal.ints("targets"), [task, request], "{:?}", removal.fields);
     }
 }

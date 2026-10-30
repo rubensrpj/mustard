@@ -2,8 +2,9 @@
 //! cobre, no código de antes da obra. A máquina do
 //! fechamento roda a prova na cópia limpa, no commit da obra, onde ela tem de
 //! passar rodando pelo menos um teste; e roda de novo numa segunda cópia, no
-//! commit base da obra, com os arquivos de teste que a obra mudou por cima
-//! (os que [`is_test_path`] dá como teste), onde ela tem de cair. Assim o
+//! commit base da obra, com os arquivos de teste da obra por cima (os da
+//! lista da obra que [`is_test_path`] dá como teste; o teste que a base trouxe
+//! de outra obra não entra), onde ela tem de cair. Assim o
 //! teste que mora em arquivo próprio roda contra o código antigo, e a prova
 //! que passa ali, rodando teste, não prova nada novo: é recusada.
 //!
@@ -59,6 +60,9 @@ pub(super) struct BeforeCopy {
     base: String,
     head: String,
     owner: Keeping,
+    /// Os arquivos de teste da obra, que vão por cima do commit base
+    /// ([`work_test_files`]).
+    test_files: Vec<String>,
     /// A impressão dos arquivos de teste que a obra põe por cima do commit
     /// base ([`work_tests`]).
     tests: String,
@@ -67,10 +71,11 @@ pub(super) struct BeforeCopy {
 }
 
 /// A cópia do código de antes da obra `spec`, com a trava das cópias presa
-/// por quem chama (`_copies`): a vaga no commit base da obra
-/// ([`super::super::validation::base_commit`]), ainda sem preparar. `None`
-/// quando a obra não tem commit base que o git ache: não há código de antes
-/// onde rodar a prova.
+/// por quem chama (`_copies`): a vaga no commit base da obra, o commit em que
+/// ela começou ([`super::super::validation::base_commit`]) e não a base de
+/// hoje, onde a obra pode já estar, ainda sem preparar. `None` quando a obra
+/// não tem commit base que o git ache: não há código de antes onde rodar a
+/// prova.
 pub(super) fn prepare(root: &Path, spec: &str, log: &SpecLog, _copies: &CopiesLock) -> Result<Option<BeforeCopy>, CloseRefusal> {
     let Some(base) = super::super::validation::base_commit(root, log) else {
         return Ok(None);
@@ -78,25 +83,72 @@ pub(super) fn prepare(root: &Path, spec: &str, log: &SpecLog, _copies: &CopiesLo
     let path = spec_copies_dir(root, spec).join(FOLDER);
     let failed = |detail: String| CloseRefusal::CleanCopyFailed { copy: shown(&path), detail };
     let head = git::run(root, &["rev-parse", "HEAD"]).result().map_err(&failed)?;
-    let tests = work_tests(root, &base, &head).map_err(&failed)?;
+    let test_files = work_test_files(root, log, &base);
+    let tests = work_tests(root, &base, &head, &test_files).map_err(&failed)?;
     let owner = crate::commands::flow::round::slot_owner(spec, log, &path);
-    Ok(Some(BeforeCopy { root: root.to_path_buf(), path, base, head, owner, tests, ready: OnceCell::new() }))
+    Ok(Some(BeforeCopy { root: root.to_path_buf(), path, base, head, owner, test_files, tests, ready: OnceCell::new() }))
 }
 
-/// A impressão dos arquivos de teste que a obra mudou do commit `base` ao
+/// Os arquivos de teste da obra que começou no commit `base`: os da lista da
+/// obra ([`super::super::validation::files_since`]) que [`is_test_path`] dá
+/// como teste. A lista é a mesma que a validação lê, e não a diferença entre
+/// `base` e `HEAD`: a base que a branch juntou depois do começo traz teste de
+/// outra obra, e ele sobre o código de antes o faria cair por compilação
+/// alheia.
+fn work_test_files(root: &Path, log: &SpecLog, base: &str) -> Vec<String> {
+    super::super::validation::files_since(root, log, base).into_iter().filter(|file| is_test_path(file)).collect()
+}
+
+/// O `git diff` de `base` a `head` restrito a `files`, escritos como estão
+/// (sem glob), com as opções `options`. Sem arquivo nenhum, a saída vazia: o
+/// `diff` sem caminho listaria o projeto inteiro.
+fn diff_of(root: &Path, base: &str, head: &str, options: &[&str], files: &[String]) -> Result<String, String> {
+    if files.is_empty() {
+        return Ok(String::new());
+    }
+    let mut args = vec!["--literal-pathspecs", "diff"];
+    args.extend(options);
+    args.extend([base, head, "--"]);
+    args.extend(files.iter().map(String::as_str));
+    git::run(root, &args).result()
+}
+
+/// A impressão dos arquivos de teste `files` da obra, do commit `base` ao
 /// commit `head`, pelo conteúdo que `head` tem de cada um, ou pela falta dele.
-fn work_tests(root: &Path, base: &str, head: &str) -> Result<String, String> {
-    let listed = git::run(root, &["diff", "--raw", "-z", "--no-renames", "--no-abbrev", base, head]).result()?;
+fn work_tests(root: &Path, base: &str, head: &str, files: &[String]) -> Result<String, String> {
+    let listed = diff_of(root, base, head, &["--raw", "-z", "--no-renames", "--no-abbrev"], files)?;
     let mut digest = Sha256::new();
     let mut fields = listed.split('\0');
     while let (Some(meta), Some(file)) = (fields.next(), fields.next()) {
-        if is_test_path(file) {
-            digest.update(meta.as_bytes());
-            digest.update(file.as_bytes());
-            digest.update(&[0]);
-        }
+        digest.update(meta.as_bytes());
+        digest.update(file.as_bytes());
+        digest.update(&[0]);
     }
     Ok(digest.hex_digest())
+}
+
+/// Põe em `path`, a vaga no commit `base`, os arquivos de teste `files` da
+/// obra como o commit `head` os tem; o que a obra apagou sai da vaga. O teste
+/// que a base trouxe de outra obra não está em `files` e fica como `base` o
+/// tem.
+fn lay_work_tests(path: &Path, base: &str, head: &str, files: &[String]) -> Result<(), String> {
+    let changed = |filter: &str| -> Result<Vec<String>, String> {
+        let listed = diff_of(path, base, head, &["--name-only", "-z", "--no-renames", filter], files)?;
+        Ok(listed.split('\0').filter(|file| !file.is_empty()).map(str::to_string).collect())
+    };
+    let present = changed("--diff-filter=d")?;
+    if !present.is_empty() {
+        let mut args = vec!["--literal-pathspecs", "checkout", head, "--"];
+        args.extend(present.iter().map(String::as_str));
+        git::run(path, &args).result()?;
+    }
+    for file in changed("--diff-filter=D")? {
+        match std::fs::remove_file(path.join(&file)) {
+            Err(err) if err.kind() != std::io::ErrorKind::NotFound => return Err(format!("{file}: {err}")),
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 /// A execução gravada em `log` da prova cuja chave é `key`, como volta
@@ -164,7 +216,7 @@ impl BeforeCopy {
         let missing: Vec<(u64, String, String)> = proofs.iter().zip(&runs).filter(|(_, (run, _))| run.is_none()).map(|(proof, _)| proof.clone()).collect();
         if !missing.is_empty() {
             self.ready()?;
-            let mut fresh = match self.lay_work_tests() {
+            let mut fresh = match lay_work_tests(&self.path, &self.base, &self.head, &self.test_files) {
                 Ok(()) => run_criteria_proofs(&self.path, &missing).into_iter().map(|(_, _, run)| (run, true)).collect::<Vec<_>>(),
                 Err(detail) => missing.iter().map(|_| (not_laid(&detail), false)).collect(),
             }
@@ -194,31 +246,6 @@ impl BeforeCopy {
         let before = run_server_command(&super::clean_env(command), &self.path);
         let from_base = from_the_base(after, &before, &[clean, &self.path]);
         Ok((before, from_base))
-    }
-
-    /// Põe na vaga os arquivos de teste que a obra mudou do commit base ao
-    /// commit da obra, como o commit da obra os tem; o que a obra apagou sai
-    /// da vaga.
-    fn lay_work_tests(&self) -> Result<(), String> {
-        let changed = |filter: &str| -> Result<Vec<String>, String> {
-            let range = [self.base.as_str(), self.head.as_str()];
-            let args = ["diff", "--name-only", "-z", "--no-renames", filter, range[0], range[1]];
-            let listed = git::run(&self.path, &args).result()?;
-            Ok(listed.split('\0').filter(|file| !file.is_empty() && is_test_path(file)).map(str::to_string).collect())
-        };
-        let present = changed("--diff-filter=d")?;
-        if !present.is_empty() {
-            let mut args = vec!["checkout", self.head.as_str(), "--"];
-            args.extend(present.iter().map(String::as_str));
-            git::run(&self.path, &args).result()?;
-        }
-        for file in changed("--diff-filter=D")? {
-            match std::fs::remove_file(self.path.join(&file)) {
-                Err(err) if err.kind() != std::io::ErrorKind::NotFound => return Err(format!("{file}: {err}")),
-                _ => {}
-            }
-        }
-        Ok(())
     }
 }
 
@@ -361,7 +388,7 @@ fn back_to_base(path: &Path, base: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{approve, close, close_for, commit_file, git_at, ready_with_files, ready_with_waves, returned, round_for, verdict_written, wave_file};
+    use super::super::tests::{approve, close, close_for, commit_file, git_at, id_of, ready_with_files, ready_with_waves, returned, round_for, wave_file, write};
     use crate::commands::flow::close::CloseOpts;
     use crate::commands::flow::round::RoundOpts;
     use mustard_core::io::spec_events as store;
@@ -408,6 +435,28 @@ mod tests {
         let closed = close_for(&opts, None);
         assert_eq!((closed["phase"].clone(), closed["validation"]["reused"].clone()), (json!("closed"), json!(false)), "{closed}");
         assert_eq!((runs_before(false), runs_before(true)), (proofs, proofs), "o segundo fechamento não roda a prova de antes de novo: {closed}");
+    }
+
+    /// A obra que já entrou na base: o `dev` está no commit em que ela
+    /// terminou, e o `merge-base` dele com a obra é a própria obra. O
+    /// fechamento roda a prova no commit em que a obra começou, onde ela cai, e
+    /// não a reprova por passar num código que já tem a obra.
+    #[test]
+    fn the_close_compares_each_proof_with_the_commit_the_work_started_from() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        ready_with_waves(root, "x", &["grep -q dois src/w1.rs && echo Tests: 1 total"], 1);
+        let started = first_commit(root);
+        git_at(root, &["branch", "dev", "HEAD"]);
+
+        let opts = CloseOpts { root: root.to_path_buf(), spec: Some("x".into()), ..Default::default() };
+        let asked = close_for(&opts, None);
+        assert_eq!(asked["review"]["final"], json!(true), "a prova que cai no começo da obra não é reprovada: {asked}");
+        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        assert_eq!(crate::commands::flow::validation::base_commit(root, &log), Some(started), "o código de antes é o começo da obra");
+        let before = |e: &&mustard_core::domain::spec_events::SpecEvent| e.str_field("stage").is_some_and(|stage| stage.starts_with("criterion-before:"));
+        let results: Vec<&str> = log.events.iter().filter(|e| e.event_type == "stage_run").filter(before).filter_map(|e| e.str_field("result")).collect();
+        assert!(results.contains(&"fail"), "a prova cai no código de antes: {results:?}");
     }
 
     /// Uma execução que caiu, com a saída inteira `evidence`.
@@ -467,6 +516,72 @@ mod tests {
         let again = format!("{after}error: unused variable `x`\n  --> /c/x/check/src/new.rs:1:1\n");
         let (lines, new) = super::new_lines(&again, before, &[clean, base]);
         assert_eq!((lines, new), (4, vec!["error: unused variable `x`".to_string(), "  --> /c/x/check/src/new.rs:1:1".to_string()]));
+    }
+
+    /// O commit em que o `HEAD` de `root` está.
+    fn head_of(root: &Path) -> String {
+        let out = std::process::Command::new("git").args(["rev-parse", "HEAD"]).current_dir(root).output().expect("git");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// Grava `text` em `file` de `root`, comita e devolve o commit.
+    fn commit_text(root: &Path, file: &str, text: &str) -> String {
+        std::fs::create_dir_all(root.join(file).parent().unwrap()).unwrap();
+        std::fs::write(root.join(file), text).unwrap();
+        git_at(root, &["add", "-f", file]);
+        git_at(root, &["commit", "-q", "-m", file]);
+        head_of(root)
+    }
+
+    /// A obra entrou na base por um `merge` e a branch avançou até lá, com um
+    /// commit só da base na frente da linha principal (`tests/alien.rs`, que
+    /// outra obra trouxe). Por cima do código de antes vão o teste que a obra
+    /// escreveu e a falta do que ela apagou; o teste da base não vai, e não
+    /// entra na impressão deles: ele faria a prova cair por um código que não
+    /// é da obra.
+    #[test]
+    fn the_tests_laid_over_the_code_before_are_the_works_and_never_the_bases() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git_at(root, &["init", "-q"]);
+        git_at(root, &["checkout", "-q", "-b", "feature"]);
+        commit_text(root, "tests/old.rs", "old");
+        let started = commit_text(root, "seed.txt", "seed");
+        git_at(root, &["branch", "dev"]);
+        let code = commit_text(root, "src/lib.rs", "code");
+        git_at(root, &["rm", "-q", "tests/old.rs"]);
+        git_at(root, &["commit", "-q", "-m", "drop the old test"]);
+        let dropped = head_of(root);
+        let mine = commit_text(root, "tests/mine.rs", "mine");
+        git_at(root, &["checkout", "-q", "dev"]);
+        commit_text(root, "tests/alien.rs", "alien");
+        git_at(root, &["merge", "-q", "--no-ff", "--no-edit", "feature"]);
+        git_at(root, &["checkout", "-q", "feature"]);
+        git_at(root, &["merge", "-q", "--ff-only", "dev"]);
+        let merged = head_of(root);
+
+        let state = json!({"v": 1, "id": 1, "type": "state", "author": "binary", "phase": "survey", "branch": "feature", "base": "dev", "start": started});
+        let commits = [&code, &dropped, &mine].into_iter().zip(2..).map(|(sha, id)| json!({"v": 1, "id": id, "type": "commit", "sha": sha, "waves": [1]}));
+        let rows: Vec<String> = std::iter::once(state).chain(commits).map(|row| row.to_string()).collect();
+        let log = mustard_core::domain::spec_events::parse_log(&rows.join("\n"));
+        let files = super::work_test_files(root, &log, &started);
+        assert_eq!(files, ["tests/mine.rs", "tests/old.rs"], "the base's test is not the work's");
+
+        let copies = tempfile::tempdir().unwrap();
+        git_at(copies.path(), &["clone", "-q", &root.to_string_lossy(), "slot"]);
+        let slot = copies.path().join("slot");
+        git_at(&slot, &["checkout", "-q", &started]);
+        super::lay_work_tests(&slot, &started, &merged, &files).expect("the tests laid");
+        assert_eq!(std::fs::read_to_string(slot.join("tests/mine.rs")).ok().as_deref(), Some("mine"), "the work's test goes over the code before");
+        assert!(!slot.join("tests/old.rs").exists(), "what the work dropped leaves the slot");
+        assert!(!slot.join("tests/alien.rs").exists(), "the base's test never goes over the code before");
+        assert!(!slot.join("src/lib.rs").exists(), "only tests go over the code before");
+
+        let key = super::work_tests(root, &started, &merged, &files).expect("the key");
+        commit_text(root, "tests/alien.rs", "alien changed");
+        assert_eq!(super::work_tests(root, &started, &head_of(root), &files).as_deref(), Ok(key.as_str()), "the base's test is not in the key");
+        commit_text(root, "tests/mine.rs", "mine changed");
+        assert_ne!(super::work_tests(root, &started, &head_of(root), &files).as_deref(), Ok(key.as_str()), "the work's test is");
     }
 
     /// O commit em que o repositório de `root` nasceu.
@@ -577,13 +692,14 @@ mod tests {
         assert!(failure.str_field("text").unwrap_or_default().contains(said), "a onda reaberta lê a recusa do pedido: {:?}", failure.fields);
     }
 
-    /// A obra fecha verde e grava o recibo da validação. A revisão final
-    /// aprova com um achado cuja prova já passa no commit base, e a tarefa
-    /// dele volta sem mudar arquivo nenhum. O fechamento seguinte não
-    /// reaproveita o recibo: a prova do achado entrou na lista das provas,
-    /// roda nas duas cópias e recusa.
+    /// A obra fecha verde e grava o recibo da validação. Uma tarefa que só
+    /// confere volta sem mudar arquivo e deixa uma sobra que bloqueia, com a
+    /// prova que já passa no commit base, e a tarefa da sobra também volta sem
+    /// mudar arquivo nenhum. O fechamento seguinte não reaproveita o recibo: a
+    /// prova da sobra entrou na lista das provas, roda nas duas cópias e
+    /// recusa.
     #[test]
-    fn a_finding_delivered_without_change_runs_its_proof_instead_of_reusing_the_receipt() {
+    fn a_blocking_leftover_delivered_without_change_runs_its_proof_instead_of_reusing_the_receipt() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         ready_with_waves(root, "x", &["git --version"], 1);
@@ -592,17 +708,39 @@ mod tests {
         let asked = close_for(&opts, None);
         assert_eq!((asked["review"]["final"].clone(), asked["validation"]["reused"].clone()), (json!(true), json!(false)), "{asked}");
 
-        let finding = json!({"title": "A soma não trata estouro", "detail": "A soma estoura em src/w1.rs. Prova: `echo Tests: 2 total`",
-            "files": [wave_file(1)], "rule": "MSTD-CRIT-0001", "places": [wave_file(1)]});
-        verdict_written(root, "x", json!({"final": true, "result": "approved", "text": "Pronta, com um achado.", "leftovers": [finding]}));
-        let recorded = close_for(&opts, None);
-        assert_eq!(recorded["phase"], json!("running"), "{recorded}");
+        let read = || store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
+        let said = id_of(&write(root, "x", "message", json!({"author": "user", "text": "conferir a soma"})));
+        let criterion = read().visible().into_iter().find(|e| e.event_type == "criterion").expect("the criterion").id;
+        let task = write(
+            root,
+            "x",
+            "task",
+            json!({"title": "Conferir a soma", "text": "Conferir a soma da onda 1.", "agent": "- conferir o código da onda 1",
+                "files": [{"path": wave_file(1)}], "covers": [criterion], "origin": said}),
+        );
+        assert_eq!(task["ok"], json!(true), "{task}");
         let round = || round_for(&RoundOpts { root: root.to_path_buf(), spec: Some("x".into()), report: None }, None);
+        let newest_wave = || read().planned_waves().into_iter().max().expect("a planned wave");
         let dispatched = round();
         assert_eq!(dispatched["ok"], json!(true), "{dispatched}");
-        let log = store::read(&store::spec_file(root, "x").unwrap()).unwrap().unwrap();
-        let wave = log.planned_waves().into_iter().max().expect("the wave of the finding");
-        assert!(wave > 1, "o achado saiu numa onda própria: {dispatched}");
+        let checking = newest_wave();
+        assert!(checking > 1, "a conferência saiu numa onda própria: {dispatched}");
+        let finding = json!({"title": "A soma não trata estouro", "detail": "A soma estoura em src/w1.rs. Prova: `echo Tests: 2 total`",
+            "files": [wave_file(1)], "rule": "MSTD-CRIT-0001", "places": [wave_file(1)], "blocks": true});
+        returned(root, "x", json!({"wave": checking, "text": "Nada a mudar: a soma já estava assim. Rodei git --version e passou.", "leftovers": [finding]}));
+        let taken = round();
+        assert_eq!(taken["ok"], json!(true), "{taken}");
+        assert!(taken.get("commit").is_none(), "a conferência voltou sem mudança: {taken}");
+        let log = read();
+        assert!(
+            log.visible().into_iter().any(|e| e.event_type == "task" && e.str_field("title") == Some("A soma não trata estouro")),
+            "a sobra que bloqueia virou tarefa da obra: {taken}"
+        );
+
+        let dispatched = round();
+        assert_eq!(dispatched["ok"], json!(true), "{dispatched}");
+        let wave = newest_wave();
+        assert!(wave > checking, "a tarefa da sobra saiu numa onda própria: {dispatched}");
         returned(
             root,
             "x",
@@ -611,9 +749,9 @@ mod tests {
         );
         let back = round();
         assert_eq!(back["ok"], json!(true), "{back}");
-        assert!(back.get("commit").is_none(), "a tarefa do achado voltou sem mudança: {back}");
+        assert!(back.get("commit").is_none(), "a tarefa da sobra voltou sem mudança: {back}");
 
         let refused = close_for(&opts, None);
-        assert_eq!(refused["reason"], json!("criterion-passed-before"), "a prova do achado rodou e recusou: {refused}");
+        assert_eq!(refused["reason"], json!("criterion-passed-before"), "a prova da sobra rodou e recusou: {refused}");
     }
 }
