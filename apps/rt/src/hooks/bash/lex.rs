@@ -712,7 +712,7 @@ fn simple_command(words: Vec<Word>, redirects: Vec<Redirect>) -> Segment {
 /// Where the command really starts: past the structure words, a function
 /// definition's head, the `NAME=value` assignments and the wrappers with
 /// their options. Junto, os nomes dos invólucros pulados, na ordem.
-fn command_start(words: &[Word]) -> (usize, Vec<String>) {
+pub(crate) fn command_start(words: &[Word]) -> (usize, Vec<String>) {
     let mut i = 0;
     let mut wrappers = Vec::new();
     while let Some(w) = words.get(i) {
